@@ -1,10 +1,10 @@
 # DP1-02: the registration funding ownership and evidence model
 
-Status: design rev2, for Sol's re-review. Base: `dw/dp1-02-registration` at 6bcaa2f, P2b fix r4
+Status: design rev2, approved with D15 (Sol design r2, APPROVE-WITH-CHANGES). Base:
+`dw/dp1-02-registration` at 6bcaa2f, P2b fix r4
 at 52215e3 plus its schema-6 work in progress. Inputs: Sol r1 to r8, Opus high, rev1 with the
 §13 rulings, Sol's design review (OD-01 to OD-06), and the rulings on OD-01, OD-02 and OD-06.
-One ledger and the functions of §5 replace the per-path rules of r1 to r8. The held, uncommitted
-`Ledger` code in this worktree follows rev1, not rev2.
+One ledger and the functions of §5 replace the per-path rules of r1 to r8.
 
 **Changelog.** rev2 (Sol's design review):
 - **OD-05:** a calling row takes only its own `Step` lock (§5.1); §6's Finish rule now matches.
@@ -18,6 +18,8 @@ One ledger and the functions of §5 replace the per-path rules of r1 to r8. The 
 - **The rest:** the OD-01/02/06 rulings are folded into §3.1, §8.1 and §9; Q1 now covers
   unspent value only; §10 maps r1–r8, OD-01–06 and the rev1 model-check findings C1–C3; §11
   adds Sol's OD regressions. (rev1, fb6483f, added the §13 rulings to rev0.)
+- **D15 (Sol design r2):** a row closed with a cancel code is no step's `row_of` (§3.2, §5.2b);
+  the model check covers it (§11.1).
 
 ## 1. Why the holes kept coming
 
@@ -106,7 +108,10 @@ them with no rows. Today a resolved step's tombstones go; PA-3 must keep them (�
 - **`own(S)`**: `signed(S)`. If that is empty, the txid of `live(signer(S))`. Otherwise ∅.
 - **`holder(S)`**: the row whose `live` outpoint is `lock(t)` for some t in `own(S)`. The
   outpoint is unique, and there is one lock per call.
-- **`row_of(S)`**: `holder(S)`, else `signer(S)`: exact possession beats draft id and heir.
+- **`row_of(S)`** (D15): choose `holder(S)`, otherwise `signer(S)`. If the chosen row is closed
+  with `registration.funded_elsewhere` or `registration.funding_cancelled`, return none;
+  otherwise return that row. Exact possession precedes draft id and heir. The exclusion does not
+  remove any step or lock evidence.
 - **`settled(S)`**: `own(S)` ≠ ∅, and every `lock(t)` is consumed and is either held, or
   `row_of(S)` is none or not open. Consumed value settles its step unless an open row of the
   step still has to receive the identity (§5.2a).
@@ -244,10 +249,12 @@ discarded never comes back (C1).
   non-retryable failure, re-arms `backed_up` and schedules the automatic backup (MN-2), so a
   later restore carries the closed row.
 
-`Close` is idempotent; when both codes apply, `funded_elsewhere` wins. Once written, the code
-alone keeps the row `Cancelled` (rows 7–8's last arm), whatever later evidence reads, so it never
-takes a `Free` lock. An `Awaiting` row beside its voided outpoint gets `clear` only, and still
-takes its own lock. A `Cancelled` row can be discarded, not resumed; to register again the user
+`Close` is idempotent; when both codes apply, `funded_elsewhere` wins. Once `Close` writes a
+cancel code, D15 excludes that row from `row_of(S)`, so later evidence cannot make its step
+reopen the row. The row takes no Free or Step lock. Consumed signed value settles in place;
+returning unspent signed value goes to Recovery under §5.1. An Awaiting row whose voided outpoint
+is cleared without a cancel code remains eligible for its own Step lock. A `Cancelled` row can
+be discarded, not resumed; to register again the user
 starts a new draft (P2b's Repair policy, I12).
 
 **(c) The induction base for restored and legacy rows (OD-03).** A recorded outpoint is trusted
@@ -349,7 +356,7 @@ and network, P2b's `LockInputsSpent`, and discovery within its gap (Q12).
 **Flagged markers: acceptable.** After a crash mid-call, a flagged marker with nothing signed
 reads `NotSent` but stands, and F7 vetoes another call of its step. Its row closes as
 `Cancelled(funding_cancelled)`: nothing was paid, discard and `start` are allowed, and a new
-draft registers. Q14 offers a same-step retry instead.
+draft registers. It is never retried on the same step (Q14).
 
 **Unflagged markers: acceptable only under the initialization contract.** One with no signed
 record reads `Unknown` for good: its row is `Awaiting` (discard and `start` refused, `Contested`
@@ -416,21 +423,26 @@ for an unflagged writer, and F4 leaves Repair nothing to conflict with.
 | C3 (rev1 check) a non-heir copy funds on an orphan's slot | `index_owner`'s step arm; `next_index`. By F10 a real copy at the index is the heir |
 | C4 (rev2, P2b WIP) an unattributed row retracts a resolved step; `Contested` freezes the row for ever | §3.1's tombstone claim; `StepCancelled` required |
 | C5 (rev2, P2b WIP) a flagged recordless marker reads `NotSent` but stays vetoed | `cancelled` covers it: the row closes (§8.1); Q14 |
+| Closure rebound (rev2 check, Sol design r2) a coded row reads `Awaiting`/`Funded` again after a restart or a holder's discard | D15: `row_of` excludes cancel-coded rows; returning value goes to `Recovery` or settles in place |
 
 ## 11. Test plan
 
 ### 11.1 Model check
 
-`docs/design/checks/dp1_02_ownership_model.py` (`python3 -I -B`, exit 0 = pass) explores rows A
-and B, steps, locks T1–T3, calls, restarts and restores exhaustively. **Planned for rev2, not
-yet run** (the file still checks rev1): `calling` in `may_take` and
+`docs/design/checks/dp1_02_ownership_model.py` (`python3 -I -B`, exit 0 = pass; a scenario
+past its 600,000-state guard prints `BOUND HIT` and exits 2) checks rev2 with D15. It explores
+rows A, B and C, restored copies, recovery rows, steps, locks T1–T3, calls, restarts and
+restores exhaustively, with flagged and unflagged markers. It covers `calling` in `may_take` and
 Finish per §5.1; `live`, `settled`'s in-place arm, `reconcile` (attach, clear, close) and
-`index_owner`'s step arm; C4's claim and C5's stale marker; C1–C3 and amendments A1–A3 retired;
-new events for the pre-marker window, a consumed signed lock no row holds, and an unattributed
-row after a resolution. Each new mutation must fail: a calling row takes `Free`; `Recovery`
-takes an open caller's `Step` lock; no attach or no closure; the closure clears an outpoint that
-isn't `dead`; the signer takes contrary value; `next_index` ignores resolved steps; C4 reads
-`Unknown`.
+`index_owner`'s step arm; C4's claim and C5's stale marker; D15's `row_of` exclusion; and events
+for the pre-marker window, a consumed signed lock no row holds, an unattributed row after a
+resolution and a wrong-holder backup. rev2 holds S1–S6, I3, I4, I6, I10–I12 and D15 with no
+expected violation; flagged scenarios reach "nothing outstanding", and every stuck unflagged state
+is §8.1's. Each mutation must fail: a calling row takes `Free`; `Recovery` takes an open
+caller's `Step` lock; no attach or no closure; the closure clears an outpoint that isn't `dead`;
+the signer takes contrary value; `next_index` ignores resolved steps; C4 reads `Unknown`; a
+cancel-coded row is again `row_of` (D15); and rev1's rejected rules. Run it under
+`systemd-run -p MemoryMax=4G -p RuntimeMaxSec=1500 -p Nice=10`.
 
 ### 11.2 Rust regressions
 
@@ -438,12 +450,12 @@ These run in `registration_tests` with the real `LeaseTable`, dispatch and appdb
 Fake library, which counts `fund` and `register_identity` calls.
 
 1. **R8-01a/b** (rev1 items 1–2). Add a schema-6 flagged-marker variant: after a reopen it reads
-   `NotSent`, nothing is funded, and A closes (C5; retryable under Q14).
+   `NotSent`, nothing is funded, and A closes as `Cancelled(funding_cancelled)` (C5, Q14).
 2. **OD-02.** Open the r8 probe's real pre-6 dispatch DB with the new build. A is `Awaiting`
    (`FundingUnknown`), discard and `start` are refused, nothing is funded, and T2 stays unheld.
 3. **OD-01** (P2b's test, a dependency): Sol's blocked-record resume race, zero broadcasts.
 4. **OD-03, Sol's r7 fixture.** A is open, S_A's durable T1 is `Consumed`, and
-   `identity_for(T1)` is discovered at index j. A gets `{T1, identity, j, IdentityRegistered}`
+   `identity_for(T1)` is discovered at index j ≠ A's index. A gets `{T1, identity, j, IdentityRegistered}`
    and reaches Done; `register_identity` and `fund` run 0 times; B is refused T1; `pending` goes
    1 → 0 and `start` is allowed after. Variant: undiscovered, A stays `Awaiting` (`Network`,
    `pending` = 1) until discovery reports it.
@@ -470,7 +482,8 @@ Fake library, which counts `fund` and `register_identity` calls.
     attributes it, and P2b's block lifts; A stays `Cancelled`. Control: unflagged, S_A reads
     `Unknown` and U is `Contested`.
 12. **C5.** Kill the process after A's marker, before signing, and restart. A is
-    `Cancelled(funding_cancelled)`, not committed; `start` is allowed; S_A is never called.
+    `Cancelled(funding_cancelled)`, not committed; `start` is allowed; S_A is never called again,
+    not even by the same step (Q14).
 13. **R8-02, R8-03, restore orphan, `Ok` mismatch** (rev1 items 4–7). An unconsumed T1 goes to
     `Recovery`, and Sol r8's Done-row control follows Q1.
 14. **Every earlier regression**, under the new names, plus Sol r8's five controls and R5 N1.
@@ -534,3 +547,4 @@ attempt doesn't resurrect them.
 - **Q13: P2b derives C4's reading.** One source of truth. P2b's status for a flagged step with tombstones and no signed lock is resolved, and DP1-02 reads it rather than overriding P2b. P2b's gate and events agree with it by construction.
 - **Q14: close the row** (`Cancelled(funding_cancelled)`), as rev2 has it. P2b doesn't replace stale markers.
 - **Before implementation:** update the model check (`docs/design/checks/dp1_02_ownership_model.py`) to rev2 and run it with the §11.1 mutations, bounded so it finishes. Then a narrow Sol design r2.
+- **D15: approved (Sol design r2, APPROVE-WITH-CHANGES).** `row_of(S)` picks `holder(S)`, else `signer(S)`, and returns none if that row is closed with `registration.funded_elsewhere` or `registration.funding_cancelled`; it never falls through to another candidate, and no step or lock evidence is dropped. A closed row takes no lock: consumed signed value settles in place, returning unspent signed value goes to Recovery (§5.1).

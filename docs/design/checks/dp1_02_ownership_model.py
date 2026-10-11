@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Spec check for DP1-02's funding ownership model (docs/design/DP1-02-ownership-model.md),
-rev2 with the manager's rulings of section 13.1.
+rev2 with the manager's rulings of section 13.1, D15 included.
 
 Run: python3 -I -B docs/design/checks/dp1_02_ownership_model.py   (exit 0 = pass)
 
@@ -11,7 +11,9 @@ and next_index). It is a model of the design's decisions, not a test of the
 code.
 
 Part 1 runs rev2 in every scenario and requires, with no expected violation:
-safety S1-S6 (section 11.1) and the invariants I3, I4, I6, I10, I11 and I12;
+safety S1-S6 (section 11.1), the invariants I3, I4, I6, I10, I11 and I12,
+and D15 (section 3.2's row_of: a row closed with a cancel code is no step's
+row_of, takes no lock, and an open one keeps reading Cancelled);
 liveness: from every reachable state the system alone (the call, the run,
 reconcile, the tap, Finish, Repair, proofs, reconstruction, discovery; no
 user decision) reaches "nothing outstanding" (no call, no outstanding step,
@@ -160,6 +162,9 @@ class Cfg(NamedTuple):
     t2_amt: int = AMT
 
 
+CANCEL_CODES = ("fe", "fc")  # registration.funded_elsewhere, registration.funding_cancelled
+
+
 def rp(x, **kw):
     return x._replace(**kw)
 
@@ -295,7 +300,12 @@ class Ledger:
 
     def row_of(self, S: Step) -> Optional[Row]:
         h = self.holder(S)
-        return h if h is not None else self.signer(S)
+        cand = h if h is not None else self.signer(S)
+        # D15: a row closed with a cancel code is no step's row_of, and
+        # the candidate isn't replaced by another; the evidence stays.
+        if cand is not None and cand.code in CANCEL_CODES and "closed-row-of" not in self.m:
+            return None
+        return cand
 
     def settled(self, S: Step) -> bool:
         own = self.own(S)
@@ -558,6 +568,8 @@ def put_out(s: St, cfg: Cfg, taker, lk: Lock, label: str, ident: bool = False) -
         tv.append("I4: a row with an outstanding step takes a lock not its own")
     if taker.rid in rl.calling and lk.signer != taker.rid:
         tv.append("I10: a calling row takes a lock not its own")
+    if taker.code in CANCEL_CODES:
+        tv.append("D15: a row closed with a cancel code takes a lock")
     # Attach (ident) also clears the row's failure (5.2a).
     n = set_row(s, rp(taker, out=lk.name, ident=taker.ident or ident,
                       code=None if ident else taker.code))
@@ -883,6 +895,16 @@ def violations(s: St, cfg: Cfg) -> list:
             for r in s.rows)
     )
     led = ledger(s, cfg)
+    # D15, as Sol design r2's overlay judges it: the exclusion itself, and
+    # a closed open row keeps reading Cancelled.
+    for S in led.steps:
+        ro = led.row_of(S)
+        if ro is not None and ro.code in CANCEL_CODES:
+            out.append("D15: a row closed with a cancel code is row_of(S)")
+    for r in s.rows:
+        if (r.code in CANCEL_CODES and r.rid not in led.calling and led.open(r)
+                and led.standing(r) not in ("Cancelled-fe", "Cancelled-fc")):
+            out.append("D15: a closed open row reopens instead of staying Cancelled")
     if led.pending(held=False) < need:
         out.append("S5: Finish's pending is below the outstanding steps no row holds")
     if led.pending(held=True) < need:
@@ -1088,6 +1110,7 @@ MUTATIONS = {
     "signer-contrary": "the signer takes contrary value from the holder (Q8 reversed)",
     "next-index-outstanding": "next_index skips only outstanding steps (ignores resolved ones)",
     "c4-unknown": "C4 reads Unknown: a resolved flagged step re-read MaybeSent",
+    "closed-row-of": "D15 rejected: a cancel-coded row can again be row_of(S)",
     # rev1's, kept
     "by-row": "provenance read by row: deleting a row drops its step (R8-02)",
     "unknown-unclaimed": "Unknown read as Unclaimed (R8-01)",
@@ -1148,24 +1171,6 @@ def witnesses(name: str, r: dict, cfg: Cfg) -> list:
     return out
 
 
-def notes(r: dict, cfg: Cfg) -> Iterator[str]:
-    """Observations that are not failures: states where a row with a written
-    closure code reads other than Cancelled (5.2b says the code alone keeps it
-    Cancelled; section 3.3's rows 4-5 come first)."""
-    seen = set()
-    for i, s in enumerate(r["states"]):
-        if not any(row.code for row in s.rows):
-            continue
-        led = ledger(s, cfg)
-        for row in s.rows:
-            if row.code and (st := led.standing(row)) not in ("Cancelled-fe", "Cancelled-fc"):
-                if (row.code, st) not in seen:
-                    seen.add((row.code, st))
-                    yield (f"a row closed with code {row.code} reads {st} "
-                           f"(state {i}, {len(r['trace'](i))} steps): "
-                           + " -> ".join(r["trace"](i)))
-
-
 # Smallest first: a rejected rule is judged on the first scenario that catches it.
 def order(sizes: dict) -> list:
     return sorted(sizes, key=lambda k: sizes[k])
@@ -1191,7 +1196,7 @@ def main() -> int:
                 tr = r["found"][v]
                 print(f"         {v} ({len(tr)} steps): {' -> '.join(tr) or '(the initial state)'}")
             safety = [v for v in r["found"] if not v.startswith("L: ")]
-            check(not safety, f"[{name}] S1-S6, I3, I4, I6, I10-I12 hold ({r['n']} states)")
+            check(not safety, f"[{name}] S1-S6, I3, I4, I6, I10-I12, D15 hold ({r['n']} states)")
             live = [v for v in r["found"] if v.startswith("L: ")]
             what = ("every state reaches nothing outstanding" if not r["stuck"] else
                     f"the {len(r['stuck'])} stuck states are all section 8.1's "
@@ -1199,8 +1204,6 @@ def main() -> int:
             check(not live, f"[{name}] liveness: {what}")
             for desc, reached in witnesses(name, r, cfg):
                 check(reached, f"[{name}] reached: {desc}")
-            for note in notes(r, cfg):
-                print(f"NOTE [{name}] {note}")
             del r
 
         if not ok:
