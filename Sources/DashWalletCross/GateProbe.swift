@@ -77,6 +77,8 @@ enum GateProbe {
     private static var firstPainted = false
     /// The screen the last mark named; a mark is written each time it changes.
     private static var shown: String?
+    /// The sidebar page the last `page` mark named.
+    private static var page: SidebarItem?
     private static var paintWaiters: [Int: CheckedContinuation<Double?, Never>] = [:]
     private static var nextWaiter = 0
     private static var unlockSent = false
@@ -88,7 +90,7 @@ enum GateProbe {
     /// Called after every frame GTK draws (Linux), or every 250 ms (elsewhere). Writes
     /// `first-paint` once, then `<screen>-paint` whenever the screen changes: `lock`,
     /// `sync-overlay`, `overview` (once it lists transactions), `transactions` (with rows) and
-    /// `detail`. A live launch can
+    /// `detail`, and `page page=<item>` whenever the sidebar selection changes. A live launch can
     /// show Overview before the vault reports it is locked, so a harness waiting for Overview
     /// after an unlock takes the first `overview-paint` after `unlock-requested`.
     static func check(at time: Double, painted: Bool) {
@@ -102,6 +104,10 @@ enum GateProbe {
         }
         guard let state = host?.state, benchState != .running else { return }
         let main = state.main
+        if main.selection != page {
+            page = main.selection
+            mark("page", at: time, "page=\(main.selection.rawValue)")
+        }
         let model = main.selection == .transactions ? state.transactions() : nil
         let screen: String? =
             if main.lockState == nil {
@@ -126,7 +132,7 @@ enum GateProbe {
         }
         if screen == "lock", let unlockFile, !unlockSent,
             let passphrase = try? String(contentsOfFile: unlockFile, encoding: .utf8)
-                .split(separator: "\n", omittingEmptySubsequences: false).first
+                .split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).first
         {
             unlockSent = true
             mark("unlock-requested")
@@ -144,11 +150,17 @@ enum GateProbe {
         // A live launch can list rows before the vault reports it is locked; the bench waits
         // for its own unlock.
         if historyRounds > 0, benchState == .idle, unlockFile == nil || unlockSent {
-            benchState = .running
-            Task {
-                await historyBench(state: state, model: model)
+            #if os(Linux)
+                benchState = .running
+                Task {
+                    await historyBench(state: state, model: model)
+                    benchState = .done
+                }
+            #else
+                // The bench times renders by the frame clock, which only Linux hooks.
                 benchState = .done
-            }
+                mark("history-bench-error", "reason=no-frame-hook")
+            #endif
         }
     }
 
