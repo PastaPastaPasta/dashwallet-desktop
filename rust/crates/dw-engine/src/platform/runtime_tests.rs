@@ -1,8 +1,8 @@
 //! Bring-up internals: the status mapping, the local markers and the
 //! cadence. The end-to-end behaviour is in `tests/e0_05_bringup.rs`.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use dw_vault::{KdfParams, KdfPolicy, LockState, MemoryOsStore, VaultConfig};
@@ -16,6 +16,18 @@ use crate::{
     DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
     NetworkSession, SessionOptions, WalletId,
 };
+
+/// Held for the whole run by the tests that start SPV and wait on it or time
+/// it: a bring-up competing with the other tests' bring-ups for CPU and disk
+/// misses their wall-clock bounds on a loaded machine. A failing test poisons
+/// the lock; the next one takes it anyway.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 struct NoEvents;
 
@@ -168,6 +180,7 @@ fn create_marks_the_wallet_created_here() {
 /// bring-up is skipped and SPV starts at once.
 #[test]
 fn a_proven_absence_skips_the_bring_up() {
+    let _serial = serial();
     let dir = dw_testutil::private_tempdir();
     let (engine, s) = session(dir.path());
     // Imported: without the marker it would get the 20 s budget.
@@ -383,6 +396,7 @@ fn give_identity(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId) {
 /// another full drain budget (10 s).
 #[test]
 fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
+    let _serial = serial();
     let dir = dw_testutil::private_tempdir();
     let hole = blackhole();
     let (engine, s) = session_on(dir.path(), &hole, false);
@@ -458,6 +472,7 @@ fn craft_backup(s: &Arc<NetworkSession>, path: &std::path::Path, wallets: &[Wall
 /// Before the fix each bundle's import signalled the bring-up at once.
 #[test]
 fn a_failed_restore_starts_no_bring_up_for_what_it_rolls_back() {
+    let _serial = serial();
     let dir = dw_testutil::private_tempdir();
     let (src_engine, src) = session(&dir.path().join("src"));
     let a = src_engine
@@ -516,6 +531,7 @@ fn a_failed_restore_starts_no_bring_up_for_what_it_rolls_back() {
 /// only drained. Eight rounds make a lucky pass unlikely (1 in 256).
 #[test]
 fn a_lock_after_the_keys_were_built_leaves_the_identity_unsettled() {
+    let _serial = serial();
     for round in 0..8 {
         let dir = dw_testutil::private_tempdir();
         // DAPI refuses at once: the race needs no network wait (the stale
@@ -565,6 +581,7 @@ fn set_no_identity(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId, age: 
 /// discovery runs again.
 #[test]
 fn a_proven_absence_expires_after_seven_days() {
+    let _serial = serial();
     let dir = dw_testutil::private_tempdir();
     let (engine, s) = session(dir.path());
     let id = engine
@@ -650,6 +667,7 @@ impl HoldWalletCreated {
 /// restore then failed on its second bundle and rolled the wallet back.
 #[test]
 fn a_start_during_an_uncommitted_restore_skips_its_wallet() {
+    let _serial = serial();
     let dir = dw_testutil::private_tempdir();
     let (src_engine, src) = session(&dir.path().join("src"));
     let a = src_engine
@@ -730,6 +748,7 @@ fn a_start_during_an_uncommitted_restore_skips_its_wallet() {
 /// event (review r4 M4-R4).
 #[test]
 fn a_successful_restore_is_brought_up_once() {
+    let _serial = serial();
     let dir = dw_testutil::private_tempdir();
     let (src_engine, src) = session(&dir.path().join("src"));
     let a = src_engine
@@ -794,6 +813,7 @@ fn a_successful_restore_is_brought_up_once() {
 /// however many arrive (review r4 M4-R4).
 #[test]
 fn signals_during_a_bring_up_make_one_follow_up() {
+    let _serial = serial();
     let dir = dw_testutil::private_tempdir();
     let (engine, s) = session_with(
         engine(dir.path(), 4),
@@ -908,6 +928,7 @@ impl EventSink for HoldTwo {
 /// bring-up until the next start.
 #[test]
 fn overlapping_restores_keep_a_committed_wallets_bring_up() {
+    let _serial = serial();
     let dir = dw_testutil::private_tempdir();
     let (src_engine, src) = session(&dir.path().join("src"));
     let a = src_engine
