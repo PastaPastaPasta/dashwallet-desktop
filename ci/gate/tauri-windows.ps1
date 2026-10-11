@@ -137,7 +137,13 @@ $msiLog = Join-Path $OutDir 'msi-install.log'
 $t = Measure-Command { $mp = Start-Process msiexec.exe -ArgumentList '/i', "`"$($msi.FullName)`"", '/qn', '/norestart', '/l*v', "`"$msiLog`"" -Wait -PassThru }
 $result.msi.exitCode = $mp.ExitCode
 $result.msi.seconds = [math]::Round($t.TotalSeconds, 1)
-$msiExe = Join-Path $env:ProgramFiles 'Dash Wallet\dash-wallet.exe'
+# Where the MSI put the app: INSTALLDIR defaults to Program Files, but the MSI reuses the
+# InstallDir the NSIS installer left in the registry, so read the target from the log.
+$msiDir = Select-String -Path $msiLog -Pattern 'Dir \(target\): Key: INSTALLDIR\s*, Object: (.+)$' -ErrorAction SilentlyContinue |
+    Select-Object -Last 1 | ForEach-Object { $_.Matches[0].Groups[1].Value.Trim() }
+if (-not $msiDir) { $msiDir = Join-Path $env:ProgramFiles 'Dash Wallet' }
+$msiExe = Join-Path $msiDir 'dash-wallet.exe'
+$result.msi.installedExe = $msiExe
 if ($mp.ExitCode -ne 0 -or -not (Test-Path $msiExe)) { Fail "MSI install failed (exit $($mp.ExitCode))" }
 else {
     $p = Start-App $msiExe $fixture 'msi-app'

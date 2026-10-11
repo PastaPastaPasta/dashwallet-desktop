@@ -110,20 +110,22 @@ function Dump([string] $Screen) {
 }
 
 # The first on-screen element matching the predicate, polling until the timeout.
-function Wait-For([scriptblock] $Predicate, [int] $Seconds = 15) {
+# Scriptblocks see variables by dynamic scope: callers pass closures (GetNewClosure), and the
+# parameter names differ, so a predicate never resolves a name to this function's own variables.
+function Wait-For([scriptblock] $Match, [int] $Seconds = 15) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     do {
         $win = Find-Window
         if ($null -ne $win) {
-            foreach ($n in (Walk $win)) { $i = $n[1]; if (-not $i.offscreen -and (& $Predicate $i)) { return $i } }
+            foreach ($n in (Walk $win)) { $i = $n[1]; if (-not $i.offscreen -and (& $Match $i)) { return $i } }
         }
         Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $deadline)
     return $null
 }
 
-function Press([scriptblock] $Predicate, [string] $Label) {
-    $hit = Wait-For { param($i) $i.type -in @('Button', 'Hyperlink', 'ListItem', 'MenuItem') -and (& $Predicate $i) }
+function Press([scriptblock] $Want, [string] $Label) {
+    $hit = Wait-For ({ param($i) $i.type -in @('Button', 'Hyperlink', 'ListItem', 'MenuItem') -and (& $Want $i) }.GetNewClosure())
     if ($null -eq $hit) { return Check 'hard' "find '$Label'" $false }
     $ok = $false
     try {
