@@ -16,6 +16,11 @@ t2=$(date +%s)
 CORE_SECONDS=$((t1 - t0)) SWIFT_SECONDS=$((t2 - t1)) \
   ci/gate/crossui/linux-pack.sh "$(swift build -c release --show-bin-path)" "$pkg"
 cp "$pkg/build.json" "$GATE_OUT/"
+# The build directory's bundles must not stand in for the tarball's (SwiftPM's accessor falls back
+# to the build path).
+for bundle in "$(swift build -c release --show-bin-path)"/*.resources; do
+  [[ -e "$bundle" ]] && mv "$bundle" "$bundle.moved"
+done
 (cd rust && cargo build --release -p dwcli)
 
 export DISPLAY=:91

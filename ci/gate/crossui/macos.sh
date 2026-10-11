@@ -119,8 +119,11 @@ screen() {
       screencapture -x "$OUT/$name-screen.png"
       "$window_id" --list "$pid" || true
     fi
-    if kill -0 "$pid" 2>/dev/null; then
-      result "$name: ok '$mark' after ${waited}s; window ${window:-none}; rss $(ps -o rss= -p "$pid" | tr -d ' ') KB"
+    if [[ -z "$window" ]]; then
+      result "$name: FAIL no window for pid $pid after '$mark'"
+      status=1
+    elif kill -0 "$pid" 2>/dev/null; then
+      result "$name: ok '$mark' after ${waited}s; window $window; rss $(ps -o rss= -p "$pid" | tr -d ' ') KB"
     else
       result "$name: FAIL exited after '$mark'"
       status=1
@@ -143,8 +146,13 @@ open -n "/Applications/Dash Wallet.app" --args --demo
 sleep 20
 if pid=$(pgrep -n -f "^$installed"); then
   w=$("$window_id" "$pid" || true)
-  [[ -n "$w" ]] && screencapture -x -o -l "$w" "$OUT/u7-launchservices-demo.png"
-  result "U7 launch through LaunchServices: running (pid $pid), window ${w:-none}"
+  if [[ -n "$w" ]]; then
+    screencapture -x -o -l "$w" "$OUT/u7-launchservices-demo.png"
+    result "U7 launch through LaunchServices: running (pid $pid), window $w"
+  else
+    result "U7 launch through LaunchServices: FAIL running (pid $pid) without a window"
+    status=1
+  fi
   kill "$pid" || true
 else
   result "U7 launch through LaunchServices: FAIL not running after 20 s"

@@ -48,7 +48,7 @@ class App:
         self.log = open(log or os.devnull, "w")
         self.started = time.monotonic()
         self.proc = subprocess.Popen([gate.binary, *args], env=environment, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.PIPE, text=True, bufsize=1)
+                                     stderr=subprocess.PIPE, text=True, errors="replace", bufsize=1)
         self.pid = self.proc.pid
         self._root = None
         threading.Thread(target=self._read, daemon=True).start()
@@ -300,6 +300,10 @@ def dump(gate, app, tag):
                 i["role"] != "?" for _n, i, d in nodes if d <= 1):
             break
         time.sleep(2)
+    else:
+        # No valid tree in five walks: an empty walk must not pass as "0 unnamed".
+        lines.append("# INVALID: no complete AT-SPI tree in 5 walks")
+        nodes = []
     with open(os.path.join(gate.out, f"atspi-{tag}.txt"), "w") as fh:
         fh.write("\n".join(lines) + "\n")
     return nodes
@@ -341,7 +345,7 @@ def phase_start(gate):
     gate.results["u5-start"] = result
     s, c = result["seconds"]["demo-overview-paint"], result["cpuSeconds"]["demo-overview-paint"]
     gate.check("U5", f"cold start to first paint (demo Overview): median {s.get('median')} s, max {s.get('max')} s "
-               f"(<= 1.5 s)", bool(s) and s["max"] <= 1.5,
+               f"(<= 1.5 s)", bool(s) and s["n"] == gate.runs and s["max"] <= 1.5,
                f"{s.get('n')} runs; CPU median {c.get('median')} s; load {result['uptime']}")
     for key in ("demo-first-paint", "live-lock-paint"):
         gate.note("U5", f"spawn to {key} (s; CPU s)", f"{result['seconds'][key]}; {result['cpuSeconds'][key]}")
@@ -351,6 +355,7 @@ def phase_start(gate):
 def phase_history(gate):
     """U5 history_page(200) round trip: GateProbe's bench, after Transactions shows its rows."""
     renders, ffi200, ffi1, cpu200, cpu1 = [], [], [], [], []
+    timeouts, incomplete = 0, 0
     rounds = gate.history_rounds
     for run in range(max(1, gate.runs // 3)):
         app = gate.launch(gate.live_args(page="transactions"), tag=f"history-{run}",
@@ -360,6 +365,8 @@ def phase_history(gate):
         for fields in app.all("history-render"):
             if fields.get("renderMs") != "timeout":
                 renders.append(float(fields["totalMs"]))
+            else:
+                timeouts += 1
             ffi200.append(float(fields["ffiMs"]))
             if "cpuMs" in fields:
                 cpu200.append(float(fields["cpuMs"]))
@@ -369,15 +376,19 @@ def phase_history(gate):
         exited = None if app.alive() else app.proc.returncode
         app.stop()
         if not done:
+            incomplete += 1
             gate.note("U5", f"history bench run {run}",
                       f"incomplete: {errors or 'no history-bench-done'}; app exit status {exited}")
     result = {"totalMs": summary(renders), "ffiMs200": summary(ffi200), "ffiMs1": summary(ffi1),
               "cpuMs200": summary(cpu200), "cpuMs1": summary(cpu1),
+              "renderTimeouts": timeouts, "incompleteRuns": incomplete,
               "raw": {"totalMs": renders, "ffiMs200": ffi200, "ffiMs1": ffi1}, "uptime": uptime()}
     gate.results["u5-history"] = result
     p95 = result["totalMs"].get("p95")
-    gate.check("U5", f"history_page(200) + render p95 {p95} ms (<= 20 ms)", p95 is not None and p95 <= 20,
-               f"FFI alone p95 {result['ffiMs200'].get('p95')} ms, limit 1 p95 {result['ffiMs1'].get('p95')} ms; "
+    # A render that timed out or a run that did not finish is slower than any p95 it would join.
+    gate.check("U5", f"history_page(200) + render p95 {p95} ms (<= 20 ms)",
+               p95 is not None and p95 <= 20 and timeouts == 0 and incomplete == 0,
+               f"{timeouts} render timeouts, {incomplete} incomplete runs; FFI alone p95 {result['ffiMs200'].get('p95')} ms, limit 1 p95 {result['ffiMs1'].get('p95')} ms; "
                f"load {result['uptime']}")
 
 
@@ -386,7 +397,8 @@ def phase_pss(gate, idle=30):
     without the engine; the live runs, with the engine in the same process, show Overview after
     unlock, then Transactions with 200 rows."""
     demo = []
-    for run in range(max(1, gate.runs // 3)):
+    pss_runs = max(1, gate.runs // 3)
+    for run in range(pss_runs):
         app = gate.launch(["--demo", "--appearance", "light"], tag=f"pss-demo-{run}")
         if app.wait("overview-paint", 120) is not None:
             time.sleep(idle)
@@ -415,7 +427,7 @@ def phase_pss(gate, idle=30):
     gate.results["u5-pss"] = {"demo": demo, "samples": samples, "idleSeconds": idle, "uptime": uptime()}
     ui = max(s["Pss"] for s in demo) if demo else None
     gate.check("U5", f"idle PSS without the engine (demo Overview) max {ui} MiB (<= 400 MiB)",
-               ui is not None and ui <= 400, json.dumps(demo))
+               ui is not None and len(demo) == pss_runs and ui <= 400, f"{len(demo)}/{pss_runs} runs: {json.dumps(demo)}")
     live = max((s["transactions"] or s["overview"])["Pss"] for s in samples) if samples else None
     gate.note("U5", f"idle PSS with the engine, 40k wallet, max {live} MiB", json.dumps(samples))
 
@@ -531,15 +543,16 @@ def phase_screens(gate):
         gate.results.setdefault("u3-fonts", {})[appearance] = fonts
         gate.check("U3", f"{appearance}: the four screens captured", len(shots) == 4, str(sorted(shots)))
         gate.check("U3", f"{appearance}: the bundled Inter is the font in use",
-                   any("Inter" in os.path.basename(f) and ".resources" in f for f in fonts), str(fonts))
+                   any("Inter" in os.path.basename(f) and f.startswith(os.path.dirname(gate.binary) + "/")
+                       for f in fonts), str(fonts))
     gate.results["u4-naming"] = naming
     for screen, info in naming.items():
         gate.check("U4", f"AT-SPI walk {screen}: {info['interactive']} interactive, {info['unnamed']} unnamed",
-                   info["unnamed"] == 0, str(info["unnamedRoles"][:10]))
+                   info["interactive"] > 0 and info["unnamed"] == 0, str(info["unnamedRoles"][:10]))
 
 
 def capture(gate, frame, tag, naming):
-    screenshot(gate.out, tag)
+    gate.check("U3", f"{tag}: screenshot", screenshot(gate.out, tag))
     nodes = dump(gate, frame, tag)
     with open(os.path.join(gate.out, f"styles-{tag}.json"), "w") as fh:
         json.dump(text_styles(nodes), fh, indent=1)
@@ -594,9 +607,9 @@ def screenshot(out_dir, tag):
     found = xdotool("search", "--onlyvisible", "--name", "^Dash Wallet").stdout.split()
     geometry = xdotool("getwindowgeometry", "--shell", found[-1]).stdout if found else ""
     box = dict(line.split("=", 1) for line in geometry.split() if "=" in line)
-    crop = f"-crop {box['WIDTH']}x{box['HEIGHT']}+{box['X']}+{box['Y']} +repage" if box else ""
-    ok = subprocess.run(["sh", "-c", f"import -window root {crop} '{path}'"]).returncode == 0
-    print(f"== screenshot {path}: {'ok' if ok else 'FAILED'} {crop}", flush=True)
+    crop = ["-crop", f"{box['WIDTH']}x{box['HEIGHT']}+{box['X']}+{box['Y']}", "+repage"] if box else []
+    ok = bool(box) and subprocess.run(["import", "-window", "root", *crop, path]).returncode == 0
+    print(f"== screenshot {path}: {'ok' if ok else 'FAILED'} {' '.join(crop) or 'no window'}", flush=True)
     return ok
 
 
@@ -646,10 +659,11 @@ def focused(frame):
     return (hits[-1][1]["role"], hits[-1][1]["name"]) if hits else None
 
 
-def paints_since(app, since):
-    """GateProbe's screen marks (`*-paint`) written at or after the monotonic time `since`."""
+def pages_since(app, since):
+    """The sidebar pages GateProbe saw selected (its `page` marks) at or after the monotonic time
+    `since`."""
     with app.cond:
-        return [m[0] for m in app.marks if m[0].endswith("-paint") and m[1] >= since]
+        return [m[2].get("page") for m in app.marks if m[0] == "page" and m[1] >= since]
 
 
 def tab_to(frame, predicate, limit):
@@ -724,7 +738,8 @@ def keyboard_steps(gate, app, frame):
             xdotool("key", "space")
         gate.check("U4", "keyboard: hide the sync overlay (Tab to Hide, Space)",
                    hidden and app.wait("overview-paint", 30, after="sync-overlay-paint") is not None)
-    unlocked = app.wait("overview-paint", 5, after="sync-overlay-paint") is not None
+    unlocked = app.wait("overview-paint", 5, after="lock-paint") is not None
+    gate.check("U4", "keyboard: Overview after the unlock", unlocked)
     if unlocked:
         time.sleep(1)
         nodes = dump(gate, frame, "keys-overview")
@@ -732,14 +747,14 @@ def keyboard_steps(gate, app, frame):
         steps["overviewTabs"] = tab_cycle(frame)
         steps["overviewInteractive"] = [(i["role"], i["name"]) for _n, i in interactive(nodes)]
         # The sidebar's rows are Tab stops, and focusing one selects it: Tab can change the page.
-        steps["pagesDuringOverviewTabs"] = paints_since(app, cycle_start)
+        steps["pagesDuringOverviewTabs"] = pages_since(app, cycle_start)
         gate.check("U4", "keyboard: Tab through the sidebar keeps the page (focus does not select a row)",
                    not steps["pagesDuringOverviewTabs"], str(steps["pagesDuringOverviewTabs"]))
         missed = [c for c in steps["overviewInteractive"] if c not in steps["overviewTabs"]]
         gate.check("U4", f"keyboard: Tab reaches every Overview control ({len(steps['overviewTabs'])} stops)",
                    not missed, str(missed[:10]))
         # Sidebar: focus it, then Down to Transactions (unless Tab already went there).
-        moved = (steps["pagesDuringOverviewTabs"] or [None])[-1] == "transactions-paint"
+        moved = (steps["pagesDuringOverviewTabs"] or [None])[-1] == "transactions"
         for _ in range(0 if moved else 40):
             now = focused(frame)
             if now and now[0] == "list item" and now[1] in ("Overview", "Transactions", "Send", "Receive"):
