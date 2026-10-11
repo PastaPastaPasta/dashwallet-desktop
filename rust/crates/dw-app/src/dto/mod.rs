@@ -76,6 +76,24 @@ pub mod credits {
     }
 }
 
+/// Serde for bytes as a base64 string (standard alphabet, padded):
+/// `#[ts(type = "string")] #[serde(with = "crate::dto::base64")]`. JSON
+/// would otherwise carry `Vec<u8>` as an array of numbers.
+pub mod base64 {
+    use ::base64::Engine as _;
+    use ::base64::engine::general_purpose::STANDARD;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&STANDARD.encode(v))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let s = String::deserialize(d)?;
+        STANDARD.decode(s).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum NetworkKind {
@@ -423,5 +441,18 @@ mod tests {
         let json = serde_json::to_string(&c).unwrap();
         assert_eq!(json, r#"{"a":"18446744073709551615","b":null}"#);
         assert_eq!(serde_json::from_str::<C>(&json).unwrap(), c);
+    }
+
+    #[test]
+    fn bytes_cross_as_base64() {
+        #[derive(Debug, PartialEq, Serialize, Deserialize)]
+        struct B(#[serde(with = "super::base64")] Vec<u8>);
+        let json = serde_json::to_string(&B(vec![0, 255, 7])).unwrap();
+        assert_eq!(json, r#""AP8H""#);
+        assert_eq!(
+            serde_json::from_str::<B>(&json).unwrap(),
+            B(vec![0, 255, 7])
+        );
+        assert!(serde_json::from_str::<B>(r#""not base64!""#).is_err());
     }
 }

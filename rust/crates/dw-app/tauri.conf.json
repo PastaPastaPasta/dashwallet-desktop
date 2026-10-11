@@ -42,7 +42,12 @@
         "vault",
         "wallets",
         "chain",
-        "history"
+        "history",
+        "backup",
+        "send",
+        "coinjoin",
+        "identity",
+        "social"
       ]
     },
     "withGlobalTauri": false
