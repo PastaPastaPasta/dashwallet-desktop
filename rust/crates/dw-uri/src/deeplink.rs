@@ -15,6 +15,8 @@
 //! - Payload checks for DashConnect URIs (Base58 body, 4 KiB limit) are not
 //!   done here; they belong to the DashConnect parser.
 
+use zeroize::{Zeroize, Zeroizing};
+
 use crate::ext::{self, PaymentRequest};
 
 /// Where a link should go.
@@ -272,6 +274,125 @@ impl DashPayUserLink {
             username: label.to_owned(),
         })
     }
+
+    /// iOS `uriString`: `dashpay://user?id=<base58>&username=<label>`. The
+    /// label is percent-encoded outside RFC 3986's unreserved set; a DPNS
+    /// label (`[A-Za-z0-9-]`) needs none, so for any name Platform holds the
+    /// bytes are the ones iOS's `URLComponents` writes
+    /// (`testdata/dashpay_user_links.json`).
+    pub fn to_uri(&self) -> String {
+        format!(
+            "dashpay://user?id={}&username={}",
+            base58(&self.identity_id),
+            crate::qurl::to_percent_encoding(&self.username)
+        )
+    }
+}
+
+/// Plain Base58 (Bitcoin alphabet, no checksum), as Platform writes
+/// identifiers.
+fn base58(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let zeros = bytes.iter().take_while(|b| **b == 0).count();
+    // Little-endian base-58 digits.
+    let mut digits: Vec<u8> = Vec::new();
+    for &byte in &bytes[zeros..] {
+        let mut carry = u32::from(byte);
+        for d in &mut digits {
+            carry += u32::from(*d) << 8;
+            *d = (carry % 58) as u8;
+            carry /= 58;
+        }
+        while carry > 0 {
+            digits.push((carry % 58) as u8);
+            carry /= 58;
+        }
+    }
+    let ones = std::iter::repeat_n('1', zeros);
+    ones.chain(
+        digits
+            .iter()
+            .rev()
+            .map(|d| char::from(ALPHABET[usize::from(*d)])),
+    )
+    .collect()
+}
+
+/// The longest `dapk` value decoded (platform-wallet's
+/// `MAX_DAPK_BASE58_LEN`): a 38-byte key blob is about 52 characters, and the
+/// cap bounds the work a hostile QR can force before the blob is checked.
+const MAX_DAPK_LEN: usize = 128;
+
+/// A DIP-15 contact QR ("Auto Accept Proof"):
+/// `dash:?du=<username>&dapk=<Base58 key blob>`, the form platform-wallet's
+/// `encode_dashpay_contact_uri` writes.
+///
+/// Only the contact form: no address, no parameter but `du` and `dapk`, each
+/// once. DIP-15's merchant form (an address and payment parameters next to
+/// `du` and `dapk`) is a payment request, not a contact code. Scheme and
+/// parameter names are case-insensitive. `du` loses one `.dash` suffix (any
+/// case, as DPNS resolves it) and must not be empty. `dapk` is Base58 of at
+/// most 128 characters; its blob is checked by the caller
+/// (platform-wallet's `decode_auto_accept_key_blob`). The username claim is
+/// not verified here.
+pub struct DashPayContactCode {
+    /// The DPNS name as written, trimmed: a `.dash` suffix is the lookup's
+    /// to drop.
+    pub username: String,
+    /// The decoded `dapk` blob: the QR owner's auto-accept private key, a
+    /// bearer credential. Never log it.
+    pub key_blob: Zeroizing<Vec<u8>>,
+}
+
+impl DashPayContactCode {
+    pub fn parse(s: &str) -> Option<DashPayContactCode> {
+        let parts = split_url(s.trim())?;
+        if parts.scheme != "dash"
+            || parts.host.is_some()
+            || !parts.path.is_empty()
+            || parts.fragment.is_some()
+        {
+            return None;
+        }
+        let mut items = query_items(parts.query?);
+        let code = Self::from_items(&items);
+        for (_, value) in &mut items {
+            value.zeroize();
+        }
+        code
+    }
+
+    fn from_items(items: &[(String, Option<String>)]) -> Option<DashPayContactCode> {
+        let (mut username, mut dapk) = (None, None);
+        for (name, value) in items {
+            let slot = match name.to_ascii_lowercase().as_str() {
+                "du" => &mut username,
+                "dapk" => &mut dapk,
+                _ => return None,
+            };
+            if slot.replace(value.as_deref()?).is_some() {
+                return None;
+            }
+        }
+        let (username, dapk) = (username?.trim(), dapk?);
+        if username.is_empty() || dapk.len() > MAX_DAPK_LEN {
+            return None;
+        }
+        let key_blob = Zeroizing::new(dashcore::base58::decode(dapk).ok()?);
+        Some(DashPayContactCode {
+            username: username.to_owned(),
+            key_blob,
+        })
+    }
+}
+
+impl std::fmt::Debug for DashPayContactCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DashPayContactCode")
+            .field("username", &self.username)
+            .field("key_blob", &"..")
+            .finish()
+    }
 }
 
 const ONELINK_HOST_SUFFIXES: [&str; 3] = ["onelink.me", "appsflyersdk.com", "appsflyer.com"];
@@ -397,6 +518,115 @@ mod tests {
         );
         assert!(
             DashPayUserLink::parse(&format!("dashpay://user?id={b58}&username=.dash")).is_none()
+        );
+        assert_eq!(
+            link.to_uri(),
+            format!("dashpay://user?id={b58}&username=bob")
+        );
+    }
+
+    /// Links iOS's own `DashPayUserLink` wrote (the fixture's `source`):
+    /// written byte for byte and parsed back.
+    #[test]
+    fn ios_made_user_links() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../testdata/dashpay_user_links.json"
+        );
+        let fixture = std::fs::read_to_string(path).unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(&fixture).unwrap();
+        let links = fixture["links"].as_array().unwrap();
+        assert!(!links.is_empty());
+        for case in links {
+            let uri = case["uri"].as_str().unwrap();
+            let link = DashPayUserLink::parse(uri).unwrap();
+            let id = dashcore::base58::decode(case["identity"].as_str().unwrap()).unwrap();
+            assert_eq!(link.identity_id.as_slice(), id.as_slice());
+            let given = case["username_given"].as_str().unwrap();
+            assert_eq!(link.username, given.strip_suffix(".dash").unwrap_or(given));
+            assert_eq!(link.to_uri(), uri);
+        }
+    }
+
+    #[test]
+    fn base58_matches_the_decoder() {
+        for bytes in [
+            vec![],
+            vec![0],
+            vec![0, 0, 1],
+            vec![0xff; 32],
+            (0..=40).collect(),
+        ] {
+            let encoded = base58(&bytes);
+            assert_eq!(
+                dashcore::base58::decode(&encoded).unwrap(),
+                bytes,
+                "{encoded}"
+            );
+        }
+        assert_eq!(
+            base58(&[7u8; 32]),
+            "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx"
+        );
+    }
+
+    /// platform-wallet's `encode_auto_accept_key_blob` layout.
+    fn key_blob(expiry: u32) -> Vec<u8> {
+        let mut blob = vec![0x00];
+        blob.extend_from_slice(&expiry.to_be_bytes());
+        blob.push(0x20);
+        blob.extend_from_slice(&[0x11; 32]);
+        blob
+    }
+
+    #[test]
+    fn dip15_contact_code() {
+        let blob = key_blob(1_700_000_000);
+        let dapk = base58(&blob);
+        let code = DashPayContactCode::parse(&format!(" dash:?du=bob&dapk={dapk}\n")).unwrap();
+        assert_eq!(code.username, "bob");
+        assert_eq!(*code.key_blob, blob);
+        // Names and scheme in any case; the name as written.
+        let code = DashPayContactCode::parse(&format!("DASH:?DAPK={dapk}&Du=Bob.DASH")).unwrap();
+        assert_eq!(code.username, "Bob.DASH");
+        // DIP-15's own example parses; its blob is the caller's to check.
+        let example =
+            "dash:?du=bobspizza&dapk=13SuoA8Z5tG9PYhvPYzxyDb6yA1yQ4rTMUpLDgMF9q4z41pbKWES";
+        assert_eq!(
+            DashPayContactCode::parse(example).unwrap().username,
+            "bobspizza"
+        );
+
+        let long = "2".repeat(MAX_DAPK_LEN + 1);
+        for bad in [
+            // DIP-15's merchant form is a payment.
+            format!("dash:Xcu5iYBH3szP744sQ1RUp3JHTVFHrFVdYu?amount=0.11&du=bob&dapk={dapk}"),
+            format!("dash:?du=bob&dapk={dapk}&amount=1"),
+            format!("dash:?du=bob&du=bob&dapk={dapk}"),
+            format!("dash:?du=bob&dapk={dapk}&dapk={dapk}"),
+            format!("dash:?du=&dapk={dapk}"),
+            format!("dash:?du&dapk={dapk}"),
+            format!("dash:?dapk={dapk}"),
+            "dash:?du=bob".to_owned(),
+            "dash:?du=bob&dapk=0OIl".to_owned(),
+            format!("dash:?du=bob&dapk={long}"),
+            format!("dash://x?du=bob&dapk={dapk}"),
+            format!("dash:?du=bob&dapk={dapk}#f"),
+            format!("dashpay:?du=bob&dapk={dapk}"),
+            "dash:".to_owned(),
+        ] {
+            assert!(DashPayContactCode::parse(&bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn contact_code_debug_hides_the_key() {
+        let code =
+            DashPayContactCode::parse(&format!("dash:?du=bob&dapk={}", base58(&key_blob(1))))
+                .unwrap();
+        assert_eq!(
+            format!("{code:?}"),
+            r#"DashPayContactCode { username: "bob", key_blob: ".." }"#
         );
     }
 }
