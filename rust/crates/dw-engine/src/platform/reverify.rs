@@ -400,6 +400,17 @@ fn unverified_of(
     held
 }
 
+/// A DPNS `domain` document's `label` as spelled and its `records.identity`
+/// (not `normalizedLabel`, not `$ownerId`); `None` if either is missing or
+/// malformed.
+fn domain_of(doc: &Document) -> Option<(String, Identifier)> {
+    let props = doc.properties();
+    let spelling = props.get("label")?.as_str()?.to_string();
+    let records = props.get("records")?.to_map().ok()?;
+    let (_, identity) = (records.iter()).find(|(k, _)| k.as_text() == Some("identity"))?;
+    Some((spelling, identity.to_identifier().ok()?))
+}
+
 /// A `contactRequest` document as platform-wallet reads it
 /// (`parse_contact_request_doc`); `None` without a required field.
 fn request_from_document(doc: &Document) -> Option<ContactRequest> {
@@ -486,15 +497,7 @@ impl Refetcher for SdkRefetcher {
                 .with_where(equal("normalizedLabel", &label));
             query.limit = 1;
             let docs = Document::fetch_many(&sdk, query).await?;
-            Ok(docs.into_iter().find_map(|(_, doc)| {
-                let props = doc?.properties().clone();
-                let spelling = props.get("label")?.as_str()?.to_string();
-                let records = props.get("records")?.to_map().ok()?.clone();
-                let identity = records
-                    .iter()
-                    .find(|(k, _)| k.as_text() == Some("identity"))?;
-                Some((spelling, identity.1.to_identifier().ok()?))
-            }))
+            Ok(docs.into_values().find_map(|doc| domain_of(&doc?)))
         })
     }
 
@@ -604,13 +607,40 @@ impl NetworkSession {
         let wm = live.manager.wallet_manager_arc();
         // Held across the writes: the library cannot change what is recorded.
         let wm = wm.read().await;
-        let records = confirmed(&verified, &held_unverified(&wm, &live.provenance));
-        let provenance = Arc::clone(&live.provenance);
-        let written =
-            tokio::task::spawn_blocking(move || record_all(&provenance, &records)).await?;
+        let step = record_step(&wm, &live.provenance, &verified).await?;
         drop(wm);
-        Ok(held.len().saturating_sub(written))
+        tracing::debug!(
+            written = step.written,
+            left = step.left,
+            "recorded verified fetches"
+        );
+        Ok(step.left)
     }
+}
+
+/// What a record step did.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Recorded {
+    /// Records that reached app.sqlite.
+    pub(super) written: usize,
+    /// Entities still unverified afterwards, counted from the library (Sol
+    /// r2 R3): a write can replace another copy's record under one key.
+    pub(super) left: usize,
+}
+
+/// Records the `verified` fetches the library still holds unchanged, then
+/// counts what is still unverified. The caller holds the wallet manager's
+/// read lock across it.
+pub(super) async fn record_step(
+    wm: &WalletManager<PlatformWalletInfo>,
+    provenance: &Arc<Provenance>,
+    verified: &[&Held],
+) -> Result<Recorded, tokio::task::JoinError> {
+    let records = confirmed(verified, &held_unverified(wm, provenance));
+    let writer = Arc::clone(provenance);
+    let written = tokio::task::spawn_blocking(move || record_all(&writer, &records)).await?;
+    let left = held_unverified(wm, provenance).len();
+    Ok(Recorded { written, left })
 }
 
 /// Records `records`; how many were written (Sol r1 R2). A failed write is
@@ -693,6 +723,44 @@ mod tests {
         let hash_as_bytes =
             ShownProfile::from_document(&doc(&[("avatarHash", Value::Bytes(vec![3; 32]))]));
         assert_eq!(hash_as_bytes.unwrap().avatar_hash, Some([3; 32]));
+    }
+
+    /// Sol r2 N1: the spelling is the document's `label`, the owner its
+    /// `records.identity`; a missing or malformed field reads as nothing.
+    #[test]
+    fn a_domain_document_reads_its_spelling_and_records_identity() {
+        let (owner, records) = (Identifier::new([5; 32]), Identifier::new([6; 32]));
+        let identity = |v: Value| Value::Map(vec![(Value::Text("identity".into()), v)]);
+        let domain = |label: Option<Value>, records: Option<Value>| {
+            let mut props = vec![("normalizedLabel", Value::Text("a11ce".into()))];
+            props.extend(label.map(|l| ("label", l)));
+            props.extend(records.map(|r| ("records", r)));
+            let mut d = doc(&props);
+            let Document::V0(v0) = &mut d;
+            v0.owner_id = owner;
+            domain_of(&d)
+        };
+        let alice = || Some(Value::Text("Alice".into()));
+        let points_to = |id: Identifier| Some(identity(Value::Identifier(id.to_buffer())));
+        assert_eq!(
+            domain(alice(), points_to(records)),
+            Some(("Alice".into(), records)),
+            "the spelling, not normalizedLabel; records.identity, not $ownerId"
+        );
+        assert_eq!(domain(None, points_to(records)), None, "no label");
+        assert_eq!(domain(Some(Value::U32(1)), points_to(records)), None);
+        assert_eq!(domain(alice(), None), None, "no records");
+        assert_eq!(domain(alice(), Some(Value::Text("x".into()))), None);
+        let other = Value::Map(vec![(
+            Value::Text("contract".into()),
+            Value::Identifier(records.to_buffer()),
+        )]);
+        assert_eq!(domain(alice(), Some(other)), None, "no records.identity");
+        assert_eq!(
+            domain(alice(), Some(identity(Value::Bool(true)))),
+            None,
+            "a malformed identity"
+        );
     }
 
     #[test]

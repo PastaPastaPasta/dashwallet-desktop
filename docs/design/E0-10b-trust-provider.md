@@ -160,7 +160,9 @@ A verified fetch that differs from what the library holds records nothing: the l
 and the next run records it. The task runs at the sync transition and then every 10 minutes while the session is open
 (a run with nothing unverified is a read of the library). It enters the session only to read the library and to
 record, not across the network fetches, and stops when the session closes. Records are written under the wallet
-manager's read lock, and only for entities the library still holds unchanged and unverified at that point.
+manager's read lock, and only for entities the library still holds unchanged and unverified at that point. Under the
+same lock the run then counts what is still unverified from the library; a write can replace another copy's record
+under one key, so the count of writes does not say how much is left.
 
 The DPNS re-fetch queries the `domain` document (`normalizedParentDomainName = "dash"`, `normalizedLabel = label`) and
 takes `records.identity`, as the SDK's `resolve_dpns_name` does, without re-normalizing the already normalized label.
@@ -219,6 +221,8 @@ the same value without a wallet.
 | §4 labels (Sol r1 R1) | a label record binds its spelling and its owner: a spelling mismatch fails the first re-fetch; a spelling replaced after verification, or during the network wait, and another owner read unverified; Sol's `reviewer_dpns_spelling_replacement_must_be_unverified` |
 | §4 encoding | field boundaries, option tags and key order (Sol r1's probe); `v2` |
 | §5 (Sol r1 R2) | the record step counts only writes that reached app.sqlite: with it locked, 0 and the entity stays unverified |
+| §5 (Sol r2 R3) | what is left after a record step is counted from the library under its lock: two verified revisions of one contact's profile both write, one stays unverified, and the step reports it |
+| §5 (Sol r2 N1) | the DPNS `domain` parser returns the document's `label` and `records.identity` (not `normalizedLabel` or `$ownerId`); a missing or malformed field reads as nothing |
 | networks | a testnet session's record is invisible to a mainnet session on the same data root, and after a reopen |
 | lifetimes | after close nothing unverified is served; a closed session reopens (`session_lifecycle`) |
 | §7 | `sync_status().quorum_source` per mode |

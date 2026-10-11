@@ -32,7 +32,7 @@ use super::names::{MainNamePrefs, resolve_main_name};
 use super::recovery::{
     BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, Pause, owned_names, summaries,
 };
-use super::reverify::{Held, ShownProfile, confirmed, held_unverified};
+use super::reverify::{Held, Recorded, ShownProfile, confirmed, held_unverified, record_step};
 use super::runtime::{TestPause, guard};
 use super::{DashPay, IdentitySummary, SpvState, StartupStatus};
 use crate::session::Manager;
@@ -1925,4 +1925,69 @@ fn a_testnet_record_is_invisible_to_a_mainnet_session() {
     for e in &entities {
         assert!(reopened.is_unverified(e), "{e:?} after a reopen");
     }
+}
+
+/// Sol r2 R3: two identities cache different revisions of one contact's
+/// profile and both fetches verified (Platform changed between them). Both
+/// writes succeed under one record key, the second replacing the first, so
+/// one revision is still unverified: the step counts that from the library,
+/// not from the writes.
+#[test]
+fn the_record_step_counts_what_is_left_from_the_library() {
+    const BOB: [u8; 32] = [9; 32];
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session(dir.path(), Arc::new(Platform::default()));
+    let id = restore(&engine, &s);
+    let manager = s.manager().unwrap();
+    engine.block_on(add_identities(&manager, id, &[(ALICE, 0), (SECOND, 1)]));
+    let provenance = s.live().unwrap().provenance;
+    provenance.fallback_in_use().unwrap();
+    let revision = |name: &str| ShownProfile {
+        display_name: Some(name.into()),
+        ..Default::default()
+    };
+    let (held_before, step) = engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let info = wm.get_wallet_info_mut(&id.0).unwrap();
+        for (holder, name) in [(ALICE, "Bob"), (SECOND, "Bobby")] {
+            let entry = ContactProfileEntry {
+                profile: Some(DashPayProfile {
+                    display_name: Some(name.into()),
+                    ..Default::default()
+                }),
+                checked_at_ms: 1,
+            };
+            (info.identity_manager)
+                .managed_identity_mut(&Identifier::new(holder))
+                .unwrap()
+                .dashpay_contact_profiles_mut()
+                .insert(Identifier::new(BOB), entry);
+        }
+        let wm = wm.downgrade();
+        let held = held_unverified(&wm, &provenance);
+        let copies =
+            |h: &&Held| matches!(h, Held::Profile { id, .. } if *id == Identifier::new(BOB));
+        let verified: Vec<&Held> = held.iter().filter(copies).collect();
+        assert_eq!(verified.len(), 2, "both revisions are held");
+        let step = record_step(&wm, &provenance, &verified).await.unwrap();
+        (held.len(), step)
+    });
+    // The identities and one of the two revisions are still unverified;
+    // `held - written` would have said both revisions were done.
+    assert_eq!(
+        step,
+        Recorded {
+            written: 2,
+            left: held_before - 1
+        }
+    );
+    let unverified = |name: &str| {
+        let h = Held::Profile {
+            id: Identifier::new(BOB),
+            shown: revision(name),
+        };
+        provenance.is_unverified(&h.entity())
+    };
+    assert_ne!(unverified("Bob"), unverified("Bobby"), "one record per key");
 }
