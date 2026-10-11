@@ -446,10 +446,18 @@ fn sdk_leaf(e: dash_sdk::Error) -> PlatformError {
     match e {
         Sdk::TimeoutReached(..) => PlatformError::Timeout,
         Sdk::DapiClientError(_) | Sdk::StaleNode(_) => PlatformError::Unavailable,
+        // A quorum key the provider refused (§2.2): the proof was not judged.
+        Sdk::ContextProviderError(e)
+        | Sdk::Proof(dash_sdk::ProofVerifierError::ContextProviderError(e)) => {
+            if super::trust::is_trust_mismatch(&e) {
+                PlatformError::TrustMismatch
+            } else {
+                PlatformError::ContextUnavailable
+            }
+        }
         Sdk::Proof(_) | Sdk::DriveProofError(..) | Sdk::InvalidProvedResponse(_) => {
             PlatformError::ProofInvalid
         }
-        Sdk::ContextProviderError(_) => PlatformError::ContextUnavailable,
         other => internal(other),
     }
 }

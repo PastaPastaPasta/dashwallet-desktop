@@ -71,7 +71,7 @@ verified.
 3. After masternode sync (rule 3): never the trusted service. Wait up to `unknown_quorum_wait` (default 2 minutes),
    polling SPV once a second for `Verified`; serve it if it comes, otherwise fail closed. A quorum that failed closed
    fails at once for `FAILED_CLOSED_FOR` (30 s), so the SDK's retries on other DAPI nodes (which cite the same quorum)
-   do not each wait another 2 minutes. Concurrent lookups of one quorum share one wait. "Rebuild the lookup from
+   do not each wait another 2 minutes. Each waiting lookup polls on its own; a poll is a local storage read. "Rebuild the lookup from
    storage" is not offered by platform-wallet's API at the pin; a follow-up if the wait proves too short.
 
 **Trusted-only**: serve `t` behind the latch, unverified.

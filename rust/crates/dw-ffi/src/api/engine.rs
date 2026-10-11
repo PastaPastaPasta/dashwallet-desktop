@@ -83,7 +83,8 @@ impl NoticeCode {
             C::DashPayStartupIncomplete
             | C::DispatchRecordMissing
             | C::UnscopedDispatch
-            | C::DispatchJournalUnavailable => return None,
+            | C::DispatchJournalUnavailable
+            | C::PlatformTrustMismatch => return None,
         })
     }
 }

@@ -116,8 +116,17 @@ impl DashPay {
         stub("DashPay.status")
     }
 
+    /// In-memory read. `last_pass` is `None` until sync passes report.
     pub fn sync_status(&self) -> Result<DashPaySyncStatus, PlatformError> {
-        stub("DashPay.sync_status")
+        let s = &self.session;
+        let startup = s.dashpay_startup(&self.wallet_id)?;
+        Ok(DashPaySyncStatus {
+            startup: startup.startup,
+            last_pass: None,
+            pending_contact_crypto: startup.contact_accounts_pending,
+            loops: s.platform_loops()?,
+            quorum_source: s.quorum_source()?,
+        })
     }
 
     pub async fn sync_now(&self) -> Result<SyncPassReport, PlatformError> {

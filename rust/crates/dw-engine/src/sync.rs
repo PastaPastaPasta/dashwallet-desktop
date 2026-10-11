@@ -349,6 +349,12 @@ impl SyncTracker {
         self.masternode_counts = counts;
     }
 
+    /// The masternode phase is done (DASHPAY §2.2: the quorum provider's
+    /// "masternode sync").
+    pub(crate) fn masternodes_synced(&self) -> bool {
+        self.readings.masternodes.is_some_and(|r| r.done())
+    }
+
     /// Masternode and evonode counts, once the masternode phase finished.
     pub(crate) fn masternode_counts(
         &self,
@@ -592,6 +598,22 @@ mod tests {
                 .all(|p| p.done)
         );
         assert_eq!(s.seconds_since_progress, None);
+    }
+
+    /// The quorum provider's "masternode sync" (E0-10b): the masternode
+    /// phase done, whatever the other phases do.
+    #[test]
+    fn masternodes_synced_follows_the_masternode_phase() {
+        let mut t = running();
+        let mut p = SyncProgress::default();
+        p.update_headers(headers(SyncState::Syncing, 500, 1000));
+        p.update_masternodes(masternodes(SyncState::Syncing, 400, 1000));
+        t.on_progress(&p);
+        assert!(!t.masternodes_synced());
+        p.update_masternodes(masternodes(SyncState::WaitForEvents, 1000, 1000));
+        t.on_progress(&p);
+        assert!(t.masternodes_synced());
+        assert!(!t.snapshot().caught_up, "headers are still syncing");
     }
 
     #[test]

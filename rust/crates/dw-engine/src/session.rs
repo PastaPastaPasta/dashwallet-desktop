@@ -23,10 +23,11 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
 
-use crate::context::{LazyTrustedContext, SharedContext};
+use crate::context::LazyTrustedContext;
 use crate::events::{SessionHub, SessionPump, WalletName, WalletState};
 use crate::fsutil::{create_owned_dir, create_owned_file};
 use crate::gate::{OpGate, OpGuard};
+use crate::platform::trust::{self, SharedContext, TrustProvider};
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NoticeCode};
 
 pub(crate) type Manager = PlatformWalletManager<crate::store::WalletStore>;
@@ -167,6 +168,9 @@ pub struct NetworkSession {
     pub(crate) rt: Handle,
     pub(crate) sink: Arc<dyn EventSink>,
     context: Arc<LazyTrustedContext>,
+    /// The layered quorum provider every proof's quorum key comes from
+    /// (DASHPAY §2.2).
+    pub(crate) trust: Arc<TrustProvider>,
     /// Holds every wallet's seed (`<network dir>/vault`). platform-wallet
     /// registers wallets external-signable, so this is the only key material.
     pub(crate) vault: Vault,
@@ -287,7 +291,25 @@ impl NetworkSession {
             }),
         }
 
-        let sdk = build_sdk(&network, &opts, sdk_options, Arc::clone(&context))?;
+        let trust = Arc::new(TrustProvider::new(
+            trust::DEFAULT_MODE,
+            Arc::new(Arc::clone(&context)),
+            Arc::clone(&sink),
+            network.clone(),
+        ));
+        trust.set_trusted_only({
+            let appdb = Arc::clone(&appdb);
+            tokio::task::spawn_blocking(move || read_trusted_only(&appdb)).await?
+        });
+        let sdk = build_sdk(
+            &network,
+            &opts,
+            sdk_options,
+            SharedContext {
+                trusted: Arc::clone(&context),
+                trust: Arc::clone(&trust),
+            },
+        )?;
 
         let db_path = data_dir.join(WALLET_DB_FILE);
         // SqlitePersister creates its backup directory with the umask's mode
@@ -367,6 +389,13 @@ impl NetworkSession {
             Arc::clone(&store),
             Arc::clone(&hub) as Arc<dyn platform_wallet::PlatformEventHandler>,
         ));
+        trust.attach(
+            Arc::new(trust::RuntimeQuorums(manager.spv_arc())),
+            Arc::clone(&provenance),
+        );
+        if hub.trust.set(Arc::clone(&trust)).is_err() {
+            tracing::warn!("the session hub already had a quorum provider");
+        }
         if let Err(e) = manager.load_from_persistor().await {
             let report = manager.shutdown().await;
             if !report.all_clean() {
@@ -391,6 +420,7 @@ impl NetworkSession {
             rt: Handle::current(),
             sink,
             context,
+            trust,
             vault,
             spv_peers,
             hub,
@@ -437,6 +467,7 @@ impl NetworkSession {
             session.schedule_automatic_backup(WalletId(id));
         }
         session.spawn_ensure_background();
+        session.spawn_reverify();
         Ok(session)
     }
 
@@ -767,11 +798,23 @@ fn load_ca(path: &Path) -> Result<Certificate, EngineError> {
     Ok(cert)
 }
 
+/// The developer toggle (`trust.trusted_only`). A read error leaves it off:
+/// SPV keeps being compared.
+fn read_trusted_only(appdb: &AppDb) -> bool {
+    match appdb.setting(dw_appdb::GLOBAL_SCOPE, trust::TRUSTED_ONLY_KEY) {
+        Ok(v) => v.as_deref() == Some("1"),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read the trusted-only toggle; it stays off");
+            false
+        }
+    }
+}
+
 fn build_sdk(
     network: &DashNetwork,
     opts: &SessionOptions,
     sdk_options: SdkOptions,
-    context: Arc<LazyTrustedContext>,
+    context: SharedContext,
 ) -> Result<dash_sdk::Sdk, EngineError> {
     let builder = if opts.dapi_addresses.is_empty() {
         match network {
@@ -788,7 +831,7 @@ fn build_sdk(
             .map_err(|e| EngineError::InvalidArgument(format!("bad DAPI address list: {e}")))?;
         SdkBuilder::new(list).with_network(network.core_network())
     };
-    let mut builder = builder.with_context_provider(SharedContext(context));
+    let mut builder = builder.with_context_provider(context);
     if let Some(ca) = sdk_options.ca {
         builder = builder.with_ca_certificate(ca);
     }
@@ -814,12 +857,25 @@ mod tests {
         assert!("AB".repeat(32).parse::<WalletId>().is_err());
     }
 
+    struct NoEvents;
+
+    impl EventSink for NoEvents {
+        fn emit(&self, _: EngineEvent) {}
+    }
+
     fn sdk_with(opts: SessionOptions) -> Result<dash_sdk::Sdk, EngineError> {
-        let context = Arc::new(LazyTrustedContext::new(
+        let trusted = Arc::new(LazyTrustedContext::new(
             dashcore::Network::Regtest,
             None,
             Some("http://127.0.0.1:1".into()),
         ));
+        let trust = Arc::new(TrustProvider::new(
+            trust::DEFAULT_MODE,
+            Arc::new(Arc::clone(&trusted)),
+            Arc::new(NoEvents),
+            DashNetwork::Regtest,
+        ));
+        let context = SharedContext { trusted, trust };
         let opts = SessionOptions {
             dapi_addresses: vec!["http://127.0.0.1:1".into()],
             ..opts

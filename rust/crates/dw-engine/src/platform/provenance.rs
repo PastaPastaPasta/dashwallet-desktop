@@ -95,10 +95,6 @@ impl Provenance {
     /// even over a latch already on file (DEC-143): a row left by a refused
     /// checkpoint is readable but not durable. Blocking (app.sqlite) until
     /// then.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "E0-10b's quorum provider calls it")
-    )]
     pub(crate) fn fallback_in_use(&self) -> Result<(), dw_appdb::AppDbError> {
         if self.latch_durable.load(Ordering::SeqCst) {
             return Ok(());
@@ -121,10 +117,6 @@ impl Provenance {
 
     /// One of the entity's fetches verified against SPV-held quorum keys
     /// (E0-10b). Blocking (app.sqlite).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "E0-10b's quorum provider calls it")
-    )]
     pub(crate) fn record_verified(
         &self,
         kind: &str,

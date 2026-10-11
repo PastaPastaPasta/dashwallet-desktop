@@ -9,6 +9,11 @@
 //! [`RETRY_INTERVAL`]. Until it exists every lookup returns a
 //! `ContextProviderError`: proofs fail verification, they are never skipped.
 //!
+//! Quorum keys reach the SDK through the layered provider
+//! (`platform/trust.rs`, DASHPAY §2.2), which consults this service;
+//! contracts, token configurations and the activation height come from it
+//! directly (rule 6).
+//!
 //! The SDK calls the `ContextProvider` methods synchronously from tokio
 //! workers. Those calls never build the provider themselves: when it is
 //! missing they start one background build (on its own OS thread, so the
@@ -19,10 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use dash_context_provider::{ContextProvider, ContextProviderError};
-use dpp::data_contract::TokenConfiguration;
-use dpp::prelude::{CoreBlockHeight, DataContract, Identifier};
-use dpp::version::PlatformVersion;
+use dash_context_provider::ContextProviderError;
 use key_wallet::Network;
 use rs_sdk_trusted_context_provider::TrustedHttpContextProvider;
 
@@ -117,7 +119,9 @@ impl LazyTrustedContext {
     /// Lookup path used by the SDK. Never blocks: when the provider is
     /// missing it starts at most one background build (rate-limited by
     /// [`RETRY_INTERVAL`]) and returns an error immediately.
-    fn provider(self: &Arc<Self>) -> Result<Arc<TrustedHttpContextProvider>, ContextProviderError> {
+    pub(crate) fn provider(
+        self: &Arc<Self>,
+    ) -> Result<Arc<TrustedHttpContextProvider>, ContextProviderError> {
         if let Some(p) = self.current() {
             return Ok(p);
         }
@@ -158,48 +162,6 @@ fn resolved_url(network: Network, base_url: Option<String>) -> Option<String> {
         Network::Regtest => Some("http://127.0.0.1:22444".to_string()),
         _ => None,
     })
-}
-
-/// Handle given to `SdkBuilder::with_context_provider` (which takes the
-/// provider by value), sharing the lazy state with the session.
-pub(crate) struct SharedContext(pub(crate) Arc<LazyTrustedContext>);
-
-impl ContextProvider for SharedContext {
-    fn get_data_contract(
-        &self,
-        id: &Identifier,
-        platform_version: &PlatformVersion,
-    ) -> Result<Option<Arc<DataContract>>, ContextProviderError> {
-        self.0.provider()?.get_data_contract(id, platform_version)
-    }
-
-    fn register_data_contract(&self, contract: Arc<DataContract>) {
-        if let Ok(p) = self.0.provider() {
-            p.register_data_contract(contract);
-        }
-    }
-
-    fn get_token_configuration(
-        &self,
-        token_id: &Identifier,
-    ) -> Result<Option<TokenConfiguration>, ContextProviderError> {
-        self.0.provider()?.get_token_configuration(token_id)
-    }
-
-    fn get_quorum_public_key(
-        &self,
-        quorum_type: u32,
-        quorum_hash: [u8; 32],
-        core_chain_locked_height: u32,
-    ) -> Result<[u8; 48], ContextProviderError> {
-        self.0
-            .provider()?
-            .get_quorum_public_key(quorum_type, quorum_hash, core_chain_locked_height)
-    }
-
-    fn get_platform_activation_height(&self) -> Result<CoreBlockHeight, ContextProviderError> {
-        self.0.provider()?.get_platform_activation_height()
-    }
 }
 
 #[cfg(test)]
