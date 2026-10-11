@@ -14,4 +14,8 @@ timestamp: number | null, blockHeight: number | null,
 /**
  * Signed duffs.
  */
-amount: number, fee: number | null, address: string | null, label: string | null, countsTowardBalance: boolean, };
+amount: number, fee: number | null, address: string | null, label: string | null, countsTowardBalance: boolean, 
+/**
+ * The record involves a watch-only address.
+ */
+involvesWatchOnly: boolean, };
