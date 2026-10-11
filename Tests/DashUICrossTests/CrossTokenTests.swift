@@ -68,7 +68,8 @@ struct CrossTokenTests {
     @Test("the GTK theme CSS names the Dash blue accent, built from the tokens")
     func test_QT_012_toolkitAccent() {
         let css = ToolkitTheme.css(for: .light)
-        #expect(css.contains("@define-color accent_bg_color rgba(0,141,228,1.0)"))
+        // A fill under white text: UX-SPEC §2.1a's RoleAA.accent (DEC-36).
+        #expect(css.contains("@define-color accent_bg_color rgba(0,111,195,1.0)"))
         #expect(ToolkitTheme.css(for: .dark).contains("switch:checked"))
     }
 
