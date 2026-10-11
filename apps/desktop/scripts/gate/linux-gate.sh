@@ -32,8 +32,8 @@ ENGINE_ARGS=("$@")
 REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
 BIN=${BIN:-$REPO/rust/target/release/dash-wallet}
 RUNS=${RUNS:-5}
-# DROP_CACHES=1 makes run 1 a cold start by dropping the page cache (needs sudo). Off by default:
-# on a shared machine it disturbs every other process's measurements.
+# DROP_CACHES=N makes the first N runs cold starts by dropping the page cache before each (needs
+# sudo). Off by default: on a shared machine it disturbs every other process's measurements.
 DROP_CACHES=${DROP_CACHES:-0}
 mkdir -p "$OUT"
 cd "$OUT"
@@ -146,7 +146,7 @@ wait $pid 2>/dev/null || true
 echo "== U5: cold and warm start ($RUNS runs, fixture)"
 start_json="["
 for i in $(seq "$RUNS"); do
-  if ((i == 1 && DROP_CACHES == 1)) && sudo -n true 2>/dev/null; then
+  if ((i <= DROP_CACHES)) && sudo -n true 2>/dev/null; then
     sync
     sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches'
     cold=true

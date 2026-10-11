@@ -199,8 +199,9 @@ case $GATE_OS in
     ;;
   linux)
     echo "== the agentbox harness under Xvfb"
-    # The runner is not shared: drop the page cache before the first start (a real cold start).
-    DROP_CACHES=1 PASSPHRASE_FILE=$PASSPHRASE_FILE "$REPO/apps/desktop/scripts/gate/linux-gate.sh" "$OUT/linux" "${ENGINE[@]}" || status=1
+    # The runner is not shared: drop the page cache before each of the first 4 of 8 starts (real
+    # cold starts), and keep 4 warm ones.
+    RUNS=8 DROP_CACHES=4 PASSPHRASE_FILE=$PASSPHRASE_FILE "$REPO/apps/desktop/scripts/gate/linux-gate.sh" "$OUT/linux" "${ENGINE[@]}" || status=1
     ;;
 esac
 
