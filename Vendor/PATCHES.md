@@ -266,3 +266,27 @@ Change (comments `dashwallet-desktop patch P10`):
   manager refuses is not repeated.
   The demo harness's "the main thread goes idle" checks run after the live onboarding and the
   send flows (`ci/linux/crossui/atspi_demo.py`).
+
+### P11 — the first show of a window does not re-enter itself (launch crash on AppKit and WinUI)
+
+Rationale: `dash-wallet` with AppKitBackend crashed at launch on `macos-latest` with a main-thread
+stack overflow, 13,800 frames deep (`docs/ci.md` "Known gaps" 3, run 37769597095). WinUIBackend
+on `windows-latest` exits the same way (`0xC00000FD`, gap 1). It is not deep layout but a loop.
+`WindowReference.update` shows the window on its first update, and cleared `isFirstUpdate` only
+after `show(window:)` returned. The runner's screen is too small for the 1100x760 default window,
+so AppKit's `makeKeyAndOrderFront` constrains the frame to the screen and calls the delegate's
+`windowWillResize` synchronously, inside `show`. The resize handler runs `update` again, which
+still sees the first update and shows the window again: `show` → `windowWillResize` → `update`
+→ `show` …, until the stack runs out. The backtrace repeats exactly that cycle. WinUI's
+`Activate` raises `SizeChanged` synchronously the same way. GTK reports sizes on a later main loop
+iteration, so Linux never hit it. Upstream 0.10.0 and `main` (2026-10-11) have the same code.
+
+Change (`Sources/SwiftCrossUI/Scenes/WindowReference.swift`, comment `dashwallet-desktop patch
+P11`): clear `isFirstUpdate` before calling `show(window:)`. A resize reported while the window
+is being shown then updates the layout like any other resize, and P10 keeps it from re-requesting
+a size the screen refused.
+
+Test: `WindowSizeTests` "a resize while the window is first shown does not show it again". The
+fake backend's `show(window:)` shrinks the window to a 1100x645 screen and calls the resize handler
+synchronously, as AppKit does. Without the patch, `show` re-enters until the fake's guard stops it
+at 50 calls; with it, the window is shown once and the main loop settles.

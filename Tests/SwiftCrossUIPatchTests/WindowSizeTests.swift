@@ -82,5 +82,20 @@ extension PatchTests {
             #expect(FakeMainLoop.drain())
             #expect(window.content == SIMD2(1200, Self.contentMinimum))
         }
+
+        /// Patch P11: AppKit (`makeKeyAndOrderFront`) and WinUI (`Activate`) shrink a window that
+        /// does not fit the screen while showing it, and call the resize handler synchronously.
+        /// Upstream cleared `isFirstUpdate` only after `show(window:)` returned, so that update
+        /// showed the window again, and so on until the main thread's stack overflowed (the
+        /// `dash-wallet` launch crash on `macos-latest` and `windows-latest`, docs/ci.md).
+        @Test("a resize while the window is first shown does not show it again")
+        func resizeDuringFirstShow() {
+            let screen = SIMD2(1100, 645)
+            window.screenLimit = screen
+            firstUpdate()
+            #expect(window.shows == 1, "show(window:) re-entered")
+            #expect(FakeMainLoop.drain(maxRounds: 50), "resize ping-pong")
+            #expect(window.shows == 1)
+        }
     }
 }

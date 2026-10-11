@@ -337,8 +337,11 @@ final class WindowReference<SceneType: WindowingScene>: ModelObserver {
         viewGraph.commit()
 
         if isFirstUpdate {
-            backend.show(window: window)
+            // dashwallet-desktop patch P11: clear the flag before showing. AppKit and WinUI resize
+            // a window that does not fit the screen while showing it, and run the resize handler
+            // synchronously; its update must not show the window again (infinite recursion).
             isFirstUpdate = false
+            backend.show(window: window)
         }
     }
 

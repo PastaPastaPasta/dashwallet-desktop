@@ -30,6 +30,13 @@ final class FakeWindow: @unchecked Sendable {
     /// A window manager that keeps the window at this content size whatever is requested.
     var heldSize: SIMD2<Int>?
     var resizeHandler: ((SIMD2<Int>) -> Void)?
+    /// The handler as `WindowReference` gave it, for backends that call it synchronously.
+    var synchronousResizeHandler: ((SIMD2<Int>) -> Void)?
+    /// `show(window:)` calls.
+    var shows = 0
+    /// Like AppKit's `makeKeyAndOrderFront` and WinUI's `Activate` on a small screen: showing
+    /// the window shrinks it to this content size and reports that synchronously.
+    var screenLimit: SIMD2<Int>?
 
     /// A user or window manager resize: GTK allocates the root widget a size it was not told
     /// about, so the root widget fires its resize callback.
@@ -142,8 +149,15 @@ final class FakeBackend: BackendFeatures.BaseStubs {
     func setResizeHandler(ofWindow window: Window, to action: @escaping (_ newSize: SIMD2<Int>) -> Void) {
         // GtkBackend runs the handler on a later main loop iteration too.
         window.resizeHandler = { size in FakeMainLoop.post { action(size) } }
+        window.synchronousResizeHandler = action
     }
-    func show(window: Window) {}
+    func show(window: Window) {
+        window.shows += 1
+        // Stop a runaway recursion before it overflows the test's stack.
+        guard window.shows < 50, let limit = window.screenLimit else { return }
+        window.content = SIMD2(min(window.content.x, limit.x), min(window.content.y, limit.y))
+        window.synchronousResizeHandler?(window.content)
+    }
     func activate(window: Window) {}
     func computeWindowEnvironment(window: Window, rootEnvironment: EnvironmentValues) -> EnvironmentValues {
         rootEnvironment
