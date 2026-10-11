@@ -1,7 +1,7 @@
 # Gate G-UI on windows-latest, the Tauri candidate (G-02); called by ci/gate/tauri.sh.
 #
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tauri-windows.ps1 -Repo R -OutDir O -App EXE
-#       -Wallet DIR -PassphraseFile F [-PauseMs 2500] [-RunSeconds 600]
+#       -Wallet DIR -PassphraseFile F [-PauseMs 2500] [-RunSeconds 600] [-WindowSize 1000x620]
 #
 # 1. U3/U8-style shots: --selftest on the fixture, the window captured on each screen.
 # 2. --selftest on the copied regtest wallet (U1 rows, real history_page timings).
@@ -17,6 +17,7 @@ param(
     [Parameter(Mandatory)] [string] $Wallet,
     [Parameter(Mandatory)] [string] $PassphraseFile,
     [int] $PauseMs = 2500,
+    [string] $WindowSize = '1000x620',
     [int] $RunSeconds = 600
 )
 $ErrorActionPreference = 'Stop'
@@ -92,7 +93,7 @@ function Tree-Memory([int] $RootId) {
 # 1. --selftest on the fixture with a window capture per screen.
 function Selftest-WithShots([string[]] $Arguments, [string] $Report, [string] $Name, [bool] $WithShots) {
     $log = Join-Path $OutDir "$Name.log"
-    $p = Start-App $App ($Arguments + @('--selftest', $Report, '--selftest-pause', "$PauseMs")) $Name
+    $p = Start-App $App ($Arguments + @('--window-size', $WindowSize, '--selftest', $Report, '--selftest-pause', "$PauseMs")) $Name
     $seen = 0
     $deadline = (Get-Date).AddSeconds(900)
     while (-not $p.HasExited -and (Get-Date) -lt $deadline) {

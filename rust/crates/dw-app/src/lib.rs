@@ -169,6 +169,7 @@ pub fn builder<R: Runtime>(launch: LaunchOptions, started: Instant) -> tauri::Bu
         .setup(move |app| {
             eprintln!("dw-app: startup setup {}", started.elapsed().as_millis());
             let theme = launch.theme;
+            let window_size = launch.window_size;
             let title = window_title(&launch.network);
             let handle = app.handle();
             let state = AppState::new(handle, launch, started, || {
@@ -182,6 +183,9 @@ pub fn builder<R: Runtime>(launch: LaunchOptions, started: Instant) -> tauri::Bu
                 window.set_title(&title)?;
                 if let Some(theme) = theme {
                     window.set_theme(Some(theme.into()))?;
+                }
+                if let Some((width, height)) = window_size {
+                    window.set_size(tauri::LogicalSize::new(width, height))?;
                 }
             }
             exit_on_signal(handle.clone());

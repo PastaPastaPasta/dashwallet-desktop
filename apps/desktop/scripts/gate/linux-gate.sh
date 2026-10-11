@@ -113,8 +113,10 @@ window_shot() { # NAME
 }
 
 echo "== U3: self-test (fixture) with screenshots"
+# U3c compares boxes across engines at one viewport that fits every CI runner's desktop.
+SIZE=(--window-size "${GATE_WINDOW_SIZE:-1000x620}")
 log=selftest-fixture.log
-"$BIN" "${FIXTURE[@]}" --selftest selftest-webkitgtk.json --selftest-pause 1500 >"$log" 2>&1 &
+"$BIN" "${FIXTURE[@]}" "${SIZE[@]}" --selftest selftest-webkitgtk.json --selftest-pause 1500 >"$log" 2>&1 &
 pid=$!
 seen=0
 while kill -0 $pid 2>/dev/null; do
@@ -170,7 +172,7 @@ start_json="${start_json%,}]"
 engine_json=null
 if ((${#ENGINE_ARGS[@]})); then
   echo "== U1/U5: engine mode ${ENGINE_ARGS[*]}"
-  timeout 600 "$BIN" "${ENGINE_ARGS[@]}" --selftest selftest-engine.json >selftest-engine.log 2>&1 || echo "engine self-test exited with $?"
+  timeout 600 "$BIN" "${ENGINE_ARGS[@]}" "${SIZE[@]}" --selftest selftest-engine.json >selftest-engine.log 2>&1 || echo "engine self-test exited with $?"
   # Start-up on the wallet: the window, then Overview with balance and history (the engine opens
   # the wallet's history first: engine-bound, see the report).
   engine_starts="["

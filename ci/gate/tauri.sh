@@ -34,6 +34,9 @@ exe=dash-wallet
 [[ "$GATE_OS" != windows ]] || exe=dash-wallet.exe
 APP=$REPO/rust/target/release/$exe
 FIXTURE=(--fixture --network testnet)
+# Self-tests run at one viewport on every OS (U3c compares boxes); it fits the runners' 1024x768
+# desktops and stays above the 980 px layout breakpoint. Playwright: DW_VIEWPORT=1000x620.
+SIZE=(--window-size "${GATE_WINDOW_SIZE:-1000x620}")
 # Screenshot pause per self-test screen (ms): long enough for a capture on a slow runner.
 PAUSE_MS=${PAUSE_MS:-2500}
 
@@ -127,7 +130,7 @@ shot() { # PID FILE
 selftest_with_shots() { # REPORT LOG ARGS...
   local report=$1 log=$2 seen=0 count screen pid
   shift 2
-  "$APP" "$@" --selftest "$report" --selftest-pause "$PAUSE_MS" >"$log" 2>&1 &
+  "$APP" "$@" "${SIZE[@]}" --selftest "$report" --selftest-pause "$PAUSE_MS" >"$log" 2>&1 &
   pid=$!
   local deadline=$(($(date +%s) + 900))
   # macOS ships bash 3.2: no mapfile, and empty arrays trip `set -u`, so read the log line by line.
@@ -164,7 +167,7 @@ case $GATE_OS in
     selftest_with_shots "$OUT/selftest-macos.json" "$OUT/selftest-macos.log" "${FIXTURE[@]}"
     judge_selftest "$OUT/selftest-macos.json" "Tauri --selftest on macOS (fixture)" || status=1
     echo "== U1/U5: self-test on the copied wallet"
-    run_limited 900 "$APP" "${ENGINE[@]}" --selftest "$OUT/selftest-macos-engine.json" >"$OUT/selftest-macos-engine.log" 2>&1 || true
+    run_limited 900 "$APP" "${ENGINE[@]}" "${SIZE[@]}" --selftest "$OUT/selftest-macos-engine.json" >"$OUT/selftest-macos-engine.log" 2>&1 || true
     judge_selftest "$OUT/selftest-macos-engine.json" "Tauri --selftest on macOS (regtest wallet)" || status=1
     echo "== U7: the dmg installs and launches"
     dmg=$(ls "$bundle_dir"/dmg/*.dmg | head -1)
@@ -185,7 +188,7 @@ case $GATE_OS in
     echo "== U3: self-test, U2 install and 10-minute run, U4 UIA walk (tauri-windows.ps1)"
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$REPO/ci/gate/tauri-windows.ps1")" \
       -Repo "$(cygpath -w "$REPO")" -OutDir "$(cygpath -w "$OUT")" -App "$(cygpath -w "$APP")" \
-      -Wallet "$(cygpath -w "$WALLET")" -PassphraseFile "$(cygpath -w "$PASSPHRASE_FILE")" -PauseMs "$PAUSE_MS" || status=1
+      -Wallet "$(cygpath -w "$WALLET")" -PassphraseFile "$(cygpath -w "$PASSPHRASE_FILE")" -PauseMs "$PAUSE_MS" -WindowSize "${SIZE[1]}" || status=1
     judge_selftest "$OUT/selftest-windows.json" "Tauri --selftest on Windows (fixture)" || status=1
     judge_selftest "$OUT/selftest-windows-engine.json" "Tauri --selftest on Windows (regtest wallet)" || status=1
     ;;

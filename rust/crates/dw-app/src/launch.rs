@@ -33,6 +33,10 @@ pub struct LaunchOptions {
     pub no_platform: bool,
     /// Force an appearance instead of following the system.
     pub theme: Option<ThemeName>,
+    /// The window's inner size in logical pixels, instead of the configured
+    /// 1280×820. The gate compares element boxes across engines at one
+    /// viewport, and the CI runners' desktops are smaller than the default.
+    pub window_size: Option<(u32, u32)>,
 }
 
 impl Default for LaunchOptions {
@@ -48,6 +52,7 @@ impl Default for LaunchOptions {
             dapi_addresses: Vec::new(),
             no_platform: false,
             theme: None,
+            window_size: None,
         }
     }
 }
@@ -64,6 +69,7 @@ usage: dash-wallet [options]
   --selftest <file>      render the gate screens, write element boxes to <file>, exit
   --selftest-pause <ms>  pause on each self-test screen (for screenshots)
   --theme light|dark     force an appearance
+  --window-size <WxH>    the window's inner size in logical pixels (default 1280x820)
   --help                 print this text";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -119,6 +125,15 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
                     other => return Err(format!("unknown theme {other:?}")),
                 })
             }
+            "--window-size" => {
+                let v = value("--window-size")?;
+                let size = v
+                    .split_once('x')
+                    .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                    .filter(|&(w, h)| w > 0 && h > 0);
+                opts.window_size =
+                    Some(size.ok_or_else(|| format!("--window-size: expected WxH, got {v:?}"))?);
+            }
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
             _ => {}
         }
@@ -162,6 +177,8 @@ mod tests {
             "1500",
             "--theme",
             "dark",
+            "--window-size",
+            "1000x620",
         ]);
         assert_eq!(o.data_dir, Some(PathBuf::from("/tmp/dw")));
         assert_eq!(
@@ -176,6 +193,7 @@ mod tests {
         assert_eq!(o.selftest, Some(PathBuf::from("/tmp/boxes.json")));
         assert_eq!(o.selftest_pause_ms, 1500);
         assert_eq!(o.theme, Some(ThemeName::Dark));
+        assert_eq!(o.window_size, Some((1000, 620)));
     }
 
     #[test]
@@ -185,6 +203,12 @@ mod tests {
         assert!(err(&["--network", "devnet-Paloma"]).contains("devnet"));
         assert!(err(&["--datadir"]).contains("needs a value"));
         assert!(err(&["--bogus"]).contains("unknown option"));
+        for bad in ["1000", "0x620", "1000x", "ax620"] {
+            assert!(
+                err(&["--window-size", bad]).contains("expected WxH"),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
