@@ -40,7 +40,7 @@ per decision, and every path asks the same functions.
 - **F6.** Restore imports rows with new ids (`import_wallet_rows` skips rowid aliases). On a
   machine whose journal kept the wallet's steps, a restored copy of row A is a different draft,
   and S_A is a step with no row. Orphan steps are a supported state, not only a legacy one.
-  (Whether remove-wallet keeps the steps is still to verify.)
+  Wallet removal keeps the steps (verified, §3.1).
 - **F7.** P2b vetoes only a second call of the same step (`funding_gate`); a step stays bound
   to its key (`StepKeyMismatch`).
 - **F8.** `FenceState::funding_steps_of(wallet)` (`fence.rs:953`, `pub(super)`) lists every
@@ -62,6 +62,23 @@ Option<DispatchState>, signed: Vec<Txid> }`.
 
 `Unknown` means a call was marked and may have signed, but the txid is unknown. It comes from a
 running call before its signature, a record lost on restart, or a `NotSent` row not yet landed.
+
+**Wallet removal keeps the steps (F6, verified on P2b 5a1e3ab).** `remove_wallet` deletes the
+wallet's `dp_registration` rows (`AppDb::delete_wallet`). It then erases the wallet's journal
+rows (`erase_wallet_rows` → `DispatchJournal::erase_wallet`). That erase takes only the
+artifacts DEC-160's `COMPACTABLE` selects: no standing marker and no `Sent` or `MaybeSent` row.
+Their `funding_marker`, `self_spend` and `signed_lock` rows go with them (`compact`). So every
+step whose claim isn't `None` keeps its marker, key and signed txids, on disk and in memory
+(`forget_erased` drops only the erased artifacts). This holds whether or not the `dispatch` rows
+go. A step resolved `NotSent` is erased, but its claim was `None` already. The wallet id derives
+from the seed (`wallet_id_for_seed`). So re-adding the same mnemonic, with or without a restore,
+finds those steps and no rows: each is an orphan, and `row_of` is the heir or none. A crash
+between the row delete and the erase keeps a superset.
+
+The probe was a throwaway `dw-appdb` test, not committed. It used four steps: a bare marker, a
+marker with a signed record, a `Sent` step, and a `NotSent` step with a signed record. Erased
+with `dispatch` false and with it true, the first three steps and one signed row stayed each
+time; only the fourth went.
 
 ### 3.2 Derived predicates (over one ledger: rows, tracked locks, identities, steps, in-call drafts)
 
