@@ -673,9 +673,13 @@ fn contact_params(e: &ContactError) -> Value {
     match e {
         C::Ineligible { reason } => json!({"reason": reason}),
         C::PaymentLocked { txid } => json!({"txid": txid}),
-        C::AlreadyContact | C::RequestPending | C::IsSelf | C::ChannelBroken | C::ScanExpired => {
-            json!({})
-        }
+        C::AlreadyContact
+        | C::RequestPending
+        | C::IsSelf
+        | C::ChannelBroken
+        | C::ScanExpired
+        | C::ScanUnverified
+        | C::NoUsername => json!({}),
         C::Platform(p) => platform_params(p),
     }
 }
@@ -1789,7 +1793,15 @@ mod tests {
         ),
         ("contact show --identity I C", NOT_BASE58),
         ("contact pending-setup", r#"{"ok":true,"result":0}"#),
+        ("name search al --limit 5", NO_PLATFORM),
+        ("name resolve alice.dash", NO_PLATFORM),
+        ("contact link --identity I", NOT_BASE58),
+        ("contact request --identity I --scanned", NOT_A_CODE),
+        ("contact scan", NOT_A_CODE),
     ];
+
+    /// `SECRET`'s `dapk` is not Base58; the error does not quote it.
+    const NOT_A_CODE: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a DashPay contact code","params":{"detail":"not a DashPay contact code"}}}"#;
 
     /// A fresh wallet before `start_spv`: nothing ran, and quorum keys come
     /// from the trusted service (DEC-168's degraded mode, E0-10b).

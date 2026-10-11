@@ -92,6 +92,8 @@ pub(crate) struct PlatformRuntime {
     pub(crate) recovery: super::recovery::Recovery,
     /// The contacts read model's snapshots and usernames (DP2-01).
     pub(crate) contacts: super::contacts_model::ContactsRuntime,
+    /// Search, links and the scans waiting for a send (DP2-03).
+    pub(crate) users: super::users::UsersRuntime,
     /// Tests: holds the next bring-up between building its keys and
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
@@ -261,6 +263,7 @@ impl PlatformRuntime {
             events: AtomicU64::new(0),
             recovery: Default::default(),
             contacts: Default::default(),
+            users: Default::default(),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
         }
@@ -429,6 +432,7 @@ impl PlatformRuntime {
         self.write_startup().remove(id);
         self.recovery.forget(id);
         self.contacts.forget(id);
+        self.users.scans.forget(id);
     }
 
     pub(super) fn untrack(&self, id: WalletId, task: tokio::task::Id) {

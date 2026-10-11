@@ -444,7 +444,50 @@ fn request_from_document(doc: &Document) -> Option<ContactRequest> {
 }
 
 /// The SDK's fetches.
-struct SdkRefetcher(Arc<dash_sdk::Sdk>);
+pub(super) struct SdkRefetcher(pub(super) Arc<dash_sdk::Sdk>);
+
+impl SdkRefetcher {
+    /// The profiles of `ids` (at most 100, Platform's `In` cap) in one
+    /// query, as [`Refetcher::profile`] reads each: identities without one
+    /// are absent.
+    pub(super) fn profiles(
+        &self,
+        ids: Vec<Identifier>,
+    ) -> BoxFuture<Result<Vec<(Identifier, ShownProfile)>, PlatformError>> {
+        let sdk = Arc::clone(&self.0);
+        Box::pin(async move {
+            let contract = load_system_data_contract(SystemDataContract::Dashpay, sdk.version())
+                .map_err(|e| PlatformError::Internal {
+                    detail: format!("DashPay contract: {e}"),
+                })?;
+            let in_ids = Value::Array(
+                ids.iter()
+                    .map(|id| Value::Identifier(id.to_buffer()))
+                    .collect(),
+            );
+            let mut query = DocumentQuery::new(Arc::new(contract), "profile")
+                .map_err(|e| PlatformError::from(dash_sdk::Error::from(e)))?
+                .with_where(dash_sdk::drive::query::WhereClause {
+                    field: "$ownerId".to_string(),
+                    operator: dash_sdk::drive::query::WhereOperator::In,
+                    value: in_ids,
+                });
+            // `In` is a range: Platform refuses it without an order on its
+            // field (as platform-wallet's contact profile fetch notes).
+            query.order_by_clauses = vec![dash_sdk::drive::query::OrderClause {
+                field: "$ownerId".to_string(),
+                ascending: true,
+            }];
+            query.limit = u32::try_from(ids.len()).unwrap_or(u32::MAX);
+            let docs = Document::fetch_many(&sdk, query).await?;
+            Ok((docs.into_iter())
+                .filter_map(|(_, doc)| doc)
+                .filter(|doc| ids.contains(&doc.owner_id()))
+                .filter_map(|doc| Some((doc.owner_id(), ShownProfile::from_document(&doc)?)))
+                .collect())
+        })
+    }
+}
 
 impl Refetcher for SdkRefetcher {
     fn identity_keys(

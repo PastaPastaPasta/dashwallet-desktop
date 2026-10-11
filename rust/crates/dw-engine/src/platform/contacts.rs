@@ -1,10 +1,12 @@
 //! Contacts: the read model, requests, ignore, private details, DashPay
 //! keys, user links and scans (DP2-01…DP2-04).
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use super::dashpay::{BearerSecret, DashPay, stub};
-use super::errors::ContactError;
+use super::errors::{ContactError, PlatformError};
 use super::payments::PaymentLock;
 use super::profile::Profile;
 
@@ -178,6 +180,24 @@ impl DashPay {
     pub fn pending_setup_count(&self) -> Result<u32, ContactError> {
         self.session.pending_setup(self.wallet_id())
     }
+
+    /// The identity's `dashpay://user?id=&username=` link with its main
+    /// name, as iOS writes it (DP2-03, `users.rs`). An identity without a
+    /// name has none: `contact.no_username`.
+    pub fn my_user_link(&self, identity: String) -> Result<String, ContactError> {
+        self.session.my_user_link_of(self.wallet_id(), &identity)
+    }
+
+    /// A scanned or pasted `dashpay://user` link or DIP-15
+    /// `dash:?du=&dapk=` code, verified against Platform (DP2-03). A `dapk`
+    /// key stays in the engine; `scan` names it for `send_request`.
+    pub async fn verify_scanned(&self, text: BearerSecret) -> Result<ScannedContact, ContactError> {
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id());
+        self.session
+            .on_runtime(async move { Ok(session.verify_scanned_of(id, text.expose()).await) })
+            .await
+            .map_err(PlatformError::from)?
+    }
 }
 
 #[expect(unused_variables, reason = "stubs until DP2-02…DP2-04")]
@@ -233,13 +253,5 @@ impl DashPay {
         grant: String,
     ) -> Result<(), ContactError> {
         stub("DashPay.enable_dashpay_keys")
-    }
-
-    pub fn my_user_link(&self, identity: String) -> Result<String, ContactError> {
-        stub("DashPay.my_user_link")
-    }
-
-    pub async fn verify_scanned(&self, text: BearerSecret) -> Result<ScannedContact, ContactError> {
-        stub("DashPay.verify_scanned")
     }
 }

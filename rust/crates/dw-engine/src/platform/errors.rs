@@ -266,6 +266,14 @@ pub enum ContactError {
     /// used: "this QR code has expired; ask for a new one".
     #[error("scanned code expired")]
     ScanExpired,
+    /// The scanned code's username is not the scanned identity's on
+    /// Platform, or no one holds it: "couldn't be verified on the Dash
+    /// network; the QR code may be outdated" (iOS).
+    #[error("scanned code not verified")]
+    ScanUnverified,
+    /// The identity has no username, so it has no user link.
+    #[error("identity has no username")]
+    NoUsername,
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -280,6 +288,8 @@ impl ContactError {
             Self::ChannelBroken => "contact.channel_broken",
             Self::PaymentLocked { .. } => "contact.payment_locked",
             Self::ScanExpired => "contact.scan_expired",
+            Self::ScanUnverified => "contact.scan_unverified",
+            Self::NoUsername => "contact.no_username",
             Self::Platform(e) => e.code(),
         }
     }

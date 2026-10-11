@@ -42,6 +42,9 @@ mod status;
 pub(crate) mod trust;
 #[cfg(test)]
 mod trust_tests;
+mod users;
+#[cfg(test)]
+mod users_tests;
 
 pub use bringup::CREATED_HERE_BUDGET;
 pub use contacts::{

@@ -505,7 +505,7 @@ impl ContactsRuntime {
     }
 }
 
-fn identifier(text: &str) -> Result<Identifier, ContactError> {
+pub(super) fn identifier(text: &str) -> Result<Identifier, ContactError> {
     Identifier::from_string(text, Encoding::Base58).map_err(|_| {
         PlatformError::InvalidArgument {
             detail: "not a Base58 identity id".into(),
@@ -654,5 +654,28 @@ impl NetworkSession {
             .filter(|e| e.setup_pending)
             .count();
         Ok(u32::try_from(pending).unwrap_or(u32::MAX))
+    }
+
+    /// How each of `users` relates to the wallet's main identity (DP2-03:
+    /// search, lookup and scans): `IsSelf` for it, else its relation in the
+    /// last contacts snapshot, else `Stranger`, as for every user while the
+    /// wallet has no identity or no snapshot yet.
+    pub(super) fn relations_to_main(
+        &self,
+        id: WalletId,
+        users: &[Identifier],
+    ) -> Result<Vec<Relation>, PlatformError> {
+        let main = (self.identity_summaries(id)?.into_iter())
+            .find(|s| s.is_main)
+            .and_then(|s| Identifier::from_string(&s.identity, Encoding::Base58).ok());
+        let (contacts, _) = self.read_contacts(id)?;
+        let owner = main.and_then(|m| contacts.as_ref()?.get(&m));
+        Ok((users.iter())
+            .map(|user| match owner.and_then(|o| o.get(user)) {
+                _ if Some(*user) == main => Relation::IsSelf,
+                Some(entry) => entry.relation,
+                None => Relation::Stranger,
+            })
+            .collect())
     }
 }
