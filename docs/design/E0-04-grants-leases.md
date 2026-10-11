@@ -780,7 +780,9 @@ call permit when its task lands.
   *dead*: they stay in `signed_lock` and come back as `dead` in the PA-1 view. The step
   reads `NotSent` whatever the snapshot shows later (the ChainLock gone from it, an unattributed row, a pending
   row under the step's own key), over a restart and over the wallet's erase (`erase_wallet_rows` and the sweep keep
-  every row of a standing marker): for a flagged step (§2a.7) every lock its one call signed is recorded and dead,
+  every row of a standing marker), its re-add and a backup restored after its removal, a backup taken before the
+  resolution included (`.dwbackup` carries `app.sqlite` rows only, never `dispatch.sqlite`, Q14; a restore writes no
+  J row): for a flagged step (§2a.7) every lock its one call signed is recorded and dead,
   so no row is its lock (C4: P2b derives this itself, so the gate, the events and the PA-1 view agree by
   construction, and DP1-02 never overrides it). This comes before §2a.5's "a proved row reads `Sent` first": a
   proved row of the step would be one of its dead locks, whose inputs the ChainLocked self-spend took, so the two
@@ -791,8 +793,10 @@ call permit when its task lands.
 - **A resolved step is never called again** (`FundingBlock::StepCancelled`, `invalid_argument` "Repair cancelled
   the funding step; a new funding needs a new step"): the funding gate refuses a step with a tombstone, or with a
   resolving self-spend whose tombstone is owed, before anything else; a new draft is a new step. Repair refuses it
-  `NotStuck(Some(NotSent))`. A step whose calls all ended definitely unsent (`NotSent` row) supersedes its marker and
-  may be funded again; a step whose flagged marker stands with nothing signed (a kill mid-call, C5) reads
+  `NotStuck(Some(NotSent))`. Nothing supersedes a resolved step's marker: a funding call of the step under another
+  key is refused `StepCancelled` the same way, and a resumable call of it `StepKeyMismatch`, both before any J
+  write, so no later attempt brings its dead locks back as signed. A step whose calls all ended definitely unsent
+  (`NotSent` row, nothing signed) supersedes its marker, leaves no tombstone and may be funded again; a step whose flagged marker stands with nothing signed (a kill mid-call, C5) reads
   `NotSent` and is refused `Step(Some(NotSent))` by its standing marker. Hence H12's exception (§5.7).
 - **Repair's refusals are typed** (review Opus O-5): `EngineError::StuckFunding(StuckFundingRefusal)`
   (`stuck_funding`), with `StuckFundingRefusal::code()` per refusal and `retry_later()` for those that pass unaided
@@ -868,8 +872,8 @@ call permit when its task lands.
 - A self-spend over very many coins can fail as too large or with an absurd fee; key-wallet holding a just-built
   lock's inputs in the same process is untested.
 - A journal error at a call step hides a `Locked`/`Revoked` refusal (both refuse the call); the permit's wait for a
-  `Committing` marker has no deadline of its own; a dropped permit leaves its step `MaybeSent`; the call steps have
-  no engine test over a real SQLite journal.
+  `Committing` marker has no deadline of its own; a dropped permit leaves its step `MaybeSent`. Only Mode B's funding
+  call steps have an engine test over a real SQLite journal (C4, C5 in §2a.7).
 - A resumable step that resolves `NotSent` emits no event (as before P2b). While a held tombstone of §5.5 is being
   watched, every J step re-checks it, at a cost linear in the entries.
 - `sign_psbt` does not check reserved coins (outside `TxDraft`), and does not take the coin fence: it signs the
@@ -949,13 +953,21 @@ record:
    `wallet/identity/network/payments.rs:1522`) send payments the engine builds, never an asset lock a funding
    call signed.
 
+**DP1-02's funding call.** DP1-02 funds a registration through `create_funded_asset_lock_proof` only, once per
+funding permit (path 1 above, then 2). The library's build-only exporters (`build_asset_lock_transaction` and the
+like) return a signed lock to the caller with no store before it, so nothing above covers a lock they build: a
+funding permit must never be used with them (§16.5, Q19).
+
 **Tests.** `mode_b_tests.rs`: `a_signed_locks_failing_write_is_retried_then_stops_the_process`,
 `a_call_signs_no_second_lock_once_its_lock_is_recorded`, `a_lock_signed_while_the_journal_is_closed_stops_the_process`,
 `a_signed_lock_whose_marker_no_longer_stands_stops_the_process`,
 `a_lock_is_the_calls_only_when_every_input_carries_its_signature`,
-`a_kill_mid_call_that_signed_nothing_reads_not_sent_and_refuses_the_step` (C5); `resume_tests.rs`:
+`a_kill_mid_call_that_signed_nothing_reads_not_sent_and_refuses_the_step` (C5),
+`flagged_and_unflagged_markers_on_a_journal_file_read_as_their_flag_says` (C4 and C5 over a real `dispatch.sqlite`,
+flagged and the same file unflagged); `resume_tests.rs`:
 `a_pass_sends_no_lock_before_its_durable_record` (OD-01: the real pass on another worker, the record's write held,
-zero broadcaster calls, then a restart at the publication boundary); `session_tests.rs`:
+zero broadcaster calls and `unrecorded_signer_of` naming the step, then the send once it landed, then a restart at
+the publication boundary); `session_tests.rs`:
 `mode_b_a_funding_signer_signs_one_lock_per_call`; `dw-appdb` `dispatch.rs`: the 5 → 6 migration leaves every
 marker unflagged. **Seam:** the real `TransactionBroadcaster` is not injectable at the pin, so the count of sends is
 taken at P2b's `Resumer`, the one P2b-controlled path that calls `resume_asset_lock`.

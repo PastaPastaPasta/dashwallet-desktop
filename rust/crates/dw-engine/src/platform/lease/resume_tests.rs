@@ -538,10 +538,13 @@ async fn a_pass_sends_no_lock_before_its_durable_record() {
         f.calls().is_empty(),
         "no resume before the record is durable"
     );
+    // What a caller that resumes a row itself (DP1-02) reads.
+    assert_eq!(t.unrecorded_signer_of(W, &built), Some(REG.to_owned()));
 
     release.send(()).unwrap();
     store.await.unwrap();
     assert_eq!(t.signed_lock_txids(W, REG), vec![built.txid]);
+    assert_eq!(t.unrecorded_signer_of(W, &built), None);
     until(|| f.calls_of(W, 1) == 1).await;
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
 

@@ -787,11 +787,19 @@ async fn an_unsent_or_never_started_funding_allows_funding_again() {
     p.signatures().note_locked();
     assert_eq!(p.finish(false), FlowOutcome::Cancelled);
     until(|| t.funding_status(W, REG) == Some(NotSent)).await;
+    // The durable unsigned resolution took the marker, and left no
+    // tombstone: the step is no standing one, and its retry is a fresh
+    // call (DP1-02 StepCancelled).
+    assert_eq!(t.call_step(W, REG).funding, None);
+    assert!(j.tombstone_rows().is_empty());
+    assert!(t.registration_funding_steps(W).unwrap().is_empty());
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
     let p = l
         .call_permit_step("funding", quote(10, 0), funding(REG, 7))
         .await
         .unwrap();
+    let v = step_view(&t, 7);
+    assert_eq!((v.signed, v.dead), (vec![], vec![]));
     assert_eq!(p.finish(true), FlowOutcome::Sent);
 
     // Refused by the gate before any marker, so never registered.
@@ -3048,12 +3056,36 @@ async fn a_repaired_step_stays_resolved_across_its_erase_and_a_restart() {
         t.record_self_spend(W, REG, [0xef; 32], &lock.inputs).await,
         Err(StuckFundingRefusal::NotStuck(Some(NotSent)))
     );
+    // Nothing supersedes its marker: a call of the step under another key,
+    // or one disguised as resumable, is refused before any J write (E0-04
+    // F7).
+    let log = j.log().len();
+    for (step, refusal) in [
+        (
+            funding(REG, 8),
+            LeaseError::FundingBlocked(FundingBlock::StepCancelled),
+        ),
+        (CallStep::Resumable(REG.into()), LeaseError::StepKeyMismatch),
+    ] {
+        assert_eq!(
+            l.call_permit_step("funding", quote(10, 0), step)
+                .await
+                .unwrap_err(),
+            refusal
+        );
+    }
+    assert_eq!(j.log().len(), log);
 
     // The wallet's rows erased (§8.6): its marker stands, so its tombstone
-    // does too.
+    // does too; the wallet added again (a re-add, a backup restored: they
+    // write no J row) reads it so.
     t.erase_wallet_rows(W).await;
     assert_eq!(j.tombstone_rows().len(), 1);
     assert_eq!(t.funding_status(W, REG), Some(NotSent));
+    t.wallet_opened(W);
+    assert!(t.refresh_funding(W).await);
+    assert_eq!(t.funding_status(W, REG), Some(NotSent));
+    assert_eq!(step_view(&t, 7).dead, vec![lock.txid]);
 
     // A restart whose snapshot no longer shows the ChainLock, with an
     // unattributed row and a pending one under the step's own key: no row
@@ -3291,4 +3323,216 @@ async fn a_malleated_copy_of_an_ended_calls_lock_stops_nothing() {
         )
     });
     assert!(why.contains("ended funding call"), "{why}");
+}
+
+/// DP1-02 PA-1 reads J alone (ownership r2 Sol item 1): the view of a step
+/// is the same whatever app.sqlite's drafts and the library's rows say
+/// (deleted, renumbered, re-keyed), before and after a restart. A closed
+/// journal gives no view rather than an empty one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_funding_view_reads_the_journal_alone_and_refuses_a_closed_one() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let lock = row(5, 7, R::Built);
+    src.set_drafts(W, vec![DraftKey::registration(7, 7)]);
+    signed_maybe_sent(&t, &l, REG, 7, &lock).await;
+    let before = t.registration_funding_steps(W).unwrap();
+    assert_eq!(
+        before,
+        vec![FundingStepView {
+            draft: 7,
+            key: key(7),
+            status: Some(MaybeSent),
+            signed: vec![lock.txid],
+            dead: Vec::new(),
+            durable_record: true,
+            recording: false,
+        }]
+    );
+    for drafts in [
+        Vec::new(),
+        vec![DraftKey::registration(9, 7)],
+        vec![DraftKey::registration(7, 2)],
+    ] {
+        src.set_drafts(W, drafts);
+        src.set_rows(W, Vec::new());
+        assert!(t.refresh_funding(W).await);
+        assert_eq!(t.registration_funding_steps(W).unwrap(), before);
+        let (t2, _) = reload(&j, &src).await;
+        assert_eq!(t2.registration_funding_steps(W).unwrap(), before);
+    }
+    t.close_journal().await;
+    assert_eq!(
+        t.registration_funding_steps(W),
+        Err(FundingStepsUnavailable)
+    );
+}
+
+/// DP1-02 C4 and C5 on a real `dispatch.sqlite` (ownership r2 Sol item
+/// 6), with a flagged journal and the same file unflagged (OD-02): a step
+/// whose call signed a lock and whose Repair self-spend is ChainLocked
+/// (C4), and a step whose call was killed before it signed (C5), beside an
+/// unattributed row and a row under the C4 step's own key that is not its
+/// lock. Flagged, both read `NotSent`, the views and the gates agree, the
+/// C4 step's resolution is announced and its tombstone written, and both
+/// still read so after a reopen whose snapshot no longer shows the
+/// ChainLock. Unflagged,
+/// neither reads `NotSent` and none is announced: the C4 step's lock is
+/// dead and its tombstone written all the same (§2a.6), but either row may
+/// be a lock either call sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flagged_and_unflagged_markers_on_a_journal_file_read_as_their_flag_says() {
+    use dw_appdb::dispatch::{DispatchJournal, JournalOpen};
+    const AT3: &str = "registration/3/funding";
+    let dir = tempfile::tempdir().unwrap();
+    let (path, legacy) = (
+        dir.path().join("dispatch.sqlite"),
+        dir.path().join("v5.sqlite"),
+    );
+    let open = |path: &std::path::Path| {
+        let JournalOpen::Ready(j) = DispatchJournal::open(path, 4).unwrap() else {
+            panic!("schema")
+        };
+        let calls = j.load_calls().unwrap();
+        let (rows, steps) = j.load().unwrap();
+        let (t, rec) = table();
+        t.load_journal_with(Some(Arc::new(j)), rows, steps, calls);
+        (t, rec)
+    };
+    let tombstones = |path: &std::path::Path| {
+        let JournalOpen::Ready(j) = DispatchJournal::open(path, 4).unwrap() else {
+            panic!("schema")
+        };
+        j.load_calls().unwrap().tombstones.len()
+    };
+    let lock = row(5, 7, R::Built);
+    {
+        let (t, _) = open(&path);
+        let src = Arc::new(FakeTracked::default());
+        t.install_tracked(src.clone());
+        assert!(t.refresh_funding(W).await);
+        let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+        signed_maybe_sent(&t, &l, REG, 7, &lock).await;
+        t.record_self_spend(W, REG, [0xee; 32], &lock.inputs)
+            .await
+            .unwrap();
+        // Killed while running, before it signed.
+        let p = l
+            .call_permit_step("funding", quote(10, 0), funding(AT3, 3))
+            .await
+            .unwrap();
+        std::mem::forget(p);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute("VACUUM INTO ?1", [legacy.to_str().unwrap()])
+            .unwrap();
+    }
+    rusqlite::Connection::open(&legacy)
+        .unwrap()
+        .execute("UPDATE funding_marker SET durable_record = 0", [])
+        .unwrap();
+
+    let src = Arc::new(FakeTracked::default());
+    src.set_drafts(
+        W,
+        vec![DraftKey::registration(7, 7), DraftKey::registration(3, 3)],
+    );
+    src.set_rows(
+        W,
+        vec![row(1, 0, R::RecoveredFromChain), row(2, 7, R::Broadcast)],
+    );
+    src.locked.lock().unwrap().insert([0xee; 32]);
+    let refused = |l: &Lease, step: &str, index: u32| {
+        let l = l.clone();
+        let step = funding(step, index);
+        async move {
+            l.call_permit_step("funding", quote(10, 0), step)
+                .await
+                .unwrap_err()
+        }
+    };
+
+    // Unflagged: either row may be a lock either call sent.
+    let (t, rec) = open(&legacy);
+    t.install_tracked(src.clone());
+    assert!(t.refresh_funding(W).await);
+    assert_ne!(t.funding_status(W, REG), Some(NotSent));
+    assert_eq!(t.funding_status(W, AT3), Some(MaybeSent));
+    let views = t.registration_funding_steps(W).unwrap();
+    assert_eq!(
+        views
+            .iter()
+            .map(|v| (v.draft, v.signed.clone(), v.dead.clone(), v.durable_record))
+            .collect::<Vec<_>>(),
+        vec![
+            (3, vec![], vec![], false),
+            (7, vec![], vec![lock.txid], false)
+        ]
+    );
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    assert_eq!(
+        refused(&l, REG, 7).await,
+        LeaseError::FundingBlocked(FundingBlock::StepCancelled)
+    );
+    assert_eq!(
+        refused(&l, AT3, 3).await,
+        LeaseError::FundingBlocked(FundingBlock::Step(Some(MaybeSent)))
+    );
+    assert!(rec.resolved().is_empty());
+    until(|| t.with_j(|i, _| i.fence.tombstoning.is_empty())).await;
+    assert_eq!(tombstones(&legacy), 1);
+    drop((l, t));
+
+    // Flagged. The first pass reads the C4 step before the self-spend's
+    // ChainLock, then with it (the move is announced); the restart's reads
+    // it with the ChainLock gone (a first reading is its baseline, no
+    // event).
+    for restart in [false, true] {
+        let (t, rec) = open(&path);
+        src.locked.lock().unwrap().clear();
+        t.install_tracked(src.clone());
+        if !restart {
+            assert!(t.refresh_funding(W).await);
+            assert_ne!(t.funding_status(W, REG), Some(NotSent));
+            src.locked.lock().unwrap().insert([0xee; 32]);
+        }
+        assert!(t.refresh_funding(W).await);
+        assert_eq!(t.funding_status(W, REG), Some(NotSent), "{restart}");
+        assert_eq!(t.funding_status(W, AT3), Some(NotSent), "{restart}");
+        let views = t.registration_funding_steps(W).unwrap();
+        assert_eq!(
+            views
+                .iter()
+                .map(|v| (
+                    v.draft,
+                    v.status,
+                    v.signed.clone(),
+                    v.dead.clone(),
+                    v.durable_record
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (3, Some(NotSent), vec![], vec![], true),
+                (7, Some(NotSent), vec![], vec![lock.txid], true),
+            ]
+        );
+        let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+        assert_eq!(
+            refused(&l, REG, 7).await,
+            LeaseError::FundingBlocked(FundingBlock::StepCancelled)
+        );
+        assert_eq!(
+            refused(&l, AT3, 3).await,
+            LeaseError::FundingBlocked(FundingBlock::Step(Some(NotSent)))
+        );
+        if restart {
+            assert!(!rec.resolved().iter().any(|(s, _)| s == REG));
+        } else {
+            assert!(
+                rec.resolved()
+                    .contains(&(REG.to_owned(), DispatchResolution::NotSent))
+            );
+            until(|| t.with_j(|i, _| i.fence.tombstoning.is_empty())).await;
+        }
+        assert_eq!(tombstones(&path), 1);
+    }
 }

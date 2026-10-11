@@ -299,6 +299,48 @@ impl Fixture {
         self.stuck_with(step, Some((seed, inputs)));
     }
 
+    /// Reads the wallet's funding statuses again.
+    fn refresh(&self) {
+        let (leases, w) = (Arc::clone(&self.session.leases), self.wallet);
+        let refreshed =
+            (self.session).on_runtime(async move { Ok(leases.refresh_funding(w).await) });
+        assert!(self.engine.block_on(refreshed).unwrap());
+    }
+
+    /// Repair of stuck `step`: its self-spend, sent and ChainLocked, then
+    /// read. Returns the self-spend.
+    fn repair(&self, step: &'static str) -> dashcore::Transaction {
+        let s = &self.session;
+        let draft = (self.engine)
+            .block_on(s.stuck_funding_draft(self.wallet, step))
+            .unwrap();
+        let seam = Arc::new(SelfSpendSeam {
+            session: Arc::clone(s),
+            wallet: self.wallet,
+            step,
+            seen: Default::default(),
+        });
+        *draft.broadcaster.lock().unwrap() = Some(seam.clone());
+        let grant = self.grant(GrantPurpose::Spend { max_duffs: 10_000 }, Credential::None);
+        (self.engine)
+            .block_on(s.send_self_spend(&draft, step, grant))
+            .unwrap();
+        let (tx, _) = seam.seen.lock().unwrap().take().expect("broadcast");
+        self.record_tx(
+            tx.clone(),
+            key_wallet::transaction_checking::TransactionContext::InChainLockedBlock(
+                key_wallet::transaction_checking::BlockInfo::new(
+                    2,
+                    dashcore::BlockHash::all_zeros(),
+                    0,
+                ),
+            ),
+            true,
+        );
+        self.refresh();
+        tx
+    }
+
     fn stuck_with(&self, step: &str, lock: Option<(u8, &[OutPoint])>) {
         let draft = self.registration_draft(0);
         assert_eq!(step, format!("registration/{draft}/funding"));
@@ -1772,12 +1814,7 @@ fn mode_b_a_signed_locks_inputs_are_held_until_repair_resolves_its_step() {
     // The step's call signed lock 70 over `a`, and its row is gone.
     f.stuck_signing(STEP, 70, &[a]);
     let status = || s.leases.funding_status(f.wallet, STEP);
-    let refresh = || {
-        let (leases, w) = (Arc::clone(&s.leases), f.wallet);
-        let refreshed = s.on_runtime(async move { Ok(leases.refresh_funding(w).await) });
-        assert!(f.engine.block_on(refreshed).unwrap());
-    };
-    refresh();
+    f.refresh();
     assert_eq!(status(), Some(DispatchState::MaybeSent));
     assert_eq!(
         s.leases.unresolved_lock_inputs(f.wallet),
@@ -1792,37 +1829,96 @@ fn mode_b_a_signed_locks_inputs_are_held_until_repair_resolves_its_step() {
     );
 
     // Repair's self-spend takes it.
-    let draft = f
-        .engine
-        .block_on(s.stuck_funding_draft(f.wallet, STEP))
-        .unwrap();
-    let seam = Arc::new(SelfSpendSeam {
-        session: Arc::clone(s),
-        wallet: f.wallet,
-        step: STEP,
-        seen: Default::default(),
-    });
-    *draft.broadcaster.lock().unwrap() = Some(seam.clone());
-    let grant = f.grant(GrantPurpose::Spend { max_duffs: 10_000 }, Credential::None);
-    f.engine
-        .block_on(s.send_self_spend(&draft, STEP, grant))
-        .unwrap();
-    let (tx, _) = seam.seen.lock().unwrap().take().expect("broadcast");
+    let tx = f.repair(STEP);
     assert!(tx.input.iter().any(|i| i.previous_output == a));
-    f.record_tx(
-        tx,
-        key_wallet::transaction_checking::TransactionContext::InChainLockedBlock(
-            key_wallet::transaction_checking::BlockInfo::new(
-                2,
-                dashcore::BlockHash::all_zeros(),
-                0,
-            ),
-        ),
-        true,
-    );
-    refresh();
     assert_eq!(status(), Some(DispatchState::NotSent));
     assert!(s.leases.unresolved_lock_inputs(f.wallet).is_empty());
+}
+
+/// Repair's resolution outlives the wallet (DP1-02 PA-3, ownership r2 Sol
+/// item 4): a backup taken while the step was stuck, restored after the
+/// wallet's removal, brings back its app rows and a wallet with no history
+/// (no ChainLocked self-spend), yet the step reads `NotSent`, its lock
+/// stays dead and never comes back as signed, and no call of the step
+/// starts. Backups carry app.sqlite rows only; `dispatch.sqlite` keeps the
+/// marker and its tombstone across the removal (§8.6).
+#[test]
+fn mode_b_a_repaired_step_stays_resolved_across_removal_and_a_pre_repair_restore() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let s = &f.session;
+    f.stuck_signing(STEP, 70, &[a]);
+    let dead = Txid::from_byte_array([70; 32]);
+    f.refresh();
+    let view = || {
+        let steps = s.leases.registration_funding_steps(f.wallet).unwrap();
+        assert_eq!(steps.len(), 1);
+        let v = steps.into_iter().next().unwrap();
+        (v.draft, v.status, v.signed, v.dead, v.durable_record)
+    };
+    assert_eq!(
+        view(),
+        (1, Some(DispatchState::MaybeSent), vec![dead], vec![], true)
+    );
+    let dir = dw_testutil::private_tempdir();
+    let backup = dir.path().join("pre-repair.dwbackup");
+    let pass = || Some(Zeroizing::new(b"bk".to_vec()));
+    f.engine
+        .block_on(s.backup_wallet(f.wallet, backup.clone(), pass()))
+        .unwrap();
+
+    f.repair(STEP);
+    let resolved = (1, Some(DispatchState::NotSent), vec![], vec![dead], true);
+    assert_eq!(view(), resolved);
+
+    let wipe = f.grant(GrantPurpose::Wipe, Credential::None);
+    f.engine.block_on(s.remove_wallet(f.wallet, wipe)).unwrap();
+    assert_eq!(
+        f.engine.block_on(s.restore_backup(backup, pass())).unwrap(),
+        vec![f.wallet]
+    );
+    f.refresh();
+    assert_eq!(view(), resolved);
+    assert!(s.leases.unresolved_lock_inputs(f.wallet).is_empty());
+    let l = f
+        .lease(FlowKind::Registration, &[f.platform_op(10_000_000, 0)])
+        .unwrap();
+    let key = FundingKey {
+        funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
+        identity_index: 0,
+        account: 0,
+    };
+    // The restore inserted the draft again as a new app.sqlite row (a new
+    // id): the facade finds no draft 1, and the lease's gate refuses the
+    // step itself.
+    match f.engine.block_on(s.funding_call_permit(
+        &l,
+        "create_funded_asset_lock_proof",
+        1_000_000,
+        STEP.into(),
+        key,
+        f.fence(),
+    )) {
+        Err(PlatformError::InvalidArgument { detail }) => {
+            assert!(detail.contains("has no funding key"), "{detail}")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        f.engine
+            .block_on(l.call_permit_step(
+                "funding",
+                super::tests::quote(10, 0),
+                CallStep::Funding {
+                    step: STEP.into(),
+                    key,
+                },
+            ))
+            .unwrap_err(),
+        LeaseError::FundingBlocked(super::mode_b::FundingBlock::StepCancelled)
+    );
+    assert_eq!(view(), resolved, "the refusal resurrects nothing");
 }
 
 /// E0-04 §6.5 (C9), review of commit 7: the self-spend beats a lost lock
