@@ -335,6 +335,11 @@ pub(crate) struct FlowState {
     offered: Option<Held>,
     /// The automatic backup of `FundingSent` was scheduled.
     pub(crate) backed_up: bool,
+    /// The lock this flow's own funding call built whose record did not
+    /// land (MN-1): exact provenance, first seen in the call's window, so
+    /// the flow's next run in this process takes it. After a restart only
+    /// "Finish transfers" gives it (Phase B: P2b's durable marker).
+    own_lock: Option<OutPoint>,
     pub(crate) task: Option<tokio::task::AbortHandle>,
     /// The next this many lock records of the run fail (a test's storage
     /// fault).
@@ -1950,7 +1955,10 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             #[cfg(not(test))]
             let written = self.advance(row, change.clone()).await;
             match written {
-                Ok(step) => break step,
+                Ok(step) => {
+                    self.flows().with_held(self.claim, |s| s.own_lock = None);
+                    break step;
+                }
                 Err(e) if tries < LOCK_WRITE_TRIES => {
                     tracing::warn!(draft = row.id, error = %e, "retrying the lock's record");
                     tokio::time::sleep(LOCK_WRITE_RETRY * tries).await;
@@ -2017,16 +2025,16 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             // reality whose lock "Finish transfers" adopted): this one
             // takes a new index rather than a second lock for it.
             IndexOwner::Taken => return self.assign_index(row).await,
-            // A lock whose index the library lost: the row takes it when
-            // "Finish transfers" would give it this row (its own funding,
-            // whose record never landed: MN-1), unless a funding call of
-            // the wallet runs, whose own lock it may be.
+            // A lock whose index the library lost: the row takes it only
+            // when its own funding call built it and the record did not land
+            // (MN-1); any other lock waits for "Finish transfers".
             IndexOwner::Unknown => {
-                let destined = match self.flows().calling(self.wallet) {
-                    true => None,
-                    false => ev.destined_lock(row).map(|l| l.outpoint),
-                };
-                return match destined {
+                let own = self
+                    .flows()
+                    .with_held(self.claim, |s| s.own_lock)
+                    .flatten()
+                    .filter(|op| ev.unclaimed().any(|l| l.outpoint == *op));
+                return match own {
                     Some(lock) => self.record_lock(row, lock, Phase::FundingSent).await,
                     None => Ok(Step::Wait(RegistrationWait::ChainLock)),
                 };
@@ -2132,6 +2140,13 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             None => None,
         }
         .map(|l| l.outpoint);
+        // The call's own lock, kept until its record lands (`record_lock`
+        // clears it), so a record that fails leaves the flow's next run its
+        // exact provenance (MN-1).
+        let own = funded.as_ref().ok().copied().or(tracked);
+        if own.is_some() {
+            self.flows().with_held(self.claim, |s| s.own_lock = own);
+        }
         match (funded, tracked) {
             (Ok(outpoint), _) => self.record_lock(row, outpoint, Phase::FundingSent).await,
             (Err(FundError::IsTimeout), Some(outpoint)) => {

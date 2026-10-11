@@ -270,11 +270,13 @@ decided where the rows leave room:
   the call, still on its way (`Built` or `Broadcast`; one rebuilt from the chain meanwhile is another device's), at
   the row's index, for its amount, that no row holds and no row this build cannot read may own (the fence and the
   in-progress gate let no other funding of this engine run meanwhile), at index 0 too, where a `Broadcast` lock's
-  index alone says nothing. The row's record of it, and the tap's, are retried; one that still fails ends the run
-  with `storage`, the row unfailed at `KeysPrepared` and its index. It reads committed (the lock "Finish transfers"
-  would give it, below), so it counts as in progress and refuses discard, funds nothing again, and its resume and
-  "Finish transfers" both give it that lock. A definite rejection after the tap scheduled the automatic backup
-  re-arms the once-only backup, so the retry that funds schedules another.
+  index alone says nothing. The row's record of it, and the tap's, are retried; one that still fails ends the run with
+  `storage`, the row unfailed at `KeysPrepared` and its index. It reads committed (the lock "Finish transfers" would
+  give it, below), so it counts as in progress and refuses discard, and funds nothing again. The flow keeps that
+  lock's outpoint in memory, first seen in its own call's window, so its next run in this process takes it; after a
+  restart only "Finish transfers" gives it (Phase B adopts by P2b's durable signed-txid marker). A definite rejection
+  after the tap scheduled the automatic backup re-arms the once-only backup, so the retry that funds schedules
+  another.
 - **Settled after the identity.** Once the identity exists the flow cannot fail for good: its funds are spent. A name
   step that Platform refuses for good (`name.taken`, `name.contest_open`, `name.locked`, `name.invalid`, or a
   refusal a retry would meet again: a budget, credits, an invalid argument, a rejected transition) records the code
@@ -304,11 +306,13 @@ decided where the rows leave room:
   another row holds, sends a flow that is not yet funded to a new index; so does another row at the index that is
   funded or older. Anything the flow cannot attribute (an identity at the index with no lock to prove it, a
   registration lock no row holds whose index is unknown) stops the flow before funding, waiting at `ChainLock`.
-  "Finish transfers" settles a lock: it gives the lock to the oldest such row it can fund, and that row's own run
-  takes it the same way; while a funding call of the wallet runs, neither gives away a lock on its way (`Built`,
-  `Broadcast`) whose index is lost, which may be that call's own, and Finish counts it in `still_pending`. Until then
-  the row reads `MaybeSent`, so it is committed and discard refuses it. An identity with no lock to prove it is never
-  adopted; the row waits until it is discarded (`register_name` then names the identity).
+  "Finish transfers" settles a lock: it gives the lock to the oldest such row it can fund. A row's own run never
+  adopts such a lock, whatever its index and amount (it may be another device's on the seed: ownership needs exact
+  provenance, the call window above). While a funding call of the wallet runs, Finish gives away no lock on its way
+  (`Built`, `Broadcast`) whose index is lost, which may be that call's own, and counts it in `still_pending`. A row
+  Finish would give a lock reads `MaybeSent` until it does, so it is committed and discard refuses it. An identity
+  with no lock to prove it is never adopted; the row waits until it is discarded (`register_name` then names the
+  identity).
 - **Waits.** A running flow waits for the sync, for the network (backing off to 60 s), for its proof and for a lock
   the library untracked to be tracked again, in its own task, keeping its lease, so one grant carries it through.
   The `ChainLock` wait has no limit, in bounded waits (the library's own unbounded wait gives up after 180 s). An own

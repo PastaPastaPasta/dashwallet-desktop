@@ -1701,19 +1701,20 @@ fn reconstructed_nonzero_index_does_not_fund_twice() {
     let draft = f.insert(row);
     lib.w().identities.push((0, "earlier-identity".into()));
     let lock = lib.lock_at(0, LockStatus::RecoveredFromChain);
-    // Before the row runs it reads committed: the lock "Finish transfers"
-    // would give it may be its own (MN-1).
-    assert!(f.status(&lib, draft).funds_committed);
-    // Its run takes the lock as "Finish transfers" would give it, not a
-    // new row beside it (which would leave this row to fund again), and
-    // funds none.
     f.drive(&lib, draft, Some(f.lease()), false);
-    assert_eq!(lib.counts(), (0, 1), "no second lock");
-    assert_eq!(f.rows().len(), 1);
+    assert_eq!(lib.counts(), (0, 0), "no second lock");
     let row = f.row(draft);
-    assert_eq!(phase(&row), Phase::Done);
-    assert_eq!(flow::outpoint_of(&row), Some(lock));
-    assert_eq!(row.identity_index, Some(7));
+    assert_eq!(
+        (phase(&row), row.asset_lock_outpoint),
+        (Phase::KeysPrepared, None)
+    );
+    assert_eq!(
+        f.status(&lib, draft).waiting,
+        Some(RegistrationWait::ChainLock)
+    );
+
+    // "Finish transfers" gives the lock to the row waiting for one, not to
+    // a new row beside it (which would leave this row to fund again).
     let report = f
         .engine
         .block_on(registration::finish(
@@ -1723,7 +1724,13 @@ fn reconstructed_nonzero_index_does_not_fund_twice() {
             f.grant(COIN, 10 * COIN * 1000, Credential::None),
         ))
         .unwrap();
-    assert_eq!((report.resumed, report.still_pending), (0, 0), "{report:?}");
+    assert_eq!((report.resumed, report.completed), (1, 1), "{report:?}");
+    assert_eq!(f.rows().len(), 1);
+    let row = f.row(draft);
+    assert_eq!(phase(&row), Phase::Done);
+    assert_eq!(flow::outpoint_of(&row), Some(lock));
+    assert_eq!(row.identity_index, Some(7));
+    assert_eq!(lib.counts(), (0, 1));
 }
 
 /// "Finish transfers" chooses no index for a lock while the funding hold
@@ -2829,8 +2836,9 @@ fn an_untapped_index_one_lock_is_its_calls_own() {
 
 /// MN-1: the lock's record is retried; one that never lands ends the run
 /// as a storage error with the row still bound to its index, unfailed. It
-/// reads committed (no discard, no second registration), and its resume and
-/// "Finish transfers" both hand it its own lock: never a second row.
+/// reads committed (no discard, no second registration). Its next run in
+/// the process takes the lock its call built (exact provenance); after a
+/// restart only "Finish transfers" gives it. Never a second row.
 #[test]
 fn a_lock_record_that_fails_is_retried_then_left_to_its_row() {
     let f = fixture(false);
@@ -2851,7 +2859,7 @@ fn a_lock_record_that_fails_is_retried_then_left_to_its_row() {
     assert_eq!(flow::outpoint_of(&row), Some(lib.w().locks[0].outpoint));
 
     // Three: the run fails as storage.
-    for via_finish in [false, true] {
+    for (restart, via_finish) in [(false, false), (false, true), (true, true)] {
         let f = fixture(false);
         let (lib, draft, lock) = lock_record_failed(&f);
         let status = f.status(&lib, draft);
@@ -2866,6 +2874,20 @@ fn a_lock_record_that_fails_is_retried_then_left_to_its_row() {
             f.grant(COIN, 10 * COIN * 1000, Credential::None),
         ));
         assert_eq!(start, Err(RegistrationError::InProgress));
+        if restart {
+            // The provenance is gone with the process: the run waits.
+            f.kill(draft);
+            f.drive(&lib, draft, Some(f.lease()), false);
+            let row = f.row(draft);
+            assert_eq!(
+                (phase(&row), row.asset_lock_outpoint),
+                (Phase::KeysPrepared, None)
+            );
+            assert_eq!(
+                f.status(&lib, draft).waiting,
+                Some(RegistrationWait::ChainLock)
+            );
+        }
         if via_finish {
             f.engine
                 .block_on(registration::finish(
@@ -3178,16 +3200,88 @@ fn finish_leaves_a_running_calls_lock_to_it() {
     assert_eq!(report.resumed, 0, "{report:?}");
     assert!(report.still_pending >= 1, "{report:?}");
     assert_eq!(f.rows().len(), 1, "Finish made a row for the call's lock");
-    // The process dies in the call: the row's resume takes its own lock.
+    // The process dies in the call: the provenance is gone, so the row's
+    // resume waits and "Finish transfers" gives it the lock.
     f.kill(draft);
     lib.w().hang = None;
     let lock = lib.w().locks[0].outpoint;
+    f.drive(&lib, draft, Some(f.lease()), false);
+    assert_eq!(f.row(draft).asset_lock_outpoint, None);
+    assert_eq!(lib.counts(), (1, 0));
+    f.engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
     f.drive(&lib, draft, Some(f.lease()), true);
     let rows = f.rows();
     assert_eq!(rows.len(), 1);
     assert_eq!(flow::outpoint_of(&rows[0]), Some(lock));
     assert_eq!(phase(&rows[0]), Phase::Done);
     assert_eq!(lib.counts(), (1, 1));
+}
+
+/// A lock that shows up outside a row's own funding call window (one the
+/// library rebuilt, another device's on the seed) is not adopted by the
+/// row's run, whatever its index and amount: only "Finish transfers" gives
+/// it (ownership needs exact provenance). Neither a restored row with no
+/// call, nor one whose call failed before anything was built.
+#[test]
+fn a_lock_outside_the_call_window_waits_for_finish() {
+    for called in [false, true] {
+        let f = fixture(false);
+        let lib = f.fake();
+        let draft = match called {
+            false => {
+                let mut row = core_row(PLAIN);
+                row.identity_index = Some(0);
+                row.phase = Phase::KeysPrepared.as_str().into();
+                f.insert(row)
+            }
+            true => {
+                lib.w().fund_script = Some(FundScript::FailUntracked);
+                let draft = f.insert(core_row(PLAIN));
+                f.drive(&lib, draft, Some(f.lease()), false);
+                assert!(f.row(draft).retryable);
+                draft
+            }
+        };
+        let lock = lib.lock_at(0, LockStatus::Broadcast);
+        lib.w().fund_script = Some(FundScript::Ok);
+        resume(
+            &f,
+            &lib,
+            draft,
+            Some(f.grant(COIN, 10 * COIN * 1000, Credential::None)),
+        );
+        // Its run waits at ChainLock, in its task, taking nothing.
+        eventually("the run waits for the lock's owner", || {
+            f.status(&lib, draft).waiting == Some(RegistrationWait::ChainLock)
+        });
+        f.kill(draft);
+        let row = f.row(draft);
+        assert_eq!(row.asset_lock_outpoint, None, "called {called}");
+        assert_eq!(phase(&row), Phase::KeysPrepared, "called {called}");
+        let funds = if called { 1 } else { 0 };
+        assert_eq!(lib.counts(), (funds, 0), "called {called}: funded again");
+        f.engine
+            .block_on(registration::finish(
+                &f.session,
+                f.wallet,
+                &*lib,
+                f.grant(COIN, 10 * COIN * 1000, Credential::None),
+            ))
+            .unwrap();
+        assert_eq!(f.rows().len(), 1, "called {called}");
+        assert_eq!(
+            flow::outpoint_of(&f.row(draft)),
+            Some(lock),
+            "called {called}"
+        );
+    }
 }
 
 mod rules;
