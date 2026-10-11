@@ -1764,7 +1764,7 @@ mod tests {
         "invite",
     ];
 
-    /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04), with the
+    /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01), with the
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
@@ -1783,11 +1783,20 @@ mod tests {
             "dashpay dispatch-status ab12",
             r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a txid, transition hash or step id","params":{"detail":"not a txid, transition hash or step id"}}}"#,
         ),
+        (
+            "contact list --identity I --section requests --sort username",
+            NOT_BASE58,
+        ),
+        ("contact show --identity I C", NOT_BASE58),
+        ("contact pending-setup", r#"{"ok":true,"result":0}"#),
     ];
 
     /// A fresh wallet before `start_spv`: nothing ran, and quorum keys come
     /// from the trusted service (DEC-168's degraded mode, E0-10b).
     const SYNC_STATUS: &str = r#"{"ok":true,"result":{"startup":"not_run","last_pass":null,"pending_contact_crypto":0,"loops":[{"sync_loop":"identity_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dash_pay_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dpns_sync","running":false,"last_run_at":null,"next_run_at":null}],"quorum_source":"trusted"}}"#;
+
+    /// `I` and `C` are not identity ids.
+    const NOT_BASE58: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a Base58 identity id","params":{"detail":"not a Base58 identity id"}}}"#;
 
     const NO_IDENTITY: &str = r#"{"ok":false,"error":{"code":"identity.not_found","message":"identity: identity not found","params":{}}}"#;
 

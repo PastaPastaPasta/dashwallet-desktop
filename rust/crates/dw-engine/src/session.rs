@@ -669,6 +669,7 @@ impl NetworkSession {
         self.close_leases().await;
         let _closing = self.gate.close().await;
         self.platform.deactivate(true).await;
+        self.platform.contacts.close().await;
         let keys_idle = self.platform.key_work_idle().await;
         self.cancel_relock();
         self.coinjoin.shutdown();

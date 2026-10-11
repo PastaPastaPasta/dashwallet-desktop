@@ -52,6 +52,10 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.dispatch_status",
     // E0-10b: the status card's quorum source.
     "DashPay.sync_status",
+    // DP2-01: the contacts read model.
+    "DashPay.contacts",
+    "DashPay.contact",
+    "DashPay.pending_setup_count",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -77,9 +81,13 @@ const FACADE: &[&str] = &[
 /// identity key policy (DP1-01), the bring-up runtime (E0-05), the names
 /// network seam and session tests (DP1-03), the changeset tap and trust
 /// records (E0-06), the lease table and dispatch fence (E0-04) and the
-/// quorum provider and its re-fetch (E0-10b).
+/// quorum provider and its re-fetch (E0-10b), the contacts read model, its
+/// usernames and its tests (DP2-01).
 const NOT_FACADE: &[&str] = &[
     "bringup.rs",
+    "contact_names.rs",
+    "contacts_model.rs",
+    "contacts_tests.rs",
     "journal.rs",
     "journal_tests.rs",
     "keys_policy.rs",
@@ -1062,11 +1070,6 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         funding: RegistrationFunding::CoreBalance,
         initial_profile: None,
     };
-    let query = ContactQuery {
-        sections: vec![],
-        sort: ContactSort::DisplayName,
-        text: None,
-    };
     let edit = ProfileEdit {
         display_name: None,
         public_message: None,
@@ -1122,9 +1125,6 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         c.stub(dp.search_users(s(), 10).await);
         c.stub(dp.resolve_user(s()).await);
 
-        c.stub(dp.contacts(s(), query));
-        c.stub(dp.contact(s(), s()));
-        c.stub(dp.pending_setup_count());
         c.stub(dp.eligibility(s(), s()).await);
         c.stub(dp.send_request(s(), s(), None, s()).await);
         c.stub(dp.accept_request(s(), s(), s()).await);

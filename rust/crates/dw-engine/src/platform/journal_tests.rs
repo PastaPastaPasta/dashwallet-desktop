@@ -19,7 +19,8 @@ use key_wallet::transaction_checking::{BlockInfo, TransactionContext, Transactio
 use platform_wallet::changeset::{
     AccountRegistrationEntry, AssetLockChangeSet, ContactChangeSet, ContactRequestEntry,
     DpnsNameSaleStatus, DpnsNameStateChangeSet, DpnsNameStateEntry, IdentityChangeSet,
-    IdentityEntry, Merge, PlatformWalletChangeSet, PlatformWalletPersistence,
+    IdentityEntry, Merge, PendingContactCrypto, PendingContactCryptoKey, PendingContactCryptoKind,
+    PendingContactCryptoOp, PlatformWalletChangeSet, PlatformWalletPersistence,
     ReceivedContactRequestKey, SentContactRequestKey,
 };
 use platform_wallet::wallet::identity::{PaymentDirection, PaymentEntry, PaymentStatus};
@@ -164,7 +165,7 @@ fn payment(
 
 /// A received transaction, in a block of time `block_time` (s) or in the
 /// mempool.
-fn tx_record(n: u32, block_time: Option<u32>) -> TransactionRecord {
+pub(super) fn tx_record(n: u32, block_time: Option<u32>) -> TransactionRecord {
     let tx = Transaction {
         version: 2,
         lock_time: n,
@@ -203,7 +204,7 @@ fn contacts_of(n: u8) -> BTreeSet<PlatformChange> {
 }
 
 #[derive(Default)]
-struct Recorder(Mutex<Vec<EngineEvent>>);
+pub(super) struct Recorder(pub(super) Mutex<Vec<EngineEvent>>);
 
 impl EventSink for Recorder {
     fn emit(&self, event: EngineEvent) {
@@ -687,6 +688,47 @@ fn row_contact_accounts_signal_contacts() {
     assert!(classify(&standard).is_none());
 }
 
+/// §3.5 row `pending_contact_crypto_*` (DP2-01): queueing or dequeueing an
+/// account build or an auto-accept is `Contacts` for its owner, once per
+/// owner, with no journal entry; a `contactInfo` decrypt is neither.
+#[test]
+fn row_queued_contact_setup_signals_contacts() {
+    let h = Harness::new();
+    let op = |owner: u8, contact: u8, op: PendingContactCryptoOp| PendingContactCrypto {
+        owner_identity_id: id(owner),
+        contact_id: id(contact),
+        op,
+        enqueued_at_ms: 0,
+    };
+    h.feed(PlatformWalletChangeSet {
+        pending_contact_crypto_added: vec![
+            op(ME, BOB, PendingContactCryptoOp::RegisterReceiving),
+            op(ME, CAROL, PendingContactCryptoOp::AutoAccept),
+            op(CAROL, BOB, PendingContactCryptoOp::ContactInfoDecrypt),
+        ],
+        ..Default::default()
+    });
+    assert_eq!(h.changes(), contacts_of(ME));
+    let key = |owner: u8, kind| PendingContactCryptoKey {
+        owner_identity_id: id(owner),
+        contact_id: id(BOB),
+        kind,
+    };
+    h.feed(PlatformWalletChangeSet {
+        pending_contact_crypto_cleared: vec![key(CAROL, PendingContactCryptoKind::AutoAccept)],
+        ..Default::default()
+    });
+    assert_eq!(h.changes(), contacts_of(CAROL));
+    assert!(h.journal().is_empty());
+
+    let decrypt_only = PlatformWalletChangeSet {
+        pending_contact_crypto_added: vec![op(ME, BOB, PendingContactCryptoOp::ContactInfoDecrypt)],
+        pending_contact_crypto_cleared: vec![key(ME, PendingContactCryptoKind::ContactInfoDecrypt)],
+        ..Default::default()
+    };
+    assert!(classify(&decrypt_only).is_none());
+}
+
 fn name_state(document: u8, label: &str) -> DpnsNameStateEntry {
     DpnsNameStateEntry {
         document_id: id(document),
@@ -949,7 +991,7 @@ fn the_first_bring_up_restarts_after_removal_and_survives_bad_reads() {
 const ABANDON_12: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
-fn engine(dir: &std::path::Path, sink: Arc<dyn EventSink>) -> Engine {
+pub(super) fn engine(dir: &std::path::Path, sink: Arc<dyn EventSink>) -> Engine {
     Engine::new(
         EngineConfig {
             data_root: dir.join("data"),
@@ -966,7 +1008,7 @@ fn engine(dir: &std::path::Path, sink: Arc<dyn EventSink>) -> Engine {
 }
 
 /// An offline session (DAPI and peers unreachable) with an imported wallet.
-fn session(engine: &Engine, no_platform: bool) -> (Arc<NetworkSession>, WalletId) {
+pub(super) fn session(engine: &Engine, no_platform: bool) -> (Arc<NetworkSession>, WalletId) {
     let s = engine
         .block_on(engine.open_network(
             DashNetwork::Regtest,

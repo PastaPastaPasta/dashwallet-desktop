@@ -36,7 +36,9 @@ use dpp::prelude::Identifier;
 use dpp::util::strings::convert_to_homograph_safe_chars;
 use dw_appdb::{AppDb, JournalEntry};
 use key_wallet::account::AccountType;
-use platform_wallet::changeset::{Merge, PlatformWalletChangeSet, PlatformWalletPersistence};
+use platform_wallet::changeset::{
+    Merge, PendingContactCryptoKind, PlatformWalletChangeSet, PlatformWalletPersistence,
+};
 use platform_wallet::wallet::identity::{PaymentDirection, PaymentStatus};
 use platform_wallet::{ContactRequest, DpnsNameInfo};
 
@@ -281,6 +283,22 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
             });
         }
     }
+
+    // `pending_contact_crypto_*`: the unlock-to-finish work that builds a
+    // contact's accounts or accepts its request moves the setup count and
+    // the channel (DP2-01). Not news; `ContactInfoDecrypt` changes neither.
+    let setup =
+        |kind: PendingContactCryptoKind| kind != PendingContactCryptoKind::ContactInfoDecrypt;
+    let queued = (cs.pending_contact_crypto_added.iter())
+        .filter(|p| setup(p.op.kind()))
+        .map(|p| p.owner_identity_id);
+    let dequeued = (cs.pending_contact_crypto_cleared.iter())
+        .filter(|k| setup(k.kind))
+        .map(|k| k.owner_identity_id);
+    c.changes.extend(
+        (queued.chain(dequeued).collect::<BTreeSet<_>>().iter())
+            .map(|o| PlatformChange::Contacts { identity: b58(o) }),
+    );
 
     // `dpns_name_states`: Names.
     if cs.dpns_name_states.as_ref().is_some_and(|s| !s.is_empty()) {

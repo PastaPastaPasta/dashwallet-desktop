@@ -6,7 +6,11 @@
 //! helper never becomes API by accident.
 
 mod bringup;
+mod contact_names;
 mod contacts;
+pub(crate) mod contacts_model;
+#[cfg(test)]
+mod contacts_tests;
 mod credits;
 mod dashpay;
 mod errors;

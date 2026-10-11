@@ -169,10 +169,6 @@ impl Provenance {
     /// The read models show `label` as `contact`'s DPNS name (`None`: no
     /// name). platform-wallet keeps no contact names, so the re-fetch
     /// verifies the shown ones from here, with `contact` as their owner.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "DP2-01's contacts read model calls it")
-    )]
     pub(crate) fn show_label(&self, contact: Identifier, label: Option<&str>) {
         let mut shown = guard(&self.shown_labels);
         match label {

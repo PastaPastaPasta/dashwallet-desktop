@@ -50,6 +50,9 @@ pub enum ContactSort {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContactsPage {
     pub sections: Vec<ContactSectionPage>,
+    /// A sync pass holds the wallet's state: the page is the last one read
+    /// before it (possibly none yet). Show "updating", not "no contacts".
+    pub updating: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,28 +149,39 @@ pub struct ScannedContact {
     pub unverified: bool,
 }
 
-#[expect(unused_variables, reason = "stubs until DP2-01…DP2-04")]
 impl DashPay {
+    /// The Contacts screen for one of the wallet's identities, from memory
+    /// (DP2-01, `contacts_model.rs`): the sections asked for, sorted and
+    /// filtered by `text`. Re-query on `Platform{Contacts}`, `Identities`
+    /// and `Payments`, and on the wallet's `HistoryChanged` (a block time
+    /// moves `last_activity_at`).
     pub fn contacts(
         &self,
         identity: String,
         q: ContactQuery,
     ) -> Result<ContactsPage, ContactError> {
-        stub("DashPay.contacts")
+        self.session.contacts_page(self.wallet_id(), identity, q)
     }
 
+    /// One contact of `identity` in any relation; `None` if unknown.
     pub fn contact(
         &self,
         identity: String,
         contact: String,
     ) -> Result<Option<ContactDetail>, ContactError> {
-        stub("DashPay.contact")
+        self.session
+            .contact_detail(self.wallet_id(), identity, contact)
     }
 
+    /// Contacts of the wallet's identities that wait for an unlock to
+    /// finish their channel or accept their request.
     pub fn pending_setup_count(&self) -> Result<u32, ContactError> {
-        stub("DashPay.pending_setup_count")
+        self.session.pending_setup(self.wallet_id())
     }
+}
 
+#[expect(unused_variables, reason = "stubs until DP2-02…DP2-04")]
+impl DashPay {
     pub async fn eligibility(
         &self,
         identity: String,

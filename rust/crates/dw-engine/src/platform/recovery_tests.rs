@@ -517,7 +517,7 @@ async fn add_identities(
     info.identity_manager.wallet_identity_ids(&id.0)
 }
 
-fn engine(dir: &std::path::Path) -> Engine {
+pub(super) fn engine(dir: &std::path::Path) -> Engine {
     Engine::new(
         EngineConfig {
             data_root: dir.join("data"),
