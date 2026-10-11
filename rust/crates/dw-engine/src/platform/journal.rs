@@ -42,7 +42,7 @@ use platform_wallet::changeset::{
 use platform_wallet::wallet::identity::{PaymentDirection, PaymentStatus};
 use platform_wallet::{ContactRequest, DpnsNameInfo};
 
-use super::lease::{FundingKey, LeaseTable};
+use super::lease::{FundingKey, LeaseTable, StoredLock};
 use super::notifications::EventKind;
 use super::runtime::guard;
 use crate::events::{SessionHub, unix_now};
@@ -173,6 +173,9 @@ pub(crate) struct Classified {
     /// keys): a funding call's coin fence is released by its own (E0-04
     /// §2a.6).
     tracked: Vec<(Txid, FundingKey)>,
+    /// The same rows' transactions, for the provenance check before the
+    /// persister takes them (§2a.6).
+    signed: Vec<StoredLock>,
     /// Contact and payment events.
     events: Vec<Event>,
     /// The DPNS names of the wallet's own identities, by identity.
@@ -266,6 +269,12 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
             };
             (e.out_point.txid, key)
         }));
+        c.signed.extend(
+            locks
+                .asset_locks
+                .values()
+                .map(|e| StoredLock::of(&e.transaction)),
+        );
     }
 
     // `dashpay_payments_overlay`: every payment write rides it (the library
@@ -363,6 +372,19 @@ impl ChangesetTap {
     /// Mode B snapshot of it (once).
     pub(crate) fn watch_locks(&self, table: &Arc<LeaseTable>) {
         let _ = self.locks_changed.set(Arc::downgrade(table));
+    }
+
+    /// The persister is about to take a changeset of `id`: the asset locks
+    /// in it that a running funding call signed are recorded as its step's
+    /// own first (§2a.6, [`LeaseTable::record_signed_locks`]). Blocking:
+    /// the library's store call waits for it, and broadcasts a `Built`
+    /// lock only after.
+    pub(crate) fn note_signed(&self, id: WalletId, c: &Classified) {
+        if !c.signed.is_empty()
+            && let Some(table) = self.table()
+        {
+            table.record_signed_locks(id, &c.signed);
+        }
     }
 
     /// A Core changeset of `id` was stored: it may carry the ChainLock of

@@ -165,10 +165,6 @@ impl Fixture {
         inputs: &[OutPoint],
         status: platform_wallet::AssetLockStatus,
     ) -> Txid {
-        let session = Arc::clone(&self.session);
-        let id = self.wallet;
-        let txid = Txid::from_byte_array([seed; 32]);
-        let out_point = OutPoint::new(txid, 0);
         let input = inputs
             .iter()
             .map(|o| dashcore::TxIn {
@@ -176,6 +172,32 @@ impl Fixture {
                 ..Default::default()
             })
             .collect();
+        let tx = dashcore::Transaction {
+            version: 3,
+            lock_time: 0,
+            input,
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        self.track_lock_tx(
+            Txid::from_byte_array([seed; 32]),
+            tx,
+            identity_index,
+            status,
+        )
+    }
+
+    /// [`Self::track_lock`] of transaction `tx`, under `txid`.
+    fn track_lock_tx(
+        &self,
+        txid: Txid,
+        tx: dashcore::Transaction,
+        identity_index: u32,
+        status: platform_wallet::AssetLockStatus,
+    ) -> Txid {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let out_point = OutPoint::new(txid, 0);
         let inner = Arc::clone(&session);
         self.engine
             .block_on(session.on_runtime(async move {
@@ -184,13 +206,7 @@ impl Fixture {
                     out_point,
                     platform_wallet::TrackedAssetLock {
                         out_point,
-                        transaction: dashcore::Transaction {
-                            version: 3,
-                            lock_time: 0,
-                            input,
-                            output: Vec::new(),
-                            special_transaction_payload: None,
-                        },
+                        transaction: tx,
                         account_index: 0,
                         funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
                         identity_index,
@@ -273,6 +289,17 @@ impl Fixture {
     /// and failed: `MaybeSent`, its marker standing. `step` is the funding
     /// step of the wallet's first draft, inserted here at index 0.
     fn stuck(&self, step: &str) {
+        self.stuck_with(step, None);
+    }
+
+    /// [`Self::stuck`], the call having signed asset lock `seed` spending
+    /// `inputs` (§2a.6): the step's own lock, recorded as the library's
+    /// store of it would. Its row is not tracked.
+    fn stuck_signing(&self, step: &str, seed: u8, inputs: &[OutPoint]) {
+        self.stuck_with(step, Some((seed, inputs)));
+    }
+
+    fn stuck_with(&self, step: &str, lock: Option<(u8, &[OutPoint])>) {
         let draft = self.registration_draft(0);
         assert_eq!(step, format!("registration/{draft}/funding"));
         let l = self
@@ -293,7 +320,21 @@ impl Fixture {
                 self.fence(),
             ))
             .unwrap();
-        permit.signatures().note_released();
+        match lock {
+            None => permit.signatures().note_released(),
+            Some((seed, inputs)) => {
+                let sighash = [seed; 32];
+                permit.signatures().note_signed(sighash);
+                self.session.leases.record_signed_locks(
+                    self.wallet,
+                    &[StoredLock {
+                        txid: Txid::from_byte_array([seed; 32]),
+                        inputs: inputs.to_vec(),
+                        sighashes: Some(vec![sighash]),
+                    }],
+                );
+            }
+        }
         assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
     }
 
@@ -1516,20 +1557,21 @@ fn repair_self_spends_every_coin_recorded_before_its_broadcast() {
         matches!(repair_draft(), Err(EngineError::InvalidArgument(_))),
         "a call runs under the marker"
     );
-    permit.signatures().note_released();
+    // The call signs its lock, which spends `a` (§2a.6), and fails.
+    permit.signatures().note_signed([51; 32]);
+    s.leases.record_signed_locks(
+        f.wallet,
+        &[StoredLock {
+            txid: Txid::from_byte_array([51; 32]),
+            inputs: vec![a],
+            sighashes: Some(vec![[51; 32]]),
+        }],
+    );
     assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
     assert_eq!(status(), Some(DispatchState::MaybeSent));
-    // Another funding's lock, Built and never sent, holds `a`.
+    // Another funding's lock, Built and never sent, holds `a` too.
     f.track_lock(50, 3, &[a], AssetLockStatus::Built);
-    // With no lock of the step known, Repair could not show its self-spend
-    // conflicts with it (review R1-01): refused.
-    match repair_draft() {
-        Err(EngineError::InvalidArgument(m)) => {
-            assert_eq!(m, StuckFundingRefusal::NoKnownLock.to_string())
-        }
-        other => panic!("{other:?}"),
-    }
-    // The step's own lock, Built and withheld, spends `a` too.
+    // The step's own lock, Built and withheld.
     f.track_lock(51, 0, &[a], AssetLockStatus::Built);
     let (leases, w) = (Arc::clone(&s.leases), f.wallet);
     let refreshed = s.on_runtime(async move { Ok(leases.refresh_funding(w).await) });
@@ -1641,15 +1683,10 @@ fn repair_refuses_a_self_spend_that_could_miss_the_lock() {
         Err(e) => panic!("{e:?}"),
         Ok(_) => panic!("not refused: {r:?}"),
     };
-    f.stuck(STEP);
-    // No lock of the step is known, and the wallet's recovery is not shown
-    // complete: a lost lock may be on the chain already (review R1-01).
-    refused(StuckFundingRefusal::NoKnownLock);
-    // A tracked lock of the step, Built (its own: index 0 is trusted only
-    // there, review P2b r1 F2): the self-spend takes `a`, one of its
-    // inputs, so it conflicts.
+    // The step's call signed lock 60 (§2a.6), whose row the wallet lost:
+    // the self-spend takes `a`, one of its inputs, so it conflicts.
     let gone = OutPoint::new(Txid::from_byte_array([0x77; 32]), 0);
-    f.track_lock(60, 0, &[gone, a], AssetLockStatus::Built);
+    f.stuck_signing(STEP, 60, &[gone, a]);
 
     // A spend of the wallet's coins short of its ChainLock (here in the
     // mempool) may be what the lost lock conflicts with.
@@ -1678,10 +1715,58 @@ fn repair_refuses_a_self_spend_that_could_miss_the_lock() {
     f.record_tx(incoming, TransactionContext::Mempool, false);
     f.record_tx(pending, TransactionContext::InChainLockedBlock(block), true);
     assert!(repair().is_ok());
-    // One whose every input the wallet saw spent: the self-spend would
-    // not conflict with it.
+    // A tracked row of the step whose every input the wallet saw spent:
+    // the self-spend would not conflict with it.
     let lock = f.track_lock(61, 0, &[gone], AssetLockStatus::Broadcast);
     refused(StuckFundingRefusal::LockInputsSpent(lock));
+}
+
+/// E0-04 §2a.6 (review P2b r2 R2-01) on a real session: a tracked lock of
+/// the step's key that no call of the step signed, `Built` and so
+/// trusted, is no known lock of the step: Repair refuses. One the call
+/// signed whose every input is spent, its row lost (the lock may have
+/// confirmed), is refused too: the self-spend would not conflict with it.
+#[test]
+fn repair_needs_a_lock_the_steps_call_signed() {
+    use platform_wallet::AssetLockStatus;
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let s = &f.session;
+    let repair = || f.engine.block_on(s.stuck_funding_draft(f.wallet, STEP));
+    let refused = |r: StuckFundingRefusal| match repair() {
+        Err(EngineError::InvalidArgument(m)) => assert_eq!(m, r.to_string()),
+        Err(e) => panic!("{e:?}"),
+        Ok(_) => panic!("not refused: {r:?}"),
+    };
+    let gone = OutPoint::new(Txid::from_byte_array([0x77; 32]), 0);
+    f.stuck_signing(STEP, 70, &[gone]);
+    f.track_lock(71, 0, &[a], AssetLockStatus::Built);
+    // The step's own lock spends only a coin that is gone.
+    refused(StuckFundingRefusal::LockInputsSpent(Txid::from_byte_array(
+        [70; 32],
+    )));
+}
+
+/// [`repair_needs_a_lock_the_steps_call_signed`], with no lock signed.
+#[test]
+fn repair_refuses_a_trusted_row_no_call_of_the_step_signed() {
+    use platform_wallet::AssetLockStatus;
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let s = &f.session;
+    f.stuck(STEP);
+    f.track_lock(71, 0, &[a], AssetLockStatus::Built);
+    let (leases, w) = (Arc::clone(&s.leases), f.wallet);
+    let refreshed = s.on_runtime(async move { Ok(leases.refresh_funding(w).await) });
+    assert!(f.engine.block_on(refreshed).unwrap());
+    match f.engine.block_on(s.stuck_funding_draft(f.wallet, STEP)) {
+        Err(EngineError::InvalidArgument(m)) => {
+            assert_eq!(m, StuckFundingRefusal::NoKnownLock.to_string())
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 /// E0-04 §6.5 (C9): a self-spend the journal fails to record is released
@@ -1693,9 +1778,9 @@ fn an_unrecorded_self_spend_is_released_unsent() {
     let a = f.credit(1, COIN);
     f.credit(2, COIN / 2);
     let s = &f.session;
-    f.stuck(STEP);
     // The step's lock, Built and withheld: a known lock to conflict with.
     // It holds `a`; the self-spend takes the other coin too.
+    f.stuck_signing(STEP, 51, &[a]);
     f.track_lock(51, 0, &[a], platform_wallet::AssetLockStatus::Built);
     let draft = f
         .engine
@@ -1737,20 +1822,73 @@ fn lock_changeset(
     identity_index: u32,
     status: platform_wallet::AssetLockStatus,
 ) -> platform_wallet::changeset::PlatformWalletChangeSet {
+    let tx = dashcore::Transaction {
+        version: 3,
+        lock_time: 0,
+        input: Vec::new(),
+        output: Vec::new(),
+        special_transaction_payload: None,
+    };
+    lock_changeset_of(
+        Txid::from_byte_array([seed; 32]),
+        tx,
+        identity_index,
+        status,
+    )
+}
+
+/// An asset lock spending `input` (a P2PKH coin of `key`) to `value`
+/// duffs, its scriptSig signed by `sign` over its `SIGHASH_ALL` sighash, as
+/// key-wallet's builder assembles it.
+fn signed_lock_tx(
+    input: OutPoint,
+    value: u64,
+    key: &dashcore::secp256k1::PublicKey,
+    sign: impl FnOnce([u8; 32]) -> dashcore::secp256k1::ecdsa::Signature,
+) -> dashcore::Transaction {
+    use dashcore::blockdata::script::{Builder, PushBytesBuf};
+    let mut tx = dashcore::Transaction {
+        version: 3,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: input,
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value,
+            script_pubkey: dashcore::ScriptBuf::new_op_return(&[]),
+        }],
+        special_transaction_payload: None,
+    };
+    let script = dashcore::ScriptBuf::new_p2pkh(&dashcore::PublicKey::new(*key).pubkey_hash());
+    let sighash = dashcore::sighash::SighashCache::new(&tx)
+        .legacy_signature_hash(0, &script, 1)
+        .unwrap()
+        .to_byte_array();
+    let mut der = sign(sighash).serialize_der().to_vec();
+    der.push(0x01);
+    tx.input[0].script_sig = Builder::new()
+        .push_slice(PushBytesBuf::try_from(der).unwrap())
+        .push_slice(key.serialize())
+        .into_script();
+    tx
+}
+
+/// [`lock_changeset`] of transaction `tx`, under `txid`.
+fn lock_changeset_of(
+    txid: Txid,
+    tx: dashcore::Transaction,
+    identity_index: u32,
+    status: platform_wallet::AssetLockStatus,
+) -> platform_wallet::changeset::PlatformWalletChangeSet {
     use platform_wallet::changeset::{AssetLockChangeSet, AssetLockEntry};
-    let out_point = OutPoint::new(Txid::from_byte_array([seed; 32]), 0);
+    let out_point = OutPoint::new(txid, 0);
     let mut locks = AssetLockChangeSet::default();
     locks.asset_locks.insert(
         out_point,
         AssetLockEntry {
             out_point,
-            transaction: dashcore::Transaction {
-                version: 3,
-                lock_time: 0,
-                input: Vec::new(),
-                output: Vec::new(),
-                special_transaction_payload: None,
-            },
+            transaction: tx,
             account_index: 0,
             funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
             identity_index,
@@ -1770,12 +1908,18 @@ fn lock_changeset(
 /// concurrent "Lock unspent" waits until the changeset tap stores the
 /// call's own lock after its first signature (not a row of another key,
 /// nor one before the call signed), of any status (the persister may fold
-/// `Built` into `Broadcast`), or until the call ends. Nothing the library runs inside the call waits for the fence:
-/// the tap, Mode B's refresh, the fee bound and `dispatch_status` all
-/// finish while the permit holds it. (A row that preceded the marker:
-/// `mode_b_tests`; under a draft's own key it would block the gate.)
+/// `Built` into `Broadcast`), or until the call ends. Nothing the library
+/// runs inside the call waits for the fence: the tap, Mode B's refresh,
+/// the fee bound and `dispatch_status` all finish while the permit holds
+/// it. (A row that preceded the marker: `mode_b_tests`; under a draft's
+/// own key it would block the gate.) The store records the lock the
+/// call's funding signer signed as the step's own, on disk before the
+/// persister takes it, and no other lock of its key (review P2b r2 R2-01).
 #[test]
 fn mode_b_a_funding_permit_holds_the_coin_fence_until_its_lock_is_built() {
+    use std::str::FromStr;
+
+    use key_wallet::Signer as _;
     use platform_wallet::changeset::PlatformWalletPersistence as _;
     use platform_wallet::{AssetLockFundingType as T, AssetLockStatus as A};
     let f = fixture(false);
@@ -1850,15 +1994,101 @@ fn mode_b_a_funding_permit_holds_the_coin_fence_until_its_lock_is_built() {
     std::thread::sleep(Duration::from_millis(300));
     assert!(!lock_a.is_finished(), "the lock waits for the call's fence");
     assert!(s.leases.call_holds_fence(f.wallet));
-    // The call's own lock after its signature, its `Built` folded into
-    // `Broadcast`: released, the call still runs.
-    permit.signatures().note_released();
-    stored(lock_changeset(63, 0, A::Broadcast))
+    // The call's own lock, signed by its funding signer (the vault), its
+    // `Built` folded into `Broadcast`: released, the call still runs. The
+    // store recorded it as the step's signed lock (§2a.6) before the
+    // persister took it, durably.
+    let signer = permit.funding_signer().unwrap();
+    let path = key_wallet::DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
+    let public = f.engine.block_on(signer.public_key(&path)).unwrap();
+    let own = signed_lock_tx(a, COIN, &public, |sighash| {
+        f.engine
+            .block_on(signer.sign_ecdsa(&path, sighash))
+            .unwrap()
+            .0
+    });
+    let own_id = own.txid();
+    let on_disk = || -> Vec<(Vec<u8>, Vec<u8>)> {
+        let db = rusqlite::Connection::open(
+            f.session
+                .data_dir()
+                .join(dw_appdb::dispatch::DISPATCH_DB_FILE),
+        )
+        .unwrap();
+        let mut q = db
+            .prepare("SELECT txid, inputs FROM signed_lock WHERE step_id = ?1")
+            .unwrap();
+        q.query_map([&step], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let mut input = a.txid.to_byte_array().to_vec();
+    input.extend_from_slice(&a.vout.to_le_bytes());
+    let row = vec![(own_id.to_byte_array().to_vec(), input)];
+    // The persister refuses the lock's store (its database is locked by
+    // another writer): the library broadcasts nothing, and the signed lock
+    // is durable all the same, written before the persister was asked.
+    {
+        let db =
+            rusqlite::Connection::open(f.session.data_dir().join(crate::session::WALLET_DB_FILE))
+                .unwrap();
+        db.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let store = Arc::clone(&store);
+        let (w, cs) = (
+            f.wallet.0,
+            lock_changeset_of(own_id, own.clone(), 0, A::Built),
+        );
+        let refused = f
+            .engine
+            .block_on(async move {
+                tokio::time::timeout(
+                    Duration::from_secs(60),
+                    tokio::task::spawn_blocking(move || store.store(w, cs)),
+                )
+                .await
+            })
+            .expect("the persister's busy timeout ends the store")
+            .unwrap();
+        assert!(refused.is_err(), "the persister refused the store");
+        db.execute_batch("ROLLBACK").unwrap();
+    }
+    assert_eq!(on_disk(), row, "durable though the persister refused");
+    assert!(!lock_a.is_finished(), "a refused store releases no fence");
+    stored(lock_changeset_of(own_id, own.clone(), 0, A::Broadcast))
         .expect("the tap does not wait")
         .unwrap();
     f.engine.block_on(lock_a).unwrap().unwrap();
     assert!(!s.leases.call_holds_fence(f.wallet));
     assert!(l.view().unwrap().call_running);
+    let signed = |w: WalletId, step: &str| {
+        s.leases.with_j(|i, _| {
+            (i.fence.signed_locks(&w, step).iter())
+                .map(|l| (l.txid, l.inputs.clone()))
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(signed(f.wallet, &step), vec![(own_id, vec![a])]);
+    assert_eq!(on_disk(), row, "written once");
+    // A lock of the call's key that the call did not sign is not the
+    // step's: another signer's, or the call's signature copied onto other
+    // outputs (it no longer verifies).
+    let other_key = dashcore::secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap();
+    let other = dashcore::secp256k1::PublicKey::from_secret_key(&other_key);
+    let foreign = signed_lock_tx(b, COIN, &other, |sighash| {
+        dashcore::secp256k1::ecdsa::sign(
+            dashcore::secp256k1::Message::from_digest(sighash),
+            &other_key,
+        )
+    });
+    let mut copied = own.clone();
+    copied.output[0].value = COIN / 2;
+    for tx in [foreign, copied] {
+        stored(lock_changeset_of(tx.txid(), tx, 0, A::Built))
+            .expect("the tap does not wait")
+            .unwrap();
+    }
+    assert_eq!(signed(f.wallet, &step).len(), 1);
     assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
     // A call that never tracks a lock: released at its end.
     let draft = f.registration_draft(1);
@@ -1903,10 +2133,10 @@ fn mode_b_a_funding_permit_holds_the_coin_fence_until_its_lock_is_built() {
         .block_on(s.unlock_outpoints(f.wallet, vec![a, b]))
         .unwrap();
 
-    // The tap attributed that index-0 row to the call: once the wallet
-    // holds it ChainLocked, the step's `Sent` row is journaled though the
-    // row's index is untrusted (review P2b r1 F1).
-    f.track_lock(63, 0, &[], A::ChainLocked);
+    // The call signed that index-0 lock: once the wallet holds it
+    // ChainLocked, the step's `Sent` row is journaled though the row's
+    // index is untrusted (review P2b r1 F1, r2 R2-01).
+    f.track_lock_tx(own_id, own, 0, A::ChainLocked);
     let (leases, w) = (Arc::clone(&s.leases), f.wallet);
     let refreshed = s.on_runtime(async move { Ok(leases.refresh_funding(w).await) });
     assert!(f.engine.block_on(refreshed).unwrap());

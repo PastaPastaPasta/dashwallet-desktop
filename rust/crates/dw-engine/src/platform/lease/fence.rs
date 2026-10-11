@@ -21,17 +21,20 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use dashcore::hashes::Hash;
+use dashcore::{OutPoint, Txid};
 use tokio::time::Instant;
 
 use super::budget::Charge;
 use super::call::{CallStep, FundingKey};
+use super::mode_b::{SignedLock, StoredLock};
 #[cfg(test)]
 use super::stress_tests::{GrantKind, LogEvent, Mutation};
 use super::table::{Effects, Entry, Inner, LeaseTable};
 use super::{ArtifactId, DispatchScope, FlowOutcome, LeaseError, LeaseId, Origin};
 use crate::platform::flows::{BudgetPurpose, DispatchResolution, DispatchResolved, DispatchState};
 use crate::{EngineEvent, NoticeCode, WalletId};
-use dw_appdb::dispatch::{CallRows, Resolution, StoredFundingKey};
+use dw_appdb::dispatch::{CallRows, Resolution, StoredFundingKey, StoredOutPoint};
 
 /// The durable medium of the journal (§6.2): `dispatch.sqlite`, or a fake
 /// with injected faults in tests. Every call is a short blocking write.
@@ -66,6 +69,18 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
         step: &str,
         artifact: &[u8; 32],
         txid: &[u8; 32],
+    ) -> Result<bool, String>;
+    /// An asset lock `txid` (internal byte order) a call of funding `step`
+    /// signed, with its `inputs` (§2a.6), recorded against the step's
+    /// standing marker; `Ok(false)` when none stands
+    /// ([`LeaseTable::record_signed_locks`]).
+    fn insert_signed_lock(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        inputs: &[StoredOutPoint],
     ) -> Result<bool, String>;
     /// Appends the artifact's resolution (DEC-154): `NotSent` supersedes
     /// its markers so far. The engine writes `Sent` only through
@@ -144,6 +159,25 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
     ) -> Result<bool, String> {
         self.insert_self_spend(wallet, step, artifact, txid, crate::events::unix_now())
             .map_err(|e| e.to_string())
+    }
+
+    fn insert_signed_lock(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        inputs: &[StoredOutPoint],
+    ) -> Result<bool, String> {
+        self.insert_signed_lock(
+            wallet,
+            step,
+            artifact,
+            txid,
+            inputs,
+            crate::events::unix_now(),
+        )
+        .map_err(|e| e.to_string())
     }
 
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
@@ -412,6 +446,9 @@ pub(crate) struct FenceState {
     funding: HashMap<(WalletId, String), FundingKey>,
     /// Repair's self-spends standing against each funding step's marker.
     self_spends: HashMap<(WalletId, String), Vec<[u8; 32]>>,
+    /// The asset locks each funding step's calls signed (§2a.6), standing
+    /// against its marker: on disk, or only here when the write failed.
+    signed_locks: HashMap<(WalletId, String), Vec<SignedLock>>,
     /// The call steps with a call running under their marker, or whose
     /// `NotSent` row is written, failed or owed.
     call_steps: HashMap<(WalletId, String), CallStepRun>,
@@ -909,6 +946,13 @@ impl FenceState {
             .collect()
     }
 
+    /// The asset locks the calls of funding `step` signed (§2a.6).
+    pub(super) fn signed_locks(&self, wallet: &WalletId, step: &str) -> &[SignedLock] {
+        self.signed_locks
+            .get(&(*wallet, step.to_owned()))
+            .map_or(&[], Vec::as_slice)
+    }
+
     /// Repair's self-spends standing against the wallet's funding markers.
     pub(super) fn self_spends_of(&self, wallet: &WalletId) -> Vec<[u8; 32]> {
         self.self_spends
@@ -992,12 +1036,14 @@ impl FenceState {
             }
         }
         self.steps.retain(|_, m| !m.is_empty());
-        // A call step's funding key and self-spends stand with its marker.
+        // A call step's funding key, self-spends and signed locks stand
+        // with its marker.
         for (s, _) in &gone {
             if id == ArtifactId::of_step(&wallet, s) {
                 let key = (wallet, s.clone());
                 self.funding.remove(&key);
                 self.self_spends.remove(&key);
+                self.signed_locks.remove(&key);
             }
         }
         let stash = self.superseded.entry((wallet, id)).or_default();
@@ -1324,6 +1370,8 @@ fn forget_erased(i: &mut Inner, wallet: WalletId, dispatch: bool, erased: Vec<[u
     f.funding
         .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
     f.self_spends
+        .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
+    f.signed_locks
         .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
     #[cfg(test)]
     for artifact in gone {
@@ -1701,6 +1749,21 @@ impl LeaseTable {
                     .entry((WalletId(s.wallet), s.step_id))
                     .or_default()
                     .push(s.txid);
+            }
+            for l in calls.signed_locks {
+                i.fence
+                    .signed_locks
+                    .entry((WalletId(l.wallet), l.step_id))
+                    .or_default()
+                    .push(SignedLock {
+                        txid: Txid::from_byte_array(l.txid),
+                        inputs: l
+                            .inputs
+                            .iter()
+                            .map(|o| OutPoint::new(Txid::from_byte_array(o.txid), o.vout))
+                            .collect(),
+                        durable: true,
+                    });
             }
             i.fence.journal = JournalState::Ready;
             fx.notify();
@@ -3085,6 +3148,110 @@ impl LeaseTable {
             })
             .await
             .unwrap_or(Err(R::JournalUnavailable))
+    }
+
+    /// The changeset tap is about to store asset locks of `wallet`
+    /// (`locks`), before the persister takes them (§2a.6, review P2b r2
+    /// R2-01). A lock a running funding call signed (every input carries a
+    /// valid signature over a sighash the call's funding signer signed:
+    /// [`SignatureCount::signed_all`](super::call::SignatureCount::signed_all))
+    /// is its step's own, exactly: it is recorded with its inputs against
+    /// the step's standing marker, one append to the journal's
+    /// `signed_lock` table, then in J ([`FenceState::signed_locks`]). The
+    /// txid exists only once the call's signatures do; platform-wallet's
+    /// asset-lock builder stores the lock `Built` (this call) before it
+    /// broadcasts it, so the record is durable before the lock can be on
+    /// the wire. A write that fails keeps the record in this process only,
+    /// and the lock's next store while the call runs writes it again; after
+    /// a restart without it the step has no known lock, and Repair refuses
+    /// it (`NoKnownLock`, fail closed). Blocking, outside J: it runs inside
+    /// the library's store call, which waits for it.
+    pub(crate) fn record_signed_locks(&self, wallet: WalletId, locks: &[StoredLock]) {
+        if locks.is_empty() {
+            return;
+        }
+        let backend = self.journal.get();
+        let (found, counted) = self.with_j(|i, _| {
+            let mut found: Vec<(String, SignedLock)> = Vec::new();
+            for lock in locks {
+                let Some(sighashes) = lock.sighashes.as_deref() else {
+                    continue;
+                };
+                for f in i.calls.values().filter_map(|r| r.funding.as_ref()) {
+                    // Written already, or about to be.
+                    let durable = i
+                        .fence
+                        .signed_locks(&wallet, &f.step)
+                        .iter()
+                        .any(|l| l.txid == lock.txid && l.durable)
+                        || found
+                            .iter()
+                            .any(|(s, l)| *s == f.step && l.txid == lock.txid);
+                    if f.wallet == wallet && f.signatures.signed_all(sighashes) && !durable {
+                        let signed = SignedLock {
+                            txid: lock.txid,
+                            inputs: lock.inputs.clone(),
+                            durable: false,
+                        };
+                        found.push((f.step.clone(), signed));
+                    }
+                }
+            }
+            let counted =
+                !found.is_empty() && backend.is_some() && i.fence.journal == JournalState::Ready;
+            if counted {
+                i.fence.writes += 1;
+            }
+            (found, counted)
+        });
+        if found.is_empty() {
+            return;
+        }
+        let mut found = found;
+        if counted && let Some(backend) = &backend {
+            for (step, lock) in &mut found {
+                let id = ArtifactId::of_step(&wallet, step);
+                let inputs: Vec<StoredOutPoint> = lock
+                    .inputs
+                    .iter()
+                    .map(|o| StoredOutPoint {
+                        txid: o.txid.to_byte_array(),
+                        vout: o.vout,
+                    })
+                    .collect();
+                let txid = lock.txid.to_byte_array();
+                match guarded(|| backend.insert_signed_lock(&wallet.0, step, &id.0, &txid, &inputs))
+                {
+                    Ok(true) => lock.durable = true,
+                    Ok(false) => tracing::warn!(step, "a signed lock's marker no longer stands"),
+                    Err(e) => tracing::warn!(step, error = %e, "recording a signed lock failed"),
+                }
+            }
+        } else {
+            tracing::warn!(
+                wallet_id = %wallet,
+                "the journal is not ready: a signed lock is known in this process only"
+            );
+        }
+        self.with_j(|i, fx| {
+            fx.notify();
+            if counted {
+                end_write(i, fx, found.iter().all(|(_, l)| l.durable));
+            }
+            for (step, lock) in found {
+                // A `NotSent` row that superseded the marker since dropped
+                // the row with it, on disk as in memory.
+                if i.fence.call_marked(&wallet, &step) {
+                    let locks = i.fence.signed_locks.entry((wallet, step)).or_default();
+                    match locks.iter_mut().find(|l| l.txid == lock.txid) {
+                        Some(known) => known.durable |= lock.durable,
+                        None => locks.push(lock),
+                    }
+                }
+            }
+            // A row already proved is journaled now.
+            super::mode_b::rederive(self, i, fx, wallet);
+        });
     }
 
     fn discard(&self, attempt: u64) {

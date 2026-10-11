@@ -10,8 +10,8 @@ use std::time::Duration;
 use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use dw_appdb::dispatch::{
-    CallRows, DiskState, DispatchRow, FundingRow, Registered, Resolution, SelfSpendRow, StepEvent,
-    StepLogRow, StepRow, StoredFundingKey,
+    CallRows, DiskState, DispatchRow, FundingRow, Registered, Resolution, SelfSpendRow,
+    SignedLockRow, StepEvent, StepLogRow, StepRow, StoredFundingKey, StoredOutPoint,
 };
 use platform_wallet::AssetLockFundingType;
 use tokio::runtime::Handle;
@@ -77,6 +77,23 @@ pub(super) fn row(n: u8, identity_index: u32, status: TrackedStatus) -> TrackedR
         inputs: vec![OutPoint::new(txid(100 + n), 0)],
         trusted: index_trusted(&key(identity_index), status),
     }
+}
+
+/// The call of permit `p` signed `row`'s lock, and the library's store of
+/// it reached the provenance check (§2a.6): the lock's only input signs
+/// sighash `[n; 32]`, `n` its txid's byte, which `p`'s funding signer
+/// signed.
+pub(super) fn sign_lock(t: &LeaseTable, p: &CallPermit, wallet: WalletId, row: &TrackedRow) {
+    let sighash = [row.txid.to_byte_array()[0]; 32];
+    p.signatures().note_signed(sighash);
+    t.record_signed_locks(
+        wallet,
+        &[StoredLock {
+            txid: row.txid,
+            inputs: row.inputs.clone(),
+            sighashes: Some(vec![sighash]),
+        }],
+    );
 }
 
 /// Records every event the table emits.
@@ -296,6 +313,10 @@ pub(super) struct FakeJournal {
     pub(super) fail_step: AtomicBool,
     /// A `self_spend` row: lost (nothing written, error).
     pub(super) fail_self_spend: AtomicBool,
+    /// A `signed_lock` row: lost (nothing written, error).
+    pub(super) fail_signed_lock: AtomicBool,
+    /// A `signed_lock` row finds its step's marker no longer standing.
+    pub(super) signed_lock_unmarked: AtomicBool,
     /// A `NotSent` row: lost (nothing written, error).
     pub(super) fail_resolve: AtomicBool,
     pub(super) panic_resolve: AtomicBool,
@@ -314,9 +335,10 @@ pub(super) struct FakeJournal {
     log: Mutex<Vec<StepLogRow>>,
     /// The next `seq`; never reused, like AUTOINCREMENT.
     next_seq: AtomicU64,
-    /// `funding_marker` and `self_spend` (schema 3).
+    /// `funding_marker` and `self_spend` (schema 3), `signed_lock` (4).
     funding: Mutex<Vec<FundingRow>>,
     self_spends: Mutex<Vec<SelfSpendRow>>,
+    signed_locks: Mutex<Vec<SignedLockRow>>,
     /// Every `Sent` bundle asked for.
     pub(super) bundles: Mutex<Vec<Bundle>>,
     /// Every artifact a marker row was ever appended for.
@@ -424,6 +446,39 @@ impl JournalBackend for FakeJournal {
         Ok(true)
     }
 
+    fn insert_signed_lock(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        inputs: &[StoredOutPoint],
+    ) -> Result<bool, String> {
+        if self.fail_signed_lock.load(Ordering::SeqCst) {
+            return Err("injected signed-lock failure".into());
+        }
+        let log = self.log.lock().unwrap();
+        let Some(marker) = latest_standing(&log, wallet, artifact, step)
+            .filter(|_| !self.signed_lock_unmarked.load(Ordering::SeqCst))
+        else {
+            return Ok(false);
+        };
+        let mut locks = self.signed_locks.lock().unwrap();
+        if !locks.iter().any(|l| l.marker == marker && l.txid == *txid) {
+            locks.push(SignedLockRow {
+                seq: self.seq(),
+                wallet: *wallet,
+                step_id: step.to_owned(),
+                artifact: *artifact,
+                txid: *txid,
+                inputs: inputs.to_vec(),
+                marker,
+                at: 0,
+            });
+        }
+        Ok(true)
+    }
+
     fn resolve_sent(
         &self,
         wallet: &[u8; 32],
@@ -448,12 +503,12 @@ impl JournalBackend for FakeJournal {
         }
         // DEC-160's predicate, under the log's lock like a transaction.
         let mut log = self.log.lock().unwrap();
-        let gone = dw_appdb::dispatch::compact_in_memory(
-            &mut log,
-            &mut self.funding.lock().unwrap(),
-            &mut self.self_spends.lock().unwrap(),
-            Some(wallet),
-        );
+        let side = dw_appdb::dispatch::SideRows {
+            funding: &mut self.funding.lock().unwrap(),
+            self_spends: &mut self.self_spends.lock().unwrap(),
+            signed_locks: &mut self.signed_locks.lock().unwrap(),
+        };
+        let gone = dw_appdb::dispatch::compact_in_memory(&mut log, side, Some(wallet));
         Ok(gone.into_iter().map(|(_, a)| a).collect())
     }
 
@@ -468,6 +523,10 @@ impl JournalBackend for FakeJournal {
         log.retain(|r| r.wallet != *wallet);
         self.funding.lock().unwrap().retain(|r| r.wallet != *wallet);
         self.self_spends
+            .lock()
+            .unwrap()
+            .retain(|r| r.wallet != *wallet);
+        self.signed_locks
             .lock()
             .unwrap()
             .retain(|r| r.wallet != *wallet);
@@ -537,7 +596,13 @@ impl FakeJournal {
             &log,
             &self.funding.lock().unwrap(),
             &self.self_spends.lock().unwrap(),
+            &self.signed_locks.lock().unwrap(),
         )
+    }
+
+    /// Every `signed_lock` row.
+    pub(super) fn signed_lock_rows(&self) -> Vec<SignedLockRow> {
+        self.signed_locks.lock().unwrap().clone()
     }
 
     /// Every `funding_marker` row.
@@ -559,6 +624,7 @@ impl FakeJournal {
             next_seq: AtomicU64::new(self.next_seq.load(Ordering::SeqCst)),
             funding: Mutex::new(self.funding_rows()),
             self_spends: Mutex::new(self.self_spends.lock().unwrap().clone()),
+            signed_locks: Mutex::new(self.signed_lock_rows()),
             ever_marked: Mutex::new(self.ever_marked.lock().unwrap().clone()),
             ..Default::default()
         })
@@ -2208,6 +2274,19 @@ impl JournalBackend for GatedJournal {
             .map_err(|e| e.to_string())
     }
 
+    fn insert_signed_lock(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        inputs: &[StoredOutPoint],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_signed_lock(wallet, step, artifact, txid, inputs, 0)
+            .map_err(|e| e.to_string())
+    }
+
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
         self.db
             .resolve(wallet, artifact, r, 0)
@@ -2861,6 +2940,19 @@ impl JournalBackend for R2Journal {
             .map_err(|e| e.to_string())
     }
 
+    fn insert_signed_lock(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        inputs: &[StoredOutPoint],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_signed_lock(wallet, step, artifact, txid, inputs, 0)
+            .map_err(|e| e.to_string())
+    }
+
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
         if r == Resolution::NotSent {
             self.resolving.store(true, Ordering::SeqCst);
@@ -3362,6 +3454,19 @@ impl JournalBackend for R3Journal {
     ) -> Result<bool, String> {
         self.db
             .insert_self_spend(wallet, step, artifact, txid, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_signed_lock(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        inputs: &[StoredOutPoint],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_signed_lock(wallet, step, artifact, txid, inputs, 0)
             .map_err(|e| e.to_string())
     }
 

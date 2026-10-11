@@ -58,6 +58,7 @@ pub use fence::{
     AdmitRequest, ArtifactKind, AttemptGuard, CallStepInfo, CallStepStatus, DispatchPermit,
     NonceSlot, NonceSpace, Outcome, Settlement, Verdict,
 };
+pub(crate) use mode_b::StoredLock;
 pub use mode_b::{DraftKey, FundingBlock, StuckFundingRefusal, TrackedRow, TrackedStatus};
 pub use table::{Lease, LeaseTable};
 

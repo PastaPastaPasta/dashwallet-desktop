@@ -13,8 +13,8 @@ use platform_wallet::AssetLockFundingType;
 use super::fence::JournalBackend;
 use super::mode_b::{Snapshot, TrackedLocks, derive_funding, index_trusted};
 use super::tests::{
-    DURABLE, FakeJournal, REG, Recorder, W, W2, begin, key, quote, row, table, txid, until,
-    with_journal,
+    DURABLE, FakeJournal, REG, Recorder, W, W2, begin, key, quote, row, sign_lock, table, txid,
+    until, with_journal,
 };
 use super::*;
 use crate::WalletId;
@@ -1531,10 +1531,20 @@ async fn a_recorded_self_spend_resolves_only_once_chain_locked() {
 async fn a_will_be_sent_funding_resolves_by_its_self_spend() {
     let (t, rec, _, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
-    maybe_sent(&l, TOPUP, 9).await;
-    src.set_rows(W, vec![row(1, 9, R::Built)]);
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(TOPUP, 9))
+        .await
+        .unwrap();
+    let built = row(1, 9, R::Built);
+    sign_lock(&t, &p, W, &built);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    src.set_rows(W, vec![built]);
     t.refresh_funding(W).await;
     assert_eq!(t.funding_status(W, TOPUP), Some(WillBeSent));
+    assert_eq!(
+        t.check_stuck_funding(W, TOPUP).unwrap(),
+        vec![(txid(1), vec![OutPoint::new(txid(101), 0)])]
+    );
     t.record_self_spend(W, TOPUP, [0xee; 32]).await.unwrap();
     assert_eq!(t.funding_status(W, TOPUP), Some(WillBeSent));
     src.locked.lock().unwrap().insert([0xee; 32]);
@@ -1713,9 +1723,9 @@ async fn a_markerless_step_proved_by_its_drafts_key_is_journaled_sent() {
 }
 
 /// A registration at identity index 0 (the wallet's first identity): its
-/// lock's row is untrusted once it left `Built`, but the changeset tap
-/// attributed it to the step's call, so Repair counts it as the step's
-/// lock and its proof is journaled (review P2b r1 F1, F2).
+/// lock's row is untrusted once it left `Built`, but the step's call signed
+/// it (§2a.6), so Repair counts it as the step's lock and its proof is
+/// journaled (review P2b r1 F1, F2; r2 R2-01).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_index_0_registrations_own_lock_is_journaled_sent() {
     const AT0: &str = "registration/4/funding";
@@ -1725,8 +1735,7 @@ async fn an_index_0_registrations_own_lock_is_journaled_sent() {
         .call_permit_step("funding", quote(10, 0), funding(AT0, 0))
         .await
         .unwrap();
-    p.signatures().note_released();
-    t.note_tracked(W, &[(txid(1), key(0))]);
+    sign_lock(&t, &p, W, &row(1, 0, R::Built));
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     let broadcast = row(1, 0, R::Broadcast);
     assert!(!broadcast.trusted);
@@ -1770,8 +1779,9 @@ async fn an_unattributed_index_0_row_is_not_the_steps_own() {
     assert!(!sent_on_disk(&j, REG));
 }
 
-/// A row two running calls could have signed (the same key) is neither
-/// step's own: neither proof is journaled.
+/// A row two running calls could have signed (the same key), stored while
+/// both ran, is neither step's own: the tap's sighting is no evidence of
+/// whose it is (§2a.6), and neither proof is journaled.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_row_two_calls_could_have_signed_is_neither_steps_own() {
     const A: &str = "registration/4/funding";
@@ -1987,4 +1997,396 @@ async fn a_lock_reports_a_cancelled_call_whose_not_sent_row_is_owed() {
         vec![(TOPUP.to_owned(), FlowOutcome::Cancelled)]
     );
     assert_eq!(flow.outcome, FlowOutcome::Cancelled);
+}
+
+// --- Exact provenance (§2a.6, review P2b r2 R2-01) -------------------------
+
+/// Sol r2's probe, strengthened: a reconstruction of ANOTHER step's lock at
+/// index 0 is stored while this call runs and after it signed. It is not
+/// the call's lock (the call's own lock, 78, is proved before the wallet
+/// closes, but no `Sent` row of it is written). The wallet closes and
+/// reopens, and the process restarts, with 78's row lost and the recovery
+/// incomplete: the unrelated row never authorizes Repair.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_r2_unrelated_reconstruction_must_not_authorize_repair() {
+    const CURRENT: &str = "registration/44/funding";
+    let (t, _, j, src) = setup().await;
+    src.set_drafts(W, vec![DraftKey::registration(44, 0)]);
+    t.refresh_funding(W).await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(CURRENT, 0))
+        .await
+        .unwrap();
+    p.signatures().note_released();
+    let unrelated = row(77, 0, R::Broadcast);
+    assert!(!unrelated.trusted);
+    src.set_rows(W, vec![unrelated.clone()]);
+    t.note_tracked(W, &[(unrelated.txid, unrelated.key)]);
+    src.set_rows(W, vec![unrelated.clone(), row(78, 0, R::Built)]);
+    p.finish(false);
+    t.refresh_funding(W).await;
+    src.set_rows(W, vec![unrelated.clone(), row(78, 0, R::ChainLocked)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, CURRENT), Some(Sent));
+    assert!(!sent_on_disk(&j, CURRENT));
+    t.wallet_closed(W);
+    src.set_rows(W, vec![unrelated.clone()]);
+    t.wallet_opened(W);
+    t.refresh_funding(W).await;
+    assert_eq!(
+        t.check_stuck_funding(W, CURRENT).err(),
+        Some(StuckFundingRefusal::NoKnownLock),
+        "a temporal coincidence is not evidence that this is CURRENT's lock"
+    );
+    let (restarted, _) = reload(&j, &src).await;
+    assert_eq!(
+        restarted.check_stuck_funding(W, CURRENT).err(),
+        Some(StuckFundingRefusal::NoKnownLock)
+    );
+}
+
+/// Sol r2's probe: the same admission through Repair's recording. A
+/// ChainLocked conflict of only the unrelated lock never declares CURRENT
+/// definitely unsent, in this process or the next.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_r2_unrelated_conflict_must_not_resolve_current_not_sent() {
+    const CURRENT: &str = "registration/44/funding";
+    let (t, _, j, src) = setup().await;
+    src.set_drafts(W, vec![DraftKey::registration(44, 0)]);
+    t.refresh_funding(W).await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(CURRENT, 0))
+        .await
+        .unwrap();
+    p.signatures().note_released();
+    let unrelated = row(77, 0, R::Broadcast);
+    src.set_rows(W, vec![unrelated.clone()]);
+    t.note_tracked(W, &[(unrelated.txid, unrelated.key)]);
+    src.set_rows(W, vec![unrelated.clone(), row(78, 0, R::Built)]);
+    p.finish(false);
+    t.refresh_funding(W).await;
+    src.set_rows(W, vec![unrelated.clone(), row(78, 0, R::ChainLocked)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, CURRENT), Some(Sent));
+    assert!(!sent_on_disk(&j, CURRENT));
+    t.wallet_closed(W);
+    src.set_rows(W, vec![unrelated.clone()]);
+    t.wallet_opened(W);
+    t.refresh_funding(W).await;
+    assert_eq!(
+        t.record_self_spend(W, CURRENT, [9; 32]).await,
+        Err(StuckFundingRefusal::NoKnownLock)
+    );
+    src.locked.lock().unwrap().insert([9; 32]);
+    t.refresh_funding(W).await;
+    let (restarted, _) = reload(&j, &src).await;
+    assert_ne!(t.funding_status(W, CURRENT), Some(NotSent));
+    assert_ne!(restarted.funding_status(W, CURRENT), Some(NotSent));
+}
+
+/// Sol r2's probe: an index-0 lock no call was seen to sign, first proved
+/// after a restart, is not journaled; with its row lost the step reads
+/// `MaybeSent` and Repair refuses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_r2_index_zero_first_proved_after_restart_fails_closed_on_row_loss() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    maybe_sent(&l, REG, 0).await;
+    let (reopened, _) = reload(&j, &src).await;
+    src.set_rows(W, vec![row(1, 0, R::ChainLocked)]);
+    reopened.refresh_funding(W).await;
+    assert_eq!(reopened.funding_status(W, REG), Some(Sent));
+    assert!(!sent_on_disk(&j, REG));
+    src.set_rows(W, Vec::new());
+    reopened.refresh_funding(W).await;
+    assert_eq!(reopened.funding_status(W, REG), Some(MaybeSent));
+    assert_eq!(
+        reopened.check_stuck_funding(W, REG).err(),
+        Some(StuckFundingRefusal::NoKnownLock)
+    );
+}
+
+/// The converse (the index-0 residual of review P2b r1): the call signed
+/// the lock, so its record is on disk. First proved after a restart, it is
+/// journaled `Sent`, which stands once its row is lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_index_0_signed_lock_first_proved_after_a_restart_is_journaled_sent() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 0))
+        .await
+        .unwrap();
+    sign_lock(&t, &p, W, &row(1, 0, R::Built));
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    assert_eq!(j.load_calls().signed_locks.len(), 1);
+    let (reopened, _) = reload(&j, &src).await;
+    src.set_rows(W, vec![row(1, 0, R::ChainLocked)]);
+    reopened.refresh_funding(W).await;
+    assert_eq!(reopened.funding_status(W, REG), Some(Sent));
+    until(|| sent_on_disk(&j, REG)).await;
+    src.set_rows(W, Vec::new());
+    reopened.refresh_funding(W).await;
+    assert_eq!(reopened.funding_status(W, REG), Some(Sent));
+    assert_eq!(
+        reopened.check_stuck_funding(W, REG).err(),
+        Some(StuckFundingRefusal::NotStuck(Some(Sent)))
+    );
+}
+
+/// A signed lock whose row is lost (a restore) still names the inputs the
+/// self-spend must conflict with, across a restart; another lock of the
+/// step's key that no call of it signed is conflicted with too, but is
+/// never what admits Repair.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_signed_locks_inputs_outlive_its_row() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 0))
+        .await
+        .unwrap();
+    let own = row(1, 0, R::Built);
+    sign_lock(&t, &p, W, &own);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    let (reopened, _) = reload(&j, &src).await;
+    assert_eq!(reopened.funding_status(W, REG), Some(MaybeSent));
+    assert_eq!(
+        reopened.check_stuck_funding(W, REG).unwrap(),
+        vec![(own.txid, own.inputs.clone())]
+    );
+    let other = row(2, 0, R::Broadcast);
+    src.set_rows(W, vec![other.clone()]);
+    reopened.refresh_funding(W).await;
+    assert_eq!(
+        reopened.check_stuck_funding(W, REG).unwrap(),
+        vec![(own.txid, own.inputs), (other.txid, other.inputs)]
+    );
+}
+
+/// A signed lock's write that failed is retried by the call's next store of
+/// it, and written once (§2a.6).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_signed_locks_failed_write_is_retried_by_the_next_store() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 0))
+        .await
+        .unwrap();
+    let durable = || {
+        t.with_j(|i, _| {
+            (i.fence.signed_locks(&W, REG).iter())
+                .map(|l| l.durable)
+                .collect::<Vec<_>>()
+        })
+    };
+    j.fail_signed_lock.store(true, Ordering::SeqCst);
+    let own = row(1, 0, R::Built);
+    sign_lock(&t, &p, W, &own);
+    assert_eq!(durable(), vec![false]);
+    assert!(j.signed_lock_rows().is_empty());
+    j.fail_signed_lock.store(false, Ordering::SeqCst);
+    sign_lock(&t, &p, W, &own);
+    sign_lock(&t, &p, W, &own);
+    assert_eq!(durable(), vec![true]);
+    assert_eq!(j.signed_lock_rows().len(), 1);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    let (reopened, _) = reload(&j, &src).await;
+    assert_eq!(
+        reopened.check_stuck_funding(W, REG).unwrap(),
+        vec![(own.txid, own.inputs)]
+    );
+}
+
+/// The step's marker no longer stands on disk when its signed lock is
+/// written: nothing is written, and the lock is known in this process
+/// only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_signed_lock_whose_marker_no_longer_stands_is_not_written() {
+    let (t, _, j, _) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 0))
+        .await
+        .unwrap();
+    j.signed_lock_unmarked.store(true, Ordering::SeqCst);
+    let own = row(1, 0, R::Built);
+    sign_lock(&t, &p, W, &own);
+    assert!(j.signed_lock_rows().is_empty());
+    let durable = t.with_j(|i, _| {
+        (i.fence.signed_locks(&W, REG).iter())
+            .map(|l| l.durable)
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(durable, vec![false]);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+}
+
+/// The signed lock's write fails: it is the step's own in this process
+/// (Repair conflicts with it), and after a restart no lock of the step is
+/// known (fail closed).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_signed_lock_the_journal_lost_is_known_in_its_process_only() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 0))
+        .await
+        .unwrap();
+    j.fail_signed_lock.store(true, Ordering::SeqCst);
+    let own = row(1, 0, R::Built);
+    sign_lock(&t, &p, W, &own);
+    j.fail_signed_lock.store(false, Ordering::SeqCst);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    assert!(j.signed_lock_rows().is_empty());
+    assert_eq!(
+        t.check_stuck_funding(W, REG).unwrap(),
+        vec![(own.txid, own.inputs)]
+    );
+    let (reopened, _) = reload(&j, &src).await;
+    assert_eq!(
+        reopened.check_stuck_funding(W, REG).err(),
+        Some(StuckFundingRefusal::NoKnownLock)
+    );
+}
+
+/// Only a lock whose every input signs a sighash the running call signed is
+/// its own: one input short, another call's, or one stored after the call
+/// ended is not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lock_is_the_calls_only_when_every_input_carries_its_signature() {
+    let (t, _, _, _) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let pa = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 0))
+        .await
+        .unwrap();
+    let pb = l
+        .call_permit_step("funding", quote(10, 0), funding(TOPUP, 9))
+        .await
+        .unwrap();
+    pa.signatures().note_signed([1; 32]);
+    pa.signatures().note_signed([3; 32]);
+    pb.signatures().note_signed([2; 32]);
+    let lock = |n: u8, sighashes: Option<Vec<[u8; 32]>>| StoredLock {
+        txid: txid(n),
+        inputs: vec![OutPoint::new(txid(100 + n), 0), OutPoint::new(txid(200), 0)],
+        sighashes,
+    };
+    let signed = |step: &str| {
+        t.with_j(|i, _| {
+            (i.fence.signed_locks(&W, step).iter())
+                .map(|l| l.txid)
+                .collect::<Vec<_>>()
+        })
+    };
+    t.record_signed_locks(
+        W,
+        &[
+            lock(3, Some(vec![[1; 32], [9; 32]])),
+            lock(4, Some(vec![[1; 32], [2; 32]])),
+            lock(5, None),
+            lock(6, Some(Vec::new())),
+            lock(7, Some(vec![[1; 32], [3; 32]])),
+        ],
+    );
+    assert_eq!(signed(REG), vec![txid(7)]);
+    assert!(signed(TOPUP).is_empty());
+    t.record_signed_locks(W2, &[lock(8, Some(vec![[1; 32]]))]);
+    assert_eq!(signed(REG), vec![txid(7)], "another wallet's lock");
+    assert_eq!(pa.finish(false), FlowOutcome::MaybeSent);
+    t.record_signed_locks(W, &[lock(9, Some(vec![[1; 32]]))]);
+    assert_eq!(signed(REG), vec![txid(7)], "after the call ended");
+    assert_eq!(pb.finish(false), FlowOutcome::MaybeSent);
+}
+
+/// A stored lock's sighashes are recomputed per input from the transaction
+/// itself, and read only when each P2PKH scriptSig's signature verifies
+/// over its own (either S): a signature copied to another input, or onto
+/// a transaction with other outputs, reads none (§2a.6).
+#[test]
+fn a_stored_locks_signatures_are_read_from_its_p2pkh_script_sigs() {
+    use dashcore::blockdata::script::{Builder, PushBytesBuf};
+    use dashcore::hashes::Hash;
+    use dashcore::secp256k1::{Message, SecretKey, ecdsa};
+    let sk = SecretKey::from_secret_bytes([5; 32]).unwrap();
+    let pk = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&sk));
+    let code = dashcore::ScriptBuf::new_p2pkh(&pk.pubkey_hash());
+    let unsigned = dashcore::Transaction {
+        version: 3,
+        lock_time: 0,
+        input: (0..2)
+            .map(|n| dashcore::TxIn {
+                previous_output: OutPoint::new(txid(40 + n), 0),
+                ..Default::default()
+            })
+            .collect(),
+        output: vec![dashcore::TxOut {
+            value: 10_000,
+            script_pubkey: dashcore::ScriptBuf::new_op_return(&[]),
+        }],
+        special_transaction_payload: None,
+    };
+    let sighash = |tx: &dashcore::Transaction, n: usize| {
+        dashcore::sighash::SighashCache::new(tx)
+            .legacy_signature_hash(n, &code, 1)
+            .unwrap()
+            .to_byte_array()
+    };
+    let sighashes = vec![sighash(&unsigned, 0), sighash(&unsigned, 1)];
+    assert_ne!(sighashes[0], sighashes[1], "each input signs its own");
+    let sign = |digest: [u8; 32]| ecdsa::sign(Message::from_digest(digest), &sk);
+    let script = |sig: &ecdsa::Signature, hash_type: u8| {
+        let mut push = sig.serialize_der().to_vec();
+        push.push(hash_type);
+        Builder::new()
+            .push_slice(PushBytesBuf::try_from(push).unwrap())
+            .push_slice(pk.inner.serialize())
+            .into_script()
+    };
+    let with = |scripts: [dashcore::ScriptBuf; 2]| {
+        let mut tx = unsigned.clone();
+        for (input, script_sig) in tx.input.iter_mut().zip(scripts) {
+            input.script_sig = script_sig;
+        }
+        tx
+    };
+    let (sig0, sig1) = (sign(sighashes[0]), sign(sighashes[1]));
+    // Input 1's signature with a high S: (r, n - s).
+    let mut compact = sig1.serialize_compact();
+    let order = dashcore::secp256k1::constants::CURVE_ORDER;
+    let mut borrow = 0i16;
+    for i in (32..64).rev() {
+        let d = order[i - 32] as i16 - compact[i] as i16 - borrow;
+        compact[i] = d.rem_euclid(256) as u8;
+        borrow = i16::from(d < 0);
+    }
+    let high = ecdsa::Signature::from_compact(&compact).unwrap();
+    assert_ne!(high, sig1);
+    let own = with([script(&sig0, 0x01), script(&sig1, 0x01)]);
+    assert_eq!(StoredLock::of(&own).sighashes, Some(sighashes.clone()));
+    assert_eq!(StoredLock::of(&own).txid, own.txid());
+    let malleated = with([script(&sig0, 0x01), script(&high, 0x01)]);
+    assert_eq!(StoredLock::of(&malleated).sighashes, Some(sighashes));
+    let mut other_outputs = own.clone();
+    other_outputs.output[0].value = 9_000;
+    for bad in [
+        // Input 0's signature copied onto input 1.
+        with([script(&sig0, 0x01), script(&sig0, 0x01)]),
+        other_outputs,
+        with([script(&sig0, 0x01), script(&sig1, 0x81)]),
+        with([
+            script(&sig0, 0x01),
+            Builder::new()
+                .push_slice([0x30, 0x01, 0x01])
+                .push_slice(pk.inner.serialize())
+                .into_script(),
+        ]),
+        with([script(&sig0, 0x01), dashcore::ScriptBuf::new()]),
+    ] {
+        assert_eq!(StoredLock::of(&bad).sighashes, None);
+    }
 }

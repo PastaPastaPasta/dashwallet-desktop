@@ -45,8 +45,8 @@
 //! is not in it, so below 500 coins the bound can fall short by that
 //! coin's input (149 duffs each).
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use dw_appdb::dispatch::StoredFundingKey;
 use dw_vault::SignerError;
@@ -181,9 +181,15 @@ impl CallStep {
 /// taken back out of `signing`: no signature exists, so it never turns a
 /// `Cancelled` into a `MaybeSent`. A refusal after the close leaves its
 /// count standing (the end may have read it: fail closed).
+///
+/// A funding signer also keeps the sighash of each signature it released
+/// ([`Signing::released_with`]), so the engine can tell exactly which
+/// transaction the call signed (§2a.6, [`Self::signed_all`]).
 #[derive(Debug, Default)]
 pub struct SignatureCount {
     released: AtomicU64,
+    /// The sighashes the funding signer released a signature over.
+    signed: Mutex<Vec<[u8; 32]>>,
     /// Signatures asked of the vault and not yet returned.
     signing: AtomicU64,
     locked: AtomicBool,
@@ -202,6 +208,17 @@ impl Signing<'_> {
     /// a reader of `signing` then `released` never misses it).
     pub(crate) fn released(self) {
         self.0.released.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// [`Self::released`], keeping the `sighash` signed: it is kept before
+    /// it is counted, so a reader that sees it counted sees it kept too.
+    pub(crate) fn released_with(self, sighash: [u8; 32]) {
+        self.0
+            .signed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(sighash);
+        self.released();
     }
 }
 
@@ -230,6 +247,28 @@ impl SignatureCount {
     #[cfg(test)]
     pub(crate) fn note_released(&self) {
         self.released.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// A funding signature released over `sighash`, as the funding signer
+    /// reports one (tests).
+    #[cfg(test)]
+    pub(crate) fn note_signed(&self, sighash: [u8; 32]) {
+        self.signed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(sighash);
+        self.note_released();
+    }
+
+    /// Whether the call's funding signer released a signature over every
+    /// one of `sighashes`, and there is one (§2a.6). A transaction each of
+    /// whose inputs carries a valid signature over its own sighash, every
+    /// one released by the call, is the call's own: a `SIGHASH_ALL` sighash
+    /// commits to all the transaction's inputs and outputs, so only the
+    /// scriptSigs could differ, and they are what was released.
+    pub(crate) fn signed_all(&self, sighashes: &[[u8; 32]]) -> bool {
+        let signed = self.signed.lock().unwrap_or_else(|p| p.into_inner());
+        !sighashes.is_empty() && sighashes.iter().all(|s| signed.contains(s))
     }
 
     pub(crate) fn note_locked(&self) {

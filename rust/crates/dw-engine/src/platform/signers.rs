@@ -214,8 +214,8 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
 
 /// The lease's `PlatformFunding` signer during one Mode B funding call
 /// (E0-04 §2a.3): it delegates every call to the vault signer and reports
-/// each released signature, and any `Locked` refusal, to the call permit's
-/// count. A public key or xpub is no signature: only `sign_ecdsa` counts as
+/// each released signature (its sighash kept, §2a.6), and any `Locked` refusal, to the
+/// call permit's count. A public key or xpub is no signature: only `sign_ecdsa` counts as
 /// released, counted before the vault is asked, and refused `Locked` once
 /// the permit ended (review M-1, `SignatureCount`). Whatever key-wallet's builder requires of a signer
 /// (`TransactionSigner` is implemented for every `Signer`) comes through
@@ -256,7 +256,7 @@ impl key_wallet::Signer for CountingFundingSigner {
             return Err(SignerError::Locked);
         };
         let signed = self.note(self.signer.sign_ecdsa(path, sighash).await)?;
-        signing.released();
+        signing.released_with(sighash);
         Ok(signed)
     }
 
