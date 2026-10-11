@@ -57,8 +57,10 @@ class App:
         for line in self.proc.stderr:
             self.log.write(line)
             self.log.flush()
-            if line.startswith("gate-mark "):
-                parts = line.split()
+            # A toolkit warning without a trailing newline can precede the mark on its line.
+            at = line.find("gate-mark ")
+            if at >= 0:
+                parts = line[at:].split()
                 fields = dict(p.split("=", 1) for p in parts[3:] if "=" in p)
                 with self.cond:
                     self.marks.append((parts[1], float(parts[2]), fields))

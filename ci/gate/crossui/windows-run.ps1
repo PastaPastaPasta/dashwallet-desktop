@@ -68,7 +68,9 @@ function Shows {
         if ($at -lt 0) { return $false }
         $text = $text.Substring($at)
     }
-    $paints = [regex]::Matches($text, '(?m)^gate-mark (\S+-paint) ')
+    # Not anchored at a line start: Pango's "couldn't load font" warning ends without a newline, so
+    # the next mark can follow it on the same line.
+    $paints = [regex]::Matches($text, 'gate-mark (\S+-paint) ')
     return $paints.Count -gt 0 -and $paints[$paints.Count - 1].Groups[1].Value -eq $Mark
 }
 while (((Get-Date) - $start).TotalSeconds -lt $TimeoutSeconds -and -not $process.HasExited) {
