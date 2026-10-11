@@ -2979,3 +2979,5 @@ fn the_profile_step_reads_platform_first() {
         assert_eq!(published.public_message, on_platform.public_message);
     }
 }
+
+mod rules;
