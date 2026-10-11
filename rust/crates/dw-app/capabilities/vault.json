@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "vault",
-  "description": "The vault: lock state, unlock and lock. Granted to the main window only; `probe_unlisted` is never granted (U6).",
+  "description": "The vault: lock state, unlock and lock, credentials and grants, quick unlock, recovery and BIP39 helpers. Granted to the main window only; `probe_unlisted` is never granted (U6).",
   "windows": [
     "main"
   ],
@@ -9,6 +9,24 @@
   "permissions": [
     "allow-lock-status",
     "allow-unlock",
-    "allow-lock"
+    "allow-unlock-mixing-only",
+    "allow-unlock-for",
+    "allow-relock-pending",
+    "allow-lock",
+    "allow-create-vault",
+    "allow-encrypt-vault",
+    "allow-change-passphrase",
+    "allow-authorize",
+    "allow-authorize-set",
+    "allow-revoke-grant",
+    "allow-reveal-mnemonic",
+    "allow-enroll-quick-unlock",
+    "allow-remove-quick-unlock",
+    "allow-quick-unlock-policy",
+    "allow-set-quick-unlock-spend-limit",
+    "allow-recover-with-mnemonic",
+    "allow-destroy-vault",
+    "allow-generate-mnemonic",
+    "allow-check-mnemonic"
   ]
 }
