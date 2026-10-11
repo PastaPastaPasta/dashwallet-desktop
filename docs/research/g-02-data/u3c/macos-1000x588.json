@@ -1,0 +1,33 @@
+{
+  "base": "chromium",
+  "tolerance": 2.0,
+  "compared": 684,
+  "textRunIds": [
+    "hero-amount",
+    "hero-capsule"
+  ],
+  "engines": {
+    "wkwebview": {
+      "maxDelta": 1,
+      "maxContainerDelta": 1,
+      "overTolerance": 0,
+      "onlyHere": [],
+      "missingHere": [],
+      "worst": [],
+      "textRuns": [],
+      "overPatterns": []
+    },
+    "webkit": {
+      "maxDelta": 0.89,
+      "maxContainerDelta": 0.8,
+      "overTolerance": 0,
+      "onlyHere": [],
+      "missingHere": [],
+      "worst": [],
+      "textRuns": [],
+      "overPatterns": []
+    }
+  },
+  "pass": true,
+  "passAllBoxes": true
+}
