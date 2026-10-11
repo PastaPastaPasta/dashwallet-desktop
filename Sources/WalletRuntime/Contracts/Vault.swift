@@ -152,4 +152,13 @@ public protocol AuthenticationGating: AnyObject {
     func revoke(_ grant: AuthGrant)
     func unlock(passphrase: any SecretBuffer, scope: UnlockScope) async throws(ServiceError)
     func lock() async throws(ServiceError)
+    /// Why the last vault status read failed (nil once a read succeeds).
+    var lastError: ServiceError? { get }
+    /// Reads the vault status again after a failed read.
+    func retryStatus()
+}
+
+extension AuthenticationGating {
+    public var lastError: ServiceError? { nil }
+    public func retryStatus() {}
 }

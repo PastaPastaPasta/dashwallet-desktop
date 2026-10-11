@@ -31,6 +31,8 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
         var walletInfos: Result<[WalletInfo], DashKitError> = .failure(.notImplemented(detail: "wallet_infos"))
         var balances: [WalletID: WalletBalances] = [:]
         var vault: VaultStatus?
+        /// Fails the next `vaultStatus` calls, in order, before they read `vault`.
+        var vaultStatusErrors: [DashKitError] = []
         var issuedGrants: [String] = []
         /// Grants not yet redeemed, revoked or dropped by a lock.
         var liveGrants: [String: FakeGrant] = [:]
@@ -211,6 +213,9 @@ final class FakeEngine: EngineProtocol, @unchecked Sendable {
 
     func vaultStatus(on network: DashNetwork) async throws(DashKitError) -> VaultStatus {
         try requireOpen(network, "vaultStatus")
+        if let error = with({ $0.vaultStatusErrors.isEmpty ? nil : $0.vaultStatusErrors.removeFirst() }) {
+            throw error
+        }
         return vaultOrNoVault()
     }
 

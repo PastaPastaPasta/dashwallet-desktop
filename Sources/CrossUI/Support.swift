@@ -131,6 +131,7 @@ enum CrossStrings {
     static let tools = "Tools"
     static let wallet = "Wallet"
     static let loading = "Loading wallet…"
+    static let retry = "Try Again"
     static let close = "Close"
     static let back = "Back"
     static let cancel = "Cancel"

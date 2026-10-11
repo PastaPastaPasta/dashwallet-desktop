@@ -117,6 +117,24 @@ private final class Latch: @unchecked Sendable {
         #expect(await eventually { h.services.auth.lockState == .locked })
     }
 
+    @Test func aFailedStatusReadIsReportedAndRetried() async throws {
+        let h = Harness {
+            $0.with {
+                $0.vault = Fixtures.vault(.locked)
+                $0.vaultStatusErrors = [.io(detail: "status")]
+            }
+        }
+        try await h.start()
+        let auth = h.services.auth
+        // The lock state stays unknown and the error says why (the window shows it with a retry).
+        #expect(auth.lockState == nil)
+        #expect(auth.lastError != nil)
+        auth.retryStatus()
+        await auth.settle()
+        #expect(auth.lockState == .locked)
+        #expect(auth.lastError == nil)
+    }
+
     @Test func authorizeIssuesTheEngineGrant() async throws {
         let h = Harness {
             $0.with { $0.vault = Fixtures.vault(.unlocked) }

@@ -175,6 +175,12 @@ public final class AuthenticationGate: AuthenticationGating, SessionObserving {
         }
     }
 
+    /// Reads the vault status again, after a failed read (`lastError`) left the lock state
+    /// unknown.
+    public func retryStatus() {
+        coalescer.request()
+    }
+
     /// Returns once every requested status refresh has run (tests).
     public func settle() async {
         await coalescer.idle()

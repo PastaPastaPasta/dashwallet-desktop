@@ -73,7 +73,13 @@ public struct WalletRootView: View {
             OnboardingScreen(model: onboarding)
         } else if main.lockState == nil {
             // Fail closed: no wallet content until the vault has said whether it is locked.
-            CenteredMessage(text: main.errorMessage ?? CrossStrings.loading, busy: main.errorMessage == nil)
+            if let error = state.env.auth.lastError {
+                CenteredMessage(text: ErrorText.common(error.code), busy: false) {
+                    state.env.auth.retryStatus()
+                }
+            } else {
+                CenteredMessage(text: main.errorMessage ?? CrossStrings.loading, busy: main.errorMessage == nil)
+            }
         } else if main.showsLockScreen {
             LockScreen(model: main.lock, network: main.network)
         } else if main.showsSyncOverlay, let status = main.home?.sync {
@@ -476,12 +482,17 @@ struct StatusRow: View {
 struct CenteredMessage: View {
     let text: String
     let busy: Bool
+    /// Shows a "Try Again" button that runs this.
+    var retry: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: Int(DashSpacing.m)) {
             Spacer()
             if busy { ProgressView() }
             Text(text).dashFont(.subhead).dashForeground(CrossRole.textSecondary)
+            if let retry {
+                DashButton(CrossStrings.retry, style: .tintedGray, size: .small, action: retry)
+            }
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
