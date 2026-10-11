@@ -6,5 +6,32 @@
     "main"
   ],
   "local": true,
-  "permissions": []
+  "permissions": [
+    "allow-dashpay-contacts",
+    "allow-dashpay-contact",
+    "allow-dashpay-pending-setup-count",
+    "allow-dashpay-eligibility",
+    "allow-dashpay-send-request",
+    "allow-dashpay-accept-request",
+    "allow-dashpay-ignore-contact",
+    "allow-dashpay-unignore-contact",
+    "allow-dashpay-set-private-details",
+    "allow-dashpay-enable-keys",
+    "allow-dashpay-my-user-link",
+    "allow-dashpay-verify-scanned",
+    "allow-contact-payment-lock",
+    "allow-resolve-contact-payment-lock",
+    "allow-contact-activity",
+    "allow-frequent-contacts",
+    "allow-dashpay-events",
+    "allow-dashpay-mark-read",
+    "allow-dashpay-unread-count",
+    "allow-dashpay-profile",
+    "allow-dashpay-profile-limits",
+    "allow-dashpay-update-profile",
+    "allow-dashpay-prepare-avatar",
+    "allow-dashpay-avatar-upload-available",
+    "allow-dashpay-upload-avatar",
+    "allow-dashpay-avatar"
+  ]
 }
