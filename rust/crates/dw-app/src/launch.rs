@@ -86,7 +86,8 @@ usage: dash-wallet [options]
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ParseOutcome {
-    Run(LaunchOptions),
+    /// Boxed: on Windows, `PathBuf` makes the options large.
+    Run(Box<LaunchOptions>),
     Help,
 }
 
@@ -147,7 +148,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
             _ => {}
         }
     }
-    Ok(ParseOutcome::Run(opts))
+    Ok(ParseOutcome::Run(Box::new(opts)))
 }
 
 #[cfg(test)]
@@ -156,7 +157,7 @@ mod tests {
 
     fn run(args: &[&str]) -> LaunchOptions {
         match parse(args.iter().map(|s| s.to_string())).unwrap() {
-            ParseOutcome::Run(o) => o,
+            ParseOutcome::Run(o) => *o,
             ParseOutcome::Help => panic!("help"),
         }
     }

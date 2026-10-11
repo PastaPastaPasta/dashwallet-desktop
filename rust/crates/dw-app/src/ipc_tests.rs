@@ -50,7 +50,10 @@ impl Demo {
             os_store: Arc::new(MemoryOsStore::new()),
             ..VaultConfig::default()
         };
+        // No default menu: muda creates macOS menu items on the main thread
+        // only, and the test harness runs tests on worker threads.
         let mut app = crate::builder_with_vault::<MockRuntime>(launch, Instant::now(), vault)
+            .enable_macos_default_menu(false)
             .build(mock_context(noop_assets()))
             .expect("app");
         // The first iteration runs `setup`, which creates the engine. Called
