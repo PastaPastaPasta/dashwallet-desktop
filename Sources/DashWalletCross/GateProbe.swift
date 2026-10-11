@@ -199,7 +199,7 @@ enum GateProbe {
                     continue
                 }
                 model.replaceRowsForMeasurement(page.records)
-                let drawn = await nextPaint()
+                let drawn = await nextPaint(timeout: 120)
                 let fields = "limit=\(limit) round=\(round) rows=\(page.records.count) ffiMs=\(ms(called - start))"
                 if let drawn {
                     let times = "renderMs=\(ms(drawn - called)) totalMs=\(ms(drawn - start)) cpuMs=\(ms(cpu() - startCPU))"

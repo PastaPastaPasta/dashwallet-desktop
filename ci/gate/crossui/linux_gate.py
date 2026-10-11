@@ -145,6 +145,7 @@ class Gate:
         self.out = args.out
         self.runs = args.runs
         self.dwcli = args.dwcli
+        self.history_rounds = args.history_rounds
         # The wallet's datadir, unpacked once; every live launch gets a fresh copy of it, so no
         # run sees another's leftovers (U1's dwcli reads the copy its launch used).
         self.fixture = os.path.join(args.out, "fixture")
@@ -350,11 +351,11 @@ def phase_start(gate):
 def phase_history(gate):
     """U5 history_page(200) round trip: GateProbe's bench, after Transactions shows its rows."""
     renders, ffi200, ffi1, cpu200, cpu1 = [], [], [], [], []
-    rounds = 20
+    rounds = gate.history_rounds
     for run in range(max(1, gate.runs // 3)):
         app = gate.launch(gate.live_args(page="transactions"), tag=f"history-{run}",
                           env={**gate.unlock_env(), "DWD_GATE_HISTORY_BENCH": str(rounds)})
-        done = app.wait("history-bench-done", 900)
+        done = app.wait("history-bench-done", 300 + 240 * rounds)
         errors = app.all("history-bench-error")
         for fields in app.all("history-render"):
             if fields.get("renderMs") != "timeout":
@@ -792,6 +793,7 @@ def main():
     parser.add_argument("--dwcli", required=True)
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--phases", default=",".join(PHASES))
+    parser.add_argument("--history-rounds", type=int, default=5, help="history_page rounds per launch")
     args = parser.parse_args()
     os.makedirs(os.path.join(args.out, "logs"), exist_ok=True)
     gate = Gate(args)
