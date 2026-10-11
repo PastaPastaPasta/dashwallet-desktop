@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "chain",
+  "description": "Chain, sync and tools. Granted to the main window only; `probe_unlisted` is never granted (U6).",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-sync-status"
+  ]
+}

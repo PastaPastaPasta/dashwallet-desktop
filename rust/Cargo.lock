@@ -2242,8 +2242,15 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 name = "dw-app"
 version = "0.1.0"
 dependencies = [
+ "dashcore",
+ "dw-coinjoin",
  "dw-engine",
+ "dw-message",
+ "dw-psbt",
+ "dw-testutil",
+ "dw-uri",
  "dw-vault",
+ "hex",
  "serde",
  "serde_json",
  "tauri",
@@ -8467,6 +8474,7 @@ version = "12.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
 dependencies = [
+ "serde_json",
  "thiserror 2.0.18",
  "ts-rs-macros",
 ]

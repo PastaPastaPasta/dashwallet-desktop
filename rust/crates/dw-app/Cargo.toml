@@ -1,6 +1,6 @@
 [package]
 name = "dw-app"
-description = "dashwallet-desktop Tauri 2 shell: commands and the event bridge over dw-engine, linked in-process (gate G-UI spike, DASHPAY §2.1)"
+description = "dashwallet-desktop on Tauri 2: commands, generated TypeScript types and the event bridge over dw-engine, linked in-process (DASHPAY §2.1, E0-13)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,13 +22,20 @@ tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
 tauri = { version = "2.12", features = [] }
+dashcore = { workspace = true }
+dw-coinjoin = { workspace = true }
 dw-engine = { workspace = true }
+dw-message = { workspace = true }
+dw-psbt = { workspace = true }
+dw-uri = { workspace = true }
 dw-vault = { workspace = true }
+hex = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# TypeScript declarations of every record that crosses the IPC boundary
-# (apps/desktop/src/api/generated, checked by `bindings_are_current`).
-ts-rs = { version = "12", features = ["no-serde-warnings"] }
+# TypeScript declarations of every record that crosses the IPC boundary, and
+# the command wrappers built from them (apps/desktop/src/api/generated,
+# checked by `codegen::tests::bindings_are_current`).
+ts-rs = { version = "12", features = ["no-serde-warnings", "serde-json-impl"] }
 thiserror = { workspace = true }
 # `signal`: SIGTERM/SIGINT end the app through its normal exit path.
 tokio = { workspace = true, features = ["signal"] }
@@ -37,3 +44,7 @@ zeroize = { workspace = true }
 [dev-dependencies]
 tauri = { version = "2.12", features = ["test"] }
 tempfile = { workspace = true }
+# Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
+dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
+# private_tempdir(): engine data roots that pass the storage permission check under any umask.
+dw-testutil = { workspace = true }

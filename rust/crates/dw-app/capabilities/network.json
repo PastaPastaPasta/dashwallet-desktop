@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "network",
+  "description": "Opening and closing networks. Granted to the main window only; `probe_unlisted` is never granted (U6).",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-open-network",
+    "allow-close-network",
+    "allow-active-network",
+    "allow-existing-networks"
+  ]
+}

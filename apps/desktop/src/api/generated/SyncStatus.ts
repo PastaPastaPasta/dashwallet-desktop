@@ -5,4 +5,12 @@ import type { SyncPhaseStatus } from "./SyncPhaseStatus";
 /**
  * Raw sync state; the renderer derives the percentage (damping is the host's job).
  */
-export type SyncStatus = { running: boolean, phases: Array<SyncPhaseStatus>, activePhase: SyncPhaseName | null, tipHeight: number | null, tipTime: number | null, chainlockHeight: number | null, connectedPeers: number, caughtUp: boolean, secondsSinceProgress: number | null, };
+export type SyncStatus = { running: boolean, 
+/**
+ * One row per phase, in phase order.
+ */
+phases: Array<SyncPhaseStatus>, activePhase: SyncPhaseName | null, tipHeight: number | null, 
+/**
+ * UNIX seconds of the best header.
+ */
+tipTime: number | null, chainlockHeight: number | null, connectedPeers: number, caughtUp: boolean, secondsSinceProgress: number | null, };
