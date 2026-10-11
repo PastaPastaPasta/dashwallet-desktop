@@ -1,0 +1,13 @@
+{
+  "binary": "/work/home/agent/workspace/dw-wt/g-02-tauri-measure/rust/target/release/dash-wallet",
+  "webkit2gtk": "2.52.6",
+  "kernel": "7.0.0-38-generic",
+  "cpus": 32,
+  "uptimeStart": " 03:42:19 up 4 days, 11:31,  2 users,  load average: 80.39, 99.56, 101.69",
+  "uptimeEnd": " 03:49:06 up 4 days, 11:37,  2 users,  load average: 83.57, 96.58, 100.76",
+  "startup": [{"run":1,"dropCaches":false,"load1":87.54,"shellMs":560,"firstPaintMs":816,"spawnToFirstPaintMs":946,"cpuMsAtFirstPaint":850},{"run":2,"dropCaches":false,"load1":87.54,"shellMs":661,"firstPaintMs":823,"spawnToFirstPaintMs":1048,"cpuMsAtFirstPaint":930},{"run":3,"dropCaches":false,"load1":88.94,"shellMs":1290,"firstPaintMs":1521,"spawnToFirstPaintMs":1640,"cpuMsAtFirstPaint":1000},{"run":4,"dropCaches":false,"load1":88.94,"shellMs":2151,"firstPaintMs":2496,"spawnToFirstPaintMs":1960,"cpuMsAtFirstPaint":1100},{"run":5,"dropCaches":false,"load1":91.35,"shellMs":2158,"firstPaintMs":2438,"spawnToFirstPaintMs":2539,"cpuMsAtFirstPaint":1020}],
+  "fixtureIdle": {"load1":116.68,"tree":{"pssKb":200176,"processes":{"dash-wallet[813544]":69799,"WebKitNetworkPr[813666]":21932,"WebKitWebProces[813683]":108445}}},
+  "engine": {"starts":[{"run":1,"load1":104.01,"shellMs":1288,"firstPaintMs":12033,"spawnToFirstPaintMs":12292,"cpuMsAtFirstPaint":8270},{"run":2,"load1":104.78,"shellMs":1003,"firstPaintMs":5630,"spawnToFirstPaintMs":5761,"cpuMsAtFirstPaint":6340},{"run":3,"load1":99.27,"shellMs":471,"firstPaintMs":5184,"spawnToFirstPaintMs":5288,"cpuMsAtFirstPaint":6480}],"load1":93.65,"loadIdle":83.57,"shellMs":456,"firstPaintMs":5437,"spawnToFirstPaintMs":6023,"idle":{"pssKb":413986,"processes":{"dash-wallet[906621]":263001,"WebKitNetworkPr[906695]":21234,"WebKitWebProces[906701]":129751}}},
+  "atspiExit": 0,
+  "sizesBytes": {"dash-wallet":71254672,"Dash Wallet_0.1.0_amd64.deb":23643886,"Dash Wallet_0.1.0_amd64.AppImage":104905208}
+}

@@ -1,0 +1,13 @@
+# Interleaved fixture start-ups under WebKitGTK renderer variants (agentbox, no GPU, ms since process start)
+base round=1 load=81.23 setup=963 page-load-started=1892 page-load-finished=1935 shell=3014 first-paint=3014 
+dmabuf round=1 load=80.17 setup=255 page-load-started=922 page-load-finished=945 shell=1093 first-paint=1236 
+compositing round=1 load=80.17 setup=509 page-load-started=1168 page-load-finished=1191 shell=1396 first-paint=1556 
+base round=2 load=78.95 setup=407 page-load-started=1244 page-load-finished=1281 shell=2012 first-paint=2559 
+dmabuf round=2 load=78.95 setup=532 page-load-started=1256 page-load-finished=1279 shell=1526 first-paint=1845 
+compositing round=2 load=77.83 setup=420 page-load-started=1121 page-load-finished=1144 shell=1271 first-paint=1406 
+base round=3 load=77.83 setup=425 page-load-started=1223 page-load-finished=1259 shell=2015 first-paint=2675 
+dmabuf round=3 load=80.09 setup=447 page-load-started=1133 page-load-finished=1159 shell=1314 first-paint=1498 
+compositing round=3 load=80.09 setup=507 page-load-started=955 page-load-finished=991 shell=1298 first-paint=1545 
+base round=4 load=80.09 setup=651 page-load-started=1431 page-load-finished=1452 shell=1827 first-paint=2416 
+dmabuf round=4 load=78.72 setup=254 page-load-started=431 page-load-finished=455 shell=683 first-paint=910 
+compositing round=4 load=78.72 setup=322 page-load-started=544 page-load-finished=569 shell=722 first-paint=859 

@@ -1,0 +1,30 @@
+[application] "dash-wallet" {}
+  [frame] "Dash Wallet — Testnet" attrs=window-type:normal {active,enabled,sensitive,showing,visible} @(-1,-22 1282x847)
+    [filler] "" {enabled,sensitive,showing,visible}
+      [filler] "" {}
+        [filler] "" {}
+          [scroll pane] "" actions= {enabled,focusable,focused,sensitive} @(0,0 1280x820)
+            [document web] "Dash Wallet" actions= {enabled,focusable,focused,sensitive,showing,visible}
+              [dialog] "Transaction details" actions= attrs=computed-role:dialog,tag:div,xml-roles:dialog {enabled,sensitive,showing,visible}
+                [landmark] "" actions= attrs=computed-role:banner,tag:header,xml-roles:banner {enabled,sensitive,showing,visible}
+                  [heading] "Transaction details" text="Transaction details" actions= attrs=computed-role:heading,id:tx-detail-title,level:2,tag:h2 {enabled,sensitive,showing,visible}
+                  [button] "Close" actions=press attrs=computed-role:button,tag:button {enabled,focusable,focused,sensitive,showing,visible}
+                [heading] "Received" text="Received" actions= attrs=computed-role:heading,level:3,tag:h3 {enabled,sensitive,showing,visible}
+                [description list] "" actions= attrs=tag:dl {enabled,sensitive,showing,visible}
+                  [description term] "" text="Received with" actions= attrs=computed-role:term,tag:dt {enabled,sensitive,showing,visible}
+                  [description value] "" text="y3uWXhqHkjPEYTpHfUEPsDEQLesKP3WKP6
+￼ (own address)" actions= attrs=computed-role:definition,tag:dd {enabled,sensitive,showing,visible}
+                    [button] "Copy address" desc="Copy address" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                  [description term] "" text="Status" actions= attrs=computed-role:term,tag:dt {enabled,sensitive,showing,visible}
+                  [description value] "" text="0/unconfirmed, in memory pool" actions= attrs=computed-role:definition,tag:dd {enabled,sensitive,showing,visible}
+                  [description term] "" text="Transaction ID" actions= attrs=computed-role:term,tag:dt {enabled,sensitive,showing,visible}
+                  [description value] "" text="0902059dbc42dcaa8e6a8d52d5b3f4c1cb484afab42e717ea37a2962908b3c36
+￼
+" actions= attrs=computed-role:definition,tag:dd {enabled,sensitive,showing,visible}
+                    [button] "Copy transaction ID" desc="Copy transaction ID" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                  [description term] "" text="Size" actions= attrs=computed-role:term,tag:dt {enabled,sensitive,showing,visible}
+                  [description value] "" text="239 bytes" actions= attrs=computed-role:definition,tag:dd {enabled,sensitive,showing,visible}
+                [unknown] "" actions= attrs=computed-role:group,tag:details {enabled,sensitive,showing,visible}
+                  [unknown] "Inputs (1)" text="￼Inputs (1)" actions= attrs=tag:summary {enabled,focusable,sensitive,showing,visible}
+                [unknown] "" actions= attrs=computed-role:group,tag:details {enabled,sensitive,showing,visible}
+                  [unknown] "Outputs (1)" text="￼Outputs (1)" actions= attrs=tag:summary {enabled,focusable,sensitive,showing,visible}

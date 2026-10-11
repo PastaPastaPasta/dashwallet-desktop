@@ -1,0 +1,2 @@
+ 04:18:30 up 4 days, 12:07,  2 users,  load average: 138.03, 133.10, 123.65
+ 04:19:01 up 4 days, 12:07,  2 users,  load average: 115.96, 128.27, 122.34
