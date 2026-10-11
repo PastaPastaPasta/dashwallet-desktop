@@ -1,13 +1,39 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "wallets",
-  "description": "Wallets. Granted to the main window only; `probe_unlisted` is never granted (U6).",
+  "description": "Wallets: registry, creation and import, balances, receive addresses, address book, labels, load state, message signing and verification. Granted to the main window only; `probe_unlisted` is never granted (U6).",
   "windows": [
     "main"
   ],
   "local": true,
   "permissions": [
     "allow-list-wallets",
-    "allow-balance"
+    "allow-wallet-info",
+    "allow-balance",
+    "allow-wallet-scan-height",
+    "allow-create-wallet",
+    "allow-import-wallet",
+    "allow-import-watch-only",
+    "allow-remove-wallet",
+    "allow-rename-wallet",
+    "allow-wallet-load-states",
+    "allow-load-wallet",
+    "allow-unload-wallet",
+    "allow-set-load-on-startup",
+    "allow-account-xpub",
+    "allow-sign-message",
+    "allow-verify-message",
+    "allow-current-receive-address",
+    "allow-next-receive-address",
+    "allow-addresses",
+    "allow-create-receive-request",
+    "allow-receive-requests",
+    "allow-delete-receive-request",
+    "allow-address-book",
+    "allow-save-address-book-entry",
+    "allow-delete-address-book-entry",
+    "allow-set-tx-label",
+    "allow-tx-label",
+    "allow-tx-message"
   ]
 }
