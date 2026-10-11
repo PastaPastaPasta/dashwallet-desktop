@@ -2272,6 +2272,131 @@ fn track_built(
     });
 }
 
+/// The tap reports no block or name times.
+struct NoTimes;
+
+impl super::journal::Times for NoTimes {
+    fn block_time(&self, _: WalletId, _: &Txid) -> Option<u32> {
+        None
+    }
+    fn name_time(&self, _: WalletId, _: &dpp::prelude::Identifier, _: &str) -> Option<u64> {
+        None
+    }
+}
+
+/// Inside a funding call: the library tracks `tracked` as it does before
+/// the tap, a coin reader queues behind the call's fence, and the session's
+/// own tap then classifies and records the lock's changeset. Returns the
+/// queued reader.
+async fn track_and_tap(
+    f: &Fixture,
+    wallet: &Arc<platform_wallet::PlatformWallet>,
+    tracked: platform_wallet::TrackedAssetLock,
+) -> tokio::task::JoinHandle<Result<crate::coins::CoinSnapshot, crate::EngineError>> {
+    let lock = tracked.out_point;
+    let entry = platform_wallet::changeset::AssetLockEntry::from(&tracked);
+    wallet
+        .state_mut()
+        .await
+        .tracked_asset_locks
+        .insert(lock, tracked);
+    let (session, id) = (Arc::clone(&f.session), f.wallet);
+    let reader = tokio::spawn(async move {
+        let fence = session.coin_fence(id).await?;
+        session.fenced_coins(&fence).await
+    });
+    until(|| f.session.coin_fences.users(f.wallet) >= 2).await;
+    assert!(!reader.is_finished());
+    let changes = platform_wallet::changeset::PlatformWalletChangeSet {
+        asset_locks: Some(platform_wallet::changeset::AssetLockChangeSet {
+            asset_locks: [(lock, entry)].into(),
+            removed: Default::default(),
+        }),
+        ..Default::default()
+    };
+    let classified = super::journal::classify(&changes).unwrap();
+    f.session
+        .live()
+        .unwrap()
+        .tap
+        .record(f.wallet, classified, &NoTimes);
+    reader
+}
+
+/// Sol r5 N1, the whole path: a built lock reported through the session's
+/// tap (classify, record, `lock_tracked`, `release_built`) releases the
+/// funding call's fence while the call still runs, so a queued coin reader
+/// completes and reads the lock's input reserved by the library, not by a
+/// stored claim; the row is claimed and funding-sent with the lock.
+#[test]
+fn a_tapped_built_lock_frees_the_fence_before_its_call_returns() {
+    let f = fixture(false);
+    let (wallet, coin) = f.coin();
+    let lib = f.pw_lib(&wallet);
+    let mut row = core_row(PLAIN);
+    row.identity_index = Some(0);
+    row.phase = Phase::KeysPrepared.as_str().into();
+    let draft = f.insert(row);
+    let claim = f.claim(draft);
+    let lock = OutPoint::new(Txid::from_byte_array([0xe3; 32]), 0);
+    f.engine.block_on(async {
+        lib.fenced(0, async {
+            let mut tracked = built_lock(lock, coin);
+            tracked.identity_index = 0;
+            let reader = track_and_tap(&f, &wallet, tracked).await;
+            // Still inside the call: only the tap can have let it through.
+            let read = tokio::time::timeout(Duration::from_secs(30), reader)
+                .await
+                .expect("the tap released the fence")
+                .unwrap()
+                .unwrap();
+            assert!(read.coins[0].reserved && read.coins[0].lock_input);
+            assert!(f.session.spends.snapshot(&f.wallet).is_empty());
+            let row = f.row(draft);
+            assert_eq!(row.owner, claim.owner());
+            assert_eq!(phase(&row), Phase::FundingSent);
+            assert_eq!(
+                row.asset_lock_outpoint.as_deref(),
+                Some(flow::canonical(lock).as_str())
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    });
+}
+
+/// Sol r5 N1, the control: a lock first tapped as broadcast does not
+/// release the fence (Phase A releases on built only, L2), so the queued
+/// reader waits for the call to return.
+#[test]
+fn a_tapped_broadcast_lock_keeps_the_fence_until_its_call_returns() {
+    let f = fixture(false);
+    let (wallet, coin) = f.coin();
+    let lib = f.pw_lib(&wallet);
+    let lock = OutPoint::new(Txid::from_byte_array([0xe5; 32]), 0);
+    f.engine.block_on(async {
+        let mut queued = None;
+        lib.fenced(1, async {
+            let mut tracked = built_lock(lock, coin);
+            tracked.status = platform_wallet::AssetLockStatus::Broadcast;
+            let mut reader = track_and_tap(&f, &wallet, tracked).await;
+            let early = tokio::time::timeout(Duration::from_millis(200), &mut reader).await;
+            assert!(early.is_err(), "the fence came down on a broadcast tap");
+            queued = Some(reader);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let read = tokio::time::timeout(Duration::from_secs(30), queued.unwrap())
+            .await
+            .expect("the call's return released the fence")
+            .unwrap()
+            .unwrap();
+        assert!(read.coins[0].reserved && read.coins[0].lock_input);
+    });
+}
+
 /// Sol r3 R3-01: a built lock's inputs read reserved only while the library
 /// tracks it (the coin view derives them, E0-04 §2a.6), and hold no funding
 /// back; once it stops (a later rejection, a sweep) nothing stale is left,
