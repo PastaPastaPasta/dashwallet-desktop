@@ -21,7 +21,7 @@ use platform_wallet::ContactRequest;
 
 use super::errors::PlatformError;
 use super::provenance::{Entity, Provenance, contact_request_key, kind};
-use super::reverify::{Held, Refetcher, ShownProfile, confirmed, reverify};
+use super::reverify::{Held, Refetcher, ShownProfile, confirmed, record_all, reverify};
 use super::startup::QuorumSource;
 use super::trust::{
     BoxFuture, SpvAnswer, SpvQuorums, TrustMode, TrustProvider, TrustedQuorums, is_trust_mismatch,
@@ -473,7 +473,8 @@ struct FakeRefetch {
     trust: Arc<TrustProvider>,
     keys: BTreeMap<KeyID, IdentityPublicKey>,
     profile: ShownProfile,
-    owner: Identifier,
+    /// The DPNS domain: its spelling and its `records.identity`.
+    domain: (String, Identifier),
     requests: Vec<ContactRequest>,
     /// The quorum each kind's proof cites.
     quorum: HashMap<&'static str, Quorum>,
@@ -503,8 +504,11 @@ impl Refetcher for FakeRefetch {
             .map(|()| Some(self.profile.clone()));
         Box::pin(async move { r })
     }
-    fn dpns_owner(&self, _: String) -> BoxFuture<Result<Option<Identifier>, PlatformError>> {
-        let r = self.prove(kind::DPNS_LABEL).map(|()| Some(self.owner));
+    fn dpns_domain(
+        &self,
+        _: String,
+    ) -> BoxFuture<Result<Option<(String, Identifier)>, PlatformError>> {
+        let r = (self.prove(kind::DPNS_LABEL)).map(|()| Some(self.domain.clone()));
         Box::pin(async move { r })
     }
     fn contact_requests(
@@ -557,7 +561,7 @@ async fn the_post_sync_refetch_records_verified_matches_only() {
             display_name: Some("Mallory".into()),
             ..Default::default()
         },
-        owner: alice,
+        domain: ("Alice".into(), alice),
         // Two requests of one pair in one block: either verifies.
         requests: vec![
             ContactRequest {
@@ -579,10 +583,7 @@ async fn the_post_sync_refetch_records_verified_matches_only() {
             keys: BTreeMap::new(),
         },
         Held::Profile { id: alice, shown },
-        Held::Label {
-            label: "a11ce".into(),
-            owner: alice,
-        },
+        Held::label("Alice", alice),
         Held::ContactRequest(request(7, 8, 1_700_000_000_123)),
         Held::ContactRequest(ContactRequest {
             encrypted_public_key: vec![5; 96],
@@ -809,7 +810,7 @@ async fn a_replaced_entity_reads_unverified_until_its_new_content_verifies() {
         trust: Arc::clone(&r.trust),
         keys: BTreeMap::new(),
         profile: shown(name),
-        owner: alice,
+        domain: ("Alice".into(), alice),
         requests: Vec::new(),
         quorum: HashMap::from([(kind::PROFILE, quorum)]),
     };
@@ -854,7 +855,7 @@ fn the_digest_covers_the_content_and_names_its_version() {
         ..Default::default()
     };
     let d = profile(base.clone());
-    assert!(d.starts_with("v1:") && d.len() == 3 + 64, "{d}");
+    assert!(d.starts_with("v2:") && d.len() == 3 + 64, "{d}");
     assert_eq!(d, profile(base.clone()), "deterministic");
     for changed in [
         ShownProfile {
@@ -915,16 +916,22 @@ fn the_digest_covers_the_content_and_names_its_version() {
     ] {
         assert_ne!(req(changed.clone()), d, "{changed:?}");
     }
-    let label = |l: &str, o: u8| {
-        Held::Label {
-            label: l.into(),
-            owner: Identifier::new([o; 32]),
-        }
-        .entity()
-        .digest
-        .unwrap()
-    };
-    assert_ne!(label("a11ce", 7), label("a11ce", 8), "the owner");
+    let label = |l: &str, o: u8| Held::label(l, Identifier::new([o; 32])).entity();
+    assert_ne!(
+        label("Alice", 7).digest,
+        label("Alice", 8).digest,
+        "the owner"
+    );
+    assert_eq!(
+        label("Alice", 7).key,
+        label("Al1ce", 7).key,
+        "one record key"
+    );
+    assert_ne!(
+        label("Alice", 7).digest,
+        label("Al1ce", 7).digest,
+        "the spelling (Sol r1 R1)"
+    );
     let identity = |keys: &[IdentityPublicKey]| {
         let keys = keys.iter().map(|k| (k.id(), k.clone())).collect();
         Held::Identity { id: alice, keys }.entity().digest.unwrap()
@@ -967,4 +974,134 @@ fn the_digest_covers_the_content_and_names_its_version() {
         d,
         "filed under another id"
     );
+}
+
+/// Sol r1 R1: a DPNS label record says "this spelling is this identity's
+/// name". A spelling Platform does not hold fails the first re-fetch; a
+/// spelling the library put in place after verification, or during the
+/// network wait, reads as unverified under the same record key; another
+/// owner reads as unverified, and a re-fetch naming it records nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_label_record_binds_its_spelling_and_its_owner() {
+    let r = rig(TrustMode::Degraded);
+    r.spv.set(A, SpvAnswer::Verified(REAL));
+    r.trusted.set(A, REAL);
+    r.trusted.set(B, REAL); // SPV does not hold B: the fallback
+    r.lookup(B).unwrap();
+    assert!(r.latched());
+    let (alice, bob) = (Identifier::new([7; 32]), Identifier::new([8; 32]));
+    let platform = || FakeRefetch {
+        trust: Arc::clone(&r.trust),
+        keys: BTreeMap::new(),
+        profile: ShownProfile::default(),
+        domain: ("Alice".into(), alice),
+        requests: Vec::new(),
+        quorum: HashMap::from([(kind::DPNS_LABEL, A)]),
+    };
+    let unverified = |h: Held| r.provenance.is_unverified(&h.entity());
+
+    // Held as `Al1ce`; Platform's domain is spelled `Alice`.
+    assert!(!refetch(&r, Held::label("Al1ce", alice), platform()).await);
+    assert!(unverified(Held::label("Al1ce", alice)), "initial mismatch");
+
+    assert!(refetch(&r, Held::label("Alice", alice), platform()).await);
+    assert!(!unverified(Held::label("Alice", alice)));
+    assert!(
+        unverified(Held::label("Al1ce", alice)),
+        "replaced after verification"
+    );
+
+    // Fetched as `Alice`, replaced by `Al1ce` before the record step.
+    let fetched = Held::label("Alice", alice);
+    assert!(
+        confirmed(&[&fetched], &[Held::label("Al1ce", alice)]).is_empty(),
+        "replaced during the network wait"
+    );
+
+    assert!(unverified(Held::label("Alice", bob)), "another owner");
+    assert!(!refetch(&r, Held::label("Alice", bob), platform()).await);
+    assert!(unverified(Held::label("Alice", bob)));
+    assert!(
+        !unverified(Held::label("Alice", alice)),
+        "alice's record stands"
+    );
+}
+
+/// Sol r1: the digest keeps field boundaries and option tags (a value
+/// holding a tag byte cannot shift into the next field) and does not
+/// depend on key insertion order.
+#[test]
+fn the_digest_separates_fields_and_options_and_ignores_key_order() {
+    let alice = Identifier::new([7; 32]);
+    let profile = |a: Option<&str>, b: Option<&str>| {
+        let shown = ShownProfile {
+            display_name: a.map(str::to_owned),
+            public_message: b.map(str::to_owned),
+            ..Default::default()
+        };
+        Held::Profile { id: alice, shown }.entity().digest.unwrap()
+    };
+    assert_ne!(
+        profile(Some("ab"), Some("c")),
+        profile(Some("a"), Some("bc"))
+    );
+    assert_ne!(
+        profile(Some("a\u{1}b"), Some("c")),
+        profile(Some("a"), Some("b\u{1}c"))
+    );
+    assert_ne!(profile(Some(""), None), profile(None, Some("")));
+    assert_ne!(profile(Some(""), None), profile(None, None));
+    let key = |id| {
+        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::MASTER,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: vec![2; 33].into(),
+            disabled_at: None,
+        })
+    };
+    let identity = |keys| Held::Identity { id: alice, keys }.entity().digest.unwrap();
+    assert_eq!(
+        identity(BTreeMap::from([(1, key(1)), (0, key(0))])),
+        identity(BTreeMap::from([(0, key(0)), (1, key(1))]))
+    );
+    let base = request(7, 8, 123);
+    let req = |r| Held::ContactRequest(r).entity().digest.unwrap();
+    for changed in [
+        ContactRequest {
+            sender_id: Identifier::new([9; 32]),
+            ..base.clone()
+        },
+        ContactRequest {
+            recipient_id: Identifier::new([9; 32]),
+            ..base.clone()
+        },
+        ContactRequest {
+            created_at: 124,
+            ..base.clone()
+        },
+    ] {
+        assert_ne!(req(base.clone()), req(changed));
+    }
+}
+
+/// Sol r1 R2: the record step counts only the writes that reached
+/// app.sqlite. With another writer holding it, nothing is written, the
+/// count is 0 and the entity stays unverified; once it is free, 1.
+#[test]
+fn a_failed_record_write_is_not_counted() {
+    let r = rig(TrustMode::Degraded);
+    r.provenance.fallback_in_use().unwrap();
+    let entity = Held::label("Alice", Identifier::new([7; 32])).entity();
+    let records = [entity.clone()];
+    let holder = rusqlite::Connection::open(&r.path).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert_eq!(record_all(&r.provenance, &records), 0, "app.sqlite locked");
+    assert!(r.provenance.is_unverified(&entity));
+    holder.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(record_all(&r.provenance, &records), 1);
+    assert!(!r.provenance.is_unverified(&entity));
 }

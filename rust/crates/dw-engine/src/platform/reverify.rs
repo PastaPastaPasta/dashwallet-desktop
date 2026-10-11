@@ -2,7 +2,8 @@
 //! DEC-125; E0-10b design §5). Once the fallback latch is set, an entity the
 //! read models show is unverified until one of its fetches verifies against
 //! SPV-held quorum keys. This task re-fetches the identities, profiles,
-//! DPNS labels and contact requests the library holds, each in its own trust scope, and records
+//! DPNS labels and contact requests the library holds, and the contacts'
+//! profiles and shown labels, each in its own trust scope, and records
 //! those whose fetch verified and matches what the library holds. A
 //! verified fetch that differs records nothing: the library's own sync
 //! replaces the data, and a later run records it. The record is written
@@ -53,7 +54,7 @@ pub(super) struct ShownProfile {
 }
 
 impl ShownProfile {
-    fn of(p: &DashPayProfile) -> Self {
+    pub(super) fn of(p: &DashPayProfile) -> Self {
         Self {
             display_name: p.display_name.clone(),
             public_message: p.public_message.clone().or_else(|| p.bio.clone()),
@@ -99,9 +100,13 @@ pub(super) enum Held {
         id: Identifier,
         shown: ShownProfile,
     },
-    /// `label` is homograph-normalized.
+    /// A DPNS name shown as `spelling` for `owner`; `label` is its
+    /// homograph-normalized form, the record and query key. The digest binds
+    /// the spelling and the owner (Sol r1 R1: `Alice` and `Al1ce` share a
+    /// key, not a digest). Build it with [`Held::label`].
     Label {
         label: String,
+        spelling: String,
         owner: Identifier,
     },
     /// A sent or received request, as the library holds it.
@@ -109,6 +114,15 @@ pub(super) enum Held {
 }
 
 impl Held {
+    /// `spelling` shown as `owner`'s DPNS name.
+    pub(super) fn label(spelling: &str, owner: Identifier) -> Self {
+        Self::Label {
+            label: convert_to_homograph_safe_chars(spelling),
+            spelling: spelling.to_string(),
+            owner,
+        }
+    }
+
     /// The entity as provenance sees it (DEC-183): its record and the digest
     /// of this content.
     pub(super) fn entity(&self) -> Entity {
@@ -120,7 +134,7 @@ impl Held {
         }
     }
 
-    /// The content digest, `v1:` and the hex SHA-256 of [`Canon`] bytes.
+    /// The content digest, `v2:` and the hex SHA-256 of [`Canon`] bytes.
     /// `None` if an identity key does not serialize.
     fn digest(&self, kind: &str) -> Option<String> {
         let mut c = Canon::new(kind);
@@ -148,8 +162,14 @@ impl Held {
                     .opt(avatar_hash.as_ref().map(|h| &h[..]))
                     .opt(avatar_fingerprint.as_ref().map(|f| &f[..]));
             }
-            Self::Label { label, owner } => {
-                c.bytes(label.as_bytes()).id(owner);
+            Self::Label {
+                label,
+                spelling,
+                owner,
+            } => {
+                c.bytes(label.as_bytes())
+                    .bytes(spelling.as_bytes())
+                    .id(owner);
             }
             Self::ContactRequest(r) => {
                 let ContactRequest {
@@ -197,7 +217,10 @@ impl Held {
 /// takes the next version, and records of the old one read as unverified.
 /// Identity keys are encoded by dpp: a dpp release that changes their
 /// bincode layout has the same effect (fails closed until re-fetched).
-const DIGEST_VERSION: &str = "v1";
+/// v2 (Sol r1 R1): a DPNS label's spelling joined its fields; every v1
+/// record (label records bound only the normalized label) reads as
+/// unverified until a re-fetch verifies it again.
+const DIGEST_VERSION: &str = "v2";
 
 /// The canonical bytes of an entity: a domain tag and the kind, then each
 /// field in order. Byte strings are length-prefixed (u64 LE), integers u64
@@ -255,7 +278,12 @@ pub(super) trait Refetcher: Send + Sync {
         id: Identifier,
     ) -> BoxFuture<Result<Option<BTreeMap<KeyID, IdentityPublicKey>>, PlatformError>>;
     fn profile(&self, id: Identifier) -> BoxFuture<Result<Option<ShownProfile>, PlatformError>>;
-    fn dpns_owner(&self, label: String) -> BoxFuture<Result<Option<Identifier>, PlatformError>>;
+    /// The DPNS domain of the homograph-normalized `label`: its `label` as
+    /// spelled and its `records.identity`.
+    fn dpns_domain(
+        &self,
+        label: String,
+    ) -> BoxFuture<Result<Option<(String, Identifier)>, PlatformError>>;
     /// The `contactRequest` documents from `sender` to `recipient` created at
     /// `created_at`, read as the library reads them.
     fn contact_requests(
@@ -280,9 +308,11 @@ pub(super) async fn reverify(h: &Held, fetch: &dyn Refetcher) -> bool {
                 ok(fetch.identity_keys(*id).await).as_ref() == Some(keys)
             }
             Held::Profile { id, shown } => ok(fetch.profile(*id).await).as_ref() == Some(shown),
-            Held::Label { label, owner } => {
-                ok(fetch.dpns_owner(label.clone()).await) == Some(*owner)
-            }
+            Held::Label {
+                label,
+                spelling,
+                owner,
+            } => ok(fetch.dpns_domain(label.clone()).await) == Some((spelling.clone(), *owner)),
             Held::ContactRequest(r) => {
                 let fetched = fetch.contact_requests(r.sender_id, r.recipient_id, r.created_at);
                 ok(fetched.await.map(Some)).is_some_and(|all| all.contains(r))
@@ -318,10 +348,7 @@ pub(super) fn held_of(m: &ManagedIdentity, info: &PlatformWalletInfo) -> Vec<Hel
         });
     }
     for (label, _) in owned_names(identity, &m.dpns_names, &info.dpns_name_states) {
-        held.push(Held::Label {
-            label: convert_to_homograph_safe_chars(&label),
-            owner: identity,
-        });
+        held.push(Held::label(&label, identity));
     }
     held
 }
@@ -336,21 +363,36 @@ fn requests_of(m: &ManagedIdentity) -> impl Iterator<Item = Held> + '_ {
         .map(|r| Held::ContactRequest(r.clone()))
 }
 
+/// The cached profiles of `m`'s contacts (and request senders). A
+/// confirmed-absent profile shows nothing and needs no record. A contact's
+/// identity has no class of its own: the library holds no keys for it, and
+/// the verified contact request binds the key indices and the encrypted
+/// xpub its channel uses (E0-10b design §5).
+fn contact_profiles_of(m: &ManagedIdentity) -> impl Iterator<Item = Held> + '_ {
+    (m.dashpay().contact_profiles.iter()).filter_map(|(id, entry)| {
+        Some(Held::Profile {
+            id: *id,
+            shown: ShownProfile::of(entry.profile.as_ref()?),
+        })
+    })
+}
+
 /// The entities of `info` the read models would show as unverified, each
-/// once. A record key held twice with different content (two wallets'
-/// copies of one request) is re-fetched as its first copy only; the other
-/// stays unverified.
+/// content once. Two copies of one record key with different content (two
+/// wallets' caches of one contact's profile) are both re-fetched; at most
+/// the one Platform holds verifies.
 fn unverified_of(
     info: &PlatformWalletInfo,
     id: &WalletId,
     provenance: &Provenance,
-    seen: &mut HashSet<(&'static str, String)>,
+    seen: &mut HashSet<Entity>,
 ) -> Vec<Held> {
     let mut held = Vec::new();
     for m in info.identity_manager.wallet_managed_identities(&id.0) {
-        for h in held_of(m, info).into_iter().chain(requests_of(m)) {
+        let all = held_of(m, info).into_iter().chain(requests_of(m));
+        for h in all.chain(contact_profiles_of(m)) {
             let e = h.entity();
-            if provenance.is_unverified(&e) && seen.insert((e.kind, e.key)) {
+            if provenance.is_unverified(&e) && seen.insert(e) {
                 held.push(h);
             }
         }
@@ -423,7 +465,10 @@ impl Refetcher for SdkRefetcher {
     /// The owner of `label.dash`, by its domain document (as the SDK's
     /// `resolve_dpns_name` does, without its re-normalization: `label` is
     /// normalized already).
-    fn dpns_owner(&self, label: String) -> BoxFuture<Result<Option<Identifier>, PlatformError>> {
+    fn dpns_domain(
+        &self,
+        label: String,
+    ) -> BoxFuture<Result<Option<(String, Identifier)>, PlatformError>> {
         let sdk = Arc::clone(&self.0);
         Box::pin(async move {
             let contract = load_system_data_contract(SystemDataContract::DPNS, sdk.version())
@@ -442,11 +487,13 @@ impl Refetcher for SdkRefetcher {
             query.limit = 1;
             let docs = Document::fetch_many(&sdk, query).await?;
             Ok(docs.into_iter().find_map(|(_, doc)| {
-                let records = doc?.properties().get("records")?.to_map().ok()?.clone();
+                let props = doc?.properties().clone();
+                let spelling = props.get("label")?.as_str()?.to_string();
+                let records = props.get("records")?.to_map().ok()?.clone();
                 let identity = records
                     .iter()
                     .find(|(k, _)| k.as_text() == Some("identity"))?;
-                identity.1.to_identifier().ok()
+                Some((spelling, identity.1.to_identifier().ok()?))
             }))
         })
     }
@@ -558,29 +605,48 @@ impl NetworkSession {
         // Held across the writes: the library cannot change what is recorded.
         let wm = wm.read().await;
         let records = confirmed(&verified, &held_unverified(&wm, &live.provenance));
-        let written = records.iter().filter(|e| e.digest.is_some()).count();
         let provenance = Arc::clone(&live.provenance);
-        tokio::task::spawn_blocking(move || {
-            for entity in records {
-                if let Err(e) = provenance.record_verified(&entity) {
-                    tracing::warn!(error = %e, kind = entity.kind, "could not record a verified fetch");
-                }
-            }
-        })
-        .await?;
+        let written =
+            tokio::task::spawn_blocking(move || record_all(&provenance, &records)).await?;
         drop(wm);
-        Ok(held.len() - written)
+        Ok(held.len().saturating_sub(written))
     }
 }
 
-/// Every entity of the wallet manager's wallets the read models show as
-/// unverified.
-fn held_unverified(wm: &WalletManager<PlatformWalletInfo>, provenance: &Provenance) -> Vec<Held> {
+/// Records `records`; how many were written (Sol r1 R2). A failed write is
+/// logged and leaves its entity unverified. Blocking (app.sqlite).
+pub(super) fn record_all(provenance: &Provenance, records: &[Entity]) -> usize {
+    let written = |entity: &&Entity| match provenance.record_verified(entity) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(error = %e, kind = entity.kind, "could not record a verified fetch");
+            false
+        }
+    };
+    (records.iter())
+        .filter(|e| e.digest.is_some())
+        .filter(written)
+        .count()
+}
+
+/// Every entity of the wallet manager's wallets, and every contact label
+/// shown ([`Provenance::show_label`]), the read models show as unverified.
+pub(super) fn held_unverified(
+    wm: &WalletManager<PlatformWalletInfo>,
+    provenance: &Provenance,
+) -> Vec<Held> {
     let mut seen = HashSet::new();
     let mut held = Vec::new();
     for id in wm.list_wallets() {
         if let Some(info) = wm.get_wallet_info(id) {
             held.extend(unverified_of(info, &WalletId(*id), provenance, &mut seen));
+        }
+    }
+    for (owner, spelling) in provenance.shown_labels() {
+        let h = Held::label(&spelling, owner);
+        let e = h.entity();
+        if provenance.is_unverified(&e) && seen.insert(e) {
+            held.push(h);
         }
     }
     held

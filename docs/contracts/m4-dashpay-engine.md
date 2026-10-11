@@ -1427,9 +1427,11 @@ The shapes are in §3. What they mean, where the name does not say:
   fallback use, even when the latch is already on file, since a row left by a refused checkpoint is readable but
   unsynced. A latch read back at open, or one that cannot be read, still counts as set for classification. Records are written by E0-10b when a fetch verifies against SPV-held quorum keys (kinds
   `identity` for an identity and its keys, `profile`, `contact_request` keyed `sender:recipient:$createdAt`,
-  `dpns_label` keyed by the homograph-normalized label, `payment` keyed by txid); the table is global and not
+  `dpns_label` keyed by the homograph-normalized label with a digest binding the spelling shown and the owner,
+  `payment` keyed by txid; a contact's identity has no record of its own, its verified `contact_request` binds the
+  keys and the xpub the channel uses); the table is global and not
   exported, so a restored wallet's data verifies again. A record is bound to content (DEC-183): it stores a digest of
-  the entity's canonical bytes as verified, naming its encoding version (`v1:` and a SHA-256), and data counts as
+  the entity's canonical bytes as verified, naming its encoding version (`v2:` and a SHA-256), and data counts as
   verified only while the digest of what the library holds now equals it. An entity the library replaced after it
   verified (from any source, the fallback included) reads as unverified until a fetch of the new content verifies;
   records written before the digest existed verify nothing. A record says that this content verified, not that it is
@@ -1716,4 +1718,8 @@ renames or reshapes them takes the next version bump:
     verification record stores, not the record's presence: a replaced entity reads as unverified until its new content
     verifies, and pre-DEC-183 records (dw-appdb migration `trust_digest`) verify nothing. `contact_request` records
     (key `sender:recipient:$createdAt`, `provenance::contact_request_key`) follow the same model, so the contacts read
-    model (DP2-01) checks content as well as the key.
+    model (DP2-01) checks content as well as the key. A `dpns_label` record binds the spelling shown and the owner
+    (encoding `v2`; `v1` records verify nothing), so another spelling of the same normalized label, or the label
+    shown for another identity, is unverified. Records are per network (each network's app.sqlite). The re-fetch also
+    verifies contacts' cached profiles and the contact labels the read model reports (`Provenance::show_label`); a
+    contact's identity has no record class.

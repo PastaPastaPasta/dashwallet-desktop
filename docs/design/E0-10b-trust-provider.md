@@ -118,8 +118,8 @@ Errors platform-wallet turns into strings lose the mismatch code: such a refusal
 still a refusal. The mismatch marker is a fixed prefix of `InvalidQuorum` text that only this provider produces.
 
 **Content binding (DEC-183).** A record verifies the content it was written for. `dp_trust_verified.digest` (dw-appdb
-migration `trust_digest`) holds `v1:` and the hex SHA-256 of the entity's canonical bytes (`reverify::Canon`: a domain
-tag, the encoding version and the kind, then each field; byte strings length-prefixed, integers u64 LE, options
+migration `trust_digest`) holds the encoding version (`v2:`) and the hex SHA-256 of the entity's canonical bytes
+(`reverify::Canon`: a domain tag, the encoding version and the kind, then each field; byte strings length-prefixed, integers u64 LE, options
 tagged; identity keys in their platform serialization). Readers (`recovery::summaries` through each identity's
 `entities`, DP2-01's contacts model) compute the digest of what the library holds now, and `Provenance::is_unverified`
 counts the record only when the digests are equal. So an entity the library replaced after it verified, from any
@@ -129,11 +129,20 @@ digest and verify nothing. Nothing clears records on change: the comparison is t
 encoding takes the next version, and records of the old one read as unverified until re-verified. Identity keys are
 encoded by dpp (bincode), so a dpp release that changes that layout has the same effect.
 
+A `dpns_label` record is keyed by the homograph-normalized label, and its digest binds the spelling shown and the
+owner (`Held::label(spelling, owner)`; Sol r1 R1). It says "this spelling is this identity's name": `Alice` and
+`Al1ce` share a key but not a digest, so a spelling the library put in place after verification, or one shown for
+another owner, reads as unverified. The re-fetch compares the spelling with the proof-verified domain document's
+`label`, and the owner with its `records.identity`. The encoding is `v2` since this change: every `v1` record reads
+as unverified until re-verified. Records are per network because app.sqlite lives in the network's directory
+(`Engine::network_dir`); a test opens a testnet and a mainnet session on one data root to keep that true.
+
 What a record means: this exact content verified at some time, not that it is current. Content that verified once
 and comes back later (a rollback served through the fallback) reads as verified again; DEC-183 accepts that. The
 identity's balance is outside provenance (`identity` covers the identity and its keys). Known limit: platform-wallet
 stores a sent request without the `autoAcceptProof` its document carries, and does not re-ingest it, so a request
-sent from a QR with auto-accept never verifies (fails closed); an upstream fix belongs to platform-wallet.
+sent from a QR with auto-accept never verifies (fails closed); an upstream fix belongs to platform-wallet (issue draft:
+`docs/research/dashpay/platform-wallet-sent-auto-accept-proof.md`).
 
 ## 5. Re-fetching unverified entities after sync
 
@@ -143,8 +152,8 @@ unverified (the kinds with consumers today):
 | Kind | Fetch | Recorded when |
 |---|---|---|
 | `identity` | `Identity::fetch` | it verified and its public keys equal the library's |
-| `profile` | the DashPay `profile` document of the identity | it verified and the fields shown equal the library's |
-| `dpns_label` | the DPNS `domain` document of the label | it verified and resolves to the identity holding it |
+| `profile` | the DashPay `profile` document of the identity (an owned identity's, or a contact's from the library's `contact_profiles` cache) | it verified and the fields shown equal the library's |
+| `dpns_label` | the DPNS `domain` document of the label (an owned identity's names, or a contact's shown label) | it verified, its `label` is the spelling shown and its `records.identity` is the identity holding it, or the contact it is shown for |
 | `contact_request` | the DashPay `contactRequest` documents from sender to recipient (`ownerIdUserId` index), the one with the held `$createdAt` | it verified and every field the library holds is equal (as `parse_contact_request_doc` reads it) |
 
 A verified fetch that differs from what the library holds records nothing: the library's own sync replaces the data,
@@ -158,7 +167,17 @@ takes `records.identity`, as the SDK's `resolve_dpns_name` does, without re-norm
 
 A `contact_request` record is keyed `sender:recipient:$createdAt` (Base58 ids, milliseconds;
 `provenance::contact_request_key`, m4 §5), the key DP2-01's contacts read model checks. The task covers the sent,
-received and established requests the library holds. `payment` records are left to DP3-04's gate, which re-fetches
+received and established requests the library holds.
+
+Contacts (DP2-01): the task also re-fetches each contact's cached profile (a confirmed-absent one shows nothing and
+needs no record) and each contact label the contacts read model shows. platform-wallet keeps no contact names, so the
+read model reports each label it shows, and for which contact, with `Provenance::show_label` (in memory; `None`
+withdraws it); the re-fetch verifies it with that contact as the owner. DP2-01 builds the same entities with
+`Held::Profile { id, shown: ShownProfile::of(..) }` and `Held::label(spelling, owner)`. A contact's identity
+has no record class: the library holds no keys for a contact, so there is no content to digest. The verified
+`contact_request` digest already binds the key indices and the encrypted xpub its channel uses, and its proof
+establishes the sender's ownership. Two copies of one record key with different content (two wallets' caches of one
+contact's profile) are each re-fetched; at most the one Platform holds verifies. `payment` records are left to DP3-04's gate, which re-fetches
 through the same `scoped`.
 
 In the degraded mode this works the same way: with #1150 the Platform quorums are `Verified` on first ask, so most
@@ -196,5 +215,10 @@ the same value without a wallet.
 | §5 | a record needs the entity unchanged at write time; profile documents parse as the library caches them |
 | DEC-183 | a replaced entity reads as unverified; a fallback-sourced replacement never verifies; the re-fetch re-verifies new content; every shown field is in the digest; pre-digest rows (migration test) verify nothing |
 | §5 | a verified, equal contact request records under DP2-01's key; a differing or absent one records nothing; `contactRequest` documents parse as the library reads them |
+| §5 contacts | a contact's cached profile and a shown contact label are re-fetched; a contact profile replaced after verification is unverified until its new content records; a label shown for another owner, or withdrawn, is not verified (`recovery_tests`) |
+| §4 labels (Sol r1 R1) | a label record binds its spelling and its owner: a spelling mismatch fails the first re-fetch; a spelling replaced after verification, or during the network wait, and another owner read unverified; Sol's `reviewer_dpns_spelling_replacement_must_be_unverified` |
+| §4 encoding | field boundaries, option tags and key order (Sol r1's probe); `v2` |
+| §5 (Sol r1 R2) | the record step counts only writes that reached app.sqlite: with it locked, 0 and the entity stays unverified |
+| networks | a testnet session's record is invisible to a mainnet session on the same data root, and after a reopen |
 | lifetimes | after close nothing unverified is served; a closed session reopens (`session_lifecycle`) |
 | §7 | `sync_status().quorum_source` per mode |

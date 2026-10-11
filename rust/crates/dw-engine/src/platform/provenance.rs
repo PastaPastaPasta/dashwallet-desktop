@@ -43,7 +43,9 @@ pub(crate) mod kind {
     pub(crate) const IDENTITY: &str = "identity";
     /// An identity's DashPay profile; the key is the identity id.
     pub(crate) const PROFILE: &str = "profile";
-    /// A DPNS label; the key is the homograph-normalized label.
+    /// A DPNS label; the key is the homograph-normalized label, the digest
+    /// binds the spelling shown and the owner. Records live in the network's
+    /// own app.sqlite, so a key needs no network.
     pub(crate) const DPNS_LABEL: &str = "dpns_label";
     /// A contact request; the key is [`super::contact_request_key`].
     pub(crate) const CONTACT_REQUEST: &str = "contact_request";
@@ -67,7 +69,7 @@ pub(crate) fn contact_request_key(
 
 /// An entity as provenance sees it: its record's kind and key, and the
 /// digest of its content as the library holds it now (DEC-183).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Entity {
     pub(crate) kind: &'static str,
     pub(crate) key: String,
@@ -86,6 +88,9 @@ pub(crate) struct Provenance {
     latch_durable: AtomicBool,
     /// `(kind, key)` → the digest of the content that verified.
     verified: Mutex<HashMap<(String, String), String>>,
+    /// Contact → the DPNS label the read models show for it, as spelled
+    /// ([`Self::show_label`]). In memory.
+    shown_labels: Mutex<HashMap<Identifier, String>>,
 }
 
 impl Provenance {
@@ -112,6 +117,7 @@ impl Provenance {
                     .map(|(kind, key, digest)| ((kind, key), digest))
                     .collect(),
             ),
+            shown_labels: Mutex::default(),
         }
     }
 
@@ -155,6 +161,28 @@ impl Provenance {
         let key = (entity.kind.to_string(), entity.key.clone());
         guard(&self.verified).insert(key, digest.clone());
         Ok(())
+    }
+
+    /// The read models show `label` as `contact`'s DPNS name (`None`: no
+    /// name). platform-wallet keeps no contact names, so the re-fetch
+    /// verifies the shown ones from here, with `contact` as their owner.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "DP2-01's contacts read model calls it")
+    )]
+    pub(crate) fn show_label(&self, contact: Identifier, label: Option<&str>) {
+        let mut shown = guard(&self.shown_labels);
+        match label {
+            Some(l) => shown.insert(contact, l.to_string()),
+            None => shown.remove(&contact),
+        };
+    }
+
+    /// The contact labels shown, as spelled, each with its contact.
+    pub(super) fn shown_labels(&self) -> Vec<(Identifier, String)> {
+        (guard(&self.shown_labels).iter())
+            .map(|(c, l)| (*c, l.clone()))
+            .collect()
     }
 
     /// Whether `entity` must be treated as unverified: the fallback has been

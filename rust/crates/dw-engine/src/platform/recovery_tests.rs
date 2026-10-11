@@ -22,6 +22,7 @@ use dw_vault::{
 use platform_wallet::DpnsNameInfo;
 use platform_wallet::changeset::{DpnsNameSaleStatus, DpnsNameStateEntry};
 use platform_wallet::manager::startup::{WalletStartupOutcome, WalletStartupStatus};
+use platform_wallet::wallet::identity::{ContactProfileEntry, DashPayProfile};
 use tokio::sync::Notify;
 use zeroize::Zeroizing;
 
@@ -31,6 +32,7 @@ use super::names::{MainNamePrefs, resolve_main_name};
 use super::recovery::{
     BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, Pause, owned_names, summaries,
 };
+use super::reverify::{Held, ShownProfile, confirmed, held_unverified};
 use super::runtime::{TestPause, guard};
 use super::{DashPay, IdentitySummary, SpvState, StartupStatus};
 use crate::session::Manager;
@@ -1752,5 +1754,175 @@ fn wait_for(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
     while !done() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// E0-10b fix r1 (DP2-01): the re-fetch walks the contacts' cached profiles
+/// and the contact labels the read models show. A contact's profile the
+/// library replaced after verification is unverified until the re-fetch
+/// records the new content; a label verified as one contact's reads
+/// unverified when shown for another (the digest binds the owner). The
+/// fetch itself is `trust_tests`'; here the walk and the record.
+#[test]
+fn contact_profiles_and_shown_labels_are_refetched_until_verified() {
+    const BOB: [u8; 32] = [9; 32];
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session(dir.path(), Arc::new(Platform::default()));
+    let id = restore(&engine, &s);
+    let manager = s.manager().unwrap();
+    engine.block_on(add_identities(&manager, id, &[(ALICE, 0)]));
+    let provenance = s.live().unwrap().provenance;
+    provenance.fallback_in_use().unwrap();
+    let set_profile = |name: &str| {
+        engine.block_on(async {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let info = wm.get_wallet_info_mut(&id.0).unwrap();
+            let managed = (info.identity_manager)
+                .managed_identity_mut(&Identifier::new(ALICE))
+                .unwrap();
+            let entry = ContactProfileEntry {
+                profile: Some(DashPayProfile {
+                    display_name: Some(name.into()),
+                    ..Default::default()
+                }),
+                checked_at_ms: 1,
+            };
+            managed
+                .dashpay_contact_profiles_mut()
+                .insert(Identifier::new(BOB), entry);
+        })
+    };
+    let held = || {
+        engine.block_on(async {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            held_unverified(&wm, &provenance)
+        })
+    };
+    // The re-fetch's record step for `h`, once its fetch verified.
+    let record = |h: &Held| {
+        let records = confirmed(&[h], &held());
+        assert_eq!(records.len(), 1, "{h:?} is held and unverified");
+        provenance.record_verified(&records[0]).unwrap();
+    };
+    let profile = |name: &str| Held::Profile {
+        id: Identifier::new(BOB),
+        shown: ShownProfile {
+            display_name: Some(name.into()),
+            ..Default::default()
+        },
+    };
+    let label = |spelling: &str, owner: [u8; 32]| Held::label(spelling, Identifier::new(owner));
+
+    set_profile("Bob");
+    assert!(held().contains(&profile("Bob")), "a contact's profile");
+    record(&profile("Bob"));
+    assert!(!held().contains(&profile("Bob")), "verified");
+    set_profile("Mallory");
+    assert!(held().contains(&profile("Mallory")), "replaced: unverified");
+    record(&profile("Mallory"));
+    assert!(!held().contains(&profile("Mallory")), "re-verified");
+
+    provenance.show_label(Identifier::new(BOB), Some("Bob"));
+    assert!(held().contains(&label("Bob", BOB)), "a shown contact label");
+    record(&label("Bob", BOB));
+    assert!(!held().contains(&label("Bob", BOB)));
+    assert!(!provenance.is_unverified(&label("Bob", BOB).entity()));
+    provenance.show_label(Identifier::new(BOB), Some("B0b"));
+    assert!(held().contains(&label("B0b", BOB)), "another spelling");
+    assert!(provenance.is_unverified(&label("B0b", BOB).entity()));
+    provenance.show_label(Identifier::new(SECOND), Some("Bob"));
+    assert!(
+        held().contains(&label("Bob", SECOND)),
+        "shown for another owner"
+    );
+    assert!(provenance.is_unverified(&label("Bob", SECOND).entity()));
+    provenance.show_label(Identifier::new(SECOND), None);
+    assert!(!held().contains(&label("Bob", SECOND)), "no longer shown");
+}
+
+/// Sol r1 R1, the reviewer's probe: an identity whose name verified as
+/// `Alice` and that the library then shows as `Al1ce` (same normalized
+/// label, same owner, no new record) is unverified.
+#[test]
+fn reviewer_dpns_spelling_replacement_must_be_unverified() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session(dir.path(), Arc::new(Platform::default()));
+    let wallet_id = restore(&engine, &s);
+    let manager = s.manager().unwrap();
+    engine.block_on(add_identities(&manager, wallet_id, &[(ALICE, 0)]));
+    engine.block_on(set_names(&manager, wallet_id, &[(ALICE, "Alice")]));
+    let provenance = s.live().unwrap().provenance;
+    provenance.fallback_in_use().unwrap();
+    let summary = || s.dashpay(wallet_id).identities().unwrap().remove(0);
+    assert!(summary().unverified);
+    let entities = engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = wm.get_wallet_info(&wallet_id.0).unwrap();
+        let m = (info.identity_manager)
+            .managed_identity(&Identifier::from(ALICE))
+            .unwrap();
+        (super::reverify::held_of(m, info).iter())
+            .map(Held::entity)
+            .collect::<Vec<_>>()
+    });
+    for e in &entities {
+        provenance.record_verified(e).unwrap();
+    }
+    let before = summary();
+    assert_eq!(before.names, vec!["Alice"]);
+    assert!(!before.unverified);
+    // The library replaces the spelling (from any source), no new record.
+    engine.block_on(set_names(&manager, wallet_id, &[(ALICE, "Al1ce")]));
+    let after = summary();
+    engine.block_on(engine.shutdown()).unwrap();
+    assert_eq!(after.names, vec!["Al1ce"]);
+    assert!(
+        after.unverified,
+        "unproved displayed spelling retained the verified flag"
+    );
+}
+
+/// Manager ruling (Sol r1 confirmation): records live in the network's own
+/// app.sqlite, so a record a testnet session writes is invisible to a
+/// mainnet session on the same data root. Keeps that true if storage moves.
+#[test]
+fn a_testnet_record_is_invisible_to_a_mainnet_session() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine(dir.path());
+    let open = |network| {
+        let s = engine
+            .block_on(engine.open_network(network, SessionOptions::default()))
+            .unwrap();
+        let provenance = s.live().unwrap().provenance;
+        provenance.fallback_in_use().unwrap();
+        (s, provenance)
+    };
+    let (testnet, on_testnet) = open(DashNetwork::Testnet);
+    let (mainnet, on_mainnet) = open(DashNetwork::Mainnet);
+    let entities = [
+        Held::Identity {
+            id: Identifier::new(ALICE),
+            keys: BTreeMap::new(),
+        },
+        Held::label("Alice", Identifier::new(ALICE)),
+    ]
+    .map(|h| h.entity());
+    for e in &entities {
+        on_testnet.record_verified(e).unwrap();
+        assert!(!on_testnet.is_unverified(e));
+        assert!(on_mainnet.is_unverified(e), "{e:?} on mainnet");
+    }
+    drop((on_testnet, on_mainnet, testnet, mainnet));
+    engine.block_on(engine.shutdown()).unwrap();
+    let engine = self::engine(dir.path());
+    let s = engine
+        .block_on(engine.open_network(DashNetwork::Mainnet, SessionOptions::default()))
+        .unwrap();
+    let reopened = s.live().unwrap().provenance;
+    for e in &entities {
+        assert!(reopened.is_unverified(e), "{e:?} after a reopen");
     }
 }
