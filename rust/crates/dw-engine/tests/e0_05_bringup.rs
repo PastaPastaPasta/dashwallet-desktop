@@ -734,5 +734,6 @@ fn a_held_key_read_does_not_hold_spv_past_the_budget() {
     assert_eq!(f.startup(&id), StartupStatus::PartialNoIdentity);
     store.release();
     f.engine.block_on(f.engine.shutdown()).unwrap();
-    assert!(f.rec.notices(NoticeCode::UncleanShutdown).is_empty());
+    let unclean = f.rec.notices(NoticeCode::UncleanShutdown);
+    assert!(unclean.is_empty(), "{unclean:?}");
 }
