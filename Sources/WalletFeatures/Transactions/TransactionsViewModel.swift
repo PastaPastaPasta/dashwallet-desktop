@@ -151,6 +151,12 @@ public final class TransactionsViewModel {
         }
     }
 
+    /// Shows `records` as if a page had loaded. Only for the UI gate's render measurement
+    /// (`DWD_GATE_HISTORY_BENCH`, G-03); the page's cursor and totals stay as they were.
+    public func replaceRowsForMeasurement(_ records: [TxRecord]) {
+        rows = records
+    }
+
     /// Appends the next page; a stale cursor reloads from the top.
     public func loadMore() async {
         guard hasMore, let cursor = nextCursor, let wallet = walletState.selectedWalletID else { return }

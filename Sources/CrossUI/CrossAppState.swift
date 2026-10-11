@@ -184,7 +184,7 @@ public final class CrossAppState {
 
     /// The Transactions page with the M2 actions (abandon, resend, extras,
     /// engine CSV, explorer links), per network.
-    func transactions() -> TransactionsViewModel? {
+    public func transactions() -> TransactionsViewModel? {
         guard let network = main.network else { return nil }
         if let cached = transactionsModel, cached.network == network { return cached.model }
         transactionsModel?.model.stop()

@@ -30,6 +30,7 @@ struct DashWalletCrossApp: App {
     let quitHook = QuitHook()
 
     init() {
+        GateProbe.mark("main")
         let options = AppLaunchOptions(
             arguments: CommandLine.arguments, environment: ProcessInfo.processInfo.environment)
         if options.showHelp || !options.problems.isEmpty {
@@ -71,14 +72,17 @@ struct DashWalletCrossApp: App {
         // takes CommandMenu literals, and the menus are built from the model.
         let menus: () -> Commands = { ShellMenus.commands(for: host.state, quit: { exit(0) }) }
         return WindowGroup(host.state?.shell.windowTitle ?? L10n.Navigation.appName) {
-            switch options.mode {
-            case .gallery:
-                DashUICrossGallery()
-            case .demo:
-                if let state = host.state { WalletRootView(state: state) }
-            case .live:
-                LiveStartView(options: options, quitHook: quitHook, host: host)
+            Group {
+                switch options.mode {
+                case .gallery:
+                    DashUICrossGallery()
+                case .demo:
+                    if let state = host.state { WalletRootView(state: state) }
+                case .live:
+                    LiveStartView(options: options, quitHook: quitHook, host: host)
+                }
             }
+            .gateProbe(host)
         }
         .defaultSize(width: 1100, height: 760)
         .commands(menus)
