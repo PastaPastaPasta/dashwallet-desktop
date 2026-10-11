@@ -7,18 +7,19 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dw_engine::{NetworkDataInfo, SessionOptions};
+use dw_engine::{DashNetwork, NetworkDataInfo, SessionOptions};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::{LockStatus, NetworkInfo, parse_network};
+use crate::error::AppError;
 use crate::ipc::commands;
 use crate::launch::LaunchOptions;
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("Engine::new", "internal: the app creates the engine at start-up"),
     ("Engine::config", "internal: the data root is the launch's"),
-    ("Engine::network_dir", "internal: a path the engine resolves"),
+    ("Engine::network_dir", "internal: a path the engine resolves; `nodeInfo.dataDir` shows the active network's"),
     ("Engine::session", "internal: `open_network` returns the open session"),
     ("Engine::shutdown", "internal: runs when the app exits"),
     ("Engine::block_on", "internal: for synchronous hosts"),
@@ -26,11 +27,13 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("NetworkSession::data_dir", "internal: a path the engine owns"),
     ("NetworkSession::avatars_dir", "internal: avatars cross as bytes"),
     ("NetworkSession::is_open", "internal: the binding drops a session it closes"),
-    ("NetworkSession::platform_context_ready", "internal: the `platform` events and `platformStatus` report it"),
+    ("NetworkSession::platform_context_ready", "internal: `warnings` reports it (`platformContextUnavailable`), with the engine's notice"),
 ];
 
-/// How to reach a network. Every field is optional; the launch flags
-/// (`--dapi`, `--spv-peer`, `--ca-cert`, …) fill those the renderer leaves out.
+/// How to reach a network. Every field may be left out of the JSON; the
+/// launch flags (`--dapi`, `--spv-peer`, `--ca-cert`, …) fill those the
+/// renderer leaves out. On mainnet and testnet the endpoint, quorum and CA
+/// fields must be left out (launch flags only).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SessionSettings {
@@ -52,6 +55,34 @@ pub struct SessionSettings {
 }
 
 impl SessionSettings {
+    /// On mainnet and testnet the trust settings (DAPI and SPV endpoints,
+    /// the quorum service, an extra CA) come from the launch flags only: a
+    /// compromised renderer must not point the wallet at its own quorum
+    /// keys or pin SPV to one peer. Other networks take them from the
+    /// renderer (a devnet's settings file, U-01).
+    fn check_trust(&self, network: &DashNetwork) -> Result<(), AppError> {
+        let public = matches!(network, DashNetwork::Mainnet | DashNetwork::Testnet);
+        let SessionSettings {
+            dapi_addresses,
+            quorum_url,
+            spv_peers,
+            ca_cert_path,
+            initial_protocol_version: _,
+            no_platform: _,
+        } = self;
+        let trust = !dapi_addresses.is_empty()
+            || quorum_url.is_some()
+            || !spv_peers.is_empty()
+            || ca_cert_path.is_some();
+        if public && trust {
+            return Err(AppError::invalid_argument(
+                "on mainnet and testnet, DAPI and SPV endpoints, the quorum service and CA \
+                 certificates are set by launch flags only",
+            ));
+        }
+        Ok(())
+    }
+
     /// The engine's options: these settings over the launch's.
     fn over(self, launch: &LaunchOptions) -> SessionOptions {
         let SessionSettings {
@@ -133,6 +164,8 @@ commands! {
             Some(name) => parse_network(&name)?,
             None => state.launch.network.clone(),
         };
+        let settings = settings.unwrap_or_default();
+        settings.check_trust(&network)?;
         let mut slot = state.session_slot().await;
         let session = match &*slot {
             Some(s) if *s.network() == network => Arc::clone(s),
@@ -143,7 +176,7 @@ commands! {
                     state.clear_handles();
                     engine.close_network(old).await?;
                 }
-                let options = settings.unwrap_or_default().over(&state.launch);
+                let options = settings.over(&state.launch);
                 let s = engine.open_network(network.clone(), options).await?;
                 *slot = Some(Arc::clone(&s));
                 if state.launch.sync

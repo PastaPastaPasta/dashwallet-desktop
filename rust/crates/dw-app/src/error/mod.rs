@@ -102,8 +102,6 @@ codes! {
     AppCode {
         /// The app runs on fixture data: there is no engine.
         FixtureMode = "app.fixture_mode",
-        /// A session command before `open_network`.
-        NetworkNotOpen = "app.network_not_open",
         /// A self-test command in a normal launch.
         NotSelftest = "app.not_selftest",
         /// The self-test report could not be written.
@@ -112,10 +110,8 @@ codes! {
         DataDir = "app.data_dir",
         /// A handle id that is not (or no longer) open.
         UnknownHandle = "app.unknown_handle",
-        /// More than `HandleTable::MAX` handles are open.
+        /// More than `SendHandles::MAX` handles of a kind are open.
         TooManyHandles = "app.too_many_handles",
-        /// A text argument is not valid UTF-8 where the engine needs text.
-        InvalidText = "app.invalid_text",
     }
 }
 
@@ -128,8 +124,14 @@ codes! {
     rename_all_fields = "camelCase"
 )]
 pub enum ErrorData {
-    /// `vault.wrong_passphrase`, `vault.throttled`: when to allow the next try.
+    /// `vault.throttled`: when to allow the next try.
     RetryAfter { secs: u64 },
+    /// `vault.wrong_passphrase`: failed attempts so far, and the wait before
+    /// the next try once the vault throttles.
+    WrongPassphrase {
+        failed_attempts: u32,
+        retry_after_secs: Option<u64>,
+    },
     /// `console.rpc_error`: Core's error code and message for the same
     /// failure, shown as "message (code N)".
     Rpc { rpc_code: i32, rpc_message: String },
@@ -142,8 +144,18 @@ pub enum ErrorData {
     /// A duff shortfall (`*.funding_insufficient`, `send.amount_exceeds_balance`,
     /// `send.insufficient_mixed_funds`, …).
     Duffs { needed: Option<u64>, available: u64 },
-    /// A credit shortfall (`platform.insufficient_credits`, `insufficient_credits`).
+    /// `platform.insufficient_credits`: a credit shortfall.
     Credits {
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        needed: u64,
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        available: u64,
+    },
+    /// `insufficient_credits`: the identity (Base58) whose balance is short.
+    IdentityCredits {
+        identity: String,
         #[ts(type = "string")]
         #[serde(with = "crate::dto::credits")]
         needed: u64,

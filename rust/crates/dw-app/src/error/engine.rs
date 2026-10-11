@@ -80,10 +80,14 @@ impl From<VaultError> for AppError {
             V::AlreadyExists => (VaultCode::AlreadyExists.into(), None),
             V::Locked => (VaultCode::Locked.into(), None),
             V::WrongPassphrase {
-                retry_after_secs, ..
+                failed_attempts,
+                retry_after_secs,
             } => (
                 VaultCode::WrongPassphrase.into(),
-                retry_after_secs.map(|secs| ErrorData::RetryAfter { secs }),
+                Some(ErrorData::WrongPassphrase {
+                    failed_attempts,
+                    retry_after_secs,
+                }),
             ),
             V::Throttled { retry_after_secs } => (
                 VaultCode::Throttled.into(),
@@ -138,10 +142,16 @@ impl From<EngineError> for AppError {
             E::Wallet(_) => (EngineCode::Wallet.into(), None),
             E::Sdk(_) => (EngineCode::Sdk.into(), None),
             E::InsufficientCredits {
-                needed, available, ..
+                identity_id,
+                needed,
+                available,
             } => (
                 EngineCode::InsufficientCredits.into(),
-                Some(ErrorData::Credits { needed, available }),
+                Some(ErrorData::IdentityCredits {
+                    identity: identity_id,
+                    needed,
+                    available,
+                }),
             ),
             E::Spv(_) => (EngineCode::Spv.into(), None),
             E::Io(_) => (EngineCode::Io.into(), None),

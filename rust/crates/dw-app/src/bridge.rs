@@ -335,8 +335,10 @@ pub struct TauriSink {
 }
 
 impl TauriSink {
-    /// Starts the forwarder thread. It ends when the sink is dropped (with
-    /// the engine) and the events still queued are sent.
+    /// Starts the forwarder thread. It runs for the life of the process:
+    /// it holds an `AppHandle`, which owns the engine and so this sink, so
+    /// the channel never closes before exit; events still queued at exit
+    /// are not sent (the window is gone).
     pub fn new<R: Runtime>(app: AppHandle<R>) -> Result<Self, AppError> {
         let (tx, rx) = mpsc::channel::<EngineEvent>();
         std::thread::Builder::new()

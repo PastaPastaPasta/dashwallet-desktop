@@ -8,6 +8,7 @@ import type { AddressClass } from "./AddressClass";
 import type { AddressFilter } from "./AddressFilter";
 import type { AddressInfo } from "./AddressInfo";
 import type { AddressPurposeName } from "./AddressPurposeName";
+import type { AmountStyle } from "./AmountStyle";
 import type { AppError } from "./AppError";
 import type { AppEvent } from "./AppEvent";
 import type { AuthGrant } from "./AuthGrant";
@@ -52,6 +53,7 @@ import type { DashPayStartupInfo } from "./DashPayStartupInfo";
 import type { DashPayStatus } from "./DashPayStatus";
 import type { DashPaySyncStatus } from "./DashPaySyncStatus";
 import type { DispatchStateName } from "./DispatchStateName";
+import type { DisplayUnit } from "./DisplayUnit";
 import type { EligibilityName } from "./EligibilityName";
 import type { ErrorCode } from "./ErrorCode";
 import type { FaucetLockKey } from "./FaucetLockKey";
@@ -212,8 +214,8 @@ export function probeUnlisted(): Promise<string> {
  * network of a `--sync` launch starts SPV; a failed start leaves the
  * network open, readable offline.
  */
-export function openNetwork(network?: string | null, settings?: SessionSettings | null): Promise<OpenedNetwork> {
-  return invoke<OpenedNetwork>("open_network", { network: network ?? null, settings: settings ?? null });
+export function openNetwork(network: string | null, settings: SessionSettings | null): Promise<OpenedNetwork> {
+  return invoke<OpenedNetwork>("open_network", { network, settings });
 }
 
 /**
@@ -287,8 +289,8 @@ export function lock(): Promise<LockStatus> {
  * Creates the vault and leaves it unlocked. A passphrase makes it
  * encrypted (Argon2id); `null` keeps the key in the OS secret store.
  */
-export function createVault(passphrase?: string | null): Promise<LockStatus> {
-  return invoke<LockStatus>("create_vault", { passphrase: passphrase ?? null });
+export function createVault(passphrase: string | null): Promise<LockStatus> {
+  return invoke<LockStatus>("create_vault", { passphrase });
 }
 
 /**
@@ -548,8 +550,8 @@ export function currentReceiveAddress(walletId: string): Promise<AddressInfo> {
  * it (QT-081). `gap_limit` once every address inside the gap limit is
  * issued.
  */
-export function nextReceiveAddress(walletId: string, label?: string | null): Promise<AddressInfo> {
-  return invoke<AddressInfo>("next_receive_address", { walletId, label: label ?? null });
+export function nextReceiveAddress(walletId: string, label: string | null): Promise<AddressInfo> {
+  return invoke<AddressInfo>("next_receive_address", { walletId, label });
 }
 
 /**
@@ -563,8 +565,8 @@ export function addresses(walletId: string, filter: AddressFilter): Promise<Arra
  * Stores a payment request on a freshly issued address. An amount of 0
  * means any amount.
  */
-export function createReceiveRequest(walletId: string, amount?: number | null, label?: string | null, message?: string | null): Promise<ReceiveRequest> {
-  return invoke<ReceiveRequest>("create_receive_request", { walletId, amount: amount ?? null, label: label ?? null, message: message ?? null });
+export function createReceiveRequest(walletId: string, amount: number | null, label: string | null, message: string | null): Promise<ReceiveRequest> {
+  return invoke<ReceiveRequest>("create_receive_request", { walletId, amount, label, message });
 }
 
 /**
@@ -582,8 +584,8 @@ export function deleteReceiveRequest(walletId: string, requestId: number): Promi
  * Address-book entries, sorted by label then address. `search` is
  * dash-qt's case-insensitive wildcard match (`*`, `?`) on label or address.
  */
-export function addressBook(walletId: string, purpose?: AddressPurposeName | null, search?: string | null): Promise<Array<AddressBookEntry>> {
-  return invoke<Array<AddressBookEntry>>("address_book", { walletId, purpose: purpose ?? null, search: search ?? null });
+export function addressBook(walletId: string, purpose: AddressPurposeName | null, search: string | null): Promise<Array<AddressBookEntry>> {
+  return invoke<Array<AddressBookEntry>>("address_book", { walletId, purpose, search });
 }
 
 /**
@@ -606,8 +608,8 @@ export function deleteAddressBookEntry(walletId: string, address: string): Promi
 /**
  * Sets, or clears (`null` or empty), the label of a transaction.
  */
-export function setTxLabel(walletId: string, txid: string, label?: string | null): Promise<null> {
-  return invoke<null>("set_tx_label", { walletId, txid, label: label ?? null });
+export function setTxLabel(walletId: string, txid: string, label: string | null): Promise<null> {
+  return invoke<null>("set_tx_label", { walletId, txid, label });
 }
 
 /**
@@ -814,8 +816,8 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
  * `walletId` is `null`) and rescans from the lowest funding height.
  * Needs a running SPV client. Returns how many were dropped.
  */
-export function dropUnconfirmed(walletId?: string | null): Promise<number> {
-  return invoke<number>("drop_unconfirmed", { walletId: walletId ?? null });
+export function dropUnconfirmed(walletId: string | null): Promise<number> {
+  return invoke<number>("drop_unconfirmed", { walletId });
 }
 
 /**
@@ -846,30 +848,34 @@ export function isCoinjoinInternal(txType: TxTypeName): Promise<boolean> {
 }
 
 /**
- * dash-qt "Backup Wallet": writes a `.dwbackup` of the wallet to
- * `destPath` (never over an existing file). `backupPassphrase` wraps
- * the data key in the file; without one, the file opens only with this
- * vault's passphrase. Watch-only wallets have nothing to back up.
+ * dash-qt "Backup Wallet" (QT-110): writes a `.dwbackup` of the wallet
+ * to `destPath` (never over an existing file). Encrypted vault: the
+ * file is wrapped with the vault's passphrase slot and needs the vault
+ * unlocked; `backupPassphrase` must be `null` (`invalid_argument`
+ * otherwise). Unencrypted vault: `backupPassphrase` is required
+ * (`backup.passphrase_required`), must not be empty, and wraps the
+ * file. Watch-only wallets have nothing to back up (`not_implemented`).
  */
-export function backupWallet(walletId: string, destPath: string, backupPassphrase?: string | null): Promise<BackupSummary> {
-  return invoke<BackupSummary>("backup_wallet", { walletId, destPath, backupPassphrase: backupPassphrase ?? null });
+export function backupWallet(walletId: string, destPath: string, backupPassphrase: string | null): Promise<BackupSummary> {
+  return invoke<BackupSummary>("backup_wallet", { walletId, destPath, backupPassphrase });
 }
 
 /**
  * Restores the wallets of a `.dwbackup`: verifies it, stores each
  * wallet's secrets under this vault's key and registers it. Returns
- * the wallet ids.
+ * the wallet ids. `passphrase` is the one that wrapped the file (the
+ * backing-up vault's passphrase, or its backup passphrase).
  */
-export function restoreBackup(path: string, passphrase?: string | null): Promise<Array<string>> {
-  return invoke<Array<string>>("restore_backup", { path, passphrase: passphrase ?? null });
+export function restoreBackup(path: string, passphrase: string | null): Promise<Array<string>> {
+  return invoke<Array<string>>("restore_backup", { path, passphrase });
 }
 
 /**
  * Automatic backups of a wallet (every wallet when `walletId` is
  * `null`), newest first.
  */
-export function automaticBackups(walletId?: string | null): Promise<Array<BackupSummary>> {
-  return invoke<Array<BackupSummary>>("automatic_backups", { walletId: walletId ?? null });
+export function automaticBackups(walletId: string | null): Promise<Array<BackupSummary>> {
+  return invoke<Array<BackupSummary>>("automatic_backups", { walletId });
 }
 
 /**
@@ -1023,7 +1029,9 @@ export function draftEstimate(draft: number): Promise<TxEstimate> {
  * Selects coins, builds, signs through the vault with a `Spend` grant
  * (or a lease) that caps what leaves the wallet, and reserves the
  * inputs. Never broadcasts. Returns the prepared transaction's handle
- * and its summary.
+ * and its summary. When the draft was closed (or the network switched)
+ * meanwhile, the transaction is dropped, its inputs are released, and
+ * the call fails with `app.unknown_handle`.
  */
 export function draftPrepare(draft: number, grantId: string): Promise<PreparedTxHandle> {
   return invoke<PreparedTxHandle>("draft_prepare", { draft, grantId });
@@ -1032,8 +1040,11 @@ export function draftPrepare(draft: number, grantId: string): Promise<PreparedTx
 /**
  * Announces a prepared transaction and waits for the network's
  * acceptance (up to about a minute on SPV). The handle is dropped once
- * the network accepted it; after `send.broadcast_unknown` it stays, so
- * the call can be repeated.
+ * the network accepted it, and after a failure that released the
+ * transaction (`send.no_peers`, `send.broadcast_rejected`,
+ * `send.cancelled`, …: prepare again). It stays while the transaction is
+ * still held: after `send.broadcast_unknown`, or a failure before
+ * dispatch, so the call can be repeated.
  */
 export function draftBroadcast(draft: number, prepared: number): Promise<BroadcastOutcome> {
   return invoke<BroadcastOutcome>("draft_broadcast", { draft, prepared });
@@ -1054,14 +1065,6 @@ export function draftAbandon(draft: number, prepared: number): Promise<null> {
  */
 export function preparedSummary(prepared: number): Promise<PreparedTxSummary> {
   return invoke<PreparedTxSummary>("prepared_summary", { prepared });
-}
-
-/**
- * The signed transaction, consensus-encoded as lower-case hex; `null`
- * once the engine released it.
- */
-export function preparedRaw(prepared: number): Promise<string | null> {
-  return invoke<string | null>("prepared_raw", { prepared });
 }
 
 /**
@@ -1135,8 +1138,8 @@ export function dustProtection(): Promise<number | null> {
 /**
  * Turns dust protection on (1..=1,000,000 duffs) or off (`null`).
  */
-export function setDustProtection(threshold?: number | null): Promise<null> {
-  return invoke<null>("set_dust_protection", { threshold: threshold ?? null });
+export function setDustProtection(threshold: number | null): Promise<null> {
+  return invoke<null>("set_dust_protection", { threshold });
 }
 
 /**
@@ -1170,8 +1173,8 @@ export function parsePaymentUri(network: string, text: string): Promise<UriParse
  * address is not validated; the amount, in duffs, is at most 21 million
  * DASH.
  */
-export function buildPaymentUri(address: string, amount?: number | null, label?: string | null, message?: string | null): Promise<string> {
-  return invoke<string>("build_payment_uri", { address, amount: amount ?? null, label: label ?? null, message: message ?? null });
+export function buildPaymentUri(address: string, amount: number | null, label: string | null, message: string | null): Promise<string> {
+  return invoke<string>("build_payment_uri", { address, amount, label, message });
 }
 
 /**
@@ -1213,9 +1216,8 @@ export function setCoinjoinSettings(settings: CoinJoinSettings): Promise<null> {
 }
 
 /**
- * The wallet's mixing status (QT-041..050): an in-memory read of the
- * status the engine refreshes once a second; re-query on `coinjoin`
- * events.
+ * The wallet's mixing status (QT-041..050): the status the engine
+ * refreshes once a second; re-query on `coinjoin` events.
  */
 export function coinjoinStatus(walletId: string): Promise<CoinJoinStatus> {
   return invoke<CoinJoinStatus>("coinjoin_status", { walletId });
@@ -1350,8 +1352,8 @@ export function registrations(walletId: string): Promise<Array<RegistrationStatu
  * Resumes a parked registration. `grant` is needed exactly when its
  * `waiting` is `unlock` or `authorize`.
  */
-export function resumeRegistration(walletId: string, draft: string, grant?: string | null): Promise<null> {
-  return invoke<null>("resume_registration", { walletId, draft, grant: grant ?? null });
+export function resumeRegistration(walletId: string, draft: string, grant: string | null): Promise<null> {
+  return invoke<null>("resume_registration", { walletId, draft, grant });
 }
 
 /**
@@ -1400,8 +1402,8 @@ export function registerName(walletId: string, identity: string, label: string, 
 /**
  * Picks `label` as the identity's main name, or clears the pick with `null`.
  */
-export function setMainName(walletId: string, identity: string, label?: string | null): Promise<null> {
-  return invoke<null>("set_main_name", { walletId, identity, label: label ?? null });
+export function setMainName(walletId: string, identity: string, label: string | null): Promise<null> {
+  return invoke<null>("set_main_name", { walletId, identity, label });
 }
 
 /**
@@ -1587,20 +1589,20 @@ export function dashpayEligibility(walletId: string, identity: string, contact: 
 }
 
 /**
- * Sends a contact request to `to` under `lease` (a `contactRequest`
+ * Sends a contact request to `to` under `grant` (a `contactRequest`
  * flow). `scan` is the proof id of `dashpayVerifyScanned`, when the
  * request answers a scanned code.
  */
-export function dashpaySendRequest(walletId: string, identity: string, to: string, scan: string | null, lease: string): Promise<ContactRequestOutcome> {
-  return invoke<ContactRequestOutcome>("dashpay_send_request", { walletId, identity, to, scan, lease });
+export function dashpaySendRequest(walletId: string, identity: string, to: string, scan: string | null, grant: string): Promise<ContactRequestOutcome> {
+  return invoke<ContactRequestOutcome>("dashpay_send_request", { walletId, identity, to, scan, grant });
 }
 
 /**
- * Accepts the request `from` sent, under `lease` (an `accept` or
+ * Accepts the request `from` sent, under `grant` (an `accept` or
  * `acceptAndPay` flow).
  */
-export function dashpayAcceptRequest(walletId: string, identity: string, from: string, lease: string): Promise<ContactRequestOutcome> {
-  return invoke<ContactRequestOutcome>("dashpay_accept_request", { walletId, identity, from, lease });
+export function dashpayAcceptRequest(walletId: string, identity: string, from: string, grant: string): Promise<ContactRequestOutcome> {
+  return invoke<ContactRequestOutcome>("dashpay_accept_request", { walletId, identity, from, grant });
 }
 
 /**
@@ -1619,19 +1621,19 @@ export function dashpayUnignoreContact(walletId: string, identity: string, conta
 
 /**
  * Sets the alias, note and hidden flag only `identity` sees. With a
- * `lease` (a `privateDetails` flow) they are published; the result says
+ * `grant` (a `privateDetails` flow) they are published; the result says
  * whether they were.
  */
-export function dashpaySetPrivateDetails(walletId: string, identity: string, contact: string, details: PrivateContactDetails, lease?: string | null): Promise<PublishStateName> {
-  return invoke<PublishStateName>("dashpay_set_private_details", { walletId, identity, contact, details, lease: lease ?? null });
+export function dashpaySetPrivateDetails(walletId: string, identity: string, contact: string, details: PrivateContactDetails, grant: string | null): Promise<PublishStateName> {
+  return invoke<PublishStateName>("dashpay_set_private_details", { walletId, identity, contact, details, grant });
 }
 
 /**
- * Adds the DashPay keys to `identity`, under `lease` (an
+ * Adds the DashPay keys to `identity`, under `grant` (an
  * `enableDashPayKeys` flow).
  */
-export function dashpayEnableKeys(walletId: string, identity: string, lease: string): Promise<null> {
-  return invoke<null>("dashpay_enable_keys", { walletId, identity, lease });
+export function dashpayEnableKeys(walletId: string, identity: string, grant: string): Promise<null> {
+  return invoke<null>("dashpay_enable_keys", { walletId, identity, grant });
 }
 
 /**
@@ -1718,11 +1720,11 @@ export function dashpayProfileLimits(walletId: string): Promise<DashPayProfileLi
 }
 
 /**
- * Publishes the whole new profile under `lease` (a `profileEdit`
+ * Publishes the whole new profile under `grant` (a `profileEdit`
  * flow); `null` fields are cleared.
  */
-export function dashpayUpdateProfile(walletId: string, identity: string, edit: ProfileEditArgs, lease: string): Promise<null> {
-  return invoke<null>("dashpay_update_profile", { walletId, identity, edit, lease });
+export function dashpayUpdateProfile(walletId: string, identity: string, edit: ProfileEditArgs, grant: string): Promise<null> {
+  return invoke<null>("dashpay_update_profile", { walletId, identity, edit, grant });
 }
 
 /**
@@ -1776,8 +1778,32 @@ export function consoleRedact(line: string): Promise<string> {
  * names the purpose and wallet) and is spent by the first command that
  * needs one.
  */
-export function consoleExecute(walletId: string | null, line: string, grantId?: string | null): Promise<ConsoleOutput> {
-  return invoke<ConsoleOutput>("console_execute", { walletId, line, grantId: grantId ?? null });
+export function consoleExecute(walletId: string | null, line: string, grantId: string | null): Promise<ConsoleOutput> {
+  return invoke<ConsoleOutput>("console_execute", { walletId, line, grantId });
+}
+
+/**
+ * Formats `amount` duffs in `unit` with one of dash-qt's formatters.
+ */
+export function formatAmount(amount: number, unit: DisplayUnit, network: string, style: AmountStyle): Promise<string> {
+  return invoke<string>("format_amount", { amount, unit, network, style });
+}
+
+/**
+ * Parses user input in `unit` to duffs with `BitcoinUnits::parse`'s
+ * rules (spaces and thin spaces ignored; at most the unit's decimals);
+ * `null` when dash-qt's parser rejects the text. Range checks (dust,
+ * the maximum supply) are the caller's.
+ */
+export function parseAmount(text: string, unit: DisplayUnit): Promise<number | null> {
+  return invoke<number | null>("parse_amount", { text, unit });
+}
+
+/**
+ * The unit's name on `network` (`DASH`, `mtDASH`, `μDASH`, `tduffs`, …).
+ */
+export function unitName(unit: DisplayUnit, network: string): Promise<string> {
+  return invoke<string>("unit_name", { unit, network });
 }
 
 /** Each command's arguments, as `invoke` sends them. */
@@ -1896,7 +1922,6 @@ export type CommandArgs = {
   draft_broadcast: { draft: number; prepared: number };
   draft_abandon: { draft: number; prepared: number };
   prepared_summary: { prepared: number };
-  prepared_raw: { prepared: number };
   draft_create_unsigned: { draft: number };
   analyze_psbt: { walletId: string | null; psbt: string };
   sign_psbt: { walletId: string; psbt: string; grantId: string };
@@ -1966,12 +1991,12 @@ export type CommandArgs = {
   dashpay_contact: { walletId: string; identity: string; contact: string };
   dashpay_pending_setup_count: { walletId: string };
   dashpay_eligibility: { walletId: string; identity: string; contact: string };
-  dashpay_send_request: { walletId: string; identity: string; to: string; scan: string | null; lease: string };
-  dashpay_accept_request: { walletId: string; identity: string; from: string; lease: string };
+  dashpay_send_request: { walletId: string; identity: string; to: string; scan: string | null; grant: string };
+  dashpay_accept_request: { walletId: string; identity: string; from: string; grant: string };
   dashpay_ignore_contact: { walletId: string; identity: string; contact: string };
   dashpay_unignore_contact: { walletId: string; identity: string; contact: string };
-  dashpay_set_private_details: { walletId: string; identity: string; contact: string; details: PrivateContactDetails; lease: string | null };
-  dashpay_enable_keys: { walletId: string; identity: string; lease: string };
+  dashpay_set_private_details: { walletId: string; identity: string; contact: string; details: PrivateContactDetails; grant: string | null };
+  dashpay_enable_keys: { walletId: string; identity: string; grant: string };
   dashpay_my_user_link: { walletId: string; identity: string };
   dashpay_verify_scanned: { walletId: string; text: string };
   contact_payment_lock: { walletId: string; identity: string; contact: string };
@@ -1983,7 +2008,7 @@ export type CommandArgs = {
   dashpay_unread_count: { walletId: string; identity: string };
   dashpay_profile: { walletId: string; identity: string };
   dashpay_profile_limits: { walletId: string };
-  dashpay_update_profile: { walletId: string; identity: string; edit: ProfileEditArgs; lease: string };
+  dashpay_update_profile: { walletId: string; identity: string; edit: ProfileEditArgs; grant: string };
   dashpay_prepare_avatar: { walletId: string; source: AvatarSourceArgs };
   dashpay_avatar_upload_available: { walletId: string };
   dashpay_upload_avatar: { walletId: string; candidate: string };
@@ -1991,6 +2016,9 @@ export type CommandArgs = {
   console_commands: {  };
   console_redact: { line: string };
   console_execute: { walletId: string | null; line: string; grantId: string | null };
+  format_amount: { amount: number; unit: DisplayUnit; network: string; style: AmountStyle };
+  parse_amount: { text: string; unit: DisplayUnit };
+  unit_name: { unit: DisplayUnit; network: string };
 };
 
 /** Each command's result. */
@@ -2109,7 +2137,6 @@ export type CommandResults = {
   draft_broadcast: BroadcastOutcome;
   draft_abandon: null;
   prepared_summary: PreparedTxSummary;
-  prepared_raw: string | null;
   draft_create_unsigned: string;
   analyze_psbt: PsbtAnalysis;
   sign_psbt: string;
@@ -2204,6 +2231,9 @@ export type CommandResults = {
   console_commands: Array<ConsoleCommand>;
   console_redact: string;
   console_execute: ConsoleOutput;
+  format_amount: string;
+  parse_amount: number | null;
+  unit_name: string;
 };
 
 export type CommandName = keyof CommandResults;
@@ -2324,7 +2354,6 @@ export const COMMANDS: Record<CommandName, string> = {
   draft_broadcast: "send",
   draft_abandon: "send",
   prepared_summary: "send",
-  prepared_raw: "send",
   draft_create_unsigned: "send",
   analyze_psbt: "send",
   sign_psbt: "send",
@@ -2419,18 +2448,19 @@ export const COMMANDS: Record<CommandName, string> = {
   console_commands: "console",
   console_redact: "console",
   console_execute: "console",
+  format_amount: "units",
+  parse_amount: "units",
+  unit_name: "units",
 };
 
 /** Every error code. */
 export const ERROR_CODES: readonly ErrorCode[] = [
   "app.fixture_mode",
-  "app.network_not_open",
   "app.not_selftest",
   "app.selftest",
   "app.data_dir",
   "app.unknown_handle",
   "app.too_many_handles",
-  "app.invalid_text",
   "invalid_config",
   "invalid_argument",
   "network_not_open",

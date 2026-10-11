@@ -122,7 +122,7 @@ pub(crate) fn assert_app_error(e: &Value) {
 fn engine_and_session_commands_over_ipc() {
     let demo = Demo::new();
     // Session commands before a network is open.
-    demo.err("list_wallets", json!({}), "app.network_not_open");
+    demo.err("list_wallets", json!({}), "network_not_open");
     assert_eq!(demo.ok("active_network", json!({})), Value::Null);
 
     let launch = demo.ok("launch_info", json!({}));
@@ -136,6 +136,14 @@ fn engine_and_session_commands_over_ipc() {
     assert_eq!(demo.ok("active_network", json!({}))["dirName"], "regtest");
     // Already active: the same session, settings ignored.
     assert_eq!(demo.ok("open_network", json!({})), opened);
+    // Trust settings on mainnet and testnet come from launch flags only;
+    // refused before the active session is touched.
+    demo.err(
+        "open_network",
+        json!({ "network": "testnet", "settings": { "quorumUrl": "https://evil.example" } }),
+        "invalid_argument",
+    );
+    assert_eq!(demo.ok("active_network", json!({}))["dirName"], "regtest");
     // An argument the binding parses itself.
     demo.err(
         "open_network",
@@ -167,7 +175,7 @@ fn engine_and_session_commands_over_ipc() {
     // Closing drops the active session.
     assert_eq!(demo.ok("close_network", json!({})), true);
     assert_eq!(demo.ok("close_network", json!({})), false);
-    demo.err("lock_status", json!({}), "app.network_not_open");
+    demo.err("lock_status", json!({}), "network_not_open");
 }
 
 #[test]
@@ -299,4 +307,134 @@ fn a_command_of_every_facade_over_ipc() {
         "platform.not_implemented",
     );
     assert_eq!(e["data"]["kind"], "call", "{e}");
+}
+
+/// The vault and wallet flows whose arguments are tagged records or
+/// several secrets of one type: a swap or a dropped field would compile.
+#[test]
+fn vault_and_wallet_flows_over_ipc() {
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "first" }));
+    let created = demo.ok("create_wallet", json!({ "wordCount": 12 }));
+    let wallet = created["walletId"].as_str().unwrap().to_owned();
+    let phrase = created["mnemonic"].as_str().unwrap().to_owned();
+    let other_phrase = demo.ok(
+        "generate_mnemonic",
+        json!({ "wordCount": 12, "language": "english" }),
+    );
+    let imported = demo.ok(
+        "import_wallet",
+        json!({
+            "mnemonic": other_phrase,
+            "bip39Passphrase": "extra",
+            "options": { "name": "Imported", "birthHeight": null, "coreCompat": false, "lookahead": null },
+        }),
+    );
+    let imported = imported.as_str().unwrap().to_owned();
+    assert_eq!(
+        demo.ok("wallet_info", json!({ "walletId": imported }))["name"],
+        "Imported"
+    );
+
+    // A wrong passphrase carries the attempt count.
+    demo.ok("lock", json!({}));
+    let e = demo.err(
+        "unlock",
+        json!({ "passphrase": "wrong" }),
+        "vault.wrong_passphrase",
+    );
+    assert_eq!(e["data"]["kind"], "wrongPassphrase", "{e}");
+    assert_eq!(e["data"]["failedAttempts"], 1, "{e}");
+    demo.ok("unlock", json!({ "passphrase": "first" }));
+
+    // authorize (tagged purpose and credential) → revealMnemonic.
+    let reveal = |wallet: &str, passphrase: &str| {
+        let grant = demo.ok(
+            "authorize",
+            json!({
+                "purpose": { "kind": "revealSecret" },
+                "walletId": wallet,
+                "credential": { "kind": "passphrase", "passphrase": passphrase },
+            }),
+        );
+        assert_eq!(grant["purpose"]["kind"], "revealSecret", "{grant}");
+        demo.ok(
+            "reveal_mnemonic",
+            json!({ "walletId": wallet, "grantId": grant["id"] }),
+        )
+    };
+    let shown = reveal(&wallet, "first");
+    assert_eq!(shown["phrase"], phrase.as_str());
+    assert_eq!(shown["bip39Passphrase"], "");
+    let shown = reveal(&imported, "first");
+    assert_eq!(shown["phrase"], other_phrase);
+    assert_eq!(shown["bip39Passphrase"], "extra");
+
+    // Forgot passphrase: the recovery phrase sets a new vault passphrase.
+    demo.ok("lock", json!({}));
+    let recovered = demo.ok(
+        "recover_with_mnemonic",
+        json!({
+            "walletId": wallet,
+            "mnemonic": phrase,
+            "bip39Passphrase": "",
+            "newPassphrase": "second",
+        }),
+    );
+    assert!(
+        recovered["status"]["encrypted"].as_bool().unwrap(),
+        "{recovered}"
+    );
+    demo.ok("lock", json!({}));
+    demo.err(
+        "unlock",
+        json!({ "passphrase": "first" }),
+        "vault.wrong_passphrase",
+    );
+    demo.ok("unlock", json!({ "passphrase": "second" }));
+
+    // removeWallet with a wipe grant.
+    let wipe = demo.ok(
+        "authorize",
+        json!({
+            "purpose": { "kind": "wipe" },
+            "walletId": imported,
+            "credential": { "kind": "passphrase", "passphrase": "second" },
+        }),
+    );
+    demo.ok(
+        "remove_wallet",
+        json!({ "walletId": imported, "grantId": wipe["id"] }),
+    );
+    assert_eq!(
+        demo.ok("list_wallets", json!({})).as_array().unwrap().len(),
+        1
+    );
+}
+
+/// A draft made from a session that closed meanwhile is not stored.
+#[test]
+fn handles_belong_to_their_session() {
+    use tauri::Manager;
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let created = demo.ok("create_wallet", json!({ "wordCount": 12 }));
+    let wallet: dw_engine::WalletId = created["walletId"].as_str().unwrap().parse().unwrap();
+    let state = demo.app.state::<crate::state::AppState>();
+    let (session, epoch) =
+        tauri::async_runtime::block_on(state.session_and_epoch()).expect("session");
+    let draft = session.new_tx_draft(wallet).expect("draft");
+    let handle = demo.ok("new_tx_draft", json!({ "walletId": wallet.to_string() }));
+    // Switching the network drops the handles and starts a new epoch.
+    demo.ok("close_network", json!({}));
+    demo.open();
+    let e = state.sends.insert_draft(epoch, draft).unwrap_err();
+    assert_eq!(e.code_str(), "network_not_open");
+    demo.err(
+        "draft_wallet_id",
+        json!({ "draft": handle }),
+        "app.unknown_handle",
+    );
 }

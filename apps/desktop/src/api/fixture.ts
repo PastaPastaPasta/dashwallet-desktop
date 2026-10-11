@@ -246,7 +246,10 @@ export class FixtureBackend implements Backend {
   unlock = async (passphrase: string) => {
     if (passphrase !== FIXTURE_PASSPHRASE) {
       this.failedAttempts += 1;
-      throw fail("vault.wrong_passphrase", `wrong passphrase (${this.failedAttempts} failed)`);
+      throw {
+        ...fail("vault.wrong_passphrase", `wrong passphrase (${this.failedAttempts} failed)`),
+        data: { kind: "wrongPassphrase", failedAttempts: this.failedAttempts, retryAfterSecs: null },
+      } satisfies AppError;
     }
     this.failedAttempts = 0;
     this.locked = false;

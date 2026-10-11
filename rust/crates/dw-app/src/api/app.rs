@@ -29,7 +29,8 @@ commands! {
     #[facade()]
     fn startup_mark(state, mark: String) -> u64 {
         let ms = state.started.elapsed().as_millis() as u64;
-        eprintln!("dw-app: startup {mark} {ms}");
+        // Escaped: the harness reads these lines, so a mark cannot forge one.
+        eprintln!("dw-app: startup {} {ms}", mark.escape_debug());
         Ok(ms)
     }
 
@@ -41,7 +42,9 @@ commands! {
         let path = state.selftest_path()?;
         let text = serde_json::to_string_pretty(&report)
             .map_err(|e| AppError::app(AppCode::Selftest, e.to_string()))?;
-        std::fs::write(path, text).map_err(|e| AppError::app(AppCode::Selftest, e.to_string()))?;
+        tokio::fs::write(path, text)
+            .await
+            .map_err(|e| AppError::app(AppCode::Selftest, e.to_string()))?;
         eprintln!("dw-app: selftest report written to {}", path.display());
         if report.get("final").and_then(serde_json::Value::as_bool) != Some(false) {
             state.exit(0);
@@ -54,7 +57,7 @@ commands! {
     #[facade()]
     fn selftest_checkpoint(state, screen: String) -> () {
         state.selftest_path()?;
-        eprintln!("dw-app: selftest-screen {screen}");
+        eprintln!("dw-app: selftest-screen {}", screen.escape_debug());
         Ok(())
     }
 

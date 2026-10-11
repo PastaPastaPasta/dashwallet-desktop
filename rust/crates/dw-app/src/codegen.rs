@@ -92,33 +92,10 @@ fn commands_ts(cfg: &Config, imports: &Imports) -> String {
             .iter()
             .map(|(n, t)| (camel(n), t.ts_name(cfg)))
             .collect();
-        // Trailing nullable arguments may be left out.
-        let optional_from = args
-            .iter()
-            .rposition(|(_, t)| !t.ends_with(" | null"))
-            .map_or(0, |i| i + 1);
-        let params: Vec<String> = args
-            .iter()
-            .enumerate()
-            .map(|(i, (n, t))| {
-                if i >= optional_from {
-                    format!("{n}?: {t}")
-                } else {
-                    format!("{n}: {t}")
-                }
-            })
-            .collect();
-        let fields: Vec<String> = args
-            .iter()
-            .enumerate()
-            .map(|(i, (n, _))| {
-                if i >= optional_from {
-                    format!("{n}: {n} ?? null")
-                } else {
-                    n.clone()
-                }
-            })
-            .collect();
+        // Every argument is written out, `null` included: a left-out
+        // passphrase or label must not mean "none" by accident.
+        let params: Vec<String> = args.iter().map(|(n, t)| format!("{n}: {t}")).collect();
+        let fields: Vec<String> = args.iter().map(|(n, _)| n.clone()).collect();
         ts.push('\n');
         let docs: Vec<&str> = spec
             .docs

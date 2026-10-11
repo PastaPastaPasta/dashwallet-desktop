@@ -13,7 +13,7 @@ export class TauriBackend implements Backend {
   readonly locale = undefined;
 
   launchInfo = () => cmd.launchInfo();
-  openNetwork = () => cmd.openNetwork();
+  openNetwork = () => cmd.openNetwork(null, null);
   listWallets = () => cmd.listWallets();
   lockStatus = () => cmd.lockStatus();
   unlock = (passphrase: string) => cmd.unlock(passphrase);
