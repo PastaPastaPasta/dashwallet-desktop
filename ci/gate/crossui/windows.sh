@@ -93,6 +93,17 @@ for appearance in light dark; do
 done
 # The stack of every crash (cdb from the runner's Windows SDK; symbols from the build's PDBs).
 cdb="/c/Program Files (x86)/Windows Kits/10/Debuggers/x64/cdb.exe"
+# WER wrote no dump for the stack overflows (0xC00000FD) of run 38114456775, so one unlock to
+# Overview runs again under cdb, which prints the stack at the first stack overflow ("sov").
+if [[ -x "$cdb" ]] && grep -q "0xC00000FD" "$results"; then
+  datadir="$GATE_WORK/cdb-datadir"
+  rm -rf "$datadir" && cp -R "$GATE_WALLET" "$datadir"
+  DWD_GATE=1 DWD_GATE_UNLOCK_FILE="$(win "$GATE_PASSPHRASE_FILE")" DWD_GATE_HIDE_SYNC_OVERLAY=1 \
+    timeout 600 "$cdb" -y "$(win "$bin_dir")" -c 'sxe -c "kn 250; !uniqstack; q" sov; g' \
+    "$(win "$exe")" --network regtest --datadir "$(win "$datadir")" --connect 127.0.0.1:1 \
+    --dapi http://127.0.0.1:1 >"$OUT/overview-cdb.txt" 2>&1 || true
+  result "overview under cdb: $(wc -l <"$OUT/overview-cdb.txt") lines in overview-cdb.txt"
+fi
 for dump in "$dumps"/*.dmp; do
   [[ -e "$dump" ]] || continue
   cp "$dump" "$OUT/"
