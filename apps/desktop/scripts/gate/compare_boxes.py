@@ -5,8 +5,13 @@ Inputs are self-test reports (`--selftest` from the Tauri app, `selftest.json` f
 one per engine. Every `<theme>/<screen>` and test id present in all reports is compared on
 x, y, width and height against the first report.
 
-Usage: compare_boxes.py NAME=report.json NAME=report.json [...] [--tolerance 2]
+Usage: compare_boxes.py NAME=report.json NAME=report.json [...] [--tolerance 2] [--text-runs ID,ID]
 Prints a JSON summary; exit status 0 when every delta is within the tolerance.
+
+`--text-runs` names test ids whose box is a text run's (sized by its glyphs: the hero amount, the
+network capsule's label). U3(c) covers layout containers, "not text runs", so those boxes are
+compared and reported apart (`textRuns`) and do not decide `pass`. `passAllBoxes` keeps the
+verdict over every box.
 """
 
 import argparse
@@ -30,7 +35,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("reports", nargs="+", help="NAME=path")
     ap.add_argument("--tolerance", type=float, default=2.0)
+    ap.add_argument("--text-runs", default="", help="comma-separated test ids of text-run boxes")
     args = ap.parse_args()
+    text_runs = {t for t in args.text_runs.split(",") if t}
     named = [r.split("=", 1) for r in args.reports]
     data = {name: boxes(json.load(open(path))) for name, path in named}
     base_name = named[0][0]
@@ -38,31 +45,37 @@ def main():
     common = set(base)
     for d in data.values():
         common &= set(d)
-    summary = {"base": base_name, "tolerance": args.tolerance, "compared": len(common), "engines": {}}
-    ok = True
+    summary = {"base": base_name, "tolerance": args.tolerance, "compared": len(common),
+               "textRunIds": sorted(text_runs), "engines": {}}
+    ok = ok_all = True
     for name, d in data.items():
         if name == base_name:
             continue
         over = []
+        runs_over = []
         worst = 0.0
         for key in sorted(common):
             a, b = base[key], d[key]
             delta = max(abs(a[k] - b[k]) for k in ("x", "y", "w", "h"))
             worst = max(worst, delta)
             if delta > args.tolerance:
-                over.append({"screen": key[0], "id": key[1], "delta": round(delta, 2), base_name: a, name: b})
+                entry = {"screen": key[0], "id": key[1], "delta": round(delta, 2), base_name: a, name: b}
+                (runs_over if key[1].split("#")[0] in text_runs else over).append(entry)
         missing = set(base) - set(d)
         extra = set(d) - set(base)
         # A container that exists in one engine only is a layout difference too.
         ok &= not over and not missing and not extra
+        ok_all &= not over and not runs_over and not missing and not extra
         summary["engines"][name] = {
             "maxDelta": round(worst, 2),
             "overTolerance": len(over),
             "onlyHere": sorted(f"{k[0]}:{k[1]}" for k in extra)[:10],
             "missingHere": sorted(f"{k[0]}:{k[1]}" for k in missing)[:10],
             "worst": sorted(over, key=lambda o: -o["delta"])[:10],
+            "textRuns": sorted(runs_over, key=lambda o: -o["delta"])[:10],
         }
     summary["pass"] = ok
+    summary["passAllBoxes"] = ok_all
     print(json.dumps(summary, indent=2))
     return 0 if ok else 1
 
