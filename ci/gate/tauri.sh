@@ -24,6 +24,11 @@ set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=$GATE_OUT
 TMP=${RUNNER_TEMP:-$OUT/tmp}
+# Git Bash: drive-letter paths ("D:\a\_temp") make GNU tar look for a remote host; use /d/a/_temp.
+if [[ "$GATE_OS" == windows ]]; then
+  OUT=$(cygpath -u "$OUT")
+  TMP=$(cygpath -u "$TMP")
+fi
 mkdir -p "$OUT/shots" "$TMP"
 exe=dash-wallet
 [[ "$GATE_OS" != windows ]] || exe=dash-wallet.exe
@@ -120,16 +125,18 @@ shot() { # PID FILE
 
 # --selftest with a capture of each screen while it pauses (Windows captures in tauri-windows.ps1).
 selftest_with_shots() { # REPORT LOG ARGS...
-  local report=$1 log=$2 seen=0 pid
+  local report=$1 log=$2 seen=0 count screen pid
   shift 2
   "$APP" "$@" --selftest "$report" --selftest-pause "$PAUSE_MS" >"$log" 2>&1 &
   pid=$!
   local deadline=$(($(date +%s) + 900))
+  # macOS ships bash 3.2: no mapfile, and empty arrays trip `set -u`, so read the log line by line.
   while kill -0 "$pid" 2>/dev/null && (($(date +%s) < deadline)); do
-    mapfile -t screens < <(grep -o 'selftest-screen [a-zA-Z/]*' "$log" | awk '{print $2}')
-    while ((seen < ${#screens[@]})); do
+    count=$(grep -o 'selftest-screen [a-zA-Z/]*' "$log" | wc -l | tr -d ' ')
+    while ((seen < count)); do
+      screen=$(grep -o 'selftest-screen [a-zA-Z/]*' "$log" | sed -n "$((seen + 1))p" | awk '{print $2}')
       sleep 0.8
-      shot "$pid" "$OUT/shots/${screens[$seen]//\//-}.png" || true
+      shot "$pid" "$OUT/shots/${screen//\//-}.png" || true
       seen=$((seen + 1))
     done
     sleep 0.2
