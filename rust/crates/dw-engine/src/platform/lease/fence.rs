@@ -3208,6 +3208,9 @@ impl LeaseTable {
             return;
         }
         let mut found = found;
+        // Every write answered: `Ok(false)` landed too (no marker stands to
+        // record against), like `record_self_spend`'s.
+        let mut answered = true;
         if counted && let Some(backend) = &backend {
             for (step, lock) in &mut found {
                 let id = ArtifactId::of_step(&wallet, step);
@@ -3220,11 +3223,15 @@ impl LeaseTable {
                     })
                     .collect();
                 let txid = lock.txid.to_byte_array();
-                match guarded(|| backend.insert_signed_lock(&wallet.0, step, &id.0, &txid, &inputs))
-                {
+                match guarded(|| {
+                    blocking(|| backend.insert_signed_lock(&wallet.0, step, &id.0, &txid, &inputs))
+                }) {
                     Ok(true) => lock.durable = true,
                     Ok(false) => tracing::warn!(step, "a signed lock's marker no longer stands"),
-                    Err(e) => tracing::warn!(step, error = %e, "recording a signed lock failed"),
+                    Err(e) => {
+                        answered = false;
+                        tracing::warn!(step, error = %e, "recording a signed lock failed");
+                    }
                 }
             }
         } else {
@@ -3236,7 +3243,7 @@ impl LeaseTable {
         self.with_j(|i, fx| {
             fx.notify();
             if counted {
-                end_write(i, fx, found.iter().all(|(_, l)| l.durable));
+                end_write(i, fx, answered);
             }
             for (step, lock) in found {
                 // A `NotSent` row that superseded the marker since dropped

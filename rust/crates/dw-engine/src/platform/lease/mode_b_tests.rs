@@ -2201,6 +2201,55 @@ async fn a_signed_locks_failed_write_is_retried_by_the_next_store() {
     );
 }
 
+/// Every lock one call signed is the step's, durably, and Repair's
+/// self-spend must take an input of each (§2a.6).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_lock_a_call_signed_is_recorded() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 0))
+        .await
+        .unwrap();
+    let (first, second) = (row(1, 0, R::Built), row(2, 0, R::Built));
+    sign_lock(&t, &p, W, &first);
+    sign_lock(&t, &p, W, &second);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    assert_eq!(j.signed_lock_rows().len(), 2);
+    let (reopened, _) = reload(&j, &src).await;
+    assert_eq!(
+        reopened.check_stuck_funding(W, REG).unwrap(),
+        vec![(first.txid, first.inputs), (second.txid, second.inputs)]
+    );
+}
+
+/// A lock signed while the journal is closed is the step's in this process
+/// only: Repair conflicts with it, nothing is written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lock_signed_while_the_journal_is_closed_is_kept_in_memory() {
+    let (t, _, j, _) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 0))
+        .await
+        .unwrap();
+    t.close_journal().await;
+    let own = row(1, 0, R::Built);
+    sign_lock(&t, &p, W, &own);
+    assert!(j.signed_lock_rows().is_empty());
+    let durable = t.with_j(|i, _| {
+        (i.fence.signed_locks(&W, REG).iter())
+            .map(|l| l.durable)
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(durable, vec![false]);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    assert_eq!(
+        t.check_stuck_funding(W, REG).unwrap(),
+        vec![(own.txid, own.inputs)]
+    );
+}
+
 /// The step's marker no longer stands on disk when its signed lock is
 /// written: nothing is written, and the lock is known in this process
 /// only.

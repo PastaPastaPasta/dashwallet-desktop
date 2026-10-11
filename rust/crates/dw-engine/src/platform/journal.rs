@@ -175,7 +175,7 @@ pub(crate) struct Classified {
     tracked: Vec<(Txid, FundingKey)>,
     /// The same rows' transactions, for the provenance check before the
     /// persister takes them (§2a.6).
-    signed: Vec<StoredLock>,
+    lock_txs: Vec<dashcore::Transaction>,
     /// Contact and payment events.
     events: Vec<Event>,
     /// The DPNS names of the wallet's own identities, by identity.
@@ -269,12 +269,8 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
             };
             (e.out_point.txid, key)
         }));
-        c.signed.extend(
-            locks
-                .asset_locks
-                .values()
-                .map(|e| StoredLock::of(&e.transaction)),
-        );
+        c.lock_txs
+            .extend(locks.asset_locks.values().map(|e| e.transaction.clone()));
     }
 
     // `dashpay_payments_overlay`: every payment write rides it (the library
@@ -378,12 +374,16 @@ impl ChangesetTap {
     /// in it that a running funding call signed are recorded as its step's
     /// own first (§2a.6, [`LeaseTable::record_signed_locks`]). Blocking:
     /// the library's store call waits for it, and broadcasts a `Built`
-    /// lock only after.
+    /// lock only after. The check (a sighash and a signature verified per
+    /// input) runs only while a funding call of `id` runs: no other lock
+    /// can be a call's.
     pub(crate) fn note_signed(&self, id: WalletId, c: &Classified) {
-        if !c.signed.is_empty()
+        if !c.lock_txs.is_empty()
             && let Some(table) = self.table()
+            && table.funding_call_runs(id)
         {
-            table.record_signed_locks(id, &c.signed);
+            let locks: Vec<StoredLock> = c.lock_txs.iter().map(StoredLock::of).collect();
+            table.record_signed_locks(id, &locks);
         }
     }
 

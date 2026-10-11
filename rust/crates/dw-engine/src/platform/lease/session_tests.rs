@@ -2001,12 +2001,49 @@ fn mode_b_a_funding_permit_holds_the_coin_fence_until_its_lock_is_built() {
     let signer = permit.funding_signer().unwrap();
     let path = key_wallet::DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
     let public = f.engine.block_on(signer.public_key(&path)).unwrap();
-    let own = signed_lock_tx(a, COIN, &public, |sighash| {
+    // Signed as the library signs it: key-wallet's `TransactionSigner`
+    // over a type-8 lock, the coin's own script as its script code.
+    let own = {
+        use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+        use dashcore::blockdata::transaction::special_transaction::asset_lock::AssetLockPayload;
+        use key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionSigner;
+        let key = dashcore::PublicKey::new(public);
+        let address = dashcore::Address::p2pkh(&key, dashcore::Network::Testnet);
+        let tx = dashcore::Transaction {
+            version: 3,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: a,
+                ..Default::default()
+            }],
+            output: vec![TxOut {
+                value: COIN - 1_000,
+                script_pubkey: dashcore::ScriptBuf::new_op_return(&[]),
+            }],
+            special_transaction_payload: Some(TransactionPayload::AssetLockPayloadType(
+                AssetLockPayload {
+                    version: 1,
+                    credit_outputs: vec![TxOut {
+                        value: COIN - 1_000,
+                        script_pubkey: dashcore::ScriptBuf::new_p2pkh(&key.pubkey_hash()),
+                    }],
+                },
+            )),
+        };
+        let coin = Utxo::new(
+            a,
+            TxOut {
+                value: COIN,
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            1,
+            false,
+        );
         f.engine
-            .block_on(signer.sign_ecdsa(&path, sighash))
+            .block_on(signer.sign_tx(tx, vec![coin], |_| Some(path.clone())))
             .unwrap()
-            .0
-    });
+    };
     let own_id = own.txid();
     let on_disk = || -> Vec<(Vec<u8>, Vec<u8>)> {
         let db = rusqlite::Connection::open(
@@ -2027,8 +2064,9 @@ fn mode_b_a_funding_permit_holds_the_coin_fence_until_its_lock_is_built() {
     input.extend_from_slice(&a.vout.to_le_bytes());
     let row = vec![(own_id.to_byte_array().to_vec(), input)];
     // The persister refuses the lock's store (its database is locked by
-    // another writer): the library broadcasts nothing, and the signed lock
-    // is durable all the same, written before the persister was asked.
+    // another writer), which the library logs before it broadcasts the lock
+    // all the same: the signed lock is durable, written before the
+    // persister was asked, and is then the lock's only record.
     {
         let db =
             rusqlite::Connection::open(f.session.data_dir().join(crate::session::WALLET_DB_FILE))

@@ -702,10 +702,14 @@ call permit when its task lands.
   the lock's txid and inputs to `signed_lock`, against the step's standing marker, and blocks the store until the
   write returns. platform-wallet's `AssetLockManager` stores the lock `Built` (`build.rs` `track_asset_lock` →
   `queue_asset_lock_changeset` → the persister's `store`, synchronous; `manager.rs`) before it broadcasts it, so
-  the record is on disk before the lock can be on the wire, even when the persister then refuses the store (the
-  library broadcasts nothing after a refused store). A funding call builds one lock; should a call build several,
-  each is recorded, and Repair must take an input of each. A txid cannot be recorded before the signatures exist (Dash has no segwit: the txid covers the
-  scriptSigs, and the signer sees only a sighash), so this store is the earliest point. A write that fails keeps the
+  the record is on disk before the lock can be on the wire. That holds when the persister then refuses the store
+  too: the library logs the refusal and broadcasts the lock all the same, and the `signed_lock` row is then the
+  only record of it. The check runs only while a funding call of the wallet runs. A txid cannot be recorded before
+  the signatures exist (Dash has no segwit: the txid covers the scriptSigs, and the signer sees only a sighash), so
+  this store is the earliest point. A funding call builds one lock at the pin (the funding gate admits one call per
+  marker, and the library builds one lock per call), and the fail-closed argument below rests on that: should a
+  call build several, each is recorded and Repair must take an input of each, but a later lock whose write failed
+  would leave Repair admitted on the earlier one alone. A write that fails keeps the
   record in this process only, logged, and the call's next store of the lock writes it again; after a restart with
   no write landed the step has no known lock (fail closed). A malleated copy of a signed lock (same signatures,
   another txid; anyone can re-encode a scriptSig) is not recorded once the call has ended: it is not the step's own,

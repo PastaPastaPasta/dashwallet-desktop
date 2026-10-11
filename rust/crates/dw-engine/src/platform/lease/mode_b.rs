@@ -1059,6 +1059,16 @@ impl LeaseTable {
         });
     }
 
+    /// Whether a funding call of `wallet` runs (§2a.6: only its locks are
+    /// checked for provenance).
+    pub(crate) fn funding_call_runs(&self, wallet: WalletId) -> bool {
+        self.with_j(|i, _| {
+            i.calls
+                .values()
+                .any(|r| r.funding.as_ref().is_some_and(|f| f.wallet == wallet))
+        })
+    }
+
     /// Whether a running call of `wallet` holds a coin fence (tests).
     #[cfg(test)]
     pub(crate) fn call_holds_fence(&self, wallet: WalletId) -> bool {
