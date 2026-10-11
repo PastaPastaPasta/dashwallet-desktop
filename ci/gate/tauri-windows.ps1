@@ -31,8 +31,9 @@ public static class Win {
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
 }
 '@
-$shots = Join-Path $OutDir 'shots'
-New-Item -ItemType Directory -Force -Path $shots | Out-Null
+# Not $shots: PowerShell names are case-insensitive, and a function's $Shots parameter would hide it.
+$shotDir = Join-Path $OutDir 'shots'
+New-Item -ItemType Directory -Force -Path $shotDir | Out-Null
 $result = [ordered]@{}
 $failed = New-Object System.Collections.ArrayList
 function Fail([string] $What) { Write-Host "::error::$What"; [void]$failed.Add($What) }
@@ -48,11 +49,14 @@ function Shot($Process, [string] $File) {
         $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
         $x = $b.X; $y = $b.Y; $w = $b.Width; $hh = $b.Height
     }
-    $bmp = New-Object System.Drawing.Bitmap $w, $hh
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($x, $y, 0, 0, (New-Object System.Drawing.Size $w, $hh))
-    $bmp.Save($File, [System.Drawing.Imaging.ImageFormat]::Png)
-    $g.Dispose(); $bmp.Dispose()
+    # A failed capture is evidence missing, not a failed run: warn and go on.
+    try {
+        $bmp = New-Object System.Drawing.Bitmap $w, $hh
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen($x, $y, 0, 0, (New-Object System.Drawing.Size $w, $hh))
+        $bmp.Save($File, [System.Drawing.Imaging.ImageFormat]::Png)
+        $g.Dispose(); $bmp.Dispose()
+    } catch { Write-Host "::warning::screenshot $File ($w x $hh at $x,$y): $($_.Exception.Message)" }
 }
 
 function Start-App([string] $Exe, [string[]] $Arguments, [string] $Name) {
@@ -86,18 +90,18 @@ function Tree-Memory([int] $RootId) {
 }
 
 # 1. --selftest on the fixture with a window capture per screen.
-function Selftest-WithShots([string[]] $Arguments, [string] $Report, [string] $Name, [bool] $Shots) {
+function Selftest-WithShots([string[]] $Arguments, [string] $Report, [string] $Name, [bool] $WithShots) {
     $log = Join-Path $OutDir "$Name.log"
     $p = Start-App $App ($Arguments + @('--selftest', $Report, '--selftest-pause', "$PauseMs")) $Name
     $seen = 0
     $deadline = (Get-Date).AddSeconds(900)
     while (-not $p.HasExited -and (Get-Date) -lt $deadline) {
-        if ($Shots) {
+        if ($WithShots) {
             $screens = @(Select-String -Path $log -Pattern 'selftest-screen ([A-Za-z/]+)' -AllMatches -ErrorAction SilentlyContinue |
                 ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value })
             while ($seen -lt $screens.Count) {
                 Start-Sleep -Milliseconds 800
-                Shot $p (Join-Path $shots ("windows-" + ($screens[$seen] -replace '/', '-') + '.png'))
+                Shot $p (Join-Path $shotDir ("windows-" + ($screens[$seen] -replace '/', '-') + '.png'))
                 $seen++
             }
         }
@@ -139,7 +143,7 @@ else {
     $p = Start-App $msiExe $fixture 'msi-app'
     $result.msi.window = Wait-Window $p 60
     Start-Sleep -Seconds 5
-    if ($result.msi.window -and -not $p.HasExited) { Shot $p (Join-Path $shots 'windows-msi-app.png') } else { Fail 'the MSI-installed app shows no window' }
+    if ($result.msi.window -and -not $p.HasExited) { Shot $p (Join-Path $shotDir 'windows-msi-app.png') } else { Fail 'the MSI-installed app shows no window' }
     Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }
 
@@ -152,7 +156,7 @@ if ($installed) {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $walk -ProcessId $p.Id -OutDir (Join-Path $OutDir 'uia')
     $result.uiaExit = $LASTEXITCODE
     if ($LASTEXITCODE -ne 0) { Fail "UIA walk: exit $LASTEXITCODE" }
-    Shot $p (Join-Path $shots 'windows-uia-end.png')
+    Shot $p (Join-Path $shotDir 'windows-uia-end.png')
     Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }
 
@@ -164,7 +168,7 @@ if ($installed) {
     $u2.window = Wait-Window $p 120
     $u2.windowSeconds = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
     Start-Sleep -Seconds 10
-    Shot $p (Join-Path $shots 'windows-wallet-locked.png')
+    Shot $p (Join-Path $shotDir 'windows-wallet-locked.png')
     $p.Refresh()
     [Win]::ShowWindow($p.MainWindowHandle, 9) | Out-Null
     [Win]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
@@ -174,7 +178,7 @@ if ($installed) {
     [System.Windows.Forms.SendKeys]::SendWait($pass)
     [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
     Start-Sleep -Seconds 20
-    Shot $p (Join-Path $shots 'windows-wallet-overview.png')
+    Shot $p (Join-Path $shotDir 'windows-wallet-overview.png')
     while (((Get-Date) - $t0).TotalSeconds -lt $RunSeconds -and -not $p.HasExited) {
         $sample = Tree-Memory $p.Id
         $sample.t = [int]((Get-Date) - $t0).TotalSeconds
@@ -185,7 +189,7 @@ if ($installed) {
     $u2.exited = $p.HasExited
     if ($p.HasExited) { $u2.exitCode = $p.ExitCode; Fail "U2: the app exited after $($u2.ranSeconds) s (code $($p.ExitCode))" }
     else {
-        Shot $p (Join-Path $shots 'windows-wallet-10min.png')
+        Shot $p (Join-Path $shotDir 'windows-wallet-10min.png')
         Stop-Process -Id $p.Id -Force
     }
     $result.u2 = $u2

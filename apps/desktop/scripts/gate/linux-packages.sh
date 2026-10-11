@@ -20,10 +20,15 @@ APPIMAGE=$(ls "$BUNDLE"/appimage/*.AppImage)
 mkdir -p "$OUT"
 cd "$OUT"
 
-export DISPLAY=:${DW_GATE_DISPLAY:-79}
-Xvfb "$DISPLAY" -screen 0 1440x900x24 -nolisten tcp >xvfb.log 2>&1 &
-XVFB=$!
-trap 'kill $XVFB 2>/dev/null || true' EXIT
+# DW_GATE_DISPLAY=:N (and XAUTHORITY) uses an existing X display, as in linux-gate.sh.
+if [[ -n "${DW_GATE_DISPLAY:-}" ]]; then
+  export DISPLAY=$DW_GATE_DISPLAY
+else
+  export DISPLAY=:79
+  Xvfb "$DISPLAY" -screen 0 1440x900x24 -nolisten tcp >xvfb.log 2>&1 &
+  XVFB=$!
+  trap 'kill $XVFB 2>/dev/null || true' EXIT
+fi
 for _ in $(seq 50); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
 dbus-update-activation-environment DISPLAY
 
@@ -32,8 +37,9 @@ selftest() {
   local name=$1
   shift
   rm -f "$OUT/selftest-$name.json"
-  # Absolute path: the AppImage's AppRun changes the working directory.
-  timeout 180 "$@" --fixture --network testnet --selftest "$OUT/selftest-$name.json" >"$name.log" 2>&1 || true
+  # Absolute path: the AppImage's AppRun changes the working directory. 600 s: extract-and-run
+  # unpacks 100 MB first, which took over 2 minutes on agentbox at load 150.
+  timeout 600 "$@" --fixture --network testnet --selftest "$OUT/selftest-$name.json" >"$name.log" 2>&1 || true
   python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print(str(r.get('final') is True and r['checksFailed'] == 0).lower())" \
     "$OUT/selftest-$name.json" 2>/dev/null || echo false
 }
