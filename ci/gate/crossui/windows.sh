@@ -81,7 +81,8 @@ run() { # NAME MARK [windows-run.ps1 switches...]
 
 # U2: unlock, Overview, then keep it running for 10 minutes (600 s from launch).
 run u2-overview overview-paint -Unlock -HoldSeconds 600
-# U4: the #787 walks.
+# U4: the #787 walks (the lock screen needs no unlock).
+run u4-unlock lock-paint -Walk
 run u4-overview overview-paint -Unlock -Walk
 run u4-transactions transactions-paint -Unlock -Page transactions -Walk
 # U3: the four screens, light and dark.
