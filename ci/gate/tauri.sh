@@ -133,9 +133,11 @@ selftest_with_shots() { # REPORT LOG ARGS...
   # Complete lines only (`lines`): a line read while the app writes it would give a cut-off name.
   while kill -0 "$pid" 2>/dev/null && (($(date +%s) < deadline)); do
     lines=$(($(wc -l <"$log")))
-    count=$(head -n "$lines" "$log" | grep -c 'selftest-screen [a-zA-Z/]' || true)
+    count=0
+    # BSD head rejects -n 0.
+    ((lines > 0)) && count=$(head -n "$lines" "$log" | grep -c 'selftest-screen [a-zA-Z/][a-zA-Z/]*' || true)
     while ((seen < count)); do
-      screen=$(head -n "$lines" "$log" | grep -o 'selftest-screen [a-zA-Z/]*' | sed -n "$((seen + 1))p" | awk '{print $2}')
+      screen=$(head -n "$lines" "$log" | grep -o 'selftest-screen [a-zA-Z/][a-zA-Z/]*' | sed -n "$((seen + 1))p" | awk '{print $2}')
       sleep 0.8
       shot "$pid" "$OUT/shots/${screen//\//-}.png" || true
       seen=$((seen + 1))

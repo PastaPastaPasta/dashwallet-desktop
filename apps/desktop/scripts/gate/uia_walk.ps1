@@ -56,9 +56,9 @@ function Info($e) {
         name      = $c.Name
         id        = $c.AutomationId
         offscreen = $c.IsOffscreen
-        # On screen and with a box: WebView2 also exposes its hidden browser views (an 'App bar',
-        # caption buttons, alerts) that are not offscreen but have an empty box. AT-SPI's
-        # 'showing' state is the Linux walk's equivalent.
+        # On screen and with a box; Walk also requires it of every ancestor. WebView2 exposes its
+        # hidden browser views (an App bar, caption buttons, a tab strip) under boxless parents.
+        # AT-SPI's 'showing' state is the Linux walk's equivalent.
         shown     = -not $c.IsOffscreen -and -not $r.IsEmpty
         enabled   = $c.IsEnabled
         focusable = $c.IsKeyboardFocusable
@@ -69,23 +69,25 @@ function Info($e) {
     }
 }
 
-# Depth-first walk of the raw view: [(depth, info)].
+# Depth-first walk of the raw view: [(depth, info)]. An element is shown only if its parent is.
 function Walk($root) {
     $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
     $out = New-Object System.Collections.ArrayList
     $stack = New-Object System.Collections.Stack
-    $stack.Push(@($root, 0))
+    $stack.Push(@($root, 0, $true))
     while ($stack.Count -gt 0 -and $out.Count -lt 5000) {
-        $pair = $stack.Pop()
-        $e = $pair[0]; $depth = $pair[1]
+        $entry = $stack.Pop()
+        $e = $entry[0]; $depth = $entry[1]
         # An element that vanished mid-walk is recorded as such; its children are still walked.
-        try { [void]$out.Add(@($depth, (Info $e))) } catch { [void]$out.Add(@($depth, [ordered]@{ type = 'Unreadable'; name = "$($_.Exception.Message)"; id = ''; rect = ''; shown = $false; element = $e })) }
+        try { $info = Info $e } catch { $info = [ordered]@{ type = 'Unreadable'; name = "$($_.Exception.Message)"; id = ''; rect = ''; shown = $false; element = $e } }
+        $info.shown = $info.shown -and $entry[2]
+        [void]$out.Add(@($depth, $info))
         $kids = New-Object System.Collections.ArrayList
         try {
             $child = $walker.GetFirstChild($e)
             while ($null -ne $child) { [void]$kids.Add($child); $child = $walker.GetNextSibling($child) }
         } catch { }
-        for ($i = $kids.Count - 1; $i -ge 0; $i--) { $stack.Push(@($kids[$i], $depth + 1)) }
+        for ($i = $kids.Count - 1; $i -ge 0; $i--) { $stack.Push(@($kids[$i], $depth + 1, $info.shown)) }
     }
     return , $out
 }
@@ -198,12 +200,11 @@ try {
             }
             Start-Sleep -Milliseconds 500
             Press { param($i) $i.name -eq 'Unlock' } 'Unlock' | Out-Null
-            $gone = $false
-            for ($k = 0; $k -lt 40 -and -not $gone; $k++) {
-                Start-Sleep -Milliseconds 250
-                $gone = $null -eq (Wait-For { param($i) $i.type -eq 'Edit' -and $i.name -eq 'Passphrase' } 0)
-            }
-            Check 'hard' 'unlocking through UIA removes the lock screen' $gone | Out-Null
+            # Opened, not merely 'the field is gone' (one empty poll would do): the toolbar's Lock
+            # is enabled only for an unlocked wallet, and the passphrase field has left.
+            $open = Wait-For { param($i) $i.type -eq 'Button' -and $i.name -ceq 'Lock wallet' -and $i.enabled } 10
+            $still = if ($null -ne $open) { Wait-For { param($i) $i.type -eq 'Edit' -and $i.name -ceq 'Passphrase' } 0 }
+            Check 'hard' 'unlocking through UIA opens the wallet (Lock enabled, no passphrase field)' ($null -ne $open -and $null -eq $still) | Out-Null
         }
 
         foreach ($s in 'overview', 'transactions', 'txDetail', 'unlock') {

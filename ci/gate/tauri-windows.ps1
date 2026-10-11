@@ -7,8 +7,9 @@
 # 2. --selftest on the copied regtest wallet (U1 rows, real history_page timings).
 # 3. U7/U2: the NSIS installer (/S) and the MSI (msiexec /qn) install; the MSI's app launches.
 # 4. U4: uia_walk.ps1 over the NSIS-installed app (fixture).
-# 5. U2: the NSIS-installed app opens the copied wallet, is unlocked with keystrokes, shows
-#    Overview, and runs for RunSeconds; it must not exit. Memory of its process tree is sampled.
+# 5. U2: the NSIS-installed app opens the copied wallet on its lock screen, is unlocked through
+#    UIA, shows Overview, and runs for RunSeconds; it must not exit. Memory of its process tree
+#    is sampled.
 # Writes windows-gate.json (and the files named above) to OutDir; exit 1 on any failure.
 param(
     [Parameter(Mandatory)] [string] $Repo,
@@ -53,10 +54,9 @@ function Shot($Process, [string] $File) {
     $Process.Refresh()
     $h = $Process.MainWindowHandle
     $r = New-Object Win+RECT
+    # The capture copies the screen: the window must be on top (and restored) before its box is read.
+    if ($h -ne [IntPtr]::Zero) { [Win]::Raise($h); Start-Sleep -Milliseconds 300 }
     if ($h -ne [IntPtr]::Zero -and [Win]::GetWindowRect($h, [ref]$r) -and ($r.Right - $r.Left) -gt 50) {
-        # The capture copies the screen: the window must be on top.
-        [Win]::Raise($h)
-        Start-Sleep -Milliseconds 300
         $x = $r.Left; $y = $r.Top; $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
     } else {
         $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -83,9 +83,11 @@ function Start-App([string] $Exe, [string[]] $Arguments, [string] $Name) {
     return $p
 }
 
-# Waits up to $Seconds for a shown element of the app (control type, exact name). Walks the raw
-# view as uia_walk.ps1 does: the managed FindFirst does not reach into WebView2's content.
-function Wait-Shown([int] $ProcessId, [System.Windows.Automation.ControlType] $Type, [string] $Name, [int] $Seconds) {
+# The first shown element of the app with this control type and exact name, polling up to
+# $Seconds (0: one look); $null if none. Walks the raw view as uia_walk.ps1 does (the managed
+# FindFirst does not reach into WebView2's content). Shown: the element and its ancestors are on
+# screen with a box, which WebView2's hidden browser views are not.
+function Find-Shown([int] $ProcessId, [System.Windows.Automation.ControlType] $Type, [string] $Name, [int] $Seconds, [switch] $Enabled) {
     $AE = [System.Windows.Automation.AutomationElement]
     $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
     $deadline = (Get-Date).AddSeconds($Seconds)
@@ -98,14 +100,15 @@ function Wait-Shown([int] $ProcessId, [System.Windows.Automation.ControlType] $T
             $e = $stack.Pop()
             try {
                 $c = $e.Current
-                if ($c.ControlType -eq $Type -and $c.Name -eq $Name -and -not $c.IsOffscreen -and -not $c.BoundingRectangle.IsEmpty) { return $true }
+                if ($c.IsOffscreen -or $c.BoundingRectangle.IsEmpty) { continue }
+                if ($c.ControlType -eq $Type -and $c.Name -ceq $Name -and (-not $Enabled -or $c.IsEnabled)) { return $e }
                 $child = $walker.GetFirstChild($e)
                 while ($null -ne $child) { $stack.Push($child); $child = $walker.GetNextSibling($child) }
             } catch { }
         }
-        Start-Sleep -Milliseconds 500
+        if ((Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
     } while ((Get-Date) -lt $deadline)
-    return $false
+    return $null
 }
 
 function Wait-Window($Process, [int] $Seconds) {
@@ -221,23 +224,34 @@ if ($installed) {
     $p = Start-App $installed.FullName $engine 'u2-app'
     $u2.window = Wait-Window $p 120
     $u2.windowSeconds = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
-    Start-Sleep -Seconds 10
+    $field = Find-Shown $p.Id ([System.Windows.Automation.ControlType]::Edit) 'Passphrase' 60
+    $u2.lockScreenShown = $null -ne $field
     Shot $p (Join-Path $shotDir 'windows-wallet-locked.png')
-    $u2.lockScreenShown = Wait-Shown $p.Id ([System.Windows.Automation.ControlType]::Edit) 'Passphrase' 60
     if (-not $u2.lockScreenShown) { Fail 'U2: the wallet did not open on its lock screen' }
-    $p.Refresh()
-    [Win]::ShowWindow($p.MainWindowHandle, 9) | Out-Null
-    [Win]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
-    Start-Sleep -Milliseconds 500
-    # The passphrase field has focus on the lock screen; SendKeys needs its specials escaped.
-    $pass = (Get-Content $PassphraseFile -TotalCount 1) -replace '([+^%~(){}\[\]])', '{$1}'
-    [System.Windows.Forms.SendKeys]::SendWait($pass)
-    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
-    Start-Sleep -Seconds 20
+    else {
+        # Through UIA, as a screen reader would: keystrokes go to whichever window Windows lets
+        # have the foreground, which on the runner can be its console.
+        $pass = Get-Content $PassphraseFile -TotalCount 1
+        $u2.typedWith = 'ValuePattern'
+        try { $field.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($pass) } catch { }
+        # Unlock is enabled once the page has the passphrase; if ValuePattern did not reach it, type.
+        $button = Find-Shown $p.Id ([System.Windows.Automation.ControlType]::Button) 'Unlock' 5 -Enabled
+        if ($null -eq $button) {
+            $u2.typedWith = 'SendKeys'
+            $p.Refresh(); [Win]::Raise($p.MainWindowHandle)
+            try { $field.SetFocus() } catch { }
+            [System.Windows.Forms.SendKeys]::SendWait(($pass -replace '([+^%~(){}\[\]])', '{$1}'))
+            $button = Find-Shown $p.Id ([System.Windows.Automation.ControlType]::Button) 'Unlock' 10 -Enabled
+        }
+        if ($null -ne $button) { $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }
+        else { Fail 'U2: no enabled Unlock button after typing the passphrase' }
+    }
+    # Opened, not merely 'the lock screen is gone': the toolbar's Lock is enabled only for an
+    # unlocked wallet, and the passphrase field has left.
+    $open = Find-Shown $p.Id ([System.Windows.Automation.ControlType]::Button) 'Lock wallet' 60 -Enabled
+    $u2.unlocked = $null -ne $open -and $null -eq (Find-Shown $p.Id ([System.Windows.Automation.ControlType]::Edit) 'Passphrase' 0)
     Shot $p (Join-Path $shotDir 'windows-wallet-overview.png')
-    # Unlocked means the wallet's toolbar is up, not merely that the lock screen is gone.
-    $u2.unlocked = Wait-Shown $p.Id ([System.Windows.Automation.ControlType]::Button) 'Lock wallet' 60
-    if (-not $u2.unlocked) { Fail "U2: the passphrase did not unlock the wallet (no 'Lock wallet' button)" }
+    if (-not $u2.unlocked) { Fail "U2: the passphrase did not open the wallet (no enabled 'Lock wallet', or the lock screen is still up)" }
     while (((Get-Date) - $t0).TotalSeconds -lt $RunSeconds -and -not $p.HasExited) {
         $sample = Tree-Memory $p.Id
         $sample.t = [int]((Get-Date) - $t0).TotalSeconds
