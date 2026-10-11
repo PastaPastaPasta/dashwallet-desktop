@@ -416,16 +416,18 @@ fn scanned(hit: UserHit, code: ScannedCode) -> ScannedContact {
 ///   the claim lives as long as the intent; nothing but the wallet's
 ///   removal or unload, or the session's close, takes a claimed scan away.
 /// - The send does every check that may refuse it (eligibility, grant,
-///   vault) first, then takes [`ScanClaim::proof_source`] and signs with it
-///   through `send_contact_request_with_external_signer`. platform-wallet's
+///   vault) first, then gives the claim up for [`ScanClaim::proof_source`]
+///   and signs with it through `send_contact_request_with_external_signer`.
+///   The call consumes the claim, so one claim makes one proof. platform-wallet's
 ///   `send_contact_request_from_qr` would parse the code and resolve its
 ///   name again at send time; the recipient is the identity
 ///   `verify_scanned` showed, and the library signs once it knows the
 ///   send's `accountReference`.
 /// - Fail closed: a claim dropped before `proof_source` (a send refused)
-///   releases the scan for a retry; once `proof_source` gave the key out,
-///   the request may have been broadcast, so dropping the claim spends the
-///   scan whatever happened next (sent, failed, cancelled, panicked).
+///   releases the scan for a retry. With the source, `proof_source` returns
+///   a [`ScanSpend`] that keeps the scan held: the request may have been
+///   broadcast, so dropping it spends the scan whatever happened next (sent,
+///   failed, cancelled, panicked). The send keeps it until it is done.
 /// - The outcome is `Pending` like any other request: the auto-accept is
 ///   only claimed (module doc) until the recipient accepts.
 #[cfg_attr(not(test), expect(dead_code, reason = "DP2-02's send_request"))]
@@ -452,7 +454,7 @@ pub(crate) mod send_seam {
         pub(super) key: Box<Zeroizing<[u8; 32]>>,
         /// When the key stops being honoured: UNIX seconds.
         pub(super) expiry: u32,
-        /// The lookup that named the recipient did not verify (m4 §5).
+        /// The recipient's shown name or profile is unverified (m4 §5).
         pub(super) recipient_unverified: bool,
         /// A send holds it ([`ScanClaim`]).
         pub(super) claimed: bool,
@@ -481,39 +483,51 @@ pub(crate) mod send_seam {
         id: String,
         /// When the key stops being honoured: UNIX seconds.
         pub(crate) expiry: u32,
-        /// The lookup that named the recipient did not verify (m4 §5): the
+        /// The recipient's shown name or profile is unverified (m4 §5): the
         /// send confirms before it relies on Platform's word alone.
         pub(crate) recipient_unverified: bool,
         /// The key went out: the scan is spent when the claim goes.
         used: bool,
     }
 
+    /// A scan whose key went out ([`ScanClaim::proof_source`]): held until
+    /// this goes, then spent (module doc).
+    #[must_use = "dropping it spends the scan; keep it until the send is done"]
+    pub(crate) struct ScanSpend {
+        _claim: ScanClaim,
+    }
+
     impl ScanClaim {
-        /// The proof source for the send, made once, right before it. The
+        /// The proof source for the send, made once, right before it, and the
+        /// guard that spends the scan; the claim goes into the guard. The
         /// bytes `SecretKey::from_secret_bytes` takes by value and the
         /// `SecretKey` handed to platform-wallet are copies this engine
         /// cannot erase: secp256k1 keys are `Copy`, and the library drops
         /// its own unerased once the proof is signed. A scan forgotten
         /// meanwhile (the wallet unloaded, the session closed) or expired by
         /// `now` (the recipient would discard the proof): `contact.scan_expired`.
-        /// From here on the claim spends the scan when it goes (module doc).
+        /// An error drops the claim, which releases what is left.
         pub(crate) fn proof_source(
-            &mut self,
+            mut self,
             now: u64,
-        ) -> Result<AutoAcceptProofSource, ContactError> {
-            let mut store = guard(&self.scans.0);
-            let at = (store.position(self.wallet, &self.id)).ok_or(ContactError::ScanExpired)?;
-            if store.scans[at].1.expired(now) {
-                store.scans.remove(at);
-                return Err(ContactError::ScanExpired);
-            }
-            let secret_key = SecretKey::from_secret_bytes(**store.scans[at].1.key)
-                .expect("a valid scalar: DashPayContactCode checked it");
+        ) -> Result<(AutoAcceptProofSource, ScanSpend), ContactError> {
+            let secret_key = {
+                let mut store = guard(&self.scans.0);
+                let at =
+                    (store.position(self.wallet, &self.id)).ok_or(ContactError::ScanExpired)?;
+                if store.scans[at].1.expired(now) {
+                    store.scans.remove(at);
+                    return Err(ContactError::ScanExpired);
+                }
+                SecretKey::from_secret_bytes(**store.scans[at].1.key)
+                    .expect("a valid scalar: DashPayContactCode checked it")
+            };
             self.used = true;
-            Ok(AutoAcceptProofSource::SignWithKey {
+            let source = AutoAcceptProofSource::SignWithKey {
                 secret_key,
                 expiry: self.expiry,
-            })
+            };
+            Ok((source, ScanSpend { _claim: self }))
         }
     }
 

@@ -139,7 +139,7 @@ pub enum RequestOutcome {
 
 /// A scanned or pasted contact. Verified against Platform means only that
 /// `username` belongs to `identity` now: a QR is unsigned, so nothing shows
-/// who made it.
+/// who made it, and a code's key stays a claim ([`ScannedCode`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScannedContact {
     pub identity: String,
@@ -148,7 +148,8 @@ pub struct ScannedContact {
     /// What was scanned, and what it claims beyond the name.
     pub code: ScannedCode,
     pub relation: Relation,
-    /// Verified only through the trusted fallback (§2.2 rule 2).
+    /// The shown name or profile is verified only through the trusted
+    /// fallback (§2.2 rule 2), as on a `UserHit`; says nothing of the key.
     pub unverified: bool,
 }
 

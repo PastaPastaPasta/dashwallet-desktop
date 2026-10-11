@@ -690,14 +690,13 @@ fn a_scan_gives_a_send_its_proof() {
     drop(intent(BOB, Some(&first)).unwrap());
     let sent = intent(BOB, Some(&first)).unwrap();
     assert_eq!((sent.sender, sent.recipient), (id(ME), id(BOB)));
-    let mut auto_accept = sent.auto_accept.unwrap();
+    let auto_accept = sent.auto_accept.unwrap();
     assert_eq!(
         (auto_accept.expiry, auto_accept.recipient_unverified),
         (soon, false)
     );
-    let Ok(AutoAcceptProofSource::SignWithKey { secret_key, expiry }) =
-        auto_accept.proof_source(unix_now())
-    else {
+    let (source, spend) = auto_accept.proof_source(unix_now()).unwrap();
+    let AutoAcceptProofSource::SignWithKey { secret_key, expiry } = source else {
         panic!("not signed with the scanned key");
     };
     assert_eq!((secret_key, expiry), (key(), soon));
@@ -716,7 +715,7 @@ fn a_scan_gives_a_send_its_proof() {
         Some("contact.request_pending")
     );
     // Once the key went out the scan is spent, whatever the send did.
-    drop(auto_accept);
+    drop(spend);
     assert_eq!(
         intent(BOB, Some(&first)).err(),
         Some("contact.scan_expired")
@@ -743,10 +742,9 @@ fn a_scan_gives_a_send_its_proof() {
     assert!(intent(BOB, Some(&other_wallet)).is_ok());
     // Expired by the time the send signs: no proof, and it goes.
     let crossing = scan();
-    let mut held = scans.claim(f.wallet, &crossing, id(BOB), 0).ok().unwrap();
+    let held = scans.claim(f.wallet, &crossing, id(BOB), 0).ok().unwrap();
     let signed = held.proof_source(u64::from(soon));
     assert_eq!(signed.err().map(|e| e.code()), Some("contact.scan_expired"));
-    drop(held);
     assert_eq!(claim(f.wallet, &crossing, 0), Some("contact.scan_expired"));
 
     // A recipient Platform named without verified proof is flagged.
@@ -785,6 +783,32 @@ fn one_send_at_a_time_claims_a_scan() {
     assert!(scans.claim(f.wallet, &scan, id(BOB), 0).is_ok());
 }
 
+/// Sol r2 M2: a claim makes one proof. `proof_source` consumes it (a second
+/// call on one claim does not compile); the spend guard it returns keeps
+/// the scan held, so no other claim can make another, and spends it when
+/// it goes, a panic included.
+#[test]
+fn a_claim_makes_one_proof() {
+    let f = Fixture::new();
+    let scan = scan_id(&f.scan(&dapk("bob", (unix_now() + 3600) as u32)).unwrap());
+    let scans = &f.s.platform.users.scans;
+    let claim = |now| scans.claim(f.wallet, &scan, id(BOB), now);
+    let (_, spend) = claim(0).ok().unwrap().proof_source(0).unwrap();
+    for _ in 0..2 {
+        let again = claim(0).err().map(|e| e.code());
+        assert_eq!(again, Some("contact.request_pending"));
+    }
+    assert_eq!(scans.len(), 1);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _spend = spend;
+        panic!("the send panics after signing");
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(scans.len(), 0);
+    let gone = claim(0).err().map(|e| e.code());
+    assert_eq!(gone, Some("contact.scan_expired"));
+}
+
 /// Sol r1 M2: a lookup paused across an unload and reload of its wallet
 /// keeps no key, and its scan is refused.
 #[test]
@@ -817,7 +841,7 @@ fn closing_the_session_drops_its_scans() {
     let first = scan_id(&f.scan(&dapk("bob", soon)).unwrap());
     let second = scan_id(&f.scan(&dapk("bob", soon)).unwrap());
     let scans = Arc::clone(&f.s.platform.users.scans);
-    let mut claim = scans.claim(f.wallet, &first, id(BOB), 0).ok().unwrap();
+    let claim = scans.claim(f.wallet, &first, id(BOB), 0).ok().unwrap();
     f.engine.block_on(f.s.close());
     assert_eq!(scans.len(), 0);
     assert_eq!(
@@ -846,13 +870,13 @@ fn scans_are_bounded_and_forgotten() {
     assert_eq!(key(&scans[0]), Err("contact.scan_expired"));
     assert_eq!(key(&scans[1]), Ok(()));
     assert_eq!(store.len(), 16);
-    let mut held = store.claim(f.wallet, &scans[1], id(BOB), 0).ok().unwrap();
+    let held = store.claim(f.wallet, &scans[1], id(BOB), 0).ok().unwrap();
     for _ in 0..16 {
         f.scan(&dapk("bob", soon)).unwrap();
     }
     assert_eq!(store.len(), 17);
-    assert!(held.proof_source(0).is_ok());
-    drop(held);
+    let (_, spend) = held.proof_source(0).unwrap();
+    drop(spend);
     assert_eq!(store.len(), 16);
     f.s.platform.forget(&f.wallet);
     assert_eq!(key(&scans[2]), Err("contact.scan_expired"));
@@ -987,10 +1011,9 @@ fn the_testnet_fixture_verifies_links_and_scans() {
     let mut intent = s
         .send_request_intent(a, &a_id, &b_id, Some(&scan_id(&scanned)))
         .unwrap();
-    let auto_accept = intent.auto_accept.as_mut().unwrap();
-    let Ok(AutoAcceptProofSource::SignWithKey { secret_key, expiry }) =
-        auto_accept.proof_source(unix_now())
-    else {
+    let auto_accept = intent.auto_accept.take().unwrap();
+    let (source, _spend) = auto_accept.proof_source(unix_now()).unwrap();
+    let AutoAcceptProofSource::SignWithKey { secret_key, expiry } = source else {
         panic!("not signed with the scanned key");
     };
     let (sender, recipient) = (intent.sender, intent.recipient);
