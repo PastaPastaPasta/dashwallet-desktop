@@ -101,4 +101,40 @@ extension DashColor {
             ("plainContentDisabled", plainContentDisabled), ("shadow", shadow),
         ]
     }
+
+    /// WCAG 2.1 AA variants of the roles whose iOS values fail 4.5:1 for small text (UX-SPEC §2.1a,
+    /// DEC-36). Each keeps its role's hue and is darkened (or, on dark surfaces, lightened) in OKLCH only
+    /// as far as AA needs. A role listed here replaces the one in `Role` wherever text sits on it or
+    /// is drawn in it; `networkCapsule` is new (the capsule was `warning` at `DashOpacity.networkCapsule`).
+    public enum RoleAA {
+        /// Filled buttons, the selected sidebar row and filter chip, under white text (5.2:1).
+        public static let accent = DashColor(light: RGBA(hex: 0x006FC3), dark: RGBA(hex: 0x006FC3))
+        /// Blue text: links, plain blue buttons, info chips on `accentTint` (≥ 4.5:1 on card, canvas
+        /// and the tint, light and dark).
+        public static let textLink = DashColor(light: RGBA(hex: 0x006FC3), dark: RGBA(hex: 0x1594EC))
+        /// The hero band and lock screen, with the strip at `DashOpacityAA.heroCard` and secondary text at
+        /// `DashOpacityAA.heroSecondaryText` (strip title 5.2:1, subtitle 4.5:1).
+        public static let hero = DashColor(light: RGBA(hex: 0x0063B7), dark: RGBA(hex: 0x0063B7))
+        /// Captions and weekday headers on card and canvas in light; dark keeps white at 60 % (6.7:1).
+        public static let textTertiary = DashColor(light: RGBA(hex: 0x68737D), dark: DashColor.tertiaryText.dark)
+        /// Warning text ("Locked" rewards) in light; dark keeps the iOS orange (7.3:1 on card).
+        public static let warning = DashColor(light: RGBA(hex: 0xB6542C), dark: DashColor.orange.dark)
+        /// The non-mainnet network capsule under white text (4.9:1), opaque, in both appearances.
+        public static let networkCapsule = DashColor(light: RGBA(hex: 0xB6542C), dark: RGBA(hex: 0xB6542C))
+
+        public static let all: [(name: String, color: DashColor)] = [
+            ("accent", accent), ("textLink", textLink), ("hero", hero), ("textTertiary", textTertiary),
+            ("warning", warning), ("networkCapsule", networkCapsule),
+        ]
+    }
+}
+
+/// The hero opacities that go with `DashColor.RoleAA.hero` (UX-SPEC §2.1a, DEC-36).
+public enum DashOpacityAA {
+    /// The breakdown strip's white fill (iOS 0.12).
+    public static let heroCard: Double = 0.08
+    /// Strip subtitles, the fiat line and the lock-screen prompt (iOS 0.7 and 0.8).
+    public static let heroSecondaryText: Double = 0.9
+    /// The network capsule is opaque `RoleAA.networkCapsule` (iOS `warning` at 0.9).
+    public static let networkCapsule: Double = 1
 }
