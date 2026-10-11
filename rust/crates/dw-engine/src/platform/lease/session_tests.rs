@@ -363,10 +363,10 @@ impl Fixture {
             ))
             .unwrap();
         match lock {
-            None => permit.signatures().note_released(),
+            None => permit.note_released(),
             Some((seed, inputs)) => {
                 let sighash = [seed; 32];
-                permit.signatures().note_signed(sighash);
+                permit.note_signed(sighash);
                 self.session.leases.record_signed_locks(
                     self.wallet,
                     &[StoredLock {
@@ -1301,13 +1301,16 @@ fn mode_b_a_funding_permit_counts_its_signer_and_the_facade_reads_its_status() {
     assert!(permit.signatures().locked());
     assert_eq!(permit.signatures().released(), 1);
     assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
-    // No lock carrying the signature was stored, so none was recorded and
-    // none sent (§2a.7).
+    // No lock carrying the signature was stored, so none was recorded; but
+    // the call released one (its `funding_release` row), and a lock the
+    // library sends without storing it would be recorded nowhere else
+    // (review P2b r6 R6-01): possibly sent.
+    assert!(s.leases.call_step(f.wallet, STEP).released);
     assert_eq!(
         f.engine
             .block_on(dashpay.dispatch_status(STEP.into()))
             .unwrap(),
-        Some(DispatchState::NotSent)
+        Some(DispatchState::MaybeSent)
     );
     // A resumable step id reads its marker: none here.
     assert_eq!(
@@ -1682,7 +1685,7 @@ fn repair_self_spends_every_coin_recorded_before_its_broadcast() {
         "a call runs under the marker"
     );
     // The call signs its lock, which spends `a` (§2a.6), and fails.
-    permit.signatures().note_signed([51; 32]);
+    permit.note_signed([51; 32]);
     s.leases.record_signed_locks(
         f.wallet,
         &[StoredLock {
@@ -2453,4 +2456,599 @@ fn mode_b_a_funding_permit_holds_the_coin_fence_until_its_lock_is_built() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+// --- Review P2b r6: the release boundary, one lock per call, the PSBT hold --
+
+impl Fixture {
+    /// Credits a confirmed coin of `value` to a fresh receive address, as
+    /// the output 0 of a transaction it returns (whose sighashes a test can
+    /// sign against).
+    fn credit_with_prev(&self, seed: u8, value: u64) -> dashcore::Transaction {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let inner = Arc::clone(&session);
+        self.engine.block_on(async move {
+            session
+                .on_runtime(async move {
+                    let wallet = inner.wallet(&id).await?;
+                    let address = wallet.core().next_receive_address_for_account(0).await?;
+                    let prev = dashcore::Transaction {
+                        version: 2,
+                        lock_time: 0,
+                        input: vec![dashcore::TxIn {
+                            previous_output: OutPoint::new(Txid::from_byte_array([seed; 32]), 0),
+                            ..Default::default()
+                        }],
+                        output: vec![TxOut {
+                            value,
+                            script_pubkey: address.script_pubkey(),
+                        }],
+                        special_transaction_payload: None,
+                    };
+                    let outpoint = OutPoint::new(prev.txid(), 0);
+                    let mut utxo = Utxo::new(outpoint, prev.output[0].clone(), address, 1, false);
+                    utxo.is_confirmed = true;
+                    (wallet
+                        .state_mut()
+                        .await
+                        .core_wallet
+                        .accounts
+                        .standard_bip44_accounts)
+                        .get_mut(&0)
+                        .expect("BIP44 account 0")
+                        .utxos
+                        .insert(outpoint, utxo);
+                    Ok(prev)
+                })
+                .await
+                .unwrap()
+        })
+    }
+
+    /// The derivation path of the key paying `prev`'s output 0.
+    fn path_for_prev(&self, prev: &dashcore::Transaction) -> key_wallet::DerivationPath {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let outpoint = OutPoint::new(prev.txid(), 0);
+        self.engine
+            .block_on(session.on_runtime({
+                let session = session.clone();
+                async move {
+                    let wallet = session.wallet(&id).await?;
+                    let state = wallet.state().await;
+                    let accounts = &state.core_wallet.accounts;
+                    let utxo = &accounts.standard_bip44_accounts[&0].utxos[&outpoint];
+                    Ok((state.core_wallet.all_managed_accounts().into_iter())
+                        .find_map(|a| a.get_address_info(&utxo.address))
+                        .unwrap()
+                        .path)
+                }
+            }))
+            .unwrap()
+    }
+
+    /// Credits a confirmed coin of `value` to a fresh CoinJoin-account
+    /// address.
+    fn credit_coinjoin(&self, seed: u8, value: u64) -> OutPoint {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        self.engine
+            .block_on(session.on_runtime({
+                let session = session.clone();
+                async move {
+                    let address = session.reserve_coinjoin_addresses(id, 1, false).await?;
+                    let address = address.into_iter().next().unwrap();
+                    let outpoint = OutPoint::new(Txid::from_byte_array([seed; 32]), 0);
+                    let txout = TxOut {
+                        value,
+                        script_pubkey: address.script_pubkey(),
+                    };
+                    let mut utxo = Utxo::new(outpoint, txout, address, 1, false);
+                    utxo.is_confirmed = true;
+                    let wallet = session.wallet(&id).await?;
+                    (wallet
+                        .state_mut()
+                        .await
+                        .core_wallet
+                        .accounts
+                        .coinjoin_accounts)
+                        .get_mut(&0)
+                        .expect("CoinJoin account 0")
+                        .utxos
+                        .insert(outpoint, utxo);
+                    Ok(outpoint)
+                }
+            }))
+            .unwrap()
+    }
+
+    /// A funding permit of registration `step` (identity 0).
+    fn funding_permit(&self, step: &str) -> CallPermit {
+        let l = self
+            .lease(FlowKind::Registration, &[self.platform_op(10_000_000, 0)])
+            .unwrap();
+        self.engine
+            .block_on(self.session.funding_call_permit(
+                &l,
+                "create_funded_asset_lock_proof",
+                100_000,
+                step.into(),
+                FundingKey {
+                    funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
+                    identity_index: 0,
+                    account: 0,
+                },
+                self.fence(),
+            ))
+            .unwrap()
+    }
+
+    /// The `funding_release` rows of `step` on disk.
+    fn release_rows(&self, step: &str) -> i64 {
+        let db = rusqlite::Connection::open(
+            (self.session.data_dir()).join(dw_appdb::dispatch::DISPATCH_DB_FILE),
+        )
+        .unwrap();
+        db.query_row(
+            "SELECT count(*) FROM funding_release WHERE step_id = ?1",
+            [step],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+}
+
+/// A type-8 asset lock of `value` spending `prev`'s output 0, paid by key
+/// `pk`, its one input signed by `sign` over its legacy `SIGHASH_ALL`
+/// sighash (as key-wallet's builder signs it).
+fn real_lock(
+    prev: &dashcore::Transaction,
+    value: u64,
+    pk: dashcore::secp256k1::PublicKey,
+    sign: impl FnOnce([u8; 32]) -> dashcore::secp256k1::ecdsa::Signature,
+) -> dashcore::Transaction {
+    use dashcore::blockdata::script::{Builder, PushBytesBuf};
+    use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+    use dashcore::blockdata::transaction::special_transaction::asset_lock::AssetLockPayload;
+    let paid = prev.output[0].script_pubkey.clone();
+    assert_eq!(
+        paid,
+        dashcore::ScriptBuf::new_p2pkh(&dashcore::PublicKey::new(pk).pubkey_hash())
+    );
+    let mut tx = dashcore::Transaction {
+        version: 3,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: OutPoint::new(prev.txid(), 0),
+            ..Default::default()
+        }],
+        output: vec![
+            TxOut {
+                value,
+                script_pubkey: dashcore::ScriptBuf::new_op_return(&[]),
+            },
+            TxOut {
+                value: prev.output[0].value - value - 1_000,
+                script_pubkey: paid.clone(),
+            },
+        ],
+        special_transaction_payload: Some(TransactionPayload::AssetLockPayloadType(
+            AssetLockPayload {
+                version: 1,
+                credit_outputs: vec![TxOut {
+                    value,
+                    script_pubkey: paid.clone(),
+                }],
+            },
+        )),
+    };
+    let digest = dashcore::sighash::SighashCache::new(&tx)
+        .legacy_signature_hash(0, &paid, 1)
+        .unwrap()
+        .to_byte_array();
+    let mut der = sign(digest).serialize_der().to_vec();
+    der.push(1);
+    tx.input[0].script_sig = Builder::new()
+        .push_slice(PushBytesBuf::try_from(der).unwrap())
+        .push_slice(pk.serialize())
+        .into_script();
+    tx
+}
+
+/// A funding signer that, after its first signature, removes the wallet
+/// from the library's manager (what a removal racing a call past its
+/// permit's deadline does): the library's tracking of the lock then finds
+/// no wallet and returns an empty changeset, which its queue skips, so no
+/// store of the lock reaches the engine's tap before the send.
+struct RemovingSigner {
+    inner: crate::platform::CountingFundingSigner,
+    manager: Arc<
+        tokio::sync::RwLock<
+            platform_wallet::key_wallet_manager::WalletManager<platform_wallet::PlatformWalletInfo>,
+        >,
+    >,
+    wallet: [u8; 32],
+    queued: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl key_wallet::Signer for RemovingSigner {
+    type Error = dw_vault::SignerError;
+
+    fn supported_methods(&self) -> &[key_wallet::SignerMethod] {
+        self.inner.supported_methods()
+    }
+
+    async fn sign_ecdsa(
+        &self,
+        path: &key_wallet::DerivationPath,
+        sighash: [u8; 32],
+    ) -> Result<
+        (
+            dashcore::secp256k1::ecdsa::Signature,
+            dashcore::secp256k1::PublicKey,
+        ),
+        Self::Error,
+    > {
+        let signed = self.inner.sign_ecdsa(path, sighash).await?;
+        if !self.queued.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let (manager, id) = (self.manager.clone(), self.wallet);
+            let (began, queued) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                // Queued on the manager's lock before the signer returns,
+                // so the removal runs before the library's tracking.
+                let write = manager.write();
+                tokio::pin!(write);
+                let mut began = Some(began);
+                let mut guard = std::future::poll_fn(|cx| {
+                    let polled = write.as_mut().poll(cx);
+                    if let Some(began) = began.take() {
+                        let _ = began.send(());
+                    }
+                    polled
+                })
+                .await;
+                guard.remove_wallet(&id).unwrap();
+            });
+            queued.await.unwrap();
+        }
+        Ok(signed)
+    }
+
+    async fn public_key(
+        &self,
+        path: &key_wallet::DerivationPath,
+    ) -> Result<dashcore::secp256k1::PublicKey, Self::Error> {
+        self.inner.public_key(path).await
+    }
+}
+
+#[async_trait::async_trait]
+impl key_wallet::ExtendedPubKeySigner for RemovingSigner {
+    async fn extended_public_key(
+        &self,
+        path: &key_wallet::DerivationPath,
+    ) -> Result<key_wallet::bip32::ExtendedPubKey, Self::Error> {
+        self.inner.extended_public_key(path).await
+    }
+}
+
+/// Review P2b r6 R6-01 (Sol's probe `review_r6_teardown_publication_boundary`):
+/// the pinned library tracks a lock it signed into an empty changeset when
+/// the wallet left its manager meanwhile, skips the queue and still calls
+/// its broadcaster, so the engine's tap never sees the lock. The engine
+/// cannot reach that broadcaster at the pin (`SpvBroadcaster`, built inside
+/// the library); the boundary every lock does pass is the funding signer,
+/// which recorded the call's `funding_release` row before the vault signed
+/// anything. So the step reads `MaybeSent`, never `NotSent`: no producer
+/// of a lock, present or future, can make it read unclaimed while a
+/// signature of it may be out.
+#[test]
+fn mode_b_a_lock_the_library_sends_unstored_leaves_its_step_maybe_sent() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    f.credit(110, COIN);
+    f.registration_draft(0);
+    let s = &f.session;
+    let permit = f.funding_permit(STEP);
+    assert_eq!(f.release_rows(STEP), 0, "nothing signed yet");
+    let (session, id, inner) = (s.clone(), f.wallet, permit.funding_signer().unwrap());
+    let result = f
+        .engine
+        .block_on(session.on_runtime({
+            let session = session.clone();
+            async move {
+                let wallet = session.wallet(&id).await?;
+                let signer = RemovingSigner {
+                    inner,
+                    manager: wallet.wallet_manager().clone(),
+                    wallet: id.0,
+                    queued: Default::default(),
+                };
+                Ok(wallet
+                    .asset_locks()
+                    .create_funded_asset_lock_proof(
+                        100_000,
+                        0,
+                        platform_wallet::AssetLockFundingType::IdentityRegistration,
+                        0,
+                        &signer,
+                    )
+                    .await)
+            }
+        }))
+        .unwrap();
+    assert!(
+        matches!(
+            &result,
+            Err(platform_wallet::PlatformWalletError::TransactionBroadcastUnconfirmed(_))
+        ),
+        "the pinned library reaches its broadcaster past the empty changeset: {result:?}"
+    );
+    assert!(permit.signatures().released() > 0);
+    assert!(
+        s.leases.signed_lock_txids(f.wallet, STEP).is_empty(),
+        "no store of the lock reached the tap"
+    );
+    assert_eq!(
+        f.release_rows(STEP),
+        1,
+        "recorded before the first signature"
+    );
+    assert!(s.leases.call_step(f.wallet, STEP).released);
+    assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
+    assert_eq!(
+        s.leases.funding_status(f.wallet, STEP),
+        Some(DispatchState::MaybeSent)
+    );
+}
+
+/// Review P2b r6 R6-01: the funding signer's release record is the gate of
+/// its first signature: a record that fails (here the journal refuses the
+/// row) refuses the signature, the vault asked nothing, and the call ends
+/// `Cancelled`, its step `NotSent`.
+#[test]
+fn mode_b_a_funding_signature_waits_for_its_durable_release() {
+    use key_wallet::Signer as _;
+    use std::str::FromStr;
+
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.registration_draft(0);
+    let s = &f.session;
+    let db = rusqlite::Connection::open(s.data_dir().join(dw_appdb::dispatch::DISPATCH_DB_FILE))
+        .unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER no_release BEFORE INSERT ON funding_release \
+         BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    )
+    .unwrap();
+    let permit = f.funding_permit(STEP);
+    let signer = permit.funding_signer().unwrap();
+    let path = key_wallet::DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
+    assert!(matches!(
+        f.engine.block_on(signer.sign_ecdsa(&path, [1; 32])),
+        Err(dw_vault::SignerError::PathNotAllowed(_))
+    ));
+    assert_eq!(permit.signatures().released(), 0);
+    assert!(!s.leases.call_step(f.wallet, STEP).released);
+    assert_eq!(f.release_rows(STEP), 0);
+    assert_eq!(permit.finish(false), FlowOutcome::Cancelled);
+    assert_eq!(
+        s.leases.funding_status(f.wallet, STEP),
+        Some(DispatchState::NotSent)
+    );
+}
+
+/// Review P2b r6 R6-02 (Sol's probe
+/// `review_r6_two_independent_locks_can_be_signed_before_the_first_record`):
+/// two asset locks over independent coins, both signed under one permit
+/// before either is stored. The funding signer sees bare sighashes, so it
+/// cannot tell the second lock from the first's next input; the record
+/// boundary does: the first store finds the call signed more than its lock
+/// and stops the process ([`super::fence`]'s `fail_closed`, a panic in
+/// tests) before the library's send, recording neither. From then on the
+/// signer refuses any new sighash, and the step reads `MaybeSent` by its
+/// release row.
+#[test]
+fn mode_b_a_second_lock_under_one_permit_stops_at_the_first_record() {
+    use key_wallet::Signer as _;
+
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit_with_prev(100, COIN);
+    let b = f.credit_with_prev(101, COIN);
+    f.registration_draft(0);
+    let s = &f.session;
+    let permit = f.funding_permit(STEP);
+    let signer = permit.funding_signer().unwrap();
+    let locks: Vec<_> = [&a, &b]
+        .into_iter()
+        .map(|prev| {
+            let path = f.path_for_prev(prev);
+            let pk = f.engine.block_on(signer.public_key(&path)).unwrap();
+            real_lock(prev, 100_000, pk, |h| {
+                f.engine.block_on(signer.sign_ecdsa(&path, h)).unwrap().0
+            })
+        })
+        .collect();
+    assert_ne!(
+        locks[0].input[0].previous_output,
+        locks[1].input[0].previous_output
+    );
+    let stored = |tx: &dashcore::Transaction| StoredLock {
+        built: true,
+        ..StoredLock::of(tx)
+    };
+    let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        s.leases.record_signed_locks(f.wallet, &[stored(&locks[0])]);
+    }))
+    .expect_err("the first record stops the process");
+    assert_eq!(
+        stopped.downcast_ref::<String>().map(String::as_str),
+        Some("fail closed: a funding call signed more than one asset lock")
+    );
+    assert!(s.leases.signed_lock_txids(f.wallet, STEP).is_empty());
+    let path = f.path_for_prev(&a);
+    assert!(matches!(
+        f.engine.block_on(signer.sign_ecdsa(&path, [9; 32])),
+        Err(dw_vault::SignerError::PathNotAllowed(_))
+    ));
+    assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
+    assert_eq!(
+        s.leases.funding_status(f.wallet, STEP),
+        Some(DispatchState::MaybeSent)
+    );
+}
+
+/// Review Opus O-2 residual (Sol r6's PSBT probe): a PSBT spending the
+/// input of a lock a funding call signed, whose step is unresolved, is
+/// neither signed nor broadcast; Repair's self-spend, the one build exempt,
+/// still takes it, and resolves the step.
+#[test]
+fn mode_b_a_psbt_spending_an_unresolved_locks_input_is_refused() {
+    use std::str::FromStr;
+
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let prev = f.credit_with_prev(102, COIN);
+    f.credit(103, COIN);
+    let a = OutPoint::new(prev.txid(), 0);
+    let s = &f.session;
+    let dest = dashcore::Address::from_str(FOREIGN)
+        .unwrap()
+        .assume_checked();
+    let psbt = || {
+        let unsigned = dashcore::Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: a,
+                ..Default::default()
+            }],
+            output: vec![TxOut {
+                value: COIN - 1_000,
+                script_pubkey: dest.script_pubkey(),
+            }],
+            special_transaction_payload: None,
+        };
+        let mut psbt = dw_psbt::PartiallySignedTransaction::from_unsigned_tx(unsigned).unwrap();
+        psbt.inputs[0].non_witness_utxo = Some(prev.clone());
+        psbt
+    };
+    let spend = || f.grant(GrantPurpose::Spend { max_duffs: COIN }, Credential::None);
+    fn held<T: std::fmt::Debug>(r: Result<T, EngineError>, a: OutPoint) {
+        match r {
+            Err(EngineError::Psbt(crate::PsbtFailure::Invalid(d))) => {
+                assert!(d.contains(&a.to_string()) && d.contains("held"), "{d}")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    // Signed while the coin is free.
+    let signed = f
+        .engine
+        .block_on(s.sign_psbt(f.wallet, psbt(), spend()))
+        .unwrap();
+    f.stuck_signing(STEP, 70, &[a]);
+    f.refresh();
+    assert_eq!(
+        s.leases.unresolved_lock_inputs(f.wallet),
+        std::collections::HashSet::from([a])
+    );
+    held(f.engine.block_on(s.sign_psbt(f.wallet, psbt(), spend())), a);
+    held(f.engine.block_on(s.broadcast_psbt(signed)), a);
+
+    let tx = f.repair(STEP);
+    assert!(tx.input.iter().any(|i| i.previous_output == a));
+    assert_eq!(
+        s.leases.funding_status(f.wallet, STEP),
+        Some(DispatchState::NotSent)
+    );
+    assert!(s.leases.unresolved_lock_inputs(f.wallet).is_empty());
+}
+
+/// Review P2b r6 S6-01: CoinJoin's funding transactions (denominations,
+/// collaterals) select from the held-coin snapshot through their own
+/// producer, `MixView`'s tallies: an unresolved lock's input is in none;
+/// Repair still takes it, and resolves the step.
+#[test]
+fn mode_b_coinjoin_funding_skips_an_unresolved_locks_input() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let b = f.credit(2, COIN);
+    let s = &f.session;
+    let network = s.network.core_network();
+    let inputs = |denominations: bool| {
+        let view = f
+            .engine
+            .block_on(s.on_runtime({
+                let (s, w) = (s.clone(), f.wallet);
+                async move { s.read_mix_view(w).await }
+            }))
+            .unwrap();
+        view.funding_inputs(network, denominations)
+    };
+    for denominations in [true, false] {
+        let free = inputs(denominations);
+        assert!(free.contains(&a) && free.contains(&b), "{free:?}");
+    }
+    f.stuck_signing(STEP, 70, &[a]);
+    f.refresh();
+    for denominations in [true, false] {
+        assert_eq!(
+            inputs(denominations),
+            vec![b],
+            "denominations: {denominations}"
+        );
+    }
+
+    let tx = f.repair(STEP);
+    assert!(tx.input.iter().any(|i| i.previous_output == a));
+    assert_eq!(
+        s.leases.funding_status(f.wallet, STEP),
+        Some(DispatchState::NotSent)
+    );
+}
+
+/// Review P2b r6 S6-01: "Move mixed coins" selects from the held-coin
+/// snapshot through its own producer (`sweep_coins`, read by its plan): a
+/// CoinJoin coin an unresolved lock spends is in no chunk until Repair
+/// resolves the step, through the lock's other input.
+#[test]
+fn mode_b_a_mixed_sweep_skips_an_unresolved_locks_input() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let c = f.credit_coinjoin(3, COIN);
+    let s = &f.session;
+    let plan = || {
+        f.engine
+            .block_on(s.mixed_coins_sweep_plan(f.wallet, crate::coinjoin::SweepDestination::Wallet))
+    };
+    assert_eq!(plan().unwrap().total, COIN);
+    f.stuck_signing(STEP, 70, &[a, c]);
+    f.refresh();
+    assert_eq!(
+        s.leases.unresolved_lock_inputs(f.wallet),
+        std::collections::HashSet::from([a, c])
+    );
+    assert!(matches!(
+        plan(),
+        Err(EngineError::CoinJoin(
+            crate::coinjoin::CoinJoinFailure::NothingToMove
+        ))
+    ));
+
+    let tx = f.repair(STEP);
+    assert!(tx.input.iter().any(|i| i.previous_output == a));
+    assert!(s.leases.unresolved_lock_inputs(f.wallet).is_empty());
+    assert_eq!(
+        plan().unwrap().total,
+        COIN,
+        "the step resolved, the coin is free"
+    );
 }

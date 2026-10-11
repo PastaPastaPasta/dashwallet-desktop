@@ -97,6 +97,15 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
         artifact: &[u8; 32],
         self_spend: &[u8; 32],
     ) -> Result<bool, String>;
+    /// A funding call of `step` is about to release its first signature
+    /// (§2a.7, review R6-01), recorded against the step's standing marker;
+    /// `Ok(false)` when none stands ([`LeaseTable::record_release`]).
+    fn insert_release(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<bool, String>;
     /// Appends the artifact's resolution (DEC-154): `NotSent` supersedes
     /// its markers so far. The engine writes `Sent` only through
     /// `resolve_sent`.
@@ -218,6 +227,16 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
             crate::events::unix_now(),
         )
         .map_err(|e| e.to_string())
+    }
+
+    fn insert_release(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.insert_release(wallet, step, artifact, crate::events::unix_now())
+            .map_err(|e| e.to_string())
     }
 
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
@@ -355,6 +374,10 @@ pub struct CallStepInfo {
     /// OD-02): every lock a call under it signed was recorded durably
     /// before anything could send it.
     pub durable_record: bool,
+    /// A call under the marker may have released a funding signature: its
+    /// `funding_release` row (schema 7, §2a.7, review P2b r6 R6-01) is
+    /// written before the vault signs anything.
+    pub released: bool,
     /// Repair's self-spends standing against the marker.
     pub self_spends: Vec<SelfSpend>,
 }
@@ -518,6 +541,14 @@ pub(crate) struct FenceState {
     /// guarantee (§2a.7, review OD-02): created by this build, or loaded
     /// with the schema 6 flag.
     durable_record: HashSet<(WalletId, String)>,
+    /// The funding steps with a `funding_release` row against their
+    /// standing marker (schema 7, §2a.7, review P2b r6 R6-01): a call under
+    /// it may have released a funding signature.
+    released: HashSet<(WalletId, String)>,
+    /// How often each funding step's marker was superseded in this process:
+    /// a release write begun under one marker is not taken for the next
+    /// one's ([`LeaseTable::record_release`]).
+    supersedes: HashMap<(WalletId, String), u64>,
     /// The funding steps Repair resolved, durably (DP1-02 PA-3, review
     /// OD-06): each with its ChainLocked self-spend, which takes an input
     /// of every lock the step's call signed. Its signed locks are dead for
@@ -985,6 +1016,7 @@ impl FenceState {
             status: self.call_step_status(wallet, step),
             funding: self.funding.get(&key).copied(),
             durable_record: self.durable_record.contains(&key),
+            released: self.released.contains(&key),
             self_spends: self.self_spends.get(&key).cloned().unwrap_or_default(),
         }
     }
@@ -1027,6 +1059,11 @@ impl FenceState {
         // Durable or being written already, or owed now.
         self.evidence.entry((wallet, id)).or_insert(Mark::Ambiguous);
         true
+    }
+
+    /// The wallets with a funding step's marker.
+    pub(super) fn funding_wallets(&self) -> BTreeSet<WalletId> {
+        self.funding.keys().map(|(w, _)| *w).collect()
     }
 
     /// The wallet's funding steps with a standing marker (§2a.5).
@@ -1153,6 +1190,8 @@ impl FenceState {
                 );
                 self.funding.remove(&key);
                 self.durable_record.remove(&key);
+                self.released.remove(&key);
+                *self.supersedes.entry(key.clone()).or_default() += 1;
                 self.self_spends.remove(&key);
                 self.signed_locks.remove(&key);
             }
@@ -1486,6 +1525,10 @@ fn forget_erased(i: &mut Inner, wallet: WalletId, dispatch: bool, erased: Vec<[u
         .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
     f.durable_record
         .retain(|(w, s)| !forgotten(w, &ArtifactId::of_step(w, s)));
+    f.released
+        .retain(|(w, s)| !forgotten(w, &ArtifactId::of_step(w, s)));
+    f.supersedes
+        .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
     f.tombstones
         .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
     f.owed_tombstones
@@ -1918,6 +1961,9 @@ impl LeaseTable {
             }
             for t in calls.tombstones {
                 (i.fence.tombstones).insert((WalletId(t.wallet), t.step_id), t.self_spend);
+            }
+            for r in calls.releases {
+                i.fence.released.insert((WalletId(r.wallet), r.step_id));
             }
             i.fence.journal = JournalState::Ready;
             fx.notify();
@@ -3298,6 +3344,119 @@ impl LeaseTable {
         self.with_j(|i, _| i.fence.call_step_info(&wallet, step))
     }
 
+    /// Records that a funding call of `step` is about to release its first
+    /// signature (schema 7, §2a.7, review P2b r6 R6-01): one append to the
+    /// journal's `funding_release` table against the step's standing
+    /// marker, in memory once it landed. The call's funding signer awaits
+    /// it before the vault signs anything
+    /// ([`CountingFundingSigner`](crate::platform::CountingFundingSigner)),
+    /// so every lock that can reach a broadcast, by whatever path, has its
+    /// step's release row on disk first, and the step never reads `NotSent`
+    /// for want of a signed-lock record once a signature may be out. An
+    /// error (no journal ready, no marker standing on disk, a write that
+    /// keeps failing or panics, the marker superseded meanwhile) refuses the
+    /// signature. A failing write is retried ([`SIGNED_WRITE_ATTEMPTS`]).
+    /// Idempotent per marker. Outside J.
+    pub(crate) async fn record_release(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        step: &str,
+    ) -> Result<(), String> {
+        let backend = (self.journal.get()).ok_or("no dispatch journal")?;
+        let key = (wallet, step.to_owned());
+        let begun = self.with_j(|i, _| {
+            if i.fence.journal != JournalState::Ready {
+                return Err("the dispatch journal is not ready".to_owned());
+            }
+            if !i.fence.call_marked(&wallet, step) {
+                return Err("the funding step's marker no longer stands".to_owned());
+            }
+            if i.fence.released.contains(&key) {
+                return Ok(None);
+            }
+            i.fence.writes += 1;
+            Ok(Some(i.fence.supersedes.get(&key).copied().unwrap_or(0)))
+        })?;
+        let Some(generation) = begun else {
+            return Ok(());
+        };
+        // The write and the J step that ends it run on the blocking task,
+        // so `writes` comes down even if this future is dropped.
+        let table = Arc::clone(self);
+        self.rt
+            .spawn_blocking(move || {
+                let id = ArtifactId::of_step(&wallet, &key.1);
+                let mut delay = SIGNED_WRITE_BACKOFF;
+                let mut written = Err(String::new());
+                for attempt in 1..=SIGNED_WRITE_ATTEMPTS {
+                    written = guarded(|| backend.insert_release(&wallet.0, &key.1, &id.0));
+                    match &written {
+                        Err(e) => {
+                            tracing::warn!(step = key.1, attempt, error = %e, "recording a funding release failed");
+                        }
+                        Ok(_) => break,
+                    }
+                    if attempt < SIGNED_WRITE_ATTEMPTS {
+                        std::thread::sleep(delay);
+                        delay *= 2;
+                    }
+                }
+                table.with_j(|i, fx| {
+                    fx.notify();
+                    end_write(i, fx, written.is_ok());
+                    match written {
+                        Err(e) => Err(e),
+                        Ok(false) => Err("no marker of the funding step stands on disk".to_owned()),
+                        // A `NotSent` row cannot supersede the marker while
+                        // the call signs (`CallPermit::end`), unless this
+                        // signing was dropped meanwhile: the row is then the
+                        // superseded marker's, and the next one's call
+                        // writes its own.
+                        Ok(true)
+                            if !i.fence.call_marked(&wallet, &key.1)
+                                || i.fence.supersedes.get(&key).copied().unwrap_or(0)
+                                    != generation =>
+                        {
+                            Err("the funding step's marker was superseded".to_owned())
+                        }
+                        Ok(true) => {
+                            i.fence.released.insert(key);
+                            Ok(())
+                        }
+                    }
+                })
+            })
+            .await
+            .unwrap_or_else(|_| Err("the funding release write was cancelled".to_owned()))
+    }
+
+    /// [`Self::record_release`] inline (tests): what a funding signer's
+    /// first signature writes, for a test that releases one without it.
+    #[cfg(test)]
+    pub(crate) fn record_release_now(&self, wallet: WalletId, step: &str) -> Result<(), String> {
+        let key = (wallet, step.to_owned());
+        let state = self.with_j(|i, _| {
+            let ready =
+                i.fence.journal == JournalState::Ready && i.fence.call_marked(&wallet, step);
+            (ready, i.fence.released.contains(&key))
+        });
+        match state {
+            (_, true) => return Ok(()),
+            (false, false) => return Err("no journal ready, or no marker".into()),
+            (true, false) => {}
+        }
+        let backend = (self.journal.get()).ok_or("no dispatch journal")?;
+        let id = ArtifactId::of_step(&wallet, step);
+        if !backend.insert_release(&wallet.0, step, &id.0)? {
+            return Err("no marker of the funding step stands on disk".into());
+        }
+        self.with_j(|i, fx| {
+            fx.notify();
+            i.fence.released.insert(key);
+        });
+        Ok(())
+    }
+
     /// Records Repair's self-spend `txid` (display order) of the stuck
     /// funding `step` (§6.5, §2a.5), which spends `inputs`, before the
     /// self-spend is broadcast: one append to the journal's `self_spend`
@@ -3398,11 +3557,16 @@ impl LeaseTable {
     /// append landed: the library sends a `Built` lock only after this
     /// store returns, and the resume pass sends none before its record is
     /// durable ([`unrecorded_signer`](super::mode_b::unrecorded_signer)), so no lock a call
-    /// signed is sent without its durable record (§2a.7). A failing append
-    /// is retried ([`SIGNED_WRITE_ATTEMPTS`]). One that keeps failing, a
-    /// marker gone, a journal not ready, a lock carrying only some of a
-    /// call's signatures, a lock of a call that already ended reaching the
-    /// store unrecorded, or a `Built` lock whose signatures cannot be read
+    /// signed that reaches the store is sent without its durable record
+    /// (§2a.7). One the library sends without storing it (an empty tracking
+    /// changeset, review P2b r6 R6-01) is covered by its call's release row
+    /// instead ([`Self::record_release`]): its step reads possibly sent.
+    /// A failing append is retried ([`SIGNED_WRITE_ATTEMPTS`]). One that
+    /// keeps failing, a marker gone, a journal not ready, a lock carrying
+    /// only some of a call's signatures, a call that signed anything besides
+    /// the lock (a second lock, review P2b r6 R6-02), a lock of a call that
+    /// already ended reaching the store unrecorded, or a `Built` lock whose
+    /// signatures cannot be read
     /// stored while a call that released one runs stops the process
     /// ([`fail_closed`]), before the library's send. A recorded lock ends
     /// its call's signing of any other (one lock per call, O-1:
@@ -3443,8 +3607,13 @@ impl LeaseTable {
                             "an asset lock carries only some of a funding call's signatures",
                         );
                     }
-                    // From here on the call signs no second lock (O-1).
+                    // From here on the call signs no second lock (O-1); one
+                    // it signed or is signing before is a second lock under
+                    // the permit (R6-02), which no record covers.
                     signatures.note_recorded();
+                    if !signatures.signed_only(sighashes) {
+                        return Err("a funding call signed more than one asset lock");
+                    }
                     if !i.fence.call_marked(&wallet, &step) {
                         return Err("a signing funding call's marker no longer stands");
                     }

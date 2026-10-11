@@ -146,7 +146,7 @@ async fn a_resumable_steps_ok_call_announces_sent_once() {
         .call_permit_step("submit", credits(10), step())
         .await
         .unwrap();
-    p.signatures().note_released();
+    p.note_released();
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     assert!(resolved(&rec).is_empty());
     let p = l

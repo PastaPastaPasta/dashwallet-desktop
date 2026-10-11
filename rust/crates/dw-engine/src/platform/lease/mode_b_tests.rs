@@ -208,7 +208,7 @@ async fn maybe_sent(t: &LeaseTable, l: &Lease, step: &str, index: u32) -> Txid {
     lock
 }
 
-/// A funding call of `step` under a build before schema 6 (OD-02): it
+/// A funding call of `step` under a build before schema 7 (OD-02): it
 /// released a signature and failed, recording no lock. `j` keeps its marker
 /// unflagged, so a reload reads the step `MaybeSent`, no lock known.
 async fn legacy_maybe_sent(l: &Lease, j: &FakeJournal, step: &str, index: u32) {
@@ -216,7 +216,7 @@ async fn legacy_maybe_sent(l: &Lease, j: &FakeJournal, step: &str, index: u32) {
         .call_permit_step("funding", quote(10, 0), funding(step, index))
         .await
         .unwrap();
-    p.signatures().note_released();
+    p.note_released();
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     j.unflag_markers();
 }
@@ -491,7 +491,7 @@ async fn dispatch_resolved_fires_on_moves_to_sent_and_not_sent_only() {
         .call_permit_step("funding", quote(10, 0), funding(OK, 11))
         .await
         .unwrap();
-    p.signatures().note_released();
+    p.note_released();
     assert_eq!(p.finish(true), FlowOutcome::Sent);
     assert_eq!(t.funding_status(W, OK), Some(Sent));
     assert_eq!(rec.resolved()[2], (OK.to_owned(), DispatchResolution::Sent));
@@ -908,7 +908,7 @@ async fn a_later_funding_under_the_same_key_does_not_read_an_earlier_ones_row() 
         .call_permit_step("funding", quote(10, 0), funding(A, 5))
         .await
         .unwrap();
-    p.signatures().note_released();
+    p.note_released();
     assert_eq!(p.finish(true), FlowOutcome::Sent);
     src.set_rows(W, vec![row(1, 5, R::Consumed)]);
     t.refresh_funding(W).await;
@@ -984,7 +984,7 @@ async fn a_funding_calls_fence_is_released_by_its_own_tracked_row_only() {
     });
     // Before the call's first signature no row is its lock.
     t.note_tracked(W, &[(txid(2), key(5))]);
-    p.signatures().note_released();
+    p.note_released();
     t.note_tracked(W, &[(txid(1), key(5))]);
     t.note_tracked(W, &[(txid(2), key(6))]);
     t.note_tracked(W, &[]);
@@ -1028,7 +1028,7 @@ async fn a_funding_calls_fence_is_released_at_its_end_or_refusal() {
         .await
         .unwrap();
     assert!(t.call_holds_fence(W));
-    p.signatures().note_released();
+    p.note_released();
     drop(p);
     assert!(!t.call_holds_fence(W));
     drop(reacquired("released at the call's end").await);
@@ -1530,16 +1530,17 @@ async fn an_unattributed_row_is_not_given_to_another_drafts_marker() {
     );
 }
 
-/// With no lock of the step known (a marker of a build before schema 6,
+/// With no lock of the step known (a marker of a build before schema 7,
 /// OD-02), Repair refuses it, whatever a scan of the chain finds (reviews
 /// R1-01, P2b r4 R4-01). In the process that marked it, the marker is
-/// flagged: with no signed record, nothing was sent (§2a.7).
+/// flagged, but its call released a signature and recorded no lock: a lock
+/// may have been sent unstored (§2a.7, P2b r6 R6-01).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn repair_refuses_a_legacy_step_with_no_known_lock() {
     let (t, _, j, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
     legacy_maybe_sent(&l, &j, TOPUP, 11).await;
-    assert_eq!(t.funding_status(W, TOPUP), Some(NotSent));
+    assert_eq!(t.funding_status(W, TOPUP), Some(MaybeSent));
     let (t, _) = reload(&j, &src).await;
     assert_eq!(t.funding_status(W, TOPUP), Some(MaybeSent));
     assert_eq!(
@@ -1924,7 +1925,7 @@ async fn a_sent_call_without_its_row_is_journaled_once_proved() {
         .call_permit_step("funding", quote(10, 0), funding(TOPUP, 9))
         .await
         .unwrap();
-    p.signatures().note_released();
+    p.note_released();
     t.close_journal().await;
     assert_eq!(p.finish(true), FlowOutcome::Sent);
     assert_eq!(t.funding_status(W, TOPUP), Some(Sent));
@@ -2119,7 +2120,7 @@ async fn review_r2_unrelated_reconstruction_must_not_authorize_repair() {
         .call_permit_step("funding", quote(10, 0), funding(CURRENT, 0))
         .await
         .unwrap();
-    p.signatures().note_released();
+    p.note_released();
     let unrelated = row(77, 0, R::Broadcast);
     assert!(!unrelated.trusted);
     src.set_rows(W, vec![unrelated.clone()]);
@@ -2161,7 +2162,7 @@ async fn review_r2_unrelated_conflict_must_not_resolve_current_not_sent() {
         .call_permit_step("funding", quote(10, 0), funding(CURRENT, 0))
         .await
         .unwrap();
-    p.signatures().note_released();
+    p.note_released();
     let unrelated = row(77, 0, R::Broadcast);
     src.set_rows(W, vec![unrelated.clone()]);
     t.note_tracked(W, &[(unrelated.txid, unrelated.key)]);
@@ -2288,10 +2289,12 @@ fn fails_closed(f: impl FnOnce()) -> String {
 
 /// A signed lock's failing append is retried before the store returns,
 /// and written once (§2a.7). One that keeps failing stops the process
-/// inside the store, before the library's send; the restarted process
-/// reads the step `NotSent`: its marker is flagged, and no lock of it was
-/// recorded or sent (PA-2; review DP1-02 r8 R8-01, whose lost record let
-/// a possibly sent funding read unfunded).
+/// inside the store, before the library's send (PA-2; review DP1-02 r8
+/// R8-01, whose lost record let a possibly sent funding read unfunded).
+/// The restarted process reads the step `MaybeSent`, no lock known: its
+/// call released a signature (its release row), and the restart cannot
+/// tell this stop from a send no store reached (P2b r6 R6-01; the
+/// liveness cost of §2a.7).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_signed_locks_failing_write_is_retried_then_stops_the_process() {
     let (t, _, j, src) = setup().await;
@@ -2337,7 +2340,8 @@ async fn a_signed_locks_failing_write_is_retried_then_stops_the_process() {
     let (restarted, _) = reload(&killed, &src).await;
     assert!(restarted.call_step(W, REG).durable_record);
     assert!(restarted.signed_lock_txids(W, REG).is_empty());
-    assert_eq!(restarted.funding_status(W, REG), Some(NotSent));
+    assert!(restarted.call_step(W, REG).released);
+    assert_eq!(restarted.funding_status(W, REG), Some(MaybeSent));
 }
 
 /// One lock per call (O-1): once a lock the call signed is recorded, the
@@ -2385,6 +2389,10 @@ async fn a_lock_signed_while_the_journal_is_closed_stops_the_process() {
         .call_permit_step("funding", quote(10, 0), funding(REG, 0))
         .await
         .unwrap();
+    // The call's signer recorded its release before the close: one signing
+    // after it is refused at the signer (R6-01); this is the store's own
+    // check behind it.
+    t.record_release(W, REG).await.unwrap();
     t.close_journal().await;
     let why = fails_closed(|| sign_lock(&t, &p, W, &row(1, 0, R::Built)));
     assert!(why.contains("not ready"), "{why}");
@@ -2427,9 +2435,9 @@ async fn a_lock_is_the_calls_only_when_every_input_carries_its_signature() {
         .call_permit_step("funding", quote(10, 0), funding(TOPUP, 9))
         .await
         .unwrap();
-    pa.signatures().note_signed([1; 32]);
-    pa.signatures().note_signed([3; 32]);
-    pb.signatures().note_signed([2; 32]);
+    pa.note_signed([1; 32]);
+    pa.note_signed([3; 32]);
+    pb.note_signed([2; 32]);
     let lock = |n: u8, sighashes: Option<Vec<[u8; 32]>>, built: bool| StoredLock {
         txid: txid(n),
         inputs: vec![OutPoint::new(txid(100 + n), 0), OutPoint::new(txid(200), 0)],
@@ -2586,6 +2594,7 @@ async fn review_r3_schema3_heuristic_repair_must_not_survive_as_negative_evidenc
              ALTER TABLE self_spend DROP COLUMN provenance;
              ALTER TABLE funding_marker DROP COLUMN durable_record;
              DROP TABLE funding_tombstone;
+             DROP TABLE funding_release;
              DROP TABLE signed_lock;
              UPDATE meta SET v = 3 WHERE k = 'schema'",
         )
@@ -2763,8 +2772,18 @@ async fn a_self_spend_shows_the_conflict_only_over_every_signed_lock() {
         .unwrap();
     let (a, b) = (row(1, 0, R::Built), row(2, 0, R::Built));
     sign_lock(&t, &p, W, &a);
-    sign_lock(&t, &p, W, &b);
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    // A second signed lock of the step (one call signs one, R6-02; a
+    // journal of an earlier build may hold two), on disk.
+    let id = ArtifactId::of_step(&W, REG);
+    let inputs = [dw_appdb::dispatch::StoredOutPoint {
+        txid: b.inputs[0].txid.to_byte_array(),
+        vout: b.inputs[0].vout,
+    }];
+    assert!(
+        j.insert_signed_lock(&W.0, REG, &id.0, &b.txid.to_byte_array(), &inputs)
+            .unwrap()
+    );
     let covers = |r: &TrackedRow| SelfSpendConflict {
         lock: r.txid.to_byte_array(),
         input: StoredOutPoint {
@@ -2772,7 +2791,6 @@ async fn a_self_spend_shows_the_conflict_only_over_every_signed_lock() {
             vout: r.inputs[0].vout,
         },
     };
-    let id = ArtifactId::of_step(&W, REG);
     assert!(
         j.insert_self_spend(&W.0, REG, &id.0, &[0xa1; 32], &[covers(&a)])
             .unwrap()
@@ -2862,6 +2880,7 @@ async fn review_r4_legacy_self_spend_and_complete_chain_scan_do_not_kill_a_withh
              ALTER TABLE self_spend DROP COLUMN provenance;
              ALTER TABLE funding_marker DROP COLUMN durable_record;
              DROP TABLE funding_tombstone;
+             DROP TABLE funding_release;
              DROP TABLE signed_lock;
              UPDATE meta SET v = 3 WHERE k = 'schema'",
         )
@@ -2931,6 +2950,7 @@ async fn a_legacy_step_resolves_only_by_a_fresh_recorded_self_spend() {
              ALTER TABLE self_spend DROP COLUMN provenance;
              ALTER TABLE funding_marker DROP COLUMN durable_record;
              DROP TABLE funding_tombstone;
+             DROP TABLE funding_release;
              UPDATE meta SET v = 4 WHERE k = 'schema'",
         )
         .unwrap();
@@ -3535,4 +3555,90 @@ async fn flagged_and_unflagged_markers_on_a_journal_file_read_as_their_flag_says
         }
         assert_eq!(tombstones(&path), 1);
     }
+}
+
+/// Review P2b r6 R6-01: a flagged marker reads `NotSent` for want of a
+/// signed-lock record only when no call under it released a signature (no
+/// `funding_release` row, schema 7). A call killed while asking for its
+/// first signature wrote none: `NotSent`. One that released a signature and
+/// recorded no lock (the library may have sent a lock no store of it
+/// reached, an empty tracking changeset) reads `MaybeSent`, in process and
+/// after a kill; Repair, knowing no lock, refuses (its liveness cost: a
+/// new draft).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r6_01_a_released_call_with_no_recorded_lock_reads_maybe_sent() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(TOPUP, 9))
+        .await
+        .unwrap();
+    let count = p.signatures();
+    let in_flight = count.begin().expect("open");
+    let killed = j.snapshot();
+    drop(in_flight);
+    let (t2, _) = reload(&killed, &src).await;
+    assert_eq!(t2.funding_status(W, TOPUP), Some(NotSent));
+    assert!(killed.release_rows().is_empty());
+
+    p.note_released();
+    assert!(t.call_step(W, TOPUP).released);
+    assert_eq!(j.release_rows().len(), 1);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    assert!(t.refresh_funding(W).await);
+    assert_eq!(t.funding_status(W, TOPUP), Some(MaybeSent));
+    let (t3, _) = reload(&j, &src).await;
+    assert_eq!(t3.funding_status(W, TOPUP), Some(MaybeSent));
+    assert!(t3.call_step(W, TOPUP).released);
+    assert_eq!(
+        t3.record_self_spend(W, TOPUP, [1; 32], &[]).await,
+        Err(StuckFundingRefusal::NoKnownLock)
+    );
+}
+
+/// Review P2b r6 R6-01: a release row answers its marker only. A `NotSent`
+/// row (a call that released nothing, the vault refusing after the release
+/// was recorded) supersedes the marker with its release, so the step's next
+/// call starts clean.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r6_01_a_release_ends_with_its_marker() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 0))
+        .await
+        .unwrap();
+    t.record_release(W, REG).await.unwrap();
+    assert!(t.call_step(W, REG).released);
+    assert_eq!(p.finish(false), FlowOutcome::Cancelled);
+    until(|| t.funding_status(W, REG) == Some(NotSent)).await;
+    assert!(!t.call_step(W, REG).released);
+    // Reloaded, no marker stands, nor its release: never started.
+    let (t2, _) = reload(&j, &src).await;
+    assert!(!t2.call_step(W, REG).released);
+    assert_eq!(t2.call_step(W, REG).status, S::None);
+    assert!(j.release_rows().len() == 1, "kept on disk until compacted");
+    // No marker stands: nothing to record against.
+    assert!(t.record_release(W, REG).await.is_err());
+}
+
+/// Review P2b r6 R6-01: a release write that keeps failing is retried,
+/// then refused: nothing is recorded, in memory or on disk, so the signer
+/// asks nothing of the vault and the call can end `Cancelled`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r6_01_a_release_write_that_keeps_failing_is_refused() {
+    let (t, _, j, _) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let p = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 0))
+        .await
+        .unwrap();
+    j.fail_release.store(true, Ordering::SeqCst);
+    assert!(t.record_release(W, REG).await.is_err());
+    assert!(!t.call_step(W, REG).released);
+    assert!(j.release_rows().is_empty());
+    j.fail_release.store(false, Ordering::SeqCst);
+    t.record_release(W, REG).await.unwrap();
+    assert_eq!(j.release_rows().len(), 1);
+    assert_eq!(p.finish(false), FlowOutcome::Cancelled, "nothing released");
 }

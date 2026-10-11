@@ -10,9 +10,9 @@ use std::time::Duration;
 use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use dw_appdb::dispatch::{
-    CallRows, DiskState, DispatchRow, FundingRow, Registered, Resolution, SelfSpendConflict,
-    SelfSpendProvenance, SelfSpendRow, SignedLockRow, StepEvent, StepLogRow, StepRow,
-    StoredFundingKey, StoredOutPoint, TombstoneRow,
+    CallRows, DiskState, DispatchRow, FundingRow, Registered, ReleaseRow, Resolution,
+    SelfSpendConflict, SelfSpendProvenance, SelfSpendRow, SignedLockRow, StepEvent, StepLogRow,
+    StepRow, StoredFundingKey, StoredOutPoint, TombstoneRow,
 };
 use platform_wallet::AssetLockFundingType;
 use tokio::runtime::Handle;
@@ -87,7 +87,7 @@ pub(super) fn row(n: u8, identity_index: u32, status: TrackedStatus) -> TrackedR
 /// signed.
 pub(super) fn sign_lock(t: &LeaseTable, p: &CallPermit, wallet: WalletId, row: &TrackedRow) {
     let sighash = [row.txid.to_byte_array()[0]; 32];
-    p.signatures().note_signed(sighash);
+    p.note_signed(sighash);
     t.record_signed_locks(
         wallet,
         &[StoredLock {
@@ -108,7 +108,7 @@ pub(super) fn sign_lost_lock(t: &LeaseTable, p: &CallPermit, wallet: WalletId) -
     static NEXT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
     let n = 0xc0 + NEXT.fetch_add(1, Ordering::SeqCst) % 0x3f;
     let sighash = [n; 32];
-    p.signatures().note_signed(sighash);
+    p.note_signed(sighash);
     let lock = Txid::from_byte_array([n; 32]);
     t.record_signed_locks(
         wallet,
@@ -373,6 +373,10 @@ pub(super) struct FakeJournal {
     tombstones: Mutex<Vec<TombstoneRow>>,
     /// A `funding_tombstone` row: lost (nothing written, error).
     pub(super) fail_tombstone: AtomicBool,
+    /// `funding_release` (7).
+    releases: Mutex<Vec<ReleaseRow>>,
+    /// A `funding_release` row: lost (nothing written, error).
+    pub(super) fail_release: AtomicBool,
     /// Every `Sent` bundle asked for.
     pub(super) bundles: Mutex<Vec<Bundle>>,
     /// Every artifact a marker row was ever appended for.
@@ -556,6 +560,33 @@ impl JournalBackend for FakeJournal {
         Ok(true)
     }
 
+    fn insert_release(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<bool, String> {
+        if self.fail_release.load(Ordering::SeqCst) {
+            return Err("injected release failure".into());
+        }
+        let log = self.log.lock().unwrap();
+        let Some(marker) = latest_standing(&log, wallet, artifact, step) else {
+            return Ok(false);
+        };
+        let mut releases = self.releases.lock().unwrap();
+        if !releases.iter().any(|r| r.marker == marker) {
+            releases.push(ReleaseRow {
+                seq: self.seq(),
+                wallet: *wallet,
+                step_id: step.to_owned(),
+                artifact: *artifact,
+                marker,
+                at: 0,
+            });
+        }
+        Ok(true)
+    }
+
     fn resolve_sent(
         &self,
         wallet: &[u8; 32],
@@ -585,6 +616,7 @@ impl JournalBackend for FakeJournal {
             self_spends: &mut self.self_spends.lock().unwrap(),
             signed_locks: &mut self.signed_locks.lock().unwrap(),
             tombstones: &mut self.tombstones.lock().unwrap(),
+            releases: &mut self.releases.lock().unwrap(),
         };
         let gone = dw_appdb::dispatch::compact_in_memory(&mut log, side, Some(wallet));
         Ok(gone.into_iter().map(|(_, a)| a).collect())
@@ -717,6 +749,7 @@ impl FakeJournal {
             &self.self_spends.lock().unwrap(),
             &self.signed_locks.lock().unwrap(),
             &self.tombstones.lock().unwrap(),
+            &self.releases.lock().unwrap(),
         )
     }
 
@@ -728,6 +761,11 @@ impl FakeJournal {
     /// Every `funding_tombstone` row.
     pub(super) fn tombstone_rows(&self) -> Vec<TombstoneRow> {
         self.tombstones.lock().unwrap().clone()
+    }
+
+    /// Every `funding_release` row.
+    pub(super) fn release_rows(&self) -> Vec<ReleaseRow> {
+        self.releases.lock().unwrap().clone()
     }
 
     /// Every `funding_marker` row.
@@ -751,6 +789,7 @@ impl FakeJournal {
             self_spends: Mutex::new(self.self_spends.lock().unwrap().clone()),
             signed_locks: Mutex::new(self.signed_lock_rows()),
             tombstones: Mutex::new(self.tombstone_rows()),
+            releases: Mutex::new(self.release_rows()),
             ever_marked: Mutex::new(self.ever_marked.lock().unwrap().clone()),
             ..Default::default()
         })
@@ -2413,6 +2452,17 @@ impl JournalBackend for GatedJournal {
             .map_err(|e| e.to_string())
     }
 
+    fn insert_release(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_release(wallet, step, artifact, 0)
+            .map_err(|e| e.to_string())
+    }
+
     fn insert_signed_lock(
         &self,
         wallet: &[u8; 32],
@@ -3092,6 +3142,17 @@ impl JournalBackend for R2Journal {
             .map_err(|e| e.to_string())
     }
 
+    fn insert_release(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_release(wallet, step, artifact, 0)
+            .map_err(|e| e.to_string())
+    }
+
     fn insert_signed_lock(
         &self,
         wallet: &[u8; 32],
@@ -3619,6 +3680,17 @@ impl JournalBackend for R3Journal {
     ) -> Result<bool, String> {
         self.db
             .insert_tombstone(wallet, step, artifact, self_spend, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_release(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_release(wallet, step, artifact, 0)
             .map_err(|e| e.to_string())
     }
 

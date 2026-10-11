@@ -246,16 +246,18 @@ impl SignatureCount {
         self.closed.load(Ordering::SeqCst)
     }
 
-    /// A released signature, as a counting signer reports one (tests).
+    /// A released signature, as a counting signer reports one (lease's
+    /// tests; a funding call's goes through [`CallPermit::note_released`],
+    /// which records its release first).
     #[cfg(test)]
-    pub(crate) fn note_released(&self) {
+    pub(super) fn note_released(&self) {
         self.released.fetch_add(1, Ordering::SeqCst);
     }
 
     /// A funding signature released over `sighash`, as the funding signer
-    /// reports one (tests).
+    /// reports one (lease's tests; see [`CallPermit::note_signed`]).
     #[cfg(test)]
-    pub(crate) fn note_signed(&self, sighash: [u8; 32]) {
+    pub(super) fn note_signed(&self, sighash: [u8; 32]) {
         self.signed
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -281,6 +283,21 @@ impl SignatureCount {
         !sighashes.is_empty() && sighashes.iter().all(|s| signed.contains(s))
     }
 
+    /// Whether the call's funding signer released signatures over exactly
+    /// `sighashes`, and no other, with nothing still being signed (review
+    /// P2b r6 R6-02): the lock carrying them is the one lock the call
+    /// signed. Read after [`Self::note_recorded`], so a signature it misses
+    /// is refused ([`Self::admits`]), or still counted in `signing` here.
+    pub(crate) fn signed_only(&self, sighashes: &[[u8; 32]]) -> bool {
+        if self.signing.load(Ordering::SeqCst) > 0 {
+            return false;
+        }
+        let signed = self.signed.lock().unwrap_or_else(|p| p.into_inner());
+        !sighashes.is_empty()
+            && sighashes.iter().all(|s| signed.contains(s))
+            && signed.iter().all(|s| sighashes.contains(s))
+    }
+
     pub(crate) fn note_locked(&self) {
         self.locked.store(true, Ordering::SeqCst);
     }
@@ -294,8 +311,12 @@ impl SignatureCount {
     /// call (O-1). Once a lock the call signed was recorded, which is after
     /// every input of it was signed and before its send, only a sighash
     /// the call already signed is (an identical retry): a second lock's
-    /// signatures are refused. The premise that Repair's self-spend need
-    /// take an input of each recorded lock only rests on it.
+    /// signatures are refused. One signed before the record (two locks
+    /// built under one permit) stops the process at the record instead
+    /// (review P2b r6 R6-02, [`Self::signed_only`]): the signer sees bare
+    /// sighashes, so it cannot tell two locks apart sooner. The premise
+    /// that Repair's self-spend need take an input of each recorded lock
+    /// only rests on it.
     pub(crate) fn admits(&self, sighash: [u8; 32]) -> bool {
         !self.recorded.load(Ordering::SeqCst) || self.signed_any(&[sighash])
     }
@@ -327,6 +348,36 @@ impl SignatureCount {
         // before.
         let signing = self.signing.load(Ordering::SeqCst);
         signing.saturating_add(self.released.load(Ordering::SeqCst))
+    }
+}
+
+/// The `funding_release` row of one funding call's signer (§2a.7, review P2b
+/// r6 R6-01): written once, before its first signature, shared by its
+/// clones (a concurrent first signature waits for the one write).
+pub(crate) struct FundingRelease {
+    table: Arc<LeaseTable>,
+    wallet: WalletId,
+    step: String,
+    done: tokio::sync::OnceCell<()>,
+}
+
+impl std::fmt::Debug for FundingRelease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FundingRelease")
+            .field("step", &self.step)
+            .field("recorded", &self.done.initialized())
+            .finish_non_exhaustive()
+    }
+}
+
+impl FundingRelease {
+    /// The release is durable: written now, or by an earlier signature. A
+    /// failed write is tried again by the next signature.
+    pub(crate) async fn record(&self) -> Result<(), String> {
+        self.done
+            .get_or_try_init(|| self.table.record_release(self.wallet, &self.step))
+            .await
+            .map(|_| ())
     }
 }
 
@@ -745,10 +796,28 @@ impl CallPermit {
     /// O-1), so it is no signer for the identity transition the library
     /// signs after the lock (`registration.rs`'s one-call path, which Mode B
     /// does not take): that one needs [`Self::identity_signer`].
+    ///
+    /// Before the vault releases its first signature, it records the
+    /// release against the step's standing marker, durably
+    /// ([`LeaseTable::record_release`], schema 7, review P2b r6 R6-01), and
+    /// refuses when that fails: no funding signature leaves the vault, by
+    /// whatever path it then reaches a broadcast, while its step could still
+    /// read `NotSent`. Refused `StepKeyMismatch` on a permit of no funding
+    /// step (no marker to record against).
     pub fn funding_signer(&self) -> Result<CountingFundingSigner, LeaseError> {
+        let Some(step) = self.step.as_ref().filter(|s| s.funding().is_some()) else {
+            return Err(LeaseError::StepKeyMismatch);
+        };
+        let release = Arc::new(FundingRelease {
+            table: Arc::clone(&self.table),
+            wallet: self.lease.wallet,
+            step: step.id().to_owned(),
+            done: tokio::sync::OnceCell::new(),
+        });
         Ok(CountingFundingSigner::new(
             self.lease.call_funding_signer()?,
             self.signatures(),
+            release,
         ))
     }
 
@@ -762,6 +831,30 @@ impl CallPermit {
     pub fn finish(mut self, ok: bool) -> FlowOutcome {
         self.done = true;
         self.end(ok)
+    }
+
+    /// A released signature, as the permit's funding signer reports one
+    /// (tests): under a funding step, its release recorded first.
+    #[cfg(test)]
+    pub(crate) fn note_released(&self) {
+        self.note_release();
+        self.signatures.note_released();
+    }
+
+    /// A funding signature released over `sighash`, as the permit's funding
+    /// signer reports one (tests): its release recorded first.
+    #[cfg(test)]
+    pub(crate) fn note_signed(&self, sighash: [u8; 32]) {
+        self.note_release();
+        self.signatures.note_signed(sighash);
+    }
+
+    #[cfg(test)]
+    fn note_release(&self) {
+        if let Some(step) = self.step.as_ref().filter(|s| s.funding().is_some()) {
+            (self.table.record_release_now(self.lease.wallet, step.id()))
+                .expect("the funding release is recorded");
+        }
     }
 
     /// The call's step is a funding step: its end refreshes the wallet's

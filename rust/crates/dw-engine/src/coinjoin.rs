@@ -528,6 +528,21 @@ impl MixView {
         coins
     }
 
+    /// The coins `CreateDenominated` (`denominations`) or
+    /// `MakeCollateralAmounts` may fund from: every tally's (tests).
+    #[cfg(test)]
+    pub(crate) fn funding_inputs(
+        &self,
+        network: dashcore::Network,
+        denominations: bool,
+    ) -> Vec<OutPoint> {
+        (self
+            .tallies(network, denominations, denominations)
+            .into_iter())
+        .flat_map(|(_, coins)| coins.into_iter().map(|c| c.coin.utxo.outpoint))
+        .collect()
+    }
+
     /// Coins grouped by address for funding transactions
     /// (`SelectCoinsGroupedByAddresses`, wallet/coinjoin.cpp:124-230):
     /// spendable BIP44 coins and CoinJoin-account coins that are not

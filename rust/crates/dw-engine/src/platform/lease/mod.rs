@@ -53,6 +53,7 @@ use dw_vault::VaultStatus;
 use super::errors::PlatformError;
 use super::flows::{BudgetPurpose, FlowKind, RevokeCause};
 
+pub(crate) use call::FundingRelease;
 pub use call::{CallPermit, CallQuote, CallStep, FundingKey, FundingQuote, SignatureCount};
 pub use fence::{
     AdmitRequest, ArtifactKind, AttemptGuard, CallStepInfo, CallStepStatus, DispatchPermit,

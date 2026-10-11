@@ -507,7 +507,7 @@ async fn a_pass_sends_no_lock_before_its_durable_record() {
     let quote = super::tests::quote(10, 0);
     let p = l.call_permit_step("funding", quote, step).await.unwrap();
     let sighash = [1; 32];
-    p.signatures().note_signed(sighash);
+    p.note_signed(sighash);
     let built = TrackedRow {
         sighashes: Some(vec![sighash]),
         ..row(1, 1, R::Built)
@@ -561,8 +561,10 @@ async fn a_pass_sends_no_lock_before_its_durable_record() {
     idle(&restarted, &[W]).await;
     assert!(f2.calls().is_empty());
     assert!(restarted.signed_lock_txids(W, REG).is_empty());
+    // Its call released a signature: possibly sent, as a send no store of
+    // it reached would read (P2b r6 R6-01).
     assert_eq!(
         restarted.funding_status(W, REG),
-        Some(crate::platform::flows::DispatchState::NotSent)
+        Some(crate::platform::flows::DispatchState::MaybeSent)
     );
 }

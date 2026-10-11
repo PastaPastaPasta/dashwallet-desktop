@@ -64,7 +64,7 @@ async fn the_lock_waits_for_a_running_call_and_reports_it_sent() {
     let p = l
         .call_permit("DashPay.register_name", credits(400))
         .unwrap();
-    p.signatures().note_released();
+    p.note_released();
     let start = Instant::now();
     let lock = tokio::spawn({
         let t = Arc::clone(&t);
@@ -124,7 +124,7 @@ async fn a_locked_signer_after_a_released_one_is_maybe_sent_and_parks() {
         .unwrap();
     // Step 2's ChainLock-height retry: the first attempt was signed and
     // submitted, the re-sign met the lock.
-    p.signatures().note_released();
+    p.note_released();
     p.signatures().note_locked();
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     assert_eq!(l.view().unwrap().budgets[0].spent, 400, "kept");
@@ -138,7 +138,7 @@ async fn a_failed_call_with_a_released_signature_is_maybe_sent() {
     let p = l
         .call_permit("DashPay.register_name", credits(400))
         .unwrap();
-    p.signatures().note_released();
+    p.note_released();
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     assert_eq!(l.state(), Some(LeaseState::Active), "no Locked: not parked");
     let report = t.lock(RevokeCause::Lock, status).await;
@@ -198,7 +198,7 @@ async fn a_dropped_permit_counts_as_a_failed_call() {
     let p = l
         .call_permit("DashPay.register_name", credits(400))
         .unwrap();
-    p.signatures().note_released();
+    p.note_released();
     drop(p);
     let report = t.lock(RevokeCause::Lock, status).await;
     assert_eq!(
@@ -383,7 +383,7 @@ async fn cancelled_supersedes_the_marker_and_maybe_sent_keeps_it() {
         .call_permit_step("submit", credits(10), resumable(SUBMIT))
         .await
         .unwrap();
-    p.signatures().note_released();
+    p.note_released();
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     assert_eq!(spent(&l), 10, "kept");
     assert_eq!(step_status(&t, W, SUBMIT), DURABLE);
@@ -418,20 +418,20 @@ async fn the_kill_matrix_of_a_funding_call_step() {
     );
 
     // Killed after the marker, while the call runs: the marker and its
-    // funding key stand. Killed before a lock of the call was recorded
-    // (running, or after a signature whose lock never reached the store),
-    // nothing of it can be out: its marker carries the durable-record
-    // guarantee (§2a.7), so it reads NotSent. Killed once its lock was
-    // recorded, it reads MaybeSent. Either way the marker stands and a
-    // second funding call of the step is refused.
+    // funding key stand. Killed before its first signature (no release
+    // row), nothing of it can be out: its marker carries the durable-record
+    // guarantee (§2a.7), so it reads NotSent. Killed once it released one,
+    // with or without a recorded lock, it reads MaybeSent: a lock may have
+    // been sent no store of it reached (P2b r6 R6-01). Either way the
+    // marker stands and a second funding call of the step is refused.
     use crate::platform::flows::DispatchState as D;
     let p = l
         .call_permit_step("funding", quote(10, 0), funding_step(FUNDING))
         .await
         .unwrap();
     let kills_running = (reload(&j), D::NotSent);
-    p.signatures().note_released();
-    let kills_released = (reload(&j), D::NotSent);
+    p.note_released();
+    let kills_released = (reload(&j), D::MaybeSent);
     sign_lock(&t, &p, W, &row(7, 3, super::mode_b::TrackedStatus::Built));
     // Killed once the call returned, before its resolution's write.
     let kills_signed = (reload(&j), D::MaybeSent);
@@ -595,7 +595,7 @@ async fn a_concurrent_call_of_the_step_keeps_its_marker() {
         .call_permit_step("b", credits(10), resumable(SUBMIT))
         .await
         .unwrap();
-    b.signatures().note_released();
+    b.note_released();
     assert_eq!(b.finish(false), FlowOutcome::MaybeSent);
     assert_eq!(a.finish(false), FlowOutcome::Cancelled, "its own outcome");
     assert_eq!(events(&j, W, SUBMIT), vec![marked(SUBMIT)], "no NotSent");
@@ -790,7 +790,7 @@ async fn self_spends_load_with_their_funding_marker() {
         .call_permit_step("funding", quote(10, 0), funding_step(FUNDING))
         .await
         .unwrap();
-    p.signatures().note_released();
+    p.note_released();
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     assert!(
         j.insert_self_spend(&W.0, FUNDING, &id.0, &[7; 32], &[c])

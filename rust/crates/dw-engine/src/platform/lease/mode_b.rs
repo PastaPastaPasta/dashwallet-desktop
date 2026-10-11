@@ -670,12 +670,17 @@ fn derive_step(
     let tombstoned =
         i.fence.tombstones.contains_key(&key) || i.fence.owed_tombstones.contains_key(&key);
     let locked = tombstoned || resolving_spend(i, wallet, &info, signed).is_some();
+    // A call under the marker may have released a funding signature, and no
+    // lock of it is recorded (review P2b r6 R6-01): the library may have
+    // sent one its store never saw (an empty tracking changeset), so neither
+    // rule below that rests on every signed lock being recorded holds.
+    let recorded_all = !(info.released && signed.is_empty());
     // Repair resolved a flagged step (DP1-02 C4, Q13): every lock its one
     // signing call built was recorded before it could be sent (§2a.7), and
     // the ChainLocked self-spend takes an input of each, so no row, however
     // keyed or attributed, is its lock; no call of it runs again
     // ([`FundingBlock::StepCancelled`]).
-    if locked && info.durable_record && info.status != CallStepStatus::Sent {
+    if locked && info.durable_record && recorded_all && info.status != CallStepStatus::Sent {
         return Some(DispatchState::NotSent);
     }
     let unattributed = snap.is_some_and(|s| {
@@ -683,11 +688,13 @@ fn derive_step(
             || markerless_unattributed_row(s, step, &info).is_some()
     });
     // A flagged marker (§2a.7, review OD-02) no running call holds, under
-    // which no lock was ever signed: every lock a call under it signed was
-    // recorded before anything could send it, so it reads as its `NotSent`
-    // row would. The marker still stands (a call of the step stays vetoed).
+    // which no signature was ever released (no `funding_release` row,
+    // schema 7, review P2b r6 R6-01) and so no lock signed: it reads as its
+    // `NotSent` row would. The marker still stands (a call of the step
+    // stays vetoed).
     let status = if matches!(info.status, CallStepStatus::Marked { .. })
         && info.durable_record
+        && !info.released
         && signed.is_empty()
         && !funding_call_of(i, wallet, step)
     {
@@ -1382,6 +1389,15 @@ impl LeaseTable {
             }
             out
         })
+    }
+
+    /// [`Self::unresolved_lock_inputs`] of every wallet with a funding
+    /// marker: what `broadcast_psbt`, which names no wallet, refuses.
+    pub(crate) fn unresolved_lock_inputs_of_any(&self) -> HashSet<OutPoint> {
+        let wallets = self.with_j(|i, _| i.fence.funding_wallets());
+        (wallets.into_iter())
+            .flat_map(|w| self.unresolved_lock_inputs(w))
+            .collect()
     }
 
     /// Every registration funding step of `wallet` (`registration/<draft>/

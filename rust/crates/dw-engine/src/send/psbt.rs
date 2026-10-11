@@ -5,10 +5,10 @@
 //! knows (which scripts are its own, their derivation paths, the previous
 //! transactions) and the grant and broadcast rules of the send flow.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use dashcore::{Address, Transaction, Txid};
+use dashcore::{Address, OutPoint, Transaction, Txid};
 use dw_psbt::{InputData, KeyPaths, PartiallySignedTransaction, Status};
 use dw_vault::{GrantKind, VaultError};
 use key_wallet::bip32::{DerivationPath, Fingerprint};
@@ -24,6 +24,24 @@ use crate::{EngineError, NetworkSession, WalletId};
 pub(crate) const FINGERPRINT_SETTING: &str = "bip32.master_fingerprint";
 /// How long `broadcast_psbt` waits for dash-spv to have broadcast peers.
 const BROADCAST_READY_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Refuses `tx` when it spends a `held` input: one of an asset lock the
+/// library tracks, or one a Mode B funding call signed whose step is
+/// neither `Sent` nor `NotSent` (review Opus O-2, P2b r6). Every build but
+/// Repair's self-spend refuses them (`coins.rs`), and a PSBT is none of
+/// Repair's: its "Resolve stuck funding" builds and sends its own draft,
+/// the one build exempt ([`crate::coins::WalletCoin::self_spend_selectable`]).
+/// A transaction spending one would leave the self-spend no input of the
+/// lock to take, and the step `MaybeSent` for good.
+fn held_lock_input(tx: &Transaction, held: &HashSet<OutPoint>) -> Result<(), PsbtFailure> {
+    match tx.input.iter().find(|i| held.contains(&i.previous_output)) {
+        Some(i) => Err(PsbtFailure::Invalid(format!(
+            "input {} is held: an asset lock spends it, unresolved (Resolve stuck funding)",
+            i.previous_output
+        ))),
+        None => Ok(()),
+    }
+}
 
 /// Why a PSBT call failed (`psbt.*` codes).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -385,7 +403,9 @@ impl NetworkSession {
     /// unknown and nothing is signed (`FeeUnknown`). A fee above
     /// [`MAX_TX_FEE`](super::MAX_TX_FEE) is refused (`AbsurdFee`), as the
     /// send flow does: a signed PSBT can be broadcast anywhere, past
-    /// `broadcast_psbt`'s rate check.
+    /// `broadcast_psbt`'s rate check. An input of an asset lock, tracked or
+    /// signed by a funding call whose step is unresolved, is refused
+    /// (`Invalid`, [`held_lock_input`]).
     pub async fn sign_psbt(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -417,6 +437,19 @@ impl NetworkSession {
                 return Err(PsbtFailure::AbsurdFee { fee }.into());
             }
             let outflow = owned.outflow(&psbt).ok_or(PsbtFailure::FeeUnknown)?;
+            // Read under the coin fence, held through the signing, as an
+            // engine build reads and spends them (`coins.rs`).
+            let _fence = this.coin_fence(wallet_id).await?;
+            let snapshot = this.coin_snapshot(&_fence, &w).await?;
+            // The raw set too: an input the wallet already reads spent (the
+            // lock seen, not proved) is no coin of the snapshot.
+            let mut held = this.leases.unresolved_lock_inputs(wallet_id);
+            held.extend(
+                (snapshot.coins.iter())
+                    .filter(|c| c.lock_input || c.unresolved_lock)
+                    .map(|c| c.utxo.outpoint),
+            );
+            held_lock_input(&psbt.unsigned_tx, &held)?;
             let vault = this.vault.clone();
             let signer = tokio::task::spawn_blocking(move || {
                 let token = vault.redeem_grant(&grant_id, GrantKind::Spend, Some(&wallet_id.0))?;
@@ -440,7 +473,9 @@ impl NetworkSession {
     /// 0.1 DASH/kB (from txid-verified input values only; an input without
     /// one is `Invalid`) and broadcasts with the send flow's verdict rules
     /// (accepted; never sent: `NoPeers` / `BroadcastRejected`; no verdict:
-    /// `BroadcastUnknown`). Returns the txid.
+    /// `BroadcastUnknown`). Returns the txid. An input of an asset lock a
+    /// funding call of any wallet signed whose step is unresolved is
+    /// refused (`Invalid`, [`held_lock_input`]).
     pub async fn broadcast_psbt(
         self: &Arc<Self>,
         mut psbt: PartiallySignedTransaction,
@@ -460,6 +495,7 @@ impl NetworkSession {
             if rate > dw_psbt::MAX_BROADCAST_FEE_PER_KB {
                 return Err(PsbtFailure::FeeRateTooHigh { duffs_per_kb: rate }.into());
             }
+            held_lock_input(&tx, &this.leases.unresolved_lock_inputs_of_any())?;
             let manager = this.manager()?;
             if !manager.spv().is_started() {
                 return Err(PsbtFailure::NoPeers.into());

@@ -53,7 +53,7 @@ use platform_wallet::{
 use zeroize::Zeroizing;
 
 use super::keys_policy::key_path;
-use super::lease::SignatureCount;
+use super::lease::{FundingRelease, SignatureCount};
 use crate::EngineError;
 
 fn require_scope(signer: &VaultSigner, scope: SignerScope) -> Result<(), EngineError> {
@@ -222,15 +222,28 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
 /// per call, O-1, `SignatureCount::admits`). Whatever key-wallet's builder requires of a signer
 /// (`TransactionSigner` is implemented for every `Signer`) comes through
 /// these two traits.
+///
+/// Its first signature waits for the call's release to be recorded against
+/// the step's marker ([`FundingRelease`], review P2b r6 R6-01); a failed
+/// record refuses the signature, the vault asked nothing.
 #[derive(Debug, Clone)]
 pub struct CountingFundingSigner {
     signer: VaultSigner,
     count: Arc<SignatureCount>,
+    release: Arc<FundingRelease>,
 }
 
 impl CountingFundingSigner {
-    pub(crate) fn new(signer: VaultSigner, count: Arc<SignatureCount>) -> Self {
-        Self { signer, count }
+    pub(crate) fn new(
+        signer: VaultSigner,
+        count: Arc<SignatureCount>,
+        release: Arc<FundingRelease>,
+    ) -> Self {
+        Self {
+            signer,
+            count,
+            release,
+        }
     }
 
     fn note<T>(&self, r: Result<T, SignerError>) -> Result<T, SignerError> {
@@ -261,6 +274,20 @@ impl key_wallet::Signer for CountingFundingSigner {
             return Err(SignerError::PathNotAllowed(format!(
                 "{path}: the call's asset lock is already signed"
             )));
+        }
+        // Counted in `signing` meanwhile: the permit's end reads the call
+        // possibly sent, so no `NotSent` row supersedes the marker under
+        // the write.
+        if let Err(e) = self.release.record().await {
+            tracing::warn!(error = %e, "a funding signature refused: its release is not recorded");
+            return Err(SignerError::PathNotAllowed(format!(
+                "{path}: the funding release could not be recorded"
+            )));
+        }
+        // The permit may have ended during the write; its end counted this
+        // signing (possibly sent), and nothing is asked of the vault.
+        if self.count.closed() {
+            return Err(SignerError::Locked);
         }
         let signed = self.note(self.signer.sign_ecdsa(path, sighash).await)?;
         signing.released_with(sighash);
