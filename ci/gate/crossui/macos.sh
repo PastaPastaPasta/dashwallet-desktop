@@ -61,16 +61,18 @@ result "U7 dmg: $(stat -f %z "$dmg") bytes; app $(du -sk "/Applications/Dash Wal
 window_id="$GATE_WORK/window-id"
 swiftc -O -o "$window_id" ci/github/macos-window-id.swift
 
-# mark_seen LOG MARK [AFTER]: GateProbe wrote MARK to LOG (after its first AFTER mark, if given).
-mark_seen() {
-  awk -v m="$2" -v a="${3:-}" '$1 == "gate-mark" && (a == "" || $2 == a) { on = 1 }
-    on && $1 == "gate-mark" && $2 == m { found = 1 } END { exit !found }' "$1"
+# shows LOG MARK [AFTER]: MARK is GateProbe's latest screen (`*-paint`) mark in LOG, written after
+# its first AFTER mark, if given.
+shows() {
+  awk -v m="$2" -v a="${3:-}" '$1 != "gate-mark" { next } a == "" || $2 == a { on = 1 }
+    on && $2 ~ /-paint$/ { last = $2 } END { exit last != m }' "$1"
 }
 
 # screen NAME APPEARANCE MARK [ENV=VALUE...] -- [APP ARGS...]: launch the installed app on a
-# fresh copy of the gate wallet, wait for GateProbe's MARK, screenshot the window, check it is
-# still alive, quit. A run that unlocks waits for MARK after GateProbe hid the sync overlay (the
-# wallet has no peer, so the overlay always comes up over the unlocked wallet).
+# fresh copy of the gate wallet, wait until GateProbe's latest screen mark is MARK, screenshot the
+# window, check it is still alive, quit. A run that unlocks counts only marks after its unlock:
+# before the vault reports it is locked, the app can show Overview or Transactions (and the sync
+# overlay, which GateProbe hides) and only then the lock screen.
 status=0
 screen() {
   local name=$1 appearance=$2 mark=$3
@@ -79,7 +81,7 @@ screen() {
   while (($#)) && [[ "$1" != -- ]]; do envs+=("$1"); shift; done
   [[ "${1:-}" == -- ]] && shift
   local after=""
-  [[ " ${envs[*]-} " == *" DWD_GATE_UNLOCK_FILE="* ]] && after=sync-overlay-hide
+  [[ " ${envs[*]-} " == *" DWD_GATE_UNLOCK_FILE="* ]] && after=unlock-requested
   local datadir="$GATE_WORK/run-datadir"
   rm -rf "$datadir" && cp -R "$GATE_WALLET" "$datadir"
   local log="$OUT/$name.log" err="$OUT/$name.err.log"
@@ -90,7 +92,7 @@ screen() {
   local pid=$!
   local seen=""
   for _ in $(seq 360); do
-    if mark_seen "$err" "$mark" "$after"; then seen=1; break; fi
+    if shows "$err" "$mark" "$after"; then seen=1; break; fi
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.5
   done
@@ -108,6 +110,7 @@ screen() {
     status=1
   else
     sleep 3  # the frame after the model change, and AppKit's layout pass
+    shows "$err" "$mark" "$after" || result "$name: WARN the screen changed after '$mark'"
     local window
     window=$("$window_id" "$pid" || true)
     if [[ -n "$window" ]]; then

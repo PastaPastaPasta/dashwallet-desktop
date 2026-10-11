@@ -55,16 +55,22 @@ $process = Start-Process -FilePath $Exe -ArgumentList $argList -Environment $env
     -RedirectStandardError $errLog -RedirectStandardOutput $outLog
 $start = Get-Date
 $seen = $false
-$pattern = "(?m)^gate-mark $([regex]::Escape($Mark)) "
+# Whether $Mark is GateProbe's latest screen (`*-paint`) mark. With -Unlock only marks after the
+# unlock count: before the vault reports it is locked, the app can show Overview or Transactions
+# (and the sync overlay, which GateProbe hides) and only then the lock screen.
+function Shows([string]$text) {
+    if (-not $text) { return $false }
+    if ($Unlock) {
+        $at = $text.IndexOf('gate-mark unlock-requested ')
+        if ($at -lt 0) { return $false }
+        $text = $text.Substring($at)
+    }
+    $paints = [regex]::Matches($text, '(?m)^gate-mark (\S+-paint) ')
+    return $paints.Count -gt 0 -and $paints[$paints.Count - 1].Groups[1].Value -eq $Mark
+}
 while (((Get-Date) - $start).TotalSeconds -lt $TimeoutSeconds -and -not $process.HasExited) {
     $text = Get-Content -Raw -Path $errLog -ErrorAction SilentlyContinue
-    # With -Unlock, the screen counts only after GateProbe hid the sync overlay that comes up over
-    # the unlocked wallet (no peer); before that, Overview can show while the vault state loads.
-    if ($text -and $Unlock) {
-        $at = $text.IndexOf('gate-mark sync-overlay-hide ')
-        $text = if ($at -ge 0) { $text.Substring($at) } else { '' }
-    }
-    if ($text -and $text -match $pattern) { $seen = $true; break }
+    if (Shows $text) { $seen = $true; break }
     Start-Sleep -Milliseconds 500
 }
 $waited = [math]::Round(((Get-Date) - $start).TotalSeconds, 1)
@@ -76,6 +82,9 @@ if (-not $seen) {
     $status = 1
 } else {
     Start-Sleep -Seconds 3
+    if (-not (Shows (Get-Content -Raw -Path $errLog -ErrorAction SilentlyContinue))) {
+        Result "${Name}: WARN the screen changed after '$Mark'"
+    }
     Shot "$Name.png"
     $process.Refresh()
     Result "${Name}: ok '$Mark' after ${waited}s; working set $([int]($process.WorkingSet64 / 1MB)) MB"
