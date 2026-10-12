@@ -155,6 +155,25 @@ impl FakeRequests {
         }
     }
 
+    /// Signs as rs-sdk does before it broadcasts a transition: with the
+    /// first key of `id` the signer signs with, so a write that goes out has
+    /// released a signature.
+    async fn sign(
+        &self,
+        id: Identifier,
+        signer: &VaultIdentitySigner,
+    ) -> Result<(), PlatformError> {
+        let key = (self.platform.lock().unwrap()[&id].public_keys().values())
+            .find(|k| signer.can_sign_with(k))
+            .cloned()
+            .expect("a key the flow signs with");
+        signer
+            .sign(&key, b"transition")
+            .await
+            .map_err(|_| PlatformError::SignerUnavailable)?;
+        Ok(())
+    }
+
     pub(crate) fn writes(&self) -> u32 {
         self.writes.load(Ordering::SeqCst)
     }
@@ -220,9 +239,10 @@ impl RequestNet for FakeRequests {
         sender: Identifier,
         recipient: Identifier,
         _: AutoAcceptProofSource,
-        _: &VaultIdentitySigner,
+        signer: &VaultIdentitySigner,
         _: &VaultContactCrypto,
     ) -> Result<ContactRequest, PlatformError> {
+        self.sign(sender, signer).await?;
         self.write()?;
         let sent = ContactRequest::new(sender, recipient, 4, 5, 0, vec![1; 96], 1, 8_000);
         Self::record_sent(wallet, &sent).await;
@@ -233,9 +253,10 @@ impl RequestNet for FakeRequests {
         &self,
         wallet: &PlatformWallet,
         request: &ContactRequest,
-        _: &VaultIdentitySigner,
+        signer: &VaultIdentitySigner,
         _: &VaultContactCrypto,
     ) -> Result<ContactRequest, PlatformError> {
+        self.sign(request.recipient_id, signer).await?;
         self.write()?;
         let ours = ContactRequest::new(
             request.recipient_id,
@@ -256,8 +277,9 @@ impl RequestNet for FakeRequests {
         _: &PlatformWallet,
         id: Identifier,
         keys: Vec<IdentityPublicKey>,
-        _: &VaultIdentitySigner,
+        signer: &VaultIdentitySigner,
     ) -> Result<(), PlatformError> {
+        self.sign(id, signer).await?;
         let landed = self.write();
         if landed.is_ok() || self.landed.load(Ordering::SeqCst) {
             let mut platform = self.platform.lock().unwrap();
@@ -587,9 +609,9 @@ fn a_failed_send_that_landed_is_pending() {
     assert_eq!(f.eligibility(BOB).unwrap(), Eligibility::PendingOutgoing);
 }
 
-/// The quote is charged to a lease id's Credits budget as the write goes
-/// out and kept whatever its outcome: a lease id carrying one quote pays
-/// for one write, failed or not.
+/// The quote is charged to a lease id's Credits budget by the write's call
+/// permit and kept once the write has signed, whatever its outcome: a
+/// lease id carrying one quote pays for one write, failed or not.
 #[test]
 fn one_lease_pays_for_one_write() {
     let quote = CONTACT_REQUEST_CREDITS;
@@ -841,6 +863,7 @@ fn each_flow_signs_with_its_own_keys_only() {
         let id = f.flow(flow, vec![f.grant(KEY_UPDATE_CREDITS)]);
         f.s.lease_for(&f.wallet, &id).unwrap().unwrap()
     };
+    let permit = |lease: &Lease| lease.call_permit("test", None).unwrap();
     let request = lease_of(FlowKind::ContactRequest);
     // Our identity's real keys at index 0.
     let unrestricted = request.identity_signer(&[0]).unwrap();
@@ -861,7 +884,8 @@ fn each_flow_signs_with_its_own_keys_only() {
     };
     // The vault could sign with the master key; the flow's signer refuses.
     sign(&unrestricted, 0).unwrap();
-    let doc = flow_signer(&request, 0, &me, &[]).unwrap();
+    let doc_permit = permit(&request);
+    let doc = flow_signer(&doc_permit, 0, &me, &[]).unwrap();
     assert!(!doc.can_sign_with(&real[&0]));
     let refused = sign(&doc, 0).unwrap_err().to_string();
     assert!(
@@ -876,14 +900,17 @@ fn each_flow_signs_with_its_own_keys_only() {
         flow_keys(FlowKind::AcceptAndPay, &me, &[], |_| true).unwrap()
     );
 
-    let upgrade = flow_signer(&lease_of(FlowKind::EnableDashPayKeys), 0, &me, &[4, 5]).unwrap();
+    let upgrade_permit = permit(&lease_of(FlowKind::EnableDashPayKeys));
+    let upgrade = flow_signer(&upgrade_permit, 0, &me, &[4, 5]).unwrap();
     sign(&upgrade, 0).unwrap();
     sign(&upgrade, 4).unwrap();
     assert!(sign(&upgrade, 1).is_err() && sign(&upgrade, 2).is_err());
 
     let other = lease_of(FlowKind::ProfileEdit);
     assert_eq!(
-        flow_signer(&other, 0, &me, &[]).unwrap_err().code(),
+        flow_signer(&permit(&other), 0, &me, &[])
+            .unwrap_err()
+            .code(),
         "platform.grant_invalid"
     );
     // No HIGH or CRITICAL key: nothing to sign a document with.

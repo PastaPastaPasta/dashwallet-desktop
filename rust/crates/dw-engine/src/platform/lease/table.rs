@@ -1008,25 +1008,6 @@ impl Lease {
         Ok(charged)
     }
 
-    /// Charges `amount` to the Credits budget in one J step: a Platform
-    /// write's quote (DP2-02), up to the cap inclusive, so one lease pays
-    /// for no more writes than its budget covers. A lease without Credits is
-    /// charged nothing.
-    pub(crate) fn charge_credits(&self, amount: u64) -> Result<Charge, LeaseError> {
-        let charge = self.with_entry(BudgetPurpose::Credits, |e| {
-            if !e.credits.granted() {
-                return Err(LeaseError::NeedsGrant(BudgetPurpose::Credits));
-            }
-            e.credits.charge(amount).map_err(|x| LeaseError::Exceeded {
-                purpose: BudgetPurpose::Credits,
-                needed: x.needed,
-                remaining: x.remaining,
-            })
-        })?;
-        self.table.with_j(|_, fx| fx.changed(self.id));
-        Ok(charge)
-    }
-
     /// Charges `amount` to the Spend budget alone (tests).
     #[cfg(test)]
     pub(crate) fn charge_spend(&self, amount: u64) -> Result<Charge, LeaseError> {
