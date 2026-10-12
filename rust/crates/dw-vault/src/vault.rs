@@ -33,7 +33,9 @@
 //!   that starts after finds none (DP2-02). Not gated: `backup_bundle`,
 //!   which takes no grant or epoch and returns only ciphertext,
 //!   `open_backup_bundle` through a bundle's passphrase slot (no vault key),
-//!   and `store_wallet_secret`, a record write under the vault's own key.
+//!   and `store_wallet_secret`, a record write under the vault's own key
+//!   that never replaces a seed (a wallet holding different records is
+//!   refused), so no signer can read a seed it changes.
 //!
 //!   A holder must not take the gate again, take `writer`, block on another
 //!   lock or wait on anything outside the process (the OS store, which may
@@ -1704,16 +1706,8 @@ impl Vault {
     /// Applies record changes (`None` deletes), bumps the manifest
     /// generation, writes the file, then reads it back from disk and checks
     /// every change landed byte for byte (seed-safety ordering, iOS rule 3).
-    /// Holds `writer` throughout, so no other change of the file interleaves.
-    fn commit_records(
-        &self,
-        dek: &Key32,
-        changes: &[(String, Option<&[u8]>)],
-    ) -> Result<(), VaultError> {
-        self.commit_records_under(&self.writer(), dek, changes)
-    }
-
-    /// [`Self::commit_records`] under a `writer` guard the caller holds.
+    /// Runs under the caller's `writer` guard, so no other change of the
+    /// file interleaves.
     fn commit_records_under(
         &self,
         writer: &WriteGuard<'_>,
@@ -1786,6 +1780,15 @@ impl Vault {
 
     /// Stores a wallet's phrase, BIP39 passphrase and seed, then verifies the
     /// write by reading the file back. Needs the data key with full scope.
+    ///
+    /// `wallet` must be the id the engine derives from this seed: the vault
+    /// does not bind ids to seeds. It never replaces a seed: a wallet that
+    /// already holds different records is refused with
+    /// [`VaultError::WalletSecretExists`] and nothing is written, since a
+    /// signer that has read the old seed is not drained here; replacing goes
+    /// through [`Self::wipe_wallet_secret`] or [`Self::delete_wallet_secret`]
+    /// first, which drain. Storing the same records again seals them anew
+    /// (no signer can tell). The check and the write hold `writer` together.
     pub fn store_wallet_secret(
         &self,
         wallet: &WalletId,
@@ -1795,20 +1798,40 @@ impl Vault {
         let seed = encode_seed(secret);
         // A raw seed has no phrase: its wallet stores the seed record only.
         let phrase = secret.derivation != SeedDerivation::RawSeed;
-        self.commit_records(
-            &dek,
-            &[
-                (
-                    record_id(wallet, REC_MNEMONIC),
-                    phrase.then_some(&secret.mnemonic[..]),
-                ),
-                (
-                    record_id(wallet, REC_PASSPHRASE),
-                    phrase.then_some(&secret.mnemonic_passphrase[..]),
-                ),
-                (record_id(wallet, REC_SEED), Some(&seed[..])),
-            ],
-        )
+        let records = [
+            (
+                record_id(wallet, REC_MNEMONIC),
+                phrase.then_some(&secret.mnemonic[..]),
+            ),
+            (
+                record_id(wallet, REC_PASSPHRASE),
+                phrase.then_some(&secret.mnemonic_passphrase[..]),
+            ),
+            (record_id(wallet, REC_SEED), Some(&seed[..])),
+        ];
+        let writer = self.writer();
+        if self.has_any_record(wallet)? && !self.holds_records(&dek, &records)? {
+            return Err(VaultError::WalletSecretExists);
+        }
+        self.commit_records_under(&writer, &dek, &records)
+    }
+
+    /// Whether the vault holds exactly `records` (`None`: absent), compared
+    /// in constant time.
+    fn holds_records(
+        &self,
+        dek: &Key32,
+        records: &[(String, Option<&[u8]>)],
+    ) -> Result<bool, VaultError> {
+        let mut same = subtle::Choice::from(1);
+        for (id, want) in records {
+            same &= match (self.read_record(dek, id)?, want) {
+                (Some(held), Some(want)) => held[..].ct_eq(want),
+                (None, None) => subtle::Choice::from(1),
+                _ => subtle::Choice::from(0),
+            };
+        }
+        Ok(same.into())
     }
 
     /// Deletes every record of `wallet` with the vault's full-scope key.

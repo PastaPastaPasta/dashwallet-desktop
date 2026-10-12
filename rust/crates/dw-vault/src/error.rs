@@ -62,6 +62,11 @@ pub enum VaultError {
     /// The recovery phrase does not derive the wallet (IOS-014).
     #[error("recovery phrase does not match the wallet")]
     RecoveryMismatch,
+    /// `store_wallet_secret` for a wallet that already holds different
+    /// records: a seed is replaced only by removing it first (wipe or
+    /// delete), which waits for the signers reading it.
+    #[error("wallet already has a different secret")]
+    WalletSecretExists,
     /// The OS secret store refused the operation or does not exist.
     #[error("OS secret store unavailable: {0}")]
     OsStoreUnavailable(String),
@@ -105,6 +110,7 @@ impl VaultError {
             Self::PassphraseStale => "vault.passphrase_stale",
             Self::NotEmpty => "vault.not_empty",
             Self::RecoveryMismatch => "vault.recovery_mismatch",
+            Self::WalletSecretExists => "vault.wallet_secret_exists",
             Self::OsStoreUnavailable(_) => "vault.os_store_unavailable",
             Self::Corrupt(_) => "vault.corrupt",
             Self::InvalidArgument(_) => "invalid_argument",

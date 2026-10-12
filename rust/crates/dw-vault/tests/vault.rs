@@ -9,11 +9,13 @@ use std::str::FromStr;
 
 use common::*;
 use dw_vault::{
-    Credential, GrantKind, GrantPurpose, LockState, SignerError, UnlockScope, Vault, VaultError,
+    Credential, GrantKind, GrantPurpose, LockState, SeedDerivation, SignerError, UnlockScope,
+    Vault, VaultError, WalletSecret,
 };
 use key_wallet::Network;
 use key_wallet::Signer;
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
+use zeroize::Zeroizing;
 
 const BIP44: &str = "m/44'/1'/0'/0/0";
 const COINJOIN: &str = "m/9'/1'/4'/0'/0/0";
@@ -260,6 +262,45 @@ fn record_rolled_back_to_an_older_ciphertext_is_detected() {
 
     let err = unlock_after(&fx, |j| j["records"][seed_record(1)] = old);
     assert!(matches!(err, VaultError::Corrupt(_)), "{err:?}");
+}
+
+/// A wallet's records are never replaced by a store (DP2-02, Sol r4): a
+/// different seed, phrase or derivation under a wallet that has a secret is
+/// refused and leaves the file as it was; the same records store again.
+#[test]
+fn a_different_secret_is_not_stored_over_a_wallets_records() {
+    let fx = Fixture::new();
+    let v = fx.open();
+    v.create(Some(PASS)).unwrap();
+    v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
+    let before = fx.raw();
+
+    let other_phrase = WalletSecret {
+        mnemonic: Zeroizing::new(b"another phrase".to_vec()),
+        ..secret(1)
+    };
+    let raw_seed = WalletSecret {
+        derivation: SeedDerivation::RawSeed,
+        ..secret(1)
+    };
+    for (name, different) in [
+        ("seed", secret(2)),
+        ("phrase", other_phrase),
+        ("derivation", raw_seed),
+    ] {
+        let refused = v.store_wallet_secret(&wallet(1), &different).unwrap_err();
+        assert_eq!(refused, VaultError::WalletSecretExists, "{name}");
+        assert_eq!(refused.code(), "vault.wallet_secret_exists");
+        assert!(fx.raw() == before, "{name}: the file changed");
+    }
+    let shown = reveal(&v, 1, Credential::Passphrase(PASS)).unwrap();
+    assert_eq!(&shown.phrase[..], b"phrase-1");
+
+    // The same records again: sealed anew, as the rollback test relies on.
+    v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
+    assert!(fx.raw() != before);
+    let shown = reveal(&v, 1, Credential::Passphrase(PASS)).unwrap();
+    assert_eq!(&shown.phrase[..], b"phrase-1");
 }
 
 /// An older but self-consistent vault file put on disk while the app runs

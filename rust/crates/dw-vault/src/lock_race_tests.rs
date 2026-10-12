@@ -1525,3 +1525,68 @@ fn a_removal_waits_for_the_signers_that_read_the_seed() {
         );
     }
 }
+
+/// A store of a different seed under a wallet one of whose signers has read
+/// its seed (DP2-02, Sol r4): refused, nothing written; the paused signer
+/// releases a signature made with the old seed, and so does every signer
+/// after it: the new seed is never readable.
+#[test]
+fn a_store_does_not_replace_the_seed_a_signer_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, Some(PASS));
+    let runtime = || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+    };
+    let sign =
+        |signer: &VaultSigner| runtime().block_on(signer.sign_ecdsa(&path(IDENTITY_KEY), [9; 32]));
+    let (first, _first_hold) = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+    let old = sign(&first).unwrap();
+    let (signing, _hold) = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+    let file = crate::file::file_path(&dir.path().join("vault"));
+    let on_disk = std::fs::read(&file).unwrap();
+
+    // The signer pauses inside the gate, once it has read the seed.
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let worker = thread::spawn(move || {
+        test_hook::set(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        runtime().block_on(signing.sign_ecdsa(&path(IDENTITY_KEY), [9; 32]))
+    });
+    entered_rx
+        .recv_timeout(NO_HANG)
+        .expect("the signer did not read the seed");
+    let (done_tx, done_rx) = mpsc::channel();
+    let storer = {
+        let v = v.clone();
+        thread::spawn(move || {
+            let other = WalletSecret {
+                mnemonic: Zeroizing::new(b"other".to_vec()),
+                mnemonic_passphrase: Zeroizing::new(Vec::new()),
+                seed: Zeroizing::new([0xa5; 64]),
+                derivation: SeedDerivation::Bip39,
+            };
+            let stored = v.store_wallet_secret(&W, &other);
+            let _ = done_tx.send(());
+            stored
+        })
+    };
+    let finished = done_rx.recv_timeout(NO_HANG).is_ok();
+    let changed_meanwhile = std::fs::read(&file).unwrap() != on_disk;
+    release_tx.send(()).unwrap();
+    let signed = worker.join().unwrap();
+    assert!(finished, "the store waited for the signer");
+    assert_eq!(storer.join().unwrap(), Err(VaultError::WalletSecretExists));
+    assert!(
+        !changed_meanwhile,
+        "the store wrote while a signer read the seed"
+    );
+    assert_eq!(signed.unwrap(), old);
+    let (after, _after_hold) = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+    assert_eq!(sign(&after).unwrap(), old, "a signer read the new seed");
+    assert!(std::fs::read(&file).unwrap() == on_disk);
+}
