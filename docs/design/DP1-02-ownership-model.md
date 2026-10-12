@@ -323,6 +323,7 @@ false, `Settled` and Done true. An `Unknown` hold reads `RegistrationWait::Fundi
 | `funding_status`, `funds_committed`, `resumable` (`:1288-1359`); `in_progress`, `settled`, `discard_refused` (reg `:430-447`, `:811`) | `committed`, `standing`, §5.4 |
 | `statuses`, `idle_wait` (reg `:669`, `:685`) | standing: `Awaiting` → `ChainLock`, (a) → `Network`, `Unknown` → `FundingUnknown` |
 | `next_index` (`:1363`) | also skips the key index of every step in the view: standing, settled or cancelled |
+| `next_index` (`registration_ledger.rs:937`, Sol f1 r2) | fallible: `NoIndex::Exhausted` once one past the highest index in use is past `0x7FFF_FFFF`, the last hardened child (`from_hardened_idx` refuses the rest, so a row there could fund a lock that never gets identity keys); `u32::MAX` used to saturate onto an index in use. Recovery then leaves the lock pending; a flow that needs a new index (a draft, or a `KeysPrepared` row whose index is `Taken`) fails for good (`internal`, not retryable) before any funding. The adoption write refuses an index a row already holds (`Adoption::IndexHeld`). No unique `(wallet, identity_index)` index: restored rows may share one (F10) |
 | `assign_index`, `create_identity`, the proof wait | unchanged: only `Unfunded` rows move, and only rows with a `live` outpoint create identities |
 
 ## 7. What gets deleted

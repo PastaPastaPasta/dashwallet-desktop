@@ -47,8 +47,8 @@ use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProo
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dw_appdb::{
-    AppDb, AppDbError, LockOutpoint, NewRegistration, RegistrationChange, RegistrationRow,
-    RegistrationUpdate,
+    Adoption, AppDb, AppDbError, LockOutpoint, NewRegistration, RegistrationChange,
+    RegistrationRow, RegistrationUpdate,
 };
 use dw_vault::LockState;
 use tokio::time::Instant;
@@ -61,7 +61,7 @@ use super::lease::{CallPermit, CallStep, DraftKey, FundingKey, Lease, LeaseTable
 use super::names::NameOutcome;
 use super::registration::RegistrationWait;
 use super::registration_ledger::{
-    IndexOwner, Ledger, Owner, Reconcile, Standing, StepClaim, Taker,
+    IndexOwner, Ledger, NoIndex, Owner, Reconcile, Standing, StepClaim, Taker, index_after,
 };
 use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
 use crate::coins::CoinFence;
@@ -1232,8 +1232,17 @@ pub(crate) fn import_stranded(
         if !ledger.may_take(Taker::Recovery, lock) {
             continue;
         }
+        // No index is left, or one the ledger did not read is held: the
+        // lock stays where it is, and `pending` counts it.
+        let index = match next {
+            Ok(index) => index,
+            Err(no) => {
+                tracing::warn!(?no, %outpoint, "no identity index for a recovered lock");
+                continue;
+            }
+        };
         let row = NewRegistration {
-            identity_index: Some(next),
+            identity_index: Some(index),
             identity: None,
             // A recovered lock has no name to register.
             label: String::new(),
@@ -1251,12 +1260,13 @@ pub(crate) fn import_stranded(
             .as_str()
             .into(),
         };
-        if db
+        match db
             .adopt_registration_lock(&w, &outpoint, &row, now)
             .map_err(db_error)?
-            .1
         {
-            next = next.saturating_add(1);
+            Adoption::Inserted(_) => next = index_after(index),
+            Adoption::Existing(_) => {}
+            Adoption::IndexHeld => next = Err(NoIndex::Held(index)),
         }
     }
     Ok((read()?.pending(), closed))
@@ -1670,10 +1680,20 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         self.advance_from(row, move |db, flows| {
             // The steps too: no new index lands on a step's slot (I12).
             let ledger = Ledger::read(db, flows, &leases, wallet, locks, identities)?;
-            Ok(RegistrationChange {
-                phase: Some(Phase::KeysPrepared.as_str().into()),
-                identity_index: Some(ledger.next_index()),
-                ..Default::default()
+            Ok(match ledger.next_index() {
+                Ok(index) => RegistrationChange {
+                    phase: Some(Phase::KeysPrepared.as_str().into()),
+                    identity_index: Some(index),
+                    ..Default::default()
+                },
+                // Never an index in use: the row fails for good.
+                Err(no) => {
+                    tracing::warn!(?no, "no identity index for a registration");
+                    RegistrationChange {
+                        failure: Some(Some((internal().to_owned(), false))),
+                        ..Default::default()
+                    }
+                }
             })
         })
         .await

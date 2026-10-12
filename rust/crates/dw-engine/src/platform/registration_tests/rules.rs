@@ -446,6 +446,59 @@ fn finish_before_the_marker_gives_an_unindexed_lock_to_recovery() {
     f.kill(calling);
 }
 
+/// Sol f1 r2: with the wallet's highest identity index at `u32::MAX`,
+/// "Finish transfers" gives a recovered lock no row rather than one at an
+/// index in use (`next_index` once saturated there): the lock stays
+/// pending.
+#[test]
+fn finish_adopts_no_lock_once_no_identity_index_is_left() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().identities.push((u32::MAX, "taken".into()));
+    let lock = lib.lock_at(0, LockStatus::RecoveredFromChain);
+    let report = f
+        .engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
+    assert!(f.rows().is_empty(), "{:?}", f.rows());
+    assert!(held_by(&f, lock).is_empty());
+    assert_eq!(report.still_pending, 1, "the lock: {report:?}");
+}
+
+/// Sol f1 r2: a new flow takes no index once none is left, and fails for
+/// good instead of taking the highest one in use.
+#[test]
+fn a_flow_fails_once_no_identity_index_is_left() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().identities.push((
+        crate::platform::registration_ledger::MAX_IDENTITY_INDEX,
+        "taken".into(),
+    ));
+    let draft = f.insert(core_row(PLAIN));
+    f.drive(&lib, draft, Some(f.lease()), false);
+    let row = f.row(draft);
+    assert_eq!(row.identity_index, None);
+    assert_eq!(
+        (row.error.as_deref(), row.retryable),
+        (
+            Some(
+                PlatformError::Internal {
+                    detail: String::new()
+                }
+                .code()
+            ),
+            false
+        )
+    );
+    assert_eq!(lib.counts(), (0, 0));
+}
+
 /// Opus-high MN-4 (O), H12: after a failed funding call a tracked lock
 /// means committed, whatever the error's class. A call that reports
 /// `NotSent` with its lock still tracked leaves the row funded at that

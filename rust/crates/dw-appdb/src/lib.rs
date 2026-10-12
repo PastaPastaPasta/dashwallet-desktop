@@ -25,7 +25,8 @@ mod registration;
 mod rows;
 pub use dashpay_journal::{JournalEntry, JournalRow};
 pub use registration::{
-    LockOutpoint, NewRegistration, RegistrationChange, RegistrationRow, RegistrationUpdate,
+    Adoption, LockOutpoint, NewRegistration, RegistrationChange, RegistrationRow,
+    RegistrationUpdate,
 };
 pub use rows::{SqlValue, TableRows};
 
