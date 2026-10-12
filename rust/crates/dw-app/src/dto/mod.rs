@@ -48,8 +48,10 @@ pub(crate) use mirror_enum;
 /// `max` bytes (`max` ≥ 64), at a character boundary, ending with a marker
 /// that says how many bytes were cut. Engine text the app queues or keeps
 /// passes through it, so no payload grows with what the engine sends
-/// (E0-13 D3); counting the escapes, not the bytes, bounds what the
-/// webview receives too. Reads at most about `max` characters of `s`.
+/// (E0-13 D3); counting the escapes, not the bytes, bounds the encoded
+/// event too (and what the webview receives within a constant factor:
+/// Tauri may escape a large payload once more). Reads at most about `max`
+/// characters of `s`.
 pub fn cap_text(mut s: String, max: usize) -> String {
     debug_assert!(max >= 64, "cap_text needs room for its marker");
     // "… [+N bytes]" with N up to 20 digits is at most 33 bytes, no escapes.
@@ -494,6 +496,23 @@ impl From<SyncSnapshot> for SyncStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The list caps that stand for "one per variant" count their enums:
+    /// each match lists every variant, so a new one fails to compile here
+    /// until its cap is looked at again.
+    #[test]
+    fn per_variant_caps_count_their_enums() {
+        use SyncPhaseName as P;
+        use platform::{BudgetPurposeName as B, MAX_LEASE_BUDGETS};
+        let phases = |p: P| match p {
+            P::Headers | P::FilterHeaders | P::Filters | P::Masternodes => 4,
+        };
+        assert_eq!(MAX_SYNC_PHASES, phases(P::Headers));
+        let budgets = |b: B| match b {
+            B::Funding | B::Credits | B::Spend | B::Crypto => 4,
+        };
+        assert_eq!(MAX_LEASE_BUDGETS, budgets(B::Funding));
+    }
 
     #[test]
     fn cap_text_cuts_at_a_char_boundary_and_says_how_much() {

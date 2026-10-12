@@ -626,17 +626,19 @@ fn payment_authentication_does_not_outlive_its_vault() {
     );
 }
 
-/// Runs a no-credential spend `authorize` on its own thread up to the test
-/// barrier (the setting read, the grant not yet issued), runs `meanwhile`,
-/// then lets it finish and returns its result.
+/// Runs a no-credential spend `authorize` on its own thread up to its test
+/// seam (the setting read, the grant not yet issued), runs `meanwhile`,
+/// then lets it finish and returns its result. If `meanwhile` panics, the
+/// seam's handle drops with it and `authorize` goes on, so the scope can
+/// end; if `authorize` fails before the seam, the wait for it times out.
 fn authorize_across(demo: &Demo, wallet: &Value, meanwhile: impl FnOnce()) -> Result<Value, Value> {
     use tauri::Manager;
     let state = demo.app.state::<crate::state::AppState>();
-    let barrier = Arc::new(std::sync::Barrier::new(2));
-    *state.payment_barrier.lock().unwrap() = Some(Arc::clone(&barrier));
+    let (seam, at_seam) = crate::state::Seam::new(true);
+    *state.payment_seam.lock().unwrap() = Some(seam);
     let key = demo.app.invoke_key().to_string();
-    std::thread::scope(|s| {
-        let (webview, key) = (&demo.webview, &key);
+    let (webview, key, state) = (&demo.webview, &key, &state);
+    std::thread::scope(move |s| {
         let call = s.spawn(move || {
             invoke(
                 webview,
@@ -649,10 +651,10 @@ fn authorize_across(demo: &Demo, wallet: &Value, meanwhile: impl FnOnce()) -> Re
                 }),
             )
         });
-        barrier.wait();
-        *state.payment_barrier.lock().unwrap() = None;
+        at_seam.arrived();
+        *state.payment_seam.lock().unwrap() = None;
         meanwhile();
-        barrier.wait();
+        at_seam.resume();
         call.join().unwrap()
     })
 }
@@ -713,14 +715,31 @@ fn payment_auth_off(demo: &Demo) -> (Value, Value) {
     (wallet, change())
 }
 
-/// Makes `setPaymentAuthentication` stop at `at` (twice, on the returned
-/// barrier).
-fn pause_payment_set(demo: &Demo, at: crate::state::SetPause) -> Arc<std::sync::Barrier> {
+/// Makes `setPaymentAuthentication` stop at `at` until the returned
+/// handle resumes it (or is dropped).
+fn pause_payment_set(demo: &Demo, at: crate::state::SetPause) -> crate::state::SeamHandle {
     use tauri::Manager;
     let state = demo.app.state::<crate::state::AppState>();
-    let barrier = Arc::new(std::sync::Barrier::new(2));
-    *state.payment_set_pause.lock().unwrap() = Some((at, Arc::clone(&barrier)));
-    barrier
+    let (seam, handle) = crate::state::Seam::new(true);
+    *state.payment_set_pause.lock().unwrap() = Some((at, seam));
+    handle
+}
+
+/// `setPaymentAuthentication` to "on" with `grant`, on its own thread.
+fn switch_on<'s>(
+    s: &'s std::thread::Scope<'s, '_>,
+    webview: &'s WebviewWindow<MockRuntime>,
+    key: &'s str,
+    grant: &'s Value,
+) -> std::thread::ScopedJoinHandle<'s, Result<Value, Value>> {
+    s.spawn(move || {
+        invoke(
+            webview,
+            key,
+            "set_payment_authentication",
+            json!({ "on": true, "grantId": grant }),
+        )
+    })
 }
 
 /// Sol r3 F1b, the reviewer's two-stage probe: a no-credential payment
@@ -732,26 +751,19 @@ fn a_grant_issued_once_the_strict_value_is_readable_is_refused() {
     let demo = Demo::new();
     demo.open();
     let (wallet, grant) = payment_auth_off(&demo);
-    let set_pause = pause_payment_set(&demo, crate::state::SetPause::AfterWrite);
+    let written = pause_payment_set(&demo, crate::state::SetPause::AfterWrite);
     let key = demo.app.invoke_key().to_string();
-    std::thread::scope(|s| {
+    let (demo, webview, key, grant) = (&demo, &demo.webview, key.as_str(), &grant);
+    // `written` moves into the scope: a failure drops it, which lets the
+    // setter go on, before the scope waits for its threads.
+    std::thread::scope(move |s| {
         let mut setter = None;
-        let result = authorize_across(&demo, &wallet, || {
-            let (webview, key, grant) = (&demo.webview, &key, &grant);
-            setter = Some(s.spawn(move || {
-                invoke(
-                    webview,
-                    key,
-                    "set_payment_authentication",
-                    json!({ "on": true, "grantId": grant }),
-                )
-            }));
+        let result = authorize_across(demo, &wallet, || {
+            setter = Some(switch_on(s, webview, key, grant));
             // Written; the setter has not returned.
-            set_pause.wait();
+            written.arrived();
         });
-        // The setter finishes before anything is judged, so a failure
-        // cannot leave it waiting (and the scope with it).
-        set_pause.wait();
+        written.resume();
         setter.unwrap().join().unwrap().expect("the switch");
         let refused = result.expect_err("issued once \"on\" was readable");
         assert_eq!(refused["code"], "vault.credential_required", "{refused}");
@@ -761,27 +773,29 @@ fn a_grant_issued_once_the_strict_value_is_readable_is_refused() {
 
 /// Sol r3 F1b: `authorize` reads the setting under the setter's gate. While
 /// the setter has advanced the generation but not yet written "on", a
-/// no-credential payment `authorize` waits, then reads "on" and is refused;
-/// it cannot read "off" with the new generation and keep its grant.
+/// no-credential payment `authorize` that reached the gate waits, then
+/// reads "on" and is refused; it cannot read "off" with the new generation
+/// and keep its grant.
 #[test]
 fn authorize_waits_for_a_policy_write_in_progress() {
+    use tauri::Manager;
     let demo = Demo::new();
     demo.open();
     let (wallet, grant) = payment_auth_off(&demo);
-    let set_pause = pause_payment_set(&demo, crate::state::SetPause::AfterBump);
+    let bumped = pause_payment_set(&demo, crate::state::SetPause::AfterBump);
+    let (seam, at_gate) = crate::state::Seam::new(false);
+    *demo
+        .app
+        .state::<crate::state::AppState>()
+        .payment_gate_seam
+        .lock()
+        .unwrap() = Some(seam);
     let key = demo.app.invoke_key().to_string();
-    let (webview, key) = (&demo.webview, &key);
-    std::thread::scope(|s| {
-        let setter = s.spawn(|| {
-            invoke(
-                webview,
-                key,
-                "set_payment_authentication",
-                json!({ "on": true, "grantId": grant }),
-            )
-        });
-        set_pause.wait();
-        let call = s.spawn(|| {
+    let (webview, key, grant, wallet) = (&demo.webview, key.as_str(), &grant, &wallet);
+    std::thread::scope(move |s| {
+        let setter = switch_on(s, webview, key, grant);
+        bumped.arrived();
+        let call = s.spawn(move || {
             invoke(
                 webview,
                 key,
@@ -793,11 +807,12 @@ fn authorize_waits_for_a_policy_write_in_progress() {
                 }),
             )
         });
-        // Only a wrong outcome depends on this wait: a correct `authorize`
-        // never finishes while the setter holds the gate.
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // At the gate. Only a wrong outcome depends on the sleep: a correct
+        // `authorize` cannot pass the gate while the setter holds it.
+        at_gate.arrived();
+        std::thread::sleep(std::time::Duration::from_millis(300));
         let early = call.is_finished();
-        set_pause.wait();
+        bumped.resume();
         setter.join().unwrap().expect("the switch");
         let result = call.join().unwrap();
         assert!(!early, "authorize read the setting mid-write: {result:?}");

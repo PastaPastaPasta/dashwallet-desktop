@@ -630,259 +630,268 @@ mod tests {
         assert_eq!(settled["settled"]["resolution"], "notSent");
     }
 
-    /// Every event at its largest: each text the engine controls is long
-    /// and made of control characters (six bytes each in JSON), each list
-    /// longer than its cap, each number at its maximum, the network a devnet
-    /// with the longest name `DashNetwork::validate` allows (Sol r3 F3a).
+    /// Every event at its largest (Sol r3 F3a): each list longer than its
+    /// cap, each number at its maximum, the network a devnet with the
+    /// longest name `DashNetwork::validate` allows, and each text the engine
+    /// controls built twice: encoding to exactly its cap (so it is kept
+    /// whole: the true worst case) and far over it, in control characters
+    /// (six bytes each in JSON; so a text left uncut shows).
     #[test]
     fn every_event_fits_its_byte_bound() {
         use dw_engine::platform::{
             BudgetPurpose, BudgetView, FlowOutcome, FlowReport, RevokeCause,
         };
         use dw_engine::{SyncPhase, SyncPhaseProgress, SyncSnapshot, WalletBalances};
-        let text = |n: usize| "\u{1}".repeat(n);
-        let network = || DashNetwork::Devnet {
-            name: "a".repeat(64),
-        };
-        let wallet_id = WalletId([0xff; 32]);
-        let txids = (0..2 * MAX_TXIDS)
-            .map(|i| dashcore::Txid::from_byte_array([i as u8; 32]))
-            .collect::<Vec<_>>();
-        let lease = |budgets: usize| LeaseView {
-            id: text(1 << 16),
-            wallet_id: text(1 << 16),
-            flow: FlowKind::EnableDashPayKeys,
-            state: LeaseStateView::Revoked {
-                cause: RevokeCause::PassphraseChange,
-            },
-            own_key: true,
-            key_expires_in_secs: Some(u64::MAX),
-            funds_committed: true,
-            budgets: (0..budgets)
-                .map(|_| BudgetView {
-                    purpose: BudgetPurpose::Funding,
-                    ceiling: u64::MAX,
-                    spent: u64::MAX,
-                })
-                .collect(),
-            in_flight: u32::MAX,
-            call_running: true,
-        };
-        // Lists over their caps (16 flows of 8 artifacts, 16 wallets), with
-        // texts long enough that every kept one is cut.
-        let report = LockReport {
-            status: dw_vault::VaultStatus {
-                state: dw_vault::LockState::UnlockedMixingOnly,
-                encrypted: true,
-                quick_unlock_enrolled: true,
-                failed_attempts: u32::MAX,
-                retry_after_secs: Some(u64::MAX),
-                wallets_with_secrets: (0..40).map(|i| [i; 32]).collect(),
-            },
-            flows: (0..20)
-                .map(|_| FlowReport {
-                    lease: text(300),
-                    wallet_id: text(300),
-                    flow: FlowKind::EnableDashPayKeys,
-                    outcome: FlowOutcome::WillBeSent,
-                    artifacts: (0..20)
-                        .map(|_| (text(300), FlowOutcome::WillBeSent))
-                        .collect(),
-                })
-                .collect(),
-        };
-        let phase = SyncPhaseProgress {
-            phase: SyncPhase::FilterHeaders,
-            current_height: Some(u32::MAX),
-            target_height: Some(u32::MAX),
-            done: true,
-        };
-        let mut events: Vec<AppEvent> = [
-            EngineEvent::SessionOpened { network: network() },
-            EngineEvent::SessionClosed { network: network() },
-            EngineEvent::WalletCreated {
-                network: network(),
-                wallet_id,
-            },
-            EngineEvent::WalletRemoved {
-                network: network(),
-                wallet_id,
-            },
-            EngineEvent::SpvStateChanged {
-                network: network(),
-                running: true,
-            },
-            EngineEvent::Sync {
-                network: network(),
-                snapshot: SyncSnapshot {
+        let worst = |text: &dyn Fn(usize) -> String| -> Vec<AppEvent> {
+            let network = || DashNetwork::Devnet {
+                name: "a".repeat(64),
+            };
+            let wallet_id = WalletId([0xff; 32]);
+            let txids = (0..2 * MAX_TXIDS)
+                .map(|i| dashcore::Txid::from_byte_array([i as u8; 32]))
+                .collect::<Vec<_>>();
+            let lease = |budgets: usize| LeaseView {
+                id: text(MAX_ID_BYTES),
+                wallet_id: text(MAX_ID_BYTES),
+                flow: FlowKind::EnableDashPayKeys,
+                state: LeaseStateView::Revoked {
+                    cause: RevokeCause::PassphraseChange,
+                },
+                own_key: true,
+                key_expires_in_secs: Some(u64::MAX),
+                funds_committed: true,
+                budgets: (0..budgets)
+                    .map(|_| BudgetView {
+                        purpose: BudgetPurpose::Funding,
+                        ceiling: u64::MAX,
+                        spent: u64::MAX,
+                    })
+                    .collect(),
+                in_flight: u32::MAX,
+                call_running: true,
+            };
+            // Lists over their caps (16 flows of 8 artifacts, 16 wallets), with
+            // texts long enough that every kept one is cut.
+            let report = LockReport {
+                status: dw_vault::VaultStatus {
+                    state: dw_vault::LockState::UnlockedMixingOnly,
+                    encrypted: true,
+                    quick_unlock_enrolled: true,
+                    failed_attempts: u32::MAX,
+                    retry_after_secs: Some(u64::MAX),
+                    wallets_with_secrets: (0..40).map(|i| [i; 32]).collect(),
+                },
+                flows: (0..20)
+                    .map(|_| FlowReport {
+                        lease: text(MAX_ID_BYTES),
+                        wallet_id: text(MAX_ID_BYTES),
+                        flow: FlowKind::EnableDashPayKeys,
+                        outcome: FlowOutcome::WillBeSent,
+                        artifacts: (0..20)
+                            .map(|_| (text(MAX_ID_BYTES), FlowOutcome::WillBeSent))
+                            .collect(),
+                    })
+                    .collect(),
+            };
+            let phase = SyncPhaseProgress {
+                phase: SyncPhase::FilterHeaders,
+                current_height: Some(u32::MAX),
+                target_height: Some(u32::MAX),
+                done: true,
+            };
+            let mut events: Vec<AppEvent> = [
+                EngineEvent::SessionOpened { network: network() },
+                EngineEvent::SessionClosed { network: network() },
+                EngineEvent::WalletCreated {
+                    network: network(),
+                    wallet_id,
+                },
+                EngineEvent::WalletRemoved {
+                    network: network(),
+                    wallet_id,
+                },
+                EngineEvent::SpvStateChanged {
+                    network: network(),
                     running: true,
-                    phases: vec![phase; 40],
-                    active_phase: Some(SyncPhase::FilterHeaders),
-                    tip_height: Some(u32::MAX),
-                    tip_time: Some(u64::MAX),
-                    chainlock_height: Some(u32::MAX),
-                    connected_peers: u32::MAX,
-                    caught_up: true,
-                    seconds_since_progress: Some(u64::MAX),
                 },
-            },
-            EngineEvent::Balances {
-                network: network(),
-                wallet_id,
-                balances: Some(WalletBalances {
-                    confirmed: u64::MAX,
-                    unconfirmed: u64::MAX,
-                    immature: u64::MAX,
-                    locked: u64::MAX,
-                    total: u64::MAX,
-                    coinjoin: u64::MAX,
-                }),
-            },
-            EngineEvent::HistoryChanged {
-                network: network(),
-                wallet_id,
-                txids: txids[..MAX_TXIDS].to_vec(),
-            },
-            EngineEvent::Notice {
-                network: Some(network()),
-                code: NoticeCode::PlatformContextUnavailable,
-                detail: text(1 << 20),
-            },
-            EngineEvent::VaultLockState {
-                network: network(),
-                state: dw_vault::LockState::UnlockedMixingOnly,
-            },
-            EngineEvent::NewTransactions {
-                network: network(),
-                wallet_id,
-                txids: txids.clone(),
-                catch_up: true,
-            },
-            EngineEvent::WalletLoadChanged {
-                network: network(),
-                wallet_id,
-                loaded: true,
-            },
-            EngineEvent::CoinJoin {
-                network: network(),
-                wallet_id,
-            },
-            EngineEvent::Platform {
-                network: network(),
-                wallet_id,
-                change: PlatformChange::Contacts {
-                    identity: text(1 << 16),
+                EngineEvent::Sync {
+                    network: network(),
+                    snapshot: SyncSnapshot {
+                        running: true,
+                        phases: vec![phase; 40],
+                        active_phase: Some(SyncPhase::FilterHeaders),
+                        tip_height: Some(u32::MAX),
+                        tip_time: Some(u64::MAX),
+                        chainlock_height: Some(u32::MAX),
+                        connected_peers: u32::MAX,
+                        caught_up: true,
+                        seconds_since_progress: Some(u64::MAX),
+                    },
                 },
-            },
-            EngineEvent::Platform {
-                network: network(),
-                wallet_id,
-                change: PlatformChange::Registration {
-                    draft: Some(text(1 << 16)),
+                EngineEvent::Balances {
+                    network: network(),
+                    wallet_id,
+                    balances: Some(WalletBalances {
+                        confirmed: u64::MAX,
+                        unconfirmed: u64::MAX,
+                        immature: u64::MAX,
+                        locked: u64::MAX,
+                        total: u64::MAX,
+                        coinjoin: u64::MAX,
+                    }),
                 },
-            },
-            EngineEvent::Platform {
-                network: network(),
-                wallet_id,
-                change: PlatformChange::Payments {
-                    identity: text(1 << 16),
+                EngineEvent::HistoryChanged {
+                    network: network(),
+                    wallet_id,
+                    txids: txids[..MAX_TXIDS].to_vec(),
                 },
-            },
-            EngineEvent::LeaseChanged {
-                network: network(),
-                lease: lease(40),
-            },
-            EngineEvent::LockProgress {
-                network: network(),
-                phase: LockPhase::Draining {
-                    in_flight: u32::MAX,
-                    deadline_in_ms: u64::MAX,
+                EngineEvent::Notice {
+                    network: Some(network()),
+                    code: NoticeCode::PlatformContextUnavailable,
+                    detail: text(MAX_DETAIL_BYTES),
                 },
-            },
-            EngineEvent::LockProgress {
-                network: network(),
-                phase: LockPhase::Done(report),
-            },
-            EngineEvent::DispatchResolved {
-                network: network(),
-                resolved: DispatchResolved {
-                    wallet_id: text(1 << 16),
-                    artifact: text(1 << 16),
-                    resolution: DispatchResolution::NotSent,
+                EngineEvent::VaultLockState {
+                    network: network(),
+                    state: dw_vault::LockState::UnlockedMixingOnly,
                 },
-            },
-        ]
-        .into_iter()
-        .map(AppEvent::from)
-        .collect();
-        events.push(AppEvent::EventsOverflowed);
-
-        // Every variant is here: adding one breaks this match.
-        let variant = |e: &AppEvent| match e {
-            AppEvent::SessionOpened { .. } => 0,
-            AppEvent::SessionClosed { .. } => 1,
-            AppEvent::WalletCreated { .. } => 2,
-            AppEvent::WalletRemoved { .. } => 3,
-            AppEvent::SpvStateChanged { .. } => 4,
-            AppEvent::Sync { .. } => 5,
-            AppEvent::Balances { .. } => 6,
-            AppEvent::HistoryChanged { .. } => 7,
-            AppEvent::Notice { .. } => 8,
-            AppEvent::EventsOverflowed => 9,
-            AppEvent::VaultLockState { .. } => 10,
-            AppEvent::NewTransactions { .. } => 11,
-            AppEvent::WalletLoadChanged { .. } => 12,
-            AppEvent::CoinJoin { .. } => 13,
-            AppEvent::Platform { .. } => 14,
-            AppEvent::LeaseChanged { .. } => 15,
-            AppEvent::LockProgress { .. } => 16,
-            AppEvent::DispatchResolved { .. } => 17,
+                EngineEvent::NewTransactions {
+                    network: network(),
+                    wallet_id,
+                    txids: txids.clone(),
+                    catch_up: true,
+                },
+                EngineEvent::WalletLoadChanged {
+                    network: network(),
+                    wallet_id,
+                    loaded: true,
+                },
+                EngineEvent::CoinJoin {
+                    network: network(),
+                    wallet_id,
+                },
+                EngineEvent::Platform {
+                    network: network(),
+                    wallet_id,
+                    change: PlatformChange::Contacts {
+                        identity: text(MAX_ID_BYTES),
+                    },
+                },
+                EngineEvent::Platform {
+                    network: network(),
+                    wallet_id,
+                    change: PlatformChange::Registration {
+                        draft: Some(text(MAX_ID_BYTES)),
+                    },
+                },
+                EngineEvent::Platform {
+                    network: network(),
+                    wallet_id,
+                    change: PlatformChange::Payments {
+                        identity: text(MAX_ID_BYTES),
+                    },
+                },
+                EngineEvent::LeaseChanged {
+                    network: network(),
+                    lease: lease(40),
+                },
+                EngineEvent::LockProgress {
+                    network: network(),
+                    phase: LockPhase::Draining {
+                        in_flight: u32::MAX,
+                        deadline_in_ms: u64::MAX,
+                    },
+                },
+                EngineEvent::LockProgress {
+                    network: network(),
+                    phase: LockPhase::Done(report),
+                },
+                EngineEvent::DispatchResolved {
+                    network: network(),
+                    resolved: DispatchResolved {
+                        wallet_id: text(MAX_ID_BYTES),
+                        artifact: text(MAX_ID_BYTES),
+                        resolution: DispatchResolution::NotSent,
+                    },
+                },
+            ]
+            .into_iter()
+            .map(AppEvent::from)
+            .collect();
+            events.push(AppEvent::EventsOverflowed);
+            events
         };
-        let seen: std::collections::BTreeSet<_> = events.iter().map(variant).collect();
-        assert_eq!(seen, (0..18).collect());
+        let at_caps = |cap: usize| "\u{1}".repeat(cap / 6) + &"x".repeat(cap % 6);
+        let over_caps = |_: usize| "\u{1}".repeat(1 << 16);
+        for (whole, events) in [(true, worst(&at_caps)), (false, worst(&over_caps))] {
+            // Every variant is here: adding one breaks this match.
+            let variant = |e: &AppEvent| match e {
+                AppEvent::SessionOpened { .. } => 0,
+                AppEvent::SessionClosed { .. } => 1,
+                AppEvent::WalletCreated { .. } => 2,
+                AppEvent::WalletRemoved { .. } => 3,
+                AppEvent::SpvStateChanged { .. } => 4,
+                AppEvent::Sync { .. } => 5,
+                AppEvent::Balances { .. } => 6,
+                AppEvent::HistoryChanged { .. } => 7,
+                AppEvent::Notice { .. } => 8,
+                AppEvent::EventsOverflowed => 9,
+                AppEvent::VaultLockState { .. } => 10,
+                AppEvent::NewTransactions { .. } => 11,
+                AppEvent::WalletLoadChanged { .. } => 12,
+                AppEvent::CoinJoin { .. } => 13,
+                AppEvent::Platform { .. } => 14,
+                AppEvent::LeaseChanged { .. } => 15,
+                AppEvent::LockProgress { .. } => 16,
+                AppEvent::DispatchResolved { .. } => 17,
+            };
+            let seen: std::collections::BTreeSet<_> = events.iter().map(variant).collect();
+            assert_eq!(seen, (0..18).collect());
 
-        let mut largest = (0, None);
-        for event in &events {
-            let bytes = serde_json::to_vec(event).unwrap().len();
-            assert!(bytes <= MAX_EVENT_BYTES, "{bytes} bytes: {event:?}");
-            if bytes > largest.0 {
-                largest = (bytes, Some(variant(event)));
+            let mut largest = (0, None);
+            for event in &events {
+                let bytes = serde_json::to_vec(event).unwrap().len();
+                assert!(bytes <= MAX_EVENT_BYTES, "{bytes} bytes: {event:?}");
+                if bytes > largest.0 {
+                    largest = (bytes, Some(variant(event)));
+                }
             }
-        }
-        // The full lock report is the largest, and it is near the bound: the
-        // caps, not slack, keep it under.
-        assert_eq!(largest.1, Some(16));
-        assert!(largest.0 > MAX_EVENT_BYTES / 2, "{} bytes", largest.0);
+            // The full lock report is the largest; whole, it is near the bound
+            // (about 28.9 KB): the caps, not slack, keep it under.
+            assert_eq!(largest.1, Some(16));
+            if whole {
+                assert!(largest.0 > 28_000, "{} bytes", largest.0);
+            }
 
-        let done = events
-            .iter()
-            .find_map(|e| match e {
-                AppEvent::LockProgress {
-                    progress: LockProgress::Done { report },
-                    ..
-                } => Some(report),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(done.status.wallets_with_secrets.len(), 16);
-        assert_eq!(done.wallets_with_secrets_omitted, 40 - 16);
-        assert_eq!(done.flows_omitted, 20 - 16);
-        let lease = events
-            .iter()
-            .find_map(|e| match e {
-                AppEvent::LeaseChanged { lease, .. } => Some(lease),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(lease.budgets.len(), 4);
-        let sync = events
-            .iter()
-            .find_map(|e| match e {
-                AppEvent::Sync { status, .. } => Some(status),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(sync.phases.len(), 4);
+            let done = events
+                .iter()
+                .find_map(|e| match e {
+                    AppEvent::LockProgress {
+                        progress: LockProgress::Done { report },
+                        ..
+                    } => Some(report),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(done.status.wallets_with_secrets.len(), 16);
+            assert_eq!(done.wallets_with_secrets_omitted, 40 - 16);
+            assert_eq!(done.flows_omitted, 20 - 16);
+            let lease = events
+                .iter()
+                .find_map(|e| match e {
+                    AppEvent::LeaseChanged { lease, .. } => Some(lease),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(lease.budgets.len(), 4);
+            let sync = events
+                .iter()
+                .find_map(|e| match e {
+                    AppEvent::Sync { status, .. } => Some(status),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(sync.phases.len(), 4);
+        }
     }
 
     /// Sol r3 (optional): past the cap a report keeps the outcomes nobody

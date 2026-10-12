@@ -333,8 +333,8 @@ fn check_payment_auth(
 /// advances it before it writes, under the same gate) or the vault is no
 /// longer the one the setting was read for, the stricter rule decides, and
 /// a refusal revokes what was issued before the call fails (Sol r2/r3
-/// F1b). So no grant issued under the relaxed rule survives once the
-/// strict value is readable.
+/// F1b). So a grant issued once "on" is readable was not judged under
+/// "off"; one issued before the change keeps its 120 s, as D11 says.
 async fn issue_grants(
     state: &AppState,
     purposes: &[GrantPurpose],
@@ -346,6 +346,8 @@ async fn issue_grants(
     let session = state.session().await?;
     let payment_policy = Arc::clone(&state.payment_policy);
     let (read_at, policy) = if pays(purposes) {
+        #[cfg(test)]
+        crate::state::Seam::pass_slot(&state.payment_gate_seam);
         let _gate = payment_policy.gate.lock().await;
         let read_at = payment_policy.generation.load(Ordering::SeqCst);
         (read_at, Some(session.payment_authentication().await?))
@@ -354,11 +356,7 @@ async fn issue_grants(
     };
     #[cfg(test)]
     if policy.is_some() {
-        let barrier = state.payment_barrier.lock().unwrap().clone();
-        if let Some(barrier) = barrier {
-            barrier.wait();
-            barrier.wait();
-        }
+        crate::state::Seam::pass_slot(&state.payment_seam);
     }
     let grants = session
         .vault_op(move |v| {

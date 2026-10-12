@@ -36,14 +36,18 @@ pub struct AppState {
     /// Orders "require authentication for every payment" against the
     /// grants issued under it (`api::vault`, D11).
     pub payment_policy: Arc<PaymentPolicy>,
-    /// Test seam: a payment `authorize` waits here twice between reading
-    /// the setting and issuing the grant.
+    /// Test seam: a payment `authorize` passes it between reading the
+    /// setting and issuing the grant.
     #[cfg(test)]
-    pub(crate) payment_barrier: StdMutex<Option<Arc<std::sync::Barrier>>>,
-    /// Test seam: `setPaymentAuthentication` waits here twice at this
-    /// point, holding [`PaymentPolicy::gate`].
+    pub(crate) payment_seam: StdMutex<Option<Arc<Seam>>>,
+    /// Test seam: a payment `authorize` passes it just before it takes
+    /// [`PaymentPolicy::gate`].
     #[cfg(test)]
-    pub(crate) payment_set_pause: StdMutex<Option<(SetPause, Arc<std::sync::Barrier>)>>,
+    pub(crate) payment_gate_seam: StdMutex<Option<Arc<Seam>>>,
+    /// Test seam: `setPaymentAuthentication` passes it at this point,
+    /// holding [`PaymentPolicy::gate`].
+    #[cfg(test)]
+    pub(crate) payment_set_pause: StdMutex<Option<(SetPause, Arc<Seam>)>>,
 }
 
 /// The single source of "require authentication for every payment" for
@@ -51,11 +55,81 @@ pub struct AppState {
 /// advancing `generation` and then writing the setting; `authorize` holds it
 /// across reading both, so no read sees the new value with the old
 /// generation. Once the grant is issued, `authorize` compares `generation`
-/// again: any write that may be readable by then has advanced it.
+/// again: any write that may be readable by then has advanced it, so a
+/// grant issued once "on" is readable was not judged under "off".
 #[derive(Default)]
 pub struct PaymentPolicy {
     pub gate: Mutex<()>,
     pub generation: AtomicU64,
+}
+
+/// A point the code under test passes and a test can watch: it reports
+/// each arrival and, if it pauses, waits until the test resumes it. When
+/// the test's [`SeamHandle`] is dropped (a failing test unwinds), a waiting
+/// pass goes on, so a failure never leaves a thread parked.
+#[cfg(test)]
+pub(crate) struct Seam {
+    arrived: std::sync::mpsc::Sender<()>,
+    resume: Option<StdMutex<std::sync::mpsc::Receiver<()>>>,
+}
+
+/// The test's side of a [`Seam`].
+#[cfg(test)]
+pub(crate) struct SeamHandle {
+    arrived: std::sync::mpsc::Receiver<()>,
+    resume: Option<std::sync::mpsc::Sender<()>>,
+}
+
+#[cfg(test)]
+impl Seam {
+    pub(crate) fn new(pauses: bool) -> (Arc<Seam>, SeamHandle) {
+        let (arrived_tx, arrived) = std::sync::mpsc::channel();
+        let (resume, resume_rx) = if pauses {
+            let (tx, rx) = std::sync::mpsc::channel();
+            (Some(tx), Some(StdMutex::new(rx)))
+        } else {
+            (None, None)
+        };
+        (
+            Arc::new(Seam {
+                arrived: arrived_tx,
+                resume: resume_rx,
+            }),
+            SeamHandle { arrived, resume },
+        )
+    }
+
+    pub(crate) fn pass(&self) {
+        let _ = self.arrived.send(());
+        if let Some(resume) = &self.resume {
+            let _ = resume.lock().unwrap().recv();
+        }
+    }
+
+    /// Passes the seam in `slot`, if a test set one.
+    pub(crate) fn pass_slot(slot: &StdMutex<Option<Arc<Seam>>>) {
+        let seam = slot.lock().unwrap().clone();
+        if let Some(seam) = seam {
+            seam.pass();
+        }
+    }
+}
+
+#[cfg(test)]
+impl SeamHandle {
+    /// Waits for the code under test to reach the seam; fails the test if
+    /// it does not within two minutes (it returned early, say).
+    pub(crate) fn arrived(&self) {
+        self.arrived
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("the code under test never reached its seam");
+    }
+
+    pub(crate) fn resume(&self) {
+        if let Some(resume) = &self.resume {
+            let _ = resume.send(());
+        }
+    }
 }
 
 /// Where [`AppState::payment_set_pause`] stops the setter.
@@ -106,7 +180,9 @@ impl AppState {
             memory,
             payment_policy: Arc::default(),
             #[cfg(test)]
-            payment_barrier: StdMutex::default(),
+            payment_seam: StdMutex::default(),
+            #[cfg(test)]
+            payment_gate_seam: StdMutex::default(),
             #[cfg(test)]
             payment_set_pause: StdMutex::default(),
         })
@@ -115,11 +191,10 @@ impl AppState {
     #[cfg(test)]
     pub(crate) fn pause_payment_set(&self, at: SetPause) {
         let pause = self.payment_set_pause.lock().unwrap().clone();
-        if let Some((stage, barrier)) = pause
+        if let Some((stage, seam)) = pause
             && stage == at
         {
-            barrier.wait();
-            barrier.wait();
+            seam.pass();
         }
     }
 
