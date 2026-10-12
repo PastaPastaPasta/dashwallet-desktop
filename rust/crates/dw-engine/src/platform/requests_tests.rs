@@ -119,6 +119,8 @@ pub(crate) struct FakeRequests {
     down: AtomicBool,
     /// Writes fail with this error, having landed or not as `landed` says.
     pub(crate) fails: Mutex<Option<PlatformError>>,
+    /// Writes fail with this error before they sign anything.
+    fails_unsigned: Mutex<Option<PlatformError>>,
     landed: AtomicBool,
     writes: AtomicU32,
     /// Runs inside each write, before it lands.
@@ -163,6 +165,9 @@ impl FakeRequests {
         id: Identifier,
         signer: &VaultIdentitySigner,
     ) -> Result<(), PlatformError> {
+        if let Some(e) = self.fails_unsigned.lock().unwrap().clone() {
+            return Err(e);
+        }
         let key = (self.platform.lock().unwrap()[&id].public_keys().values())
             .find(|k| signer.can_sign_with(k))
             .cloned()
@@ -627,6 +632,64 @@ fn one_lease_pays_for_one_write() {
     assert_eq!(f.net.writes(), 1);
     let twice = f.flow(FlowKind::ContactRequest, vec![f.grant(2 * quote)]);
     assert!(f.send(BOB, &twice).is_ok());
+}
+
+/// A write's call permit hands its quote back when the write failed
+/// before signing anything (`Cancelled`), and keeps it once a signature is
+/// out, whatever the write returns (E0-04 P2b, m4 item 40): per flow, on a
+/// lease carrying one quote.
+#[test]
+fn a_quote_goes_back_only_when_nothing_was_signed() {
+    type Write = fn(&Fixture, &str) -> Result<(), ContactError>;
+    let flows: [(FlowKind, u64, Write); 3] = [
+        (FlowKind::ContactRequest, CONTACT_REQUEST_CREDITS, |f, l| {
+            f.send(BOB, l).map(drop)
+        }),
+        (FlowKind::Accept, CONTACT_REQUEST_CREDITS, |f, l| {
+            f.accept(FRANK, l).map(drop)
+        }),
+        (FlowKind::EnableDashPayKeys, KEY_UPDATE_CREDITS, |f, l| {
+            f.enable_keys(l)
+        }),
+    ];
+    for (flow, quote, write) in flows {
+        let keys = if flow == FlowKind::EnableDashPayKeys {
+            keys(false)
+        } else {
+            keys(true)
+        };
+        let f = Fixture::with_keys(keys, u64::MAX / 2);
+        let spent = |lease: &str| {
+            let lease = f.s.lease_for(&f.wallet, lease).unwrap().unwrap();
+            let view = lease.view().unwrap();
+            (view.budgets.iter())
+                .find(|b| b.purpose == BudgetPurpose::Credits)
+                .unwrap()
+                .spent
+        };
+
+        let lease = f.flow(flow, vec![f.grant(quote)]);
+        *f.net.fails_unsigned.lock().unwrap() = Some(PlatformError::Unavailable);
+        let refused = write(&f, &lease).unwrap_err();
+        assert_eq!(refused.code(), "platform.unavailable", "{flow:?}");
+        assert_eq!(
+            spent(&lease),
+            0,
+            "{flow:?}: nothing signed, quote not returned"
+        );
+        *f.net.fails_unsigned.lock().unwrap() = None;
+
+        *f.net.fails.lock().unwrap() = Some(PlatformError::Timeout);
+        assert_eq!(write(&f, &lease).unwrap_err().code(), "platform.timeout");
+        assert_eq!(spent(&lease), quote, "{flow:?}: signed, quote not kept");
+        *f.net.fails.lock().unwrap() = None;
+        assert_eq!(
+            write(&f, &lease).unwrap_err().code(),
+            "platform.grant_exceeded",
+            "{flow:?}"
+        );
+        assert_eq!(f.net.writes(), 1, "{flow:?}");
+    }
 }
 
 /// A write whose identity has no key its flow signs with is refused before
