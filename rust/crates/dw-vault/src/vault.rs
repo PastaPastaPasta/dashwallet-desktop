@@ -162,6 +162,8 @@ pub(crate) enum GateEvent {
     Refused(u64),
     /// `lock()` was called; it now waits for the gate.
     LockCalled,
+    /// A seed deletion now waits for the gate ([`Vault::drain_ops`]).
+    DrainWaiting,
 }
 
 /// Exclusive hold of `Shared::ops`, which every epoch change needs. Only
@@ -587,6 +589,13 @@ impl Vault {
         let mut inner = self.inner();
         let epoch = inner.epoch;
         inner.gate_log = Some(vec![GateEvent::Epoch(epoch)]);
+    }
+
+    /// Whether `event` was logged since [`Self::start_gate_log`]; logging
+    /// goes on.
+    #[cfg(test)]
+    pub(crate) fn gate_logged(&self, event: GateEvent) -> bool {
+        (self.inner().gate_log.as_ref()).is_some_and(|log| log.contains(&event))
     }
 
     /// The events logged since [`Self::start_gate_log`]; logging stops.
@@ -1583,8 +1592,10 @@ impl Vault {
     /// before the deletion and still signs after it (DP2-02, Sol r3). An
     /// operation that read the seed has released its result by then; one
     /// that starts after finds no seed (`NoSecret`). Taken after `writer`,
-    /// as every epoch change is.
+    /// as the epoch changes that write the file take it.
     fn drain_ops(&self, _writer: &WriteGuard<'_>) -> EpochGuard<'_> {
+        #[cfg(test)]
+        self.inner().record(GateEvent::DrainWaiting);
         self.epoch_guard()
     }
 

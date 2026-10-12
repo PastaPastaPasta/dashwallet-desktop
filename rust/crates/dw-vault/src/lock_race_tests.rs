@@ -427,6 +427,7 @@ fn check_gate_log(log: &[GateEvent]) -> GateStats {
                 lock_waiting = true;
                 stats.locks += 1;
             }
+            GateEvent::DrainWaiting => {}
         }
     }
     stats
@@ -1484,7 +1485,9 @@ fn a_removal_waits_for_the_signers_that_read_the_seed() {
         entered_rx
             .recv_timeout(NO_HANG)
             .expect("the signer did not read the seed");
-        // The removal starts, and is given five seconds to finish meanwhile.
+        // The removal starts; once it waits for the gate, it is given a
+        // second to finish meanwhile.
+        v.start_gate_log();
         let (done_tx, done_rx) = mpsc::channel();
         let remover = {
             let v = v.clone();
@@ -1494,11 +1497,20 @@ fn a_removal_waits_for_the_signers_that_read_the_seed() {
                 result
             })
         };
-        let finished_meanwhile = done_rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        let start = Instant::now();
+        while !v.gate_logged(GateEvent::DrainWaiting) && start.elapsed() < NO_HANG {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let drain_waited = v.gate_logged(GateEvent::DrainWaiting);
+        let finished_meanwhile = done_rx.recv_timeout(Duration::from_secs(1)).is_ok();
         let removed_meanwhile = removed(&v);
         release_tx.send(()).unwrap();
         let signed = worker.join().unwrap();
         assert_eq!(remover.join().unwrap(), Ok(()), "{name}");
+        assert!(
+            drain_waited,
+            "{name}: the removal did not wait for the gate"
+        );
         assert!(
             !finished_meanwhile && !removed_meanwhile,
             "{name}: the seed went while a signer that read it was still signing"
