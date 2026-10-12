@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
@@ -12,7 +13,7 @@ use dw_vault::VaultConfig;
 use tauri::{AppHandle, Runtime};
 use tokio::sync::Mutex;
 
-use crate::bridge::{NoticeLog, TauriSink};
+use crate::bridge::{EventMemory, TauriSink};
 use crate::error::{AppCode, AppError, EngineCode};
 use crate::launch::LaunchOptions;
 
@@ -29,8 +30,17 @@ pub struct AppState {
     exit: Box<dyn Fn(i32) + Send + Sync>,
     /// The drafts and prepared transactions of the active session.
     pub sends: SendHandles,
-    /// The engine's recent notices (`recentNotices`).
-    pub notices: Arc<NoticeLog>,
+    /// What an overflow cannot lose: the recent notices (`recentNotices`)
+    /// and each network's last lock report (`lastLockReport`).
+    pub memory: Arc<EventMemory>,
+    /// Advanced by every change of "require authentication for every
+    /// payment"; a grant issued while it moved is checked again under the
+    /// stricter rule (`api::vault`, Sol r2 F1b).
+    pub payment_policy_gen: Arc<AtomicU64>,
+    /// Test seam: a payment `authorize` waits here twice between reading
+    /// the setting and issuing the grant.
+    #[cfg(test)]
+    pub(crate) payment_barrier: StdMutex<Option<Arc<std::sync::Barrier>>>,
 }
 
 impl AppState {
@@ -43,7 +53,7 @@ impl AppState {
         vault: VaultConfig,
         default_data_dir: impl FnOnce() -> Result<PathBuf, AppError>,
     ) -> Result<Self, AppError> {
-        let notices = Arc::new(NoticeLog::default());
+        let memory = Arc::new(EventMemory::default());
         let engine = if launch.fixture {
             None
         } else {
@@ -57,7 +67,7 @@ impl AppState {
                     worker_threads: None,
                     vault,
                 },
-                Arc::new(TauriSink::new(app.clone(), Arc::clone(&notices))?),
+                Arc::new(TauriSink::new(app.clone(), Arc::clone(&memory))?),
             )?)
         };
         let handle = app.clone();
@@ -68,7 +78,10 @@ impl AppState {
             session: Mutex::new(None),
             exit: Box::new(move |code| handle.exit(code)),
             sends: SendHandles::default(),
-            notices,
+            memory,
+            payment_policy_gen: Arc::default(),
+            #[cfg(test)]
+            payment_barrier: StdMutex::default(),
         })
     }
 

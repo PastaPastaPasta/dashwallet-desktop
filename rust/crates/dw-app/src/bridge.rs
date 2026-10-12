@@ -18,12 +18,16 @@
 //!   `historyChanged` and `platform` to 4 Hz per domain and `coinJoin` to
 //!   1 Hz), so the queue fills only when the webview stalls.
 //! - **One-shot news stays readable.** Every event's news is also state a
-//!   command reads (D3 lists them); notices, which have no other home, are
-//!   kept in a [`NoticeLog`] before the queue (`recentNotices`).
+//!   command reads (D3 lists them). Notices and lock reports, which have no
+//!   other home, are kept in an [`EventMemory`] before the queue
+//!   (`recentNotices`, `lastLockReport`).
 //! - **Bounded payloads.** `historyChanged` sends at most [`MAX_TXIDS`]
 //!   txids; a larger batch is sent empty, which the engine already defines
 //!   as "reload the whole history". `newTransactions` sends the first
-//!   [`MAX_TXIDS`] with the full `count`.
+//!   [`MAX_TXIDS`] with the full `count`. A notice's detail is cut to
+//!   [`MAX_DETAIL_BYTES`] and a lock report to 16 flows of 8 artifacts
+//!   with 128-byte ids, the rest counted (`dto::platform`); the copies
+//!   [`EventMemory`] keeps are the same bounded DTOs.
 //! - **Hints, not rows.** Payloads say what changed; the renderer re-queries
 //!   (DESIGN-opus §1.5 rule 4). Lease, lock and dispatch events carry their
 //!   data because that data is the news.
@@ -34,7 +38,7 @@
 //! - Events sent before the page listens are lost; the renderer queries
 //!   everything when it starts.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, TrySendError};
 use std::sync::{Arc, Mutex};
@@ -45,8 +49,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime};
 use ts_rs::TS;
 
-use crate::dto::platform::{DispatchSettled, Lease, LockProgress};
-use crate::dto::{Balances, LockStateName, SyncStatus, mirror_enum};
+use crate::dto::platform::{DispatchSettled, Lease, LockOutcome, LockProgress};
+use crate::dto::{Balances, LockStateName, SyncStatus, cap_text, mirror_enum};
 use crate::error::{AppError, EngineCode};
 
 /// The Tauri event every engine event is sent on.
@@ -55,12 +59,17 @@ pub const EVENT: &str = "engine://event";
 /// Txids per `historyChanged` or `newTransactions` payload.
 pub const MAX_TXIDS: usize = 256;
 
-/// Events waiting for the webview at most; at ≤ [`MAX_TXIDS`] txids each, a
-/// few MB.
+/// Events waiting for the webview at most. Each is bounded: ≤ [`MAX_TXIDS`]
+/// txids, a [`MAX_DETAIL_BYTES`] notice detail, a lock report of at most
+/// `dto::platform::MAX_LOCK_FLOWS` flows (about 32 KB), so a full queue
+/// holds at most about 32 MB, and a few hundred KB in practice.
 pub const QUEUE: usize = 1024;
 
-/// Notices [`NoticeLog`] keeps.
+/// Notices [`EventMemory`] keeps.
 pub const NOTICES: usize = 64;
+
+/// Bytes of a notice's detail the app passes on and keeps.
+pub const MAX_DETAIL_BYTES: usize = 1024;
 
 /// How long the forwarder waits for an event before it looks at the
 /// overflow flag anyway: a drop recorded after the forwarder emptied the
@@ -308,7 +317,7 @@ impl From<EngineEvent> for AppEvent {
             } => AppEvent::Notice {
                 network: network.map(net),
                 code: code.into(),
-                detail,
+                detail: cap_text(detail, MAX_DETAIL_BYTES),
             },
             EngineEvent::VaultLockState { network, state } => AppEvent::VaultLockState {
                 network: net(network),
@@ -375,31 +384,66 @@ pub struct RecentNotice {
     pub detail: String,
 }
 
-/// The last [`NOTICES`] notices, recorded before the event queue so an
-/// overflow cannot lose them.
+/// What the renderer can read again after an overflow dropped the event
+/// that said it (D3): the last [`NOTICES`] notices (`recentNotices`) and
+/// each network's last lock report (`lastLockReport`). Recorded from the
+/// mapped, bounded event before it is queued; a network's lock report is
+/// forgotten when a session of it opens.
 #[derive(Default)]
-pub struct NoticeLog(Mutex<(u64, VecDeque<RecentNotice>)>);
+pub struct EventMemory {
+    notices: Mutex<(u64, VecDeque<RecentNotice>)>,
+    lock_reports: Mutex<HashMap<String, LockOutcome>>,
+}
 
-impl NoticeLog {
-    fn push(&self, network: Option<&DashNetwork>, code: NoticeCode, detail: &str) {
-        let mut log = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let (seq, notices) = &mut *log;
-        *seq += 1;
-        if notices.len() == NOTICES {
-            notices.pop_front();
+impl EventMemory {
+    fn record(&self, event: &AppEvent) {
+        match event {
+            AppEvent::Notice {
+                network,
+                code,
+                detail,
+            } => {
+                let mut log = self.notices.lock().unwrap_or_else(|e| e.into_inner());
+                let (seq, notices) = &mut *log;
+                *seq += 1;
+                if notices.len() == NOTICES {
+                    notices.pop_front();
+                }
+                notices.push_back(RecentNotice {
+                    seq: *seq,
+                    network: network.clone(),
+                    code: *code,
+                    detail: detail.clone(),
+                });
+            }
+            AppEvent::LockProgress {
+                network,
+                progress: LockProgress::Done { report },
+            } => {
+                self.reports().insert(network.clone(), report.clone());
+            }
+            AppEvent::SessionOpened { network } => {
+                self.reports().remove(network);
+            }
+            _ => {}
         }
-        notices.push_back(RecentNotice {
-            seq: *seq,
-            network: network.map(DashNetwork::dir_name),
-            code: code.into(),
-            detail: detail.to_owned(),
-        });
+    }
+
+    fn reports(&self) -> std::sync::MutexGuard<'_, HashMap<String, LockOutcome>> {
+        self.lock_reports.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Oldest first.
-    pub fn recent(&self) -> Vec<RecentNotice> {
-        let log = self.0.lock().unwrap_or_else(|e| e.into_inner());
+    pub fn recent_notices(&self) -> Vec<RecentNotice> {
+        let log = self.notices.lock().unwrap_or_else(|e| e.into_inner());
         log.1.iter().cloned().collect()
+    }
+
+    /// The report of the last revocation of every lease on `network` (its
+    /// directory name) since its session opened: the last `lockProgress`
+    /// `done`, from a lock or any other full revocation.
+    pub fn last_lock_report(&self, network: &str) -> Option<LockOutcome> {
+        self.reports().get(network).cloned()
     }
 }
 
@@ -409,7 +453,7 @@ pub struct TauriSink {
     /// Set when an event was dropped; the forwarder clears it and sends
     /// `eventsOverflowed`.
     overflowed: Arc<AtomicBool>,
-    notices: Arc<NoticeLog>,
+    memory: Arc<EventMemory>,
 }
 
 impl TauriSink {
@@ -417,8 +461,8 @@ impl TauriSink {
     /// it holds an `AppHandle`, which owns the engine and so this sink, so
     /// the queue never closes before exit; events still queued at exit
     /// are not sent (the window is gone).
-    pub fn new<R: Runtime>(app: AppHandle<R>, notices: Arc<NoticeLog>) -> Result<Self, AppError> {
-        Self::with_forwarder(QUEUE, notices, move |event| {
+    pub fn new<R: Runtime>(app: AppHandle<R>, memory: Arc<EventMemory>) -> Result<Self, AppError> {
+        Self::with_forwarder(QUEUE, memory, move |event| {
             if let Err(e) = app.emit(EVENT, event) {
                 eprintln!("dw-app: could not forward an engine event: {e}");
             }
@@ -428,7 +472,7 @@ impl TauriSink {
     /// The sink over a queue of `capacity` and a forwarder calling `emit`.
     fn with_forwarder(
         capacity: usize,
-        notices: Arc<NoticeLog>,
+        memory: Arc<EventMemory>,
         mut emit: impl FnMut(AppEvent) + Send + 'static,
     ) -> Result<Self, AppError> {
         let (tx, rx) = mpsc::sync_channel::<AppEvent>(capacity);
@@ -455,22 +499,16 @@ impl TauriSink {
         Ok(TauriSink {
             tx,
             overflowed,
-            notices,
+            memory,
         })
     }
 }
 
 impl EventSink for TauriSink {
     fn emit(&self, event: EngineEvent) {
-        if let EngineEvent::Notice {
-            network,
-            code,
-            detail,
-        } = &event
-        {
-            self.notices.push(network.as_ref(), *code, detail);
-        }
-        match self.tx.try_send(AppEvent::from(event)) {
+        let event = AppEvent::from(event);
+        self.memory.record(&event);
+        match self.tx.try_send(event) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => self.overflowed.store(true, Ordering::Release),
             // Only once the forwarder is gone, while the app exits.
@@ -643,39 +681,78 @@ mod tests {
         }
     }
 
+    /// A sink over a queue of `cap` whose forwarder stalls in its first
+    /// event until `release` is sent; `stalled` fires once it does.
+    struct Stalled {
+        sink: TauriSink,
+        memory: Arc<EventMemory>,
+        seen: Arc<Mutex<Vec<AppEvent>>>,
+        stalled: std::sync::mpsc::Receiver<()>,
+        release: std::sync::mpsc::Sender<()>,
+    }
+
+    impl Stalled {
+        fn new(cap: usize) -> Self {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let (release, gate) = std::sync::mpsc::channel::<()>();
+            let (stalled_tx, stalled) = std::sync::mpsc::channel::<()>();
+            let record = Arc::clone(&seen);
+            let memory = Arc::new(EventMemory::default());
+            let sink = TauriSink::with_forwarder(cap, Arc::clone(&memory), move |e| {
+                if record.lock().unwrap().is_empty() {
+                    stalled_tx.send(()).unwrap();
+                    gate.recv().unwrap();
+                }
+                record.lock().unwrap().push(e);
+            })
+            .unwrap();
+            Stalled {
+                sink,
+                memory,
+                seen,
+                stalled,
+                release,
+            }
+        }
+
+        /// Lets the forwarder go and returns the `n` events it sends.
+        fn drain(&self, n: usize) -> Vec<AppEvent> {
+            self.release.send(()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while self.seen.lock().unwrap().len() < n {
+                assert!(Instant::now() < deadline, "the forwarder did not drain");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            let seen = self.seen.lock().unwrap().clone();
+            assert_eq!(seen.len(), n, "{seen:?}");
+            seen
+        }
+    }
+
+    fn spv(running: bool) -> EngineEvent {
+        EngineEvent::SpvStateChanged {
+            network: DashNetwork::Regtest,
+            running,
+        }
+    }
+
     /// Sol r1 F3: a stalled webview fills the bounded queue; the engine
     /// keeps going, later events are dropped, and the renderer gets exactly
-    /// one `eventsOverflowed`. Notices survive in the log; queued events are
-    /// DTOs, their txids already cut.
+    /// one `eventsOverflowed`. Notices survive in the memory; queued events
+    /// are DTOs, their txids already cut.
     #[test]
     fn a_stalled_forwarder_overflows_once_and_stays_bounded() {
         const CAP: usize = 8;
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let (release, gate) = std::sync::mpsc::channel::<()>();
-        let (stalled_tx, stalled) = std::sync::mpsc::channel::<()>();
-        let record = Arc::clone(&seen);
-        let notices = Arc::new(NoticeLog::default());
-        let sink = TauriSink::with_forwarder(CAP, Arc::clone(&notices), move |e| {
-            // The first event stalls the forwarder until the test lets go.
-            if record.lock().unwrap().is_empty() {
-                stalled_tx.send(()).unwrap();
-                gate.recv().unwrap();
-            }
-            record.lock().unwrap().push(e);
-        })
-        .unwrap();
-        let spv = |running| EngineEvent::SpvStateChanged {
-            network: DashNetwork::Regtest,
-            running,
-        };
+        let st = Stalled::new(CAP);
         let started = Instant::now();
-        sink.emit(spv(true));
-        stalled.recv().unwrap();
-        while sink.tx.try_send(AppEvent::from(spv(true))).is_ok() {}
+        st.sink.emit(spv(true));
+        st.stalled.recv().unwrap();
+        while st.sink.tx.try_send(AppEvent::from(spv(true))).is_ok() {}
         // The queue is full: CAP events wait, the first is in flight. Every
         // further emit returns at once and is dropped, notices included.
         for i in 0..10_000 {
-            sink.emit(EngineEvent::Notice {
+            st.sink.emit(EngineEvent::Notice {
                 network: None,
                 code: NoticeCode::BackupFailed,
                 detail: format!("n{i}"),
@@ -685,25 +762,158 @@ mod tests {
             started.elapsed() < Duration::from_secs(5),
             "the engine waited"
         );
-        release.send(()).unwrap();
         // Bounded: the in-flight event, the one signal, then the CAP queued
         // events; none of the 10 000 notices got through.
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while seen.lock().unwrap().len() < CAP + 2 {
-            assert!(Instant::now() < deadline, "the forwarder did not drain");
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-        let seen = seen.lock().unwrap().clone();
-        assert_eq!(seen.len(), CAP + 2, "{seen:?}");
+        let seen = st.drain(CAP + 2);
         assert_eq!(seen[1], AppEvent::EventsOverflowed);
         let spv_events = seen.iter().filter(|e| **e == AppEvent::from(spv(true)));
         assert_eq!(spv_events.count(), CAP + 1, "{seen:?}");
-        // The notices are readable through the log, the last NOTICES of them.
-        let recent = notices.recent();
+        // The notices are readable in the memory, the last NOTICES of them.
+        let recent = st.memory.recent_notices();
         assert_eq!(recent.len(), NOTICES);
         assert_eq!(recent.last().unwrap().detail, "n9999");
         assert_eq!(recent.last().unwrap().seq, 10_000);
+    }
+
+    /// Sol r2 F3a and F3b: oversized notices and lock reports behind a
+    /// stalled forwarder are queued and kept cut to their bounds, so the
+    /// bytes held stay bounded whatever the engine sends; and the `done`
+    /// an overflow dropped is still read from the memory, every flow's
+    /// outcome with it.
+    #[test]
+    fn oversized_payloads_stay_bounded_and_a_dropped_lock_report_is_kept() {
+        use crate::dto::platform::{
+            FlowOutcomeName, MAX_FLOW_ARTIFACTS, MAX_ID_BYTES, MAX_LOCK_FLOWS,
+        };
+        use dw_engine::platform::{FlowOutcome, FlowReport};
+        // A lock report of 16 flows of 8 artifacts with 128-byte ids is
+        // about 27 KB; a notice about 1 KB.
+        const EVENT_BYTES: usize = 32 * 1024;
+        const CAP: usize = 8;
+        let big = |n: usize| "x".repeat(n);
+        let notice = || EngineEvent::Notice {
+            network: Some(DashNetwork::Regtest),
+            code: NoticeCode::BackupFailed,
+            detail: big(1 << 20),
+        };
+        let done = |outcomes: &[FlowOutcome], artifacts: usize| EngineEvent::LockProgress {
+            network: DashNetwork::Regtest,
+            phase: LockPhase::Done(LockReport {
+                status: dw_vault::VaultStatus {
+                    state: dw_vault::LockState::Locked,
+                    encrypted: true,
+                    quick_unlock_enrolled: false,
+                    failed_attempts: 0,
+                    retry_after_secs: None,
+                    wallets_with_secrets: vec![],
+                },
+                flows: outcomes
+                    .iter()
+                    .map(|o| FlowReport {
+                        lease: big(4096),
+                        wallet_id: big(4096),
+                        flow: FlowKind::ContactRequest,
+                        outcome: *o,
+                        artifacts: (0..artifacts)
+                            .map(|a| {
+                                let o = if a == artifacts - 1 {
+                                    *o
+                                } else {
+                                    FlowOutcome::Cancelled
+                                };
+                                (big(4096), o)
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            }),
+        };
+        let st = Stalled::new(CAP);
+        st.sink.emit(spv(true));
+        st.stalled.recv().unwrap();
+        // CAP oversized events fill the queue.
+        let mut flows = vec![FlowOutcome::Cancelled; 100];
+        flows[99] = FlowOutcome::MaybeSent;
+        for i in 0..CAP {
+            if i % 2 == 0 {
+                st.sink.emit(notice());
+            } else {
+                st.sink.emit(done(&flows, 100));
+            }
+        }
+        // The queue is full: this lock's `done` is dropped.
+        let dropped = [
+            FlowOutcome::Cancelled,
+            FlowOutcome::MaybeSent,
+            FlowOutcome::WillBeSent,
+        ];
+        st.sink.emit(done(&dropped, 2));
+
+        let seen = st.drain(CAP + 2);
+        assert_eq!(seen[1], AppEvent::EventsOverflowed);
+        let mut held = 0;
+        for event in &seen {
+            let bytes = serde_json::to_vec(event).unwrap().len();
+            assert!(bytes <= EVENT_BYTES, "{bytes} bytes");
+            held += bytes;
+        }
+        assert!(held <= (CAP + 2) * EVENT_BYTES);
+        let cut = seen
+            .iter()
+            .find_map(|e| match e {
+                AppEvent::LockProgress {
+                    progress: LockProgress::Done { report },
+                    ..
+                } => Some(report),
+                _ => None,
+            })
+            .expect("a queued lock report");
+        assert_eq!(cut.flows.len(), MAX_LOCK_FLOWS);
+        assert_eq!(cut.flows_omitted, 100 - MAX_LOCK_FLOWS as u32);
+        // The one flow that may have sent something is kept, and in it the
+        // one artifact that may have.
+        assert_eq!(cut.flows[0].outcome, FlowOutcomeName::MaybeSent);
+        assert_eq!(
+            cut.flows[0].artifacts[0].outcome,
+            FlowOutcomeName::MaybeSent
+        );
+        assert_eq!(cut.flows[0].artifacts.len(), MAX_FLOW_ARTIFACTS);
+        assert_eq!(
+            cut.flows[0].artifacts_omitted,
+            100 - MAX_FLOW_ARTIFACTS as u32
+        );
+        assert!(cut.flows[0].lease.len() <= MAX_ID_BYTES);
+        assert!(cut.flows[0].artifacts[0].artifact.len() <= MAX_ID_BYTES);
+
+        // The memory keeps bounded copies: notices cut, the dropped report
+        // whole (it was small) with each flow's outcome.
+        let notices = st.memory.recent_notices();
+        assert_eq!(notices.len(), CAP / 2);
+        for n in &notices {
+            assert!(n.detail.len() <= MAX_DETAIL_BYTES);
+            assert!(
+                n.detail.ends_with("bytes]"),
+                "{}",
+                &n.detail[n.detail.len() - 40..]
+            );
+        }
+        let kept = st.memory.last_lock_report("regtest").expect("kept");
+        let outcomes: Vec<_> = kept.flows.iter().map(|f| f.outcome).collect();
+        assert_eq!(
+            outcomes,
+            [
+                FlowOutcomeName::MaybeSent,
+                FlowOutcomeName::WillBeSent,
+                FlowOutcomeName::Cancelled
+            ]
+        );
+        assert_eq!(kept.flows_omitted, 0);
+        assert!(serde_json::to_vec(&kept).unwrap().len() <= EVENT_BYTES);
+        // A new session of the network forgets it.
+        st.sink.emit(EngineEvent::SessionOpened {
+            network: DashNetwork::Regtest,
+        });
+        assert_eq!(st.memory.last_lock_report("regtest"), None);
     }
 
     /// A drop recorded after the forwarder emptied the queue (the engine

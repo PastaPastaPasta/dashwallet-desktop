@@ -13,6 +13,7 @@
     "allow-unlock-for",
     "allow-relock-pending",
     "allow-lock",
+    "allow-last-lock-report",
     "allow-create-vault",
     "allow-encrypt-vault",
     "allow-change-passphrase",

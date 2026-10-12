@@ -17,7 +17,8 @@ export class TauriBackend implements Backend {
   listWallets = () => cmd.listWallets();
   lockStatus = () => cmd.lockStatus();
   unlock = (passphrase: string) => cmd.unlock(passphrase);
-  lock = () => cmd.lock();
+  // The lock report (`flows`) is for the lease views (U-07); the shell needs the status.
+  lock = () => cmd.lock().then((outcome) => outcome.status);
   balance = (walletId: string) => cmd.balance(walletId);
   syncStatus = () => cmd.syncStatus();
   historyPage = cmd.historyPage;

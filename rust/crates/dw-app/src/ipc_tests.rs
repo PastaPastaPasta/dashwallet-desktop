@@ -572,6 +572,216 @@ fn payment_authentication_needs_an_encrypted_vault() {
     assert_eq!(demo.ok("payment_authentication", json!({})), true);
 }
 
+/// Sol r2 F1: the setting belongs to the vault. "Off", set with the
+/// passphrase, does not carry over to a vault created after `destroyVault`,
+/// even one encrypted and unlocked the same way.
+#[test]
+fn payment_authentication_does_not_outlive_its_vault() {
+    let demo = Demo::new();
+    demo.open();
+    let pw = |p: &str| json!({ "kind": "passphrase", "passphrase": p });
+    let none = json!({ "kind": "unencrypted" });
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let change = |credential: &Value| {
+        demo.ok(
+            "authorize",
+            json!({ "purpose": { "kind": "changeCredential" }, "walletId": null, "credential": credential }),
+        )["id"]
+            .clone()
+    };
+    let grant = change(&pw("pw"));
+    demo.ok(
+        "set_payment_authentication",
+        json!({ "on": false, "grantId": grant }),
+    );
+    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+
+    // "Delete All": the wallet, then the vault.
+    let wipe = demo.ok(
+        "authorize",
+        json!({ "purpose": { "kind": "wipe" }, "walletId": wallet, "credential": pw("pw") }),
+    );
+    demo.ok(
+        "remove_wallet",
+        json!({ "walletId": wallet, "grantId": wipe["id"] }),
+    );
+    demo.ok("destroy_vault", json!({ "credential": pw("pw") }));
+
+    // A new vault, encrypted later, then locked and unlocked.
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let grant = change(&none);
+    demo.ok(
+        "encrypt_vault",
+        json!({ "newPassphrase": "pw", "grantId": grant }),
+    );
+    demo.ok("lock", json!({}));
+    demo.ok("unlock", json!({ "passphrase": "pw" }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+    demo.err(
+        "authorize",
+        json!({ "purpose": { "kind": "spend", "maxDuffs": 1000 }, "walletId": wallet, "credential": none }),
+        "vault.credential_required",
+    );
+}
+
+/// Runs a no-credential spend `authorize` on its own thread up to the test
+/// barrier (the setting read, the grant not yet issued), runs `meanwhile`,
+/// then lets it finish and returns its result.
+fn authorize_across(demo: &Demo, wallet: &Value, meanwhile: impl FnOnce()) -> Result<Value, Value> {
+    use tauri::Manager;
+    let state = demo.app.state::<crate::state::AppState>();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    *state.payment_barrier.lock().unwrap() = Some(Arc::clone(&barrier));
+    let key = demo.app.invoke_key().to_string();
+    std::thread::scope(|s| {
+        let (webview, key) = (&demo.webview, &key);
+        let call = s.spawn(move || {
+            invoke(
+                webview,
+                key,
+                "authorize",
+                json!({
+                    "purpose": { "kind": "spend", "maxDuffs": 1000 },
+                    "walletId": wallet,
+                    "credential": { "kind": "unencrypted" },
+                }),
+            )
+        });
+        barrier.wait();
+        *state.payment_barrier.lock().unwrap() = None;
+        meanwhile();
+        barrier.wait();
+        call.join().unwrap()
+    })
+}
+
+/// Sol r2 F1b: a switch to "on" that completes while a no-credential
+/// payment grant is between reading "off" and being issued refuses it.
+#[test]
+fn a_policy_change_during_authorize_applies_to_it() {
+    let demo = Demo::new();
+    demo.open();
+    let pw = json!({ "kind": "passphrase", "passphrase": "pw" });
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let change = || {
+        demo.ok(
+            "authorize",
+            json!({ "purpose": { "kind": "changeCredential" }, "walletId": null, "credential": pw }),
+        )["id"]
+            .clone()
+    };
+    let grant = change();
+    demo.ok(
+        "set_payment_authentication",
+        json!({ "on": false, "grantId": grant }),
+    );
+    // Unchanged meanwhile: off, the grant is issued.
+    authorize_across(&demo, &wallet, || {}).expect("off: no credential needed");
+
+    let grant = change();
+    let refused = authorize_across(&demo, &wallet, || {
+        demo.ok(
+            "set_payment_authentication",
+            json!({ "on": true, "grantId": grant }),
+        );
+    })
+    .expect_err("issued under the old setting");
+    assert_eq!(refused["code"], "vault.credential_required", "{refused}");
+}
+
+/// Sol r2 F1: a no-credential payment grant that read "off" for one vault
+/// is refused when, by the time it is issued, another vault replaced it.
+#[test]
+fn a_vault_replaced_during_authorize_is_judged_by_its_own_setting() {
+    let demo = Demo::new();
+    demo.open();
+    let pw = json!({ "kind": "passphrase", "passphrase": "pw" });
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let grant = demo.ok(
+        "authorize",
+        json!({ "purpose": { "kind": "changeCredential" }, "walletId": null, "credential": pw }),
+    )["id"]
+        .clone();
+    demo.ok(
+        "set_payment_authentication",
+        json!({ "on": false, "grantId": grant }),
+    );
+    let refused = authorize_across(&demo, &wallet, || {
+        let wipe = demo.ok(
+            "authorize",
+            json!({ "purpose": { "kind": "wipe" }, "walletId": wallet, "credential": pw }),
+        );
+        demo.ok(
+            "remove_wallet",
+            json!({ "walletId": wallet, "grantId": wipe["id"] }),
+        );
+        demo.ok("destroy_vault", json!({ "credential": pw }));
+        // Encrypted and unlocked: it would take no credential if "off"
+        // still applied.
+        demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    })
+    .expect_err("issued by another vault");
+    assert_eq!(refused["code"], "vault.credential_required", "{refused}");
+}
+
+/// Sol r2 F3b: `lock` returns its report, and `lastLockReport` returns it
+/// again from the app's memory of the `done` event (which the bridge keeps
+/// before its queue, so an overflow cannot lose it; `bridge::tests`).
+#[test]
+fn the_last_lock_report_is_kept_for_its_network() {
+    use tauri::Manager;
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    assert_eq!(demo.ok("last_lock_report", json!({})), Value::Null);
+    let report = demo.ok("lock", json!({}));
+    assert_eq!(report["status"]["state"], "locked");
+    assert_eq!(report["flows"], json!([]));
+    assert_eq!(report["flowsOmitted"], 0);
+    assert_eq!(demo.ok("last_lock_report", json!({})), report);
+
+    // A lock report the engine sends, with flows, is what the query reads.
+    let state = demo.app.state::<crate::state::AppState>();
+    let sink = crate::bridge::TauriSink::new(demo.app.handle().clone(), Arc::clone(&state.memory))
+        .unwrap();
+    dw_engine::EventSink::emit(
+        &sink,
+        dw_engine::EngineEvent::LockProgress {
+            network: dw_engine::DashNetwork::Regtest,
+            phase: dw_engine::platform::LockPhase::Done(dw_engine::platform::LockReport {
+                status: tauri::async_runtime::block_on(state.session())
+                    .unwrap()
+                    .vault()
+                    .status(),
+                flows: vec![dw_engine::platform::FlowReport {
+                    lease: "0123abcd".into(),
+                    wallet_id: "ab".repeat(32),
+                    flow: dw_engine::platform::FlowKind::TopUp,
+                    outcome: dw_engine::platform::FlowOutcome::MaybeSent,
+                    artifacts: vec![(
+                        "topup/1/funding".into(),
+                        dw_engine::platform::FlowOutcome::MaybeSent,
+                    )],
+                }],
+            }),
+        },
+    );
+    let kept = demo.ok("last_lock_report", json!({}));
+    assert_eq!(kept["flows"][0]["outcome"], "maybeSent", "{kept}");
+    assert_eq!(
+        kept["flows"][0]["artifacts"][0]["artifact"],
+        "topup/1/funding"
+    );
+    // A new session of the network starts without one.
+    demo.ok("close_network", json!({}));
+    demo.open();
+    assert_eq!(demo.ok("last_lock_report", json!({})), Value::Null);
+}
+
 /// Sol r1 F2: two prepares race for the last prepared handle (63 taken).
 /// Exactly one gets past the cap; the other fails with
 /// `app.too_many_handles` before its grant is redeemed. Reservations of

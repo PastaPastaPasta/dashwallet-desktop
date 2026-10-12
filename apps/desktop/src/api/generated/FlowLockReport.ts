@@ -7,8 +7,17 @@ export type FlowLockReport = {
 /**
  * The facade's lease id.
  */
-lease: string, walletId: string, flow: FlowKindName, outcome: FlowOutcomeName, 
+lease: string, walletId: string, flow: FlowKindName, 
 /**
- * Each committed artifact of the flow, with its own outcome.
+ * The strongest of all its artifacts' outcomes, listed or not.
  */
-artifacts: Array<ArtifactOutcome>, };
+outcome: FlowOutcomeName, 
+/**
+ * The flow's committed artifacts, each with its own outcome: at most
+ * [`MAX_FLOW_ARTIFACTS`], the ones that may have been sent first.
+ */
+artifacts: Array<ArtifactOutcome>, 
+/**
+ * Artifacts beyond [`MAX_FLOW_ARTIFACTS`], not listed.
+ */
+artifactsOmitted: number, };

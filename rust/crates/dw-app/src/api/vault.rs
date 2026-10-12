@@ -13,6 +13,8 @@
 //! zeroed (G-01 H-01). Secrets returned to the renderer (a revealed phrase,
 //! a fresh quick-unlock key) are plain strings for the same reason.
 
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use dw_engine::EngineError;
@@ -23,10 +25,11 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use zeroize::Zeroizing;
 
+use crate::dto::platform::LockOutcome;
 use crate::dto::{LockStatus, mirror_enum};
 use crate::error::{AppError, EngineCode};
 use crate::ipc::commands;
-use crate::state::parse_wallet_id;
+use crate::state::{AppState, parse_wallet_id};
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     (
@@ -52,6 +55,10 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     (
         "Vault::dir",
         "internal: a path the engine owns",
+    ),
+    (
+        "Vault::vault_id",
+        "internal: keys the engine's per-vault settings (`paymentAuthentication`); the id itself means nothing to the UI",
     ),
     (
         "Vault::network",
@@ -317,6 +324,58 @@ fn check_payment_auth(
         return Err(dw_vault::VaultError::CredentialRequired);
     }
     Ok(())
+}
+
+/// Issues grants through `issue` under "require authentication for every
+/// payment" (D11). The setting is read before the vault call, and checked
+/// again once the grants exist: if it changed meanwhile
+/// (`AppState::payment_policy_gen`, advanced after each write) or the vault
+/// is no longer the one it was read for, the stricter rule decides, and a
+/// refusal revokes what was issued before the call fails (Sol r2 F1b). A
+/// change that completes before the grants exist is therefore never
+/// missed; one that lands after them orders after the issue.
+async fn issue_grants(
+    state: &AppState,
+    purposes: &[GrantPurpose],
+    credential: OwnedCredential,
+    issue: impl FnOnce(&dw_vault::Vault, Credential<'_>) -> Result<Vec<dw_vault::AuthGrant>, dw_vault::VaultError>
+    + Send
+    + 'static,
+) -> Result<Vec<dw_vault::AuthGrant>, AppError> {
+    let session = state.session().await?;
+    let generation = Arc::clone(&state.payment_policy_gen);
+    // Before the setting: a write that this read misses advances it later.
+    let read_at = generation.load(Ordering::SeqCst);
+    let policy = if pays(purposes) {
+        Some(session.payment_authentication().await?)
+    } else {
+        None
+    };
+    #[cfg(test)]
+    if policy.is_some() {
+        let barrier = state.payment_barrier.lock().unwrap().clone();
+        if let Some(barrier) = barrier {
+            barrier.wait();
+            barrier.wait();
+        }
+    }
+    let grants = session
+        .vault_op(move |v| {
+            check_payment_auth(v, &credential, policy.as_ref().is_some_and(|p| p.on))?;
+            let grants = issue(v, credential.as_credential())?;
+            if let Some(policy) = &policy
+                && (generation.load(Ordering::SeqCst) != read_at || v.vault_id() != policy.vault_id)
+                && let Err(e) = check_payment_auth(v, &credential, true)
+            {
+                for grant in &grants {
+                    v.revoke_grant(&grant.id);
+                }
+                return Err(e);
+            }
+            Ok(grants)
+        })
+        .await?;
+    Ok(grants)
 }
 
 /// Whether the setting applies: a `spend` or `platformOp` among `purposes`.
@@ -594,10 +653,23 @@ commands! {
     }
 
     /// The full lock (E0-04 §8.1): revokes leases and returns after their
-    /// drain; `lockProgress` events report it.
+    /// drain, with its report (each flow it cut and how that ended, bounded
+    /// as in D3); `lockProgress` events report it too.
     #[facade("NetworkSession::lock_vault")]
-    fn lock(state) -> LockStatus {
-        Ok(state.session().await?.lock_vault().await?.status.into())
+    fn lock(state) -> LockOutcome {
+        Ok(state.session().await?.lock_vault().await?.into())
+    }
+
+    /// The report of the last revocation of every lease on this network
+    /// since its session opened, or `null`: whatever revoked them (`lock`,
+    /// the relock timer, the console's `walletlock`, `encryptVault`,
+    /// `changePassphrase`, `recoverWithMnemonic`, `destroyVault`), it is what that
+    /// `lockProgress` `done` said, even if an overflow dropped it (D3).
+    /// Kept apart from the event queue.
+    #[facade()]
+    fn last_lock_report(state) -> Option<LockOutcome> {
+        let network = state.session().await?.network().dir_name();
+        Ok(state.memory.last_lock_report(&network))
     }
 
     /// Creates the vault and leaves it unlocked. A passphrase makes it
@@ -661,18 +733,14 @@ commands! {
         let credential = OwnedCredential::from(credential);
         let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
         let purpose = GrantPurpose::from(purpose);
-        let session = state.session().await?;
-        let required = pays(&[purpose]) && session.payment_authentication().await?;
-        let grant = session
-            .vault_op(move |v| {
-                check_payment_auth(v, &credential, required)?;
-                v.authorize(
-                    purpose,
-                    wallet.as_ref().map(|w| &w.0),
-                    credential.as_credential(),
-                )
-            })
-            .await?;
+        let mut grants = issue_grants(&state, &[purpose], credential, move |v, credential| {
+            v.authorize(purpose, wallet.as_ref().map(|w| &w.0), credential)
+                .map(|g| vec![g])
+        })
+        .await?;
+        let grant = grants
+            .pop()
+            .ok_or_else(|| AppError::new(EngineCode::Internal, "no grant issued"))?;
         Ok(grant.into())
     }
 
@@ -692,18 +760,11 @@ commands! {
         let credential = OwnedCredential::from(credential);
         let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
         let purposes: Vec<GrantPurpose> = purposes.into_iter().map(Into::into).collect();
-        let session = state.session().await?;
-        let required = pays(&purposes) && session.payment_authentication().await?;
-        let grants = session
-            .vault_op(move |v| {
-                check_payment_auth(v, &credential, required)?;
-                v.authorize_set(
-                    &purposes,
-                    wallet.as_ref().map(|w| &w.0),
-                    credential.as_credential(),
-                )
-            })
-            .await?;
+        let issue = purposes.clone();
+        let grants = issue_grants(&state, &purposes, credential, move |v, credential| {
+            v.authorize_set(&issue, wallet.as_ref().map(|w| &w.0), credential)
+        })
+        .await?;
         Ok(grants.into_iter().map(AuthGrant::from).collect())
     }
 
@@ -762,7 +823,7 @@ commands! {
     /// for this network next to its vault.
     #[facade("NetworkSession::payment_authentication")]
     fn payment_authentication(state) -> bool {
-        Ok(state.session().await?.payment_authentication().await?)
+        Ok(state.session().await?.payment_authentication().await?.on)
     }
 
     /// Turns "require authentication for every payment" on or off. Needs a
@@ -772,7 +833,14 @@ commands! {
     /// working until they are used or expire.
     #[facade("NetworkSession::set_payment_authentication")]
     fn set_payment_authentication(state, on: bool, grant_id: String) -> () {
-        Ok(state.session().await?.set_payment_authentication(on, grant_id).await?)
+        state
+            .session()
+            .await?
+            .set_payment_authentication(on, grant_id)
+            .await?;
+        // After the write: a grant read before it sees the change at issue.
+        state.payment_policy_gen.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Sets the biometric spending limit (IOS-016) to one of 0, 0.1, 0.5, 1

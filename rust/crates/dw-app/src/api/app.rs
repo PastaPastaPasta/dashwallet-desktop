@@ -28,7 +28,7 @@ commands! {
     /// queue: after `eventsOverflowed`, the notices it may have dropped.
     #[facade()]
     fn recent_notices(state) -> Vec<RecentNotice> {
-        Ok(state.notices.recent())
+        Ok(state.memory.recent_notices())
     }
 
     /// A start-up milestone of the renderer (`shell`: the window's first

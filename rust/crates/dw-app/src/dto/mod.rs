@@ -44,6 +44,26 @@ macro_rules! mirror_enum {
 }
 pub(crate) use mirror_enum;
 
+/// `s` cut to at most `max` bytes (`max` ≥ 64), at a character boundary,
+/// ending with a marker that says how many bytes were cut. Engine text the
+/// app queues or keeps passes through it, so no payload grows with what
+/// the engine sends (E0-13 D3).
+pub fn cap_text(mut s: String, max: usize) -> String {
+    debug_assert!(max >= 64, "cap_text needs room for its marker");
+    if s.len() <= max {
+        return s;
+    }
+    // "… [+N bytes]" with N up to 20 digits is at most 33 bytes.
+    let mut end = max.saturating_sub(40);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let cut = s.len() - end;
+    s.truncate(end);
+    s.push_str(&format!("… [+{cut} bytes]"));
+    s
+}
+
 /// Credit amounts as decimal strings: `#[serde(with = "crate::dto::credits")]`
 /// with `#[ts(type = "string")]` (and `credits::option` with
 /// `#[ts(type = "string | null")]`).
@@ -449,6 +469,20 @@ impl From<SyncSnapshot> for SyncStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cap_text_cuts_at_a_char_boundary_and_says_how_much() {
+        assert_eq!(cap_text("short".into(), 64), "short");
+        let exact = "y".repeat(64);
+        assert_eq!(cap_text(exact.clone(), 64), exact);
+        // Three-byte characters: the cut never splits one.
+        let long = "€".repeat(10_000);
+        let cut = cap_text(long, 1024);
+        assert!(cut.len() <= 1024, "{}", cut.len());
+        let (kept, marker) = cut.split_once('…').unwrap();
+        assert!(kept.chars().all(|c| c == '€'));
+        assert_eq!(marker, format!(" [+{} bytes]", 30_000 - kept.len()));
+    }
 
     #[test]
     fn outpoints_round_trip_and_reject_bad_txids() {

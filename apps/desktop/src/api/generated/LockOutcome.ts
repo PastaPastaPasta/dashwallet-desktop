@@ -4,6 +4,17 @@ import type { LockStatus } from "./LockStatus";
 
 /**
  * What a full lock did: the vault's state after it, and each flow it cut
- * (E0-04 §8.1, copy C4/C5).
+ * (E0-04 §8.1, copy C4/C5). Bounded (E0-13 D3): at most
+ * [`MAX_LOCK_FLOWS`] flows of [`MAX_FLOW_ARTIFACTS`] artifacts, ids cut to
+ * [`MAX_ID_BYTES`].
  */
-export type LockOutcome = { status: LockStatus, flows: Array<FlowLockReport>, };
+export type LockOutcome = { status: LockStatus, 
+/**
+ * At most [`MAX_LOCK_FLOWS`], the ones that may have sent something
+ * first.
+ */
+flows: Array<FlowLockReport>, 
+/**
+ * Flows beyond [`MAX_LOCK_FLOWS`], not listed.
+ */
+flowsOmitted: number, };

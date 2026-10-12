@@ -75,6 +75,7 @@ import type { JsonValue } from "./serde_json/JsonValue";
 import type { KeyMaterialInput } from "./KeyMaterialInput";
 import type { LaunchInfo } from "./LaunchInfo";
 import type { Lease } from "./Lease";
+import type { LockOutcome } from "./LockOutcome";
 import type { LockResolutionName } from "./LockResolutionName";
 import type { LockStatus } from "./LockStatus";
 import type { MixedCoinsDestination } from "./MixedCoinsDestination";
@@ -288,10 +289,23 @@ export function relockPending(): Promise<boolean> {
 
 /**
  * The full lock (E0-04 §8.1): revokes leases and returns after their
- * drain; `lockProgress` events report it.
+ * drain, with its report (each flow it cut and how that ended, bounded
+ * as in D3); `lockProgress` events report it too.
  */
-export function lock(): Promise<LockStatus> {
-  return invoke<LockStatus>("lock");
+export function lock(): Promise<LockOutcome> {
+  return invoke<LockOutcome>("lock");
+}
+
+/**
+ * The report of the last revocation of every lease on this network
+ * since its session opened, or `null`: whatever revoked them (`lock`,
+ * the relock timer, the console's `walletlock`, `encryptVault`,
+ * `changePassphrase`, `recoverWithMnemonic`, `destroyVault`), it is what that
+ * `lockProgress` `done` said, even if an overflow dropped it (D3).
+ * Kept apart from the event queue.
+ */
+export function lastLockReport(): Promise<LockOutcome | null> {
+  return invoke<LockOutcome | null>("last_lock_report");
 }
 
 /**
@@ -1892,6 +1906,7 @@ export type CommandArgs = {
   unlock_for: { passphrase: string; timeoutSecs: number; mixingOnly: boolean };
   relock_pending: {  };
   lock: {  };
+  last_lock_report: {  };
   create_vault: { passphrase: string | null };
   encrypt_vault: { newPassphrase: string; grantId: string };
   change_passphrase: { oldPassphrase: string; newPassphrase: string };
@@ -2112,7 +2127,8 @@ export type CommandResults = {
   unlock_mixing_only: LockStatus;
   unlock_for: LockStatus;
   relock_pending: boolean;
-  lock: LockStatus;
+  lock: LockOutcome;
+  last_lock_report: LockOutcome | null;
   create_vault: LockStatus;
   encrypt_vault: LockStatus;
   change_passphrase: LockStatus;
@@ -2336,6 +2352,7 @@ export const COMMANDS: Record<CommandName, string> = {
   unlock_for: "vault",
   relock_pending: "vault",
   lock: "vault",
+  last_lock_report: "vault",
   create_vault: "vault",
   encrypt_vault: "vault",
   change_passphrase: "vault",

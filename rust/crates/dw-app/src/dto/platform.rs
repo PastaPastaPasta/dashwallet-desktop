@@ -11,7 +11,7 @@ use dw_engine::platform::{
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{LockStatus, mirror_enum};
+use super::{LockStatus, cap_text, mirror_enum};
 
 /// What a lease is for; it fixes which budgets its grants may fund.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -250,6 +250,29 @@ pub struct ArtifactOutcome {
     pub outcome: FlowOutcomeName,
 }
 
+/// Flows a lock report lists; the others are counted (`flowsOmitted`).
+pub const MAX_LOCK_FLOWS: usize = 16;
+/// Artifacts a flow's report lists; the others are counted
+/// (`artifactsOmitted`).
+pub const MAX_FLOW_ARTIFACTS: usize = 8;
+/// Bytes of an engine identifier (lease id, artifact) the app passes on;
+/// the engine's own are at most 80.
+pub const MAX_ID_BYTES: usize = 128;
+
+/// The first `max` of `items` after a stable sort that puts the ones that
+/// may have sent something before the cancelled ones, and how many were
+/// left out.
+fn keep_sent_first<T>(
+    mut items: Vec<T>,
+    max: usize,
+    cancelled: impl Fn(&T) -> bool,
+) -> (Vec<T>, u32) {
+    items.sort_by_key(|t| cancelled(t));
+    let omitted = items.len().saturating_sub(max);
+    items.truncate(max);
+    (items, u32::try_from(omitted).unwrap_or(u32::MAX))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FlowLockReport {
@@ -257,9 +280,13 @@ pub struct FlowLockReport {
     pub lease: String,
     pub wallet_id: String,
     pub flow: FlowKindName,
+    /// The strongest of all its artifacts' outcomes, listed or not.
     pub outcome: FlowOutcomeName,
-    /// Each committed artifact of the flow, with its own outcome.
+    /// The flow's committed artifacts, each with its own outcome: at most
+    /// [`MAX_FLOW_ARTIFACTS`], the ones that may have been sent first.
     pub artifacts: Vec<ArtifactOutcome>,
+    /// Artifacts beyond [`MAX_FLOW_ARTIFACTS`], not listed.
+    pub artifacts_omitted: u32,
 }
 
 impl From<FlowReport> for FlowLockReport {
@@ -271,37 +298,52 @@ impl From<FlowReport> for FlowLockReport {
             outcome,
             artifacts,
         } = r;
+        let (artifacts, artifacts_omitted) =
+            keep_sent_first(artifacts, MAX_FLOW_ARTIFACTS, |(_, o)| {
+                *o == FlowOutcome::Cancelled
+            });
         FlowLockReport {
-            lease,
-            wallet_id,
+            lease: cap_text(lease, MAX_ID_BYTES),
+            wallet_id: cap_text(wallet_id, MAX_ID_BYTES),
             flow: flow.into(),
             outcome: outcome.into(),
             artifacts: artifacts
                 .into_iter()
                 .map(|(artifact, outcome)| ArtifactOutcome {
-                    artifact,
+                    artifact: cap_text(artifact, MAX_ID_BYTES),
                     outcome: outcome.into(),
                 })
                 .collect(),
+            artifacts_omitted,
         }
     }
 }
 
 /// What a full lock did: the vault's state after it, and each flow it cut
-/// (E0-04 §8.1, copy C4/C5).
+/// (E0-04 §8.1, copy C4/C5). Bounded (E0-13 D3): at most
+/// [`MAX_LOCK_FLOWS`] flows of [`MAX_FLOW_ARTIFACTS`] artifacts, ids cut to
+/// [`MAX_ID_BYTES`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LockOutcome {
     pub status: LockStatus,
+    /// At most [`MAX_LOCK_FLOWS`], the ones that may have sent something
+    /// first.
     pub flows: Vec<FlowLockReport>,
+    /// Flows beyond [`MAX_LOCK_FLOWS`], not listed.
+    pub flows_omitted: u32,
 }
 
 impl From<LockReport> for LockOutcome {
     fn from(r: LockReport) -> Self {
         let LockReport { status, flows } = r;
+        let (flows, flows_omitted) = keep_sent_first(flows, MAX_LOCK_FLOWS, |f| {
+            f.outcome == FlowOutcome::Cancelled
+        });
         LockOutcome {
             status: status.into(),
             flows: flows.into_iter().map(Into::into).collect(),
+            flows_omitted,
         }
     }
 }
@@ -383,7 +425,7 @@ impl From<DispatchResolved> for DispatchSettled {
         } = r;
         DispatchSettled {
             wallet_id,
-            artifact,
+            artifact: cap_text(artifact, MAX_ID_BYTES),
             resolution: resolution.into(),
         }
     }
