@@ -3,4 +3,4 @@
 /**
  * Whether an identity may send a contact request to another.
  */
-export type EligibilityName = "ok" | "noDashPayKeys" | "isSelf" | "alreadyContact" | "pendingOutgoing" | "pendingIncoming";
+export type EligibilityName = "ok" | "noDashPayKeys" | "isSelf" | "alreadyContact" | "pendingOutgoing" | "pendingIncoming" | "contactCannotReceive";

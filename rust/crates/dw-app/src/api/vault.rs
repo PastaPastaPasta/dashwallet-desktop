@@ -49,6 +49,14 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: a closure over the seed for the engine's own key derivations (masternode keys, MG), never a host call",
     ),
     (
+        "Vault::grant_identity_key_matches",
+        "internal: the engine's contact-request writes ask it before they redeem a grant (DP2-02); the UI sees the refusal",
+    ),
+    (
+        "Vault::redeem_grant_holding_key",
+        "internal: the engine's contact-request writes redeem their grant through it (DP2-02); the grant comes from `authorize` as for any write",
+    ),
+    (
         "Vault::open",
         "internal: the engine opens the vault when it opens a network",
     ),

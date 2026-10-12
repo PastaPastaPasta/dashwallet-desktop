@@ -67,6 +67,7 @@ codes! {
         PassphraseStale = "vault.passphrase_stale",
         NotEmpty = "vault.not_empty",
         RecoveryMismatch = "vault.recovery_mismatch",
+        WalletSecretExists = "vault.wallet_secret_exists",
         OsStoreUnavailable = "vault.os_store_unavailable",
         Corrupt = "vault.corrupt",
     }
@@ -112,6 +113,7 @@ impl From<VaultError> for AppError {
             V::PassphraseStale => (VaultCode::PassphraseStale.into(), None),
             V::NotEmpty => (VaultCode::NotEmpty.into(), None),
             V::RecoveryMismatch => (VaultCode::RecoveryMismatch.into(), None),
+            V::WalletSecretExists => (VaultCode::WalletSecretExists.into(), None),
             V::OsStoreUnavailable(_) => (VaultCode::OsStoreUnavailable.into(), None),
             V::Corrupt(_) => (VaultCode::Corrupt.into(), None),
             V::InvalidArgument(_) => (EngineCode::InvalidArgument.into(), None),
@@ -310,6 +312,8 @@ mod tests {
                 "{code} is outside the `{domain}` namespace"
             );
         }
+        let e = VaultError::WalletSecretExists;
+        assert_eq!(AppError::from(e.clone()).code_str(), e.code());
     }
 
     #[test]

@@ -110,10 +110,13 @@ pub enum EligibilityName {
     AlreadyContact,
     PendingOutgoing,
     PendingIncoming,
+    /// The contact has no key a request can be encrypted to.
+    ContactCannotReceive,
 }
 
 mirror_enum!(Eligibility => EligibilityName {
-    Ok, NoDashPayKeys, IsSelf, AlreadyContact, PendingOutgoing, PendingIncoming
+    Ok, NoDashPayKeys, IsSelf, AlreadyContact, PendingOutgoing, PendingIncoming,
+    ContactCannotReceive
 });
 
 /// One budget of a lease's current generation, in its purpose's unit.

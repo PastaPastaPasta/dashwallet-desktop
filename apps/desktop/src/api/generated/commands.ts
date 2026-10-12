@@ -2645,6 +2645,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "vault.passphrase_stale",
   "vault.not_empty",
   "vault.recovery_mismatch",
+  "vault.wallet_secret_exists",
   "vault.os_store_unavailable",
   "vault.corrupt",
   "signer.locked",
