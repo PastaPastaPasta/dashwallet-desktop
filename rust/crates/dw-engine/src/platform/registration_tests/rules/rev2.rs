@@ -755,7 +755,7 @@ fn i12_a_new_draft_skips_a_cancelled_steps_index() {
     views.set(resolved(a, index, t1.txid));
     f.discard(&lib, a).unwrap();
     assert!(f.rows().is_empty());
-    assert_eq!(ledger(&f, &lib).next_index(), index + 1);
+    assert_eq!(ledger(&f, &lib).next_index(), Ok(index + 1));
 
     let c: i64 = start(&f, &lib).unwrap().parse().unwrap();
     f.settle(c);

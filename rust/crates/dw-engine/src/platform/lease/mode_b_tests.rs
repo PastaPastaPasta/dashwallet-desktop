@@ -3057,6 +3057,127 @@ async fn each_registration_step_shows_its_own_release_time() {
     drop(running);
 }
 
+/// DP1-02 f1 (Sol r9 residual 2): a release write begun under one marker
+/// that lands only after its call was cancelled (`NotSent` superseded the
+/// marker, the signing dropped before any signature) and the step was
+/// marked again answers no marker. The next call, which released nothing,
+/// shows no release, in memory and after a restart, where its flagged
+/// marker reads `NotSent` (C5), not `MaybeSent` with an hour started early.
+/// Its own release then names its own marker and is written as usual.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_release_write_never_answers_the_next_marker() {
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let first = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 7))
+        .await
+        .unwrap();
+    let (began, release) = j.hold_release();
+    let record = tokio::spawn({
+        let t = Arc::clone(&t);
+        async move { t.record_release(W, REG).await }
+    });
+    tokio::task::spawn_blocking(move || began.recv_timeout(Duration::from_secs(60)))
+        .await
+        .unwrap()
+        .expect("the release write began under the first marker");
+    assert_eq!(first.finish(false), FlowOutcome::Cancelled);
+    let second = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 7))
+        .await
+        .unwrap();
+    release.send(()).unwrap();
+    assert!(
+        record.await.unwrap().is_err(),
+        "the superseded marker's write"
+    );
+    assert!(j.release_rows().is_empty(), "no row answers the new marker");
+    let step = |t: &LeaseTable| {
+        (t.registration_funding_steps(W).unwrap().into_iter())
+            .find(|v| v.draft == 7)
+            .unwrap()
+    };
+    assert_eq!(step(&t).released_at, None);
+    let (reopened, _) = reload(&j, &src).await;
+    let reloaded = step(&reopened);
+    assert_eq!(
+        (reloaded.released_at, reloaded.status),
+        (None, Some(NotSent))
+    );
+    t.record_release(W, REG).await.unwrap();
+    let rows = j.release_rows();
+    let standing = j.funding_rows().last().unwrap().seq;
+    assert_eq!(
+        rows.iter().map(|r| r.marker).collect::<Vec<_>>(),
+        vec![standing],
+        "the second marker's own release"
+    );
+    assert_eq!(
+        step(&t).released_at,
+        Some(rows[0].at),
+        "J's time is the row's"
+    );
+    second.note_released();
+    assert_eq!(second.finish(false), FlowOutcome::MaybeSent);
+}
+
+/// Sol f1 r1: a release that committed under the first marker but answers
+/// only after the step went `NotSent`, the wallet's rows were erased and
+/// it was opened again with a new marker of the same step answers that
+/// marker neither in memory nor on disk; the new call's release then
+/// writes its own row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_release_answering_after_erase_never_answers_the_new_marker() {
+    let (t, _, j, _) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let first = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 7))
+        .await
+        .unwrap();
+    let old = j.funding_rows().last().unwrap().seq;
+    let (stored, release) = j.hold_release_after();
+    let record = tokio::spawn({
+        let t = Arc::clone(&t);
+        async move { t.record_release(W, REG).await }
+    });
+    tokio::task::spawn_blocking(move || stored.recv_timeout(Duration::from_secs(60)))
+        .await
+        .unwrap()
+        .expect("the release row stored under the first marker");
+    let markers = |j: &FakeJournal| {
+        j.release_rows()
+            .iter()
+            .map(|r| r.marker)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(markers(&j), vec![old]);
+    assert_eq!(first.finish(false), FlowOutcome::Cancelled);
+    t.erase_wallet_rows(W).await;
+    assert!(j.release_rows().is_empty(), "compacted with its marker");
+    t.wallet_opened(W);
+    assert!(t.refresh_funding(W).await);
+    let second = l
+        .call_permit_step("funding", quote(10, 0), funding(REG, 7))
+        .await
+        .unwrap();
+    let new = j.funding_rows().last().unwrap().seq;
+    assert_ne!(new, old);
+    release.send(()).unwrap();
+    assert!(record.await.unwrap().is_err(), "the first marker's answer");
+    let step = |t: &LeaseTable| {
+        (t.registration_funding_steps(W).unwrap().into_iter())
+            .find(|v| v.draft == 7)
+            .unwrap()
+    };
+    assert_eq!(step(&t).released_at, None, "no time for the new marker");
+    assert!(j.release_rows().is_empty(), "no row for the new marker");
+    t.record_release(W, REG).await.unwrap();
+    assert_eq!(markers(&j), vec![new], "the new marker's own release");
+    assert_eq!(step(&t).released_at, Some(j.release_rows()[0].at));
+    second.note_released();
+    assert_eq!(second.finish(false), FlowOutcome::MaybeSent);
+}
+
 /// Repair's resolution of a flagged step is durable (DP1-02 PA-3, review
 /// OD-06): its tombstone outlives the self-spend's ChainLock in the
 /// snapshot, the wallet's erase and a restart. The step reads `NotSent`

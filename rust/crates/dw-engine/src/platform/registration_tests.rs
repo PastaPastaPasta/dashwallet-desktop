@@ -1956,10 +1956,13 @@ fn a_lock_another_flow_holds_moves_this_one_to_a_new_index() {
     held.identity_index = Some(0);
     held.initial_profile = None;
     held.phase = Phase::ProofWaiting.as_str().into();
-    let (holder, _) = f
+    let dw_appdb::Adoption::Inserted(holder) = f
         .appdb()
         .adopt_registration_lock(&w, &flow::canonical(lock), &held, 1)
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("a new row for the lock");
+    };
     let mut behind = core_row(PLAIN);
     behind.identity_index = Some(0);
     behind.phase = Phase::KeysPrepared.as_str().into();

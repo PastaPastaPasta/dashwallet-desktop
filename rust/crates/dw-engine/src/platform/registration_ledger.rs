@@ -149,6 +149,29 @@ pub(crate) enum IndexOwner {
     Unknown,
 }
 
+/// The last identity index a new row may take: identity keys derive at a
+/// hardened child (`ChildNumber::from_hardened_idx`, DIP-13), which refuses
+/// an index past this one, so a row there would fund a lock whose identity
+/// can never get keys.
+pub(crate) const MAX_IDENTITY_INDEX: u32 = (1 << 31) - 1;
+
+/// Why no new identity index can be given ([`Ledger::next_index`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NoIndex {
+    /// One past the highest index in use is past [`MAX_IDENTITY_INDEX`].
+    Exhausted,
+    /// A row the ledger did not read holds the index (the adoption's own
+    /// check, [`dw_appdb::Adoption::IndexHeld`]).
+    Held(u32),
+}
+
+/// The index after `index`, if a new row may take it.
+pub(crate) fn index_after(index: u32) -> Result<u32, NoIndex> {
+    (index.checked_add(1))
+        .filter(|i| *i <= MAX_IDENTITY_INDEX)
+        .ok_or(NoIndex::Exhausted)
+}
+
 /// The `registration.funded_elsewhere` failure (§3.3 row 7).
 pub(crate) fn funded_elsewhere() -> &'static str {
     RegistrationError::FundedElsewhere.code()
@@ -909,8 +932,9 @@ impl Ledger {
 
     /// One past every identity index the wallet's identities, its tracked
     /// registration locks, its rows and every step in the view (standing,
-    /// settled or cancelled) use, so no new row lands on a step's slot (I12).
-    pub(crate) fn next_index(&self) -> u32 {
+    /// settled or cancelled) use, so no new row lands on a step's slot (I12);
+    /// `Exhausted` past [`MAX_IDENTITY_INDEX`], never an index in use.
+    pub(crate) fn next_index(&self) -> Result<u32, NoIndex> {
         let used = self
             .identities
             .iter()
@@ -924,7 +948,7 @@ impl Ledger {
             .chain(self.rows.iter().filter_map(|r| r.identity_index))
             .chain(self.steps.iter().map(|s| s.view.key.identity_index))
             .max();
-        used.map_or(0, |i| i.saturating_add(1))
+        used.map_or(Ok(0), index_after)
     }
 
     // --- §5.4 gates -----------------------------------------------------
