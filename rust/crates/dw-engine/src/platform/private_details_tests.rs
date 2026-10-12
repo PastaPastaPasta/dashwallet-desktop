@@ -862,6 +862,23 @@ fn a_read_ends_at_the_sessions_close() {
     f.engine.block_on(editing).unwrap();
 }
 
+/// The deadline holds after the last open too (Sol r2 F4): a slow final
+/// open fails the settle with the timeout and applies nothing.
+#[test]
+fn a_slow_last_open_ends_the_settle() {
+    let f = published();
+    f.publish_elsewhere(BOB, &details("Bobby"));
+    {
+        let mut hooks = guard(&f.s.platform.contacts.read_hooks);
+        hooks.budget = Some(Duration::from_secs(2));
+        hooks.open_delay = Some(Duration::from_secs(4));
+    }
+    let shown = f.shown(BOB);
+    assert!(!f.settle());
+    assert_eq!(f.opens(), 1);
+    assert_eq!((f.shown(BOB), f.recorded(BOB)), (shown, None));
+}
+
 /// The library's publish reads every document the identity holds, with no
 /// bound: over the engine's cap (every document, opened or not) a publish
 /// is refused before the grant is redeemed (Sol r1 F3). (The SDK source

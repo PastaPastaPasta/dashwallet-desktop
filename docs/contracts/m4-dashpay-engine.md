@@ -2124,7 +2124,10 @@ renames or reshapes them takes the next version bump:
       never settles. Then the engine fetches the identity's `contactInfo` documents
       (`$ownerId`, ordered by `$updatedAt`, pages of 100, at most 1,000 counted as Platform returns them, parsed or
       not) and opens each with that crypto. One deadline, 30 s, covers the check, the fetch and the opens; it and the
-      session's close are checked before each open. A document whose keys the wallet does not hold or whose seal does
+      session's close are checked before each open, the deadline again after the last open and before the apply phase.
+      Past it the settle fails with `platform.timeout` and applies nothing. The apply phase (the details saved with
+      each established contact and their `dp_contact_info` rows: local writes only, bounded by the established
+      contacts, no network) runs to its end under the lock once it has started within the deadline. A document whose keys the wallet does not hold or whose seal does
       not open is skipped, with a warning; so is one whose plaintext does not decode, as the library skips it. A
       locked vault, a failed fetch, the deadline, or documents of which none opens fail the read, which then changes
       nothing and never guesses `Published`. A settle runs in the background (a bring-up or an unlock does not wait

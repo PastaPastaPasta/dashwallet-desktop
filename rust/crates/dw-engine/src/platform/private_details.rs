@@ -505,6 +505,10 @@ impl NetworkSession {
                 }
             }
         }
+        // The last open too.
+        if Instant::now() >= deadline {
+            return Err(PlatformError::Timeout);
+        }
         if total > 0 && !opened_any {
             return Err(PlatformError::Internal {
                 detail: format!(
@@ -689,6 +693,11 @@ impl NetworkSession {
                 .map(|(contact, c)| (*contact, c.into()))
                 .collect()
         };
+        // The apply phase starts within the deadline: local writes only, one
+        // set per established contact, so it then runs to its end.
+        if Instant::now() >= deadline {
+            return Err(PlatformError::Timeout);
+        }
         let keep: Vec<String> = established.iter().map(|(c, _)| b58(c)).collect();
         for (contact, shown) in established {
             let pair = Pair {
