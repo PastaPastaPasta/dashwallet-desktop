@@ -508,6 +508,12 @@ impl ContactsRuntime {
         }
     }
 
+    /// Tests: whether every background task has ended.
+    #[cfg(test)]
+    pub(super) fn idle(&self) -> bool {
+        guard(&self.tasks).running.iter().all(|t| t.is_finished())
+    }
+
     /// Session close (DASHPAY §3.2: nothing runs while closed): ends every
     /// background task and waits for it, so no fetch lands afterwards, and
     /// refuses new ones. A username batch cut short lands what it owed as

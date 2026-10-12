@@ -21,6 +21,7 @@
 //! edit until a read finds whether it landed.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -256,13 +257,14 @@ fn too_many() -> PlatformError {
 /// `contact` reads memory only): loaded per wallet in the background on
 /// its first read, then written through by every record and forget.
 #[derive(Default)]
-pub(crate) struct DigestCache(Mutex<BTreeMap<WalletId, Cached>>);
+pub(crate) struct DigestCache(Mutex<BTreeMap<WalletId, Cached>>, AtomicU64);
 
 #[derive(Default)]
 struct Cached {
     /// `None` until loaded.
     rows: Option<BTreeMap<(Identifier, Identifier), [u8; 32]>>,
-    /// Bumped by every write, so a load that read before it reads again.
+    /// New at every write, so a load that read before it reads again;
+    /// drawn from one counter, so a forget does not bring an old one back.
     epoch: u64,
     loading: bool,
 }
@@ -281,11 +283,18 @@ impl DigestCache {
         rows.get(&(*owner, *contact)).copied()
     }
 
+    fn next_epoch(&self) -> u64 {
+        self.1.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
     /// Starts loading wallet `id`: the epoch the load reads at, `None` when
     /// it is loaded or loading.
     fn begin_load(&self, id: WalletId) -> Option<u64> {
         let mut cache = guard(&self.0);
-        let c = cache.entry(id).or_default();
+        let c = cache.entry(id).or_insert_with(|| Cached {
+            epoch: self.next_epoch(),
+            ..Cached::default()
+        });
         if c.rows.is_some() || c.loading {
             return None;
         }
@@ -293,8 +302,9 @@ impl DigestCache {
         Some(c.epoch)
     }
 
-    /// Lands a load that read at `epoch`; else (a write came in between)
-    /// the epoch to read at again.
+    /// Lands a load that read at `epoch`, or nothing when the wallet was
+    /// forgotten since; else (a write came in between) the epoch to read at
+    /// again.
     fn finish_load(
         &self,
         id: WalletId,
@@ -302,7 +312,9 @@ impl DigestCache {
         rows: BTreeMap<(Identifier, Identifier), [u8; 32]>,
     ) -> Result<(), u64> {
         let mut cache = guard(&self.0);
-        let c = cache.entry(id).or_default();
+        let Some(c) = cache.get_mut(&id) else {
+            return Ok(());
+        };
         if c.epoch != epoch {
             return Err(c.epoch);
         }
@@ -327,7 +339,7 @@ impl DigestCache {
     ) {
         let mut cache = guard(&self.0);
         let c = cache.entry(id).or_default();
-        c.epoch += 1;
+        c.epoch = self.next_epoch();
         if let Some(rows) = &mut c.rows {
             match digest {
                 Some(d) => rows.insert((owner, contact), d),
@@ -342,8 +354,9 @@ impl DigestCache {
         guard(&self.0).contains_key(id)
     }
 
-    /// The wallet left the manager: nothing of it stays. A load of it in
-    /// flight lands nothing ([`WriteFences`]).
+    /// Nothing of wallet `id` stays in memory (it left the manager, or a
+    /// restore of it rolled back): its next read loads again, and a load
+    /// of it in flight lands nothing.
     pub(crate) fn forget(&self, id: &WalletId) {
         guard(&self.0).remove(id);
     }
@@ -639,6 +652,7 @@ impl NetworkSession {
                     pause.release.notified().await;
                 }
                 let Some(_fence) = fences.enter(&manager, id, &loaded).await else {
+                    cache.abort_load(id);
                     return;
                 };
                 match cache.finish_load(id, epoch, rows) {
@@ -720,7 +734,7 @@ impl NetworkSession {
         id: WalletId,
         wallet: &PlatformWallet,
     ) -> Result<WriteFence, PlatformError> {
-        let manager = self.manager().map_err(|_| PlatformError::WalletNotFound)?;
+        let manager = self.manager()?;
         let fences = &self.platform.contacts.fences;
         (fences.enter(&manager, id, wallet).await).ok_or(PlatformError::WalletNotFound)
     }
@@ -742,7 +756,7 @@ impl NetworkSession {
     /// The lock is held across the read (all of it within one
     /// [`READ_TIMEOUT`]), so a write of the identity cannot land between the
     /// read and what it applies.
-    async fn settle_identity(
+    pub(super) async fn settle_identity(
         &self,
         wallet: &PlatformWallet,
         at: (WalletId, u32, Identifier),
