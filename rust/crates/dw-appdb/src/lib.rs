@@ -258,6 +258,7 @@ impl AppDb {
             "dp_payment_lock",
             "dp_trust_unverified",
             "dp_prefs",
+            "dp_contact_info",
         ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE wallet_id = ?1"),
@@ -775,6 +776,65 @@ impl AppDb {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// The digest `dp_contact_info` holds for `identity`'s details of
+    /// `contact` (DP2-04), if any.
+    pub fn contact_info_digest(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        contact: &str,
+    ) -> Result<Option<[u8; 32]>> {
+        let digest: Option<Vec<u8>> = self
+            .conn()
+            .query_row(
+                "SELECT digest FROM dp_contact_info
+                 WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3",
+                params![wallet_id, identity, contact],
+                |r| r.get(0),
+            )
+            .optional()?;
+        digest
+            .map(|d| {
+                <[u8; 32]>::try_from(d.as_slice())
+                    .map_err(|_| AppDbError::Corrupt("dp_contact_info.digest".into()))
+            })
+            .transpose()
+    }
+
+    /// Records what Platform holds of `identity`'s details of `contact`.
+    pub fn set_contact_info_digest(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        contact: &str,
+        digest: &[u8; 32],
+        now: u64,
+    ) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO dp_contact_info (wallet_id, identity, contact, digest, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (wallet_id, identity, contact)
+             DO UPDATE SET digest = excluded.digest, recorded_at = excluded.recorded_at",
+            params![wallet_id, identity, contact, &digest[..], now as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the digest of `identity`'s details of `contact`: Platform
+    /// holds none.
+    pub fn forget_contact_info_digest(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        contact: &str,
+    ) -> Result<()> {
+        self.conn().execute(
+            "DELETE FROM dp_contact_info WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3",
+            params![wallet_id, identity, contact],
+        )?;
+        Ok(())
+    }
+
     /// Sets an identity's preference, or deletes it for `None`.
     pub fn set_dp_pref(
         &self,
@@ -835,7 +895,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026101202);
+        assert_eq!(db.schema_version().unwrap(), 2026101301);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();

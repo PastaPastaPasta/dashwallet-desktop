@@ -2,7 +2,7 @@
 //! (QT-110, QT-116). Generic over the schema: every table with a
 //! `wallet_id` column contributes the wallet's rows, and `settings_kv` its
 //! rows scoped to the wallet, so tables added by later migrations are
-//! carried without changes here.
+//! carried without changes here, except the ones in [`NOT_EXPORTED`].
 
 use rusqlite::types::Value;
 
@@ -66,6 +66,12 @@ fn columns(conn: &rusqlite::Connection, table: &str) -> Result<Vec<(String, bool
         .collect())
 }
 
+/// Wallet tables a `.dwbackup` does not carry, neither out nor in: what
+/// they hold is derived from the network and a restore records it again.
+/// `dp_contact_info` (DP2-04): what Platform holds of the private details,
+/// which the restore's own read of the `contactInfo` documents records.
+const NOT_EXPORTED: [&str; 1] = ["dp_contact_info"];
+
 /// Tables and the column that scopes their rows to a wallet.
 fn scoped_tables(conn: &rusqlite::Connection) -> Result<Vec<(String, &'static str)>> {
     let mut stmt = conn.prepare(
@@ -77,6 +83,9 @@ fn scoped_tables(conn: &rusqlite::Connection) -> Result<Vec<(String, &'static st
         .collect::<rusqlite::Result<_>>()?;
     let mut out = Vec::new();
     for name in names {
+        if NOT_EXPORTED.contains(&name.as_str()) {
+            continue;
+        }
         let cols = columns(conn, &name)?;
         if cols.iter().any(|(c, _)| c == "wallet_id") {
             out.push((name, "wallet_id"));
@@ -196,7 +205,7 @@ impl AppDb {
 
 #[cfg(test)]
 mod tests {
-    use crate::{AppDb, BookPurpose, LabelKind};
+    use crate::{AppDb, BookPurpose, LabelKind, SqlValue, TableRows};
 
     #[test]
     fn wallet_rows_round_trip_into_another_database() {
@@ -234,5 +243,41 @@ mod tests {
         // Importing again inserts nothing; rows of another wallet are refused.
         assert_eq!(b.import_wallet_rows(&w, &rows).unwrap(), 0);
         assert_eq!(b.import_wallet_rows(&other, &rows).unwrap(), 0);
+    }
+
+    /// `dp_contact_info` stays on its machine, out and in (DP2-04): a
+    /// restore records it from its own read of Platform.
+    #[test]
+    fn contact_info_digests_are_not_carried() {
+        let a = AppDb::open_in_memory().unwrap();
+        let w = "ab".repeat(32);
+        a.set_wallet_name(&w, "Savings", 10).unwrap();
+        a.set_contact_info_digest(&w, "id", "contact", &[7; 32], 11)
+            .unwrap();
+        a.set_contact_info_digest(&w, "id", "contact", &[8; 32], 12)
+            .unwrap();
+        assert_eq!(
+            a.contact_info_digest(&w, "id", "contact").unwrap(),
+            Some([8; 32])
+        );
+        let rows = a.export_wallet_rows(&w).unwrap();
+        assert!(rows.iter().all(|t| t.table != "dp_contact_info"));
+
+        let b = AppDb::open_in_memory().unwrap();
+        let crafted = TableRows {
+            table: "dp_contact_info".into(),
+            columns: ["wallet_id", "identity", "contact", "digest", "recorded_at"]
+                .map(String::from)
+                .to_vec(),
+            rows: vec![vec![
+                SqlValue::Text(w.clone()),
+                SqlValue::Text("id".into()),
+                SqlValue::Text("contact".into()),
+                SqlValue::Blob(vec![7; 32]),
+                SqlValue::Integer(11),
+            ]],
+        };
+        assert_eq!(b.import_wallet_rows(&w, &[crafted]).unwrap(), 0);
+        assert_eq!(b.contact_info_digest(&w, "id", "contact").unwrap(), None);
     }
 }

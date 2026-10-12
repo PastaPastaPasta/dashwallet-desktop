@@ -12,9 +12,11 @@ const TRUST: i64 = 2026100901;
 const TRUST_DIGEST: i64 = 2026101101;
 const OWNER: i64 = 2026101201;
 const OUTCOMES: i64 = 2026101202;
+const CONTACT_INFO: i64 = 2026101301;
 
-const DP_TABLES: [&str; 9] = [
+const DP_TABLES: [&str; 10] = [
     "dp_avatar",
+    "dp_contact_info",
     "dp_contest_watch",
     "dp_events",
     "dp_main_identity",
@@ -72,13 +74,21 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), OUTCOMES);
+    assert_eq!(db.schema_version().unwrap(), CONTACT_INFO);
     drop(db);
 
     let conn = Connection::open(&path).unwrap();
     assert_eq!(
         versions(&conn),
-        [INITIAL, DASHPAY, TRUST, TRUST_DIGEST, OWNER, OUTCOMES]
+        [
+            INITIAL,
+            DASHPAY,
+            TRUST,
+            TRUST_DIGEST,
+            OWNER,
+            OUTCOMES,
+            CONTACT_INFO
+        ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
     // Every dp_ table is STRICT, like the rest of the schema.
@@ -119,7 +129,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     }
 
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), OUTCOMES);
+    assert_eq!(db.schema_version().unwrap(), CONTACT_INFO);
     assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "Main".into())]);
     assert_eq!(
         db.label(W, crate::LabelKind::Tx, "t").unwrap().as_deref(),
@@ -134,7 +144,15 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     let conn = Connection::open(&path).unwrap();
     assert_eq!(
         versions(&conn),
-        [INITIAL, DASHPAY, TRUST, TRUST_DIGEST, OWNER, OUTCOMES]
+        [
+            INITIAL,
+            DASHPAY,
+            TRUST,
+            TRUST_DIGEST,
+            OWNER,
+            OUTCOMES,
+            CONTACT_INFO
+        ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
     for table in DP_TABLES {
@@ -151,7 +169,7 @@ fn reopening_and_rerunning_change_nothing() {
     }
     for _ in 0..3 {
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), OUTCOMES);
+        assert_eq!(db.schema_version().unwrap(), CONTACT_INFO);
         db.conn()
             .execute(
                 "INSERT OR IGNORE INTO dp_main_identity (wallet_id, identity) VALUES (?1, 'id1')",
@@ -170,7 +188,15 @@ fn reopening_and_rerunning_change_nothing() {
     assert!(report.applied_migrations().is_empty());
     assert_eq!(
         versions(&conn),
-        [INITIAL, DASHPAY, TRUST, TRUST_DIGEST, OWNER, OUTCOMES]
+        [
+            INITIAL,
+            DASHPAY,
+            TRUST,
+            TRUST_DIGEST,
+            OWNER,
+            OUTCOMES,
+            CONTACT_INFO
+        ]
     );
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_main_identity"), 1);
 }
@@ -206,6 +232,11 @@ fn shipped_migrations_are_unchanged() {
                 "registration_outcomes".to_string(),
                 CHECKSUM_OUTCOMES
             ),
+            (
+                CONTACT_INFO,
+                "contact_info".to_string(),
+                CHECKSUM_CONTACT_INFO
+            ),
         ]
     );
 }
@@ -216,6 +247,7 @@ const CHECKSUM_TRUST: u64 = 11010845116850883893;
 const CHECKSUM_TRUST_DIGEST: u64 = 5295667777470269757;
 const CHECKSUM_OWNER: u64 = 12040521178707991804;
 const CHECKSUM_OUTCOMES: u64 = 9183630881616259306;
+const CHECKSUM_CONTACT_INFO: u64 = 6330962680869650951;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -500,6 +532,12 @@ fn dashpay_rows_travel_in_the_wallet_export() {
                 [wallet, identity],
             )
             .unwrap();
+            conn.execute(
+                "INSERT INTO dp_contact_info (wallet_id, identity, contact, digest, recorded_at)
+                 VALUES (?1, ?2, 'bob', zeroblob(32), 1)",
+                [wallet, identity],
+            )
+            .unwrap();
         }
         // Network-wide: not part of any wallet's export.
         conn.execute(
@@ -541,9 +579,11 @@ fn dashpay_rows_travel_in_the_wallet_export() {
     let conn = dst.conn();
     // dp_avatar and dp_trust_verified are global, and not exported: a
     // restored wallet's Platform data verifies again (DEC-125).
+    // dp_contact_info is the wallet's but derived from Platform: a restore
+    // reads it again (DP2-04).
     for table in DP_TABLES
         .iter()
-        .filter(|t| !matches!(**t, "dp_avatar" | "dp_trust_verified"))
+        .filter(|t| !matches!(**t, "dp_avatar" | "dp_trust_verified" | "dp_contact_info"))
     {
         let one_wallet = format!("SELECT COUNT(*) FROM {table} WHERE wallet_id = 'aa'");
         let all = format!("SELECT COUNT(*) FROM {table}");
@@ -552,6 +592,7 @@ fn dashpay_rows_travel_in_the_wallet_export() {
     }
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_avatar"), 0);
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_trust_verified"), 0);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_contact_info"), 0);
     // The initial profile and the outpoint survive; the row got a new id.
     let (profile, outpoint): (String, String) = conn
         .query_row(
@@ -657,7 +698,7 @@ fn verification_records_without_a_digest_verify_nothing() {
         .unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), OUTCOMES);
+    assert_eq!(db.schema_version().unwrap(), CONTACT_INFO);
     assert!(db.verified_entities().unwrap().is_empty(), "the old row");
     assert_eq!(
         count(
@@ -758,6 +799,7 @@ fn delete_wallet_covers_every_wallet_scoped_table() {
                 ("reason", _) => "'manual'",
                 ("retryable", _) => "0",
                 ("kind", _) if table == "labels" => "'tx'",
+                ("digest", "BLOB") => "zeroblob(32)",
                 (_, "INTEGER") => "1",
                 _ => "'x'",
             })

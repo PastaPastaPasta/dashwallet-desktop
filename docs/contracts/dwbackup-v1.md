@@ -150,6 +150,11 @@ The wallet-scoped DashPay tables of `app.sqlite` (`DASHPAY.md` §3.4: `dp_main_i
 Rowid aliases (`dp_registration.id`, `dp_events.id`) are renumbered on import, in export order, so event
 order and read state survive. `dp_avatar` (the network-wide thumbnail cache index) has no wallet and is
 not exported. Restoring an unverified-entity flag (`dp_trust_unverified`) is the conservative choice.
+`dp_contact_info` (DP2-04: per contact, the digest of the private details Platform holds) has a
+`wallet_id` column but is **not carried**, neither exported nor imported: it is derivable, and a restore
+rebuilds it from its first read of the identity's `contactInfo` documents (`m4-dashpay-engine.md` §7
+item 42). Carrying it could only make a restored wallet claim `Published` for details Platform no
+longer holds.
 
 **Manager decision: `dp_registration` rows ARE restored on another machine**, so a registration whose
 asset lock is already funded resumes there and the locked funds are not stranded. The wallet scan
