@@ -692,6 +692,120 @@ fn a_policy_change_during_authorize_applies_to_it() {
     assert_eq!(refused["code"], "vault.credential_required", "{refused}");
 }
 
+/// "Off", then a `changeCredential` grant for the switch back: the setup of
+/// the Sol r3 F1b tests.
+fn payment_auth_off(demo: &Demo) -> (Value, Value) {
+    let pw = json!({ "kind": "passphrase", "passphrase": "pw" });
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let change = || {
+        demo.ok(
+            "authorize",
+            json!({ "purpose": { "kind": "changeCredential" }, "walletId": null, "credential": pw }),
+        )["id"]
+            .clone()
+    };
+    let grant = change();
+    demo.ok(
+        "set_payment_authentication",
+        json!({ "on": false, "grantId": grant }),
+    );
+    (wallet, change())
+}
+
+/// Makes `setPaymentAuthentication` stop at `at` (twice, on the returned
+/// barrier).
+fn pause_payment_set(demo: &Demo, at: crate::state::SetPause) -> Arc<std::sync::Barrier> {
+    use tauri::Manager;
+    let state = demo.app.state::<crate::state::AppState>();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    *state.payment_set_pause.lock().unwrap() = Some((at, Arc::clone(&barrier)));
+    barrier
+}
+
+/// Sol r3 F1b, the reviewer's two-stage probe: a no-credential payment
+/// grant read "off", then the switch to "on" is written and readable (the
+/// setter stopped right after its write) before the grant is issued. It is
+/// refused: the generation moved before the write.
+#[test]
+fn a_grant_issued_once_the_strict_value_is_readable_is_refused() {
+    let demo = Demo::new();
+    demo.open();
+    let (wallet, grant) = payment_auth_off(&demo);
+    let set_pause = pause_payment_set(&demo, crate::state::SetPause::AfterWrite);
+    let key = demo.app.invoke_key().to_string();
+    std::thread::scope(|s| {
+        let mut setter = None;
+        let result = authorize_across(&demo, &wallet, || {
+            let (webview, key, grant) = (&demo.webview, &key, &grant);
+            setter = Some(s.spawn(move || {
+                invoke(
+                    webview,
+                    key,
+                    "set_payment_authentication",
+                    json!({ "on": true, "grantId": grant }),
+                )
+            }));
+            // Written; the setter has not returned.
+            set_pause.wait();
+        });
+        // The setter finishes before anything is judged, so a failure
+        // cannot leave it waiting (and the scope with it).
+        set_pause.wait();
+        setter.unwrap().join().unwrap().expect("the switch");
+        let refused = result.expect_err("issued once \"on\" was readable");
+        assert_eq!(refused["code"], "vault.credential_required", "{refused}");
+    });
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+}
+
+/// Sol r3 F1b: `authorize` reads the setting under the setter's gate. While
+/// the setter has advanced the generation but not yet written "on", a
+/// no-credential payment `authorize` waits, then reads "on" and is refused;
+/// it cannot read "off" with the new generation and keep its grant.
+#[test]
+fn authorize_waits_for_a_policy_write_in_progress() {
+    let demo = Demo::new();
+    demo.open();
+    let (wallet, grant) = payment_auth_off(&demo);
+    let set_pause = pause_payment_set(&demo, crate::state::SetPause::AfterBump);
+    let key = demo.app.invoke_key().to_string();
+    let (webview, key) = (&demo.webview, &key);
+    std::thread::scope(|s| {
+        let setter = s.spawn(|| {
+            invoke(
+                webview,
+                key,
+                "set_payment_authentication",
+                json!({ "on": true, "grantId": grant }),
+            )
+        });
+        set_pause.wait();
+        let call = s.spawn(|| {
+            invoke(
+                webview,
+                key,
+                "authorize",
+                json!({
+                    "purpose": { "kind": "spend", "maxDuffs": 1000 },
+                    "walletId": wallet,
+                    "credential": { "kind": "unencrypted" },
+                }),
+            )
+        });
+        // Only a wrong outcome depends on this wait: a correct `authorize`
+        // never finishes while the setter holds the gate.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let early = call.is_finished();
+        set_pause.wait();
+        setter.join().unwrap().expect("the switch");
+        let result = call.join().unwrap();
+        assert!(!early, "authorize read the setting mid-write: {result:?}");
+        let refused = result.expect_err("read \"on\"");
+        assert_eq!(refused["code"], "vault.credential_required", "{refused}");
+    });
+}
+
 /// Sol r2 F1: a no-credential payment grant that read "off" for one vault
 /// is refused when, by the time it is issued, another vault replaced it.
 #[test]

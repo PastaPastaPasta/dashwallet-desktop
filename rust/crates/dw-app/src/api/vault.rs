@@ -327,13 +327,14 @@ fn check_payment_auth(
 }
 
 /// Issues grants through `issue` under "require authentication for every
-/// payment" (D11). The setting is read before the vault call, and checked
-/// again once the grants exist: if it changed meanwhile
-/// (`AppState::payment_policy_gen`, advanced after each write) or the vault
-/// is no longer the one it was read for, the stricter rule decides, and a
-/// refusal revokes what was issued before the call fails (Sol r2 F1b). A
-/// change that completes before the grants exist is therefore never
-/// missed; one that lands after them orders after the issue.
+/// payment" (D11). The setting and its generation are read together under
+/// [`PaymentPolicy::gate`](crate::state::PaymentPolicy); once the grants
+/// exist the generation is compared again. If it moved (the setter
+/// advances it before it writes, under the same gate) or the vault is no
+/// longer the one the setting was read for, the stricter rule decides, and
+/// a refusal revokes what was issued before the call fails (Sol r2/r3
+/// F1b). So no grant issued under the relaxed rule survives once the
+/// strict value is readable.
 async fn issue_grants(
     state: &AppState,
     purposes: &[GrantPurpose],
@@ -343,13 +344,13 @@ async fn issue_grants(
     + 'static,
 ) -> Result<Vec<dw_vault::AuthGrant>, AppError> {
     let session = state.session().await?;
-    let generation = Arc::clone(&state.payment_policy_gen);
-    // Before the setting: a write that this read misses advances it later.
-    let read_at = generation.load(Ordering::SeqCst);
-    let policy = if pays(purposes) {
-        Some(session.payment_authentication().await?)
+    let payment_policy = Arc::clone(&state.payment_policy);
+    let (read_at, policy) = if pays(purposes) {
+        let _gate = payment_policy.gate.lock().await;
+        let read_at = payment_policy.generation.load(Ordering::SeqCst);
+        (read_at, Some(session.payment_authentication().await?))
     } else {
-        None
+        (0, None)
     };
     #[cfg(test)]
     if policy.is_some() {
@@ -364,7 +365,8 @@ async fn issue_grants(
             check_payment_auth(v, &credential, policy.as_ref().is_some_and(|p| p.on))?;
             let grants = issue(v, credential.as_credential())?;
             if let Some(policy) = &policy
-                && (generation.load(Ordering::SeqCst) != read_at || v.vault_id() != policy.vault_id)
+                && (payment_policy.generation.load(Ordering::SeqCst) != read_at
+                    || v.vault_id() != policy.vault_id)
                 && let Err(e) = check_payment_auth(v, &credential, true)
             {
                 for grant in &grants {
@@ -823,7 +825,9 @@ commands! {
     /// for this network next to its vault.
     #[facade("NetworkSession::payment_authentication")]
     fn payment_authentication(state) -> bool {
-        Ok(state.session().await?.payment_authentication().await?.on)
+        let session = state.session().await?;
+        let _gate = state.payment_policy.gate.lock().await;
+        Ok(session.payment_authentication().await?.on)
     }
 
     /// Turns "require authentication for every payment" on or off. Needs a
@@ -833,13 +837,17 @@ commands! {
     /// working until they are used or expire.
     #[facade("NetworkSession::set_payment_authentication")]
     fn set_payment_authentication(state, on: bool, grant_id: String) -> () {
-        state
-            .session()
-            .await?
-            .set_payment_authentication(on, grant_id)
-            .await?;
-        // After the write: a grant read before it sees the change at issue.
-        state.payment_policy_gen.fetch_add(1, Ordering::SeqCst);
+        let session = state.session().await?;
+        let _gate = state.payment_policy.gate.lock().await;
+        // Before the write, which makes the value readable: a grant read
+        // under the old value sees the change when it is issued (D11). A
+        // write that then fails only makes such a grant ask again.
+        state.payment_policy.generation.fetch_add(1, Ordering::SeqCst);
+        #[cfg(test)]
+        state.pause_payment_set(crate::state::SetPause::AfterBump);
+        session.set_payment_authentication(on, grant_id).await?;
+        #[cfg(test)]
+        state.pause_payment_set(crate::state::SetPause::AfterWrite);
         Ok(())
     }
 

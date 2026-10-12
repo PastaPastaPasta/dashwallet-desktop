@@ -33,14 +33,39 @@ pub struct AppState {
     /// What an overflow cannot lose: the recent notices (`recentNotices`)
     /// and each network's last lock report (`lastLockReport`).
     pub memory: Arc<EventMemory>,
-    /// Advanced by every change of "require authentication for every
-    /// payment"; a grant issued while it moved is checked again under the
-    /// stricter rule (`api::vault`, Sol r2 F1b).
-    pub payment_policy_gen: Arc<AtomicU64>,
+    /// Orders "require authentication for every payment" against the
+    /// grants issued under it (`api::vault`, D11).
+    pub payment_policy: Arc<PaymentPolicy>,
     /// Test seam: a payment `authorize` waits here twice between reading
     /// the setting and issuing the grant.
     #[cfg(test)]
     pub(crate) payment_barrier: StdMutex<Option<Arc<std::sync::Barrier>>>,
+    /// Test seam: `setPaymentAuthentication` waits here twice at this
+    /// point, holding [`PaymentPolicy::gate`].
+    #[cfg(test)]
+    pub(crate) payment_set_pause: StdMutex<Option<(SetPause, Arc<std::sync::Barrier>)>>,
+}
+
+/// The single source of "require authentication for every payment" for
+/// the grants issued under it (Sol r3 F1b). The setter holds `gate` across
+/// advancing `generation` and then writing the setting; `authorize` holds it
+/// across reading both, so no read sees the new value with the old
+/// generation. Once the grant is issued, `authorize` compares `generation`
+/// again: any write that may be readable by then has advanced it.
+#[derive(Default)]
+pub struct PaymentPolicy {
+    pub gate: Mutex<()>,
+    pub generation: AtomicU64,
+}
+
+/// Where [`AppState::payment_set_pause`] stops the setter.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SetPause {
+    /// The generation is advanced; the setting is not written yet.
+    AfterBump,
+    /// The setting is written and readable.
+    AfterWrite,
 }
 
 impl AppState {
@@ -79,10 +104,23 @@ impl AppState {
             exit: Box::new(move |code| handle.exit(code)),
             sends: SendHandles::default(),
             memory,
-            payment_policy_gen: Arc::default(),
+            payment_policy: Arc::default(),
             #[cfg(test)]
             payment_barrier: StdMutex::default(),
+            #[cfg(test)]
+            payment_set_pause: StdMutex::default(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_payment_set(&self, at: SetPause) {
+        let pause = self.payment_set_pause.lock().unwrap().clone();
+        if let Some((stage, barrier)) = pause
+            && stage == at
+        {
+            barrier.wait();
+            barrier.wait();
+        }
     }
 
     pub fn engine(&self) -> Result<&Engine, AppError> {
