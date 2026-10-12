@@ -20,7 +20,7 @@ use platform_wallet::wallet::identity::crypto::auto_accept::{
 use platform_wallet::{ContactRequest, EstablishedContact};
 use zeroize::Zeroizing;
 
-use super::contacts::{Relation, ScannedCode, ScannedContact};
+use super::contacts::{Relation, RequestOutcome, ScannedCode, ScannedContact};
 use super::dashpay::{BearerSecret, DashPay};
 use super::errors::PlatformError;
 use super::journal_tests::{Recorder, engine, session};
@@ -1023,4 +1023,149 @@ fn the_testnet_fixture_verifies_links_and_scans() {
         &owner_key, &proof, &sender, &recipient, 1
     ));
     eprintln!("done after {:?}", t0.elapsed());
+}
+
+/// DP2-02 sends through the seam: one refused before its key went out
+/// (ineligible, or the scan too close to its expiry) releases the scan and
+/// leaves the grant, one that went out spends it, even when the write
+/// failed.
+#[test]
+fn a_send_spends_its_scan_or_releases_it() {
+    use super::flows::CONTACT_REQUEST_CREDITS;
+    use super::journal_tests::{grant_unused, platform_grant};
+    use super::requests::send;
+    use super::requests::tests::{FakeRequests, identity, keys, vault_keys};
+
+    let f = Fixture::new();
+    let mine = vault_keys(&f.engine, &f.s, f.wallet, keys(true));
+    let mine = identity(ME, mine, u64::MAX / 2);
+    let net = Arc::new(FakeRequests::with([
+        mine.clone(),
+        identity(BOB, keys(true), 0),
+        identity(DAVE, keys(true), 0),
+        identity(OTHER, keys(true), 0),
+        identity(FRANK, keys(true), 0),
+    ]));
+    let (manager, wallet_id) = (f.s.manager().unwrap(), f.wallet);
+    f.engine.block_on(async move {
+        let wallet = manager.get_wallet(&wallet_id.0).await.unwrap();
+        let mut state = wallet.state_mut().await;
+        state
+            .identity_manager
+            .managed_identity_mut(&id(ME))
+            .unwrap()
+            .identity = mine;
+    });
+    let grant = || platform_grant(&f.s, f.wallet, CONTACT_REQUEST_CREDITS);
+    let send_under = |to: u8, scan: String, grant: String| {
+        let net = Arc::clone(&net);
+        let ask = (b58(ME), b58(to), Some(scan));
+        (f.engine)
+            .block_on(f.dp().on_wallet(move |s, _, w| async move {
+                send(&*net, &s, &w, wallet_id, ask, grant).await
+            }))
+            .map_err(|e| e.code())
+    };
+    let send_with = |to: u8, scan: String| send_under(to, scan, grant());
+    let soon = (unix_now() + 3600) as u32;
+    let scans = &f.s.platform.users.scans;
+    let claim = |scan: &str, to: u8| {
+        scans
+            .claim(f.wallet, scan, id(to), 0)
+            .err()
+            .map(|e| e.code())
+    };
+
+    // Bob is a contact already: refused, the scan released.
+    let bob = scan_id(&f.scan(&dapk("bob", soon)).unwrap());
+    assert_eq!(
+        send_with(BOB, bob.clone()).err(),
+        Some("contact.ineligible")
+    );
+    assert_eq!(claim(&bob, BOB), None);
+    // Dave is not: sent with the scan's proof, the scan spent.
+    let dave = scan_id(&f.scan(&dapk("dave", soon)).unwrap());
+    assert!(matches!(
+        send_with(DAVE, dave.clone()),
+        Ok(RequestOutcome::Pending { .. })
+    ));
+    assert_eq!(claim(&dave, DAVE), Some("contact.scan_expired"));
+    assert_eq!(net.writes(), 1);
+
+    // A scan that expires within the margin: refused before the grant is
+    // redeemed or the key goes out.
+    let near = scan_id(&f.scan(&dapk("other", (unix_now() + 30) as u32)).unwrap());
+    let unused = grant();
+    assert_eq!(
+        send_under(OTHER, near, unused.clone()).err(),
+        Some("contact.scan_expired")
+    );
+    assert!(grant_unused(&f.s, f.wallet, &unused));
+    // Frank's key went out with a write that failed: the scan is spent.
+    *net.fails.lock().unwrap() = Some(PlatformError::Timeout);
+    let frank = scan_id(&f.scan(&dapk("frank", soon)).unwrap());
+    assert_eq!(
+        send_with(FRANK, frank.clone()).err(),
+        Some("platform.timeout")
+    );
+    assert_eq!(claim(&frank, FRANK), Some("contact.scan_expired"));
+    assert_eq!(net.writes(), 2);
+}
+
+/// Q8: a send from a scan whose recipient was shown on the fallback's
+/// word waits for masternode sync where writes wait (`Enforcing`); a
+/// verified scan, a plain send and the degraded mode do not.
+#[test]
+fn an_unverified_scan_waits_for_masternode_sync() {
+    use dash_context_provider::ContextProviderError;
+
+    use super::requests::wait_to_confirm;
+    use super::trust::{TrustMode, TrustProvider, TrustedQuorums};
+
+    struct NoQuorums;
+    impl TrustedQuorums for NoQuorums {
+        fn quorum_key(
+            &self,
+            _: u32,
+            _: [u8; 32],
+            _: u32,
+        ) -> Result<[u8; 48], ContextProviderError> {
+            Err(ContextProviderError::Generic("no quorums".into()))
+        }
+    }
+    let provider = |mode| {
+        let sink = Arc::new(Recorder::default());
+        TrustProvider::new(mode, Arc::new(NoQuorums), sink, DashNetwork::Regtest)
+    };
+    let f = Fixture::new();
+    let soon = (unix_now() + 3600) as u32;
+    let verified = scan_id(&f.scan(&dapk("dave", soon)).unwrap());
+    f.s.live().unwrap().provenance.fallback_in_use().unwrap();
+    let unverified = scan_id(&f.scan(&dapk("dave", soon)).unwrap());
+    let scans = &f.s.platform.users.scans;
+    let waits = |scan: Option<&str>, trust: &TrustProvider| {
+        let claim = scan.map(|s| scans.claim(f.wallet, s, id(DAVE), 0).ok().unwrap());
+        wait_to_confirm(claim.as_ref(), trust)
+            .err()
+            .map(|e| e.code())
+    };
+
+    let enforcing = provider(TrustMode::Enforcing);
+    assert_eq!(
+        waits(Some(&unverified), &enforcing),
+        Some("platform.context_unavailable")
+    );
+    assert_eq!(waits(Some(&verified), &enforcing), None);
+    assert_eq!(waits(None, &enforcing), None);
+    assert_eq!(
+        waits(Some(&unverified), &provider(TrustMode::Degraded)),
+        None
+    );
+    enforcing.set_trusted_only(true);
+    assert_eq!(waits(Some(&unverified), &enforcing), None);
+    enforcing.set_trusted_only(false);
+    enforcing.note_masternodes_synced();
+    assert_eq!(waits(Some(&unverified), &enforcing), None);
+    // The session's own mode until H-09: nothing waits yet.
+    assert!(!f.s.trust.writes_wait());
 }

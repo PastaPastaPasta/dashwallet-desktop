@@ -1477,7 +1477,7 @@ fn registrations_of_one_identity_are_serial() {
     let dir = dw_testutil::private_tempdir();
     let f = Fixture::signing(dir.path(), &["carol"]);
     let locks = identity_locks(f.wallet, IDENTITY.into());
-    let held = f.engine.block_on(async { locks.serial.lock().await });
+    let held = f.engine.block_on(async { locks.write.lock().await });
     let ask = Registration {
         wallet_id: f.wallet,
         identity: IDENTITY.into(),

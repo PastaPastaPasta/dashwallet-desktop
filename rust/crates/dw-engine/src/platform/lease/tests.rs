@@ -1097,6 +1097,27 @@ async fn the_reaper_ends_idle_vault_key_leases_and_forgets_them_later() {
     assert!(t.lease(&other.id(), &W2).is_ok());
 }
 
+/// DP2-02: a write runs under its call permit however long it takes, so
+/// "Accept and pay" keeps its Spend part through a slow accept; once the
+/// permit ends the idle reaper may end the lease.
+#[tokio::test(start_paused = true)]
+async fn a_write_under_its_call_permit_keeps_its_lease() {
+    let (t, _) = table();
+    let idle = LeaseConfig::default().idle;
+    let lease = begin(&t, W, 0, 1, 1).await.unwrap();
+    let permit = lease.call_permit("accept_request", None).unwrap();
+    let slow_write = async {
+        tokio::time::advance(idle * 2).await;
+        t.reap();
+    };
+    crate::platform::requests::leased(&lease, slow_write).await;
+    assert_eq!(lease.state(), Some(LeaseState::Active));
+    permit.finish(true);
+    tokio::time::advance(idle).await;
+    t.reap();
+    assert_eq!(lease.state(), Some(LeaseState::Ended));
+}
+
 /// Validator N-1: another wallet's step marker of the same bytes holds a
 /// copy back as its live entry does: one standing from an earlier process
 /// (no row-less entry yet), and one a copy is writing before it resends.

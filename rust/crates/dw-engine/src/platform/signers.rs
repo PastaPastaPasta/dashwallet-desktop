@@ -32,6 +32,7 @@
 //! that must not use such a result ("Lock to cancel") fences at its own
 //! commit point under an E0-04 lease, not here.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -40,19 +41,19 @@ use dpp::ProtocolError;
 use dpp::address_funds::AddressWitness;
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dpp::identity::signer::Signer;
-use dpp::identity::{IdentityPublicKey, KeyType};
+use dpp::identity::{IdentityPublicKey, KeyID, KeyType};
 use dpp::platform_value::BinaryData;
 use dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dw_vault::{ScanKey, SignerError, SignerScope, VaultSigner};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
-use key_wallet::{ExtendedPubKeySigner, SignerMethod};
+use key_wallet::{ExtendedPubKeySigner, Signer as _, SignerMethod};
 use platform_wallet::manager::startup::ScanKeyError;
 use platform_wallet::{
     ContactCryptoProvider, ContactInfoOpened, ContactInfoSealed, PlatformWalletError,
 };
 use zeroize::Zeroizing;
 
-use super::keys_policy::key_path;
+use super::keys_policy::{self, KeySpec, key_path};
 use super::lease::{FundingRelease, SignatureCount};
 use crate::EngineError;
 
@@ -77,12 +78,29 @@ fn require_scope(signer: &VaultSigner, scope: SignerScope) -> Result<(), EngineE
 /// signed, the check `dash_sdk_sign_with_mnemonic_resolver_and_path` makes
 /// with `expected_key_data`. ECDSA keys only, as the resolver
 /// (`resolver_supports_key_type`); identity keys sign no address witness.
+///
+/// A flow narrows it to the key ids its transition signs with
+/// ([`Self::only_keys`]): any other key, the master included, is refused
+/// before the vault is asked, and `can_sign_with` answers `false`, so the
+/// library's key choice cannot fall on it.
+///
+/// Its vault signer never leaves it (DP2-02 Sol r5): a raw signer would sign
+/// past the call permit's count and the key allow-list. Public keys come
+/// from [`Self::derive_public_keys`]; there is no accessor:
+///
+/// ```compile_fail
+/// fn raw(s: &dw_engine::platform::VaultIdentitySigner) {
+///     let _ = s.vault_signer();
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct VaultIdentitySigner {
     signer: VaultSigner,
     identity_indices: Vec<u32>,
     /// Mode B: the call permit's count of released signatures (§2a.3).
     count: Option<Arc<SignatureCount>>,
+    /// `None`: every key of the identities.
+    keys: Option<BTreeSet<KeyID>>,
 }
 
 impl VaultIdentitySigner {
@@ -97,19 +115,57 @@ impl VaultIdentitySigner {
             signer,
             identity_indices: identity_indices.into_iter().collect(),
             count: None,
+            keys: None,
         })
+    }
+
+    /// Signs with the keys `ids` only (DP2-02: a flow's transition names
+    /// its keys).
+    pub(crate) fn only_keys(mut self, ids: impl IntoIterator<Item = KeyID>) -> Self {
+        self.keys = Some(ids.into_iter().collect());
+        self
+    }
+
+    /// The public keys `specs` of the identity at `identity_index`, one of
+    /// this signer's, as registration derives them
+    /// ([`keys_policy::derive_keys`]). Public material only: no signature
+    /// is made, so none is counted. Refused once [`Self::only_keys`]
+    /// narrowed the signer, so the narrowing cannot be stepped around.
+    pub(crate) async fn derive_public_keys(
+        &self,
+        identity_index: u32,
+        specs: &[KeySpec],
+    ) -> Result<BTreeMap<KeyID, IdentityPublicKey>, EngineError> {
+        if self.keys.is_some() {
+            return Err(EngineError::Internal(
+                "a narrowed identity signer derives no keys".into(),
+            ));
+        }
+        if !self.identity_indices.contains(&identity_index) {
+            return Err(EngineError::InvalidArgument(format!(
+                "identity index {identity_index} is not this signer's"
+            )));
+        }
+        // `keys_policy::derive_keys` inlined: the signer never leaves this
+        // type, not even by reference.
+        keys_policy::unique_specs(specs)?;
+        let mut keys = BTreeMap::new();
+        for spec in specs {
+            let path = key_path(self.signer.network(), identity_index, spec.id)?;
+            let public_key = self.signer.public_key(&path).await?;
+            keys.insert(spec.id, keys_policy::spec_key(spec, &public_key));
+        }
+        Ok(keys)
+    }
+
+    fn allowed(&self, key: &IdentityPublicKey) -> bool {
+        self.keys.as_ref().is_none_or(|ids| ids.contains(&key.id()))
     }
 
     /// Reports each released signature, and a `Locked` refusal, to `count`.
     pub(crate) fn counting(mut self, count: Arc<SignatureCount>) -> Self {
         self.count = Some(count);
         self
-    }
-
-    /// The vault signer, for deriving the identity's public keys
-    /// (`keys_policy::derive_keys`).
-    pub(crate) fn vault_signer(&self) -> &VaultSigner {
-        &self.signer
     }
 
     /// The slot `keys_policy` derives the key at.
@@ -136,6 +192,12 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
             return Err(ProtocolError::InvalidIdentityPublicKeyTypeError(
                 InvalidIdentityPublicKeyTypeError::new(key.key_type()),
             ));
+        }
+        if !self.allowed(key) {
+            return Err(ProtocolError::ExternalSignerError(format!(
+                "key {} is not a key this flow signs with",
+                key.id()
+            )));
         }
         // Counted before the vault is asked (E0-04 review M-1): refused
         // once the call permit ended.
@@ -198,6 +260,7 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
     /// the call permit ended it answers `false` without asking the vault.
     fn can_sign_with(&self, key: &IdentityPublicKey) -> bool {
         Self::supported(key)
+            && self.allowed(key)
             && !self.count.as_ref().is_some_and(|c| c.closed())
             && self.identity_indices.iter().any(|&i| {
                 self.slot(i, key).is_some_and(|path| {
@@ -488,5 +551,71 @@ impl VaultScanKey {
         &self,
     ) -> impl Fn() -> Result<ExtendedPrivKey, ScanKeyError> + Send + Sync + '_ {
         move || self.resolve()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// No signing handle leaves this module (DP2-02 Sol r5, r6). Outside its
+    /// tests:
+    /// - no function here returns anything that names a `VaultSigner`;
+    /// - no `type` alias names one;
+    /// - no field holding one is visible outside its type;
+    /// - `self.signer` is only ever the receiver of a method call
+    ///   (`self.signer.<method>(..)`), never returned, cloned, borrowed or
+    ///   passed on.
+    ///
+    /// This is a tripwire over the source text, not a parser: it catches the
+    /// obvious ways back to the raw signer, and review is the real check.
+    /// The `compile_fail` doctest on [`super::VaultIdentitySigner`] covers
+    /// the public surface; this covers `pub(crate)` too.
+    #[test]
+    fn no_vault_signer_leaves_the_module() {
+        let source = include_str!("signers.rs");
+        let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let mut rest = production;
+        while let Some(at) = rest.find("fn ") {
+            let sig = &rest[at..];
+            let end = sig.find(['{', ';']).unwrap_or(sig.len());
+            let sig = &sig[..end];
+            if let Some((_, returns)) = sig.split_once("->") {
+                assert!(
+                    !returns.contains("VaultSigner"),
+                    "a signer leaves the module: {sig}"
+                );
+            }
+            rest = &rest[at + 3..];
+        }
+        for line in production.lines() {
+            let line = line.trim();
+            assert!(
+                !(line.starts_with("pub")
+                    && !line.contains("fn ")
+                    && line.contains(": VaultSigner")),
+                "a visible signer field: {line}"
+            );
+            assert!(
+                !(line.split_whitespace().any(|w| w == "type") && line.contains("VaultSigner")),
+                "a signer alias: {line}"
+            );
+        }
+        // Whitespace dropped, so `self\n.signer\n.sign(..)` reads as one.
+        let compact: String = production.split_whitespace().collect();
+        for (at, _) in compact.match_indices("self.signer") {
+            let after = &compact[at + "self.signer".len()..];
+            let method = after
+                .strip_prefix('.')
+                .and_then(|m| m.split_once('('))
+                .map(|(name, _)| name)
+                .filter(|name| {
+                    !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                });
+            let shown = &compact[at..(at + 60).min(compact.len())];
+            assert!(method.is_some(), "self.signer handed out: {shown}");
+            assert!(
+                !matches!(method, Some("clone" | "to_owned" | "as_ref" | "borrow")),
+                "self.signer copied out: {shown}"
+            );
+        }
     }
 }

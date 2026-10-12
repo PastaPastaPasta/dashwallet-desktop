@@ -16,6 +16,7 @@ mod dashpay;
 mod errors;
 mod flows;
 mod identity;
+mod identity_writes;
 mod invitations;
 pub(crate) mod journal;
 #[cfg(test)]
@@ -36,6 +37,7 @@ pub(crate) mod registration_ledger;
 mod registration_rows;
 #[cfg(test)]
 mod registration_tests;
+mod requests;
 mod reverify;
 pub(crate) mod runtime;
 #[cfg(test)]

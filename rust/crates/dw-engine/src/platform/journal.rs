@@ -99,7 +99,7 @@ pub(crate) fn name_ref(label: &str, stamp: Option<u64>) -> String {
 /// The journal `ref` of a request event: the request's `$createdAt` (ms),
 /// which names it among the contact's requests (the library's
 /// `ContactRequest` carries no document id).
-fn request_ref(request: &ContactRequest) -> String {
+pub(super) fn request_ref(request: &ContactRequest) -> String {
     request.created_at.to_string()
 }
 

@@ -46,15 +46,15 @@ const BEFORE: u64 = 1_000;
 const OLD_MS: u64 = 500_000;
 const NEW_MS: u64 = 2_000_000;
 
-fn id(n: u8) -> Identifier {
+pub(super) fn id(n: u8) -> Identifier {
     Identifier::from([n; 32])
 }
 
-fn b58(n: u8) -> String {
+pub(super) fn b58(n: u8) -> String {
     id(n).to_string(Encoding::Base58)
 }
 
-fn request(sender: u8, recipient: u8, created_at: u64) -> ContactRequest {
+pub(super) fn request(sender: u8, recipient: u8, created_at: u64) -> ContactRequest {
     ContactRequest::new(
         id(sender),
         id(recipient),
@@ -1282,4 +1282,23 @@ fn the_bring_up_records_the_first_bring_up() {
         .unwrap();
     assert!(!format!("{exported:?}").contains(CATCH_UP_BEFORE_KEY));
     engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A vault grant for one Platform write of `wallet` (unencrypted vault).
+pub(super) fn platform_grant(s: &NetworkSession, wallet: WalletId, max_credits: u64) -> String {
+    let purpose = dw_vault::GrantPurpose::PlatformOp {
+        max_duffs: 0,
+        max_credits,
+    };
+    let granted = s
+        .vault
+        .authorize(purpose, Some(&wallet.0), dw_vault::Credential::None);
+    granted.unwrap().id
+}
+
+/// `grant` is still there to redeem: nothing consumed it.
+pub(super) fn grant_unused(s: &NetworkSession, wallet: WalletId, grant: &str) -> bool {
+    (s.vault)
+        .check_grant(grant, dw_vault::GrantKind::PlatformOp, Some(&wallet.0))
+        .is_ok()
 }

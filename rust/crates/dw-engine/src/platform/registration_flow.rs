@@ -55,6 +55,7 @@ use tokio::time::Instant;
 
 use super::errors::{NameError, PlatformError, RegistrationError};
 use super::flows::{BudgetPurpose, LeaseStateView};
+use super::identity_writes::identity_locks;
 use super::lease::mode_b::TrackedRow;
 use super::lease::{CallPermit, CallStep, DraftKey, FundingKey, Lease, LeaseTable};
 use super::names::NameOutcome;
@@ -2773,13 +2774,10 @@ impl RegistrationLib for PwLib {
         // (the credit output's key). The step's status rests on that lock's
         // own signed record, which no signature here can contradict.
         let funding_signer = permit.lease().uncounted_funding_signer()?;
-        let keys = super::keys_policy::derive_keys(
-            identity_signer.vault_signer(),
-            identity_index,
-            &super::keys_policy::registration_specs(),
-        )
-        .await
-        .map_err(PlatformError::from)?;
+        let keys = identity_signer
+            .derive_public_keys(identity_index, &super::keys_policy::registration_specs())
+            .await
+            .map_err(PlatformError::from)?;
         let identity = self
             .wallet
             .identity()
@@ -2862,6 +2860,9 @@ impl RegistrationLib for PwLib {
     ) -> Result<(), PlatformError> {
         let id = parse_identity(identity)?;
         let signer = lease.identity_signer(&[identity_index])?;
+        // One write of the identity at a time (identity_writes.rs).
+        let locks = identity_locks(self.wallet_id, id);
+        let _write = locks.write.lock().await;
         self.wallet
             .identity()
             .dashpay()
@@ -2879,6 +2880,9 @@ impl RegistrationLib for PwLib {
     ) -> Result<(), PlatformError> {
         let id = parse_identity(identity)?;
         let signer = lease.identity_signer(&[identity_index])?;
+        // One write of the identity at a time (identity_writes.rs).
+        let locks = identity_locks(self.wallet_id, id);
+        let _write = locks.write.lock().await;
         self.wallet
             .identity()
             .dashpay()

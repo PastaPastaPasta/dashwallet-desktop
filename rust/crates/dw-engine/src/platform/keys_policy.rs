@@ -27,6 +27,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use dashcore::secp256k1::PublicKey;
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
@@ -176,6 +177,18 @@ pub async fn derive_keys(
     identity_index: u32,
     specs: &[KeySpec],
 ) -> Result<BTreeMap<KeyID, IdentityPublicKey>, EngineError> {
+    unique_specs(specs)?;
+    let mut keys = BTreeMap::new();
+    for spec in specs {
+        let path = key_path(signer.network(), identity_index, spec.id)?;
+        let public_key = signer.public_key(&path).await?;
+        keys.insert(spec.id, spec_key(spec, &public_key));
+    }
+    Ok(keys)
+}
+
+/// Refuses `specs` that name a key id twice.
+pub(crate) fn unique_specs(specs: &[KeySpec]) -> Result<(), EngineError> {
     let mut ids = BTreeSet::new();
     if let Some(dup) = specs.iter().find(|s| !ids.insert(s.id)) {
         return Err(EngineError::InvalidArgument(format!(
@@ -183,23 +196,21 @@ pub async fn derive_keys(
             dup.id
         )));
     }
-    let mut keys = BTreeMap::new();
-    for spec in specs {
-        let path = key_path(signer.network(), identity_index, spec.id)?;
-        let public_key = signer.public_key(&path).await?;
-        let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: spec.id,
-            purpose: spec.purpose,
-            security_level: spec.security_level,
-            contract_bounds: spec.contract_bounds.clone(),
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: public_key.serialize().to_vec().into(),
-            disabled_at: None,
-        });
-        keys.insert(spec.id, key);
-    }
-    Ok(keys)
+    Ok(())
+}
+
+/// The identity key `spec` describes, holding `public_key`.
+pub(crate) fn spec_key(spec: &KeySpec, public_key: &PublicKey) -> IdentityPublicKey {
+    IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        id: spec.id,
+        purpose: spec.purpose,
+        security_level: spec.security_level,
+        contract_bounds: spec.contract_bounds.clone(),
+        key_type: KeyType::ECDSA_SECP256K1,
+        read_only: false,
+        data: public_key.serialize().to_vec().into(),
+        disabled_at: None,
+    })
 }
 
 #[cfg(test)]

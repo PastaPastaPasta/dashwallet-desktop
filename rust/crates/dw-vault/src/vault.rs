@@ -16,19 +16,26 @@
 //!   token's key holds it from the token check until the operation is done
 //!   ([`Vault::gated`]): the secret reads (`reveal_mnemonic`,
 //!   `export_wallet_secret`, `with_revealed_seed`, `open_backup_bundle` of
-//!   this vault's own bundle) and the token-authorized writes
-//!   (`wipe_wallet_secret`, `encrypt`, `enroll_quick_unlock`,
-//!   `set_quick_unlock_spend_limit`), whose file write is inside.
+//!   this vault's own bundle) and the token-authorized writes (`encrypt`,
+//!   `enroll_quick_unlock`, `set_quick_unlock_spend_limit`), whose file
+//!   write is inside.
 //!   `seed_derivation` and `core_mnemonic_check`, which read a secret with
 //!   the vault's own key, are gated too. Every epoch change (lock, unlock,
 //!   scope change, passphrase change, encrypt, recover, destroy) holds it
 //!   exclusively, so `lock()` returns only once every such operation that
 //!   started before it has finished, and any operation after it sees the
-//!   new epoch and fails `Locked`. Not gated: `backup_bundle`, which takes
-//!   no grant or epoch and returns only ciphertext, `open_backup_bundle`
-//!   through a bundle's passphrase slot (no vault key), and record writes
-//!   under the vault's own key (`store_wallet_secret`,
-//!   `delete_wallet_secret`).
+//!   new epoch and fails `Locked`. Every deletion of a seed
+//!   (`wipe_wallet_secret`, `delete_wallet_secret`, the old vault that
+//!   `recover_with_mnemonic` replaces) holds it exclusively as well, from
+//!   before the records go until they are gone, without ending the epoch
+//!   unless it changes one anyway ([`Vault::drain_ops`]): a signer that read
+//!   a seed has released its result before the seed is deleted, and one
+//!   that starts after finds none (DP2-02). Not gated: `backup_bundle`,
+//!   which takes no grant or epoch and returns only ciphertext,
+//!   `open_backup_bundle` through a bundle's passphrase slot (no vault key),
+//!   and `store_wallet_secret`, a record write under the vault's own key
+//!   that never replaces a seed (a wallet holding different records is
+//!   refused), so no signer can read a seed it changes.
 //!
 //!   A holder must not take the gate again, take `writer`, block on another
 //!   lock or wait on anything outside the process (the OS store, which may
@@ -80,6 +87,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use key_wallet::Network;
+use key_wallet::bip32::DerivationPath;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use unicode_normalization::UnicodeNormalization;
@@ -156,6 +164,8 @@ pub(crate) enum GateEvent {
     Refused(u64),
     /// `lock()` was called; it now waits for the gate.
     LockCalled,
+    /// A seed deletion now waits for the gate ([`Vault::drain_ops`]).
+    DrainWaiting,
 }
 
 /// Exclusive hold of `Shared::ops`, which every epoch change needs. Only
@@ -581,6 +591,13 @@ impl Vault {
         let mut inner = self.inner();
         let epoch = inner.epoch;
         inner.gate_log = Some(vec![GateEvent::Epoch(epoch)]);
+    }
+
+    /// Whether `event` was logged since [`Self::start_gate_log`]; logging
+    /// goes on.
+    #[cfg(test)]
+    pub(crate) fn gate_logged(&self, event: GateEvent) -> bool {
+        (self.inner().gate_log.as_ref()).is_some_and(|log| log.contains(&event))
     }
 
     /// The events logged since [`Self::start_gate_log`]; logging stops.
@@ -1386,6 +1403,124 @@ impl Vault {
         })
     }
 
+    /// Whether the identity key at `path` of `wallet` is the on-chain key
+    /// `key_data` (dw-vault `VaultSigner::identity_key_matches`), asked
+    /// through a `PlatformOp` grant without consuming it: lets a write
+    /// refuse a key the vault does not hold with the grant left for another
+    /// try (DP2-02). Needs what a `PlatformIdentity` signer from the grant
+    /// would (a credit cap above 0, else `GrantPurposeMismatch`; the grant's
+    /// own key or the vault's full key) and answers only yes or no: nothing
+    /// signs, and no key leaves the vault. An answer, not a promise: the
+    /// redemption that relies on it is [`Self::redeem_grant_holding_key`].
+    pub fn grant_identity_key_matches(
+        &self,
+        grant_id: &str,
+        wallet: &WalletId,
+        path: &DerivationPath,
+        key_data: &[u8],
+    ) -> Result<bool, VaultError> {
+        Self::key_held(
+            &self.grant_identity_signer(grant_id, wallet)?,
+            path,
+            key_data,
+        )
+    }
+
+    /// Redeems a `PlatformOp` grant for `wallet` only while the vault holds
+    /// one of `candidates` (identity key paths and on-chain key data, as
+    /// [`Self::grant_identity_key_matches`] asks): the check and the
+    /// redemption are one section under the guard of the vault's record
+    /// writes, so a wallet removal that deletes the seed either came first
+    /// or waits until the grant is redeemed (DP2-02). `Ok(None)`: no
+    /// candidate is held (or the wallet has no seed), and the grant is left
+    /// unused. A lock in between ends the grant (`GrantInvalid`, or `Locked`
+    /// while a key is derived). An unencrypted vault whose key is not cached
+    /// reads it from the OS store inside the section, so record writes wait
+    /// on that read.
+    pub fn redeem_grant_holding_key(
+        &self,
+        grant_id: &str,
+        wallet: &WalletId,
+        candidates: &[(DerivationPath, Vec<u8>)],
+    ) -> Result<Option<GrantToken>, VaultError> {
+        let _writer = self.writer();
+        let signer = match self.grant_identity_signer(grant_id, wallet) {
+            Err(VaultError::NoSecret) => return Ok(None),
+            signer => signer?,
+        };
+        for (path, key_data) in candidates {
+            match Self::key_held(&signer, path, key_data) {
+                Ok(true) => {
+                    return self
+                        .redeem_grant(grant_id, GrantKind::PlatformOp, Some(wallet))
+                        .map(Some);
+                }
+                Ok(false) | Err(VaultError::NoSecret) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(None)
+    }
+
+    /// A `PlatformIdentity` signer under an unredeemed `PlatformOp` grant,
+    /// for the yes-or-no questions above (no token is issued, so it cannot
+    /// reach a lease).
+    fn grant_identity_signer(
+        &self,
+        grant_id: &str,
+        wallet: &WalletId,
+    ) -> Result<VaultSigner, VaultError> {
+        let GrantPurpose::PlatformOp { max_credits, .. } =
+            self.grant_purpose(grant_id, GrantKind::PlatformOp, Some(wallet))?
+        else {
+            return Err(VaultError::GrantPurposeMismatch);
+        };
+        if max_credits == 0 {
+            return Err(VaultError::GrantPurposeMismatch);
+        }
+        let check = |inner: &mut Inner| {
+            Self::valid_grant(
+                inner,
+                grant_id,
+                GrantKind::PlatformOp,
+                Some(wallet),
+                self.now(),
+            )
+            .map(|issued| issued.key.as_ref().map(|key| Zeroizing::new(**key)))
+        };
+        let own = check(&mut self.inner())?;
+        if own.is_none() {
+            self.full_dek()?;
+        }
+        #[cfg(test)]
+        crate::signer::test_hook::checked();
+        // The signer is issued under a guard that finds the grant again:
+        // every epoch change ends it, so no probe runs on a grant that was
+        // redeemed, or ended by a lock or passphrase change, in between.
+        let mut inner = self.inner();
+        check(&mut inner)?;
+        let key = own.map_or(KeySource::Vault, |key| KeySource::Own(Arc::new(key)));
+        if matches!(key, KeySource::Vault) && inner.dek.is_none() {
+            return Err(VaultError::Locked);
+        }
+        self.signer_locked(&inner, wallet, SignerScope::PlatformIdentity, key)
+    }
+
+    fn key_held(
+        signer: &VaultSigner,
+        path: &DerivationPath,
+        key_data: &[u8],
+    ) -> Result<bool, VaultError> {
+        signer
+            .identity_key_matches(path, key_data)
+            .map_err(|e| match e {
+                SignerError::Locked => VaultError::Locked,
+                SignerError::NoSecret => VaultError::NoSecret,
+                SignerError::Vault(e) => e,
+                e => VaultError::InvalidArgument(e.to_string()),
+            })
+    }
+
     /// The vault's epoch: it changes on every lock, every unlock that
     /// changes the lock state or scope, and every passphrase change,
     /// encrypt, recover and destroy, and each change ends every grant,
@@ -1436,17 +1571,34 @@ impl Vault {
     /// own was redeemed while the full key was in memory, and only an epoch
     /// change drops it.
     fn key_for(&self, _op: &OpGuard<'_>, token: &GrantToken) -> Result<Key32, VaultError> {
-        let key = {
-            let inner = self.inner();
-            self.token_current(&inner, token)?;
-            match token.key.copy()? {
-                Some(key) => key,
-                None => Self::memory_dek(&inner)?,
-            }
-        };
+        let key = self.token_key(token)?;
         #[cfg(test)]
         crate::signer::test_hook::opened();
         Ok(key)
+    }
+
+    /// [`Self::key_for`]'s check and key read, one step under `inner`: for
+    /// it, and for a caller that holds the gate exclusively instead.
+    fn token_key(&self, token: &GrantToken) -> Result<Key32, VaultError> {
+        let inner = self.inner();
+        self.token_current(&inner, token)?;
+        match token.key.copy()? {
+            Some(key) => Ok(key),
+            None => Self::memory_dek(&inner),
+        }
+    }
+
+    /// Waits for every gated operation still running, then keeps new ones
+    /// out until the guard drops, without ending the epoch: a caller that
+    /// deletes a wallet's seed under it knows that no signer copied that seed
+    /// before the deletion and still signs after it (DP2-02, Sol r3). An
+    /// operation that read the seed has released its result by then; one
+    /// that starts after finds no seed (`NoSecret`). Taken after `writer`,
+    /// as the epoch changes that write the file take it.
+    fn drain_ops(&self, _writer: &WriteGuard<'_>) -> EpochGuard<'_> {
+        #[cfg(test)]
+        self.inner().record(GateEvent::DrainWaiting);
+        self.epoch_guard()
     }
 
     /// The full-scope data key held in memory, inside the gated operation
@@ -1554,16 +1706,8 @@ impl Vault {
     /// Applies record changes (`None` deletes), bumps the manifest
     /// generation, writes the file, then reads it back from disk and checks
     /// every change landed byte for byte (seed-safety ordering, iOS rule 3).
-    /// Holds `writer` throughout, so no other change of the file interleaves.
-    fn commit_records(
-        &self,
-        dek: &Key32,
-        changes: &[(String, Option<&[u8]>)],
-    ) -> Result<(), VaultError> {
-        self.commit_records_under(&self.writer(), dek, changes)
-    }
-
-    /// [`Self::commit_records`] under a `writer` guard the caller holds.
+    /// Runs under the caller's `writer` guard, so no other change of the
+    /// file interleaves.
     fn commit_records_under(
         &self,
         writer: &WriteGuard<'_>,
@@ -1636,6 +1780,15 @@ impl Vault {
 
     /// Stores a wallet's phrase, BIP39 passphrase and seed, then verifies the
     /// write by reading the file back. Needs the data key with full scope.
+    ///
+    /// `wallet` must be the id the engine derives from this seed: the vault
+    /// does not bind ids to seeds. It never replaces a seed: a wallet that
+    /// already holds different records is refused with
+    /// [`VaultError::WalletSecretExists`] and nothing is written, since a
+    /// signer that has read the old seed is not drained here; replacing goes
+    /// through [`Self::wipe_wallet_secret`] or [`Self::delete_wallet_secret`]
+    /// first, which drain. Storing the same records again seals them anew
+    /// (no signer can tell). The check and the write hold `writer` together.
     pub fn store_wallet_secret(
         &self,
         wallet: &WalletId,
@@ -1645,20 +1798,40 @@ impl Vault {
         let seed = encode_seed(secret);
         // A raw seed has no phrase: its wallet stores the seed record only.
         let phrase = secret.derivation != SeedDerivation::RawSeed;
-        self.commit_records(
-            &dek,
-            &[
-                (
-                    record_id(wallet, REC_MNEMONIC),
-                    phrase.then_some(&secret.mnemonic[..]),
-                ),
-                (
-                    record_id(wallet, REC_PASSPHRASE),
-                    phrase.then_some(&secret.mnemonic_passphrase[..]),
-                ),
-                (record_id(wallet, REC_SEED), Some(&seed[..])),
-            ],
-        )
+        let records = [
+            (
+                record_id(wallet, REC_MNEMONIC),
+                phrase.then_some(&secret.mnemonic[..]),
+            ),
+            (
+                record_id(wallet, REC_PASSPHRASE),
+                phrase.then_some(&secret.mnemonic_passphrase[..]),
+            ),
+            (record_id(wallet, REC_SEED), Some(&seed[..])),
+        ];
+        let writer = self.writer();
+        if self.has_any_record(wallet)? && !self.holds_records(&dek, &records)? {
+            return Err(VaultError::WalletSecretExists);
+        }
+        self.commit_records_under(&writer, &dek, &records)
+    }
+
+    /// Whether the vault holds exactly `records` (`None`: absent), compared
+    /// in constant time.
+    fn holds_records(
+        &self,
+        dek: &Key32,
+        records: &[(String, Option<&[u8]>)],
+    ) -> Result<bool, VaultError> {
+        let mut same = subtle::Choice::from(1);
+        for (id, want) in records {
+            same &= match (self.read_record(dek, id)?, want) {
+                (Some(held), Some(want)) => held[..].ct_eq(want),
+                (None, None) => subtle::Choice::from(1),
+                _ => subtle::Choice::from(0),
+            };
+        }
+        Ok(same.into())
     }
 
     /// Deletes every record of `wallet` with the vault's full-scope key.
@@ -1669,15 +1842,20 @@ impl Vault {
             return Ok(false);
         }
         let dek = self.full_dek()?;
-        self.delete_records(&self.writer(), wallet, &dek)?;
+        let writer = self.writer();
+        let _drained = self.drain_ops(&writer);
+        self.delete_records(&writer, wallet, &dek)?;
         Ok(true)
     }
 
     /// Deletes every record of `wallet` under a redeemed `Wipe` grant for that
     /// wallet, with the grant's key when it carries one (a passphrase grant on
-    /// a locked vault). `Ok(false)` when it had none. The deletion is one
-    /// gated operation: it is done before a concurrent `lock()` returns, or
-    /// refused (`Locked`) when that lock came first.
+    /// a locked vault). `Ok(false)` when it had none. The deletion holds the
+    /// gate exclusively ([`Self::drain_ops`]): it waits for every operation
+    /// still running, so a signer of the wallet that read its seed releases
+    /// its result before the seed goes, and none starts until it is gone. A
+    /// concurrent `lock()` either came first, and the deletion is refused
+    /// (`Locked`), or waits until it is done.
     pub fn wipe_wallet_secret(
         &self,
         wallet: &WalletId,
@@ -1693,11 +1871,12 @@ impl Vault {
         self.token_current(&self.inner(), token)?;
         #[cfg(test)]
         crate::signer::test_hook::checked();
-        self.gated(VaultError::Locked, |op| {
-            let dek = self.key_for(op, token)?;
-            self.delete_records(&writer, wallet, &dek)?;
-            Ok(true)
-        })
+        let _drained = self.drain_ops(&writer);
+        let dek = self.token_key(token)?;
+        #[cfg(test)]
+        crate::signer::test_hook::opened();
+        self.delete_records(&writer, wallet, &dek)?;
+        Ok(true)
     }
 
     fn wallet_record_ids(wallet: &WalletId) -> Vec<String> {
@@ -2369,13 +2548,15 @@ impl Vault {
             )?),
         };
 
+        // The `lost` wallets' seeds go with the old vault: drained first
+        // (DP2-02, Sol r3), as `wipe_wallet_secret`.
+        let ops = self.drain_ops(&writer);
         file::keep_replaced_copy(&self.shared.dir, now)?;
         file::write(&self.shared.dir, &next)?;
         // From here the old vault is replaced on disk; memory follows even
         // if the read-back check below fails, so nothing keeps using the
         // old key.
         {
-            let ops = self.epoch_guard();
             let mut inner = self.inner();
             inner.file = Some(next);
             inner.high_water = manifest.generation;
@@ -2384,6 +2565,7 @@ impl Vault {
             inner.backup_kek = Some(backup_kek);
             inner.last_passphrase_at = Some(now);
         }
+        drop(ops);
         let disk = file::read(&self.shared.dir)?
             .ok_or_else(|| VaultError::Corrupt("vault file vanished after write".into()))?;
         verify_manifest(&disk, &dek, manifest.generation)?;
