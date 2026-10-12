@@ -402,7 +402,7 @@ attributed lock. The old row stays committed, `Awaiting`, and can't be discarded
 The release time comes from P2b's `funding_release.at`. Until P2b r7 exposes it, the seam
 (`registration_ledger::released_at`) returns none, so the override fails closed.
 
-**Contested locks of a wedged step (DP1-02 decision, for ruling).** A wedged step contests every
+**Contested locks of a wedged step (DEC-198 am.1).** A wedged step contests every
 unattributed lock at its index, or of unknown index, of its amount, and with no adoption nothing
 ever attributes one to it. So a lock that only wedged steps contest, each with a known release,
 goes to `Recovery`, never to a row: `may_take(Recovery, L)` holds, `may_take(Row, L)` doesn't,
@@ -417,8 +417,8 @@ lock's true signer must be wedged). Without this the model check's liveness fail
 lock of unknown index stayed `Contested` for good, and the new row's index read `Unknown` (it
 would wait for a ChainLock that never settles the contest). Residual: until the user runs
 Finish, a new row that is open and unfunded when such a lock shows up reads its index `Unknown`
-and waits with `RegistrationWait::ChainLock`, which only Finish resolves; after Finish it funds at
-its own index. A wait reason naming Finish would be an m4 change (proposed, not made).
+and waits with `RegistrationWait::NeedsFinish` (m4 Contract-Version 14: only such locks leave its
+index unattributed; otherwise it waits `ChainLock`); after Finish it funds at its own index.
 
 **Ask of P2b r7** (DEC-197's seam). `released_at` must be some only for a released step, and it
 must be the release of the step the view shows (its `step_id`, so not an earlier generation's
@@ -654,4 +654,5 @@ attempt doesn't resurrect them.
 - **Before implementation:** update the model check (`docs/design/checks/dp1_02_ownership_model.py`) to rev2 and run it with the §11.1 mutations, bounded so it finishes. Then a narrow Sol design r2.
 - **D15: approved (Sol design r2, APPROVE-WITH-CHANGES).** `row_of(S)` picks `holder(S)`, else `signer(S)`, and returns none if that row is closed with `registration.funded_elsewhere` or `registration.funding_cancelled`; it never falls through to another candidate, and no step or lock evidence is dropped. A closed row takes no lock: consumed signed value settles in place, returning unspent signed value goes to Recovery (§5.1).
 - **Q15 → DEC-197: neither pure option; the wedge must be resolvable.** (Its adoption half is superseded by DEC-198.) P2b adopts a released, recordless step's lock from chain evidence for the life of the step. DP1-02 adds an explicit override, `start_registration_past_unknown_funding` (m4 Contract-Version 14). It requires SPV synced, the release at least an hour old and the user's confirmed copy (§8.1). The old row stays committed. The model gains the unstored-send path and the override. Every flagged scenario ends with nothing outstanding, or with a wedged step whose only exit is the override.
-- **DEC-198: P2b's adoption by funding key is deferred.** At the pin a registration's credit key is the next pool address, chosen after signing and persisted best effort, so an exact key match can't tell two steps apart; BL-108 tracks the pin change. The DEC-197 override is the wedge's only exit. The copy promises no adoption: the earlier attempt may still confirm, and its funds then show up as a lock the wallet recovers later. DP1-02's consequence, for ruling (§8.1): a lock only wedged steps contest goes to `Recovery` through Finish, never to a row.
+- **DEC-198: P2b's adoption by funding key is deferred.** At the pin a registration's credit key is the next pool address, chosen after signing and persisted best effort, so an exact key match can't tell two steps apart; BL-108 tracks the pin change. The DEC-197 override is the wedge's only exit. The copy promises no adoption: the earlier attempt may still confirm, and its funds then show up as a lock the wallet recovers later. DP1-02's consequence (§8.1): a lock only wedged steps contest goes to `Recovery` through Finish, never to a row.
+- **DEC-198 am.1: the Recovery rule, ruled as proposed.** A `Contested` lock that only wedged steps contest (each with a known release, `Unknown`, flagged, nothing voided, no call or record write under it) goes only to `Recovery` through Finish, never to a row; C then funds at its own index and A stays committed. A narrow carve-out from I3/S4, fail closed until P2b supplies `released_at` (same `step_id`, same J step). Meanwhile C waits `RegistrationWait::NeedsFinish`, not `ChainLock`.
