@@ -1950,8 +1950,15 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             // Refused before the call: nothing was signed. A step that may
             // be out already (an earlier call of the draft) waits.
             Err(FundError::Refused(
-                PlatformError::BroadcastUnknown { .. } | PlatformError::WillBeSent { .. },
-            )) => self.maybe_sent().await,
+                PlatformError::BroadcastUnknown { artifact }
+                | PlatformError::WillBeSent { artifact },
+            )) if artifact == step => self.maybe_sent().await,
+            // P2b's gate named another tracked lock the catch-up has not
+            // resent yet (`FundingBlock::Row`, by its txid): nothing of the
+            // step's is out, and the funding waits for the catch-up.
+            Err(FundError::Refused(PlatformError::WillBeSent { .. })) => {
+                Ok(Step::Wait(RegistrationWait::Sync))
+            }
             Err(FundError::Refused(e)) => Ok(self.failed(&e)),
             Err(FundError::CoinsLocked) => {
                 Ok(Step::Fail(RegistrationError::CoinsLocked.code(), true))

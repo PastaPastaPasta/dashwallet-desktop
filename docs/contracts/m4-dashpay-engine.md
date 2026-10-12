@@ -357,6 +357,8 @@ bodies decided where the rows leave room:
   `NoIdentity`, `PartialAccountsPending`, `SeedBindingUnverified`). Until then the flow waits at `Sync`; a bring-up
   that runs again only at the first unlock (`IdentityUnsettled`) parks it at `Unlock`, and one that runs again only at
   the next start (`PartialNoIdentity`, `DiscoveryFailed`, `IdentityScanIncomplete`) parks it at `Network`. The
+  funding also waits at `Sync`, with nothing signed and no failure, while P2b's gate holds another tracked
+  `Built`/`Broadcast` lock the catch-up has not resent (`will_be_sent` naming that lock, not the step). The
   index is a field of the row, never derived from the library: a lock the library rebuilt from the chain says index
   0 whatever index funded it, so a lock's index is known only while it is live (`Built`) or when it is not 0. A flow
   owns what is at its index only by its own lock: a lock whose known index is the row's and that no row holds or

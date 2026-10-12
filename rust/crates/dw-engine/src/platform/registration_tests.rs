@@ -3738,6 +3738,54 @@ fn an_unsigned_lock_waits_for_finish() {
     }
 }
 
+/// P2b's gate refuses a funding build while a tracked `Built` lock the
+/// catch-up has not resent stands (E0-04 §2a.3, `FundingBlock::Row`), and
+/// names that lock, not the step: the row waits with nothing signed and no
+/// failure (its step is no `broadcast_unknown`), and funds once the
+/// catch-up has resent the lock.
+#[test]
+fn another_lock_awaiting_its_resend_holds_the_funding_without_failing_the_row() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let wallet = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
+    let pending = f.engine.block_on(async {
+        let transaction = dashcore::Transaction {
+            version: 3,
+            lock_time: 0,
+            input: Vec::new(),
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        let lock = OutPoint::new(transaction.txid(), 0);
+        wallet.state_mut().await.tracked_asset_locks.insert(
+            lock,
+            platform_wallet::TrackedAssetLock {
+                out_point: lock,
+                transaction,
+                account_index: 0,
+                funding_type: platform_wallet::AssetLockFundingType::IdentityTopUp,
+                identity_index: 40,
+                amount: flow::LOCK_DUFFS,
+                status: platform_wallet::AssetLockStatus::Built,
+                proof: None,
+            },
+        );
+        lock
+    });
+    let draft = prepared(&f, 1);
+    f.drive(&lib, draft, Some(f.lease()), false);
+    let row = f.row(draft);
+    assert_eq!(
+        (phase(&row), row.error.as_deref()),
+        (Phase::KeysPrepared, None)
+    );
+    assert_eq!(lib.counts(), (0, 0));
+    f.session.leases.note_resumed(f.wallet, pending.txid);
+    f.drive(&lib, draft, Some(f.lease()), true);
+    assert_eq!(phase(&f.row(draft)), Phase::Done);
+    assert_eq!(lib.counts(), (1, 1));
+}
+
 mod ledger;
 mod rules;
 mod step2;
