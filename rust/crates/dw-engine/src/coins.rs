@@ -207,7 +207,6 @@ impl CoinSnapshot {
     /// its lock would not free it. A tracked lock's input (`lock_input`) is
     /// not among them: the library reserves those itself. An unresolved
     /// signed lock's input is ([`CoinHold::UnresolvedLock`]).
-    #[cfg_attr(not(test), expect(dead_code, reason = "DP1-02's funding policy check"))]
     pub(crate) fn held_funding_coins(&self) -> impl Iterator<Item = HeldCoin> + '_ {
         self.coins
             .iter()
@@ -299,6 +298,14 @@ impl CoinFences {
             wallet,
             _guard: fence.try_lock_owned().ok()?,
         })
+    }
+
+    /// Tests: how many hold or wait for `wallet`'s fence.
+    #[cfg(test)]
+    pub(crate) fn users(&self, wallet: WalletId) -> usize {
+        self.map()
+            .get(&wallet)
+            .map_or(0, |f| Arc::strong_count(f) - 1)
     }
 
     /// Drops a removed or unloaded wallet's fence unless it is held or
@@ -442,7 +449,7 @@ fn funding_accounts(
 }
 
 /// Reads every funds account of `info` (key-wallet state only).
-fn read_coins(info: &ManagedWalletInfo) -> CoinSnapshot {
+pub(crate) fn read_coins(info: &ManagedWalletInfo) -> CoinSnapshot {
     let accounts = &info.accounts;
     let mut coins = Vec::new();
     for a in funding_accounts(accounts) {
@@ -546,7 +553,6 @@ impl NetworkSession {
     /// `fence`: what DP1-02's funding policy checks
     /// ([`CoinSnapshot::held_funding_coins`]) before it hands the same fence
     /// to [`Self::funding_call_permit`].
-    #[cfg_attr(not(test), expect(dead_code, reason = "DP1-02's funding policy check"))]
     pub(crate) async fn fenced_coins(
         &self,
         fence: &CoinFence,

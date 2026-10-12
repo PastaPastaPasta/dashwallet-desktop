@@ -537,13 +537,6 @@ impl Lease {
     /// step that is no registration funding step, or a key that is not
     /// its draft's own (reviews M-3, M-4), and so this is crate-private
     /// (review Opus O-11).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "DP1-02's resumable steps take their permits by it"
-        )
-    )]
     pub(crate) async fn call_permit_step(
         &self,
         label: impl Into<String>,

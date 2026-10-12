@@ -483,10 +483,6 @@ pub enum FundingBlock {
 
 /// A registration funding step as DP1-02 reads it
 /// ([`LeaseTable::registration_funding_steps`], PA-1).
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "DP1-02's ownership ledger reads it")
-)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FundingStepView {
     /// The draft it funds: `registration/<draft>/funding`.
@@ -507,14 +503,15 @@ pub(crate) struct FundingStepView {
     /// A signed lock's record is being written: the library's store of it
     /// waits, and its send follows only once the record is durable.
     pub(crate) recording: bool,
+    /// When a call under its standing marker was about to release its
+    /// first funding signature: its `funding_release` row's `at` (UNIX
+    /// seconds), read with the rest of this view (DP1-02's DEC-197 and
+    /// DEC-198 am.1). `None`: no signature was released under it.
+    pub(crate) released_at: Option<u64>,
 }
 
 /// The dispatch journal is not read (not loaded, unopenable, a newer
 /// schema): which steps are claimed is unknown.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "DP1-02's ownership ledger reads it")
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FundingStepsUnavailable;
 
@@ -689,7 +686,7 @@ fn derive_step(
     // stays vetoed).
     let status = if matches!(info.status, CallStepStatus::Marked { .. })
         && info.durable_record
-        && !info.released
+        && info.released.is_none()
         && signed.is_empty()
         && !funding_call_of(i, wallet, step)
     {
@@ -1349,10 +1346,6 @@ impl LeaseTable {
     /// a caller that resumes a row itself (DP1-02's outpoint calls) must
     /// not resume it while this is `Some`, as P2b's own pass does not
     /// ([`unrecorded_signer`]).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "DP1-02's resume calls gate on it")
-    )]
     pub(crate) fn unrecorded_signer_of(
         &self,
         wallet: WalletId,
@@ -1410,10 +1403,6 @@ impl LeaseTable {
     /// be read (a funding type or a draft id this build does not know): an
     /// empty or partial list would read a claimed step unclaimed (review
     /// Opus O-3, P2b r5 validator).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "DP1-02's ownership ledger reads it")
-    )]
     pub(crate) fn registration_funding_steps(
         &self,
         wallet: WalletId,
@@ -1452,6 +1441,7 @@ impl LeaseTable {
                     dead,
                     durable_record: info.durable_record,
                     recording: locks.iter().any(|l| !l.durable),
+                    released_at: info.released,
                 });
             }
             out.sort_by_key(|v| v.draft);

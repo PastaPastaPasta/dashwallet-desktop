@@ -244,7 +244,7 @@ fn broken_rules(check: &UsernameCheck) -> Vec<UsernameRule> {
 }
 
 /// `label`'s check, or `name.invalid` with the rules it breaks.
-fn valid_label(label: &str) -> Result<UsernameCheck, NameError> {
+pub(crate) fn valid_label(label: &str) -> Result<UsernameCheck, NameError> {
     let check = username_check(label);
     if check.valid {
         Ok(check)
@@ -1015,7 +1015,6 @@ impl DashPay {
 
     /// `register_name` under a lease the caller holds (DP1-02's
     /// registration flow), on the runtime the caller already runs on.
-    #[expect(dead_code, reason = "DP1-02's registration flow calls it")]
     pub(crate) async fn register_name_for_flow(
         session: &Arc<NetworkSession>,
         wallet_id: WalletId,
@@ -1469,6 +1468,16 @@ impl DashPay {
             Self::name_grant(&SdkNet(manager.sdk_arc()), &check).await
         })
         .await
+    }
+
+    /// A registration's name cost (DP1-02's quote): what `register_name`'s
+    /// grant would ask for `label`.
+    pub(crate) async fn name_credits_for_flow(
+        sdk: Arc<dash_sdk::Sdk>,
+        label: &str,
+    ) -> Result<u64, NameError> {
+        let check = valid_label(label)?;
+        Ok(Self::name_grant(&SdkNet(sdk), &check).await?.max_credits)
     }
 
     async fn name_grant(

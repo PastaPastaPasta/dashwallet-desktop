@@ -177,6 +177,9 @@ pub(crate) struct Classified {
     /// for the provenance check before the persister takes them (§2a.6,
     /// §2a.7).
     lock_txs: Vec<(dashcore::Transaction, bool)>,
+    /// Registration locks of account 0 written, as the registration
+    /// ledger reads them (DP1-02 §6).
+    registration_locks: Vec<super::registration_flow::LockInfo>,
     /// Contact and payment events.
     events: Vec<Event>,
     /// The DPNS names of the wallet's own identities, by identity.
@@ -274,6 +277,23 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
             let built = matches!(e.status, platform_wallet::AssetLockStatus::Built);
             (e.transaction.clone(), built)
         }));
+        c.registration_locks.extend(
+            locks
+                .asset_locks
+                .values()
+                .filter(|e| {
+                    e.funding_type == platform_wallet::AssetLockFundingType::IdentityRegistration
+                        && e.account_index == 0
+                })
+                .map(|e| super::registration_flow::LockInfo {
+                    outpoint: e.out_point,
+                    registration: true,
+                    identity_index: e.identity_index,
+                    account: e.account_index,
+                    amount: e.amount_duffs,
+                    status: super::registration_flow::lock_status(&e.status),
+                }),
+        );
     }
 
     // `dashpay_payments_overlay`: every payment write rides it (the library
@@ -350,6 +370,13 @@ pub(crate) struct ChangesetTap {
     /// so does a Core changeset of a wallet awaiting a self-spend's
     /// ChainLock.
     locks_changed: OnceLock<Weak<LeaseTable>>,
+    /// Told when a registration reached `FundingSent` here (DP1-02: the
+    /// automatic backup of §3.4 Restore rule 4). Set once the session
+    /// exists.
+    pub(crate) on_funded: OnceLock<Box<dyn Fn(WalletId, i64) + Send + Sync>>,
+    /// The session's registration flows, whose actors write a tracked
+    /// lock's outpoint (DEC-173). Set once the session exists.
+    pub(crate) registrations: OnceLock<Arc<super::registration_flow::Flows>>,
 }
 
 impl ChangesetTap {
@@ -359,6 +386,8 @@ impl ChangesetTap {
             appdb,
             catch_up_before: Mutex::new(HashMap::new()),
             locks_changed: OnceLock::new(),
+            on_funded: OnceLock::new(),
+            registrations: OnceLock::new(),
         }
     }
 
@@ -502,6 +531,40 @@ impl ChangesetTap {
         let wallet = id.to_string();
         let now = unix_now();
         let mut changes = std::mem::take(&mut c.changes);
+        // Before the library broadcasts a registration's lock, its
+        // outpoint goes to the flow's row (§3.4 Restore rule 3).
+        let locks = std::mem::take(&mut c.registration_locks);
+        // The lease table holds the signed-lock provenance the tap gives a
+        // lock by; without it the lock is left to the funding call and
+        // "Finish transfers" (fail closed).
+        match (self.registrations.get(), self.table()) {
+            (Some(flows), Some(leases)) => {
+                for lock in locks {
+                    let tracked = super::registration_flow::lock_tracked(
+                        flows,
+                        &self.appdb,
+                        &leases,
+                        id,
+                        lock,
+                    );
+                    match tracked {
+                        Ok(Some(draft)) => {
+                            if let Some(funded) = self.on_funded.get() {
+                                funded(id, draft);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!(wallet_id = %id, error = %e, "could not record a registration's lock")
+                        }
+                    }
+                }
+            }
+            _ if !locks.is_empty() => {
+                tracing::warn!(wallet_id = %id, "a registration lock was tracked before the session's flows")
+            }
+            _ => {}
+        }
         if !c.locks.is_empty()
             && let Some(table) = self.table()
         {

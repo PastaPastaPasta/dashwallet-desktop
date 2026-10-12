@@ -144,11 +144,19 @@ impl From<IdentityError> for PlatformError {
 /// `invitation.*` refusals of invitation funding.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RegistrationError {
-    /// Another registration flow is running.
-    #[error("a registration is in progress")]
-    InProgress,
+    /// Another registration is in progress (DP1-02 §5.3): `draft` names
+    /// the row that blocks, or `registration/<n>/funding` for a funding step
+    /// whose row is gone (an orphan, Q7).
+    #[error("registration {draft} is in progress")]
+    InProgress { draft: String },
     #[error("insufficient funds: {needed} duffs needed, {available} available")]
     FundingInsufficient { needed: u64, available: u64 },
+    /// The wallet has coins it keeps from automatic selection (locked by
+    /// the user or the dust protection, or reserved by a send), and the
+    /// asset-lock funding cannot be told to skip them: it is refused until
+    /// they are unlocked or the send ends.
+    #[error("the wallet has locked or reserved coins the funding could spend")]
+    CoinsLocked,
     #[error("no InstantSend lock in time")]
     IslockTimeout,
     /// The flow parked and can be resumed with `resume_registration`.
@@ -156,6 +164,38 @@ pub enum RegistrationError {
     Recoverable { draft: String },
     #[error("the identity already has a username")]
     AlreadyHasUsername,
+    /// The row was written by a newer build: its funding or profile
+    /// encoding, or its phase, is one this build does not know. Read-time
+    /// only: the row is never advanced, funded or discarded here, and stays
+    /// as written for the build that can read it.
+    #[error("the registration was written by a newer version")]
+    Unsupported,
+    /// A row's failure, never returned by a call: another registration
+    /// holds the lock this one's funding step signed (a restored copy), so
+    /// this one is closed for good and never funds that intent again. It
+    /// can be discarded; a new registration starts afresh (DP1-02 §3.3
+    /// row 7).
+    #[error("another registration holds this registration's funding")]
+    FundedElsewhere,
+    /// A row's failure, never returned by a call: its funding was cancelled
+    /// (Repair's ChainLocked self-spend took its lock's inputs, or nothing
+    /// was signed before a restart) and its step is never called again.
+    /// Nothing is committed; it can be discarded, and a new registration
+    /// starts afresh (DP1-02 §3.3 row 8).
+    #[error("the registration's funding was cancelled")]
+    FundingCancelled,
+    /// A start past an unknown funding (DEC-197) while SPV is not caught
+    /// up: a lock the earlier funding sent may not be seen yet.
+    #[error("the wallet is not synced")]
+    NotSynced,
+    /// A start past an unknown funding (DEC-197) before its release is an
+    /// hour old, or with its age unknown: a lock it sent may still appear.
+    /// `wait_secs` is how long until it may pass, when known.
+    #[error("registration {draft}'s funding may still appear")]
+    FundingUnknownRecent {
+        draft: String,
+        wait_secs: Option<u64>,
+    },
     #[error(transparent)]
     Name(NameError),
     #[error(transparent)]
@@ -167,11 +207,17 @@ pub enum RegistrationError {
 impl RegistrationError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::InProgress => "registration.in_progress",
+            Self::InProgress { .. } => "registration.in_progress",
             Self::FundingInsufficient { .. } => "registration.funding_insufficient",
+            Self::CoinsLocked => "registration.coins_locked",
             Self::IslockTimeout => "registration.islock_timeout",
             Self::Recoverable { .. } => "registration.recoverable",
             Self::AlreadyHasUsername => "registration.already_has_username",
+            Self::Unsupported => "registration.unsupported",
+            Self::FundedElsewhere => "registration.funded_elsewhere",
+            Self::FundingCancelled => "registration.funding_cancelled",
+            Self::NotSynced => "registration.not_synced",
+            Self::FundingUnknownRecent { .. } => "registration.funding_unknown_recent",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
             Self::Platform(e) => e.code(),

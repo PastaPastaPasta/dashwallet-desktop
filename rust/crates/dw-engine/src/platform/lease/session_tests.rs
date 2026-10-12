@@ -1309,7 +1309,7 @@ fn mode_b_a_funding_permit_counts_its_signer_and_the_facade_reads_its_status() {
     // the call released one (its `funding_release` row), and a lock the
     // library sends without storing it would be recorded nowhere else
     // (review P2b r6 R6-01): possibly sent.
-    assert!(s.leases.call_step(f.wallet, STEP).released);
+    assert!(s.leases.call_step(f.wallet, STEP).released.is_some());
     assert_eq!(
         f.engine
             .block_on(dashpay.dispatch_status(STEP.into()))
@@ -2800,7 +2800,7 @@ fn mode_b_a_lock_the_library_sends_unstored_leaves_its_step_maybe_sent() {
         1,
         "recorded before the first signature"
     );
-    assert!(s.leases.call_step(f.wallet, STEP).released);
+    assert!(s.leases.call_step(f.wallet, STEP).released.is_some());
     assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
     assert_eq!(
         s.leases.funding_status(f.wallet, STEP),
@@ -2837,7 +2837,7 @@ fn mode_b_a_funding_signature_waits_for_its_durable_release() {
         Err(dw_vault::SignerError::PathNotAllowed(_))
     ));
     assert_eq!(permit.signatures().released(), 0);
-    assert!(!s.leases.call_step(f.wallet, STEP).released);
+    assert!(s.leases.call_step(f.wallet, STEP).released.is_none());
     assert_eq!(f.release_rows(STEP), 0);
     assert_eq!(permit.finish(false), FlowOutcome::Cancelled);
     assert_eq!(

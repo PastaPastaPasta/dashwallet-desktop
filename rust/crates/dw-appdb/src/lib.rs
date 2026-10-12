@@ -21,8 +21,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 mod dashpay_journal;
 pub mod dispatch;
 mod provenance;
+mod registration;
 mod rows;
 pub use dashpay_journal::{JournalEntry, JournalRow};
+pub use registration::{
+    LockOutpoint, NewRegistration, RegistrationChange, RegistrationRow, RegistrationUpdate,
+};
 pub use rows::{SqlValue, TableRows};
 
 mod embedded {
@@ -831,7 +835,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026101101);
+        assert_eq!(db.schema_version().unwrap(), 2026101202);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();

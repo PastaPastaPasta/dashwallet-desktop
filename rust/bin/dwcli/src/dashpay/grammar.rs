@@ -38,6 +38,9 @@ pub(super) enum Ty {
     /// lower-case hex) or a funding step id (`registration/<id>/funding`,
     /// `topup/<id>/funding`).
     Artifact,
+    /// What `registration.in_progress` names: a draft id, or a funding
+    /// step id (`registration/<id>/funding`).
+    Blocker,
     /// A Dash address: 26–35 Base58 characters.
     Address,
     /// A decimal integer that fits a `u64`, without a leading zero.
@@ -77,6 +80,7 @@ fn value_type(cmd: &str, arg: &str) -> Option<Ty> {
         ("activity", "cursor") => Ty::EngineId,
         (_, "draft" | "invitation_id" | "link_id" | "faucet_key") => Ty::EngineId,
         (_, "artifact") => Ty::Artifact,
+        (_, "past_unknown_funding") => Ty::Blocker,
         (_, "to") => Ty::Address,
         (_, "cursor" | "up_to" | "max_duffs" | "max_credits" | "duffs" | "credits" | "amount") => {
             Ty::U64
@@ -107,6 +111,7 @@ impl Ty {
             Ty::Identity => "an identity id (Base58 of 32 bytes)",
             Ty::EngineId => "an id the engine issued (1-64 of [0-9a-z_-])",
             Ty::Artifact => "a txid, a state-transition hash or a funding step id",
+            Ty::Blocker => "a draft id or a registration's funding step id",
             Ty::Address => "a Dash address",
             Ty::U64 | Ty::U32 => "a decimal number",
             Ty::Enum(_) => "one of the listed names",
@@ -134,6 +139,12 @@ impl Ty {
                             .and_then(|r| r.strip_suffix("/funding"))
                             .is_some_and(|id| is_engine_id(id.as_bytes()))
                     })
+            }
+            Ty::Blocker => {
+                is_engine_id(b)
+                    || (v.strip_prefix("registration/"))
+                        .and_then(|r| r.strip_suffix("/funding"))
+                        .is_some_and(|id| is_engine_id(id.as_bytes()))
             }
             Ty::Address => (26..=35).contains(&b.len()) && b.iter().all(|c| BASE58.contains(c)),
             Ty::U64 => is_decimal(b) && v.parse::<u64>().is_ok(),
@@ -474,6 +485,17 @@ mod tests {
                 Ty::Artifact,
                 &[&hex, "registration/d1/funding", "topup/7/funding"],
                 &["registration//funding", "topup/7", "x/7/funding", "AB"],
+            ),
+            (
+                Ty::Blocker,
+                &["7", "d1", "registration/7/funding"],
+                &[
+                    "topup/7/funding",
+                    "registration/7",
+                    "registration//funding",
+                    "AB",
+                    "",
+                ],
             ),
             (
                 Ty::Address,

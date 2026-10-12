@@ -565,6 +565,7 @@ impl JournalBackend for FakeJournal {
         wallet: &[u8; 32],
         step: &str,
         artifact: &[u8; 32],
+        at: u64,
     ) -> Result<bool, String> {
         if self.fail_release.load(Ordering::SeqCst) {
             return Err("injected release failure".into());
@@ -581,7 +582,7 @@ impl JournalBackend for FakeJournal {
                 step_id: step.to_owned(),
                 artifact: *artifact,
                 marker,
-                at: 0,
+                at,
             });
         }
         Ok(true)
@@ -2457,9 +2458,10 @@ impl JournalBackend for GatedJournal {
         wallet: &[u8; 32],
         step: &str,
         artifact: &[u8; 32],
+        at: u64,
     ) -> Result<bool, String> {
         self.db
-            .insert_release(wallet, step, artifact, 0)
+            .insert_release(wallet, step, artifact, at)
             .map_err(|e| e.to_string())
     }
 
@@ -3147,9 +3149,10 @@ impl JournalBackend for R2Journal {
         wallet: &[u8; 32],
         step: &str,
         artifact: &[u8; 32],
+        at: u64,
     ) -> Result<bool, String> {
         self.db
-            .insert_release(wallet, step, artifact, 0)
+            .insert_release(wallet, step, artifact, at)
             .map_err(|e| e.to_string())
     }
 
@@ -3688,9 +3691,10 @@ impl JournalBackend for R3Journal {
         wallet: &[u8; 32],
         step: &str,
         artifact: &[u8; 32],
+        at: u64,
     ) -> Result<bool, String> {
         self.db
-            .insert_release(wallet, step, artifact, 0)
+            .insert_release(wallet, step, artifact, at)
             .map_err(|e| e.to_string())
     }
 

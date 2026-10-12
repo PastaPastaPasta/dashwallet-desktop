@@ -94,6 +94,8 @@ pub(crate) struct PlatformRuntime {
     pub(crate) contacts: super::contacts_model::ContactsRuntime,
     /// Search, links and the scans waiting for a send (DP2-03).
     pub(crate) users: super::users::UsersRuntime,
+    /// The registration flows running in this process (DP1-02).
+    pub(crate) registrations: Arc<super::registration_flow::Flows>,
     /// Tests: holds the next bring-up between building its keys and
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
@@ -264,6 +266,7 @@ impl PlatformRuntime {
             recovery: Default::default(),
             contacts: Default::default(),
             users: Default::default(),
+            registrations: Default::default(),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
         }
@@ -433,6 +436,7 @@ impl PlatformRuntime {
         self.recovery.forget(id);
         self.contacts.forget(id);
         self.users.scans.forget(id);
+        self.registrations.forget_wallet(*id);
     }
 
     pub(super) fn untrack(&self, id: WalletId, task: tokio::task::Id) {

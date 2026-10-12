@@ -326,6 +326,12 @@ pub struct RegistrationArgs {
     /// Print the quote only.
     #[arg(long)]
     quote_only: bool,
+    /// Start past this earlier registration's unknown funding (repeatable;
+    /// the draft or funding step `registration.in_progress` names), once
+    /// the user confirmed that its payment may still confirm, as a lock to
+    /// recover later (DEC-197, DEC-198).
+    #[arg(long)]
+    past_unknown_funding: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -657,7 +663,17 @@ fn invitation_params(e: &InvitationError) -> Value {
 fn registration_params(e: &RegistrationError) -> Value {
     use RegistrationError as R;
     match e {
-        R::InProgress | R::IslockTimeout | R::AlreadyHasUsername => json!({}),
+        R::IslockTimeout
+        | R::AlreadyHasUsername
+        | R::Unsupported
+        | R::FundedElsewhere
+        | R::FundingCancelled
+        | R::NotSynced
+        | R::CoinsLocked => json!({}),
+        R::FundingUnknownRecent { draft, wait_secs } => {
+            json!({"draft": draft, "wait_secs": wait_secs})
+        }
+        R::InProgress { draft } => json!({"draft": draft}),
         R::FundingInsufficient { needed, available } => {
             json!({"needed": needed, "available": available})
         }
@@ -1399,7 +1415,13 @@ fn register(
     let mut result = json!({"quote": quote});
     if !reg.quote_only {
         let grant = ctx.platform_op(dp, caps)?;
-        result["draft"] = ctx.block_on(dp.start_registration(req, grant))?.into();
+        let draft = if reg.past_unknown_funding.is_empty() {
+            ctx.block_on(dp.start_registration(req, grant))?
+        } else {
+            let past = reg.past_unknown_funding;
+            ctx.block_on(dp.start_registration_past_unknown_funding(req, grant, past))?
+        };
+        result["draft"] = draft.into();
     }
     Ok(result)
 }
@@ -1772,7 +1794,7 @@ mod tests {
         "invite",
     ];
 
-    /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01), with the
+    /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01, DP1-02), with the
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
@@ -1787,6 +1809,28 @@ mod tests {
         ("name register --identity I bob", NO_PLATFORM),
         ("dashpay sync-status", SYNC_STATUS),
         ("dashpay leases", r#"{"ok":true,"result":[]}"#),
+        ("identity register --label alice", NO_PLATFORM),
+        (
+            "identity register --label alice --existing-identity I",
+            NO_PLATFORM,
+        ),
+        ("identity registrations", r#"{"ok":true,"result":[]}"#),
+        (
+            "identity resume D --max-duffs 1 --max-credits 2",
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"no registration \"D\"","params":{"detail":"no registration \"D\""}}}"#,
+        ),
+        (
+            "identity discard D",
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: unknown draft","params":{"detail":"unknown draft"}}}"#,
+        ),
+        (
+            "identity finish-asset-locks --max-credits 50000",
+            r#"{"ok":true,"result":{"resumed":0,"completed":0,"still_pending":0}}"#,
+        ),
+        (
+            "identity faucet-key",
+            r#"{"ok":false,"error":{"code":"platform.feature_off","message":"feature off: faucet","params":{"feature":"faucet"}}}"#,
+        ),
         (
             "dashpay dispatch-status ab12",
             r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a txid, transition hash or step id","params":{"detail":"not a txid, transition hash or step id"}}}"#,

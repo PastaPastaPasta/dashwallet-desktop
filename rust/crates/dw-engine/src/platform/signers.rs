@@ -106,6 +106,12 @@ impl VaultIdentitySigner {
         self
     }
 
+    /// The vault signer, for deriving the identity's public keys
+    /// (`keys_policy::derive_keys`).
+    pub(crate) fn vault_signer(&self) -> &VaultSigner {
+        &self.signer
+    }
+
     /// The slot `keys_policy` derives the key at.
     fn slot(&self, identity_index: u32, key: &IdentityPublicKey) -> Option<DerivationPath> {
         key_path(self.signer.network(), identity_index, key.id()).ok()
