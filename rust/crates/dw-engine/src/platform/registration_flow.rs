@@ -2774,13 +2774,10 @@ impl RegistrationLib for PwLib {
         // (the credit output's key). The step's status rests on that lock's
         // own signed record, which no signature here can contradict.
         let funding_signer = permit.lease().uncounted_funding_signer()?;
-        let keys = super::keys_policy::derive_keys(
-            identity_signer.vault_signer().expect("not narrowed"),
-            identity_index,
-            &super::keys_policy::registration_specs(),
-        )
-        .await
-        .map_err(PlatformError::from)?;
+        let keys = identity_signer
+            .derive_public_keys(identity_index, &super::keys_policy::registration_specs())
+            .await
+            .map_err(PlatformError::from)?;
         let identity = self
             .wallet
             .identity()

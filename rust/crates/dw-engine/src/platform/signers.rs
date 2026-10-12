@@ -32,7 +32,7 @@
 //! that must not use such a result ("Lock to cancel") fences at its own
 //! commit point under an E0-04 lease, not here.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -53,7 +53,7 @@ use platform_wallet::{
 };
 use zeroize::Zeroizing;
 
-use super::keys_policy::key_path;
+use super::keys_policy::{self, KeySpec, key_path};
 use super::lease::{FundingRelease, SignatureCount};
 use crate::EngineError;
 
@@ -83,6 +83,16 @@ fn require_scope(signer: &VaultSigner, scope: SignerScope) -> Result<(), EngineE
 /// ([`Self::only_keys`]): any other key, the master included, is refused
 /// before the vault is asked, and `can_sign_with` answers `false`, so the
 /// library's key choice cannot fall on it.
+///
+/// Its vault signer never leaves it (DP2-02 Sol r5): a raw signer would sign
+/// past the call permit's count and the key allow-list. Public keys come
+/// from [`Self::derive_public_keys`]; there is no accessor:
+///
+/// ```compile_fail
+/// fn raw(s: &dw_engine::platform::VaultIdentitySigner) {
+///     let _ = s.vault_signer();
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct VaultIdentitySigner {
     signer: VaultSigner,
@@ -116,11 +126,27 @@ impl VaultIdentitySigner {
         self
     }
 
-    /// The scoped vault signer, which `keys_policy::derive_keys` derives
-    /// public keys with; `None` once [`Self::only_keys`] narrowed it, so the
-    /// narrowing cannot be stepped around.
-    pub(crate) fn vault_signer(&self) -> Option<&VaultSigner> {
-        self.keys.is_none().then_some(&self.signer)
+    /// The public keys `specs` of the identity at `identity_index`, one of
+    /// this signer's, as registration derives them
+    /// ([`keys_policy::derive_keys`]). Public material only: no signature
+    /// is made, so none is counted. Refused once [`Self::only_keys`]
+    /// narrowed the signer, so the narrowing cannot be stepped around.
+    pub(crate) async fn derive_public_keys(
+        &self,
+        identity_index: u32,
+        specs: &[KeySpec],
+    ) -> Result<BTreeMap<KeyID, IdentityPublicKey>, EngineError> {
+        if self.keys.is_some() {
+            return Err(EngineError::Internal(
+                "a narrowed identity signer derives no keys".into(),
+            ));
+        }
+        if !self.identity_indices.contains(&identity_index) {
+            return Err(EngineError::InvalidArgument(format!(
+                "identity index {identity_index} is not this signer's"
+            )));
+        }
+        keys_policy::derive_keys(&self.signer, identity_index, specs).await
     }
 
     fn allowed(&self, key: &IdentityPublicKey) -> bool {
@@ -516,5 +542,41 @@ impl VaultScanKey {
         &self,
     ) -> impl Fn() -> Result<ExtendedPrivKey, ScanKeyError> + Send + Sync + '_ {
         move || self.resolve()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// No signing handle leaves this module (DP2-02 Sol r5): outside its
+    /// tests, no function here returns anything that names a
+    /// `VaultSigner`, and no field holding one is visible outside its type.
+    /// The `compile_fail` doctest on [`super::VaultIdentitySigner`] covers
+    /// the public surface; this covers `pub(crate)` too.
+    #[test]
+    fn no_vault_signer_leaves_the_module() {
+        let source = include_str!("signers.rs");
+        let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let mut rest = production;
+        while let Some(at) = rest.find("fn ") {
+            let sig = &rest[at..];
+            let end = sig.find(['{', ';']).unwrap_or(sig.len());
+            let sig = &sig[..end];
+            if let Some((_, returns)) = sig.split_once("->") {
+                assert!(
+                    !returns.contains("VaultSigner"),
+                    "a signer leaves the module: {sig}"
+                );
+            }
+            rest = &rest[at + 3..];
+        }
+        for line in production.lines() {
+            let line = line.trim();
+            assert!(
+                !(line.starts_with("pub")
+                    && !line.contains("fn ")
+                    && line.contains(": VaultSigner")),
+                "a visible signer field: {line}"
+            );
+        }
     }
 }

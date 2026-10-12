@@ -28,7 +28,7 @@ use super::super::identity_writes::identity_locks;
 use super::super::journal_tests::{
     Recorder, b58, engine, grant_unused, id, platform_grant, request, session,
 };
-use super::super::keys_policy::{derive_keys, registration_specs};
+use super::super::keys_policy::registration_specs;
 use super::super::signers::{VaultContactCrypto, VaultIdentitySigner};
 use super::super::startup::SyncLoop;
 use super::*;
@@ -91,12 +91,7 @@ pub(crate) fn vault_keys(
         (engine.block_on(s.begin_flow(wallet, FlowKind::EnableDashPayKeys, grants))).unwrap();
     let lease = s.lease_for(&wallet, &lease_id).unwrap().unwrap();
     let signer = lease.identity_signer(&[0]).unwrap();
-    let real = (engine.block_on(derive_keys(
-        signer.vault_signer().unwrap(),
-        0,
-        &registration_specs(),
-    )))
-    .unwrap();
+    let real = (engine.block_on(signer.derive_public_keys(0, &registration_specs()))).unwrap();
     lease.end();
     keys.into_keys().map(|k| (k, real[&k].clone())).collect()
 }
@@ -634,6 +629,44 @@ fn one_lease_pays_for_one_write() {
     assert!(f.send(BOB, &twice).is_ok());
 }
 
+/// A permit's identity signer gives public keys and signatures only (DP2-02
+/// Sol r5): it derives a key upgrade's public keys while unnarrowed and for
+/// its own identity; narrowed to a flow's keys it derives none; once the
+/// permit ends it signs nothing. No raw vault signer can be had from it
+/// (`signers::tests::no_vault_signer_leaves_the_module`).
+#[test]
+fn a_permits_signer_hands_out_public_keys_only() {
+    let f = Fixture::with_keys(keys(false), u64::MAX / 2);
+    let id = f.flow(
+        FlowKind::EnableDashPayKeys,
+        vec![f.grant(KEY_UPDATE_CREDITS)],
+    );
+    let lease = f.s.lease_for(&f.wallet, &id).unwrap().unwrap();
+    let permit = lease.call_permit("enable_dashpay_keys", None).unwrap();
+    let signer = permit.identity_signer(&[0]).unwrap();
+    let derive = |signer: &VaultIdentitySigner, index| {
+        f.engine
+            .block_on(signer.derive_public_keys(index, &registration_specs()))
+    };
+    let real = derive(&signer, 0).unwrap();
+    assert_eq!(real, vault_keys(&f.engine, &f.s, f.wallet, keys(true)));
+    assert!(matches!(
+        derive(&signer, 1),
+        Err(crate::EngineError::InvalidArgument(_))
+    ));
+    let narrowed = signer.clone().only_keys([0]);
+    assert!(matches!(
+        derive(&narrowed, 0),
+        Err(crate::EngineError::Internal(_))
+    ));
+
+    let master = &real[&0];
+    f.engine.block_on(signer.sign(master, b"before")).unwrap();
+    permit.finish(true);
+    assert!(!signer.can_sign_with(master));
+    assert!(f.engine.block_on(signer.sign(master, b"after")).is_err());
+}
+
 /// A write's call permit hands its quote back when the write failed
 /// before signing anything (`Cancelled`), and keeps it once a signature is
 /// out, whatever the write returns (E0-04 P2b, m4 item 40): per flow, on a
@@ -932,11 +965,7 @@ fn each_flow_signs_with_its_own_keys_only() {
     let unrestricted = request.identity_signer(&[0]).unwrap();
     let real = f
         .engine
-        .block_on(derive_keys(
-            unrestricted.vault_signer().unwrap(),
-            0,
-            &registration_specs(),
-        ))
+        .block_on(unrestricted.derive_public_keys(0, &registration_specs()))
         .unwrap();
     let me = identity(ME, real.clone(), 0);
     let sign = |signer: &VaultIdentitySigner, k: KeyID| {
@@ -1014,6 +1043,15 @@ fn enable_dashpay_keys_adds_the_missing_pair_once() {
         .map(|k| (k.id(), k.purpose()))
         .collect();
     assert_eq!(added, [(4, Purpose::ENCRYPTION), (5, Purpose::DECRYPTION)]);
+    // Derived through the permit's signer as registration derives them.
+    let registered = vault_keys(&f.engine, &f.s, f.wallet, keys(true));
+    for id in [4, 5] {
+        assert_eq!(
+            me.public_keys()[&id].data(),
+            registered[&id].data(),
+            "key {id}"
+        );
+    }
     assert_eq!(
         me.balance(),
         quote - f.net.fee,

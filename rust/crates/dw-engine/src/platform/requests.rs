@@ -36,9 +36,7 @@ use super::flows::{BudgetPurpose, CONTACT_REQUEST_CREDITS, FlowKind, KEY_UPDATE_
 use super::identity::KeyPurpose;
 use super::identity_writes::identity_locks;
 use super::journal::request_ref;
-use super::keys_policy::{
-    derive_keys, is_dashpay_recipient, key_path, missing_dashpay_purposes, upgrade_specs,
-};
+use super::keys_policy::{is_dashpay_recipient, key_path, missing_dashpay_purposes, upgrade_specs};
 use super::lease::session::HeldKey;
 use super::lease::{CallPermit, CallQuote, Lease};
 use super::names::{NameAuthority, check_credit_cap};
@@ -723,15 +721,11 @@ pub(super) async fn enable_keys(
     )
     .await?;
     let permit = write_permit(&lease, "enable_dashpay_keys", KEY_UPDATE_CREDITS)?;
-    let keys = {
-        let deriving = permit
-            .identity_signer(&[index])
-            .map_err(PlatformError::from)?;
-        let deriving = deriving.vault_signer().expect("not narrowed yet");
-        derive_keys(deriving, index, &specs)
-            .await
-            .map_err(PlatformError::from)?
-    };
+    let keys = (permit.identity_signer(&[index]))
+        .map_err(PlatformError::from)?
+        .derive_public_keys(index, &specs)
+        .await
+        .map_err(PlatformError::from)?;
     let added: Vec<KeyID> = keys.keys().copied().collect();
     let signer = flow_signer(&permit, index, &current, &added)?;
     let written = leased(
