@@ -832,7 +832,7 @@ fn the_key_window_parks_at_key_until_and_follows_the_proof_wait() {
             t.begin(
                 wallet,
                 FlowKind::Registration,
-                move || issue(&vault, &wallet, FlowKind::Registration, &[g], &[]),
+                move || issue(&vault, &wallet, FlowKind::Registration, &[g], None),
                 move || epoch.epoch(),
             )
         };

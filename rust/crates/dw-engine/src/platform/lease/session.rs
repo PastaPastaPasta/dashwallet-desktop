@@ -48,13 +48,13 @@ pub(crate) type HeldKey = (DerivationPath, Vec<u8>);
 /// signer the purposes need, and drops the tokens. With `keys`, the
 /// `PlatformOp` grant is redeemed only while the vault holds one of them
 /// (dw-vault `redeem_grant_holding_key`), else `KeysNotHeld` with every
-/// grant unused.
+/// grant unused (none given included).
 pub(crate) fn issue(
     vault: &Vault,
     wallet: &WalletId,
     flow: FlowKind,
     grants: &[String],
-    keys: &[HeldKey],
+    keys: Option<&[HeldKey]>,
 ) -> Result<Issued, LeaseError> {
     let epoch_before = vault.epoch();
     let allowed = kinds_for(flow);
@@ -78,8 +78,8 @@ pub(crate) fn issue(
     // leaves every grant unused.
     let mut order: Vec<_> = grants.iter().zip(&kinds).collect();
     order.sort_by_key(|(_, k)| **k != GrantKind::PlatformOp);
-    let redeem = |g: &String, kind: GrantKind| match kind {
-        GrantKind::PlatformOp if !keys.is_empty() => vault
+    let redeem = |g: &String, kind: GrantKind| match (kind, keys) {
+        (GrantKind::PlatformOp, Some(keys)) => vault
             .redeem_grant_holding_key(g, &wallet.0, keys)?
             .ok_or(VaultError::NoSecret),
         _ => vault.redeem_grant(g, kind, Some(&wallet.0)),
@@ -90,8 +90,10 @@ pub(crate) fn issue(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| match e {
             VaultError::Locked | VaultError::MixingOnly => LeaseError::Locked,
-            VaultError::NoSecret if !keys.is_empty() => LeaseError::KeysNotHeld,
-            _ => LeaseError::Invalid,
+            VaultError::NoSecret if keys.is_some() => LeaseError::KeysNotHeld,
+            VaultError::GrantInvalid | VaultError::GrantPurposeMismatch => LeaseError::Invalid,
+            // The key check reads the seed: a vault fault, not the grant's.
+            _ => LeaseError::Vault("redemption"),
         })?;
     if tokens.iter().any(|t| t.wallet() != Some(wallet.0)) {
         return Err(LeaseError::Invalid);
@@ -161,8 +163,7 @@ impl NetworkSession {
         flow: FlowKind,
         grants: &[String],
     ) -> Result<Lease, LeaseError> {
-        self.begin_lease_holding(wallet, flow, grants, Vec::new())
-            .await
+        self.begin_issuing(wallet, flow, grants, None).await
     }
 
     /// [`Self::begin_lease`] for a write that signs with one of `keys`:
@@ -175,6 +176,16 @@ impl NetworkSession {
         grants: &[String],
         keys: Vec<HeldKey>,
     ) -> Result<Lease, LeaseError> {
+        self.begin_issuing(wallet, flow, grants, Some(keys)).await
+    }
+
+    async fn begin_issuing(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        flow: FlowKind,
+        grants: &[String],
+        keys: Option<Vec<HeldKey>>,
+    ) -> Result<Lease, LeaseError> {
         let vault = self.vault.clone();
         let epoch_vault = self.vault.clone();
         let grants = grants.to_vec();
@@ -182,7 +193,7 @@ impl NetworkSession {
             .begin(
                 wallet,
                 flow,
-                move || issue(&vault, &wallet, flow, &grants, &keys),
+                move || issue(&vault, &wallet, flow, &grants, keys.as_deref()),
                 move || epoch_vault.epoch(),
             )
             .await
@@ -195,7 +206,7 @@ impl NetworkSession {
         let (wallet, flow, grants) = (lease.wallet, lease.flow, grants.to_vec());
         lease
             .rebind(
-                move || issue(&vault, &wallet, flow, &grants, &[]),
+                move || issue(&vault, &wallet, flow, &grants, None),
                 move || epoch_vault.epoch(),
             )
             .await
