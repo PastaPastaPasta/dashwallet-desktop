@@ -1,0 +1,84 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Dash Wallet",
+  "mainBinaryName": "dash-wallet",
+  "version": "0.1.0",
+  "identifier": "org.dash.wallet.desktop",
+  "build": {
+    "frontendDist": "../../../apps/desktop/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Dash Wallet",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 920,
+        "minHeight": 600,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self'",
+        "img-src": "'self' data:",
+        "font-src": "'self'",
+        "connect-src": "ipc: http://ipc.localhost",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'",
+        "frame-ancestors": "'none'"
+      },
+      "freezePrototype": true,
+      "capabilities": [
+        "app",
+        "network",
+        "vault",
+        "wallets",
+        "chain",
+        "history",
+        "backup",
+        "send",
+        "coinjoin",
+        "identity",
+        "social",
+        "console",
+        "units"
+      ]
+    },
+    "withGlobalTauri": false
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "deb",
+      "appimage",
+      "msi",
+      "nsis",
+      "app",
+      "dmg"
+    ],
+    "category": "Finance",
+    "shortDescription": "Dash Wallet",
+    "longDescription": "The Dash wallet with DashPay, on the desktop.",
+    "copyright": "MIT",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
+  }
+}

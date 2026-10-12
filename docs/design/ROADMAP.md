@@ -120,7 +120,7 @@ what dashmate's gateway actually serves:
 | ID | Task | Deps | Size | Owner | Tier | Stack-indep | Acceptance |
 |---|---|---|---|---|---|---|---|
 | — | **Freeze, effective now**: no new screens in `MacUI`, `DashUIMac`, `CrossUI` or `DashUICross`; bug fixes only | — | — | — | — | — | — |
-| U-07 | Fixture backend + UI test harness: Playwright light and dark, tauri-driver end-to-end, axe-core in CI; replaces `WalletDemo` for UI tests | G-04, E0-13 | M | UI | T0, CI | N | Playwright runs without an engine. |
+| U-07 | Fixture backend + UI test harness: Playwright light and dark, tauri-driver end-to-end, axe-core in CI; replaces `WalletDemo` for UI tests | G-04, E0-13 | M | UI | T0, CI | N | Playwright runs without an engine. The lock-report consumer treats `flowsOmitted` / `artifactsOmitted` / `walletsWithSecretsOmitted` > 0 as unresolved and reconciles through `leases` / `dispatchStatus` / `lockStatus` (E0-13 D3). |
 | U-01 | Shell and information architecture (DASHPAY §4): window, sidebar, toolbar (chip, bell, wallet picker, discreet, lock), status bar, native menus, single instance, deep links (`dash:`, `pay:`, `dashwallet:`, `dashpay:`), tray | G-04, E0-13 | L | UI | T0, GL, CI | N | Every route renders; links route on all three OSes (CI). |
 | U-02 | Onboarding (create, verify, restore with live checks, passphrase), lock screen, unlock sheet, recovery phrase, Forgot passphrase | U-01 | L | UI | T0, T1, GL | N | The ported view-model tests (by parity ID) pass; the IOS-002/004/007/010/013/014 flows pass on T1. |
 | U-03 | Home, Pay (address tab, coin-control panel, confirm, result), Receive, Activity (list, table, filters, detail) | U-01 | L | UI | T0, T1, GL | N | A real regtest send through the UI. |

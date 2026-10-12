@@ -1,3 +1,6 @@
 # refinery checksums a migration's bytes: a CRLF checkout would differ from the
 # database that applied it (and from the checksums the dw-appdb tests pin).
 rust/crates/dw-appdb/migrations/*.sql text eol=lf
+# dw-app compares these with what it generates, byte for byte (E0-13).
+apps/desktop/src/api/generated/** text eol=lf
+docs/design/E0-13-facade-coverage.md text eol=lf

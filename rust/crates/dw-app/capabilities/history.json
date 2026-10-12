@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "history",
+  "description": "Transaction history. Granted to the main window only; `probe_unlisted` is never granted (U6).",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-history-page",
+    "allow-tx-detail",
+    "allow-tx-detail-extras",
+    "allow-abandon-transaction",
+    "allow-resend-transaction",
+    "allow-drop-unconfirmed",
+    "allow-export-history-csv",
+    "allow-tx-notices",
+    "allow-is-coinjoin-internal"
+  ]
+}
