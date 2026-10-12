@@ -609,6 +609,52 @@ fn row_asset_locks_signal_their_registration() {
     assert!(h.journal().is_empty());
 }
 
+/// The rows of an `asset_locks` changeset, of any status (the persister
+/// may fold a `Built` into a later one), with their funding keys: what
+/// releases a funding call's coin fence (E0-04 §2a.6).
+#[test]
+fn asset_locks_report_their_tracked_rows() {
+    use platform_wallet::changeset::AssetLockEntry;
+    use platform_wallet::{AssetLockFundingType as T, AssetLockStatus as A};
+    let entry = |n: u8, status: A, identity_index: u32| AssetLockEntry {
+        out_point: outpoint(n, 0),
+        transaction: Transaction {
+            version: 3,
+            lock_time: 0,
+            input: Vec::new(),
+            output: Vec::new(),
+            special_transaction_payload: None,
+        },
+        account_index: 2,
+        funding_type: T::IdentityRegistration,
+        identity_index,
+        amount_duffs: 1_000,
+        status,
+        proof: None,
+    };
+    let mut locks = AssetLockChangeSet::default();
+    for e in [entry(1, A::Built, 4), entry(2, A::Broadcast, 5)] {
+        locks.asset_locks.insert(e.out_point, e);
+    }
+    locks.removed.insert(outpoint(3, 0));
+    let c = classify(&PlatformWalletChangeSet {
+        asset_locks: Some(locks),
+        ..Default::default()
+    })
+    .unwrap();
+    let key = |identity_index| crate::platform::lease::FundingKey {
+        funding_type: T::IdentityRegistration,
+        identity_index,
+        account: 2,
+    };
+    let mut tracked = c.tracked().to_vec();
+    tracked.sort_by_key(|(_, k)| k.identity_index);
+    assert_eq!(
+        tracked,
+        [(outpoint(1, 0).txid, key(4)), (outpoint(2, 0).txid, key(5))]
+    );
+}
+
 /// §3.5 row `dashpay_payments_overlay`: `Payments{identity}`; "Received …
 /// from @alice" for a received payment. Its age is the block time of its
 /// confirmed transaction, as the persister has it (DEC-114): a payment the

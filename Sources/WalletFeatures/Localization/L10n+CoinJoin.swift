@@ -192,6 +192,9 @@ extension L10n {
         public static func movedPartially(moved: String, remaining: String, reason: String) -> String {
             "Moved \(moved); \(remaining) could not be moved yet: \(reason) You can try again later."
         }
+        public static func chunkUnknown(_ txid: String) -> String {
+            "It is not known whether the network received transaction \(txid). Its coins stay reserved until they show as spent; check Transactions before moving again."
+        }
         public static let withdrawalsTitle = "CoinJoin Withdrawals"
         public static let withdrawalsInfo = "Your mixed Dash was moved to your spendable balance using these transactions."
         public static func withdrawalsSummary(transactions: Int, inputs: Int) -> String {

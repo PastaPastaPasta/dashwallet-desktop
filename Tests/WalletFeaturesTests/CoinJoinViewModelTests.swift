@@ -349,6 +349,22 @@ struct CoinJoinViewModelTests {
         #expect(model.resultText?.contains("No peers are connected") == true)
     }
 
+    @Test func IOS057_aChunkThatMayBeOutIsNamed() async {
+        m3.coinJoin.sweepPlan.withLock {
+            $0 = MixedCoinsSweepPlan(destination: .wallet, total: Amount(duffs: 300), chunks: [])
+        }
+        m3.coinJoin.moveResult.withLock {
+            $0 = MixedCoinsSweepResult(
+                txids: [txid(1)], moved: Amount(duffs: 100), remaining: Amount(duffs: 200),
+                failureCode: .coinjoinBroadcastUnknown, unknownTxid: txid(2))
+        }
+        let model = makeMixed()
+        await model.preparePlan()
+        await model.move()
+        #expect(model.resultText?.contains("could not be moved yet") == true)
+        #expect(model.resultText?.contains("not known whether the network received transaction \(txid(2))") == true)
+    }
+
     @Test func IOS057_encryptedVaultAsksForThePassphrase() async {
         world.auth.lockState = .unlocked
         m3.coinJoin.sweepPlan.withLock { $0 = MixedCoinsSweepPlan(destination: .wallet, total: Amount(duffs: 300), chunks: []) }

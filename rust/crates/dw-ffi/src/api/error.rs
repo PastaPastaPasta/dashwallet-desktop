@@ -100,6 +100,12 @@ impl From<dw_engine::EngineError> for EngineError {
             E::Compat(_) | E::Backup(_) | E::Psbt(_) | E::CoinJoin(_) | E::Masternode(_) => {
                 Self::Wallet { detail }
             }
+            // DP1-02's Repair facade carries the refusal's own code; no M0
+            // call produces it.
+            E::StuckFunding(
+                dw_engine::platform::lease::StuckFundingRefusal::JournalUnavailable,
+            ) => Self::Storage { detail },
+            E::StuckFunding(_) => Self::InvalidArgument { detail },
         }
     }
 }

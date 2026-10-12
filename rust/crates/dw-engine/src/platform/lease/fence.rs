@@ -10,21 +10,33 @@
 //! tests the library's side against a fake library; Mode A's PR (P3/P4)
 //! and Mode B's call permits (P2b) call the same `register`, `admit`,
 //! `abandon`, `proof_wait_started` and `chainlock_fallback`.
+//!
+//! Mode B's call steps (§2a.3 "Durable markers first") are ordinary step
+//! markers of a synthetic artifact ([`ArtifactId::of_step`]), so DEC-154,
+//! DEC-160 and DEC-163 hold for them unchanged. A funding step's marker
+//! carries its funding key, written in the marker's transaction and in
+//! every `Sent` bundle that re-appends it.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use dashcore::hashes::Hash;
+use dashcore::{OutPoint, Txid};
 use tokio::time::Instant;
 
 use super::budget::Charge;
+use super::call::{CallFunding, CallStep, FundingKey, SignatureCount};
+use super::mode_b::{SelfSpend, SignedLock, StoredLock};
 #[cfg(test)]
 use super::stress_tests::{GrantKind, LogEvent, Mutation};
 use super::table::{Effects, Entry, Inner, LeaseTable};
 use super::{ArtifactId, DispatchScope, FlowOutcome, LeaseError, LeaseId, Origin};
 use crate::platform::flows::{BudgetPurpose, DispatchResolution, DispatchResolved, DispatchState};
 use crate::{EngineEvent, NoticeCode, WalletId};
-use dw_appdb::dispatch::Resolution;
+use dw_appdb::dispatch::{
+    CallRows, Resolution, SelfSpendConflict, SelfSpendProvenance, StoredFundingKey, StoredOutPoint,
+};
 
 /// The durable medium of the journal (§6.2): `dispatch.sqlite`, or a fake
 /// with injected faults in tests. Every call is a short blocking write.
@@ -41,17 +53,71 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     fn mark_dispatching(&self, wallet: &[u8; 32], txid: &[u8; 32]) -> Result<bool, String>;
     fn insert_step(&self, wallet: &[u8; 32], step: &str, artifact: &[u8; 32])
     -> Result<(), String>;
+    /// A funding step's marker with its funding key, in one transaction
+    /// (§2a.3).
+    fn insert_funding_step(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        key: &StoredFundingKey,
+    ) -> Result<(), String>;
+    /// Repair's self-spend `txid` of a funding step (§6.5), recorded against
+    /// the step's standing marker with the signed locks it spends an input
+    /// of (`conflicts`); `Ok(false)` when none stands
+    /// ([`LeaseTable::record_self_spend`]).
+    fn insert_self_spend(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
+    ) -> Result<bool, String>;
+    /// An asset lock `txid` (internal byte order) a call of funding `step`
+    /// signed, with its `inputs` (§2a.6), recorded against the step's
+    /// standing marker; `Ok(false)` when none stands
+    /// ([`LeaseTable::record_signed_locks`]).
+    fn insert_signed_lock(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        inputs: &[StoredOutPoint],
+    ) -> Result<bool, String>;
+    /// Funding `step` was resolved by Repair: its ChainLocked self-spend
+    /// `self_spend` takes an input of every lock signed under the step's
+    /// standing marker, which the tombstone answers; `Ok(false)` when none
+    /// stands ([`LeaseTable::write_tombstones`]).
+    fn insert_tombstone(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        self_spend: &[u8; 32],
+    ) -> Result<bool, String>;
+    /// A funding call of `step` is about to release its first signature
+    /// (§2a.7, review R6-01), recorded against the step's standing marker;
+    /// `Ok(false)` when none stands ([`LeaseTable::record_release`]).
+    fn insert_release(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<bool, String>;
     /// Appends the artifact's resolution (DEC-154): `NotSent` supersedes
     /// its markers so far. The engine writes `Sent` only through
     /// `resolve_sent`.
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String>;
-    /// A marked artifact's `Sent` row with its marker set, in one
-    /// transaction (DEC-163).
+    /// A marked artifact's `Sent` row with its marker set, each funding
+    /// step's key with its marker, in one transaction (DEC-163).
     fn resolve_sent(
         &self,
         wallet: &[u8; 32],
         artifact: &[u8; 32],
         steps: &[String],
+        funding: &[(String, StoredFundingKey)],
     ) -> Result<(), String>;
     /// A wallet's removal (DEC-160): `dispatch` rows only with `dispatch`,
     /// and the compactable artifacts' `step_log` rows, the predicate
@@ -97,6 +163,82 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
             .map_err(|e| e.to_string())
     }
 
+    fn insert_funding_step(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        key: &StoredFundingKey,
+    ) -> Result<(), String> {
+        self.insert_funding_step(wallet, step, artifact, key, crate::events::unix_now())
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_self_spend(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
+    ) -> Result<bool, String> {
+        self.insert_self_spend(
+            wallet,
+            step,
+            artifact,
+            txid,
+            conflicts,
+            crate::events::unix_now(),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn insert_signed_lock(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        inputs: &[StoredOutPoint],
+    ) -> Result<bool, String> {
+        self.insert_signed_lock(
+            wallet,
+            step,
+            artifact,
+            txid,
+            inputs,
+            crate::events::unix_now(),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn insert_tombstone(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        self_spend: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.insert_tombstone(
+            wallet,
+            step,
+            artifact,
+            self_spend,
+            crate::events::unix_now(),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn insert_release(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.insert_release(wallet, step, artifact, crate::events::unix_now())
+            .map_err(|e| e.to_string())
+    }
+
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
         dw_appdb::dispatch::DispatchJournal::resolve(
             self,
@@ -113,8 +255,9 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         wallet: &[u8; 32],
         artifact: &[u8; 32],
         steps: &[String],
+        funding: &[(String, StoredFundingKey)],
     ) -> Result<(), String> {
-        self.resolve_sent(wallet, artifact, steps, crate::events::unix_now())
+        self.resolve_sent(wallet, artifact, steps, funding, crate::events::unix_now())
             .map_err(|e| e.to_string())
     }
 
@@ -180,6 +323,65 @@ pub(crate) enum Mark {
     Ambiguous,
 }
 
+impl Mark {
+    /// Its write is running.
+    fn is_committing(self) -> bool {
+        matches!(self, Self::Committing { .. })
+    }
+}
+
+/// A Mode B call step's calls under its marker (§2a.3).
+#[derive(Debug, Default)]
+struct CallStepRun {
+    /// Calls running under the marker.
+    running: u32,
+    /// A call under the marker may have sent, or an earlier marker of the
+    /// step existed: no `NotSent` row may supersede it.
+    possibly_out: bool,
+    /// Every call ended definitely unsent while the marker's write ran:
+    /// that write's J step begins the `NotSent` row.
+    after_write: bool,
+    /// The `NotSent` row is being written: a new call of the step waits.
+    resolving: bool,
+    /// The `NotSent` row failed, and may have landed: the next call of the
+    /// step retries it before its own marker.
+    owed: bool,
+}
+
+/// A Mode B call step's journal state (§2a.3), which `dispatch_status`
+/// reads (§2a.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallStepStatus {
+    /// No marker: no call of the step ever started, or a definite
+    /// resolution was compacted away with it.
+    None,
+    /// A marker stands, or may (a write that failed may have committed);
+    /// `durable` once its write returned.
+    Marked { durable: bool },
+    /// A `NotSent` row superseded the marker in this process.
+    NotSent,
+    /// A call of the step returned Ok, or its `Sent` row was loaded.
+    Sent,
+}
+
+/// What the fence holds of one call step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallStepInfo {
+    pub status: CallStepStatus,
+    /// A funding step's key, as its marker carries it.
+    pub funding: Option<FundingKey>,
+    /// The marker carries the durable-record guarantee (§2a.7, review
+    /// OD-02): every lock a call under it signed was recorded durably
+    /// before anything could send it.
+    pub durable_record: bool,
+    /// A call under the marker may have released a funding signature: its
+    /// `funding_release` row (schema 7, §2a.7, review P2b r6 R6-01) is
+    /// written before the vault signs anything.
+    pub released: bool,
+    /// Repair's self-spends standing against the marker.
+    pub self_spends: Vec<SelfSpend>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RowlessState {
     Admitted {
@@ -233,6 +435,66 @@ struct SpendCharge {
     charge: Charge,
 }
 
+/// A journal write's outcome, in its J step (§6.4): the first write that
+/// succeeds after one failed runs H6's resume pass again (review Opus 11).
+fn note_write(i: &mut Inner, fx: &mut Effects, ok: bool) {
+    if !ok {
+        i.fence.write_failed = true;
+    } else if std::mem::take(&mut i.fence.write_failed) {
+        fx.resume();
+    }
+}
+
+/// A journal write's end, in its J step: one write fewer in flight, and
+/// its outcome ([`note_write`]).
+fn end_write(i: &mut Inner, fx: &mut Effects, ok: bool) {
+    i.fence.writes -= 1;
+    note_write(i, fx, ok);
+}
+
+/// A journal write, a panic in it taken as its failure.
+fn guarded<T>(write: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(write))
+        .unwrap_or_else(|_| Err("the journal write panicked".into()))
+}
+
+/// How often a signed lock's append is tried before the process stops
+/// (§2a.7), the first retry after [`SIGNED_WRITE_BACKOFF`], each next one
+/// after twice the last wait.
+const SIGNED_WRITE_ATTEMPTS: u32 = 5;
+const SIGNED_WRITE_BACKOFF: Duration = Duration::from_millis(50);
+
+/// The fail-closed end of a signed lock's record (§2a.7, PA-2): the lock
+/// could otherwise reach the wire with no durable record of its step. The
+/// process stops inside the library's store call, before its send; after
+/// a restart the step reads `NotSent`, its marker flagged and no lock of
+/// it recorded or sent. Tests panic instead.
+fn fail_closed(wallet: WalletId, why: &str) -> ! {
+    tracing::error!(wallet_id = %wallet, why, "stopping: a signed asset lock could be sent without its durable record");
+    // The log's writer may not flush before the abort.
+    eprintln!("dw-engine: stopping, wallet {wallet}: {why}");
+    #[cfg(test)]
+    panic!("fail closed: {why}");
+    #[cfg(not(test))]
+    std::process::abort();
+}
+
+/// Appends the `NotSent` row of `id` (inline on a blocking thread; outside
+/// J). `false` when there is no journal or the write failed or panicked,
+/// which `what` names in the log.
+fn write_not_sent(
+    backend: Option<&Arc<dyn JournalBackend>>,
+    wallet: &WalletId,
+    id: &ArtifactId,
+    what: &str,
+) -> bool {
+    backend.is_some_and(|backend| {
+        guarded(|| blocking(|| backend.resolve(&wallet.0, &id.0, Resolution::NotSent)))
+            .inspect_err(|e| tracing::warn!(artifact = %id, error = %e, "{what} failed"))
+            .is_ok()
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Attempt {
     wallet: WalletId,
@@ -246,6 +508,9 @@ struct Attempt {
 #[derive(Default)]
 pub(crate) struct FenceState {
     pub(crate) journal: JournalState,
+    /// The last journal write failed (§6.4): the next one that succeeds
+    /// runs H6's resume pass again.
+    write_failed: bool,
     entries: HashMap<(WalletId, ArtifactId), Reg>,
     /// The lease that registered each entry of this process.
     origins: HashMap<(WalletId, ArtifactId), LeaseId>,
@@ -265,12 +530,89 @@ pub(crate) struct FenceState {
     /// Journal writes running (`spawn_write`, a `NotSent` row, a removal's
     /// erase); closing the journal waits for them.
     writes: usize,
+    /// Mode B (§2a.3): each funding step's key, as its marker carries it.
+    funding: HashMap<(WalletId, String), FundingKey>,
+    /// Repair's self-spends standing against each funding step's marker.
+    self_spends: HashMap<(WalletId, String), Vec<SelfSpend>>,
+    /// The asset locks each funding step's calls signed (§2a.6), standing
+    /// against its marker: on disk, or only here when the write failed.
+    signed_locks: HashMap<(WalletId, String), Vec<SignedLock>>,
+    /// The funding steps whose standing marker carries the durable-record
+    /// guarantee (§2a.7, review OD-02): created by this build, or loaded
+    /// with the schema 6 flag.
+    durable_record: HashSet<(WalletId, String)>,
+    /// The funding steps with a `funding_release` row against their
+    /// standing marker (schema 7, §2a.7, review P2b r6 R6-01): a call under
+    /// it may have released a funding signature.
+    released: HashSet<(WalletId, String)>,
+    /// How often each funding step's marker was superseded in this process:
+    /// a release write begun under one marker is not taken for the next
+    /// one's ([`LeaseTable::record_release`]).
+    supersedes: HashMap<(WalletId, String), u64>,
+    /// The funding steps Repair resolved, durably (DP1-02 PA-3, review
+    /// OD-06): each with its ChainLocked self-spend, which takes an input
+    /// of every lock the step's call signed. Its signed locks are dead for
+    /// good, its marker stands, and no call of it runs again
+    /// ([`FundingBlock::StepCancelled`](super::mode_b::FundingBlock::StepCancelled)).
+    pub(super) tombstones: HashMap<(WalletId, String), [u8; 32]>,
+    /// The funding steps Repair resolved in this process whose tombstone is
+    /// not durable yet, each with its self-spend: the resolution holds from
+    /// the first snapshot that showed it, whatever later ones show (a
+    /// ChainLock is final), and its write is owed until it lands (review
+    /// P2b r5 validator).
+    pub(super) owed_tombstones: HashMap<(WalletId, String), [u8; 32]>,
+    /// The tombstones whose write runs ([`LeaseTable::write_tombstones`]).
+    pub(super) tombstoning: HashSet<(WalletId, String)>,
+    /// The funding steps whose marker loaded with a funding type this
+    /// build does not know: their claim is unknown (PA-1's view refuses).
+    pub(super) unreadable_funding: HashSet<(WalletId, String)>,
+    /// The funding calls that ended in this process after their signer
+    /// released a signature (§2a.7): a lock of theirs that reaches the
+    /// store unrecorded stops the process, and the resume pass sends none
+    /// of theirs without its durable record.
+    pub(super) ended_funding: Vec<CallFunding>,
+    /// The call steps with a call running under their marker, or whose
+    /// `NotSent` row is written, failed or owed.
+    call_steps: HashMap<(WalletId, String), CallStepRun>,
     spend: HashMap<(WalletId, ArtifactId), SpendCharge>,
     /// Every artifact an attempt finished `Sent` for, under any wallet:
     /// identical bytes are one transaction. Only grows.
-    sent: HashSet<ArtifactId>,
+    sent: SentSet,
     attempts: HashMap<u64, Attempt>,
     next: u64,
+    /// Tombstones whose `MaybeSent` (another wallet holds the same bytes)
+    /// a host read: [`sweep_cross_wallet`] announces each when the hold
+    /// ends (BL-76).
+    held: HashSet<RowKey>,
+}
+
+/// The artifacts seen `Sent` (only grows), with the ones added since the
+/// last [`sweep_cross_wallet`].
+#[derive(Default)]
+struct SentSet {
+    set: HashSet<ArtifactId>,
+    fresh: Vec<ArtifactId>,
+}
+
+impl SentSet {
+    fn contains(&self, id: &ArtifactId) -> bool {
+        self.set.contains(id)
+    }
+
+    /// Adds `id`; `true` when it is new, which the sweep announces to
+    /// every wallet that holds a key of it.
+    fn insert(&mut self, id: ArtifactId) -> bool {
+        let new = self.set.insert(id);
+        if new {
+            self.fresh.push(id);
+        }
+        new
+    }
+
+    /// Adds `id` as the journal's load found it: nothing to announce.
+    fn load(&mut self, id: ArtifactId) {
+        self.set.insert(id);
+    }
 }
 
 /// What kind of artifact a hand-off carries.
@@ -640,7 +982,7 @@ impl FenceState {
         self.evidence.get(&(*wallet, *id)).copied()
     }
 
-    #[cfg(test)]
+    /// `step`'s marker of `id` in memory.
     pub(crate) fn mark(&self, wallet: &WalletId, step: &str, id: &ArtifactId) -> Option<Mark> {
         self.steps
             .get(&(*wallet, step.to_owned()))
@@ -654,10 +996,245 @@ impl FenceState {
             .is_some_and(|m| !m.is_empty())
     }
 
+    /// A Mode B call step's journal state (§2a.3).
+    pub(crate) fn call_step_status(&self, wallet: &WalletId, step: &str) -> CallStepStatus {
+        let id = ArtifactId::of_step(wallet, step);
+        if self.sent.contains(&id) {
+            return CallStepStatus::Sent;
+        }
+        match self.mark(wallet, step, &id) {
+            Some(Mark::Durable) => CallStepStatus::Marked { durable: true },
+            Some(_) => CallStepStatus::Marked { durable: false },
+            None if self.superseded.contains_key(&(*wallet, id)) => CallStepStatus::NotSent,
+            None => CallStepStatus::None,
+        }
+    }
+
+    pub(super) fn call_step_info(&self, wallet: &WalletId, step: &str) -> CallStepInfo {
+        let key = (*wallet, step.to_owned());
+        CallStepInfo {
+            status: self.call_step_status(wallet, step),
+            funding: self.funding.get(&key).copied(),
+            durable_record: self.durable_record.contains(&key),
+            released: self.released.contains(&key),
+            self_spends: self.self_spends.get(&key).cloned().unwrap_or_default(),
+        }
+    }
+
+    /// A funding step whose lock the wallet saw proved (review R1-01): it
+    /// reads `Sent` for good, and its `Sent` row is owed (`Ambiguous`), to
+    /// be begun after J ([`Effects::owe_sent`]) with the step's marker and
+    /// funding key, as one DEC-163 bundle. Markers a `NotSent` row
+    /// superseded come back with it; a step with no marker (found by its
+    /// draft's own key) gets one, under `key`, the proving row's. A write
+    /// that fails or panics leaves the row owed. `false` when the row is
+    /// written, being written or owed already.
+    pub(super) fn note_proved_funding(
+        &mut self,
+        wallet: WalletId,
+        step: &str,
+        key: FundingKey,
+    ) -> bool {
+        let id = ArtifactId::of_step(&wallet, step);
+        // `sent` may hold it with no row begun (a call that returned `Sent`
+        // while the journal was not ready, a removed wallet re-added):
+        // owed then too (review P2b r1 F3).
+        if !self.sent.insert(id) && self.evidence.contains_key(&(wallet, id)) {
+            return false;
+        }
+        for (s, mark) in self.superseded.remove(&(wallet, id)).unwrap_or_default() {
+            self.steps
+                .entry((wallet, s))
+                .or_default()
+                .entry(id)
+                .or_insert(mark);
+        }
+        let k = (wallet, step.to_owned());
+        self.funding.entry(k.clone()).or_insert(key);
+        self.steps
+            .entry(k)
+            .or_default()
+            .entry(id)
+            .or_insert(Mark::Ambiguous);
+        // Durable or being written already, or owed now.
+        self.evidence.entry((wallet, id)).or_insert(Mark::Ambiguous);
+        true
+    }
+
+    /// The wallets with a funding step's marker.
+    pub(super) fn funding_wallets(&self) -> BTreeSet<WalletId> {
+        self.funding.keys().map(|(w, _)| *w).collect()
+    }
+
+    /// The wallet's funding steps with a standing marker (§2a.5).
+    pub(super) fn funding_steps_of(&self, wallet: &WalletId) -> Vec<String> {
+        self.funding
+            .keys()
+            .filter(|(w, _)| w == wallet)
+            .map(|(_, s)| s.clone())
+            .collect()
+    }
+
+    /// The asset locks the calls of funding `step` signed (§2a.6).
+    pub(super) fn signed_locks(&self, wallet: &WalletId, step: &str) -> &[SignedLock] {
+        self.signed_locks
+            .get(&(*wallet, step.to_owned()))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether lock `txid` of funding `step` has its durable record
+    /// (§2a.7).
+    pub(super) fn recorded_durably(&self, wallet: &WalletId, step: &str, txid: Txid) -> bool {
+        self.signed_locks(wallet, step)
+            .iter()
+            .any(|l| l.txid == txid && l.durable)
+    }
+
+    /// Repair's self-spends standing against the wallet's funding markers.
+    pub(super) fn self_spends_of(&self, wallet: &WalletId) -> Vec<[u8; 32]> {
+        self.self_spends
+            .iter()
+            .filter(|((w, _), _)| w == wallet)
+            .flat_map(|(_, spends)| spends.iter().map(|s| s.txid))
+            .collect()
+    }
+
+    /// Whether every call of the step in this process ended definitely
+    /// unsent and none runs, its `NotSent` row begun after the marker's
+    /// write, being written, or owed after a failed write (the lock report,
+    /// review P2b r1 F4).
+    pub(super) fn call_ended_unsent(&self, key: &(WalletId, String)) -> bool {
+        self.call_steps.get(key).is_some_and(|r| {
+            r.running == 0 && !r.possibly_out && (r.after_write || r.resolving || r.owed)
+        })
+    }
+
+    /// Whether a `NotSent` row of the call step is being written.
+    pub(super) fn call_resolving(&self, key: &(WalletId, String)) -> bool {
+        self.call_steps.get(key).is_some_and(|r| r.resolving)
+    }
+
+    /// Whether a call runs under the step's marker, or its `NotSent` row is
+    /// being written.
+    pub(super) fn call_busy(&self, key: &(WalletId, String)) -> bool {
+        self.call_steps
+            .get(key)
+            .is_some_and(|r| r.running > 0 || r.resolving)
+    }
+
+    /// Whether the step's own marker stands in memory (any mark).
+    fn call_marked(&self, wallet: &WalletId, step: &str) -> bool {
+        self.mark(wallet, step, &ArtifactId::of_step(wallet, step))
+            .is_some()
+    }
+
+    /// The funding keys a write of `id`'s `steps` carries: those of its
+    /// funding steps, whose synthetic artifact `id` is (§2a.3).
+    fn funding_of(
+        &self,
+        wallet: &WalletId,
+        id: &ArtifactId,
+        steps: &[String],
+    ) -> Vec<(String, StoredFundingKey)> {
+        steps
+            .iter()
+            .filter_map(|s| {
+                let key = self.funding.get(&(*wallet, s.clone()))?;
+                (ArtifactId::of_step(wallet, s) == *id).then(|| (s.clone(), key.stored()))
+            })
+            .collect()
+    }
+
+    /// Whether a call of `step` would carry another funding key (or none)
+    /// than the marker of the step that exists: the journal keeps the
+    /// key first recorded under a marker (§2a.3).
+    pub(super) fn call_key_differs(&self, wallet: WalletId, step: &CallStep) -> bool {
+        let key = (wallet, step.id().to_owned());
+        self.call_marked(&wallet, step.id()) && self.funding.get(&key).copied() != step.funding()
+    }
+
+    /// A durable `NotSent` row superseded `id`'s markers of `wallet`: they
+    /// leave `steps` for the stash a later `Sent` row restores them from,
+    /// each as its own write left it.
+    fn supersede(&mut self, wallet: WalletId, id: ArtifactId) {
+        let mut gone = Vec::new();
+        for ((w, s), m) in self.steps.iter_mut() {
+            if *w == wallet
+                && let Some(mark) = m.remove(&id)
+            {
+                // Only a marker whose write returned is known on disk;
+                // any other may never have landed (review r2 H1).
+                let mark = if mark == Mark::Durable {
+                    Mark::Durable
+                } else {
+                    Mark::Ambiguous
+                };
+                gone.push((s.clone(), mark));
+            }
+        }
+        self.steps.retain(|_, m| !m.is_empty());
+        // A call step's funding key, self-spends and signed locks stand
+        // with its marker.
+        for (s, _) in &gone {
+            if id == ArtifactId::of_step(&wallet, s) {
+                let key = (wallet, s.clone());
+                // Only a call that released no signature writes a step's
+                // `NotSent` row (`call.rs`), and a signed lock or a
+                // self-spend needs one: none is ever dropped here (review
+                // Opus O-9).
+                debug_assert!(
+                    !self.signed_locks.contains_key(&key)
+                        && !self.self_spends.contains_key(&key)
+                        && !self.tombstones.contains_key(&key),
+                    "superseding funding step {s}, which has a signed lock or a self-spend"
+                );
+                self.funding.remove(&key);
+                self.durable_record.remove(&key);
+                self.released.remove(&key);
+                *self.supersedes.entry(key.clone()).or_default() += 1;
+                self.self_spends.remove(&key);
+                self.signed_locks.remove(&key);
+            }
+        }
+        let stash = self.superseded.entry((wallet, id)).or_default();
+        for (s, mark) in gone {
+            match stash.iter_mut().find(|(t, _)| *t == s) {
+                Some((_, m)) if mark == Mark::Durable => *m = Mark::Durable,
+                Some(_) => {}
+                None => stash.push((s, mark)),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_read(&self, wallet: &WalletId, id: &ArtifactId) -> bool {
+        self.held.contains(&(*wallet, *id))
+    }
+
     fn live(inner_leases: &HashMap<LeaseId, Entry>, lease: &LeaseId, wallet: &WalletId) -> bool {
         inner_leases
             .get(lease)
             .is_some_and(|e| e.wallet == *wallet && e.state.live())
+    }
+}
+
+impl LeaseTable {
+    /// The `DispatchResolved` event of `wallet`'s `artifact` (a txid, a
+    /// state-transition hash or a funding step id).
+    pub(super) fn resolved_event(
+        &self,
+        wallet: &WalletId,
+        artifact: impl ToString,
+        resolution: DispatchResolution,
+    ) -> EngineEvent {
+        EngineEvent::DispatchResolved {
+            network: self.network.clone(),
+            resolved: DispatchResolved {
+                wallet_id: wallet.to_string(),
+                artifact: artifact.to_string(),
+                resolution,
+            },
+        }
     }
 }
 
@@ -669,14 +1246,7 @@ fn resolved(
     id: &ArtifactId,
     r: DispatchResolution,
 ) {
-    fx.emit(EngineEvent::DispatchResolved {
-        network: t.network.clone(),
-        resolved: DispatchResolved {
-            wallet_id: wallet.to_string(),
-            artifact: id.to_string(),
-            resolution: r,
-        },
-    });
+    fx.emit(t.resolved_event(wallet, id, r));
 }
 
 /// A row-less map key: the wallet and the artifact (review O-1).
@@ -701,6 +1271,96 @@ fn held_elsewhere(i: &Inner, wallet: &WalletId, id: &ArtifactId) -> bool {
         return false;
     }
     i.fence.held_elsewhere(wallet, id)
+}
+
+/// BL-76, §5.5 "Per wallet, one transaction": announces what another
+/// wallet's change resolved for this one, at the end of every J step.
+/// - An artifact newly seen `Sent` (`sent` is keyed by artifact): every
+///   wallet with an entry of it reads `Sent` now, and gets
+///   `DispatchResolved(Sent)` unless this J step already emits it (the
+///   sighting's own wallet does).
+/// - A tombstone whose `MaybeSent` a host read while another wallet held
+///   the same bytes ([`FenceState::note_hold_read`]): once no other wallet
+///   holds them, it reads `NotSent` again, and its wallet gets
+///   `DispatchResolved(NotSent)`. A host that never read the `MaybeSent`
+///   still holds the tombstone's own `NotSent`, which stays true.
+pub(super) fn sweep_cross_wallet(t: &LeaseTable, i: &mut Inner, fx: &mut Effects) {
+    if i.fence.sent.fresh.is_empty() && i.fence.held.is_empty() {
+        return;
+    }
+    let fresh = std::mem::take(&mut i.fence.sent.fresh);
+    if !fresh.is_empty() {
+        let f = &i.fence;
+        let fresh: HashSet<ArtifactId> = fresh.into_iter().collect();
+        // A call step's own synthetic artifact announces under the step's
+        // id (`call_step_end`, `rederive`), not here.
+        let marked = f.steps.iter().flat_map(|((w, s), m)| {
+            let own = ArtifactId::of_step(w, s);
+            m.keys().filter(move |a| **a != own).map(move |a| (*w, *a))
+        });
+        let keys: BTreeSet<RowKey> = f
+            .rowless
+            .keys()
+            .chain(f.entries.keys())
+            .copied()
+            .chain(marked)
+            .filter(|(_, a)| fresh.contains(a))
+            .collect();
+        for (wallet, id) in keys {
+            resolved_once(t, fx, &wallet, &id, DispatchResolution::Sent);
+        }
+        i.fence.held.retain(|(_, a)| !fresh.contains(a));
+    }
+    let ended: Vec<RowKey> = i
+        .fence
+        .held
+        .iter()
+        .filter(|(w, a)| !tombstone_held(i, w, a))
+        .copied()
+        .collect();
+    for (wallet, id) in ended {
+        i.fence.held.remove(&(wallet, id));
+        // A key forgotten, or admitted again by its own wallet, has no
+        // hold to end.
+        if is_tombstone(i, &wallet, &id) && !i.fence.sent.contains(&id) {
+            resolved_once(t, fx, &wallet, &id, DispatchResolution::NotSent);
+        }
+    }
+}
+
+/// Whether `wallet`'s entry of `id` is a row-less tombstone (as
+/// `dispatch_status` reads it: no registered entry first).
+fn is_tombstone(i: &Inner, wallet: &WalletId, id: &ArtifactId) -> bool {
+    !i.fence.entries.contains_key(&(*wallet, *id))
+        && i.fence
+            .rowless
+            .get(&row_key(i, *wallet, *id))
+            .is_some_and(|r| matches!(r.state, RowlessState::Revoked | RowlessState::NotSent))
+}
+
+/// Whether `wallet`'s tombstone of `id` reads `MaybeSent` because another
+/// wallet holds the same bytes (§5.5).
+fn tombstone_held(i: &Inner, wallet: &WalletId, id: &ArtifactId) -> bool {
+    !i.fence.sent.contains(id) && is_tombstone(i, wallet, id) && held_elsewhere(i, wallet, id)
+}
+
+/// A host reads `wallet`'s status of `id` now: a held tombstone's
+/// `MaybeSent` is announced again when the hold ends (BL-76).
+pub(crate) fn note_hold_read(i: &mut Inner, wallet: &WalletId, id: &ArtifactId) {
+    if tombstone_held(i, wallet, id) {
+        i.fence.held.insert((*wallet, *id));
+    }
+}
+
+/// [`resolved`], unless this J step already emits the same event.
+fn resolved_once(
+    t: &LeaseTable,
+    fx: &mut Effects,
+    wallet: &WalletId,
+    id: &ArtifactId,
+    r: DispatchResolution,
+) {
+    fx.emit_once(t.resolved_event(wallet, id, r));
 }
 
 /// The row-less artifact `id` settles definitely unsent: refund, tombstone
@@ -854,6 +1514,29 @@ fn forget_erased(i: &mut Inner, wallet: WalletId, dispatch: bool, erased: Vec<[u
     f.evidence.retain(|(w, a), _| !forgotten(w, a));
     f.superseded.retain(|(w, a), _| !forgotten(w, a));
     f.rowless.retain(|(w, a), _| !forgotten(w, a));
+    // The removed wallet's tracked rows and derived statuses (§2a.5).
+    i.mode_b.forget(&wallet);
+    let f = &mut i.fence;
+    f.funding
+        .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
+    f.self_spends
+        .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
+    f.signed_locks
+        .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
+    f.durable_record
+        .retain(|(w, s)| !forgotten(w, &ArtifactId::of_step(w, s)));
+    f.released
+        .retain(|(w, s)| !forgotten(w, &ArtifactId::of_step(w, s)));
+    f.supersedes
+        .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
+    f.tombstones
+        .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
+    f.owed_tombstones
+        .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
+    f.unreadable_funding
+        .retain(|(w, s)| !forgotten(w, &ArtifactId::of_step(w, s)));
+    f.ended_funding
+        .retain(|c| !forgotten(&c.wallet, &ArtifactId::of_step(&c.wallet, &c.step)));
     #[cfg(test)]
     for artifact in gone {
         i.note(LogEvent::Erased { wallet, artifact });
@@ -902,6 +1585,34 @@ fn revoke_unsent(
     {
         e.refund(BudgetPurpose::Funding, charge);
         fx.changed(*lease);
+    }
+}
+
+/// Why a Mode B call step does not go on yet ([`LeaseTable::call_step_gate`]).
+pub(super) enum CallGate {
+    /// Its `NotSent` row is being written.
+    Wait,
+    /// Its `NotSent` row failed: retry it first.
+    Retry,
+}
+
+/// In a step write's J step: whether the call step's `NotSent` row, held
+/// back while the marker's write ran (`call_step_end`), begins now.
+fn call_settles_after_write(
+    f: &mut FenceState,
+    wallet: WalletId,
+    step: &str,
+    id: ArtifactId,
+) -> bool {
+    let key = (wallet, step.to_owned());
+    let writing = f.mark(&wallet, step, &id).is_some_and(Mark::is_committing);
+    match f.call_steps.get_mut(&key) {
+        Some(run) if run.after_write && !writing && run.running == 0 && !run.possibly_out => {
+            run.after_write = false;
+            run.resolving = true;
+            true
+        }
+        _ => false,
     }
 }
 
@@ -1120,17 +1831,46 @@ impl LeaseTable {
         });
     }
 
-    /// Loads the journal's rows (§6.5): at load every origin is dead, so an
-    /// `Unsent` row is refused on its first `admit`.
+    /// Loads the journal's rows (§6.5) with no Mode B rows.
+    #[cfg(test)]
     pub(crate) fn load_journal(
         &self,
         backend: Option<Arc<dyn JournalBackend>>,
         rows: Vec<dw_appdb::dispatch::DispatchRow>,
         steps: Vec<dw_appdb::dispatch::StepRow>,
     ) {
+        self.load_journal_with(backend, rows, steps, CallRows::default());
+    }
+
+    /// Loads the journal's rows (§6.5): at load every origin is dead, so an
+    /// `Unsent` row is refused on its first `admit`. Of `calls`, only the
+    /// rows that stand ([`dw_appdb::dispatch::standing_calls`]); a funding
+    /// key of a type this build does not know is skipped, and its marker
+    /// still reads possibly sent.
+    pub(crate) fn load_journal_with(
+        &self,
+        backend: Option<Arc<dyn JournalBackend>>,
+        rows: Vec<dw_appdb::dispatch::DispatchRow>,
+        steps: Vec<dw_appdb::dispatch::StepRow>,
+        calls: CallRows,
+    ) {
         use dw_appdb::dispatch::DiskState;
         let ready = backend.is_some();
         self.journal.set(backend);
+        // Outside J: a subscriber may do I/O (H1).
+        let mut unreadable = Vec::new();
+        let funding: Vec<_> = calls
+            .funding
+            .into_iter()
+            .filter_map(|f| match FundingKey::from_stored(f.key) {
+                Some(key) => Some(((WalletId(f.wallet), f.step_id), (key, f.durable_record))),
+                None => {
+                    tracing::warn!(step = %f.step_id, code = f.key.funding_type, "an unknown funding type in the dispatch journal");
+                    unreadable.push((WalletId(f.wallet), f.step_id));
+                    None
+                }
+            })
+            .collect();
         self.with_j(|i, fx| {
             if !ready {
                 i.fence.journal = JournalState::Unavailable;
@@ -1156,7 +1896,7 @@ impl LeaseTable {
             }
             for s in steps {
                 if s.sent {
-                    i.fence.sent.insert(ArtifactId(s.artifact));
+                    i.fence.sent.load(ArtifactId(s.artifact));
                     i.fence
                         .evidence
                         .insert((WalletId(s.wallet), ArtifactId(s.artifact)), Mark::Durable);
@@ -1167,9 +1907,128 @@ impl LeaseTable {
                     .or_default()
                     .insert(ArtifactId(s.artifact), Mark::Durable);
             }
+            // In `seq` order: the latest standing key of a step wins, and
+            // its flag (§2a.7).
+            i.fence.unreadable_funding.extend(unreadable);
+            for (step, (key, durable_record)) in funding {
+                if durable_record {
+                    i.fence.durable_record.insert(step.clone());
+                } else {
+                    i.fence.durable_record.remove(&step);
+                }
+                i.fence.funding.insert(step, key);
+            }
+            for s in calls.self_spends {
+                let conflicts = match s.provenance {
+                    SelfSpendProvenance::Legacy => None,
+                    SelfSpendProvenance::Conflicts(c) => Some(
+                        c.iter()
+                            .map(|c| {
+                                (
+                                    Txid::from_byte_array(c.lock),
+                                    OutPoint::new(
+                                        Txid::from_byte_array(c.input.txid),
+                                        c.input.vout,
+                                    ),
+                                )
+                            })
+                            .collect(),
+                    ),
+                };
+                i.fence
+                    .self_spends
+                    .entry((WalletId(s.wallet), s.step_id))
+                    .or_default()
+                    .push(SelfSpend {
+                        txid: s.txid,
+                        conflicts,
+                    });
+            }
+            for l in calls.signed_locks {
+                i.fence
+                    .signed_locks
+                    .entry((WalletId(l.wallet), l.step_id))
+                    .or_default()
+                    .push(SignedLock {
+                        txid: Txid::from_byte_array(l.txid),
+                        inputs: l
+                            .inputs
+                            .iter()
+                            .map(|o| OutPoint::new(Txid::from_byte_array(o.txid), o.vout))
+                            .collect(),
+                        durable: true,
+                    });
+            }
+            for t in calls.tombstones {
+                (i.fence.tombstones).insert((WalletId(t.wallet), t.step_id), t.self_spend);
+            }
+            for r in calls.releases {
+                i.fence.released.insert((WalletId(r.wallet), r.step_id));
+            }
             i.fence.journal = JournalState::Ready;
             fx.notify();
         });
+    }
+
+    /// Writes each owed tombstone of `wallets` (DP1-02 PA-3, review
+    /// OD-06): a funding step whose ChainLocked self-spend a snapshot
+    /// showed resolving it ([`resolving_spend`](super::mode_b::resolving_spend)),
+    /// held in `owed_tombstones` until its write lands. A failed write is
+    /// begun again by the next derivation of the wallet; one that finds no
+    /// marker standing on disk is dropped (the step then reads from its
+    /// evidence again). Each on a blocking thread, outside J.
+    pub(super) fn write_tombstones(self: &Arc<Self>, wallets: &BTreeSet<WalletId>) {
+        let Some(backend) = self.journal.get() else {
+            return;
+        };
+        let jobs: Vec<(WalletId, String, [u8; 32])> = self.with_j(|i, _| {
+            let mut jobs = Vec::new();
+            if i.fence.journal != JournalState::Ready {
+                return jobs;
+            }
+            for wallet in wallets {
+                let owed: Vec<((WalletId, String), [u8; 32])> = (i.fence.owed_tombstones.iter())
+                    .filter(|(k, _)| k.0 == *wallet && !i.fence.tombstoning.contains(*k))
+                    .map(|(k, s)| (k.clone(), *s))
+                    .collect();
+                for (key, spend) in owed {
+                    i.fence.tombstoning.insert(key.clone());
+                    i.fence.writes += 1;
+                    jobs.push((key.0, key.1, spend));
+                }
+            }
+            jobs
+        });
+        for (wallet, step, spend) in jobs {
+            let (table, backend) = (Arc::clone(self), Arc::clone(&backend));
+            self.rt.spawn_blocking(move || {
+                let id = ArtifactId::of_step(&wallet, &step);
+                let written = guarded(|| backend.insert_tombstone(&wallet.0, &step, &id.0, &spend));
+                if let Err(e) = &written {
+                    tracing::warn!(step, error = %e, "recording a funding step's tombstone failed");
+                }
+                table.with_j(|i, fx| {
+                    fx.notify();
+                    end_write(i, fx, written.is_ok());
+                    let key = (wallet, step);
+                    i.fence.tombstoning.remove(&key);
+                    match written {
+                        Ok(true) => {
+                            i.fence.owed_tombstones.remove(&key);
+                            i.fence.tombstones.insert(key, spend);
+                        }
+                        Ok(false) => {
+                            tracing::warn!(
+                                step = key.1,
+                                "no marker stands on disk for a funding step's tombstone"
+                            );
+                            i.fence.owed_tombstones.remove(&key);
+                        }
+                        Err(_) => {}
+                    }
+                });
+            });
+        }
     }
 
     /// Closes the journal (last step of close, §8.5). No write begins once
@@ -1236,11 +2095,10 @@ impl LeaseTable {
             .spawn_blocking(move || {
                 // Its J step below always runs, even after a panicking
                 // write: a removal's erase waits for it (`erase_wallet_rows`).
-                let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    backend.register(&wallet.0, &txid.0, &lease, &process, &payload)
-                }))
-                .unwrap_or_else(|_| Err("the journal write panicked".into()));
+                let written =
+                    guarded(|| backend.register(&wallet.0, &txid.0, &lease, &process, &payload));
                 table.with_j(|i, fx| {
+                    note_write(i, fx, written.is_ok());
                     let key = (wallet, txid);
                     let abandoned = i.fence.registering.remove(&key).unwrap_or(false);
                     #[cfg(test)]
@@ -1576,24 +2434,36 @@ impl LeaseTable {
         let split = i.mutation == Some(Mutation::SplitBundle);
         #[cfg(test)]
         let target = mutate_bundle(i, wallet, artifact, target);
+        // A funding step's marker carries its key, alone or in a bundle
+        // (§2a.3, DEC-163).
+        let funding = match &target {
+            Target::Record => Vec::new(),
+            Target::Step(s) => i
+                .fence
+                .funding_of(&wallet, &artifact, std::slice::from_ref(s)),
+            Target::Sent(steps) => i.fence.funding_of(&wallet, &artifact, steps),
+        };
         let table = Arc::clone(self);
         self.rt.spawn_blocking(move || {
             let (w, a) = (&wallet.0, &artifact.0);
             let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &target {
                 Target::Record => matches!(backend.mark_dispatching(w, a), Ok(true)),
-                Target::Step(s) => backend.insert_step(w, s, a).is_ok(),
+                Target::Step(s) => match funding.first() {
+                    Some((_, key)) => backend.insert_funding_step(w, s, a, key).is_ok(),
+                    None => backend.insert_step(w, s, a).is_ok(),
+                },
                 #[cfg(test)]
                 Target::Sent(steps) if split => {
                     // The mutation: the bundle as separate statements.
                     steps.iter().all(|s| backend.insert_step(w, s, a).is_ok())
                         && backend.resolve(w, a, Resolution::Sent).is_ok()
                 }
-                Target::Sent(steps) => backend.resolve_sent(w, a, steps).is_ok(),
+                Target::Sent(steps) => backend.resolve_sent(w, a, steps, &funding).is_ok(),
             }))
             .unwrap_or(false);
-            let settling = table.with_j(|i, fx| {
-                i.fence.writes -= 1;
+            let (settling, call) = table.with_j(|i, fx| {
                 fx.notify();
+                end_write(i, fx, ok);
                 // A `Sent` row an earlier write failed is retried once the
                 // journal takes a write again (review r2 M2).
                 if ok && i.fence.journal == JournalState::Ready {
@@ -1675,15 +2545,26 @@ impl LeaseTable {
                                 } if settles_idle(possibly_out, slot_taken)
                             )
                         });
-                if idle {
+                // A call step's `NotSent` row this write held back
+                // (`call_step_end`) begins now.
+                let call = match &target {
+                    Target::Step(s) => call_settles_after_write(&mut i.fence, wallet, s, artifact)
+                        .then(|| s.clone()),
+                    _ => None,
+                };
+                let settling = if idle {
                     fx.notify();
                     start_settle(&table, i, fx, row_key(i, wallet, artifact))
                 } else {
                     Settling::Now
-                }
+                };
+                (settling, call)
             });
             if let Settling::Durably = settling {
                 table.resolve_not_sent(wallet, artifact);
+            }
+            if let Some(step) = call {
+                table.resolve_call_not_sent(wallet, &step);
             }
             ok
         })
@@ -1707,6 +2588,22 @@ impl LeaseTable {
         for (w, a) in owed {
             self.begin_sent_bundle(i, Arc::clone(backend), w, a);
         }
+    }
+
+    /// Begins `wallets`' owed `Sent` rows ([`Effects::owe_sent`]), reading
+    /// the journal outside J. A journal not ready leaves them owed: the
+    /// next write that lands, or the journal's close, begins them.
+    pub(super) fn write_owed_sent(self: &Arc<Self>, wallets: &BTreeSet<WalletId>) {
+        let Some(backend) = self.journal.get() else {
+            return;
+        };
+        self.with_j(|i, _| {
+            if i.fence.journal == JournalState::Ready {
+                for w in wallets {
+                    self.retry_owed_sent(i, &backend, Some(*w));
+                }
+            }
+        });
     }
 
     /// Begins the artifact's `Sent` row with its whole marker set, as one
@@ -2216,21 +3113,12 @@ impl LeaseTable {
         if !resolving {
             return false;
         }
-        let written = write
-            && backend.as_ref().is_some_and(|backend| {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                blocking(|| backend.resolve(&wallet.0, &id.0, Resolution::NotSent))
-            }))
-            .unwrap_or_else(|_| Err("the journal write panicked".into()))
-            .inspect_err(
-                |e| tracing::warn!(artifact = %id, error = %e, "resolving a step marker failed"),
-            )
-            .is_ok()
-            });
+        let written =
+            write && write_not_sent(backend.as_ref(), &wallet, &id, "resolving a step marker");
         self.with_j(|i, fx| {
             fx.notify();
             if write {
-                i.fence.writes -= 1;
+                end_write(i, fx, written);
             }
             let key = row_key(i, wallet, id);
             if keep_sent(i, key) {
@@ -2260,33 +3148,623 @@ impl LeaseTable {
                 };
                 return false;
             }
-            let mut gone = Vec::new();
-            for ((w, s), m) in i.fence.steps.iter_mut() {
-                if *w == wallet
-                    && let Some(mark) = m.remove(&id)
-                {
-                    // Only a marker whose write returned is known on disk;
-                    // any other may never have landed (review r2 H1).
-                    let mark = if mark == Mark::Durable {
-                        Mark::Durable
-                    } else {
-                        Mark::Ambiguous
-                    };
-                    gone.push((s.clone(), mark));
-                }
-            }
-            i.fence.steps.retain(|_, m| !m.is_empty());
-            let stash = i.fence.superseded.entry((wallet, id)).or_default();
-            for (s, mark) in gone {
-                match stash.iter_mut().find(|(t, _)| *t == s) {
-                    Some((_, m)) if mark == Mark::Durable => *m = Mark::Durable,
-                    Some(_) => {}
-                    None => stash.push((s, mark)),
-                }
-            }
+            i.fence.supersede(wallet, id);
             settle_unsent(self, i, fx, key);
             true
         })
+    }
+
+    /// The gate of a Mode B call step's J step (§2a.3): `None` when the call
+    /// may go on to its lease checks. The journal must be ready, since the
+    /// marker is written before the call; a running `NotSent` row of the
+    /// step is waited for, and a failed one is retried first (once per
+    /// call, `retry`).
+    pub(super) fn call_step_gate(
+        &self,
+        i: &mut Inner,
+        key: &(WalletId, String),
+        ready: bool,
+        retry: bool,
+    ) -> Result<Option<CallGate>, LeaseError> {
+        if !ready || i.fence.journal != JournalState::Ready {
+            return Err(LeaseError::JournalUnavailable);
+        }
+        Ok(match i.fence.call_steps.get_mut(key) {
+            Some(run) if run.resolving => Some(CallGate::Wait),
+            Some(run) if run.owed && retry => {
+                run.owed = false;
+                run.resolving = true;
+                Some(CallGate::Retry)
+            }
+            _ => None,
+        })
+    }
+
+    /// In the J step that took the call's permit (§2a.3): the step's marker
+    /// becomes `Committing` and its durable write is spawned, unless it is
+    /// durable already. Returns whether an earlier marker of the step
+    /// exists (the call's `prior_marker`), and the write to await before
+    /// the call starts.
+    pub(super) fn call_step_mark(
+        self: &Arc<Self>,
+        i: &mut Inner,
+        backend: Arc<dyn JournalBackend>,
+        wallet: WalletId,
+        step: &CallStep,
+    ) -> (bool, Option<tokio::task::JoinHandle<bool>>) {
+        let id = ArtifactId::of_step(&wallet, step.id());
+        let key = (wallet, step.id().to_owned());
+        let mark = i.fence.mark(&wallet, step.id(), &id);
+        let prior = mark.is_some();
+        // A new marker records the call's key; under an existing one the
+        // key is the same (refused otherwise, `call_key_differs`).
+        if !prior && let Some(funding) = step.funding() {
+            i.fence.funding.insert(key.clone(), funding);
+            i.fence.durable_record.insert(key.clone());
+        }
+        let run = i.fence.call_steps.entry(key.clone()).or_default();
+        run.running += 1;
+        run.possibly_out |= prior;
+        // This call runs under the marker now: a `NotSent` row an earlier
+        // call held back or left owed no longer applies.
+        run.owed = false;
+        run.after_write = false;
+        if mark == Some(Mark::Durable) {
+            return (true, None);
+        }
+        i.fence.next += 1;
+        let owner = i.fence.next;
+        i.fence
+            .steps
+            .entry(key)
+            .or_default()
+            .insert(id, Mark::Committing { owner });
+        let target = Target::Step(step.id().to_owned());
+        let write = self.spawn_write(i, backend, wallet, id, target, owner);
+        (prior, Some(write))
+    }
+
+    /// A call under the step's marker ended (in its permit's J step). Ok
+    /// begins the step's `Sent` row, the DEC-163 bundle. Once no call runs
+    /// under the marker and none may have sent, a `NotSent` row supersedes
+    /// it (written with the marker, `FULL`); while the marker's own write
+    /// runs, that write's J step begins it. Returns whether the caller
+    /// writes the row now, outside J ([`Self::resolve_call_not_sent`]).
+    pub(super) fn call_step_end(
+        self: &Arc<Self>,
+        i: &mut Inner,
+        fx: &mut Effects,
+        backend: Option<Arc<dyn JournalBackend>>,
+        wallet: WalletId,
+        step: &CallStep,
+        outcome: FlowOutcome,
+    ) -> bool {
+        let id = ArtifactId::of_step(&wallet, step.id());
+        let key = (wallet, step.id().to_owned());
+        if outcome == FlowOutcome::Sent {
+            // A resumable step's call that returned Ok holds the proved
+            // execution (H12, BL-76): `Sent`, announced under the step's
+            // id, as the facade reads it. A funding step's status is
+            // derived, and `rederive` announces it.
+            if i.fence.sent.insert(id) && step.funding().is_none() {
+                fx.emit(self.resolved_event(&wallet, step.id(), DispatchResolution::Sent));
+            }
+            self.begin_sent_row(i, backend, wallet, id);
+        }
+        let writing = i
+            .fence
+            .mark(&wallet, step.id(), &id)
+            .is_some_and(Mark::is_committing);
+        let Some(run) = i.fence.call_steps.get_mut(&key) else {
+            return false;
+        };
+        run.running = run.running.saturating_sub(1);
+        if outcome != FlowOutcome::Cancelled {
+            run.possibly_out = true;
+        }
+        if run.running > 0 {
+            return false;
+        }
+        if run.possibly_out {
+            i.fence.call_steps.remove(&key);
+            return false;
+        }
+        if writing {
+            run.after_write = true;
+            return false;
+        }
+        run.resolving = true;
+        true
+    }
+
+    /// Retries a call step's failed `NotSent` row ([`CallGate::Retry`]).
+    pub(super) async fn retry_call_not_sent(self: &Arc<Self>, wallet: WalletId, step: String) {
+        let table = Arc::clone(self);
+        let _ = self
+            .rt
+            .spawn_blocking(move || table.resolve_call_not_sent(wallet, &step))
+            .await;
+    }
+
+    /// Writes the `NotSent` row of a call step whose every call ended
+    /// definitely unsent (§2a.3, §7.6): it supersedes the step's marker,
+    /// and a new call of the step is a fresh one. A write that fails or
+    /// panics may have landed: the marker stays, `Ambiguous`, so the step
+    /// reads MaybeSent until a retry lands (the step's next call). Outside
+    /// J; blocks on the journal (inline on a blocking thread).
+    pub(super) fn resolve_call_not_sent(&self, wallet: WalletId, step: &str) -> bool {
+        let backend = self.journal.get();
+        let id = ArtifactId::of_step(&wallet, step);
+        let key = (wallet, step.to_owned());
+        let (resolving, write) = self.with_j(|i, _| {
+            let resolving = i.fence.call_resolving(&key);
+            let write = resolving && i.fence.journal == JournalState::Ready;
+            if write {
+                i.fence.writes += 1;
+            }
+            (resolving, write)
+        });
+        if !resolving {
+            return false;
+        }
+        let written = write
+            && write_not_sent(
+                backend.as_ref(),
+                &wallet,
+                &id,
+                "resolving a call step's marker",
+            );
+        self.with_j(|i, fx| {
+            fx.notify();
+            if write {
+                end_write(i, fx, written);
+            }
+            let Some(run) = i.fence.call_steps.get_mut(&key) else {
+                return false;
+            };
+            run.resolving = false;
+            if !written {
+                run.owed = true;
+                if let Some(m) = i.fence.steps.get_mut(&key).and_then(|m| m.get_mut(&id)) {
+                    *m = Mark::Ambiguous;
+                }
+                return false;
+            }
+            i.fence.call_steps.remove(&key);
+            i.fence.supersede(wallet, id);
+            // A definite resolution (§2a.5): the funding may read NotSent.
+            super::mode_b::rederive(self, i, fx, wallet);
+            true
+        })
+    }
+
+    /// A Mode B call step's journal state, its funding key and Repair's
+    /// self-spends (§2a.3, §2a.5).
+    pub fn call_step(&self, wallet: WalletId, step: &str) -> CallStepInfo {
+        self.with_j(|i, _| i.fence.call_step_info(&wallet, step))
+    }
+
+    /// Records that a funding call of `step` is about to release its first
+    /// signature (schema 7, §2a.7, review P2b r6 R6-01): one append to the
+    /// journal's `funding_release` table against the step's standing
+    /// marker, in memory once it landed. The call's funding signer awaits
+    /// it before the vault signs anything
+    /// ([`CountingFundingSigner`](crate::platform::CountingFundingSigner)),
+    /// so every lock that can reach a broadcast, by whatever path, has its
+    /// step's release row on disk first, and the step never reads `NotSent`
+    /// for want of a signed-lock record once a signature may be out. An
+    /// error (no journal ready, no marker standing on disk, a write that
+    /// keeps failing or panics, the marker superseded meanwhile) refuses the
+    /// signature. A failing write is retried ([`SIGNED_WRITE_ATTEMPTS`]).
+    /// Idempotent per marker. Outside J.
+    pub(crate) async fn record_release(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        step: &str,
+    ) -> Result<(), String> {
+        let backend = (self.journal.get()).ok_or("no dispatch journal")?;
+        let key = (wallet, step.to_owned());
+        let begun = self.with_j(|i, _| {
+            if i.fence.journal != JournalState::Ready {
+                return Err("the dispatch journal is not ready".to_owned());
+            }
+            if !i.fence.call_marked(&wallet, step) {
+                return Err("the funding step's marker no longer stands".to_owned());
+            }
+            if i.fence.released.contains(&key) {
+                return Ok(None);
+            }
+            i.fence.writes += 1;
+            Ok(Some(i.fence.supersedes.get(&key).copied().unwrap_or(0)))
+        })?;
+        let Some(generation) = begun else {
+            return Ok(());
+        };
+        // The write and the J step that ends it run on the blocking task,
+        // so `writes` comes down even if this future is dropped.
+        let table = Arc::clone(self);
+        self.rt
+            .spawn_blocking(move || {
+                let id = ArtifactId::of_step(&wallet, &key.1);
+                let mut delay = SIGNED_WRITE_BACKOFF;
+                let mut written = Err(String::new());
+                for attempt in 1..=SIGNED_WRITE_ATTEMPTS {
+                    written = guarded(|| backend.insert_release(&wallet.0, &key.1, &id.0));
+                    match &written {
+                        Err(e) => {
+                            tracing::warn!(step = key.1, attempt, error = %e, "recording a funding release failed");
+                        }
+                        Ok(_) => break,
+                    }
+                    if attempt < SIGNED_WRITE_ATTEMPTS {
+                        std::thread::sleep(delay);
+                        delay *= 2;
+                    }
+                }
+                table.with_j(|i, fx| {
+                    fx.notify();
+                    end_write(i, fx, written.is_ok());
+                    match written {
+                        Err(e) => Err(e),
+                        Ok(false) => Err("no marker of the funding step stands on disk".to_owned()),
+                        // A `NotSent` row cannot supersede the marker while
+                        // the call signs (`CallPermit::end`), unless this
+                        // signing was dropped meanwhile: the row is then the
+                        // superseded marker's, and the next one's call
+                        // writes its own.
+                        Ok(true)
+                            if !i.fence.call_marked(&wallet, &key.1)
+                                || i.fence.supersedes.get(&key).copied().unwrap_or(0)
+                                    != generation =>
+                        {
+                            Err("the funding step's marker was superseded".to_owned())
+                        }
+                        // A permit that ended during this write read its
+                        // step `NotSent` until now (no release, no call
+                        // running), and `MaybeSent` from here: its
+                        // resolution event may flap NotSent → MaybeSent
+                        // (review Opus closure C-4). Safe: the signer
+                        // re-checks the end after this write and signs
+                        // nothing.
+                        Ok(true) => {
+                            i.fence.released.insert(key);
+                            Ok(())
+                        }
+                    }
+                })
+            })
+            .await
+            .unwrap_or_else(|_| Err("the funding release write was cancelled".to_owned()))
+    }
+
+    /// [`Self::record_release`] inline (tests): what a funding signer's
+    /// first signature writes, for a test that releases one without it.
+    #[cfg(test)]
+    pub(crate) fn record_release_now(&self, wallet: WalletId, step: &str) -> Result<(), String> {
+        let key = (wallet, step.to_owned());
+        let state = self.with_j(|i, _| {
+            let ready =
+                i.fence.journal == JournalState::Ready && i.fence.call_marked(&wallet, step);
+            (ready, i.fence.released.contains(&key))
+        });
+        match state {
+            (_, true) => return Ok(()),
+            (false, false) => return Err("no journal ready, or no marker".into()),
+            (true, false) => {}
+        }
+        let backend = (self.journal.get()).ok_or("no dispatch journal")?;
+        let id = ArtifactId::of_step(&wallet, step);
+        if !backend.insert_release(&wallet.0, step, &id.0)? {
+            return Err("no marker of the funding step stands on disk".into());
+        }
+        self.with_j(|i, fx| {
+            fx.notify();
+            i.fence.released.insert(key);
+        });
+        Ok(())
+    }
+
+    /// Records Repair's self-spend `txid` (display order) of the stuck
+    /// funding `step` (§6.5, §2a.5), which spends `inputs`, before the
+    /// self-spend is broadcast: one append to the journal's `self_spend`
+    /// table, against the step's standing marker, with the input it spends
+    /// of each lock a call of the step signed (its provenance, review P2b
+    /// r3 R3-01), then the step's in-memory self-spends. Never a `NotSent`
+    /// row: the step reads `NotSent` only once the self-spend is
+    /// ChainLocked and its record shows the conflict
+    /// ([`super::mode_b::derive_funding`], [`SelfSpend`]), and after a
+    /// restart the row and the wallet's ChainLock say so again.
+    ///
+    /// Refused unless the step is stuck now
+    /// ([`super::mode_b::stuck_funding`]); refused with `MissesSignedLock`
+    /// when `inputs` miss every input of a signed lock; with `NoMarker` when no
+    /// marker of the step stands on disk (a `NotSent` row superseded it
+    /// meanwhile). A write that fails or panics may have landed: the caller
+    /// must then not broadcast, and a row of a self-spend never sent is
+    /// harmless (it is never ChainLocked). Outside J.
+    pub(crate) async fn record_self_spend(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        step: &str,
+        txid: [u8; 32],
+        inputs: &[OutPoint],
+    ) -> Result<(), super::mode_b::StuckFundingRefusal> {
+        use super::mode_b::StuckFundingRefusal as R;
+        let backend = self.journal.get().ok_or(R::JournalUnavailable)?;
+        let conflicts = self.with_j(|i, _| {
+            if i.fence.journal != JournalState::Ready {
+                return Err(R::JournalUnavailable);
+            }
+            super::mode_b::stuck_funding(i, wallet, step)?;
+            let conflicts = super::mode_b::self_spend_conflicts(i, wallet, step, inputs)?;
+            i.fence.writes += 1;
+            Ok(conflicts)
+        })?;
+        let stored: Vec<SelfSpendConflict> = conflicts
+            .iter()
+            .map(|(lock, input)| SelfSpendConflict {
+                lock: lock.to_byte_array(),
+                input: StoredOutPoint {
+                    txid: input.txid.to_byte_array(),
+                    vout: input.vout,
+                },
+            })
+            .collect();
+        // The write and the J step that ends it run on the blocking task,
+        // so `writes` comes down even if this future is dropped.
+        let table = Arc::clone(self);
+        let step = step.to_owned();
+        self.rt
+            .spawn_blocking(move || {
+                let id = ArtifactId::of_step(&wallet, &step);
+                let written =
+                    guarded(|| backend.insert_self_spend(&wallet.0, &step, &id.0, &txid, &stored))
+                        .inspect_err(
+                            |e| tracing::warn!(step, error = %e, "recording a self-spend failed"),
+                        )
+                        .ok();
+                table.with_j(|i, fx| {
+                    fx.notify();
+                    end_write(i, fx, written.is_some());
+                    match written {
+                        None => Err(R::JournalUnavailable),
+                        Some(false) => Err(R::NoMarker),
+                        Some(true) => {
+                            // A `NotSent` row that superseded the marker
+                            // since dropped the row with it, on disk as in
+                            // memory.
+                            if i.fence.call_marked(&wallet, &step) {
+                                let spends = i.fence.self_spends.entry((wallet, step));
+                                let spends = spends.or_default();
+                                if !spends.iter().any(|s| s.txid == txid) {
+                                    spends.push(SelfSpend {
+                                        txid,
+                                        conflicts: Some(conflicts),
+                                    });
+                                }
+                            }
+                            Ok(())
+                        }
+                    }
+                })
+            })
+            .await
+            .unwrap_or(Err(R::JournalUnavailable))
+    }
+
+    /// The changeset tap is about to store asset locks of `wallet`
+    /// (`locks`), before the persister takes them (§2a.6, §2a.7, reviews
+    /// P2b r2 R2-01, OD-01). A lock a running funding call signed (every
+    /// input carries a valid signature over a sighash the call's funding
+    /// signer signed: [`SignatureCount::signed_all`](super::call::SignatureCount::signed_all))
+    /// is its step's own, exactly: it is recorded with its inputs against
+    /// the step's standing marker, first here, pending (from then on the
+    /// step cannot read `NotSent` for want of a record), then by one append
+    /// to the journal's `signed_lock` table. This returns only once that
+    /// append landed: the library sends a `Built` lock only after this
+    /// store returns, and the resume pass sends none before its record is
+    /// durable ([`unrecorded_signer`](super::mode_b::unrecorded_signer)), so no lock a call
+    /// signed that reaches the store is sent without its durable record
+    /// (§2a.7). One the library sends without storing it (an empty tracking
+    /// changeset, review P2b r6 R6-01) is covered by its call's release row
+    /// instead ([`Self::record_release`]): its step reads possibly sent.
+    /// A failing append is retried ([`SIGNED_WRITE_ATTEMPTS`]). One that
+    /// keeps failing, a marker gone, a journal not ready, a lock carrying
+    /// only some of a call's signatures, a call that signed anything besides
+    /// the lock (a second lock, review P2b r6 R6-02), an asset-lock
+    /// changeset with no lock while a running call's released signatures
+    /// have no recorded lock (review P2b r7), a lock of a call that
+    /// already ended reaching the store unrecorded, or a `Built` lock whose
+    /// signatures cannot be read
+    /// stored while a call that released one runs stops the process
+    /// ([`fail_closed`]), before the library's send. A recorded lock ends
+    /// its call's signing of any other (one lock per call, O-1:
+    /// [`SignatureCount::admits`]). Blocking, outside J: it runs inside the
+    /// library's store call, which waits for it.
+    pub(crate) fn record_signed_locks(&self, wallet: WalletId, locks: &[StoredLock]) {
+        if locks.is_empty() {
+            // An asset-lock changeset with no lock (review P2b r7): a
+            // running call that released a signature no recorded lock of it
+            // covers may have signed a lock the library sends unstored, a
+            // second one among them (R6-02). It stops here too; its release
+            // row keeps its step `MaybeSent`.
+            let uncovered = self.with_j(|i, _| {
+                let mut uncovered = false;
+                for f in i.calls.values().filter_map(|r| r.funding.as_ref()) {
+                    if f.wallet == wallet && f.signatures.uncovered() {
+                        f.signatures.note_recorded();
+                        uncovered = true;
+                    }
+                }
+                uncovered
+            });
+            if uncovered {
+                fail_closed(
+                    wallet,
+                    "a funding call's signatures reached a store with no lock",
+                );
+            }
+            return;
+        }
+        let backend = self.journal.get();
+        let classified = self.with_j(|i, fx| -> Result<_, &'static str> {
+            let mut found: Vec<(String, SignedLock)> = Vec::new();
+            for lock in locks {
+                let Some(sighashes) = lock.sighashes.as_deref() else {
+                    // Only the builder stores a `Built` lock, before its
+                    // send: one no call can be shown to have signed may
+                    // still be a running call's.
+                    let signing = (i.calls.values().filter_map(|r| r.funding.as_ref()))
+                        .chain(&i.fence.ended_funding)
+                        .any(|f| f.wallet == wallet && f.signatures.released() > 0);
+                    if lock.built && signing {
+                        return Err(
+                            "an unverifiable built asset lock is stored while a funding call signs",
+                        );
+                    }
+                    continue;
+                };
+                let signers: Vec<(String, Arc<SignatureCount>)> = i
+                    .calls
+                    .values()
+                    .filter_map(|r| r.funding.as_ref())
+                    .filter(|f| f.wallet == wallet && f.signatures.signed_any(sighashes))
+                    .map(|f| (f.step.clone(), f.signatures.clone()))
+                    .collect();
+                for (step, signatures) in signers {
+                    if !signatures.signed_all(sighashes) {
+                        return Err(
+                            "an asset lock carries only some of a funding call's signatures",
+                        );
+                    }
+                    // From here on the call signs no second lock (O-1); one
+                    // it signed or is signing before is a second lock under
+                    // the permit (R6-02), which no record covers.
+                    signatures.note_recorded();
+                    if !signatures.signed_only(sighashes) {
+                        return Err("a funding call signed more than one asset lock");
+                    }
+                    if !i.fence.call_marked(&wallet, &step) {
+                        return Err("a signing funding call's marker no longer stands");
+                    }
+                    let known = i
+                        .fence
+                        .signed_locks
+                        .entry((wallet, step.clone()))
+                        .or_default();
+                    match known.iter().find(|l| l.txid == lock.txid) {
+                        Some(l) if l.durable => continue,
+                        Some(_) => {}
+                        None => known.push(SignedLock {
+                            txid: lock.txid,
+                            inputs: lock.inputs.clone(),
+                            durable: false,
+                        }),
+                    }
+                    if !found.iter().any(|(s, l)| *s == step && l.txid == lock.txid) {
+                        let pending = SignedLock {
+                            txid: lock.txid,
+                            inputs: lock.inputs.clone(),
+                            durable: false,
+                        };
+                        found.push((step, pending));
+                    }
+                }
+                // Its call ended before its store: the library call outlived
+                // the permit, and its send would follow this store. Only the
+                // builder stores a lock `Built`, before its send; a copy of
+                // an ended call's lock stored otherwise (a reconstruction of
+                // a malleated copy, whose signatures read the same sighashes)
+                // was sent by someone else and costs liveness only (§2a.6).
+                if lock.built
+                    && i.fence.ended_funding.iter().any(|f| {
+                        f.wallet == wallet
+                            && f.signatures.signed_any(sighashes)
+                            && !i.fence.recorded_durably(&wallet, &f.step, lock.txid)
+                    })
+                {
+                    return Err("a lock of an ended funding call reached the store unrecorded");
+                }
+            }
+            let ready = backend.is_some() && i.fence.journal == JournalState::Ready;
+            if !found.is_empty() {
+                if ready {
+                    i.fence.writes += 1;
+                }
+                fx.notify();
+                super::mode_b::rederive(self, i, fx, wallet);
+            }
+            Ok((found, ready))
+        });
+        let (mut found, ready) = match classified {
+            Ok(c) => c,
+            Err(why) => fail_closed(wallet, why),
+        };
+        if found.is_empty() {
+            return;
+        }
+        let Some(backend) = backend.filter(|_| ready) else {
+            fail_closed(wallet, "the journal is not ready to record a signed lock");
+        };
+        let mut delay = SIGNED_WRITE_BACKOFF;
+        for attempt in 1..=SIGNED_WRITE_ATTEMPTS {
+            let mut failed = false;
+            for (step, lock) in found.iter_mut().filter(|(_, l)| !l.durable) {
+                let id = ArtifactId::of_step(&wallet, step);
+                let inputs: Vec<StoredOutPoint> = lock
+                    .inputs
+                    .iter()
+                    .map(|o| StoredOutPoint {
+                        txid: o.txid.to_byte_array(),
+                        vout: o.vout,
+                    })
+                    .collect();
+                let txid = lock.txid.to_byte_array();
+                match guarded(|| {
+                    blocking(|| backend.insert_signed_lock(&wallet.0, step, &id.0, &txid, &inputs))
+                }) {
+                    Ok(true) => lock.durable = true,
+                    Ok(false) => {
+                        self.with_j(|i, fx| end_write(i, fx, true));
+                        fail_closed(
+                            wallet,
+                            "a signing funding call's marker no longer stands on disk",
+                        );
+                    }
+                    Err(e) => {
+                        failed = true;
+                        tracing::warn!(step, attempt, error = %e, "recording a signed lock failed");
+                    }
+                }
+            }
+            if !failed {
+                break;
+            }
+            if attempt == SIGNED_WRITE_ATTEMPTS {
+                self.with_j(|i, fx| end_write(i, fx, false));
+                fail_closed(wallet, "recording a signed lock keeps failing");
+            }
+            blocking(|| std::thread::sleep(delay));
+            delay *= 2;
+        }
+        let resume = self.with_j(|i, fx| {
+            fx.notify();
+            end_write(i, fx, true);
+            for (step, lock) in found {
+                if let Some(known) = i.fence.signed_locks.get_mut(&(wallet, step))
+                    && let Some(k) = known.iter_mut().find(|l| l.txid == lock.txid)
+                {
+                    k.durable = true;
+                }
+            }
+            // A row already proved is journaled now.
+            super::mode_b::rederive(self, i, fx, wallet);
+            // A pass that skipped a row for want of this record runs again.
+            i.mode_b.passes.take_deferred(&wallet)
+        });
+        if resume && let Some(me) = self.me.upgrade() {
+            me.request_resume(Some(wallet));
+        }
     }
 
     fn discard(&self, attempt: u64) {
@@ -2374,23 +3852,41 @@ impl LeaseTable {
         }
     }
 
-    /// The wallet saw the transaction (a Resend accepted, or it confirmed):
-    /// `Sent` (§4.6).
+    /// The wallet holds positive network evidence that the transaction is
+    /// out (BL-76, §4.6): an InstantSend lock, a block that holds it, or a
+    /// ChainLock over that block (`SessionHub`): `Sent`.
     pub fn note_seen(self: &Arc<Self>, wallet: WalletId, artifact: ArtifactId) {
+        self.note_seen_all(wallet, [artifact]);
+    }
+
+    /// [`Self::note_seen`] of every artifact in one J step (a block's or a
+    /// ChainLock's transactions).
+    pub fn note_seen_all(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        artifacts: impl IntoIterator<Item = ArtifactId>,
+    ) {
         let backend = self.journal.get();
         self.with_j(|i, fx| {
-            // Another wallet's sighting says nothing of this one's entry
-            // (review r2 L2).
-            let known = i.fence.rowless.contains_key(&row_key(i, wallet, artifact))
-                || i.fence.entries.contains_key(&(wallet, artifact));
-            if !known {
-                return;
+            for artifact in artifacts {
+                // Another wallet's sighting says nothing of this one's
+                // entry (review r2 L2). A step marker alone is one: after a
+                // restart a marked artifact has no row-less entry.
+                let known = i.fence.rowless.contains_key(&row_key(i, wallet, artifact))
+                    || i.fence.entries.contains_key(&(wallet, artifact))
+                    || i.fence
+                        .steps
+                        .iter()
+                        .any(|((w, _), m)| *w == wallet && m.contains_key(&artifact));
+                if !known {
+                    continue;
+                }
+                if i.fence.sent.insert(artifact) {
+                    resolved(self, fx, &wallet, &artifact, DispatchResolution::Sent);
+                }
+                // Begins the row, or again after a failed write.
+                self.begin_sent_row(i, backend.clone(), wallet, artifact);
             }
-            if i.fence.sent.insert(artifact) {
-                resolved(self, fx, &wallet, &artifact, DispatchResolution::Sent);
-            }
-            // Begins the row, or again after a failed write.
-            self.begin_sent_row(i, backend, wallet, artifact);
         });
     }
 
@@ -2398,6 +3894,7 @@ impl LeaseTable {
     /// rows of the table are Mode A's (P4) and Mode B's (P2b).
     pub fn dispatch_status(&self, wallet: WalletId, artifact: ArtifactId) -> Option<DispatchState> {
         self.with_j(|i, _| {
+            note_hold_read(i, &wallet, &artifact);
             let f = &i.fence;
             if f.sent.contains(&artifact) {
                 return Some(DispatchState::Sent);
@@ -2487,8 +3984,8 @@ impl LeaseTable {
                 tracing::warn!(wallet_id = %wallet, error = %e, "erasing dispatch records failed");
             }
             table.with_j(|i, fx| {
-                i.fence.writes -= 1;
                 fx.notify();
+                end_write(i, fx, erased.is_ok());
                 if let Ok(erased) = erased {
                     let forget = || forget_erased(i, wallet, dispatch, erased);
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(forget));

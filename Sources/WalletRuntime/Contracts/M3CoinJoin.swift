@@ -290,12 +290,18 @@ public struct MixedCoinsSweepResult: Sendable, Hashable {
     public let remaining: Amount
     /// Engine code of the error that stopped the sweep; `nil` = complete.
     public let failureCode: ServiceErrorCode?
+    /// With `.coinjoinBroadcastUnknown`: the chunk that may be on the network. Its coins stay reserved until the
+    /// wallet sees them spent.
+    public let unknownTxid: String?
 
-    public init(txids: [String], moved: Amount, remaining: Amount, failureCode: ServiceErrorCode?) {
+    public init(
+        txids: [String], moved: Amount, remaining: Amount, failureCode: ServiceErrorCode?, unknownTxid: String? = nil
+    ) {
         self.txids = txids
         self.moved = moved
         self.remaining = remaining
         self.failureCode = failureCode
+        self.unknownTxid = unknownTxid
     }
 }
 

@@ -242,6 +242,7 @@ impl NetworkSession {
             tokio::task::spawn_blocking(move || vault.wipe_wallet_secret(&id.0, &token)).await??;
             live.manager.remove_wallet(&id.0).await?;
             this.hub.forget_wallet(&id);
+            this.coin_fences.forget(&id);
             this.platform.forget(&id);
             let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
             tokio::task::spawn_blocking(move || -> Result<(), EngineError> {

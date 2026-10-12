@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use dw_vault::{KeyHold, VaultSigner};
 use tokio::runtime::Handle;
@@ -47,7 +47,7 @@ impl LeaseState {
         !matches!(self, Self::Revoked(_) | Self::Ended)
     }
 
-    fn refusal(self, purpose: BudgetPurpose) -> LeaseError {
+    pub(crate) fn refusal(self, purpose: BudgetPurpose) -> LeaseError {
         match self {
             Self::Parked => LeaseError::Parked(purpose),
             Self::Revoked(cause) => LeaseError::Revoked(cause),
@@ -107,11 +107,17 @@ pub(crate) struct Entry {
     pub(crate) permits: u32,
     /// Library calls of the flow running now (Mode B's call permits).
     pub(crate) calls: u32,
+    /// The flow's finished library calls, in order (§2a.3, §8.4).
+    pub(crate) calls_done: Vec<super::call::CallRecord>,
+    /// The funding steps the flow took a funding call's permit for, or was
+    /// bound to ([`Lease::bind_funding_step`]): its Mode B
+    /// `funds_committed` reads them (§16.5).
+    pub(crate) funding_steps: Vec<String>,
     pub(crate) ended_at: Option<Instant>,
 }
 
 impl Entry {
-    fn budget_mut(&mut self, purpose: BudgetPurpose) -> Option<&mut Budget> {
+    pub(crate) fn budget_mut(&mut self, purpose: BudgetPurpose) -> Option<&mut Budget> {
         match purpose {
             BudgetPurpose::Funding => Some(&mut self.funding),
             BudgetPurpose::Credits => Some(&mut self.credits),
@@ -214,6 +220,11 @@ pub(crate) struct Inner {
     pub(crate) leases: HashMap<LeaseId, Entry>,
     pub(crate) background: HashMap<WalletId, Background>,
     pub(crate) fence: FenceState,
+    /// Mode B's call permits in flight, by id (§2a.3).
+    pub(crate) calls: HashMap<u64, super::call::CallRun>,
+    pub(crate) next_call: u64,
+    /// Mode B's tracked rows and derived funding statuses (§2a.5).
+    pub(crate) mode_b: super::mode_b::ModeB,
     #[cfg(test)]
     pub(crate) log: Vec<super::stress_tests::LogEvent>,
     #[cfg(test)]
@@ -241,6 +252,11 @@ pub(crate) struct Effects {
     drops: Vec<Box<dyn Send>>,
     changed: BTreeSet<LeaseId>,
     notify: bool,
+    resume: bool,
+    /// Wallets with a `Sent` row owed (review R1-01): begun after J.
+    owed_sent: BTreeSet<WalletId>,
+    /// Wallets with a funding step's tombstone owed: begun after J.
+    owed_tombstones: BTreeSet<WalletId>,
 }
 
 impl Effects {
@@ -252,6 +268,13 @@ impl Effects {
         self.events.push(e);
     }
 
+    /// [`Self::emit`], unless this J step already emits `e`.
+    pub(crate) fn emit_once(&mut self, e: EngineEvent) {
+        if !self.events.contains(&e) {
+            self.events.push(e);
+        }
+    }
+
     /// The lease's view changed: `LeaseChanged` after J.
     pub(crate) fn changed(&mut self, id: LeaseId) {
         self.changed.insert(id);
@@ -260,6 +283,24 @@ impl Effects {
     /// Wake every waiter on the table (barrier, permits, gates).
     pub(crate) fn notify(&mut self) {
         self.notify = true;
+    }
+
+    /// Run the catch-up's resume pass for every loaded wallet (H6 part 2):
+    /// the journal recovered from a write failure (§6.4).
+    pub(crate) fn resume(&mut self) {
+        self.resume = true;
+    }
+
+    /// Begin `wallet`'s owed `Sent` rows after J
+    /// ([`LeaseTable::write_owed_sent`]), which reads the journal outside J.
+    pub(crate) fn owe_sent(&mut self, wallet: WalletId) {
+        self.owed_sent.insert(wallet);
+    }
+
+    /// Begin `wallet`'s owed tombstones after J
+    /// ([`LeaseTable::write_tombstones`]).
+    pub(crate) fn owe_tombstone(&mut self, wallet: WalletId) {
+        self.owed_tombstones.insert(wallet);
     }
 }
 
@@ -274,6 +315,14 @@ pub struct LeaseTable {
     /// This process's journal nonce (diagnostics, §6.2).
     pub(crate) process: [u8; 16],
     pub(crate) journal: super::fence::JournalSlot,
+    /// Mode B's evidence source (§2a.5); the session installs it.
+    pub(crate) tracked: OnceLock<Arc<dyn super::mode_b::TrackedLocks>>,
+    /// Serializes Mode B's snapshot refreshes.
+    pub(crate) refresh: tokio::sync::Mutex<()>,
+    /// The catch-up's resume path (H6 part 2); the session installs it.
+    pub(crate) resumer: OnceLock<Arc<dyn super::resume::Resumer>>,
+    /// The table itself, for work a J step's effects start.
+    pub(super) me: Weak<LeaseTable>,
 }
 
 impl std::fmt::Debug for LeaseTable {
@@ -290,7 +339,7 @@ impl LeaseTable {
         config: LeaseConfig,
         epoch: u64,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|me| Self {
             j: Mutex::new(Inner {
                 lock_gen: 0,
                 wallet_gen: HashMap::new(),
@@ -300,6 +349,9 @@ impl LeaseTable {
                 leases: HashMap::new(),
                 background: HashMap::new(),
                 fence: FenceState::default(),
+                calls: HashMap::new(),
+                next_call: 0,
+                mode_b: Default::default(),
                 #[cfg(test)]
                 log: Vec::new(),
                 #[cfg(test)]
@@ -312,6 +364,10 @@ impl LeaseTable {
             rt,
             process: rand::random(),
             journal: Default::default(),
+            tracked: OnceLock::new(),
+            refresh: tokio::sync::Mutex::new(()),
+            resumer: OnceLock::new(),
+            me: me.clone(),
         })
     }
 
@@ -325,6 +381,8 @@ impl LeaseTable {
         let (r, views) = {
             let mut inner = self.lock_j();
             let r = f(&mut inner, &mut fx);
+            // What this step changed for another wallet (BL-76).
+            super::fence::sweep_cross_wallet(self, &mut inner, &mut fx);
             let now = Instant::now();
             let views: Vec<LeaseView> = fx
                 .changed
@@ -345,6 +403,21 @@ impl LeaseTable {
         }
         if fx.notify {
             self.changed.notify_waiters();
+        }
+        if fx.resume
+            && let Some(me) = self.me.upgrade()
+        {
+            me.request_resume(None);
+        }
+        if !fx.owed_sent.is_empty()
+            && let Some(me) = self.me.upgrade()
+        {
+            me.write_owed_sent(&fx.owed_sent);
+        }
+        if !fx.owed_tombstones.is_empty()
+            && let Some(me) = self.me.upgrade()
+        {
+            me.write_tombstones(&fx.owed_tombstones);
         }
         r
     }
@@ -476,6 +549,8 @@ impl LeaseTable {
                 history: Vec::new(),
                 permits: 0,
                 calls: 0,
+                calls_done: Vec::new(),
+                funding_steps: Vec::new(),
                 ended_at: None,
             };
             if !fresh {
@@ -697,7 +772,7 @@ fn view_of(inner: &Inner, id: &LeaseId, now: Instant) -> Option<LeaseView> {
             .as_ref()
             .and(e.key_until)
             .map(|u| u.saturating_duration_since(now).as_secs()),
-        funds_committed: inner.fence.funds_committed(e),
+        funds_committed: inner.fence.funds_committed(e) || super::mode_b::funds_committed(inner, e),
         budgets,
         in_flight: e.permits,
         call_running: e.calls > 0,
@@ -797,29 +872,97 @@ impl Lease {
         })
     }
 
+    /// What the purpose's current generation still allows: the check a
+    /// caller makes before the call that charges it (a name's credit cap
+    /// before its pending label is written). Refused like a signer while
+    /// the lease does not sign.
+    pub fn available(&self, purpose: BudgetPurpose) -> Result<u64, LeaseError> {
+        self.with_entry(purpose, |e| {
+            e.budget_mut(purpose)
+                .map(|b| b.available())
+                .ok_or(LeaseError::NeedsGrant(purpose))
+        })
+    }
+
     /// Identity-key signer for the identities at `identity_indices`
     /// (`PlatformIdentity`); refused once the Credits budget is 0.
     pub fn identity_signer(
         &self,
         identity_indices: &[u32],
     ) -> Result<VaultIdentitySigner, LeaseError> {
-        let signer = self.signer(
-            BudgetPurpose::Credits,
-            |s| s.identity.as_ref(),
-            |e| e.credits.available() > 0,
-        )?;
+        self.scoped_identity_signer(identity_indices, |e| e.credits.available() > 0)
+    }
+
+    /// The identity signer a call's permit hands out: the permit's J step
+    /// already charged the call's quote, so the budget may be at 0.
+    pub(crate) fn call_identity_signer(
+        &self,
+        identity_indices: &[u32],
+    ) -> Result<VaultIdentitySigner, LeaseError> {
+        self.scoped_identity_signer(identity_indices, |e| e.credits.granted())
+    }
+
+    fn scoped_identity_signer(
+        &self,
+        identity_indices: &[u32],
+        budget: impl FnOnce(&Entry) -> bool,
+    ) -> Result<VaultIdentitySigner, LeaseError> {
+        let signer = self.signer(BudgetPurpose::Credits, |s| s.identity.as_ref(), budget)?;
         VaultIdentitySigner::new(signer, identity_indices.iter().copied())
             .map_err(|_| LeaseError::Vault("identity signer scope"))
     }
 
     /// The asset-lock funding signer (`PlatformFunding`, cap fixed at
-    /// issue; the remaining budget is charged at `register`).
-    pub fn funding_signer(&self) -> Result<VaultSigner, LeaseError> {
+    /// issue; the remaining budget is charged at `register`), counted by no
+    /// call permit (review Opus O-7): for a call that builds no asset lock
+    /// (DP1-02's `FromExistingAssetLock`). A Mode B funding call signs
+    /// through its permit's counting signer only
+    /// ([`CallPermit::funding_signer`](super::CallPermit::funding_signer)):
+    /// one this one signed for would end `Cancelled`, and its step would
+    /// read `NotSent` over a lock that may be on the wire.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "DP1-02's FromExistingAssetLock registration")
+    )]
+    pub(crate) fn uncounted_funding_signer(&self) -> Result<VaultSigner, LeaseError> {
         self.signer(
             BudgetPurpose::Funding,
             |s| s.funding.as_ref(),
             |e| e.funding.available() > 0,
         )
+    }
+
+    /// The funding signer a funding call's permit hands out: the permit's
+    /// J step already charged the call's quote, so the budget may be at 0.
+    pub(crate) fn call_funding_signer(&self) -> Result<VaultSigner, LeaseError> {
+        self.signer(
+            BudgetPurpose::Funding,
+            |s| s.funding.as_ref(),
+            |e| e.funding.granted(),
+        )
+    }
+
+    /// Binds the flow to a funding step it did not take a permit for, e.g.
+    /// a resumed registration's `registration/<draft>/funding`: its
+    /// `funds_committed` then reads the step's status (§16.5), so a tracked
+    /// row matching the draft's own key with no marker sets it.
+    pub fn bind_funding_step(&self, step: impl Into<String>) {
+        let step = step.into();
+        self.table
+            .with_j(|i, fx| self.bind_funding_step_in(i, fx, &step));
+    }
+
+    /// [`Self::bind_funding_step`]'s J step, which a funding call's permit
+    /// takes as well: the lease's `funding_steps` gain `step` and the
+    /// wallet's funding statuses are derived again.
+    pub(super) fn bind_funding_step_in(&self, i: &mut Inner, fx: &mut Effects, step: &str) {
+        if let Some(e) = i.leases.get_mut(&self.id) {
+            if !e.funding_steps.iter().any(|s| s == step) {
+                e.funding_steps.push(step.to_owned());
+            }
+            fx.changed(self.id);
+        }
+        super::mode_b::rederive(&self.table, i, fx, self.wallet);
     }
 
     /// The flow's DashPay crypto (`DashPayCrypto`); never hands off.
@@ -940,18 +1083,6 @@ impl Lease {
         });
     }
 
-    /// Mode B's call permit counter (selects C2); P2b takes it per call.
-    pub fn call_running(&self) -> CallGuard {
-        self.table.with_j(|i, fx| {
-            if let Some(e) = i.leases.get_mut(&self.id) {
-                e.calls += 1;
-                e.last_use = Instant::now();
-                fx.changed(self.id);
-            }
-        });
-        CallGuard(self.clone())
-    }
-
     pub fn view(&self) -> Option<LeaseView> {
         let now = Instant::now();
         let inner = self.table.lock_j();
@@ -1031,20 +1162,5 @@ impl Lease {
             table.spawn_key_timer(self.id);
         }
         Ok(())
-    }
-}
-
-/// While held, the lease counts a running library call (`call_running`).
-pub struct CallGuard(Lease);
-
-impl Drop for CallGuard {
-    fn drop(&mut self) {
-        let id = self.0.id;
-        self.0.table.with_j(|i, fx| {
-            if let Some(e) = i.leases.get_mut(&id) {
-                e.calls = e.calls.saturating_sub(1);
-                fx.changed(id);
-            }
-        });
     }
 }

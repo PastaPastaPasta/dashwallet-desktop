@@ -6,6 +6,58 @@
 //! persisted, so the engine keeps "Lock unspent" and dust locks in
 //! `app.sqlite` and applies them when it lists coins and builds candidate
 //! sets for a payment.
+//!
+//! The inputs of the wallet's tracked `Built` and `Broadcast` asset locks
+//! read as reserved (E0-04 §2a.3's F7 mitigation, H6 part 1 in Mode B):
+//! such a lock may already be on the wire, and the catch-up resends it, so
+//! no engine build may spend its inputs, neither by automatic selection nor
+//! by coin control. They are read with the coins, from one wallet state,
+//! so the exclusion holds from the first build of a session, before any
+//! resume ran, and lifts once the row reaches a proof, is consumed or is
+//! untracked. Repair's "Resolve stuck funding" self-spend (§6.5, §2a.5) is
+//! the one build that must spend them: its draft names exactly those
+//! inputs as exempt ([`WalletCoin::self_spend_selectable`]); every other
+//! build still refuses them. The inputs of a lock a funding call signed
+//! whose step is unresolved read the same way once its row is gone
+//! ([`WalletCoin::unresolved_lock`], review Opus O-2): the library no
+//! longer reserves them, and Repair's self-spend must take one of each.
+//!
+//! **The coin fence** (E0-04 §2a.6, DP1-02 Sol r2 R2-04). One async mutex
+//! per wallet ([`CoinFence`], [`NetworkSession::coin_fence`]) orders every
+//! change of what a build may spend against every build that reads it:
+//! - "Lock unspent"/"Unlock unspent" hold it across their check and
+//!   persist;
+//! - a coin read ([`NetworkSession::coin_snapshot`]) needs it, so dust
+//!   locks are only applied under it;
+//! - an engine build (a `TxDraft`'s prepare, Repair's self-spend, CoinJoin's
+//!   denomination and collateral funding, "Move mixed coins") holds one
+//!   fence from its coin read through its selection, its signing and the
+//!   reservation of its inputs ([`crate::send::PendingSpends`], under the
+//!   build's own [`crate::send::SpendOwner`], DEC-179);
+//! - a library funding call holds the fence its policy check read the coins
+//!   under ([`NetworkSession::fenced_coins`]) inside its call permit, until
+//!   the library has tracked the lock it signed (`Built`, whose inputs then
+//!   read reserved) or the call ends
+//!   ([`NetworkSession::funding_call_permit`]).
+//!
+//! So a coin locked after a build read the coins is never signed by that
+//! build: the lock waits for the build's reservation, and a build that
+//! starts after the lock reads it.
+//!
+//! Lock order: the fence before `wallet.state()` and the wallet manager
+//! (no holder of either awaits the fence), and never inside J. A holder
+//! passes its fence down and never asks for it again (the mutex is not
+//! reentrant). Nothing the library or SPV can run while a fence is held
+//! asks for one: the changeset tap, Mode B's refresh, the fee bound, the
+//! event handlers and the catch-up's resume pass read no coins through it.
+//! CoinJoin sessions (denominations of the CoinJoin account, unattended)
+//! read their coins under a fence they release at once and reserve their
+//! inputs outside it; their final-input signing takes the fence again to
+//! read the funding holds, through the signing (review P2b r7).
+//!
+//! `broadcast_psbt` alone takes more than one fence: those of the wallets
+//! owning an input, in ascending wallet id, held through its send. Every
+//! other holder takes one and waits for no other, so no cycle forms.
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -13,10 +65,11 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dashcore::{Address, OutPoint, Txid};
-use dw_appdb::{AppDb, AppDbError, GLOBAL_SCOPE, LabelKind};
+use dw_appdb::{AppDb, AppDbError, GLOBAL_SCOPE, LabelKind, LockReason};
 use key_wallet::Utxo;
 use key_wallet::bip32::ChildNumber;
 use key_wallet::managed_account::ManagedCoreFundsAccount;
+use key_wallet::managed_account::managed_account_collection::ManagedAccountCollection;
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use key_wallet::managed_account::transaction_record::TransactionDirection;
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -63,8 +116,19 @@ pub(crate) struct WalletCoin {
     /// The funding transaction spent none of the wallet's coins (or, when
     /// key-wallet no longer has the record, the coin is not change).
     pub foreign_incoming: bool,
+    /// Locked by the user or by dust protection (`dust_locked` says which).
     pub user_locked: bool,
+    /// The lock is dust protection's (QT-075), not the user's.
+    pub dust_locked: bool,
     pub reserved: bool,
+    /// Reserved only as the input of a tracked `Built` or `Broadcast`
+    /// asset lock, or of an unresolved signed one (module doc), not by a
+    /// payment of the engine.
+    pub lock_input: bool,
+    /// An input of an asset lock a funding call signed, whose funding step
+    /// reads neither `Sent` nor `NotSent`, and of no tracked pending lock:
+    /// nothing reserves it in the library (review Opus O-2).
+    pub unresolved_lock: bool,
 }
 
 impl WalletCoin {
@@ -85,6 +149,13 @@ impl WalletCoin {
         self.utxo.is_spendable(height) && !self.user_locked && !self.reserved
     }
 
+    /// Eligible for Repair's self-spend when the draft exempts it (E0-04
+    /// §6.5): as when picked by hand, except that a tracked asset lock's
+    /// reservation does not hold it back.
+    pub(crate) fn self_spend_selectable(&self, height: u32) -> bool {
+        self.utxo.is_spendable(height) && !self.user_locked && (!self.reserved || self.lock_input)
+    }
+
     fn denominated(&self) -> bool {
         self.coinjoin_account && COINJOIN_DENOMINATIONS.contains(&self.utxo.value())
     }
@@ -95,6 +166,172 @@ impl WalletCoin {
 pub(crate) struct CoinSnapshot {
     pub height: u32,
     pub coins: Vec<WalletCoin>,
+}
+
+/// Why a funding-account coin holds a library funding build back (E0-04
+/// §2a.6): the pinned asset-lock builder takes no exclusion set, so it
+/// would select the coin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum CoinHold {
+    /// An input of a pending payment of the engine: it clears when the
+    /// payment settles or is released.
+    Reserved,
+    /// "Lock unspent" by the user.
+    UserLock,
+    /// Dust protection's lock. Spending the coin would link its address to
+    /// the wallet's others (the lock's purpose), so it is not exempted; the
+    /// UI can offer "release this dust coin".
+    DustLock,
+    /// An input of an asset lock a funding call signed whose step is not
+    /// resolved, its row gone (review Opus O-2): spent by another lock, it
+    /// would leave Repair no input of it to take. It clears once Repair's
+    /// self-spend resolves the step, or its lock is proved.
+    UnresolvedLock,
+}
+
+/// One coin that holds a funding build back, for the refusal to name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HeldCoin {
+    pub outpoint: OutPoint,
+    pub value: u64,
+    pub hold: CoinHold,
+}
+
+impl CoinSnapshot {
+    /// The coins of the funding accounts (BIP44, BIP32, DashPay receiving)
+    /// the user or dust protection locked, or a pending payment of the
+    /// engine reserves: what the library's asset-lock builder does not see.
+    /// DP1-02's funding refuses while any stands, naming each with its
+    /// hold, checked under the fence its call permit then holds (module
+    /// doc). A coin both reserved and locked reads `Reserved`: releasing
+    /// its lock would not free it. A tracked lock's input (`lock_input`) is
+    /// not among them: the library reserves those itself. An unresolved
+    /// signed lock's input is ([`CoinHold::UnresolvedLock`]).
+    #[cfg_attr(not(test), expect(dead_code, reason = "DP1-02's funding policy check"))]
+    pub(crate) fn held_funding_coins(&self) -> impl Iterator<Item = HeldCoin> + '_ {
+        self.coins
+            .iter()
+            .filter(|c| c.send_account)
+            .filter_map(|c| {
+                let hold = if c.reserved && !c.lock_input {
+                    CoinHold::Reserved
+                } else if c.unresolved_lock {
+                    CoinHold::UnresolvedLock
+                } else if c.dust_locked {
+                    CoinHold::DustLock
+                } else if c.user_locked {
+                    CoinHold::UserLock
+                } else {
+                    return None;
+                };
+                Some(HeldCoin {
+                    outpoint: c.utxo.outpoint,
+                    value: c.utxo.value(),
+                    hold,
+                })
+            })
+    }
+}
+
+/// Proof that the caller holds a wallet's coin fence (module doc): no
+/// coin lock, dust lock, reservation or other build of the wallet changes
+/// what may be spent until it is dropped. Taken with
+/// [`NetworkSession::coin_fence`].
+pub struct CoinFence {
+    wallet: WalletId,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl CoinFence {
+    pub fn wallet_id(&self) -> WalletId {
+        self.wallet
+    }
+}
+
+impl std::fmt::Debug for CoinFence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CoinFence")
+            .field("wallet", &self.wallet)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The session's coin fences, one per wallet, made on first use.
+#[derive(Default)]
+pub(crate) struct CoinFences {
+    fences: std::sync::Mutex<HashMap<WalletId, Arc<tokio::sync::Mutex<()>>>>,
+    /// Tests: holds the next `TxDraft` prepare after its coin read, its
+    /// fence held.
+    #[cfg(test)]
+    pub(crate) pause_prepare: std::sync::Mutex<Option<Arc<TestPause>>>,
+    /// Tests: holds the next PSBT broadcast after its peer wait, before it
+    /// takes the coin fences.
+    #[cfg(test)]
+    pub(crate) pause_broadcast: std::sync::Mutex<Option<Arc<TestPause>>>,
+}
+
+/// A one-shot pause point for tests.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TestPause {
+    pub(crate) reached: std::sync::atomic::AtomicBool,
+    pub(crate) release: tokio::sync::Notify,
+}
+
+impl CoinFences {
+    fn map(&self) -> std::sync::MutexGuard<'_, HashMap<WalletId, Arc<tokio::sync::Mutex<()>>>> {
+        self.fences.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Waits for `wallet`'s fence.
+    pub(crate) async fn acquire(&self, wallet: WalletId) -> CoinFence {
+        let fence = Arc::clone(self.map().entry(wallet).or_default());
+        CoinFence {
+            wallet,
+            _guard: fence.lock_owned().await,
+        }
+    }
+
+    /// `wallet`'s fence if no one holds it now.
+    pub(crate) fn try_acquire(&self, wallet: WalletId) -> Option<CoinFence> {
+        let fence = Arc::clone(self.map().entry(wallet).or_default());
+        Some(CoinFence {
+            wallet,
+            _guard: fence.try_lock_owned().ok()?,
+        })
+    }
+
+    /// Drops a removed or unloaded wallet's fence unless it is held or
+    /// awaited (a new one for the same id would let two holders in).
+    pub(crate) fn forget(&self, wallet: &WalletId) {
+        let mut map = self.map();
+        if map.get(wallet).is_some_and(|f| Arc::strong_count(f) == 1) {
+            map.remove(wallet);
+        }
+    }
+
+    /// Tests: the pause point of a prepare that holds its fence.
+    pub(crate) async fn prepare_pause_point(&self) {
+        #[cfg(test)]
+        pause_at(&self.pause_prepare).await;
+    }
+
+    /// Tests: the pause point of a PSBT broadcast past its peer wait.
+    pub(crate) async fn broadcast_pause_point(&self) {
+        #[cfg(test)]
+        pause_at(&self.pause_broadcast).await;
+    }
+}
+
+#[cfg(test)]
+async fn pause_at(slot: &std::sync::Mutex<Option<Arc<TestPause>>>) {
+    let pause = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
+    if let Some(pause) = pause {
+        pause
+            .reached
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        pause.release.notified().await;
+    }
 }
 
 /// UTXO list filter (contract `UtxoFilter`).
@@ -171,22 +408,44 @@ fn collect(
                 r.direction == TransactionDirection::Incoming
             }),
             user_locked: false,
+            dust_locked: false,
             reserved: false,
+            lock_input: false,
+            unresolved_lock: false,
         });
     }
+}
+
+/// The inputs of the tracked asset locks that may be sent (`Built`,
+/// `Broadcast`): reserved for them (module doc).
+fn pending_lock_inputs<'a>(
+    locks: impl IntoIterator<Item = &'a platform_wallet::TrackedAssetLock>,
+) -> HashSet<OutPoint> {
+    locks
+        .into_iter()
+        .filter(|l| crate::platform::lease::TrackedStatus::from(&l.status).pending())
+        .flat_map(|l| l.transaction.input.iter().map(|i| i.previous_output))
+        .collect()
+}
+
+/// The funding accounts: BIP44, BIP32 and DashPay receiving, which
+/// platform-wallet's `ASSET_LOCK_FUNDING_SOURCES` pools (CoinJoin accounts
+/// are no funding source).
+fn funding_accounts(
+    accounts: &ManagedAccountCollection,
+) -> impl Iterator<Item = &ManagedCoreFundsAccount> {
+    accounts
+        .standard_bip44_accounts
+        .values()
+        .chain(accounts.standard_bip32_accounts.values())
+        .chain(accounts.dashpay_receival_accounts.values())
 }
 
 /// Reads every funds account of `info` (key-wallet state only).
 fn read_coins(info: &ManagedWalletInfo) -> CoinSnapshot {
     let accounts = &info.accounts;
     let mut coins = Vec::new();
-    for a in accounts.standard_bip44_accounts.values() {
-        collect(&mut coins, a, true, false);
-    }
-    for a in accounts.standard_bip32_accounts.values() {
-        collect(&mut coins, a, true, false);
-    }
-    for a in accounts.dashpay_receival_accounts.values() {
+    for a in funding_accounts(accounts) {
         collect(&mut coins, a, true, false);
     }
     for a in accounts.coinjoin_accounts.values() {
@@ -207,6 +466,50 @@ fn parse_threshold(value: Option<String>) -> Result<Option<u64>, AppDbError> {
         .transpose()
 }
 
+/// Whether the wallet holds `txid` as ChainLocked in any of its funds
+/// accounts: its record's context, or the finalized txid key-wallet keeps
+/// once it drops a ChainLocked record (as [`collect`] reads a coin's).
+pub(crate) fn tx_chain_locked(info: &ManagedWalletInfo, txid: &Txid) -> bool {
+    let accounts = &info.accounts;
+    let locked = |a: &ManagedCoreFundsAccount| {
+        a.transactions()
+            .get(txid)
+            .is_some_and(|r| r.context.is_chain_locked())
+            || a.transaction_is_finalized(txid)
+    };
+    funding_accounts(accounts).any(locked) || accounts.coinjoin_accounts.values().any(locked)
+}
+
+/// A transaction of the funding accounts (BIP44, BIP32, DashPay receiving)
+/// that spends one of the wallet's coins and is not ChainLocked yet, if
+/// any. Repair's self-spend waits for none (`platform/lease/repair.rs`):
+/// a coin such a transaction spends is no coin of the self-spend, so a lost
+/// asset lock that conflicts only with it is not beaten by the self-spend.
+pub(crate) fn unsettled_spend(info: &ManagedWalletInfo) -> Option<Txid> {
+    let accounts = &info.accounts;
+    let pending = |a: &ManagedCoreFundsAccount| {
+        a.transactions()
+            .values()
+            .find(|r| !r.input_details.is_empty() && !r.context.is_chain_locked())
+            .map(|r| r.txid)
+    };
+    funding_accounts(accounts).find_map(pending)
+}
+
+/// How many unspent outputs the asset-lock builder may fund from: every coin
+/// of the accounts platform-wallet's `ASSET_LOCK_FUNDING_SOURCES` pools
+/// (BIP44, BIP32, DashPay receiving), whatever its maturity, locks or
+/// reservations, which the library does not all see (E0-04 §2a.3's
+/// `fee_bound_worst` counts a superset, so its bound stays an upper one).
+pub(crate) async fn funding_coin_count(wallet: &PlatformWallet) -> usize {
+    let state = wallet.state().await;
+    read_coins(&state.core_wallet)
+        .coins
+        .iter()
+        .filter(|c| c.send_account)
+        .count()
+}
+
 impl NetworkSession {
     /// Runs a dw-appdb call on the blocking pool.
     pub(crate) async fn appdb_op<T, F>(&self, f: F) -> Result<T, EngineError>
@@ -220,18 +523,60 @@ impl NetworkSession {
             .map_err(EngineError::from)
     }
 
-    /// The wallet's coins with user/dust locks and reservations applied.
-    /// With dust protection on, first dust-locks small foreign incoming
-    /// coins (Dash Core: value ≤ threshold, funding transaction not ours;
-    /// a released dust lock is not renewed).
+    /// Waits for `wallet_id`'s coin fence (module doc). A holder passes it
+    /// down and never asks again: the fence is not reentrant. Not to be
+    /// awaited while holding the wallet's state or manager lock.
+    /// `WalletNotFound` for a wallet that is not loaded.
+    pub async fn coin_fence(&self, wallet_id: WalletId) -> Result<CoinFence, EngineError> {
+        self.wallet(&wallet_id).await?;
+        Ok(self.coin_fences.acquire(wallet_id).await)
+    }
+
+    /// [`Self::coin_fence`] if no one holds the fence now (`Ok(None)`
+    /// otherwise): for reads that may be skipped.
+    pub(crate) async fn try_coin_fence(
+        &self,
+        wallet_id: WalletId,
+    ) -> Result<Option<CoinFence>, EngineError> {
+        self.wallet(&wallet_id).await?;
+        Ok(self.coin_fences.try_acquire(wallet_id))
+    }
+
+    /// The fenced wallet's coins ([`Self::coin_snapshot`]), read under
+    /// `fence`: what DP1-02's funding policy checks
+    /// ([`CoinSnapshot::held_funding_coins`]) before it hands the same fence
+    /// to [`Self::funding_call_permit`].
+    #[cfg_attr(not(test), expect(dead_code, reason = "DP1-02's funding policy check"))]
+    pub(crate) async fn fenced_coins(
+        &self,
+        fence: &CoinFence,
+    ) -> Result<CoinSnapshot, EngineError> {
+        let wallet = self.wallet(&fence.wallet).await?;
+        self.coin_snapshot(fence, &wallet).await
+    }
+
+    /// The fenced wallet's coins with user/dust locks and reservations
+    /// applied. With dust protection on, first dust-locks small foreign
+    /// incoming coins (Dash Core: value ≤ threshold, funding transaction
+    /// not ours; a released dust lock is not renewed): only under the
+    /// fence (module doc).
     pub(crate) async fn coin_snapshot(
         &self,
+        fence: &CoinFence,
         wallet: &PlatformWallet,
-        wallet_id: WalletId,
     ) -> Result<CoinSnapshot, EngineError> {
-        let mut snapshot = {
+        let wallet_id = fence.wallet;
+        debug_assert_eq!(
+            wallet.wallet_id(),
+            wallet_id.0,
+            "the fence of another wallet"
+        );
+        let (mut snapshot, lock_inputs) = {
             let state = wallet.state().await;
-            read_coins(&state.core_wallet)
+            (
+                read_coins(&state.core_wallet),
+                pending_lock_inputs(state.tracked_asset_locks.values()),
+            )
         };
         let id = wallet_id.to_string();
         let dust_candidates: Vec<(u64, String, u32)> = snapshot
@@ -243,7 +588,7 @@ impl NetworkSession {
                 (c.utxo.value(), txid, vout)
             })
             .collect();
-        let locked: HashSet<(String, u32)> = self
+        let locked: HashMap<(String, u32), LockReason> = self
             .appdb_op(move |db| {
                 if let Some(threshold) =
                     parse_threshold(db.setting(GLOBAL_SCOPE, DUST_PROTECTION_KEY)?)?
@@ -259,16 +604,24 @@ impl NetworkSession {
                     .locks(&id)?
                     .into_iter()
                     .filter(|row| row.is_locked())
-                    .map(|row| (row.txid, row.vout))
+                    .map(|row| ((row.txid, row.vout), row.reason))
                     .collect())
             })
             .await?;
         let unspent: HashSet<OutPoint> = snapshot.coins.iter().map(|c| c.utxo.outpoint).collect();
         self.spends.retain_unspent(&wallet_id, &unspent);
         let reserved = self.spends.snapshot(&wallet_id);
+        let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
         for coin in &mut snapshot.coins {
-            coin.user_locked = locked.contains(&lock_key(&coin.utxo.outpoint));
-            coin.reserved = reserved.contains(&coin.utxo.outpoint);
+            let o = coin.utxo.outpoint;
+            let lock = locked.get(&lock_key(&o));
+            coin.user_locked = lock.is_some();
+            coin.dust_locked = lock == Some(&LockReason::Dust);
+            let spend_reserved = reserved.contains(&o);
+            let lock_reserved = lock_inputs.contains(&o);
+            coin.unresolved_lock = !lock_reserved && unresolved.contains(&o);
+            coin.lock_input = !spend_reserved && (lock_reserved || coin.unresolved_lock);
+            coin.reserved = spend_reserved || lock_reserved || coin.unresolved_lock;
         }
         Ok(snapshot)
     }
@@ -286,7 +639,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let view = this.mix_view(wallet_id).await?;
+            let view = this.read_mix_view(wallet_id).await?;
             let has_keys = this.vault.has_wallet_secret(&wallet_id.0);
             let id = wallet_id.to_string();
             let labels: HashMap<String, String> = this
@@ -356,7 +709,10 @@ impl NetworkSession {
     }
 
     /// "Lock unspent" (QT-070): excludes the outpoints from automatic
-    /// selection and coin control until unlocked. Persisted.
+    /// selection and coin control until unlocked. Persisted. Holds the
+    /// wallet's coin fence across its check and write, so it waits for a
+    /// build that read the coins before it to reserve its inputs (module
+    /// doc).
     pub async fn lock_outpoints(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -365,6 +721,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            let _fence = this.coin_fence(wallet_id).await?;
             this.require_unspent(wallet_id, &outpoints).await?;
             let id = wallet_id.to_string();
             this.appdb_op(move |db| {
@@ -382,7 +739,8 @@ impl NetworkSession {
 
     /// "Unlock unspent": deletes a user lock or releases a dust lock (which
     /// dust protection then leaves alone). An outpoint that is neither
-    /// locked nor an unspent output is `OutpointNotFound`.
+    /// locked nor an unspent output is `OutpointNotFound`. Under the coin
+    /// fence, as "Lock unspent".
     pub async fn unlock_outpoints(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -391,6 +749,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            let _fence = this.coin_fence(wallet_id).await?;
             let id = wallet_id.to_string();
             let keys: Vec<(String, u32)> = outpoints.iter().map(lock_key).collect();
             let active: HashSet<(String, u32)> = this
@@ -502,10 +861,135 @@ mod tests {
         assert!(!is_internal_path(&receive));
     }
 
+    fn coin(seed: u8, send_account: bool) -> WalletCoin {
+        use dashcore::hashes::Hash;
+        let address = Address::new(
+            dashcore::Network::Regtest,
+            dashcore::address::Payload::PubkeyHash(dashcore::PubkeyHash::from_byte_array(
+                [seed; 20],
+            )),
+        );
+        let utxo = Utxo::new(
+            OutPoint::new(Txid::from_byte_array([seed; 32]), 0),
+            dashcore::TxOut {
+                value: 1_000 * u64::from(seed),
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            100,
+            false,
+        );
+        WalletCoin {
+            utxo,
+            send_account,
+            coinjoin_account: !send_account,
+            is_change: false,
+            block_time: None,
+            chain_locked: false,
+            foreign_incoming: false,
+            user_locked: false,
+            dust_locked: false,
+            reserved: false,
+            lock_input: false,
+            unresolved_lock: false,
+        }
+    }
+
+    /// E0-04 §2a.6: the funding refusal names every held coin with its
+    /// hold, a dust lock apart from a user lock, and an unresolved signed
+    /// lock's input (review Opus O-2); a tracked lock's input, a free coin
+    /// and a CoinJoin coin hold nothing back.
+    #[test]
+    fn held_funding_coins_name_their_hold() {
+        let user = WalletCoin {
+            user_locked: true,
+            ..coin(1, true)
+        };
+        let dust = WalletCoin {
+            user_locked: true,
+            dust_locked: true,
+            ..coin(2, true)
+        };
+        let paying = WalletCoin {
+            reserved: true,
+            ..coin(3, true)
+        };
+        let paying_and_locked = WalletCoin {
+            reserved: true,
+            user_locked: true,
+            dust_locked: true,
+            ..coin(4, true)
+        };
+        let lock_input = WalletCoin {
+            reserved: true,
+            lock_input: true,
+            ..coin(5, true)
+        };
+        let coinjoin = WalletCoin {
+            user_locked: true,
+            ..coin(6, false)
+        };
+        let unresolved = WalletCoin {
+            reserved: true,
+            lock_input: true,
+            unresolved_lock: true,
+            ..coin(8, true)
+        };
+        let snapshot = CoinSnapshot {
+            height: 200,
+            coins: vec![
+                user.clone(),
+                dust.clone(),
+                paying.clone(),
+                paying_and_locked.clone(),
+                lock_input,
+                coin(7, true),
+                coinjoin,
+                unresolved.clone(),
+            ],
+        };
+        let held: Vec<HeldCoin> = snapshot.held_funding_coins().collect();
+        let expect = |c: &WalletCoin, hold| HeldCoin {
+            outpoint: c.utxo.outpoint,
+            value: c.utxo.value(),
+            hold,
+        };
+        assert_eq!(
+            held,
+            [
+                expect(&user, CoinHold::UserLock),
+                expect(&dust, CoinHold::DustLock),
+                expect(&paying, CoinHold::Reserved),
+                expect(&paying_and_locked, CoinHold::Reserved),
+                expect(&unresolved, CoinHold::UnresolvedLock),
+            ]
+        );
+    }
+
     #[test]
     fn threshold_parsing() {
         assert_eq!(parse_threshold(None).unwrap(), None);
         assert_eq!(parse_threshold(Some("10000".into())).unwrap(), Some(10_000));
         assert!(parse_threshold(Some("x".into())).is_err());
+    }
+
+    /// One fence per wallet, never reentrant; `try_acquire` refuses a held
+    /// one. A removed wallet's fence is forgotten only when idle: a held
+    /// one stays, so a later holder still waits for it.
+    #[tokio::test]
+    async fn a_wallets_fence_is_forgotten_only_when_idle() {
+        let fences = CoinFences::default();
+        let (w, other) = (WalletId([1; 32]), WalletId([2; 32]));
+        let held = fences.acquire(w).await;
+        assert!(fences.try_acquire(w).is_none());
+        drop(fences.try_acquire(other).expect("another wallet's is free"));
+        fences.forget(&w);
+        assert!(fences.map().contains_key(&w), "a held fence is kept");
+        assert!(fences.try_acquire(w).is_none(), "and still excludes");
+        drop(held);
+        drop(fences.try_acquire(w).expect("released"));
+        fences.forget(&w);
+        fences.forget(&other);
+        assert!(fences.map().is_empty(), "idle fences are forgotten");
     }
 }

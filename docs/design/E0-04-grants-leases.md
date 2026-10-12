@@ -438,7 +438,8 @@ recovery payload, `PreFence` seeding, restore and pending-spend re-fencing at lo
     means the step's outcome is `MaybeSent`, not `Cancelled`.
 - **Signatures.** The vault gate ends the epoch at the lock, so every signer issued before fails `Locked` after it.
   The engine's signer adapters count the signatures they release during each call permit. The count is host-visible
-  and only grows (review GPT r2 10).
+  and only grows (review GPT r2 10). A signature is counted before the vault is asked for it, and the count closes
+  when the permit ends, so a signer kept past its permit signs nothing (§2a.6, review M-1).
 - **Outcome per call:**
   - `Sent` when the call returned Ok;
   - `Cancelled` only when the call failed (a signer `Locked`, or refused before it started), **released no signature
@@ -505,7 +506,9 @@ recovery payload, `PreFence` seeding, restore and pending-spend re-fencing at lo
    - a top-up's `broadcast_unknown` offers no retry;
    - a restart after a withdrawal's `broadcast_unknown` offers no retry (H16);
    - `DispatchResolved` from row transitions, from DP1-05's adoption and from Repair's ChainLocked self-spend;
-   - a definitely-unsent funding (a Lock before signing, a not-ready rejection, a self-spend) allows funding again.
+   - a definitely-unsent funding (a Lock before signing, a self-spend) allows funding again, and so does a funding
+     refused before its marker (it never registered). Mode B at the pin cannot tell a not-ready rejection after
+     signing (§2a.6, review M-2).
 8. The Lock copy of §16.10 with its precedence:
    - the signed-before-broadcast barrier through the UI shows DEC-67's line, never a stop promise;
    - the "key held" lock state, with its mixing-only and Cross forms, and its Lock control (§4.6).
@@ -542,8 +545,8 @@ Mode B has no registered journal entries, so it derives every status from three 
 | Repair's self-spend of one of the lock's inputs is ChainLocked | `NotSent` (it can no longer confirm) |
 | a matching row is `InstantSendLocked`, `ChainLocked`, `Consumed` or `RecoveredFromChain` | `Sent` |
 | a matching row is `Built` or `Broadcast`, with or without a marker | `WillBeSent` (the catch-up and the deferred resume resend it) |
-| no row, and the marker records a definite resolution: the call released no signature, or the pin's `Rejected` arm untracked the row before any send | `NotSent` |
-| no marker and no matching row: the call never started | `None`: an asset lock never registered, so a second funding is allowed (§16.6) |
+| no row, and the marker records a definite resolution: the call released no signature, or the pin's `Rejected` arm untracked the row before any send (Mode B at the pin: the first only, §2a.6) | `NotSent` |
+| no marker and no matching row: the call never started | `None`: an asset lock never registered, so a second funding is allowed (§16.6); `MaybeSent` for a registration while an unattributed row may be its lock (§2a.6) |
 | anything else: a marker, no row, no definite resolution | `MaybeSent`, possibly indefinitely |
 
 - **Definite resolutions are written with the marker** (`FULL`), so they survive a restart.
@@ -555,7 +558,9 @@ Mode B has no registered journal entries, so it derives every status from three 
   `RecoveredFromChain` lock) or to `NotSent` (a definite resolution, or the ChainLocked self-spend).
 - **An orphan can stay unresolved indefinitely.** A lock that lost its row and is withheld by a peer stays
   `MaybeSent` with no time bound. The user can force a resolution with Repair's "Cancel it" (§6.5): a self-spend of
-  every coin. Once that spend is ChainLocked, any lost lock whose inputs it consumed can no longer confirm.
+  every coin. Once that spend is ChainLocked, any lost lock whose inputs it consumed can no longer confirm. As
+  built, Repair refuses a step none of whose calls' locks is recorded, and such a step stays `MaybeSent` until its
+  lock is found (§2a.6, reviews P2b r1 R1-01, r2 R2-01, r4 R4-01).
 - **Row-less state transitions after a restart, in both modes (H16).** The per-process set and its tombstones are
   gone, so `dispatch_status` answers `None`, which for a transition is unknown. Every resolution needs positive
   evidence, and none is offered a retry before it:
@@ -563,6 +568,491 @@ Mode B has no registered journal entries, so it derives every status from three 
   - any other transition has no record, so it stays "may have been sent" for as long as the host shows it, and the
     engine never answers `NotSent` for it. In its own process the row-less entry keeps the transition's identity,
     nonce space and nonce, and H16's evidence settles it.
+
+### 2a.6 Mode B as built (P2b)
+
+P2b implements §2a.3 and §2a.5 in dw-engine (`platform/lease/`: `call.rs`, `mode_b.rs`, `resume.rs`, `repair.rs`).
+**Mode B mechanism closed in P2b; items 7 and 9 end to end at DP1-02.** P2b closes §2a.4 items 1–8 against the
+fake library (item 7's cases as engine tests). The end-to-end halves of items 7 and 9 move to DP1-02 and the credit
+tasks: the testnet registration, a top-up's and a withdrawal's `broadcast_unknown`, and step 2's ChainLock-height
+retries. At the pin, `register_name` is the one live library write; the others are still stubs, and each takes its
+call permit when its task lands.
+
+**What DP1-02 builds on.**
+- `CallPermit::funding_signer()` (a `CountingFundingSigner`) and `CallPermit::identity_signer(indices)`: every
+  released signature and a `Locked` refusal count into the permit. Both are issued with the budget at 0, since the
+  permit's J step charged the quote. Only these count (`Lease::identity_signer` and the crate-private
+  `Lease::uncounted_funding_signer`, review Opus O-7, for a call that builds no lock, do not). A signature is counted
+  before the vault is asked for it, and the count closes at the permit's end: a signer (or a clone of it) used after
+  the end refuses `Locked`, and one in flight at the end makes the call `MaybeSent` (review M-1). The funding
+  signer also keeps the sighash of each signature it released: that is how the engine knows which lock the call
+  signed (below, "A step's own lock"), so DP1-02's funding call must sign through it, and its lock must reach the
+  persister while the permit runs. The step marker is unchanged.
+- `NetworkSession::funding_call_permit(lease, label, amount, step, key)` (the crate-private
+  `Lease::call_permit_step` with `CallStep::Funding{step, key}`, review Opus O-11): the funding gate, then the marker made durable, then the permit, charged
+  `amount + fee_bound_worst`. It refuses (`invalid_argument`, before any charge or marker) a step that is no funding
+  step, a `topup/...` step (below), and a `registration/<draft>/funding` step whose `key` is not its draft's own
+  key in `app.sqlite`, or whose draft has none (reviews M-3, M-4).
+- `dispatch_status` and `funds_committed` for `registration/<draft>/funding` and `topup/<id>/funding`, from the
+  tracked rows matched by the marker's key and the draft's own: `AppDb::registration_identity_indices`, keyed
+  (`IdentityRegistration`, the draft's identity index, account 0).
+- The funding gate refuses a funding build while any tracked `Built`/`Broadcast` row of the wallet, DP1-02's
+  included, has not been resumed by the catch-up's pass (`LeaseError::FundingBlocked(Row)`, `will_be_sent`), and
+  while the wallet's rows are unknown (`RowsUnknown`, `unavailable`). DP1-02 needs no gate of its own.
+- `register_name` under a lease: `NameAuthority`, `DashPay::register_name_for_flow`, `Lease::available`.
+- `WalletCoin::lock_input` tells a tracked lock's input (reserved for it) from a pending payment's input. The
+  inputs of a signed lock (§2a.7) whose step reads neither `Sent` nor `NotSent` and whose row is gone read the same
+  way (`WalletCoin::unresolved_lock`, `LeaseTable::unresolved_lock_inputs`; review Opus O-2): no payment, CoinJoin
+  pass, mixing session's signing, sweep or PSBT (§2a.6) takes them, Repair's self-spend may (history resend is a known
+  limit, §2a.6), and `held_funding_coins` names them `CoinHold::UnresolvedLock`
+  (the pinned builder does not see them), so a new funding waits for the step's Repair.
+- `LeaseTable::registration_funding_steps(wallet)` (PA-1, DP1-02 ownership §3.1, §13.1): every
+  `registration/<draft>/funding` step with a standing marker, by draft, in one J step, as `FundingStepView { draft,
+  key, status, signed, dead, durable_record, recording }`. A step Repair resolved lists its locks under `dead` and
+  none under `signed`, and reads `NotSent`. `Err(FundingStepsUnavailable)` while the journal is not read: an empty
+  list would read every step unclaimed (review Opus O-3).
+- **The coin fence** (DP1-02 Sol r2 R2-04, DEC-173 (3); `coins.rs`). One async mutex per wallet orders every change of
+  what a build may spend against every build that reads it:
+  - `NetworkSession::coin_fence(&self, wallet_id: WalletId) -> Result<CoinFence, EngineError>` waits for it;
+    `CoinFence` (`dw_engine::CoinFence`, `wallet_id()`) is the held guard. Not reentrant: a holder passes it down and
+    never asks again, and nobody awaits it while holding the wallet's state or manager lock. It is public for
+    DP1-02's policy check; a host that holds one stalls the wallet's "Lock unspent", coin list and payments until it
+    drops it.
+  - `NetworkSession::fenced_coins(&self, fence: &CoinFence) -> Result<CoinSnapshot, EngineError>` reads the coins under
+    it; `CoinSnapshot::held_funding_coins()` yields a `HeldCoin { outpoint, value, hold }` for each funding-account
+    coin an engine payment reserves (`CoinHold::Reserved`), the user locked (`UserLock`) or dust protection locked
+    (`DustLock`); a coin both reserved and locked reads `Reserved`. DP1-02's policy check refuses while any stands,
+    and its refusal names each coin with its hold, so the UI can offer "release this dust coin". Dust locks stay
+    counted (manager ruling): the pinned builder takes no exclusion set, so exempting one would let it spend the
+    coin and link its address, which the lock exists to prevent. **Residual:** a dust payment into a funding account
+    blocks registration until released; lifted when the library accepts an exclusion set (the upstream ask: the
+    platform-wallet asset-lock builder takes excluded outpoints; then the fence passes the held set and the refusal
+    goes away). Dust that arrives during the call is not locked until the next coin read, so the library may spend
+    it: dust protection's usual window.
+  - `funding_call_permit(lease, label, amount, step, key, fence: CoinFence)` takes the fence that check ran under
+    and moves it into the permit's call. **Release rule:** at the first of (a) the changeset tap storing a tracked
+    row of the wallet under the permit's funding key, of any status, that is not foreign to its step, once the call
+    released a signature (platform-wallet tracks and persists the lock `Built` after signing it and before
+    broadcasting it, and from then on its inputs read reserved through `lock_input`; the persister may fold that
+    `Built` into `Broadcast` before the tap sees it, so any status counts; a row before the call's first signature is
+    not its lock), or (b) the call's end (`finish` or drop); a refused permit drops it with the refusal. It is
+    released outside J and never held through the library's proof wait past that row. While the permit holds it, the
+    caller asks for no coin fence of the wallet (it would wait for itself).
+  - Who takes it: `lock_outpoints`/`unlock_outpoints` across their check and write; every coin read
+    (`coin_snapshot` requires a `&CoinFence`, so dust locks are applied only under it): `utxos`, `max_spendable`,
+    `coin_selection_summary`, `TxDraft::estimate` and `create_unsigned`, CoinJoin's status, start, recovery scan,
+    sweep plan and session coin reads; and one fence held from the coin read through selection, signing and the
+    reservation (`PendingSpends::reserve`) by `TxDraft::prepare` (every path: plain, leased, CoinJoin source, Repair's
+    self-spend), CoinJoin's automatic pass (denomination and collateral funding spend BIP44 coins; released before
+    the funding transaction's broadcast) and "Move mixed coins" (every chunk signed and reserved under it, released
+    before the broadcasts). A broadcast definitely refused (`TransactionBroadcast`) gives back its chunk's and the
+    later chunks' reservations; one whose outcome is unknown (`TransactionBroadcastUnconfirmed`, any other error)
+    keeps its own chunk's claim, which goes once its inputs are seen spent, and gives back only the later chunks',
+    never broadcast (`coinjoin.broadcast_unknown`; review P2b r1).
+  - Nothing the library or SPV runs inside a call takes it: the changeset tap (`LeaseTable::note_tracked` is one J
+    step), Mode B's refresh, `fee_bound_worst`/`funding_coin_count`, the event handlers and the catch-up's resume
+    pass. The CoinJoin status refresher only tries it: a held fence skips that wallet's tick and keeps its cached
+    status. `lock_vault`, a wallet's unload or removal, and the session's close never take it; they wait only for the
+    engine operations and permits they always waited for (up to a permit's deadline), some of which may hold it. A
+    removed or unloaded wallet's fence is dropped unless held or awaited.
+  - **CoinJoin decision:** mixing sessions (denominations of the CoinJoin account, unattended) read their coins under
+    a fence released at once and reserve and sign their inputs outside it. A user lock taken after the session read
+    its coins does not stop that session from spending a denomination it already picked; the next session's read
+    honours it. Such inputs are the CoinJoin account's own denominations, never BIP44 coins, and a session's
+    reservation excludes them from a concurrent "Move mixed coins" plan read after it.
+
+- **Owner-keyed reservations** (DEC-179). `PendingSpends` maps each outpoint to the set of owners that claim it
+  (`SpendOwner`); every reserve names its owner, a release removes only that owner's claim, and a coin stays
+  reserved while any owner holds it. Seen spent, every claim on the coin goes (`retain_unspent`); a wallet's unload
+  drops them all.
+  - `SpendOwner::Tx(txid)`: a transaction the engine signed, reserved under the fence after signing: a `PreparedTx`
+    (`PreparedTx::owner`; accepted, abandoned, dropped while pending or never sent releases it by owner, never by
+    outpoint), a CoinJoin funding transaction, a "Move mixed coins" chunk. Abandoning a transaction from history
+    (`tx_actions`) releases each abandoned txid's claim.
+  - `SpendOwner::Mixing(token)`: one fresh token per mixing session (`SpendOwner::mixing_session()`), for its
+    collateral input and the inputs it locks; a success's inputs stay held under it until the observation timeout.
+  - The API: `reserve(wallet, owner, outpoints)`, `release(wallet, owner)`, `release_some(wallet, owner,
+    outpoints)` (that owner's claims on those coins only), `snapshot(wallet)` (coins any owner holds).
+    DP1-02 adds its registration lock's owner as a new variant.
+  - Held inputs are kept per (outpoint, session), so two sessions that locked the same coin each release their own
+    claim at the observation timeout. Residual (as before DEC-179): that timeout runs only in the mixing loop, so a
+    success's held inputs stay reserved after mixing stops, until seen spent, mixing restarts or the wallet unloads.
+
+**Decisions taken in P2b** (the manager's rulings D1–D5 on its plan, and the implementation's):
+- D2: `register_name` takes a lease id or a raw grant; a raw grant is checked without consuming it, then redeemed
+  into a one-shot `NameRegistration` lease that ends with the call. The pending label is the write's durable marker
+  (DP1-03), so it takes a plain call permit, not a step marker.
+- D3: `dispatch.sqlite` schema 3 adds the append-only `funding_marker` and `self_spend` tables. The DEC-160
+  predicate is unchanged: a `funding_marker` row shares its `seq` with its `step_log` marker, which is why compaction
+  treats it as a marker. The DEC-163 `Sent` bundle includes it. Schema 4 (P2b r2) adds the append-only
+  `signed_lock` table: a lock a funding call signed (txid, input outpoints), against the marker standing when it
+  was written, standing and compacted with it like a `self_spend` row. 3 → 4 only adds. Schema 5 (P2b r3) adds a
+  `self_spend` row's provenance: `1` with its `conflicts` (per signed lock of the step, the lock's txid and the
+  input of it the self-spend spends), `0` for every row written before (legacy). 4 → 5 only adds; every existing
+  self-spend reads legacy. Schema 6 (P2b r5; reviews OD-02, OD-06, Opus O-8) adds `funding_marker.durable_record`
+  (§2a.7) and the append-only `funding_tombstone` table (below, "Repair's resolution is durable"); 5 → 6 only adds,
+  every existing marker reads unflagged and no tombstone exists. A self-spend recorded with no conflicts is refused
+  by the journal (O-8a), and the open's migration and sweep run in an `IMMEDIATE` transaction (O-8c).
+- D4: the self-spend row is appended before the broadcast; no `NotSent` row is written. The step derives `NotSent`
+  once the wallet holds the self-spend ChainLocked.
+- D5: the fee bound is snapshotted outside J and compared inside J (below for the re-check).
+- Rows unknown fail closed. A standing marker blocks re-funding its step. A step ignores rows its key matched before
+  its marker (an earlier funding's). A ChainLocked self-spend reads `NotSent` over a `Built`/`Broadcast` row.
+- The catch-up's pass (H6 part 2) runs after SPV starts, on every peers 0 → >0, after a journal write succeeds
+  following a failed one, and when a wallet is opened; a row stops blocking once its library attempt returned,
+  whatever the result. A stop disarms the passes; a closed wallet's rows block again until its reopen's pass.
+- Repair's self-spend spends every spendable coin of the funding accounts, the tracked locks' inputs exempt from
+  their reservation on this path only, to a fresh receive address. It is refused while any spend of the funding
+  accounts' coins is not ChainLocked, and unless it takes an input of every lock the step's calls signed (row or
+  not) and of every tracked `Built`/`Broadcast` row of the step.
+- BL-76 (H12): the session hub feeds `note_seen` an InstantSend lock (also a transaction first seen through its
+  lock), a block holding the transaction and a ChainLock over it; never a mempool sighting.
+- **A step's own lock** (reviews P2b r1 F1, F2; r2 R2-01: exact provenance). A lock is a funding step's own only
+  when a call of the step signed it. The permit's funding signer keeps the sighash of every signature it releases.
+  `WalletStore::store` reads each asset lock of a changeset before the persister takes it. For each input it
+  recomputes the legacy `SIGHASH_ALL` sighash from the stored transaction itself (the P2PKH script of the
+  scriptSig's key) and verifies the scriptSig's signature over it (either S). A lock whose every input verifies over
+  a sighash a running funding call signed is that call's, exactly: each sighash commits to all the lock's inputs and
+  outputs, and only the call's signer produced a signature over it. A signature copied onto other inputs or outputs
+  no longer verifies, and a scriptSig that is not exactly `<signature> <key>` reads nothing. The engine then appends
+  the lock's txid and inputs to `signed_lock`, against the step's standing marker, and blocks the store until the
+  write has landed (§2a.7). platform-wallet's `AssetLockManager` stores the lock `Built` (`build.rs` `track_asset_lock` →
+  `queue_asset_lock_changeset` → the persister's `store`, synchronous; `manager.rs`) before it broadcasts it, so
+  the record is on disk before the lock can be on the wire. That holds when the persister then refuses the store
+  too: the library logs the refusal and broadcasts the lock all the same, and the `signed_lock` row is then the
+  only record of it. The check runs only while a funding call of the wallet runs. A txid cannot be recorded before
+  the signatures exist (Dash has no segwit: the txid covers the scriptSigs, and the signer sees only a sighash), so
+  this store is the earliest point. A funding call signs one lock (the funding gate admits one call per marker):
+  once a lock of the call is recorded, its funding signer signs only sighashes it already signed and refuses any
+  other (`PathNotAllowed`, review Opus O-1), so a library rebuild or a second build under one permit signs nothing.
+  A write that fails is retried, and one that keeps failing stops the process before the library's send (§2a.7). A malleated copy of a signed lock (same signatures,
+  another txid; anyone can re-encode a scriptSig) is not recorded once the call has ended: it is not the step's own,
+  and it costs liveness only (its inputs are the signed lock's, which Repair already conflicts with). A row that only
+  matches the step's key, or that the changeset tap saw while the call ran, is not the step's own: it may be
+  another step's lock (a reconstruction at index 0). The tap only releases the call's coin fence; it attributes
+  nothing. A wallet's close and reopen keep the records, since they are exact; nothing else of ownership is kept in
+  memory.
+- **A proved funding is journaled `Sent`** (review P2b r1 R1-01). When a tracked row with a proof (`InstantSendLocked`,
+  `ChainLocked`, `Consumed`, `RecoveredFromChain`) whose index is trusted or that is one of the step's signed locks
+  first makes it read `Sent`, the
+  step gets its DEC-163 `Sent` bundle: the step's marker (one under the row's key if the step had none, found by its
+  draft's own key) with its `funding_marker` row, and the `Sent` row. It is begun after J and stays owed on a
+  failed, cancelled or panicking write: the next journal write of the wallet that lands, or the journal's close,
+  begins it again, and after a restart the rows derive it again. From then on the step reads `Sent` whatever
+  becomes of its rows (a sweep, a restore), and a recorded self-spend can never turn it `NotSent`: `Sent` comes
+  first in §2a.5. Any other matching proved row (index 0, re-added from the chain, with no signed lock) may be
+  another singleton step's lock: it reads `Sent` while it stands and is never journaled. A step that reads `Sent`
+  with no row begun (a call returned `Sent` while the journal was closed) owes it too. A `Sent` only stops Repair,
+  so a trusted index is evidence enough for it.
+- **Repair needs a lock to conflict with** (reviews P2b r1 R1-01, r2 R2-01, r4 R4-01, fail closed). Repair
+  resolves a step only while a lock a call of the step signed is recorded (`signed_lock`, or in memory after a
+  failed write). Its self-spend must take an input of each signed lock, whether or not its row stands (a lost
+  row's lock may still confirm), and of every tracked `Built`/`Broadcast` row of the step; a signed lock whose
+  inputs are all spent (it may have confirmed) is refused `LockInputsSpent`. Otherwise it refuses `NoKnownLock`
+  (`invalid_argument`): a step whose lock lost its row may have that lock on the chain already, or held by a peer
+  over an input no scan of the chain shows (key-wallet spends 0-conf outputs, so a lock can spend an unconfirmed
+  parent's output that only the peer holds); and a tracked row that only matches the step's key, trusted index or
+  not, may be another step's lock. No scan of the chain lifts the refusal: a complete one still cannot see a lock a
+  peer withholds (R4-01). So the withheld-T1 trace (§2a.4 item 7) stays `MaybeSent` until its lock is found, and
+  so does a step whose marker predates schema 4.
+- **A self-spend carries its provenance** (review P2b r3 R3-01). Repair records, with the self-spend's txid, the
+  input it spends of each signed lock of the step, read from the transaction it will broadcast; one that spends no
+  input of a signed lock is refused `MissesSignedLock` before anything is written. A ChainLocked self-spend reads
+  the step `NotSent` only while its record names an input of every signed lock of the step (at least one): the lock
+  can then no longer confirm, and it is the step's only lock (one lock per call, above). A lock its record names
+  that the process no longer knows (its `signed_lock` write failed) counts all the same: the record shows the call
+  signed it, and no other call of the step signs, since none starts while its marker stands (`check_funding`).
+  Nothing else lets a self-spend count (review P2b r4 R4-01). A legacy self-spend (written before schema 5, when
+  Repair could admit on a heuristic owner, review P2b r2 R2-01) and one recorded with no conflicts (admitted, at
+  r3, on a complete recovery) never do, whatever a later scan finds: the step derives as if they were absent
+  (`MaybeSent`, `WillBeSent` or committed) until a `Sent` lands. Their rows stay, and no signed lock is made up for
+  them. The only way out for such a step is a fresh Repair under the current rules: a new self-spend, its own row
+  beside the legacy one, recorded with the inputs it takes of the step's signed locks (so the step needs one).
+  Liveness residual: where the legacy self-spend did spend every input of the signed lock, Repair is refused
+  `LockInputsSpent` and the step reads `MaybeSent` for good (it is never funded again: fail closed). No
+  shipped build can hold a legacy row: desktop main through 9b70543 is at schema 2, with no `self_spend` table; the
+  table and Repair exist only on the unmerged P2b branch (schemas 3 to 5).
+- **Repair's resolution is durable** (DP1-02 PA-3, C4, ownership rev2 §9; review OD-06). Repair's `NotSent` is
+  derived (D4), and the marker stands for good, so once the wallet holds a self-spend ChainLocked that shows the
+  conflict with every signed lock of the step, the engine appends a `funding_tombstone` row (the self-spend's
+  txid, against the standing marker; one per marker, after J). The resolution holds in memory from the first
+  snapshot that shows it, whatever later snapshots show (a ChainLock is final), and the write stays owed until it
+  lands; a write that finds no marker standing on disk is dropped. From then on the step's signed locks are
+  *dead*: they stay in `signed_lock` and come back as `dead` in the PA-1 view. The step
+  reads `NotSent` whatever the snapshot shows later (the ChainLock gone from it, an unattributed row, a pending
+  row under the step's own key), over a restart and over the wallet's erase (`erase_wallet_rows` and the sweep keep
+  every row of a standing marker), its re-add and a backup restored after its removal, a backup taken before the
+  resolution included (`.dwbackup` carries `app.sqlite` rows only, never `dispatch.sqlite`, Q14; a restore writes no
+  J row): for a flagged step (§2a.7) every lock its one call signed is recorded and dead,
+  so no row is its lock (C4: P2b derives this itself, so the gate, the events and the PA-1 view agree by
+  construction, and DP1-02 never overrides it). This comes before §2a.5's "a proved row reads `Sent` first": a
+  proved row of the step would be one of its dead locks, whose inputs the ChainLocked self-spend took, so the two
+  cannot both hold. An unflagged step's locks are dead all the same (the gate refuses it, the view lists them
+  under `dead`), but it reads `NotSent` only while no unattributed row stands (§2a.6's residual), `MaybeSent`
+  meanwhile. `DispatchResolved(NotSent)` is emitted once
+  when the step first reads it (DP1-02's optional signal: no other is added).
+- **A resolved step is never called again** (`FundingBlock::StepCancelled`, `invalid_argument` "Repair cancelled
+  the funding step; a new funding needs a new step"): the funding gate refuses a step with a tombstone, or with a
+  resolving self-spend whose tombstone is owed, before anything else; a new draft is a new step. Repair refuses it
+  `NotStuck(Some(NotSent))`. Nothing supersedes a resolved step's marker: a funding call of the step under another
+  key is refused `StepCancelled` the same way, and a resumable call of it `StepKeyMismatch`, both before any J
+  write, so no later attempt brings its dead locks back as signed. A step whose calls all ended definitely unsent
+  (`NotSent` row, nothing signed) supersedes its marker, leaves no tombstone and may be funded again; a step whose flagged marker stands with nothing signed (a kill mid-call, C5) reads
+  `NotSent` and is refused `Step(Some(NotSent))` by its standing marker. Hence H12's exception (§5.7).
+- **Repair's refusals are typed** (review Opus O-5): `EngineError::StuckFunding(StuckFundingRefusal)`
+  (`stuck_funding`), with `StuckFundingRefusal::code()` per refusal and `retry_later()` for those that pass unaided
+  (`rows_unknown`, `call_running`, `spend_unsettled`, `journal_unavailable`; O-13b). `lock_inputs_spent` reads "asset
+  lock …: every coin it spends is already spent", and with `no_known_lock` is the lasting case DP1-02's copy
+  explains (nothing else is blocked, the other funds are free, a new registration can start, the draft resolves if
+  its lock appears).
+- **A journal not read reads `MaybeSent`** (review Opus O-3). While `dispatch.sqlite` is not read (not loaded,
+  unopenable, a newer schema), a step with no proving row reads `MaybeSent`, never `None` or `NotSent`: no marker
+  loaded says nothing. A lease bound to the step has committed funds; the permit is refused `JournalUnavailable`
+  as before; the PA-1 view refuses.
+- **A lock's report of a funding step** (review P2b r1 R1-02). `LockReport` lists each funding step a flow is
+  bound to (`Lease::bind_funding_step`) or called, under its public step id, by its status now: `Sent`,
+  `WillBeSent`, `MaybeSent`; `NotSent` or never started read `Cancelled`. A funding call's own outcome is not listed
+  beside it, so current evidence supersedes a stale local result; a call still running reads `MaybeSent` as before.
+  A step whose calls all ended definitely unsent in this process reads `Cancelled` while its `NotSent` row is still
+  to land (review F4). A flow resumed after a restart reports its funding the same way.
+
+**Residuals** (each fails closed unless marked):
+- D5's re-check in coin selection is unreachable at the pin (the library selects inside the call): a coin received
+  between the snapshot and the selection can leave the bound short by up to 149 duffs per such coin. (The bound
+  counts at most 500 inputs, the most a lock spends at the pin, so the cap itself loses nothing.)
+- After a restart the per-step set of earlier rows is gone, so an older row under the same key counts again for a
+  marked step.
+- At the pin, `reconstruction.rs` re-adds a lock whose row the wallet lost (a sweep's
+  `remove_tracked_asset_locks_for_swept`, a restore) from the chain, as `RecoveredFromChain`, `InstantSendLocked` or
+  `Broadcast`, and `funding_family` gives every singleton family (registration, unbound top-up, invitation, both
+  address top-ups) identity index 0; a bound top-up keeps its exact index. So a row's index is trusted only when the
+  row is `Built`, its index is non-zero, or it is an `IdentityTopUp` row (review H-1). The engine re-keys an
+  untrusted registration row by the identity its outpoint created (`ChainAssetLockProof::new(0, outpoint)
+  .create_identifier()`, the DP1-02 rule) when that identity is one of the wallet's managed identities; a row that
+  stays untrusted is *unattributed*. While an unattributed row of a step's funding type stands that the step does not
+  match by key, the step's ChainLocked self-spend reads `MaybeSent`, not `NotSent`, and Repair refuses it
+  (`UnattributedLock`, `invalid_argument`): liveness, fail closed, until DP1-05's adoption attributes the row (or the
+  identity it created is registered). The step's matching rows read as before. The engine cannot tell such a row
+  from the wallet's own index-0 registration lock once that lock has left `Built`: while it is in flight, or if it
+  is abandoned unused, it blocks every other registration draft's Repair the same way.
+- A registration funding step with no standing marker of its own (none, or one its `NotSent` row superseded) reads
+  `MaybeSent`, not `None` or `NotSent`, while the wallet holds an unattributed `IdentityRegistration` row of the
+  step's account that the step does not match by key (the manager's ruling on the open gap of 1de1714, fail
+  closed). So a draft at index k ≠ 0 whose marker a lost or rolled-back journal dropped, and whose lock came back at
+  index 0, is refused a second funding (`FundingBlock::Step`, `broadcast_unknown` from `funding_call_permit`). Such
+  a row is never attributed to another draft's standing marker instead: a rolled-back journal can keep draft 0's
+  marker and lose draft k's. **Liveness cost:** every new registration draft of the account (any index but 0) waits
+  until the unattributed lock is adopted (Finish registration / DP1-05), which re-keys the row by its identity; a
+  restored wallet holding an unused recovered lock registers nothing else until then. A draft at index 0 matches
+  the row by key and reads by its status (`Sent`, or `WillBeSent` for a `Broadcast` reconstruction).
+- The self-spend's `NotSent` rests on the library tracking a lock (`Built`, persisted) before broadcasting it, so a
+  ChainLocked lock always has a row, which reads `Sent`. A wallet restored where the journal's marker survives but
+  the library's rows do not could read `NotSent` for a lock already on the chain (key-wallet drops ChainLocked
+  records, so history cannot show it). Fail closed since P2b r1: a proved step's `Sent` is journaled, and with no
+  durable `Sent` and no lock of the step's calls recorded, Repair refuses (`NoKnownLock`, P2b r4 R4-01). **Liveness
+  cost**: a step whose lock left neither a row nor a record (a restore, a failed `signed_lock` write, a marker
+  before schema 4) cannot be repaired, and reads `MaybeSent` until its lock is found (adoption of a found lock is
+  deferred, §2a.7, DEC-198).
+- A durable `Sent` can over-approximate. After a restart the per-step set of earlier rows is gone (above), so an
+  earlier funding's trusted proved row under the same key reads the marked step `Sent`, and that is now journaled.
+  Fail closed (the step is never funded again; no second payment), at a liveness cost to that step only. Funding keys are shared across fundings only by top-ups, whose funding calls P2b
+  refuses, and the funding gate refuses a call while a matching row stands.
+- A signed lock's `signed_lock` write that keeps failing stops the process (§2a.7), so no lock is known in one
+  process only any more; with the write landed, an index-0 registration lock first proved after a restart is
+  journaled `Sent` (the index-0 residual of P2b r1 is closed). A step whose marker predates schema 7 (unflagged)
+  keeps the old reading: its lock may have gone out unrecorded.
+- The record rests on the library storing a lock through the persister before it broadcasts it (§2a.7). A
+  library that broadcast first, or stored only after the call ended, would leave the lock unrecorded; the second
+  stops the process (a lock of an ended call reaching the store unrecorded), the first is a pin change §2a.7's
+  file:line list must catch.
+- A "Move mixed coins" chunk whose broadcast outcome is unknown keeps its coins reserved until they are seen spent
+  or the wallet unloads. `MixedCoinsSweepResult.unknown_txid` names it, so the user can check on it (review F5, the
+  CoinJoin owner's ruling); there is no call to abandon it. Fail closed.
+- A top-up step has no funding key of its own after a lost journal: the draft's own key is a registration's, and
+  every top-up of an identity shares one key. Until the credit task gives top-ups their own key,
+  `funding_call_permit` refuses `topup/...` steps (review M-3); `dispatch_status` still answers them.
+- A self-spend over very many coins can fail as too large or with an absurd fee; key-wallet holding a just-built
+  lock's inputs in the same process is untested.
+- A journal error at a call step hides a `Locked`/`Revoked` refusal (both refuse the call); the permit's wait for a
+  `Committing` marker has no deadline of its own; a dropped permit leaves its step `MaybeSent`. Only Mode B's funding
+  call steps have an engine test over a real SQLite journal (C4, C5 in §2a.7).
+- A resumable step that resolves `NotSent` emits no event (as before P2b). While a held tombstone of §5.5 is being
+  watched, every J step re-checks it, at a cost linear in the entries.
+- `sign_psbt` does not check reserved or user-locked coins (outside `TxDraft`): it signs the inputs the PSBT names.
+  It does refuse an asset lock's input, tracked or of a lock a funding call signed whose step is unresolved (O-2,
+  P2b r6), read under the coin fence it holds through the signing; `broadcast_psbt` refuses an unresolved lock's
+  input of any wallet (`send/psbt.rs` `held_lock_input`, `psbt.invalid` naming the input). Both read the raw
+unresolved set too, not only the coins: an input the wallet already reads spent (the lock seen, not proved) is held. Repair's self-spend is
+  the one build exempt, and it is no PSBT. `broadcast_psbt` reads the hold after its peer wait, under the coin
+  fence of each wallet owning an input, kept through the send (P2b r7): a funding call keeps its wallet's fence
+  until its lock is recorded, so a lock recorded during the wait is seen. The send waits for the network's
+  acceptance (dash-spv's 60 s plus 5 s grace when none comes), and the owning wallets' builds, coin reads, mixing
+  signatures and funding calls wait that long too. A mixing session's final-input signing
+  (`EngineMixingWallet::sign_inputs`) reads the wallet's holds the same way, under its coin fence through the
+  signing (P2b r7); a fence held that long can make it miss the masternode's signing timeout (the session
+  fails). **Known limits** (O-2 covers payments, CoinJoin passes and sessions, sweeps and PSBTs only): a
+  history resend (`resend_transaction`, `tx_actions.rs:394`) sends a transaction already in the wallet's records
+  without reading the holds; a PSBT signed elsewhere (another wallet instance on the seed) is not seen either.
+- The holds of signed locks' inputs come from the dispatch journal, so while it is not read (not loaded yet,
+  unopenable, a newer schema) none is known (review Opus closure C-1). The unattended spenders spend nothing
+  meanwhile: the automatic CoinJoin pass and its sessions (`NetworkSession::pass_view`, `sign_inputs`) and "Move
+  mixed coins" (refused `storage`). **Residual:** an explicit payment (send flow, PSBT, CoinJoin-page payment) may
+  take such an input then, and Repair of that step is refused `LockInputsSpent` for good.
+- The coin fence has no deadline of its own: a funding call that hangs before tracking its lock keeps the wallet's
+  "Lock unspent", coin list and payments waiting until its permit ends. It is not released at the permit's deadline
+  or at a vault lock either: a call still signing could then sign a coin locked after; after a lock the library's
+  next signature fails and ends the call, which releases it. The first `coinjoin_status` of a wallet (no cached
+  status yet) waits for a held fence. Repair's self-spend reads its coin list under one fence and prepares under another: a coin locked in
+  between is refused by the prepare (`send.outpoint_unavailable`), not signed.
+- §2a.5 row 4's second resolution, "the pin's `Rejected` arm untracked the row before any send", is not implemented
+  (review M-2): the pin offers no signal for it, and "no tracked row" alone is not `NotSent` (a sweep or a wallet's
+  removal leaves the same state). A funding call rejected not-ready after signing reads `MaybeSent`; Repair's
+  self-spend resolves it, its signed lock's inputs held for it meanwhile (O-2). **Residual:** a second wallet
+  instance on the same seed can still spend them (fail closed: Repair refuses `lock_inputs_spent`).
+- A catch-up resume that returned an error stops blocking the funding gate, as any returned attempt (review L-1).
+  That only strands the step's row until the next pass; it never double-pays, since the library re-reserves the
+  inputs of the rows it knows for its own coin selection.
+- A step's derived status can move again after it resolved: a later funding under the same draft key (or an
+  attribution that re-keys a row) may make a row match it, so a step that read `NotSent` can read `Sent` (and emit
+  `DispatchResolved` again) (review L-2). Fail closed: the move is towards "sent".
+- An unattributed row read after a step's self-spend `NotSent` (or a markerless registration step's definite
+  `NotSent`) was announced moves the step back to `MaybeSent` with no `DispatchResolved` (only `LeaseChanged`): the
+  retraction has no event of its own. Fail closed for the
+  engine's gates; a host that acted on the `NotSent` (a new draft) is not told.
+
+### 2a.7 No signed lock on the wire before its durable record (P2b r5; DP1-02 PA-2, reviews OD-01, OD-02, Opus O-1, O-4)
+
+**Claim.** For a funding step whose marker is *flagged* (`funding_marker.durable_record = 1`), no funding signature
+of a call of the step leaves the vault before the call's `funding_release` row is on disk (schema 7, P2b r6
+R6-01), and every asset lock such a call signed that reaches the library's store has its `signed_lock` row on disk
+before the library can hand it to a broadcaster; where that cannot be guaranteed, the process stops first. So a
+flagged marker with no release row, no signed record and no call running reads `NotSent`: nothing was signed
+(DP1-02 C5: a kill mid-call before the first signature). One with a release row and no signed record reads
+`MaybeSent`: a lock may have reached a broadcaster no store of it passed (path 1's empty changeset). The marker
+still stands, so the step is never called again (§2a.6).
+
+**The release boundary (P2b r6 R6-01).** The broadcaster is not the engine's at the pin: `SpvBroadcaster` is built
+inside the library (`SpvRuntime::start`) and is not injectable, so the engine cannot refuse a send there. The one
+boundary every lock of a funding call does pass, whatever later path sends it, is the call's funding signer:
+`CountingFundingSigner::sign_ecdsa` counts the signature (`signing`), then awaits `FundingRelease::record`, one
+`funding_release` row per standing marker (`LeaseTable::record_release`, `dispatch.rs` `insert_release`, written
+once and shared by the signer's clones), and only then asks the vault. A record that fails (no journal ready, no
+marker standing on disk, a write that keeps failing after `SIGNED_WRITE_ATTEMPTS` or panics, the marker superseded
+during the write) refuses the signature (`PathNotAllowed`), the vault asked nothing, and a permit that ended during
+the write signs nothing either (`Locked`; its end counted the signing); a call that released nothing ends `Cancelled`, and its `NotSent` row supersedes the marker with its release
+row. `CallPermit::funding_signer` refuses a permit of no funding step (`StepKeyMismatch`), so no funding signature
+exists without a marker to record against. Every current and future producer of a lock inherits the rule, since
+none signs without this signer. `derive_step` (`mode_b.rs`) reads the absence of a record as `NotSent` only with no
+release row (`CallStepInfo::released`, loaded from disk); Repair's tombstone `NotSent` rests on a recorded lock,
+since Repair refuses `NoKnownLock` without one. **Liveness cost:** a call that released a signature and failed before its store (the vault
+locked mid-build, the library's build failing after signing) reads `MaybeSent` with no known lock, and Repair
+refuses (`NoKnownLock`): the user starts a new draft. Repair adoption of a registration lock is deferred (DEC-198):
+at the pin the credit key is the next pool address, chosen after signing and persisted best-effort, so a lock can't
+be tied to its step; the Q15 wedge exits through DEC-197's start override; BL-108 tracks the pin change. **Not
+prevented at the pin:** the send itself. A removal of
+the wallet from the library's manager between the signing and the tracking (an engine removal drains permits only
+up to their deadline, §8.6) makes `track_asset_lock` return an empty changeset, which `queue_asset_lock_changeset`
+skips, and `build.rs:1142` still broadcasts; the step then reads `MaybeSent`, never `NotSent`. Making the send
+itself wait for the record needs a platform-fork pin change: abort the build on an empty tracking changeset, or an
+injectable broadcaster.
+
+**Initialization contract (OD-02).** `funding_call_permit` writes every new marker flagged (schema ≥ 7). A marker
+written by an earlier build is unflagged, including all of them after the 5 → 6 and the 6 → 7 migrations (a schema
+6 build recorded no release), and never reads `NotSent` from the absence of a record: its call may have sent a lock
+before any record existed. The flag is the
+marker's and never changes; a later call of the step needs a new step (the marker stands).
+
+**The send paths at the pin** (`ebe37f8`, `packages/rs-platform-wallet/src`), each with what keeps it behind the
+record:
+1. *The build.* `wallet/asset_lock/build.rs:1098-1109` tracks the lock `Built` in memory, `:1110`
+   `queue_asset_lock_changeset` stores it (`wallet/asset_lock/manager.rs:220-235` → `wallet/persister.rs:85`,
+   synchronous; a refused store is only logged), and only then `:1142` broadcasts. The engine's
+   `WalletStore::store` (`dw-engine/src/store.rs:95-115`) runs the tap's `note_signed` (`platform/journal.rs`)
+   before the persister. `LeaseTable::record_signed_locks` (`platform/lease/fence.rs`) records each lock a
+   running funding call signed (`SignatureCount::signed_all`), pending in memory, then appends it, and returns only
+   once the append landed. It retries a failing append (5 attempts, 50 ms doubling) and otherwise stops the process
+   (`fail_closed`: `abort` in production) on: a write that keeps failing; the journal not ready; the marker gone, in
+   memory or on disk; a lock carrying only some of a call's signatures; a lock of a call that already ended reaching
+   the store `Built` and unrecorded (`ended_funding`: the library call outlived its permit; a copy stored with any
+   other status, such as a reconstruction of a malleated copy, was sent by someone else and costs liveness only);
+   a `Built` lock whose signatures cannot be read stored while a funding call of the wallet that released one runs
+   or has ended; a call that signed anything besides the lock (a second lock, R6-02 under path 2). An ended call
+   stops being checked once Repair resolved its step. All of this happens inside the store call `:1110` waits for,
+   so `:1142` comes after the record. **Exception at the pin:** `persist_asset_lock_account_pools` and
+   `track_asset_lock` (`sync/tracking.rs:128`) store nothing when the wallet left the library's manager, and
+   `manager.rs:221` skips the empty changeset, so `:1142` broadcasts a lock no store reached; the release row
+   covers it (above).
+2. *One lock per call (O-1).* Once a lock of a call is recorded, `SignatureCount::admits` lets its counting signer
+   sign only sighashes it already signed (`CountingFundingSigner::sign_ecdsa` refuses any other with
+   `PathNotAllowed`), so a library rebuild or a second build under the permit signs nothing a record does not
+   name. A lock signed and never stored (its build failed before `:1110`) was never broadcast either. The signer
+   sees bare sighashes (`key_wallet::Signer` at the pin), so it cannot tell a second lock signed *before* the first
+   record from the first lock's next input (P2b r6 R6-02): the record does. `record_signed_locks` marks the call
+   recorded first, then requires that nothing is still being signed and that the call signed exactly the lock's
+   sighashes (`SignatureCount::signed_only`); otherwise the process stops before the library's send, neither lock
+   recorded, and the step reads `MaybeSent` by its release row. A signing racing the record either sees it
+   (refused by `admits`) or is seen in `signing`. Locks the library sends unstored (path 1's exception) pass no
+   record: an asset-lock changeset that carries no lock transaction (a row's removal), while a running call has
+   released a signature and no lock of it is recorded (`SignatureCount::uncovered`), stops the process the same way
+   (P2b r7), the step `MaybeSent`. **Limits:** other changesets (the account pools a build persists after signing,
+   Core-only, identity, contact, payment and name changesets) pass unchecked, so a call that sees no such removal
+   before it ends is not stopped; its release row keeps the step `MaybeSent`, which is what keeps it from being
+   funded twice. **Cost:** a removal another task stores between a call's first signature and its lock's store (an
+   earlier lock consumed by its registration, or untracked after a rejected broadcast) aborts the process with no
+   lock sent; the step reads `MaybeSent` until Repair, whose self-spend moves every funding coin to the wallet (a
+   fee and a ChainLock wait).
+3. *Resumes.* `wallet/asset_lock/sync/recovery.rs:920` `resume_asset_lock` broadcasts a tracked row (`:1176`,
+   `:1491`). The library starts none of its own: its callers are host calls naming an outpoint
+   (`wallet/asset_lock/orchestration.rs:566` (a row with its proof), `:701` (`FromExistingAssetLock`),
+   `wallet/identity/network/registration.rs:197`, `:454`, `wallet/platform_addresses/fund_from_asset_lock.rs:343`).
+   P2b's catch-up pass (`platform/lease/resume.rs`) skips a row a funding call of this process signed while it has
+   no durable record of that call's step (`defer_unrecorded` → `mode_b::unrecorded_signer`, the same sighash
+   check), and runs again when the record lands or the call ends. That closes O-4's window (b): the in-memory
+   `Built` row between `:1109` and the store. Only a `Built` row is deferred (any later status was sent after its
+   store), and one whose signatures do not verify is deferred while any funding call of the wallet that released a
+   signature runs or has ended, as the store refuses it. The library's own retry of a resume whose transport was
+   not ready (`recovery.rs:592` `resume_when_transport_ready`) follows a resume the pass already let through.
+   **DP1-02's own resume calls** (the outpoint calls above) must apply the same gate before they resume a row
+   (`LeaseTable::unrecorded_signer_of`); P2b exposes nothing that resumes behind its back.
+4. *Re-dispatch at load.* `manager/load.rs:620` re-sends what was persisted before this process started. The
+   persister stores nothing of a lock before its record landed (`store.rs`: `note_signed` before `inner.store`), so
+   anything it re-sends has its record.
+5. *Other broadcasts* (`wallet/core/broadcast.rs:158`, `wallet/reservations.rs:154`,
+   `wallet/identity/network/payments.rs:1522`) send payments the engine builds, never an asset lock a funding
+   call signed.
+
+**DP1-02's funding call.** DP1-02 funds a registration through `create_funded_asset_lock_proof` only, once per
+funding permit (path 1 above, then 2). The library's build-only exporters (`build_asset_lock_transaction` and the
+like) return a signed lock to the caller with no store before it, so nothing above covers a lock they build: a
+funding permit must never be used with them (§16.5, Q19).
+
+**Tests.** `mode_b_tests.rs`: `a_signed_locks_failing_write_is_retried_then_stops_the_process`,
+`a_call_signs_no_second_lock_once_its_lock_is_recorded`, `a_lock_signed_while_the_journal_is_closed_stops_the_process`,
+`a_signed_lock_whose_marker_no_longer_stands_stops_the_process`,
+`a_lock_is_the_calls_only_when_every_input_carries_its_signature`,
+`a_kill_mid_call_that_signed_nothing_reads_not_sent_and_refuses_the_step` (C5),
+`flagged_and_unflagged_markers_on_a_journal_file_read_as_their_flag_says` (C4 and C5 over a real `dispatch.sqlite`,
+flagged and the same file unflagged), `r6_01_a_released_call_with_no_recorded_lock_reads_maybe_sent` (a kill before
+the first signature reads `NotSent`, one after it `MaybeSent`, in process and reloaded),
+`r6_01_a_release_ends_with_its_marker`; `resume_tests.rs`:
+`a_pass_sends_no_lock_before_its_durable_record` (OD-01: the real pass on another worker, the record's write held,
+zero broadcaster calls and `unrecorded_signer_of` naming the step, then the send once it landed, then a restart at
+the publication boundary); `session_tests.rs`:
+`mode_b_a_funding_signer_signs_one_lock_per_call`,
+`mode_b_a_lock_the_library_sends_unstored_leaves_its_step_maybe_sent` (R6-01: the real library build, the wallet
+removed from its manager after the first signature, the broadcaster reached with no store; release row on disk,
+`MaybeSent`), `mode_b_a_funding_signature_waits_for_its_durable_release` (a refused release row: nothing signed,
+`Cancelled`), `mode_b_a_second_lock_under_one_permit_stops_at_the_first_record` (R6-02, two real locks over
+independent coins), `mode_b_a_store_with_no_lock_stops_a_call_whose_signatures_no_record_covers` (P2b r7: the
+same two locks, then a lockless changeset through `WalletStore::store`),
+`mode_b_a_hold_recorded_during_a_psbt_broadcasts_peer_wait_refuses_it`,
+`mode_b_a_mixing_session_does_not_sign_an_unresolved_locks_input` (P2b r7 O-2); `dw-appdb` `dispatch.rs`: the 5 → 6 and 6 → 7 migrations leave every marker unflagged,
+`a_release_answers_its_marker_once`. **Seam:** the real `TransactionBroadcaster` is not injectable at the pin, so the count of sends is
+taken at P2b's `Resumer`, the one P2b-controlled path that calls `resume_asset_lock`.
+
+**Release gate (DP1-02 Q11).** P2b and DP1-02 ship in the same release, at dispatch schema ≥ 7: DP1-02's reading of
+a flagged marker (C4, C5) relies on this section, including its release rows, and a build between them would write
+markers DP1-02 cannot read.
 
 ## 3. Grants (dw-vault)
 
@@ -1280,13 +1770,14 @@ admit(req):
     wallet answers `Deferred`, in `decide` and again before a resend that waited for its markers. So no entry of this
     wallet runs alongside the other's attempt and settles `DefinitelyUnsent`. Another wallet's tombstone does not
     hold a copy back. Meanwhile this wallet's own tombstone reads `MaybeSent` (`dispatch_status`, the lock report),
-    so the host offers no retry on it. That read carries no `DispatchResolved` for this wallet: an H12 event already
-    sent `NotSent` for the tombstone, and when the other wallet's attempt settles only that wallet gets an event, so
-    a host that cached the `NotSent` must re-read `dispatch_status` before a retry (BL-76; review Opus high
-    validator). The hold can last the session: a possibly-out entry clears only when the
-    bytes are seen (BL-76), and a `Resolving{failed}` one only when its own wallet retries. That fails safe: the
-    deferred send reports `broadcast_unknown` with its inputs pinned. The set of artifacts seen `Sent` stays keyed by
-    artifact: identical bytes on the wire are sent for every wallet. Unreachable in P2a (one wallet signs a
+    so the host offers no retry on it. An H12 event already sent `NotSent` for the tombstone. Once a host read the
+    held `MaybeSent` (`dispatch_status` or the lock report), this wallet gets `DispatchResolved(NotSent)` again when no
+    other wallet holds the bytes any more, and every wallet with an entry of the bytes gets `DispatchResolved(Sent)`
+    when any wallet's sighting makes them sent (BL-76, P2b; review Opus high validator). A tombstone nobody read
+    during the hold keeps its own `NotSent` without a second event. The hold can last the session: a possibly-out
+    entry clears only when the bytes are seen (BL-76), and a `Resolving{failed}` one only when its own wallet retries.
+    That fails safe: the deferred send reports `broadcast_unknown` with its inputs pinned. The set of artifacts seen
+    `Sent` stays keyed by artifact: identical bytes on the wire are sent for every wallet. Unreachable in P2a (one wallet signs a
     `TxDraft`'s inputs), this is for the producers that follow (`External`, `Rebroadcast`, P2b/P4 hand-offs).
   - **It is not persisted.** Row-less bytes are handed off only in the process that signed them (dash-spv's broadcast
     set is not persisted either, F3, and dw has no load replay, F8). The exception is resumable steps, which carry a
@@ -1341,7 +1832,7 @@ With no fence installed, the library behaves exactly as at the pin, so other hos
 | H9 | Every vault call that can end the epoch either is a revoking call with its own session method (§8.6), or runs through `vault_op`, which compares `Vault::epoch()` before and after (§4.3). |
 | H10 | A resumable step's First writes its durable step marker before any transport (§7.6). A flow resumed in a later process reads `Refused{step_possibly_dispatched: true}` as MaybeSent, never Cancelled. The marker, not the flow's own phase, is the evidence (GPT 3). |
 | H11 | **Fail closed.** No retry, no discard and no second funding of a step is offered unless `dispatch_status` of its artifact (or, in Mode B, of its funding, §2a.5) is `NotSent`. The one exception is the engine's funding gate (`discard_registration`), which also allows an asset lock's `None`: no entry, no marker and no tracked row (§16.6). The host reads every `None` as unknown, and a state transition's or a `TxDraft` send's `None` never allows a retry (reviews Opus r2 1a, DW-E0-08 r2 N-1). `discard_registration` consults it for the registration's funding; a top-up retry, a payment retry and "Register again" do too. `finish_asset_locks` is **not** gated: it resumes committed locks, which are never `NotSent` (review Opus r2 1a). |
-| H12 | `DispatchResolved` (§16.7) is emitted for every provisional outcome when it settles, from the sources of §4.6. DP1-02 moves a row back to retryable only on `NotSent`; the payment and top-up UIs clear "may have been sent" on either outcome. P2a provides `note_seen` and `note_executed` but no production caller feeds them yet (the wallet's transaction-seen and confirmation paths, proved execution results): that wiring is **BL-76**, owned by P2b/E0-05 (review Opus high O-2). Until then a cut First stays `MaybeSent`, which fails safe. BL-76 also covers the cross-wallet `MaybeSent` of §5.5 ("Per wallet, one transaction"), which emits no event of its own. |
+| H12 | `DispatchResolved` (§16.7) is emitted for every provisional outcome when it settles, from the sources of §4.6. DP1-02 moves a row back to retryable only on `NotSent`, and not a step with tombstones or a standing marker (C5): a new funding takes a new step (§2a.6, "A resolved step is never called again"); the payment and top-up UIs clear "may have been sent" on either outcome. **BL-76** (review Opus high O-2), wired in P2b: the session hub feeds `note_seen` the wallet's positive network evidence only: an InstantSend lock (also a transaction first seen through its lock), a block that holds the transaction (inserted, or confirmed now) and a ChainLock over it; a mempool sighting is none. A resumable call step's call that returned Ok announces `Sent` under the step's id (its `Sent` row is the DEC-163 bundle). `note_executed` stays Mode A's (row-less transitions). The cross-wallet `MaybeSent` of §5.5 ("Per wallet, one transaction") is announced as described there. |
 | H13 | Mode B: each library write call runs under a call permit, taken in a J step that checks the lease and charges the call's quoted budget. A funding call or a resumable step first has its marker written, with the `Committing` pattern (§2a.3). The engine's signer adapters count the signatures released per call permit. |
 | H14 | **Every lock request runs its own vault gate** (review GPT r2 8). Each `lock_vault` call (async, the FFI's sync lock, the relock timer, auto lock) runs `vault.lock()` after its own freeze, and returns only after that gate. Concurrent requests share only the drain. An unlock (`NetworkSession::unlock`) waits while any lock gate is pending, so a lock request is always ordered before an unlock issued after its call. The epoch that a lock ends is always one that existed at or after its call. |
 | H15 | Mode B: the statuses of §2a.5 are derived on every `list_tracked_locks` change, at load and at each call's end. Definite resolutions are written with their marker (`FULL`). |
@@ -2437,6 +2928,7 @@ and for a state transition.
 - **DP1-02** builds against P2a's API and the fake library at once, and closes against P2b (Mode B) or P4 (Mode A).
 - **Order of work.** P2b also serves as Mode A's interim, so it lands whatever pasta decides; P4 then replaces call
   permits with per-artifact admission site by site.
+- **P2b's closure.** Mode B mechanism closed in P2b; items 7 and 9 end to end at DP1-02 (§2a.6).
 
 ## 14. Open questions
 

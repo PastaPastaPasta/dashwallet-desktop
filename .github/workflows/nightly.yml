@@ -102,6 +102,10 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         working-directory: regtest/harness
         run: .venv/bin/python -m pytest -v tests/test_l2_tools.py --junitxml="$LOGS/l2-tools.xml"
+      - name: e0-04 BL-76 (engine SPV against dashd)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: rust
+        run: DASHD_PATH="$DASHCORE_DIR/bin/dashd" cargo test -p dw-engine --test e0_04_bl76_regtest -- --nocapture
       - name: restore
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         working-directory: regtest/harness

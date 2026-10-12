@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use dashcore::{OutPoint, Txid};
 use dpp::platform_value::string_encoding::Encoding;
@@ -42,6 +42,7 @@ use platform_wallet::changeset::{
 use platform_wallet::wallet::identity::{PaymentDirection, PaymentStatus};
 use platform_wallet::{ContactRequest, DpnsNameInfo};
 
+use super::lease::{FundingKey, LeaseTable, StoredLock};
 use super::notifications::EventKind;
 use super::runtime::guard;
 use crate::events::{SessionHub, unix_now};
@@ -168,10 +169,26 @@ pub(crate) struct Classified {
     changes: BTreeSet<PlatformChange>,
     /// Tracked asset locks touched: each signals its registration.
     locks: BTreeSet<OutPoint>,
+    /// The tracked rows stored, of any status (their txids and funding
+    /// keys): a funding call's coin fence is released by its own (E0-04
+    /// §2a.6).
+    tracked: Vec<(Txid, FundingKey)>,
+    /// The same rows' transactions, each with whether its row is `Built`,
+    /// for the provenance check before the persister takes them (§2a.6,
+    /// §2a.7).
+    lock_txs: Vec<(dashcore::Transaction, bool)>,
     /// Contact and payment events.
     events: Vec<Event>,
     /// The DPNS names of the wallet's own identities, by identity.
     names: BTreeMap<Identifier, Vec<DpnsNameInfo>>,
+}
+
+impl Classified {
+    /// The tracked rows stored (tests).
+    #[cfg(test)]
+    pub(crate) fn tracked(&self) -> &[(Txid, FundingKey)] {
+        &self.tracked
+    }
 }
 
 /// Classifies a changeset by the §3.5 table. `None` when it touches nothing
@@ -243,6 +260,20 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
     if let Some(locks) = cs.asset_locks.as_ref().filter(|l| !l.is_empty()) {
         c.locks.extend(locks.asset_locks.keys().copied());
         c.locks.extend(locks.removed.iter().copied());
+        // Any status: the persister may fold a lock's `Built` into a later
+        // status before it stores the changeset.
+        c.tracked.extend(locks.asset_locks.values().map(|e| {
+            let key = FundingKey {
+                funding_type: e.funding_type,
+                identity_index: e.identity_index,
+                account: e.account_index,
+            };
+            (e.out_point.txid, key)
+        }));
+        c.lock_txs.extend(locks.asset_locks.values().map(|e| {
+            let built = matches!(e.status, platform_wallet::AssetLockStatus::Built);
+            (e.transaction.clone(), built)
+        }));
     }
 
     // `dashpay_payments_overlay`: every payment write rides it (the library
@@ -314,6 +345,11 @@ pub(crate) struct ChangesetTap {
     appdb: Arc<AppDb>,
     /// [`CATCH_UP_BEFORE_KEY`] per wallet, UNIX seconds, once known.
     catch_up_before: Mutex<HashMap<WalletId, u64>>,
+    /// The lease table Mode B's statuses are derived in (E0-04 §2a.5, H15):
+    /// every `asset_locks` changeset requests a refresh of its wallet, and
+    /// so does a Core changeset of a wallet awaiting a self-spend's
+    /// ChainLock.
+    locks_changed: OnceLock<Weak<LeaseTable>>,
 }
 
 impl ChangesetTap {
@@ -322,6 +358,54 @@ impl ChangesetTap {
             hub,
             appdb,
             catch_up_before: Mutex::new(HashMap::new()),
+            locks_changed: OnceLock::new(),
+        }
+    }
+
+    /// The lease table [`Self::watch_locks`] was given, if it still lives.
+    fn table(&self) -> Option<Arc<LeaseTable>> {
+        self.locks_changed.get().and_then(Weak::upgrade)
+    }
+
+    /// Has every tracked asset-lock change of a wallet refresh `table`'s
+    /// Mode B snapshot of it (once).
+    pub(crate) fn watch_locks(&self, table: &Arc<LeaseTable>) {
+        let _ = self.locks_changed.set(Arc::downgrade(table));
+    }
+
+    /// The persister is about to take a changeset of `id`: the asset locks
+    /// in it that a running funding call signed are recorded as its step's
+    /// own first (§2a.6, [`LeaseTable::record_signed_locks`]). Blocking:
+    /// the library's store call waits for it, and broadcasts a `Built`
+    /// lock only after. The check (a sighash and a signature verified per
+    /// input) runs only while a funding call of `id` runs or after one
+    /// that released a signature ended: no other lock can carry a call's
+    /// signature. An asset-lock changeset with no lock transaction (a
+    /// removal) is checked too (review P2b r7): a running call's released
+    /// signatures must be covered by then.
+    pub(crate) fn note_signed(&self, id: WalletId, c: &Classified) {
+        if !c.locks.is_empty()
+            && let Some(table) = self.table()
+            && table.funding_signatures_out(id)
+        {
+            let locks: Vec<StoredLock> = (c.lock_txs.iter())
+                .map(|(tx, built)| StoredLock {
+                    built: *built,
+                    ..StoredLock::of(tx)
+                })
+                .collect();
+            table.record_signed_locks(id, &locks);
+        }
+    }
+
+    /// A Core changeset of `id` was stored: it may carry the ChainLock of
+    /// one of Repair's self-spends (§2a.5 row 1), so a wallet awaiting one
+    /// is refreshed. Spawned: this runs inside the library's store call.
+    pub(crate) fn core_changed(&self, id: WalletId) {
+        if let Some(table) = self.table()
+            && table.awaits_self_spend_lock(id)
+        {
+            table.request_refresh(id);
         }
     }
 
@@ -418,6 +502,14 @@ impl ChangesetTap {
         let wallet = id.to_string();
         let now = unix_now();
         let mut changes = std::mem::take(&mut c.changes);
+        if !c.locks.is_empty()
+            && let Some(table) = self.table()
+        {
+            // A funding call's coin fence: one J step, no await.
+            table.note_tracked(id, &c.tracked);
+            // Spawned: this runs inside the library's store call.
+            table.request_refresh(id);
+        }
         for outpoint in &c.locks {
             let draft = self
                 .appdb

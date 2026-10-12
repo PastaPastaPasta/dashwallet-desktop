@@ -15,6 +15,44 @@
 //!   marker and no `Sent` or `MaybeSent` row ([`compactable`]). The sweep at
 //!   open and [`DispatchJournal::erase_wallet`] evaluate it inside their
 //!   `DELETE`; whatever it keeps outlives a wallet's removal.
+//! - `funding_marker` and `self_spend` (schema 3, Mode B, §2a.3) are
+//!   append-only too. A funding step's marker row is written with its
+//!   `funding_marker` row (the funding key) in one transaction, which shares
+//!   the marker row's `seq`, so it stands exactly while that marker stands
+//!   ([`standing_calls`]). A `self_spend` row records Repair's self-spend of
+//!   a funding against the marker standing when it was written (its
+//!   `marker`). Both tables' rows of an artifact go exactly when its
+//!   `step_log` rows are compacted, in the same `DELETE`'s transaction.
+//! - `signed_lock` (schema 4, Mode B, §2a.6) records an asset lock a
+//!   funding call signed: its txid and inputs, against the marker standing
+//!   when it was written, before the library broadcasts it. It is
+//!   append-only, stands while that marker does, and goes with the
+//!   artifact's rows like the other two.
+//! - Schema 5 gives each `self_spend` row its provenance: written since,
+//!   it lists the signed locks it was checked to spend an input of (its
+//!   `conflicts`); written before, it is legacy and lists none
+//!   ([`SelfSpendProvenance`], review P2b r3 R3-01).
+//! - Schema 6 gives each `funding_marker` row written since its
+//!   `durable_record` flag: the engine that wrote it records every asset
+//!   lock the step's calls sign in `signed_lock` before the library may
+//!   send it, or stops the process (E0-04 §2a.7). So a flagged marker with
+//!   no `signed_lock` row and no running call has nothing on the wire; an
+//!   unflagged one (written before) cannot say so. No shipped build wrote
+//!   a funding marker (they stop at schema 2): unflagged markers exist in
+//!   development journals only. Schema 6 adds `funding_tombstone` too: a
+//!   funding step Repair resolved (its self-spend, ChainLocked, takes an
+//!   input of every lock the step's call signed), against the marker it
+//!   answers. Its signed locks are dead for good (a ChainLock is final);
+//!   the marker keeps standing, so the step's rows outlive the sweep and a
+//!   wallet's removal ([`compactable`]), and no call of the step runs
+//!   again.
+//! - Schema 7 adds `funding_release` (review R6-01): a funding call
+//!   under a marker was about to release its first signature, written
+//!   before the vault signs. A store before the library's send cannot be
+//!   relied on (a producer may send a lock it never stored), so the flag
+//!   now means: a flagged marker with no `funding_release` row has nothing
+//!   signed under it, and one with a row but no `signed_lock` row may have
+//!   a lock out. Schema 6 wrote no releases, so 6 → 7 clears every flag.
 //! - `meta` holds the schema version, the creation time and the per-wallet
 //!   `seeded:<wallet hex>` marks.
 //!
@@ -41,8 +79,12 @@ use crate::{AppDbError, Result};
 pub const DISPATCH_DB_FILE: &str = "dispatch.sqlite";
 
 /// The schema this build reads and writes. Version 1 (a `step` table whose
-/// rows a definite resolution deleted) is migrated at open (DEC-154).
-pub const DISPATCH_SCHEMA: u32 = 2;
+/// rows a definite resolution deleted) is migrated at open (DEC-154), and
+/// so are version 2 (no Mode B tables), 3 (no `signed_lock`), 4 (no
+/// self-spend provenance), 5 (no `durable_record` flag) and 6 (no
+/// `funding_release`); every migration only adds, except that 6 → 7 clears
+/// the flags schema 6 set.
+pub const DISPATCH_SCHEMA: u32 = 7;
 
 const SCHEMA_BASE: &str = "
 CREATE TABLE meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
@@ -94,6 +136,144 @@ INSERT INTO step_log (wallet, artifact, kind, step_id, at)
 DROP TABLE step;
 UPDATE meta SET v = 2 WHERE k = 'schema';
 ";
+
+/// Version 3 (Mode B, E0-04 P2b): a funding step's key, and Repair's
+/// self-spends (§2a.3, §2a.5). Both append-only. A `funding_marker` row's
+/// `seq` is the `seq` of the `step_log` marker row written with it; a
+/// `self_spend` row's `marker` is the `seq` of the marker it answers.
+const MODE_B: &str = "
+CREATE TABLE funding_marker (
+  seq            INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet         BLOB NOT NULL CHECK (length(wallet) = 32),
+  step_id        TEXT NOT NULL,
+  artifact       BLOB NOT NULL CHECK (length(artifact) = 32),
+  funding_type   INTEGER NOT NULL CHECK (funding_type BETWEEN 0 AND 255),
+  identity_index INTEGER NOT NULL CHECK (identity_index BETWEEN 0 AND 4294967295),
+  account        INTEGER NOT NULL CHECK (account BETWEEN 0 AND 4294967295),
+  at             INTEGER NOT NULL
+);
+CREATE INDEX funding_marker_artifact ON funding_marker (wallet, artifact);
+CREATE TABLE self_spend (
+  seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet   BLOB NOT NULL CHECK (length(wallet) = 32),
+  step_id  TEXT NOT NULL,
+  artifact BLOB NOT NULL CHECK (length(artifact) = 32),
+  txid     BLOB NOT NULL CHECK (length(txid) = 32),
+  marker   INTEGER NOT NULL,
+  at       INTEGER NOT NULL
+);
+CREATE INDEX self_spend_artifact ON self_spend (wallet, artifact);
+";
+
+/// Version 2 → 3: the Mode B tables are new and empty.
+const MIGRATE_V2: &str = "UPDATE meta SET v = 3 WHERE k = 'schema';";
+
+/// Version 4 (E0-04 P2b r2): the asset locks funding calls signed. A row's
+/// `marker` is the `seq` of the marker it answers; `inputs` is the lock's
+/// input outpoints, 36 bytes each (txid, then vout little-endian).
+const SIGNED_LOCK: &str = "
+CREATE TABLE signed_lock (
+  seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet   BLOB NOT NULL CHECK (length(wallet) = 32),
+  step_id  TEXT NOT NULL,
+  artifact BLOB NOT NULL CHECK (length(artifact) = 32),
+  txid     BLOB NOT NULL CHECK (length(txid) = 32),
+  inputs   BLOB NOT NULL CHECK (length(inputs) > 0 AND length(inputs) % 36 = 0),
+  marker   INTEGER NOT NULL,
+  at       INTEGER NOT NULL
+);
+CREATE INDEX signed_lock_artifact ON signed_lock (wallet, artifact);
+";
+
+/// Version 3 → 4: `signed_lock` is new and empty.
+const MIGRATE_V3: &str = "UPDATE meta SET v = 4 WHERE k = 'schema';";
+
+/// Version 5 (E0-04 P2b r3, review R3-01): a self-spend's provenance. `0`
+/// is legacy (written before version 5, by an engine that did not check
+/// what it conflicts with); `1` was written with `conflicts`, one 68-byte
+/// entry per signed lock it was checked to spend an input of (the lock's
+/// txid, then that input: txid, vout little-endian; both txids in internal
+/// byte order, like `signed_lock`'s, while `self_spend.txid` is in display
+/// order). A row of `1` with none was written only by the P2b r3 build
+/// (admitted on a complete recovery); it shows nothing, like a legacy one
+/// (review P2b r4 R4-01). A legacy row keeps its txid's row: a later record
+/// of the same txid adds nothing.
+const SELF_SPEND_PROVENANCE: &str = "
+ALTER TABLE self_spend ADD COLUMN provenance INTEGER NOT NULL DEFAULT 0
+  CHECK (provenance IN (0, 1));
+ALTER TABLE self_spend ADD COLUMN conflicts BLOB NOT NULL DEFAULT x''
+  CHECK (length(conflicts) % 68 = 0);
+";
+
+/// Version 4 → 5: every self-spend already written is legacy.
+const MIGRATE_V4: &str = "UPDATE meta SET v = 5 WHERE k = 'schema';";
+
+/// Version 6 (E0-04 P2b, PA-2, review OD-02): `durable_record` is `1` on
+/// a funding marker written by an engine that records every asset lock
+/// the step's calls sign durably before the library may send it (§2a.7),
+/// set when the marker is created; `0` on one written before, whose calls'
+/// locks may have gone out with no record.
+const DURABLE_RECORD: &str = "
+ALTER TABLE funding_marker ADD COLUMN durable_record INTEGER NOT NULL DEFAULT 0
+  CHECK (durable_record IN (0, 1));
+";
+
+/// Version 6 (E0-04 P2b, DP1-02 PA-3, review OD-06): a funding step
+/// Repair resolved, one row per marker. `self_spend` is the ChainLocked
+/// self-spend's txid (display order, like `self_spend.txid`); `marker` the
+/// `seq` of the marker it answers, whose signed locks are the step's dead
+/// ones.
+const TOMBSTONE: &str = "
+CREATE TABLE funding_tombstone (
+  seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet     BLOB NOT NULL CHECK (length(wallet) = 32),
+  step_id    TEXT NOT NULL,
+  artifact   BLOB NOT NULL CHECK (length(artifact) = 32),
+  self_spend BLOB NOT NULL CHECK (length(self_spend) = 32),
+  marker     INTEGER NOT NULL UNIQUE,
+  at         INTEGER NOT NULL
+);
+CREATE INDEX funding_tombstone_artifact ON funding_tombstone (wallet, artifact);
+";
+
+/// Version 5 → 6: every funding marker already written is unflagged, and
+/// `funding_tombstone` is new and empty.
+const MIGRATE_V5: &str = "UPDATE meta SET v = 6 WHERE k = 'schema';";
+
+/// Version 7 (E0-04 P2b r6, review R6-01): a funding call under `marker`
+/// was about to release its first signature, one row per marker, written
+/// before the vault signs. A flagged marker with none has nothing signed
+/// under it, so nothing on the wire, whatever any producer did after
+/// signing; one with a row and no `signed_lock` row may have a lock out.
+const RELEASE: &str = "
+CREATE TABLE funding_release (
+  seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet   BLOB NOT NULL CHECK (length(wallet) = 32),
+  step_id  TEXT NOT NULL,
+  artifact BLOB NOT NULL CHECK (length(artifact) = 32),
+  marker   INTEGER NOT NULL UNIQUE,
+  at       INTEGER NOT NULL
+);
+CREATE INDEX funding_release_artifact ON funding_release (wallet, artifact);
+";
+
+/// Version 6 → 7: `funding_release` is new and empty, and every marker is
+/// unflagged: schema 6 wrote no release, so its flag cannot say that
+/// nothing was signed (review R6-01).
+const MIGRATE_V6: &str = "
+UPDATE funding_marker SET durable_record = 0;
+UPDATE meta SET v = 7 WHERE k = 'schema';
+";
+
+/// The Mode B side tables, whose rows go with their artifact's `step_log`
+/// rows ([`compact`]).
+const SIDE_TABLES: [&str; 5] = [
+    "funding_marker",
+    "self_spend",
+    "signed_lock",
+    "funding_tombstone",
+    "funding_release",
+];
 
 /// A registered artifact's state on disk (§6.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,10 +353,141 @@ pub enum StepEvent {
 /// One `step_log` row, in sequence order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepLogRow {
+    /// The row's `seq`: what a `funding_marker` or `self_spend` row links.
+    pub seq: u64,
     pub wallet: [u8; 32],
     pub artifact: [u8; 32],
     pub event: StepEvent,
     pub at: u64,
+}
+
+/// A funding step's key as stored (§2a.3): the funding type's stable code
+/// (the engine owns the mapping), the identity index and the account, as
+/// platform-wallet's tracked asset-lock rows carry them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct StoredFundingKey {
+    pub funding_type: u8,
+    pub identity_index: u32,
+    pub account: u32,
+}
+
+/// One `funding_marker` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FundingRow {
+    /// The `seq` of the `step_log` marker row it was written with.
+    pub seq: u64,
+    pub wallet: [u8; 32],
+    pub step_id: String,
+    pub artifact: [u8; 32],
+    pub key: StoredFundingKey,
+    pub at: u64,
+    /// Written since schema 6 (§2a.7): every lock the step's calls signed
+    /// was recorded durably before it could be sent.
+    pub durable_record: bool,
+}
+
+/// One `self_spend` row: Repair's self-spend `txid` of a funding (§6.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelfSpendRow {
+    pub seq: u64,
+    pub wallet: [u8; 32],
+    pub step_id: String,
+    pub artifact: [u8; 32],
+    pub txid: [u8; 32],
+    /// The `seq` of the marker that stood when it was written.
+    pub marker: u64,
+    pub provenance: SelfSpendProvenance,
+    pub at: u64,
+}
+
+/// What a self-spend was shown to conflict with when it was recorded
+/// (schema 5, review P2b r3 R3-01).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelfSpendProvenance {
+    /// Written before schema 5: nothing shows what it conflicts with.
+    Legacy,
+    /// Each signed lock of the step it spends an input of, with that
+    /// input. None only from the P2b r3 build, which admitted one on a
+    /// complete recovery: it shows nothing (review P2b r4 R4-01).
+    Conflicts(Vec<SelfSpendConflict>),
+}
+
+/// A signed lock (`lock`, its txid) a self-spend spends `input` of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SelfSpendConflict {
+    pub lock: [u8; 32],
+    pub input: StoredOutPoint,
+}
+
+/// A transaction input's outpoint, as `signed_lock` stores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StoredOutPoint {
+    pub txid: [u8; 32],
+    pub vout: u32,
+}
+
+/// One `signed_lock` row: an asset lock `txid` a funding call signed, with
+/// its inputs (§2a.6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedLockRow {
+    pub seq: u64,
+    pub wallet: [u8; 32],
+    pub step_id: String,
+    pub artifact: [u8; 32],
+    pub txid: [u8; 32],
+    pub inputs: Vec<StoredOutPoint>,
+    /// The `seq` of the marker that stood when it was written.
+    pub marker: u64,
+    pub at: u64,
+}
+
+/// One `funding_tombstone` row: Repair resolved funding `step_id`, its
+/// ChainLocked `self_spend` taking an input of every lock signed under
+/// `marker` (schema 6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TombstoneRow {
+    pub seq: u64,
+    pub wallet: [u8; 32],
+    pub step_id: String,
+    pub artifact: [u8; 32],
+    pub self_spend: [u8; 32],
+    /// The `seq` of the marker it answers.
+    pub marker: u64,
+    pub at: u64,
+}
+
+/// One `funding_release` row: a funding call of `step_id` under `marker`
+/// was about to release its first signature (schema 7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseRow {
+    pub seq: u64,
+    pub wallet: [u8; 32],
+    pub step_id: String,
+    pub artifact: [u8; 32],
+    /// The `seq` of the marker it answers.
+    pub marker: u64,
+    pub at: u64,
+}
+
+/// The Mode B rows recovery reads ([`standing_calls`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CallRows {
+    pub funding: Vec<FundingRow>,
+    pub self_spends: Vec<SelfSpendRow>,
+    pub signed_locks: Vec<SignedLockRow>,
+    pub tombstones: Vec<TombstoneRow>,
+    pub releases: Vec<ReleaseRow>,
+}
+
+/// The Mode B side rows [`compact_in_memory`] deletes with their
+/// artifacts'.
+#[derive(Debug)]
+pub struct SideRows<'a> {
+    pub funding: &'a mut Vec<FundingRow>,
+    pub self_spends: &'a mut Vec<SelfSpendRow>,
+    pub signed_locks: &'a mut Vec<SignedLockRow>,
+    pub tombstones: &'a mut Vec<TombstoneRow>,
+    pub releases: &'a mut Vec<ReleaseRow>,
 }
 
 /// The (wallet, artifact) pairs whose `step_log` rows may be deleted
@@ -199,6 +510,33 @@ pub fn compactable(log: &[StepLogRow]) -> HashSet<([u8; 32], [u8; 32])> {
         .map(|r| (r.wallet, r.artifact))
         .filter(|k| !keep.contains(k))
         .collect()
+}
+
+/// The in-memory reading of [`compact`] (DEC-160): deletes the rows of
+/// every artifact [`compactable`] selects (of `wallet`, or of all wallets),
+/// its Mode B side rows with them, and returns the pairs it erased. For
+/// in-memory journals and the tests that hold it equal to the SQL.
+pub fn compact_in_memory(
+    log: &mut Vec<StepLogRow>,
+    side: SideRows<'_>,
+    wallet: Option<&[u8; 32]>,
+) -> BTreeSet<([u8; 32], [u8; 32])> {
+    let gone: BTreeSet<_> = compactable(log)
+        .into_iter()
+        .filter(|(w, _)| wallet.is_none_or(|x| x == w))
+        .collect();
+    log.retain(|r| !gone.contains(&(r.wallet, r.artifact)));
+    side.funding
+        .retain(|r| !gone.contains(&(r.wallet, r.artifact)));
+    side.self_spends
+        .retain(|r| !gone.contains(&(r.wallet, r.artifact)));
+    side.signed_locks
+        .retain(|r| !gone.contains(&(r.wallet, r.artifact)));
+    side.tombstones
+        .retain(|r| !gone.contains(&(r.wallet, r.artifact)));
+    side.releases
+        .retain(|r| !gone.contains(&(r.wallet, r.artifact)));
+    gone
 }
 
 /// A step's marker, appended unless one of the same step already stands.
@@ -250,6 +588,66 @@ fn append_resolution(
     Ok(())
 }
 
+/// The `seq` of the latest marker of a step (?1 wallet, ?2 artifact, ?3
+/// step), if it stands: a marker of the step stands exactly when its latest
+/// one does.
+const LATEST_STANDING: &str = "
+SELECT m.seq FROM step_log m
+WHERE m.seq = (SELECT max(seq) FROM step_log
+               WHERE wallet = ?1 AND artifact = ?2 AND kind = 0 AND step_id = ?3)
+  AND (EXISTS (SELECT 1 FROM step_log f WHERE f.wallet = ?1
+         AND f.artifact = ?2 AND f.kind IN (2, 3))
+       OR m.seq > (SELECT coalesce(max(n.seq), 0) FROM step_log n
+         WHERE n.wallet = ?1 AND n.artifact = ?2 AND n.kind = 1))";
+
+fn latest_standing(
+    c: &Connection,
+    wallet: &[u8; 32],
+    artifact: &[u8; 32],
+    step_id: &str,
+) -> Result<Option<i64>> {
+    Ok(c.query_row(
+        LATEST_STANDING,
+        params![&wallet[..], &artifact[..], step_id],
+        |r| r.get(0),
+    )
+    .optional()?)
+}
+
+/// A funding step's key, with the standing marker of the step that has
+/// none yet (the one the caller just appended, or one that stood already).
+/// Its `seq` is the marker row's, so the two stand and go together. The
+/// caller runs it right after the marker statement, in its transaction.
+fn append_funding(
+    c: &Connection,
+    wallet: &[u8; 32],
+    artifact: &[u8; 32],
+    step_id: &str,
+    key: &StoredFundingKey,
+    now: u64,
+) -> Result<()> {
+    let Some(marker) = latest_standing(c, wallet, artifact, step_id)? else {
+        return Ok(());
+    };
+    c.execute(
+        "INSERT INTO funding_marker
+           (seq, wallet, step_id, artifact, funding_type, identity_index, account, at, durable_record)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1
+         WHERE NOT EXISTS (SELECT 1 FROM funding_marker WHERE seq = ?1)",
+        params![
+            marker,
+            &wallet[..],
+            step_id,
+            &artifact[..],
+            key.funding_type,
+            key.identity_index,
+            key.account,
+            now as i64
+        ],
+    )?;
+    Ok(())
+}
+
 /// DEC-160's predicate over `step_log l`, in SQL: [`compactable`].
 const COMPACTABLE: &str = "
   NOT EXISTS (SELECT 1 FROM step_log f
@@ -262,7 +660,8 @@ const COMPACTABLE: &str = "
 
 /// Deletes the rows of every compactable artifact (of `wallet`, or of all
 /// wallets) in one statement, so the predicate and the delete see the same
-/// rows; returns the artifacts it erased.
+/// rows, and then those artifacts' Mode B side rows ([`SIDE_TABLES`]);
+/// returns the artifacts it erased. [`compact_in_memory`] is its reading.
 fn compact(conn: &Connection, wallet: Option<&[u8; 32]>) -> Result<Vec<([u8; 32], [u8; 32])>> {
     let sql = format!(
         "DELETE FROM step_log WHERE seq IN (
@@ -278,19 +677,28 @@ fn compact(conn: &Connection, wallet: Option<&[u8; 32]>) -> Result<Vec<([u8; 32]
         let (w, a) = r?;
         out.insert((fixed(w, "step_log.wallet")?, fixed(a, "step_log.artifact")?));
     }
+    drop(stmt);
+    // The artifact's Mode B rows go exactly with its `step_log` rows, in
+    // the caller's transaction.
+    for (w, a) in &out {
+        for table in SIDE_TABLES {
+            conn.execute(
+                &format!("DELETE FROM {table} WHERE wallet = ?1 AND artifact = ?2"),
+                params![&w[..], &a[..]],
+            )?;
+        }
+    }
     Ok(out.into_iter().collect())
 }
 
-/// Recovery's reading of `step_log` (DEC-154): the markers that stand, one
-/// per (wallet, step, artifact), earliest first. A marker stands unless a
-/// later `NotSent` row of its artifact supersedes it; any `Sent` or
-/// `MaybeSent` row of the artifact is final, so all its markers stand
-/// whatever follows.
-pub fn standing(log: &[StepLogRow]) -> Vec<StepRow> {
+/// Per row of `log`: whether it is a marker that stands (DEC-154). A
+/// marker stands unless a later `NotSent` row of its artifact supersedes
+/// it; any `Sent` or `MaybeSent` row of the artifact is final, so all its
+/// markers stand whatever follows.
+fn marker_stands(log: &[StepLogRow]) -> Vec<bool> {
     use std::collections::HashMap;
     type Key = ([u8; 32], [u8; 32]);
     let mut last_not_sent: HashMap<Key, usize> = HashMap::new();
-    let mut sent: HashSet<Key> = HashSet::new();
     let mut final_: HashSet<Key> = HashSet::new();
     for (n, r) in log.iter().enumerate() {
         let key = (r.wallet, r.artifact);
@@ -298,24 +706,37 @@ pub fn standing(log: &[StepLogRow]) -> Vec<StepRow> {
             StepEvent::Resolved(Resolution::NotSent) => {
                 last_not_sent.insert(key, n);
             }
-            StepEvent::Resolved(Resolution::Sent) => {
-                sent.insert(key);
-                final_.insert(key);
-            }
-            StepEvent::Resolved(Resolution::MaybeSent) => {
+            StepEvent::Resolved(Resolution::Sent | Resolution::MaybeSent) => {
                 final_.insert(key);
             }
             StepEvent::Marked(_) => {}
         }
     }
+    log.iter()
+        .enumerate()
+        .map(|(n, r)| {
+            let key = (r.wallet, r.artifact);
+            matches!(r.event, StepEvent::Marked(_))
+                && (final_.contains(&key) || last_not_sent.get(&key).is_none_or(|&m| n > m))
+        })
+        .collect()
+}
+
+/// Recovery's reading of `step_log` (DEC-154): the markers that stand, one
+/// per (wallet, step, artifact), earliest first ([`marker_stands`]).
+pub fn standing(log: &[StepLogRow]) -> Vec<StepRow> {
+    let sent: HashSet<([u8; 32], [u8; 32])> = log
+        .iter()
+        .filter(|r| r.event == StepEvent::Resolved(Resolution::Sent))
+        .map(|r| (r.wallet, r.artifact))
+        .collect();
     let mut seen = HashSet::new();
     let mut out = Vec::new();
-    for (n, r) in log.iter().enumerate() {
+    for (r, stands) in log.iter().zip(marker_stands(log)) {
         let StepEvent::Marked(step) = &r.event else {
             continue;
         };
         let key = (r.wallet, r.artifact);
-        let stands = final_.contains(&key) || last_not_sent.get(&key).is_none_or(|&m| n > m);
         if stands && seen.insert((key, step.clone())) {
             out.push(StepRow {
                 wallet: r.wallet,
@@ -327,6 +748,62 @@ pub fn standing(log: &[StepLogRow]) -> Vec<StepRow> {
         }
     }
     out
+}
+
+/// Recovery's reading of the Mode B rows (§2a.3): a `funding_marker` row
+/// stands exactly while the marker row it was written with stands, and a
+/// `self_spend`, `signed_lock`, `funding_tombstone` or `funding_release`
+/// row while the marker it answers does. A row whose marker is gone, or
+/// names another step, does not stand.
+pub fn standing_calls(
+    log: &[StepLogRow],
+    funding: &[FundingRow],
+    self_spends: &[SelfSpendRow],
+    signed_locks: &[SignedLockRow],
+    tombstones: &[TombstoneRow],
+    releases: &[ReleaseRow],
+) -> CallRows {
+    use std::collections::HashMap;
+    let stands: HashMap<u64, (&[u8; 32], &[u8; 32], &str)> = log
+        .iter()
+        .zip(marker_stands(log))
+        .filter_map(|(r, stands)| match &r.event {
+            StepEvent::Marked(step) if stands => {
+                Some((r.seq, (&r.wallet, &r.artifact, step.as_str())))
+            }
+            _ => None,
+        })
+        .collect();
+    let of = |seq: u64, wallet: &[u8; 32], artifact: &[u8; 32], step: &str| {
+        stands.get(&seq) == Some(&(wallet, artifact, step))
+    };
+    CallRows {
+        funding: funding
+            .iter()
+            .filter(|f| of(f.seq, &f.wallet, &f.artifact, &f.step_id))
+            .cloned()
+            .collect(),
+        self_spends: self_spends
+            .iter()
+            .filter(|s| of(s.marker, &s.wallet, &s.artifact, &s.step_id))
+            .cloned()
+            .collect(),
+        signed_locks: signed_locks
+            .iter()
+            .filter(|s| of(s.marker, &s.wallet, &s.artifact, &s.step_id))
+            .cloned()
+            .collect(),
+        tombstones: tombstones
+            .iter()
+            .filter(|t| of(t.marker, &t.wallet, &t.artifact, &t.step_id))
+            .cloned()
+            .collect(),
+        releases: releases
+            .iter()
+            .filter(|r| of(r.marker, &r.wallet, &r.artifact, &r.step_id))
+            .cloned()
+            .collect(),
+    }
 }
 
 /// What `register` found.
@@ -389,7 +866,9 @@ impl DispatchJournal {
             conn.pragma_update(None, "checkpoint_fullfsync", "ON")?;
         }
         conn.busy_timeout(std::time::Duration::from_secs(2))?;
-        let tx = conn.transaction()?;
+        // IMMEDIATE: the migration and the sweep see rows no other writer
+        // can change meanwhile (review Opus O-8c).
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let has_meta: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')",
             [],
@@ -401,9 +880,30 @@ impl DispatchJournal {
                 .optional()?;
             match schema {
                 Some(v) if v == i64::from(DISPATCH_SCHEMA) => {}
-                Some(1) => {
-                    tx.execute_batch(STEP_LOG)?;
-                    tx.execute_batch(MIGRATE_V1)?;
+                Some(v @ 1..=6) => {
+                    if v == 1 {
+                        tx.execute_batch(STEP_LOG)?;
+                        tx.execute_batch(MIGRATE_V1)?;
+                    }
+                    if v <= 2 {
+                        tx.execute_batch(MODE_B)?;
+                        tx.execute_batch(MIGRATE_V2)?;
+                    }
+                    if v <= 3 {
+                        tx.execute_batch(SIGNED_LOCK)?;
+                        tx.execute_batch(MIGRATE_V3)?;
+                    }
+                    if v <= 4 {
+                        tx.execute_batch(SELF_SPEND_PROVENANCE)?;
+                        tx.execute_batch(MIGRATE_V4)?;
+                    }
+                    if v <= 5 {
+                        tx.execute_batch(DURABLE_RECORD)?;
+                        tx.execute_batch(TOMBSTONE)?;
+                        tx.execute_batch(MIGRATE_V5)?;
+                    }
+                    tx.execute_batch(RELEASE)?;
+                    tx.execute_batch(MIGRATE_V6)?;
                 }
                 Some(v) if v > i64::from(DISPATCH_SCHEMA) => {
                     return Ok(JournalOpen::NewerSchema(
@@ -419,6 +919,12 @@ impl DispatchJournal {
         } else {
             tx.execute_batch(SCHEMA_BASE)?;
             tx.execute_batch(STEP_LOG)?;
+            tx.execute_batch(MODE_B)?;
+            tx.execute_batch(SIGNED_LOCK)?;
+            tx.execute_batch(SELF_SPEND_PROVENANCE)?;
+            tx.execute_batch(DURABLE_RECORD)?;
+            tx.execute_batch(TOMBSTONE)?;
+            tx.execute_batch(RELEASE)?;
             tx.execute(
                 "INSERT INTO meta (k, v) VALUES ('schema', ?1), ('created_at', ?2)",
                 params![i64::from(DISPATCH_SCHEMA), now as i64],
@@ -507,6 +1013,176 @@ impl DispatchJournal {
         append_marker(&self.conn(), wallet, artifact, step_id, now)
     }
 
+    /// A funding step's write-ahead marker with its funding key (§2a.3), in
+    /// one transaction: the `step_log` marker, appended unless one of the
+    /// step stands, and its `funding_marker` row, unless the standing
+    /// marker has one already (the first key recorded under a marker
+    /// stays). Idempotent.
+    pub fn insert_funding_step(
+        &self,
+        wallet: &[u8; 32],
+        step_id: &str,
+        artifact: &[u8; 32],
+        key: &StoredFundingKey,
+        now: u64,
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        append_marker(&tx, wallet, artifact, step_id, now)?;
+        append_funding(&tx, wallet, artifact, step_id, key, now)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Repair's self-spend `txid` of the funding marked by `step_id`
+    /// (§6.5, §2a.5), recorded against the step's standing marker before
+    /// the spend is broadcast, with the signed locks it was checked to
+    /// spend an input of (`conflicts`, its provenance). The engine writes
+    /// no `NotSent` row for it: the step derives `NotSent` from this row
+    /// once the wallet sees the spend ChainLocked, if its provenance shows
+    /// the conflict.
+    /// `Ok(false)`: no marker of the step stands, so nothing is recorded.
+    /// Idempotent.
+    pub fn insert_self_spend(
+        &self,
+        wallet: &[u8; 32],
+        step_id: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
+        now: u64,
+    ) -> Result<bool> {
+        // One that shows no conflict could never resolve its step (review
+        // P2b r4 R4-01); the engine writes none (review Opus O-8a).
+        if conflicts.is_empty() {
+            return Err(AppDbError::Corrupt("self_spend: no conflicts".into()));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(marker) = latest_standing(&tx, wallet, artifact, step_id)? else {
+            return Ok(false);
+        };
+        tx.execute(
+            "INSERT INTO self_spend (wallet, step_id, artifact, txid, marker, at,
+                                     provenance, conflicts)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7
+             WHERE NOT EXISTS (SELECT 1 FROM self_spend WHERE marker = ?5 AND txid = ?4)",
+            params![
+                &wallet[..],
+                step_id,
+                &artifact[..],
+                &txid[..],
+                marker,
+                now as i64,
+                encode_conflicts(conflicts),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// An asset lock `txid` (with its `inputs`) that a call of funding
+    /// `step_id` signed (§2a.6), recorded against the step's standing
+    /// marker while the call runs, before the library broadcasts the lock.
+    /// `Ok(false)`: no marker of the step stands, so nothing is recorded.
+    /// Idempotent per marker and txid.
+    pub fn insert_signed_lock(
+        &self,
+        wallet: &[u8; 32],
+        step_id: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        inputs: &[StoredOutPoint],
+        now: u64,
+    ) -> Result<bool> {
+        if inputs.is_empty() {
+            return Err(AppDbError::Corrupt("signed_lock: no inputs".into()));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(marker) = latest_standing(&tx, wallet, artifact, step_id)? else {
+            return Ok(false);
+        };
+        tx.execute(
+            "INSERT INTO signed_lock (wallet, step_id, artifact, txid, inputs, marker, at)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+             WHERE NOT EXISTS (SELECT 1 FROM signed_lock WHERE marker = ?6 AND txid = ?4)",
+            params![
+                &wallet[..],
+                step_id,
+                &artifact[..],
+                &txid[..],
+                encode_outpoints(inputs),
+                marker,
+                now as i64
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Funding `step_id` was resolved by Repair (schema 6): its ChainLocked
+    /// self-spend `self_spend` takes an input of every lock signed under
+    /// the step's standing marker, which the row answers. `Ok(false)`: no
+    /// marker of the step stands, so nothing is recorded. Idempotent per
+    /// marker.
+    pub fn insert_tombstone(
+        &self,
+        wallet: &[u8; 32],
+        step_id: &str,
+        artifact: &[u8; 32],
+        self_spend: &[u8; 32],
+        now: u64,
+    ) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(marker) = latest_standing(&tx, wallet, artifact, step_id)? else {
+            return Ok(false);
+        };
+        tx.execute(
+            "INSERT INTO funding_tombstone (wallet, step_id, artifact, self_spend, marker, at)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6
+             WHERE NOT EXISTS (SELECT 1 FROM funding_tombstone WHERE marker = ?5)",
+            params![
+                &wallet[..],
+                step_id,
+                &artifact[..],
+                &self_spend[..],
+                marker,
+                now as i64
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// A funding call of `step_id` is about to release its first
+    /// signature (schema 7, review R6-01): recorded against the step's
+    /// standing marker before the vault signs. `Ok(false)`: no marker of
+    /// the step stands, so nothing is recorded (the call must not sign).
+    /// Idempotent per marker.
+    pub fn insert_release(
+        &self,
+        wallet: &[u8; 32],
+        step_id: &str,
+        artifact: &[u8; 32],
+        now: u64,
+    ) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(marker) = latest_standing(&tx, wallet, artifact, step_id)? else {
+            return Ok(false);
+        };
+        tx.execute(
+            "INSERT INTO funding_release (wallet, step_id, artifact, marker, at)
+             SELECT ?1, ?2, ?3, ?4, ?5
+             WHERE NOT EXISTS (SELECT 1 FROM funding_release WHERE marker = ?4)",
+            params![&wallet[..], step_id, &artifact[..], marker, now as i64],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Appends `artifact`'s resolution (DEC-154). `NotSent` supersedes its
     /// markers so far: the engine refunds and reports it only after this
     /// returned (review P2a r1 F2). `Sent` is written once; a repeated
@@ -523,7 +1199,8 @@ impl DispatchJournal {
     }
 
     /// A marked artifact's `Sent` row with its complete marker set (DEC-163):
-    /// each of `steps` appended unless it stands, then the row, in one
+    /// each of `steps` appended unless it stands, with its funding key from
+    /// `funding` for a funding step (§2a.3), then the row, in one
     /// transaction. Whatever order it takes against a `NotSent` row or a
     /// removal's compaction, the row never stands on disk without them.
     pub fn resolve_sent(
@@ -531,12 +1208,16 @@ impl DispatchJournal {
         wallet: &[u8; 32],
         artifact: &[u8; 32],
         steps: &[String],
+        funding: &[(String, StoredFundingKey)],
         now: u64,
     ) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         for step_id in steps {
             append_marker(&tx, wallet, artifact, step_id, now)?;
+            if let Some((_, key)) = funding.iter().find(|(s, _)| s == step_id) {
+                append_funding(&tx, wallet, artifact, step_id, key, now)?;
+            }
         }
         append_resolution(&tx, wallet, artifact, Resolution::Sent, now)?;
         tx.commit()?;
@@ -616,9 +1297,52 @@ impl DispatchJournal {
         Ok((rows, standing(&step_log(&conn)?)))
     }
 
+    /// The Mode B rows that stand, for the load (§2a.3, [`standing_calls`]).
+    pub fn load_calls(&self) -> Result<CallRows> {
+        let conn = self.conn();
+        Ok(standing_calls(
+            &step_log(&conn)?,
+            &funding_rows(&conn)?,
+            &self_spend_rows(&conn)?,
+            &signed_lock_rows(&conn)?,
+            &tombstone_rows(&conn)?,
+            &release_rows(&conn)?,
+        ))
+    }
+
     /// `step_log` in sequence order (tests and the sweep).
     pub fn step_log(&self) -> Result<Vec<StepLogRow>> {
         step_log(&self.conn())
+    }
+
+    /// Every `funding_marker` row, in sequence order (tests).
+    #[cfg(test)]
+    pub fn funding_rows(&self) -> Result<Vec<FundingRow>> {
+        funding_rows(&self.conn())
+    }
+
+    /// Every `self_spend` row, in sequence order (tests).
+    #[cfg(test)]
+    pub fn self_spend_rows(&self) -> Result<Vec<SelfSpendRow>> {
+        self_spend_rows(&self.conn())
+    }
+
+    /// Every `signed_lock` row, in sequence order (tests).
+    #[cfg(test)]
+    pub fn signed_lock_rows(&self) -> Result<Vec<SignedLockRow>> {
+        signed_lock_rows(&self.conn())
+    }
+
+    /// Every `funding_tombstone` row, in sequence order (tests).
+    #[cfg(test)]
+    pub fn tombstone_rows(&self) -> Result<Vec<TombstoneRow>> {
+        tombstone_rows(&self.conn())
+    }
+
+    /// Every `funding_release` row, in sequence order (tests).
+    #[cfg(test)]
+    pub fn release_rows(&self) -> Result<Vec<ReleaseRow>> {
+        release_rows(&self.conn())
     }
 
     /// A wallet's removal (§6.5), with `secure_delete` on, then a WAL
@@ -660,10 +1384,12 @@ impl DispatchJournal {
             .filter(|r| r.wallet == *wallet)
             .map(|r| r.artifact)
             .collect();
-        tx.execute(
-            "DELETE FROM step_log WHERE wallet = ?1",
-            params![&wallet[..]],
-        )?;
+        for table in ["step_log"].into_iter().chain(SIDE_TABLES) {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE wallet = ?1"),
+                params![&wallet[..]],
+            )?;
+        }
         tx.commit()?;
         Ok(erased.into_iter().collect())
     }
@@ -671,7 +1397,7 @@ impl DispatchJournal {
 
 fn step_log(conn: &Connection) -> Result<Vec<StepLogRow>> {
     let mut stmt =
-        conn.prepare("SELECT wallet, artifact, kind, step_id, at FROM step_log ORDER BY seq")?;
+        conn.prepare("SELECT wallet, artifact, kind, step_id, at, seq FROM step_log ORDER BY seq")?;
     let rows = stmt
         .query_map([], |r| {
             Ok((
@@ -680,10 +1406,11 @@ fn step_log(conn: &Connection) -> Result<Vec<StepLogRow>> {
                 r.get::<_, i64>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
             ))
         })?
         .map(|row| {
-            let (wallet, artifact, kind, step_id, at) = row?;
+            let (wallet, artifact, kind, step_id, at, seq) = row?;
             let event = match (kind, step_id) {
                 (0, Some(s)) => StepEvent::Marked(s),
                 (1, None) => StepEvent::Resolved(Resolution::NotSent),
@@ -692,6 +1419,7 @@ fn step_log(conn: &Connection) -> Result<Vec<StepLogRow>> {
                 (k, _) => return Err(AppDbError::Corrupt(format!("step_log.kind {k}"))),
             };
             Ok(StepLogRow {
+                seq: seq as u64,
                 wallet: fixed(wallet, "step_log.wallet")?,
                 artifact: fixed(artifact, "step_log.artifact")?,
                 event,
@@ -700,6 +1428,256 @@ fn step_log(conn: &Connection) -> Result<Vec<StepLogRow>> {
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+fn funding_rows(conn: &Connection) -> Result<Vec<FundingRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, wallet, step_id, artifact, funding_type, identity_index, account, at,
+                durable_record
+         FROM funding_marker ORDER BY seq",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Vec<u8>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, bool>(8)?,
+            ))
+        })?
+        .map(|row| {
+            let (seq, wallet, step_id, artifact, ty, index, account, at, durable_record) = row?;
+            let int = |v: i64, what: &str| {
+                u32::try_from(v)
+                    .map_err(|_| AppDbError::Corrupt(format!("funding_marker.{what} {v}")))
+            };
+            Ok(FundingRow {
+                seq: seq as u64,
+                wallet: fixed(wallet, "funding_marker.wallet")?,
+                step_id,
+                artifact: fixed(artifact, "funding_marker.artifact")?,
+                key: StoredFundingKey {
+                    funding_type: u8::try_from(ty).map_err(|_| {
+                        AppDbError::Corrupt(format!("funding_marker.funding_type {ty}"))
+                    })?,
+                    identity_index: int(index, "identity_index")?,
+                    account: int(account, "account")?,
+                },
+                at: at as u64,
+                durable_record,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn self_spend_rows(conn: &Connection) -> Result<Vec<SelfSpendRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, wallet, step_id, artifact, txid, marker, at, provenance, conflicts
+         FROM self_spend ORDER BY seq",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                (
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                ),
+                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, Vec<u8>>(8)?,
+            ))
+        })?
+        .map(|row| {
+            let ((seq, wallet, step_id, artifact, txid), marker, at, provenance, conflicts) = row?;
+            let provenance = match provenance {
+                0 => SelfSpendProvenance::Legacy,
+                1 => SelfSpendProvenance::Conflicts(decode_conflicts(&conflicts)?),
+                other => {
+                    return Err(AppDbError::Corrupt(format!(
+                        "self_spend.provenance {other}"
+                    )));
+                }
+            };
+            Ok(SelfSpendRow {
+                seq: seq as u64,
+                wallet: fixed(wallet, "self_spend.wallet")?,
+                step_id,
+                artifact: fixed(artifact, "self_spend.artifact")?,
+                txid: fixed(txid, "self_spend.txid")?,
+                marker: marker as u64,
+                provenance,
+                at: at as u64,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn signed_lock_rows(conn: &Connection) -> Result<Vec<SignedLockRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, wallet, step_id, artifact, txid, inputs, marker, at
+         FROM signed_lock ORDER BY seq",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Vec<u8>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
+                r.get::<_, Vec<u8>>(4)?,
+                r.get::<_, Vec<u8>>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
+            ))
+        })?
+        .map(|row| {
+            let (seq, wallet, step_id, artifact, txid, inputs, marker, at) = row?;
+            Ok(SignedLockRow {
+                seq: seq as u64,
+                wallet: fixed(wallet, "signed_lock.wallet")?,
+                step_id,
+                artifact: fixed(artifact, "signed_lock.artifact")?,
+                txid: fixed(txid, "signed_lock.txid")?,
+                inputs: decode_outpoints(&inputs)?,
+                marker: marker as u64,
+                at: at as u64,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn tombstone_rows(conn: &Connection) -> Result<Vec<TombstoneRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, wallet, step_id, artifact, self_spend, marker, at
+         FROM funding_tombstone ORDER BY seq",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Vec<u8>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
+                r.get::<_, Vec<u8>>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+            ))
+        })?
+        .map(|row| {
+            let (seq, wallet, step_id, artifact, self_spend, marker, at) = row?;
+            Ok(TombstoneRow {
+                seq: seq as u64,
+                wallet: fixed(wallet, "funding_tombstone.wallet")?,
+                step_id,
+                artifact: fixed(artifact, "funding_tombstone.artifact")?,
+                self_spend: fixed(self_spend, "funding_tombstone.self_spend")?,
+                marker: marker as u64,
+                at: at as u64,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn release_rows(conn: &Connection) -> Result<Vec<ReleaseRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, wallet, step_id, artifact, marker, at
+         FROM funding_release ORDER BY seq",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Vec<u8>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+            ))
+        })?
+        .map(|row| {
+            let (seq, wallet, step_id, artifact, marker, at) = row?;
+            Ok(ReleaseRow {
+                seq: seq as u64,
+                wallet: fixed(wallet, "funding_release.wallet")?,
+                step_id,
+                artifact: fixed(artifact, "funding_release.artifact")?,
+                marker: marker as u64,
+                at: at as u64,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn encode_outpoints(inputs: &[StoredOutPoint]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(inputs.len() * 36);
+    for o in inputs {
+        out.extend_from_slice(&o.txid);
+        out.extend_from_slice(&o.vout.to_le_bytes());
+    }
+    out
+}
+
+fn decode_outpoints(bytes: &[u8]) -> Result<Vec<StoredOutPoint>> {
+    let (chunks, rest) = bytes.as_chunks::<36>();
+    if chunks.is_empty() || !rest.is_empty() {
+        return Err(AppDbError::Corrupt(format!(
+            "signed_lock.inputs: {} bytes",
+            bytes.len()
+        )));
+    }
+    Ok(chunks
+        .iter()
+        .map(|c| StoredOutPoint {
+            txid: c[..32].try_into().expect("32 bytes"),
+            vout: u32::from_le_bytes(c[32..].try_into().expect("4 bytes")),
+        })
+        .collect())
+}
+
+fn encode_conflicts(conflicts: &[SelfSpendConflict]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(conflicts.len() * 68);
+    for c in conflicts {
+        out.extend_from_slice(&c.lock);
+        out.extend_from_slice(&encode_outpoints(&[c.input]));
+    }
+    out
+}
+
+fn decode_conflicts(bytes: &[u8]) -> Result<Vec<SelfSpendConflict>> {
+    let (chunks, rest) = bytes.as_chunks::<68>();
+    if !rest.is_empty() {
+        return Err(AppDbError::Corrupt(format!(
+            "self_spend.conflicts: {} bytes",
+            bytes.len()
+        )));
+    }
+    chunks
+        .iter()
+        .map(|c| {
+            let (txid, vout) = c[32..].split_at(32);
+            Ok(SelfSpendConflict {
+                lock: c[..32].try_into().expect("32 bytes"),
+                input: StoredOutPoint {
+                    txid: txid.try_into().expect("32 bytes"),
+                    vout: u32::from_le_bytes(vout.try_into().expect("4 bytes")),
+                },
+            })
+        })
+        .collect()
 }
 
 /// The sweep at open (DEC-154 (4)): nothing of this process is on the
@@ -900,7 +1878,7 @@ mod tests {
                         match op {
                             Op::NotSent => j.resolve(&W, &T, Resolution::NotSent, 2).unwrap(),
                             Op::Erase => drop(j.erase_wallet(&W, false).unwrap()),
-                            Op::Bundle => j.resolve_sent(&W, &T, &["s".into()], 3).unwrap(),
+                            Op::Bundle => j.resolve_sent(&W, &T, &["s".into()], &[], 3).unwrap(),
                             Op::Marker => j.insert_step(&W, "s", &T, 3).unwrap(),
                             Op::Sent => j.resolve(&W, &T, Resolution::Sent, 3).unwrap(),
                         }
@@ -969,7 +1947,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 2);
+        assert_eq!(schema, 7, "through versions 2, 3, 4, 5 and 6 to 7");
         let old: bool = j
             .conn()
             .query_row(
@@ -979,6 +1957,652 @@ mod tests {
             )
             .unwrap();
         assert!(!old);
+        assert_mode_b_tables(&j);
+    }
+
+    /// `step`'s funding marker row (of marker `seq` 1) as a build before
+    /// schema 6 wrote it: no `durable_record` column.
+    fn unflagged_funding(conn: &Connection, step: &str) {
+        conn.execute(
+            "INSERT INTO funding_marker
+               (seq, wallet, step_id, artifact, funding_type, identity_index, account, at)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 1)",
+            params![
+                &W[..],
+                step,
+                &T[..],
+                KEY.funding_type,
+                KEY.identity_index,
+                KEY.account
+            ],
+        )
+        .unwrap();
+    }
+
+    fn assert_mode_b_tables(j: &DispatchJournal) {
+        for table in SIDE_TABLES {
+            let there: bool = j
+                .conn()
+                .query_row(
+                    "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(there, "{table}");
+        }
+    }
+
+    /// Schemas 3 to 7 add (7 clears flags): a version 2 file keeps every row and
+    /// reading.
+    #[test]
+    fn a_version_2_journal_migrates_to_7_keeping_every_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_BASE).unwrap();
+        conn.execute_batch(STEP_LOG).unwrap();
+        conn.execute(
+            "INSERT INTO meta (k, v) VALUES ('schema', 2), ('created_at', 1)",
+            [],
+        )
+        .unwrap();
+        for (artifact, kind, step) in [(T, 0, Some("a")), (T, 2, None), ([9; 32], 0, Some("b"))] {
+            conn.execute(
+                "INSERT INTO step_log (wallet, artifact, kind, step_id, at) VALUES (?1, ?2, ?3, ?4, 1)",
+                params![&W[..], &artifact[..], kind, step],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 3).unwrap() else {
+            panic!("newer schema");
+        };
+        assert_eq!(
+            markers(&j),
+            vec![("a".into(), T, true), ("b".into(), [9; 32], false)]
+        );
+        assert_eq!(j.step_log().unwrap().len(), 3);
+        let schema: i64 = j
+            .conn()
+            .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schema, 7);
+        assert_mode_b_tables(&j);
+        assert_eq!(j.load_calls().unwrap(), CallRows::default());
+        // The new tables take writes; a reopen keeps them.
+        j.insert_funding_step(&W, "topup/i/funding", &[7; 32], &KEY, 4)
+            .unwrap();
+        drop(j);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 5).unwrap() else {
+            panic!("newer schema");
+        };
+        assert_eq!(j.load_calls().unwrap().funding.len(), 1);
+    }
+
+    /// Schemas 4 and 5 only add: a version 3 file keeps its Mode B rows, its
+    /// self-spends read legacy (review P2b r3 R3-01), and its standing
+    /// markers take signed locks and self-spends with their conflicts.
+    #[test]
+    fn a_version_3_journal_migrates_to_7_keeping_every_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_BASE).unwrap();
+        conn.execute_batch(STEP_LOG).unwrap();
+        conn.execute_batch(MODE_B).unwrap();
+        conn.execute(
+            "INSERT INTO meta (k, v) VALUES ('schema', 3), ('created_at', 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let step = "registration/d/funding";
+        {
+            // Rows a schema 3 build wrote, through the same statements.
+            let conn = Connection::open(&path).unwrap();
+            append_marker(&conn, &W, &T, step, 1).unwrap();
+            unflagged_funding(&conn, step);
+            conn.execute(
+                "INSERT INTO self_spend (wallet, step_id, artifact, txid, marker, at)
+                 VALUES (?1, ?2, ?3, ?4, 1, 1)",
+                params![&W[..], step, &T[..], &[5u8; 32][..]],
+            )
+            .unwrap();
+        }
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 2).unwrap() else {
+            panic!("newer schema");
+        };
+        let schema: i64 = j
+            .conn()
+            .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schema, 7);
+        assert_mode_b_tables(&j);
+        let rows = j.load_calls().unwrap();
+        assert_eq!((rows.funding.len(), rows.self_spends.len()), (1, 1));
+        assert_eq!(rows.self_spends[0].provenance, SelfSpendProvenance::Legacy);
+        assert!(rows.signed_locks.is_empty());
+        let inputs = [StoredOutPoint {
+            txid: [6; 32],
+            vout: 1,
+        }];
+        assert!(
+            j.insert_signed_lock(&W, step, &T, &[7; 32], &inputs, 3)
+                .unwrap()
+        );
+        assert_eq!(j.load_calls().unwrap().signed_locks[0].marker, 1);
+        let conflicts = [SelfSpendConflict {
+            lock: [7; 32],
+            input: inputs[0],
+        }];
+        assert!(
+            j.insert_self_spend(&W, step, &T, &[8; 32], &conflicts, 4)
+                .unwrap()
+        );
+        let spends = j.load_calls().unwrap().self_spends;
+        assert_eq!(spends[0].provenance, SelfSpendProvenance::Legacy);
+        assert_eq!(
+            spends[1].provenance,
+            SelfSpendProvenance::Conflicts(conflicts.to_vec())
+        );
+    }
+
+    /// Schemas 5 and 6 only add: a version 4 file keeps every row, and the
+    /// self-spends it holds read legacy, since nothing recorded what they
+    /// conflict with (review P2b r3 R3-01).
+    #[test]
+    fn a_version_4_journal_migrates_to_7_its_self_spends_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_BASE).unwrap();
+        conn.execute_batch(STEP_LOG).unwrap();
+        conn.execute_batch(MODE_B).unwrap();
+        conn.execute_batch(SIGNED_LOCK).unwrap();
+        conn.execute(
+            "INSERT INTO meta (k, v) VALUES ('schema', 4), ('created_at', 1)",
+            [],
+        )
+        .unwrap();
+        let step = "registration/d/funding";
+        append_marker(&conn, &W, &T, step, 1).unwrap();
+        unflagged_funding(&conn, step);
+        conn.execute(
+            "INSERT INTO self_spend (wallet, step_id, artifact, txid, marker, at)
+             VALUES (?1, ?2, ?3, ?4, 1, 1)",
+            params![&W[..], step, &T[..], &[5u8; 32][..]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO signed_lock (wallet, step_id, artifact, txid, inputs, marker, at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, 1)",
+            params![&W[..], step, &T[..], &[7u8; 32][..], &[6u8; 36][..]],
+        )
+        .unwrap();
+        drop(conn);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 2).unwrap() else {
+            panic!("newer schema");
+        };
+        let schema: i64 = j
+            .conn()
+            .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schema, 7);
+        let rows = j.load_calls().unwrap();
+        assert_eq!(
+            (rows.funding.len(), rows.signed_locks.len()),
+            (1, 1),
+            "every row kept"
+        );
+        assert_eq!(rows.self_spends.len(), 1);
+        assert_eq!(rows.self_spends[0].provenance, SelfSpendProvenance::Legacy);
+        assert!(!rows.funding[0].durable_record);
+    }
+
+    /// Schema 6 only adds: a version 5 file's funding markers read
+    /// unflagged, since their calls' locks may have gone out unrecorded; a
+    /// marker written since is flagged (§2a.7, review OD-02).
+    #[test]
+    fn a_version_5_journal_migrates_to_7_its_markers_unflagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_BASE).unwrap();
+        conn.execute_batch(STEP_LOG).unwrap();
+        conn.execute_batch(MODE_B).unwrap();
+        conn.execute_batch(SIGNED_LOCK).unwrap();
+        conn.execute_batch(SELF_SPEND_PROVENANCE).unwrap();
+        conn.execute(
+            "INSERT INTO meta (k, v) VALUES ('schema', 5), ('created_at', 1)",
+            [],
+        )
+        .unwrap();
+        let step = "registration/d/funding";
+        append_marker(&conn, &W, &T, step, 1).unwrap();
+        unflagged_funding(&conn, step);
+        drop(conn);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 2).unwrap() else {
+            panic!("newer schema");
+        };
+        let schema: i64 = j
+            .conn()
+            .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schema, 7);
+        assert_mode_b_tables(&j);
+        let rows = j.load_calls().unwrap();
+        assert_eq!(rows.funding.len(), 1);
+        assert!(!rows.funding[0].durable_record);
+        assert!(rows.tombstones.is_empty());
+        let other = "registration/e/funding";
+        j.insert_funding_step(&W, other, &[3; 32], &KEY, 3).unwrap();
+        let rows = j.load_calls().unwrap();
+        assert_eq!(rows.funding.len(), 2);
+        assert!(
+            rows.funding[1].durable_record,
+            "a marker written since is flagged"
+        );
+    }
+
+    /// Version 6 → 7 (review R6-01): `funding_release` is new and every
+    /// marker loses its flag, since schema 6 recorded no release; a marker
+    /// written since is flagged.
+    #[test]
+    fn a_version_6_journal_migrates_to_7_its_markers_unflagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let step = "registration/d/funding";
+        {
+            let JournalOpen::Ready(j) = DispatchJournal::open(&path, 1).unwrap() else {
+                panic!("newer schema");
+            };
+            j.insert_funding_step(&W, step, &T, &KEY, 2).unwrap();
+            assert!(j.load_calls().unwrap().funding[0].durable_record);
+            j.conn()
+                .execute_batch(
+                    "DROP TABLE funding_release;
+                     UPDATE meta SET v = 6 WHERE k = 'schema'",
+                )
+                .unwrap();
+        }
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 3).unwrap() else {
+            panic!("newer schema");
+        };
+        let schema: i64 = j
+            .conn()
+            .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schema, 7);
+        assert_mode_b_tables(&j);
+        let rows = j.load_calls().unwrap();
+        assert!(
+            !rows.funding[0].durable_record,
+            "schema 6's flag is cleared"
+        );
+        assert!(rows.releases.is_empty());
+        j.insert_funding_step(&W, "registration/e/funding", &[3; 32], &KEY, 4)
+            .unwrap();
+        assert!(j.load_calls().unwrap().funding[1].durable_record);
+    }
+
+    /// A release (schema 7, review R6-01) is written only against a
+    /// standing marker of its step, once per marker; it stands with the
+    /// marker and goes with its rows.
+    #[test]
+    fn a_release_answers_its_marker_once() {
+        let j = journal();
+        let step = "registration/d/funding";
+        assert!(!j.insert_release(&W, step, &T, 1).unwrap(), "no marker");
+        assert!(j.release_rows().unwrap().is_empty());
+        j.insert_funding_step(&W, step, &T, &KEY, 2).unwrap();
+        assert!(j.insert_release(&W, step, &T, 3).unwrap());
+        assert!(j.insert_release(&W, step, &T, 4).unwrap());
+        assert_eq!(j.release_rows().unwrap().len(), 1, "once per marker");
+        let rows = j.load_calls().unwrap();
+        assert_eq!(rows.releases.len(), 1);
+        assert_eq!(rows.releases[0].marker, rows.funding[0].seq);
+        assert!(
+            !j.insert_release(&W, "registration/e/funding", &T, 5)
+                .unwrap(),
+            "another step's marker does not answer"
+        );
+        // Superseded (definitely unsent), the marker no longer stands, nor
+        // its release.
+        j.resolve(&W, &T, Resolution::NotSent, 6).unwrap();
+        assert!(j.load_calls().unwrap().releases.is_empty());
+    }
+
+    /// A self-spend's conflicts read back as written. One with none is
+    /// refused (review Opus O-8a): it could never show the conflict.
+    #[test]
+    fn a_self_spends_conflicts_round_trip() {
+        let j = journal();
+        let step = "registration/d/funding";
+        j.insert_funding_step(&W, step, &T, &KEY, 1).unwrap();
+        let conflicts = [
+            SelfSpendConflict {
+                lock: [7; 32],
+                input: StoredOutPoint {
+                    txid: [6; 32],
+                    vout: 0x0102_0304,
+                },
+            },
+            SelfSpendConflict {
+                lock: [9; 32],
+                input: StoredOutPoint {
+                    txid: [8; 32],
+                    vout: 0,
+                },
+            },
+        ];
+        assert!(
+            j.insert_self_spend(&W, step, &T, &[1; 32], &conflicts, 2)
+                .unwrap()
+        );
+        assert!(j.insert_self_spend(&W, step, &T, &[2; 32], &[], 2).is_err());
+        let provenance: Vec<_> = j
+            .load_calls()
+            .unwrap()
+            .self_spends
+            .into_iter()
+            .map(|s| s.provenance)
+            .collect();
+        assert_eq!(
+            provenance,
+            vec![SelfSpendProvenance::Conflicts(conflicts.to_vec())]
+        );
+    }
+
+    const KEY: StoredFundingKey = StoredFundingKey {
+        funding_type: 1,
+        identity_index: 4,
+        account: 0,
+    };
+
+    /// A self-spend's one conflict (a lock and the input it takes).
+    const CONFLICT: [SelfSpendConflict; 1] = [SelfSpendConflict {
+        lock: [7; 32],
+        input: StoredOutPoint {
+            txid: [6; 32],
+            vout: 0,
+        },
+    }];
+
+    fn calls(j: &DispatchJournal) -> Vec<(String, StoredFundingKey)> {
+        j.load_calls()
+            .unwrap()
+            .funding
+            .into_iter()
+            .map(|f| (f.step_id, f.key))
+            .collect()
+    }
+
+    /// A funding marker is its `step_log` marker row and its key, written
+    /// together, sharing the marker's `seq`; it stands exactly while the
+    /// marker does.
+    #[test]
+    fn a_funding_marker_stands_and_goes_with_its_step_marker() {
+        let j = journal();
+        let step = "registration/d/funding";
+        j.insert_funding_step(&W, step, &T, &KEY, 1).unwrap();
+        j.insert_funding_step(&W, step, &T, &KEY, 2).unwrap();
+        let log = j.step_log().unwrap();
+        let funding = j.funding_rows().unwrap();
+        assert_eq!(log.len(), 1, "one marker");
+        assert_eq!(funding.len(), 1, "one key");
+        assert_eq!(funding[0].seq, log[0].seq, "linked by seq");
+        assert_eq!(calls(&j), vec![(step.into(), KEY)]);
+        // While the marker stands, a later call's other key is not added:
+        // the first key recorded under the marker stays.
+        let other = StoredFundingKey {
+            identity_index: 5,
+            ..KEY
+        };
+        j.insert_funding_step(&W, step, &T, &other, 3).unwrap();
+        assert_eq!(calls(&j), vec![(step.into(), KEY)]);
+        // NotSent supersedes the marker and its key.
+        j.resolve(&W, &T, Resolution::NotSent, 4).unwrap();
+        assert!(calls(&j).is_empty());
+        assert!(markers(&j).is_empty());
+        // A new call of the step: a new marker with its own key.
+        j.insert_funding_step(&W, step, &T, &other, 5).unwrap();
+        assert_eq!(calls(&j), vec![(step.into(), other)]);
+        assert_eq!(j.funding_rows().unwrap().len(), 2, "append-only");
+        // A plain marker of the step (never written by the engine for a
+        // funding step) carries no key and makes no row stand.
+        j.insert_step(&W, "s", &[3; 32], 6).unwrap();
+        assert_eq!(calls(&j).len(), 1);
+    }
+
+    /// DEC-163: a `Sent` bundle re-appends a funding step's key with its
+    /// marker, so the row never stands without either, even after a
+    /// `NotSent` row and the compaction took them.
+    #[test]
+    fn a_sent_bundle_carries_the_funding_marker() {
+        let j = journal();
+        let step = "topup/i/funding";
+        j.insert_funding_step(&W, step, &T, &KEY, 1).unwrap();
+        j.resolve(&W, &T, Resolution::NotSent, 2).unwrap();
+        assert_eq!(j.erase_wallet(&W, false).unwrap(), vec![T]);
+        assert!(j.funding_rows().unwrap().is_empty(), "compacted with it");
+        j.resolve_sent(&W, &T, &[step.into()], &[(step.into(), KEY)], 3)
+            .unwrap();
+        assert_eq!(markers(&j), vec![(step.into(), T, true)]);
+        assert_eq!(calls(&j), vec![(step.into(), KEY)]);
+        // A bundle over a standing marker adds nothing.
+        j.resolve_sent(&W, &T, &[step.into()], &[(step.into(), KEY)], 4)
+            .unwrap();
+        assert_eq!(j.funding_rows().unwrap().len(), 1);
+        assert_eq!(j.step_log().unwrap().len(), 2);
+        // Final: a later NotSent revokes neither.
+        j.resolve(&W, &T, Resolution::NotSent, 5).unwrap();
+        assert_eq!(calls(&j), vec![(step.into(), KEY)]);
+    }
+
+    /// A self-spend is recorded only against a standing marker of its
+    /// step, and stands only while that marker does.
+    #[test]
+    fn a_self_spend_answers_the_marker_standing_when_written() {
+        let j = journal();
+        let step = "registration/d/funding";
+        let (tx1, tx2) = ([5; 32], [6; 32]);
+        assert!(
+            !j.insert_self_spend(&W, step, &T, &tx1, &CONFLICT, 1)
+                .unwrap()
+        );
+        assert!(j.self_spend_rows().unwrap().is_empty(), "no marker");
+        j.insert_funding_step(&W, step, &T, &KEY, 2).unwrap();
+        assert!(
+            j.insert_self_spend(&W, step, &T, &tx1, &CONFLICT, 3)
+                .unwrap()
+        );
+        assert!(
+            j.insert_self_spend(&W, step, &T, &tx1, &CONFLICT, 4)
+                .unwrap()
+        );
+        assert!(
+            j.insert_self_spend(&W, step, &T, &tx2, &CONFLICT, 4)
+                .unwrap()
+        );
+        let spends = |j: &DispatchJournal| -> Vec<[u8; 32]> {
+            j.load_calls()
+                .unwrap()
+                .self_spends
+                .into_iter()
+                .map(|s| s.txid)
+                .collect()
+        };
+        assert_eq!(spends(&j), vec![tx1, tx2], "idempotent per txid");
+        // A NotSent row (a later call's definite resolution) supersedes
+        // the marker, and the self-spends with it. A new call's marker does not inherit them.
+        j.resolve(&W, &T, Resolution::NotSent, 5).unwrap();
+        assert!(spends(&j).is_empty());
+        assert!(
+            !j.insert_self_spend(&W, step, &T, &tx1, &CONFLICT, 6)
+                .unwrap()
+        );
+        j.insert_funding_step(&W, step, &T, &KEY, 7).unwrap();
+        assert!(spends(&j).is_empty());
+        assert_eq!(j.self_spend_rows().unwrap().len(), 2, "append-only");
+        // The compaction takes the side rows exactly with the artifact's.
+        j.resolve(&W, &T, Resolution::NotSent, 8).unwrap();
+        assert_eq!(j.erase_wallet(&W, false).unwrap(), vec![T]);
+        assert!(j.self_spend_rows().unwrap().is_empty());
+        assert!(j.funding_rows().unwrap().is_empty());
+    }
+
+    /// A signed lock is recorded only against a standing marker of its
+    /// step, keeps its inputs in order, and stands only while that marker
+    /// does.
+    #[test]
+    fn a_signed_lock_answers_the_marker_standing_when_written() {
+        let j = journal();
+        let step = "registration/d/funding";
+        let inputs = [
+            StoredOutPoint {
+                txid: [8; 32],
+                vout: 7,
+            },
+            StoredOutPoint {
+                txid: [9; 32],
+                vout: u32::MAX,
+            },
+        ];
+        let (tx1, tx2) = ([5; 32], [6; 32]);
+        assert!(
+            !j.insert_signed_lock(&W, step, &T, &tx1, &inputs, 1)
+                .unwrap()
+        );
+        assert!(j.signed_lock_rows().unwrap().is_empty(), "no marker");
+        assert!(j.insert_signed_lock(&W, step, &T, &tx1, &[], 1).is_err());
+        j.insert_funding_step(&W, step, &T, &KEY, 2).unwrap();
+        assert!(
+            j.insert_signed_lock(&W, step, &T, &tx1, &inputs, 3)
+                .unwrap()
+        );
+        assert!(
+            j.insert_signed_lock(&W, step, &T, &tx1, &inputs, 4)
+                .unwrap()
+        );
+        assert!(
+            j.insert_signed_lock(&W, step, &T, &tx2, &inputs[..1], 4)
+                .unwrap()
+        );
+        let locks = j.load_calls().unwrap().signed_locks;
+        assert_eq!(locks.len(), 2, "idempotent per txid");
+        assert_eq!((locks[0].txid, &locks[0].inputs[..]), (tx1, &inputs[..]));
+        assert_eq!((locks[1].txid, &locks[1].inputs[..]), (tx2, &inputs[..1]));
+        // A NotSent row supersedes the marker, and the locks with it; a new
+        // marker does not inherit them.
+        j.resolve(&W, &T, Resolution::NotSent, 5).unwrap();
+        assert!(j.load_calls().unwrap().signed_locks.is_empty());
+        j.insert_funding_step(&W, step, &T, &KEY, 6).unwrap();
+        assert!(j.load_calls().unwrap().signed_locks.is_empty());
+        assert_eq!(j.signed_lock_rows().unwrap().len(), 2, "append-only");
+        j.resolve(&W, &T, Resolution::NotSent, 7).unwrap();
+        assert_eq!(j.erase_wallet(&W, false).unwrap(), vec![T]);
+        assert!(j.signed_lock_rows().unwrap().is_empty());
+    }
+
+    /// A `Sent` row keeps the step's signed locks standing.
+    #[test]
+    fn a_sent_row_keeps_the_signed_locks() {
+        let j = journal();
+        let step = "registration/d/funding";
+        let inputs = [StoredOutPoint {
+            txid: [8; 32],
+            vout: 0,
+        }];
+        j.insert_funding_step(&W, step, &T, &KEY, 1).unwrap();
+        assert!(
+            j.insert_signed_lock(&W, step, &T, &[5; 32], &inputs, 2)
+                .unwrap()
+        );
+        j.resolve_sent(&W, &T, &[step.to_owned()], &[], 3).unwrap();
+        j.resolve(&W, &T, Resolution::NotSent, 4).unwrap();
+        assert_eq!(j.load_calls().unwrap().signed_locks.len(), 1);
+    }
+
+    /// The sweep never takes a standing funding marker or its self-spend.
+    #[test]
+    fn the_sweep_keeps_a_standing_funding_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let open = |now| match DispatchJournal::open(&path, now).unwrap() {
+            JournalOpen::Ready(j) => j,
+            JournalOpen::NewerSchema(v) => panic!("newer schema {v}"),
+        };
+        let j = open(1);
+        let (kept, gone) = ([7; 32], [8; 32]);
+        for a in [kept, gone] {
+            j.insert_funding_step(&W, "s/funding", &a, &KEY, 1).unwrap();
+            assert!(
+                j.insert_self_spend(&W, "s/funding", &a, &[1; 32], &CONFLICT, 1)
+                    .unwrap()
+            );
+        }
+        j.resolve(&W, &gone, Resolution::NotSent, 2).unwrap();
+        drop(j);
+        let j = open(2);
+        let rows = j.load_calls().unwrap();
+        assert_eq!(rows.funding.len(), 1);
+        assert_eq!(rows.funding[0].artifact, kept);
+        assert_eq!(rows.self_spends.len(), 1);
+        assert!(j.funding_rows().unwrap().iter().all(|f| f.artifact == kept));
+        assert!(
+            j.self_spend_rows()
+                .unwrap()
+                .iter()
+                .all(|f| f.artifact == kept)
+        );
+    }
+
+    /// A tombstone (DP1-02 PA-3, review OD-06) is written only against a
+    /// standing marker of its step, once per marker, and stands with it:
+    /// it outlives a reopen's sweep and a wallet's removal, as the marker
+    /// and the signed locks it answers do.
+    #[test]
+    fn a_tombstone_answers_its_marker_and_outlives_the_sweep_and_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let open = |now| match DispatchJournal::open(&path, now).unwrap() {
+            JournalOpen::Ready(j) => j,
+            JournalOpen::NewerSchema(v) => panic!("newer schema {v}"),
+        };
+        let step = "registration/d/funding";
+        let j = open(1);
+        assert!(
+            !j.insert_tombstone(&W, step, &T, &[5; 32], 1).unwrap(),
+            "no marker"
+        );
+        j.insert_funding_step(&W, step, &T, &KEY, 2).unwrap();
+        let input = StoredOutPoint {
+            txid: [6; 32],
+            vout: 0,
+        };
+        assert!(
+            j.insert_signed_lock(&W, step, &T, &[7; 32], &[input], 3)
+                .unwrap()
+        );
+        assert!(
+            j.insert_self_spend(&W, step, &T, &[5; 32], &CONFLICT, 4)
+                .unwrap()
+        );
+        assert!(j.insert_tombstone(&W, step, &T, &[5; 32], 5).unwrap());
+        assert!(j.insert_tombstone(&W, step, &T, &[9; 32], 6).unwrap());
+        assert_eq!(j.tombstone_rows().unwrap().len(), 1, "once per marker");
+        drop(j);
+        let j = open(7);
+        assert!(j.erase_wallet(&W, true).unwrap().is_empty());
+        drop(j);
+        let j = open(8);
+        let rows = j.load_calls().unwrap();
+        assert_eq!(rows.tombstones.len(), 1);
+        assert_eq!(rows.tombstones[0].self_spend, [5; 32]);
+        assert_eq!(rows.tombstones[0].marker, rows.funding[0].seq);
+        assert_eq!(rows.signed_locks.len(), 1);
+        assert!(rows.funding[0].durable_record);
     }
 
     #[test]
@@ -1041,7 +2665,9 @@ mod tests {
 
     /// The SQL predicate (`COMPACTABLE`, used by the sweep and the removal)
     /// and the Rust one (`compactable`, over `standing`) agree on random
-    /// logs, including orders the write API would not produce.
+    /// logs, including orders the write API would not produce; and so do
+    /// their deletes of the Mode B rows (`compact` and
+    /// `compact_in_memory`), orphans included.
     #[test]
     fn the_sql_and_rust_compaction_predicates_agree() {
         let mut seed = 0x2545_f491_4f6c_dd1du64;
@@ -1066,12 +2692,90 @@ mod tests {
                     .unwrap();
             }
             let log = j.step_log().unwrap();
+            // Side rows: linked to a marker, or orphans of any pair.
+            for r in &log {
+                if let StepEvent::Marked(step) = &r.event
+                    && next(2) == 0
+                {
+                    j.conn()
+                        .execute(
+                            "INSERT INTO funding_marker (seq, wallet, step_id, artifact, funding_type, identity_index, account, at)
+                             VALUES (?1, ?2, ?3, ?4, 0, 0, 0, 0)",
+                            params![r.seq as i64, &r.wallet[..], step, &r.artifact[..]],
+                        )
+                        .unwrap();
+                }
+            }
+            for n in 0..next(4) {
+                let (w, a) = ([next(2) as u8; 32], [next(3) as u8; 32]);
+                j.conn()
+                    .execute(
+                        "INSERT INTO funding_marker (seq, wallet, step_id, artifact, funding_type, identity_index, account, at)
+                         VALUES (?1, ?2, 's0', ?3, 0, 0, 0, 0)",
+                        params![1000 + n as i64, &w[..], &a[..]],
+                    )
+                    .unwrap();
+                j.conn()
+                    .execute(
+                        "INSERT INTO self_spend (wallet, step_id, artifact, txid, marker, at)
+                         VALUES (?1, 's0', ?2, ?3, ?4, 0)",
+                        params![&w[..], &a[..], &[n as u8; 32][..], next(13) as i64],
+                    )
+                    .unwrap();
+                let (w, a) = ([next(2) as u8; 32], [next(3) as u8; 32]);
+                j.conn()
+                    .execute(
+                        "INSERT INTO signed_lock (wallet, step_id, artifact, txid, inputs, marker, at)
+                         VALUES (?1, 's0', ?2, ?3, ?4, ?5, 0)",
+                        params![&w[..], &a[..], &[n as u8; 32][..], &[0u8; 36][..], next(13) as i64],
+                    )
+                    .unwrap();
+                let (w, a) = ([next(2) as u8; 32], [next(3) as u8; 32]);
+                j.conn()
+                    .execute(
+                        "INSERT INTO funding_tombstone (wallet, step_id, artifact, self_spend, marker, at)
+                         VALUES (?1, 's0', ?2, ?3, ?4, 0)",
+                        params![&w[..], &a[..], &[n as u8; 32][..], 2000 + n as i64],
+                    )
+                    .unwrap();
+                let (w, a) = ([next(2) as u8; 32], [next(3) as u8; 32]);
+                j.conn()
+                    .execute(
+                        "INSERT INTO funding_release (wallet, step_id, artifact, marker, at)
+                         VALUES (?1, 's0', ?2, ?3, 0)",
+                        params![&w[..], &a[..], 3000 + n as i64],
+                    )
+                    .unwrap();
+            }
+            let (mut funding, mut spends, mut locks) = (
+                j.funding_rows().unwrap(),
+                j.self_spend_rows().unwrap(),
+                j.signed_lock_rows().unwrap(),
+            );
+            let mut tombstones = j.tombstone_rows().unwrap();
+            let mut releases = j.release_rows().unwrap();
+            let mut mem_log = log.clone();
             let mut want: Vec<_> = compactable(&log).into_iter().collect();
             want.sort();
+            let side = SideRows {
+                funding: &mut funding,
+                self_spends: &mut spends,
+                signed_locks: &mut locks,
+                tombstones: &mut tombstones,
+                releases: &mut releases,
+            };
+            let mem = compact_in_memory(&mut mem_log, side, None);
+            assert_eq!(mem.into_iter().collect::<Vec<_>>(), want);
             let mut got = compact(&j.conn(), None).unwrap();
             got.sort();
             assert_eq!(got, want, "{log:?}");
             let left = j.step_log().unwrap();
+            assert_eq!(left, mem_log);
+            assert_eq!(j.funding_rows().unwrap(), funding, "{log:?}");
+            assert_eq!(j.self_spend_rows().unwrap(), spends, "{log:?}");
+            assert_eq!(j.signed_lock_rows().unwrap(), locks, "{log:?}");
+            assert_eq!(j.tombstone_rows().unwrap(), tombstones, "{log:?}");
+            assert_eq!(j.release_rows().unwrap(), releases, "{log:?}");
             assert_eq!(
                 standing(&left),
                 standing(&log),

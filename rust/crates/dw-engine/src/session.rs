@@ -182,6 +182,8 @@ pub struct NetworkSession {
     pump: Mutex<Option<PumpTask>>,
     /// Inputs of prepared, not yet settled transactions (E2 send).
     pub(crate) spends: crate::send::PendingSpends,
+    /// One coin fence per wallet (`coins.rs`, E0-04 §2a.6).
+    pub(crate) coin_fences: crate::coins::CoinFences,
     /// When this session opened, UNIX seconds ("Startup time").
     pub(crate) opened_at: u64,
     /// The previous session of this network did not close cleanly (its
@@ -435,6 +437,7 @@ impl NetworkSession {
             })),
             pump: Mutex::new(None),
             spends: Default::default(),
+            coin_fences: Default::default(),
             opened_at: crate::events::unix_now(),
             unclean_previous,
             startup_list: Mutex::new(startup_list),
@@ -445,10 +448,34 @@ impl NetworkSession {
             flow_leases: Mutex::default(),
         });
         match journal {
-            Some((backend, rows, steps)) => session.leases.load_journal(Some(backend), rows, steps),
-            None => session.leases.load_journal(None, Vec::new(), Vec::new()),
+            Some((backend, rows, steps, calls)) => {
+                session
+                    .leases
+                    .load_journal_with(Some(backend), rows, steps, calls)
+            }
+            None => {
+                session
+                    .leases
+                    .load_journal_with(None, Vec::new(), Vec::new(), Default::default())
+            }
         }
         session.leases.start_reaper();
+        // Mode B's funding statuses (E0-04 §2a.5, H15): its evidence source,
+        // the tap's hook on tracked-row changes, and a first read of every
+        // loaded wallet's rows. The same source resumes tracked rows for
+        // the catch-up (H6 part 2), which SPV's start and its peers drive.
+        let tracked = Arc::new(crate::platform::lease::mode_b::SessionTracked {
+            session: Arc::downgrade(&session),
+        });
+        session.leases.install_tracked(tracked.clone());
+        session.leases.install_resumer(tracked);
+        session.hub.attach_leases(&session.leases);
+        if let Ok(live) = session.live() {
+            live.tap.watch_locks(&session.leases);
+        }
+        for id in manager.list_wallet_ids_blocking() {
+            session.leases.request_refresh(WalletId(id));
+        }
         if let Err(e) =
             create_owned_file(&session.data_dir, Path::new(crate::tools::SESSION_MARKER))
         {
@@ -640,10 +667,13 @@ impl NetworkSession {
             network: self.network.clone(),
             running: true,
         });
+        // E0-04 H6 part 2: the catch-up's resume pass, spawned.
+        self.leases.spv_started();
         Ok(())
     }
 
     pub(crate) async fn stop_spv_inner(&self, manager: &Manager) -> Result<(), EngineError> {
+        self.leases.spv_stopped();
         let stopped = manager.spv().stop().await;
         self.hub.set_spv_running(false);
         self.sink.emit(EngineEvent::SpvStateChanged {

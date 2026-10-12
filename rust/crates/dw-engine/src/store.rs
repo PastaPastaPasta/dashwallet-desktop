@@ -97,9 +97,17 @@ impl PlatformWalletPersistence for WalletStore {
         wallet_id: RawWalletId,
         changeset: PlatformWalletChangeSet,
     ) -> Result<(), PersistenceError> {
-        // Classified before the persister takes it, recorded once it has.
+        // Classified before the persister takes it, recorded once it has;
+        // a funding call's own locks are recorded before (§2a.6).
         let classified = classify(&changeset);
+        if let Some(classified) = &classified {
+            self.tap.note_signed(WalletId(wallet_id), classified);
+        }
+        let core = changeset.core.is_some();
         self.inner.store(wallet_id, changeset)?;
+        if core {
+            self.tap.core_changed(WalletId(wallet_id));
+        }
         if let Some(classified) = classified {
             self.tap
                 .record(WalletId(wallet_id), classified, self.inner.as_ref());

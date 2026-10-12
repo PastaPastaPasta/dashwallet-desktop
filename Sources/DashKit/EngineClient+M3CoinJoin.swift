@@ -257,6 +257,8 @@ public struct MixedCoinsOutcome: Sendable, Hashable {
     public let moved: Amount
     public let remaining: Amount
     public let failureCode: String?
+    /// With `coinjoin.broadcast_unknown`: the chunk that may be on the network.
+    public let unknownTxid: String?
 }
 
 public struct NetworkStatsSnapshot: Sendable, Hashable {
@@ -374,7 +376,8 @@ extension EngineClient {
         }
         return MixedCoinsOutcome(
             txids: r.txids, moved: Amount(duffs: Int64(clamping: r.moved)),
-            remaining: Amount(duffs: Int64(clamping: r.remaining)), failureCode: r.failureCode)
+            remaining: Amount(duffs: Int64(clamping: r.remaining)), failureCode: r.failureCode,
+            unknownTxid: r.unknownTxid)
     }
 
     public func networkStats(on network: DashNetwork) throws(DashKitError) -> NetworkStatsSnapshot {

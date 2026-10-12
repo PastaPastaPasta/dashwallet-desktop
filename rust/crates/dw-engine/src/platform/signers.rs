@@ -6,7 +6,10 @@
 //! - [`VaultContactCrypto`]: platform-wallet `ContactCryptoProvider` for the
 //!   DIP-15 contact crypto, scope `DashPayCrypto` (never signs);
 //! - [`VaultScanKey`]: platform-wallet `ScanKeyResolver` for the identity
-//!   scan of `start_wallet_subsystems`.
+//!   scan of `start_wallet_subsystems`;
+//! - [`CountingFundingSigner`]: key-wallet `Signer` + `ExtendedPubKeySigner`
+//!   for `create_funded_asset_lock_proof`, scope `PlatformFunding`, counting
+//!   into a Mode B call permit (E0-04 §2a.3).
 //!
 //! Counterparts at platform `bc321362b9`, which these mirror call for call:
 //! `rs-platform-wallet-ffi/src/dashpay.rs` `ResolverContactCryptoProvider`
@@ -29,8 +32,10 @@
 //! that must not use such a result ("Lock to cancel") fences at its own
 //! commit point under an E0-04 lease, not here.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::secp256k1::{PublicKey, SecretKey, ecdsa};
 use dpp::ProtocolError;
 use dpp::address_funds::AddressWitness;
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -39,8 +44,8 @@ use dpp::identity::{IdentityPublicKey, KeyType};
 use dpp::platform_value::BinaryData;
 use dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dw_vault::{ScanKey, SignerError, SignerScope, VaultSigner};
-use key_wallet::ExtendedPubKeySigner;
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
+use key_wallet::{ExtendedPubKeySigner, SignerMethod};
 use platform_wallet::manager::startup::ScanKeyError;
 use platform_wallet::{
     ContactCryptoProvider, ContactInfoOpened, ContactInfoSealed, PlatformWalletError,
@@ -48,6 +53,7 @@ use platform_wallet::{
 use zeroize::Zeroizing;
 
 use super::keys_policy::key_path;
+use super::lease::{FundingRelease, SignatureCount};
 use crate::EngineError;
 
 fn require_scope(signer: &VaultSigner, scope: SignerScope) -> Result<(), EngineError> {
@@ -75,6 +81,8 @@ fn require_scope(signer: &VaultSigner, scope: SignerScope) -> Result<(), EngineE
 pub struct VaultIdentitySigner {
     signer: VaultSigner,
     identity_indices: Vec<u32>,
+    /// Mode B: the call permit's count of released signatures (§2a.3).
+    count: Option<Arc<SignatureCount>>,
 }
 
 impl VaultIdentitySigner {
@@ -88,7 +96,14 @@ impl VaultIdentitySigner {
         Ok(Self {
             signer,
             identity_indices: identity_indices.into_iter().collect(),
+            count: None,
         })
+    }
+
+    /// Reports each released signature, and a `Locked` refusal, to `count`.
+    pub(crate) fn counting(mut self, count: Arc<SignatureCount>) -> Self {
+        self.count = Some(count);
+        self
     }
 
     /// The slot `keys_policy` derives the key at.
@@ -116,6 +131,19 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
                 InvalidIdentityPublicKeyTypeError::new(key.key_type()),
             ));
         }
+        // Counted before the vault is asked (E0-04 review M-1): refused
+        // once the call permit ended.
+        let signing = match &self.count {
+            Some(count) => match count.begin() {
+                Some(signing) => Some(signing),
+                None => {
+                    return Err(ProtocolError::ExternalSignerError(
+                        SignerError::Locked.to_string(),
+                    ));
+                }
+            },
+            None => None,
+        };
         for &identity_index in &self.identity_indices {
             let Some(path) = self.slot(identity_index, key) else {
                 continue;
@@ -124,10 +152,20 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
                 .signer
                 .sign_identity(&path, key.data().as_slice(), data)
             {
-                Ok(signature) => return Ok(signature.to_vec().into()),
+                Ok(signature) => {
+                    if let Some(signing) = signing {
+                        signing.released();
+                    }
+                    return Ok(signature.to_vec().into());
+                }
                 // Not this identity's key: try the next identity.
                 Err(SignerError::KeyMismatch(_)) => continue,
-                Err(e) => return Err(ProtocolError::ExternalSignerError(e.to_string())),
+                Err(e) => {
+                    if let Some(count) = &self.count {
+                        count.observe_err(&e);
+                    }
+                    return Err(ProtocolError::ExternalSignerError(e.to_string()));
+                }
             }
         }
         Err(ProtocolError::ExternalSignerError(format!(
@@ -148,16 +186,126 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
 
     /// dpp's preflight. Each identity index costs one vault operation (seed
     /// decrypt and derivation); a locked vault or any other signer error
-    /// answers `false`, and the `sign` that follows reports the error.
+    /// answers `false`, and the `sign` that follows reports the error. A
+    /// `Locked` refusal is reported to the call permit's count here too
+    /// (review L-3): dpp may stop at the preflight, with no `sign`. Once
+    /// the call permit ended it answers `false` without asking the vault.
     fn can_sign_with(&self, key: &IdentityPublicKey) -> bool {
         Self::supported(key)
+            && !self.count.as_ref().is_some_and(|c| c.closed())
             && self.identity_indices.iter().any(|&i| {
                 self.slot(i, key).is_some_and(|path| {
-                    self.signer
+                    match self
+                        .signer
                         .identity_key_matches(&path, key.data().as_slice())
-                        .unwrap_or(false)
+                    {
+                        Ok(matches) => matches,
+                        Err(e) => {
+                            if let Some(count) = &self.count {
+                                count.observe_err(&e);
+                            }
+                            false
+                        }
+                    }
                 })
             })
+    }
+}
+
+/// The lease's `PlatformFunding` signer during one Mode B funding call
+/// (E0-04 §2a.3): it delegates every call to the vault signer and reports
+/// each released signature (its sighash kept, §2a.6), and any `Locked` refusal, to the
+/// call permit's count. A public key or xpub is no signature: only `sign_ecdsa` counts as
+/// released, counted before the vault is asked, and refused `Locked` once
+/// the permit ended (review M-1, `SignatureCount`), and refused once a lock
+/// of the call was recorded unless it signed the sighash already (one lock
+/// per call, O-1, `SignatureCount::admits`). Whatever key-wallet's builder requires of a signer
+/// (`TransactionSigner` is implemented for every `Signer`) comes through
+/// these two traits.
+///
+/// Its first signature waits for the call's release to be recorded against
+/// the step's marker ([`FundingRelease`], review P2b r6 R6-01); a failed
+/// record refuses the signature, the vault asked nothing.
+#[derive(Debug, Clone)]
+pub struct CountingFundingSigner {
+    signer: VaultSigner,
+    count: Arc<SignatureCount>,
+    release: Arc<FundingRelease>,
+}
+
+impl CountingFundingSigner {
+    pub(crate) fn new(
+        signer: VaultSigner,
+        count: Arc<SignatureCount>,
+        release: Arc<FundingRelease>,
+    ) -> Self {
+        Self {
+            signer,
+            count,
+            release,
+        }
+    }
+
+    fn note<T>(&self, r: Result<T, SignerError>) -> Result<T, SignerError> {
+        if let Err(e) = &r {
+            self.count.observe_err(e);
+        }
+        r
+    }
+}
+
+#[async_trait]
+impl key_wallet::Signer for CountingFundingSigner {
+    type Error = SignerError;
+
+    fn supported_methods(&self) -> &[SignerMethod] {
+        self.signer.supported_methods()
+    }
+
+    async fn sign_ecdsa(
+        &self,
+        path: &DerivationPath,
+        sighash: [u8; 32],
+    ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+        let Some(signing) = self.count.begin() else {
+            return Err(SignerError::Locked);
+        };
+        if !self.count.admits(sighash) {
+            return Err(SignerError::PathNotAllowed(format!(
+                "{path}: the call's asset lock is already signed"
+            )));
+        }
+        // Counted in `signing` meanwhile: the permit's end reads the call
+        // possibly sent, so no `NotSent` row supersedes the marker under
+        // the write.
+        if let Err(e) = self.release.record().await {
+            tracing::warn!(error = %e, "a funding signature refused: its release is not recorded");
+            return Err(SignerError::PathNotAllowed(format!(
+                "{path}: the funding release could not be recorded"
+            )));
+        }
+        // The permit may have ended during the write; its end counted this
+        // signing (possibly sent), and nothing is asked of the vault.
+        if self.count.closed() {
+            return Err(SignerError::Locked);
+        }
+        let signed = self.note(self.signer.sign_ecdsa(path, sighash).await)?;
+        signing.released_with(sighash);
+        Ok(signed)
+    }
+
+    async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, SignerError> {
+        self.note(self.signer.public_key(path).await)
+    }
+}
+
+#[async_trait]
+impl ExtendedPubKeySigner for CountingFundingSigner {
+    async fn extended_public_key(
+        &self,
+        path: &DerivationPath,
+    ) -> Result<ExtendedPubKey, SignerError> {
+        self.note(self.signer.extended_public_key(path).await)
     }
 }
 

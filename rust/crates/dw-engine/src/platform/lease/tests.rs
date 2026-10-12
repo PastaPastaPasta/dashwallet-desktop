@@ -4,17 +4,23 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
+use dashcore::hashes::Hash;
+use dashcore::{OutPoint, Txid};
 use dw_appdb::dispatch::{
-    DiskState, DispatchRow, Registered, Resolution, StepEvent, StepLogRow, StepRow,
+    CallRows, DiskState, DispatchRow, FundingRow, Registered, ReleaseRow, Resolution,
+    SelfSpendConflict, SelfSpendProvenance, SelfSpendRow, SignedLockRow, StepEvent, StepLogRow,
+    StepRow, StoredFundingKey, StoredOutPoint, TombstoneRow,
 };
+use platform_wallet::AssetLockFundingType;
 use tokio::runtime::Handle;
 use tokio::time::Instant;
 
 use super::fence::JournalBackend;
 use super::lock::Scope;
+use super::mode_b::index_trusted;
 use super::table::{Issued, LeaseState, LeaseTable};
 use super::*;
 use crate::platform::flows::{
@@ -26,6 +32,95 @@ pub(super) const W: WalletId = WalletId([1; 32]);
 pub(super) const W2: WalletId = WalletId([2; 32]);
 /// The permit lifetime H of the default config.
 pub(super) const H: Duration = Duration::from_secs(10);
+/// A funding step of identity index 7 (E0-04 §2a.3).
+pub(super) const REG: &str = "registration/7/funding";
+/// A call step's marker that stands on disk.
+pub(super) const DURABLE: CallStepStatus = CallStepStatus::Marked { durable: true };
+
+/// A quote of `amount` against the Credits budget.
+pub(super) fn credits(amount: u64) -> Option<CallQuote> {
+    Some(CallQuote {
+        purpose: BudgetPurpose::Credits,
+        amount,
+    })
+}
+
+/// A funding call's quote (§2a.3): `amount` and its worst-case fee.
+pub(super) fn quote(amount: u64, fee_bound_worst: u64) -> Option<CallQuote> {
+    Some(
+        FundingQuote {
+            amount,
+            fee_bound_worst,
+        }
+        .into(),
+    )
+}
+
+pub(super) fn txid(n: u8) -> Txid {
+    Txid::from_byte_array([n; 32])
+}
+
+/// The registration funding key of `identity_index`, account 0.
+pub(super) fn key(identity_index: u32) -> FundingKey {
+    FundingKey {
+        funding_type: AssetLockFundingType::IdentityRegistration,
+        identity_index,
+        account: 0,
+    }
+}
+
+/// A tracked row `n` of the registration of `identity_index`.
+pub(super) fn row(n: u8, identity_index: u32, status: TrackedStatus) -> TrackedRow {
+    TrackedRow {
+        txid: txid(n),
+        key: key(identity_index),
+        status,
+        inputs: vec![OutPoint::new(txid(100 + n), 0)],
+        trusted: index_trusted(&key(identity_index), status),
+        sighashes: None,
+    }
+}
+
+/// The call of permit `p` signed `row`'s lock, and the library's store of
+/// it reached the provenance check (§2a.6): the lock's only input signs
+/// sighash `[n; 32]`, `n` its txid's byte, which `p`'s funding signer
+/// signed.
+pub(super) fn sign_lock(t: &LeaseTable, p: &CallPermit, wallet: WalletId, row: &TrackedRow) {
+    let sighash = [row.txid.to_byte_array()[0]; 32];
+    p.note_signed(sighash);
+    t.record_signed_locks(
+        wallet,
+        &[StoredLock {
+            txid: row.txid,
+            inputs: row.inputs.clone(),
+            sighashes: Some(vec![sighash]),
+            built: true,
+        }],
+    );
+}
+
+/// The call of permit `p` signed a lock and the library's store of it
+/// recorded it (§2a.7), and the lock's row is gone (a rejected broadcast
+/// untracked it, a restart lost it): the step reads `MaybeSent`. Each call
+/// gives a fresh lock (txid byte 0xc0 to 0xfe), its one input unrelated to
+/// any test row's.
+pub(super) fn sign_lost_lock(t: &LeaseTable, p: &CallPermit, wallet: WalletId) -> Txid {
+    static NEXT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+    let n = 0xc0 + NEXT.fetch_add(1, Ordering::SeqCst) % 0x3f;
+    let sighash = [n; 32];
+    p.note_signed(sighash);
+    let lock = Txid::from_byte_array([n; 32]);
+    t.record_signed_locks(
+        wallet,
+        &[StoredLock {
+            txid: lock,
+            inputs: vec![OutPoint::new(Txid::from_byte_array([!n; 32]), 1)],
+            sighashes: Some(vec![sighash]),
+            built: true,
+        }],
+    );
+    lock
+}
 
 /// Records every event the table emits.
 #[derive(Default)]
@@ -38,6 +133,10 @@ impl EventSink for Recorder {
 }
 
 impl Recorder {
+    pub(super) fn events(&self) -> Vec<EngineEvent> {
+        self.0.lock().unwrap().clone()
+    }
+
     pub(super) fn resolved(&self) -> Vec<(String, DispatchResolution)> {
         self.0
             .lock()
@@ -47,6 +146,18 @@ impl Recorder {
                 EngineEvent::DispatchResolved { resolved, .. } => {
                     Some((resolved.artifact.clone(), resolved.resolution))
                 }
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(super) fn leases_changed(&self) -> Vec<crate::platform::flows::LeaseView> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| match e {
+                EngineEvent::LeaseChanged { lease, .. } => Some(lease.clone()),
                 _ => None,
             })
             .collect()
@@ -215,6 +326,10 @@ fn budget(lease: &Lease, purpose: BudgetPurpose) -> Option<(u64, u64)> {
 /// A row: (wallet, txid) → (origin lease, 0 unsent / 1 dispatching).
 type Rows = HashMap<([u8; 32], [u8; 32]), (LeaseId, u8)>;
 
+/// A `Sent` bundle a [`FakeJournal`] was asked for: (artifact, steps,
+/// funding keys).
+pub(super) type Bundle = ([u8; 32], Vec<String>, Vec<(String, StoredFundingKey)>);
+
 /// A journal with injected faults (§12 "Journal").
 #[derive(Default)]
 pub(super) struct FakeJournal {
@@ -222,6 +337,16 @@ pub(super) struct FakeJournal {
     /// 0: ok; 1: lost (nothing written, error); 2: durable, then an error.
     pub(super) dispatch_fault: AtomicU64,
     pub(super) fail_step: AtomicBool,
+    /// A `self_spend` row: lost (nothing written, error).
+    pub(super) fail_self_spend: AtomicBool,
+    /// The next this many `signed_lock` rows: lost (nothing written,
+    /// error).
+    pub(super) fail_signed_lock: AtomicU64,
+    /// The next `signed_lock` append reports it began, then waits to be
+    /// released ([`Self::hold_signed_lock`]).
+    signed_lock_hold: Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>,
+    /// A `signed_lock` row finds its step's marker no longer standing.
+    pub(super) signed_lock_unmarked: AtomicBool,
     /// A `NotSent` row: lost (nothing written, error).
     pub(super) fail_resolve: AtomicBool,
     pub(super) panic_resolve: AtomicBool,
@@ -235,8 +360,25 @@ pub(super) struct FakeJournal {
     /// Real-time stall of every write (row, `Dispatching`, step), in ms.
     pub(super) stall_ms: AtomicU64,
     rows: Mutex<Rows>,
-    /// `step_log`, append-only (DEC-154).
+    /// `step_log`, append-only (DEC-154). Locked before `funding` and
+    /// `self_spends`, like one transaction.
     log: Mutex<Vec<StepLogRow>>,
+    /// The next `seq`; never reused, like AUTOINCREMENT.
+    next_seq: AtomicU64,
+    /// `funding_marker` and `self_spend` (schema 3), `signed_lock` (4).
+    funding: Mutex<Vec<FundingRow>>,
+    self_spends: Mutex<Vec<SelfSpendRow>>,
+    signed_locks: Mutex<Vec<SignedLockRow>>,
+    /// `funding_tombstone` (6).
+    tombstones: Mutex<Vec<TombstoneRow>>,
+    /// A `funding_tombstone` row: lost (nothing written, error).
+    pub(super) fail_tombstone: AtomicBool,
+    /// `funding_release` (7).
+    releases: Mutex<Vec<ReleaseRow>>,
+    /// A `funding_release` row: lost (nothing written, error).
+    pub(super) fail_release: AtomicBool,
+    /// Every `Sent` bundle asked for.
+    pub(super) bundles: Mutex<Vec<Bundle>>,
     /// Every artifact a marker row was ever appended for.
     ever_marked: Mutex<std::collections::HashSet<([u8; 32], [u8; 32])>>,
 }
@@ -296,17 +438,171 @@ impl JournalBackend for FakeJournal {
         Ok(())
     }
 
+    fn insert_funding_step(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        key: &StoredFundingKey,
+    ) -> Result<(), String> {
+        self.stall();
+        if self.fail_step.load(Ordering::SeqCst) {
+            return Err("injected step failure".into());
+        }
+        let mut log = self.log.lock().unwrap();
+        self.append_marker(&mut log, wallet, artifact, step);
+        self.append_funding(&log, wallet, artifact, step, key);
+        Ok(())
+    }
+
+    fn insert_self_spend(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
+    ) -> Result<bool, String> {
+        if self.fail_self_spend.load(Ordering::SeqCst) {
+            return Err("injected self-spend failure".into());
+        }
+        if conflicts.is_empty() {
+            return Err("self_spend: no conflicts".into());
+        }
+        let log = self.log.lock().unwrap();
+        let Some(marker) = latest_standing(&log, wallet, artifact, step) else {
+            return Ok(false);
+        };
+        let mut spends = self.self_spends.lock().unwrap();
+        if !spends.iter().any(|s| s.marker == marker && s.txid == *txid) {
+            spends.push(SelfSpendRow {
+                seq: self.seq(),
+                wallet: *wallet,
+                step_id: step.to_owned(),
+                artifact: *artifact,
+                txid: *txid,
+                marker,
+                provenance: SelfSpendProvenance::Conflicts(conflicts.to_vec()),
+                at: 0,
+            });
+        }
+        Ok(true)
+    }
+
+    fn insert_signed_lock(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        inputs: &[StoredOutPoint],
+    ) -> Result<bool, String> {
+        let hold = self.signed_lock_hold.lock().unwrap().take();
+        if let Some((began, release)) = hold {
+            began.send(()).unwrap();
+            let _ = release.recv();
+        }
+        let fail = |n: u64| n.checked_sub(1);
+        if (self.fail_signed_lock)
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, fail)
+            .is_ok()
+        {
+            return Err("injected signed-lock failure".into());
+        }
+        let log = self.log.lock().unwrap();
+        let Some(marker) = latest_standing(&log, wallet, artifact, step)
+            .filter(|_| !self.signed_lock_unmarked.load(Ordering::SeqCst))
+        else {
+            return Ok(false);
+        };
+        let mut locks = self.signed_locks.lock().unwrap();
+        if !locks.iter().any(|l| l.marker == marker && l.txid == *txid) {
+            locks.push(SignedLockRow {
+                seq: self.seq(),
+                wallet: *wallet,
+                step_id: step.to_owned(),
+                artifact: *artifact,
+                txid: *txid,
+                inputs: inputs.to_vec(),
+                marker,
+                at: 0,
+            });
+        }
+        Ok(true)
+    }
+
+    fn insert_tombstone(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        self_spend: &[u8; 32],
+    ) -> Result<bool, String> {
+        if self.fail_tombstone.load(Ordering::SeqCst) {
+            return Err("injected tombstone failure".into());
+        }
+        let log = self.log.lock().unwrap();
+        let Some(marker) = latest_standing(&log, wallet, artifact, step) else {
+            return Ok(false);
+        };
+        let mut tombstones = self.tombstones.lock().unwrap();
+        if !tombstones.iter().any(|t| t.marker == marker) {
+            tombstones.push(TombstoneRow {
+                seq: self.seq(),
+                wallet: *wallet,
+                step_id: step.to_owned(),
+                artifact: *artifact,
+                self_spend: *self_spend,
+                marker,
+                at: 0,
+            });
+        }
+        Ok(true)
+    }
+
+    fn insert_release(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<bool, String> {
+        if self.fail_release.load(Ordering::SeqCst) {
+            return Err("injected release failure".into());
+        }
+        let log = self.log.lock().unwrap();
+        let Some(marker) = latest_standing(&log, wallet, artifact, step) else {
+            return Ok(false);
+        };
+        let mut releases = self.releases.lock().unwrap();
+        if !releases.iter().any(|r| r.marker == marker) {
+            releases.push(ReleaseRow {
+                seq: self.seq(),
+                wallet: *wallet,
+                step_id: step.to_owned(),
+                artifact: *artifact,
+                marker,
+                at: 0,
+            });
+        }
+        Ok(true)
+    }
+
     fn resolve_sent(
         &self,
         wallet: &[u8; 32],
         artifact: &[u8; 32],
         steps: &[String],
+        funding: &[(String, StoredFundingKey)],
     ) -> Result<(), String> {
-        self.resolve_rows(wallet, artifact, Resolution::Sent, steps)
+        self.bundles
+            .lock()
+            .unwrap()
+            .push((*artifact, steps.to_vec(), funding.to_vec()));
+        self.resolve_rows(wallet, artifact, Resolution::Sent, steps, funding)
     }
 
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
-        self.resolve_rows(wallet, artifact, r, &[])
+        self.resolve_rows(wallet, artifact, r, &[], &[])
     }
 
     fn erase_wallet(&self, wallet: &[u8; 32], dispatch: bool) -> Result<Vec<[u8; 32]>, String> {
@@ -315,13 +611,15 @@ impl JournalBackend for FakeJournal {
         }
         // DEC-160's predicate, under the log's lock like a transaction.
         let mut log = self.log.lock().unwrap();
-        let gone: Vec<[u8; 32]> = dw_appdb::dispatch::compactable(&log)
-            .into_iter()
-            .filter(|(w, _)| w == wallet)
-            .map(|(_, a)| a)
-            .collect();
-        log.retain(|r| r.wallet != *wallet || !gone.contains(&r.artifact));
-        Ok(gone)
+        let side = dw_appdb::dispatch::SideRows {
+            funding: &mut self.funding.lock().unwrap(),
+            self_spends: &mut self.self_spends.lock().unwrap(),
+            signed_locks: &mut self.signed_locks.lock().unwrap(),
+            tombstones: &mut self.tombstones.lock().unwrap(),
+            releases: &mut self.releases.lock().unwrap(),
+        };
+        let gone = dw_appdb::dispatch::compact_in_memory(&mut log, side, Some(wallet));
+        Ok(gone.into_iter().map(|(_, a)| a).collect())
     }
 
     fn erase_wallet_unconditionally(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
@@ -333,13 +631,180 @@ impl JournalBackend for FakeJournal {
             .map(|r| r.artifact)
             .collect();
         log.retain(|r| r.wallet != *wallet);
+        self.funding.lock().unwrap().retain(|r| r.wallet != *wallet);
+        self.self_spends
+            .lock()
+            .unwrap()
+            .retain(|r| r.wallet != *wallet);
+        self.signed_locks
+            .lock()
+            .unwrap()
+            .retain(|r| r.wallet != *wallet);
+        self.tombstones
+            .lock()
+            .unwrap()
+            .retain(|r| r.wallet != *wallet);
         Ok(gone.into_iter().collect())
     }
+}
+
+/// The `seq` of `step`'s latest marker of `artifact`, if it stands.
+fn latest_standing(
+    log: &[StepLogRow],
+    wallet: &[u8; 32],
+    artifact: &[u8; 32],
+    step: &str,
+) -> Option<u64> {
+    let stands = dw_appdb::dispatch::standing(log)
+        .iter()
+        .any(|s| s.wallet == *wallet && s.artifact == *artifact && s.step_id == step);
+    log.iter()
+        .rev()
+        .find(|r| {
+            r.wallet == *wallet
+                && r.artifact == *artifact
+                && matches!(&r.event, StepEvent::Marked(s) if s == step)
+        })
+        .map(|r| r.seq)
+        .filter(|_| stands)
 }
 
 impl FakeJournal {
     fn stall(&self) {
         std::thread::sleep(Duration::from_millis(self.stall_ms.load(Ordering::SeqCst)));
+    }
+
+    fn seq(&self) -> u64 {
+        self.next_seq.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// A funding step's key with the step's standing marker that has none.
+    fn append_funding(
+        &self,
+        log: &[StepLogRow],
+        wallet: &[u8; 32],
+        artifact: &[u8; 32],
+        step: &str,
+        key: &StoredFundingKey,
+    ) {
+        let Some(seq) = latest_standing(log, wallet, artifact, step) else {
+            return;
+        };
+        let mut funding = self.funding.lock().unwrap();
+        if !funding.iter().any(|f| f.seq == seq) {
+            funding.push(FundingRow {
+                seq,
+                wallet: *wallet,
+                step_id: step.to_owned(),
+                artifact: *artifact,
+                key: *key,
+                at: 0,
+                durable_record: true,
+            });
+        }
+    }
+
+    /// Holds the next `signed_lock` append: the first receiver hears when
+    /// it began, and it waits until the sender is sent to (or dropped).
+    pub(super) fn hold_signed_lock(&self) -> (mpsc::Receiver<()>, mpsc::SyncSender<()>) {
+        let (began, began_rx) = mpsc::sync_channel(1);
+        let (release, release_rx) = mpsc::sync_channel(1);
+        *self.signed_lock_hold.lock().unwrap() = Some((began, release_rx));
+        (began_rx, release)
+    }
+
+    /// Clears every marker's `durable_record` flag, as in a journal written
+    /// before schema 6 (OD-02).
+    pub(super) fn unflag_markers(&self) {
+        for f in self.funding.lock().unwrap().iter_mut() {
+            f.durable_record = false;
+        }
+    }
+
+    /// A self-spend row of `step`'s standing marker that shows the conflict
+    /// with nothing: what the P2b r3 dev build wrote, and what no journal
+    /// accepts now (review Opus O-8a).
+    pub(super) fn push_empty_self_spend(&self, wallet: WalletId, step: &str, txid: [u8; 32]) {
+        let artifact = ArtifactId::of_step(&wallet, step).0;
+        let marker = latest_standing(&self.log.lock().unwrap(), &wallet.0, &artifact, step)
+            .expect("a standing marker");
+        self.self_spends.lock().unwrap().push(SelfSpendRow {
+            seq: self.seq(),
+            wallet: wallet.0,
+            step_id: step.to_owned(),
+            artifact,
+            txid,
+            marker,
+            provenance: SelfSpendProvenance::Conflicts(Vec::new()),
+            at: 0,
+        });
+    }
+
+    /// What a reopen would load of Mode B's rows (§2a.3).
+    pub(super) fn load_calls(&self) -> CallRows {
+        let log = self.log.lock().unwrap();
+        dw_appdb::dispatch::standing_calls(
+            &log,
+            &self.funding.lock().unwrap(),
+            &self.self_spends.lock().unwrap(),
+            &self.signed_locks.lock().unwrap(),
+            &self.tombstones.lock().unwrap(),
+            &self.releases.lock().unwrap(),
+        )
+    }
+
+    /// Every `signed_lock` row.
+    pub(super) fn signed_lock_rows(&self) -> Vec<SignedLockRow> {
+        self.signed_locks.lock().unwrap().clone()
+    }
+
+    /// Every `funding_tombstone` row.
+    pub(super) fn tombstone_rows(&self) -> Vec<TombstoneRow> {
+        self.tombstones.lock().unwrap().clone()
+    }
+
+    /// Every `funding_release` row.
+    pub(super) fn release_rows(&self) -> Vec<ReleaseRow> {
+        self.releases.lock().unwrap().clone()
+    }
+
+    /// Every `funding_marker` row.
+    pub(super) fn funding_rows(&self) -> Vec<FundingRow> {
+        self.funding.lock().unwrap().clone()
+    }
+
+    /// `step_log` as it is now.
+    pub(super) fn log(&self) -> Vec<StepLogRow> {
+        self.log.lock().unwrap().clone()
+    }
+
+    /// An independent copy of the file as it is now: a kill here, and the
+    /// next process's journal.
+    pub(super) fn snapshot(&self) -> Arc<FakeJournal> {
+        Arc::new(FakeJournal {
+            rows: Mutex::new(self.rows.lock().unwrap().clone()),
+            log: Mutex::new(self.log()),
+            next_seq: AtomicU64::new(self.next_seq.load(Ordering::SeqCst)),
+            funding: Mutex::new(self.funding_rows()),
+            self_spends: Mutex::new(self.self_spends.lock().unwrap().clone()),
+            signed_locks: Mutex::new(self.signed_lock_rows()),
+            tombstones: Mutex::new(self.tombstone_rows()),
+            releases: Mutex::new(self.release_rows()),
+            ever_marked: Mutex::new(self.ever_marked.lock().unwrap().clone()),
+            ..Default::default()
+        })
+    }
+
+    /// A kill now: loads what a reopen would (§6.5) into `t`, with this
+    /// file as `t`'s journal.
+    pub(super) fn load_into(self: &Arc<Self>, t: &LeaseTable) {
+        let (rows, steps) = self.load();
+        t.load_journal_with(
+            Some(self.clone() as Arc<dyn JournalBackend>),
+            rows,
+            steps,
+            self.load_calls(),
+        );
     }
 
     /// What a reopen would load (§6.5).
@@ -376,6 +841,7 @@ impl FakeJournal {
         artifact: &[u8; 32],
         r: Resolution,
         steps: &[String],
+        funding: &[(String, StoredFundingKey)],
     ) -> Result<(), String> {
         self.stall();
         let not_sent = r == Resolution::NotSent;
@@ -394,8 +860,12 @@ impl FakeJournal {
         let mut log = self.log.lock().unwrap();
         for step in steps {
             self.append_marker(&mut log, wallet, artifact, step);
+            if let Some((_, key)) = funding.iter().find(|(s, _)| s == step) {
+                self.append_funding(&log, wallet, artifact, step, key);
+            }
         }
         log.push(StepLogRow {
+            seq: self.seq(),
             wallet: *wallet,
             artifact: *artifact,
             event: StepEvent::Resolved(r),
@@ -429,6 +899,7 @@ impl FakeJournal {
                 .unwrap()
                 .insert((*wallet, *artifact));
             log.push(StepLogRow {
+                seq: self.seq(),
                 wallet: *wallet,
                 artifact: *artifact,
                 event: StepEvent::Marked(step.to_owned()),
@@ -556,7 +1027,7 @@ async fn the_state_machine_transition_by_transition() {
         "Parked → NeedsGrant"
     );
     assert_eq!(
-        b.funding_signer().unwrap_err(),
+        b.uncounted_funding_signer().unwrap_err(),
         LeaseError::NeedsGrant(BudgetPurpose::Funding)
     );
     b.rebind(move || Ok(issued(0, 500, 0, 1)), || 1)
@@ -597,7 +1068,7 @@ async fn the_state_machine_transition_by_transition() {
     d.end();
     d.end();
     assert_eq!(d.state(), Some(LeaseState::Ended));
-    assert_eq!(d.funding_signer().unwrap_err(), LeaseError::Ended);
+    assert_eq!(d.uncounted_funding_signer().unwrap_err(), LeaseError::Ended);
     b.end();
     assert_eq!(b.state(), Some(LeaseState::Ended));
 }
@@ -608,7 +1079,7 @@ async fn the_reaper_ends_idle_vault_key_leases_and_forgets_them_later() {
     let idle = LeaseConfig::default().idle;
     let a = begin(&t, W, 0, 1, 0).await.unwrap();
     let busy = begin(&t, W, 0, 1, 0).await.unwrap();
-    let call = busy.call_running();
+    let call = busy.call_permit("call", None).unwrap();
     tokio::time::advance(idle).await;
     t.reap();
     assert_eq!(a.state(), Some(LeaseState::Ended));
@@ -1623,7 +2094,7 @@ async fn a_parked_lease_rebinds_under_a_fresh_grant() {
 }
 
 /// Waits (real time, at most 5 s) until `f` holds.
-async fn until(mut f: impl FnMut() -> bool) {
+pub(super) async fn until(mut f: impl FnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(5), async {
         while !f() {
             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -1944,6 +2415,67 @@ impl JournalBackend for GatedJournal {
             .map_err(|e| e.to_string())
     }
 
+    fn insert_funding_step(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        key: &StoredFundingKey,
+    ) -> Result<(), String> {
+        self.db
+            .insert_funding_step(wallet, step, artifact, key, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_self_spend(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_self_spend(wallet, step, artifact, txid, conflicts, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_tombstone(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        self_spend: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_tombstone(wallet, step, artifact, self_spend, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_release(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_release(wallet, step, artifact, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_signed_lock(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        inputs: &[StoredOutPoint],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_signed_lock(wallet, step, artifact, txid, inputs, 0)
+            .map_err(|e| e.to_string())
+    }
+
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
         self.db
             .resolve(wallet, artifact, r, 0)
@@ -1955,9 +2487,10 @@ impl JournalBackend for GatedJournal {
         wallet: &[u8; 32],
         artifact: &[u8; 32],
         steps: &[String],
+        funding: &[(String, StoredFundingKey)],
     ) -> Result<(), String> {
         self.db
-            .resolve_sent(wallet, artifact, steps, 0)
+            .resolve_sent(wallet, artifact, steps, funding, 0)
             .map_err(|e| e.to_string())
     }
 
@@ -2572,6 +3105,67 @@ impl JournalBackend for R2Journal {
             .map_err(|e| e.to_string())
     }
 
+    fn insert_funding_step(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        key: &StoredFundingKey,
+    ) -> Result<(), String> {
+        self.db
+            .insert_funding_step(wallet, step, artifact, key, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_self_spend(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_self_spend(wallet, step, artifact, txid, conflicts, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_tombstone(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        self_spend: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_tombstone(wallet, step, artifact, self_spend, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_release(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_release(wallet, step, artifact, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_signed_lock(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        inputs: &[StoredOutPoint],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_signed_lock(wallet, step, artifact, txid, inputs, 0)
+            .map_err(|e| e.to_string())
+    }
+
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
         if r == Resolution::NotSent {
             self.resolving.store(true, Ordering::SeqCst);
@@ -2584,7 +3178,7 @@ impl JournalBackend for R2Journal {
             }
             return Ok(());
         }
-        self.resolve_sent(wallet, artifact, &[])
+        self.resolve_sent(wallet, artifact, &[], &[])
     }
 
     fn resolve_sent(
@@ -2592,6 +3186,7 @@ impl JournalBackend for R2Journal {
         wallet: &[u8; 32],
         artifact: &[u8; 32],
         steps: &[String],
+        funding: &[(String, StoredFundingKey)],
     ) -> Result<(), String> {
         let n = self.sent_writes.fetch_add(1, Ordering::SeqCst);
         self.sending.store(true, Ordering::SeqCst);
@@ -2600,7 +3195,7 @@ impl JournalBackend for R2Journal {
         }
         self.wait(true);
         self.db
-            .resolve_sent(wallet, artifact, steps, 0)
+            .resolve_sent(wallet, artifact, steps, funding, 0)
             .map_err(|e| e.to_string())
     }
 
@@ -3051,9 +3646,70 @@ impl JournalBackend for R3Journal {
             .map_err(|e| e.to_string())
     }
 
+    fn insert_funding_step(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        key: &StoredFundingKey,
+    ) -> Result<(), String> {
+        self.db
+            .insert_funding_step(wallet, step, artifact, key, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_self_spend(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        conflicts: &[SelfSpendConflict],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_self_spend(wallet, step, artifact, txid, conflicts, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_tombstone(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        self_spend: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_tombstone(wallet, step, artifact, self_spend, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_release(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_release(wallet, step, artifact, 0)
+            .map_err(|e| e.to_string())
+    }
+
+    fn insert_signed_lock(
+        &self,
+        wallet: &[u8; 32],
+        step: &str,
+        artifact: &[u8; 32],
+        txid: &[u8; 32],
+        inputs: &[StoredOutPoint],
+    ) -> Result<bool, String> {
+        self.db
+            .insert_signed_lock(wallet, step, artifact, txid, inputs, 0)
+            .map_err(|e| e.to_string())
+    }
+
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
         if r != Resolution::NotSent {
-            return self.resolve_sent(wallet, artifact, &[]);
+            return self.resolve_sent(wallet, artifact, &[], &[]);
         }
         self.not_sending.store(true, Ordering::SeqCst);
         self.wait(NOT_SENT);
@@ -3067,11 +3723,12 @@ impl JournalBackend for R3Journal {
         wallet: &[u8; 32],
         artifact: &[u8; 32],
         steps: &[String],
+        funding: &[(String, StoredFundingKey)],
     ) -> Result<(), String> {
         self.sending.store(true, Ordering::SeqCst);
         self.wait(SENT);
         self.db
-            .resolve_sent(wallet, artifact, steps, 0)
+            .resolve_sent(wallet, artifact, steps, funding, 0)
             .map_err(|e| e.to_string())
     }
 

@@ -17,6 +17,7 @@ use dash_spv::network::NetworkEvent;
 use dash_spv::sync::SyncProgress;
 use dashcore::Txid;
 use key_wallet::account::AccountType;
+use key_wallet::transaction_checking::TransactionContext;
 use key_wallet::wallet::balance::WalletCoreBalance;
 use platform_wallet::PlatformEventHandler;
 use platform_wallet::events::WalletEvent;
@@ -311,6 +312,10 @@ pub(crate) struct SessionHub {
     pub announced: Mutex<HashMap<Txid, u64>>,
     /// The quorum provider, told when the masternode phase is done.
     pub trust: OnceLock<Arc<crate::platform::trust::TrustProvider>>,
+    /// The lease table: its catch-up runs on each SPV peers 0 → >0
+    /// transition (E0-04 H6 part 2), and its dispatch fence hears the
+    /// wallet's positive network evidence (BL-76, [`Self::note_seen`]).
+    leases: std::sync::OnceLock<std::sync::Weak<crate::platform::lease::LeaseTable>>,
 }
 
 impl SessionHub {
@@ -327,7 +332,35 @@ impl SessionHub {
             chainlock: Mutex::new(None),
             announced: Mutex::new(HashMap::new()),
             trust: OnceLock::new(),
+            leases: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Runs `leases`' resume pass on every SPV peers 0 → >0 transition and
+    /// feeds its fence the wallet's sightings ([`Self::note_seen`]).
+    pub(crate) fn attach_leases(&self, leases: &Arc<crate::platform::lease::LeaseTable>) {
+        let _ = self.leases.set(Arc::downgrade(leases));
+    }
+
+    fn lease_table(&self) -> Option<Arc<crate::platform::lease::LeaseTable>> {
+        self.leases.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    /// BL-76 (E0-04 H12, §4.6): `txids` carry positive network evidence
+    /// for wallet `id`: an InstantSend lock, a block that holds them, or a
+    /// ChainLock over that block. Each is `Sent` for the dispatch fence
+    /// ([`LeaseTable::note_seen`](crate::platform::lease::LeaseTable::note_seen),
+    /// which ignores an artifact the wallet never dispatched). A mempool
+    /// sighting is not evidence: the wallet records its own transactions
+    /// before any peer took them.
+    fn note_seen(&self, id: WalletId, txids: impl IntoIterator<Item = Txid>) {
+        let Some(leases) = self.lease_table() else {
+            return;
+        };
+        let artifacts = txids
+            .into_iter()
+            .map(|t| crate::platform::lease::ArtifactId::from_txid(&t));
+        leases.note_seen_all(id, artifacts);
     }
 
     pub(crate) fn note_announced(&self, txid: Txid) {
@@ -517,6 +550,11 @@ impl SessionHub {
                 if self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
                 }
+                // First seen through its InstantSend lock: evidence. In
+                // the mempool: none (BL-76).
+                if matches!(record.context, TransactionContext::InstantSend(_)) {
+                    self.note_seen(id, [record.txid]);
+                }
             }
             WalletEvent::TransactionInstantLocked {
                 txid,
@@ -530,6 +568,7 @@ impl SessionHub {
                 if self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
                 }
+                self.note_seen(id, [*txid]);
             }
             WalletEvent::TransactionsSwept {
                 txids,
@@ -583,6 +622,9 @@ impl SessionHub {
                 if self.update_balance(id, balance, account_balances) || flipped {
                     self.pump.mark_balances(id);
                 }
+                // In this block: inserted, or confirmed now. A matured
+                // record's block was evidence already.
+                self.note_seen(id, inserted.iter().chain(updated).map(|r| r.txid));
             }
             WalletEvent::SyncHeightAdvanced { height, .. } => {
                 if self.update_heights(id, Some(*height), Some(*height)) {
@@ -612,6 +654,7 @@ impl SessionHub {
                 if !locked.is_empty() {
                     self.pump.mark_history(id, Some(&locked));
                 }
+                self.note_seen(id, locked_transactions.values().flatten().copied());
             }
         }
     }
@@ -632,8 +675,17 @@ impl EventHandler for SessionHub {
     }
 
     fn on_network_event(&self, event: &NetworkEvent) {
-        if self.tracker().on_network_event(event) {
+        let (changed, up) = {
+            let mut tracker = self.tracker();
+            let before = tracker.peer_count();
+            let changed = tracker.on_network_event(event);
+            (changed, before == 0 && tracker.peer_count() > 0)
+        };
+        if changed {
             self.pump.mark_sync();
+        }
+        if up && let Some(leases) = self.lease_table() {
+            leases.request_resume(None);
         }
     }
 

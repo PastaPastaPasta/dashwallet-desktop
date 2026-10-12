@@ -19,6 +19,7 @@ use platform_wallet::DpnsFetch;
 use platform_wallet::changeset::{DpnsNameSaleStatus, DpnsNameStateEntry};
 
 use super::*;
+use crate::platform::flows::{LeaseStateView, LeaseView};
 use crate::platform::recovery_tests::live_identities;
 use crate::{Engine, EngineConfig, EventSink, SessionOptions};
 
@@ -794,6 +795,27 @@ impl Fixture {
             .id
     }
 
+    /// A `NameRegistration` lease of this wallet with `max_credits`.
+    fn lease(&self, max_credits: u64) -> String {
+        let grant = self.grant(max_credits);
+        self.engine
+            .block_on(
+                self.session
+                    .begin_flow(self.wallet, FlowKind::NameRegistration, vec![grant]),
+            )
+            .unwrap()
+    }
+
+    fn lease_view(&self, lease: &str) -> LeaseView {
+        let hex = lease.strip_prefix("lease-").unwrap();
+        self.session
+            .leases()
+            .unwrap()
+            .into_iter()
+            .find(|v| hex.starts_with(&v.id))
+            .unwrap()
+    }
+
     fn grant_unused(&self, grant: &str) -> bool {
         self.session
             .vault
@@ -817,7 +839,8 @@ impl Fixture {
         let (net, grant) = (Arc::clone(net), grant.to_string());
         self.engine
             .block_on(self.dp().on_wallet(move |session, _, wallet| async move {
-                DashPay::register(&*net, &session, &wallet, ask, grant).await
+                let authority = NameAuthority::of(&session, ask.wallet_id, grant)?;
+                DashPay::register(&*net, &session, &wallet, ask, authority).await
             }))
     }
 
@@ -1054,6 +1077,62 @@ fn a_retry_after_a_failed_write_needs_a_new_grant() {
     assert_eq!(f.prefs().pending, ["alice2"]);
     assert_eq!(f.main_name().as_deref(), Some("carol"));
     assert_eq!(f.prefs().pending, ["alice2"]);
+}
+
+/// E0-04 D2: a lease id pays as a grant does, through a call permit
+/// charged with the cost; a raw grant runs under a one-shot lease that ends
+/// with the call.
+#[test]
+fn a_name_registers_under_a_lease_or_a_one_shot_lease() {
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::signing(dir.path(), &["carol"]);
+    let net = Arc::new(FakeNet::available(false));
+    // A lease short of the cost is refused before the write, uncharged.
+    let short = f.lease(NAME_FEE_BOUND - 1);
+    assert_eq!(
+        f.register(&net, "alice2", &short).unwrap_err().platform(),
+        Some(&PlatformError::GrantExceeded {
+            purpose: BudgetPurpose::Credits,
+            needed: NAME_FEE_BOUND,
+            remaining: NAME_FEE_BOUND - 1,
+        })
+    );
+    assert_eq!(f.lease_view(&short).budgets[0].spent, 0);
+    // An unknown lease is no grant.
+    let unknown = format!("lease-{}", "0".repeat(32));
+    assert_eq!(
+        f.register(&net, "alice2", &unknown).unwrap_err().code(),
+        "platform.grant_invalid"
+    );
+    assert_eq!(net.submits(), 0);
+
+    // A lease that covers it: one write, charged the cost; the lease lives
+    // on for the flow's other calls.
+    let lease = f.lease(2 * NAME_FEE_BOUND);
+    assert_eq!(
+        f.register(&net, "alice2", &lease),
+        Ok(NameOutcome::Registered)
+    );
+    let view = f.lease_view(&lease);
+    assert_eq!(view.budgets[0].spent, NAME_FEE_BOUND);
+    assert_eq!((view.in_flight, view.call_running), (0, false));
+    assert!(matches!(view.state, LeaseStateView::Active));
+
+    // A raw grant leaves no lease behind.
+    let grant = f.grant(NAME_FEE_BOUND);
+    assert_eq!(
+        f.register(&net, "alice3", &grant),
+        Ok(NameOutcome::Registered)
+    );
+    assert_eq!(net.submits(), 2);
+    let live = f
+        .session
+        .leases()
+        .unwrap()
+        .into_iter()
+        .filter(|v| !matches!(v.state, LeaseStateView::Ended))
+        .count();
+    assert_eq!(live, 2, "only the two flow leases");
 }
 
 /// Review DP1-03 R2: joining another identity's contest needs its deadline.
@@ -1409,7 +1488,14 @@ fn registrations_of_one_identity_are_serial() {
     let (session, dp) = (Arc::clone(&f.session), f.dp());
     let call = f.session.rt.spawn(async move {
         dp.on_wallet(move |_, _, wallet| async move {
-            DashPay::register(&offline(), &session, &wallet, ask, "no grant".into()).await
+            DashPay::register(
+                &offline(),
+                &session,
+                &wallet,
+                ask,
+                NameAuthority::Grant("no grant".into()),
+            )
+            .await
         })
         .await
     });

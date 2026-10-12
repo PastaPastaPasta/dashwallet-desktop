@@ -598,6 +598,8 @@ impl NetworkSession {
         for &(id, _) in &done {
             self.platform
                 .signal_at(committed, PlatformSignal::WalletAdded(id));
+            // E0-04 §8.6 (review L-4): as `load_wallet`.
+            self.leases.wallet_opened(id);
             self.schedule_automatic_backup(id);
         }
         Ok(done.into_iter().map(|(id, _)| id).collect())
@@ -685,6 +687,7 @@ impl NetworkSession {
                     // since the first forget passed the wallet check.
                     self.platform.users.scans.forget(&id);
                     self.hub.forget_wallet(&id);
+                    self.coin_fences.forget(&id);
                     let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
                     tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
                         persister.delete_wallet(id.0)?;

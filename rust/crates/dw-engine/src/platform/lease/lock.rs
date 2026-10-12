@@ -15,7 +15,7 @@ use dw_vault::VaultStatus;
 use tokio::time::Instant;
 
 use super::table::LeaseTable;
-use super::{FlowOutcome, FlowReport, LeaseId, LockPhase, LockReport, lease_string};
+use super::{ArtifactId, FlowOutcome, FlowReport, LeaseId, LockPhase, LockReport, lease_string};
 use crate::platform::flows::RevokeCause;
 use crate::{EngineEvent, WalletId};
 
@@ -35,6 +35,8 @@ pub(crate) struct Freeze {
     scope: Scope,
     /// The permits in flight at the freeze, with their deadlines.
     snapshot: Vec<(u64, Instant)>,
+    /// Mode B's call permits in flight at the freeze, likewise (§2a.3).
+    calls: Vec<(u64, Instant)>,
     /// Leases to report: revoked by this freeze, or holding a permit of
     /// the snapshot.
     leases: Vec<LeaseId>,
@@ -48,7 +50,7 @@ impl LeaseTable {
     /// The freeze (§8.1 step 1). `gate`: the request runs a vault gate the
     /// barrier waits for.
     pub(crate) fn freeze(self: &Arc<Self>, cause: RevokeCause, scope: Scope, gate: bool) -> Freeze {
-        let (snapshot, leases, lock) = self.with_j(|i, fx| {
+        let (snapshot, calls, leases, lock) = self.with_j(|i, fx| {
             #[cfg(test)]
             let revoke_now = i.mutation != Some(super::stress_tests::Mutation::RevokeInDrain);
             #[cfg(not(test))]
@@ -89,6 +91,17 @@ impl LeaseTable {
                     leases.push(*l);
                 }
             }
+            let calls: Vec<(u64, Instant)> = i
+                .calls
+                .iter()
+                .filter(|(_, c)| i.leases.get(&c.lease).is_some_and(|e| in_scope(&e.wallet)))
+                .map(|(id, c)| {
+                    if !leases.contains(&c.lease) {
+                        leases.push(c.lease);
+                    }
+                    (*id, c.deadline)
+                })
+                .collect();
             if cause == RevokeCause::Close {
                 i.closed = true;
             }
@@ -124,12 +137,13 @@ impl LeaseTable {
                 in_flight: snapshot.iter().map(|(id, d, _)| (*id, *d)).collect(),
             });
             let snapshot = snapshot.into_iter().map(|(id, d, _)| (id, d)).collect();
-            (snapshot, leases, lock)
+            (snapshot, calls, leases, lock)
         });
         Freeze {
             table: Arc::clone(self),
             scope,
             snapshot,
+            calls,
             leases,
             lock,
             gate_pending: gate,
@@ -193,6 +207,8 @@ impl LeaseTable {
                     t.abort();
                 }
             }
+            // The catch-up's resume passes (H6 part 2).
+            i.mode_b.passes.abort_all();
         });
     }
 }
@@ -228,11 +244,15 @@ impl Freeze {
             notified.as_mut().enable();
             let now = Instant::now();
             let open: Vec<Instant> = table.with_j(|i, _| {
-                self.snapshot
+                let permits = self
+                    .snapshot
                     .iter()
-                    .filter(|(id, deadline)| now < *deadline && i.fence.has_attempt(*id))
-                    .map(|(_, d)| *d)
-                    .collect()
+                    .filter(|(id, deadline)| now < *deadline && i.fence.has_attempt(*id));
+                let calls = self
+                    .calls
+                    .iter()
+                    .filter(|(id, deadline)| now < *deadline && i.calls.contains_key(id));
+                permits.chain(calls).map(|(_, d)| *d).collect()
             });
             let Some(last) = open.iter().max().copied() else {
                 break;
@@ -304,14 +324,46 @@ impl Freeze {
         self.gate_done();
         self.release_drain();
         let flows = self.table.with_j(|i, _| {
+            // The report reads each artifact's outcome (BL-76).
+            let read: Vec<(WalletId, ArtifactId)> = self
+                .leases
+                .iter()
+                .filter_map(|id| i.leases.get(id))
+                .flat_map(|e| e.history.iter().map(|a| (e.wallet, *a)))
+                .collect();
+            for (wallet, a) in read {
+                super::fence::note_hold_read(i, &wallet, &a);
+            }
             self.leases
                 .iter()
                 .filter_map(|id| {
                     let e = i.leases.get(id)?;
+                    // A library call still running is possibly out (§2a.3).
+                    let running = i
+                        .calls
+                        .values()
+                        .filter(|c| c.lease == *id)
+                        .map(|c| (c.label.clone(), FlowOutcome::MaybeSent));
+                    // Each funding step of the flow, bound or called, by its
+                    // status now under its public id (review R1-02): a
+                    // resumed flow's funding counts, and history supersedes
+                    // its finished calls' own outcomes.
+                    let funding = e
+                        .funding_steps
+                        .iter()
+                        .map(|s| (s.clone(), super::mode_b::funding_outcome(i, e.wallet, s)));
                     let artifacts: Vec<(String, FlowOutcome)> = e
                         .history
                         .iter()
                         .map(|a| (a.to_string(), i.fence.outcome(&e.wallet, a)))
+                        .chain(
+                            e.calls_done
+                                .iter()
+                                .filter(|c| c.funding_step.is_none())
+                                .map(|c| (c.label.clone(), c.outcome)),
+                        )
+                        .chain(funding)
+                        .chain(running)
                         .collect();
                     let outcome = artifacts
                         .iter()

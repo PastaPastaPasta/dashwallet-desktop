@@ -134,6 +134,10 @@ pub enum EngineError {
     /// A masternode keychain call failed (`masternode.*` codes, M3).
     #[error("masternode: {0}")]
     Masternode(crate::masternode_keys::MasternodeFailure),
+    /// Repair refused to resolve a stuck funding step (E0-04 §6.5): the
+    /// refusal's own code says what the user can do (review Opus O-5).
+    #[error("stuck funding: {0}")]
+    StuckFunding(crate::platform::lease::StuckFundingRefusal),
 }
 
 impl EngineError {
@@ -181,6 +185,7 @@ impl EngineError {
             EngineError::Psbt(_) => "psbt",
             EngineError::CoinJoin(_) => "coinjoin",
             EngineError::Masternode(_) => "masternode",
+            EngineError::StuckFunding(_) => "stuck_funding",
         }
     }
 }
