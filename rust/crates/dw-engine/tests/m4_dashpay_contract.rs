@@ -70,6 +70,13 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.discard_registration",
     "DashPay.finish_asset_locks",
     "DashPay.prepare_faucet_lock",
+    // DP2-02: contact requests, eligibility and the key upgrade.
+    "DashPay.eligibility",
+    "DashPay.send_request",
+    "DashPay.accept_request",
+    "DashPay.ignore",
+    "DashPay.unignore",
+    "DashPay.enable_dashpay_keys",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -97,13 +104,15 @@ const FACADE: &[&str] = &[
 /// records (E0-06), the lease table and dispatch fence (E0-04) and the
 /// quorum provider and its re-fetch (E0-10b), the contacts read model, its
 /// usernames and its tests (DP2-01), user search, links and scans with
-/// their tests (DP2-03), and the registration state machine, its row
-/// encodings and tests (DP1-02).
+/// their tests (DP2-03), the registration state machine, its row
+/// encodings and tests (DP1-02), and the contact-request writes, their
+/// network seam and tests, and the identity write locks (DP2-02).
 const NOT_FACADE: &[&str] = &[
     "bringup.rs",
     "contact_names.rs",
     "contacts_model.rs",
     "contacts_tests.rs",
+    "identity_writes.rs",
     "journal.rs",
     "journal_tests.rs",
     "keys_policy.rs",
@@ -113,6 +122,9 @@ const NOT_FACADE: &[&str] = &[
     "provenance.rs",
     "recovery.rs",
     "recovery_tests.rs",
+    "requests.rs",
+    "requests_net.rs",
+    "requests_tests.rs",
     "reverify.rs",
     "names_tests.rs",
     "registration_flow.rs",
@@ -1180,16 +1192,21 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             assert_eq!(found.unwrap_err().code(), "wallet_not_found");
         }
 
-        c.stub(dp.eligibility(s(), s()).await);
-        c.stub(dp.send_request(s(), s(), None, s()).await);
-        c.stub(dp.accept_request(s(), s(), s()).await);
-        c.stub(dp.ignore(s(), s()).await);
-        c.stub(dp.unignore(s(), s()).await);
+        // DP2-02's calls are implemented: an unknown wallet is refused.
+        for refused in [
+            dp.eligibility(s(), s()).await.map(drop),
+            dp.send_request(s(), s(), None, s()).await.map(drop),
+            dp.accept_request(s(), s(), s()).await.map(drop),
+            dp.ignore(s(), s()).await,
+            dp.unignore(s(), s()).await,
+            dp.enable_dashpay_keys(s(), s()).await,
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
         c.stub(
             dp.set_private_details(s(), s(), PrivateDetails::default(), None)
                 .await,
         );
-        c.stub(dp.enable_dashpay_keys(s(), s()).await);
         assert_eq!(dp.my_user_link(s()).unwrap_err().code(), "wallet_not_found");
         assert_eq!(
             dp.verify_scanned(secret()).await.unwrap_err().code(),

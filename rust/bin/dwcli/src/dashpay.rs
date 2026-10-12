@@ -1794,7 +1794,8 @@ mod tests {
         "invite",
     ];
 
-    /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01, DP1-02), with the
+    /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01,
+    /// DP2-03, DP1-02, DP2-02), with the
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
@@ -1846,6 +1847,12 @@ mod tests {
         ("contact link --identity I", NOT_BASE58),
         ("contact request --identity I --scanned", NOT_A_CODE),
         ("contact scan", NOT_A_CODE),
+        ("contact eligibility --identity I C", NOT_BASE58),
+        ("contact request --identity I C", NOT_BASE58),
+        ("contact accept --identity I C", NOT_BASE58),
+        ("contact ignore --identity I C", NOT_BASE58),
+        ("contact unignore --identity I C", NOT_BASE58),
+        ("contact enable-keys --identity I", NOT_BASE58),
     ];
 
     /// `SECRET`'s `dapk` is not Base58; the error does not quote it.

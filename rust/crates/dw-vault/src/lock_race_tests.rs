@@ -37,10 +37,10 @@ use crate::signer::KeyUse;
 use crate::signer::test_hook;
 use crate::vault::GateEvent;
 use crate::{
-    Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantPurpose, GrantToken, KdfParams, KdfPolicy,
-    KeyHold, MemoryOsStore, QUICK_UNLOCK_SPEND_LIMITS, ScanKey, SeedDerivation, SignerError,
-    SignerScope, SystemClock, UnlockScope, Vault, VaultConfig, VaultError, VaultSigner,
-    WalletSecret, WalletSigner,
+    Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose, GrantToken, KdfParams,
+    KdfPolicy, KeyHold, MemoryOsStore, QUICK_UNLOCK_SPEND_LIMITS, ScanKey, SeedDerivation,
+    SignerError, SignerScope, SystemClock, UnlockScope, Vault, VaultConfig, VaultError,
+    VaultSigner, WalletSecret, WalletSigner,
 };
 
 const W: [u8; 32] = [1; 32];
@@ -427,6 +427,7 @@ fn check_gate_log(log: &[GateEvent]) -> GateStats {
                 lock_waiting = true;
                 stats.locks += 1;
             }
+            GateEvent::DrainWaiting => {}
         }
     }
     stats
@@ -1316,4 +1317,276 @@ fn no_signature_begins_after_its_key_hold_dropped() {
         results > 0,
         "no signature was made: the race was not exercised"
     );
+}
+
+/// `grant_identity_key_matches` finds its grant again under the guard that
+/// issues its signer (DP2-02): a grant redeemed elsewhere, or ended by a
+/// lock, between its check and the probe is `GrantInvalid`, and nothing is
+/// derived with its key.
+#[test]
+fn a_key_probe_does_not_outlive_its_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, Some(PASS));
+    let (identity, _hold) = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+    let key_data = identity_public_key(&identity);
+    let probe =
+        |grant: &str| v.grant_identity_key_matches(grant, &W, &path(IDENTITY_KEY), &key_data);
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&W), Credential::None)
+        .unwrap();
+    assert_eq!(probe(&grant.id), Ok(true));
+
+    // Redeemed by another call in between.
+    let (v2, id) = (v.clone(), grant.id.clone());
+    test_hook::set_checked(move || {
+        v2.redeem_grant(&id, GrantKind::PlatformOp, Some(&W))
+            .unwrap();
+    });
+    assert_eq!(probe(&grant.id), Err(VaultError::GrantInvalid));
+    test_hook::set_checked(|| {});
+
+    // A passphrase grant on a locked vault (its own key), ended by a lock in
+    // between.
+    v.lock();
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&W), Credential::Passphrase(PASS))
+        .unwrap();
+    let v2 = v.clone();
+    test_hook::set_checked(move || lock(&v2));
+    assert_eq!(probe(&grant.id), Err(VaultError::GrantInvalid));
+    test_hook::set_checked(|| {});
+}
+
+/// A key-checked redemption is one section under the guard of the vault's
+/// record writes (DP2-02, Sol r2 #1): a wallet removal that starts during
+/// it waits until the grant is redeemed, and one that came first leaves the
+/// grant unused.
+#[test]
+fn a_removal_waits_for_a_key_checked_redemption() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, Some(PASS));
+    let (identity, _hold) = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+    let keys = [(path(IDENTITY_KEY), identity_public_key(&identity).to_vec())];
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&W), Credential::None)
+        .unwrap();
+
+    // The removal starts once the redemption checked its grant, and is given
+    // two seconds to finish before the redemption goes on.
+    let (v2, (tx, rx)) = (v.clone(), mpsc::channel());
+    test_hook::set_checked(move || {
+        let (v3, (done_tx, done_rx)) = (v2.clone(), mpsc::channel());
+        let removal = thread::spawn(move || {
+            let removed = v3.delete_wallet_secret(&W);
+            let _ = done_tx.send(());
+            removed
+        });
+        let waited = done_rx.recv_timeout(Duration::from_secs(2)).is_err();
+        tx.send((removal, waited)).unwrap();
+    });
+    let token = v.redeem_grant_holding_key(&grant.id, &W, &keys);
+    test_hook::set_checked(|| {});
+    let (removal, waited) = rx.recv().unwrap();
+    assert!(waited, "the removal finished inside the redemption");
+    assert!(matches!(token, Ok(Some(_))), "{token:?}");
+    assert_eq!(removal.join().unwrap(), Ok(true));
+
+    // A lock inside the section ends the grant: refused, nothing redeemed.
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&W), Credential::None)
+        .unwrap();
+    let v2 = v.clone();
+    test_hook::set_checked(move || lock(&v2));
+    let locked = v.redeem_grant_holding_key(&grant.id, &W, &keys);
+    test_hook::set_checked(|| {});
+    assert_eq!(locked.unwrap_err(), VaultError::GrantInvalid);
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    assert_eq!(
+        (v.check_grant(&grant.id, GrantKind::PlatformOp, Some(&W))).unwrap_err(),
+        VaultError::GrantInvalid
+    );
+
+    // The removal came first: no seed, and the grant is left unused.
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&W), Credential::None)
+        .unwrap();
+    assert!(matches!(
+        v.redeem_grant_holding_key(&grant.id, &W, &keys),
+        Ok(None)
+    ));
+    v.check_grant(&grant.id, GrantKind::PlatformOp, Some(&W))
+        .unwrap();
+}
+
+/// One way a wallet's seed leaves the vault.
+type Removal = Box<dyn FnOnce(&Vault) -> Result<(), VaultError> + Send>;
+
+/// The seed deletions (`wipe_wallet_secret`, `delete_wallet_secret`, and
+/// the recovery that replaces the vault, losing the test wallet).
+fn removals(v: &Vault) -> Vec<(&'static str, Removal)> {
+    let wipe = token(v, GrantPurpose::Wipe, Credential::Passphrase(PASS));
+    vec![
+        (
+            "wipe",
+            Box::new(move |v: &Vault| v.wipe_wallet_secret(&W, &wipe).map(drop)),
+        ),
+        (
+            "delete",
+            Box::new(|v: &Vault| v.delete_wallet_secret(&W).map(drop)),
+        ),
+        (
+            "recover",
+            Box::new(|v: &Vault| {
+                let phrase: &[u8] = b"abandon abandon abandon abandon abandon abandon \
+                    abandon abandon abandon abandon abandon about";
+                let secret = crate::mnemonic::derive_secret(phrase, b"", false).unwrap();
+                let id =
+                    crate::mnemonic::wallet_id_for_seed(&secret.seed, Network::Regtest).unwrap();
+                v.recover_with_mnemonic(&id, phrase, b"", b"another passphrase")
+                    .map(drop)
+            }),
+        ),
+    ]
+}
+
+/// A wallet removal while a signer of the wallet has read its seed (DP2-02,
+/// Sol r3): the removal waits for the signer, whose signature is released
+/// before the seed is deleted, never after; a signer issued before the
+/// removal and used after it signs nothing.
+#[test]
+fn a_removal_waits_for_the_signers_that_read_the_seed() {
+    for index in 0..3 {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir, Some(PASS));
+        let (name, remove) = removals(&v).swap_remove(index);
+        let (signing, _hold) = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+        let (late, _late_hold) =
+            platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+        let file = crate::file::file_path(&dir.path().join("vault"));
+        let on_disk = std::fs::read(&file).unwrap();
+        let removed =
+            |v: &Vault| !v.has_wallet_secret(&W) || std::fs::read(&file).unwrap() != on_disk;
+        let runtime = || {
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+        };
+
+        // The signer pauses inside the gate, once it has read the seed.
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let worker = thread::spawn(move || {
+            test_hook::set(move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            });
+            runtime().block_on(signing.sign_ecdsa(&path(IDENTITY_KEY), [9; 32]))
+        });
+        entered_rx
+            .recv_timeout(NO_HANG)
+            .expect("the signer did not read the seed");
+        // The removal starts; once it waits for the gate, it is given a
+        // second to finish meanwhile.
+        v.start_gate_log();
+        let (done_tx, done_rx) = mpsc::channel();
+        let remover = {
+            let v = v.clone();
+            thread::spawn(move || {
+                let result = remove(&v);
+                let _ = done_tx.send(());
+                result
+            })
+        };
+        let start = Instant::now();
+        while !v.gate_logged(GateEvent::DrainWaiting) && start.elapsed() < NO_HANG {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let drain_waited = v.gate_logged(GateEvent::DrainWaiting);
+        let finished_meanwhile = done_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        let removed_meanwhile = removed(&v);
+        release_tx.send(()).unwrap();
+        let signed = worker.join().unwrap();
+        assert_eq!(remover.join().unwrap(), Ok(()), "{name}");
+        assert!(
+            drain_waited,
+            "{name}: the removal did not wait for the gate"
+        );
+        assert!(
+            !finished_meanwhile && !removed_meanwhile,
+            "{name}: the seed went while a signer that read it was still signing"
+        );
+        assert!(signed.is_ok(), "{name}: {signed:?}");
+        assert!(removed(&v), "{name}");
+        assert!(
+            runtime()
+                .block_on(late.sign_ecdsa(&path(IDENTITY_KEY), [9; 32]))
+                .is_err(),
+            "{name}: signed after the removal"
+        );
+    }
+}
+
+/// A store of a different seed under a wallet one of whose signers has read
+/// its seed (DP2-02, Sol r4): refused, nothing written; the paused signer
+/// releases a signature made with the old seed, and so does every signer
+/// after it: the new seed is never readable.
+#[test]
+fn a_store_does_not_replace_the_seed_a_signer_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, Some(PASS));
+    let runtime = || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+    };
+    let sign =
+        |signer: &VaultSigner| runtime().block_on(signer.sign_ecdsa(&path(IDENTITY_KEY), [9; 32]));
+    let (first, _first_hold) = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+    let old = sign(&first).unwrap();
+    let (signing, _hold) = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+    let file = crate::file::file_path(&dir.path().join("vault"));
+    let on_disk = std::fs::read(&file).unwrap();
+
+    // The signer pauses inside the gate, once it has read the seed.
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let worker = thread::spawn(move || {
+        test_hook::set(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        runtime().block_on(signing.sign_ecdsa(&path(IDENTITY_KEY), [9; 32]))
+    });
+    entered_rx
+        .recv_timeout(NO_HANG)
+        .expect("the signer did not read the seed");
+    let (done_tx, done_rx) = mpsc::channel();
+    let storer = {
+        let v = v.clone();
+        thread::spawn(move || {
+            let other = WalletSecret {
+                mnemonic: Zeroizing::new(b"other".to_vec()),
+                mnemonic_passphrase: Zeroizing::new(Vec::new()),
+                seed: Zeroizing::new([0xa5; 64]),
+                derivation: SeedDerivation::Bip39,
+            };
+            let stored = v.store_wallet_secret(&W, &other);
+            let _ = done_tx.send(());
+            stored
+        })
+    };
+    let finished = done_rx.recv_timeout(NO_HANG).is_ok();
+    let changed_meanwhile = std::fs::read(&file).unwrap() != on_disk;
+    release_tx.send(()).unwrap();
+    let signed = worker.join().unwrap();
+    assert!(finished, "the store waited for the signer");
+    assert_eq!(storer.join().unwrap(), Err(VaultError::WalletSecretExists));
+    assert!(
+        !changed_meanwhile,
+        "the store wrote while a signer read the seed"
+    );
+    assert_eq!(signed.unwrap(), old);
+    let (after, _after_hold) = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+    assert_eq!(sign(&after).unwrap(), old, "a signer read the new seed");
+    assert!(std::fs::read(&file).unwrap() == on_disk);
 }

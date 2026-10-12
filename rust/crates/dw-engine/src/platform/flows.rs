@@ -253,9 +253,9 @@ fn engine(e: EngineError) -> PlatformError {
 /// | `EnableDashPayKeys` (identity update adding 2 keys) | 3.5 KiB | 100 000 000 |
 ///
 /// None of them funds from Core, so `max_duffs` is 0.
-const CONTACT_REQUEST_CREDITS: u64 = 150_000_000;
+pub(super) const CONTACT_REQUEST_CREDITS: u64 = 150_000_000;
 const DOCUMENT_10K_CREDITS: u64 = 300_000_000;
-const KEY_UPDATE_CREDITS: u64 = 100_000_000;
+pub(super) const KEY_UPDATE_CREDITS: u64 = 100_000_000;
 
 impl DashPay {
     /// `RegisterName` is quoted (DP1-03, `register_name_grant`); the other

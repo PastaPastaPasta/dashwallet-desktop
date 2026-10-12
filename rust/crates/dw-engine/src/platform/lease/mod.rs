@@ -50,8 +50,9 @@ use std::time::Duration;
 
 use dw_vault::VaultStatus;
 
-use super::errors::PlatformError;
+use super::errors::{IdentityError, PlatformError};
 use super::flows::{BudgetPurpose, FlowKind, RevokeCause};
+use super::identity::KeyPurpose;
 
 pub(crate) use call::FundingRelease;
 pub use call::{CallPermit, CallQuote, CallStep, FundingKey, FundingQuote, SignatureCount};
@@ -279,6 +280,10 @@ pub enum LeaseError {
     /// charge.
     #[error("funding blocked: {0:?}")]
     FundingBlocked(mode_b::FundingBlock),
+    /// The vault no longer holds a key the write signs with; its grants are
+    /// unused (DP2-02): `identity.keys_missing`.
+    #[error("the vault holds none of the write's keys")]
+    KeysNotHeld,
 }
 
 impl From<LeaseError> for PlatformError {
@@ -329,6 +334,10 @@ impl From<LeaseError> for PlatformError {
                         .into(),
                 },
             },
+            LeaseError::KeysNotHeld => IdentityError::KeysMissing {
+                purpose: KeyPurpose::Authentication,
+            }
+            .into(),
         }
     }
 }

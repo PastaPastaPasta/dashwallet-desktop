@@ -430,7 +430,6 @@ fn scanned(hit: UserHit, code: ScannedCode) -> ScannedContact {
 ///   failed, cancelled, panicked). The send keeps it until it is done.
 /// - The outcome is `Pending` like any other request: the auto-accept is
 ///   only claimed (module doc) until the recipient accepts.
-#[cfg_attr(not(test), expect(dead_code, reason = "DP2-02's send_request"))]
 pub(crate) mod send_seam {
     use std::sync::Arc;
 

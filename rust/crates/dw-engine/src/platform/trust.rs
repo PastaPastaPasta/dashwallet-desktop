@@ -69,8 +69,8 @@ pub(crate) enum TrustMode {
     /// DASHPAY §2.2's degraded mode (DEC-168).
     Degraded,
     /// R7 in full. H-09 makes it the default once chain anchoring of quorum
-    /// lists (dashpay/rust-dashcore#1117) is in the graph.
-    #[cfg_attr(not(test), expect(dead_code, reason = "H-09 selects it"))]
+    /// lists (dashpay/rust-dashcore#1117) is in the graph; until then no
+    /// session opens in it, so nothing waits on [`TrustProvider::writes_wait`].
     Enforcing,
 }
 
@@ -280,8 +280,8 @@ impl TrustProvider {
 
     /// Platform writes must wait for masternode sync (rule 2). Only in
     /// `Enforcing`: the degraded mode suspends rule 5, and the toggle is the
-    /// developer's choice. Wired into the write flows by H-09.
-    #[cfg_attr(not(test), expect(dead_code, reason = "H-09 wires the write flows"))]
+    /// developer's choice. DP2-02's send reads it for a scan shown on the
+    /// fallback's word; H-09 wires it into every write flow.
     pub(crate) fn writes_wait(&self) -> bool {
         self.mode == TrustMode::Enforcing && !self.trusted_only() && !self.masternodes_synced()
     }
