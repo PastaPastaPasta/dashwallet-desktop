@@ -3077,9 +3077,10 @@ async fn a_late_release_write_never_answers_the_next_marker() {
         let t = Arc::clone(&t);
         async move { t.record_release(W, REG).await }
     });
-    tokio::task::spawn_blocking(move || began.recv().unwrap())
+    tokio::task::spawn_blocking(move || began.recv_timeout(Duration::from_secs(60)))
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the release write began under the first marker");
     assert_eq!(first.finish(false), FlowOutcome::Cancelled);
     let second = l
         .call_permit_step("funding", quote(10, 0), funding(REG, 7))
