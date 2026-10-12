@@ -64,6 +64,7 @@ const IMPLEMENTED: &[&str] = &[
     // DP1-02: registration.
     "DashPay.registration_quote",
     "DashPay.start_registration",
+    "DashPay.start_registration_past_unknown_funding",
     "DashPay.registrations",
     "DashPay.resume_registration",
     "DashPay.discard_registration",
@@ -828,6 +829,11 @@ fn error_codes_match_the_contract() {
             RegistrationError::Unsupported,
             RegistrationError::FundedElsewhere,
             RegistrationError::FundingCancelled,
+            RegistrationError::NotSynced,
+            RegistrationError::FundingUnknownRecent {
+                draft: s(),
+                wait_secs: None,
+            },
         ],
         RegistrationError::code,
     );
@@ -1142,6 +1148,13 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         );
         assert_eq!(
             dp.start_registration(request(), s())
+                .await
+                .unwrap_err()
+                .code(),
+            "wallet_not_found"
+        );
+        assert_eq!(
+            dp.start_registration_past_unknown_funding(request(), s(), vec![s()])
                 .await
                 .unwrap_err()
                 .code(),

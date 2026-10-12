@@ -5,6 +5,7 @@
 use super::*;
 use crate::platform::DispatchState;
 use crate::platform::lease::mode_b::FundingStepView;
+use crate::platform::registration_ledger::test_views::Views;
 use crate::platform::registration_ledger::{IndexOwner, Ledger, Standing, Taker};
 
 /// The fixture's [`Fake`] with one twist the library can show but the
@@ -113,6 +114,10 @@ impl RegistrationLib for Hooked {
 
     async fn wait_proof(&self, outpoint: OutPoint, timeout: Duration) -> Result<(), FundError> {
         self.fake.wait_proof(outpoint, timeout).await
+    }
+
+    async fn spv_synced(&self) -> bool {
+        self.fake.spv_synced().await
     }
 
     async fn tracked_row(&self, outpoint: OutPoint) -> Option<TrackedRow> {
@@ -332,9 +337,17 @@ fn a_run_whose_generation_was_taken_stops_at_its_next_write() {
 /// library lost to a restored row waiting for one, not to one whose
 /// funding call runs. Before its signature that call's step is `Unknown`,
 /// so the lock may be its own: `Contested` (DP1-02 §3.4, §10 R6-03), given
-/// to no row, and pending with the step (§5.2).
+/// to no row, and pending with the step (§5.2). Nor to a recovery row once
+/// the call has released a signature: a step in its call isn't wedged
+/// (DEC-198).
 #[test]
 fn finish_gives_no_unindexed_lock_to_a_row_whose_funding_call_runs() {
+    for released in [false, true] {
+        finish_gives_no_unindexed_lock_to_a_calling_row(released);
+    }
+}
+
+fn finish_gives_no_unindexed_lock_to_a_calling_row(released: bool) {
     let f = fixture(false);
     let lib = f.fake();
     lib.hang_at(Call::Fund, When::Before);
@@ -347,6 +360,10 @@ fn finish_gives_no_unindexed_lock_to_a_row_whose_funding_call_runs() {
             .get((f.wallet, calling))
             .in_call
     });
+    let views = Views::new(&f.session.leases, f.wallet);
+    if released {
+        views.set_released(calling, crate::events::unix_now() - 2 * 3600);
+    }
     let lock = lib.lock_at(0, LockStatus::RecoveredFromChain);
     let report = f
         .engine
@@ -1155,3 +1172,7 @@ mod r8;
 
 /// DP1-02 rev2 §11.2: OD-03 to OD-06, C1, C4.
 mod rev2;
+
+/// DEC-197 (Q15): the start override past a wedged step, its only exit
+/// (DEC-198).
+mod dec197;

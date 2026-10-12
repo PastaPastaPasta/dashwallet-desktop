@@ -326,6 +326,12 @@ pub struct RegistrationArgs {
     /// Print the quote only.
     #[arg(long)]
     quote_only: bool,
+    /// Start past this earlier registration's unknown funding (repeatable;
+    /// the draft or funding step `registration.in_progress` names), once
+    /// the user confirmed that its payment may still confirm, as a lock to
+    /// recover later (DEC-197, DEC-198).
+    #[arg(long)]
+    past_unknown_funding: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -662,7 +668,11 @@ fn registration_params(e: &RegistrationError) -> Value {
         | R::Unsupported
         | R::FundedElsewhere
         | R::FundingCancelled
+        | R::NotSynced
         | R::CoinsLocked => json!({}),
+        R::FundingUnknownRecent { draft, wait_secs } => {
+            json!({"draft": draft, "wait_secs": wait_secs})
+        }
         R::InProgress { draft } => json!({"draft": draft}),
         R::FundingInsufficient { needed, available } => {
             json!({"needed": needed, "available": available})
@@ -1405,7 +1415,13 @@ fn register(
     let mut result = json!({"quote": quote});
     if !reg.quote_only {
         let grant = ctx.platform_op(dp, caps)?;
-        result["draft"] = ctx.block_on(dp.start_registration(req, grant))?.into();
+        let draft = if reg.past_unknown_funding.is_empty() {
+            ctx.block_on(dp.start_registration(req, grant))?
+        } else {
+            let past = reg.past_unknown_funding;
+            ctx.block_on(dp.start_registration_past_unknown_funding(req, grant, past))?
+        };
+        result["draft"] = draft.into();
     }
     Ok(result)
 }

@@ -184,6 +184,18 @@ pub enum RegistrationError {
     /// starts afresh (DP1-02 §3.3 row 8).
     #[error("the registration's funding was cancelled")]
     FundingCancelled,
+    /// A start past an unknown funding (DEC-197) while SPV is not caught
+    /// up: a lock the earlier funding sent may not be seen yet.
+    #[error("the wallet is not synced")]
+    NotSynced,
+    /// A start past an unknown funding (DEC-197) before its release is an
+    /// hour old, or with its age unknown: a lock it sent may still appear.
+    /// `wait_secs` is how long until it may pass, when known.
+    #[error("registration {draft}'s funding may still appear")]
+    FundingUnknownRecent {
+        draft: String,
+        wait_secs: Option<u64>,
+    },
     #[error(transparent)]
     Name(NameError),
     #[error(transparent)]
@@ -204,6 +216,8 @@ impl RegistrationError {
             Self::Unsupported => "registration.unsupported",
             Self::FundedElsewhere => "registration.funded_elsewhere",
             Self::FundingCancelled => "registration.funding_cancelled",
+            Self::NotSynced => "registration.not_synced",
+            Self::FundingUnknownRecent { .. } => "registration.funding_unknown_recent",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
             Self::Platform(e) => e.code(),

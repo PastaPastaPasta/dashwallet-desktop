@@ -871,3 +871,69 @@ fn consumed_signed_value_attaches_only_once_discovered() {
     assert_eq!(l.pending(), 0);
     assert_eq!(l.standing(&other), Standing::Settled);
 }
+
+/// DEC-197: only a step that recorded no lock is wedged, so passed. A
+/// flagged `MaybeSent` step with a tombstone (P2b reading a step Repair
+/// resolved as unknown) is not, nor is one under a record write or a call.
+#[test]
+fn a_wedged_step_recorded_no_lock() {
+    let mut awaiting = row(1, 1);
+    awaiting.error = Some(flow::broadcast_unknown().into());
+    let flagged = |dead: &[Txid]| tombstoned(1, 1, Some(DispatchState::MaybeSent), &[], dead, true);
+    let l = ledger(vec![], vec![awaiting.clone()], vec![flagged(&[])]);
+    assert_eq!(l.standing(&awaiting), Standing::Awaiting);
+    assert_eq!(l.passed(&[1]), vec![1]);
+    let recording = FundingStepView {
+        recording: true,
+        ..flagged(&[])
+    };
+    for s in [flagged(&[txid(9)]), recording] {
+        let l = ledger(vec![], vec![awaiting.clone()], vec![s]);
+        assert_eq!(l.passed(&[1]), Vec::<i64>::new());
+    }
+    let l = Ledger::new(vec![], vec![], vec![awaiting], vec![flagged(&[])], vec![1]);
+    assert_eq!(l.passed(&[1]), Vec::<i64>::new());
+}
+
+/// DEC-198: `Recovery` takes a lock only wedged steps contest, each with a
+/// known release, and a row never does. A contester in a call, under a
+/// record write, with a tombstone, unflagged, or with no known release
+/// keeps it `Contested` for everyone.
+#[test]
+fn recovery_takes_a_lock_only_released_wedged_steps_contest() {
+    let mut awaiting = row(1, 1);
+    awaiting.error = Some(flow::broadcast_unknown().into());
+    let rebuilt = lock(9, 0, LockStatus::RecoveredFromChain);
+    let flagged = tombstoned(1, 1, Some(DispatchState::MaybeSent), &[], &[], true);
+    let read = |view: FundingStepView, calling: Vec<i64>, released: bool| {
+        let rows = vec![awaiting.clone()];
+        let mut l = Ledger::new(vec![rebuilt.clone()], vec![], rows, vec![view], calling);
+        if released {
+            l.set_released(vec![1]);
+        }
+        l
+    };
+    let l = read(flagged.clone(), vec![], true);
+    assert_eq!(l.owner(&rebuilt), Some(Owner::Contested));
+    assert!(l.may_take(Taker::Recovery, &rebuilt));
+    assert!(!l.may_take(Taker::Row(1), &rebuilt));
+    let recording = FundingStepView {
+        recording: true,
+        ..flagged.clone()
+    };
+    let voided = tombstoned(1, 1, Some(DispatchState::MaybeSent), &[], &[txid(8)], true);
+    for (view, calling, released) in [
+        (flagged.clone(), vec![1], true),
+        (recording, vec![], true),
+        (voided, vec![], true),
+        (unknown(1, 1), vec![], true),
+        (flagged, vec![], false),
+    ] {
+        let l = read(view.clone(), calling.clone(), released);
+        assert_eq!(l.owner(&rebuilt), Some(Owner::Contested), "{view:?}");
+        assert!(
+            !l.may_take(Taker::Recovery, &rebuilt),
+            "{view:?} {calling:?} {released}"
+        );
+    }
+}

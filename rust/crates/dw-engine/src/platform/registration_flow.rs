@@ -279,6 +279,9 @@ pub(crate) trait RegistrationLib: Send + Sync {
     /// The tracked lock at `outpoint` as P2b reads it ([`TrackedRow::of`]),
     /// for the resume gate ([`LeaseTable::unrecorded_signer_of`]).
     fn tracked_row(&self, outpoint: OutPoint) -> impl Future<Output = Option<TrackedRow>> + Send;
+    /// Whether SPV is caught up with the network (DEC-197: a start past an
+    /// unknown funding needs the wallet's history current).
+    fn spv_synced(&self) -> impl Future<Output = bool> + Send;
     /// The identity the lock created, if Platform (or the wallet) has it.
     fn find_identity(
         &self,
@@ -1148,8 +1151,9 @@ pub(crate) fn backup_again(session: &Arc<NetworkSession>, wallet: WalletId, draf
 /// step's open row, calling or not, else to a recovery row when
 /// `may_take(Recovery)` lets it; a `Free` lock to the row at its known
 /// index, else to the oldest row waiting for a lock whose amount it covers,
-/// else to a recovery row (a new unnamed row at an unused index).
-/// `Parked`, `Contested` and `Dead` locks go nowhere. `held`: the funding
+/// else to a recovery row (a new unnamed row at an unused index); a
+/// `Contested` lock to a recovery row when only wedged steps contest it
+/// (DEC-198). `Parked` and `Dead` locks go nowhere. `held`: the funding
 /// hold is on, and until discovery has answered which indexes the seed
 /// uses, a fresh index may be another device's identity's, so nothing is
 /// written. Returns [`Ledger::pending`], read afresh after the writes, and
@@ -1208,7 +1212,9 @@ pub(crate) fn import_stranded(
                             if lock_duffs <= lock.amount)
                 }),
             },
-            Some(Owner::Parked | Owner::Contested | Owner::Dead) | None => continue,
+            // A row never; Recovery when only wedged steps contest it.
+            Some(Owner::Contested) => None,
+            Some(Owner::Parked | Owner::Dead) | None => continue,
         };
         let outpoint = canonical(lock.outpoint);
         if let Some(row) = row {
@@ -2712,6 +2718,10 @@ impl RegistrationLib for PwLib {
         (self.wallet.asset_locks().list_tracked_locks().await.iter())
             .find(|l| l.out_point == outpoint)
             .map(TrackedRow::of)
+    }
+
+    async fn spv_synced(&self) -> bool {
+        self.session.hub.tracker().caught_up()
     }
 
     async fn find_identity(&self, outpoint: OutPoint) -> Result<Option<String>, PlatformError> {

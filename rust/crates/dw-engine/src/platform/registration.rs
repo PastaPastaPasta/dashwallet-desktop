@@ -203,6 +203,27 @@ impl DashPay {
         .await
     }
 
+    /// [`Self::start_registration`] past earlier registrations whose
+    /// funding is unknown (DEC-197, ownership model §8.1): `past` names
+    /// them as `registration.in_progress` does. Call it only after the user
+    /// confirmed that each one's payment may still confirm, and that its
+    /// funds then show up as a lock the wallet can recover later (DEC-198:
+    /// nothing attaches it to its registration). Each must be blocked
+    /// only by its unknown funding, SPV caught up, and its funding released
+    /// at least an hour ago; anything else still blocks.
+    pub async fn start_registration_past_unknown_funding(
+        &self,
+        req: RegistrationRequest,
+        grant: String,
+        past: Vec<String>,
+    ) -> Result<String, RegistrationError> {
+        let wallet = self.wallet_id;
+        self.on_lib(move |session, _, lib| async move {
+            start_past(&session, wallet, lib, req, grant, &past).await
+        })
+        .await
+    }
+
     pub async fn registrations(&self) -> Result<Vec<RegistrationStatus>, RegistrationError> {
         let wallet = self.wallet_id;
         self.on_lib(move |session, _, lib| async move { statuses(&session, wallet, &*lib).await })
@@ -491,19 +512,36 @@ pub(crate) async fn start<L: RegistrationLib + 'static>(
     req: RegistrationRequest,
     grant: String,
 ) -> Result<String, RegistrationError> {
+    start_past(session, wallet, lib, req, grant, &[]).await
+}
+
+pub(crate) async fn start_past<L: RegistrationLib + 'static>(
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    lib: Arc<L>,
+    req: RegistrationRequest,
+    grant: String,
+    past: &[String],
+) -> Result<String, RegistrationError> {
     let plan = plan(&*lib, &req, "DashPay.start_registration").await?;
+    let past = past
+        .iter()
+        .map(|p| past_draft(p).ok_or_else(|| invalid(format!("{p} names no registration"))))
+        .collect::<Result<Vec<_>, _>>()?;
     // Checked here so a refused start keeps its grant, and again with the
     // insert, in the one job of the wallet's actor (DEC-173).
     let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
     let leases = Arc::clone(&session.leases);
-    let (l, i) = (locks.clone(), identities.clone());
-    let blocking = flow::ledger_op(session, wallet, move |db, flows| {
-        Ok(Ledger::read(db, flows, &leases, wallet, l, i)?.blocking())
+    let (l, i, p) = (locks.clone(), identities.clone(), past.clone());
+    let (blocking, passed) = flow::ledger_op(session, wallet, move |db, flows| {
+        let ledger = Ledger::read(db, flows, &leases, wallet, l, i)?;
+        Ok((ledger.blocking_past(&p), ledger.passed(&p)))
     })
     .await?;
     if let Some(draft) = blocking {
         return Err(RegistrationError::InProgress { draft });
     }
+    may_pass(session, wallet, &*lib, &passed).await?;
     if let Funding::CoreBalance { lock_duffs } = plan.funding {
         // The same checks the funding step makes, before a row exists.
         let needed = lock_duffs.saturating_add(plan.fee_duffs);
@@ -538,11 +576,17 @@ pub(crate) async fn start<L: RegistrationLib + 'static>(
     };
     let wallet_text = wallet.to_string();
     let now = crate::events::unix_now();
-    let leases = Arc::clone(&session.leases);
+    let (leases, checked) = (Arc::clone(&session.leases), passed.clone());
     let draft = flow::ledger_op(session, wallet, move |db, flows| {
         let ledger = Ledger::read(db, flows, &leases, wallet, locks, identities)?;
-        if let Some(draft) = ledger.blocking() {
+        // What passes now must be what was checked: a step wedged since is
+        // named as still blocking.
+        let unchecked = (ledger.passed(&past).into_iter()).find(|d| !checked.contains(d));
+        if let Some(draft) = ledger.blocking_past(&past) {
             return Ok(Err(draft));
+        }
+        if let Some(draft) = unchecked {
+            return Ok(Err(ledger.blocker_of(draft)));
         }
         db.insert_registration(&wallet_text, &row, now)
             .map(Ok)
@@ -550,10 +594,60 @@ pub(crate) async fn start<L: RegistrationLib + 'static>(
     })
     .await?
     .map_err(|draft| RegistrationError::InProgress { draft })?;
-    tracing::info!(draft, "registration started");
+    if passed.is_empty() {
+        tracing::info!(draft, "registration started");
+    } else {
+        tracing::warn!(
+            draft,
+            ?passed,
+            "registration started past unknown fundings (DEC-197)"
+        );
+    }
     flow::signal(session, wallet, draft);
     flow::start_run(session, wallet, lib, draft, Some(lease)).await?;
     Ok(draft.to_string())
+}
+
+/// The draft a `registration.in_progress` name gives: the draft id, or its
+/// funding step id.
+fn past_draft(name: &str) -> Option<i64> {
+    let id = (name.strip_prefix("registration/"))
+        .and_then(|rest| rest.strip_suffix("/funding"))
+        .unwrap_or(name);
+    id.parse().ok()
+}
+
+/// How long a funding step's release must stand before a start may pass
+/// its unknown funding (DEC-197): a lock that was sent is most likely
+/// InstantSend locked, and seen by a synced wallet, by then.
+pub(crate) const PAST_UNKNOWN_FUNDING_AFTER: u64 = 3600;
+
+/// Whether a start may pass the unknown fundings of `passed` (DEC-197): SPV
+/// caught up, and each one's funding released an hour ago or more.
+async fn may_pass<L: RegistrationLib>(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &L,
+    passed: &[i64],
+) -> Result<(), RegistrationError> {
+    if passed.is_empty() {
+        return Ok(());
+    }
+    if !lib.spv_synced().await {
+        return Err(RegistrationError::NotSynced);
+    }
+    let now = crate::events::unix_now();
+    for &draft in passed {
+        let at = super::registration_ledger::released_at(&session.leases, wallet, draft);
+        let wait = at.map(|at| (at + PAST_UNKNOWN_FUNDING_AFTER).saturating_sub(now));
+        if wait != Some(0) {
+            return Err(RegistrationError::FundingUnknownRecent {
+                draft: draft.to_string(),
+                wait_secs: wait,
+            });
+        }
+    }
+    Ok(())
 }
 
 async fn registration_row(

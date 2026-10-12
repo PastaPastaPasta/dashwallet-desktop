@@ -447,6 +447,8 @@ struct World {
     proof_arrives: bool,
     /// Every `wait_proof` bound asked for.
     waits: Vec<Duration>,
+    /// SPV is behind the network (DEC-197).
+    unsynced: bool,
 }
 
 /// The tap's report of the lock `outpoint`, as the journal builds it: its
@@ -698,6 +700,10 @@ impl RegistrationLib for Fake {
         };
         self.maybe_hang(Call::Fund, When::After).await;
         result
+    }
+
+    async fn spv_synced(&self) -> bool {
+        !self.w().unsynced
     }
 
     async fn tracked_row(&self, outpoint: OutPoint) -> Option<TrackedRow> {

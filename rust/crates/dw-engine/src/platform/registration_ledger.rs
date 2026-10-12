@@ -193,6 +193,8 @@ pub(crate) struct Ledger {
     /// Every step's tombstones (`voided`).
     dead: Vec<Txid>,
     calling: Vec<i64>,
+    /// The steps whose funding call released a signature ([`released_at`]).
+    released: Vec<i64>,
 }
 
 impl Ledger {
@@ -213,8 +215,16 @@ impl Ledger {
         let steps = leases.registration_funding_steps(wallet);
         #[cfg(test)]
         let steps = steps.map(|steps| test_views::overlay(leases, wallet, steps));
-        Ok(steps
-            .map(|steps| Self::new(locks, identities, rows, steps, flows.in_call_drafts(wallet))))
+        Ok(steps.map(|steps| {
+            let released = (steps.iter())
+                .filter(|s| released_at(leases, wallet, s.draft).is_some())
+                .map(|s| s.draft)
+                .collect();
+            let mut ledger =
+                Self::new(locks, identities, rows, steps, flows.in_call_drafts(wallet));
+            ledger.released = released;
+            ledger
+        }))
     }
 
     /// [`Self::read_in`] as one error: a storage error, and no write.
@@ -268,6 +278,7 @@ impl Ledger {
             steps: Vec::new(),
             dead,
             calling,
+            released: Vec::new(),
         };
         let drafts: Vec<i64> = views.iter().map(|s| s.draft).collect();
         let steps = views
@@ -324,6 +335,12 @@ impl Ledger {
 
     pub(crate) fn rows(&self) -> &[RegistrationRow] {
         &self.rows
+    }
+
+    /// The steps whose release [`Self::read_in`] would have found.
+    #[cfg(test)]
+    pub(crate) fn set_released(&mut self, drafts: Vec<i64>) {
+        self.released = drafts;
     }
 
     pub(crate) fn locks(&self) -> &[LockInfo] {
@@ -632,7 +649,12 @@ impl Ledger {
     /// built `lock` (its index is the step's, or lost), unless the amount
     /// differs from the one its row locks (Q6).
     fn contested(&self, lock: &LockInfo) -> bool {
-        self.steps.iter().any(|s| {
+        self.contesters(lock).next().is_some()
+    }
+
+    /// The steps that contest `lock` ([`Self::contested`]).
+    fn contesters<'a>(&'a self, lock: &'a LockInfo) -> impl Iterator<Item = &'a Step> + 'a {
+        self.steps.iter().filter(move |s| {
             let row = s.row_of.and_then(|d| self.row(d));
             s.outstanding
                 && s.claim == StepClaim::Unknown
@@ -671,7 +693,15 @@ impl Ledger {
                 }),
                 Taker::Recovery => true,
             },
-            Some(Owner::Parked | Owner::Contested | Owner::Dead) | None => false,
+            // DEC-198: only wedged steps with a known release contest it,
+            // and no row waits for it (a wedged step never takes a lock,
+            // nothing attributes it): Recovery may take it, a row never.
+            Some(Owner::Contested) => {
+                matches!(taker, Taker::Recovery)
+                    && (self.contesters(lock))
+                        .all(|s| self.wedged(s) && self.released.contains(&s.view.draft))
+            }
+            Some(Owner::Parked | Owner::Dead) | None => false,
         }
     }
 
@@ -896,12 +926,77 @@ impl Ledger {
 
     /// What `start_registration` waits for (§5.4, I6): a row in progress
     /// (its draft), else an orphan step (its funding step id).
+    #[cfg(test)]
     pub(crate) fn blocking(&self) -> Option<String> {
-        if let Some(row) = self.rows.iter().find(|r| self.in_progress(r)) {
+        self.blocking_past(&[])
+    }
+
+    /// DEC-197: `step` may have sent a lock no record holds. A flagged
+    /// marker whose call released a signature and recorded no lock reads
+    /// `MaybeSent` for good (P2b r6), so its claim is `Unknown` (nothing
+    /// signed) with nothing voided either, no call running under it and no `NotSent` write in
+    /// flight. The view shows no release: a flagged step read `MaybeSent`
+    /// only while the wallet's rows are unknown passes here too, and the
+    /// override then refuses it, and Recovery takes no lock it contests,
+    /// because [`released_at`] knows no release for it.
+    fn wedged(&self, step: &Step) -> bool {
+        step.outstanding
+            && step.claim == StepClaim::Unknown
+            && step.view.dead.is_empty()
+            && step.view.durable_record
+            && !step.view.recording
+            && !self.calling(step.view.draft)
+    }
+
+    /// Whether the user's confirmed `past` lets the in-progress `row`
+    /// through (DEC-197): it names the row, the row is `Awaiting`, and
+    /// every step it awaits is wedged ([`Self::wedged`]).
+    fn row_passed(&self, row: &RegistrationRow, past: &[i64]) -> bool {
+        past.contains(&row.id)
+            && self.standing(row) == Standing::Awaiting
+            && self.steps_of(row.id).all(|s| self.wedged(s))
+    }
+
+    /// Whether `past` lets the orphan step of `draft` through: it names it
+    /// and the step is wedged.
+    fn orphan_passed(&self, draft: i64, past: &[i64]) -> bool {
+        past.contains(&draft) && self.step(draft).is_some_and(|s| self.wedged(s))
+    }
+
+    /// The wedged steps behind what `past` lets through ([`Self::row_passed`],
+    /// [`Self::orphan_passed`]): their drafts, sorted.
+    pub(crate) fn passed(&self, past: &[i64]) -> Vec<i64> {
+        let rows = (self.rows.iter())
+            .filter(|r| self.in_progress(r) && self.row_passed(r, past))
+            .flat_map(|r| self.steps_of(r.id).map(|s| s.view.draft));
+        let orphans = (self.orphans().into_iter())
+            .map(|(draft, _)| draft)
+            .filter(|&draft| self.orphan_passed(draft, past));
+        let mut passed: Vec<i64> = rows.chain(orphans).collect();
+        passed.sort_unstable();
+        passed.dedup();
+        passed
+    }
+
+    /// How `registration.in_progress` names what `draft`'s step blocks: its
+    /// row, else the orphan step.
+    pub(crate) fn blocker_of(&self, draft: i64) -> String {
+        match self.step(draft).and_then(|s| s.row_of) {
+            Some(row) => row.to_string(),
+            None => super::registration_flow::funding_step(draft),
+        }
+    }
+
+    /// [`Self::blocking`] with the user's confirmed `past` let through
+    /// (DEC-197, §8.1): what else blocks.
+    pub(crate) fn blocking_past(&self, past: &[i64]) -> Option<String> {
+        if let Some(row) =
+            (self.rows.iter()).find(|r| self.in_progress(r) && !self.row_passed(r, past))
+        {
             return Some(row.id.to_string());
         }
-        self.orphans()
-            .first()
+        (self.orphans().iter())
+            .find(|(draft, _)| !self.orphan_passed(*draft, past))
             .map(|(draft, _)| super::registration_flow::funding_step(*draft))
     }
 
@@ -950,6 +1045,19 @@ impl Ledger {
 /// list yet (PA-3 tombstones, OD-02's flag, retention across
 /// `erase_wallet`). A view set replaces the stub's view of its draft; the
 /// others are added. Never in a build that ships.
+/// When `draft`'s funding call released its first funding signature (its
+/// `funding_release` row's `at`, UNIX seconds), if it did: P2b's side of
+/// DEC-197, stubbed until P2b r7 exposes it. `None` refuses every start
+/// past the step (fail closed), as it must for a step with no release.
+pub(crate) fn released_at(leases: &LeaseTable, wallet: WalletId, draft: i64) -> Option<u64> {
+    #[cfg(test)]
+    if let Some(at) = test_views::released_at(leases, wallet, draft) {
+        return Some(at);
+    }
+    let _ = (leases, wallet, draft);
+    None
+}
+
 #[cfg(test)]
 pub(crate) mod test_views {
     use std::sync::{Arc, Mutex, PoisonError};
@@ -959,6 +1067,19 @@ pub(crate) mod test_views {
     /// The views set, by lease table (its address, pinned by the guard's
     /// `Arc`) and wallet.
     static VIEWS: Mutex<Vec<(usize, WalletId, FundingStepView)>> = Mutex::new(Vec::new());
+
+    /// The release times set ([`super::released_at`]), keyed as `VIEWS`.
+    static RELEASES: Mutex<Vec<(usize, WalletId, i64, u64)>> = Mutex::new(Vec::new());
+
+    pub(super) fn released_at(leases: &LeaseTable, wallet: WalletId, draft: i64) -> Option<u64> {
+        let k = key(leases);
+        (RELEASES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter())
+        .find(|(l, w, d, _)| *l == k && *w == wallet && *d == draft)
+        .map(|(_, _, _, at)| *at)
+    }
 
     fn key(leases: &LeaseTable) -> usize {
         std::ptr::from_ref(leases) as usize
@@ -985,6 +1106,14 @@ pub(crate) mod test_views {
             views.retain(|(l, w, v)| !(*l == k && *w == self.wallet && v.draft == view.draft));
             views.push((k, self.wallet, view));
         }
+
+        /// Sets when `draft`'s call released its first funding signature.
+        pub(crate) fn set_released(&self, draft: i64, at: u64) {
+            let k = key(&self.leases);
+            let mut releases = RELEASES.lock().unwrap_or_else(PoisonError::into_inner);
+            releases.retain(|(l, w, d, _)| !(*l == k && *w == self.wallet && *d == draft));
+            releases.push((k, self.wallet, draft, at));
+        }
     }
 
     impl Drop for Views {
@@ -994,6 +1123,10 @@ pub(crate) mod test_views {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .retain(|(l, w, _)| !(*l == k && *w == self.wallet));
+            RELEASES
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .retain(|(l, w, _, _)| !(*l == k && *w == self.wallet));
         }
     }
 

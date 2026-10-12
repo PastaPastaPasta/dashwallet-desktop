@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 13
+Contract-Version: 14
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -65,7 +65,7 @@ type is `pub(crate)`.
 | `dashpay.rs` | E0-08 | `NetworkSession.dashpay`, `wallet_id`; `BearerSecret` |
 | `startup.rs` | E0-05 bring-up | `status`, `sync_status`, `sync_now` |
 | `identity.rs` | DP1-01, DP1-05, DP6-01 | `identities`, `set_main_identity`, `identity_detail`, `refresh_balance`, `discover_identities` |
-| `registration.rs` | DP1-02 | `registration_quote`, `start_registration`, `registrations`, `resume_registration`, `discard_registration`, `finish_asset_locks`, `prepare_faucet_lock` |
+| `registration.rs` | DP1-02 | `registration_quote`, `start_registration`, `start_registration_past_unknown_funding`, `registrations`, `resume_registration`, `discard_registration`, `finish_asset_locks`, `prepare_faucet_lock` |
 | `names.rs` | DP1-03, DP1-04, DP2-03 | `check_username`, `name_availability`, `register_name`, `set_main_name`, `main_name`, `contest_status`, `search_users`, `resolve_user` |
 | `contacts.rs` | DP2-01…DP2-04 | `contacts`, `contact`, `pending_setup_count`, `eligibility`, `send_request`, `accept_request`, `ignore`, `unignore`, `set_private_details`, `enable_dashpay_keys`, `my_user_link`, `verify_scanned` |
 | `payments.rs` | DP3-01, DP3-02 | `payment_lock`, `resolve_payment_lock`, `contact_activity`, `frequent_contacts` |
@@ -206,6 +206,7 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 |---|---|---|---|
 | `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. | `RegistrationError` |
 | `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. | `RegistrationError` |
+| `start_registration_past_unknown_funding(req, grant, past)` | async | `start_registration` past earlier registrations whose funding is unknown (DEC-197, "In progress" below). `past` names each blocker the user confirmed, as `registration.in_progress` names it. Call it only after the user confirmed the wedge copy. A named blocker passes only if every funding step it waits on is wedged; anything else still returns `registration.in_progress`. SPV must be synced (`registration.not_synced`), and each passed step's funding must have been released at least an hour ago (`registration.funding_unknown_recent { draft, wait_secs }`). A malformed name is `invalid_argument`; a well-formed one that blocks nothing is ignored. | `RegistrationError` |
 | `registrations()` | async | Every `dp_registration` row of the wallet, with what each waits for (§5), and, read-only, every outstanding funding step whose row is gone (draft `registration/<n>/funding`; §2.2 "The registration ledger"). | `RegistrationError` |
 | `resume_registration(draft, grant)` | async | Advances a parked flow; it acts on any state (§4.1). `grant` is required exactly when the row's `waiting` is `Unlock` or `Authorize`, and ignored otherwise. | `RegistrationError` |
 | `discard_registration(draft)` | async | Refused (`invalid_argument`) while the row is committed by the registration ledger (§2.2): it holds a lock not yet consumed, a funding step of its own may still deliver a lock, or its funding call runs; and for a row this build cannot read. A `Done` row, or one whose identity exists with nothing of its funding outstanding, may be discarded although its `funds_committed` reads `true`; so may a `Cancelled` one (`registration.funded_elsewhere`, `registration.funding_cancelled`). | `RegistrationError` |
@@ -215,7 +216,9 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 **Done (DP1-02, Contract-Version 9; Sol review r1, DEC-171, version 10 for `registration.coins_locked`; Sol r2,
 DEC-173; Opus-high review, version 11 for `RegistrationStatus.name_failure` and `profile_failure`; DP1-02's ownership
 model, version 12 for `RegistrationError::InProgress { draft }` and `RegistrationWait::FundingUnknown`; its rev2,
-version 13 for the row failures `registration.funded_elsewhere` and `registration.funding_cancelled`).** What the
+version 13 for the row failures `registration.funded_elsewhere` and `registration.funding_cancelled`; DEC-197,
+version 14 for `start_registration_past_unknown_funding`, `registration.not_synced` and
+`registration.funding_unknown_recent`).** What the
 bodies decided where the rows leave room:
 
 - **Costs.** The lock is 0.03 DASH (3 000 000 duffs) for a plain name and 0.25 DASH for a contested one, as the iOS
@@ -270,6 +273,7 @@ bodies decided where the rows leave room:
   (its index, or a lost one, unless its amount differs from the step's row's), else `Free`. A `Step` lock may go only
   to its step's row while that row is open, its funding call running or not, else (that row gone, or readable and not
   open) to a recovery row; a `Free` lock to an open `Unfunded` row whose funding call does not run, or a recovery row;
+  a `Contested` lock only to a recovery row, and only while every step contesting it is wedged ("The wedge" below);
   no other lock to anyone. A row is committed while `Funded`, `Awaiting` or `Closed`, or while its funding call runs;
   the gates read that. `RegistrationStatus.funds_committed` keeps E0-04 §16.5's meaning: committed, or a Core-balance
   row that holds or held a lock (an outpoint, an identity, a phase past funding), so a `Settled` or `Done` row still
@@ -284,6 +288,19 @@ bodies decided where the rows leave room:
 - **In progress.** `registration.in_progress { draft }` names what blocks a new registration: a row with no failure
   that is not `Done`, a retryable failed row, or a committed row that is not `Done`, never a `Cancelled` one (a row
   this build cannot read while committed); else an orphan funding step (`draft` is then `registration/<n>/funding`).
+  **The wedge (DEC-197).** A funding step whose call released a signature and recorded no lock reads `MaybeSent` for
+  good, and Repair refuses it. Its row stays committed (`waiting: FundingUnknown`) and can't be discarded. Nothing
+  attaches the step's lock to it (DEC-198). The only exit is `start_registration_past_unknown_funding`, which starts a
+  new draft past the step once SPV is synced and an hour has passed since the release. The new draft has its own index
+  and lock. If the earlier lock confirms, it goes to neither row: "Finish transfers" recovers it. Before that call, the
+  UI shows this copy and the user confirms it: "An earlier registration's payment could not be confirmed, and it may
+  still appear on the network. You can start a new registration now. The earlier payment may still confirm. If it does,
+  its funds show up as a transfer this wallet can recover later with Tools ▸ Repair ▸ Finish transfers, as a separate
+  identity, so you may have paid for two registrations. The earlier registration can't be discarded." On
+  `registration.funding_unknown_recent`: "The earlier registration's payment was sent less than an hour ago. Try again
+  in {minutes} minutes." With `wait_secs` none, the release time is unknown (until P2b r7 exposes it, the call fails
+  closed): "This wallet can't yet tell when the earlier registration's payment was sent. Try again later." On
+  `registration.not_synced`: "Wait until the wallet has finished syncing, then try again."
   A `Cancelled` row is discarded, never resumed: to register again the user starts a new registration. A row this build cannot run reads as failed, not retryable: a
   `funding`, `initial_profile`, `phase` or lock outpoint it does not know is `registration.unsupported`, an
   `Invitation` row is `invitation.invalid` (until DP5-02 the invitation-claim path does not exist;
@@ -383,8 +400,8 @@ bodies decided where the rows leave room:
   recovery row when that row is gone or readable and not open; a `Free` lock to the row at its known index, else
   (index unknown) to the oldest `Unfunded` row waiting for a lock (no failure, or a retryable one) whose amount it
   covers, else to a recovery row. A recovery row is a new row with label `""` at a fresh index, which skips the name
-  step; it is only ever made for unspent value (a consumed lock settles its step instead). A `Parked`, `Contested` or
-  `Dead` lock goes nowhere. `still_pending` starts from the ledger read after these writes: the outstanding steps no
+  step; it is only ever made for unspent value (a consumed lock settles its step instead). A `Contested` lock
+  goes to a recovery row only when every step contesting it is wedged; a `Parked` or `Dead` lock goes nowhere. `still_pending` starts from the ledger read after these writes: the outstanding steps no
   row holds a lock of, plus the `Parked`, `Contested` and `Free` locks (an `Unknown` step and a lock it contests
   count as two). While the funding hold lasts (the indexes the seed uses are not known yet) it writes nothing and
   reports the same count. It
@@ -774,6 +791,8 @@ pub enum RegistrationError {
     Unsupported,
     FundedElsewhere,
     FundingCancelled,
+    NotSynced,
+    FundingUnknownRecent { draft: String, wait_secs: Option<u64> },
     Name(NameError),
     Invitation(InvitationError),
     Platform(PlatformError),
@@ -1386,6 +1405,7 @@ pub struct FinishReport {
 impl DashPay {
     pub async fn registration_quote(&self, req: RegistrationRequest) -> Result<RegistrationQuote, RegistrationError>;
     pub async fn start_registration(&self, req: RegistrationRequest, grant: String) -> Result<String, RegistrationError>;
+    pub async fn start_registration_past_unknown_funding(&self, req: RegistrationRequest, grant: String, past: Vec<String>) -> Result<String, RegistrationError>;
     pub async fn registrations(&self) -> Result<Vec<RegistrationStatus>, RegistrationError>;
     pub async fn resume_registration(&self, draft: String, grant: Option<String>) -> Result<(), RegistrationError>;
     pub async fn discard_registration(&self, draft: String) -> Result<(), RegistrationError>;
@@ -1479,7 +1499,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 |---|---|
 | `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`, `internal` |
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
-| `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled` |
+| `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled`, `registration.not_synced`, `registration.funding_unknown_recent` |
 | `NameError` | `name.invalid`, `name.taken`, `name.contest_open`, `name.locked`, `name.unavailable_for_invite` |
 | `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired`, `contact.scan_unverified`, `contact.no_username` |
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
