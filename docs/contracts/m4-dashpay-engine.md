@@ -2181,9 +2181,9 @@ renames or reshapes them takes the next version bump:
     - **The library's publish is not bounded.** platform-wallet's `set_contact_info_with_external_signer` fetches and
       opens every `contactInfo` document the identity holds before it writes, with no cap or deadline of its own.
       The engine reads them first, within the read's cap and deadline, and refuses a publish over 1,000 before the
-      grant is redeemed. **Residual (accepted):** documents added between that read and the library's own fetch are
-      still read without a bound, under the identity's write lock; a bounded publish API in platform-wallet closes
-      it (follow-up). A publish costs two fetches, and a failed one's read-back a third.
+      grant is redeemed. **Residual (accepted, DEC-206):** documents added between that read and the library's own
+      fetch are still read without a bound, under the identity's write lock; that fetch only reads documents owned by
+      the wallet's own identity. A bounded publish API in platform-wallet closes it at the next fork bump. A publish costs two fetches, and a failed one's read-back a third.
     - **T2 is pending tDASH.** `private_details_tests::t2_testnet_private_details` (ignored,
       `DW_DP204_TESTNET_FIXTURE`) is written. Fixture wallets A and B stay read-only, and C has one contact (A), so the
       run needs a new wallet D, an identity with DashPay keys funded with tDASH. D asks C, C accepts, and C publishes
