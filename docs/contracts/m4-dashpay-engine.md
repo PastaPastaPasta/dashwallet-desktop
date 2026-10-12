@@ -2076,10 +2076,19 @@ renames or reshapes them takes the next version bump:
       nothing, as do signers that can no longer be issued. What the vault hands out (a revealed phrase or
       masternode key, a discovery's scan key, an auto-accept key) is the caller's once released and signs no write
       here; removal ends the discoveries first (DP1-05). A signature made before the removal may still broadcast
-      after it, until E0-04 P3's dispatch fence: the residual below, as for Lock.
+      after it, until E0-04 P3's dispatch fence: the residual below, as for Lock. No seed is replaced in place
+      (Sol r4): `store_wallet_secret` refuses a wallet that already holds different records
+      (`vault.wallet_secret_exists`, checked and written under the record-write guard, nothing written), so a new
+      seed under an id goes in only after one of these deletions; the same records again only re-seal them. The
+      vault does not bind wallet ids to seeds: the engine stores a seed only under the id it derives from it, and
+      only when the vault has none.
     - **E0-04's lease rule follows this one** (E0-04 amendment 3): a lease of another flow, passed to a write that
       names its flows, is `platform.grant_invalid`; `platform.needs_grant` only when no grant or lease carries the
       purpose.
     - **Residual (accepted, E0-04 P3):** Lock stops new signatures; a write already signed when Lock lands may still
       broadcast until E0-04 P3's dispatch fence (§4, the Lock reading). So may one signed before a wallet removal
       deleted its seed. DP2-02 builds no fence of its own.
+    - **Residual (accepted, Sol r4):** wipe and delete keep the vault's epoch. When the same seed is imported again
+      with no Lock between the removal and the import (same seed, same epoch), a signer issued before the removal
+      and a grant not yet redeemed work again, with no fresh unlock. A Lock in between, or a recovery (which ends
+      the epoch), ends both.
