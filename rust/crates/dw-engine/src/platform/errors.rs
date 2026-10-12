@@ -320,6 +320,10 @@ pub enum ContactError {
     /// The identity has no username, so it has no user link.
     #[error("identity has no username")]
     NoUsername,
+    /// The private details encode to `bytes`, more than the `max` a
+    /// `contactInfo` holds (DIP-15 `privateData`, DP2-04).
+    #[error("private details too long: {bytes} bytes, at most {max}")]
+    DetailsTooLong { bytes: u32, max: u32 },
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -336,6 +340,7 @@ impl ContactError {
             Self::ScanExpired => "contact.scan_expired",
             Self::ScanUnverified => "contact.scan_unverified",
             Self::NoUsername => "contact.no_username",
+            Self::DetailsTooLong { .. } => "contact.details_too_long",
             Self::Platform(e) => e.code(),
         }
     }

@@ -544,9 +544,18 @@ impl NetworkSession {
         if identity.is_none() && startup.identity.is_some() {
             self.platform.recovery.names_due(id);
         }
+        let has_identity = startup.identity.is_some();
         self.finish_bring_up(id, startup, since, budget).await;
         self.load_identity_choices(id).await;
         self.refresh_identities(manager, id).await;
+        // A restore's private details, and their state, come back here
+        // (DP2-04).
+        if has_identity
+            && let Some(crypto) = self.prompt_free_crypto(id).await
+            && let Some(wallet) = manager.get_wallet(&id.0).await
+        {
+            self.settle_contact_infos(&wallet, id, &crypto, None).await;
+        }
     }
 
     /// At the Platform pass's admission: a recovery phase starts (catch-up
@@ -746,6 +755,21 @@ impl NetworkSession {
         if let Some(entry) = self.platform.write_startup().get_mut(&id) {
             entry.contact_accounts_pending = u32::try_from(pending).unwrap_or(u32::MAX);
         }
+        self.settle_contact_infos(&wallet, id, &crypto, None).await;
+    }
+
+    /// The vault's prompt-free DashPay crypto for wallet `id`
+    /// ([`background_contact_crypto`]); `None` while it would need a prompt.
+    pub(super) async fn prompt_free_crypto(&self, id: WalletId) -> Option<VaultContactCrypto> {
+        if !prompt_free(self.platform.lock.borrow().state) {
+            return None;
+        }
+        self.platform
+            .key_work
+            .run(self.vault.clone(), move |vault| {
+                background_contact_crypto(vault, id)
+            })
+            .await
     }
 
     /// (created here, Platform proved no identity within

@@ -177,7 +177,7 @@ pub(super) async fn eligibility(
 
 /// Refuses before any grant is redeemed when the identity's credits are
 /// below `quote` (`platform.insufficient_credits`).
-fn cover(available: u64, quote: u64) -> Result<(), PlatformError> {
+pub(super) fn cover(available: u64, quote: u64) -> Result<(), PlatformError> {
     if available < quote {
         return Err(PlatformError::InsufficientCredits {
             needed: quote,
@@ -208,7 +208,7 @@ fn cover(available: u64, quote: u64) -> Result<(), PlatformError> {
 /// refuses (nothing signed). `ready` is the
 /// write's last check (a scan's expiry), right before a grant is redeemed:
 /// the key check can wait on the vault.
-async fn write_lease(
+pub(super) async fn write_lease(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     grant: &str,
@@ -327,9 +327,10 @@ fn first_auth_key(
 /// The levels of the key `flow`'s transition signs with ([`flow_keys`]).
 fn flow_levels(flow: FlowKind) -> &'static [SecurityLevel] {
     match flow {
-        FlowKind::ContactRequest | FlowKind::Accept | FlowKind::AcceptAndPay => {
-            &[SecurityLevel::HIGH, SecurityLevel::CRITICAL]
-        }
+        FlowKind::ContactRequest
+        | FlowKind::Accept
+        | FlowKind::AcceptAndPay
+        | FlowKind::PrivateDetails => &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
         FlowKind::EnableDashPayKeys => &[SecurityLevel::MASTER],
         _ => &[],
     }
@@ -349,10 +350,11 @@ fn candidate_keys(
 }
 
 /// The keys `flow`'s transition signs with, and no others:
-/// - a contact request or accept: the document key, the identity's first
-///   HIGH or CRITICAL authentication key that is `usable` (the vault holds
-///   it; DPP refuses the master on document writes; the DashPay keys only do
-///   ECDH, in the crypto signer);
+/// - a contact request, an accept or a `contactInfo` (DP2-04): the document
+///   key, the identity's first HIGH or CRITICAL authentication key that is
+///   `usable` (the vault holds it; DPP refuses the master on document
+///   writes; the DashPay keys only do ECDH and the `contactInfo` AES keys,
+///   in the crypto signer);
 /// - a key upgrade: the master key, which signs the IdentityUpdate, and the
 ///   `added` keys, each of which signs its own proof of possession (dpp
 ///   `IdentityUpdateTransition::try_from_identity_with_signer`).
@@ -372,7 +374,10 @@ fn flow_keys(
         })
     };
     match flow {
-        FlowKind::ContactRequest | FlowKind::Accept | FlowKind::AcceptAndPay => {
+        FlowKind::ContactRequest
+        | FlowKind::Accept
+        | FlowKind::AcceptAndPay
+        | FlowKind::PrivateDetails => {
             let key = first_auth_key(identity, flow_levels(flow), usable);
             Ok(vec![key.ok_or_else(missing)?])
         }
@@ -394,7 +399,11 @@ fn flow_keys(
 /// ends the permit with no signature, a definite `Cancelled`, and the quote
 /// goes back; once a signature is out, the quote is kept whatever the call
 /// returns (fail closed), so one lease id pays for one write's quote.
-fn write_permit(lease: &Lease, label: &str, quote: u64) -> Result<CallPermit, PlatformError> {
+pub(super) fn write_permit(
+    lease: &Lease,
+    label: &str,
+    quote: u64,
+) -> Result<CallPermit, PlatformError> {
     let quote = CallQuote {
         purpose: BudgetPurpose::Credits,
         amount: quote,
@@ -405,7 +414,7 @@ fn write_permit(lease: &Lease, label: &str, quote: u64) -> Result<CallPermit, Pl
 /// The permit's identity signer for the identity at `index` (counting into
 /// the permit), narrowed to [`flow_keys`] of the lease's flow, chosen among
 /// the keys the vault holds.
-fn flow_signer(
+pub(super) fn flow_signer(
     permit: &CallPermit,
     index: u32,
     identity: &Identity,

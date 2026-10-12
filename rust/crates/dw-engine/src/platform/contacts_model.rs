@@ -62,6 +62,7 @@ use super::contacts::{
     ContactSummary, ContactsPage, PrivateDetails, PublishState, Relation,
 };
 use super::errors::{ContactError, IdentityError, PlatformError};
+use super::private_details;
 use super::profile::Profile;
 use super::provenance::Entity;
 use super::recovery::profile_of;
@@ -281,6 +282,9 @@ pub(super) struct Join<'a> {
     pub(super) unverified: &'a dyn Fn(&Entity) -> bool,
     /// When a transaction happened, UNIX seconds.
     pub(super) tx_time: &'a dyn Fn(&Txid) -> Option<u64>,
+    /// What `dp_contact_info` records of the owner's details of a contact
+    /// (DP2-04); `None` too when it cannot be read.
+    pub(super) published: &'a dyn Fn(&Identifier, &Identifier) -> Option<[u8; 32]>,
 }
 
 fn b58(id: &Identifier) -> String {
@@ -427,22 +431,23 @@ pub(super) fn page(
 
 /// One contact in full.
 pub(super) fn detail(
-    owner: &OwnerContacts,
+    (owner_id, owner): (&Identifier, &OwnerContacts),
     contact: &Identifier,
     join: &Join,
 ) -> Option<ContactDetail> {
     let e = owner.get(contact)?;
     let at = |r: Option<Request>| r.map(|r| r.created_at / 1000);
+    let publish_state = if e.relation == Relation::Contact {
+        let recorded = (join.published)(owner_id, contact);
+        private_details::publish_state(owner.established(), &e.private, recorded)
+    } else {
+        PublishState::Local
+    };
     Some(ContactDetail {
         summary: e.summary(join),
         profile: e.profile.clone(),
         private_details: e.private.clone(),
-        // Whether a `contactInfo` was published is DP2-04's to record.
-        publish_state: if e.relation == Relation::Contact && owner.established() < 2 {
-            PublishState::DeferredUntilTwoContacts
-        } else {
-            PublishState::Local
-        },
+        publish_state,
         request_sent_at: at(e.outgoing),
         request_received_at: at(e.incoming),
         // DP3-01's `dp_payment_lock`.
@@ -459,6 +464,9 @@ pub(crate) struct ContactsRuntime {
     refreshing: Arc<Mutex<BTreeSet<WalletId>>>,
     pub(super) names: ContactNames,
     tasks: Mutex<Tasks>,
+    /// Tests: replaces the SDK's `contactInfo` reads.
+    #[cfg(test)]
+    pub(super) info_source: Arc<Mutex<Option<Arc<dyn super::private_details::InfoSource>>>>,
 }
 
 #[derive(Default)]
@@ -590,7 +598,8 @@ impl NetworkSession {
         if owned.is_none() && !updating {
             return Err(PlatformError::from(IdentityError::NotFound).into());
         }
-        let provenance = self.live().map_err(PlatformError::from)?.provenance;
+        let live = self.live().map_err(PlatformError::from)?;
+        let (provenance, appdb) = (live.provenance, live.appdb);
         let names = &self.platform.contacts.names;
         let unverified = |e: &Entity| provenance.is_unverified(e);
         // Block times only (DEC-114): an unconfirmed payment has none yet.
@@ -601,10 +610,18 @@ impl NetworkSession {
             _ => None,
         };
         let username = |c: &Identifier| names.label(c);
+        let wallet = id.to_string();
+        let published = |owner: &Identifier, contact: &Identifier| {
+            (appdb.contact_info_digest(&wallet, &b58(owner), &b58(contact)))
+                .inspect_err(|e| tracing::warn!(error = %e, "reading a contactInfo digest"))
+                .ok()
+                .flatten()
+        };
         let join = Join {
             username: &username,
             unverified: &unverified,
             tx_time: &tx_time,
+            published: &published,
         };
         let result = f(owned, &join, updating);
         // After the read: it shows the names it had, whenever a fetch lands.
@@ -635,10 +652,11 @@ impl NetworkSession {
         identity: String,
         contact: String,
     ) -> Result<Option<ContactDetail>, ContactError> {
+        let owner = identifier(&identity)?;
         self.with_contacts(id, &identity, |owned, join, _| {
             let contact = identifier(&contact)?;
             let owned = owned.ok_or(PlatformError::Unavailable)?;
-            Ok(detail(owned, &contact, join))
+            Ok(detail((&owner, owned), &contact, join))
         })
     }
 

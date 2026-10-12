@@ -27,8 +27,11 @@ use tokio::sync::Notify;
 use zeroize::Zeroizing;
 
 use super::bringup::NO_IDENTITY_KEY;
+use super::contacts::{PrivateDetails, PublishState};
 use super::errors::PlatformError;
 use super::names::{MainNamePrefs, resolve_main_name};
+use super::private_details::InfoSource;
+use super::private_details_tests::FakeInfos;
 use super::recovery::{
     BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, Pause, owned_names, summaries,
 };
@@ -320,6 +323,8 @@ struct Platform {
     discovered: Vec<([u8; 32], u32)>,
     /// Labels a later bring-up (not the first) finds for an identity.
     replayed_names: Vec<([u8; 32], &'static str)>,
+    /// (identity, contact) pairs the bring-up's DashPay pass establishes.
+    contacts: Vec<([u8; 32], [u8; 32])>,
     bring_ups: Arc<AtomicU32>,
     hold_bring_up: Option<Arc<Notify>>,
     hold_names: Option<Arc<Notify>>,
@@ -356,6 +361,7 @@ impl MockPlatform for Platform {
             self.hold_bring_up.clone(),
             self.replayed_names.clone(),
         );
+        let contacts = self.contacts.clone();
         Box::pin(async move {
             if let Some(hold) = hold {
                 hold.notified().await;
@@ -367,6 +373,7 @@ impl MockPlatform for Platform {
             // discovery's included, and those its discovery finds (review r1
             // N1: not a fabricated absence).
             let on_file = add_identities(&manager, id, &identities).await;
+            establish(&manager, id, &contacts).await;
             let status = if on_file.is_empty() {
                 WalletStartupStatus::NoIdentity
             } else {
@@ -515,6 +522,27 @@ async fn add_identities(
         }
     }
     info.identity_manager.wallet_identity_ids(&id.0)
+}
+
+/// Establishes the `contacts` the wallet lacks, as the library's DashPay
+/// pass does from the pairs' requests (no private details).
+async fn establish(manager: &Manager, id: WalletId, contacts: &[([u8; 32], [u8; 32])]) {
+    let wm = manager.wallet_manager_arc();
+    let mut wm = wm.write().await;
+    let info = wm.get_wallet_info_mut(&id.0).expect("wallet info");
+    for (owner, contact) in contacts {
+        let (owner, contact) = (Identifier::from(*owner), Identifier::from(*contact));
+        let m = (info.identity_manager.managed_identity_mut(&owner)).expect("on file");
+        if m.dashpay().established_contacts().contains_key(&contact) {
+            continue;
+        }
+        let request = |from, to, at| ContactRequest::new(from, to, 0, 0, 0, vec![1; 96], 1, at);
+        m.apply_established_contact(EstablishedContact::new(
+            contact,
+            request(owner, contact, 1_000),
+            request(contact, owner, 2_000),
+        ));
+    }
 }
 
 pub(super) fn engine(dir: &std::path::Path) -> Engine {
@@ -1625,6 +1653,83 @@ fn concurrent_main_identity_writes_leave_the_cache_as_the_database() {
     assert_eq!(stored, Some(base58(SECOND)));
     assert_eq!(main, vec![base58(SECOND)]);
     engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// ROADMAP DP2-04's acceptance: a restored wallet gets its contacts'
+/// private details back. Another device of the seed published them (its
+/// own engine and vault); a restore into a fresh datadir reads them after
+/// its bring-up and shows them `Published`, or with the vault locked then,
+/// after the unlock.
+#[test]
+fn a_restored_wallet_gets_its_private_details_back() {
+    const BOB: [u8; 32] = [9; 32];
+    const CAROL: [u8; 32] = [10; 32];
+    let bob = PrivateDetails {
+        alias: Some("Bobby".into()),
+        note: Some("met at the meetup".into()),
+        hidden: false,
+    };
+    let carol = PrivateDetails {
+        hidden: true,
+        ..PrivateDetails::default()
+    };
+    let infos = Arc::new(FakeInfos::default());
+    {
+        let old = dw_testutil::private_tempdir();
+        let engine = super::journal_tests::engine(old.path(), Arc::new(NoEvents));
+        let (s, wallet) = super::journal_tests::session(&engine, true);
+        engine.block_on(async {
+            let crypto = s.prompt_free_crypto(wallet).await.unwrap();
+            infos
+                .seal(&crypto, (ALICE.into(), 0, BOB.into()), &bob)
+                .await;
+            infos
+                .seal(&crypto, (ALICE.into(), 0, CAROL.into()), &carol)
+                .await;
+        });
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+    for locked in [false, true] {
+        let dir = dw_testutil::private_tempdir();
+        let platform = Arc::new(Platform {
+            identities: vec![(ALICE, 0)],
+            contacts: vec![(ALICE, BOB), (ALICE, CAROL)],
+            ..Platform::default()
+        });
+        let (engine, s) = session_with(dir.path(), platform, Some(PASSPHRASE));
+        *guard(&s.platform.contacts.info_source) = Some(Arc::clone(&infos) as Arc<dyn InfoSource>);
+        let id = restore(&engine, &s);
+        let dp = s.dashpay(id);
+        let detail = |contact| {
+            let d = dp.contact(base58(ALICE), base58(contact)).ok().flatten()?;
+            Some((d.private_details, d.publish_state))
+        };
+        if locked {
+            s.lock_vault_sync().unwrap();
+        }
+        start(&engine, &s);
+        if locked {
+            wait_until("the bring-up", || {
+                s.dashpay_startup(&id).unwrap().startup != StartupStatus::Starting
+            });
+            std::thread::sleep(Duration::from_millis(300));
+            let shown = detail(BOB).map(|(d, _)| d);
+            assert!(
+                shown
+                    .as_ref()
+                    .is_none_or(|d| *d == PrivateDetails::default()),
+                "{shown:?}"
+            );
+            engine
+                .block_on(s.vault_op(|v| v.unlock(PASSPHRASE, UnlockScope::Full)))
+                .unwrap();
+        }
+        wait_until("the details", || {
+            detail(BOB) == Some((bob.clone(), PublishState::Published))
+                && detail(CAROL) == Some((carol.clone(), PublishState::Published))
+        });
+        engine.block_on(engine.shutdown()).unwrap();
+    }
 }
 
 /// ROADMAP DP1-05 on public testnet. `DW_DP105_TESTNET_FIXTURE` names the

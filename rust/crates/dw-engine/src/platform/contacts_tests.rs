@@ -195,6 +195,8 @@ struct Joins {
     names: BTreeMap<Identifier, String>,
     times: BTreeMap<Txid, u64>,
     provenance: Option<Provenance>,
+    /// `dp_contact_info` digests by contact.
+    published: BTreeMap<Identifier, [u8; 32]>,
 }
 
 impl Joins {
@@ -203,10 +205,12 @@ impl Joins {
         let unverified =
             |e: &Entity| (self.provenance.as_ref()).is_some_and(|p| p.is_unverified(e));
         let tx_time = |t: &Txid| self.times.get(t).copied();
+        let published = |_: &Identifier, c: &Identifier| self.published.get(c).copied();
         f(&Join {
             username: &username,
             unverified: &unverified,
             tx_time: &tx_time,
+            published: &published,
         })
     }
 
@@ -220,7 +224,7 @@ impl Joins {
     }
 
     fn detail(&self, owner: &OwnerContacts, n: u8) -> Option<ContactDetail> {
-        self.run(|j| detail(owner, &id(n), j))
+        self.run(|j| detail((&id(0), owner), &id(n), j))
     }
 
     /// Each contact's `unverified`, over every section.
@@ -520,10 +524,11 @@ fn a_rotated_request_moves_the_contact_date() {
 }
 
 /// The private details as the library holds them; publishing waits for a
-/// second contact; the payment lock is not this task's.
+/// second contact, then the details read as published while their digest is
+/// the one recorded (DP2-04); the payment lock is not this task's.
 #[test]
 fn private_details_and_the_publish_state() {
-    let (mut me, j) = (Me::new(), Joins::default());
+    let (mut me, mut j) = (Me::new(), Joins::default());
     me.established(BOB, 1_000, 2_000);
     me.contact(BOB).alias = Some("Bobby".into());
     me.contact(BOB).note = Some("met at the meetup".into());
@@ -543,6 +548,27 @@ fn private_details_and_the_publish_state() {
     me.established(CAROL, 4_000, 5_000);
     assert_eq!(
         j.detail(&me.contacts(), BOB).unwrap().publish_state,
+        PublishState::Local
+    );
+
+    let shown = j.detail(&me.contacts(), BOB).unwrap().private_details;
+    j.published
+        .insert(id(BOB), super::private_details::digest(&shown));
+    assert_eq!(
+        j.detail(&me.contacts(), BOB).unwrap().publish_state,
+        PublishState::Published
+    );
+    // A hidden-only change is a change.
+    me.contact(BOB).is_hidden = true;
+    assert_eq!(
+        j.detail(&me.contacts(), BOB).unwrap().publish_state,
+        PublishState::Local
+    );
+    // A record names one contact.
+    j.published
+        .insert(id(CAROL), super::private_details::digest(&shown));
+    assert_eq!(
+        j.detail(&me.contacts(), CAROL).unwrap().publish_state,
         PublishState::Local
     );
 }
