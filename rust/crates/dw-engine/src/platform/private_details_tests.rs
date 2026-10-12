@@ -1093,6 +1093,36 @@ fn a_load_across_a_forget_lands_nothing_old() {
     assert_eq!(f.reported(ERIN), PublishState::Published);
 }
 
+/// A write whose task is cancelled while its app.sqlite job runs holds a
+/// removal until the job ends; the removal then leaves nothing of the
+/// wallet.
+#[test]
+fn a_cancelled_write_holds_a_removal_until_its_job_ends() {
+    let f = published();
+    let pause = Arc::new(TestPause::default());
+    *guard(&f.s.platform.contacts.job_pause) = Some(Arc::clone(&pause));
+    let (s, pair, lease) = (Arc::clone(&f.s), f.pair(ERIN), f.lease());
+    let (manager, net) = (f.s.manager().unwrap(), Arc::clone(&f.net));
+    let publishing = f.s.rt.spawn(async move {
+        let wallet = manager.get_wallet(&pair.wallet.0).await.unwrap();
+        set(&*net, &s, &wallet, pair, details("Erin"), Some(lease)).await
+    });
+    wait_until("the write's job", Duration::from_secs(20), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    publishing.abort();
+    assert!(f.engine.block_on(publishing).unwrap_err().is_cancelled());
+    std::thread::scope(|scope| {
+        let removal = scope.spawn(|| f.remove_wallet());
+        std::thread::sleep(Duration::from_millis(300));
+        let waited = !removal.is_finished();
+        pause.release.notify_one();
+        removal.join().unwrap();
+        assert!(waited);
+    });
+    f.nothing_of_the_wallet();
+}
+
 /// A removal waits for a settle already writing, then removes what it
 /// wrote.
 #[test]

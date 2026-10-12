@@ -372,8 +372,9 @@ impl DigestCache {
 pub(crate) struct WriteFences(Mutex<BTreeMap<WalletId, Arc<tokio::sync::RwLock<()>>>>);
 
 /// Held over private-details writes: the wallet was the manager's when it
-/// was taken, and stays until it is dropped.
-pub(super) struct WriteFence(#[allow(dead_code)] tokio::sync::OwnedRwLockReadGuard<()>);
+/// was taken, and stays until it is dropped. Shared with the blocking job
+/// of each app.sqlite write, which keeps it until the job ends.
+pub(super) struct WriteFence(Arc<tokio::sync::OwnedRwLockReadGuard<()>>);
 
 impl WriteFences {
     fn fence(&self, id: WalletId) -> Arc<tokio::sync::RwLock<()>> {
@@ -395,7 +396,7 @@ impl WriteFences {
     ) -> Option<WriteFence> {
         let fence = self.fence(id).read_owned().await;
         let live = manager.get_wallet(&id.0).await?;
-        std::ptr::eq(&*live, wallet).then_some(WriteFence(fence))
+        std::ptr::eq(&*live, wallet).then(|| WriteFence(Arc::new(fence)))
     }
 }
 
@@ -436,6 +437,15 @@ impl Mine {
             details: established.get(&pair.contact).map(PrivateDetails::from),
         })
     }
+}
+
+/// `pair` as `dp_contact_info` keys it: wallet, identity, contact.
+fn row_keys(pair: &Pair) -> (String, String, String) {
+    (
+        pair.wallet.to_string(),
+        b58(&pair.identity),
+        b58(&pair.contact),
+    )
 }
 
 /// Saves `d` as `pair.identity`'s details of `pair.contact` in the library
@@ -668,63 +678,80 @@ impl NetworkSession {
         });
     }
 
-    /// `f` on app.sqlite with `pair` as `dp_contact_info` keys it.
-    async fn contact_info_op<T: Send + 'static>(
-        &self,
-        pair: &Pair,
-        f: impl FnOnce(&AppDb, &str, &str, &str) -> Result<T, AppDbError> + Send + 'static,
-    ) -> Result<T, PlatformError> {
-        let (wallet, identity, contact) = (
-            pair.wallet.to_string(),
-            b58(&pair.identity),
-            b58(&pair.contact),
-        );
-        Ok(self
-            .appdb_op(move |db| f(db, &wallet, &identity, &contact))
-            .await?)
-    }
-
     /// The digest `dp_contact_info` holds for `pair`.
     pub(super) async fn recorded_digest(
         &self,
         pair: &Pair,
     ) -> Result<Option<[u8; 32]>, PlatformError> {
-        self.contact_info_op(pair, |db, w, i, c| db.contact_info_digest(w, i, c))
-            .await
+        let (w, i, c) = row_keys(pair);
+        Ok(self
+            .appdb_op(move |db| db.contact_info_digest(&w, &i, &c))
+            .await?)
     }
 
-    /// Records that Platform holds `d` for `pair`. A change signals
-    /// `Contacts`: the details' `publish_state` moved.
+    /// `f` on app.sqlite, a private-details write under `fence`: its
+    /// blocking job holds the fence until it ends, even when the task
+    /// awaiting it is cancelled, so the wallet leaves after the write.
+    async fn fenced_op<T: Send + 'static>(
+        &self,
+        fence: &WriteFence,
+        f: impl FnOnce(&AppDb) -> Result<T, AppDbError> + Send + 'static,
+    ) -> Result<T, PlatformError> {
+        let held = Arc::clone(&fence.0);
+        #[cfg(test)]
+        let pause = guard(&self.platform.contacts.job_pause).take();
+        Ok(self
+            .appdb_op(move |db| {
+                let _held = held;
+                #[cfg(test)]
+                if let Some(pause) = pause {
+                    pause
+                        .reached
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    tokio::runtime::Handle::current().block_on(pause.release.notified());
+                }
+                f(db)
+            })
+            .await?)
+    }
+
+    /// Records that Platform holds `d` for `pair`, in app.sqlite and in
+    /// memory, by one job. A change signals `Contacts`: the details'
+    /// `publish_state` moved.
     async fn record_digest(
         &self,
-        _fence: &WriteFence,
+        fence: &WriteFence,
         pair: &Pair,
         d: &PrivateDetails,
     ) -> Result<(), PlatformError> {
-        let digest = digest(d);
-        let changed = self
-            .contact_info_op(pair, move |db, w, i, c| {
-                db.set_contact_info_digest(w, i, c, &digest, unix_now())
-            })
-            .await?;
-        (self.platform.contacts.digests).write(
-            pair.wallet,
-            pair.identity,
-            pair.contact,
-            Some(digest),
-        );
+        let (digest, cache, at) = (digest(d), self.digests(), *pair);
+        let (w, i, c) = row_keys(pair);
+        let changed = (self.fenced_op(fence, move |db| {
+            let changed = db.set_contact_info_digest(&w, &i, &c, &digest, unix_now())?;
+            cache.write(at.wallet, at.identity, at.contact, Some(digest));
+            Ok(changed)
+        }))
+        .await?;
         self.digest_changed(pair, changed);
         Ok(())
     }
 
     /// Forgets what was recorded for `pair`: Platform holds nothing for it.
-    async fn forget_digest(&self, _fence: &WriteFence, pair: &Pair) -> Result<(), PlatformError> {
-        let changed = self
-            .contact_info_op(pair, |db, w, i, c| db.forget_contact_info_digest(w, i, c))
-            .await?;
-        (self.platform.contacts.digests).write(pair.wallet, pair.identity, pair.contact, None);
+    async fn forget_digest(&self, fence: &WriteFence, pair: &Pair) -> Result<(), PlatformError> {
+        let (cache, at) = (self.digests(), *pair);
+        let (w, i, c) = row_keys(pair);
+        let changed = (self.fenced_op(fence, move |db| {
+            let changed = db.forget_contact_info_digest(&w, &i, &c)?;
+            cache.write(at.wallet, at.identity, at.contact, None);
+            Ok(changed)
+        }))
+        .await?;
         self.digest_changed(pair, changed);
         Ok(())
+    }
+
+    fn digests(&self) -> Arc<DigestCache> {
+        Arc::clone(&self.platform.contacts.digests)
     }
 
     /// The fence for private-details writes of `wallet` ([`WriteFences`]);
@@ -815,18 +842,25 @@ impl NetworkSession {
             }
         }
         // Records of contacts no longer established go too.
-        let (w, i) = (id.to_string(), b58(&owner));
-        let gone = (self.appdb_op(move |db| db.forget_contact_infos_except(&w, &i, &keep))).await?;
-        for contact in &gone {
-            if let Ok(contact) = Identifier::from_string(contact, Encoding::Base58) {
-                let pair = Pair {
-                    wallet: id,
-                    identity: owner,
-                    contact,
-                };
-                (self.platform.contacts.digests).write(id, owner, contact, None);
-                self.digest_changed(&pair, true);
+        let (w, i, cache) = (id.to_string(), b58(&owner), self.digests());
+        let gone = (self.fenced_op(&fence, move |db| {
+            let gone: Vec<Identifier> = (db.forget_contact_infos_except(&w, &i, &keep)?)
+                .iter()
+                .filter_map(|c| Identifier::from_string(c, Encoding::Base58).ok())
+                .collect();
+            for contact in &gone {
+                cache.write(id, owner, *contact, None);
             }
+            Ok(gone)
+        }))
+        .await?;
+        for contact in gone {
+            let pair = Pair {
+                wallet: id,
+                identity: owner,
+                contact,
+            };
+            self.digest_changed(&pair, true);
         }
         Ok(())
     }
