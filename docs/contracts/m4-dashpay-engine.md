@@ -2062,9 +2062,9 @@ renames or reshapes them takes the next version bump:
       and redeems the `PlatformOp` grant in one section under the guard of the vault's record writes. No candidate
       held, the wallet's seed included, is `identity.keys_missing` with every grant left unused. A wallet removal
       takes the same guard to delete the seed: one that came first is that refusal; one that starts during the
-      section waits until the grant is redeemed, the key still held, and the write then signs before the seed is
-      deleted or fails as a removed wallet's write does (its signers derive no key). A Lock ends every grant
-      (E0-04), so one in between refuses the redemption. Earlier, before a scan's expiry
+      section waits until the grant is redeemed, the key still held; the grant is then used, and the write either
+      signs before the seed is deleted or fails without signing (its signers cannot be issued, or derive no key).
+      A Lock ends every grant (E0-04), so one in between refuses the redemption. Earlier, before a scan's expiry
       check, each candidate is asked in turn through the grant without using it (`grant_identity_key_matches`, a
       yes-or-no answer that signs nothing); that check is advisory. A lease id, redeemed already, is checked by
       its signer (`can_sign_with`) before its credits are charged.
