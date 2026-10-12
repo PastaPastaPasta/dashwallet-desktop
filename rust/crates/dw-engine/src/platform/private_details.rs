@@ -374,7 +374,7 @@ pub(crate) struct WriteFences(Mutex<BTreeMap<WalletId, Arc<tokio::sync::RwLock<(
 /// Held over private-details writes: the wallet was the manager's when it
 /// was taken, and stays until it is dropped. Shared with the blocking job
 /// of each app.sqlite write, which keeps it until the job ends.
-pub(super) struct WriteFence(Arc<tokio::sync::OwnedRwLockReadGuard<()>>);
+pub(super) struct WriteFence(WalletId, Arc<tokio::sync::OwnedRwLockReadGuard<()>>);
 
 impl WriteFences {
     fn fence(&self, id: WalletId) -> Arc<tokio::sync::RwLock<()>> {
@@ -402,7 +402,7 @@ impl WriteFences {
     ) -> Option<WriteFence> {
         let fence = self.fence(id).read_owned().await;
         let live = manager.get_wallet(&id.0).await?;
-        std::ptr::eq(&*live, wallet).then(|| WriteFence(Arc::new(fence)))
+        std::ptr::eq(&*live, wallet).then(|| WriteFence(id, Arc::new(fence)))
     }
 }
 
@@ -704,7 +704,7 @@ impl NetworkSession {
         what: &'static str,
         f: impl FnOnce(&AppDb) -> Result<T, AppDbError> + Send + 'static,
     ) -> Result<T, PlatformError> {
-        let held = Arc::clone(&fence.0);
+        let (wallet_id, held) = (fence.0, Arc::clone(&fence.1));
         #[cfg(test)]
         let pause = {
             let mut slot = guard(&self.platform.contacts.job_pause);
@@ -724,7 +724,7 @@ impl NetworkSession {
             })
             .await;
         written.map_err(|e| {
-            tracing::warn!(write = what, error = %e, "private details not written");
+            tracing::warn!(%wallet_id, write = what, error = %e, "private details not written");
             e.into()
         })
     }

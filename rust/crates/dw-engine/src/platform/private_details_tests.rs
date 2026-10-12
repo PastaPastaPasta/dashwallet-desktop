@@ -1118,7 +1118,7 @@ fn hold_job(f: &Fixture, what: &'static str) -> (Arc<TestPause>, Release) {
 /// removal, a close) waits at it, and ends once the job does.
 fn a_cancelled_job_holds<T: Send + 'static>(
     f: &Fixture,
-    pause: &TestPause,
+    pause: &Arc<TestPause>,
     task: tokio::task::JoinHandle<T>,
     leave: impl FnOnce() + Send,
 ) {
@@ -1131,14 +1131,16 @@ fn a_cancelled_job_holds<T: Send + 'static>(
     assert!(fence.try_write().is_err(), "the job holds no fence");
     std::thread::scope(|scope| {
         let leaving = scope.spawn(leave);
+        // Before the scope joins the leave, whatever happens here.
+        let _release = Release(Arc::clone(pause));
         // A writer waits at the fence: no read gets in.
         wait_until("the leave at the fence", Duration::from_secs(60), || {
-            fence.try_read().is_err()
+            fence.try_read().is_err() || leaving.is_finished()
         });
         let waited = !leaving.is_finished();
         pause.release.notify_one();
         leaving.join().unwrap();
-        assert!(waited);
+        assert!(waited, "the leave did not wait for the job");
     });
 }
 
@@ -1189,6 +1191,7 @@ fn a_close_waits_for_a_cancelled_writes_job() {
             .block_on(f.engine.close_network(DashNetwork::Regtest))
             .unwrap();
     });
+    assert!(!f.s.platform.contacts.digests.holds(&f.wallet));
 }
 
 /// A removal waits for a settle already writing, then removes what it
@@ -1297,8 +1300,6 @@ fn contact_reads_digests_from_memory() {
 fn a_settle_forgets_contacts_no_longer_established() {
     let f = published();
     assert!(f.settle());
-    // That settle's own signals land first.
-    std::thread::sleep(Duration::from_secs(1));
     let (w, i, c) = (f.wallet.to_string(), b58(&id(ME)), b58(&id(DAVE)));
     let planted =
         f.s.appdb_op(move |db| db.set_contact_info_digest(&w, &i, &c, &[1; 32], 1));
@@ -1313,6 +1314,8 @@ fn a_settle_forgets_contacts_no_longer_established() {
         Duration::from_secs(20),
         || held().is_some() && f.s.platform.contacts.idle(),
     );
+    // The first settle's and the load's own signals land first.
+    std::thread::sleep(Duration::from_secs(1));
     // Nothing else changes in this settle: the signal is the forget's.
     let before = f.contact_signals();
     assert!(f.settle());
