@@ -554,10 +554,6 @@ pub(crate) struct FenceState {
     /// the row's `at` (UNIX seconds, DP1-02's DEC-197): a call under it may
     /// have released a funding signature since then.
     released: HashMap<(WalletId, String), u64>,
-    /// How often each funding step's marker was superseded in this process:
-    /// a release write begun under one marker is not taken for the next
-    /// one's ([`LeaseTable::record_release`]).
-    supersedes: HashMap<(WalletId, String), u64>,
     /// Each funding step's standing marker's `seq` on disk, once its write
     /// in this process returned: a release names it, so a write that lands
     /// after the marker was superseded answers no other one (DP1-02 f1). A
@@ -566,6 +562,11 @@ pub(crate) struct FenceState {
     /// when a `NotSent` row supersedes it; a `Sent` bundle that appends the
     /// step's marker again leaves the old one here, harmlessly (no call of
     /// a `Sent` step runs, and the journal refuses a release naming it).
+    /// A release's answer counts only while this is still the `seq` it
+    /// named: `step_log` is AUTOINCREMENT, so no later marker of the step
+    /// gets that `seq` again, even after the wallet's erase compacted the
+    /// old one and forgot this entry, where an in-memory counter would
+    /// start over (Sol f1 r1).
     marker_seqs: HashMap<(WalletId, String), u64>,
     /// The funding steps Repair resolved, durably (DP1-02 PA-3, review
     /// OD-06): each with its ChainLocked self-spend, which takes an input
@@ -1210,7 +1211,6 @@ impl FenceState {
                 self.durable_record.remove(&key);
                 self.released.remove(&key);
                 self.marker_seqs.remove(&key);
-                *self.supersedes.entry(key.clone()).or_default() += 1;
                 self.self_spends.remove(&key);
                 self.signed_locks.remove(&key);
             }
@@ -1545,8 +1545,6 @@ fn forget_erased(i: &mut Inner, wallet: WalletId, dispatch: bool, erased: Vec<[u
     f.durable_record
         .retain(|(w, s)| !forgotten(w, &ArtifactId::of_step(w, s)));
     f.released
-        .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
-    f.supersedes
         .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
     f.marker_seqs
         .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
@@ -3419,12 +3417,9 @@ impl LeaseTable {
                 return Err("the funding step's marker is not durable".to_owned());
             };
             i.fence.writes += 1;
-            Ok(Some((
-                i.fence.supersedes.get(&key).copied().unwrap_or(0),
-                marker,
-            )))
+            Ok(Some(marker))
         })?;
-        let Some((generation, marker)) = begun else {
+        let Some(marker) = begun else {
             return Ok(());
         };
         // One time for every attempt, so a retry that finds an earlier
@@ -3464,10 +3459,12 @@ impl LeaseTable {
                         // superseded marker's (the journal wrote it only
                         // while that marker stood), and the next one's call
                         // writes its own.
+                        // So is a row that answers only after the wallet's
+                        // erase and re-add marked the step again: J's `seq`
+                        // is the new marker's.
                         Ok(Some(_))
                             if !i.fence.call_marked(&wallet, &key.1)
-                                || i.fence.supersedes.get(&key).copied().unwrap_or(0)
-                                    != generation =>
+                                || i.fence.marker_seqs.get(&key) != Some(&marker) =>
                         {
                             Err("the funding step's marker was superseded".to_owned())
                         }

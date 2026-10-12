@@ -381,6 +381,8 @@ pub(super) struct FakeJournal {
     /// be released before it reads the step's marker
     /// ([`Self::hold_release`]).
     release_hold: Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>,
+    /// [`Self::hold_release_after`]'s hold, once the row is stored.
+    release_hold_after: Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>,
     /// Every `Sent` bundle asked for.
     pub(super) bundles: Mutex<Vec<Bundle>>,
     /// Every artifact a marker row was ever appended for.
@@ -577,26 +579,34 @@ impl JournalBackend for FakeJournal {
             began.send(()).unwrap();
             let _ = release.recv();
         }
-        if self.fail_release.load(Ordering::SeqCst) {
-            return Err("injected release failure".into());
+        let written = (|| {
+            if self.fail_release.load(Ordering::SeqCst) {
+                return Err("injected release failure".into());
+            }
+            let log = self.log.lock().unwrap();
+            if latest_standing(&log, wallet, artifact, step) != Some(marker) {
+                return Ok(None);
+            }
+            let mut releases = self.releases.lock().unwrap();
+            if let Some(r) = releases.iter().find(|r| r.marker == marker) {
+                return Ok(Some(r.at));
+            }
+            releases.push(ReleaseRow {
+                seq: self.seq(),
+                wallet: *wallet,
+                step_id: step.to_owned(),
+                artifact: *artifact,
+                marker,
+                at,
+            });
+            Ok(Some(at))
+        })();
+        let hold = self.release_hold_after.lock().unwrap().take();
+        if let Some((stored, release)) = hold {
+            stored.send(()).unwrap();
+            let _ = release.recv();
         }
-        let log = self.log.lock().unwrap();
-        if latest_standing(&log, wallet, artifact, step) != Some(marker) {
-            return Ok(None);
-        }
-        let mut releases = self.releases.lock().unwrap();
-        if let Some(r) = releases.iter().find(|r| r.marker == marker) {
-            return Ok(Some(r.at));
-        }
-        releases.push(ReleaseRow {
-            seq: self.seq(),
-            wallet: *wallet,
-            step_id: step.to_owned(),
-            artifact: *artifact,
-            marker,
-            at,
-        });
-        Ok(Some(at))
+        written
     }
 
     fn resolve_sent(
@@ -732,6 +742,15 @@ impl FakeJournal {
         let (release, release_rx) = mpsc::sync_channel(1);
         *self.release_hold.lock().unwrap() = Some((began, release_rx));
         (began_rx, release)
+    }
+
+    /// [`Self::hold_release`], with the next release's answer held after
+    /// its write: the row is stored, the caller not yet told.
+    pub(super) fn hold_release_after(&self) -> (mpsc::Receiver<()>, mpsc::SyncSender<()>) {
+        let (stored, stored_rx) = mpsc::sync_channel(1);
+        let (release, release_rx) = mpsc::sync_channel(1);
+        *self.release_hold_after.lock().unwrap() = Some((stored, release_rx));
+        (stored_rx, release)
     }
 
     /// Clears every marker's `durable_record` flag, as in a journal written

@@ -434,7 +434,10 @@ step as the rest of `registration_funding_steps`. The disk write is tied to the 
 under too (DP1-02 f1, Sol r9 residual 2): `insert_release` names that marker's `seq` (returned by
 the marker's own write) and writes only while it stands, in one transaction, so a record whose
 signing was dropped and whose write lands after a `NotSent` row and the next call's marker answers
-neither; and it returns the row's `at`, which J keeps, so J's time is always the disk's. An
+neither; and it returns the row's `at`, which J keeps, so J's time is always the disk's. J takes
+the answer only while its own `seq` for the step is still the one the write named (Sol f1 r1):
+`step_log` never reuses a `seq`, so a row that committed under the old marker but answers after
+the wallet's erase and re-add marked the step again is the old marker's, in memory too. An
 unreleased flagged step can still read `MaybeSent` while the wallet's rows are unknown; its view
 shows no release, so it passes nothing.
 
