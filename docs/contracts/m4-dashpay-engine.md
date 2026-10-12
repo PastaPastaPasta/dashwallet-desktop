@@ -2096,3 +2096,7 @@ renames or reshapes them takes the next version bump:
       with no Lock between the removal and the import (same seed, same epoch), a signer issued before the removal
       and a grant not yet redeemed work again, with no fresh unlock. A Lock in between, or a recovery (which ends
       the epoch), ends both.
+    - **Residual (accepted, Sol r5):** an `accept_request` that adopts our request already on Platform signs
+      nothing and returns `Ok`, so its call permit ends `Sent` (E0-04 P2b's `finish(ok)`) and the quote stays charged
+      to the lease's credits budget though no Platform credits were spent. Conservative: the lease pays for at most
+      one write either way.
