@@ -1655,11 +1655,12 @@ fn concurrent_main_identity_writes_leave_the_cache_as_the_database() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
-/// A settle requires a verified seed binding, after an unlock too, where
-/// the contact-crypto drain had nothing queued and so checked nothing
-/// (Sol r1 S1): with keys of another seed in the vault, an empty read
-/// changes no recorded digest, and the wallet reports
-/// `SeedBindingUnverified`.
+/// A settle requires a verified seed binding after an unlock too (Sol r1
+/// S1): with keys of another seed in the vault, an empty read changes no
+/// recorded digest, and the wallet reports `SeedBindingUnverified`. (Here
+/// the drain has a DashPay pass's refresh queued and reports the mismatch
+/// too; with nothing queued it checks nothing, which
+/// `an_unlock_with_nothing_queued_still_checks_the_binding` covers.)
 #[test]
 fn an_unlock_settle_needs_a_verified_seed_binding() {
     const BOB: [u8; 32] = [9; 32];

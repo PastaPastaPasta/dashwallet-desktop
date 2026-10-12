@@ -30,6 +30,7 @@ use super::registration_flow::b58;
 use super::requests::tests::{Fixture, keys, wait_until};
 use super::runtime::guard;
 use super::signers::VaultContactCrypto;
+use super::startup::StartupStatus;
 use crate::{DashNetwork, EngineEvent, PlatformChange};
 use dw_vault::{SeedDerivation, WalletSecret};
 use zeroize::Zeroizing;
@@ -277,6 +278,11 @@ impl Fixture {
             .unwrap()
             .unwrap();
         detail.publish_state
+    }
+
+    /// The wallet's DashPay startup status.
+    fn startup(&self) -> Option<StartupStatus> {
+        self.s.platform.startup_of(&self.wallet).map(|s| s.startup)
     }
 
     /// The opens reads have begun.
@@ -743,6 +749,34 @@ fn a_settle_needs_a_verified_seed_binding() {
         (f.state(ERIN), f.state(BOB)),
         (PublishState::Published, PublishState::Published)
     );
+    assert_eq!(f.startup(), Some(StartupStatus::SeedBindingUnverified));
+}
+
+/// The unlock's settle checks the binding itself, after a contact-crypto
+/// drain that had nothing queued and so checked nothing (Sol r1 S1): the
+/// records stay, and the wallet reports `SeedBindingUnverified`.
+#[test]
+fn an_unlock_with_nothing_queued_still_checks_the_binding() {
+    let f = published();
+    f.set(BOB, details("Bob"), Some(f.lease())).unwrap();
+    f.net.infos.remove(id(ME), id(BOB));
+    f.swap_seed();
+    let (s, wallet) = (Arc::clone(&f.s), f.wallet);
+    let queued = f.engine.block_on(async move {
+        let manager = s.manager().unwrap();
+        let w = manager.get_wallet(&wallet.0).await.unwrap();
+        let queued = (w.identity().dashpay())
+            .drainable_contact_crypto_count()
+            .await;
+        s.after_unlock(&manager, wallet).await;
+        queued
+    });
+    assert_eq!(queued, 0);
+    wait_until("the settle's check", Duration::from_secs(20), || {
+        f.startup() == Some(StartupStatus::SeedBindingUnverified)
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(f.state(BOB), PublishState::Published);
 }
 
 /// An edit's read-first is a settle too, with the same check: it leaves
@@ -759,6 +793,7 @@ fn the_read_first_needs_a_verified_seed_binding() {
         PublishState::Local
     );
     assert_eq!(f.state(BOB), PublishState::Published);
+    assert_eq!(f.startup(), Some(StartupStatus::SeedBindingUnverified));
 }
 
 /// One deadline bounds a settle, opens included, checked between opens
@@ -889,10 +924,14 @@ fn contact_reads_digests_from_memory() {
 #[test]
 fn a_settle_forgets_contacts_no_longer_established() {
     let f = published();
+    assert!(f.settle());
+    // That settle's own signals land first.
+    std::thread::sleep(Duration::from_secs(1));
     let (w, i, c) = (f.wallet.to_string(), b58(&id(ME)), b58(&id(DAVE)));
     let planted =
         f.s.appdb_op(move |db| db.set_contact_info_digest(&w, &i, &c, &[1; 32], 1));
     assert!(f.engine.block_on(planted).unwrap());
+    // Nothing else changes in this settle: the signal is the forget's.
     let before = f.contact_signals();
     assert!(f.settle());
     assert_eq!(f.recorded(DAVE), None);

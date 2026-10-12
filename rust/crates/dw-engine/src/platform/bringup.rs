@@ -679,7 +679,7 @@ impl NetworkSession {
     /// the identity unsettled, otherwise the seed-gated contact-crypto drain;
     /// then `reconcile_dashpay_rescan`, so payments to contacts whose
     /// accounts appear only now are found by a rescan.
-    async fn after_unlock(self: &Arc<Self>, manager: &Manager, id: WalletId) {
+    pub(super) async fn after_unlock(self: &Arc<Self>, manager: &Manager, id: WalletId) {
         // No seed, a restore not committed yet, or a signal from an unlock
         // the vault has since locked again.
         let admitted = self
