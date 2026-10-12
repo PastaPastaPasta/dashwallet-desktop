@@ -296,11 +296,18 @@ fn a_different_secret_is_not_stored_over_a_wallets_records() {
     let shown = reveal(&v, 1, Credential::Passphrase(PASS)).unwrap();
     assert_eq!(&shown.phrase[..], b"phrase-1");
 
-    // The same records again: sealed anew, as the rollback test relies on.
+    // The same records again: sealed anew, as the rollback test relies on;
+    // a raw seed, with no phrase records, as well.
     v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
     assert!(fx.raw() != before);
     let shown = reveal(&v, 1, Credential::Passphrase(PASS)).unwrap();
     assert_eq!(&shown.phrase[..], b"phrase-1");
+    let raw_seed = WalletSecret {
+        derivation: SeedDerivation::RawSeed,
+        ..secret(2)
+    };
+    v.store_wallet_secret(&wallet(2), &raw_seed).unwrap();
+    v.store_wallet_secret(&wallet(2), &raw_seed).unwrap();
 }
 
 /// An older but self-consistent vault file put on disk while the app runs
