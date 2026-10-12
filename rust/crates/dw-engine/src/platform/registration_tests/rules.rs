@@ -132,9 +132,9 @@ impl RegistrationLib for Hooked {
         &self,
         outpoint: OutPoint,
         index: u32,
-        lease: &Lease,
+        permit: &CallPermit,
     ) -> Result<String, PlatformError> {
-        self.fake.register_identity(outpoint, index, lease).await
+        self.fake.register_identity(outpoint, index, permit).await
     }
 
     async fn register_name(

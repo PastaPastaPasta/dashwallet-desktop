@@ -3,7 +3,7 @@
 //! and cap, restore adoption, the funding failures (H12), discard and
 //! "Finish transfers".
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -449,6 +449,25 @@ struct World {
     waits: Vec<Duration>,
     /// SPV is behind the network (DEC-197).
     unsynced: bool,
+    /// What each `register_identity` call meets, in order; none left, it
+    /// creates the identity at once.
+    identity_script: VecDeque<IdentityAttempt>,
+}
+
+/// One `register_identity` call as step 2's retries play out inside it
+/// (E0-04 §2a.3, F10, F16): Platform refuses a ChainLock proof whose height
+/// it has not reached, and the library signs the transition again.
+#[derive(Debug, Clone, Copy)]
+enum IdentityAttempt {
+    /// The first attempt's signature was released and submitted; the
+    /// re-sign met a locked signer. `executes`: the first attempt lands on
+    /// Platform all the same.
+    ReleasedThenLocked { executes: bool },
+    /// Every re-sign was released and refused on the height until the
+    /// library gave up: nothing landed.
+    ReleasedThenUnavailable,
+    /// The height caught up at the second attempt: created.
+    RetriedThenCreated,
 }
 
 /// The tap's report of the lock `outpoint`, as the journal builds it: its
@@ -520,6 +539,23 @@ impl Fake {
     }
 
     /// Fundings and identity creations so far.
+    /// Platform's IdentityCreate from the lock at `outpoint`: the identity
+    /// at `index`, the lock consumed. Never twice for one lock.
+    fn create_identity(&self, outpoint: OutPoint, index: u32) -> String {
+        let id = flow::b58(&flow::identity_for(outpoint));
+        {
+            let mut w = self.w();
+            assert!(
+                !w.identities.iter().any(|(_, i)| *i == id),
+                "the lock is consumed twice"
+            );
+            w.identities.push((index, id.clone()));
+            w.identity_creates += 1;
+        }
+        self.set_status(outpoint, LockStatus::Consumed);
+        id
+    }
+
     fn counts(&self) -> (u32, u32) {
         let w = self.w();
         (w.funds, w.identity_creates)
@@ -773,24 +809,39 @@ impl RegistrationLib for Fake {
         &self,
         outpoint: OutPoint,
         index: u32,
-        lease: &Lease,
+        permit: &CallPermit,
     ) -> Result<String, PlatformError> {
         // The proof is signed with the lock's one-time key: the funding
         // signer, as `PwLib` asks.
-        lease.identity_signer(&[index])?;
-        lease.uncounted_funding_signer()?;
+        permit.identity_signer(&[index])?;
+        permit.lease().uncounted_funding_signer()?;
         self.maybe_hang(Call::RegisterIdentity, When::Before).await;
-        let id = flow::b58(&flow::identity_for(outpoint));
-        {
-            let mut w = self.w();
-            assert!(
-                !w.identities.iter().any(|(_, i)| *i == id),
-                "the lock is consumed twice"
-            );
-            w.identities.push((index, id.clone()));
-            w.identity_creates += 1;
+        let attempt = self.w().identity_script.pop_front();
+        match attempt {
+            Some(IdentityAttempt::ReleasedThenLocked { executes }) => {
+                permit.note_released();
+                if executes {
+                    self.create_identity(outpoint, index);
+                }
+                permit.signatures().note_locked();
+                // As the library reports a signer's refusal: its own
+                // error, not the lease's.
+                return Err(PlatformError::Internal {
+                    detail: "the identity signer refused: locked".into(),
+                });
+            }
+            Some(IdentityAttempt::ReleasedThenUnavailable) => {
+                permit.note_released();
+                permit.note_released();
+                return Err(PlatformError::Unavailable);
+            }
+            Some(IdentityAttempt::RetriedThenCreated) => {
+                permit.note_released();
+                permit.note_released();
+            }
+            None => permit.note_released(),
         }
-        self.set_status(outpoint, LockStatus::Consumed);
+        let id = self.create_identity(outpoint, index);
         self.maybe_hang(Call::RegisterIdentity, When::After).await;
         Ok(id)
     }
@@ -3677,3 +3728,4 @@ fn an_unsigned_lock_waits_for_finish() {
 
 mod ledger;
 mod rules;
+mod step2;

@@ -57,7 +57,7 @@ use tokio::time::Instant;
 use super::errors::{NameError, PlatformError, RegistrationError};
 use super::flows::{BudgetPurpose, LeaseStateView};
 use super::lease::mode_b::TrackedRow;
-use super::lease::{CallPermit, DraftKey, FundingKey, Lease, LeaseTable};
+use super::lease::{CallPermit, CallStep, DraftKey, FundingKey, Lease, LeaseTable};
 use super::names::NameOutcome;
 use super::registration::RegistrationWait;
 use super::registration_ledger::{
@@ -288,12 +288,15 @@ pub(crate) trait RegistrationLib: Send + Sync {
         outpoint: OutPoint,
     ) -> impl Future<Output = Result<Option<String>, PlatformError>> + Send;
     /// IdentityCreate from the tracked lock (`FromExistingAssetLock`),
-    /// with keys 0–5 of `identity_index`, under the lease's signers.
+    /// with keys 0–5 of `identity_index`: the transition signed by
+    /// `permit`'s counting identity signer (step 2's retries re-sign inside
+    /// the one call, E0-04 §2a.3), the lock's proof by the lease's
+    /// uncounted funding signer (no lock is built).
     fn register_identity(
         &self,
         outpoint: OutPoint,
         identity_index: u32,
-        lease: &Lease,
+        permit: &CallPermit,
     ) -> impl Future<Output = Result<String, PlatformError>> + Send;
     /// DP1-03's `register_name` under the lease.
     fn register_name(
@@ -2067,26 +2070,41 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         let Some(lease) = self.lease() else {
             return Ok(Step::Park(self.authority_wait()));
         };
-        // The call holds a plain call permit. P2b seam: the step marker of
-        // `identity_step` written before the call.
+        // The call holds P2b's step permit (E0-04 §2a.3): the step's marker
+        // is durable before the library starts, and the permit's identity
+        // signer counts what it releases. Step 2's ChainLock-height and
+        // IS→CL retries re-sign inside the one call, so an earlier attempt
+        // may execute: a call that released a signature and then failed
+        // reads `MaybeSent`, and one whose signer met the lock parks the
+        // flow. Either way the identity is looked for first (it is the
+        // lock's: Platform creates it once), so the next run never pays
+        // twice.
         let in_call = match self.flows().enter_call(self.claim) {
             Ok(in_call) => in_call,
             Err(step) => return Ok(step),
         };
-        let created = lease
-            .scope_step(Some(identity_step(row.id)), async {
-                let call = lease.call_permit(identity_step(row.id), None)?;
-                let created = self.lib.register_identity(outpoint, index, &lease).await;
+        let step = identity_step(row.id);
+        let (created, locked) = lease
+            .scope_step(Some(step.clone()), async {
+                let call = (lease.call_permit_step(&step, None, CallStep::Resumable(step.clone())))
+                    .await
+                    .map_err(PlatformError::from)?;
+                let created = self.lib.register_identity(outpoint, index, &call).await;
+                let locked = call.signatures().locked();
                 call.finish(created.is_ok());
-                created
+                Ok::<_, PlatformError>((created, locked))
             })
-            .await;
+            .await
+            .unwrap_or_else(|e| (Err(e), false));
         drop(in_call);
         match created {
             Ok(id) => self.advance(row, registered(id)).await,
             Err(e) => {
                 if let Ok(Some(id)) = self.lib.find_identity(outpoint).await {
                     return self.advance(row, registered(id)).await;
+                }
+                if locked {
+                    return Ok(Step::Park(self.authority_wait()));
                 }
                 Ok(self.failed(&e))
             }
@@ -2735,17 +2753,17 @@ impl RegistrationLib for PwLib {
         &self,
         outpoint: OutPoint,
         identity_index: u32,
-        lease: &Lease,
+        permit: &CallPermit,
     ) -> Result<String, PlatformError> {
         use platform_wallet::wallet::asset_lock::AssetLockFunding;
-        let identity_signer = lease.identity_signer(&[identity_index])?;
+        let identity_signer = permit.identity_signer(&[identity_index])?;
         // Uncounted, and no funding release recorded (E0-04 §2a.7): this
         // call builds no lock. The library resumes the tracked one, which
         // `create_identity` passes only with a proof, so nothing is sent,
         // and the funding key signs only the transition's asset lock proof
         // (the credit output's key). The step's status rests on that lock's
         // own signed record, which no signature here can contradict.
-        let funding_signer = lease.uncounted_funding_signer()?;
+        let funding_signer = permit.lease().uncounted_funding_signer()?;
         let keys = super::keys_policy::derive_keys(
             identity_signer.vault_signer(),
             identity_index,
