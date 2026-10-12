@@ -243,6 +243,9 @@ pub(super) fn publish_state(
 /// that cannot open them (a locked vault) fails the read; a document that
 /// does not open with the wallet's keys (another client's, a corrupt one),
 /// or whose plaintext does not decode, is skipped, as the library skips it.
+/// Documents of which none opens fail the read too: a seed that does not
+/// bind the wallet opens none, and must not read as "Platform holds
+/// nothing" (Opus r2 M1).
 async fn read_platform(
     source: &dyn InfoSource,
     crypto: &VaultContactCrypto,
@@ -251,6 +254,7 @@ async fn read_platform(
     let documents = tokio::time::timeout(READ_TIMEOUT, source.documents(owner))
         .await
         .map_err(|_| PlatformError::Timeout)??;
+    let (total, mut opened_any) = (documents.len(), false);
     let mut found = BTreeMap::new();
     for doc in documents {
         let root = key_path(network, index, doc.root).ok();
@@ -267,6 +271,7 @@ async fn read_platform(
             tracing::warn!(owner = %owner, "a contactInfo that does not open with the wallet's keys");
             continue;
         };
+        opened_any = true;
         match decode_private_data(&opened.private_data) {
             Ok(data) => {
                 found.insert(Identifier::from(opened.contact_id), data.into());
@@ -275,6 +280,11 @@ async fn read_platform(
                 tracing::warn!(owner = %owner, error = %e, "a contactInfo that does not decode")
             }
         }
+    }
+    if total > 0 && !opened_any {
+        return Err(PlatformError::Internal {
+            detail: format!("none of {total} contactInfo documents opens with the wallet's keys"),
+        });
     }
     Ok(found)
 }
@@ -629,12 +639,13 @@ pub(super) async fn set(
             // `Local`, and a later read decides (the library's pass puts
             // Platform's details back meanwhile, as it would anyway).
             tracing::info!(contact = %b58(&pair.contact), "contactInfo write failed: {e}");
-            let read = read_platform(
-                &*session.info_source()?,
-                &crypto,
-                (session.vault.network(), index, pair.identity),
-            )
-            .await;
+            let read = match session.info_source() {
+                Ok(source) => {
+                    let at = (session.vault.network(), index, pair.identity);
+                    read_platform(&*source, &crypto, at).await
+                }
+                Err(e) => Err(e),
+            };
             match read {
                 Ok(found) if found.get(&pair.contact) == Some(&d) => {
                     session.record_digest(&pair, &d).await?;

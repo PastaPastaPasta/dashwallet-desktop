@@ -631,7 +631,9 @@ fn refusals_keep_the_grant() {
 /// The settle (bring-up, unlock, a failed read-back's retry) makes the
 /// wallet agree with Platform: its details applied and recorded, a record
 /// Platform no longer backs forgotten, and a document that does not open
-/// with the wallet's keys skipped (Opus r1 #3).
+/// with the wallet's keys skipped (Opus r1 #3). Documents of which none
+/// opens (a seed that does not bind the wallet) fail the read, changing
+/// nothing (Opus r2 M1).
 #[test]
 fn the_settle_applies_what_platform_holds() {
     let f = published();
@@ -670,6 +672,13 @@ fn the_settle_applies_what_platform_holds() {
     f.net.infos.put(id(ME), id(DAVE), foreign);
     f.publish_elsewhere(ERIN, &details("Erin3"));
     assert!(f.settle());
+    assert_eq!(
+        (f.shown(ERIN), f.state(ERIN)),
+        (details("Erin3"), PublishState::Published)
+    );
+
+    f.net.infos.remove(id(ME), id(ERIN));
+    assert!(!f.settle());
     assert_eq!(
         (f.shown(ERIN), f.state(ERIN)),
         (details("Erin3"), PublishState::Published)
