@@ -1398,6 +1398,16 @@ export function startRegistration(walletId: string, request: RegistrationRequest
 }
 
 /**
+ * `startRegistration` past the earlier registrations `past` (as
+ * `registration.in_progress` names them) whose funding is unknown.
+ * Call it only after the user confirmed that each one's payment may
+ * still confirm and then shows up as a lock to recover later.
+ */
+export function startRegistrationPastUnknownFunding(walletId: string, request: RegistrationRequest, grant: string, past: Array<string>): Promise<string> {
+  return invoke<string>("start_registration_past_unknown_funding", { walletId, request, grant, past });
+}
+
+/**
  * Every registration on file, with what it waits for.
  */
 export function registrations(walletId: string): Promise<Array<RegistrationStatus>> {
@@ -2056,6 +2066,7 @@ export type CommandArgs = {
   set_main_identity: { walletId: string; identity: string };
   registration_quote: { walletId: string; request: RegistrationRequest };
   start_registration: { walletId: string; request: RegistrationRequest; grant: string };
+  start_registration_past_unknown_funding: { walletId: string; request: RegistrationRequest; grant: string; past: Array<string> };
   registrations: { walletId: string };
   resume_registration: { walletId: string; draft: string; grant: string | null };
   discard_registration: { walletId: string; draft: string };
@@ -2279,6 +2290,7 @@ export type CommandResults = {
   set_main_identity: null;
   registration_quote: RegistrationQuote;
   start_registration: string;
+  start_registration_past_unknown_funding: string;
   registrations: Array<RegistrationStatus>;
   resume_registration: null;
   discard_registration: null;
@@ -2504,6 +2516,7 @@ export const COMMANDS: Record<CommandName, string> = {
   set_main_identity: "identity",
   registration_quote: "identity",
   start_registration: "identity",
+  start_registration_past_unknown_funding: "identity",
   registrations: "identity",
   resume_registration: "identity",
   discard_registration: "identity",
@@ -2737,9 +2750,15 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "identity.keys_missing",
   "registration.in_progress",
   "registration.funding_insufficient",
+  "registration.coins_locked",
   "registration.islock_timeout",
   "registration.recoverable",
   "registration.already_has_username",
+  "registration.unsupported",
+  "registration.funded_elsewhere",
+  "registration.funding_cancelled",
+  "registration.not_synced",
+  "registration.funding_unknown_recent",
   "name.invalid",
   "name.taken",
   "name.contest_open",

@@ -42,9 +42,15 @@ codes! {
     RegistrationCode {
         InProgress = "registration.in_progress",
         FundingInsufficient = "registration.funding_insufficient",
+        CoinsLocked = "registration.coins_locked",
         IslockTimeout = "registration.islock_timeout",
         Recoverable = "registration.recoverable",
         AlreadyHasUsername = "registration.already_has_username",
+        Unsupported = "registration.unsupported",
+        FundedElsewhere = "registration.funded_elsewhere",
+        FundingCancelled = "registration.funding_cancelled",
+        NotSynced = "registration.not_synced",
+        FundingUnknownRecent = "registration.funding_unknown_recent",
     }
 }
 
@@ -183,7 +189,10 @@ impl From<RegistrationError> for AppError {
         use RegistrationError as R;
         let message = e.to_string();
         let (code, data) = match e {
-            R::InProgress => (RegistrationCode::InProgress, None),
+            R::InProgress { draft } => (
+                RegistrationCode::InProgress,
+                Some(ErrorData::Draft { draft }),
+            ),
             R::FundingInsufficient { needed, available } => (
                 RegistrationCode::FundingInsufficient,
                 Some(ErrorData::Duffs {
@@ -191,12 +200,21 @@ impl From<RegistrationError> for AppError {
                     available,
                 }),
             ),
+            R::CoinsLocked => (RegistrationCode::CoinsLocked, None),
             R::IslockTimeout => (RegistrationCode::IslockTimeout, None),
             R::Recoverable { draft } => (
                 RegistrationCode::Recoverable,
                 Some(ErrorData::Draft { draft }),
             ),
             R::AlreadyHasUsername => (RegistrationCode::AlreadyHasUsername, None),
+            R::Unsupported => (RegistrationCode::Unsupported, None),
+            R::FundedElsewhere => (RegistrationCode::FundedElsewhere, None),
+            R::FundingCancelled => (RegistrationCode::FundingCancelled, None),
+            R::NotSynced => (RegistrationCode::NotSynced, None),
+            R::FundingUnknownRecent { draft, wait_secs } => (
+                RegistrationCode::FundingUnknownRecent,
+                Some(ErrorData::DraftWait { draft, wait_secs }),
+            ),
             R::Name(e) => return e.into(),
             R::Invitation(e) => return e.into(),
             R::Platform(e) => return e.into(),
@@ -370,14 +388,23 @@ mod tests {
             assert_eq!(AppError::from(e.clone()).code_str(), e.code());
         }
         let registration = [
-            RegistrationError::InProgress,
+            RegistrationError::InProgress { draft: s() },
             RegistrationError::FundingInsufficient {
                 needed: 2,
                 available: 1,
             },
+            RegistrationError::CoinsLocked,
             RegistrationError::IslockTimeout,
             RegistrationError::Recoverable { draft: s() },
             RegistrationError::AlreadyHasUsername,
+            RegistrationError::Unsupported,
+            RegistrationError::FundedElsewhere,
+            RegistrationError::FundingCancelled,
+            RegistrationError::NotSynced,
+            RegistrationError::FundingUnknownRecent {
+                draft: s(),
+                wait_secs: Some(1),
+            },
             RegistrationError::Name(NameError::Taken),
             RegistrationError::Invitation(InvitationError::Expired),
             RegistrationError::Platform(PlatformError::Timeout),
@@ -471,6 +498,21 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&e).unwrap()["data"]["rules"],
             serde_json::json!(["noEdgeHyphen"])
+        );
+        let e = AppError::from(RegistrationError::InProgress {
+            draft: "registration/3/funding".into(),
+        });
+        assert_eq!(
+            serde_json::to_value(&e).unwrap()["data"],
+            serde_json::json!({ "kind": "draft", "draft": "registration/3/funding" })
+        );
+        let e = AppError::from(RegistrationError::FundingUnknownRecent {
+            draft: "d".into(),
+            wait_secs: Some(600),
+        });
+        assert_eq!(
+            serde_json::to_value(&e).unwrap()["data"],
+            serde_json::json!({ "kind": "draftWait", "draft": "d", "waitSecs": 600 })
         );
     }
 }

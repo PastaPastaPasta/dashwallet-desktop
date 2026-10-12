@@ -23,4 +23,14 @@ fundsCommitted: boolean,
 /**
  * While `phase` is `contested`.
  */
-contestEndsAt: number | null, failure: RegistrationFailure | null, createdAt: number, updatedAt: number, };
+contestEndsAt: number | null, failure: RegistrationFailure | null, 
+/**
+ * The code the name step ended with when the identity was registered
+ * but its name was not (`name.taken`, …): the flow still ends `done`,
+ * and the identity claims a name with `registerName`.
+ */
+nameFailure: string | null, 
+/**
+ * The same for the initial profile, which `updateProfile` publishes.
+ */
+profileFailure: string | null, createdAt: number, updatedAt: number, };

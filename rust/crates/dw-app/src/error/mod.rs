@@ -195,8 +195,17 @@ pub enum ErrorData {
     Artifact { artifact: String },
     /// `contact.payment_locked`, and a txid elsewhere.
     Txid { txid: String },
-    /// `registration.recoverable`: the draft to resume.
+    /// `registration.recoverable`: the draft to resume;
+    /// `registration.in_progress`: the draft that blocks (or
+    /// `registration/<n>/funding` for a funding step whose row is gone).
     Draft { draft: String },
+    /// `registration.funding_unknown_recent`: the earlier registration
+    /// whose funding may still appear, and how long until a start may pass
+    /// it, when known.
+    DraftWait {
+        draft: String,
+        wait_secs: Option<u64>,
+    },
     /// `name.invalid`: the rules the label breaks.
     UsernameRules { rules: Vec<UsernameRuleName> },
     /// `contact.ineligible`: the eligibility answer that refused.

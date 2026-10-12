@@ -17,6 +17,7 @@
     "allow-set-main-identity",
     "allow-registration-quote",
     "allow-start-registration",
+    "allow-start-registration-past-unknown-funding",
     "allow-registrations",
     "allow-resume-registration",
     "allow-discard-registration",

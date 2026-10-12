@@ -130,6 +130,24 @@ commands! {
         Ok(dashpay.start_registration(request.into(), grant).await?)
     }
 
+    /// `startRegistration` past the earlier registrations `past` (as
+    /// `registration.in_progress` names them) whose funding is unknown.
+    /// Call it only after the user confirmed that each one's payment may
+    /// still confirm and then shows up as a lock to recover later.
+    #[facade("DashPay::start_registration_past_unknown_funding")]
+    fn start_registration_past_unknown_funding(
+        state,
+        wallet_id: String,
+        request: RegistrationRequest,
+        grant: String,
+        past: Vec<String>,
+    ) -> String {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay
+            .start_registration_past_unknown_funding(request.into(), grant, past)
+            .await?)
+    }
+
     /// Every registration on file, with what it waits for.
     #[facade("DashPay::registrations")]
     fn registrations(state, wallet_id: String) -> Vec<RegistrationStatus> {

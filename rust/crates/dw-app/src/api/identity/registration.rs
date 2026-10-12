@@ -184,10 +184,17 @@ pub enum RegistrationWaitName {
     InstantSend,
     ChainLock,
     Network,
+    /// A funding call may have sent a lock this device cannot name: the
+    /// flow waits until the lock is tracked or the funding is resolved
+    /// unsent.
+    FundingUnknown,
+    /// A lock only wedged funding steps contest holds the flow's index:
+    /// "Finish transfers" recovers it.
+    NeedsFinish,
 }
 
 mirror_enum!(engine::RegistrationWait => RegistrationWaitName {
-    Unlock, Authorize, Sync, InstantSend, ChainLock, Network
+    Unlock, Authorize, Sync, InstantSend, ChainLock, Network, FundingUnknown, NeedsFinish
 });
 
 /// Why a registration is `failed`.
@@ -248,6 +255,12 @@ pub struct RegistrationStatus {
     /// While `phase` is `contested`.
     pub contest_ends_at: Option<u64>,
     pub failure: Option<RegistrationFailure>,
+    /// The code the name step ended with when the identity was registered
+    /// but its name was not (`name.taken`, …): the flow still ends `done`,
+    /// and the identity claims a name with `registerName`.
+    pub name_failure: Option<String>,
+    /// The same for the initial profile, which `updateProfile` publishes.
+    pub profile_failure: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -266,6 +279,8 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             funds_committed,
             contest_ends_at,
             failure,
+            name_failure,
+            profile_failure,
             created_at,
             updated_at,
         } = s;
@@ -281,6 +296,8 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             funds_committed,
             contest_ends_at,
             failure: failure.map(Into::into),
+            name_failure,
+            profile_failure,
             created_at,
             updated_at,
         }

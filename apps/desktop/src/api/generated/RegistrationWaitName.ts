@@ -3,4 +3,4 @@
 /**
  * What a parked or slow registration waits for.
  */
-export type RegistrationWaitName = "unlock" | "authorize" | "sync" | "instantSend" | "chainLock" | "network";
+export type RegistrationWaitName = "unlock" | "authorize" | "sync" | "instantSend" | "chainLock" | "network" | "fundingUnknown" | "needsFinish";
