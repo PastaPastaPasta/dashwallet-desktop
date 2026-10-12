@@ -54,6 +54,7 @@ use super::runtime::guard;
 use super::signers::VaultContactCrypto;
 use super::startup::StartupStatus;
 use crate::events::unix_now;
+use crate::session::Manager;
 use crate::{NetworkSession, PlatformChange, WalletId};
 
 /// `contactInfo` documents per page of a read.
@@ -335,11 +336,53 @@ impl DigestCache {
         }
     }
 
-    /// The wallet is gone (or its rows are: `delete_wallet`).
+    /// Tests: whether anything of wallet `id` is in memory.
+    #[cfg(test)]
+    pub(super) fn holds(&self, id: &WalletId) -> bool {
+        guard(&self.0).contains_key(id)
+    }
+
+    /// The wallet left the manager: nothing of it stays. A load of it in
+    /// flight lands nothing ([`WriteFences`]).
     pub(crate) fn forget(&self, id: &WalletId) {
-        if let Some(c) = guard(&self.0).get_mut(id) {
-            (c.rows, c.epoch) = (None, c.epoch + 1);
-        }
+        guard(&self.0).remove(id);
+    }
+}
+
+/// Private-details writes of a wallet (its library details, its
+/// `dp_contact_info` rows and their digests in memory) against the wallet
+/// leaving the manager: a write lands only while the wallet it read is
+/// still the manager's, and the wallet leaves only once the writes in
+/// flight have landed. So a settle or a publish that outlives a removal
+/// writes nothing of the removed wallet.
+#[derive(Default)]
+pub(crate) struct WriteFences(Mutex<BTreeMap<WalletId, Arc<tokio::sync::RwLock<()>>>>);
+
+/// Held over private-details writes: the wallet was the manager's when it
+/// was taken, and stays until it is dropped.
+pub(super) struct WriteFence(#[allow(dead_code)] tokio::sync::OwnedRwLockReadGuard<()>);
+
+impl WriteFences {
+    fn fence(&self, id: WalletId) -> Arc<tokio::sync::RwLock<()>> {
+        Arc::clone(guard(&self.0).entry(id).or_default())
+    }
+
+    /// Held while wallet `id` leaves the manager.
+    pub(super) async fn removal(&self, id: WalletId) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        self.fence(id).write_owned().await
+    }
+
+    /// The fence for writes of `wallet`, if it is still `manager`'s
+    /// wallet `id`.
+    async fn enter(
+        &self,
+        manager: &Manager,
+        id: WalletId,
+        wallet: &PlatformWallet,
+    ) -> Option<WriteFence> {
+        let fence = self.fence(id).read_owned().await;
+        let live = manager.get_wallet(&id.0).await?;
+        std::ptr::eq(&*live, wallet).then_some(WriteFence(fence))
     }
 }
 
@@ -386,6 +429,7 @@ impl Mine {
 /// (its changeset tap signals `Contacts`), as its own DashPay pass applies
 /// a `contactInfo`. A contact no longer established is left alone.
 async fn save_local(
+    _fence: &WriteFence,
     wallet: &PlatformWallet,
     pair: &Pair,
     d: &PrivateDetails,
@@ -562,8 +606,13 @@ impl NetworkSession {
             cache.abort_load(id);
             return;
         };
-        let (db, hub) = (live.appdb, Arc::clone(&self.hub));
+        let (db, manager, hub) = (live.appdb, live.manager, Arc::clone(&self.hub));
+        let fences = Arc::clone(&self.platform.contacts.fences);
         self.platform.contacts.spawn(&self.rt, async move {
+            let Some(loaded) = manager.get_wallet(&id.0).await else {
+                cache.abort_load(id);
+                return;
+            };
             loop {
                 let (db, wallet) = (Arc::clone(&db), id.to_string());
                 let read =
@@ -578,6 +627,9 @@ impl NetworkSession {
                     .filter_map(|(i, c, d)| Some(((id58(i)?, id58(c)?), *d)))
                     .collect();
                 let owners: BTreeSet<Identifier> = rows.keys().map(|(o, _)| *o).collect();
+                let Some(_fence) = fences.enter(&manager, id, &loaded).await else {
+                    return;
+                };
                 match cache.finish_load(id, epoch, rows) {
                     Ok(()) => {
                         let changes =
@@ -618,7 +670,12 @@ impl NetworkSession {
 
     /// Records that Platform holds `d` for `pair`. A change signals
     /// `Contacts`: the details' `publish_state` moved.
-    async fn record_digest(&self, pair: &Pair, d: &PrivateDetails) -> Result<(), PlatformError> {
+    async fn record_digest(
+        &self,
+        _fence: &WriteFence,
+        pair: &Pair,
+        d: &PrivateDetails,
+    ) -> Result<(), PlatformError> {
         let digest = digest(d);
         let changed = self
             .contact_info_op(pair, move |db, w, i, c| {
@@ -636,13 +693,25 @@ impl NetworkSession {
     }
 
     /// Forgets what was recorded for `pair`: Platform holds nothing for it.
-    async fn forget_digest(&self, pair: &Pair) -> Result<(), PlatformError> {
+    async fn forget_digest(&self, _fence: &WriteFence, pair: &Pair) -> Result<(), PlatformError> {
         let changed = self
             .contact_info_op(pair, |db, w, i, c| db.forget_contact_info_digest(w, i, c))
             .await?;
         (self.platform.contacts.digests).write(pair.wallet, pair.identity, pair.contact, None);
         self.digest_changed(pair, changed);
         Ok(())
+    }
+
+    /// The fence for private-details writes of `wallet` ([`WriteFences`]);
+    /// `WalletNotFound` once it is no longer the manager's wallet `id`.
+    async fn write_fence(
+        &self,
+        id: WalletId,
+        wallet: &PlatformWallet,
+    ) -> Result<WriteFence, PlatformError> {
+        let manager = self.manager().map_err(|_| PlatformError::WalletNotFound)?;
+        let fences = &self.platform.contacts.fences;
+        (fences.enter(&manager, id, wallet).await).ok_or(PlatformError::WalletNotFound)
     }
 
     fn digest_changed(&self, pair: &Pair, changed: bool) {
@@ -693,11 +762,16 @@ impl NetworkSession {
                 .map(|(contact, c)| (*contact, c.into()))
                 .collect()
         };
+        #[cfg(test)]
+        crate::coins::pause_at(&self.platform.contacts.settle_pause).await;
         // The apply phase starts within the deadline: local writes only, one
         // set per established contact, so it then runs to its end.
         if Instant::now() >= deadline {
             return Err(PlatformError::Timeout);
         }
+        let fence = self.write_fence(id, wallet).await?;
+        #[cfg(test)]
+        crate::coins::pause_at(&self.platform.contacts.apply_pause).await;
         let keep: Vec<String> = established.iter().map(|(c, _)| b58(c)).collect();
         for (contact, shown) in established {
             let pair = Pair {
@@ -708,11 +782,11 @@ impl NetworkSession {
             match found.get(&contact) {
                 Some(held) => {
                     if *held != shown {
-                        save_local(wallet, &pair, held).await?;
+                        save_local(&fence, wallet, &pair, held).await?;
                     }
-                    self.record_digest(&pair, held).await?;
+                    self.record_digest(&fence, &pair, held).await?;
                 }
-                None => self.forget_digest(&pair).await?,
+                None => self.forget_digest(&fence, &pair).await?,
             }
         }
         // Records of contacts no longer established go too.
@@ -840,7 +914,8 @@ pub(super) async fn set(
         return Err(not_contact().into());
     }
     if mine.contacts < 2 {
-        save_local(wallet, &pair, &d).await?;
+        let fence = session.write_fence(pair.wallet, wallet).await?;
+        save_local(&fence, wallet, &pair, &d).await?;
         return Ok(PublishState::DeferredUntilTwoContacts);
     }
     let mut recorded = session.recorded_digest(&pair).await?;
@@ -872,7 +947,8 @@ pub(super) async fn set(
             }
             .into());
         }
-        save_local(wallet, &pair, &d).await?;
+        let fence = session.write_fence(pair.wallet, wallet).await?;
+        save_local(&fence, wallet, &pair, &d).await?;
         return Ok(publish_state(mine.contacts, &d, recorded));
     };
     let before = mine.details.ok_or_else(not_contact)?;
@@ -915,7 +991,8 @@ pub(super) async fn set(
     let outcome = permit.finish(written.is_ok());
     match written {
         Ok(ContactInfoPublishOutcome::Published) => {
-            session.record_digest(&pair, &d).await?;
+            let fence = session.write_fence(pair.wallet, wallet).await?;
+            session.record_digest(&fence, &pair, &d).await?;
             Ok(PublishState::Published)
         }
         // The library counted fewer contacts than this call did; it saved
@@ -929,7 +1006,8 @@ pub(super) async fn set(
             // details first: they go back where Platform holds others (its
             // next pass would put those back), else they stay, `Local`.
             if recorded.is_some() {
-                save_local(wallet, &pair, &before).await?;
+                let fence = session.write_fence(pair.wallet, wallet).await?;
+                save_local(&fence, wallet, &pair, &before).await?;
             }
             Err(e.into())
         }
@@ -948,7 +1026,8 @@ pub(super) async fn set(
             };
             match read {
                 Ok(found) if found.get(&pair.contact) == Some(&d) => {
-                    session.record_digest(&pair, &d).await?;
+                    let fence = session.write_fence(pair.wallet, wallet).await?;
+                    session.record_digest(&fence, &pair, &d).await?;
                     Ok(PublishState::Published)
                 }
                 read => {

@@ -31,8 +31,9 @@ use super::requests::tests::{Fixture, keys, wait_until};
 use super::runtime::guard;
 use super::signers::VaultContactCrypto;
 use super::startup::StartupStatus;
+use crate::coins::TestPause;
 use crate::{DashNetwork, EngineEvent, PlatformChange};
-use dw_vault::{SeedDerivation, WalletSecret};
+use dw_vault::{Credential, GrantPurpose, SeedDerivation, WalletSecret};
 use zeroize::Zeroizing;
 
 const ME: u8 = 1;
@@ -283,6 +284,36 @@ impl Fixture {
     /// The wallet's DashPay startup status.
     fn startup(&self) -> Option<StartupStatus> {
         self.s.platform.startup_of(&self.wallet).map(|s| s.startup)
+    }
+
+    /// [`Self::settle`] on the runtime, not waited for.
+    fn settle_in_background(&self) -> tokio::task::JoinHandle<bool> {
+        let (s, wallet) = (Arc::clone(&self.s), self.wallet);
+        self.s.rt.spawn(async move {
+            let crypto = s.prompt_free_crypto(wallet).await.unwrap();
+            let w = s.manager().unwrap().get_wallet(&wallet.0).await.unwrap();
+            s.settle_contact_infos(&w, wallet, &crypto, None).await
+        })
+    }
+
+    /// Removes the wallet, as `remove_wallet` with a wipe grant.
+    fn remove_wallet(&self) {
+        let (vault, wallet) = (self.s.vault(), self.wallet);
+        let wipe = (vault.authorize(GrantPurpose::Wipe, Some(&wallet.0), Credential::None))
+            .unwrap()
+            .id;
+        (self.engine)
+            .block_on(self.s.remove_wallet(wallet, wipe))
+            .unwrap();
+    }
+
+    /// Nothing of the removed wallet's private details stays: no
+    /// `dp_contact_info` row, nothing in memory.
+    fn nothing_of_the_wallet(&self) {
+        let w = self.wallet.to_string();
+        let rows = self.s.appdb_op(move |db| db.contact_info_digests(&w));
+        assert_eq!(self.engine.block_on(rows).unwrap(), vec![]);
+        assert!(!self.s.platform.contacts.digests.holds(&self.wallet));
     }
 
     /// The opens reads have begun.
@@ -877,6 +908,48 @@ fn a_slow_last_open_ends_the_settle() {
     assert!(!f.settle());
     assert_eq!(f.opens(), 1);
     assert_eq!((f.shown(BOB), f.recorded(BOB)), (shown, None));
+}
+
+/// A settle that read its contacts before the wallet's removal writes
+/// nothing of the wallet afterwards: no row, nothing in memory, no
+/// details.
+#[test]
+fn a_settle_after_the_wallet_left_writes_nothing() {
+    let f = published();
+    f.publish_elsewhere(BOB, &details("Bobby"));
+    let pause = Arc::new(TestPause::default());
+    *guard(&f.s.platform.contacts.settle_pause) = Some(Arc::clone(&pause));
+    let settling = f.settle_in_background();
+    wait_until("the settle's snapshot", Duration::from_secs(20), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    f.remove_wallet();
+    pause.release.notify_one();
+    assert!(!f.engine.block_on(settling).unwrap());
+    f.nothing_of_the_wallet();
+}
+
+/// A removal waits for a settle already writing, then removes what it
+/// wrote.
+#[test]
+fn a_removal_waits_for_a_settle_writing() {
+    let f = published();
+    f.publish_elsewhere(BOB, &details("Bobby"));
+    let pause = Arc::new(TestPause::default());
+    *guard(&f.s.platform.contacts.apply_pause) = Some(Arc::clone(&pause));
+    let settling = f.settle_in_background();
+    wait_until("the settle's writes", Duration::from_secs(20), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    std::thread::scope(|scope| {
+        let removal = scope.spawn(|| f.remove_wallet());
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!removal.is_finished());
+        pause.release.notify_one();
+        removal.join().unwrap();
+    });
+    assert!(f.engine.block_on(settling).unwrap());
+    f.nothing_of_the_wallet();
 }
 
 /// The library's publish reads every document the identity holds, with no

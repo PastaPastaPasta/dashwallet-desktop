@@ -462,6 +462,14 @@ pub(crate) struct ContactsRuntime {
     tasks: Mutex<Tasks>,
     /// `dp_contact_info` in memory (DP2-04).
     pub(super) digests: Arc<super::private_details::DigestCache>,
+    /// Private-details writes against a wallet leaving the manager (DP2-04).
+    pub(super) fences: Arc<super::private_details::WriteFences>,
+    /// Tests: holds the next settle after its snapshot of the contacts.
+    #[cfg(test)]
+    pub(super) settle_pause: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next settle once it holds its write fence.
+    #[cfg(test)]
+    pub(super) apply_pause: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: replaces the SDK's `contactInfo` reads.
     #[cfg(test)]
     pub(super) info_source: Arc<Mutex<Option<Arc<dyn super::private_details::InfoSource>>>>,

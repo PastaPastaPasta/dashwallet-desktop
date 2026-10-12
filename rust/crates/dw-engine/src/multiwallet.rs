@@ -276,9 +276,9 @@ impl NetworkSession {
             // Its discoveries end first, as for a removal: none may apply
             // what it finds to the wallet once it is loaded again.
             let _discoveries = this.platform.recovery.end_discoveries(id).await;
-            if let Err(e) = live.manager.remove_wallet(&id.0).await {
+            if let Err(e) = this.platform.remove_from_manager(&live.manager, id).await {
                 live.store.set_unloaded(id.0, false);
-                return Err(e.into());
+                return Err(e);
             }
             this.hub.unload_wallet(&id);
             this.spends.forget_wallet(&id);

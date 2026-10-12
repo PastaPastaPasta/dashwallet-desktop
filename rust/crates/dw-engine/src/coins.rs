@@ -331,7 +331,7 @@ impl CoinFences {
 }
 
 #[cfg(test)]
-async fn pause_at(slot: &std::sync::Mutex<Option<Arc<TestPause>>>) {
+pub(crate) async fn pause_at(slot: &std::sync::Mutex<Option<Arc<TestPause>>>) {
     let pause = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
     if let Some(pause) = pause {
         pause

@@ -240,7 +240,7 @@ impl NetworkSession {
             // removal closed, before anything else of the wallet goes.
             let vault = this.vault.clone();
             tokio::task::spawn_blocking(move || vault.wipe_wallet_secret(&id.0, &token)).await??;
-            live.manager.remove_wallet(&id.0).await?;
+            this.platform.remove_from_manager(&live.manager, id).await?;
             this.hub.forget_wallet(&id);
             this.coin_fences.forget(&id);
             this.platform.forget(&id);
@@ -252,7 +252,6 @@ impl NetworkSession {
                     .map_err(|e| EngineError::Storage(e.to_string()))
             })
             .await??;
-            this.platform.forget_contact_digests(&id);
             live.tap.forget(&id);
             this.sink.emit(EngineEvent::WalletRemoved {
                 network: this.network.clone(),

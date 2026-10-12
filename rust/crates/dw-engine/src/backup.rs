@@ -682,7 +682,7 @@ impl NetworkSession {
             if created {
                 let removed = async {
                     let live = self.live()?;
-                    live.manager.remove_wallet(&id.0).await?;
+                    self.platform.remove_from_manager(&live.manager, id).await?;
                     // Again, now that it is out of the manager: a scan begun
                     // since the first forget passed the wallet check.
                     self.platform.users.scans.forget(&id);
@@ -695,9 +695,7 @@ impl NetworkSession {
                             .delete_wallet(&id.to_string())
                             .map_err(|e| EngineError::Storage(e.to_string()))
                     })
-                    .await??;
-                    self.platform.forget_contact_digests(&id);
-                    Ok::<(), EngineError>(())
+                    .await?
                 }
                 .await;
                 if let Err(e) = removed {

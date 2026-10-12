@@ -2136,7 +2136,10 @@ renames or reshapes them takes the next version bump:
       established contact. A record that changes, with or without the details, signals `Platform{Contacts}` so a host
       re-reads `publish_state`. That is how a restore gets its details back
       (acceptance: `recovery_tests::a_restored_wallet_gets_its_private_details_back`, with the vault unlocked at the
-      bring-up, and locked until after it).
+      bring-up, and locked until after it). A settle or an edit writes nothing of a wallet once it has left the wallet
+      manager (a removal, an unload, a restore's rollback): each of their writes lands only while the wallet it read
+      is still the manager's, and the wallet leaves only after the writes in flight have landed, so a removal's delete
+      of its rows comes after them.
     - **An edit of published details needs a grant.** The library's DashPay pass applies Platform's `contactInfo` over
       local details on every pass (remote wins), so a local-only edit of a contact Platform holds details for would
       go back silently. It is `platform.needs_grant{credits}` and the edit is not saved. Re-saving the same details

@@ -442,11 +442,19 @@ impl PlatformRuntime {
         self.registrations.forget_wallet(*id);
     }
 
-    /// Forgets wallet `id`'s private-details digests again once its
-    /// app.sqlite rows are gone: a load since [`Self::forget`] may have read
-    /// them.
-    pub(crate) fn forget_contact_digests(&self, id: &WalletId) {
-        self.contacts.digests.forget(id);
+    /// Takes wallet `id` out of `manager` (a removal, an unload, a restore's
+    /// rollback): private-details writes of it in flight land first and none
+    /// lands afterwards ([`super::private_details::WriteFences`]), and its
+    /// digests leave memory.
+    pub(crate) async fn remove_from_manager(
+        &self,
+        manager: &Manager,
+        id: WalletId,
+    ) -> Result<(), EngineError> {
+        let _fence = self.contacts.fences.removal(id).await;
+        manager.remove_wallet(&id.0).await?;
+        self.contacts.digests.forget(&id);
+        Ok(())
     }
 
     pub(super) fn untrack(&self, id: WalletId, task: tokio::task::Id) {
