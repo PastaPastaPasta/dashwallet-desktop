@@ -252,6 +252,7 @@ impl NetworkSession {
                     .map_err(|e| EngineError::Storage(e.to_string()))
             })
             .await??;
+            this.platform.forget_contact_digests(&id);
             live.tap.forget(&id);
             this.sink.emit(EngineEvent::WalletRemoved {
                 network: this.network.clone(),

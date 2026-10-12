@@ -391,11 +391,14 @@ impl PlatformRuntime {
         self.write_startup().insert(id, startup);
     }
 
-    pub(super) fn set_status(&self, id: WalletId, status: StartupStatus) {
-        self.write_startup()
-            .entry(id)
-            .or_insert_with(|| DashPayStartup::new(status, false))
-            .startup = status;
+    /// Sets wallet `id`'s startup status; the one it replaced, if any.
+    pub(super) fn set_status(&self, id: WalletId, status: StartupStatus) -> Option<StartupStatus> {
+        let mut startup = self.write_startup();
+        if let Some(entry) = startup.get_mut(&id) {
+            return Some(std::mem::replace(&mut entry.startup, status));
+        }
+        startup.insert(id, DashPayStartup::new(status, false));
+        None
     }
 
     /// Whether bring-up or unlock work may start for `id` now: `None` while a
@@ -437,6 +440,13 @@ impl PlatformRuntime {
         self.contacts.forget(id);
         self.users.scans.forget(id);
         self.registrations.forget_wallet(*id);
+    }
+
+    /// Forgets wallet `id`'s private-details digests again once its
+    /// app.sqlite rows are gone: a load since [`Self::forget`] may have read
+    /// them.
+    pub(crate) fn forget_contact_digests(&self, id: &WalletId) {
+        self.contacts.digests.forget(id);
     }
 
     pub(super) fn untrack(&self, id: WalletId, task: tokio::task::Id) {

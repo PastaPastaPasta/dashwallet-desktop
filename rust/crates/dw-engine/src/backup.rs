@@ -695,7 +695,9 @@ impl NetworkSession {
                             .delete_wallet(&id.to_string())
                             .map_err(|e| EngineError::Storage(e.to_string()))
                     })
-                    .await?
+                    .await??;
+                    self.platform.forget_contact_digests(&id);
+                    Ok::<(), EngineError>(())
                 }
                 .await;
                 if let Err(e) = removed {

@@ -351,8 +351,10 @@ pub(super) struct ReadHooks {
     pub(super) gone: bool,
     /// Replaces [`READ_TIMEOUT`].
     pub(super) budget: Option<Duration>,
-    /// Each open takes this long first, blocking, as a slow vault would.
+    /// Each open waits this long first, as a slow vault would.
     pub(super) open_delay: Option<Duration>,
+    /// Opens begun.
+    pub(super) opens: usize,
 }
 
 /// The wallet's identity and its contact as platform-wallet holds them.
@@ -468,7 +470,11 @@ impl NetworkSession {
             }
             #[cfg(test)]
             {
-                let delay = guard(&self.platform.contacts.read_hooks).open_delay;
+                let delay = {
+                    let mut hooks = guard(&self.platform.contacts.read_hooks);
+                    hooks.opens += 1;
+                    hooks.open_delay
+                };
                 if let Some(delay) = delay {
                     tokio::time::sleep(delay).await;
                 }
@@ -528,10 +534,12 @@ impl NetworkSession {
         match checked {
             Ok(()) => Ok(()),
             Err(e @ PlatformWalletError::SeedMismatch { .. }) => {
-                tracing::error!(wallet_id = %id, error = %e, "private details not settled: the vault's seed does not bind this wallet");
-                self.platform
-                    .set_status(id, StartupStatus::SeedBindingUnverified);
-                self.notice_incomplete(id, StartupStatus::SeedBindingUnverified);
+                let status = StartupStatus::SeedBindingUnverified;
+                // Noticed once, by whichever path finds it first.
+                if self.platform.set_status(id, status) != Some(status) {
+                    tracing::error!(wallet_id = %id, error = %e, "private details not settled: the vault's seed does not bind this wallet");
+                    self.notice_incomplete(id, status);
+                }
                 Err(PlatformError::SeedMismatch)
             }
             Err(e) => Err(e.into()),

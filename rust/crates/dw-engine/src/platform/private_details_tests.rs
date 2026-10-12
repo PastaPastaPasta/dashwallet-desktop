@@ -279,6 +279,18 @@ impl Fixture {
         detail.publish_state
     }
 
+    /// The opens reads have begun.
+    fn opens(&self) -> usize {
+        guard(&self.s.platform.contacts.read_hooks).opens
+    }
+
+    /// Waits until a read is opening documents.
+    fn reading(&self) {
+        wait_until("a read's first open", Duration::from_secs(20), || {
+            self.opens() > 0
+        });
+    }
+
     /// The `Platform{Contacts}` signals for our identity so far.
     fn contact_signals(&self) -> usize {
         let ours = PlatformChange::Contacts {
@@ -755,16 +767,15 @@ fn the_read_first_needs_a_verified_seed_binding() {
 #[test]
 fn a_slow_read_ends_at_its_deadline() {
     let f = published();
-    for n in 0..40 {
+    for n in 0..100 {
         f.publish_elsewhere(100 + n, &details("x"));
     }
     {
         let mut hooks = guard(&f.s.platform.contacts.read_hooks);
-        hooks.budget = Some(Duration::from_millis(300));
+        hooks.budget = Some(Duration::from_secs(2));
         hooks.open_delay = Some(Duration::from_millis(100));
     }
     let locks = identity_locks(f.wallet, id(ME));
-    let started = std::time::Instant::now();
     let s = Arc::clone(&f.s);
     let pair = f.pair(ERIN);
     let manager = f.s.manager().unwrap();
@@ -773,12 +784,14 @@ fn a_slow_read_ends_at_its_deadline() {
         let wallet = manager.get_wallet(&pair.wallet.0).await.unwrap();
         set(&*net, &s, &wallet, pair, details("Erin"), None).await
     });
-    std::thread::sleep(Duration::from_millis(100));
+    f.reading();
     // Waits for the edit's read, which holds the lock.
+    let started = std::time::Instant::now();
     drop(f.engine.block_on(locks.write.lock()));
     let took = started.elapsed();
-    // 40 opens would take 4 s.
-    assert!(took < Duration::from_secs(2), "{took:?}");
+    // 100 opens would take 10 s.
+    assert!(took < Duration::from_secs(5), "{took:?}");
+    assert!(f.opens() < 100);
     let edited = f.engine.block_on(editing).unwrap();
     assert_eq!(edited.unwrap(), PublishState::Local);
 }
@@ -802,20 +815,22 @@ fn a_read_ends_at_the_sessions_close() {
         let wallet = manager.get_wallet(&pair.wallet.0).await.unwrap();
         let _ = set(&*net, &s, &wallet, pair, details("Erin"), None).await;
     });
-    std::thread::sleep(Duration::from_millis(300));
+    f.reading();
     let closing = std::time::Instant::now();
     (f.engine)
         .block_on(f.engine.close_network(DashNetwork::Regtest))
         .unwrap();
     // 100 opens would take 10 s.
     let took = closing.elapsed();
-    assert!(took < Duration::from_secs(3), "{took:?}");
+    assert!(took < Duration::from_secs(5), "{took:?}");
+    assert!(f.opens() < 100);
     f.engine.block_on(editing).unwrap();
 }
 
 /// The library's publish reads every document the identity holds, with no
-/// bound: over the engine's cap (raw documents, opened or not) a publish
-/// is refused before the grant is redeemed (Sol r1 F3).
+/// bound: over the engine's cap (every document, opened or not) a publish
+/// is refused before the grant is redeemed (Sol r1 F3). (The SDK source
+/// counts its raw page entries, parsed or not.)
 #[test]
 fn a_publish_over_the_document_cap_is_refused() {
     let f = published();
