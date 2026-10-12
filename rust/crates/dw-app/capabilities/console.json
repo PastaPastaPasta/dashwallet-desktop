@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "console",
+  "description": "The local RPC console (Tools → Console). Granted to the main window only.",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-console-commands",
+    "allow-console-redact",
+    "allow-console-execute"
+  ]
+}

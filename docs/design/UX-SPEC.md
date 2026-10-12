@@ -124,6 +124,32 @@ Notes:
 - Shadow: `Color.dash.shadow` (light `#B8C2CC` @10%, dark clear) — see §2.6.
 - The full generated palette (every named colour, both catalogs, light + dark) is Appendix A.
 
+### 2.1a WCAG AA variants (DEC-36)
+
+The iOS palette fails WCAG 2.1 AA (4.5:1 for text under 18.7 px bold / 24 px) on several pairs the
+roles above prescribe: white on Dash blue (3.5:1), blue text on canvas or on `accentTint` (3.2–3.3:1),
+`textTertiary` on white (4.0:1), the hero strip's text (2.2–3.0:1), the lock prompt (2.8:1), the
+network capsule (2.5:1) and orange "Locked" text (2.3:1). Accessibility is a product requirement, so
+**both stacks draw the variants below** wherever text sits on, or is drawn in, the role; gate G-UI
+judges U4 on them. They live in `Roles.swift` as `DashColor.RoleAA` and `DashOpacityAA` (hex literals,
+because the iOS catalogs have no such colours). Each keeps its role's hue in OKLCH and changes lightness
+only as far as AA needs; non-text uses (icons, focus rings, switch tracks: 3:1) may keep the iOS value.
+
+| Role | Light | Dark | Replaces | Worst text pair |
+|---|---|---|---|---|
+| `RoleAA.accent` | #006FC3 | #006FC3 | `accent` as a fill under white text | white 5.2:1 |
+| `RoleAA.textLink` | #006FC3 | #1594EC | `textLink`, and `accent` / `buttonPlainBlueContent` used as text | on `accentTint` 4.6:1 (light), 4.5:1 (dark) |
+| `RoleAA.hero` | #0063B7 | #0063B7 | `hero` | strip subtitle 4.5:1 |
+| `RoleAA.textTertiary` | #68737D | #FFFFFF @60% | `textTertiary` | on canvas 4.5:1 |
+| `RoleAA.warning` | #B6542C | #FA9169 | `warning` as text | on canvas 4.6:1 |
+| `RoleAA.networkCapsule` | #B6542C | #B6542C | the capsule's `warning` × 0.9 | white 4.9:1 |
+| `DashOpacityAA.heroCard` | 0.08 | 0.08 | `DashOpacity.heroCard` (0.12) | — |
+| `DashOpacityAA.heroSecondaryText` | 0.9 | 0.9 | `heroSecondaryText` (0.7) and the lock prompt's `whiteAlpha80` | — |
+| `DashOpacityAA.networkCapsule` | 1 | 1 | `DashOpacity.networkCapsule` (0.9) | — |
+
+`danger` (#EB3842) is 4.06:1 on white: red text on light surfaces needs a variant too when a screen
+draws it at text size (none of the gate's four screens does).
+
 ### 2.2 Typography
 
 Scale = DashUIKit `DashTextStyle` (already `DesignTokens.DashTextStyle`):

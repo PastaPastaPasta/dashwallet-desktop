@@ -64,7 +64,7 @@ pub use history::{
     AddressChain, HistoryFilter, HistoryPage, HistoryQuery, HistorySort, TxCategory, TxDetail,
     TxInputDetail, TxOutputDetail, TxRecord, TxStatus, TxStatusKind, TxType, WatchOnlyFilter,
 };
-pub use keys::{CORE_COMPAT_LOOKAHEAD, ImportOptions, MAX_LOOKAHEAD};
+pub use keys::{CORE_COMPAT_LOOKAHEAD, ImportOptions, MAX_LOOKAHEAD, PaymentAuthentication};
 pub use labels::{BookEntryInfo, LabelsFailure};
 pub use masternode_keys::{
     MasternodeFailure, MasternodeKeyInfo, MasternodeKeyRole, RevealedMasternodeKey,

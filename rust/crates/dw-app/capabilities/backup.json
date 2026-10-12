@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "backup",
+  "description": "Backups, restore and Dash Core compatibility. Granted to the main window only; `probe_unlisted` is never granted (U6).",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-backup-wallet",
+    "allow-restore-backup",
+    "allow-automatic-backups",
+    "allow-backup-directory",
+    "allow-backup-policy",
+    "allow-set-backup-policy",
+    "allow-read-backup-header",
+    "allow-inspect-wallet-file",
+    "allow-import-dump-wallet",
+    "allow-import-wallet-dat",
+    "allow-import-key-material",
+    "allow-core-mnemonic-compatibility",
+    "allow-export-for-core"
+  ]
+}

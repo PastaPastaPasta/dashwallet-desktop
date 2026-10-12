@@ -136,6 +136,30 @@ fn passphrase_operations_on_an_unencrypted_vault() {
     assert_eq!(fx.open().create(Some(PASS)), Err(VaultError::AlreadyExists));
 }
 
+/// The vault id lives as long as the vault file: kept by `encrypt`, a
+/// passphrase change and a restart, new for every vault created after a
+/// `destroy` (hosts key per-vault settings by it).
+#[test]
+fn the_vault_id_belongs_to_one_vault_file() {
+    let fx = Fixture::new();
+    let v = fx.open();
+    assert_eq!(v.vault_id(), None);
+    v.create(None).unwrap();
+    let first = v.vault_id().expect("an id");
+    assert_eq!(first.len(), 16);
+    let grant = v
+        .authorize(GrantPurpose::ChangeCredential, None, Credential::None)
+        .unwrap();
+    v.encrypt(PASS, &grant.id).unwrap();
+    assert_eq!(v.vault_id().as_ref(), Some(&first));
+    v.change_passphrase(PASS, OTHER).unwrap();
+    assert_eq!(fx.open().vault_id().as_ref(), Some(&first));
+    v.destroy(Credential::Passphrase(OTHER)).unwrap();
+    assert_eq!(v.vault_id(), None);
+    v.create(Some(PASS)).unwrap();
+    assert_ne!(v.vault_id().as_ref(), Some(&first));
+}
+
 // MARK: tamper and rollback
 
 /// Tampers with the vault file of a locked vault, restarts, and returns

@@ -692,6 +692,14 @@ impl Vault {
         self.status_of(&inner)
     }
 
+    /// The vault file's random id, made when the vault is created (or made
+    /// again by a recovery) and kept by `encrypt` and passphrase changes;
+    /// `None` without a vault. A new vault never has an old vault's id, so
+    /// host settings keyed by it start fresh. In-memory read.
+    pub fn vault_id(&self) -> Option<Vec<u8>> {
+        self.inner().file.as_ref().map(|f| f.vault_id.clone())
+    }
+
     /// Current lock state. In-memory read; also drops expired grants.
     pub fn lock_state(&self) -> LockState {
         let now = self.now();
