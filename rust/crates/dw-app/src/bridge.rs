@@ -4,7 +4,8 @@
 //! Semantics (E0-13 D-row "events"):
 //!
 //! - **The engine never waits.** [`TauriSink::emit`] maps the event to its
-//!   DTO (bounded work: at most [`MAX_TXIDS`] txids), offers it to a bounded
+//!   bounded DTO (the mapping reads the whole engine input, e.g. sorts a
+//!   lock report's flows, before it cuts), offers it to a bounded
 //!   queue ([`QUEUE`] events) and returns; it does no serialising or IPC. A
 //!   forwarder thread emits each queued event.
 //! - **Order.** One queue, one consumer, one Tauri event name: the renderer
