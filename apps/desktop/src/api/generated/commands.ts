@@ -2774,6 +2774,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "contact.scan_expired",
   "contact.scan_unverified",
   "contact.no_username",
+  "contact.details_too_long",
   "invitation.invalid",
   "invitation.claimed",
   "invitation.expired",

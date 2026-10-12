@@ -224,6 +224,9 @@ pub enum ErrorData {
     /// `request_not_found`, `height_out_of_range`, `backup.unsupported_version`,
     /// `psbt.too_large` (bytes): the number named.
     Number { value: u64 },
+    /// `contact.details_too_long`: the details' DIP-15 encoding and its cap,
+    /// in bytes.
+    Size { bytes: u32, max: u32 },
     /// `send.outpoint_unavailable`, `outpoint_not_found`: the output (txid hex and index).
     Outpoint { txid: String, vout: u32 },
     /// `backup.already_exists`: the wallet (lower-case hex id) the backup would duplicate.
