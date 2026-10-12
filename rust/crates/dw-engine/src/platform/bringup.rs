@@ -420,7 +420,7 @@ impl NetworkSession {
     /// one that Platform proved recently has no identity and has none on
     /// file. Its budget, counted from `since`, bounds all of it, the reads
     /// and the key acquisition included (review r1 M3).
-    async fn bring_up_wallet(&self, manager: &Manager, id: WalletId, since: Instant) {
+    async fn bring_up_wallet(self: &Arc<Self>, manager: &Manager, id: WalletId, since: Instant) {
         match self
             .platform
             .admit(&id, || self.vault.has_wallet_secret(&id.0))
@@ -549,16 +549,15 @@ impl NetworkSession {
         self.load_identity_choices(id).await;
         self.refresh_identities(manager, id).await;
         // A restore's private details, and their state, come back here
-        // (DP2-04); not with the crypto of a seed that does not bind the
-        // wallet.
+        // (DP2-04), after the bring-up; not with the crypto of a seed that
+        // does not bind the wallet.
         let unbound = (self.platform.startup_of(&id))
             .is_some_and(|s| s.startup == StartupStatus::SeedBindingUnverified);
         if has_identity
             && !unbound
             && let Some(crypto) = self.prompt_free_crypto(id).await
-            && let Some(wallet) = manager.get_wallet(&id.0).await
         {
-            self.settle_contact_infos(&wallet, id, &crypto, None).await;
+            self.settle_later(id, crypto);
         }
     }
 
@@ -686,7 +685,7 @@ impl NetworkSession {
     /// the identity unsettled, otherwise the seed-gated contact-crypto drain;
     /// then `reconcile_dashpay_rescan`, so payments to contacts whose
     /// accounts appear only now are found by a rescan.
-    async fn after_unlock(&self, manager: &Manager, id: WalletId) {
+    async fn after_unlock(self: &Arc<Self>, manager: &Manager, id: WalletId) {
         // No seed, a restore not committed yet, or a signal from an unlock
         // the vault has since locked again.
         let admitted = self
@@ -716,7 +715,7 @@ impl NetworkSession {
         }
     }
 
-    async fn drain_contact_crypto(&self, manager: &Manager, id: WalletId) {
+    async fn drain_contact_crypto(self: &Arc<Self>, manager: &Manager, id: WalletId) {
         let Some(wallet) = manager.get_wallet(&id.0).await else {
             return;
         };
@@ -756,7 +755,7 @@ impl NetworkSession {
         }
         // Not with the crypto of a seed that does not bind the wallet.
         if bound {
-            self.settle_contact_infos(&wallet, id, &crypto, None).await;
+            self.settle_later(id, crypto);
         }
     }
 

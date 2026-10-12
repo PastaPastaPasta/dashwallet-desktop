@@ -2118,8 +2118,8 @@ renames or reshapes them takes the next version bump:
       document whose keys the wallet does not hold or whose seal does not open is skipped, with a warning; so is one
       whose plaintext does not decode, as the library skips it. A locked vault, a failed fetch, or documents of which
       none opens (a seed that does not bind the wallet opens none) fail the read, which then changes nothing and never
-      guesses `Published`. The read runs under the identity's write lock (held across the fetch, so an edit of the
-      identity waits for it) after each bring-up of a wallet with an identity, unless its startup is
+      guesses `Published`. The read runs in the background (a bring-up or an unlock does not wait for it), under
+      the identity's write lock (held across the fetch, so an edit of the identity waits for it), after each bring-up of a wallet with an identity, unless its startup is
       `SeedBindingUnverified`, and after each unlock drain that did not report `SeedMismatch`, and applies Platform's
       details to each established contact. A record that changes, with or without the details, signals `Platform{Contacts}` so a host
       re-reads `publish_state`. That is how a restore gets its details back

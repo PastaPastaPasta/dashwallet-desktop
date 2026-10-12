@@ -485,6 +485,21 @@ impl NetworkSession {
         settled
     }
 
+    /// [`Self::settle_contact_infos`] for wallet `id` in the background, so
+    /// a bring-up or an unlock drain does not wait for Platform (a read may
+    /// take [`READ_TIMEOUT`] per identity). Session close cancels it.
+    pub(super) fn settle_later(self: &Arc<Self>, id: WalletId, crypto: VaultContactCrypto) {
+        let weak = Arc::downgrade(self);
+        let task = async move {
+            let Some(this) = weak.upgrade() else { return };
+            let Ok(manager) = this.manager() else { return };
+            if let Some(wallet) = manager.get_wallet(&id.0).await {
+                this.settle_contact_infos(&wallet, id, &crypto, None).await;
+            }
+        };
+        self.platform.contacts.spawn(&self.rt, task);
+    }
+
     /// After a write that failed once signed and whose read-back did not
     /// find it: settles `owner` again every [`RESETTLE_AFTER`], up to
     /// [`RESETTLE_TRIES`] times (a try while the vault needs a prompt reads
