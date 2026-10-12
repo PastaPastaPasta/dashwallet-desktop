@@ -44,24 +44,42 @@ macro_rules! mirror_enum {
 }
 pub(crate) use mirror_enum;
 
-/// `s` cut to at most `max` bytes (`max` ≥ 64), at a character boundary,
-/// ending with a marker that says how many bytes were cut. Engine text the
-/// app queues or keeps passes through it, so no payload grows with what
-/// the engine sends (E0-13 D3).
+/// `s` cut so that it encodes (as a JSON string, quotes aside) to at most
+/// `max` bytes (`max` ≥ 64), at a character boundary, ending with a marker
+/// that says how many bytes were cut. Engine text the app queues or keeps
+/// passes through it, so no payload grows with what the engine sends
+/// (E0-13 D3); counting the escapes, not the bytes, bounds what the
+/// webview receives too. Reads at most about `max` characters of `s`.
 pub fn cap_text(mut s: String, max: usize) -> String {
     debug_assert!(max >= 64, "cap_text needs room for its marker");
-    if s.len() <= max {
+    // "… [+N bytes]" with N up to 20 digits is at most 33 bytes, no escapes.
+    let budget = max.saturating_sub(40);
+    let (mut encoded, mut end) = (0, None);
+    for (i, c) in s.char_indices() {
+        encoded += json_len(c);
+        if encoded > budget && end.is_none() {
+            end = Some(i);
+        }
+        if encoded > max {
+            break;
+        }
+    }
+    let Some(end) = end.filter(|_| encoded > max) else {
         return s;
-    }
-    // "… [+N bytes]" with N up to 20 digits is at most 33 bytes.
-    let mut end = max.saturating_sub(40);
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
+    };
     let cut = s.len() - end;
     s.truncate(end);
     s.push_str(&format!("… [+{cut} bytes]"));
     s
+}
+
+/// The bytes `c` takes in a JSON string as serde_json writes it.
+fn json_len(c: char) -> usize {
+    match c {
+        '"' | '\\' | '\u{8}' | '\u{c}' | '\n' | '\r' | '\t' => 2,
+        c if u32::from(c) < 0x20 => 6,
+        c => c.len_utf8(),
+    }
 }
 
 /// Credit amounts as decimal strings: `#[serde(with = "crate::dto::credits")]`
@@ -385,6 +403,9 @@ impl From<VaultStatus> for LockStatus {
     }
 }
 
+/// Rows a [`SyncStatus`] lists: one per [`SyncPhaseName`].
+pub const MAX_SYNC_PHASES: usize = 4;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum SyncPhaseName {
@@ -427,7 +448,7 @@ impl From<SyncPhaseProgress> for SyncPhaseStatus {
 #[serde(rename_all = "camelCase")]
 pub struct SyncStatus {
     pub running: bool,
-    /// One row per phase, in phase order.
+    /// One row per phase, in phase order: at most [`MAX_SYNC_PHASES`].
     pub phases: Vec<SyncPhaseStatus>,
     pub active_phase: Option<SyncPhaseName>,
     pub tip_height: Option<u32>,
@@ -454,7 +475,11 @@ impl From<SyncSnapshot> for SyncStatus {
         } = s;
         SyncStatus {
             running,
-            phases: phases.into_iter().map(Into::into).collect(),
+            phases: phases
+                .into_iter()
+                .take(MAX_SYNC_PHASES)
+                .map(Into::into)
+                .collect(),
             active_phase: active_phase.map(Into::into),
             tip_height,
             tip_time,
@@ -482,6 +507,15 @@ mod tests {
         let (kept, marker) = cut.split_once('…').unwrap();
         assert!(kept.chars().all(|c| c == '€'));
         assert_eq!(marker, format!(" [+{} bytes]", 30_000 - kept.len()));
+        // Escapes count as what they encode to: a control character is six
+        // bytes in JSON, a newline or a quote two.
+        for c in ['\u{1}', '\n', '"', 'x'] {
+            let cut = cap_text(c.to_string().repeat(10_000), 1024);
+            let encoded = serde_json::to_string(&cut).unwrap().len() - 2;
+            assert!((1024 - 46..=1024).contains(&encoded), "{c:?}: {encoded}");
+        }
+        let fits = "\n".repeat(512);
+        assert_eq!(cap_text(fits.clone(), 1024), fits);
     }
 
     #[test]

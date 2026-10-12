@@ -19,7 +19,11 @@ keyExpiresInSecs: number | null,
 /**
  * E0-04 §16.5's single definition.
  */
-fundsCommitted: boolean, budgets: Array<Budget>, 
+fundsCommitted: boolean, 
+/**
+ * At most [`MAX_LEASE_BUDGETS`], one per purpose.
+ */
+budgets: Array<Budget>, 
 /**
  * Permits held now.
  */

@@ -25,8 +25,9 @@
 //!   txids; a larger batch is sent empty, which the engine already defines
 //!   as "reload the whole history". `newTransactions` sends the first
 //!   [`MAX_TXIDS`] with the full `count`. A notice's detail is cut to
-//!   [`MAX_DETAIL_BYTES`] and a lock report to 16 flows of 8 artifacts
-//!   with 128-byte ids, the rest counted (`dto::platform`); the copies
+//!   [`MAX_DETAIL_BYTES`], a lock report's lists to `dto::platform`'s
+//!   caps (the rest counted), and every engine id to `MAX_ID_BYTES`: no
+//!   event encodes to more than [`MAX_EVENT_BYTES`]. The copies
 //!   [`EventMemory`] keeps are the same bounded DTOs.
 //! - **Hints, not rows.** Payloads say what changed; the renderer re-queries
 //!   (DESIGN-opus §1.5 rule 4). Lease, lock and dispatch events carry their
@@ -49,7 +50,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime};
 use ts_rs::TS;
 
-use crate::dto::platform::{DispatchSettled, Lease, LockOutcome, LockProgress};
+use crate::dto::platform::{DispatchSettled, Lease, LockOutcome, LockProgress, MAX_ID_BYTES};
 use crate::dto::{Balances, LockStateName, SyncStatus, cap_text, mirror_enum};
 use crate::error::{AppError, EngineCode};
 
@@ -59,11 +60,17 @@ pub const EVENT: &str = "engine://event";
 /// Txids per `historyChanged` or `newTransactions` payload.
 pub const MAX_TXIDS: usize = 256;
 
-/// Events waiting for the webview at most. Each is bounded: ≤ [`MAX_TXIDS`]
-/// txids, a [`MAX_DETAIL_BYTES`] notice detail, a lock report of at most
-/// `dto::platform::MAX_LOCK_FLOWS` flows (about 32 KB), so a full queue
-/// holds at most about 32 MB, and a few hundred KB in practice.
+/// Events waiting for the webview at most. Each is at most
+/// [`MAX_EVENT_BYTES`], so a full queue holds at most 32 MB, and a few
+/// hundred KB in practice.
 pub const QUEUE: usize = 1024;
+
+/// The encoded size of an [`AppEvent`] at most, whatever the engine sends:
+/// every text and list in one is capped (`dto::cap_text`, [`MAX_TXIDS`],
+/// [`MAX_DETAIL_BYTES`], `dto::platform::MAX_*`, `dto::MAX_SYNC_PHASES`;
+/// `tests::every_event_fits_its_byte_bound`). The largest is a full lock
+/// report.
+pub const MAX_EVENT_BYTES: usize = 32 * 1024;
 
 /// Notices [`EventMemory`] keeps.
 pub const NOTICES: usize = 64;
@@ -209,9 +216,15 @@ impl From<PlatformChange> for PlatformChangeName {
     fn from(c: PlatformChange) -> Self {
         match c {
             PlatformChange::Identities => Self::Identities,
-            PlatformChange::Contacts { identity } => Self::Contacts { identity },
-            PlatformChange::Registration { draft } => Self::Registration { draft },
-            PlatformChange::Payments { identity } => Self::Payments { identity },
+            PlatformChange::Contacts { identity } => Self::Contacts {
+                identity: cap_text(identity, MAX_ID_BYTES),
+            },
+            PlatformChange::Registration { draft } => Self::Registration {
+                draft: draft.map(|d| cap_text(d, MAX_ID_BYTES)),
+            },
+            PlatformChange::Payments { identity } => Self::Payments {
+                identity: cap_text(identity, MAX_ID_BYTES),
+            },
             PlatformChange::Names => Self::Names,
         }
     }
@@ -387,8 +400,9 @@ pub struct RecentNotice {
 /// What the renderer can read again after an overflow dropped the event
 /// that said it (D3): the last [`NOTICES`] notices (`recentNotices`) and
 /// each network's last lock report (`lastLockReport`). Recorded from the
-/// mapped, bounded event before it is queued; a network's lock report is
-/// forgotten when a session of it opens.
+/// mapped, bounded event before it is queued. A network's lock report is
+/// forgotten when its session closes (the engine's last event for it) or
+/// opens, so the memory holds at most one report per open network.
 #[derive(Default)]
 pub struct EventMemory {
     notices: Mutex<(u64, VecDeque<RecentNotice>)>,
@@ -422,7 +436,7 @@ impl EventMemory {
             } => {
                 self.reports().insert(network.clone(), report.clone());
             }
-            AppEvent::SessionOpened { network } => {
+            AppEvent::SessionOpened { network } | AppEvent::SessionClosed { network } => {
                 self.reports().remove(network);
             }
             _ => {}
@@ -616,6 +630,308 @@ mod tests {
         assert_eq!(settled["settled"]["resolution"], "notSent");
     }
 
+    /// Every event at its largest: each text the engine controls is long
+    /// and made of control characters (six bytes each in JSON), each list
+    /// longer than its cap, each number at its maximum, the network a devnet
+    /// with the longest name `DashNetwork::validate` allows (Sol r3 F3a).
+    #[test]
+    fn every_event_fits_its_byte_bound() {
+        use dw_engine::platform::{
+            BudgetPurpose, BudgetView, FlowOutcome, FlowReport, RevokeCause,
+        };
+        use dw_engine::{SyncPhase, SyncPhaseProgress, SyncSnapshot, WalletBalances};
+        let text = |n: usize| "\u{1}".repeat(n);
+        let network = || DashNetwork::Devnet {
+            name: "a".repeat(64),
+        };
+        let wallet_id = WalletId([0xff; 32]);
+        let txids = (0..2 * MAX_TXIDS)
+            .map(|i| dashcore::Txid::from_byte_array([i as u8; 32]))
+            .collect::<Vec<_>>();
+        let lease = |budgets: usize| LeaseView {
+            id: text(1 << 16),
+            wallet_id: text(1 << 16),
+            flow: FlowKind::EnableDashPayKeys,
+            state: LeaseStateView::Revoked {
+                cause: RevokeCause::PassphraseChange,
+            },
+            own_key: true,
+            key_expires_in_secs: Some(u64::MAX),
+            funds_committed: true,
+            budgets: (0..budgets)
+                .map(|_| BudgetView {
+                    purpose: BudgetPurpose::Funding,
+                    ceiling: u64::MAX,
+                    spent: u64::MAX,
+                })
+                .collect(),
+            in_flight: u32::MAX,
+            call_running: true,
+        };
+        // Lists over their caps (16 flows of 8 artifacts, 16 wallets), with
+        // texts long enough that every kept one is cut.
+        let report = LockReport {
+            status: dw_vault::VaultStatus {
+                state: dw_vault::LockState::UnlockedMixingOnly,
+                encrypted: true,
+                quick_unlock_enrolled: true,
+                failed_attempts: u32::MAX,
+                retry_after_secs: Some(u64::MAX),
+                wallets_with_secrets: (0..40).map(|i| [i; 32]).collect(),
+            },
+            flows: (0..20)
+                .map(|_| FlowReport {
+                    lease: text(300),
+                    wallet_id: text(300),
+                    flow: FlowKind::EnableDashPayKeys,
+                    outcome: FlowOutcome::WillBeSent,
+                    artifacts: (0..20)
+                        .map(|_| (text(300), FlowOutcome::WillBeSent))
+                        .collect(),
+                })
+                .collect(),
+        };
+        let phase = SyncPhaseProgress {
+            phase: SyncPhase::FilterHeaders,
+            current_height: Some(u32::MAX),
+            target_height: Some(u32::MAX),
+            done: true,
+        };
+        let mut events: Vec<AppEvent> = [
+            EngineEvent::SessionOpened { network: network() },
+            EngineEvent::SessionClosed { network: network() },
+            EngineEvent::WalletCreated {
+                network: network(),
+                wallet_id,
+            },
+            EngineEvent::WalletRemoved {
+                network: network(),
+                wallet_id,
+            },
+            EngineEvent::SpvStateChanged {
+                network: network(),
+                running: true,
+            },
+            EngineEvent::Sync {
+                network: network(),
+                snapshot: SyncSnapshot {
+                    running: true,
+                    phases: vec![phase; 40],
+                    active_phase: Some(SyncPhase::FilterHeaders),
+                    tip_height: Some(u32::MAX),
+                    tip_time: Some(u64::MAX),
+                    chainlock_height: Some(u32::MAX),
+                    connected_peers: u32::MAX,
+                    caught_up: true,
+                    seconds_since_progress: Some(u64::MAX),
+                },
+            },
+            EngineEvent::Balances {
+                network: network(),
+                wallet_id,
+                balances: Some(WalletBalances {
+                    confirmed: u64::MAX,
+                    unconfirmed: u64::MAX,
+                    immature: u64::MAX,
+                    locked: u64::MAX,
+                    total: u64::MAX,
+                    coinjoin: u64::MAX,
+                }),
+            },
+            EngineEvent::HistoryChanged {
+                network: network(),
+                wallet_id,
+                txids: txids[..MAX_TXIDS].to_vec(),
+            },
+            EngineEvent::Notice {
+                network: Some(network()),
+                code: NoticeCode::PlatformContextUnavailable,
+                detail: text(1 << 20),
+            },
+            EngineEvent::VaultLockState {
+                network: network(),
+                state: dw_vault::LockState::UnlockedMixingOnly,
+            },
+            EngineEvent::NewTransactions {
+                network: network(),
+                wallet_id,
+                txids: txids.clone(),
+                catch_up: true,
+            },
+            EngineEvent::WalletLoadChanged {
+                network: network(),
+                wallet_id,
+                loaded: true,
+            },
+            EngineEvent::CoinJoin {
+                network: network(),
+                wallet_id,
+            },
+            EngineEvent::Platform {
+                network: network(),
+                wallet_id,
+                change: PlatformChange::Contacts {
+                    identity: text(1 << 16),
+                },
+            },
+            EngineEvent::Platform {
+                network: network(),
+                wallet_id,
+                change: PlatformChange::Registration {
+                    draft: Some(text(1 << 16)),
+                },
+            },
+            EngineEvent::Platform {
+                network: network(),
+                wallet_id,
+                change: PlatformChange::Payments {
+                    identity: text(1 << 16),
+                },
+            },
+            EngineEvent::LeaseChanged {
+                network: network(),
+                lease: lease(40),
+            },
+            EngineEvent::LockProgress {
+                network: network(),
+                phase: LockPhase::Draining {
+                    in_flight: u32::MAX,
+                    deadline_in_ms: u64::MAX,
+                },
+            },
+            EngineEvent::LockProgress {
+                network: network(),
+                phase: LockPhase::Done(report),
+            },
+            EngineEvent::DispatchResolved {
+                network: network(),
+                resolved: DispatchResolved {
+                    wallet_id: text(1 << 16),
+                    artifact: text(1 << 16),
+                    resolution: DispatchResolution::NotSent,
+                },
+            },
+        ]
+        .into_iter()
+        .map(AppEvent::from)
+        .collect();
+        events.push(AppEvent::EventsOverflowed);
+
+        // Every variant is here: adding one breaks this match.
+        let variant = |e: &AppEvent| match e {
+            AppEvent::SessionOpened { .. } => 0,
+            AppEvent::SessionClosed { .. } => 1,
+            AppEvent::WalletCreated { .. } => 2,
+            AppEvent::WalletRemoved { .. } => 3,
+            AppEvent::SpvStateChanged { .. } => 4,
+            AppEvent::Sync { .. } => 5,
+            AppEvent::Balances { .. } => 6,
+            AppEvent::HistoryChanged { .. } => 7,
+            AppEvent::Notice { .. } => 8,
+            AppEvent::EventsOverflowed => 9,
+            AppEvent::VaultLockState { .. } => 10,
+            AppEvent::NewTransactions { .. } => 11,
+            AppEvent::WalletLoadChanged { .. } => 12,
+            AppEvent::CoinJoin { .. } => 13,
+            AppEvent::Platform { .. } => 14,
+            AppEvent::LeaseChanged { .. } => 15,
+            AppEvent::LockProgress { .. } => 16,
+            AppEvent::DispatchResolved { .. } => 17,
+        };
+        let seen: std::collections::BTreeSet<_> = events.iter().map(variant).collect();
+        assert_eq!(seen, (0..18).collect());
+
+        let mut largest = (0, None);
+        for event in &events {
+            let bytes = serde_json::to_vec(event).unwrap().len();
+            assert!(bytes <= MAX_EVENT_BYTES, "{bytes} bytes: {event:?}");
+            if bytes > largest.0 {
+                largest = (bytes, Some(variant(event)));
+            }
+        }
+        // The full lock report is the largest, and it is near the bound: the
+        // caps, not slack, keep it under.
+        assert_eq!(largest.1, Some(16));
+        assert!(largest.0 > MAX_EVENT_BYTES / 2, "{} bytes", largest.0);
+
+        let done = events
+            .iter()
+            .find_map(|e| match e {
+                AppEvent::LockProgress {
+                    progress: LockProgress::Done { report },
+                    ..
+                } => Some(report),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(done.status.wallets_with_secrets.len(), 16);
+        assert_eq!(done.wallets_with_secrets_omitted, 40 - 16);
+        assert_eq!(done.flows_omitted, 20 - 16);
+        let lease = events
+            .iter()
+            .find_map(|e| match e {
+                AppEvent::LeaseChanged { lease, .. } => Some(lease),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(lease.budgets.len(), 4);
+        let sync = events
+            .iter()
+            .find_map(|e| match e {
+                AppEvent::Sync { status, .. } => Some(status),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(sync.phases.len(), 4);
+    }
+
+    /// Sol r3 (optional): past the cap a report keeps the outcomes nobody
+    /// knows (`maybeSent`) and those still going out before known `sent`
+    /// ones.
+    #[test]
+    fn a_cut_report_keeps_unresolved_outcomes_first() {
+        use crate::dto::platform::{FlowOutcomeName, MAX_LOCK_FLOWS};
+        use dw_engine::platform::{FlowOutcome, FlowReport};
+        let mut outcomes = vec![FlowOutcome::Sent; 20];
+        outcomes.extend([
+            FlowOutcome::Cancelled,
+            FlowOutcome::WillBeSent,
+            FlowOutcome::MaybeSent,
+        ]);
+        let report = LockOutcome::from(LockReport {
+            status: dw_vault::VaultStatus {
+                state: dw_vault::LockState::Locked,
+                encrypted: true,
+                quick_unlock_enrolled: false,
+                failed_attempts: 0,
+                retry_after_secs: None,
+                wallets_with_secrets: vec![],
+            },
+            flows: outcomes
+                .iter()
+                .map(|o| FlowReport {
+                    lease: "l".into(),
+                    wallet_id: "w".into(),
+                    flow: FlowKind::TopUp,
+                    outcome: *o,
+                    artifacts: vec![("a".into(), FlowOutcome::Sent), ("b".into(), *o)],
+                })
+                .collect(),
+        });
+        let kept: Vec<_> = report.flows.iter().map(|f| f.outcome).collect();
+        assert_eq!(
+            kept[..2],
+            [FlowOutcomeName::MaybeSent, FlowOutcomeName::WillBeSent]
+        );
+        assert!(kept[2..].iter().all(|o| *o == FlowOutcomeName::Sent));
+        assert_eq!(kept.len(), MAX_LOCK_FLOWS);
+        assert_eq!(report.flows_omitted, 23 - MAX_LOCK_FLOWS as u32);
+        assert_eq!(
+            report.flows[0].artifacts[0].outcome,
+            FlowOutcomeName::MaybeSent
+        );
+    }
+
     #[test]
     fn large_txid_batches_are_bounded() {
         let wallet_id = WalletId([1; 32]);
@@ -786,9 +1102,6 @@ mod tests {
             FlowOutcomeName, MAX_FLOW_ARTIFACTS, MAX_ID_BYTES, MAX_LOCK_FLOWS,
         };
         use dw_engine::platform::{FlowOutcome, FlowReport};
-        // A lock report of 16 flows of 8 artifacts with 128-byte ids is
-        // about 27 KB; a notice about 1 KB.
-        const EVENT_BYTES: usize = 32 * 1024;
         const CAP: usize = 8;
         let big = |n: usize| "x".repeat(n);
         let notice = || EngineEvent::Notice {
@@ -810,8 +1123,8 @@ mod tests {
                 flows: outcomes
                     .iter()
                     .map(|o| FlowReport {
-                        lease: big(4096),
-                        wallet_id: big(4096),
+                        lease: big(300),
+                        wallet_id: big(300),
                         flow: FlowKind::ContactRequest,
                         outcome: *o,
                         artifacts: (0..artifacts)
@@ -821,7 +1134,7 @@ mod tests {
                                 } else {
                                     FlowOutcome::Cancelled
                                 };
-                                (big(4096), o)
+                                (big(300), o)
                             })
                             .collect(),
                     })
@@ -832,13 +1145,13 @@ mod tests {
         st.sink.emit(spv(true));
         st.stalled.recv().unwrap();
         // CAP oversized events fill the queue.
-        let mut flows = vec![FlowOutcome::Cancelled; 100];
-        flows[99] = FlowOutcome::MaybeSent;
+        let mut flows = vec![FlowOutcome::Cancelled; 20];
+        flows[19] = FlowOutcome::MaybeSent;
         for i in 0..CAP {
             if i % 2 == 0 {
                 st.sink.emit(notice());
             } else {
-                st.sink.emit(done(&flows, 100));
+                st.sink.emit(done(&flows, 20));
             }
         }
         // The queue is full: this lock's `done` is dropped.
@@ -854,10 +1167,10 @@ mod tests {
         let mut held = 0;
         for event in &seen {
             let bytes = serde_json::to_vec(event).unwrap().len();
-            assert!(bytes <= EVENT_BYTES, "{bytes} bytes");
+            assert!(bytes <= MAX_EVENT_BYTES, "{bytes} bytes");
             held += bytes;
         }
-        assert!(held <= (CAP + 2) * EVENT_BYTES);
+        assert!(held <= (CAP + 2) * MAX_EVENT_BYTES);
         let cut = seen
             .iter()
             .find_map(|e| match e {
@@ -869,7 +1182,7 @@ mod tests {
             })
             .expect("a queued lock report");
         assert_eq!(cut.flows.len(), MAX_LOCK_FLOWS);
-        assert_eq!(cut.flows_omitted, 100 - MAX_LOCK_FLOWS as u32);
+        assert_eq!(cut.flows_omitted, 20 - MAX_LOCK_FLOWS as u32);
         // The one flow that may have sent something is kept, and in it the
         // one artifact that may have.
         assert_eq!(cut.flows[0].outcome, FlowOutcomeName::MaybeSent);
@@ -880,7 +1193,7 @@ mod tests {
         assert_eq!(cut.flows[0].artifacts.len(), MAX_FLOW_ARTIFACTS);
         assert_eq!(
             cut.flows[0].artifacts_omitted,
-            100 - MAX_FLOW_ARTIFACTS as u32
+            20 - MAX_FLOW_ARTIFACTS as u32
         );
         assert!(cut.flows[0].lease.len() <= MAX_ID_BYTES);
         assert!(cut.flows[0].artifacts[0].artifact.len() <= MAX_ID_BYTES);
@@ -908,9 +1221,16 @@ mod tests {
             ]
         );
         assert_eq!(kept.flows_omitted, 0);
-        assert!(serde_json::to_vec(&kept).unwrap().len() <= EVENT_BYTES);
-        // A new session of the network forgets it.
+        assert!(serde_json::to_vec(&kept).unwrap().len() <= MAX_EVENT_BYTES);
+        // A new session of the network forgets it, and so does its close
+        // (Sol r3 F3a): reports of closed networks are not kept.
         st.sink.emit(EngineEvent::SessionOpened {
+            network: DashNetwork::Regtest,
+        });
+        assert_eq!(st.memory.last_lock_report("regtest"), None);
+        st.sink.emit(done(&dropped, 2));
+        assert!(st.memory.last_lock_report("regtest").is_some());
+        st.sink.emit(EngineEvent::SessionClosed {
             network: DashNetwork::Regtest,
         });
         assert_eq!(st.memory.last_lock_report("regtest"), None);

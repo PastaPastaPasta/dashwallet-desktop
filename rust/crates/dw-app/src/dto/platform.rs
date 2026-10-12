@@ -195,6 +195,7 @@ pub struct Lease {
     pub key_expires_in_secs: Option<u64>,
     /// E0-04 §16.5's single definition.
     pub funds_committed: bool,
+    /// At most [`MAX_LEASE_BUDGETS`], one per purpose.
     pub budgets: Vec<Budget>,
     /// Permits held now.
     pub in_flight: u32,
@@ -217,14 +218,18 @@ impl From<LeaseView> for Lease {
             call_running,
         } = l;
         Lease {
-            id,
-            wallet_id,
+            id: cap_text(id, MAX_ID_BYTES),
+            wallet_id: cap_text(wallet_id, MAX_ID_BYTES),
             flow: flow.into(),
             state: state.into(),
             own_key,
             key_expires_in_secs,
             funds_committed,
-            budgets: budgets.into_iter().map(Into::into).collect(),
+            budgets: budgets
+                .into_iter()
+                .take(MAX_LEASE_BUDGETS)
+                .map(Into::into)
+                .collect(),
             in_flight,
             call_running,
         }
@@ -255,19 +260,30 @@ pub const MAX_LOCK_FLOWS: usize = 16;
 /// Artifacts a flow's report lists; the others are counted
 /// (`artifactsOmitted`).
 pub const MAX_FLOW_ARTIFACTS: usize = 8;
-/// Bytes of an engine identifier (lease id, artifact) the app passes on;
-/// the engine's own are at most 80.
+/// Bytes of an engine identifier (lease id, artifact, wallet id, identity,
+/// draft) the app passes on; the engine's own are at most 80.
 pub const MAX_ID_BYTES: usize = 128;
+/// Wallets a lock report's `status` lists; the others are counted
+/// (`walletsWithSecretsOmitted`), and `lockStatus` lists them all.
+pub const MAX_REPORT_WALLETS: usize = 16;
+/// Budgets a lease lists: the engine keeps one per purpose.
+pub const MAX_LEASE_BUDGETS: usize = 4;
 
-/// The first `max` of `items` after a stable sort that puts the ones that
-/// may have sent something before the cancelled ones, and how many were
-/// left out.
-fn keep_sent_first<T>(
+/// The first `max` of `items`, the ones a reader must not miss first: an
+/// outcome nobody knows (`maybeSent`), then one still going out
+/// (`willBeSent`), then `sent`, then `cancelled` (a stable sort). And how
+/// many were left out.
+fn keep_unresolved_first<T>(
     mut items: Vec<T>,
     max: usize,
-    cancelled: impl Fn(&T) -> bool,
+    outcome: impl Fn(&T) -> FlowOutcome,
 ) -> (Vec<T>, u32) {
-    items.sort_by_key(|t| cancelled(t));
+    items.sort_by_key(|t| match outcome(t) {
+        FlowOutcome::MaybeSent => 0,
+        FlowOutcome::WillBeSent => 1,
+        FlowOutcome::Sent => 2,
+        FlowOutcome::Cancelled => 3,
+    });
     let omitted = items.len().saturating_sub(max);
     items.truncate(max);
     (items, u32::try_from(omitted).unwrap_or(u32::MAX))
@@ -283,7 +299,8 @@ pub struct FlowLockReport {
     /// The strongest of all its artifacts' outcomes, listed or not.
     pub outcome: FlowOutcomeName,
     /// The flow's committed artifacts, each with its own outcome: at most
-    /// [`MAX_FLOW_ARTIFACTS`], the ones that may have been sent first.
+    /// [`MAX_FLOW_ARTIFACTS`], unresolved ones first (`maybeSent`,
+    /// `willBeSent`, `sent`, `cancelled`).
     pub artifacts: Vec<ArtifactOutcome>,
     /// Artifacts beyond [`MAX_FLOW_ARTIFACTS`], not listed.
     pub artifacts_omitted: u32,
@@ -299,9 +316,7 @@ impl From<FlowReport> for FlowLockReport {
             artifacts,
         } = r;
         let (artifacts, artifacts_omitted) =
-            keep_sent_first(artifacts, MAX_FLOW_ARTIFACTS, |(_, o)| {
-                *o == FlowOutcome::Cancelled
-            });
+            keep_unresolved_first(artifacts, MAX_FLOW_ARTIFACTS, |(_, o)| *o);
         FlowLockReport {
             lease: cap_text(lease, MAX_ID_BYTES),
             wallet_id: cap_text(wallet_id, MAX_ID_BYTES),
@@ -321,29 +336,35 @@ impl From<FlowReport> for FlowLockReport {
 
 /// What a full lock did: the vault's state after it, and each flow it cut
 /// (E0-04 §8.1, copy C4/C5). Bounded (E0-13 D3): at most
-/// [`MAX_LOCK_FLOWS`] flows of [`MAX_FLOW_ARTIFACTS`] artifacts, ids cut to
-/// [`MAX_ID_BYTES`].
+/// [`MAX_LOCK_FLOWS`] flows of [`MAX_FLOW_ARTIFACTS`] artifacts and
+/// [`MAX_REPORT_WALLETS`] wallets, ids cut to [`MAX_ID_BYTES`]. A report
+/// with `flowsOmitted` or `artifactsOmitted` above 0 is not complete:
+/// treat what it leaves out as unresolved (`dispatchStatus`, `leases`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LockOutcome {
     pub status: LockStatus,
-    /// At most [`MAX_LOCK_FLOWS`], the ones that may have sent something
-    /// first.
+    /// At most [`MAX_LOCK_FLOWS`], unresolved ones first (as artifacts).
     pub flows: Vec<FlowLockReport>,
     /// Flows beyond [`MAX_LOCK_FLOWS`], not listed.
     pub flows_omitted: u32,
+    /// Wallets beyond `status`'s [`MAX_REPORT_WALLETS`], not listed.
+    pub wallets_with_secrets_omitted: u32,
 }
 
 impl From<LockReport> for LockOutcome {
     fn from(r: LockReport) -> Self {
         let LockReport { status, flows } = r;
-        let (flows, flows_omitted) = keep_sent_first(flows, MAX_LOCK_FLOWS, |f| {
-            f.outcome == FlowOutcome::Cancelled
-        });
+        let (flows, flows_omitted) = keep_unresolved_first(flows, MAX_LOCK_FLOWS, |f| f.outcome);
+        let mut status = LockStatus::from(status);
+        let wallets = status.wallets_with_secrets.len();
+        status.wallets_with_secrets.truncate(MAX_REPORT_WALLETS);
         LockOutcome {
-            status: status.into(),
+            status,
             flows: flows.into_iter().map(Into::into).collect(),
             flows_omitted,
+            wallets_with_secrets_omitted: u32::try_from(wallets.saturating_sub(MAX_REPORT_WALLETS))
+                .unwrap_or(u32::MAX),
         }
     }
 }
@@ -424,7 +445,7 @@ impl From<DispatchResolved> for DispatchSettled {
             resolution,
         } = r;
         DispatchSettled {
-            wallet_id,
+            wallet_id: cap_text(wallet_id, MAX_ID_BYTES),
             artifact: cap_text(artifact, MAX_ID_BYTES),
             resolution: resolution.into(),
         }

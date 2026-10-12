@@ -5,16 +5,21 @@ import type { LockStatus } from "./LockStatus";
 /**
  * What a full lock did: the vault's state after it, and each flow it cut
  * (E0-04 §8.1, copy C4/C5). Bounded (E0-13 D3): at most
- * [`MAX_LOCK_FLOWS`] flows of [`MAX_FLOW_ARTIFACTS`] artifacts, ids cut to
- * [`MAX_ID_BYTES`].
+ * [`MAX_LOCK_FLOWS`] flows of [`MAX_FLOW_ARTIFACTS`] artifacts and
+ * [`MAX_REPORT_WALLETS`] wallets, ids cut to [`MAX_ID_BYTES`]. A report
+ * with `flowsOmitted` or `artifactsOmitted` above 0 is not complete:
+ * treat what it leaves out as unresolved (`dispatchStatus`, `leases`).
  */
 export type LockOutcome = { status: LockStatus, 
 /**
- * At most [`MAX_LOCK_FLOWS`], the ones that may have sent something
- * first.
+ * At most [`MAX_LOCK_FLOWS`], unresolved ones first (as artifacts).
  */
 flows: Array<FlowLockReport>, 
 /**
  * Flows beyond [`MAX_LOCK_FLOWS`], not listed.
  */
-flowsOmitted: number, };
+flowsOmitted: number, 
+/**
+ * Wallets beyond `status`'s [`MAX_REPORT_WALLETS`], not listed.
+ */
+walletsWithSecretsOmitted: number, };

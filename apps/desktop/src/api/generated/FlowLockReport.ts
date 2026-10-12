@@ -14,7 +14,8 @@ lease: string, walletId: string, flow: FlowKindName,
 outcome: FlowOutcomeName, 
 /**
  * The flow's committed artifacts, each with its own outcome: at most
- * [`MAX_FLOW_ARTIFACTS`], the ones that may have been sent first.
+ * [`MAX_FLOW_ARTIFACTS`], unresolved ones first (`maybeSent`,
+ * `willBeSent`, `sent`, `cancelled`).
  */
 artifacts: Array<ArtifactOutcome>, 
 /**

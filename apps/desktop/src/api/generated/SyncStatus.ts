@@ -7,7 +7,7 @@ import type { SyncPhaseStatus } from "./SyncPhaseStatus";
  */
 export type SyncStatus = { running: boolean, 
 /**
- * One row per phase, in phase order.
+ * One row per phase, in phase order: at most [`MAX_SYNC_PHASES`].
  */
 phases: Array<SyncPhaseStatus>, activePhase: SyncPhaseName | null, tipHeight: number | null, 
 /**
