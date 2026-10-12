@@ -10,6 +10,7 @@ use dw_appdb::dispatch::{
     CallRows, DISPATCH_DB_FILE, DispatchJournal, DispatchRow, JournalOpen, StepRow,
 };
 use dw_vault::{GrantKind, GrantPurpose, SignerScope, Vault, VaultError, VaultStatus};
+use key_wallet::bip32::DerivationPath;
 use zeroize::Zeroizing;
 
 use super::fence::JournalBackend;
@@ -39,14 +40,21 @@ fn issuing(e: VaultError) -> LeaseError {
     }
 }
 
+/// An identity key a write signs with: its DIP-13 path and on-chain data.
+pub(crate) type HeldKey = (DerivationPath, Vec<u8>);
+
 /// §4.1 step 2 on the blocking pool: checks every grant before consuming
 /// any, redeems them, moves an own key into one `KeyHold`, issues every
-/// signer the purposes need, and drops the tokens.
+/// signer the purposes need, and drops the tokens. With `keys`, the
+/// `PlatformOp` grant is redeemed only while the vault holds one of them
+/// (dw-vault `redeem_grant_holding_key`), else `KeysNotHeld` with every
+/// grant unused.
 pub(crate) fn issue(
     vault: &Vault,
     wallet: &WalletId,
     flow: FlowKind,
     grants: &[String],
+    keys: &[HeldKey],
 ) -> Result<Issued, LeaseError> {
     let epoch_before = vault.epoch();
     let allowed = kinds_for(flow);
@@ -66,13 +74,23 @@ pub(crate) fn issue(
     if kinds.is_empty() {
         return Err(LeaseError::Invalid);
     }
-    let mut tokens = grants
-        .iter()
-        .zip(&kinds)
-        .map(|(g, k)| vault.redeem_grant(g, *k, Some(&wallet.0)))
+    // The key-checked redemption first, so a key the vault does not hold
+    // leaves every grant unused.
+    let mut order: Vec<_> = grants.iter().zip(&kinds).collect();
+    order.sort_by_key(|(_, k)| **k != GrantKind::PlatformOp);
+    let redeem = |g: &String, kind: GrantKind| match kind {
+        GrantKind::PlatformOp if !keys.is_empty() => vault
+            .redeem_grant_holding_key(g, &wallet.0, keys)?
+            .ok_or(VaultError::NoSecret),
+        _ => vault.redeem_grant(g, kind, Some(&wallet.0)),
+    };
+    let mut tokens = order
+        .into_iter()
+        .map(|(g, k)| redeem(g, *k))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| match e {
             VaultError::Locked | VaultError::MixingOnly => LeaseError::Locked,
+            VaultError::NoSecret if !keys.is_empty() => LeaseError::KeysNotHeld,
             _ => LeaseError::Invalid,
         })?;
     if tokens.iter().any(|t| t.wallet() != Some(wallet.0)) {
@@ -143,6 +161,20 @@ impl NetworkSession {
         flow: FlowKind,
         grants: &[String],
     ) -> Result<Lease, LeaseError> {
+        self.begin_lease_holding(wallet, flow, grants, Vec::new())
+            .await
+    }
+
+    /// [`Self::begin_lease`] for a write that signs with one of `keys`:
+    /// its `PlatformOp` grant is redeemed only while the vault holds one
+    /// ([`issue`]); `KeysNotHeld` with the grants unused otherwise (DP2-02).
+    pub(crate) async fn begin_lease_holding(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        flow: FlowKind,
+        grants: &[String],
+        keys: Vec<HeldKey>,
+    ) -> Result<Lease, LeaseError> {
         let vault = self.vault.clone();
         let epoch_vault = self.vault.clone();
         let grants = grants.to_vec();
@@ -150,7 +182,7 @@ impl NetworkSession {
             .begin(
                 wallet,
                 flow,
-                move || issue(&vault, &wallet, flow, &grants),
+                move || issue(&vault, &wallet, flow, &grants, &keys),
                 move || epoch_vault.epoch(),
             )
             .await
@@ -163,7 +195,7 @@ impl NetworkSession {
         let (wallet, flow, grants) = (lease.wallet, lease.flow, grants.to_vec());
         lease
             .rebind(
-                move || issue(&vault, &wallet, flow, &grants),
+                move || issue(&vault, &wallet, flow, &grants, &[]),
                 move || epoch_vault.epoch(),
             )
             .await

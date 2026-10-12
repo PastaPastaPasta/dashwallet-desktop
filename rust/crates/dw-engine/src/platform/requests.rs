@@ -39,6 +39,7 @@ use super::keys_policy::{
     derive_keys, is_dashpay_recipient, key_path, missing_dashpay_purposes, upgrade_specs,
 };
 use super::lease::Lease;
+use super::lease::session::HeldKey;
 use super::names::{NameAuthority, check_credit_cap};
 use super::signers::{VaultContactCrypto, VaultIdentitySigner};
 use super::trust::TrustProvider;
@@ -193,9 +194,13 @@ fn cover(available: u64, quote: u64) -> Result<(), PlatformError> {
 ///   flow's lease is `platform.grant_invalid`: its keys are not this
 ///   write's), whose Credits budget left covers `quote`;
 /// - a vault `PlatformOp` grant whose `max_credits` covers `quote`
-///   (names.rs `check_credit_cap`) and through which the vault holds a key
-///   of [`flow_keys`] for `flows[0]` ([`check_held_keys`]), redeemed into a
-///   lease of `flows[0]` that ends when the call drops it.
+///   (names.rs `check_credit_cap`), redeemed into a lease of `flows[0]`
+///   that ends when the call drops it, and only while the vault holds one
+///   of the flow's [`candidate_keys`]: the check and the redemption are one
+///   section under the vault's record-write guard (dw-vault
+///   `redeem_grant_holding_key`), so a wallet removal that came first is
+///   `identity.keys_missing` with the grant unused. [`check_held_keys`]
+///   asks the same before `ready`, which then runs after any vault wait.
 ///
 /// A budget below `quote` is `platform.grant_exceeded`, none at all
 /// `platform.needs_grant{Credits}`. `signs` is the identity at its index
@@ -222,7 +227,8 @@ async fn write_lease(
         check_held_keys(session, wallet, grant, flows[0], signs).await?;
         ready()?;
         let grants = [grant.to_owned()];
-        let lease = session.begin_lease(wallet, flows[0], &grants).await;
+        let keys = candidate_keys(session, flows[0], signs);
+        let lease = (session.begin_lease_holding(wallet, flows[0], &grants, keys)).await;
         return Ok(lease.map_err(PlatformError::from)?);
     };
     let lease = lease.map_err(PlatformError::from)?;
@@ -255,7 +261,8 @@ async fn write_lease(
 /// are asked in turn, until one is held, through the grant without
 /// redeeming it (dw-vault
 /// `grant_identity_key_matches`). A vault error on the way (locked, the
-/// grant gone) is that error rather than `keys_missing`.
+/// grant gone) is that error rather than `keys_missing`. Advisory: the
+/// redemption checks again ([`write_lease`]).
 async fn check_held_keys(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
@@ -291,23 +298,54 @@ pub(super) async fn leased<F: Future>(lease: &Lease, call: F) -> F::Output {
     lease.scope(call).await
 }
 
-/// The first enabled ECDSA AUTHENTICATION key at one of `levels` that is
-/// `usable`, in key-id order, as platform-wallet picks its signing key (the
-/// first its signer's `can_sign_with` accepts).
+/// The enabled ECDSA AUTHENTICATION keys at one of `levels`, in key-id
+/// order, among which platform-wallet picks its signing key (the first its
+/// signer's `can_sign_with` accepts).
+fn auth_keys<'a>(
+    identity: &'a Identity,
+    levels: &'a [SecurityLevel],
+) -> impl Iterator<Item = &'a IdentityPublicKey> {
+    (identity.public_keys().values()).filter(|k| {
+        k.purpose() == Purpose::AUTHENTICATION
+            && levels.contains(&k.security_level())
+            && k.key_type() == KeyType::ECDSA_SECP256K1
+            && !k.is_disabled()
+    })
+}
+
+/// The first of [`auth_keys`] that is `usable`.
 fn first_auth_key(
     identity: &Identity,
     levels: &[SecurityLevel],
     usable: impl Fn(&IdentityPublicKey) -> bool,
 ) -> Option<KeyID> {
-    (identity.public_keys().values())
-        .find(|k| {
-            k.purpose() == Purpose::AUTHENTICATION
-                && levels.contains(&k.security_level())
-                && k.key_type() == KeyType::ECDSA_SECP256K1
-                && !k.is_disabled()
-                && usable(k)
-        })
+    auth_keys(identity, levels)
+        .find(|k| usable(k))
         .map(|k| k.id())
+}
+
+/// The levels of the key `flow`'s transition signs with ([`flow_keys`]).
+fn flow_levels(flow: FlowKind) -> &'static [SecurityLevel] {
+    match flow {
+        FlowKind::ContactRequest | FlowKind::Accept | FlowKind::AcceptAndPay => {
+            &[SecurityLevel::HIGH, SecurityLevel::CRITICAL]
+        }
+        FlowKind::EnableDashPayKeys => &[SecurityLevel::MASTER],
+        _ => &[],
+    }
+}
+
+/// The keys [`flow_keys`] chooses among for `flow`, as (DIP-13 path, key
+/// data), for a grant redeemed only while the vault holds one of them.
+fn candidate_keys(
+    session: &NetworkSession,
+    flow: FlowKind,
+    (index, identity): (u32, &Identity),
+) -> Vec<HeldKey> {
+    let network = session.vault.network();
+    (auth_keys(identity, flow_levels(flow)))
+        .filter_map(|k| Some((key_path(network, index, k.id()).ok()?, k.data().to_vec())))
+        .collect()
 }
 
 /// The keys `flow`'s transition signs with, and no others:
@@ -335,12 +373,11 @@ fn flow_keys(
     };
     match flow {
         FlowKind::ContactRequest | FlowKind::Accept | FlowKind::AcceptAndPay => {
-            let levels = [SecurityLevel::HIGH, SecurityLevel::CRITICAL];
-            let key = first_auth_key(identity, &levels, usable);
+            let key = first_auth_key(identity, flow_levels(flow), usable);
             Ok(vec![key.ok_or_else(missing)?])
         }
         FlowKind::EnableDashPayKeys => {
-            let master = first_auth_key(identity, &[SecurityLevel::MASTER], usable);
+            let master = first_auth_key(identity, flow_levels(flow), usable);
             let master = master.ok_or_else(missing)?;
             Ok(std::iter::once(master)
                 .chain(added.iter().copied())

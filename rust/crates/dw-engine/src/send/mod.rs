@@ -222,9 +222,11 @@ fn lease_failure(e: LeaseError, outflow: u64) -> EngineError {
         }
         LeaseError::Revoked(_) | LeaseError::Locked => SendFailure::Cancelled,
         LeaseError::Ended | LeaseError::Invalid => SendFailure::GrantInvalid,
-        LeaseError::Parked(_) | LeaseError::NeedsGrant(_) | LeaseError::Vault(_) => {
-            SendFailure::VaultLocked
-        }
+        // A coin send names no identity keys, so `KeysNotHeld` cannot arise.
+        LeaseError::Parked(_)
+        | LeaseError::NeedsGrant(_)
+        | LeaseError::Vault(_)
+        | LeaseError::KeysNotHeld => SendFailure::VaultLocked,
         LeaseError::Exceeded { remaining, .. } => SendFailure::GrantExceeded {
             max_duffs: remaining,
             outflow,

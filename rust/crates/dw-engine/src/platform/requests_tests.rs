@@ -18,7 +18,7 @@ use dpp::identity::v0::IdentityV0;
 use dpp::identity::{Identity, IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
-use dw_vault::{Credential, GrantPurpose};
+use dw_vault::{Credential, GrantKind, GrantPurpose};
 use platform_wallet::{AutoAcceptProofSource, ContactRequest, EstablishedContact, PlatformWallet};
 
 use super::super::contacts::{Eligibility, RequestOutcome};
@@ -672,6 +672,30 @@ fn a_key_upgrade_without_a_held_master_keeps_the_grant() {
     let grant = f.grant(KEY_UPDATE_CREDITS);
     let upgrade = f.enable_keys(&grant);
     refused_before_redemption(&f, (FlowKind::EnableDashPayKeys, grant), upgrade);
+}
+
+/// A wallet removal that lands after the key check and before the
+/// redemption (Sol r2 #1): the redemption asks again under the vault's
+/// record-write guard, so the grant stays unused and nothing is written.
+#[test]
+fn a_removal_after_the_key_check_keeps_the_grant() {
+    let f = Fixture::new(u64::MAX / 2);
+    let grant = f.grant(CONTACT_REQUEST_CREDITS);
+    let (me, vault, wallet) = (f.me(), f.s.vault.clone(), f.wallet);
+    // `ready` runs between the two, as wallets.rs removes a wallet.
+    let remove = move || {
+        let wipe = (vault.authorize(GrantPurpose::Wipe, Some(&wallet.0), Credential::None))
+            .unwrap()
+            .id;
+        let token = (vault.redeem_grant(&wipe, GrantKind::Wipe, Some(&wallet.0))).unwrap();
+        assert!(vault.wipe_wallet_secret(&wallet.0, &token).unwrap());
+        Ok(())
+    };
+    let flows = (&[FlowKind::ContactRequest][..], CONTACT_REQUEST_CREDITS);
+    let lease = (f.engine).block_on(write_lease(&f.s, wallet, &grant, flows, (0, &me), remove));
+    assert_eq!(Fixture::code(lease.map(drop)), "identity.keys_missing");
+    assert!(f.unused(&grant));
+    assert_eq!(f.net.writes(), 0);
 }
 
 /// A lease id is not charged for a write the vault cannot sign: its
