@@ -381,6 +381,12 @@ impl WriteFences {
         Arc::clone(guard(&self.0).entry(id).or_default())
     }
 
+    /// Tests: wallet `id`'s fence.
+    #[cfg(test)]
+    pub(super) fn of(&self, id: WalletId) -> Arc<tokio::sync::RwLock<()>> {
+        self.fence(id)
+    }
+
     /// Held while wallet `id` leaves the manager.
     pub(super) async fn removal(&self, id: WalletId) -> tokio::sync::OwnedRwLockWriteGuard<()> {
         self.fence(id).write_owned().await
@@ -689,18 +695,22 @@ impl NetworkSession {
             .await?)
     }
 
-    /// `f` on app.sqlite, a private-details write under `fence`: its
-    /// blocking job holds the fence until it ends, even when the task
+    /// `f` on app.sqlite, the private-details write `what` under `fence`:
+    /// its blocking job holds the fence until it ends, even when the task
     /// awaiting it is cancelled, so the wallet leaves after the write.
     async fn fenced_op<T: Send + 'static>(
         &self,
         fence: &WriteFence,
+        what: &'static str,
         f: impl FnOnce(&AppDb) -> Result<T, AppDbError> + Send + 'static,
     ) -> Result<T, PlatformError> {
         let held = Arc::clone(&fence.0);
         #[cfg(test)]
-        let pause = guard(&self.platform.contacts.job_pause).take();
-        Ok(self
+        let pause = {
+            let mut slot = guard(&self.platform.contacts.job_pause);
+            slot.take_if(|(at, _)| *at == what).map(|(_, pause)| pause)
+        };
+        let written = self
             .appdb_op(move |db| {
                 let _held = held;
                 #[cfg(test)]
@@ -712,7 +722,11 @@ impl NetworkSession {
                 }
                 f(db)
             })
-            .await?)
+            .await;
+        written.map_err(|e| {
+            tracing::warn!(write = what, error = %e, "private details not written");
+            e.into()
+        })
     }
 
     /// Records that Platform holds `d` for `pair`, in app.sqlite and in
@@ -726,7 +740,7 @@ impl NetworkSession {
     ) -> Result<(), PlatformError> {
         let (digest, cache, at) = (digest(d), self.digests(), *pair);
         let (w, i, c) = row_keys(pair);
-        let changed = (self.fenced_op(fence, move |db| {
+        let changed = (self.fenced_op(fence, "record", move |db| {
             let changed = db.set_contact_info_digest(&w, &i, &c, &digest, unix_now())?;
             cache.write(at.wallet, at.identity, at.contact, Some(digest));
             Ok(changed)
@@ -740,7 +754,7 @@ impl NetworkSession {
     async fn forget_digest(&self, fence: &WriteFence, pair: &Pair) -> Result<(), PlatformError> {
         let (cache, at) = (self.digests(), *pair);
         let (w, i, c) = row_keys(pair);
-        let changed = (self.fenced_op(fence, move |db| {
+        let changed = (self.fenced_op(fence, "forget", move |db| {
             let changed = db.forget_contact_info_digest(&w, &i, &c)?;
             cache.write(at.wallet, at.identity, at.contact, None);
             Ok(changed)
@@ -843,7 +857,7 @@ impl NetworkSession {
         }
         // Records of contacts no longer established go too.
         let (w, i, cache) = (id.to_string(), b58(&owner), self.digests());
-        let gone = (self.fenced_op(&fence, move |db| {
+        let gone = (self.fenced_op(&fence, "gone", move |db| {
             let gone: Vec<Identifier> = (db.forget_contact_infos_except(&w, &i, &keep)?)
                 .iter()
                 .filter_map(|c| Identifier::from_string(c, Encoding::Base58).ok())

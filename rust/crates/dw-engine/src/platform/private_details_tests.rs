@@ -1095,34 +1095,81 @@ fn a_load_across_a_forget_lands_nothing_old() {
     assert_eq!(f.reported(ERIN), PublishState::Published);
 }
 
-/// A write whose task is cancelled while its app.sqlite job runs holds a
+/// Releases a held job at the end of a test, passed or failed: the
+/// runtime's drop would wait for it.
+struct Release(Arc<TestPause>);
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        self.0.release.notify_one();
+    }
+}
+
+/// Holds the next fenced app.sqlite write `what` in its blocking job.
+fn hold_job(f: &Fixture, what: &'static str) -> (Arc<TestPause>, Release) {
+    let pause = Arc::new(TestPause::default());
+    *guard(&f.s.platform.contacts.job_pause) = Some((what, Arc::clone(&pause)));
+    let release = Release(Arc::clone(&pause));
+    (pause, release)
+}
+
+/// With `task` held in a fenced app.sqlite job at `pause` and then
+/// cancelled, the job still holds the wallet's write fence: `leave` (a
+/// removal, a close) waits at it, and ends once the job does.
+fn a_cancelled_job_holds<T: Send + 'static>(
+    f: &Fixture,
+    pause: &TestPause,
+    task: tokio::task::JoinHandle<T>,
+    leave: impl FnOnce() + Send,
+) {
+    wait_until("the write's job", Duration::from_secs(60), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    task.abort();
+    assert!(f.engine.block_on(task).is_err_and(|e| e.is_cancelled()));
+    let fence = f.s.platform.contacts.fences.of(f.wallet);
+    assert!(fence.try_write().is_err(), "the job holds no fence");
+    std::thread::scope(|scope| {
+        let leaving = scope.spawn(leave);
+        // A writer waits at the fence: no read gets in.
+        wait_until("the leave at the fence", Duration::from_secs(60), || {
+            fence.try_read().is_err()
+        });
+        let waited = !leaving.is_finished();
+        pause.release.notify_one();
+        leaving.join().unwrap();
+        assert!(waited);
+    });
+}
+
+/// A publish cancelled while its record's app.sqlite job runs holds a
 /// removal until the job ends; the removal then leaves nothing of the
 /// wallet.
 #[test]
 fn a_cancelled_write_holds_a_removal_until_its_job_ends() {
     let f = published();
-    let pause = Arc::new(TestPause::default());
-    *guard(&f.s.platform.contacts.job_pause) = Some(Arc::clone(&pause));
+    let (pause, _release) = hold_job(&f, "record");
     let (s, pair, lease) = (Arc::clone(&f.s), f.pair(ERIN), f.lease());
     let (manager, net) = (f.s.manager().unwrap(), Arc::clone(&f.net));
     let publishing = f.s.rt.spawn(async move {
         let wallet = manager.get_wallet(&pair.wallet.0).await.unwrap();
         set(&*net, &s, &wallet, pair, details("Erin"), Some(lease)).await
     });
-    wait_until("the write's job", Duration::from_secs(20), || {
-        pause.reached.load(Ordering::SeqCst)
-    });
-    publishing.abort();
-    assert!(f.engine.block_on(publishing).unwrap_err().is_cancelled());
-    std::thread::scope(|scope| {
-        let removal = scope.spawn(|| f.remove_wallet());
-        std::thread::sleep(Duration::from_millis(300));
-        let waited = !removal.is_finished();
-        pause.release.notify_one();
-        removal.join().unwrap();
-        assert!(waited);
-    });
+    a_cancelled_job_holds(&f, &pause, publishing, || f.remove_wallet());
     f.nothing_of_the_wallet();
+}
+
+/// The same for each app.sqlite write of a settle: a contact's forget and
+/// the contacts no longer established.
+#[test]
+fn a_cancelled_settle_holds_a_removal_until_its_job_ends() {
+    for what in ["forget", "gone"] {
+        let f = published();
+        let (pause, _release) = hold_job(&f, what);
+        let settling = f.settle_in_background();
+        a_cancelled_job_holds(&f, &pause, settling, || f.remove_wallet());
+        f.nothing_of_the_wallet();
+    }
 }
 
 /// A removal waits for a settle already writing, then removes what it
