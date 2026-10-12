@@ -952,6 +952,25 @@ fn a_removal_waits_for_a_settle_writing() {
     f.nothing_of_the_wallet();
 }
 
+/// A digest load overtaken by a write reads again (Sol r2 R6): what it
+/// read first lacks the write.
+#[test]
+fn a_load_overtaken_by_a_write_reads_again() {
+    let f = published();
+    f.s.platform.contacts.digests.forget(&f.wallet);
+    let pause = Arc::new(TestPause::default());
+    *guard(&f.s.platform.contacts.load_pause) = Some(Arc::clone(&pause));
+    assert_eq!(f.reported(ERIN), PublishState::Local);
+    wait_until("the load's read", Duration::from_secs(20), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    f.set(ERIN, details("Erin"), Some(f.lease())).unwrap();
+    pause.release.notify_one();
+    wait_until("the second read", Duration::from_secs(20), || {
+        f.reported(ERIN) == PublishState::Published
+    });
+}
+
 /// The library's publish reads every document the identity holds, with no
 /// bound: over the engine's cap (every document, opened or not) a publish
 /// is refused before the grant is redeemed (Sol r1 F3). (The SDK source

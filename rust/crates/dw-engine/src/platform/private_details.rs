@@ -608,11 +608,15 @@ impl NetworkSession {
         };
         let (db, manager, hub) = (live.appdb, live.manager, Arc::clone(&self.hub));
         let fences = Arc::clone(&self.platform.contacts.fences);
+        #[cfg(test)]
+        let pause = guard(&self.platform.contacts.load_pause).take();
         self.platform.contacts.spawn(&self.rt, async move {
             let Some(loaded) = manager.get_wallet(&id.0).await else {
                 cache.abort_load(id);
                 return;
             };
+            #[cfg(test)]
+            let mut pause = pause;
             loop {
                 let (db, wallet) = (Arc::clone(&db), id.to_string());
                 let read =
@@ -627,6 +631,13 @@ impl NetworkSession {
                     .filter_map(|(i, c, d)| Some(((id58(i)?, id58(c)?), *d)))
                     .collect();
                 let owners: BTreeSet<Identifier> = rows.keys().map(|(o, _)| *o).collect();
+                #[cfg(test)]
+                if let Some(pause) = pause.take() {
+                    pause
+                        .reached
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    pause.release.notified().await;
+                }
                 let Some(_fence) = fences.enter(&manager, id, &loaded).await else {
                     return;
                 };
