@@ -1069,8 +1069,8 @@ fn a_load_after_the_wallet_left_lands_nothing() {
 }
 
 /// A digest load that read before a write and a forget of the wallet
-/// (a restore's rollback keeps the wallet) lands nothing old: the next
-/// read finds the write.
+/// (a restore's rollback keeps the wallet) lands nothing old, not even
+/// over a newer load that landed first.
 #[test]
 fn a_load_across_a_forget_lands_nothing_old() {
     let f = published();
@@ -1083,13 +1083,14 @@ fn a_load_across_a_forget_lands_nothing_old() {
     });
     f.set(ERIN, details("Erin"), Some(f.lease())).unwrap();
     f.s.platform.contacts.digests.forget(&f.wallet);
-    pause.release.notify_one();
-    wait_until("the load's end", Duration::from_secs(20), || {
-        f.s.platform.contacts.idle()
-    });
-    wait_until("the write read", Duration::from_secs(20), || {
+    wait_until("a newer load", Duration::from_secs(20), || {
         f.reported(ERIN) == PublishState::Published
     });
+    pause.release.notify_one();
+    wait_until("the first load's end", Duration::from_secs(20), || {
+        f.s.platform.contacts.idle()
+    });
+    assert_eq!(f.reported(ERIN), PublishState::Published);
 }
 
 /// A removal waits for a settle already writing, then removes what it
