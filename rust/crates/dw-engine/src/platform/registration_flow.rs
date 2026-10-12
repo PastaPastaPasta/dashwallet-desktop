@@ -55,6 +55,7 @@ use tokio::time::Instant;
 
 use super::errors::{NameError, PlatformError, RegistrationError};
 use super::flows::{BudgetPurpose, LeaseStateView};
+use super::identity_writes::identity_locks;
 use super::lease::mode_b::TrackedRow;
 use super::lease::{CallPermit, CallStep, DraftKey, FundingKey, Lease, LeaseTable};
 use super::names::NameOutcome;
@@ -2862,6 +2863,9 @@ impl RegistrationLib for PwLib {
     ) -> Result<(), PlatformError> {
         let id = parse_identity(identity)?;
         let signer = lease.identity_signer(&[identity_index])?;
+        // One write of the identity at a time (identity_writes.rs).
+        let locks = identity_locks(self.wallet_id, id);
+        let _write = locks.write.lock().await;
         self.wallet
             .identity()
             .dashpay()
@@ -2879,6 +2883,9 @@ impl RegistrationLib for PwLib {
     ) -> Result<(), PlatformError> {
         let id = parse_identity(identity)?;
         let signer = lease.identity_signer(&[identity_index])?;
+        // One write of the identity at a time (identity_writes.rs).
+        let locks = identity_locks(self.wallet_id, id);
+        let _write = locks.write.lock().await;
         self.wallet
             .identity()
             .dashpay()
