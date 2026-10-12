@@ -430,12 +430,11 @@ releases as `(wallet, step_id) → at`, only for the standing marker: the load k
 while the marker it answers stands, a record sets J only under the marker it began under, and a
 `NotSent` re-mark drops the release with the marker. A second record under one marker keeps the
 first time, as the row on disk does (idempotent per marker). `released_at` is read in the same J
-step as the rest of `registration_funding_steps`. Residual (review, P2b's to close): the disk
-write itself is not tied to the marker it began under. A record whose signing was dropped and
-whose write is still retrying (≤ ~750 ms) can land on the next marker's row first; J then shows
-the next call's own time until a reload shows the earlier one, so DEC-197's hour can start up to
-that call's mark-to-first-signature gap early. The fix is `insert_release` taking the marker it
-answers (or returning the stored `at` for J). An
+step as the rest of `registration_funding_steps`. The disk write is tied to the marker it began
+under too (DP1-02 f1, Sol r9 residual 2): `insert_release` names that marker's `seq` (returned by
+the marker's own write) and writes only while it stands, in one transaction, so a record whose
+signing was dropped and whose write lands after a `NotSent` row and the next call's marker answers
+neither; and it returns the row's `at`, which J keeps, so J's time is always the disk's. An
 unreleased flagged step can still read `MaybeSent` while the wallet's rows are unknown; its view
 shows no release, so it passes nothing.
 

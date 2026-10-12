@@ -1017,7 +1017,8 @@ impl DispatchJournal {
     /// one transaction: the `step_log` marker, appended unless one of the
     /// step stands, and its `funding_marker` row, unless the standing
     /// marker has one already (the first key recorded under a marker
-    /// stays). Idempotent.
+    /// stays). Idempotent. Returns the standing marker's `seq`, which a
+    /// release of a call under it names ([`Self::insert_release`]).
     pub fn insert_funding_step(
         &self,
         wallet: &[u8; 32],
@@ -1025,13 +1026,16 @@ impl DispatchJournal {
         artifact: &[u8; 32],
         key: &StoredFundingKey,
         now: u64,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         append_marker(&tx, wallet, artifact, step_id, now)?;
         append_funding(&tx, wallet, artifact, step_id, key, now)?;
+        // The marker just appended, or one that stood: it stands.
+        let marker = latest_standing(&tx, wallet, artifact, step_id)?
+            .ok_or_else(|| AppDbError::Corrupt(format!("{step_id}: no marker stands")))?;
         tx.commit()?;
-        Ok(())
+        Ok(marker as u64)
     }
 
     /// Repair's self-spend `txid` of the funding marked by `step_id`
@@ -1156,31 +1160,46 @@ impl DispatchJournal {
         Ok(true)
     }
 
-    /// A funding call of `step_id` is about to release its first
-    /// signature (schema 7, review R6-01): recorded against the step's
-    /// standing marker before the vault signs. `Ok(false)`: no marker of
-    /// the step stands, so nothing is recorded (the call must not sign).
-    /// Idempotent per marker.
+    /// A funding call of `step_id` under the marker `marker` (its `seq`,
+    /// as [`Self::insert_funding_step`] returned it) is about to release its
+    /// first signature (schema 7, review R6-01): recorded against that
+    /// marker before the vault signs, in one transaction, only while it is
+    /// the step's standing marker. A write that lands after the marker was
+    /// superseded and the step marked again never answers the new marker
+    /// (DP1-02 f1): that call released nothing. Returns the row's `at`,
+    /// the first write's under the marker (idempotent per marker); `None`:
+    /// `marker` does not stand, so nothing is recorded (the call must not
+    /// sign).
     pub fn insert_release(
         &self,
         wallet: &[u8; 32],
         step_id: &str,
         artifact: &[u8; 32],
+        marker: u64,
         now: u64,
-    ) -> Result<bool> {
+    ) -> Result<Option<u64>> {
+        // A `seq` past i64 names no row.
+        let Ok(marker) = i64::try_from(marker) else {
+            return Ok(None);
+        };
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some(marker) = latest_standing(&tx, wallet, artifact, step_id)? else {
-            return Ok(false);
-        };
+        if latest_standing(&tx, wallet, artifact, step_id)? != Some(marker) {
+            return Ok(None);
+        }
         tx.execute(
             "INSERT INTO funding_release (wallet, step_id, artifact, marker, at)
              SELECT ?1, ?2, ?3, ?4, ?5
              WHERE NOT EXISTS (SELECT 1 FROM funding_release WHERE marker = ?4)",
             params![&wallet[..], step_id, &artifact[..], marker, now as i64],
         )?;
+        let at: i64 = tx.query_row(
+            "SELECT at FROM funding_release WHERE marker = ?1",
+            [marker],
+            |r| r.get(0),
+        )?;
         tx.commit()?;
-        Ok(true)
+        Ok(Some(at as u64))
     }
 
     /// Appends `artifact`'s resolution (DEC-154). `NotSent` supersedes its
@@ -2246,6 +2265,27 @@ mod tests {
         assert!(j.load_calls().unwrap().funding[1].durable_record);
     }
 
+    /// DP1-02 f1: a release write begun under one marker that lands after
+    /// a `NotSent` row superseded it and the step was marked again answers
+    /// no marker, the new one least of all (its call released nothing);
+    /// the new marker's own release is written as usual.
+    #[test]
+    fn a_late_release_never_answers_the_next_marker() {
+        let j = journal();
+        let step = "registration/d/funding";
+        let first = j.insert_funding_step(&W, step, &T, &KEY, 1).unwrap();
+        j.resolve(&W, &T, Resolution::NotSent, 2).unwrap();
+        let second = j.insert_funding_step(&W, step, &T, &KEY, 3).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(j.insert_release(&W, step, &T, first, 4).unwrap(), None);
+        assert!(j.release_rows().unwrap().is_empty());
+        assert!(j.load_calls().unwrap().releases.is_empty());
+        assert_eq!(j.insert_release(&W, step, &T, second, 5).unwrap(), Some(5));
+        let rows = j.load_calls().unwrap();
+        assert_eq!(rows.releases.len(), 1);
+        assert_eq!((rows.releases[0].marker, rows.releases[0].at), (second, 5));
+    }
+
     /// A release (schema 7, review R6-01) is written only against a
     /// standing marker of its step, once per marker; it stands with the
     /// marker and goes with its rows.
@@ -2253,18 +2293,32 @@ mod tests {
     fn a_release_answers_its_marker_once() {
         let j = journal();
         let step = "registration/d/funding";
-        assert!(!j.insert_release(&W, step, &T, 1).unwrap(), "no marker");
+        assert_eq!(
+            j.insert_release(&W, step, &T, 1, 1).unwrap(),
+            None,
+            "no marker"
+        );
         assert!(j.release_rows().unwrap().is_empty());
-        j.insert_funding_step(&W, step, &T, &KEY, 2).unwrap();
-        assert!(j.insert_release(&W, step, &T, 3).unwrap());
-        assert!(j.insert_release(&W, step, &T, 4).unwrap());
+        let marker = j.insert_funding_step(&W, step, &T, &KEY, 2).unwrap();
+        assert_eq!(
+            j.insert_funding_step(&W, step, &T, &KEY, 2).unwrap(),
+            marker
+        );
+        assert_eq!(j.insert_release(&W, step, &T, marker, 3).unwrap(), Some(3));
+        assert_eq!(
+            j.insert_release(&W, step, &T, marker, 4).unwrap(),
+            Some(3),
+            "the first write's time"
+        );
         assert_eq!(j.release_rows().unwrap().len(), 1, "once per marker");
         let rows = j.load_calls().unwrap();
         assert_eq!(rows.releases.len(), 1);
         assert_eq!(rows.releases[0].marker, rows.funding[0].seq);
-        assert!(
-            !j.insert_release(&W, "registration/e/funding", &T, 5)
+        assert_eq!(rows.funding[0].seq, marker);
+        assert_eq!(
+            j.insert_release(&W, "registration/e/funding", &T, marker, 5)
                 .unwrap(),
+            None,
             "another step's marker does not answer"
         );
         // Superseded (definitely unsent), the marker no longer stands, nor

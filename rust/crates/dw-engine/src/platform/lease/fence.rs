@@ -54,14 +54,14 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     fn insert_step(&self, wallet: &[u8; 32], step: &str, artifact: &[u8; 32])
     -> Result<(), String>;
     /// A funding step's marker with its funding key, in one transaction
-    /// (§2a.3).
+    /// (§2a.3). Returns the standing marker's `seq`.
     fn insert_funding_step(
         &self,
         wallet: &[u8; 32],
         step: &str,
         artifact: &[u8; 32],
         key: &StoredFundingKey,
-    ) -> Result<(), String>;
+    ) -> Result<u64, String>;
     /// Repair's self-spend `txid` of a funding step (§6.5), recorded against
     /// the step's standing marker with the signed locks it spends an input
     /// of (`conflicts`); `Ok(false)` when none stands
@@ -97,17 +97,20 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
         artifact: &[u8; 32],
         self_spend: &[u8; 32],
     ) -> Result<bool, String>;
-    /// A funding call of `step` is about to release its first signature
-    /// (§2a.7, review R6-01), recorded against the step's standing marker
-    /// at `at` (UNIX seconds); `Ok(false)` when none stands
+    /// A funding call of `step` under the marker `marker` (its `seq`) is
+    /// about to release its first signature (§2a.7, review R6-01),
+    /// recorded against that marker at `at` (UNIX seconds) only while it
+    /// stands (DP1-02 f1). Returns the row's time (the first write's);
+    /// `Ok(None)` when `marker` does not stand
     /// ([`LeaseTable::record_release`]).
     fn insert_release(
         &self,
         wallet: &[u8; 32],
         step: &str,
         artifact: &[u8; 32],
+        marker: u64,
         at: u64,
-    ) -> Result<bool, String>;
+    ) -> Result<Option<u64>, String>;
     /// Appends the artifact's resolution (DEC-154): `NotSent` supersedes
     /// its markers so far. The engine writes `Sent` only through
     /// `resolve_sent`.
@@ -171,7 +174,7 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         step: &str,
         artifact: &[u8; 32],
         key: &StoredFundingKey,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.insert_funding_step(wallet, step, artifact, key, crate::events::unix_now())
             .map_err(|e| e.to_string())
     }
@@ -236,9 +239,10 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         wallet: &[u8; 32],
         step: &str,
         artifact: &[u8; 32],
+        marker: u64,
         at: u64,
-    ) -> Result<bool, String> {
-        self.insert_release(wallet, step, artifact, at)
+    ) -> Result<Option<u64>, String> {
+        self.insert_release(wallet, step, artifact, marker, at)
             .map_err(|e| e.to_string())
     }
 
@@ -554,6 +558,15 @@ pub(crate) struct FenceState {
     /// a release write begun under one marker is not taken for the next
     /// one's ([`LeaseTable::record_release`]).
     supersedes: HashMap<(WalletId, String), u64>,
+    /// Each funding step's standing marker's `seq` on disk, once its write
+    /// in this process returned: a release names it, so a write that lands
+    /// after the marker was superseded answers no other one (DP1-02 f1). A
+    /// loaded marker needs none: the gate refuses a new call of a marked
+    /// step, and a release without it is refused. Dropped with the marker
+    /// when a `NotSent` row supersedes it; a `Sent` bundle that appends the
+    /// step's marker again leaves the old one here, harmlessly (no call of
+    /// a `Sent` step runs, and the journal refuses a release naming it).
+    marker_seqs: HashMap<(WalletId, String), u64>,
     /// The funding steps Repair resolved, durably (DP1-02 PA-3, review
     /// OD-06): each with its ChainLocked self-spend, which takes an input
     /// of every lock the step's call signed. Its signed locks are dead for
@@ -1196,6 +1209,7 @@ impl FenceState {
                 self.funding.remove(&key);
                 self.durable_record.remove(&key);
                 self.released.remove(&key);
+                self.marker_seqs.remove(&key);
                 *self.supersedes.entry(key.clone()).or_default() += 1;
                 self.self_spends.remove(&key);
                 self.signed_locks.remove(&key);
@@ -1533,6 +1547,8 @@ fn forget_erased(i: &mut Inner, wallet: WalletId, dispatch: bool, erased: Vec<[u
     f.released
         .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
     f.supersedes
+        .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
+    f.marker_seqs
         .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
     f.tombstones
         .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
@@ -2452,10 +2468,15 @@ impl LeaseTable {
         let table = Arc::clone(self);
         self.rt.spawn_blocking(move || {
             let (w, a) = (&wallet.0, &artifact.0);
+            // A funding marker's `seq`, which its calls' releases name.
+            let mut seq = None;
             let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &target {
                 Target::Record => matches!(backend.mark_dispatching(w, a), Ok(true)),
                 Target::Step(s) => match funding.first() {
-                    Some((_, key)) => backend.insert_funding_step(w, s, a, key).is_ok(),
+                    Some((_, key)) => backend
+                        .insert_funding_step(w, s, a, key)
+                        .map(|n| seq = Some(n))
+                        .is_ok(),
                     None => backend.insert_step(w, s, a).is_ok(),
                 },
                 #[cfg(test)]
@@ -2495,6 +2516,9 @@ impl LeaseTable {
                     && *m == (Mark::Committing { owner })
                 {
                     *m = if ok { Mark::Durable } else { Mark::Ambiguous };
+                    if let (Target::Step(s), Some(seq)) = (&target, seq) {
+                        i.fence.marker_seqs.insert((wallet, s.clone()), seq);
+                    }
                 }
                 #[cfg(test)]
                 if ok {
@@ -3216,6 +3240,14 @@ impl LeaseTable {
         run.owed = false;
         run.after_write = false;
         if mark == Some(Mark::Durable) {
+            // Only a resumable step's call runs under a marker that stood:
+            // the funding gate refuses a marked funding step, so a funding
+            // call always writes its marker and learns its `seq`, which its
+            // release names (DP1-02 f1).
+            debug_assert!(
+                step.funding().is_none(),
+                "a funding call over a standing marker"
+            );
             return (true, None);
         }
         i.fence.next += 1;
@@ -3353,15 +3385,18 @@ impl LeaseTable {
     /// Records that a funding call of `step` is about to release its first
     /// signature (schema 7, §2a.7, review P2b r6 R6-01): one append to the
     /// journal's `funding_release` table against the step's standing
-    /// marker, in memory once it landed. The call's funding signer awaits
+    /// marker, named by its `seq` as J knew it when the record began, so a
+    /// write that lands after that marker was superseded and the step
+    /// marked again answers neither (DP1-02 f1); in memory, with the row's
+    /// time, once it landed. The call's funding signer awaits
     /// it before the vault signs anything
     /// ([`CountingFundingSigner`](crate::platform::CountingFundingSigner)),
     /// so every lock that can reach a broadcast, by whatever path, has its
     /// step's release row on disk first, and the step never reads `NotSent`
     /// for want of a signed-lock record once a signature may be out. An
-    /// error (no journal ready, no marker standing on disk, a write that
-    /// keeps failing or panics, the marker superseded meanwhile) refuses the
-    /// signature. A failing write is retried ([`SIGNED_WRITE_ATTEMPTS`]).
+    /// error (no journal ready, no marker `seq` known in this process, the
+    /// marker no longer standing on disk, a write that keeps failing or
+    /// panics, the marker superseded meanwhile) refuses the signature. A failing write is retried ([`SIGNED_WRITE_ATTEMPTS`]).
     /// Idempotent per marker. Outside J.
     pub(crate) async fn record_release(
         self: &Arc<Self>,
@@ -3380,10 +3415,16 @@ impl LeaseTable {
             if i.fence.released.contains_key(&key) {
                 return Ok(None);
             }
+            let Some(&marker) = i.fence.marker_seqs.get(&key) else {
+                return Err("the funding step's marker is not durable".to_owned());
+            };
             i.fence.writes += 1;
-            Ok(Some(i.fence.supersedes.get(&key).copied().unwrap_or(0)))
+            Ok(Some((
+                i.fence.supersedes.get(&key).copied().unwrap_or(0),
+                marker,
+            )))
         })?;
-        let Some(generation) = begun else {
+        let Some((generation, marker)) = begun else {
             return Ok(());
         };
         // One time for every attempt, so a retry that finds an earlier
@@ -3398,7 +3439,8 @@ impl LeaseTable {
                 let mut delay = SIGNED_WRITE_BACKOFF;
                 let mut written = Err(String::new());
                 for attempt in 1..=SIGNED_WRITE_ATTEMPTS {
-                    written = guarded(|| backend.insert_release(&wallet.0, &key.1, &id.0, at));
+                    written =
+                        guarded(|| backend.insert_release(&wallet.0, &key.1, &id.0, marker, at));
                     match &written {
                         Err(e) => {
                             tracing::warn!(step = key.1, attempt, error = %e, "recording a funding release failed");
@@ -3415,13 +3457,14 @@ impl LeaseTable {
                     end_write(i, fx, written.is_ok());
                     match written {
                         Err(e) => Err(e),
-                        Ok(false) => Err("no marker of the funding step stands on disk".to_owned()),
+                        Ok(None) => Err("the funding step's marker no longer stands on disk".to_owned()),
                         // A `NotSent` row cannot supersede the marker while
                         // the call signs (`CallPermit::end`), unless this
                         // signing was dropped meanwhile: the row is then the
-                        // superseded marker's, and the next one's call
+                        // superseded marker's (the journal wrote it only
+                        // while that marker stood), and the next one's call
                         // writes its own.
-                        Ok(true)
+                        Ok(Some(_))
                             if !i.fence.call_marked(&wallet, &key.1)
                                 || i.fence.supersedes.get(&key).copied().unwrap_or(0)
                                     != generation =>
@@ -3435,7 +3478,10 @@ impl LeaseTable {
                         // (review Opus closure C-4). Safe: the signer
                         // re-checks the end after this write and signs
                         // nothing.
-                        Ok(true) => {
+                        // The row's time: an earlier attempt's or another
+                        // signer's write under the marker may have landed
+                        // first.
+                        Ok(Some(at)) => {
                             i.fence.released.insert(key, at);
                             Ok(())
                         }
@@ -3484,9 +3530,11 @@ impl LeaseTable {
         }
         let backend = (self.journal.get()).ok_or("no dispatch journal")?;
         let id = ArtifactId::of_step(&wallet, step);
-        if !backend.insert_release(&wallet.0, step, &id.0, at)? {
-            return Err("no marker of the funding step stands on disk".into());
-        }
+        let marker = (self.with_j(|i, _| i.fence.marker_seqs.get(&key).copied()))
+            .ok_or("the funding step's marker is not durable")?;
+        let Some(at) = backend.insert_release(&wallet.0, step, &id.0, marker, at)? else {
+            return Err("the funding step's marker no longer stands on disk".into());
+        };
         self.with_j(|i, fx| {
             fx.notify();
             i.fence.released.insert(key, at);

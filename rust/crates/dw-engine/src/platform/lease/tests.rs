@@ -377,6 +377,10 @@ pub(super) struct FakeJournal {
     releases: Mutex<Vec<ReleaseRow>>,
     /// A `funding_release` row: lost (nothing written, error).
     pub(super) fail_release: AtomicBool,
+    /// The next `funding_release` append reports it began, then waits to
+    /// be released before it reads the step's marker
+    /// ([`Self::hold_release`]).
+    release_hold: Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>,
     /// Every `Sent` bundle asked for.
     pub(super) bundles: Mutex<Vec<Bundle>>,
     /// Every artifact a marker row was ever appended for.
@@ -444,7 +448,7 @@ impl JournalBackend for FakeJournal {
         step: &str,
         artifact: &[u8; 32],
         key: &StoredFundingKey,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.stall();
         if self.fail_step.load(Ordering::SeqCst) {
             return Err("injected step failure".into());
@@ -452,7 +456,7 @@ impl JournalBackend for FakeJournal {
         let mut log = self.log.lock().unwrap();
         self.append_marker(&mut log, wallet, artifact, step);
         self.append_funding(&log, wallet, artifact, step, key);
-        Ok(())
+        Ok(latest_standing(&log, wallet, artifact, step).expect("the marker stands"))
     }
 
     fn insert_self_spend(
@@ -565,27 +569,34 @@ impl JournalBackend for FakeJournal {
         wallet: &[u8; 32],
         step: &str,
         artifact: &[u8; 32],
+        marker: u64,
         at: u64,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<u64>, String> {
+        let hold = self.release_hold.lock().unwrap().take();
+        if let Some((began, release)) = hold {
+            began.send(()).unwrap();
+            let _ = release.recv();
+        }
         if self.fail_release.load(Ordering::SeqCst) {
             return Err("injected release failure".into());
         }
         let log = self.log.lock().unwrap();
-        let Some(marker) = latest_standing(&log, wallet, artifact, step) else {
-            return Ok(false);
-        };
-        let mut releases = self.releases.lock().unwrap();
-        if !releases.iter().any(|r| r.marker == marker) {
-            releases.push(ReleaseRow {
-                seq: self.seq(),
-                wallet: *wallet,
-                step_id: step.to_owned(),
-                artifact: *artifact,
-                marker,
-                at,
-            });
+        if latest_standing(&log, wallet, artifact, step) != Some(marker) {
+            return Ok(None);
         }
-        Ok(true)
+        let mut releases = self.releases.lock().unwrap();
+        if let Some(r) = releases.iter().find(|r| r.marker == marker) {
+            return Ok(Some(r.at));
+        }
+        releases.push(ReleaseRow {
+            seq: self.seq(),
+            wallet: *wallet,
+            step_id: step.to_owned(),
+            artifact: *artifact,
+            marker,
+            at,
+        });
+        Ok(Some(at))
     }
 
     fn resolve_sent(
@@ -711,6 +722,15 @@ impl FakeJournal {
         let (began, began_rx) = mpsc::sync_channel(1);
         let (release, release_rx) = mpsc::sync_channel(1);
         *self.signed_lock_hold.lock().unwrap() = Some((began, release_rx));
+        (began_rx, release)
+    }
+
+    /// Holds the next `funding_release` append, as
+    /// [`Self::hold_signed_lock`] does the next `signed_lock` one.
+    pub(super) fn hold_release(&self) -> (mpsc::Receiver<()>, mpsc::SyncSender<()>) {
+        let (began, began_rx) = mpsc::sync_channel(1);
+        let (release, release_rx) = mpsc::sync_channel(1);
+        *self.release_hold.lock().unwrap() = Some((began, release_rx));
         (began_rx, release)
     }
 
@@ -2422,7 +2442,7 @@ impl JournalBackend for GatedJournal {
         step: &str,
         artifact: &[u8; 32],
         key: &StoredFundingKey,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.db
             .insert_funding_step(wallet, step, artifact, key, 0)
             .map_err(|e| e.to_string())
@@ -2458,10 +2478,11 @@ impl JournalBackend for GatedJournal {
         wallet: &[u8; 32],
         step: &str,
         artifact: &[u8; 32],
+        marker: u64,
         at: u64,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<u64>, String> {
         self.db
-            .insert_release(wallet, step, artifact, at)
+            .insert_release(wallet, step, artifact, marker, at)
             .map_err(|e| e.to_string())
     }
 
@@ -3113,7 +3134,7 @@ impl JournalBackend for R2Journal {
         step: &str,
         artifact: &[u8; 32],
         key: &StoredFundingKey,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.db
             .insert_funding_step(wallet, step, artifact, key, 0)
             .map_err(|e| e.to_string())
@@ -3149,10 +3170,11 @@ impl JournalBackend for R2Journal {
         wallet: &[u8; 32],
         step: &str,
         artifact: &[u8; 32],
+        marker: u64,
         at: u64,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<u64>, String> {
         self.db
-            .insert_release(wallet, step, artifact, at)
+            .insert_release(wallet, step, artifact, marker, at)
             .map_err(|e| e.to_string())
     }
 
@@ -3655,7 +3677,7 @@ impl JournalBackend for R3Journal {
         step: &str,
         artifact: &[u8; 32],
         key: &StoredFundingKey,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.db
             .insert_funding_step(wallet, step, artifact, key, 0)
             .map_err(|e| e.to_string())
@@ -3691,10 +3713,11 @@ impl JournalBackend for R3Journal {
         wallet: &[u8; 32],
         step: &str,
         artifact: &[u8; 32],
+        marker: u64,
         at: u64,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<u64>, String> {
         self.db
-            .insert_release(wallet, step, artifact, at)
+            .insert_release(wallet, step, artifact, marker, at)
             .map_err(|e| e.to_string())
     }
 
