@@ -1273,7 +1273,7 @@ fn contact_reads_digests_from_memory() {
 }
 
 /// A settle forgets the records of contacts no longer established (Sol r1
-/// F5), and signals it.
+/// F5), in app.sqlite and in memory, and signals it.
 #[test]
 fn a_settle_forgets_contacts_no_longer_established() {
     let f = published();
@@ -1284,10 +1284,20 @@ fn a_settle_forgets_contacts_no_longer_established() {
     let planted =
         f.s.appdb_op(move |db| db.set_contact_info_digest(&w, &i, &c, &[1; 32], 1));
     assert!(f.engine.block_on(planted).unwrap());
+    // In memory too: loaded again, with the planted record.
+    let digests = &f.s.platform.contacts.digests;
+    let held = || digests.get(f.wallet, &id(ME), &id(DAVE));
+    digests.forget(&f.wallet);
+    f.reported(ERIN);
+    wait_until(
+        "the planted record in memory",
+        Duration::from_secs(20),
+        || held().is_some() && f.s.platform.contacts.idle(),
+    );
     // Nothing else changes in this settle: the signal is the forget's.
     let before = f.contact_signals();
     assert!(f.settle());
-    assert_eq!(f.recorded(DAVE), None);
+    assert_eq!((f.recorded(DAVE), held()), (None, None));
     wait_until("the signal", Duration::from_secs(20), || {
         f.contact_signals() > before
     });
