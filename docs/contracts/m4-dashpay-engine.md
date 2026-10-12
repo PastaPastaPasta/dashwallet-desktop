@@ -2056,20 +2056,29 @@ renames or reshapes them takes the next version bump:
     - **Refused before the grant is redeemed:** eligibility, the balance against the quote, a flow with no key to sign
       with (`identity.keys_missing`), and a scan within 60 s of its expiry (`contact.scan_expired`).
     - **`RequestOutcome.request`** is the request's `$createdAt` (ms), as the journal's request kinds (§5).
-    - **A grant is redeemed only while the vault holds a key the write signs with** (Sol r1, r2). The redemption is
+    - **A grant is redeemed only while the vault holds a key the write signs with** (Sol r1–r3). The redemption is
       the authority: dw-vault `redeem_grant_holding_key` checks the write's candidate keys (its flow's enabled ECDSA
       authentication keys at the flow's levels, in id order: a document key, or for the key upgrade the master key)
       and redeems the `PlatformOp` grant in one section under the guard of the vault's record writes. No candidate
       held, the wallet's seed included, is `identity.keys_missing` with every grant left unused. A wallet removal
       takes the same guard to delete the seed: one that came first is that refusal; one that starts during the
-      section waits until the grant is redeemed, the key still held; the grant is then used, and the write either
-      signs before the seed is deleted or fails without signing (its signers cannot be issued, or derive no key).
-      A Lock ends every grant (E0-04), so one in between refuses the redemption. Earlier, before a scan's expiry
-      check, each candidate is asked in turn through the grant without using it (`grant_identity_key_matches`, a
-      yes-or-no answer that signs nothing); that check is advisory. A lease id, redeemed already, is checked by
-      its signer (`can_sign_with`) before its credits are charged.
+      section waits until the grant is redeemed, the key still held, and the grant is then used. A Lock ends every
+      grant (E0-04), so one in between refuses the redemption. Earlier, before a scan's expiry check, each
+      candidate is asked in turn through the grant without using it (`grant_identity_key_matches`, a yes-or-no
+      answer that signs nothing); that check is advisory. A lease id, redeemed already, is checked by its signer
+      (`can_sign_with`) before its credits are charged.
+    - **No signature is made after its seed is deleted** (Sol r3). Every deletion of a seed (`wipe_wallet_secret`
+      on removal, `delete_wallet_secret`, the old vault a recovery replaces) first waits for every vault operation
+      still running and keeps new ones out until the seed is gone, holding the vault's operation gate exclusively as
+      Lock does (a wipe or delete without ending the epoch; a recovery ends it anyway). A vault signer reads the
+      seed only inside an operation, so one that read it releases its signature before the deletion, and one that
+      starts after finds no seed and signs nothing, as do signers that can no longer be issued. (What the vault hands
+      out under a grant, a revealed phrase or masternode key or a discovery's scan key, is the caller's once
+      released, and signs no write here; removal ends the discoveries first, DP1-05.) A signature made before the removal may still broadcast after it,
+      until E0-04 P3's dispatch fence: the residual below, as for Lock.
     - **E0-04's lease rule follows this one** (E0-04 amendment 3): a lease of another flow, passed to a write that
       names its flows, is `platform.grant_invalid`; `platform.needs_grant` only when no grant or lease carries the
       purpose.
     - **Residual (accepted, E0-04 P3):** Lock stops new signatures; a write already signed when Lock lands may still
-      broadcast until E0-04 P3's dispatch fence (§4, the Lock reading). DP2-02 builds no fence of its own.
+      broadcast until E0-04 P3's dispatch fence (§4, the Lock reading). So may one signed before a wallet removal
+      deleted its seed. DP2-02 builds no fence of its own.
