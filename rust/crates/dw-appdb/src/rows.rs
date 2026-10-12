@@ -270,6 +270,25 @@ mod tests {
         assert!(!forget().unwrap());
         assert_eq!(a.contact_info_digest(&w, "id", "contact").unwrap(), None);
 
+        for contact in ["c1", "c2", "c3"] {
+            a.set_contact_info_digest(&w, "id", contact, &[1; 32], 14)
+                .unwrap();
+        }
+        a.set_contact_info_digest(&w, "other", "c1", &[2; 32], 14)
+            .unwrap();
+        let keep = ["c2".to_string()];
+        assert_eq!(
+            a.forget_contact_infos_except(&w, "id", &keep).unwrap(),
+            ["c1", "c3"]
+        );
+        assert_eq!(
+            a.contact_info_digests(&w).unwrap(),
+            [
+                ("id".into(), "c2".into(), [1; 32]),
+                ("other".into(), "c1".into(), [2; 32])
+            ]
+        );
+
         let b = AppDb::open_in_memory().unwrap();
         let crafted = TableRows {
             table: "dp_contact_info".into(),

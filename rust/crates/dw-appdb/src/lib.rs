@@ -839,6 +839,60 @@ impl AppDb {
         Ok(changed > 0)
     }
 
+    /// Every digest `dp_contact_info` holds for the wallet, as (identity,
+    /// contact, digest): what the engine keeps in memory for its sync reads.
+    pub fn contact_info_digests(&self, wallet_id: &str) -> Result<Vec<(String, String, [u8; 32])>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT identity, contact, digest FROM dp_contact_info WHERE wallet_id = ?1
+             ORDER BY identity, contact",
+        )?;
+        let rows = stmt
+            .query_map([wallet_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|(identity, contact, digest)| {
+                let digest = <[u8; 32]>::try_from(digest.as_slice())
+                    .map_err(|_| AppDbError::Corrupt("dp_contact_info.digest".into()))?;
+                Ok((identity, contact, digest))
+            })
+            .collect()
+    }
+
+    /// Forgets the digests of `identity`'s details of every contact not in
+    /// `keep` (no longer established); the contacts it forgot.
+    pub fn forget_contact_infos_except(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        keep: &[String],
+    ) -> Result<Vec<String>> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let held = {
+            let mut stmt = tx.prepare(
+                "SELECT contact FROM dp_contact_info WHERE wallet_id = ?1 AND identity = ?2",
+            )?;
+            stmt.query_map(params![wallet_id, identity], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let gone: Vec<String> = held.into_iter().filter(|c| !keep.contains(c)).collect();
+        for contact in &gone {
+            tx.execute(
+                "DELETE FROM dp_contact_info WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3",
+                params![wallet_id, identity, contact],
+            )?;
+        }
+        tx.commit()?;
+        Ok(gone)
+    }
+
     /// Sets an identity's preference, or deletes it for `None`.
     pub fn set_dp_pref(
         &self,
