@@ -417,7 +417,7 @@ lock's true signer must be wedged). Without this the model check's liveness fail
 lock of unknown index stayed `Contested` for good, and the new row's index read `Unknown` (it
 would wait for a ChainLock that never settles the contest). Residual: until the user runs
 Finish, a new row that is open and unfunded when such a lock shows up reads its index `Unknown`
-and waits with `RegistrationWait::NeedsFinish` (m4 Contract-Version 14: only such locks leave its
+and waits with `RegistrationWait::NeedsFinish` (m4 Contract-Version 12: only such locks leave its
 index unattributed; otherwise it waits `ChainLock`); after Finish it funds at its own index.
 
 **Ask of P2b r7** (DEC-197's seam). `released_at` must be some only for a released step, and it

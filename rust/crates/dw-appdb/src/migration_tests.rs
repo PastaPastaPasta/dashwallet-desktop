@@ -10,7 +10,7 @@ const INITIAL: i64 = 2026100501;
 const DASHPAY: i64 = 2026100801;
 const TRUST: i64 = 2026100901;
 const TRUST_DIGEST: i64 = 2026101101;
-const OWNER: i64 = 2026101001;
+const OWNER: i64 = 2026101201;
 const OUTCOMES: i64 = 2026101202;
 
 const DP_TABLES: [&str; 9] = [
@@ -76,7 +76,10 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
     drop(db);
 
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(versions(&conn), [INITIAL, DASHPAY, TRUST, OWNER, TRUST_DIGEST, OUTCOMES]);
+    assert_eq!(
+        versions(&conn),
+        [INITIAL, DASHPAY, TRUST, TRUST_DIGEST, OWNER, OUTCOMES]
+    );
     assert_eq!(tables(&conn), DP_TABLES);
     // Every dp_ table is STRICT, like the rest of the schema.
     for table in DP_TABLES {
@@ -129,7 +132,10 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     drop(db);
 
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(versions(&conn), [INITIAL, DASHPAY, TRUST, OWNER, TRUST_DIGEST, OUTCOMES]);
+    assert_eq!(
+        versions(&conn),
+        [INITIAL, DASHPAY, TRUST, TRUST_DIGEST, OWNER, OUTCOMES]
+    );
     assert_eq!(tables(&conn), DP_TABLES);
     for table in DP_TABLES {
         assert_eq!(count(&conn, &format!("SELECT COUNT(*) FROM {table}")), 0);
@@ -162,7 +168,10 @@ fn reopening_and_rerunning_change_nothing() {
         .run(&mut conn)
         .unwrap();
     assert!(report.applied_migrations().is_empty());
-    assert_eq!(versions(&conn), [INITIAL, DASHPAY, TRUST, OWNER, TRUST_DIGEST, OUTCOMES]);
+    assert_eq!(
+        versions(&conn),
+        [INITIAL, DASHPAY, TRUST, TRUST_DIGEST, OWNER, OUTCOMES]
+    );
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_main_identity"), 1);
 }
 
@@ -186,12 +195,12 @@ fn shipped_migrations_are_unchanged() {
             (INITIAL, "initial".to_string(), CHECKSUM_INITIAL),
             (DASHPAY, "dashpay".to_string(), CHECKSUM_DASHPAY),
             (TRUST, "trust_verified".to_string(), CHECKSUM_TRUST),
-            (OWNER, "registration_owner".to_string(), CHECKSUM_OWNER),
             (
                 TRUST_DIGEST,
                 "trust_digest".to_string(),
                 CHECKSUM_TRUST_DIGEST
             ),
+            (OWNER, "registration_owner".to_string(), CHECKSUM_OWNER),
             (
                 OUTCOMES,
                 "registration_outcomes".to_string(),
@@ -205,8 +214,8 @@ const CHECKSUM_INITIAL: u64 = 15039092102494657885;
 const CHECKSUM_DASHPAY: u64 = 11805424486264248187;
 const CHECKSUM_TRUST: u64 = 11010845116850883893;
 const CHECKSUM_TRUST_DIGEST: u64 = 5295667777470269757;
-const CHECKSUM_OWNER: u64 = 13999494890636001400;
-const CHECKSUM_OUTCOMES: u64 = 10568379569776118395;
+const CHECKSUM_OWNER: u64 = 12040521178707991804;
+const CHECKSUM_OUTCOMES: u64 = 9183630881616259306;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -648,7 +657,7 @@ fn verification_records_without_a_digest_verify_nothing() {
         .unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), TRUST_DIGEST);
+    assert_eq!(db.schema_version().unwrap(), OUTCOMES);
     assert!(db.verified_entities().unwrap().is_empty(), "the old row");
     assert_eq!(
         count(

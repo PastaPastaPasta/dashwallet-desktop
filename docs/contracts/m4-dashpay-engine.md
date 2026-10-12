@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 14
+Contract-Version: 12
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -185,7 +185,7 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 `discover_identities` (§2.1), DP1-03's names calls in §2.3 (`check_username`, `name_availability`,
 `register_name`, `set_main_name`, `main_name`), DP2-01's contacts read model in §2.4 (`contacts`, `contact`,
 `pending_setup_count`), and DP2-03's user search, links and scans (`search_users` and `resolve_user` in §2.3,
-`my_user_link` and `verify_scanned` in §2.4). Each row says whether its call is implemented. Kind is `sync`, `async` or `free, pure` (§1).
+`my_user_link` and `verify_scanned` in §2.4), and DP1-02's registration calls in §2.2. Each row says whether its call is implemented. Kind is `sync`, `async` or `free, pure` (§1).
 
 ### 2.1 Status and identity
 
@@ -213,12 +213,11 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 | `finish_asset_locks(grant)` | async | Tools ▸ Repair "Finish transfers": resumes tracked asset locks that no flow finished. Not gated by the journal: it resumes committed locks and builds none. | `RegistrationError` |
 | `prepare_faucet_lock(grant)` | async | Developer builds only. Derives a fresh registration asset-lock key (`m/9'/c'/5'/1'/…`) and returns its id and compressed public key for the faucet's `POST /api/asset-lock-proof` (§5). Outside developer builds: `platform.feature_off{feature: "faucet"}`. | `RegistrationError` |
 
-**Done (DP1-02, Contract-Version 9; Sol review r1, DEC-171, version 10 for `registration.coins_locked`; Sol r2,
-DEC-173; Opus-high review, version 11 for `RegistrationStatus.name_failure` and `profile_failure`; DP1-02's ownership
-model, version 12 for `RegistrationError::InProgress { draft }` and `RegistrationWait::FundingUnknown`; its rev2,
-version 13 for the row failures `registration.funded_elsewhere` and `registration.funding_cancelled`; DEC-197,
-version 14 for `start_registration_past_unknown_funding`, `registration.not_synced`,
-`registration.funding_unknown_recent` and, DEC-198 am.1, `RegistrationWait::NeedsFinish`).** What the
+**Done (DP1-02, Contract-Version 12, item 40; its review rounds added `registration.coins_locked` (Sol r1, DEC-171),
+`RegistrationStatus.name_failure` and `profile_failure` (Opus-high), `RegistrationError::InProgress { draft }` and
+`RegistrationWait::FundingUnknown` (the ownership model), the row failures `registration.funded_elsewhere` and
+`registration.funding_cancelled` (its rev2), `start_registration_past_unknown_funding`, `registration.not_synced` and
+`registration.funding_unknown_recent` (DEC-197), and `RegistrationWait::NeedsFinish` (DEC-198 am.1)).** What the
 bodies decided where the rows leave room:
 
 - **Costs.** The lock is 0.03 DASH (3 000 000 duffs) for a plain name and 0.25 DASH for a contested one, as the iOS
@@ -535,7 +534,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: c241b6ede999045e6a77b5e78ff01eebfd493c8263e411c8219d931db7532795 version: 11 -->
+<!-- surface-sha256: 31fbc38633f46fee0fcfd4ca8c9f792a49619184bb171541ef5c44e24627ea85 version: 12 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2007,3 +2006,13 @@ renames or reshapes them takes the next version bump:
     `topup/<id>/funding`) by E0-04 §2a.5; `DispatchResolved` also fires for a sighting of the bytes in another wallet
     and for a resumable step whose call returned Ok. Repair's "Resolve stuck funding" is engine-internal
     (`NetworkSession::resolve_stuck_funding`) until DP1-02 gives it its facade call.
+
+**From DP1-02** (version 12):
+
+40. **Identity registration** (§2.2, "Done (DP1-02 …)"). The registration rows get real bodies:
+    `registration_quote`, `start_registration`, `registrations`, `resume_registration`, `discard_registration`,
+    `finish_asset_locks`, `prepare_faucet_lock` and `start_registration_past_unknown_funding` (DEC-197). New:
+    `RegistrationStatus.name_failure` and `profile_failure`; `RegistrationWait::FundingUnknown` and `NeedsFinish`;
+    `RegistrationError::InProgress { draft }`, `NotSynced` and `FundingUnknownRecent { draft, wait_secs }`; the codes
+    `registration.coins_locked`, `registration.funded_elsewhere`, `registration.funding_cancelled`,
+    `registration.not_synced` and `registration.funding_unknown_recent`.
