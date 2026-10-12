@@ -165,7 +165,8 @@ Consumed signed value is §5.2a's.
   Starting rows that bypassed it (F11) are judged by §5.2c.
 - **I4. A reserved row stays put.** A row with an outstanding step never funds and never moves
   index, takes only its own `Step` locks, and is committed.
-- **I5. Uncertainty quarantines.** No row and no Finish takes a `Contested` lock.
+- **I5. Uncertainty quarantines.** No row takes a `Contested` lock, and Finish takes one only
+  for `Recovery` when every step contesting it is wedged with a known release (§8.1, DEC-198).
 - **I6. One funding per intent.** A row funds only from `Unfunded` at a free index. `start`
   refuses while a row is committed and not Done, or while an outstanding step has no row.
 - **I7. Only evidence releases.** Only a `None` claim, consumption or a voided txid ends a hold.
@@ -208,7 +209,8 @@ impl Ledger {  // rows, locks, identities, steps (PA-1), calling
 |---|---|---|
 | `Step(S)` | r = `row_of(S)` and `open(r)`, calling or not | `row_of(S)` is none, or readable and not `open` |
 | `Free` | `standing(r)` = `Unfunded`, `open(r)`, ¬`calling(r)` | yes |
-| `Parked`, `Contested`, `Dead` | no | no |
+| `Contested` | no | every step contesting it is wedged, with a known release (§8.1, DEC-198) |
+| `Parked`, `Dead` | no | no |
 
 **OD-05 is the `¬calling(r)` term.** `enter_funding` sets the flag in an actor job, and every
 ledger is read and written in one. A Finish or tap job that runs first may give r a `Free`
@@ -315,7 +317,7 @@ false, `Settled` and Done true. An `Unknown` hold reads `RegistrationWait::Fundi
 | `lock_of` (`:1090`) | the `live` outpoint's lock; else `own_lock`; else, for an `Unfunded` row only, the `Free` lock at its known index |
 | `index_owner` (`:1214`) | a `Free` lock at the index → `Lock`. An identity at the index: its lock by `may_take(Row r)` → `Lock`, another's → `Taken`, `Contested`/`Parked` → `Unknown`. **Another draft's step at the index → `Unknown` while outstanding, else `Taken`.** Another row at the index that holds something, is committed or is older → `Taken`. An unindexed `Free`/`Contested`/`Parked` lock → `Unknown` |
 | tap `note_lock_tracked` (`:1441`) | candidates at the index with no `live` outpoint, filtered by `may_take(Row r, L)`; the in-call row first, else the oldest |
-| Finish `import_stranded` (`:1553`) | `reconcile()` writes first. Then each unheld lock by owner: `Step` → `row_of(S)` if `may_take(Row)`, else `Recovery` if `may_take(Recovery)`, else it stays; `Free` → §5.1; others → none. The held path writes nothing. Returns `pending()` |
+| Finish `import_stranded` (`:1553`) | `reconcile()` writes first. Then each unheld lock by owner: `Step` → `row_of(S)` if `may_take(Row)`, else `Recovery` if `may_take(Recovery)`, else it stays; `Free` → §5.1; `Contested` → `Recovery` if `may_take(Recovery)` (§8.1), else it stays; others → none. The held path writes nothing. Returns `pending()` |
 | `adopt_registration_lock` (appdb) | only after `may_take(Recovery, L)`, so unspent value only (a CAS writer, not an authority) |
 | backup import (`import_wallet_rows`) | unchanged; §5.2c judges its rows |
 | `funding_status`, `funds_committed`, `resumable` (`:1288-1359`); `in_progress`, `settled`, `discard_refused` (reg `:430-447`, `:811`) | `committed`, `standing`, §5.4 |
@@ -341,9 +343,9 @@ false, `Settled` and Done true. An `Unknown` hold reads `RegistrationWait::Fundi
 | `Awaiting`, `Exact`, lock present / consumed | the run, the tap or Finish attaches it / (a), once discovery reports the identity |
 | `Closed` or no row, `Exact`, lock present / consumed | Finish → `Recovery` → identity / settles in place |
 | `Awaiting`/`Closed`, `Exact`, lock away | it returns, or Repair → `NotSent` (P2b residual: `LockInputsSpent`) |
-| `Awaiting`, `Unknown`, `durable_record` | in a call: it ends `Exact` or `NotSent`. After it, with no release row: `None` and the row closes (C5); with one: none (§8.1, Q15) |
+| `Awaiting`, `Unknown`, `durable_record` | in a call: it ends `Exact` or `NotSent`. After it, with no release row: `None` and the row closes (C5); with one: none, the step is wedged, and the user may start past it (§8.1, DEC-197; no adoption, DEC-198) |
 | `Awaiting`, `Unknown`, unflagged marker | none (§8.1) |
-| `Contested` | freed when no `Unknown` step stands (C4 removes the persistent one) |
+| `Contested` | freed when no `Unknown` step stands (C4 removes the persistent one); contested only by wedged steps, Finish → `Recovery` (§8.1, DEC-198) |
 | `Parked`; a `Step(S)` lock whose `row_of(S)` is unreadable | a build that reads the row (DEC-173) |
 | orphan step | its holder or heir, as above, else `Recovery` or settling in place |
 | `Cancelled` | none needed: not committed, and discardable; a new draft registers again |
@@ -378,8 +380,70 @@ funding signature and recorded no lock reads `MaybeSent` for good (E0-04 §2a.7)
 locked mid-build, the library's build failing after signing, or the wallet leaving the
 library's manager between the signing and the store. Repair refuses it (`NoKnownLock`). Its row
 is `Awaiting` like an unflagged one's, so the same wedge follows (discard and `start` refused, a
-lock at its index `Contested`), and here a shipped build can reach it. P2b's stated exit, "the
-user starts a new draft", needs `start` to pass such a step, which I6 forbids today: Q15.
+lock at its index `Contested`), and here a shipped build can reach it. DEC-197 (Q15) gives it
+one exit, and DEC-198 makes it the only one: P2b doesn't adopt the step's lock from chain
+evidence. At the pin a registration's credit key is the next pool address, chosen after signing
+and persisted best effort, so an exact key match can't tell two steps apart (BL-108 tracks the
+pin change).
+
+**A start past the step (DP1-02).** `start_registration` still refuses.
+`start_registration_past_unknown_funding(req, grant, past)` starts a new draft once the user has
+confirmed each blocker in `past`, named as `registration.in_progress` names it. A named row
+passes only if it is `Awaiting` and every step it awaits is wedged: `Unknown`, flagged, with
+nothing voided (a tombstone means Repair resolved it), and no call and no record write under
+it. A named orphan step passes only if it is wedged. Two more
+conditions must also hold. SPV must be synced; otherwise the start returns
+`registration.not_synced`. Each passed step's release row must be at least an hour old;
+otherwise it returns `registration.funding_unknown_recent` with the seconds left, or with none
+while the release time is unknown. Anything else still blocks with `registration.in_progress`.
+The new draft takes a fresh index (§6 skips every step's index) and gets its own exactly
+attributed lock. The old row stays committed, `Awaiting`, and can't be discarded.
+
+The release time comes from P2b's `funding_release.at`. Until P2b r7 exposes it, the seam
+(`registration_ledger::released_at`) returns none, so the override fails closed.
+
+**Contested locks of a wedged step (DP1-02 decision, for ruling).** A wedged step contests every
+unattributed lock at its index, or of unknown index, of its amount, and with no adoption nothing
+ever attributes one to it. So a lock that only wedged steps contest, each with a known release,
+goes to `Recovery`, never to a row: `may_take(Recovery, L)` holds, `may_take(Row, L)` doesn't,
+and Finish imports it into a recovery row. While a contester's release is unknown (until P2b r7,
+always) the lock stays `Contested` and pending (fail closed). That is how the earlier attempt's
+lock, if it confirms, comes back: a lock the wallet recovers through Finish, never attached to
+the old row or to the new one. A step that isn't wedged (unflagged, in a call, under a record
+write, or with a tombstone) still contests in full. This carves `Recovery` out of I3 for a
+wedged step's own unrecorded lock, and out of S4 for a lock only wedged steps contest: DEC-198
+sends that value to `Recovery`, and the model judges each such take against ground truth (the
+lock's true signer must be wedged). Without this the model check's liveness failed: a rebuilt
+lock of unknown index stayed `Contested` for good, and the new row's index read `Unknown` (it
+would wait for a ChainLock that never settles the contest). Residual: until the user runs
+Finish, a new row that is open and unfunded when such a lock shows up reads its index `Unknown`
+and waits with `RegistrationWait::ChainLock`, which only Finish resolves; after Finish it funds at
+its own index. A wait reason naming Finish would be an m4 change (proposed, not made).
+
+**Ask of P2b r7** (DEC-197's seam). `released_at` must be some only for a released step, and it
+must be the release of the step the view shows (its `step_id`, so not an earlier generation's
+after a `NotSent` re-mark), read in the same J step as `registration_funding_steps` or never
+going from none to some for a step the view still shows as unreleased. The view shows no release,
+and an unreleased flagged step can read `MaybeSent` while the wallet's rows are unknown.
+
+Passing an unflagged step is refused by decision, not by a safety rule. Its marker predates
+PA-2, so it has no release row, and §8.1 leaves it to the developer's fresh
+profile.
+
+**The wedge's copy.** The UI must show this text, and the user must confirm it, before it calls
+the override:
+
+> An earlier registration's payment could not be confirmed, and it may still appear on the
+> network. You can start a new registration now. The earlier payment may still confirm. If it
+> does, its funds show up as a transfer this wallet can recover later with Tools ▸ Repair ▸
+> Finish transfers, as a separate identity, so you may have paid for two registrations. The
+> earlier registration can't be discarded.
+
+While the hour runs (`funding_unknown_recent`): "The earlier registration's payment was sent
+less than an hour ago. Try again in {minutes} minutes." With no `wait_secs` (the release time is
+unknown): "This wallet can't yet tell when the earlier registration's payment was sent. Try again
+later." While SPV syncs (`not_synced`): "Wait until the wallet has finished syncing, then try
+again."
 
 ## 9. P2b asks
 
@@ -449,12 +513,22 @@ restores exhaustively, with flagged and unflagged markers. It covers `calling` i
 Finish per §5.1; `live`, `settled`'s in-place arm, `reconcile` (attach, clear, close) and
 `index_owner`'s step arm; C4's claim and C5's stale marker; D15's `row_of` exclusion; and events
 for the pre-marker window, a consumed signed lock no row holds, an unattributed row after a
-resolution and a wrong-holder backup. rev2 holds S1–S6, I3, I4, I6, I10–I12 and D15 with no
-expected violation; flagged scenarios reach "nothing outstanding", and every stuck unflagged state
-is §8.1's. Each mutation must fail: a calling row takes `Free`; `Recovery` takes an open
+resolution and a wrong-holder backup. DEC-197/198 add three things:
+- a signing path where the lock leaves unstored and the process stops;
+- the override start, past wedged steps only;
+- no adoption (DEC-198): a lock only wedged steps contest goes to a Finish recovery row.
+
+rev2 holds S1–S6, I3, I4, I6, I10–I12 and D15 with no expected violation. Every stuck flagged
+state reaches, by system events alone, DEC-197's rest: nothing outstanding but wedged steps
+(any lock of theirs that showed up recovered), with the override open, the steps' only exit.
+Every other stuck state is §8.1's unflagged one. Witnesses: the override is taken; A's lock,
+sent unstored, shows up and Finish recovers it while A stays `Awaiting`; after the override C
+funds with its own lock while a recovery row holds A's; and after the override A stays
+`Awaiting`, not discardable. Each mutation must fail: a calling row takes `Free`; `Recovery` takes an open
 caller's `Step` lock; no attach or no closure; the closure clears an outpoint that isn't `dead`;
 the signer takes contrary value; `next_index` ignores resolved steps; C4 reads `Unknown`; a
-cancel-coded row is again `row_of` (D15); and rev1's rejected rules. Run it under
+cancel-coded row is again `row_of` (D15); rev1's rejected rules; and DEC-198's: a row takes a lock
+only wedged steps contest, and `Recovery` takes any `Contested` lock. Run it under
 `systemd-run -p MemoryMax=4G -p RuntimeMaxSec=1500 -p Nice=10`.
 
 ### 11.2 Rust regressions
@@ -465,7 +539,15 @@ Fake library, which counts `fund` and `register_identity` calls.
 1. **R8-01a/b** (rev1 items 1–2). Add schema-7 flagged-marker variants. With no release row,
    after a reopen it reads `NotSent`, nothing is funded, and A closes as
    `Cancelled(funding_cancelled)` (C5, Q14). With one, it reads `MaybeSent`: A is `Awaiting`
-   (`FundingUnknown`), discard and `start` are refused, nothing is funded (P2b r6, Q15).
+   (`FundingUnknown`), discard and `start` are refused, nothing is funded (P2b r6, Q15). DEC-197:
+   the override is refused within an hour of the release, and while SPV is behind. After both,
+   it starts C at a fresh index and C completes. A stays committed, can't be discarded, and
+   contests a lock at its index. An unflagged step and a row holding its lock still block, and a
+   malformed name is refused. DEC-198: A's lock showing up after the override, rebuilt with its
+   index unknown, while C is open and unfunded, is `Contested`; C may not take it and its index
+   reads `Unknown`; Finish recovers it into a recovery row, never to A or C; then C funds at its
+   own index and completes, and A stays waiting and committed. The override passes a wedged
+   orphan step named `registration/<n>/funding`.
 2. **OD-02.** Open the r8 probe's real pre-6 dispatch DB with the new build. A is `Awaiting`
    (`FundingUnknown`), discard and `start` are refused, nothing is funded, and T2 stays unheld.
 3. **OD-01** (P2b's test, a dependency): Sol's blocked-record resume race, zero broadcasts.
@@ -511,6 +593,8 @@ A named test must kill each mutation site: `outstanding`'s `Unknown` arm, the he
 (b)'s exact `dead` match; `pending`'s step term and `committed` for `Closed`; the post-call `Ok`
 routing; the step arms of `next_index` and `index_owner`; discard's `committed` check. Sol r8's
 KNOWN_INDEX, RUN_RESERVATION and ORPHAN_IMPORT stay; ORPHAN_IMPORT now expects `Recovery`.
+DEC-197 adds the override's gates (wedged needs a flagged marker, the row must be named, every
+step it awaits wedged, SPV synced, the release an hour old) and `may_take`'s wedge-only `Recovery` arm (DEC-198).
 
 Traps: sign through the Fake's `fund` (a record needs a running call); the Fake's txid is
 `[index+1; 32]`; P2b's 5 s lease tests flake at load ~200; run the check with `-I -B`.
@@ -534,12 +618,11 @@ Traps: sign through the Fake's `fund` (a record needs a running call); the Fake'
 - **Q14. C5: close, or retry the same step?** Today the row closes and the user starts a new
   draft (nothing was paid). Alternatively P2b's permit supersedes a flagged marker with nothing
   signed and no running call before marking anew; then `cancelled` narrows to `dead` ≠ ∅.
-- **Q15. A released step with no recorded lock (P2b r6).** It reads `MaybeSent` for good and
+- **Q15 (ruled: DEC-197, DEC-198, §8.1, §13.1). A released step with no recorded lock (P2b r6).** It reads `MaybeSent` for good and
   wedges the wallet's registrations (§8.1). Either keep the wedge (fail closed: no second lock
   while one may be out), or let `start` pass such a step: its row stays `Awaiting`, committed and
   not discardable, a lock at its index stays `Contested`, and the new draft takes a fresh index
-  with its own exactly attributed lock, at the cost of possibly paying twice. The code keeps the
-  wedge until ruled.
+  with its own exactly attributed lock, at the cost of possibly paying twice.
 
 ## 13. Manager rulings
 
@@ -570,3 +653,5 @@ attempt doesn't resurrect them.
 - **Q14: close the row** (`Cancelled(funding_cancelled)`), as rev2 has it. P2b doesn't replace stale markers.
 - **Before implementation:** update the model check (`docs/design/checks/dp1_02_ownership_model.py`) to rev2 and run it with the §11.1 mutations, bounded so it finishes. Then a narrow Sol design r2.
 - **D15: approved (Sol design r2, APPROVE-WITH-CHANGES).** `row_of(S)` picks `holder(S)`, else `signer(S)`, and returns none if that row is closed with `registration.funded_elsewhere` or `registration.funding_cancelled`; it never falls through to another candidate, and no step or lock evidence is dropped. A closed row takes no lock: consumed signed value settles in place, returning unspent signed value goes to Recovery (§5.1).
+- **Q15 → DEC-197: neither pure option; the wedge must be resolvable.** (Its adoption half is superseded by DEC-198.) P2b adopts a released, recordless step's lock from chain evidence for the life of the step. DP1-02 adds an explicit override, `start_registration_past_unknown_funding` (m4 Contract-Version 14). It requires SPV synced, the release at least an hour old and the user's confirmed copy (§8.1). The old row stays committed. The model gains the unstored-send path and the override. Every flagged scenario ends with nothing outstanding, or with a wedged step whose only exit is the override.
+- **DEC-198: P2b's adoption by funding key is deferred.** At the pin a registration's credit key is the next pool address, chosen after signing and persisted best effort, so an exact key match can't tell two steps apart; BL-108 tracks the pin change. The DEC-197 override is the wedge's only exit. The copy promises no adoption: the earlier attempt may still confirm, and its funds then show up as a lock the wallet recovers later. DP1-02's consequence, for ruling (§8.1): a lock only wedged steps contest goes to `Recovery` through Finish, never to a row.

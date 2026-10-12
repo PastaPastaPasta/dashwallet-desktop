@@ -18,10 +18,12 @@ liveness: from every reachable state the system alone (the call, the run,
 reconcile, the tap, Finish, Repair, proofs, reconstruction, discovery; no
 user decision) reaches "nothing outstanding" (no call, no outstanding step,
 every live lock consumed, no row holding unconsumed or voided value, every
-Cancelled row closed with its code), and every state that cannot is one of section
-8.1's (an Unknown step on an unflagged marker, or on a flagged one whose call
-released a signature and recorded no lock: P2b r6, Q15); and a few reachability
-witnesses for rev2's new paths. Part 2 runs each rule the design rejects and
+Cancelled row closed with its code), or DEC-197/198's rest (nothing
+outstanding but wedged steps, flagged Unknown ones whose call released a
+signature and recorded no lock, with the override open: their only exit);
+every state that reaches neither is section 8.1's (an Unknown step on an
+unflagged marker); and a few reachability witnesses for rev2's and
+DEC-197/198's paths. Part 2 runs each rule the design rejects and
 requires the check to fail. A scenario that outgrows MAX_STATES stops the
 run with "BOUND HIT" and exit 2, never a silent pass.
 
@@ -52,7 +54,8 @@ What is modelled:
   `Consumed` by this library, identity discovered, dead (can never land).
 - Events: enter_funding (sets `calling`), P2b marks (the pre-marker window
   lies between), sign (record durable, or the write fails: with PA-2 the
-  process stops before any broadcast), store and the tap (write lands or
+  process stops before any broadcast, or, what MaybeSent covers, after the
+  lock left unstored), store and the tap (write lands or
   fails), the returns (Ok or a timeout; Refused before the broadcast;
   NotSent after a rejection; an error before signing or before the store),
   P2b's NotSent write (lands, or fails and lives in memory), the post-call
@@ -65,7 +68,10 @@ What is modelled:
   NoKnownLock otherwise), restart, discard, start, the foreign lock
   appearing, wallet removal and re-add (copies of the rows, an older backup
   taken before the funding, or no rows), and a backup whose B' holds A's
-  lock while A' is open at A's index (section 5.2c, Q8).
+  lock while A' is open at A's index (section 5.2c, Q8). DEC-197/198: the
+  override start (C past wedged steps only); no adoption (DEC-198), so a
+  lock only wedged steps contest goes to a Finish recovery row, never to a
+  row.
 
 The checks judge with rev2's functions run without the rule under test (the
 reference ledger) or with the ground truth, never with the rule under test.
@@ -110,6 +116,7 @@ class Row(NamedTuple):
     ident: bool = False
     code: Optional[str] = None  # closure: "fe" funded_elsewhere, "fc" funding_cancelled
     late: bool = False  # truth: made by start while a lost row's step was out
+    forced: bool = False  # made by DEC-197's override, past a wedged step
 
 
 class Lock(NamedTuple):
@@ -380,6 +387,17 @@ class Ledger:
                 return ("Contested", S.draft)
         return ("Free",)
 
+    def contesters(self, lk: Lock) -> list:
+        return [S for S in self.steps
+                if self.claim(S) == "Unknown" and self.outstanding(S) and not self.own(S)
+                and lk.kidx in (None, S.idx) and lk.duffs == S.duffs]
+
+    def wedge_only(self, lk: Lock) -> bool:
+        """DEC-198: only wedged steps with a known release contest lk, so no
+        row waits for it."""
+        c = self.contesters(lk)
+        return bool(c) and all(self.wedged(S) and S.released for S in c)
+
     def kind(self, lk: Lock) -> Optional[str]:
         o = self.owner(lk)
         if o is None:
@@ -407,7 +425,11 @@ class Ledger:
                     return self.open(r)
                 return self.open(r) and self.standing(r) == "Unfunded"
             return True
-        return False  # Parked, Contested, Dead
+        if k == "Contested":
+            if taker[0] == "Row":
+                return "wedge-contest-row" in self.m and self.wedge_only(lk) and self.open(taker[1])
+            return self.wedge_only(lk) or "recovery-any-contest" in self.m
+        return False  # Parked, Dead
 
     # 5.2 -------------------------------------------------------------------
     def reconcile(self, r: Row) -> list:
@@ -503,6 +525,25 @@ class Ledger:
             return False
         return not any(self.outstanding(S) and self.row_of(S) is None for S in self.steps)
 
+    def wedged(self, S: Step) -> bool:
+        """DEC-197: a flagged step read Unknown with no call under it (a
+        released call that recorded no lock, MaybeSent for good)."""
+        return (self.claim(S) == "Unknown" and self.outstanding(S) and S.durable_record
+                and not S.signed and not S.deadv and S.draft not in self.calling)
+
+    def start_past_allowed(self) -> bool:
+        """DEC-197 (2): the override, the user having confirmed every
+        blocker: a committed row passes only Awaiting wedged steps alone, an
+        orphan step only if wedged."""
+        for r in self.rows:
+            if self.committed(r) and not r.ident:
+                mine = self.steps_of(r)
+                if not (self.standing(r) == "Awaiting" and mine
+                        and all(self.wedged(S) for S in mine)):
+                    return False
+        return all(self.wedged(S) for S in self.steps
+                   if self.outstanding(S) and self.row_of(S) is None)
+
     def discard_allowed(self, r: Row) -> bool:
         if "settled-exemption" in self.m and r.ident and r.rid not in self.calling:
             return True  # the old settled(): a row with an identity may go
@@ -552,8 +593,16 @@ def put_out(s: St, cfg: Cfg, taker, lk: Lock, label: str, ident: bool = False) -
     rl = ledger(s, ref(cfg))
     tv = []
     o = rl.owner(lk)
-    if o is not None and o[0] == "Contested":
+    if o is not None and o[0] == "Contested" and not (taker == "rec" and rl.wedge_only(lk)):
         tv.append("S4: a Contested lock is held")
+    if taker == "rec" and o is not None and o[0] == "Contested" and lk.signer is not None:
+        # DEC-198's carve-out, judged by ground truth, not by wedge_only: the
+        # lock's true signer is flagged, released, recorded nothing (durably
+        # or voided) and runs no call.
+        T = step_of(s, lk.signer)
+        if T is None or not (T.durable_record and T.released and not T.dsigned and not T.deadv
+                             and all(d != T.draft for d, _ in s.calling)):
+            tv.append("S4: Recovery takes a Contested lock whose signer isn't wedged")
     h = rl.holder_of.get(lk.name)
     if h is not None and (taker == "rec" or h.rid != taker.rid):
         tv.append("I11: value moves between rows")
@@ -647,7 +696,8 @@ def mark(s: St, cfg: Cfg, r: Row) -> tuple:
     """P2b marks the call: the step's durable marker (F1)."""
     tv = []
     for S in lost_out(s):
-        if S.draft != r.rid and (S.idx == r.index or S.lin == r.key or r.late):
+        if S.draft != r.rid and (S.idx == r.index or S.lin == r.key
+                                 or (r.late and not r.forced)):
             tv.append("S1: a funding call starts while a lost row's step is out")
     if any(x.lkey == r.key and x.stored and not x.dead for x in s.locks):
         tv.append("I6: an intent funds again while its value exists")
@@ -689,6 +739,11 @@ def call_steps(s: St, cfg: Cfg, d: str, ph: str) -> Iterator[tuple]:
         if cfg.pa2:
             yield (f"call {d}: signs {name}, record write fails: process stops (PA-2)",
                    restart(set_step(s1, rp(R, signed=one))), True, [])
+            # What MaybeSent covers (Q15): the lock left with no store or
+            # record of it, then the process stopped.
+            s2 = set_lock(s, Lock(name, signer=d, lkey=S.lin, duffs=S.duffs, stored=True))
+            yield (f"call {d}: signs {name}, record write fails, {name} sent unstored: "
+                   "process stops", restart(set_step(s2, rp(R, signed=one))), True, [])
         else:
             yield (f"call {d}: signs {name}, record write fails (logged)",
                    set_call(set_step(s1, rp(R, signed=one)), d, "signed"), True, [])
@@ -773,6 +828,9 @@ def finish(s: St, cfg: Cfg) -> tuple:
             waiting = [r for r in led.rows if r.kind == "user" and led.may_take(("Row", r), lk)
                        and AMT <= lk.duffs]
             target = (at or waiting or ["rec"])[0]
+        elif k == "Contested":  # DEC-198: Recovery, when only wedged steps contest it
+            rows = [r for r in led.rows if r.kind == "user" and led.may_take(("Row", r), lk)]
+            target = rows[0] if rows else ("rec" if led.may_take(("Rec",), lk) else None)
         if target is not None:
             lab, s, _, t = put_out(s, cfg, target, lk, "")
             labels.append(lab.lstrip(": "))
@@ -867,6 +925,11 @@ def steps(s: St, cfg: Cfg) -> Iterator[tuple]:
         c = Row(rid="C", seq=s.nseq, index=led.next_index(), key="kC", late=bool(lost_out(s)))
         yield (f"start C at index {c.index}",
                set_row(rp(s, starts=s.starts - 1, nseq=s.nseq + 1), c), False, [])
+    elif s.starts > 0 and led.start_past_allowed():
+        c = Row(rid="C", seq=s.nseq, index=led.next_index(), key="kC", late=bool(lost_out(s)),
+                forced=True)
+        yield (f"override: start C at index {c.index} past a wedged step (DEC-197)",
+               set_row(rp(s, starts=s.starts - 1, nseq=s.nseq + 1), c), False, [])
     if s.restarts > 0:
         yield ("restart", rp(restart(s), restarts=s.restarts - 1), False, [])
     if s.restores > 0:
@@ -917,14 +980,14 @@ def violations(s: St, cfg: Cfg) -> list:
     return out
 
 
-def goal(s: St, cfg: Cfg) -> bool:
-    """Nothing outstanding: no call, no outstanding step, every live lock
-    consumed, no row holding unconsumed or voided value, every Cancelled row
-    closed with its code."""
+def goal(s: St, cfg: Cfg, ignore: frozenset = frozenset()) -> bool:
+    """Nothing outstanding: no call, no outstanding step (but those of
+    `ignore`), every live lock consumed, no row holding unconsumed or voided
+    value, every Cancelled row closed with its code."""
     if s.calling:
         return False
     led = ledger(s, ref(cfg))
-    if any(led.outstanding(S) for S in led.steps):
+    if any(led.outstanding(S) for S in led.steps if S.draft not in ignore):
         return False
     if any(x.stored and not x.dead and not x.consumed for x in s.locks):
         return False
@@ -940,15 +1003,22 @@ def goal(s: St, cfg: Cfg) -> bool:
     return True
 
 
+def wedge_rest(s: St, cfg: Cfg) -> bool:
+    """DEC-197/198's end state: nothing outstanding but wedged steps (a lock
+    of theirs that showed up was recovered: goal needs every live lock
+    consumed), and the override open, the steps' only exit."""
+    led = ledger(s, ref(cfg))
+    w = frozenset(S.draft for S in led.steps if led.wedged(S))
+    return bool(w) and goal(s, cfg, ignore=w) and led.start_past_allowed()
+
+
 def unflagged_unknown(s: St, cfg: Cfg) -> bool:
-    """Section 8.1: an Unknown step on an unflagged marker, or on a flagged
-    one whose call released a signature and recorded no lock (P2b r6, Q15:
-    the wedge is kept until ruled), no call running, whose money no row
-    holds as a lock that can still land."""
+    """Section 8.1: an Unknown step on an unflagged marker, no call running,
+    whose money no row holds as a lock that can still land."""
     led = ledger(s, ref(cfg))
     return any(
         led.outstanding(S) and led.claim(S) == "Unknown"
-        and (not S.durable_record or S.released)
+        and not S.durable_record
         and S.draft not in led.running
         and not any(t in led.holder_of and not led.locks[t].dead
                     for t in led.own(S) if t in led.locks)
@@ -974,6 +1044,8 @@ def stuck_reason(s: St, cfg: Cfg) -> str:
     for S in led.steps:
         if led.outstanding(S) and led.claim(S) == "Unknown":
             return "a flagged Unknown step with no exit"
+    if not ledger(s, ref(cfg)).start_past_allowed():
+        return "a wedged step the override can't pass"
     for k in ("Step", "Contested", "Free", "Dead"):
         for x in s.locks:
             o = led.owner(x)
@@ -1028,6 +1100,7 @@ def explore(init: St, cfg: Cfg, stop_early: bool = False) -> dict:
         return list(reversed(out))
 
     res = {"n": len(states), "states": states, "labels": labels, "stuck": set(), "pred": set(),
+           "wedge": set(), "rest": set(),
            "trace": trace}
     if not (stop_early and found):
         pred_g: list = [[] for _ in states]
@@ -1045,12 +1118,25 @@ def explore(init: St, cfg: Cfg, stop_early: bool = False) -> dict:
                 if not can[i]:
                     can[i] = True
                     q.append(i)
-        del pred_g
         stuck = {i for i in range(len(states)) if not can[i]}
-        pred = {i for i, s in enumerate(states) if unflagged_unknown(s, cfg)}
-        for i in sorted(stuck - pred):
+        # DEC-197: a stuck state must reach the wedge's rest by itself.
+        rest = {i for i in stuck if wedge_rest(states[i], cfg)}
+        can_rest = {i: False for i in stuck}
+        q = deque(rest)
+        for i in q:
+            can_rest[i] = True
+        while q:
+            j = q.popleft()
+            for i in pred_g[j]:
+                if i in can_rest and not can_rest[i]:
+                    can_rest[i] = True
+                    q.append(i)
+        del pred_g
+        wedge = {i for i, ok in can_rest.items() if ok}
+        pred = {i for i in stuck - wedge if unflagged_unknown(states[i], cfg)}
+        for i in sorted(stuck - wedge - pred):
             found.setdefault(f"L: {stuck_reason(states[i], cfg)}", (i, None))
-        res.update(stuck=stuck, pred=pred)
+        res.update(stuck=stuck, pred=pred, wedge=wedge, rest=rest)
     res["found"] = {v: trace(i, lab) for v, (i, lab) in found.items()}
     return res
 
@@ -1128,6 +1214,9 @@ MUTATIONS = {
     "no-heir": "no heir: an orphan step has no row",
     "take-contested": "a row takes a Contested lock (I5)",
     "r7-01": "R7-01: an Awaiting row takes a Free lock",
+    # DEC-197/198
+    "wedge-contest-row": "a row takes a lock only wedged steps contest (as if Free)",
+    "recovery-any-contest": "Recovery takes any Contested lock, not only a wedge-only one",
 }
 
 
@@ -1166,6 +1255,26 @@ def witnesses(name: str, r: dict, cfg: Cfg) -> list:
                         and any(x.out == "T2" for x in s.rows) for s in st)))
         out.append(("OD-04: a voided outpoint is cleared and its row closed",
                     any("Close A (clear" in x for x in lab)))
+        out.append(("DEC-197: the override starts C past A's wedged step",
+                    any(x.startswith("override: start C") for x in lab)))
+        out.append(("DEC-198: A's lock sent unstored shows up and Finish recovers it into a "
+                    "recovery row while A stays Awaiting",
+                    any(any(r.kind == "rec" and (x := lock_of(s, r.out)) is not None
+                            and x.signer == "A" for r in s.rows)
+                        and standing(s, "A") == "Awaiting" for s in st)))
+        out.append(("DEC-198: after the override C funds with its own lock while A's "
+                    "recovered lock is held by a recovery row",
+                    any((c := row_of_id(s, "C")) is not None and c.forced
+                        and (x := lock_of(s, c.out or "")) is not None and x.signer == "C"
+                        and any(r.kind == "rec" and (y := lock_of(s, r.out)) is not None
+                                and y.signer == "A" for r in s.rows)
+                        for s in st)))
+        out.append(("DEC-197: after the override A stays Awaiting its wedged step "
+                    "(committed, not discardable)",
+                    any((c := row_of_id(s, "C")) is not None and c.forced
+                        and standing(s, "A") == "Awaiting"
+                        and not ledger(s, cfg).discard_allowed(row_of_id(s, "A"))
+                        for s in st)))
     if name == "wrong holder restored (flagged)":
         out.append(("5.2c/Q8: A' reads Cancelled(funded_elsewhere) and B' keeps TA1 to its "
                     "identity",
@@ -1212,8 +1321,9 @@ def main() -> int:
             check(not safety, f"[{name}] S1-S6, I3, I4, I6, I10-I12, D15 hold ({r['n']} states)")
             live = [v for v in r["found"] if v.startswith("L: ")]
             what = ("every state reaches nothing outstanding" if not r["stuck"] else
-                    f"the {len(r['stuck'])} stuck states are all section 8.1's "
-                    f"Unknown wedge states (Q15 included) (of {len(r['pred'])} such states)")
+                    f"of the {len(r['stuck'])} stuck states, {len(r['wedge'])} reach DEC-197's "
+                    f"wedge rest ({len(r['rest'])} states: only the override left) and "
+                    f"{len(r['pred'])} are section 8.1's unflagged Unknown")
             check(not live, f"[{name}] liveness: {what}")
             for desc, reached in witnesses(name, r, cfg):
                 check(reached, f"[{name}] reached: {desc}")
