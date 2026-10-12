@@ -171,9 +171,11 @@ fn one_test_at_a_time() {
     });
 }
 
-/// The fixture with `infos` as the session's `contactInfo` source.
-fn fixture(f: Fixture) -> Fixture {
+/// The fixture `make` builds, one test at a time, with `infos` as the
+/// session's `contactInfo` source.
+fn fixture(make: impl FnOnce() -> Fixture) -> Fixture {
     one_test_at_a_time();
+    let f = make();
     *guard(&f.s.platform.contacts.info_source) =
         Some(Arc::clone(&f.net.infos) as Arc<dyn InfoSource>);
     f
@@ -376,14 +378,14 @@ impl Fixture {
 }
 
 fn published() -> Fixture {
-    two_contacts(fixture(Fixture::new(u64::MAX / 2)))
+    two_contacts(fixture(|| Fixture::new(u64::MAX / 2)))
 }
 
 /// Below two contacts the details are saved with the contact and the
 /// publish deferred: no write, the grant left unused.
 #[test]
 fn below_two_contacts_the_details_stay_local() {
-    let f = fixture(Fixture::new(u64::MAX / 2));
+    let f = fixture(|| Fixture::new(u64::MAX / 2));
     let grant = f.grant(DOCUMENT_10K_CREDITS);
     assert_eq!(
         f.set(ERIN, details("Erin"), Some(grant.clone())).unwrap(),
@@ -709,7 +711,7 @@ fn refusals_keep_the_grant() {
     let code = Fixture::code(f.set(ERIN, details("Erin"), Some(profile)));
     assert_eq!(code, "platform.grant_invalid");
 
-    let g = two_contacts(fixture(Fixture::with_keys(keys(false), u64::MAX / 2)));
+    let g = two_contacts(fixture(|| Fixture::with_keys(keys(false), u64::MAX / 2)));
     let grant = g.grant(DOCUMENT_10K_CREDITS);
     assert_eq!(
         Fixture::code(g.set(ERIN, details("Erin"), Some(grant.clone()))),
@@ -717,7 +719,7 @@ fn refusals_keep_the_grant() {
     );
     assert!(g.unused(&grant));
 
-    let poor = two_contacts(fixture(Fixture::new(DOCUMENT_10K_CREDITS - 1)));
+    let poor = two_contacts(fixture(|| Fixture::new(DOCUMENT_10K_CREDITS - 1)));
     let grant = poor.grant(DOCUMENT_10K_CREDITS);
     assert_eq!(
         Fixture::code(poor.set(ERIN, details("Erin"), Some(grant.clone()))),
@@ -725,7 +727,7 @@ fn refusals_keep_the_grant() {
     );
     assert!(poor.unused(&grant));
 
-    let unheld = two_contacts(fixture(Fixture::foreign(keys(true), u64::MAX / 2)));
+    let unheld = two_contacts(fixture(|| Fixture::foreign(keys(true), u64::MAX / 2)));
     let grant = unheld.grant(DOCUMENT_10K_CREDITS);
     assert_eq!(
         Fixture::code(unheld.set(ERIN, details("Erin"), Some(grant.clone()))),
