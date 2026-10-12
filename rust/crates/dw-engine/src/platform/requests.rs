@@ -4,12 +4,12 @@
 //!
 //! Every write refuses what it can before it redeems a grant, in this
 //! order: the identity and the other user (`eligibility`), the identity's
-//! credits against the action's quote, the keys its flow signs with and a
-//! scan's expiry, then the grant or lease. It signs under a lease
-//! ([`write_lease`]) with exactly the keys its transition needs
-//! ([`flow_keys`]), charges the quote to the lease's Credits budget just
-//! before it goes out, counted as a running call ([`leased`]), and holds the
-//! identity's write lock throughout (`identity_writes.rs`).
+//! credits against the action's quote, then the grant or lease, whether the
+//! vault holds a key its flow signs with, and last a scan's expiry. It signs
+//! under a lease ([`write_lease`]) with exactly the keys its transition
+//! needs ([`flow_keys`]), charges the quote to the lease's Credits budget
+//! just before it goes out, counted as a running call ([`leased`]), and
+//! holds the identity's write lock throughout (`identity_writes.rs`).
 //!
 //! Fees (DEC-195): Platform meters a transition's fee against its state
 //! when it executes, so no quote can equal the charge. The quote is a bound
@@ -36,7 +36,7 @@ use super::identity::KeyPurpose;
 use super::identity_writes::identity_locks;
 use super::journal::request_ref;
 use super::keys_policy::{
-    derive_keys, is_dashpay_recipient, missing_dashpay_purposes, upgrade_specs,
+    derive_keys, is_dashpay_recipient, key_path, missing_dashpay_purposes, upgrade_specs,
 };
 use super::lease::Lease;
 use super::names::{NameAuthority, check_credit_cap};
@@ -193,17 +193,23 @@ fn cover(available: u64, quote: u64) -> Result<(), PlatformError> {
 ///   flow's lease is `platform.grant_invalid`: its keys are not this
 ///   write's), whose Credits budget left covers `quote`;
 /// - a vault `PlatformOp` grant whose `max_credits` covers `quote`
-///   (names.rs `check_credit_cap`), redeemed into a lease of `flows[0]`
-///   that ends when the call drops it.
+///   (names.rs `check_credit_cap`) and through which the vault holds a key
+///   of [`flow_keys`] for `flows[0]` ([`check_held_keys`]), redeemed into a
+///   lease of `flows[0]` that ends when the call drops it.
 ///
 /// A budget below `quote` is `platform.grant_exceeded`, none at all
-/// `platform.needs_grant{Credits}`.
+/// `platform.needs_grant{Credits}`. `signs` is the identity at its index
+/// whose keys the write signs with; a lease id's are checked by
+/// [`flow_signer`], before anything is charged to it. `ready` is the
+/// write's last check (a scan's expiry), right before a grant is redeemed:
+/// the key check can wait on the vault.
 async fn write_lease(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     grant: &str,
-    flows: &[FlowKind],
-    quote: u64,
+    (flows, quote): (&[FlowKind], u64),
+    signs: (u32, &Identity),
+    ready: impl FnOnce() -> Result<(), ContactError>,
 ) -> Result<Lease, ContactError> {
     let Some(lease) = session.lease_for(&wallet, grant) else {
         check_credit_cap(
@@ -213,6 +219,8 @@ async fn write_lease(
             quote,
         )
         .await?;
+        check_held_keys(session, wallet, grant, flows[0], signs).await?;
+        ready()?;
         let grants = [grant.to_owned()];
         let lease = session.begin_lease(wallet, flows[0], &grants).await;
         return Ok(lease.map_err(PlatformError::from)?);
@@ -238,7 +246,44 @@ async fn write_lease(
         }
         .into());
     }
+    ready()?;
     Ok(lease)
+}
+
+/// Refuses, with `grant` left unused, a write whose `flow` has no key the
+/// vault holds ([`flow_keys`], `identity.keys_missing`): the candidate keys
+/// are asked in turn, until one is held, through the grant without
+/// redeeming it (dw-vault
+/// `grant_identity_key_matches`). A vault error on the way (locked, the
+/// grant gone) is that error rather than `keys_missing`.
+async fn check_held_keys(
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    grant: &str,
+    flow: FlowKind,
+    (index, identity): (u32, &Identity),
+) -> Result<(), ContactError> {
+    let (vault, grant, identity) = (session.vault.clone(), grant.to_owned(), identity.clone());
+    let checked = tokio::task::spawn_blocking(move || {
+        let failed = std::cell::Cell::new(None);
+        let held = |k: &IdentityPublicKey| {
+            let Ok(path) = key_path(vault.network(), index, k.id()) else {
+                return false;
+            };
+            vault
+                .grant_identity_key_matches(&grant, &wallet.0, &path, k.data().as_slice())
+                .unwrap_or_else(|e| {
+                    failed.set(Some(e));
+                    false
+                })
+        };
+        match flow_keys(flow, &identity, &[], held) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(failed.take().map_or(e, |e| PlatformError::from(e).into())),
+        }
+    })
+    .await;
+    checked.map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
 }
 
 /// Runs `call`, a library write, under `lease`, in its dispatch scope.
@@ -275,8 +320,8 @@ fn first_auth_key(
 ///   `IdentityUpdateTransition::try_from_identity_with_signer`).
 ///
 /// Any other flow writes nothing here: `platform.grant_invalid`. No such
-/// key: `identity.keys_missing`, which a write checks with every key
-/// `usable` before it redeems anything.
+/// key: `identity.keys_missing`, which a write checks before it redeems a
+/// grant ([`check_held_keys`]).
 fn flow_keys(
     flow: FlowKind,
     identity: &Identity,
@@ -331,9 +376,9 @@ fn charge(lease: &Lease, quote: u64) -> Result<(), PlatformError> {
 
 /// What a contact-request write needs once its own checks pass, refused
 /// before anything is redeemed where it can be: the identity's credits
-/// against the quote and its document key, then the lease of one of
-/// `flows`, its signer (the document key alone) and its contact crypto.
-/// `ready` runs last before the grant is redeemed (a scan's expiry).
+/// against the quote, then the lease of one of `flows` (which checks the
+/// vault holds the document key, then `ready`, a scan's expiry), its signer
+/// (the document key alone) and its contact crypto.
 async fn prepare(
     net: &impl RequestNet,
     session: &Arc<NetworkSession>,
@@ -347,9 +392,9 @@ async fn prepare(
     let id = own.identity.id();
     let balance = net.balance(id).await?.ok_or_else(not_found)?;
     cover(balance, CONTACT_REQUEST_CREDITS)?;
-    flow_keys(flows[0], &own.identity, &[], |_| true)?;
-    ready()?;
-    let lease = write_lease(session, wallet, grant, flows, CONTACT_REQUEST_CREDITS).await?;
+    let signs = (index, &own.identity);
+    let cost = (flows, CONTACT_REQUEST_CREDITS);
+    let lease = write_lease(session, wallet, grant, cost, signs, ready).await?;
     let signer = flow_signer(&lease, index, &own.identity, &[])?;
     let crypto = lease.contact_crypto().map_err(PlatformError::from)?;
     Ok((lease, signer, crypto))
@@ -602,13 +647,13 @@ pub(super) async fn enable_keys(
     let index = own.index()?;
     let before = current.balance();
     cover(before, KEY_UPDATE_CREDITS)?;
-    flow_keys(FlowKind::EnableDashPayKeys, &current, &[], |_| true)?;
     let lease = write_lease(
         session,
         wallet_id,
         &grant,
-        &[FlowKind::EnableDashPayKeys],
-        KEY_UPDATE_CREDITS,
+        (&[FlowKind::EnableDashPayKeys], KEY_UPDATE_CREDITS),
+        (index, &current),
+        || Ok(()),
     )
     .await?;
     let keys = {

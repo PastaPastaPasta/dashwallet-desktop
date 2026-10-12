@@ -23,7 +23,7 @@ use platform_wallet::{AutoAcceptProofSource, ContactRequest, EstablishedContact,
 
 use super::super::contacts::{Eligibility, RequestOutcome};
 use super::super::errors::{ContactError, PlatformError};
-use super::super::flows::{CONTACT_REQUEST_CREDITS, FlowKind, KEY_UPDATE_CREDITS};
+use super::super::flows::{BudgetPurpose, CONTACT_REQUEST_CREDITS, FlowKind, KEY_UPDATE_CREDITS};
 use super::super::identity_writes::identity_locks;
 use super::super::journal_tests::{
     Recorder, b58, engine, grant_unused, id, platform_grant, request, session,
@@ -288,13 +288,27 @@ impl Fixture {
     }
 
     fn with_keys(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
+        Self::build(mine, balance, true)
+    }
+
+    /// Our identity with `mine` as they are: keys the vault does not hold.
+    fn foreign(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
+        Self::build(mine, balance, false)
+    }
+
+    fn build(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64, held: bool) -> Self {
         let dir = dw_testutil::private_tempdir();
         let engine = engine(
             dir.path(),
             Arc::new(Recorder::default()) as Arc<dyn EventSink>,
         );
         let (s, wallet) = session(&engine, true);
-        let me = identity(ME, vault_keys(&engine, &s, wallet, mine), balance);
+        let mine = if held {
+            vault_keys(&engine, &s, wallet, mine)
+        } else {
+            mine
+        };
+        let me = identity(ME, mine, balance);
         let net = Arc::new(FakeRequests::with([
             me.clone(),
             identity(BOB, keys(true), 0),
@@ -618,6 +632,68 @@ fn missing_flow_keys_refuse_before_the_grant() {
     );
     assert!(g.unused(&grant));
     assert_eq!(f.net.writes() + g.net.writes(), 0);
+}
+
+/// A grant stays unused when the vault holds no key the write's flow signs
+/// with, and redeems afterwards (Sol r1 #1).
+fn refused_before_redemption(
+    f: &Fixture,
+    (flow, grant): (FlowKind, String),
+    write: Result<impl std::fmt::Debug, ContactError>,
+) {
+    assert_eq!(Fixture::code(write), "identity.keys_missing");
+    assert!(f.unused(&grant));
+    assert_eq!(f.net.writes(), 0);
+    f.flow(flow, vec![grant]);
+}
+
+/// A send whose document key the vault does not hold.
+#[test]
+fn a_send_without_a_held_key_keeps_the_grant() {
+    let f = Fixture::foreign(keys(true), u64::MAX / 2);
+    let grant = f.grant(CONTACT_REQUEST_CREDITS);
+    let send = f.send(BOB, &grant);
+    refused_before_redemption(&f, (FlowKind::ContactRequest, grant), send);
+}
+
+/// An accept whose document key the vault does not hold.
+#[test]
+fn an_accept_without_a_held_key_keeps_the_grant() {
+    let f = Fixture::foreign(keys(true), u64::MAX / 2);
+    let grant = f.grant(CONTACT_REQUEST_CREDITS);
+    let accept = f.accept(FRANK, &grant);
+    refused_before_redemption(&f, (FlowKind::Accept, grant), accept);
+}
+
+/// A key upgrade whose master key the vault does not hold.
+#[test]
+fn a_key_upgrade_without_a_held_master_keeps_the_grant() {
+    let f = Fixture::foreign(keys(false), u64::MAX / 2);
+    let grant = f.grant(KEY_UPDATE_CREDITS);
+    let upgrade = f.enable_keys(&grant);
+    refused_before_redemption(&f, (FlowKind::EnableDashPayKeys, grant), upgrade);
+}
+
+/// A lease id is not charged for a write the vault cannot sign: its
+/// signer's key check comes before the charge.
+#[test]
+fn a_lease_is_not_charged_without_a_held_key() {
+    let f = Fixture::foreign(keys(true), u64::MAX / 2);
+    let id = f.flow(
+        FlowKind::ContactRequest,
+        vec![f.grant(CONTACT_REQUEST_CREDITS)],
+    );
+    assert_eq!(Fixture::code(f.send(BOB, &id)), "identity.keys_missing");
+    let lease = f.s.lease_for(&f.wallet, &id).unwrap().unwrap();
+    let view = lease.view().unwrap();
+    let credits = (view.budgets.iter())
+        .find(|b| b.purpose == BudgetPurpose::Credits)
+        .unwrap();
+    assert_eq!(
+        (credits.ceiling, credits.spent),
+        (CONTACT_REQUEST_CREDITS, 0)
+    );
+    assert_eq!(f.net.writes(), 0);
 }
 
 /// A lease must be one of the write's flows and carry its quote.
