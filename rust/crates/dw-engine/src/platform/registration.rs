@@ -160,6 +160,10 @@ pub enum RegistrationWait {
     /// name (its signed record was lost): the flow waits until the lock is
     /// tracked or the funding is resolved unsent (DP1-02 §8, Q4).
     FundingUnknown,
+    /// What holds the flow's index is a lock only wedged funding steps
+    /// contest (DEC-198 am.1): "Finish transfers" recovers it, and the flow
+    /// then funds at its own index.
+    NeedsFinish,
 }
 
 /// Why a flow is `Failed`, with the parameters its code carries.
@@ -794,7 +798,7 @@ fn idle_wait<L: RegistrationLib>(
         return hold;
     }
     if unfunded && ledger.live(row).is_none() && ledger.unattributed(row) {
-        return RegistrationWait::ChainLock;
+        return ledger.unattributed_wait(row);
     }
     let proofless = matches!(phase, Some(Phase::FundingSent | Phase::ProofWaiting))
         && flow::outpoint_of(row)

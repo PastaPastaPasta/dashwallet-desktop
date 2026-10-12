@@ -20,6 +20,7 @@ use super::errors::{PlatformError, RegistrationError};
 use super::flows::DispatchState;
 use super::lease::mode_b::{FundingStepView, FundingStepsUnavailable};
 use super::lease::{FundingKey, LeaseTable};
+use super::registration::RegistrationWait;
 use super::registration_flow::{
     Flows, LockInfo, LockStatus, RegistrationLib, b58, broadcast_unknown, failure_of, identity_for,
     interpret, is_core_balance, is_unsupported, ledger_op, may_own_an_unrecorded_lock, outpoint_of,
@@ -884,6 +885,26 @@ impl Ledger {
         match row.identity_index {
             Some(index) => self.index_owner(row, index) == IndexOwner::Unknown,
             None => self.unindexed(),
+        }
+    }
+
+    /// What the `Unfunded`, [`Self::unattributed`] `row` waits for:
+    /// `NeedsFinish` when only locks "Finish transfers" gives to `Recovery`
+    /// past wedged steps (DEC-198 am.1) leave its index unattributed, else
+    /// `ChainLock`.
+    pub(crate) fn unattributed_wait(&self, row: &RegistrationRow) -> RegistrationWait {
+        let recoverable = |l: &LockInfo| {
+            self.owner(l) == Some(Owner::Contested) && self.may_take(Taker::Recovery, l)
+        };
+        if !self.locks.iter().any(recoverable) {
+            return RegistrationWait::ChainLock;
+        }
+        let mut finished = self.clone();
+        finished.locks.retain(|l| !recoverable(l));
+        if finished.unattributed(row) {
+            RegistrationWait::ChainLock
+        } else {
+            RegistrationWait::NeedsFinish
         }
     }
 

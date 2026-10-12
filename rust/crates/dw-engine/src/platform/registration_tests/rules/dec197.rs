@@ -128,10 +128,11 @@ fn dec197_the_override_starts_past_a_wedged_step() {
 /// The earlier attempt's lock shows up after the override, rebuilt from the
 /// chain with its index unknown, while C is open and unfunded (its funding
 /// failed before anything was signed). Only A's wedged step contests it, so
-/// no row may take it, C included, and C's index reads `Unknown` (C would
-/// wait). Finish recovers it into a recovery row (DEC-198: the funds come
-/// back as a lock the wallet recovers, never to A or C); then C funds and
-/// completes on its own lock, and A stays waiting, committed.
+/// no row may take it, C included, and C's index reads `Unknown`: resumed,
+/// C waits `NeedsFinish`. Finish recovers it into a recovery row (DEC-198
+/// am.1: the funds come back as a lock the wallet recovers, never to A or
+/// C); then C funds and completes on its own lock, and A stays waiting,
+/// committed.
 #[test]
 fn dec197_the_earlier_lock_showing_up_is_recovered_by_finish() {
     let mut f = fixture(false);
@@ -165,13 +166,7 @@ fn dec197_the_earlier_lock_showing_up_is_recovered_by_finish() {
         IndexOwner::Unknown
     );
     assert_eq!(l.pending(), 2);
-
-    let report = finish_once(&f, &lib);
-    assert_eq!(report.still_pending, 1, "{report:?}");
-    let holders = held_by(&f, original);
-    assert_eq!(holders.len(), 1);
-    assert!(holders != [a] && holders != [c], "{holders:?}");
-    assert_eq!(f.rows().len(), 3);
+    assert_eq!(l.unattributed_wait(&row), RegistrationWait::NeedsFinish);
 
     f.engine
         .block_on(registration::resume(
@@ -182,6 +177,15 @@ fn dec197_the_earlier_lock_showing_up_is_recovered_by_finish() {
             Some(f.grant(COIN, 10 * COIN * 1000, Credential::None)),
         ))
         .unwrap();
+    eventually("C waits for Finish", || {
+        f.status(&lib, c).waiting == Some(RegistrationWait::NeedsFinish)
+    });
+    let report = finish_once(&f, &lib);
+    assert_eq!(report.still_pending, 1, "{report:?}");
+    let holders = held_by(&f, original);
+    assert_eq!(holders.len(), 1);
+    assert!(holders != [a] && holders != [c], "{holders:?}");
+    assert_eq!(f.rows().len(), 3);
     f.settle(c);
     let row = f.row(c);
     assert_eq!(

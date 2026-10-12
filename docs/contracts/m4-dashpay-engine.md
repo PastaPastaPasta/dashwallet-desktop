@@ -217,8 +217,8 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 DEC-173; Opus-high review, version 11 for `RegistrationStatus.name_failure` and `profile_failure`; DP1-02's ownership
 model, version 12 for `RegistrationError::InProgress { draft }` and `RegistrationWait::FundingUnknown`; its rev2,
 version 13 for the row failures `registration.funded_elsewhere` and `registration.funding_cancelled`; DEC-197,
-version 14 for `start_registration_past_unknown_funding`, `registration.not_synced` and
-`registration.funding_unknown_recent`).** What the
+version 14 for `start_registration_past_unknown_funding`, `registration.not_synced`,
+`registration.funding_unknown_recent` and, DEC-198 am.1, `RegistrationWait::NeedsFinish`).** What the
 bodies decided where the rows leave room:
 
 - **Costs.** The lock is 0.03 DASH (3 000 000 duffs) for a plain name and 0.25 DASH for a contested one, as the iOS
@@ -292,7 +292,8 @@ bodies decided where the rows leave room:
   good, and Repair refuses it. Its row stays committed (`waiting: FundingUnknown`) and can't be discarded. Nothing
   attaches the step's lock to it (DEC-198). The only exit is `start_registration_past_unknown_funding`, which starts a
   new draft past the step once SPV is synced and an hour has passed since the release. The new draft has its own index
-  and lock. If the earlier lock confirms, it goes to neither row: "Finish transfers" recovers it. Before that call, the
+  and lock. If the earlier lock confirms, it goes to neither row: "Finish transfers" recovers it (DEC-198 am.1), and a
+  new draft whose index it leaves unattributed meanwhile waits `NeedsFinish`. Before that call, the
   UI shows this copy and the user confirms it: "An earlier registration's payment could not be confirmed, and it may
   still appear on the network. You can start a new registration now. The earlier payment may still confirm. If it does,
   its funds show up as a transfer this wallet can recover later with Tools ▸ Repair ▸ Finish transfers, as a separate
@@ -414,7 +415,8 @@ bodies decided where the rows leave room:
 - **`waiting`** is derived, never stored: the running flow's own wait, else, for a row no task drives, for an
   `Awaiting` row (failed or not) `FundingUnknown` when a step of its is `Unknown`, `Network` while discovery has not
   reported the identity its step's consumed lock created, and `ChainLock` otherwise, `Sync`
-  before funding while the hold lasts, `ChainLock` for a lock without a proof or evidence it cannot attribute,
+  before funding while the hold lasts, `ChainLock` for a lock without a proof or evidence it cannot attribute
+  (`NeedsFinish` when only locks "Finish transfers" recovers past wedged steps leave its index unattributed),
   otherwise `Unlock` or `Authorize` by the vault's state. An orphan step's entry waits the same way and is read-only:
   `resume_registration` and `discard_registration` refuse its draft. `failure.needed`/`available` of `registration.funding_insufficient` are computed when read.
 - **`contest_ends_at`** stays `None` until DP1-04's vote poll.
@@ -1387,6 +1389,7 @@ pub enum RegistrationWait {
     ChainLock,
     Network,
     FundingUnknown,
+    NeedsFinish,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistrationFailure {
@@ -1696,7 +1699,8 @@ The shapes are in §3. What they mean, where the name does not say:
     resume needs a grant), `Sync` ("Waiting for the
     network to sync": a restored row held until SPV sync, §3.4 Restore rule 1, or a write held by §2.2 rule 5),
     `InstantSend` and `ChainLock` (the proof wait; E0-04 `Parked{ProofWaiting}` is `ChainLock`), `Network` (DAPI or
-    the peers unreachable; retried on reconnect). `None` while the flow runs, and after it ends. A grant is needed
+    the peers unreachable; retried on reconnect), `NeedsFinish` ("An earlier registration's payment showed up. Run
+    Tools ▸ Repair ▸ Finish transfers to recover it, and this registration continues": "The wedge" below). `None` while the flow runs, and after it ends. A grant is needed
     exactly for `Unlock` and `Authorize`: when a ChainLock-parked flow's proof arrives and it needs keys again, the
     row moves to `Unlock` (vault locked or mixing-only) or `Authorize` (unlocked), so the host never prompts during
     the wait and never has to guess. A rebind with "require authentication for every payment" on also moves the row

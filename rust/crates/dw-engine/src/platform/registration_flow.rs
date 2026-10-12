@@ -1814,7 +1814,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             IndexOwner::Taken => return self.assign_index(row).await,
             // What is at the index cannot be attributed yet: it waits for
             // "Finish transfers".
-            IndexOwner::Unknown => return Ok(Step::Wait(RegistrationWait::ChainLock)),
+            IndexOwner::Unknown => return Ok(Step::Wait(ledger.unattributed_wait(row))),
         }
         // P2b's permit refuses a step its marker says may be out: the
         // backstop of the standing above.

@@ -917,6 +917,19 @@ fn recovery_takes_a_lock_only_released_wedged_steps_contest() {
     assert_eq!(l.owner(&rebuilt), Some(Owner::Contested));
     assert!(l.may_take(Taker::Recovery, &rebuilt));
     assert!(!l.may_take(Taker::Row(1), &rebuilt));
+    // A new row C waits for Finish, not the ChainLock (DEC-198 am.1).
+    let c = row(2, 2);
+    let mut l = Ledger::new(
+        vec![rebuilt.clone()],
+        vec![],
+        vec![awaiting.clone(), c.clone()],
+        vec![flagged.clone()],
+        vec![],
+    );
+    assert!(l.unattributed(&c));
+    assert_eq!(l.unattributed_wait(&c), RegistrationWait::ChainLock);
+    l.set_released(vec![1]);
+    assert_eq!(l.unattributed_wait(&c), RegistrationWait::NeedsFinish);
     let recording = FundingStepView {
         recording: true,
         ..flagged.clone()
