@@ -764,8 +764,11 @@ impl NetworkSession {
         //     (manager/mod.rs:522, wallet/core/balance_handler.rs:43-45)
         // `remove_wallet` is an in-memory unload (no persister writes:
         // manager/wallet_lifecycle.rs:676-900, key-wallet-manager accessors.rs:75).
+        // Through the private-details fence: the close returns after their
+        // writes in flight.
         for id in manager.list_wallet_ids_blocking() {
-            if let Err(e) = manager.remove_wallet(&id).await {
+            let unloaded = self.platform.remove_from_manager(&manager, WalletId(id));
+            if let Err(e) = unloaded.await {
                 tracing::warn!(wallet_id = %hex::encode(id), error = %e, "unload on close failed");
             }
         }

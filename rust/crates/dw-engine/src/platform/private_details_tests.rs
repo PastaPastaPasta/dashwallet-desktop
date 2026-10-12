@@ -1172,6 +1172,25 @@ fn a_cancelled_settle_holds_a_removal_until_its_job_ends() {
     }
 }
 
+/// A session's close unloads its wallets through the same fence: it
+/// returns after a cancelled write's job.
+#[test]
+fn a_close_waits_for_a_cancelled_writes_job() {
+    let f = published();
+    let (pause, _release) = hold_job(&f, "record");
+    let (s, pair, lease) = (Arc::clone(&f.s), f.pair(ERIN), f.lease());
+    let (manager, net) = (f.s.manager().unwrap(), Arc::clone(&f.net));
+    let publishing = f.s.rt.spawn(async move {
+        let wallet = manager.get_wallet(&pair.wallet.0).await.unwrap();
+        set(&*net, &s, &wallet, pair, details("Erin"), Some(lease)).await
+    });
+    a_cancelled_job_holds(&f, &pause, publishing, || {
+        (f.engine)
+            .block_on(f.engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+    });
+}
+
 /// A removal waits for a settle already writing, then removes what it
 /// wrote.
 #[test]
