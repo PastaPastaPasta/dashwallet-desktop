@@ -338,10 +338,17 @@ impl NetworkSession {
                 let secret = make_secret()?;
                 let id =
                     mnemonic::wallet_id_for_seed(&secret.seed, network).map_err(mnemonic_error)?;
-                let had_secret = vault.has_wallet_secret(&id);
-                if !had_secret {
-                    vault.store_wallet_secret(&id, &secret)?;
-                }
+                // The vault keeps a seed it holds: an import of the same seed
+                // (the id derives from it) stored meanwhile, perhaps with
+                // another derivation flag, counts as one already there.
+                let had_secret = vault.has_wallet_secret(&id)
+                    || match vault.store_wallet_secret(&id, &secret) {
+                        Err(VaultError::WalletSecretExists) => true,
+                        stored => {
+                            stored?;
+                            false
+                        }
+                    };
                 // Kept for PSBT derivation records (watch-only use, no key needed).
                 let fingerprint =
                     key_wallet::bip32::ExtendedPrivKey::new_master(network, &secret.seed[..])

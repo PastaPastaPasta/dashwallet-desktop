@@ -259,8 +259,8 @@ impl From<dw_vault::VaultError> for VaultError {
             V::PassphraseStale => Self::PassphraseStale,
             V::NotEmpty => Self::NotEmpty,
             V::RecoveryMismatch => Self::RecoveryMismatch,
-            // The engine stores a seed only under the id it derives from it,
-            // and only when the vault has none: a replacement is a bug.
+            // The engine stores a seed only under the id it derives from it
+            // and takes this as one already stored: it never surfaces here.
             e @ V::WalletSecretExists => Self::Internal {
                 detail: e.to_string(),
             },

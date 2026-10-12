@@ -2081,7 +2081,8 @@ renames or reshapes them takes the next version bump:
       (`vault.wallet_secret_exists`, checked and written under the record-write guard, nothing written), so a new
       seed under an id goes in only after one of these deletions; the same records again only re-seal them. The
       vault does not bind wallet ids to seeds: the engine stores a seed only under the id it derives from it, and
-      only when the vault has none.
+      keeps the one the vault holds (a concurrent import of the same seed that stored first, perhaps with another
+      derivation flag, included).
     - **E0-04's lease rule follows this one** (E0-04 amendment 3): a lease of another flow, passed to a write that
       names its flows, is `platform.grant_invalid`; `platform.needs_grant` only when no grant or lease carries the
       purpose.
