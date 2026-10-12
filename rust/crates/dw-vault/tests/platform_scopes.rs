@@ -733,6 +733,65 @@ async fn contact_info_opens_what_it_seals_and_refuses_foreign_ciphertext() {
     ));
 }
 
+/// A `PlatformOp` grant is redeemed only while the vault holds one of the
+/// candidate keys (DP2-02, Sol r2 #1): the first held one redeems it, and
+/// none held, none given or no seed leaves it unused.
+#[tokio::test]
+async fn a_grant_redeems_only_while_the_vault_holds_a_candidate_key() {
+    let fx = Fixture::new();
+    let v = unencrypted_vault(&fx);
+    let key = path("m/9'/1'/5'/0'/0'/0'/1'");
+    let held = platform_signer(&v, SignerScope::PlatformIdentity)
+        .public_key(&key)
+        .await
+        .unwrap()
+        .serialize()
+        .to_vec();
+    let unheld = (key.clone(), vec![2; 33]);
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&wallet(1)), Credential::None)
+        .unwrap();
+    let redeem = |keys: &[(DerivationPath, Vec<u8>)]| {
+        v.redeem_grant_holding_key(&grant.id, &wallet(1), keys)
+    };
+    let unused = || {
+        v.check_grant(&grant.id, GrantKind::PlatformOp, Some(&wallet(1)))
+            .is_ok()
+    };
+    assert!(matches!(redeem(std::slice::from_ref(&unheld)), Ok(None)));
+    assert!(matches!(redeem(&[]), Ok(None)));
+    assert!(unused());
+    // Another wallet's grant is refused, and kept.
+    assert_eq!(
+        v.redeem_grant_holding_key(&grant.id, &wallet(2), &[(key.clone(), held.clone())])
+            .unwrap_err(),
+        VaultError::GrantPurposeMismatch
+    );
+    assert!(unused());
+    // The first held candidate redeems it, once.
+    let token = redeem(&[unheld.clone(), (key.clone(), held.clone())])
+        .unwrap()
+        .unwrap();
+    assert_eq!(token.wallet(), Some(wallet(1)));
+    assert!(!unused());
+    assert_eq!(
+        redeem(&[(key.clone(), held.clone())]).unwrap_err(),
+        VaultError::GrantInvalid
+    );
+
+    // The wallet's seed gone: the grant is left unused.
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&wallet(1)), Credential::None)
+        .unwrap();
+    assert!(v.delete_wallet_secret(&wallet(1)).unwrap());
+    assert!(matches!(
+        v.redeem_grant_holding_key(&grant.id, &wallet(1), &[(key, held)]),
+        Ok(None)
+    ));
+    v.check_grant(&grant.id, GrantKind::PlatformOp, Some(&wallet(1)))
+        .unwrap();
+}
+
 /// `grant_identity_key_matches` answers whether the vault holds an identity
 /// key through a `PlatformOp` grant it leaves unused (DP2-02): with the
 /// vault's key and with a locked vault's own-key grant; never for another

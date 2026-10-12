@@ -1355,3 +1355,49 @@ fn a_key_probe_does_not_outlive_its_grant() {
     assert_eq!(probe(&grant.id), Err(VaultError::GrantInvalid));
     test_hook::set_checked(|| {});
 }
+
+/// A key-checked redemption is one section under the guard of the vault's
+/// record writes (DP2-02, Sol r2 #1): a wallet removal that starts during
+/// it waits until the grant is redeemed, and one that came first leaves the
+/// grant unused.
+#[test]
+fn a_removal_waits_for_a_key_checked_redemption() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, Some(PASS));
+    let (identity, _hold) = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+    let keys = [(path(IDENTITY_KEY), identity_public_key(&identity).to_vec())];
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&W), Credential::None)
+        .unwrap();
+
+    // The removal starts once the redemption checked its grant, and is given
+    // two seconds to finish before the redemption goes on.
+    let (v2, (tx, rx)) = (v.clone(), mpsc::channel());
+    test_hook::set_checked(move || {
+        let (v3, (done_tx, done_rx)) = (v2.clone(), mpsc::channel());
+        let removal = thread::spawn(move || {
+            let removed = v3.delete_wallet_secret(&W);
+            let _ = done_tx.send(());
+            removed
+        });
+        let waited = done_rx.recv_timeout(Duration::from_secs(2)).is_err();
+        tx.send((removal, waited)).unwrap();
+    });
+    let token = v.redeem_grant_holding_key(&grant.id, &W, &keys);
+    test_hook::set_checked(|| {});
+    let (removal, waited) = rx.recv().unwrap();
+    assert!(waited, "the removal finished inside the redemption");
+    assert!(matches!(token, Ok(Some(_))), "{token:?}");
+    assert_eq!(removal.join().unwrap(), Ok(true));
+
+    // The removal came first: no seed, and the grant is left unused.
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&W), Credential::None)
+        .unwrap();
+    assert!(matches!(
+        v.redeem_grant_holding_key(&grant.id, &W, &keys),
+        Ok(None)
+    ));
+    v.check_grant(&grant.id, GrantKind::PlatformOp, Some(&W))
+        .unwrap();
+}

@@ -1394,7 +1394,8 @@ impl Vault {
     /// try (DP2-02). Needs what a `PlatformIdentity` signer from the grant
     /// would (a credit cap above 0, else `GrantPurposeMismatch`; the grant's
     /// own key or the vault's full key) and answers only yes or no: nothing
-    /// signs, and no key leaves the vault.
+    /// signs, and no key leaves the vault. An answer, not a promise: the
+    /// redemption that relies on it is [`Self::redeem_grant_holding_key`].
     pub fn grant_identity_key_matches(
         &self,
         grant_id: &str,
@@ -1402,6 +1403,54 @@ impl Vault {
         path: &DerivationPath,
         key_data: &[u8],
     ) -> Result<bool, VaultError> {
+        Self::key_held(
+            &self.grant_identity_signer(grant_id, wallet)?,
+            path,
+            key_data,
+        )
+    }
+
+    /// Redeems a `PlatformOp` grant for `wallet` only while the vault holds
+    /// one of `candidates` (identity key paths and on-chain key data, as
+    /// [`Self::grant_identity_key_matches`] asks): the check and the
+    /// redemption are one section under the guard of the vault's record
+    /// writes, so a wallet removal that deletes the seed either came first
+    /// or waits until the grant is redeemed (DP2-02). `Ok(None)`: no
+    /// candidate is held (or the wallet has no seed), and the grant is left
+    /// unused. A lock in between ends the grant (`GrantInvalid`).
+    pub fn redeem_grant_holding_key(
+        &self,
+        grant_id: &str,
+        wallet: &WalletId,
+        candidates: &[(DerivationPath, Vec<u8>)],
+    ) -> Result<Option<GrantToken>, VaultError> {
+        let _writer = self.writer();
+        let signer = match self.grant_identity_signer(grant_id, wallet) {
+            Err(VaultError::NoSecret) => return Ok(None),
+            signer => signer?,
+        };
+        for (path, key_data) in candidates {
+            match Self::key_held(&signer, path, key_data) {
+                Ok(true) => {
+                    return self
+                        .redeem_grant(grant_id, GrantKind::PlatformOp, Some(wallet))
+                        .map(Some);
+                }
+                Ok(false) | Err(VaultError::NoSecret) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(None)
+    }
+
+    /// A `PlatformIdentity` signer under an unredeemed `PlatformOp` grant,
+    /// for the yes-or-no questions above (no token is issued, so it cannot
+    /// reach a lease).
+    fn grant_identity_signer(
+        &self,
+        grant_id: &str,
+        wallet: &WalletId,
+    ) -> Result<VaultSigner, VaultError> {
         let GrantPurpose::PlatformOp { max_credits, .. } =
             self.grant_purpose(grant_id, GrantKind::PlatformOp, Some(wallet))?
         else {
@@ -1429,15 +1478,20 @@ impl Vault {
         // The signer is issued under a guard that finds the grant again:
         // every epoch change ends it, so no probe runs on a grant that was
         // redeemed, or ended by a lock or passphrase change, in between.
-        let signer = {
-            let mut inner = self.inner();
-            check(&mut inner)?;
-            let key = own.map_or(KeySource::Vault, |key| KeySource::Own(Arc::new(key)));
-            if matches!(key, KeySource::Vault) && inner.dek.is_none() {
-                return Err(VaultError::Locked);
-            }
-            self.signer_locked(&inner, wallet, SignerScope::PlatformIdentity, key)?
-        };
+        let mut inner = self.inner();
+        check(&mut inner)?;
+        let key = own.map_or(KeySource::Vault, |key| KeySource::Own(Arc::new(key)));
+        if matches!(key, KeySource::Vault) && inner.dek.is_none() {
+            return Err(VaultError::Locked);
+        }
+        self.signer_locked(&inner, wallet, SignerScope::PlatformIdentity, key)
+    }
+
+    fn key_held(
+        signer: &VaultSigner,
+        path: &DerivationPath,
+        key_data: &[u8],
+    ) -> Result<bool, VaultError> {
         signer
             .identity_key_matches(path, key_data)
             .map_err(|e| match e {
