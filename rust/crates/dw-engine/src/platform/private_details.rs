@@ -467,8 +467,11 @@ impl NetworkSession {
                 return Err(PlatformError::Timeout);
             }
             #[cfg(test)]
-            if let Some(delay) = guard(&self.platform.contacts.read_hooks).open_delay {
-                std::thread::sleep(delay);
+            {
+                let delay = guard(&self.platform.contacts.read_hooks).open_delay;
+                if let Some(delay) = delay {
+                    tokio::time::sleep(delay).await;
+                }
             }
             let root = key_path(network, index, doc.root).ok();
             let opened = match root {

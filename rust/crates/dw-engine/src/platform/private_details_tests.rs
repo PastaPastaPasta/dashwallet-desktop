@@ -30,7 +30,7 @@ use super::registration_flow::b58;
 use super::requests::tests::{Fixture, keys, wait_until};
 use super::runtime::guard;
 use super::signers::VaultContactCrypto;
-use crate::{EngineEvent, PlatformChange};
+use crate::{DashNetwork, EngineEvent, PlatformChange};
 use dw_vault::{SeedDerivation, WalletSecret};
 use zeroize::Zeroizing;
 
@@ -781,6 +781,36 @@ fn a_slow_read_ends_at_its_deadline() {
     assert!(took < Duration::from_secs(2), "{took:?}");
     let edited = f.engine.block_on(editing).unwrap();
     assert_eq!(edited.unwrap(), PublishState::Local);
+}
+
+/// A read ends at the session's close, between opens, and releases the
+/// identity's lock (Sol r1 F4).
+#[test]
+fn a_read_ends_at_the_sessions_close() {
+    let f = published();
+    for n in 0..100 {
+        f.publish_elsewhere(100 + n, &details("x"));
+    }
+    guard(&f.s.platform.contacts.read_hooks).open_delay = Some(Duration::from_millis(100));
+    let s = Arc::clone(&f.s);
+    let pair = f.pair(ERIN);
+    let manager = f.s.manager().unwrap();
+    let net = Arc::clone(&f.net);
+    // Admitted, as the facade's call is: the close waits for it.
+    let editing = f.s.rt.spawn(async move {
+        let _op = s.enter().await.unwrap();
+        let wallet = manager.get_wallet(&pair.wallet.0).await.unwrap();
+        let _ = set(&*net, &s, &wallet, pair, details("Erin"), None).await;
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let closing = std::time::Instant::now();
+    (f.engine)
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    // 100 opens would take 10 s.
+    let took = closing.elapsed();
+    assert!(took < Duration::from_secs(3), "{took:?}");
+    f.engine.block_on(editing).unwrap();
 }
 
 /// The library's publish reads every document the identity holds, with no
