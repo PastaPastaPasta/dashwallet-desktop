@@ -3188,6 +3188,76 @@ fn mode_b_coinjoin_funding_skips_an_unresolved_locks_input() {
     );
 }
 
+/// Review Opus closure C-1: the holds of signed locks' inputs (O-2) come
+/// from the dispatch journal, so while it is not read the automatic
+/// CoinJoin pass spends nothing: it would read an unresolved lock's input
+/// free, and Repair would lose it.
+#[test]
+fn mode_b_the_coinjoin_pass_spends_nothing_while_the_journal_is_not_read() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(4, COIN);
+    let b = f.credit(5, COIN);
+    let s = &f.session;
+    let network = s.network.core_network();
+    let pass = || {
+        f.engine
+            .block_on(s.on_runtime({
+                let (s, w) = (s.clone(), f.wallet);
+                async move {
+                    let fence = s.coin_fence(w).await?;
+                    s.pass_view(&fence).await
+                }
+            }))
+            .unwrap()
+            .map(|view| view.funding_inputs(network, true))
+    };
+    f.stuck_signing(STEP, 73, &[a]);
+    f.refresh();
+    assert_eq!(pass(), Some(vec![b]), "the journal read holds the input");
+    // The journal could not be opened at the next launch.
+    s.leases
+        .load_journal_with(None, Vec::new(), Vec::new(), Default::default());
+    assert_eq!(pass(), None, "the pass spends nothing");
+}
+
+/// Review Opus closure C-2: a permit that ends while its signer's first
+/// release write is in flight: the write lands, the signer sees the end
+/// and refuses `Locked`, and the vault signs nothing.
+#[test]
+fn mode_b_a_permit_ending_during_the_release_write_signs_nothing() {
+    use key_wallet::Signer as _;
+    use std::str::FromStr;
+
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.registration_draft(0);
+    let s = &f.session;
+    let permit = f.funding_permit(STEP);
+    let signer = permit.funding_signer().unwrap().clone();
+    let count = permit.signatures();
+    // The release write waits for this connection's lock (busy timeout).
+    let db = rusqlite::Connection::open(s.data_dir().join(dw_appdb::dispatch::DISPATCH_DB_FILE))
+        .unwrap();
+    db.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let path = key_wallet::DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
+    let signing =
+        s.rt.clone()
+            .spawn(async move { signer.sign_ecdsa(&path, [1; 32]).await });
+    std::thread::sleep(Duration::from_millis(300));
+    let finish = std::thread::spawn(move || permit.finish(false));
+    std::thread::sleep(Duration::from_millis(300));
+    db.execute_batch("COMMIT").unwrap();
+    assert_eq!(finish.join().unwrap(), FlowOutcome::MaybeSent);
+    assert!(matches!(
+        f.engine.block_on(signing).unwrap(),
+        Err(dw_vault::SignerError::Locked)
+    ));
+    assert_eq!(count.released(), 0, "the vault signed nothing");
+    assert_eq!(f.release_rows(STEP), 1);
+}
+
 /// Review P2b r6 S6-01: "Move mixed coins" selects from the held-coin
 /// snapshot through its own producer (`sweep_coins`, read by its plan): a
 /// CoinJoin coin an unresolved lock spends is in no chunk until Repair

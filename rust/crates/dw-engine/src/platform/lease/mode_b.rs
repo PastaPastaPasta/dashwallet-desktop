@@ -670,17 +670,12 @@ fn derive_step(
     let tombstoned =
         i.fence.tombstones.contains_key(&key) || i.fence.owed_tombstones.contains_key(&key);
     let locked = tombstoned || resolving_spend(i, wallet, &info, signed).is_some();
-    // A call under the marker may have released a funding signature, and no
-    // lock of it is recorded (review P2b r6 R6-01): the library may have
-    // sent one its store never saw (an empty tracking changeset), so neither
-    // rule below that rests on every signed lock being recorded holds.
-    let recorded_all = !(info.released && signed.is_empty());
     // Repair resolved a flagged step (DP1-02 C4, Q13): every lock its one
     // signing call built was recorded before it could be sent (§2a.7), and
     // the ChainLocked self-spend takes an input of each, so no row, however
     // keyed or attributed, is its lock; no call of it runs again
     // ([`FundingBlock::StepCancelled`]).
-    if locked && info.durable_record && recorded_all && info.status != CallStepStatus::Sent {
+    if locked && info.durable_record && info.status != CallStepStatus::Sent {
         return Some(DispatchState::NotSent);
     }
     let unattributed = snap.is_some_and(|s| {
@@ -1389,6 +1384,13 @@ impl LeaseTable {
             }
             out
         })
+    }
+
+    /// Whether the dispatch journal is read: until it is,
+    /// [`Self::unresolved_lock_inputs`] knows no hold (review Opus closure
+    /// C-1), so the unattended spenders spend nothing.
+    pub(crate) fn journal_ready(&self) -> bool {
+        self.with_j(|i, _| i.fence.journal == JournalState::Ready)
     }
 
     /// [`Self::unresolved_lock_inputs`] of every wallet with a funding

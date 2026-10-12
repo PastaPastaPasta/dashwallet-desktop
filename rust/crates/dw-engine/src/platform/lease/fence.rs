@@ -3419,6 +3419,13 @@ impl LeaseTable {
                         {
                             Err("the funding step's marker was superseded".to_owned())
                         }
+                        // A permit that ended during this write read its
+                        // step `NotSent` until now (no release, no call
+                        // running), and `MaybeSent` from here: its
+                        // resolution event may flap NotSent → MaybeSent
+                        // (review Opus closure C-4). Safe: the signer
+                        // re-checks the end after this write and signs
+                        // nothing.
                         Ok(true) => {
                             i.fence.released.insert(key);
                             Ok(())

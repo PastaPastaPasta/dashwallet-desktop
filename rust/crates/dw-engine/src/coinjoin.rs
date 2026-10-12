@@ -941,6 +941,19 @@ impl NetworkSession {
         })
     }
 
+    /// [`Self::mix_view`] for an unattended spender (the automatic pass):
+    /// `None` while the dispatch journal is not read, whose signed locks'
+    /// inputs (O-2) would read free (review Opus closure C-1).
+    pub(crate) async fn pass_view(
+        &self,
+        fence: &CoinFence,
+    ) -> Result<Option<MixView>, EngineError> {
+        if !self.leases.journal_ready() {
+            return Ok(None);
+        }
+        self.mix_view(fence).await.map(Some)
+    }
+
     /// [`Self::mix_view`] under a fence taken for the read only: for
     /// callers that spend nothing of what they read.
     pub(crate) async fn read_mix_view(&self, wallet_id: WalletId) -> Result<MixView, EngineError> {
@@ -1786,7 +1799,9 @@ impl NetworkSession {
         // transaction releases it before its broadcast; a session's own
         // denominations are reserved outside it (`coins.rs`).
         let fence = self.coin_fence(wallet_id).await?;
-        let view = self.mix_view(&fence).await?;
+        let Some(view) = self.pass_view(&fence).await? else {
+            return Ok(());
+        };
         let mut fence = Some(fence);
         let (active, last_success) = {
             let mixers = self.coinjoin.mixers();
@@ -2269,6 +2284,14 @@ impl NetworkSession {
             if !this.vault.has_wallet_secret(&wallet_id.0) {
                 return Err(CoinJoinFailure::WatchOnly.into());
             }
+            // A sweep takes every mixed coin: none while the dispatch
+            // journal, which holds signed locks' inputs, is not read
+            // (review Opus closure C-1).
+            if !this.leases.journal_ready() {
+                return Err(EngineError::Storage(
+                    "the dispatch journal is not read".into(),
+                ));
+            }
             // Held from the coin read through every chunk's signing and
             // reservation; released before the broadcasts (`coins.rs`).
             let fence = this.coin_fence(wallet_id).await?;
@@ -2515,11 +2538,9 @@ impl MixingWallet for EngineMixingWallet {
         let s = self.session()?;
         // Read under a fence released at once: a session's denominations
         // are reserved outside it (`coins.rs`).
-        let view = s
-            .read_mix_view(self.wallet_id)
-            .await
-            .map_err(|e| WalletError(e.to_string()))?;
-        Ok(view.ready_to_mix(amount))
+        let fence = (s.coin_fence(self.wallet_id).await).map_err(|e| WalletError(e.to_string()))?;
+        let view = (s.pass_view(&fence).await).map_err(|e| WalletError(e.to_string()))?;
+        Ok(view.map(|v| v.ready_to_mix(amount)).unwrap_or_default())
     }
 
     async fn reserve_scripts(&self, count: usize) -> Result<Vec<ScriptBuf>, WalletError> {
@@ -2591,6 +2612,9 @@ impl MixingWallet for EngineMixingWallet {
             .coin_fence(self.wallet_id)
             .await
             .map_err(|e| WalletError(e.to_string()))?;
+        if !s.leases.journal_ready() {
+            return Err(WalletError("the dispatch journal is not read".into()));
+        }
         let held = s.leases.unresolved_lock_inputs(self.wallet_id);
         if let Some(o) = (inputs.iter())
             .map(|(i, _)| tx.input[*i].previous_output)
