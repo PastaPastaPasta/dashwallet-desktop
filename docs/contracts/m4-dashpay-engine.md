@@ -2067,15 +2067,16 @@ renames or reshapes them takes the next version bump:
       candidate is asked in turn through the grant without using it (`grant_identity_key_matches`, a yes-or-no
       answer that signs nothing); that check is advisory. A lease id, redeemed already, is checked by its signer
       (`can_sign_with`) before its credits are charged.
-    - **No signature is made after its seed is deleted** (Sol r3). Every deletion of a seed (`wipe_wallet_secret`
-      on removal, `delete_wallet_secret`, the old vault a recovery replaces) first waits for every vault operation
-      still running and keeps new ones out until the seed is gone, holding the vault's operation gate exclusively as
-      Lock does (a wipe or delete without ending the epoch; a recovery ends it anyway). A vault signer reads the
-      seed only inside an operation, so one that read it releases its signature before the deletion, and one that
-      starts after finds no seed and signs nothing, as do signers that can no longer be issued. (What the vault hands
-      out under a grant, a revealed phrase or masternode key or a discovery's scan key, is the caller's once
-      released, and signs no write here; removal ends the discoveries first, DP1-05.) A signature made before the removal may still broadcast after it,
-      until E0-04 P3's dispatch fence: the residual below, as for Lock.
+    - **No signature is made after its seed is deleted** (Sol r3). Every deletion of a seed from the live vault
+      (`wipe_wallet_secret` on removal, `delete_wallet_secret`, and a recovery's replacement of the vault, whose old
+      file it keeps on disk) first waits for every vault operation still running and keeps new ones out until the
+      seed is gone, holding the vault's operation gate exclusively as Lock does (a wipe or delete without ending the
+      epoch; a recovery ends it anyway). A vault signer reads the seed only inside an operation, so one that read it
+      releases its signature before the deletion; while the seed is absent, one that starts finds none and signs
+      nothing, as do signers that can no longer be issued. What the vault hands out (a revealed phrase or
+      masternode key, a discovery's scan key, an auto-accept key) is the caller's once released and signs no write
+      here; removal ends the discoveries first (DP1-05). A signature made before the removal may still broadcast
+      after it, until E0-04 P3's dispatch fence: the residual below, as for Lock.
     - **E0-04's lease rule follows this one** (E0-04 amendment 3): a lease of another flow, passed to a write that
       names its flows, is `platform.grant_invalid`; `platform.needs_grant` only when no grant or lease carries the
       purpose.
