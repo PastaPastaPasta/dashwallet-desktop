@@ -390,6 +390,62 @@ fn finish_gives_no_unindexed_lock_to_a_calling_row(released: bool) {
     f.kill(calling);
 }
 
+/// The window before P2b's marker, which the test above waits past:
+/// `calling` is set (OD-05) and the step has no marker yet. Nothing can
+/// have signed (the marker is durable before the library starts), so an
+/// unindexed lock is `Free`, never the calling row's (`¬calling`, §5.1), and
+/// Finish gives it to a recovery row at a fresh index (§6). The call then
+/// funds its own lock at its own index.
+#[test]
+fn finish_before_the_marker_gives_an_unindexed_lock_to_recovery() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.permit_hold.store(true, Ordering::SeqCst);
+    let calling = f.insert(prepared_row(2));
+    f.spawn(&lib, calling, Some(f.lease()));
+    eventually("the call waits for its permit", || {
+        lib.hung.load(Ordering::SeqCst)
+    });
+    assert!(
+        f.session
+            .platform
+            .registrations
+            .get((f.wallet, calling))
+            .in_call
+    );
+    let steps = f.session.leases.registration_funding_steps(f.wallet);
+    assert!(steps.is_ok_and(|s| s.is_empty()), "no marker yet");
+    let lock = lib.lock_at(0, LockStatus::RecoveredFromChain);
+    f.engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
+    let row = f.row(calling);
+    assert_eq!(
+        (phase(&row), row.asset_lock_outpoint),
+        (Phase::KeysPrepared, None),
+        "Finish gave the calling row a lock"
+    );
+    let [recovery] = held_by(&f, lock)[..] else {
+        panic!("no recovery row: {:?}", f.rows());
+    };
+    assert_ne!(recovery, calling);
+    assert_ne!(f.row(recovery).identity_index, Some(2));
+    lib.hang_at(Call::WaitProof, When::Before);
+    lib.permit_hold.store(false, Ordering::SeqCst);
+    eventually("the call funds its own lock", || {
+        flow::outpoint_of(&f.row(calling)).is_some()
+    });
+    assert_ne!(flow::outpoint_of(&f.row(calling)), Some(lock));
+    assert_eq!(held_by(&f, lock), [recovery]);
+    assert_eq!(lib.counts().0, 1);
+    f.kill(calling);
+}
+
 /// Opus-high MN-4 (O), H12: after a failed funding call a tracked lock
 /// means committed, whatever the error's class. A call that reports
 /// `NotSent` with its lock still tracked leaves the row funded at that
