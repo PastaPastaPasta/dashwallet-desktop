@@ -252,16 +252,23 @@ mod tests {
         let a = AppDb::open_in_memory().unwrap();
         let w = "ab".repeat(32);
         a.set_wallet_name(&w, "Savings", 10).unwrap();
-        a.set_contact_info_digest(&w, "id", "contact", &[7; 32], 11)
-            .unwrap();
-        a.set_contact_info_digest(&w, "id", "contact", &[8; 32], 12)
-            .unwrap();
+        let set = |digest, at| a.set_contact_info_digest(&w, "id", "contact", &digest, at);
+        assert!(set([7; 32], 11).unwrap());
+        assert!(
+            !set([7; 32], 12).unwrap(),
+            "the same digest changes nothing"
+        );
+        assert!(set([8; 32], 13).unwrap());
         assert_eq!(
             a.contact_info_digest(&w, "id", "contact").unwrap(),
             Some([8; 32])
         );
         let rows = a.export_wallet_rows(&w).unwrap();
         assert!(rows.iter().all(|t| t.table != "dp_contact_info"));
+        let forget = || a.forget_contact_info_digest(&w, "id", "contact");
+        assert!(forget().unwrap());
+        assert!(!forget().unwrap());
+        assert_eq!(a.contact_info_digest(&w, "id", "contact").unwrap(), None);
 
         let b = AppDb::open_in_memory().unwrap();
         let crafted = TableRows {

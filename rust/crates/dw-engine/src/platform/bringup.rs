@@ -549,8 +549,12 @@ impl NetworkSession {
         self.load_identity_choices(id).await;
         self.refresh_identities(manager, id).await;
         // A restore's private details, and their state, come back here
-        // (DP2-04).
+        // (DP2-04); not with the crypto of a seed that does not bind the
+        // wallet.
+        let unbound = (self.platform.startup_of(&id))
+            .is_some_and(|s| s.startup == StartupStatus::SeedBindingUnverified);
         if has_identity
+            && !unbound
             && let Some(crypto) = self.prompt_free_crypto(id).await
             && let Some(wallet) = manager.get_wallet(&id.0).await
         {
@@ -717,18 +721,12 @@ impl NetworkSession {
             return;
         };
         let locks = self.platform.lock.borrow().locks;
-        let Some(crypto) = self
-            .platform
-            .key_work
-            .run(self.vault.clone(), move |vault| {
-                background_contact_crypto(vault, id)
-            })
-            .await
-        else {
+        let Some(crypto) = self.contact_crypto(id).await else {
             return;
         };
         let deadline = Instant::now() + DEFAULT_STARTUP_BUDGET;
         let mut lock = self.platform.lock.subscribe();
+        let mut bound = true;
         tokio::select! {
             drained = wallet.drain_pending_contact_crypto_verified(
                 &crypto,
@@ -740,6 +738,7 @@ impl NetworkSession {
                     tracing::error!(wallet_id = %id, error = %e, "the vault's seed does not bind this wallet");
                     self.platform.set_status(id, StartupStatus::SeedBindingUnverified);
                     self.notice_incomplete(id, StartupStatus::SeedBindingUnverified);
+                    bound = false;
                 }
                 // Unanswered in time, or the vault locked: still queued for
                 // the next drain.
@@ -755,21 +754,29 @@ impl NetworkSession {
         if let Some(entry) = self.platform.write_startup().get_mut(&id) {
             entry.contact_accounts_pending = u32::try_from(pending).unwrap_or(u32::MAX);
         }
-        self.settle_contact_infos(&wallet, id, &crypto, None).await;
+        // Not with the crypto of a seed that does not bind the wallet.
+        if bound {
+            self.settle_contact_infos(&wallet, id, &crypto, None).await;
+        }
     }
 
-    /// The vault's prompt-free DashPay crypto for wallet `id`
-    /// ([`background_contact_crypto`]); `None` while it would need a prompt.
-    pub(super) async fn prompt_free_crypto(&self, id: WalletId) -> Option<VaultContactCrypto> {
-        if !prompt_free(self.platform.lock.borrow().state) {
-            return None;
-        }
+    /// The vault's DashPay crypto for wallet `id`
+    /// ([`background_contact_crypto`]), off the runtime.
+    async fn contact_crypto(&self, id: WalletId) -> Option<VaultContactCrypto> {
         self.platform
             .key_work
             .run(self.vault.clone(), move |vault| {
                 background_contact_crypto(vault, id)
             })
             .await
+    }
+
+    /// [`Self::contact_crypto`]; `None` while it would need a prompt.
+    pub(super) async fn prompt_free_crypto(&self, id: WalletId) -> Option<VaultContactCrypto> {
+        if !prompt_free(self.platform.lock.borrow().state) {
+            return None;
+        }
+        self.contact_crypto(id).await
     }
 
     /// (created here, Platform proved no identity within

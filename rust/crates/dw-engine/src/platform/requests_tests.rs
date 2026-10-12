@@ -32,7 +32,7 @@ use super::super::journal_tests::{
     Recorder, b58, engine, grant_unused, id, platform_grant, request, session,
 };
 use super::super::keys_policy::registration_specs;
-use super::super::private_details_tests::{FakeInfos, sealed_data};
+use super::super::private_details_tests::FakeInfos;
 use super::super::signers::{VaultContactCrypto, VaultIdentitySigner};
 use super::super::startup::SyncLoop;
 use super::*;
@@ -313,7 +313,7 @@ impl RequestNet for FakeRequests {
         let (contacts, index) = {
             let mut state = wallet.state_mut().await;
             let m = (state.identity_manager.managed_identity_mut(&owner)).unwrap();
-            let saved = m.set_contact_metadata(&contact, sealed_data(details), wallet.persister());
+            let saved = m.set_contact_metadata(&contact, details.into(), wallet.persister());
             assert!(saved.unwrap(), "an established contact");
             (m.dashpay().established_contacts().len(), m.identity_index)
         };
@@ -338,6 +338,8 @@ pub(crate) struct Fixture {
     pub(crate) s: Arc<NetworkSession>,
     pub(crate) wallet: WalletId,
     pub(crate) net: Arc<FakeRequests>,
+    /// What the engine emitted.
+    pub(crate) events: Arc<Recorder>,
     _dir: tempfile::TempDir,
 }
 
@@ -354,16 +356,14 @@ impl Fixture {
     }
 
     /// Our identity with `mine` as they are: keys the vault does not hold.
-    fn foreign(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
+    pub(crate) fn foreign(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
         Self::build(mine, balance, false)
     }
 
     fn build(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64, held: bool) -> Self {
         let dir = dw_testutil::private_tempdir();
-        let engine = engine(
-            dir.path(),
-            Arc::new(Recorder::default()) as Arc<dyn EventSink>,
-        );
+        let events = Arc::new(Recorder::default());
+        let engine = engine(dir.path(), Arc::clone(&events) as Arc<dyn EventSink>);
         let (s, wallet) = session(&engine, true);
         let mine = if held {
             vault_keys(&engine, &s, wallet, mine)
@@ -403,6 +403,7 @@ impl Fixture {
             s,
             wallet,
             net,
+            events,
             _dir: dir,
         }
     }
@@ -474,6 +475,16 @@ impl Fixture {
             )
             .unwrap()
             .id
+    }
+
+    /// What the lease `lease` has spent of its credits budget.
+    pub(crate) fn credits_spent(&self, lease: &str) -> u64 {
+        let lease = self.s.lease_for(&self.wallet, lease).unwrap().unwrap();
+        let view = lease.view().unwrap();
+        (view.budgets.iter())
+            .find(|b| b.purpose == BudgetPurpose::Credits)
+            .unwrap()
+            .spent
     }
 
     pub(crate) fn unused(&self, grant: &str) -> bool {
@@ -732,21 +743,12 @@ fn a_quote_goes_back_only_when_nothing_was_signed() {
             keys(true)
         };
         let f = Fixture::with_keys(keys, u64::MAX / 2);
-        let spent = |lease: &str| {
-            let lease = f.s.lease_for(&f.wallet, lease).unwrap().unwrap();
-            let view = lease.view().unwrap();
-            (view.budgets.iter())
-                .find(|b| b.purpose == BudgetPurpose::Credits)
-                .unwrap()
-                .spent
-        };
-
         let lease = f.flow(flow, vec![f.grant(quote)]);
         *f.net.fails_unsigned.lock().unwrap() = Some(PlatformError::Unavailable);
         let refused = write(&f, &lease).unwrap_err();
         assert_eq!(refused.code(), "platform.unavailable", "{flow:?}");
         assert_eq!(
-            spent(&lease),
+            f.credits_spent(&lease),
             0,
             "{flow:?}: nothing signed, quote not returned"
         );
@@ -754,7 +756,11 @@ fn a_quote_goes_back_only_when_nothing_was_signed() {
 
         *f.net.fails.lock().unwrap() = Some(PlatformError::Timeout);
         assert_eq!(write(&f, &lease).unwrap_err().code(), "platform.timeout");
-        assert_eq!(spent(&lease), quote, "{flow:?}: signed, quote not kept");
+        assert_eq!(
+            f.credits_spent(&lease),
+            quote,
+            "{flow:?}: signed, quote not kept"
+        );
         *f.net.fails.lock().unwrap() = None;
         assert_eq!(
             write(&f, &lease).unwrap_err().code(),

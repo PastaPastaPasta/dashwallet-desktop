@@ -16,7 +16,9 @@
 //! The library's DashPay pass applies Platform's `contactInfo` over local
 //! details on every pass ("remote wins"), so a local-only edit of a contact
 //! Platform holds details for would silently go back: it needs a grant
-//! (`platform.needs_grant`, m4 §7 item 42).
+//! (`platform.needs_grant`, m4 §7 item 42). With no digest recorded, the
+//! edit reads Platform first. A write that failed once signed keeps the
+//! edit until a read finds whether it landed.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -29,22 +31,26 @@ use dpp::identity::Identity;
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::platform_value::Value;
 use dpp::prelude::Identifier;
+use dw_appdb::{AppDb, AppDbError};
 use platform_wallet::wallet::identity::crypto::contact_info::{
     ContactInfoPrivateData, MAX_PLAINTEXT_LEN, decode_private_data, encode_private_data,
 };
-use platform_wallet::{ContactCryptoProvider, ContactInfoPublishOutcome, PlatformWallet};
+use platform_wallet::{ContactInfoPublishOutcome, EstablishedContact, PlatformWallet};
 
+pub(super) use super::contact_names::BoxedFuture;
 use super::contacts::{Eligibility, PrivateDetails, PublishState};
 use super::errors::{ContactError, PlatformError};
 use super::flows::{BudgetPurpose, DOCUMENT_10K_CREDITS, FlowKind};
 use super::identity_writes::identity_locks;
 use super::keys_policy::{key_path, missing_dashpay_purposes};
-use super::requests::{Pair, RequestNet, cover, flow_signer, leased, write_lease, write_permit};
+use super::lease::FlowOutcome;
+use super::registration_flow::b58;
+use super::requests::{Pair, RequestNet, leased, not_found, prepare};
 #[cfg(test)]
 use super::runtime::guard;
 use super::signers::VaultContactCrypto;
 use crate::events::unix_now;
-use crate::{NetworkSession, WalletId};
+use crate::{NetworkSession, PlatformChange, WalletId};
 
 /// `contactInfo` documents per page of a read.
 const PAGE: u32 = 100;
@@ -56,12 +62,14 @@ const MAX_DOCUMENTS: usize = 1000;
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// After a write's read-back failed: when the details are read again, and
 /// how many times, before the next bring-up or unlock does it.
-const RESETTLE_AFTER: Duration = Duration::from_secs(60);
+const RESETTLE_AFTER: Duration = if cfg!(test) {
+    Duration::from_millis(500)
+} else {
+    Duration::from_secs(60)
+};
 const RESETTLE_TRIES: u32 = 5;
 /// Domain of [`digest`].
 const DIGEST_DOMAIN: &[u8] = b"dw.contact_info.v1";
-
-pub(super) type BoxedFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// One `contactInfo` document as Platform holds it, still sealed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,15 +168,41 @@ fn document(owner: &Identifier, d: &Document) -> Option<InfoDocument> {
     found
 }
 
-/// The details as DIP-15 encodes them; no accepted accounts (desktop uses
-/// account 0 only, m4 §7 item 42).
+/// The details as the library holds and DIP-15 encodes them; no accepted
+/// accounts (desktop uses account 0 only, m4 §7 item 42).
+impl From<&PrivateDetails> for ContactInfoPrivateData {
+    fn from(d: &PrivateDetails) -> Self {
+        Self {
+            alias_name: d.alias.clone(),
+            note: d.note.clone(),
+            display_hidden: d.hidden,
+            accepted_accounts: Vec::new(),
+        }
+    }
+}
+
+impl From<ContactInfoPrivateData> for PrivateDetails {
+    fn from(d: ContactInfoPrivateData) -> Self {
+        Self {
+            alias: d.alias_name,
+            note: d.note,
+            hidden: d.display_hidden,
+        }
+    }
+}
+
+impl From<&EstablishedContact> for PrivateDetails {
+    fn from(c: &EstablishedContact) -> Self {
+        Self {
+            alias: c.alias.clone(),
+            note: c.note.clone(),
+            hidden: c.is_hidden,
+        }
+    }
+}
+
 fn encoded(d: &PrivateDetails) -> Vec<u8> {
-    encode_private_data(&ContactInfoPrivateData {
-        alias_name: d.alias.clone(),
-        note: d.note.clone(),
-        display_hidden: d.hidden,
-        accepted_accounts: Vec::new(),
-    })
+    encode_private_data(&d.into())
 }
 
 /// What `dp_contact_info` records of details: SHA-256 over a domain and
@@ -205,11 +239,11 @@ pub(super) fn publish_state(
 }
 
 /// Opens `owner`'s documents (identity `index`) with `crypto`: what
-/// Platform holds for each contact, the latest update winning. A document
-/// that does not open fails the read (a locked vault looks the same as
-/// none); one whose plaintext does not decode is skipped, as the library
-/// skips it.
-pub(super) async fn read_platform(
+/// Platform holds for each contact, the latest update winning. A signer
+/// that cannot open them (a locked vault) fails the read; a document that
+/// does not open with the wallet's keys (another client's, a corrupt one),
+/// or whose plaintext does not decode, is skipped, as the library skips it.
+async fn read_platform(
     source: &dyn InfoSource,
     crypto: &VaultContactCrypto,
     (network, index, owner): (key_wallet::Network, u32, Identifier),
@@ -219,23 +253,23 @@ pub(super) async fn read_platform(
         .map_err(|_| PlatformError::Timeout)??;
     let mut found = BTreeMap::new();
     for doc in documents {
-        let root = key_path(network, index, doc.root).map_err(PlatformError::from)?;
-        let opened = crypto
-            .contact_info_open(
+        let root = key_path(network, index, doc.root).ok();
+        let opened = match root {
+            Some(root) => crypto.contact_info_open_or_skip(
                 &root,
                 doc.derivation,
                 &doc.enc_to_user_id,
                 &doc.private_data,
-            )
-            .await?;
+            )?,
+            None => None,
+        };
+        let Some(opened) = opened else {
+            tracing::warn!(owner = %owner, "a contactInfo that does not open with the wallet's keys");
+            continue;
+        };
         match decode_private_data(&opened.private_data) {
             Ok(data) => {
-                let details = PrivateDetails {
-                    alias: data.alias_name,
-                    note: data.note,
-                    hidden: data.display_hidden,
-                };
-                found.insert(Identifier::from(opened.contact_id), details);
+                found.insert(Identifier::from(opened.contact_id), data.into());
             }
             Err(e) => {
                 tracing::warn!(owner = %owner, error = %e, "a contactInfo that does not decode")
@@ -259,17 +293,13 @@ impl Mine {
         let state = wallet.state().await;
         let m = (state.identity_manager.managed_identity(&pair.identity))
             .filter(|m| m.wallet_id == Some(wallet.wallet_id()))
-            .ok_or_else(|| PlatformError::from(super::errors::IdentityError::NotFound))?;
+            .ok_or_else(not_found)?;
         let established = m.dashpay().established_contacts();
         Ok(Self {
             index: m.identity_index,
             identity: m.identity.clone(),
             contacts: established.len(),
-            details: established.get(&pair.contact).map(|c| PrivateDetails {
-                alias: c.alias.clone(),
-                note: c.note.clone(),
-                hidden: c.is_hidden,
-            }),
+            details: established.get(&pair.contact).map(PrivateDetails::from),
         })
     }
 }
@@ -286,26 +316,16 @@ async fn save_local(
     let Some(managed) = (state.identity_manager).managed_identity_mut(&pair.identity) else {
         return Ok(());
     };
-    let data = ContactInfoPrivateData {
-        alias_name: d.alias.clone(),
-        note: d.note.clone(),
-        display_hidden: d.hidden,
-        accepted_accounts: Vec::new(),
-    };
     managed
-        .set_contact_metadata(&pair.contact, data, wallet.persister())
+        .set_contact_metadata(&pair.contact, d.into(), wallet.persister())
         .map_err(|e| PlatformError::Storage {
             detail: format!("private details not saved: {e}"),
         })?;
     Ok(())
 }
 
-fn b58(id: &Identifier) -> String {
-    id.to_string(dpp::platform_value::string_encoding::Encoding::Base58)
-}
-
 impl NetworkSession {
-    pub(super) fn info_source(&self) -> Result<Arc<dyn InfoSource>, PlatformError> {
+    fn info_source(&self) -> Result<Arc<dyn InfoSource>, PlatformError> {
         #[cfg(test)]
         if let Some(source) = guard(&self.platform.contacts.info_source).clone() {
             return Ok(source);
@@ -314,61 +334,85 @@ impl NetworkSession {
         Ok(Arc::new(SdkInfos(manager.sdk_arc())))
     }
 
+    /// `f` on app.sqlite with `pair` as `dp_contact_info` keys it.
+    async fn contact_info_op<T: Send + 'static>(
+        &self,
+        pair: &Pair,
+        f: impl FnOnce(&AppDb, &str, &str, &str) -> Result<T, AppDbError> + Send + 'static,
+    ) -> Result<T, PlatformError> {
+        let (wallet, identity, contact) = (
+            pair.wallet.to_string(),
+            b58(&pair.identity),
+            b58(&pair.contact),
+        );
+        Ok(self
+            .appdb_op(move |db| f(db, &wallet, &identity, &contact))
+            .await?)
+    }
+
     /// The digest `dp_contact_info` holds for `pair`.
     pub(super) async fn recorded_digest(
         &self,
         pair: &Pair,
     ) -> Result<Option<[u8; 32]>, PlatformError> {
-        let (wallet, identity, contact) = (
-            pair.wallet.to_string(),
-            b58(&pair.identity),
-            b58(&pair.contact),
-        );
-        Ok(self
-            .appdb_op(move |db| db.contact_info_digest(&wallet, &identity, &contact))
-            .await?)
+        self.contact_info_op(pair, |db, w, i, c| db.contact_info_digest(w, i, c))
+            .await
     }
 
-    /// Records that Platform holds `d` for `pair`.
+    /// Records that Platform holds `d` for `pair`. A change signals
+    /// `Contacts`: the details' `publish_state` moved.
     async fn record_digest(&self, pair: &Pair, d: &PrivateDetails) -> Result<(), PlatformError> {
-        let (wallet, identity, contact) = (
-            pair.wallet.to_string(),
-            b58(&pair.identity),
-            b58(&pair.contact),
-        );
         let digest = digest(d);
-        Ok(self
-            .appdb_op(move |db| {
-                db.set_contact_info_digest(&wallet, &identity, &contact, &digest, unix_now())
+        let changed = self
+            .contact_info_op(pair, move |db, w, i, c| {
+                db.set_contact_info_digest(w, i, c, &digest, unix_now())
             })
-            .await?)
+            .await?;
+        self.digest_changed(pair, changed);
+        Ok(())
     }
 
     /// Forgets what was recorded for `pair`: Platform holds nothing for it.
     async fn forget_digest(&self, pair: &Pair) -> Result<(), PlatformError> {
-        let (wallet, identity, contact) = (
-            pair.wallet.to_string(),
-            b58(&pair.identity),
-            b58(&pair.contact),
-        );
-        Ok(self
-            .appdb_op(move |db| db.forget_contact_info_digest(&wallet, &identity, &contact))
-            .await?)
+        let changed = self
+            .contact_info_op(pair, |db, w, i, c| db.forget_contact_info_digest(w, i, c))
+            .await?;
+        self.digest_changed(pair, changed);
+        Ok(())
+    }
+
+    fn digest_changed(&self, pair: &Pair, changed: bool) {
+        if changed {
+            let identity = b58(&pair.identity);
+            (self.hub.pump).mark_platform(pair.wallet, [PlatformChange::Contacts { identity }]);
+        }
     }
 
     /// Reads what Platform holds of `owner`'s details (identity `index`)
     /// and makes the wallet agree, under the identity's write lock: each
     /// established contact gets Platform's details (as the library's own
     /// pass applies them) and its digest recorded; a contact Platform holds
-    /// nothing for loses its record. A failed read changes nothing.
+    /// nothing for loses its record. A failed read changes nothing. The
+    /// lock is held across the read (at most [`READ_TIMEOUT`]), so a write
+    /// of the identity cannot land between the read and what it applies.
     async fn settle_identity(
+        &self,
+        wallet: &PlatformWallet,
+        at: (WalletId, u32, Identifier),
+        crypto: &VaultContactCrypto,
+    ) -> Result<(), PlatformError> {
+        let locks = identity_locks(at.0, at.2);
+        let _write = locks.write.lock().await;
+        self.settle_locked(wallet, at, crypto).await
+    }
+
+    /// [`Self::settle_identity`] under the write lock its caller holds.
+    async fn settle_locked(
         &self,
         wallet: &PlatformWallet,
         (id, index, owner): (WalletId, u32, Identifier),
         crypto: &VaultContactCrypto,
     ) -> Result<(), PlatformError> {
-        let locks = identity_locks(id, owner);
-        let _write = locks.write.lock().await;
         let source = self.info_source()?;
         let found = read_platform(&*source, crypto, (self.vault.network(), index, owner)).await?;
         let established: Vec<(Identifier, PrivateDetails)> = {
@@ -377,14 +421,7 @@ impl NetworkSession {
                 return Ok(());
             };
             (m.dashpay().established_contacts().iter())
-                .map(|(contact, c)| {
-                    let shown = PrivateDetails {
-                        alias: c.alias.clone(),
-                        note: c.note.clone(),
-                        hidden: c.is_hidden,
-                    };
-                    (*contact, shown)
-                })
+                .map(|(contact, c)| (*contact, c.into()))
                 .collect()
         };
         for (contact, shown) in established {
@@ -438,10 +475,12 @@ impl NetworkSession {
         settled
     }
 
-    /// After a write whose read-back failed: settles `owner` again every
-    /// [`RESETTLE_AFTER`], up to [`RESETTLE_TRIES`] times, while the vault
-    /// is prompt-free, so details that did land become `Published` without
-    /// another write. Session close cancels it.
+    /// After a write that failed once signed and whose read-back did not
+    /// find it: settles `owner` again every [`RESETTLE_AFTER`], up to
+    /// [`RESETTLE_TRIES`] times (a try while the vault needs a prompt reads
+    /// nothing), so details that landed late become `Published` without
+    /// another write, and details that did not are put back. Session close
+    /// cancels it.
     fn resettle_later(self: &Arc<Self>, id: WalletId, owner: Identifier) {
         let weak = Arc::downgrade(self);
         let task = async move {
@@ -489,19 +528,38 @@ pub(super) async fn set(
     }
     let locks = identity_locks(pair.wallet, pair.identity);
     let _write = locks.write.lock().await;
-    let mine = Mine::of(wallet, &pair).await?;
-    let Some(before) = mine.details.clone() else {
-        return Err(PlatformError::InvalidArgument {
-            detail: "not a contact of this identity".into(),
-        }
-        .into());
+    let mut mine = Mine::of(wallet, &pair).await?;
+    let not_contact = || PlatformError::InvalidArgument {
+        detail: "not a contact of this identity".into(),
     };
+    if mine.details.is_none() {
+        return Err(not_contact().into());
+    }
     if mine.contacts < 2 {
         save_local(wallet, &pair, &d).await?;
         return Ok(PublishState::DeferredUntilTwoContacts);
     }
-    let recorded = session.recorded_digest(&pair).await?;
+    let mut recorded = session.recorded_digest(&pair).await?;
     let Some(grant) = grant else {
+        // With nothing recorded, Platform may still hold details (a settle
+        // that failed): read them first, when the vault allows it.
+        if recorded.is_none()
+            && mine.details.as_ref() != Some(&d)
+            && let Some(index) = mine.index
+            && let Some(crypto) = session.prompt_free_crypto(pair.wallet).await
+        {
+            let at = (pair.wallet, index, pair.identity);
+            match session.settle_locked(wallet, at, &crypto).await {
+                Ok(()) => {
+                    mine = Mine::of(wallet, &pair).await?;
+                    recorded = session.recorded_digest(&pair).await?;
+                }
+                Err(e) => {
+                    tracing::info!(contact = %b58(&pair.contact), "private details not read: {e}")
+                }
+            }
+        }
+        let before = mine.details.ok_or_else(not_contact)?;
         // Platform holds details for the contact: the library's next pass
         // would put them back over a local-only edit.
         if recorded.is_some() && d != before {
@@ -513,8 +571,8 @@ pub(super) async fn set(
         save_local(wallet, &pair, &d).await?;
         return Ok(publish_state(mine.contacts, &d, recorded));
     };
-    if recorded == Some(digest(&d)) {
-        save_local(wallet, &pair, &d).await?;
+    let before = mine.details.ok_or_else(not_contact)?;
+    if before == d && recorded == Some(digest(&d)) {
         return Ok(PublishState::Published);
     }
     let index = mine.index.ok_or_else(|| PlatformError::InvalidArgument {
@@ -525,16 +583,19 @@ pub(super) async fn set(
             reason: Eligibility::NoDashPayKeys,
         });
     }
-    let balance = net.balance(pair.identity).await?;
-    let balance =
-        balance.ok_or_else(|| PlatformError::from(super::errors::IdentityError::NotFound))?;
-    cover(balance, DOCUMENT_10K_CREDITS)?;
-    let cost = (&[FlowKind::PrivateDetails][..], DOCUMENT_10K_CREDITS);
-    let signs = (index, &mine.identity);
-    let lease = write_lease(session, pair.wallet, &grant, cost, signs, || Ok(())).await?;
-    let permit = write_permit(&lease, "set_contact_info", DOCUMENT_10K_CREDITS)?;
-    let signer = flow_signer(&permit, index, &mine.identity, &[])?;
-    let crypto = lease.contact_crypto().map_err(PlatformError::from)?;
+    let (lease, permit, signer, crypto) = prepare(
+        net,
+        session,
+        (index, &mine.identity),
+        (pair.wallet, &grant),
+        (
+            &[FlowKind::PrivateDetails],
+            DOCUMENT_10K_CREDITS,
+            "set_contact_info",
+        ),
+        || Ok(()),
+    )
+    .await?;
     let written = leased(
         &lease,
         net.set_contact_info(wallet, pair.identity, pair.contact, &d, &signer, &crypto),
@@ -542,7 +603,7 @@ pub(super) async fn set(
     .await;
     drop(signer);
     let outcome = permit.finish(written.is_ok());
-    let result = match written {
+    match written {
         Ok(ContactInfoPublishOutcome::Published) => {
             session.record_digest(&pair, &d).await?;
             Ok(PublishState::Published)
@@ -553,13 +614,20 @@ pub(super) async fn set(
             Ok(PublishState::DeferredUntilTwoContacts)
         }
         Ok(ContactInfoPublishOutcome::SkippedWatchOnly) => Ok(PublishState::Local),
-        Err(e) if outcome == super::lease::FlowOutcome::Cancelled => {
-            // Nothing signed, so nothing went out: the details go back to
-            // what Platform holds (the library saved them first).
-            save_local(wallet, &pair, &before).await?;
+        Err(e) if outcome == FlowOutcome::Cancelled => {
+            // Nothing signed, so nothing went out. The library saved the
+            // details first: they go back where Platform holds others (its
+            // next pass would put those back), else they stay, `Local`.
+            if recorded.is_some() {
+                save_local(wallet, &pair, &before).await?;
+            }
             Err(e.into())
         }
         Err(e) => {
+            // Signed, so it may have landed, or land later. Details the
+            // read-back finds are `Published`; otherwise the edit stays,
+            // `Local`, and a later read decides (the library's pass puts
+            // Platform's details back meanwhile, as it would anyway).
             tracing::info!(contact = %b58(&pair.contact), "contactInfo write failed: {e}");
             let read = read_platform(
                 &*session.info_source()?,
@@ -572,21 +640,14 @@ pub(super) async fn set(
                     session.record_digest(&pair, &d).await?;
                     Ok(PublishState::Published)
                 }
-                Ok(_) => {
-                    save_local(wallet, &pair, &before).await?;
-                    Err(e.into())
-                }
-                // Unknown: the details stay as edited, `Local`, until a
-                // later read finds them on Platform (or not).
-                Err(again) => {
-                    tracing::info!("after the failure: {again}");
+                read => {
+                    if let Err(again) = read {
+                        tracing::info!("after the failure: {again}");
+                    }
                     session.resettle_later(pair.wallet, pair.identity);
                     Err(e.into())
                 }
             }
         }
-    };
-    drop(crypto);
-    drop(lease);
-    result
+    }
 }

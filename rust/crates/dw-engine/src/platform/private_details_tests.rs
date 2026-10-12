@@ -11,22 +11,25 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use platform_wallet::wallet::identity::crypto::contact_info::{
-    ContactInfoPrivateData, MAX_PLAINTEXT_LEN, encode_private_data,
+    MAX_PLAINTEXT_LEN, encode_private_data,
 };
 use platform_wallet::{ContactCryptoProvider, EstablishedContact, ManagedIdentity};
 
 use super::contacts::{PrivateDetails, PublishState};
 use super::errors::{ContactError, PlatformError};
-use super::flows::{BudgetPurpose, DOCUMENT_10K_CREDITS, FlowKind};
+use super::flows::{DOCUMENT_10K_CREDITS, FlowKind};
 use super::identity_writes::identity_locks;
 use super::journal_tests::{id, request};
 use super::keys_policy::key_path;
 use super::private_details::{BoxedFuture, InfoDocument, InfoSource, digest, publish_state, set};
-use super::requests::tests::{Fixture, keys};
+
+use super::requests::tests::{Fixture, keys, wait_until};
 use super::runtime::guard;
 use super::signers::VaultContactCrypto;
+use crate::{EngineEvent, PlatformChange};
 
 const ME: u8 = 1;
 /// A second contact, made in [`two_contacts`].
@@ -39,16 +42,6 @@ const ERIN: u8 = 5;
 const ROOT: u32 = 4;
 /// The test sessions' network (`journal_tests::session`).
 const NETWORK: key_wallet::Network = key_wallet::Network::Regtest;
-
-/// The details as the library holds them with a contact.
-pub(crate) fn sealed_data(d: &PrivateDetails) -> ContactInfoPrivateData {
-    ContactInfoPrivateData {
-        alias_name: d.alias.clone(),
-        note: d.note.clone(),
-        display_hidden: d.hidden,
-        accepted_accounts: Vec::new(),
-    }
-}
 
 /// An identity's `contactInfo` documents on Platform, by (owner, contact).
 #[derive(Default)]
@@ -78,7 +71,7 @@ impl FakeInfos {
             }
         };
         let root = key_path(NETWORK, index, ROOT).unwrap();
-        let plaintext = encode_private_data(&sealed_data(d));
+        let plaintext = encode_private_data(&d.into());
         let sealed = crypto
             .contact_info_seal(
                 &root,
@@ -167,15 +160,17 @@ fn two_contacts(f: Fixture) -> Fixture {
 
 impl Fixture {
     /// Runs `edit` on our identity as the library holds it.
-    fn with_identity(&self, edit: impl FnOnce(&mut ManagedIdentity) + Send + 'static) {
+    fn with_identity<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut ManagedIdentity) -> T + Send + 'static,
+    ) -> T {
         let manager = self.s.manager().unwrap();
         let wallet = self.wallet;
         self.engine.block_on(async move {
             let wallet = manager.get_wallet(&wallet.0).await.unwrap();
             let mut state = wallet.state_mut().await;
-            let m = (state.identity_manager.managed_identity_mut(&id(ME))).unwrap();
-            edit(m);
-        });
+            f((state.identity_manager.managed_identity_mut(&id(ME))).unwrap())
+        })
     }
 
     fn set(
@@ -190,19 +185,7 @@ impl Fixture {
 
     /// The contact's details as the library holds them.
     fn shown(&self, contact: u8) -> PrivateDetails {
-        let manager = self.s.manager().unwrap();
-        let wallet = self.wallet;
-        self.engine.block_on(async move {
-            let wallet = manager.get_wallet(&wallet.0).await.unwrap();
-            let state = wallet.state().await;
-            let m = (state.identity_manager.managed_identity(&id(ME))).unwrap();
-            let c = &m.dashpay().established_contacts()[&id(contact)];
-            PrivateDetails {
-                alias: c.alias.clone(),
-                note: c.note.clone(),
-                hidden: c.is_hidden,
-            }
-        })
+        self.with_identity(move |m| (&m.dashpay().established_contacts()[&id(contact)]).into())
     }
 
     fn recorded(&self, contact: u8) -> Option<[u8; 32]> {
@@ -246,20 +229,35 @@ impl Fixture {
         });
     }
 
-    fn credits_spent(&self, lease: &str) -> u64 {
-        let lease = self.s.lease_for(&self.wallet, lease).unwrap().unwrap();
-        let view = lease.view().unwrap();
-        (view.budgets.iter())
-            .find(|b| b.purpose == BudgetPurpose::Credits)
-            .unwrap()
-            .spent
-    }
-
     fn lease(&self) -> String {
         self.flow(
             FlowKind::PrivateDetails,
             vec![self.grant(DOCUMENT_10K_CREDITS)],
         )
+    }
+
+    /// Applies `d` to the contact as the library's DashPay pass applies a
+    /// `contactInfo` (no settle, no record).
+    fn apply(&self, contact: u8, d: &PrivateDetails) {
+        let (manager, wallet, d) = (self.s.manager().unwrap(), self.wallet, d.clone());
+        self.engine.block_on(async move {
+            let wallet = manager.get_wallet(&wallet.0).await.unwrap();
+            let mut state = wallet.state_mut().await;
+            let m = (state.identity_manager.managed_identity_mut(&id(ME))).unwrap();
+            let saved = m.set_contact_metadata(&id(contact), (&d).into(), wallet.persister());
+            assert!(saved.unwrap());
+        });
+    }
+
+    /// The `Platform{Contacts}` signals for our identity so far.
+    fn contact_signals(&self) -> usize {
+        let ours = PlatformChange::Contacts {
+            identity: id(ME).to_string(Encoding::Base58),
+        };
+        let events = self.events.0.lock().unwrap();
+        (events.iter())
+            .filter(|e| matches!(e, EngineEvent::Platform { change, .. } if *change == ours))
+            .count()
     }
 }
 
@@ -380,9 +378,9 @@ fn a_published_contact_needs_a_grant_to_change() {
     assert_eq!(f.net.writes(), 2);
 }
 
-/// A write that failed before signing sent nothing: the quote goes back
-/// and the details return to what they were (the library saved the edit
-/// first).
+/// A write that failed before signing sent nothing: the quote goes back,
+/// and the details return to what Platform holds (the library saved the
+/// edit first); with nothing recorded the edit stays, `Local`.
 #[test]
 fn a_write_that_signed_nothing_rolls_back() {
     let f = published();
@@ -398,30 +396,122 @@ fn a_write_that_signed_nothing_rolls_back() {
         (f.shown(ERIN), f.state(ERIN)),
         (details("Erin"), PublishState::Published)
     );
-}
-
-/// A write that failed after signing is read back: the details Platform
-/// holds decide. Not landed: the error, the details back as they were;
-/// landed: `Published` and recorded.
-#[test]
-fn a_failed_write_is_read_back() {
-    let f = published();
-    *f.net.fails.lock().unwrap() = Some(PlatformError::Timeout);
     assert_eq!(
-        Fixture::code(f.set(ERIN, details("Erin"), Some(f.lease()))),
-        "platform.timeout"
+        Fixture::code(f.set(BOB, details("Bob"), Some(f.lease()))),
+        "platform.unavailable"
     );
     assert_eq!(
-        (f.shown(ERIN), f.recorded(ERIN)),
-        (PrivateDetails::default(), None)
+        (f.shown(BOB), f.state(BOB)),
+        (details("Bob"), PublishState::Local)
+    );
+}
+
+/// A write that failed after signing may still land (Opus r1 #1): the
+/// read-back that finds it is `Published`; otherwise the edit stays,
+/// `Local`, with the error, and a later read decides: Platform's details
+/// back when it did not land, `Published` when it landed late.
+#[test]
+fn a_failed_write_keeps_the_edit_until_a_read() {
+    let f = published();
+    f.set(ERIN, details("Erin"), Some(f.lease())).unwrap();
+    *f.net.fails.lock().unwrap() = Some(PlatformError::Timeout);
+
+    let failed = f.set(ERIN, details("Erin2"), Some(f.lease()));
+    assert_eq!(Fixture::code(failed), "platform.timeout");
+    assert_eq!(
+        (f.shown(ERIN), f.state(ERIN)),
+        (details("Erin2"), PublishState::Local)
+    );
+    assert!(f.settle(), "it did not land");
+    assert_eq!(
+        (f.shown(ERIN), f.state(ERIN)),
+        (details("Erin"), PublishState::Published)
+    );
+
+    let failed = f.set(ERIN, details("Erin3"), Some(f.lease()));
+    assert_eq!(Fixture::code(failed), "platform.timeout");
+    f.publish_elsewhere(ERIN, &details("Erin3"));
+    assert!(f.settle(), "it landed late");
+    assert_eq!(
+        (f.shown(ERIN), f.state(ERIN)),
+        (details("Erin3"), PublishState::Published)
     );
 
     f.net.landed.store(true, Ordering::SeqCst);
     assert_eq!(
-        f.set(ERIN, details("Erin"), Some(f.lease())).unwrap(),
+        f.set(ERIN, details("Erin4"), Some(f.lease())).unwrap(),
         PublishState::Published
     );
     assert_eq!(f.state(ERIN), PublishState::Published);
+    assert_eq!(f.net.writes(), 4);
+}
+
+/// With a grant, details count as on Platform only while the contact still
+/// shows them (Opus r1 #5): after another device's edit the library's pass
+/// applied, the details recorded earlier are published again.
+#[test]
+fn a_stale_record_is_published_again() {
+    let f = published();
+    f.set(ERIN, details("Erin"), Some(f.lease())).unwrap();
+    f.publish_elsewhere(ERIN, &details("Other"));
+    f.apply(ERIN, &details("Other"));
+    assert_eq!(
+        f.set(ERIN, details("Erin"), Some(f.lease())).unwrap(),
+        PublishState::Published
+    );
+    assert_eq!(f.net.writes(), 2);
+    assert!(f.settle());
+    assert_eq!(
+        (f.shown(ERIN), f.state(ERIN)),
+        (details("Erin"), PublishState::Published)
+    );
+}
+
+/// With nothing recorded (a settle that failed), an edit without a grant
+/// reads Platform first (Opus r1 #4): details there need a grant. When the
+/// read fails too, the edit is saved, `Local` (the residual of item 42).
+#[test]
+fn without_a_record_an_edit_reads_platform_first() {
+    let f = published();
+    f.publish_elsewhere(ERIN, &details("Other"));
+    f.apply(ERIN, &details("Other"));
+    assert_eq!(f.recorded(ERIN), None);
+    assert_eq!(
+        Fixture::code(f.set(ERIN, details("Erin"), None)),
+        "platform.needs_grant"
+    );
+    assert_eq!(
+        (f.shown(ERIN), f.state(ERIN)),
+        (details("Other"), PublishState::Published)
+    );
+
+    f.publish_elsewhere(BOB, &details("Other"));
+    f.net.infos.down.store(true, Ordering::SeqCst);
+    assert_eq!(
+        f.set(BOB, details("Bob"), None).unwrap(),
+        PublishState::Local
+    );
+    assert_eq!(f.shown(BOB), details("Bob"));
+}
+
+/// A settle that moves only a digest (the library's pass applied the
+/// details already) signals `Contacts`, so a host re-reads `publish_state`
+/// (Opus r1 #2).
+#[test]
+fn a_digest_change_signals_contacts() {
+    let f = published();
+    f.apply(ERIN, &details("Erin"));
+    f.publish_elsewhere(ERIN, &details("Erin"));
+    wait_until("the apply's signal", Duration::from_secs(20), || {
+        f.contact_signals() > 0
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let before = f.contact_signals();
+    assert!(f.settle());
+    assert_eq!(f.state(ERIN), PublishState::Published);
+    wait_until("the digest's signal", Duration::from_secs(20), || {
+        f.contact_signals() > before
+    });
 }
 
 /// When the read-back fails too, the edit stays, `Local`, with its error;
@@ -450,10 +540,32 @@ fn an_unknown_write_is_published_by_a_later_read() {
     assert_eq!(f.net.writes(), 1);
 }
 
+/// The failed read-back's own retry (`RESETTLE_AFTER`, shortened in tests)
+/// reads again on its own: once Platform answers, the edit is `Published`.
+#[test]
+fn a_failed_read_back_is_retried() {
+    let f = published();
+    f.net.landed.store(true, Ordering::SeqCst);
+    *f.net.fails.lock().unwrap() = Some(PlatformError::Timeout);
+    f.net.infos.down.store(true, Ordering::SeqCst);
+    let failed = f.set(ERIN, details("Erin"), Some(f.lease()));
+    assert_eq!(Fixture::code(failed), "platform.timeout");
+    let reads = f.net.infos.reads.load(Ordering::SeqCst);
+    wait_until("a retry", Duration::from_secs(20), || {
+        f.net.infos.reads.load(Ordering::SeqCst) > reads
+    });
+    assert_eq!(f.state(ERIN), PublishState::Local);
+    f.net.infos.down.store(false, Ordering::SeqCst);
+    wait_until("the retry's read", Duration::from_secs(20), || {
+        f.state(ERIN) == PublishState::Published
+    });
+    assert_eq!(f.net.writes(), 1);
+}
+
 /// Refused before the grant is redeemed, with nothing written or saved:
 /// details over DIP-15's plaintext cap, ourselves, no contact, an identity
-/// without DashPay keys, one the wallet only watches, and a lease of
-/// another flow.
+/// without DashPay keys, credits below the quote, no document key the vault
+/// holds, one the wallet only watches, and a lease of another flow.
 #[test]
 fn refusals_keep_the_grant() {
     let f = published();
@@ -491,18 +603,35 @@ fn refusals_keep_the_grant() {
     );
     assert!(g.unused(&grant));
 
+    let poor = two_contacts(fixture(Fixture::new(DOCUMENT_10K_CREDITS - 1)));
+    let grant = poor.grant(DOCUMENT_10K_CREDITS);
+    assert_eq!(
+        Fixture::code(poor.set(ERIN, details("Erin"), Some(grant.clone()))),
+        "platform.insufficient_credits"
+    );
+    assert!(poor.unused(&grant));
+
+    let unheld = two_contacts(fixture(Fixture::foreign(keys(true), u64::MAX / 2)));
+    let grant = unheld.grant(DOCUMENT_10K_CREDITS);
+    assert_eq!(
+        Fixture::code(unheld.set(ERIN, details("Erin"), Some(grant.clone()))),
+        "identity.keys_missing"
+    );
+    assert!(unheld.unused(&grant));
+
     f.with_identity(|m| m.identity_index = None);
     let grant = f.grant(DOCUMENT_10K_CREDITS);
     let code = Fixture::code(f.set(ERIN, details("Erin"), Some(grant.clone())));
     assert_eq!(code, "invalid_argument");
     assert!(f.unused(&grant));
-    assert_eq!(f.net.writes() + g.net.writes(), 0);
+    let writes = [&f, &g, &poor, &unheld].map(|x| x.net.writes());
+    assert_eq!(writes, [0; 4]);
 }
 
 /// The settle (bring-up, unlock, a failed read-back's retry) makes the
 /// wallet agree with Platform: its details applied and recorded, a record
 /// Platform no longer backs forgotten, and a document that does not open
-/// failing the read, changing nothing.
+/// with the wallet's keys skipped (Opus r1 #3).
 #[test]
 fn the_settle_applies_what_platform_holds() {
     let f = published();
@@ -540,8 +669,11 @@ fn the_settle_applies_what_platform_holds() {
     };
     f.net.infos.put(id(ME), id(DAVE), foreign);
     f.publish_elsewhere(ERIN, &details("Erin3"));
-    assert!(!f.settle());
-    assert_eq!(f.shown(ERIN), details("Erin2"));
+    assert!(f.settle());
+    assert_eq!(
+        (f.shown(ERIN), f.state(ERIN)),
+        (details("Erin3"), PublishState::Published)
+    );
 }
 
 /// A write and a settle each wait for the identity's write lock.
@@ -567,6 +699,24 @@ fn private_details_wait_for_the_identity_write_lock() {
         PublishState::Published
     );
     assert_eq!(f.net.writes(), 1);
+
+    let held = f.engine.block_on(locks.write.lock());
+    let reads = f.net.infos.reads.load(Ordering::SeqCst);
+    let s = Arc::clone(&f.s);
+    let wallet = f.wallet;
+    let settling = f.s.rt.spawn(async move {
+        let crypto = s.prompt_free_crypto(wallet).await.unwrap();
+        let w = s.manager().unwrap().get_wallet(&wallet.0).await.unwrap();
+        s.settle_contact_infos(&w, wallet, &crypto, None).await
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        f.net.infos.reads.load(Ordering::SeqCst),
+        reads,
+        "the settle waits"
+    );
+    drop(held);
+    assert!(f.engine.block_on(settling).unwrap());
 }
 
 /// The details' digest covers every field.
@@ -611,7 +761,7 @@ fn t2_testnet_private_details() {
     use super::flows::CONTACT_REQUEST_CREDITS;
     use super::journal_tests::{grant_unused, platform_grant};
     use super::recovery_tests;
-    use super::requests::tests::{passes, wait_until};
+    use super::requests::tests::passes;
     use crate::{DashNetwork, Engine, ImportOptions, NetworkSession, SessionOptions, WalletId};
     use zeroize::Zeroizing;
 
@@ -690,7 +840,7 @@ fn t2_testnet_private_details() {
             charged <= quote,
             "{what} charged {charged} over its quote {quote}"
         );
-        charged
+        assert!(charged > 0, "{what} charged nothing");
     };
     let eligibility = |dp: &super::DashPay, me: &str, them: &str| {
         engine
@@ -699,10 +849,11 @@ fn t2_testnet_private_details() {
     };
 
     // 1. D becomes C's second contact.
-    match eligibility(&dp_c, &c_id, &d_id) {
+    let first = eligibility(&dp_c, &c_id, &d_id);
+    match first {
         Eligibility::AlreadyContact => eprintln!("T2 rerun: C and D are contacts"),
         Eligibility::Ok | Eligibility::PendingIncoming => {
-            if eligibility(&dp_c, &c_id, &d_id) == Eligibility::Ok {
+            if first == Eligibility::Ok {
                 let sent = engine.block_on(dp_d.send_request(
                     d_id.clone(),
                     c_id.clone(),

@@ -801,7 +801,9 @@ impl AppDb {
             .transpose()
     }
 
-    /// Records what Platform holds of `identity`'s details of `contact`.
+    /// Records what Platform holds of `identity`'s details of `contact`;
+    /// whether that changed the row (`recorded_at` is when its digest was
+    /// first recorded).
     pub fn set_contact_info_digest(
         &self,
         wallet_id: &str,
@@ -809,30 +811,31 @@ impl AppDb {
         contact: &str,
         digest: &[u8; 32],
         now: u64,
-    ) -> Result<()> {
-        self.conn().execute(
+    ) -> Result<bool> {
+        let changed = self.conn().execute(
             "INSERT INTO dp_contact_info (wallet_id, identity, contact, digest, recorded_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (wallet_id, identity, contact)
-             DO UPDATE SET digest = excluded.digest, recorded_at = excluded.recorded_at",
+             DO UPDATE SET digest = excluded.digest, recorded_at = excluded.recorded_at
+             WHERE digest != excluded.digest",
             params![wallet_id, identity, contact, &digest[..], now as i64],
         )?;
-        Ok(())
+        Ok(changed > 0)
     }
 
     /// Forgets the digest of `identity`'s details of `contact`: Platform
-    /// holds none.
+    /// holds none. Whether there was one.
     pub fn forget_contact_info_digest(
         &self,
         wallet_id: &str,
         identity: &str,
         contact: &str,
-    ) -> Result<()> {
-        self.conn().execute(
+    ) -> Result<bool> {
+        let changed = self.conn().execute(
             "DELETE FROM dp_contact_info WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3",
             params![wallet_id, identity, contact],
         )?;
-        Ok(())
+        Ok(changed > 0)
     }
 
     /// Sets an identity's preference, or deletes it for `None`.

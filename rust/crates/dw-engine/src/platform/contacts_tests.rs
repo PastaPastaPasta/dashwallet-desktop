@@ -205,7 +205,7 @@ impl Joins {
         let unverified =
             |e: &Entity| (self.provenance.as_ref()).is_some_and(|p| p.is_unverified(e));
         let tx_time = |t: &Txid| self.times.get(t).copied();
-        let published = |_: &Identifier, c: &Identifier| self.published.get(c).copied();
+        let published = |c: &Identifier| self.published.get(c).copied();
         f(&Join {
             username: &username,
             unverified: &unverified,
@@ -224,7 +224,7 @@ impl Joins {
     }
 
     fn detail(&self, owner: &OwnerContacts, n: u8) -> Option<ContactDetail> {
-        self.run(|j| detail((&id(0), owner), &id(n), j))
+        self.run(|j| detail(owner, &id(n), j))
     }
 
     /// Each contact's `unverified`, over every section.

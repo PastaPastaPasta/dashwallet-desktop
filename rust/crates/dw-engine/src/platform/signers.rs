@@ -406,6 +406,30 @@ impl VaultContactCrypto {
         require_scope(&signer, SignerScope::DashPayCrypto)?;
         Ok(Self { signer })
     }
+
+    /// `contact_info_open`, telling a document apart from the signer: one
+    /// whose keys do not derive or whose ciphertext does not decrypt (another
+    /// client's, a corrupt one) is `None`; a signer that cannot run (locked,
+    /// out of scope, no seed) is the error.
+    pub(crate) fn contact_info_open_or_skip(
+        &self,
+        root_path: &DerivationPath,
+        derivation_index: u32,
+        enc_to_user_id: &[u8; 32],
+        private_data_blob: &[u8],
+    ) -> Result<Option<dw_vault::ContactInfoOpened>, super::PlatformError> {
+        let opened = self.signer.contact_info_open(
+            root_path,
+            derivation_index,
+            enc_to_user_id,
+            private_data_blob,
+        );
+        match opened {
+            Ok(opened) => Ok(Some(opened)),
+            Err(SignerError::Decrypt(_) | SignerError::Derivation(_)) => Ok(None),
+            Err(e) => Err(provider_error(e).into()),
+        }
+    }
 }
 
 #[async_trait]

@@ -75,7 +75,7 @@ fn b58(id: &Identifier) -> String {
     id.to_string(Encoding::Base58)
 }
 
-fn not_found() -> PlatformError {
+pub(super) fn not_found() -> PlatformError {
     IdentityError::NotFound.into()
 }
 
@@ -177,7 +177,7 @@ pub(super) async fn eligibility(
 
 /// Refuses before any grant is redeemed when the identity's credits are
 /// below `quote` (`platform.insufficient_credits`).
-pub(super) fn cover(available: u64, quote: u64) -> Result<(), PlatformError> {
+fn cover(available: u64, quote: u64) -> Result<(), PlatformError> {
     if available < quote {
         return Err(PlatformError::InsufficientCredits {
             needed: quote,
@@ -208,7 +208,7 @@ pub(super) fn cover(available: u64, quote: u64) -> Result<(), PlatformError> {
 /// refuses (nothing signed). `ready` is the
 /// write's last check (a scan's expiry), right before a grant is redeemed:
 /// the key check can wait on the vault.
-pub(super) async fn write_lease(
+async fn write_lease(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     grant: &str,
@@ -399,11 +399,7 @@ fn flow_keys(
 /// ends the permit with no signature, a definite `Cancelled`, and the quote
 /// goes back; once a signature is out, the quote is kept whatever the call
 /// returns (fail closed), so one lease id pays for one write's quote.
-pub(super) fn write_permit(
-    lease: &Lease,
-    label: &str,
-    quote: u64,
-) -> Result<CallPermit, PlatformError> {
+fn write_permit(lease: &Lease, label: &str, quote: u64) -> Result<CallPermit, PlatformError> {
     let quote = CallQuote {
         purpose: BudgetPurpose::Credits,
         amount: quote,
@@ -414,7 +410,7 @@ pub(super) fn write_permit(
 /// The permit's identity signer for the identity at `index` (counting into
 /// the permit), narrowed to [`flow_keys`] of the lease's flow, chosen among
 /// the keys the vault holds.
-pub(super) fn flow_signer(
+fn flow_signer(
     permit: &CallPermit,
     index: u32,
     identity: &Identity,
@@ -428,29 +424,27 @@ pub(super) fn flow_signer(
     Ok(signer.only_keys(keys))
 }
 
-/// What a contact-request write needs once its own checks pass, refused
-/// before anything is redeemed where it can be: the identity's credits
-/// against the quote, then the lease of one of `flows` (which checks the
-/// vault holds the document key, then `ready`, a scan's expiry), the call
-/// permit `label` charged the quote, its signer (the document key alone)
-/// and the lease's contact crypto.
-async fn prepare(
+/// What a document write (a contact request or accept, a `contactInfo`)
+/// needs once its own checks pass, refused before anything is redeemed
+/// where it can be: the credits of `identity` (index `index`) against
+/// `quote`, then the lease of one of `flows` (which checks the vault holds
+/// the document key, then `ready`, a scan's expiry), the call permit
+/// `label` charged the quote, its signer (the document key alone) and the
+/// lease's contact crypto.
+pub(super) async fn prepare(
     net: &impl RequestNet,
     session: &Arc<NetworkSession>,
-    own: &Own,
+    (index, identity): (u32, &Identity),
     (wallet, grant): (WalletId, &str),
-    (flows, label): (&[FlowKind], &str),
+    (flows, quote, label): (&[FlowKind], u64, &str),
     ready: impl FnOnce() -> Result<(), ContactError>,
 ) -> Result<(Lease, CallPermit, VaultIdentitySigner, VaultContactCrypto), ContactError> {
-    let index = own.index()?;
-    let id = own.identity.id();
-    let balance = net.balance(id).await?.ok_or_else(not_found)?;
-    cover(balance, CONTACT_REQUEST_CREDITS)?;
-    let signs = (index, &own.identity);
-    let cost = (flows, CONTACT_REQUEST_CREDITS);
-    let lease = write_lease(session, wallet, grant, cost, signs, ready).await?;
-    let permit = write_permit(&lease, label, CONTACT_REQUEST_CREDITS)?;
-    let signer = flow_signer(&permit, index, &own.identity, &[])?;
+    let balance = net.balance(identity.id()).await?.ok_or_else(not_found)?;
+    cover(balance, quote)?;
+    let signs = (index, identity);
+    let lease = write_lease(session, wallet, grant, (flows, quote), signs, ready).await?;
+    let permit = write_permit(&lease, label, quote)?;
+    let signer = flow_signer(&permit, index, identity, &[])?;
     let crypto = lease.contact_crypto().map_err(PlatformError::from)?;
     Ok((lease, permit, signer, crypto))
 }
@@ -555,9 +549,9 @@ pub(super) async fn send(
     let (lease, permit, signer, crypto) = prepare(
         net,
         session,
-        &own,
+        (own.index()?, &own.identity),
         (wallet_id, &grant),
-        (&flows, "send_request"),
+        (&flows, CONTACT_REQUEST_CREDITS, "send_request"),
         ready,
     )
     .await?;
@@ -618,9 +612,9 @@ pub(super) async fn accept(
     let (lease, permit, signer, crypto) = prepare(
         net,
         session,
-        &own,
+        (own.index()?, &own.identity),
         (pair.wallet, &grant),
-        (&flows, "accept_request"),
+        (&flows, CONTACT_REQUEST_CREDITS, "accept_request"),
         || Ok(()),
     )
     .await?;

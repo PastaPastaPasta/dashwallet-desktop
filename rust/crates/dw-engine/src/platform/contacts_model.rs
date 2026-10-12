@@ -244,11 +244,7 @@ pub(super) fn owner_contacts(
             setup_pending: channel == ChannelState::SetupPending,
             outgoing: Some((&c.outgoing_request).into()),
             incoming: Some((&c.incoming_request).into()),
-            private: PrivateDetails {
-                alias: c.alias.clone(),
-                note: c.note.clone(),
-                hidden: c.is_hidden,
-            },
+            private: PrivateDetails::from(c),
             ..entry(
                 *contact,
                 Relation::Contact,
@@ -284,7 +280,7 @@ pub(super) struct Join<'a> {
     pub(super) tx_time: &'a dyn Fn(&Txid) -> Option<u64>,
     /// What `dp_contact_info` records of the owner's details of a contact
     /// (DP2-04); `None` too when it cannot be read.
-    pub(super) published: &'a dyn Fn(&Identifier, &Identifier) -> Option<[u8; 32]>,
+    pub(super) published: &'a dyn Fn(&Identifier) -> Option<[u8; 32]>,
 }
 
 fn b58(id: &Identifier) -> String {
@@ -431,14 +427,14 @@ pub(super) fn page(
 
 /// One contact in full.
 pub(super) fn detail(
-    (owner_id, owner): (&Identifier, &OwnerContacts),
+    owner: &OwnerContacts,
     contact: &Identifier,
     join: &Join,
 ) -> Option<ContactDetail> {
     let e = owner.get(contact)?;
     let at = |r: Option<Request>| r.map(|r| r.created_at / 1000);
     let publish_state = if e.relation == Relation::Contact {
-        let recorded = (join.published)(owner_id, contact);
+        let recorded = (join.published)(contact);
         private_details::publish_state(owner.established(), &e.private, recorded)
     } else {
         PublishState::Local
@@ -610,9 +606,9 @@ impl NetworkSession {
             _ => None,
         };
         let username = |c: &Identifier| names.label(c);
-        let wallet = id.to_string();
-        let published = |owner: &Identifier, contact: &Identifier| {
-            (appdb.contact_info_digest(&wallet, &b58(owner), &b58(contact)))
+        let (wallet, owner) = (id.to_string(), b58(&owner));
+        let published = |contact: &Identifier| {
+            (appdb.contact_info_digest(&wallet, &owner, &b58(contact)))
                 .inspect_err(|e| tracing::warn!(error = %e, "reading a contactInfo digest"))
                 .ok()
                 .flatten()
@@ -652,11 +648,10 @@ impl NetworkSession {
         identity: String,
         contact: String,
     ) -> Result<Option<ContactDetail>, ContactError> {
-        let owner = identifier(&identity)?;
         self.with_contacts(id, &identity, |owned, join, _| {
             let contact = identifier(&contact)?;
             let owned = owned.ok_or(PlatformError::Unavailable)?;
-            Ok(detail((&owner, owned), &contact, join))
+            Ok(detail(owned, &contact, join))
         })
     }
 
