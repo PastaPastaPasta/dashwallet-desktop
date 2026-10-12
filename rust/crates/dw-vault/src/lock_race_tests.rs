@@ -1390,6 +1390,21 @@ fn a_removal_waits_for_a_key_checked_redemption() {
     assert!(matches!(token, Ok(Some(_))), "{token:?}");
     assert_eq!(removal.join().unwrap(), Ok(true));
 
+    // A lock inside the section ends the grant: refused, nothing redeemed.
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&W), Credential::None)
+        .unwrap();
+    let v2 = v.clone();
+    test_hook::set_checked(move || lock(&v2));
+    let locked = v.redeem_grant_holding_key(&grant.id, &W, &keys);
+    test_hook::set_checked(|| {});
+    assert_eq!(locked.unwrap_err(), VaultError::GrantInvalid);
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    assert_eq!(
+        (v.check_grant(&grant.id, GrantKind::PlatformOp, Some(&W))).unwrap_err(),
+        VaultError::GrantInvalid
+    );
+
     // The removal came first: no seed, and the grant is left unused.
     let grant = v
         .authorize(PLATFORM_OP, Some(&W), Credential::None)

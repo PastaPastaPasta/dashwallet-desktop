@@ -1417,7 +1417,10 @@ impl Vault {
     /// writes, so a wallet removal that deletes the seed either came first
     /// or waits until the grant is redeemed (DP2-02). `Ok(None)`: no
     /// candidate is held (or the wallet has no seed), and the grant is left
-    /// unused. A lock in between ends the grant (`GrantInvalid`).
+    /// unused. A lock in between ends the grant (`GrantInvalid`, or `Locked`
+    /// while a key is derived). An unencrypted vault whose key is not cached
+    /// reads it from the OS store inside the section, so record writes wait
+    /// on that read.
     pub fn redeem_grant_holding_key(
         &self,
         grant_id: &str,
