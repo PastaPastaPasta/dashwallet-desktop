@@ -2127,12 +2127,17 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
     engine.block_on(engine.shutdown()).unwrap();
     drop(engine);
 
-    // app.sqlite as a build from before E0-10b left it.
+    // app.sqlite as a build from before E0-10b left it: without the later
+    // migrations too (DP1-02's registration columns), which such a build
+    // never had, or the runner refuses the gap below them.
     rusqlite::Connection::open(&appdb)
         .unwrap()
         .execute_batch(
             "ALTER TABLE dp_trust_verified DROP COLUMN digest;
-             DELETE FROM refinery_schema_history WHERE version = 2026101101;
+             ALTER TABLE dp_registration DROP COLUMN owner;
+             ALTER TABLE dp_registration DROP COLUMN name_error;
+             ALTER TABLE dp_registration DROP COLUMN profile_error;
+             DELETE FROM refinery_schema_history WHERE version >= 2026101101;
              DELETE FROM settings_kv WHERE key = 'trust.fallback_used_at';",
         )
         .unwrap();
