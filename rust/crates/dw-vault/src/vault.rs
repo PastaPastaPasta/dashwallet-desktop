@@ -80,6 +80,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use key_wallet::Network;
+use key_wallet::bip32::DerivationPath;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use unicode_normalization::UnicodeNormalization;
@@ -1384,6 +1385,67 @@ impl Vault {
                 .map_or(KeySource::Vault, |key| KeySource::Own(Arc::new(key))),
             issued: AtomicBool::new(false),
         })
+    }
+
+    /// Whether the identity key at `path` of `wallet` is the on-chain key
+    /// `key_data` (dw-vault `VaultSigner::identity_key_matches`), asked
+    /// through a `PlatformOp` grant without consuming it: lets a write
+    /// refuse a key the vault does not hold with the grant left for another
+    /// try (DP2-02). Needs what a `PlatformIdentity` signer from the grant
+    /// would (a credit cap above 0, else `GrantPurposeMismatch`; the grant's
+    /// own key or the vault's full key) and answers only yes or no: nothing
+    /// signs, and no key leaves the vault.
+    pub fn grant_identity_key_matches(
+        &self,
+        grant_id: &str,
+        wallet: &WalletId,
+        path: &DerivationPath,
+        key_data: &[u8],
+    ) -> Result<bool, VaultError> {
+        let GrantPurpose::PlatformOp { max_credits, .. } =
+            self.grant_purpose(grant_id, GrantKind::PlatformOp, Some(wallet))?
+        else {
+            return Err(VaultError::GrantPurposeMismatch);
+        };
+        if max_credits == 0 {
+            return Err(VaultError::GrantPurposeMismatch);
+        }
+        let check = |inner: &mut Inner| {
+            Self::valid_grant(
+                inner,
+                grant_id,
+                GrantKind::PlatformOp,
+                Some(wallet),
+                self.now(),
+            )
+            .map(|issued| issued.key.as_ref().map(|key| Zeroizing::new(**key)))
+        };
+        let own = check(&mut self.inner())?;
+        if own.is_none() {
+            self.full_dek()?;
+        }
+        #[cfg(test)]
+        crate::signer::test_hook::checked();
+        // The signer is issued under a guard that finds the grant again:
+        // every epoch change ends it, so no probe runs on a grant that was
+        // redeemed, or ended by a lock or passphrase change, in between.
+        let signer = {
+            let mut inner = self.inner();
+            check(&mut inner)?;
+            let key = own.map_or(KeySource::Vault, |key| KeySource::Own(Arc::new(key)));
+            if matches!(key, KeySource::Vault) && inner.dek.is_none() {
+                return Err(VaultError::Locked);
+            }
+            self.signer_locked(&inner, wallet, SignerScope::PlatformIdentity, key)?
+        };
+        signer
+            .identity_key_matches(path, key_data)
+            .map_err(|e| match e {
+                SignerError::Locked => VaultError::Locked,
+                SignerError::NoSecret => VaultError::NoSecret,
+                SignerError::Vault(e) => e,
+                e => VaultError::InvalidArgument(e.to_string()),
+            })
     }
 
     /// The vault's epoch: it changes on every lock, every unlock that

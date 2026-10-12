@@ -37,10 +37,10 @@ use crate::signer::KeyUse;
 use crate::signer::test_hook;
 use crate::vault::GateEvent;
 use crate::{
-    Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantPurpose, GrantToken, KdfParams, KdfPolicy,
-    KeyHold, MemoryOsStore, QUICK_UNLOCK_SPEND_LIMITS, ScanKey, SeedDerivation, SignerError,
-    SignerScope, SystemClock, UnlockScope, Vault, VaultConfig, VaultError, VaultSigner,
-    WalletSecret, WalletSigner,
+    Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose, GrantToken, KdfParams,
+    KdfPolicy, KeyHold, MemoryOsStore, QUICK_UNLOCK_SPEND_LIMITS, ScanKey, SeedDerivation,
+    SignerError, SignerScope, SystemClock, UnlockScope, Vault, VaultConfig, VaultError,
+    VaultSigner, WalletSecret, WalletSigner,
 };
 
 const W: [u8; 32] = [1; 32];
@@ -1316,4 +1316,42 @@ fn no_signature_begins_after_its_key_hold_dropped() {
         results > 0,
         "no signature was made: the race was not exercised"
     );
+}
+
+/// `grant_identity_key_matches` finds its grant again under the guard that
+/// issues its signer (DP2-02): a grant redeemed elsewhere, or ended by a
+/// lock, between its check and the probe is `GrantInvalid`, and nothing is
+/// derived with its key.
+#[test]
+fn a_key_probe_does_not_outlive_its_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir, Some(PASS));
+    let (identity, _hold) = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+    let key_data = identity_public_key(&identity);
+    let probe =
+        |grant: &str| v.grant_identity_key_matches(grant, &W, &path(IDENTITY_KEY), &key_data);
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&W), Credential::None)
+        .unwrap();
+    assert_eq!(probe(&grant.id), Ok(true));
+
+    // Redeemed by another call in between.
+    let (v2, id) = (v.clone(), grant.id.clone());
+    test_hook::set_checked(move || {
+        v2.redeem_grant(&id, GrantKind::PlatformOp, Some(&W))
+            .unwrap();
+    });
+    assert_eq!(probe(&grant.id), Err(VaultError::GrantInvalid));
+    test_hook::set_checked(|| {});
+
+    // A passphrase grant on a locked vault (its own key), ended by a lock in
+    // between.
+    v.lock();
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&W), Credential::Passphrase(PASS))
+        .unwrap();
+    let v2 = v.clone();
+    test_hook::set_checked(move || lock(&v2));
+    assert_eq!(probe(&grant.id), Err(VaultError::GrantInvalid));
+    test_hook::set_checked(|| {});
 }

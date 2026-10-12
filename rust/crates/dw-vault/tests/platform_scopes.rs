@@ -732,3 +732,87 @@ async fn contact_info_opens_what_it_seals_and_refuses_foreign_ciphertext() {
         Err(SignerError::Derivation(_))
     ));
 }
+
+/// `grant_identity_key_matches` answers whether the vault holds an identity
+/// key through a `PlatformOp` grant it leaves unused (DP2-02): with the
+/// vault's key and with a locked vault's own-key grant; never for another
+/// path kind, a credit-less grant or another wallet.
+#[tokio::test]
+async fn a_grant_tells_whether_the_vault_holds_an_identity_key_without_being_used() {
+    let fx = Fixture::new();
+    let v = unencrypted_vault(&fx);
+    let key = path("m/9'/1'/5'/0'/0'/0'/1'");
+    let held = platform_signer(&v, SignerScope::PlatformIdentity)
+        .public_key(&key)
+        .await
+        .unwrap()
+        .serialize();
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&wallet(1)), Credential::None)
+        .unwrap();
+    let matches = |p: &DerivationPath, data: &[u8]| {
+        v.grant_identity_key_matches(&grant.id, &wallet(1), p, data)
+    };
+    assert!(matches(&key, &held).unwrap());
+    assert!(!matches(&key, &[2; 33]).unwrap());
+    assert!(!matches(&path("m/9'/1'/5'/0'/0'/1'/1'"), &held).unwrap());
+    assert!(
+        matches(&path("m/44'/1'/0'/0/0"), &held).is_err(),
+        "not an identity key"
+    );
+    // Asked three times, the grant is still there to redeem.
+    v.redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&wallet(1)))
+        .unwrap();
+    assert_eq!(
+        v.grant_identity_key_matches(&grant.id, &wallet(1), &key, &held)
+            .unwrap_err(),
+        VaultError::GrantInvalid
+    );
+
+    let no_credits = v
+        .authorize(
+            GrantPurpose::PlatformOp {
+                max_duffs: 1,
+                max_credits: 0,
+            },
+            Some(&wallet(1)),
+            Credential::None,
+        )
+        .unwrap();
+    assert_eq!(
+        v.grant_identity_key_matches(&no_credits.id, &wallet(1), &key, &held)
+            .unwrap_err(),
+        VaultError::GrantPurposeMismatch
+    );
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&wallet(1)), Credential::None)
+        .unwrap();
+    assert_eq!(
+        v.grant_identity_key_matches(&grant.id, &wallet(2), &key, &held)
+            .unwrap_err(),
+        VaultError::GrantPurposeMismatch
+    );
+
+    // A locked vault: the passphrase grant's own key answers.
+    let fx = Fixture::new();
+    let v = fx.open();
+    v.create(Some(PASS)).unwrap();
+    v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
+    v.lock();
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&wallet(1)), Credential::Passphrase(PASS))
+        .unwrap();
+    assert!(
+        v.grant_identity_key_matches(&grant.id, &wallet(1), &key, &held)
+            .unwrap()
+    );
+    // Still redeemable, and its own key still goes to a hold.
+    let mut tokens = [v
+        .redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&wallet(1)))
+        .unwrap()];
+    let hold = v.hold_key(&mut tokens).unwrap().unwrap();
+    let identity = v
+        .platform_signer_held(&wallet(1), &hold, &tokens[0], SignerScope::PlatformIdentity)
+        .unwrap();
+    assert!(identity.identity_key_matches(&key, &held).unwrap());
+}
