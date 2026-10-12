@@ -2042,8 +2042,8 @@ renames or reshapes them takes the next version bump:
       charged 61,330,100; `send_request`, quote 150,000,000, charged 94,048,500; `accept_request`, quote 150,000,000,
       charged 81,967,400 (DP1-06's cost table can start from these).
     - **One write lock per identity.** Every Platform write that spends an identity's credits or moves its revision
-      or nonce holds it: contact requests and accepts, the key upgrade, DP1-03's name writes, and DP1-02's writes
-      when they land.
+      or nonce holds it: contact requests and accepts, the key upgrade, DP1-03's name writes, and DP1-02's name
+      and profile writes.
     - **Each flow signs with its own keys only.** The vault's PlatformOp grant names identity indices, not key ids,
       so the engine's identity signer carries the flow's key ids and refuses any other: `ContactRequest`, `Accept`
       and `AcceptAndPay` sign with the identity's first `HIGH` or `CRITICAL` authentication key that the vault

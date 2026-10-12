@@ -46,7 +46,7 @@ use dpp::platform_value::BinaryData;
 use dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dw_vault::{ScanKey, SignerError, SignerScope, VaultSigner};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
-use key_wallet::{ExtendedPubKeySigner, SignerMethod};
+use key_wallet::{ExtendedPubKeySigner, Signer as _, SignerMethod};
 use platform_wallet::manager::startup::ScanKeyError;
 use platform_wallet::{
     ContactCryptoProvider, ContactInfoOpened, ContactInfoSealed, PlatformWalletError,
@@ -146,7 +146,16 @@ impl VaultIdentitySigner {
                 "identity index {identity_index} is not this signer's"
             )));
         }
-        keys_policy::derive_keys(&self.signer, identity_index, specs).await
+        // `keys_policy::derive_keys` inlined: the signer never leaves this
+        // type, not even by reference.
+        keys_policy::unique_specs(specs)?;
+        let mut keys = BTreeMap::new();
+        for spec in specs {
+            let path = key_path(self.signer.network(), identity_index, spec.id)?;
+            let public_key = self.signer.public_key(&path).await?;
+            keys.insert(spec.id, keys_policy::spec_key(spec, &public_key));
+        }
+        Ok(keys)
     }
 
     fn allowed(&self, key: &IdentityPublicKey) -> bool {
@@ -547,9 +556,17 @@ impl VaultScanKey {
 
 #[cfg(test)]
 mod tests {
-    /// No signing handle leaves this module (DP2-02 Sol r5): outside its
-    /// tests, no function here returns anything that names a
-    /// `VaultSigner`, and no field holding one is visible outside its type.
+    /// No signing handle leaves this module (DP2-02 Sol r5, r6). Outside its
+    /// tests:
+    /// - no function here returns anything that names a `VaultSigner`;
+    /// - no `type` alias names one;
+    /// - no field holding one is visible outside its type;
+    /// - `self.signer` is only ever the receiver of a method call
+    ///   (`self.signer.<method>(..)`), never returned, cloned, borrowed or
+    ///   passed on.
+    ///
+    /// This is a tripwire over the source text, not a parser: it catches the
+    /// obvious ways back to the raw signer, and review is the real check.
     /// The `compile_fail` doctest on [`super::VaultIdentitySigner`] covers
     /// the public surface; this covers `pub(crate)` too.
     #[test]
@@ -576,6 +593,28 @@ mod tests {
                     && !line.contains("fn ")
                     && line.contains(": VaultSigner")),
                 "a visible signer field: {line}"
+            );
+            assert!(
+                !(line.split_whitespace().any(|w| w == "type") && line.contains("VaultSigner")),
+                "a signer alias: {line}"
+            );
+        }
+        // Whitespace dropped, so `self\n.signer\n.sign(..)` reads as one.
+        let compact: String = production.split_whitespace().collect();
+        for (at, _) in compact.match_indices("self.signer") {
+            let after = &compact[at + "self.signer".len()..];
+            let method = after
+                .strip_prefix('.')
+                .and_then(|m| m.split_once('('))
+                .map(|(name, _)| name)
+                .filter(|name| {
+                    !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                });
+            let shown = &compact[at..(at + 60).min(compact.len())];
+            assert!(method.is_some(), "self.signer handed out: {shown}");
+            assert!(
+                !matches!(method, Some("clone" | "to_owned" | "as_ref" | "borrow")),
+                "self.signer copied out: {shown}"
             );
         }
     }

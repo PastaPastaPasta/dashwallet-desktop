@@ -669,7 +669,7 @@ fn a_permits_signer_hands_out_public_keys_only() {
 
 /// A write's call permit hands its quote back when the write failed
 /// before signing anything (`Cancelled`), and keeps it once a signature is
-/// out, whatever the write returns (E0-04 P2b, m4 item 40): per flow, on a
+/// out, whatever the write returns (E0-04 P2b, m4 item 41): per flow, on a
 /// lease carrying one quote.
 #[test]
 fn a_quote_goes_back_only_when_nothing_was_signed() {
