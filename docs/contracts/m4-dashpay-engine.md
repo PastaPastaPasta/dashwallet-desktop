@@ -298,8 +298,8 @@ bodies decided where the rows leave room:
   its funds show up as a transfer this wallet can recover later with Tools ▸ Repair ▸ Finish transfers, as a separate
   identity, so you may have paid for two registrations. The earlier registration can't be discarded." On
   `registration.funding_unknown_recent`: "The earlier registration's payment was sent less than an hour ago. Try again
-  in {minutes} minutes." With `wait_secs` none, the release time is unknown (until P2b r7 exposes it, the call fails
-  closed): "This wallet can't yet tell when the earlier registration's payment was sent. Try again later." On
+  in {minutes} minutes." With `wait_secs` none, the step shows no release time (P2b's `funding_release.at`;
+  the call fails closed): "This wallet can't yet tell when the earlier registration's payment was sent. Try again later." On
   `registration.not_synced`: "Wait until the wallet has finished syncing, then try again."
   A `Cancelled` row is discarded, never resumed: to register again the user starts a new registration. A row this build cannot run reads as failed, not retryable: a
   `funding`, `initial_profile`, `phase` or lock outpoint it does not know is `registration.unsupported`, an

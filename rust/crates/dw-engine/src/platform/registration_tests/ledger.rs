@@ -75,6 +75,7 @@ fn step(draft: i64, index: u32, status: Option<DispatchState>, signed: &[Txid]) 
         dead: Vec::new(),
         durable_record: false,
         recording: false,
+        released_at: None,
     }
 }
 

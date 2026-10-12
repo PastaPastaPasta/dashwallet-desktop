@@ -503,6 +503,11 @@ pub(crate) struct FundingStepView {
     /// A signed lock's record is being written: the library's store of it
     /// waits, and its send follows only once the record is durable.
     pub(crate) recording: bool,
+    /// When a call under its standing marker was about to release its
+    /// first funding signature: its `funding_release` row's `at` (UNIX
+    /// seconds), read with the rest of this view (DP1-02's DEC-197 and
+    /// DEC-198 am.1). `None`: no signature was released under it.
+    pub(crate) released_at: Option<u64>,
 }
 
 /// The dispatch journal is not read (not loaded, unopenable, a newer
@@ -681,7 +686,7 @@ fn derive_step(
     // stays vetoed).
     let status = if matches!(info.status, CallStepStatus::Marked { .. })
         && info.durable_record
-        && !info.released
+        && info.released.is_none()
         && signed.is_empty()
         && !funding_call_of(i, wallet, step)
     {
@@ -1436,6 +1441,7 @@ impl LeaseTable {
                     dead,
                     durable_record: info.durable_record,
                     recording: locks.iter().any(|l| !l.durable),
+                    released_at: info.released,
                 });
             }
             out.sort_by_key(|v| v.draft);

@@ -1,12 +1,14 @@
 //! DEC-197 (Q15): a start past a wedged step, the step a released funding
 //! call left with no recorded lock (`MaybeSent` for good, Repair refuses
-//! it). The override needs SPV synced and the release an hour old (the
-//! release time stood in for through [`Views`]); the old row stays
+//! it). The override needs SPV synced and the release an hour old (P2b's
+//! `funding_release` time, in the step's own view); the old row stays
 //! committed. Nothing adopts the old lock (DEC-198): if it shows up, only
 //! Recovery may take it, and Finish does.
 
 use super::r8::{Marker, start, unlanded};
 use super::*;
+use crate::platform::DispatchState;
+use crate::platform::lease::mode_b::FundingStepView;
 use crate::platform::registration_ledger::test_views::Views;
 use crate::platform::registration_ledger::{IndexOwner, Ledger, Owner, Taker};
 
@@ -35,14 +37,89 @@ fn wedged(f: &mut Fixture) -> (i64, OutPoint, Arc<Fake>) {
 
 const HOUR: u64 = registration::PAST_UNKNOWN_FUNDING_AFTER;
 
+/// P2b's view of `draft`'s step.
+fn step_of(f: &Fixture, draft: i64) -> FundingStepView {
+    (f.session
+        .leases
+        .registration_funding_steps(f.wallet)
+        .unwrap())
+    .into_iter()
+    .find(|s| s.draft == draft)
+    .unwrap()
+}
+
+/// The override waits on the release of the step it passes, as that
+/// step's own view shows it: another step released two hours ago lets
+/// nothing pass early, and A's own time, rewritten on disk and loaded
+/// again, is what lets it pass.
+#[test]
+fn dec197_the_override_reads_the_passed_steps_own_release() {
+    let mut f = fixture(false);
+    let (a, _, lib) = wedged(&mut f);
+    let now = crate::events::unix_now();
+    let set_at = |f: &mut Fixture, at: u64| {
+        let path = f.session.data_dir().join("dispatch.sqlite");
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute("UPDATE funding_release SET at = ?1", [at as i64])
+            .unwrap();
+        drop(conn);
+        super::r8::reopen(f);
+    };
+    set_at(&mut f, now - 60);
+    assert_eq!(step_of(&f, a).released_at, Some(now - 60));
+    let views = Views::new(&f.session.leases, f.wallet);
+    let mut other = step_of(&f, a);
+    other.draft = a + 100;
+    other.key.identity_index += 100;
+    other.status = Some(DispatchState::NotSent);
+    other.released_at = Some(now - 2 * HOUR);
+    views.set(other);
+    let refused = start_past(&f, &lib, &[a.to_string()]);
+    assert!(
+        matches!(
+            &refused,
+            Err(RegistrationError::FundingUnknownRecent { draft, wait_secs: Some(w) })
+                if *draft == a.to_string() && (HOUR - 120..=HOUR - 60).contains(w)
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(f.rows().len(), 1);
+    drop(views);
+    set_at(&mut f, now - HOUR - 60);
+    let views = Views::new(&f.session.leases, f.wallet);
+    let mut other = step_of(&f, a);
+    other.draft = a + 100;
+    other.key.identity_index += 100;
+    other.status = Some(DispatchState::NotSent);
+    other.released_at = Some(now - 60);
+    views.set(other);
+    start_past(&f, &lib, &[a.to_string()]).unwrap();
+}
+
 /// The override is refused while the release is under an hour old, with
-/// the wait left, and while no release time is known (P2b r7 fills the
-/// seam; until then the override fails closed). A stays as it was.
+/// the wait left: just released (the time P2b's `funding_release` row
+/// carries, loaded after the restart), and a minute on. A view with no
+/// release time fails closed. A stays as it was.
 #[test]
 fn dec197_the_override_waits_an_hour_after_the_release() {
     let mut f = fixture(false);
     let (a, _, lib) = wedged(&mut f);
     let past = [a.to_string()];
+    let fresh = start_past(&f, &lib, &past);
+    assert!(
+        matches!(
+            &fresh,
+            Err(RegistrationError::FundingUnknownRecent { draft, wait_secs: Some(w) })
+                if *draft == a.to_string() && (HOUR - 120..=HOUR).contains(w)
+        ),
+        "{fresh:?}"
+    );
+    let views = Views::new(&f.session.leases, f.wallet);
+    let unreleased = FundingStepView {
+        released_at: None,
+        ..step_of(&f, a)
+    };
+    views.set(unreleased);
     let unknown = start_past(&f, &lib, &past);
     assert!(
         matches!(
@@ -52,7 +129,7 @@ fn dec197_the_override_waits_an_hour_after_the_release() {
         ),
         "{unknown:?}"
     );
-    let views = Views::new(&f.session.leases, f.wallet);
+    views.set(step_of(&f, a));
     views.set_released(a, crate::events::unix_now() - 60);
     let recent = start_past(&f, &lib, &past);
     assert!(

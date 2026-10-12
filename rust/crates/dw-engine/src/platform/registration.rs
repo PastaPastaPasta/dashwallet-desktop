@@ -539,13 +539,13 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
     let (l, i, p) = (locks.clone(), identities.clone(), past.clone());
     let (blocking, passed) = flow::ledger_op(session, wallet, move |db, flows| {
         let ledger = Ledger::read(db, flows, &leases, wallet, l, i)?;
-        Ok((ledger.blocking_past(&p), ledger.passed(&p)))
+        Ok((ledger.blocking_past(&p), passed_releases(&ledger, &p)))
     })
     .await?;
     if let Some(draft) = blocking {
         return Err(RegistrationError::InProgress { draft });
     }
-    may_pass(session, wallet, &*lib, &passed).await?;
+    may_pass(&*lib, &passed).await?;
     if let Funding::CoreBalance { lock_duffs } = plan.funding {
         // The same checks the funding step makes, before a row exists.
         let needed = lock_duffs.saturating_add(plan.fee_duffs);
@@ -583,9 +583,12 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
     let (leases, checked) = (Arc::clone(&session.leases), passed.clone());
     let draft = flow::ledger_op(session, wallet, move |db, flows| {
         let ledger = Ledger::read(db, flows, &leases, wallet, locks, identities)?;
-        // What passes now must be what was checked: a step wedged since is
-        // named as still blocking.
-        let unchecked = (ledger.passed(&past).into_iter()).find(|d| !checked.contains(d));
+        // What passes now must be what was checked, with the release
+        // checked: a step wedged or released again since is named as still
+        // blocking.
+        let unchecked = (passed_releases(&ledger, &past).into_iter())
+            .find(|d| !checked.contains(d))
+            .map(|(draft, _)| draft);
         if let Some(draft) = ledger.blocking_past(&past) {
             return Ok(Err(draft));
         }
@@ -626,13 +629,19 @@ fn past_draft(name: &str) -> Option<i64> {
 /// InstantSend locked, and seen by a synced wallet, by then.
 pub(crate) const PAST_UNKNOWN_FUNDING_AFTER: u64 = 3600;
 
+/// The steps `ledger` lets a start pass with `past` confirmed, each with
+/// its release time as its own view showed it (DEC-197).
+fn passed_releases(ledger: &Ledger, past: &[i64]) -> Vec<(i64, Option<u64>)> {
+    (ledger.passed(past).into_iter())
+        .map(|draft| (draft, ledger.released_at(draft)))
+        .collect()
+}
+
 /// Whether a start may pass the unknown fundings of `passed` (DEC-197): SPV
 /// caught up, and each one's funding released an hour ago or more.
 async fn may_pass<L: RegistrationLib>(
-    session: &NetworkSession,
-    wallet: WalletId,
     lib: &L,
-    passed: &[i64],
+    passed: &[(i64, Option<u64>)],
 ) -> Result<(), RegistrationError> {
     if passed.is_empty() {
         return Ok(());
@@ -641,8 +650,7 @@ async fn may_pass<L: RegistrationLib>(
         return Err(RegistrationError::NotSynced);
     }
     let now = crate::events::unix_now();
-    for &draft in passed {
-        let at = super::registration_ledger::released_at(&session.leases, wallet, draft);
+    for &(draft, at) in passed {
         let wait = at.map(|at| (at + PAST_UNKNOWN_FUNDING_AFTER).saturating_sub(now));
         if wait != Some(0) {
             return Err(RegistrationError::FundingUnknownRecent {

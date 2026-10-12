@@ -169,6 +169,7 @@ fn resolved(draft: i64, index: u32, t: Txid) -> FundingStepView {
         dead: vec![t],
         durable_record: true,
         recording: false,
+        released_at: None,
     }
 }
 
@@ -329,6 +330,7 @@ fn od_04_a_voided_outpoint_is_cleared_and_the_close_holds_by_its_code() {
         dead: vec![t1.txid],
         durable_record: true,
         recording: false,
+        released_at: None,
     };
     let l = Ledger::new(vec![], vec![], vec![row.clone()], vec![view], vec![]);
     let reconcile = l.reconcile();

@@ -399,15 +399,20 @@ while the release time is unknown. Anything else still blocks with `registration
 The new draft takes a fresh index (§6 skips every step's index) and gets its own exactly
 attributed lock. The old row stays committed, `Awaiting`, and can't be discarded.
 
-The release time comes from P2b's `funding_release.at`. Until P2b r7 exposes it, the seam
-(`registration_ledger::released_at`) returns none, so the override fails closed.
+The release time is P2b's `funding_release.at`. J keeps it beside the step's release, as the
+release is recorded and as its row loads, and `FundingStepView.released_at` shows it in the same
+J step as the rest of the view. The start reads each passed step's time from the ledger it
+decided with, and checks it again with the insert. A view with no release time fails closed.
 
 **Contested locks of a wedged step (DEC-198 am.1).** A wedged step contests every
 unattributed lock at its index, or of unknown index, of its amount, and with no adoption nothing
 ever attributes one to it. So a lock that only wedged steps contest, each with a known release,
 goes to `Recovery`, never to a row: `may_take(Recovery, L)` holds, `may_take(Row, L)` doesn't,
-and Finish imports it into a recovery row. While a contester's release is unknown (until P2b r7,
-always) the lock stays `Contested` and pending (fail closed). That is how the earlier attempt's
+and Finish imports it into a recovery row. While a contester's view shows no release the lock
+stays `Contested` and pending (fail closed). Under P2b r6 a wedged step always has one (a flagged
+`MaybeSent` step with no recorded lock has a release row), so in practice Finish takes such a
+lock, even the wedged step's own call's lock showing up before any override: the row stays
+waiting and the lock makes its one identity in a recovery row. That is how the earlier attempt's
 lock, if it confirms, comes back: a lock the wallet recovers through Finish, never attached to
 the old row or to the new one. A step that isn't wedged (unflagged, in a call, under a record
 write, or with a tombstone) still contests in full. This carves `Recovery` out of I3 for a
@@ -420,11 +425,14 @@ Finish, a new row that is open and unfunded when such a lock shows up reads its 
 and waits with `RegistrationWait::NeedsFinish` (m4 Contract-Version 12: only such locks leave its
 index unattributed; otherwise it waits `ChainLock`); after Finish it funds at its own index.
 
-**Ask of P2b r7** (DEC-197's seam). `released_at` must be some only for a released step, and it
-must be the release of the step the view shows (its `step_id`, so not an earlier generation's
-after a `NotSent` re-mark), read in the same J step as `registration_funding_steps` or never
-going from none to some for a step the view still shows as unreleased. The view shows no release,
-and an unreleased flagged step can read `MaybeSent` while the wallet's rows are unknown.
+**The release time** (DEC-197's seam, the P2b r7 ask, added on P2b's merged code). J keeps
+releases as `(wallet, step_id) → at`, only for the standing marker: the load keeps a row only
+while the marker it answers stands, a record answers the marker it began under, and a `NotSent`
+re-mark drops the release with the marker, so an earlier generation's time never shows. A second
+record under one marker keeps the first time, as the row on disk does (idempotent per marker).
+`released_at` is read in the same J step as the rest of `registration_funding_steps`. An
+unreleased flagged step can still read `MaybeSent` while the wallet's rows are unknown; its view
+shows no release, so it passes nothing.
 
 Passing an unflagged step is refused by decision, not by a safety rule. Its marker predates
 PA-2, so it has no release row, and §8.1 leaves it to the developer's fresh

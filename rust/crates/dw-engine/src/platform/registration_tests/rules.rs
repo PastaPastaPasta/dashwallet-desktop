@@ -583,7 +583,8 @@ fn run_once(f: &Fixture, lib: &impl RegistrationLib, draft: i64) -> Result<(), P
 /// reads the step `MaybeSent` (E0-04 §2a.7): the safe reading, `Unknown`.
 /// The row fails `broadcast_unknown` and waits `FundingUnknown`, the lock
 /// is `Contested` (no row takes it), new starts wait, and nothing is funded
-/// again.
+/// again. Only the wedged step contests the lock, with its release known,
+/// so Finish recovers it into a recovery row (DEC-198 am.1).
 #[test]
 fn review_r6_own_lock_proof_race_must_not_wedge() {
     for unsigned in [false, true] {
@@ -617,7 +618,7 @@ fn review_r6_own_lock_proof_race_must_not_wedge() {
             ))
             .unwrap();
         let original = f.row(draft);
-        assert_eq!(f.rows().len(), 1, "{report:?}");
+        assert_eq!(f.rows().len(), 1 + usize::from(unsigned), "{report:?}");
         let start = f.engine.block_on(registration::start(
             &f.session,
             f.wallet,
@@ -627,7 +628,8 @@ fn review_r6_own_lock_proof_race_must_not_wedge() {
         ));
         if unsigned {
             assert_eq!(flow::outpoint_of(&original), None);
-            assert!(held_by(&f, lock).is_empty(), "{:?}", f.rows());
+            let holders = held_by(&f, lock);
+            assert!(holders.len() == 1 && holders != [draft], "{:?}", f.rows());
             assert!(report.still_pending > 0, "{report:?}");
             assert_eq!(
                 f.status(&fake, draft).waiting,
@@ -1113,6 +1115,7 @@ fn every_adoption_path_follows_the_one_ownership_rule() {
         dead: vec![],
         durable_record: false,
         recording: false,
+        released_at: None,
     };
     let ledger = |lock: LockInfo, steps| {
         Ledger::new(

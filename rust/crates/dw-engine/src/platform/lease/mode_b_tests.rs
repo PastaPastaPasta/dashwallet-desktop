@@ -2340,7 +2340,7 @@ async fn a_signed_locks_failing_write_is_retried_then_stops_the_process() {
     let (restarted, _) = reload(&killed, &src).await;
     assert!(restarted.call_step(W, REG).durable_record);
     assert!(restarted.signed_lock_txids(W, REG).is_empty());
-    assert!(restarted.call_step(W, REG).released);
+    assert!(restarted.call_step(W, REG).released.is_some());
     assert_eq!(restarted.funding_status(W, REG), Some(MaybeSent));
 }
 
@@ -3010,6 +3010,53 @@ fn step_view(t: &LeaseTable, draft: i64) -> FundingStepView {
         .unwrap()
 }
 
+/// DP1-02's DEC-197 and DEC-198 am.1 read a step's release time in its own
+/// view: J keeps each `funding_release` row's `at` beside its step, as the
+/// release is recorded and as it loads again after a kill. So each step
+/// shows its own time, never another step's; a step with no release shows
+/// none; and a second record under the same marker keeps the first time,
+/// as the row on disk does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_registration_step_shows_its_own_release_time() {
+    const AT3: &str = "registration/3/funding";
+    const AT5: &str = "registration/5/funding";
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    for (step, index, at) in [(AT3, 3, 1_000), (REG, 7, 7_000)] {
+        let p = l
+            .call_permit_step("funding", quote(10, 0), funding(step, index))
+            .await
+            .unwrap();
+        t.record_release_at(W, step, at).unwrap();
+        p.note_released();
+        assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    }
+    // A call that has released nothing yet.
+    let running = l
+        .call_permit_step("funding", quote(10, 0), funding(AT5, 5))
+        .await
+        .unwrap();
+    let times = |t: &LeaseTable| {
+        (t.registration_funding_steps(W).unwrap().into_iter())
+            .map(|v| (v.draft, v.released_at))
+            .collect::<Vec<_>>()
+    };
+    let expected = vec![(3, Some(1_000)), (5, None), (7, Some(7_000))];
+    assert_eq!(times(&t), expected);
+    assert_eq!(
+        (j.release_rows().iter())
+            .map(|r| (r.step_id.as_str(), r.at))
+            .collect::<Vec<_>>(),
+        vec![(AT3, 1_000), (REG, 7_000)],
+        "J's time is the row's"
+    );
+    t.record_release_at(W, AT3, 9_000).unwrap();
+    assert_eq!(times(&t), expected, "the marker's first release stands");
+    let (reopened, _) = reload(&j, &src).await;
+    assert_eq!(times(&reopened), expected, "loaded from each row's `at`");
+    drop(running);
+}
+
 /// Repair's resolution of a flagged step is durable (DP1-02 PA-3, review
 /// OD-06): its tombstone outlives the self-spend's ChainLock in the
 /// snapshot, the wallet's erase and a restart. The step reads `NotSent`
@@ -3032,9 +3079,17 @@ async fn a_repaired_step_stays_resolved_across_its_erase_and_a_restart() {
         dead: Vec::new(),
         durable_record: true,
         recording: false,
+        // Released when signed; its time is checked by
+        // `each_registration_step_shows_its_own_release_time`.
+        released_at: Some(0),
     };
     assert_eq!(
-        t.registration_funding_steps(W).unwrap(),
+        (t.registration_funding_steps(W).unwrap().into_iter())
+            .map(|v| FundingStepView {
+                released_at: v.released_at.map(|_| 0),
+                ..v
+            })
+            .collect::<Vec<_>>(),
         vec![
             view(3, key(3), vec![own3.txid]),
             view(7, key(7), vec![lock.txid])
@@ -3357,6 +3412,7 @@ async fn the_funding_view_reads_the_journal_alone_and_refuses_a_closed_one() {
     src.set_drafts(W, vec![DraftKey::registration(7, 7)]);
     signed_maybe_sent(&t, &l, REG, 7, &lock).await;
     let before = t.registration_funding_steps(W).unwrap();
+    assert!(before[0].released_at.is_some(), "the call released");
     assert_eq!(
         before,
         vec![FundingStepView {
@@ -3367,6 +3423,7 @@ async fn the_funding_view_reads_the_journal_alone_and_refuses_a_closed_one() {
             dead: Vec::new(),
             durable_record: true,
             recording: false,
+            released_at: before[0].released_at,
         }]
     );
     for drafts in [
@@ -3582,14 +3639,14 @@ async fn r6_01_a_released_call_with_no_recorded_lock_reads_maybe_sent() {
     assert!(killed.release_rows().is_empty());
 
     p.note_released();
-    assert!(t.call_step(W, TOPUP).released);
+    assert!(t.call_step(W, TOPUP).released.is_some());
     assert_eq!(j.release_rows().len(), 1);
     assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
     assert!(t.refresh_funding(W).await);
     assert_eq!(t.funding_status(W, TOPUP), Some(MaybeSent));
     let (t3, _) = reload(&j, &src).await;
     assert_eq!(t3.funding_status(W, TOPUP), Some(MaybeSent));
-    assert!(t3.call_step(W, TOPUP).released);
+    assert!(t3.call_step(W, TOPUP).released.is_some());
     assert_eq!(
         t3.record_self_spend(W, TOPUP, [1; 32], &[]).await,
         Err(StuckFundingRefusal::NoKnownLock)
@@ -3609,13 +3666,13 @@ async fn r6_01_a_release_ends_with_its_marker() {
         .await
         .unwrap();
     t.record_release(W, REG).await.unwrap();
-    assert!(t.call_step(W, REG).released);
+    assert!(t.call_step(W, REG).released.is_some());
     assert_eq!(p.finish(false), FlowOutcome::Cancelled);
     until(|| t.funding_status(W, REG) == Some(NotSent)).await;
-    assert!(!t.call_step(W, REG).released);
+    assert!(t.call_step(W, REG).released.is_none());
     // Reloaded, no marker stands, nor its release: never started.
     let (t2, _) = reload(&j, &src).await;
-    assert!(!t2.call_step(W, REG).released);
+    assert!(t2.call_step(W, REG).released.is_none());
     assert_eq!(t2.call_step(W, REG).status, S::None);
     assert!(j.release_rows().len() == 1, "kept on disk until compacted");
     // No marker stands: nothing to record against.
@@ -3635,7 +3692,7 @@ async fn r6_01_a_release_write_that_keeps_failing_is_refused() {
         .unwrap();
     j.fail_release.store(true, Ordering::SeqCst);
     assert!(t.record_release(W, REG).await.is_err());
-    assert!(!t.call_step(W, REG).released);
+    assert!(t.call_step(W, REG).released.is_none());
     assert!(j.release_rows().is_empty());
     j.fail_release.store(false, Ordering::SeqCst);
     t.record_release(W, REG).await.unwrap();

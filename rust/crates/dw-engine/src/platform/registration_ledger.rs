@@ -194,8 +194,6 @@ pub(crate) struct Ledger {
     /// Every step's tombstones (`voided`).
     dead: Vec<Txid>,
     calling: Vec<i64>,
-    /// The steps whose funding call released a signature ([`released_at`]).
-    released: Vec<i64>,
 }
 
 impl Ledger {
@@ -216,16 +214,8 @@ impl Ledger {
         let steps = leases.registration_funding_steps(wallet);
         #[cfg(test)]
         let steps = steps.map(|steps| test_views::overlay(leases, wallet, steps));
-        Ok(steps.map(|steps| {
-            let released = (steps.iter())
-                .filter(|s| released_at(leases, wallet, s.draft).is_some())
-                .map(|s| s.draft)
-                .collect();
-            let mut ledger =
-                Self::new(locks, identities, rows, steps, flows.in_call_drafts(wallet));
-            ledger.released = released;
-            ledger
-        }))
+        Ok(steps
+            .map(|steps| Self::new(locks, identities, rows, steps, flows.in_call_drafts(wallet))))
     }
 
     /// [`Self::read_in`] as one error: a storage error, and no write.
@@ -279,7 +269,6 @@ impl Ledger {
             steps: Vec::new(),
             dead,
             calling,
-            released: Vec::new(),
         };
         let drafts: Vec<i64> = views.iter().map(|s| s.draft).collect();
         let steps = views
@@ -338,10 +327,20 @@ impl Ledger {
         &self.rows
     }
 
-    /// The steps whose release [`Self::read_in`] would have found.
+    /// Gives the steps of `drafts` a release, as P2b's view would show it.
     #[cfg(test)]
     pub(crate) fn set_released(&mut self, drafts: Vec<i64>) {
-        self.released = drafts;
+        for s in self.steps.iter_mut() {
+            s.view.released_at = drafts.contains(&s.view.draft).then_some(0);
+        }
+    }
+
+    /// When `draft`'s step released its first funding signature, as its
+    /// own view shows it (P2b's `funding_release` row, read in the same J
+    /// step as the rest of the view): what DEC-197's start override waits
+    /// on. `None`: no step, or no release.
+    pub(crate) fn released_at(&self, draft: i64) -> Option<u64> {
+        self.step(draft).and_then(|s| s.view.released_at)
     }
 
     pub(crate) fn locks(&self) -> &[LockInfo] {
@@ -700,7 +699,7 @@ impl Ledger {
             Some(Owner::Contested) => {
                 matches!(taker, Taker::Recovery)
                     && (self.contesters(lock))
-                        .all(|s| self.wedged(s) && self.released.contains(&s.view.draft))
+                        .all(|s| self.wedged(s) && s.view.released_at.is_some())
             }
             Some(Owner::Parked | Owner::Dead) | None => false,
         }
@@ -959,7 +958,7 @@ impl Ledger {
     /// flight. The view shows no release: a flagged step read `MaybeSent`
     /// only while the wallet's rows are unknown passes here too, and the
     /// override then refuses it, and Recovery takes no lock it contests,
-    /// because [`released_at`] knows no release for it.
+    /// because its view shows no release (`released_at`).
     fn wedged(&self, step: &Step) -> bool {
         step.outstanding
             && step.claim == StepClaim::Unknown
@@ -1066,19 +1065,6 @@ impl Ledger {
 /// list yet (PA-3 tombstones, OD-02's flag, retention across
 /// `erase_wallet`). A view set replaces the stub's view of its draft; the
 /// others are added. Never in a build that ships.
-/// When `draft`'s funding call released its first funding signature (its
-/// `funding_release` row's `at`, UNIX seconds), if it did: P2b's side of
-/// DEC-197, stubbed until P2b r7 exposes it. `None` refuses every start
-/// past the step (fail closed), as it must for a step with no release.
-pub(crate) fn released_at(leases: &LeaseTable, wallet: WalletId, draft: i64) -> Option<u64> {
-    #[cfg(test)]
-    if let Some(at) = test_views::released_at(leases, wallet, draft) {
-        return Some(at);
-    }
-    let _ = (leases, wallet, draft);
-    None
-}
-
 #[cfg(test)]
 pub(crate) mod test_views {
     use std::sync::{Arc, Mutex, PoisonError};
@@ -1088,19 +1074,6 @@ pub(crate) mod test_views {
     /// The views set, by lease table (its address, pinned by the guard's
     /// `Arc`) and wallet.
     static VIEWS: Mutex<Vec<(usize, WalletId, FundingStepView)>> = Mutex::new(Vec::new());
-
-    /// The release times set ([`super::released_at`]), keyed as `VIEWS`.
-    static RELEASES: Mutex<Vec<(usize, WalletId, i64, u64)>> = Mutex::new(Vec::new());
-
-    pub(super) fn released_at(leases: &LeaseTable, wallet: WalletId, draft: i64) -> Option<u64> {
-        let k = key(leases);
-        (RELEASES
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter())
-        .find(|(l, w, d, _)| *l == k && *w == wallet && *d == draft)
-        .map(|(_, _, _, at)| *at)
-    }
 
     fn key(leases: &LeaseTable) -> usize {
         std::ptr::from_ref(leases) as usize
@@ -1128,12 +1101,21 @@ pub(crate) mod test_views {
             views.push((k, self.wallet, view));
         }
 
-        /// Sets when `draft`'s call released its first funding signature.
+        /// Sets when `draft`'s call released its first funding signature:
+        /// in the view set for `draft`, else in J's release of its step
+        /// (which P2b's view then reads).
         pub(crate) fn set_released(&self, draft: i64, at: u64) {
             let k = key(&self.leases);
-            let mut releases = RELEASES.lock().unwrap_or_else(PoisonError::into_inner);
-            releases.retain(|(l, w, d, _)| !(*l == k && *w == self.wallet && *d == draft));
-            releases.push((k, self.wallet, draft, at));
+            let mut views = VIEWS.lock().unwrap_or_else(PoisonError::into_inner);
+            let set = (views.iter_mut())
+                .find(|(l, w, v)| *l == k && *w == self.wallet && v.draft == draft);
+            match set {
+                Some((_, _, view)) => view.released_at = Some(at),
+                None => {
+                    let step = crate::platform::registration_flow::funding_step(draft);
+                    self.leases.set_release_at(self.wallet, &step, at);
+                }
+            }
         }
     }
 
@@ -1144,10 +1126,6 @@ pub(crate) mod test_views {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .retain(|(l, w, _)| !(*l == k && *w == self.wallet));
-            RELEASES
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .retain(|(l, w, _, _)| !(*l == k && *w == self.wallet));
         }
     }
 

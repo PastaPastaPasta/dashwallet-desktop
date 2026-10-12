@@ -1491,8 +1491,10 @@ fn funding_failures_follow_the_tracked_row() {
 /// recorded, the step reads `MaybeSent` (E0-04 §2a.7, P2b r6 R6-01): a lock
 /// may have reached a broadcaster no store of it passed. The row waits
 /// `FundingUnknown`, its funds committed: discard and a new registration
-/// are refused, the step is never called again, and a lock at its index
-/// later is no row's (`Contested`).
+/// are refused, and the step is never called again. A lock at its index
+/// later is no row's (`Contested`): only the wedged step contests it, with
+/// its release known, so Finish recovers it into a recovery row (DEC-198
+/// am.1), which makes the lock's one identity; the row stays waiting.
 #[test]
 fn a_signature_lost_before_its_store_leaves_the_step_maybe_sent() {
     let f = fixture(false);
@@ -1552,7 +1554,16 @@ fn a_signature_lost_before_its_store_leaves_the_step_maybe_sent() {
         .unwrap();
     assert!(report.still_pending > 0, "{report:?}");
     assert_eq!(flow::outpoint_of(&f.row(draft)), None);
-    assert_eq!(lib.counts(), (1, 0), "the step was called again");
+    let recovery: Vec<_> = (f.rows().into_iter())
+        .filter(|r| flow::outpoint_of(r) == Some(lock))
+        .collect();
+    assert_eq!(recovery.len(), 1, "{report:?}");
+    assert_ne!(recovery[0].id, draft);
+    assert_eq!(lib.counts(), (1, 1), "funded once; the lock's one identity");
+    assert_eq!(
+        f.status(&lib, draft).waiting,
+        Some(RegistrationWait::FundingUnknown)
+    );
     assert_eq!(
         f.discard(&lib, draft).unwrap_err().code(),
         "invalid_argument"
@@ -3389,6 +3400,7 @@ fn only_a_signed_lock_whose_index_is_lost_is_the_rows() {
         dead: vec![],
         durable_record: false,
         recording: false,
+        released_at: None,
     };
     use crate::platform::registration_ledger::IndexOwner;
     for status in [

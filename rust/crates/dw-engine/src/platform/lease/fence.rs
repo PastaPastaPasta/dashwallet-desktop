@@ -98,13 +98,15 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
         self_spend: &[u8; 32],
     ) -> Result<bool, String>;
     /// A funding call of `step` is about to release its first signature
-    /// (§2a.7, review R6-01), recorded against the step's standing marker;
-    /// `Ok(false)` when none stands ([`LeaseTable::record_release`]).
+    /// (§2a.7, review R6-01), recorded against the step's standing marker
+    /// at `at` (UNIX seconds); `Ok(false)` when none stands
+    /// ([`LeaseTable::record_release`]).
     fn insert_release(
         &self,
         wallet: &[u8; 32],
         step: &str,
         artifact: &[u8; 32],
+        at: u64,
     ) -> Result<bool, String>;
     /// Appends the artifact's resolution (DEC-154): `NotSent` supersedes
     /// its markers so far. The engine writes `Sent` only through
@@ -234,8 +236,9 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         wallet: &[u8; 32],
         step: &str,
         artifact: &[u8; 32],
+        at: u64,
     ) -> Result<bool, String> {
-        self.insert_release(wallet, step, artifact, crate::events::unix_now())
+        self.insert_release(wallet, step, artifact, at)
             .map_err(|e| e.to_string())
     }
 
@@ -376,8 +379,9 @@ pub struct CallStepInfo {
     pub durable_record: bool,
     /// A call under the marker may have released a funding signature: its
     /// `funding_release` row (schema 7, §2a.7, review P2b r6 R6-01) is
-    /// written before the vault signs anything.
-    pub released: bool,
+    /// written before the vault signs anything. The row's `at`, UNIX
+    /// seconds.
+    pub released: Option<u64>,
     /// Repair's self-spends standing against the marker.
     pub self_spends: Vec<SelfSpend>,
 }
@@ -542,9 +546,10 @@ pub(crate) struct FenceState {
     /// with the schema 6 flag.
     durable_record: HashSet<(WalletId, String)>,
     /// The funding steps with a `funding_release` row against their
-    /// standing marker (schema 7, §2a.7, review P2b r6 R6-01): a call under
-    /// it may have released a funding signature.
-    released: HashSet<(WalletId, String)>,
+    /// standing marker (schema 7, §2a.7, review P2b r6 R6-01), each with
+    /// the row's `at` (UNIX seconds, DP1-02's DEC-197): a call under it may
+    /// have released a funding signature since then.
+    released: HashMap<(WalletId, String), u64>,
     /// How often each funding step's marker was superseded in this process:
     /// a release write begun under one marker is not taken for the next
     /// one's ([`LeaseTable::record_release`]).
@@ -1016,7 +1021,7 @@ impl FenceState {
             status: self.call_step_status(wallet, step),
             funding: self.funding.get(&key).copied(),
             durable_record: self.durable_record.contains(&key),
-            released: self.released.contains(&key),
+            released: self.released.get(&key).copied(),
             self_spends: self.self_spends.get(&key).cloned().unwrap_or_default(),
         }
     }
@@ -1526,7 +1531,7 @@ fn forget_erased(i: &mut Inner, wallet: WalletId, dispatch: bool, erased: Vec<[u
     f.durable_record
         .retain(|(w, s)| !forgotten(w, &ArtifactId::of_step(w, s)));
     f.released
-        .retain(|(w, s)| !forgotten(w, &ArtifactId::of_step(w, s)));
+        .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
     f.supersedes
         .retain(|(w, s), _| !forgotten(w, &ArtifactId::of_step(w, s)));
     f.tombstones
@@ -1963,7 +1968,8 @@ impl LeaseTable {
                 (i.fence.tombstones).insert((WalletId(t.wallet), t.step_id), t.self_spend);
             }
             for r in calls.releases {
-                i.fence.released.insert((WalletId(r.wallet), r.step_id));
+                // One row per standing marker: a step has one at most.
+                (i.fence.released).insert((WalletId(r.wallet), r.step_id), r.at);
             }
             i.fence.journal = JournalState::Ready;
             fx.notify();
@@ -3371,7 +3377,7 @@ impl LeaseTable {
             if !i.fence.call_marked(&wallet, step) {
                 return Err("the funding step's marker no longer stands".to_owned());
             }
-            if i.fence.released.contains(&key) {
+            if i.fence.released.contains_key(&key) {
                 return Ok(None);
             }
             i.fence.writes += 1;
@@ -3380,6 +3386,9 @@ impl LeaseTable {
         let Some(generation) = begun else {
             return Ok(());
         };
+        // One time for every attempt, so a retry that finds an earlier
+        // attempt's row (idempotent per marker) leaves J's time the row's.
+        let at = crate::events::unix_now();
         // The write and the J step that ends it run on the blocking task,
         // so `writes` comes down even if this future is dropped.
         let table = Arc::clone(self);
@@ -3389,7 +3398,7 @@ impl LeaseTable {
                 let mut delay = SIGNED_WRITE_BACKOFF;
                 let mut written = Err(String::new());
                 for attempt in 1..=SIGNED_WRITE_ATTEMPTS {
-                    written = guarded(|| backend.insert_release(&wallet.0, &key.1, &id.0));
+                    written = guarded(|| backend.insert_release(&wallet.0, &key.1, &id.0, at));
                     match &written {
                         Err(e) => {
                             tracing::warn!(step = key.1, attempt, error = %e, "recording a funding release failed");
@@ -3427,7 +3436,7 @@ impl LeaseTable {
                         // re-checks the end after this write and signs
                         // nothing.
                         Ok(true) => {
-                            i.fence.released.insert(key);
+                            i.fence.released.insert(key, at);
                             Ok(())
                         }
                     }
@@ -3441,11 +3450,32 @@ impl LeaseTable {
     /// first signature writes, for a test that releases one without it.
     #[cfg(test)]
     pub(crate) fn record_release_now(&self, wallet: WalletId, step: &str) -> Result<(), String> {
+        self.record_release_at(wallet, step, crate::events::unix_now())
+    }
+
+    /// Sets J's time of `step`'s release to `at`, in memory only, as a
+    /// `funding_release` row written at `at` would load (tests).
+    #[cfg(test)]
+    pub(crate) fn set_release_at(&self, wallet: WalletId, step: &str, at: u64) {
+        self.with_j(|i, fx| {
+            fx.notify();
+            i.fence.released.insert((wallet, step.to_owned()), at);
+        });
+    }
+
+    /// [`Self::record_release_now`] at `at` (UNIX seconds).
+    #[cfg(test)]
+    pub(crate) fn record_release_at(
+        &self,
+        wallet: WalletId,
+        step: &str,
+        at: u64,
+    ) -> Result<(), String> {
         let key = (wallet, step.to_owned());
         let state = self.with_j(|i, _| {
             let ready =
                 i.fence.journal == JournalState::Ready && i.fence.call_marked(&wallet, step);
-            (ready, i.fence.released.contains(&key))
+            (ready, i.fence.released.contains_key(&key))
         });
         match state {
             (_, true) => return Ok(()),
@@ -3454,12 +3484,12 @@ impl LeaseTable {
         }
         let backend = (self.journal.get()).ok_or("no dispatch journal")?;
         let id = ArtifactId::of_step(&wallet, step);
-        if !backend.insert_release(&wallet.0, step, &id.0)? {
+        if !backend.insert_release(&wallet.0, step, &id.0, at)? {
             return Err("no marker of the funding step stands on disk".into());
         }
         self.with_j(|i, fx| {
             fx.notify();
-            i.fence.released.insert(key);
+            i.fence.released.insert(key, at);
         });
         Ok(())
     }
