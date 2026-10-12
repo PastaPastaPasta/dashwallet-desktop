@@ -1416,3 +1416,100 @@ fn a_removal_waits_for_a_key_checked_redemption() {
     v.check_grant(&grant.id, GrantKind::PlatformOp, Some(&W))
         .unwrap();
 }
+
+/// One way a wallet's seed leaves the vault.
+type Removal = Box<dyn FnOnce(&Vault) -> Result<(), VaultError> + Send>;
+
+/// The seed deletions (`wipe_wallet_secret`, `delete_wallet_secret`, and
+/// the recovery that replaces the vault, losing the test wallet).
+fn removals(v: &Vault) -> Vec<(&'static str, Removal)> {
+    let wipe = token(v, GrantPurpose::Wipe, Credential::Passphrase(PASS));
+    vec![
+        (
+            "wipe",
+            Box::new(move |v: &Vault| v.wipe_wallet_secret(&W, &wipe).map(drop)),
+        ),
+        (
+            "delete",
+            Box::new(|v: &Vault| v.delete_wallet_secret(&W).map(drop)),
+        ),
+        (
+            "recover",
+            Box::new(|v: &Vault| {
+                let phrase: &[u8] = b"abandon abandon abandon abandon abandon abandon \
+                    abandon abandon abandon abandon abandon about";
+                let secret = crate::mnemonic::derive_secret(phrase, b"", false).unwrap();
+                let id =
+                    crate::mnemonic::wallet_id_for_seed(&secret.seed, Network::Regtest).unwrap();
+                v.recover_with_mnemonic(&id, phrase, b"", b"another passphrase")
+                    .map(drop)
+            }),
+        ),
+    ]
+}
+
+/// A wallet removal while a signer of the wallet has read its seed (DP2-02,
+/// Sol r3): the removal waits for the signer, whose signature is released
+/// before the seed is deleted, never after; a signer issued before the
+/// removal and used after it signs nothing.
+#[test]
+fn a_removal_waits_for_the_signers_that_read_the_seed() {
+    for index in 0..3 {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir, Some(PASS));
+        let (name, remove) = removals(&v).swap_remove(index);
+        let (signing, _hold) = platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+        let (late, _late_hold) =
+            platform_signer(&v, SignerScope::PlatformIdentity, Credential::None);
+        let file = crate::file::file_path(&dir.path().join("vault"));
+        let on_disk = std::fs::read(&file).unwrap();
+        let removed =
+            |v: &Vault| !v.has_wallet_secret(&W) || std::fs::read(&file).unwrap() != on_disk;
+        let runtime = || {
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+        };
+
+        // The signer pauses inside the gate, once it has read the seed.
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let worker = thread::spawn(move || {
+            test_hook::set(move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            });
+            runtime().block_on(signing.sign_ecdsa(&path(IDENTITY_KEY), [9; 32]))
+        });
+        entered_rx
+            .recv_timeout(NO_HANG)
+            .expect("the signer did not read the seed");
+        // The removal starts, and is given five seconds to finish meanwhile.
+        let (done_tx, done_rx) = mpsc::channel();
+        let remover = {
+            let v = v.clone();
+            thread::spawn(move || {
+                let result = remove(&v);
+                let _ = done_tx.send(());
+                result
+            })
+        };
+        let finished_meanwhile = done_rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        let removed_meanwhile = removed(&v);
+        release_tx.send(()).unwrap();
+        let signed = worker.join().unwrap();
+        assert_eq!(remover.join().unwrap(), Ok(()), "{name}");
+        assert!(
+            !finished_meanwhile && !removed_meanwhile,
+            "{name}: the seed went while a signer that read it was still signing"
+        );
+        assert!(signed.is_ok(), "{name}: {signed:?}");
+        assert!(removed(&v), "{name}");
+        assert!(
+            runtime()
+                .block_on(late.sign_ecdsa(&path(IDENTITY_KEY), [9; 32]))
+                .is_err(),
+            "{name}: signed after the removal"
+        );
+    }
+}

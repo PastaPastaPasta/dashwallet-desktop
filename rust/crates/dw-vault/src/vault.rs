@@ -16,19 +16,24 @@
 //!   token's key holds it from the token check until the operation is done
 //!   ([`Vault::gated`]): the secret reads (`reveal_mnemonic`,
 //!   `export_wallet_secret`, `with_revealed_seed`, `open_backup_bundle` of
-//!   this vault's own bundle) and the token-authorized writes
-//!   (`wipe_wallet_secret`, `encrypt`, `enroll_quick_unlock`,
-//!   `set_quick_unlock_spend_limit`), whose file write is inside.
+//!   this vault's own bundle) and the token-authorized writes (`encrypt`,
+//!   `enroll_quick_unlock`, `set_quick_unlock_spend_limit`), whose file
+//!   write is inside.
 //!   `seed_derivation` and `core_mnemonic_check`, which read a secret with
 //!   the vault's own key, are gated too. Every epoch change (lock, unlock,
 //!   scope change, passphrase change, encrypt, recover, destroy) holds it
 //!   exclusively, so `lock()` returns only once every such operation that
 //!   started before it has finished, and any operation after it sees the
-//!   new epoch and fails `Locked`. Not gated: `backup_bundle`, which takes
-//!   no grant or epoch and returns only ciphertext, `open_backup_bundle`
-//!   through a bundle's passphrase slot (no vault key), and record writes
-//!   under the vault's own key (`store_wallet_secret`,
-//!   `delete_wallet_secret`).
+//!   new epoch and fails `Locked`. Every deletion of a seed
+//!   (`wipe_wallet_secret`, `delete_wallet_secret`, the old vault that
+//!   `recover_with_mnemonic` replaces) holds it exclusively as well, from
+//!   before the records go until they are gone, without ending the epoch
+//!   unless it changes one anyway ([`Vault::drain_ops`]): a signer that read
+//!   a seed has released its result before the seed is deleted, and one
+//!   that starts after finds none (DP2-02). Not gated: `backup_bundle`,
+//!   which takes no grant or epoch and returns only ciphertext,
+//!   `open_backup_bundle` through a bundle's passphrase slot (no vault key),
+//!   and `store_wallet_secret`, a record write under the vault's own key.
 //!
 //!   A holder must not take the gate again, take `writer`, block on another
 //!   lock or wait on anything outside the process (the OS store, which may
@@ -1555,17 +1560,32 @@ impl Vault {
     /// own was redeemed while the full key was in memory, and only an epoch
     /// change drops it.
     fn key_for(&self, _op: &OpGuard<'_>, token: &GrantToken) -> Result<Key32, VaultError> {
-        let key = {
-            let inner = self.inner();
-            self.token_current(&inner, token)?;
-            match token.key.copy()? {
-                Some(key) => key,
-                None => Self::memory_dek(&inner)?,
-            }
-        };
+        let key = self.token_key(token)?;
         #[cfg(test)]
         crate::signer::test_hook::opened();
         Ok(key)
+    }
+
+    /// [`Self::key_for`]'s check and key read, one step under `inner`: for
+    /// it, and for a caller that holds the gate exclusively instead.
+    fn token_key(&self, token: &GrantToken) -> Result<Key32, VaultError> {
+        let inner = self.inner();
+        self.token_current(&inner, token)?;
+        match token.key.copy()? {
+            Some(key) => Ok(key),
+            None => Self::memory_dek(&inner),
+        }
+    }
+
+    /// Waits for every gated operation still running, then keeps new ones
+    /// out until the guard drops, without ending the epoch: a caller that
+    /// deletes a wallet's seed under it knows that no signer copied that seed
+    /// before the deletion and still signs after it (DP2-02, Sol r3). An
+    /// operation that read the seed has released its result by then; one
+    /// that starts after finds no seed (`NoSecret`). Taken after `writer`,
+    /// as every epoch change is.
+    fn drain_ops(&self, _writer: &WriteGuard<'_>) -> EpochGuard<'_> {
+        self.epoch_guard()
     }
 
     /// The full-scope data key held in memory, inside the gated operation
@@ -1788,15 +1808,20 @@ impl Vault {
             return Ok(false);
         }
         let dek = self.full_dek()?;
-        self.delete_records(&self.writer(), wallet, &dek)?;
+        let writer = self.writer();
+        let _drained = self.drain_ops(&writer);
+        self.delete_records(&writer, wallet, &dek)?;
         Ok(true)
     }
 
     /// Deletes every record of `wallet` under a redeemed `Wipe` grant for that
     /// wallet, with the grant's key when it carries one (a passphrase grant on
-    /// a locked vault). `Ok(false)` when it had none. The deletion is one
-    /// gated operation: it is done before a concurrent `lock()` returns, or
-    /// refused (`Locked`) when that lock came first.
+    /// a locked vault). `Ok(false)` when it had none. The deletion holds the
+    /// gate exclusively ([`Self::drain_ops`]): it waits for every operation
+    /// still running, so a signer of the wallet that read its seed releases
+    /// its result before the seed goes, and none starts until it is gone. A
+    /// concurrent `lock()` either came first, and the deletion is refused
+    /// (`Locked`), or waits until it is done.
     pub fn wipe_wallet_secret(
         &self,
         wallet: &WalletId,
@@ -1812,11 +1837,12 @@ impl Vault {
         self.token_current(&self.inner(), token)?;
         #[cfg(test)]
         crate::signer::test_hook::checked();
-        self.gated(VaultError::Locked, |op| {
-            let dek = self.key_for(op, token)?;
-            self.delete_records(&writer, wallet, &dek)?;
-            Ok(true)
-        })
+        let _drained = self.drain_ops(&writer);
+        let dek = self.token_key(token)?;
+        #[cfg(test)]
+        crate::signer::test_hook::opened();
+        self.delete_records(&writer, wallet, &dek)?;
+        Ok(true)
     }
 
     fn wallet_record_ids(wallet: &WalletId) -> Vec<String> {
@@ -2488,13 +2514,15 @@ impl Vault {
             )?),
         };
 
+        // The `lost` wallets' seeds go with the old vault: drained first
+        // (DP2-02, Sol r3), as `wipe_wallet_secret`.
+        let ops = self.drain_ops(&writer);
         file::keep_replaced_copy(&self.shared.dir, now)?;
         file::write(&self.shared.dir, &next)?;
         // From here the old vault is replaced on disk; memory follows even
         // if the read-back check below fails, so nothing keeps using the
         // old key.
         {
-            let ops = self.epoch_guard();
             let mut inner = self.inner();
             inner.file = Some(next);
             inner.high_water = manifest.generation;
@@ -2503,6 +2531,7 @@ impl Vault {
             inner.backup_kek = Some(backup_kek);
             inner.last_passphrase_at = Some(now);
         }
+        drop(ops);
         let disk = file::read(&self.shared.dir)?
             .ok_or_else(|| VaultError::Corrupt("vault file vanished after write".into()))?;
         verify_manifest(&disk, &dek, manifest.generation)?;
