@@ -7,9 +7,10 @@
 //! credits against the action's quote, then the grant or lease, whether the
 //! vault holds a key its flow signs with, and last a scan's expiry. It signs
 //! under a lease ([`write_lease`]) with exactly the keys its transition
-//! needs ([`flow_keys`]), charges the quote to the lease's Credits budget
-//! just before it goes out, counted as a running call ([`leased`]), and
-//! holds the identity's write lock throughout (`identity_writes.rs`).
+//! needs ([`flow_keys`]), under a call permit charged the quote from the
+//! lease's Credits budget ([`write_permit`]) whose signer is the only one it
+//! uses, in the lease's dispatch scope ([`leased`]), and holds the
+//! identity's write lock throughout (`identity_writes.rs`).
 //!
 //! Fees (DEC-195): Platform meters a transition's fee against its state
 //! when it executes, so no quote can equal the charge. The quote is a bound
@@ -205,7 +206,8 @@ fn cover(available: u64, quote: u64) -> Result<(), PlatformError> {
 /// A budget below `quote` is `platform.grant_exceeded`, none at all
 /// `platform.needs_grant{Credits}`. `signs` is the identity at its index
 /// whose keys the write signs with; a lease id's are checked by
-/// [`flow_signer`], before anything is charged to it. `ready` is the
+/// [`flow_signer`] under the write's permit, whose quote goes back when it
+/// refuses (nothing signed). `ready` is the
 /// write's last check (a scan's expiry), right before a grant is redeemed:
 /// the key check can wait on the vault.
 async fn write_lease(
@@ -390,8 +392,8 @@ fn flow_keys(
 /// The call permit a library write runs under (E0-04 §2a.3, m4 §7 item
 /// 39), charged `quote` from the lease's Credits budget: a lock's drain
 /// waits for it, and its end decides the write's outcome by the signatures
-/// its signers released. A write refused before it signs drops the permit
-/// unstarted-in-effect: no signature, a definite `Cancelled`, and the quote
+/// its signers released. A write that fails or is refused before it signs
+/// ends the permit with no signature, a definite `Cancelled`, and the quote
 /// goes back; once a signature is out, the quote is kept whatever the call
 /// returns (fail closed), so one lease id pays for one write's quote.
 fn write_permit(lease: &Lease, label: &str, quote: u64) -> Result<CallPermit, PlatformError> {

@@ -37,7 +37,7 @@ time" and the open-issues list) and the draft clauses of the E0-04 row in [`ROAD
 ## Amendment 3: DP2-02 (Sol r1, 2026-10-12)
 
 - §16.1 and N-6: a lease of another flow is `platform.grant_invalid` for a write that names its flows (m4
-  Contract-Version 12, DP2-02); `platform.needs_grant` only when no grant or lease carries the purpose.
+  Contract-Version 15, DP2-02); `platform.needs_grant` only when no grant or lease carries the purpose.
 
 ## Amendment 2: closure round 3
 
@@ -3041,7 +3041,7 @@ the contract's prose differs, E0-08 matches this section; §15 lists the lines.
   idempotent. The session owns the lease from `begin_flow` until `end_flow` or the reaper (§4.1, §4.7).
 - A lease id is accepted wherever a `grant: String` is, by any call of its wallet whose purpose it carries. A
   Platform write that names the flows whose leases it takes (DP2-02's `send_request`, `accept_request` and
-  `enable_dashpay_keys`, m4 §7 item 39) refuses a lease of any other flow with `platform.grant_invalid`: that lease's
+  `enable_dashpay_keys`, m4 §7 item 41) refuses a lease of any other flow with `platform.grant_invalid`: that lease's
   keys are not the write's. `platform.needs_grant{purpose}` is only for a call that has no grant or lease for a
   purpose it needs (no budget for it, or one at 0 or parked). Another wallet's lease, or an unknown id, is
   `platform.grant_invalid` (N-6).
