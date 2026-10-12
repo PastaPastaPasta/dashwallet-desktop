@@ -353,13 +353,17 @@ fn finish_gives_no_unindexed_lock_to_a_calling_row(released: bool) {
     lib.hang_at(Call::Fund, When::Before);
     let calling = f.insert(prepared_row(2));
     f.spawn(&lib, calling, Some(f.lease()));
-    eventually("the funding call runs", || {
+    // Inside the library call, its permit's marker durable: `in_call`
+    // alone is set before the permit, when nothing can have signed the lock
+    // yet and Finish rightly recovers it.
+    eventually("the funding call runs", || lib.hung.load(Ordering::SeqCst));
+    assert!(
         f.session
             .platform
             .registrations
             .get((f.wallet, calling))
             .in_call
-    });
+    );
     let views = Views::new(&f.session.leases, f.wallet);
     if released {
         views.set_released(calling, crate::events::unix_now() - 2 * 3600);
