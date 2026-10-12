@@ -32,9 +32,8 @@
 //! step's status decides: a call that signed nothing is `NotSent` and the
 //! row is retryable again, any other is `MaybeSent`, and the row waits (or
 //! fails `platform.broadcast_unknown`) until the lock is tracked again or
-//! positive evidence says `NotSent`. What still waits for Phase B is marked
-//! `P2b seam:` below: the identity step's marker, and the step status's
-//! join into the row's funding gate.
+//! positive evidence says `NotSent`. The identity step runs under its own
+//! resumable step permit (its call in `create_identity`).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -2103,7 +2102,10 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 if let Ok(Some(id)) = self.lib.find_identity(outpoint).await {
                     return self.advance(row, registered(id)).await;
                 }
-                if locked {
+                // A signer that met the lock parks the flow: the permit's
+                // counted signers say so, the proof's uncounted one only
+                // by the vault's state.
+                if locked || self.authority_wait() == RegistrationWait::Unlock {
                     return Ok(Step::Park(self.authority_wait()));
                 }
                 Ok(self.failed(&e))

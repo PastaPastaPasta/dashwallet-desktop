@@ -463,6 +463,9 @@ enum IdentityAttempt {
     /// re-sign met a locked signer. `executes`: the first attempt lands on
     /// Platform all the same.
     ReleasedThenLocked { executes: bool },
+    /// The identity keys signed and were released; the proof's signer met
+    /// the vault locked under the call.
+    ReleasedThenVaultLocked,
     /// Every re-sign was released and refused on the height until the
     /// library gave up: nothing landed.
     ReleasedThenUnavailable,
@@ -828,6 +831,15 @@ impl RegistrationLib for Fake {
                 // error, not the lease's.
                 return Err(PlatformError::Internal {
                     detail: "the identity signer refused: locked".into(),
+                });
+            }
+            Some(IdentityAttempt::ReleasedThenVaultLocked) => {
+                permit.note_released();
+                // The proof's signer, which no permit counts, meets the
+                // lock: only the vault's state shows it.
+                (self.session.upgrade().unwrap()).lock_vault_sync().unwrap();
+                return Err(PlatformError::Internal {
+                    detail: "the proof signer refused: locked".into(),
                 });
             }
             Some(IdentityAttempt::ReleasedThenUnavailable) => {

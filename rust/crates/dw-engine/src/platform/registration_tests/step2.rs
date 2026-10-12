@@ -2,9 +2,10 @@
 //! F16): the library's ChainLock-height and IS→CL retries sign the
 //! transition again inside one call, so an earlier attempt may execute
 //! however the call ends. A call that released a signature and failed
-//! reads `MaybeSent`; one whose signer met the lock parks the flow; the
-//! next run looks for the lock's identity before it signs again, so one
-//! lock never pays for two identities (the fake asserts it).
+//! reads `MaybeSent`; one whose signer met the lock parks the flow (the
+//! proof's uncounted signer by the vault's state); the next run looks for
+//! the lock's identity before it signs again, so one lock never pays for
+//! two identities (the fake asserts it).
 
 use super::*;
 use crate::platform::lease::CallStepStatus;
@@ -74,6 +75,29 @@ fn step2_a_locked_resign_after_a_released_attempt_is_maybe_sent_and_parks() {
     done(&f, draft);
     assert_eq!(lib.counts(), (1, 1));
     assert_eq!(identity_call(&f, draft), CallStepStatus::Sent);
+}
+
+/// The proof's signer, which no permit counts, meets the lock after the
+/// identity keys were released: the call reads `MaybeSent` and the flow
+/// parks for the unlock, which the vault's state shows where the count
+/// cannot, not a retryable failure. Unlocked by a grant, the next call
+/// creates the identity once.
+#[test]
+fn step2_a_proof_signer_meeting_the_lock_parks_for_the_unlock() {
+    let f = fixture(true);
+    let (lib, draft) = started(&f, &[IdentityAttempt::ReleasedThenVaultLocked]);
+    let status = f.status(&lib, draft);
+    assert_eq!(status.waiting, Some(RegistrationWait::Unlock));
+    assert_eq!(status.failure, None);
+    assert_eq!(
+        identity_call(&f, draft),
+        CallStepStatus::Marked { durable: true }
+    );
+    let grant = f.grant(COIN, 10 * COIN * 1000, Credential::Passphrase(PASS));
+    resume(&f, &lib, draft, Some(grant));
+    f.settle(draft);
+    done(&f, draft);
+    assert_eq!(lib.counts(), (1, 1));
 }
 
 /// The parked flow's first attempt lands after all: the next run finds the

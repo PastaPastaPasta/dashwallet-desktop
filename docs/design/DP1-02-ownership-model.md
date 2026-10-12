@@ -427,10 +427,15 @@ index unattributed; otherwise it waits `ChainLock`); after Finish it funds at it
 
 **The release time** (DEC-197's seam, the P2b r7 ask, added on P2b's merged code). J keeps
 releases as `(wallet, step_id) → at`, only for the standing marker: the load keeps a row only
-while the marker it answers stands, a record answers the marker it began under, and a `NotSent`
-re-mark drops the release with the marker, so an earlier generation's time never shows. A second
-record under one marker keeps the first time, as the row on disk does (idempotent per marker).
-`released_at` is read in the same J step as the rest of `registration_funding_steps`. An
+while the marker it answers stands, a record sets J only under the marker it began under, and a
+`NotSent` re-mark drops the release with the marker. A second record under one marker keeps the
+first time, as the row on disk does (idempotent per marker). `released_at` is read in the same J
+step as the rest of `registration_funding_steps`. Residual (review, P2b's to close): the disk
+write itself is not tied to the marker it began under. A record whose signing was dropped and
+whose write is still retrying (≤ ~750 ms) can land on the next marker's row first; J then shows
+the next call's own time until a reload shows the earlier one, so DEC-197's hour can start up to
+that call's mark-to-first-signature gap early. The fix is `insert_release` taking the marker it
+answers (or returning the stored `at` for J). An
 unreleased flagged step can still read `MaybeSent` while the wallet's rows are unknown; its view
 shows no release, so it passes nothing.
 

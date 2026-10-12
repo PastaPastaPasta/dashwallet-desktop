@@ -421,7 +421,9 @@ bodies decided where the rows leave room:
 - **`contest_ends_at`** stays `None` until DP1-04's vote poll.
 - **On E0-04.P2b (Mode B):** the funding step runs under P2b's funding call permit, which charges the Funding budget
   (the cap is also checked before the call), writes the funding marker, counts released signatures and records the
-  signed lock (above). Still waiting on P2b: the identity step's marker, `DispatchResolved` for a flow's steps, and
+  signed lock (above). The identity step runs under P2b's step permit (`registration/<draft>/identity`, resumable):
+  a call that released a signature and failed reads `MaybeSent`, and one whose signer met the lock parks the flow.
+  Still waiting on P2b: `DispatchResolved` for a flow's steps, and
   the catch-up pass that resumes parked flows at session open and unlock. Until then a parked flow moves on
   `resume_registration` or "Finish transfers". The Funding cap holds per lock: a host lease passed by id that funds a
   second registration is charged by P2b's permits, not here. `register_name` accepts a vault grant or a lease id

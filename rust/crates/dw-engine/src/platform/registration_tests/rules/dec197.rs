@@ -48,8 +48,21 @@ fn step_of(f: &Fixture, draft: i64) -> FundingStepView {
     .unwrap()
 }
 
+/// Overlays two other steps released at `at`, one on each side of `a`'s
+/// draft, so neither the first nor the last step's time reads as `a`'s.
+fn decoys(f: &Fixture, views: &Views, a: i64, at: u64) {
+    for (n, draft) in [a - 100, a + 100].into_iter().enumerate() {
+        let mut other = step_of(f, a);
+        other.draft = draft;
+        other.key.identity_index += 100 + n as u32;
+        other.status = Some(DispatchState::NotSent);
+        other.released_at = Some(at);
+        views.set(other);
+    }
+}
+
 /// The override waits on the release of the step it passes, as that
-/// step's own view shows it: another step released two hours ago lets
+/// step's own view shows it: other steps released two hours ago let
 /// nothing pass early, and A's own time, rewritten on disk and loaded
 /// again, is what lets it pass.
 #[test]
@@ -68,12 +81,7 @@ fn dec197_the_override_reads_the_passed_steps_own_release() {
     set_at(&mut f, now - 60);
     assert_eq!(step_of(&f, a).released_at, Some(now - 60));
     let views = Views::new(&f.session.leases, f.wallet);
-    let mut other = step_of(&f, a);
-    other.draft = a + 100;
-    other.key.identity_index += 100;
-    other.status = Some(DispatchState::NotSent);
-    other.released_at = Some(now - 2 * HOUR);
-    views.set(other);
+    decoys(&f, &views, a, now - 2 * HOUR);
     let refused = start_past(&f, &lib, &[a.to_string()]);
     assert!(
         matches!(
@@ -87,12 +95,7 @@ fn dec197_the_override_reads_the_passed_steps_own_release() {
     drop(views);
     set_at(&mut f, now - HOUR - 60);
     let views = Views::new(&f.session.leases, f.wallet);
-    let mut other = step_of(&f, a);
-    other.draft = a + 100;
-    other.key.identity_index += 100;
-    other.status = Some(DispatchState::NotSent);
-    other.released_at = Some(now - 60);
-    views.set(other);
+    decoys(&f, &views, a, now - 60);
     start_past(&f, &lib, &[a.to_string()]).unwrap();
 }
 
