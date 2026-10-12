@@ -6,8 +6,8 @@ manager's final closure check (DEC-57).
 - rev1 (d2a21c6) was reviewed in r2: GPT REWORK, Opus APPROVE-WITH-CHANGES.
 - rev2 (70cbeee) with amendment 1 (692fd20) was reviewed in r3: Opus APPROVE-WITH-NITS, GPT REWORK on one E0-04
   major (F2).
-- The manager's rulings and every finding's disposition are in "Amendment 2", "Amendment 1", "Changes in rev2"
-  and "Changes in rev1" below.
+- The manager's rulings and every finding's disposition are in "Amendment 3", "Amendment 2", "Amendment 1",
+  "Changes in rev2" and "Changes in rev1" below.
 - DEC-65 accepted rev0's Q2–Q20. DEC-67 accepted Q21, rejected Q22, and accepted Mode B with its promise in user
   terms.
 - Q1 (the platform PR) is still pasta's call (B5), so the design specifies both outcomes (§2a).
@@ -33,6 +33,11 @@ time" and the open-issues list) and the draft clauses of the E0-04 row in [`ROAD
 - rust-dashcore `40268cc0` (`dash-spv`, `key-wallet`).
 
 **Spec check:** `python3 -I docs/design/checks/e0_04_design_model.py` (exit 0 = pass; about 80 s; 86 checks).
+
+## Amendment 3: DP2-02 (Sol r1, 2026-10-12)
+
+- §16.1 and N-6: a lease of another flow is `platform.grant_invalid` for a write that names its flows (m4
+  Contract-Version 12, DP2-02); `platform.needs_grant` only when no grant or lease carries the purpose.
 
 ## Amendment 2: closure round 3
 
@@ -97,7 +102,7 @@ asset lock's `None` as never registered.
 | `lease_revoked`, `lease_expired` (N-5) | **Mapped.** `LeaseError::Revoked{cause}` is `platform.lease_revoked{cause}`, and `LeaseError::Ended` (`end_flow`, the reaper) is `platform.lease_expired`. A passed `key_until` parks the lease, so it is `platform.needs_grant{purpose}`, never `lease_expired`: E0-08 drops "or its own key passed `key_until`" from its row. | §4.4, §16.4 | — |
 | `WalletClosed` (N-4) | **Kept** as its own cause: one wallet's close (§8.6), while `Close` is the session's. E0-08 adds `RevokeCause::WalletClosed`. | §16.4 | — |
 | `funds_committed` (N-3) | **Applied.** In Mode A it is true when an asset lock of the flow has its entry in `Committing`, `Dispatching`, `Ambiguous` or `PreFence`, or has a tracked row with no entry. It is false for an `Unsent` entry (live, or with a dead origin), a `Revoked` entry, and no entry with no row. In Mode B it is true from the J step that takes the funding call's permit (and its marker) until the funding reads `NotSent`. So a revoked lock and an uncommitted one both read false. E0-08 copies §16.5. | §2a.5, §4.6, §16.5 | — |
-| A lease id's reach, the reaper (N-6) | Unchanged here. A lease id is accepted only by calls of its wallet whose purpose it carries, otherwise `platform.needs_grant{purpose}`; another wallet's id is `platform.grant_invalid`. E0-08 states it. | §16.1 | — |
+| A lease id's reach, the reaper (N-6) | Unchanged here. A lease id is accepted only by calls of its wallet whose purpose it carries, otherwise `platform.needs_grant{purpose}`; another wallet's id is `platform.grant_invalid`. E0-08 states it. *Amendment 3: a lease of another flow, passed to a write that names its flows, is `platform.grant_invalid`.* | §16.1 | — |
 | The retry gates (N-1, N-2) | `discard_registration` needs the funding to read `NotSent` or `None`, which also refuses a live `Unsent`. `resume_registration` acts on any state, and `finish_asset_locks` is not gated. E0-08 replaces its "`NotSent` … or absent" clause with these, and its refusal list's phase rule with the same check. | §16.6 | — |
 
 ## Changes in rev2
@@ -3034,9 +3039,12 @@ the contract's prose differs, E0-08 matches this section; §15 lists the lines.
 - `NetworkSession.begin_flow(wallet_id, flow: FlowKind, grants: Vec<String>) -> Result<String, PlatformError>`
   returns a lease id. `NetworkSession.end_flow(lease: String) -> Result<(), PlatformError>` is synchronous and
   idempotent. The session owns the lease from `begin_flow` until `end_flow` or the reaper (§4.1, §4.7).
-- A lease id is accepted wherever a `grant: String` is, by any call of its wallet whose purpose it carries. A call
-  that needs a purpose the lease lacks gets `platform.needs_grant{purpose}`. Another wallet's lease, or an unknown
-  id, is `platform.grant_invalid` (N-6).
+- A lease id is accepted wherever a `grant: String` is, by any call of its wallet whose purpose it carries. A
+  Platform write that names the flows whose leases it takes (DP2-02's `send_request`, `accept_request` and
+  `enable_dashpay_keys`, m4 §7 item 39) refuses a lease of any other flow with `platform.grant_invalid`: that lease's
+  keys are not the write's. `platform.needs_grant{purpose}` is only for a call that has no grant or lease for a
+  purpose it needs (no budget for it, or one at 0 or parked). Another wallet's lease, or an unknown id, is
+  `platform.grant_invalid` (N-6).
 - **The idle reaper** ends a vault-key lease, or a revoked one, after 10 minutes with no call, no permit and no
   running flow task.
 - `FlowKind`: `Registration`, `TopUp`, `Withdraw`, `NameRegistration`, `ProfileEdit`, `ContactRequest`, `Accept`,
