@@ -987,6 +987,46 @@ fn a_settle_after_the_wallet_left_writes_nothing() {
     f.nothing_of_the_wallet();
 }
 
+/// A publish that ends as the wallet is removed records nothing of it.
+#[test]
+fn a_publish_after_the_wallet_left_records_nothing() {
+    let f = published();
+    let pause = Arc::new(TestPause::default());
+    *guard(&f.s.platform.contacts.publish_pause) = Some(Arc::clone(&pause));
+    let (s, pair, lease) = (Arc::clone(&f.s), f.pair(ERIN), f.lease());
+    let (manager, net) = (f.s.manager().unwrap(), Arc::clone(&f.net));
+    let publishing = f.s.rt.spawn(async move {
+        let wallet = manager.get_wallet(&pair.wallet.0).await.unwrap();
+        set(&*net, &s, &wallet, pair, details("Erin"), Some(lease)).await
+    });
+    wait_until("the publish", Duration::from_secs(20), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    f.remove_wallet();
+    pause.release.notify_one();
+    let published = f.engine.block_on(publishing).unwrap();
+    assert_eq!(Fixture::code(published), "wallet_not_found");
+    f.nothing_of_the_wallet();
+}
+
+/// A digest load that read before the wallet's removal lands nothing.
+#[test]
+fn a_load_after_the_wallet_left_lands_nothing() {
+    let f = published();
+    f.set(ERIN, details("Erin"), Some(f.lease())).unwrap();
+    f.s.platform.contacts.digests.forget(&f.wallet);
+    let pause = Arc::new(TestPause::default());
+    *guard(&f.s.platform.contacts.load_pause) = Some(Arc::clone(&pause));
+    f.reported(ERIN);
+    wait_until("the load's read", Duration::from_secs(20), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    f.remove_wallet();
+    pause.release.notify_one();
+    std::thread::sleep(Duration::from_millis(300));
+    f.nothing_of_the_wallet();
+}
+
 /// A removal waits for a settle already writing, then removes what it
 /// wrote.
 #[test]

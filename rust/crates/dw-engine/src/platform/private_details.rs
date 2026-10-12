@@ -1000,6 +1000,8 @@ pub(super) async fn set(
     .await;
     drop(signer);
     let outcome = permit.finish(written.is_ok());
+    #[cfg(test)]
+    crate::coins::pause_at(&session.platform.contacts.publish_pause).await;
     match written {
         Ok(ContactInfoPublishOutcome::Published) => {
             let fence = session.write_fence(pair.wallet, wallet).await?;

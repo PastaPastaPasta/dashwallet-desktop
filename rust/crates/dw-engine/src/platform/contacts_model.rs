@@ -470,6 +470,9 @@ pub(crate) struct ContactsRuntime {
     /// Tests: holds the next settle once it holds its write fence.
     #[cfg(test)]
     pub(super) apply_pause: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next private-details publish once its permit ends.
+    #[cfg(test)]
+    pub(super) publish_pause: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next digest load after its read of app.sqlite.
     #[cfg(test)]
     pub(super) load_pause: Mutex<Option<Arc<crate::coins::TestPause>>>,
