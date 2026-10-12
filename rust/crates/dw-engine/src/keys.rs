@@ -35,6 +35,26 @@ pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
 /// whenever the session opens (key-wallet keeps the gap limit in memory).
 const LOOKAHEAD_SETTING: &str = "bip44.lookahead";
 
+/// app.sqlite setting of "require authentication for every payment", one
+/// per vault: this prefix and the vault id in hex. `"0"` is off; absent
+/// (the default) or anything else is on.
+const PAYMENT_AUTH_KEY: &str = "auth.every_payment/";
+
+fn payment_auth_key(vault_id: &[u8]) -> String {
+    format!("{PAYMENT_AUTH_KEY}{}", hex::encode(vault_id))
+}
+
+/// "Require authentication for every payment" as read for one vault
+/// ([`NetworkSession::payment_authentication`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaymentAuthentication {
+    pub on: bool,
+    /// The vault it was read for ([`Vault::vault_id`]); `None` without a
+    /// vault (the default, on). A host that issues a grant later checks the
+    /// vault is still this one.
+    pub vault_id: Option<Vec<u8>>,
+}
+
 /// Who schedules the automatic backup of an imported wallet and signals its
 /// DashPay bring-up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -168,6 +188,72 @@ impl NetworkSession {
             self.ensure_background().await;
         }
         out
+    }
+
+    /// "Require authentication for every payment" (DESIGN-opus §1.8; default
+    /// on). While on, a host issues `Spend` and `PlatformOp` grants on an
+    /// encrypted vault only against a credential, never `Credential::None`
+    /// (dw-app enforces it at its IPC boundary). Stored in this network's
+    /// app.sqlite under the vault's id, so script in a webview cannot change
+    /// it and every new vault (after `destroy`, or a recovery) starts on.
+    pub async fn payment_authentication(
+        self: &Arc<Self>,
+    ) -> Result<PaymentAuthentication, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            let Some(vault_id) = this.vault().vault_id() else {
+                return Ok(PaymentAuthentication {
+                    on: true,
+                    vault_id: None,
+                });
+            };
+            let key = payment_auth_key(&vault_id);
+            let on = this
+                .appdb_op(move |db| {
+                    Ok(db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.as_deref() != Some("0"))
+                })
+                .await?;
+            Ok(PaymentAuthentication {
+                on,
+                vault_id: Some(vault_id),
+            })
+        })
+        .await
+    }
+
+    /// Turns "require authentication for every payment" on or off. Either
+    /// way needs a `ChangeCredential` grant, redeemed before the setting is
+    /// written, on an encrypted vault, so the passphrase:
+    /// `VaultError::NotEncrypted` without one. A vault with no passphrase
+    /// has no credential to ask for, and a value stored then would carry
+    /// over, unasked, to the vault once encrypted. The value is stored for
+    /// the vault that redeemed the grant.
+    pub async fn set_payment_authentication(
+        self: &Arc<Self>,
+        on: bool,
+        grant_id: String,
+    ) -> Result<(), EngineError> {
+        let vault_id = self
+            .vault_op(move |v| {
+                if !v.status().encrypted {
+                    return Err(VaultError::NotEncrypted);
+                }
+                let vault_id = v.vault_id().ok_or(VaultError::NoVault)?;
+                v.redeem_grant(&grant_id, GrantKind::ChangeCredential, None)?;
+                Ok(vault_id)
+            })
+            .await?;
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            let key = payment_auth_key(&vault_id);
+            this.appdb_op(move |db| {
+                db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, (!on).then_some("0"))
+            })
+            .await
+        })
+        .await
     }
 
     /// Dash Core's `walletpassphrase` timer (console, QT-145): locks the

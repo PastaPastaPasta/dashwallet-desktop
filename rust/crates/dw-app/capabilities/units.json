@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "units",
+  "description": "Amount formatting and parsing (dash-qt's rules). Granted to the main window only.",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-format-amount",
+    "allow-parse-amount",
+    "allow-unit-name"
+  ]
+}

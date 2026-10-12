@@ -1,0 +1,54 @@
+[package]
+name = "dw-app"
+description = "dashwallet-desktop on Tauri 2: commands, generated TypeScript types and the event bridge over dw-engine, linked in-process (DASHPAY §2.1, E0-13)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+# `tauri build` reads this for the bundle; the binary name matches tauri.conf.json `mainBinaryName`.
+default-run = "dash-wallet"
+
+[lib]
+name = "dw_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dash-wallet"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+# Byte payloads (avatars, raw transactions) cross IPC as base64 strings.
+base64 = "0.22"
+dashcore = { workspace = true }
+dw-coinjoin = { workspace = true }
+dw-console = { workspace = true }
+dw-engine = { workspace = true }
+dw-message = { workspace = true }
+dw-psbt = { workspace = true }
+dw-units = { workspace = true }
+dw-uri = { workspace = true }
+dw-vault = { workspace = true }
+hex = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# TypeScript declarations of every record that crosses the IPC boundary, and
+# the command wrappers built from them (apps/desktop/src/api/generated,
+# checked by `codegen::tests::bindings_are_current`).
+ts-rs = { version = "12", features = ["no-serde-warnings", "serde-json-impl"] }
+thiserror = { workspace = true }
+# `signal`: SIGTERM/SIGINT end the app through its normal exit path.
+tokio = { workspace = true, features = ["signal"] }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tauri = { version = "2.12", features = ["test"] }
+tempfile = { workspace = true }
+# Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
+dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
+# private_tempdir(): engine data roots that pass the storage permission check under any umask.
+dw-testutil = { workspace = true }

@@ -105,6 +105,18 @@ pub struct RegistrationChange {
     pub profile_error: Option<String>,
 }
 
+/// How [`AppDb::adopt_registration_lock`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Adoption {
+    /// A new row holds the lock.
+    Inserted(i64),
+    /// The row that already held the lock.
+    Existing(i64),
+    /// No row holds the lock, and a row of the wallet holds the new row's
+    /// identity index: nothing is written.
+    IndexHeld,
+}
+
 /// How a compare-and-set update ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistrationUpdate {
@@ -182,15 +194,16 @@ impl AppDb {
 
     /// The flow that holds `outpoint`, or a new one at `row` holding it:
     /// keyed on the lock with the unique index's own predicate, so a
-    /// stranded lock's row is reused, never doubled (§3.4 rule 5). Returns
-    /// the row's id and whether this call inserted it.
+    /// stranded lock's row is reused, never doubled (§3.4 rule 5). A new
+    /// row never takes an identity index a row of the wallet holds, in the
+    /// same statement: two keys there would be one.
     pub fn adopt_registration_lock(
         &self,
         wallet_id: &str,
         outpoint: &LockOutpoint,
         row: &NewRegistration,
         now: u64,
-    ) -> Result<(i64, bool)> {
+    ) -> Result<Adoption> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let inserted: Option<i64> = tx
@@ -198,7 +211,9 @@ impl AppDb {
                 "INSERT INTO dp_registration
                      (wallet_id, identity_index, identity, label, temp_label, funding,
                       initial_profile, asset_lock_outpoint, phase, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10
+                 WHERE ?2 IS NULL OR NOT EXISTS (
+                     SELECT 1 FROM dp_registration WHERE wallet_id = ?1 AND identity_index = ?2)
                  ON CONFLICT (wallet_id, asset_lock_outpoint)
                      WHERE asset_lock_outpoint IS NOT NULL
                  DO NOTHING
@@ -219,16 +234,16 @@ impl AppDb {
             )
             .optional()?;
         let adopted = match inserted {
-            Some(id) => (id, true),
-            None => (
-                tx.query_row(
+            Some(id) => Adoption::Inserted(id),
+            None => tx
+                .query_row(
                     "SELECT id FROM dp_registration
                      WHERE wallet_id = ?1 AND asset_lock_outpoint = ?2",
                     params![wallet_id, outpoint.as_str()],
                     |r| r.get(0),
-                )?,
-                false,
-            ),
+                )
+                .optional()?
+                .map_or(Adoption::IndexHeld, Adoption::Existing),
         };
         tx.commit()?;
         Ok(adopted)
@@ -585,19 +600,29 @@ mod tests {
         assert_eq!(
             db.adopt_registration_lock(W, &outpoint(1), &adopted, 3)
                 .unwrap(),
-            (id, false)
+            Adoption::Existing(id)
         );
         let row = db.registration_row(W, id).unwrap().unwrap();
         assert_eq!((row.label.as_str(), row.updated_at), ("alice", 2));
 
-        let (other, inserted) = db
+        let Adoption::Inserted(other) = db
             .adopt_registration_lock(W, &outpoint(2), &adopted, 4)
-            .unwrap();
-        assert!(inserted && other != id);
+            .unwrap()
+        else {
+            panic!("a new row for a new lock");
+        };
+        assert_ne!(other, id);
         assert_eq!(
             db.adopt_registration_lock(W, &outpoint(2), &adopted, 4)
                 .unwrap(),
-            (other, false)
+            Adoption::Existing(other)
+        );
+        assert_eq!(db.registration_rows(W).unwrap().len(), 2);
+        // A third lock at the second's index: no row, the index is held.
+        assert_eq!(
+            db.adopt_registration_lock(W, &outpoint(3), &adopted, 5)
+                .unwrap(),
+            Adoption::IndexHeld
         );
         assert_eq!(db.registration_rows(W).unwrap().len(), 2);
     }

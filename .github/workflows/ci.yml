@@ -1,6 +1,9 @@
 # CI on Linux, macOS and Windows (DEC-13, roadmap T-03).
 #
-# - lint, rust-linux: fmt, clippy and `cargo test --workspace` on Linux.
+# - lint, rust-linux: fmt, clippy and `cargo test --workspace` on Linux; rust-linux then
+#   regenerates the Tauri bindings (apps/desktop/src/api/generated and the E0-13 facade
+#   coverage table) and fails if they differ from the committed ones.
+# - desktop-renderer: the Tauri renderer (apps/desktop): design tokens, tsc and vitest.
 # - swift-linux: the Linux Swift tests (the headless suites of scripts/linux-docker-test.sh
 #   plus DashUICrossTests: the UI T0 tier) with Swift 6.3.3, then the SwiftCrossUI app launched
 #   under Xvfb with a screenshot.
@@ -99,6 +102,41 @@ jobs:
           workspaces: rust -> target
       - run: cargo test --workspace --no-run --locked
       - run: cargo test --workspace --locked --no-fail-fast
+      # E0-13: the TypeScript bindings and the facade coverage table are generated from dw-app;
+      # regenerate them and fail when the committed files differ (or a new file is missing).
+      - name: Regenerate the Tauri bindings and check them in
+        # Also after a failed test step (stale bindings fail it): the diff shows what changed.
+        if: ${{ !cancelled() }}
+        run: |
+          DW_UPDATE_BINDINGS=1 cargo test -p dw-app --lib --locked -- codegen::tests::bindings_are_current coverage::tests::coverage_doc_is_current
+          cd ..
+          git add -N apps/desktop/src/api/generated docs/design/E0-13-facade-coverage.md
+          git diff --exit-code -- apps/desktop/src/api/generated docs/design/E0-13-facade-coverage.md
+
+  desktop-renderer:
+    name: Tauri renderer (tokens, tsc, vitest)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: apps/desktop/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm tokens:check
+      - run: pnpm typecheck
+      - run: pnpm test
 
   swift-linux:
     name: Swift + UI T0 (Linux)

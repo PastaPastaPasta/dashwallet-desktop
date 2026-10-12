@@ -353,13 +353,17 @@ fn finish_gives_no_unindexed_lock_to_a_calling_row(released: bool) {
     lib.hang_at(Call::Fund, When::Before);
     let calling = f.insert(prepared_row(2));
     f.spawn(&lib, calling, Some(f.lease()));
-    eventually("the funding call runs", || {
+    // Inside the library call, its permit's marker durable: `in_call`
+    // alone is set before the permit, when nothing can have signed the lock
+    // yet and Finish rightly recovers it.
+    eventually("the funding call runs", || lib.hung.load(Ordering::SeqCst));
+    assert!(
         f.session
             .platform
             .registrations
             .get((f.wallet, calling))
             .in_call
-    });
+    );
     let views = Views::new(&f.session.leases, f.wallet);
     if released {
         views.set_released(calling, crate::events::unix_now() - 2 * 3600);
@@ -384,6 +388,115 @@ fn finish_gives_no_unindexed_lock_to_a_calling_row(released: bool) {
     assert_eq!(f.rows().len(), 1, "a recovery row for a contested lock");
     assert_eq!(report.still_pending, 2, "the step and the lock: {report:?}");
     f.kill(calling);
+}
+
+/// The window before P2b's marker, which the test above waits past:
+/// `calling` is set (OD-05) and the step has no marker yet. Nothing can
+/// have signed (the marker is durable before the library starts), so an
+/// unindexed lock is `Free`, never the calling row's (`¬calling`, §5.1), and
+/// Finish gives it to a recovery row at a fresh index (§6). The call then
+/// funds its own lock at its own index.
+#[test]
+fn finish_before_the_marker_gives_an_unindexed_lock_to_recovery() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.permit_hold.store(true, Ordering::SeqCst);
+    let calling = f.insert(prepared_row(2));
+    f.spawn(&lib, calling, Some(f.lease()));
+    eventually("the call waits for its permit", || {
+        lib.hung.load(Ordering::SeqCst)
+    });
+    assert!(
+        f.session
+            .platform
+            .registrations
+            .get((f.wallet, calling))
+            .in_call
+    );
+    let steps = f.session.leases.registration_funding_steps(f.wallet);
+    assert!(steps.is_ok_and(|s| s.is_empty()), "no marker yet");
+    let lock = lib.lock_at(0, LockStatus::RecoveredFromChain);
+    f.engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
+    let row = f.row(calling);
+    assert_eq!(
+        (phase(&row), row.asset_lock_outpoint),
+        (Phase::KeysPrepared, None),
+        "Finish gave the calling row a lock"
+    );
+    let [recovery] = held_by(&f, lock)[..] else {
+        panic!("no recovery row: {:?}", f.rows());
+    };
+    assert_ne!(recovery, calling);
+    assert_ne!(f.row(recovery).identity_index, Some(2));
+    lib.hang_at(Call::WaitProof, When::Before);
+    lib.permit_hold.store(false, Ordering::SeqCst);
+    eventually("the call funds its own lock", || {
+        flow::outpoint_of(&f.row(calling)).is_some()
+    });
+    assert_ne!(flow::outpoint_of(&f.row(calling)), Some(lock));
+    assert_eq!(held_by(&f, lock), [recovery]);
+    assert_eq!(lib.counts().0, 1);
+    f.kill(calling);
+}
+
+/// Sol f1 r2: with the wallet's highest identity index at `u32::MAX`,
+/// "Finish transfers" gives a recovered lock no row rather than one at an
+/// index in use (`next_index` once saturated there): the lock stays
+/// pending.
+#[test]
+fn finish_adopts_no_lock_once_no_identity_index_is_left() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().identities.push((u32::MAX, "taken".into()));
+    let lock = lib.lock_at(0, LockStatus::RecoveredFromChain);
+    let report = f
+        .engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
+    assert!(f.rows().is_empty(), "{:?}", f.rows());
+    assert!(held_by(&f, lock).is_empty());
+    assert_eq!(report.still_pending, 1, "the lock: {report:?}");
+}
+
+/// Sol f1 r2: a new flow takes no index once none is left, and fails for
+/// good instead of taking the highest one in use.
+#[test]
+fn a_flow_fails_once_no_identity_index_is_left() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().identities.push((
+        crate::platform::registration_ledger::MAX_IDENTITY_INDEX,
+        "taken".into(),
+    ));
+    let draft = f.insert(core_row(PLAIN));
+    f.drive(&lib, draft, Some(f.lease()), false);
+    let row = f.row(draft);
+    assert_eq!(row.identity_index, None);
+    assert_eq!(
+        (row.error.as_deref(), row.retryable),
+        (
+            Some(
+                PlatformError::Internal {
+                    detail: String::new()
+                }
+                .code()
+            ),
+            false
+        )
+    );
+    assert_eq!(lib.counts(), (0, 0));
 }
 
 /// Opus-high MN-4 (O), H12: after a failed funding call a tracked lock

@@ -8,7 +8,8 @@ use super::*;
 use crate::platform::DispatchState;
 use crate::platform::lease::mode_b::FundingStepView;
 use crate::platform::registration_ledger::{
-    IndexOwner, Ledger, Owner, Reconcile, Standing, Taker, funded_elsewhere, funding_cancelled,
+    IndexOwner, Ledger, MAX_IDENTITY_INDEX, NoIndex, Owner, Reconcile, Standing, Taker,
+    funded_elsewhere, funding_cancelled,
 };
 
 fn txid(b: u8) -> Txid {
@@ -652,19 +653,25 @@ fn gates_by_standing() {
     // next_index skips every step's key index: standing, settled or
     // cancelled (I12).
     let l = ledger(vec![], vec![row(1, 1)], vec![unknown(4, 9)]);
-    assert_eq!(l.next_index(), 10);
+    assert_eq!(l.next_index(), Ok(10));
     let l = ledger(
         vec![],
         vec![row(1, 1)],
         vec![step(4, 9, Some(DispatchState::NotSent), &[])],
     );
-    assert_eq!(l.next_index(), 10);
+    assert_eq!(l.next_index(), Ok(10));
     let l = ledger(
         vec![lock(9, 9, LockStatus::Consumed)],
         vec![row(1, 1)],
         vec![exact(4, 9, txid(9))],
     );
-    assert_eq!(l.next_index(), 10);
+    assert_eq!(l.next_index(), Ok(10));
+    // Sol f1 r2: never an index in use, nor one past the last hardened
+    // child. A row at `u32::MAX` once saturated to `u32::MAX`.
+    let at = |index| ledger(vec![], vec![row(1, index)], vec![]).next_index();
+    assert_eq!(at(MAX_IDENTITY_INDEX - 1), Ok(MAX_IDENTITY_INDEX));
+    assert_eq!(at(MAX_IDENTITY_INDEX), Err(NoIndex::Exhausted));
+    assert_eq!(at(u32::MAX), Err(NoIndex::Exhausted));
     // index_owner's step arm: an outstanding step `Unknown`, else `Taken`.
     let l = ledger(vec![], vec![row(1, 9)], vec![unknown(4, 9)]);
     assert_eq!(l.index_owner(&row(1, 9), 9), IndexOwner::Unknown);
