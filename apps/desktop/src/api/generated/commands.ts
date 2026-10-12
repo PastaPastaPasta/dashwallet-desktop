@@ -1543,6 +1543,21 @@ export function dispatchStatus(walletId: string, artifact: string): Promise<Disp
 }
 
 /**
+ * Repair's "Resolve stuck funding: send all coins to yourself" for the
+ * funding step `step` of the wallet (`registration/<draft>/funding` or
+ * `topup/<id>/funding`, as `dispatchStatus` names it; E0-04 §6.5).
+ * `grant` is a `spend` grant or a lease with a Spend budget, as for
+ * `draftPrepare`: the self-spend's outflow is its fee. Refused
+ * `stuck_funding` with the refusal and whether the same Repair may
+ * succeed later (`retryLater`); on success the step keeps reading
+ * `maybeSent` (or `willBeSent`) until the wallet sees the self-spend
+ * ChainLocked.
+ */
+export function resolveStuckFunding(walletId: string, step: string, grant: string): Promise<BroadcastOutcome> {
+  return invoke<BroadcastOutcome>("resolve_stuck_funding", { walletId, step, grant });
+}
+
+/**
  * Redeems `grants` (vault grant ids) into one lease for `flow` and
  * returns its id, which the wallet's calls accept as their `grant` for
  * the purposes the lease carries. `endFlow` releases it.
@@ -2061,6 +2076,7 @@ export type CommandArgs = {
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
   dispatch_status: { walletId: string; artifact: string };
+  resolve_stuck_funding: { walletId: string; step: string; grant: string };
   begin_flow: { walletId: string; flow: FlowKindName; grants: Array<string> };
   end_flow: { lease: string };
   leases: {  };
@@ -2283,6 +2299,7 @@ export type CommandResults = {
   credits_withdraw: WithdrawOutcome;
   grant_request: GrantRequest;
   dispatch_status: DispatchStateName | null;
+  resolve_stuck_funding: BroadcastOutcome;
   begin_flow: string;
   end_flow: null;
   leases: Array<Lease>;
@@ -2507,6 +2524,7 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_withdraw: "identity",
   grant_request: "identity",
   dispatch_status: "identity",
+  resolve_stuck_funding: "identity",
   begin_flow: "identity",
   end_flow: "identity",
   leases: "identity",
@@ -2595,6 +2613,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "address_not_mine",
   "internal",
   "outpoint_not_found",
+  "stuck_funding",
   "vault.no_vault",
   "vault.already_exists",
   "vault.locked",
@@ -2733,6 +2752,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "contact.channel_broken",
   "contact.payment_locked",
   "contact.scan_expired",
+  "contact.scan_unverified",
+  "contact.no_username",
   "invitation.invalid",
   "invitation.claimed",
   "invitation.expired",

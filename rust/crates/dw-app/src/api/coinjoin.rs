@@ -563,6 +563,10 @@ pub struct MixedCoinsSweepResult {
     pub remaining: u64,
     /// The code of the error that stopped the sweep; `null` when complete.
     pub failure_code: Option<String>,
+    /// With `coinjoin.broadcast_unknown`: the chunk that may be on the
+    /// network (display txid), its coins reserved until the wallet sees
+    /// them spent.
+    pub unknown_txid: Option<String>,
 }
 
 impl From<SweepResult> for MixedCoinsSweepResult {
@@ -572,12 +576,14 @@ impl From<SweepResult> for MixedCoinsSweepResult {
             moved,
             remaining,
             failure_code,
+            unknown_txid,
         } = r;
         MixedCoinsSweepResult {
             txids,
             moved,
             remaining,
             failure_code,
+            unknown_txid,
         }
     }
 }

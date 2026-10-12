@@ -43,6 +43,7 @@ codes! {
         AddressNotMine = "address_not_mine",
         Internal = "internal",
         OutpointNotFound = "outpoint_not_found",
+        StuckFunding = "stuck_funding",
     }
 }
 
@@ -203,6 +204,13 @@ impl From<EngineError> for AppError {
             E::Psbt(f) => return f.into(),
             E::CoinJoin(f) => return f.into(),
             E::Masternode(f) => return f.into(),
+            E::StuckFunding(r) => (
+                EngineCode::StuckFunding.into(),
+                Some(ErrorData::StuckFunding {
+                    retry_later: r.retry_later(),
+                    refusal: r.into(),
+                }),
+            ),
         };
         AppError {
             code,
@@ -266,6 +274,7 @@ mod tests {
             E::AddressNotMine(s()),
             E::Internal(s()),
             E::OutpointNotFound(dashcore::OutPoint::null()),
+            E::StuckFunding(dw_engine::platform::lease::StuckFundingRefusal::NoMarker),
         ];
         // Every code of `EngineCode` is one of these (the one-to-one check).
         let mut seen: Vec<&str> = Vec::new();
@@ -309,6 +318,34 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&e).unwrap()["data"],
             serde_json::json!({ "kind": "outpoint", "txid": "0".repeat(64), "vout": u32::MAX })
+        );
+    }
+
+    /// Repair's refusal rides in data with its txid or status, and whether
+    /// the same Repair may succeed later (E0-04 P2b).
+    #[test]
+    fn a_stuck_funding_refusal_rides_in_data() {
+        use dw_engine::platform::lease::StuckFundingRefusal as R;
+        let data = |r: R| {
+            serde_json::to_value(AppError::from(EngineError::StuckFunding(r))).unwrap()["data"]
+                .clone()
+        };
+        let txid = dashcore::OutPoint::null().txid;
+        assert_eq!(
+            data(R::SpendUnsettled(txid)),
+            serde_json::json!({
+                "kind": "stuckFunding",
+                "refusal": { "kind": "spendUnsettled", "txid": "0".repeat(64) },
+                "retryLater": true,
+            })
+        );
+        assert_eq!(
+            data(R::NotStuck(Some(dw_engine::platform::DispatchState::Sent))),
+            serde_json::json!({
+                "kind": "stuckFunding",
+                "refusal": { "kind": "notStuck", "status": "sent" },
+                "retryLater": false,
+            })
         );
     }
 }

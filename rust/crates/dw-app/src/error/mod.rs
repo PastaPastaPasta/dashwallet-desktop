@@ -22,7 +22,8 @@ use serde::Serialize;
 use ts_rs::TS;
 
 use crate::dto::platform::{
-    BudgetPurposeName, EligibilityName, KeyPurposeName, RevokeCauseName, UsernameRuleName,
+    BudgetPurposeName, DispatchStateName, EligibilityName, KeyPurposeName, RevokeCauseName,
+    UsernameRuleName,
 };
 
 pub use engine::{EngineCode, VaultCode};
@@ -222,6 +223,76 @@ pub enum ErrorData {
     KeysNetwork { mainnet: bool },
     /// `psbt.fee_rate_too_high`: the offending fee rate in duffs per kB.
     FeeRate { duffs_per_kb: u64 },
+    /// `stuck_funding`: why Repair refused (E0-04 §6.5), and whether the
+    /// same Repair may succeed later with nothing done by the user.
+    StuckFunding {
+        refusal: StuckFundingRefusalName,
+        retry_later: bool,
+    },
+}
+
+/// Why Repair refused a stuck funding step (E0-04 §6.5; the engine's
+/// `StuckFundingRefusal`). Txids are display hex.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum StuckFundingRefusalName {
+    /// The wallet's tracked asset locks were not read yet this session.
+    RowsUnknown,
+    /// The funding is not stuck: `status` is its dispatch state (`null`:
+    /// it never started).
+    NotStuck {
+        status: Option<DispatchStateName>,
+    },
+    /// No marker of the funding step stands.
+    NoMarker,
+    /// A call of the funding step is running.
+    CallRunning,
+    JournalUnavailable,
+    /// This transaction spends the wallet's coins and is not ChainLocked
+    /// yet: wait for its ChainLock, or abandon it.
+    SpendUnsettled {
+        txid: String,
+    },
+    /// Every coin this asset lock spends is already spent.
+    LockInputsSpent {
+        txid: String,
+    },
+    /// The self-spend spends no input of this signed asset lock.
+    MissesSignedLock {
+        txid: String,
+    },
+    /// This tracked asset lock may be the funding's; its identity is not
+    /// known yet.
+    UnattributedLock {
+        txid: String,
+    },
+    /// No asset lock the funding signed is known.
+    NoKnownLock,
+}
+
+impl From<dw_engine::platform::lease::StuckFundingRefusal> for StuckFundingRefusalName {
+    fn from(r: dw_engine::platform::lease::StuckFundingRefusal) -> Self {
+        use dw_engine::platform::lease::StuckFundingRefusal as R;
+        let txid = |t: dashcore::Txid| t.to_string();
+        match r {
+            R::RowsUnknown => Self::RowsUnknown,
+            R::NotStuck(status) => Self::NotStuck {
+                status: status.map(Into::into),
+            },
+            R::NoMarker => Self::NoMarker,
+            R::CallRunning => Self::CallRunning,
+            R::JournalUnavailable => Self::JournalUnavailable,
+            R::SpendUnsettled(t) => Self::SpendUnsettled { txid: txid(t) },
+            R::LockInputsSpent(t) => Self::LockInputsSpent { txid: txid(t) },
+            R::MissesSignedLock(t) => Self::MissesSignedLock { txid: txid(t) },
+            R::UnattributedLock(t) => Self::UnattributedLock { txid: txid(t) },
+            R::NoKnownLock => Self::NoKnownLock,
+        }
+    }
 }
 
 /// Why `abandon_transaction` or `resend_transaction` refused (QT-105).

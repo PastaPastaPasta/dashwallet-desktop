@@ -25,9 +25,10 @@ use std::sync::Arc;
 use dw_engine::{EngineError, PreparedTx, PsbtFailure, SendFailure, TxDraft};
 
 use self::coins::{CoinSelectionSummary, FeePolicy, OutPoint, Utxo, UtxoFilter};
+pub(crate) use self::draft::BroadcastOutcome;
 use self::draft::{
-    BroadcastOutcome, ChangePolicy, CoinSource, FeeMode, PreparedTxHandle, PreparedTxSummary,
-    PsbtAnalysis, Recipient, TxEstimate,
+    ChangePolicy, CoinSource, FeeMode, PreparedTxHandle, PreparedTxSummary, PsbtAnalysis,
+    Recipient, TxEstimate,
 };
 use self::uri::{AddressClass, QrMatrix, UriParse};
 use crate::error::AppError;

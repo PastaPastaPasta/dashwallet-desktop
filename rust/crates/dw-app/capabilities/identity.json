@@ -37,6 +37,7 @@
     "allow-credits-withdraw",
     "allow-grant-request",
     "allow-dispatch-status",
+    "allow-resolve-stuck-funding",
     "allow-begin-flow",
     "allow-end-flow",
     "allow-leases",

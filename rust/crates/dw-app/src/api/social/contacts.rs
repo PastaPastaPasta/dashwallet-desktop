@@ -2,7 +2,8 @@
 
 use dw_engine::platform::{
     ChannelState, ContactDetail, ContactQuery, ContactSection, ContactSectionPage, ContactSort,
-    ContactSummary, ContactsPage, PrivateDetails, PublishState, RequestOutcome, ScannedContact,
+    ContactSummary, ContactsPage, PrivateDetails, PublishState, RequestOutcome, ScannedCode,
+    ScannedContact,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -267,6 +268,34 @@ impl From<RequestOutcome> for ContactRequestOutcome {
     }
 }
 
+/// The kind of a scanned code (m4 §2.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ScannedCodeInfo {
+    /// A `dashpay://user` link: the name and its identity, nothing more.
+    UserLink,
+    /// A DIP-15 code with an auto-accept key: `scan` is an id the engine
+    /// holds in memory until `expiresAt` (UNIX seconds); pass it as `scan`
+    /// to `dashpaySendRequest`. Its claim that the recipient accepts on its
+    /// own is unconfirmed: a request sent with it is pending like any other.
+    AutoAcceptClaim { scan: String, expires_at: u64 },
+}
+
+impl From<ScannedCode> for ScannedCodeInfo {
+    fn from(c: ScannedCode) -> Self {
+        match c {
+            ScannedCode::UserLink => Self::UserLink,
+            ScannedCode::AutoAcceptClaim { scan, expires_at } => {
+                Self::AutoAcceptClaim { scan, expires_at }
+            }
+        }
+    }
+}
+
 /// A scanned or pasted contact, verified against Platform.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -274,9 +303,8 @@ pub struct ScannedContactInfo {
     pub identity: String,
     pub username: Option<String>,
     pub display_name: Option<String>,
-    /// Set when the payload carried an auto-accept proof: an id the engine
-    /// holds in memory; pass it as `scan` to `dashpaySendRequest`.
-    pub scan: Option<String>,
+    /// What was scanned, and what it claims beyond the name.
+    pub code: ScannedCodeInfo,
     pub relation: UserRelation,
     /// Verified only through the trusted fallback.
     pub unverified: bool,
@@ -288,7 +316,7 @@ impl From<ScannedContact> for ScannedContactInfo {
             identity,
             username,
             display_name,
-            scan,
+            code,
             relation,
             unverified,
         } = s;
@@ -296,7 +324,7 @@ impl From<ScannedContact> for ScannedContactInfo {
             identity,
             username,
             display_name,
-            scan,
+            code: code.into(),
             relation: relation.into(),
             unverified,
         }

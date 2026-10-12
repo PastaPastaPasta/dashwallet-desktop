@@ -26,6 +26,7 @@ use self::registration::{
     FaucetLockKey, FinishReport, RegistrationQuote, RegistrationRequest, RegistrationStatus,
 };
 use self::startup::{DashPayStatus, DashPaySyncStatus, QuorumSource, SyncPassReport};
+use crate::api::send::BroadcastOutcome;
 use crate::dto::platform::{DispatchStateName, FlowKindName, Lease};
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
@@ -42,6 +43,14 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     (
         "NetworkSession::lease_table",
         "internal: the engine's lease table; the renderer reads `leases` and its views",
+    ),
+    (
+        "NetworkSession::coin_fence",
+        "internal: the wallet's coin fence, which the engine's own flows take and pass to `funding_call_permit`; a host never holds it",
+    ),
+    (
+        "NetworkSession::funding_call_permit",
+        "internal: Mode B funding calls take their permit inside the engine (E0-04 P2b); it takes the engine's owning `Lease` and a `CoinFence`, which a host never holds",
     ),
     (
         "NetworkSession::rebind_lease",
@@ -321,6 +330,27 @@ commands! {
     ) -> Option<DispatchStateName> {
         let status = state.dashpay(&wallet_id).await?.dispatch_status(artifact).await?;
         Ok(status.map(Into::into))
+    }
+
+    /// Repair's "Resolve stuck funding: send all coins to yourself" for the
+    /// funding step `step` of the wallet (`registration/<draft>/funding` or
+    /// `topup/<id>/funding`, as `dispatchStatus` names it; E0-04 §6.5).
+    /// `grant` is a `spend` grant or a lease with a Spend budget, as for
+    /// `draftPrepare`: the self-spend's outflow is its fee. Refused
+    /// `stuck_funding` with the refusal and whether the same Repair may
+    /// succeed later (`retryLater`); on success the step keeps reading
+    /// `maybeSent` (or `willBeSent`) until the wallet sees the self-spend
+    /// ChainLocked.
+    #[facade("NetworkSession::resolve_stuck_funding")]
+    fn resolve_stuck_funding(
+        state,
+        wallet_id: String,
+        step: String,
+        grant: String,
+    ) -> BroadcastOutcome {
+        let id = parse_wallet_id(&wallet_id)?;
+        let session = state.session().await?;
+        Ok(session.resolve_stuck_funding(id, step, grant).await?.into())
     }
 
     /// Redeems `grants` (vault grant ids) into one lease for `flow` and

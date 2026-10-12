@@ -67,6 +67,8 @@ codes! {
         ChannelBroken = "contact.channel_broken",
         PaymentLocked = "contact.payment_locked",
         ScanExpired = "contact.scan_expired",
+        ScanUnverified = "contact.scan_unverified",
+        NoUsername = "contact.no_username",
     }
 }
 
@@ -251,6 +253,8 @@ impl From<ContactError> for AppError {
                 (ContactCode::PaymentLocked, Some(ErrorData::Txid { txid }))
             }
             C::ScanExpired => (ContactCode::ScanExpired, None),
+            C::ScanUnverified => (ContactCode::ScanUnverified, None),
+            C::NoUsername => (ContactCode::NoUsername, None),
             C::Platform(e) => return e.into(),
         };
         AppError {
@@ -404,6 +408,8 @@ mod tests {
             ContactError::ChannelBroken,
             ContactError::PaymentLocked { txid: s() },
             ContactError::ScanExpired,
+            ContactError::ScanUnverified,
+            ContactError::NoUsername,
             ContactError::Platform(PlatformError::Unavailable),
         ];
         for e in contacts {
