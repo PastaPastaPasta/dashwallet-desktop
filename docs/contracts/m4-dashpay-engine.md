@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 12
+Contract-Version: 14
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -213,7 +213,7 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 | `finish_asset_locks(grant)` | async | Tools ▸ Repair "Finish transfers": resumes tracked asset locks that no flow finished. Not gated by the journal: it resumes committed locks and builds none. | `RegistrationError` |
 | `prepare_faucet_lock(grant)` | async | Developer builds only. Derives a fresh registration asset-lock key (`m/9'/c'/5'/1'/…`) and returns its id and compressed public key for the faucet's `POST /api/asset-lock-proof` (§5). Outside developer builds: `platform.feature_off{feature: "faucet"}`. | `RegistrationError` |
 
-**Done (DP1-02, Contract-Version 12, item 40; its review rounds added `registration.coins_locked` (Sol r1, DEC-171),
+**Done (DP1-02, Contract-Version 14, item 40; its review rounds added `registration.coins_locked` (Sol r1, DEC-171),
 `RegistrationStatus.name_failure` and `profile_failure` (Opus-high), `RegistrationError::InProgress { draft }` and
 `RegistrationWait::FundingUnknown` (the ownership model), the row failures `registration.funded_elsewhere` and
 `registration.funding_cancelled` (its rev2), `start_registration_past_unknown_funding`, `registration.not_synced` and
@@ -538,7 +538,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 31fbc38633f46fee0fcfd4ca8c9f792a49619184bb171541ef5c44e24627ea85 version: 12 -->
+<!-- surface-sha256: 31fbc38633f46fee0fcfd4ca8c9f792a49619184bb171541ef5c44e24627ea85 version: 14 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2011,7 +2011,7 @@ renames or reshapes them takes the next version bump:
     and for a resumable step whose call returned Ok. Repair's "Resolve stuck funding" is engine-internal
     (`NetworkSession::resolve_stuck_funding`) until DP1-02 gives it its facade call.
 
-**From DP1-02** (version 12):
+**From DP1-02** (version 14):
 
 40. **Identity registration** (§2.2, "Done (DP1-02 …)"). The registration rows get real bodies:
     `registration_quote`, `start_registration`, `registrations`, `resume_registration`, `discard_registration`,

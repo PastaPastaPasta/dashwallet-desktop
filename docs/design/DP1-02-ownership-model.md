@@ -422,7 +422,7 @@ lock's true signer must be wedged). Without this the model check's liveness fail
 lock of unknown index stayed `Contested` for good, and the new row's index read `Unknown` (it
 would wait for a ChainLock that never settles the contest). Residual: until the user runs
 Finish, a new row that is open and unfunded when such a lock shows up reads its index `Unknown`
-and waits with `RegistrationWait::NeedsFinish` (m4 Contract-Version 12: only such locks leave its
+and waits with `RegistrationWait::NeedsFinish` (m4 Contract-Version 14: only such locks leave its
 index unattributed; otherwise it waits `ChainLock`); after Finish it funds at its own index.
 
 **The release time** (DEC-197's seam, the P2b r7 ask, added on P2b's merged code). J keeps
