@@ -910,6 +910,64 @@ fn a_slow_last_open_ends_the_settle() {
     assert_eq!((f.shown(BOB), f.recorded(BOB)), (shown, None));
 }
 
+/// A write's read-back holds the deadline after its last open too: past
+/// it the read-back finds nothing, and the edit stays `Local`.
+#[test]
+fn a_late_read_back_finds_nothing() {
+    let f = published();
+    f.net.landed.store(true, Ordering::SeqCst);
+    *f.net.fails.lock().unwrap() = Some(PlatformError::Timeout);
+    {
+        let mut hooks = guard(&f.s.platform.contacts.read_hooks);
+        hooks.budget = Some(Duration::from_secs(2));
+        hooks.open_delay = Some(Duration::from_secs(4));
+    }
+    assert_eq!(
+        Fixture::code(f.set(ERIN, details("Erin"), Some(f.lease()))),
+        "platform.timeout"
+    );
+    assert!(f.opens() >= 1);
+    assert_eq!((f.shown(ERIN), f.recorded(ERIN)), (details("Erin"), None));
+}
+
+/// A settle past its deadline when its apply phase would start applies
+/// nothing.
+#[test]
+fn a_settle_past_its_deadline_applies_nothing() {
+    let f = published();
+    f.publish_elsewhere(BOB, &details("Bobby"));
+    guard(&f.s.platform.contacts.read_hooks).budget = Some(Duration::from_secs(1));
+    let pause = Arc::new(TestPause::default());
+    *guard(&f.s.platform.contacts.settle_pause) = Some(Arc::clone(&pause));
+    let shown = f.shown(BOB);
+    let settling = f.settle_in_background();
+    wait_until("the settle's snapshot", Duration::from_secs(20), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    std::thread::sleep(Duration::from_millis(1200));
+    pause.release.notify_one();
+    assert!(!f.engine.block_on(settling).unwrap());
+    assert_eq!((f.shown(BOB), f.recorded(BOB)), (shown, None));
+}
+
+/// A settle that read the wallet before an unload writes nothing once it
+/// is loaded again: what it read is not the wallet loaded.
+#[test]
+fn a_settle_across_an_unload_writes_nothing() {
+    let f = published();
+    f.publish_elsewhere(BOB, &details("Bobby"));
+    let pause = Arc::new(TestPause::default());
+    *guard(&f.s.platform.contacts.settle_pause) = Some(Arc::clone(&pause));
+    let settling = f.settle_in_background();
+    wait_until("the settle's snapshot", Duration::from_secs(20), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    f.engine.block_on(f.s.unload_wallet(f.wallet)).unwrap();
+    f.engine.block_on(f.s.load_wallet(f.wallet)).unwrap();
+    pause.release.notify_one();
+    assert!(!f.engine.block_on(settling).unwrap());
+}
+
 /// A settle that read its contacts before the wallet's removal writes
 /// nothing of the wallet afterwards: no row, nothing in memory, no
 /// details.
