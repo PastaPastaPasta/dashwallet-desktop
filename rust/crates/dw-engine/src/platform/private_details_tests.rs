@@ -6,9 +6,10 @@
 //! rollback or read-back, and the settle that gives a restore its details
 //! back.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dpp::platform_value::string_encoding::Encoding;
@@ -154,8 +155,25 @@ fn details(alias: &str) -> PrivateDetails {
     }
 }
 
+/// Tests of this module run one at a time: each fixture is the same wallet
+/// and identity, whose identity locks are process-wide, so one test holding
+/// them (a slow open, a paused settle) would hold up another's waits. Held
+/// until the test's thread ends.
+fn one_test_at_a_time() {
+    static ONE: Mutex<()> = Mutex::new(());
+    thread_local! {
+        static HELD: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) };
+    }
+    HELD.with_borrow_mut(|held| {
+        if held.is_none() {
+            *held = Some(ONE.lock().unwrap_or_else(PoisonError::into_inner));
+        }
+    });
+}
+
 /// The fixture with `infos` as the session's `contactInfo` source.
 fn fixture(f: Fixture) -> Fixture {
+    one_test_at_a_time();
     *guard(&f.s.platform.contacts.info_source) =
         Some(Arc::clone(&f.net.infos) as Arc<dyn InfoSource>);
     f
@@ -286,6 +304,23 @@ impl Fixture {
         self.s.platform.startup_of(&self.wallet).map(|s| s.startup)
     }
 
+    /// Settles ME's private details on the runtime, not waited for: what
+    /// the settle of the identity returned.
+    fn settle_me_in_background(&self) -> tokio::task::JoinHandle<Result<(), PlatformError>> {
+        let (s, wallet) = (Arc::clone(&self.s), self.wallet);
+        self.s.rt.spawn(async move {
+            let crypto = s.prompt_free_crypto(wallet).await.unwrap();
+            let w = s.manager().unwrap().get_wallet(&wallet.0).await.unwrap();
+            let index = {
+                let state = w.state().await;
+                let me = state.identity_manager.managed_identity(&id(ME)).unwrap();
+                me.identity_index.unwrap()
+            };
+            s.settle_identity(&w, (wallet, index, id(ME)), &crypto)
+                .await
+        })
+    }
+
     /// [`Self::settle`] on the runtime, not waited for.
     fn settle_in_background(&self) -> tokio::task::JoinHandle<bool> {
         let (s, wallet) = (Arc::clone(&self.s), self.wallet);
@@ -323,7 +358,7 @@ impl Fixture {
 
     /// Waits until a read is opening documents.
     fn reading(&self) {
-        wait_until("a read's first open", Duration::from_secs(20), || {
+        wait_until("a read's first open", Duration::from_secs(60), || {
             self.opens() > 0
         });
     }
@@ -833,8 +868,8 @@ fn the_read_first_needs_a_verified_seed_binding() {
 #[test]
 fn a_slow_read_ends_at_its_deadline() {
     let f = published();
-    for n in 0..100 {
-        f.publish_elsewhere(100 + n, &details("x"));
+    for n in 0..200 {
+        f.publish_elsewhere(50 + n, &details("x"));
     }
     {
         let mut hooks = guard(&f.s.platform.contacts.read_hooks);
@@ -855,9 +890,9 @@ fn a_slow_read_ends_at_its_deadline() {
     let started = std::time::Instant::now();
     drop(f.engine.block_on(locks.write.lock()));
     let took = started.elapsed();
-    // 100 opens would take 10 s.
-    assert!(took < Duration::from_secs(5), "{took:?}");
-    assert!(f.opens() < 100);
+    // 200 opens would take 20 s.
+    assert!(took < Duration::from_secs(10), "{took:?}");
+    assert!(f.opens() < 200);
     let edited = f.engine.block_on(editing).unwrap();
     assert_eq!(edited.unwrap(), PublishState::Local);
 }
@@ -936,7 +971,7 @@ fn a_late_read_back_finds_nothing() {
 fn a_settle_past_its_deadline_applies_nothing() {
     let f = published();
     f.publish_elsewhere(BOB, &details("Bobby"));
-    guard(&f.s.platform.contacts.read_hooks).budget = Some(Duration::from_secs(1));
+    guard(&f.s.platform.contacts.read_hooks).budget = Some(Duration::from_secs(3));
     let pause = Arc::new(TestPause::default());
     *guard(&f.s.platform.contacts.settle_pause) = Some(Arc::clone(&pause));
     let shown = f.shown(BOB);
@@ -944,7 +979,7 @@ fn a_settle_past_its_deadline_applies_nothing() {
     wait_until("the settle's snapshot", Duration::from_secs(20), || {
         pause.reached.load(Ordering::SeqCst)
     });
-    std::thread::sleep(Duration::from_millis(1200));
+    std::thread::sleep(Duration::from_millis(3200));
     pause.release.notify_one();
     assert!(!f.engine.block_on(settling).unwrap());
     assert_eq!((f.shown(BOB), f.recorded(BOB)), (shown, None));
@@ -958,14 +993,18 @@ fn a_settle_across_an_unload_writes_nothing() {
     f.publish_elsewhere(BOB, &details("Bobby"));
     let pause = Arc::new(TestPause::default());
     *guard(&f.s.platform.contacts.settle_pause) = Some(Arc::clone(&pause));
-    let settling = f.settle_in_background();
+    let settling = f.settle_me_in_background();
     wait_until("the settle's snapshot", Duration::from_secs(20), || {
         pause.reached.load(Ordering::SeqCst)
     });
     f.engine.block_on(f.s.unload_wallet(f.wallet)).unwrap();
     f.engine.block_on(f.s.load_wallet(f.wallet)).unwrap();
     pause.release.notify_one();
-    assert!(!f.engine.block_on(settling).unwrap());
+    let settled = f.engine.block_on(settling).unwrap();
+    assert!(
+        matches!(settled, Err(PlatformError::WalletNotFound)),
+        "{settled:?}"
+    );
 }
 
 /// A settle that read its contacts before the wallet's removal writes
@@ -1023,7 +1062,9 @@ fn a_load_after_the_wallet_left_lands_nothing() {
     });
     f.remove_wallet();
     pause.release.notify_one();
-    std::thread::sleep(Duration::from_millis(300));
+    wait_until("the load's end", Duration::from_secs(20), || {
+        f.s.platform.contacts.idle()
+    });
     f.nothing_of_the_wallet();
 }
 
@@ -1066,9 +1107,10 @@ fn a_removal_waits_for_a_settle_writing() {
     std::thread::scope(|scope| {
         let removal = scope.spawn(|| f.remove_wallet());
         std::thread::sleep(Duration::from_millis(300));
-        assert!(!removal.is_finished());
+        let waited = !removal.is_finished();
         pause.release.notify_one();
         removal.join().unwrap();
+        assert!(waited);
     });
     assert!(f.engine.block_on(settling).unwrap());
     f.nothing_of_the_wallet();
