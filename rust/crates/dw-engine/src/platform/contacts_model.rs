@@ -279,7 +279,7 @@ pub(super) struct Join<'a> {
     /// When a transaction happened, UNIX seconds.
     pub(super) tx_time: &'a dyn Fn(&Txid) -> Option<u64>,
     /// What `dp_contact_info` records of the owner's details of a contact
-    /// (DP2-04); `None` too when it cannot be read.
+    /// (DP2-04), from memory; `None` too until the wallet's digests load.
     pub(super) published: &'a dyn Fn(&Identifier) -> Option<[u8; 32]>,
 }
 
@@ -460,9 +460,14 @@ pub(crate) struct ContactsRuntime {
     refreshing: Arc<Mutex<BTreeSet<WalletId>>>,
     pub(super) names: ContactNames,
     tasks: Mutex<Tasks>,
+    /// `dp_contact_info` in memory (DP2-04).
+    pub(super) digests: Arc<super::private_details::DigestCache>,
     /// Tests: replaces the SDK's `contactInfo` reads.
     #[cfg(test)]
     pub(super) info_source: Arc<Mutex<Option<Arc<dyn super::private_details::InfoSource>>>>,
+    /// Tests: what those reads see.
+    #[cfg(test)]
+    pub(super) read_hooks: Mutex<super::private_details::ReadHooks>,
 }
 
 #[derive(Default)]
@@ -476,6 +481,7 @@ impl ContactsRuntime {
         guard(&self.snapshots).remove(id);
         guard(&self.refreshing).remove(id);
         self.names.forget(id);
+        self.digests.forget(id);
     }
 
     /// Runs `task` on `rt` until it ends or the session closes; once closed
@@ -594,8 +600,7 @@ impl NetworkSession {
         if owned.is_none() && !updating {
             return Err(PlatformError::from(IdentityError::NotFound).into());
         }
-        let live = self.live().map_err(PlatformError::from)?;
-        let (provenance, appdb) = (live.provenance, live.appdb);
+        let provenance = self.live().map_err(PlatformError::from)?.provenance;
         let names = &self.platform.contacts.names;
         let unverified = |e: &Entity| provenance.is_unverified(e);
         // Block times only (DEC-114): an unconfirmed payment has none yet.
@@ -606,13 +611,11 @@ impl NetworkSession {
             _ => None,
         };
         let username = |c: &Identifier| names.label(c);
-        let (wallet, owner) = (id.to_string(), b58(&owner));
-        let published = |contact: &Identifier| {
-            (appdb.contact_info_digest(&wallet, &owner, &b58(contact)))
-                .inspect_err(|e| tracing::warn!(error = %e, "reading a contactInfo digest"))
-                .ok()
-                .flatten()
-        };
+        // Memory only (m4 §1); the first read of a wallet loads its digests
+        // in the background and signals when they land.
+        self.load_digests(id);
+        let digests = &self.platform.contacts.digests;
+        let published = |contact: &Identifier| digests.get(id, &owner, contact);
         let join = Join {
             username: &username,
             unverified: &unverified,

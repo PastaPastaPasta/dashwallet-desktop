@@ -1655,6 +1655,68 @@ fn concurrent_main_identity_writes_leave_the_cache_as_the_database() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+/// A settle requires a verified seed binding, after an unlock too, where
+/// the contact-crypto drain had nothing queued and so checked nothing
+/// (Sol r1 S1): with keys of another seed in the vault, an empty read
+/// changes no recorded digest, and the wallet reports
+/// `SeedBindingUnverified`.
+#[test]
+fn an_unlock_settle_needs_a_verified_seed_binding() {
+    const BOB: [u8; 32] = [9; 32];
+    const CAROL: [u8; 32] = [10; 32];
+    let bob = PrivateDetails {
+        alias: Some("Bobby".into()),
+        ..PrivateDetails::default()
+    };
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        contacts: vec![(ALICE, BOB), (ALICE, CAROL)],
+        ..Platform::default()
+    });
+    let (engine, s) = session_with(dir.path(), platform, Some(PASSPHRASE));
+    let infos = Arc::new(FakeInfos::default());
+    *guard(&s.platform.contacts.info_source) = Some(Arc::clone(&infos) as Arc<dyn InfoSource>);
+    let id = restore(&engine, &s);
+    engine.block_on(async {
+        let crypto = s.prompt_free_crypto(id).await.unwrap();
+        infos
+            .seal(&crypto, (ALICE.into(), 0, BOB.into()), &bob)
+            .await;
+    });
+    start(&engine, &s);
+    let dp = s.dashpay(id);
+    let state = |contact| {
+        let d = dp.contact(base58(ALICE), base58(contact)).ok().flatten()?;
+        Some(d.publish_state)
+    };
+    wait_until("the details", || {
+        state(BOB) == Some(PublishState::Published)
+    });
+    wait_until("an empty contact-crypto queue", || {
+        let startup = s.dashpay_startup(&id).unwrap();
+        startup.startup == StartupStatus::Ready && startup.contact_accounts_pending == 0
+    });
+
+    infos.remove(ALICE.into(), BOB.into());
+    engine
+        .block_on(s.vault_op(move |v| {
+            v.delete_wallet_secret(&id.0)?;
+            v.store_wallet_secret(&id.0, &super::private_details_tests::other_seed())
+        }))
+        .unwrap();
+    s.lock_vault_sync().unwrap();
+    engine
+        .block_on(s.vault_op(|v| v.unlock(PASSPHRASE, UnlockScope::Full)))
+        .unwrap();
+    wait_until("the settle's check", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::SeedBindingUnverified
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(state(BOB), Some(PublishState::Published));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// ROADMAP DP2-04's acceptance: a restored wallet gets its contacts'
 /// private details back. Another device of the seed published them (its
 /// own engine and vault); a restore into a fresh datadir reads them after

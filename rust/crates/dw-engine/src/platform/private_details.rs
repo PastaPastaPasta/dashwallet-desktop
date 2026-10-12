@@ -20,8 +20,8 @@
 //! edit reads Platform first. A write that failed once signed keeps the
 //! edit until a read finds whether it landed.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dash_sdk::platform::{DocumentQuery, FetchMany};
@@ -30,12 +30,16 @@ use dpp::document::{Document, DocumentV0Getters};
 use dpp::identity::Identity;
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::platform_value::Value;
+use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dw_appdb::{AppDb, AppDbError};
 use platform_wallet::wallet::identity::crypto::contact_info::{
     ContactInfoPrivateData, MAX_PLAINTEXT_LEN, decode_private_data, encode_private_data,
 };
-use platform_wallet::{ContactInfoPublishOutcome, EstablishedContact, PlatformWallet};
+use platform_wallet::{
+    ContactInfoPublishOutcome, EstablishedContact, PlatformWallet, PlatformWalletError,
+};
+use tokio::time::Instant;
 
 pub(super) use super::contact_names::BoxedFuture;
 use super::contacts::{Eligibility, PrivateDetails, PublishState};
@@ -46,19 +50,21 @@ use super::keys_policy::{key_path, missing_dashpay_purposes};
 use super::lease::FlowOutcome;
 use super::registration_flow::b58;
 use super::requests::{Pair, RequestNet, leased, not_found, prepare};
-#[cfg(test)]
 use super::runtime::guard;
 use super::signers::VaultContactCrypto;
+use super::startup::StartupStatus;
 use crate::events::unix_now;
 use crate::{NetworkSession, PlatformChange, WalletId};
 
 /// `contactInfo` documents per page of a read.
 const PAGE: u32 = 100;
-/// The most documents one identity's read takes; more is a failed read.
-/// An identity has one per contact it published details for.
+/// The most documents one identity's read takes, counted as Platform
+/// returns them (parsed or not); more fails the read and refuses a
+/// publish. An identity has one per contact it published details for.
 const MAX_DOCUMENTS: usize = 1000;
-/// How long one identity's read may take before it counts as failed, as a
-/// contact's username fetch (`contact_names.rs`).
+/// How long one identity's settle may take, as a contact's username fetch
+/// (`contact_names.rs`): the seed-binding check, the fetch and the opens
+/// under one deadline, checked between opens.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// After a write's read-back failed: when the details are read again, and
 /// how many times, before the next bring-up or unlock does it.
@@ -109,7 +115,7 @@ impl InfoSource for SdkInfos {
         use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
         Box::pin(async move {
             let contract = super::registration_flow::dashpay_contract()?;
-            let mut out = Vec::new();
+            let (mut out, mut raw) = (Vec::new(), 0);
             let mut start = None;
             loop {
                 let mut query = DocumentQuery::new(Arc::clone(&contract), "contactInfo")
@@ -127,16 +133,16 @@ impl InfoSource for SdkInfos {
                 query.start = start.take();
                 let page = Document::fetch_many(&self.0, query).await?;
                 let (len, last) = (page.len(), page.keys().last().copied());
+                // Every entry counts, whether it parses or not.
+                raw += len;
+                if raw > MAX_DOCUMENTS {
+                    return Err(too_many());
+                }
                 out.extend(
                     page.into_values()
                         .flatten()
                         .filter_map(|d| document(&owner, &d)),
                 );
-                if out.len() > MAX_DOCUMENTS {
-                    return Err(PlatformError::Internal {
-                        detail: format!("more than {MAX_DOCUMENTS} contactInfo documents"),
-                    });
-                }
                 match last {
                     Some(id) if len >= PAGE as usize => {
                         start = Some(Start::StartAfter(id.to_buffer().to_vec()));
@@ -238,55 +244,115 @@ pub(super) fn publish_state(
     }
 }
 
-/// Opens `owner`'s documents (identity `index`) with `crypto`: what
-/// Platform holds for each contact, the latest update winning. A signer
-/// that cannot open them (a locked vault) fails the read; a document that
-/// does not open with the wallet's keys (another client's, a corrupt one),
-/// or whose plaintext does not decode, is skipped, as the library skips it.
-/// Documents of which none opens fail the read too: a seed that does not
-/// bind the wallet opens none, and must not read as "Platform holds
-/// nothing" (Opus r2 M1).
-async fn read_platform(
-    source: &dyn InfoSource,
-    crypto: &VaultContactCrypto,
-    (network, index, owner): (key_wallet::Network, u32, Identifier),
-) -> Result<BTreeMap<Identifier, PrivateDetails>, PlatformError> {
-    let documents = tokio::time::timeout(READ_TIMEOUT, source.documents(owner))
-        .await
-        .map_err(|_| PlatformError::Timeout)??;
-    let (total, mut opened_any) = (documents.len(), false);
-    let mut found = BTreeMap::new();
-    for doc in documents {
-        let root = key_path(network, index, doc.root).ok();
-        let opened = match root {
-            Some(root) => crypto.contact_info_open_or_skip(
-                &root,
-                doc.derivation,
-                &doc.enc_to_user_id,
-                &doc.private_data,
-            )?,
-            None => None,
-        };
-        let Some(opened) = opened else {
-            tracing::warn!(owner = %owner, "a contactInfo that does not open with the wallet's keys");
-            continue;
-        };
-        opened_any = true;
-        match decode_private_data(&opened.private_data) {
-            Ok(data) => {
-                found.insert(Identifier::from(opened.contact_id), data.into());
-            }
-            Err(e) => {
-                tracing::warn!(owner = %owner, error = %e, "a contactInfo that does not decode")
-            }
+/// More `contactInfo` documents than the engine reads.
+fn too_many() -> PlatformError {
+    PlatformError::NotImplemented {
+        call: format!("contactInfo with more than {MAX_DOCUMENTS} documents"),
+    }
+}
+
+/// What `dp_contact_info` records, in memory for the sync reads (m4 §1:
+/// `contact` reads memory only): loaded per wallet in the background on
+/// its first read, then written through by every record and forget.
+#[derive(Default)]
+pub(crate) struct DigestCache(Mutex<BTreeMap<WalletId, Cached>>);
+
+#[derive(Default)]
+struct Cached {
+    /// `None` until loaded.
+    rows: Option<BTreeMap<(Identifier, Identifier), [u8; 32]>>,
+    /// Bumped by every write, so a load that read before it reads again.
+    epoch: u64,
+    loading: bool,
+}
+
+impl DigestCache {
+    /// The digest of `owner`'s details of `contact`; `None` too while the
+    /// wallet's digests are not loaded.
+    pub(super) fn get(
+        &self,
+        id: WalletId,
+        owner: &Identifier,
+        contact: &Identifier,
+    ) -> Option<[u8; 32]> {
+        let cache = guard(&self.0);
+        let rows = cache.get(&id)?.rows.as_ref()?;
+        rows.get(&(*owner, *contact)).copied()
+    }
+
+    /// Starts loading wallet `id`: the epoch the load reads at, `None` when
+    /// it is loaded or loading.
+    fn begin_load(&self, id: WalletId) -> Option<u64> {
+        let mut cache = guard(&self.0);
+        let c = cache.entry(id).or_default();
+        if c.rows.is_some() || c.loading {
+            return None;
+        }
+        c.loading = true;
+        Some(c.epoch)
+    }
+
+    /// Lands a load that read at `epoch`; else (a write came in between)
+    /// the epoch to read at again.
+    fn finish_load(
+        &self,
+        id: WalletId,
+        epoch: u64,
+        rows: BTreeMap<(Identifier, Identifier), [u8; 32]>,
+    ) -> Result<(), u64> {
+        let mut cache = guard(&self.0);
+        let c = cache.entry(id).or_default();
+        if c.epoch != epoch {
+            return Err(c.epoch);
+        }
+        (c.rows, c.loading) = (Some(rows), false);
+        Ok(())
+    }
+
+    /// A load that failed: the next read tries again.
+    fn abort_load(&self, id: WalletId) {
+        if let Some(c) = guard(&self.0).get_mut(&id) {
+            c.loading = false;
         }
     }
-    if total > 0 && !opened_any {
-        return Err(PlatformError::Internal {
-            detail: format!("none of {total} contactInfo documents opens with the wallet's keys"),
-        });
+
+    /// After `dp_contact_info` changed for (`owner`, `contact`).
+    fn write(
+        &self,
+        id: WalletId,
+        owner: Identifier,
+        contact: Identifier,
+        digest: Option<[u8; 32]>,
+    ) {
+        let mut cache = guard(&self.0);
+        let c = cache.entry(id).or_default();
+        c.epoch += 1;
+        if let Some(rows) = &mut c.rows {
+            match digest {
+                Some(d) => rows.insert((owner, contact), d),
+                None => rows.remove(&(owner, contact)),
+            };
+        }
     }
-    Ok(found)
+
+    /// The wallet is gone (or its rows are: `delete_wallet`).
+    pub(crate) fn forget(&self, id: &WalletId) {
+        if let Some(c) = guard(&self.0).get_mut(id) {
+            (c.rows, c.epoch) = (None, c.epoch + 1);
+        }
+    }
+}
+
+/// Tests: what `contactInfo` reads see.
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct ReadHooks {
+    /// The document source is gone (`info_source` fails).
+    pub(super) gone: bool,
+    /// Replaces [`READ_TIMEOUT`].
+    pub(super) budget: Option<Duration>,
+    /// Each open takes this long first, blocking, as a slow vault would.
+    pub(super) open_delay: Option<Duration>,
 }
 
 /// The wallet's identity and its contact as platform-wallet holds them.
@@ -337,11 +403,177 @@ async fn save_local(
 impl NetworkSession {
     fn info_source(&self) -> Result<Arc<dyn InfoSource>, PlatformError> {
         #[cfg(test)]
-        if let Some(source) = guard(&self.platform.contacts.info_source).clone() {
-            return Ok(source);
+        {
+            if guard(&self.platform.contacts.read_hooks).gone {
+                return Err(PlatformError::Unavailable);
+            }
+            if let Some(source) = guard(&self.platform.contacts.info_source).clone() {
+                return Ok(source);
+            }
         }
         let manager = self.manager()?;
         Ok(Arc::new(SdkInfos(manager.sdk_arc())))
+    }
+
+    /// When a settle or a read that starts now must be done.
+    fn read_deadline(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(budget) = guard(&self.platform.contacts.read_hooks).budget {
+            return Instant::now() + budget;
+        }
+        Instant::now() + READ_TIMEOUT
+    }
+
+    /// `owner`'s documents from `source` by `deadline`, more than
+    /// [`MAX_DOCUMENTS`] refused.
+    async fn documents(
+        source: &dyn InfoSource,
+        owner: Identifier,
+        deadline: Instant,
+    ) -> Result<Vec<InfoDocument>, PlatformError> {
+        let documents = tokio::time::timeout_at(deadline, source.documents(owner))
+            .await
+            .map_err(|_| PlatformError::Timeout)??;
+        if documents.len() > MAX_DOCUMENTS {
+            return Err(too_many());
+        }
+        Ok(documents)
+    }
+
+    /// Opens `owner`'s documents (identity `index`) with `crypto`, by
+    /// `deadline`: what Platform holds for each contact, the latest update
+    /// winning. The deadline and the session's close are checked before each
+    /// open, so a read holding the identity's write lock ends at either. A
+    /// signer that cannot open them (a locked vault) fails the read; a
+    /// document that does not open with the wallet's keys (another client's,
+    /// a corrupt one), or whose plaintext does not decode, is skipped, as the
+    /// library skips it. Documents of which none opens fail the read too.
+    async fn read_platform(
+        &self,
+        source: &dyn InfoSource,
+        crypto: &VaultContactCrypto,
+        (index, owner): (u32, Identifier),
+        deadline: Instant,
+    ) -> Result<BTreeMap<Identifier, PrivateDetails>, PlatformError> {
+        let network = self.vault.network();
+        let documents = Self::documents(source, owner, deadline).await?;
+        let (total, mut opened_any) = (documents.len(), false);
+        let mut found = BTreeMap::new();
+        for doc in documents {
+            if !self.is_open() {
+                return Err(PlatformError::NetworkNotOpen);
+            }
+            if Instant::now() >= deadline {
+                return Err(PlatformError::Timeout);
+            }
+            #[cfg(test)]
+            if let Some(delay) = guard(&self.platform.contacts.read_hooks).open_delay {
+                std::thread::sleep(delay);
+            }
+            let root = key_path(network, index, doc.root).ok();
+            let opened = match root {
+                Some(root) => crypto.contact_info_open_or_skip(
+                    &root,
+                    doc.derivation,
+                    &doc.enc_to_user_id,
+                    &doc.private_data,
+                )?,
+                None => None,
+            };
+            // A point where a close's abort lands.
+            tokio::task::yield_now().await;
+            let Some(opened) = opened else {
+                tracing::warn!(owner = %owner, "a contactInfo that does not open with the wallet's keys");
+                continue;
+            };
+            opened_any = true;
+            match decode_private_data(&opened.private_data) {
+                Ok(data) => {
+                    found.insert(Identifier::from(opened.contact_id), data.into());
+                }
+                Err(e) => {
+                    tracing::warn!(owner = %owner, error = %e, "a contactInfo that does not decode")
+                }
+            }
+        }
+        if total > 0 && !opened_any {
+            return Err(PlatformError::Internal {
+                detail: format!(
+                    "none of {total} contactInfo documents opens with the wallet's keys"
+                ),
+            });
+        }
+        Ok(found)
+    }
+
+    /// A settle requires a verified seed binding: `crypto` must derive the
+    /// wallet's own account-0 xpub (platform-wallet `verify_seed_binds`),
+    /// checked here for every settle. Without it, a read that finds nothing
+    /// could not tell "Platform holds nothing" from keys of another seed.
+    /// A proven mismatch is the wallet's `SeedBindingUnverified`, as the
+    /// unlock drain reports it.
+    async fn verify_binding(
+        &self,
+        wallet: &PlatformWallet,
+        id: WalletId,
+        crypto: &VaultContactCrypto,
+        deadline: Instant,
+    ) -> Result<(), PlatformError> {
+        let checked = tokio::time::timeout_at(deadline, wallet.verify_seed_binds(crypto))
+            .await
+            .map_err(|_| PlatformError::Timeout)?;
+        match checked {
+            Ok(()) => Ok(()),
+            Err(e @ PlatformWalletError::SeedMismatch { .. }) => {
+                tracing::error!(wallet_id = %id, error = %e, "private details not settled: the vault's seed does not bind this wallet");
+                self.platform
+                    .set_status(id, StartupStatus::SeedBindingUnverified);
+                self.notice_incomplete(id, StartupStatus::SeedBindingUnverified);
+                Err(PlatformError::SeedMismatch)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Loads wallet `id`'s digests into memory in the background, once
+    /// ([`DigestCache`]); signals `Contacts` for the identities that have
+    /// any when they land.
+    pub(super) fn load_digests(&self, id: WalletId) {
+        let cache = Arc::clone(&self.platform.contacts.digests);
+        let Some(mut epoch) = cache.begin_load(id) else {
+            return;
+        };
+        let Ok(live) = self.live() else {
+            cache.abort_load(id);
+            return;
+        };
+        let (db, hub) = (live.appdb, Arc::clone(&self.hub));
+        self.platform.contacts.spawn(&self.rt, async move {
+            loop {
+                let (db, wallet) = (Arc::clone(&db), id.to_string());
+                let read =
+                    tokio::task::spawn_blocking(move || db.contact_info_digests(&wallet)).await;
+                let Ok(Ok(read)) = read else {
+                    tracing::warn!(wallet_id = %id, "contactInfo digests not loaded");
+                    cache.abort_load(id);
+                    return;
+                };
+                let id58 = |t: &str| Identifier::from_string(t, Encoding::Base58).ok();
+                let rows: BTreeMap<_, _> = (read.iter())
+                    .filter_map(|(i, c, d)| Some(((id58(i)?, id58(c)?), *d)))
+                    .collect();
+                let owners: BTreeSet<Identifier> = rows.keys().map(|(o, _)| *o).collect();
+                match cache.finish_load(id, epoch, rows) {
+                    Ok(()) => {
+                        let changes =
+                            (owners.iter()).map(|o| PlatformChange::Contacts { identity: b58(o) });
+                        hub.pump.mark_platform(id, changes);
+                        return;
+                    }
+                    Err(now) => epoch = now,
+                }
+            }
+        });
     }
 
     /// `f` on app.sqlite with `pair` as `dp_contact_info` keys it.
@@ -378,6 +610,12 @@ impl NetworkSession {
                 db.set_contact_info_digest(w, i, c, &digest, unix_now())
             })
             .await?;
+        (self.platform.contacts.digests).write(
+            pair.wallet,
+            pair.identity,
+            pair.contact,
+            Some(digest),
+        );
         self.digest_changed(pair, changed);
         Ok(())
     }
@@ -387,6 +625,7 @@ impl NetworkSession {
         let changed = self
             .contact_info_op(pair, |db, w, i, c| db.forget_contact_info_digest(w, i, c))
             .await?;
+        (self.platform.contacts.digests).write(pair.wallet, pair.identity, pair.contact, None);
         self.digest_changed(pair, changed);
         Ok(())
     }
@@ -402,9 +641,12 @@ impl NetworkSession {
     /// and makes the wallet agree, under the identity's write lock: each
     /// established contact gets Platform's details (as the library's own
     /// pass applies them) and its digest recorded; a contact Platform holds
-    /// nothing for loses its record. A failed read changes nothing. The
-    /// lock is held across the read (at most [`READ_TIMEOUT`]), so a write
-    /// of the identity cannot land between the read and what it applies.
+    /// nothing for loses its record, and so does a contact no longer
+    /// established. It needs a verified seed binding first
+    /// ([`Self::verify_binding`]); a failed check or read changes nothing.
+    /// The lock is held across the read (all of it within one
+    /// [`READ_TIMEOUT`]), so a write of the identity cannot land between the
+    /// read and what it applies.
     async fn settle_identity(
         &self,
         wallet: &PlatformWallet,
@@ -423,8 +665,10 @@ impl NetworkSession {
         (id, index, owner): (WalletId, u32, Identifier),
         crypto: &VaultContactCrypto,
     ) -> Result<(), PlatformError> {
+        let deadline = self.read_deadline();
+        self.verify_binding(wallet, id, crypto, deadline).await?;
         let source = self.info_source()?;
-        let found = read_platform(&*source, crypto, (self.vault.network(), index, owner)).await?;
+        let found = (self.read_platform(&*source, crypto, (index, owner), deadline)).await?;
         let established: Vec<(Identifier, PrivateDetails)> = {
             let state = wallet.state().await;
             let Some(m) = state.identity_manager.managed_identity(&owner) else {
@@ -434,6 +678,7 @@ impl NetworkSession {
                 .map(|(contact, c)| (*contact, c.into()))
                 .collect()
         };
+        let keep: Vec<String> = established.iter().map(|(c, _)| b58(c)).collect();
         for (contact, shown) in established {
             let pair = Pair {
                 wallet: id,
@@ -448,6 +693,20 @@ impl NetworkSession {
                     self.record_digest(&pair, held).await?;
                 }
                 None => self.forget_digest(&pair).await?,
+            }
+        }
+        // Records of contacts no longer established go too.
+        let (w, i) = (id.to_string(), b58(&owner));
+        let gone = (self.appdb_op(move |db| db.forget_contact_infos_except(&w, &i, &keep))).await?;
+        for contact in &gone {
+            if let Ok(contact) = Identifier::from_string(contact, Encoding::Base58) {
+                let pair = Pair {
+                    wallet: id,
+                    identity: owner,
+                    contact,
+                };
+                (self.platform.contacts.digests).write(id, owner, contact, None);
+                self.digest_changed(&pair, true);
             }
         }
         Ok(())
@@ -608,6 +867,12 @@ pub(super) async fn set(
             reason: Eligibility::NoDashPayKeys,
         });
     }
+    // The library's publish reads every document the identity holds, with
+    // no bound of its own: refused before it when there are more than the
+    // engine reads (m4 §7 item 42).
+    let source = session.info_source()?;
+    let deadline = session.read_deadline();
+    NetworkSession::documents(&*source, pair.identity, deadline).await?;
     let (lease, permit, signer, crypto) = prepare(
         net,
         session,
@@ -656,8 +921,8 @@ pub(super) async fn set(
             tracing::info!(contact = %b58(&pair.contact), "contactInfo write failed: {e}");
             let read = match session.info_source() {
                 Ok(source) => {
-                    let at = (session.vault.network(), index, pair.identity);
-                    read_platform(&*source, &crypto, at).await
+                    let (at, deadline) = ((index, pair.identity), session.read_deadline());
+                    (session.read_platform(&*source, &crypto, at, deadline)).await
                 }
                 Err(e) => Err(e),
             };

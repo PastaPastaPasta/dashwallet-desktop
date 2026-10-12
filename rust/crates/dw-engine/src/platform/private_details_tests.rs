@@ -26,10 +26,13 @@ use super::journal_tests::{id, request};
 use super::keys_policy::key_path;
 use super::private_details::{BoxedFuture, InfoDocument, InfoSource, digest, publish_state, set};
 
+use super::registration_flow::b58;
 use super::requests::tests::{Fixture, keys, wait_until};
 use super::runtime::guard;
 use super::signers::VaultContactCrypto;
 use crate::{EngineEvent, PlatformChange};
+use dw_vault::{SeedDerivation, WalletSecret};
+use zeroize::Zeroizing;
 
 const ME: u8 = 1;
 /// A second contact, made in [`two_contacts`].
@@ -101,7 +104,7 @@ impl FakeInfos {
         self.docs.lock().unwrap().insert((owner, contact), doc);
     }
 
-    fn remove(&self, owner: Identifier, contact: Identifier) {
+    pub(crate) fn remove(&self, owner: Identifier, contact: Identifier) {
         self.docs.lock().unwrap().remove(&(owner, contact));
     }
 
@@ -128,6 +131,16 @@ impl InfoSource for FakeInfos {
             mine.sort_by_key(|doc| doc.updated_at);
             Ok(mine)
         })
+    }
+}
+
+/// Another seed than the wallet's: keys that do not bind it.
+pub(crate) fn other_seed() -> WalletSecret {
+    WalletSecret {
+        mnemonic: Zeroizing::new(Vec::new()),
+        mnemonic_passphrase: Zeroizing::new(Vec::new()),
+        seed: Zeroizing::new([7; 64]),
+        derivation: SeedDerivation::RawSeed,
     }
 }
 
@@ -247,6 +260,23 @@ impl Fixture {
             let saved = m.set_contact_metadata(&id(contact), (&d).into(), wallet.persister());
             assert!(saved.unwrap());
         });
+    }
+
+    /// Replaces the wallet's seed in the vault with [`other_seed`].
+    fn swap_seed(&self) {
+        let (vault, wallet) = (self.s.vault(), self.wallet);
+        assert!(vault.delete_wallet_secret(&wallet.0).unwrap());
+        vault.store_wallet_secret(&wallet.0, &other_seed()).unwrap();
+    }
+
+    /// `contact`'s `publish_state` as `DashPay::contact` reports it.
+    fn reported(&self, contact: u8) -> PublishState {
+        let dp = self.s.dashpay(self.wallet);
+        let detail = dp
+            .contact(b58(&id(ME)), b58(&id(contact)))
+            .unwrap()
+            .unwrap();
+        detail.publish_state
     }
 
     /// The `Platform{Contacts}` signals for our identity so far.
@@ -522,7 +552,7 @@ fn an_unknown_write_is_published_by_a_later_read() {
     let f = published();
     f.net.landed.store(true, Ordering::SeqCst);
     *f.net.fails.lock().unwrap() = Some(PlatformError::Timeout);
-    f.net.infos.down.store(true, Ordering::SeqCst);
+    f.net.infos_down_after.store(true, Ordering::SeqCst);
     assert_eq!(
         Fixture::code(f.set(ERIN, details("Erin"), Some(f.lease()))),
         "platform.timeout"
@@ -547,7 +577,7 @@ fn a_failed_read_back_is_retried() {
     let f = published();
     f.net.landed.store(true, Ordering::SeqCst);
     *f.net.fails.lock().unwrap() = Some(PlatformError::Timeout);
-    f.net.infos.down.store(true, Ordering::SeqCst);
+    f.net.infos_down_after.store(true, Ordering::SeqCst);
     let failed = f.set(ERIN, details("Erin"), Some(f.lease()));
     assert_eq!(Fixture::code(failed), "platform.timeout");
     let reads = f.net.infos.reads.load(Ordering::SeqCst);
@@ -683,6 +713,169 @@ fn the_settle_applies_what_platform_holds() {
         (f.shown(ERIN), f.state(ERIN)),
         (details("Erin3"), PublishState::Published)
     );
+}
+
+/// A settle requires a verified seed binding (Sol r1 S1): with keys that
+/// do not bind the wallet, a read that finds nothing changes nothing, the
+/// recorded digests included.
+#[test]
+fn a_settle_needs_a_verified_seed_binding() {
+    let f = published();
+    f.set(ERIN, details("Erin"), Some(f.lease())).unwrap();
+    f.set(BOB, details("Bob"), Some(f.lease())).unwrap();
+    f.net.infos.remove(id(ME), id(ERIN));
+    f.net.infos.remove(id(ME), id(BOB));
+    f.swap_seed();
+    assert!(!f.settle());
+    assert_eq!(
+        (f.state(ERIN), f.state(BOB)),
+        (PublishState::Published, PublishState::Published)
+    );
+}
+
+/// An edit's read-first is a settle too, with the same check: it leaves
+/// other contacts' records alone under keys that do not bind the wallet.
+#[test]
+fn the_read_first_needs_a_verified_seed_binding() {
+    let f = published();
+    f.set(BOB, details("Bob"), Some(f.lease())).unwrap();
+    f.net.infos.remove(id(ME), id(BOB));
+    f.swap_seed();
+    assert_eq!(f.recorded(ERIN), None);
+    assert_eq!(
+        f.set(ERIN, details("Erin"), None).unwrap(),
+        PublishState::Local
+    );
+    assert_eq!(f.state(BOB), PublishState::Published);
+}
+
+/// One deadline bounds a settle, opens included, checked between opens
+/// (Sol r1 F4): a slow vault ends an edit's read-first at the deadline,
+/// which releases the identity's write lock.
+#[test]
+fn a_slow_read_ends_at_its_deadline() {
+    let f = published();
+    for n in 0..40 {
+        f.publish_elsewhere(100 + n, &details("x"));
+    }
+    {
+        let mut hooks = guard(&f.s.platform.contacts.read_hooks);
+        hooks.budget = Some(Duration::from_millis(300));
+        hooks.open_delay = Some(Duration::from_millis(100));
+    }
+    let locks = identity_locks(f.wallet, id(ME));
+    let started = std::time::Instant::now();
+    let s = Arc::clone(&f.s);
+    let pair = f.pair(ERIN);
+    let manager = f.s.manager().unwrap();
+    let net = Arc::clone(&f.net);
+    let editing = f.s.rt.spawn(async move {
+        let wallet = manager.get_wallet(&pair.wallet.0).await.unwrap();
+        set(&*net, &s, &wallet, pair, details("Erin"), None).await
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    // Waits for the edit's read, which holds the lock.
+    drop(f.engine.block_on(locks.write.lock()));
+    let took = started.elapsed();
+    // 40 opens would take 4 s.
+    assert!(took < Duration::from_secs(2), "{took:?}");
+    let edited = f.engine.block_on(editing).unwrap();
+    assert_eq!(edited.unwrap(), PublishState::Local);
+}
+
+/// The library's publish reads every document the identity holds, with no
+/// bound: over the engine's cap (raw documents, opened or not) a publish
+/// is refused before the grant is redeemed (Sol r1 F3).
+#[test]
+fn a_publish_over_the_document_cap_is_refused() {
+    let f = published();
+    let junk = |n: u32| {
+        let mut contact = [9; 32];
+        contact[..4].copy_from_slice(&n.to_le_bytes());
+        Identifier::from(contact)
+    };
+    let doc = InfoDocument {
+        root: ROOT,
+        derivation: 0,
+        enc_to_user_id: [3; 32],
+        private_data: vec![5; 48],
+        updated_at: 0,
+    };
+    for n in 0..=1000 {
+        f.net.infos.put(id(ME), junk(n), doc.clone());
+    }
+    let grant = f.grant(DOCUMENT_10K_CREDITS);
+    assert_eq!(
+        Fixture::code(f.set(ERIN, details("Erin"), Some(grant.clone()))),
+        "platform.not_implemented"
+    );
+    assert!(f.unused(&grant));
+    assert_eq!(f.net.writes(), 0);
+    f.net.infos.remove(id(ME), junk(1000));
+    f.set(ERIN, details("Erin"), Some(f.lease())).unwrap();
+    assert_eq!(f.net.writes(), 1);
+}
+
+/// `contact` reads the digests from memory (m4 §1; Sol r1 F2): loaded once
+/// in the background, then written through by each record and forget.
+#[test]
+fn contact_reads_digests_from_memory() {
+    let f = published();
+    f.set(ERIN, details("Erin"), Some(f.lease())).unwrap();
+    wait_until("the digests' load", Duration::from_secs(20), || {
+        f.reported(ERIN) == PublishState::Published
+    });
+    // Gone from app.sqlite behind the engine: the read answers from memory.
+    let (w, i, c) = (f.wallet.to_string(), b58(&id(ME)), b58(&id(ERIN)));
+    let forgot =
+        f.s.appdb_op(move |db| db.forget_contact_info_digest(&w, &i, &c));
+    assert!(f.engine.block_on(forgot).unwrap());
+    assert_eq!(f.reported(ERIN), PublishState::Published);
+    // A forget through the engine lands in memory at once.
+    f.net.infos.remove(id(ME), id(ERIN));
+    f.publish_elsewhere(BOB, &details("Bob"));
+    assert!(f.settle());
+    assert_eq!(f.reported(ERIN), PublishState::Local);
+    assert_eq!(f.reported(BOB), PublishState::Published);
+}
+
+/// A settle forgets the records of contacts no longer established (Sol r1
+/// F5), and signals it.
+#[test]
+fn a_settle_forgets_contacts_no_longer_established() {
+    let f = published();
+    let (w, i, c) = (f.wallet.to_string(), b58(&id(ME)), b58(&id(DAVE)));
+    let planted =
+        f.s.appdb_op(move |db| db.set_contact_info_digest(&w, &i, &c, &[1; 32], 1));
+    assert!(f.engine.block_on(planted).unwrap());
+    let before = f.contact_signals();
+    assert!(f.settle());
+    assert_eq!(f.recorded(DAVE), None);
+    wait_until("the signal", Duration::from_secs(20), || {
+        f.contact_signals() > before
+    });
+}
+
+/// A signed write whose read-back cannot reach the document source reports
+/// the write's error, and a later read still finds it (Sol r1, M26).
+#[test]
+fn a_read_back_without_its_source_is_retried() {
+    let f = published();
+    f.net.landed.store(true, Ordering::SeqCst);
+    *f.net.fails.lock().unwrap() = Some(PlatformError::Timeout);
+    let s = Arc::clone(&f.s);
+    *f.net.during.lock().unwrap() = Some(Box::new(move || {
+        guard(&s.platform.contacts.read_hooks).gone = true;
+    }));
+    let failed = f.set(ERIN, details("Erin"), Some(f.lease()));
+    assert_eq!(Fixture::code(failed), "platform.timeout");
+    assert_eq!(f.state(ERIN), PublishState::Local);
+    *f.net.during.lock().unwrap() = None;
+    guard(&f.s.platform.contacts.read_hooks).gone = false;
+    wait_until("the retry's read", Duration::from_secs(20), || {
+        f.state(ERIN) == PublishState::Published
+    });
+    assert_eq!(f.net.writes(), 1);
 }
 
 /// A write and a settle each wait for the identity's write lock.

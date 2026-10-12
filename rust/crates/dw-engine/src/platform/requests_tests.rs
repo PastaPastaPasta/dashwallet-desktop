@@ -123,11 +123,13 @@ pub(crate) struct FakeRequests {
     pub(crate) landed: AtomicBool,
     writes: AtomicU32,
     /// Runs inside each write, before it lands.
-    during: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    pub(crate) during: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// What a key upgrade costs.
     fee: u64,
     /// The `contactInfo` documents a write publishes.
     pub(crate) infos: Arc<FakeInfos>,
+    /// A `contactInfo` write takes their reads down as it lands (or not).
+    pub(crate) infos_down_after: AtomicBool,
 }
 
 impl FakeRequests {
@@ -328,6 +330,9 @@ impl RequestNet for FakeRequests {
         if landed.is_ok() || self.landed.load(Ordering::SeqCst) {
             let at = (owner, index, contact);
             self.infos.seal(crypto, at, details).await;
+        }
+        if self.infos_down_after.load(Ordering::SeqCst) {
+            self.infos.down.store(true, Ordering::SeqCst);
         }
         landed.map(|()| ContactInfoPublishOutcome::Published)
     }

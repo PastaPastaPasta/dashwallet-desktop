@@ -549,14 +549,8 @@ impl NetworkSession {
         self.load_identity_choices(id).await;
         self.refresh_identities(manager, id).await;
         // A restore's private details, and their state, come back here
-        // (DP2-04), after the bring-up; not with the crypto of a seed that
-        // does not bind the wallet.
-        let unbound = (self.platform.startup_of(&id))
-            .is_some_and(|s| s.startup == StartupStatus::SeedBindingUnverified);
-        if has_identity
-            && !unbound
-            && let Some(crypto) = self.prompt_free_crypto(id).await
-        {
+        // (DP2-04), after the bring-up; the settle checks the seed binding.
+        if has_identity && let Some(crypto) = self.prompt_free_crypto(id).await {
             self.settle_later(id, crypto);
         }
     }
@@ -606,7 +600,7 @@ impl NetworkSession {
     }
 
     /// `Notice{DashPayStartupIncomplete}` (DASHPAY §3.7).
-    fn notice_incomplete(&self, id: WalletId, status: StartupStatus) {
+    pub(super) fn notice_incomplete(&self, id: WalletId, status: StartupStatus) {
         self.sink.emit(EngineEvent::Notice {
             network: Some(self.network.clone()),
             code: NoticeCode::DashPayStartupIncomplete,
@@ -725,7 +719,6 @@ impl NetworkSession {
         };
         let deadline = Instant::now() + DEFAULT_STARTUP_BUDGET;
         let mut lock = self.platform.lock.subscribe();
-        let mut bound = true;
         tokio::select! {
             drained = wallet.drain_pending_contact_crypto_verified(
                 &crypto,
@@ -737,7 +730,6 @@ impl NetworkSession {
                     tracing::error!(wallet_id = %id, error = %e, "the vault's seed does not bind this wallet");
                     self.platform.set_status(id, StartupStatus::SeedBindingUnverified);
                     self.notice_incomplete(id, StartupStatus::SeedBindingUnverified);
-                    bound = false;
                 }
                 // Unanswered in time, or the vault locked: still queued for
                 // the next drain.
@@ -753,10 +745,9 @@ impl NetworkSession {
         if let Some(entry) = self.platform.write_startup().get_mut(&id) {
             entry.contact_accounts_pending = u32::try_from(pending).unwrap_or(u32::MAX);
         }
-        // Not with the crypto of a seed that does not bind the wallet.
-        if bound {
-            self.settle_later(id, crypto);
-        }
+        // The settle checks the seed binding itself: a drain of an empty
+        // queue checks nothing.
+        self.settle_later(id, crypto);
     }
 
     /// The vault's DashPay crypto for wallet `id`
