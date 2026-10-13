@@ -1117,6 +1117,8 @@ fn the_first_bring_up_restarts_after_removal_and_survives_bad_reads() {
     let scope = dw_appdb::local_scope(&W.to_string());
     h.appdb.delete_wallet(&W.to_string()).unwrap();
     h.tap.forget(&W);
+    // Imported again: the import readmits the wallet first (DEC-210).
+    h.appdb.readmit_wallet(&W.to_string()).unwrap();
     h.tap.note_first_bring_up(W);
     let stored = h
         .appdb
