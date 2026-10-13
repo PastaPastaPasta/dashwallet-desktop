@@ -86,6 +86,7 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.top_up",
     "DashPay.pending_top_ups",
     "DashPay.resume_top_up",
+    "DashPay.resolve_top_up",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -117,8 +118,10 @@ const FACADE: &[&str] = &[
 /// encodings and tests (DP1-02), and the contact-request writes, their
 /// network seam and tests, and the identity write locks (DP2-02), and the
 /// private details' publish and settle with their tests (DP2-04), and the
-/// credit costs and the top-up flow with its tests (DP1-06).
+/// credit costs, the balance refreshes and the top-up flow with its tests
+/// (DP1-06).
 const NOT_FACADE: &[&str] = &[
+    "balances.rs",
     "bringup.rs",
     "contact_names.rs",
     "contacts_model.rs",
@@ -1269,6 +1272,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.top_up(s(), 1, s()).await.map(drop),
             dp.pending_top_ups().await.map(drop),
             dp.resume_top_up(s(), s()).await.map(drop),
+            dp.resolve_top_up(s()).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }
