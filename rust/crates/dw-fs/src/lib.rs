@@ -65,6 +65,60 @@ pub fn create_owned_dir(base: &Path, owned: &Path) -> io::Result<()> {
     }
 }
 
+/// Opens the file at `path` for reading and writing as the one name of a
+/// regular file: created empty and 0600 when missing, never through a
+/// symlink in its last component (`O_NOFOLLOW`), and refused, with an error
+/// naming the path, when it is not a regular file or has another hard link.
+/// Symlinks above it are followed.
+///
+/// Windows refuses a symlink there too, but does not count hard links.
+pub fn open_sole_file(path: &Path) -> io::Result<std::fs::File> {
+    let refused = |what: String| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} {what}", path.display()),
+        )
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use rustix::fs::OFlags;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        options
+            .mode(0o600)
+            .custom_flags((OFlags::NOFOLLOW | OFlags::NOCTTY).bits() as i32);
+        let file = options.open(path).map_err(|e| {
+            if e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) {
+                refused("is a symbolic link".into())
+            } else {
+                io::Error::new(e.kind(), format!("{}: {e}", path.display()))
+            }
+        })?;
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Err(refused("is not a regular file".into()));
+        }
+        if meta.nlink() != 1 {
+            return Err(refused(format!("has {} hard links", meta.nlink())));
+        }
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(refused("is a symbolic link".into()));
+        }
+        let file = options
+            .open(path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
+        if !file.metadata()?.is_file() {
+            return Err(refused("is not a regular file".into()));
+        }
+        Ok(file)
+    }
+}
+
 /// [`create_owned_dir`] for the parent of `owned`, then the file itself:
 /// created empty and 0600 when missing, otherwise its group and other
 /// permissions go and its contents stay. A symlink there is left alone.
@@ -741,6 +795,37 @@ mod tests {
         std::fs::hard_link(&db, tmp.path().join("other")).unwrap();
         create_owned_file(tmp.path(), Path::new("app.sqlite")).unwrap();
         assert_eq!(mode(&db), 0o664);
+    }
+
+    #[test]
+    fn a_sole_file_is_one_regular_file_reached_without_a_final_symlink() {
+        let tmp = private_tempdir();
+        let file = tmp.path().join("app.sqlite.lock");
+        open_sole_file(&file).unwrap();
+        assert_eq!(mode(&file), 0o600);
+        std::fs::write(&file, b"kept").unwrap();
+        open_sole_file(&file).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"kept");
+
+        // Through a directory symlink: the same file.
+        symlink(tmp.path(), tmp.path().join("alias")).unwrap();
+        open_sole_file(&tmp.path().join("alias/app.sqlite.lock")).unwrap();
+
+        let link = tmp.path().join("link");
+        symlink(&file, &link).unwrap();
+        let refused = open_sole_file(&link).unwrap_err().to_string();
+        assert!(refused.contains("symbolic link"), "{refused}");
+        let dangling = tmp.path().join("dangling");
+        symlink(tmp.path().join("missing"), &dangling).unwrap();
+        assert!(open_sole_file(&dangling).is_err());
+        assert!(!tmp.path().join("missing").exists());
+
+        std::fs::hard_link(&file, tmp.path().join("second")).unwrap();
+        let refused = open_sole_file(&file).unwrap_err().to_string();
+        assert!(refused.contains("2 hard links"), "{refused}");
+
+        mkdir(&tmp.path().join("dir"), 0o700);
+        assert!(open_sole_file(&tmp.path().join("dir")).is_err());
     }
 
     #[test]
