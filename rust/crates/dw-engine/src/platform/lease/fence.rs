@@ -36,6 +36,7 @@ use crate::platform::flows::{BudgetPurpose, DispatchResolution, DispatchResolved
 use crate::{EngineEvent, NoticeCode, WalletId};
 use dw_appdb::dispatch::{
     CallRows, Resolution, SelfSpendConflict, SelfSpendProvenance, StoredFundingKey, StoredOutPoint,
+    TopUpSettled,
 };
 
 /// The durable medium of the journal (§6.2): `dispatch.sqlite`, or a fake
@@ -131,6 +132,21 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     /// The `EraseAll` mutation's unconditional delete.
     #[cfg(test)]
     fn erase_wallet_unconditionally(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String>;
+    /// Records the top-up lock `txid` (internal byte order) settled
+    /// (schema 8, DP1-06); the first record stands. The tests' journals
+    /// keep none.
+    fn settle_top_up(
+        &self,
+        _wallet: &[u8; 32],
+        _txid: &[u8; 32],
+        _how: TopUpSettled,
+    ) -> Result<(), String> {
+        Err("this journal keeps no settled top-ups".into())
+    }
+    /// The top-up locks of `wallet` recorded settled.
+    fn top_ups_settled(&self, _wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+        Err("this journal keeps no settled top-ups".into())
+    }
 }
 
 impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
@@ -276,6 +292,22 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
     #[cfg(test)]
     fn erase_wallet_unconditionally(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
         self.erase_wallet_unconditionally(wallet)
+            .map_err(|e| e.to_string())
+    }
+
+    fn settle_top_up(
+        &self,
+        wallet: &[u8; 32],
+        txid: &[u8; 32],
+        how: TopUpSettled,
+    ) -> Result<(), String> {
+        self.settle_top_up(wallet, txid, how, crate::events::unix_now())
+            .map_err(|e| e.to_string())
+    }
+
+    fn top_ups_settled(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+        (self.top_ups_settled(wallet))
+            .map(|rows| rows.into_iter().map(|(txid, _)| txid).collect())
             .map_err(|e| e.to_string())
     }
 }
@@ -1099,6 +1131,20 @@ impl FenceState {
         self.signed_locks
             .get(&(*wallet, step.to_owned()))
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// The txids of every lock `wallet`'s funding steps whose name
+    /// `step_of` admits signed. A step with a signed lock keeps it (it is
+    /// never superseded), so this is every such lock the journal holds.
+    pub(super) fn signed_lock_txids_where(
+        &self,
+        wallet: &WalletId,
+        step_of: impl Fn(&str) -> bool,
+    ) -> HashSet<Txid> {
+        (self.signed_locks.iter())
+            .filter(|((w, step), _)| w == wallet && step_of(step))
+            .flat_map(|(_, locks)| locks.iter().map(|l| l.txid))
+            .collect()
     }
 
     /// Whether lock `txid` of funding `step` has its durable record

@@ -458,17 +458,15 @@ async fn ledger<L: RegistrationLib>(
 }
 
 /// The Funding cap `grant` gives, read without redeeming it: a refused
-/// start leaves the grant for the next try (as `register_name` does).
-async fn funding_cap(
+/// start leaves the grant for the next try (as `register_name` does; a
+/// top-up too).
+pub(super) async fn funding_cap(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     grant: &str,
-) -> Result<u64, RegistrationError> {
+) -> Result<u64, PlatformError> {
     if let Some(lease) = session.lease_for(&wallet, grant) {
-        let lease = lease.map_err(PlatformError::from)?;
-        return Ok(lease
-            .available(BudgetPurpose::Funding)
-            .map_err(PlatformError::from)?);
+        return Ok(lease?.available(BudgetPurpose::Funding)?);
     }
     let vault = session.vault.clone();
     let grant = grant.to_owned();
@@ -482,7 +480,7 @@ async fn funding_cap(
     .map_err(PlatformError::from)?;
     match purpose {
         GrantPurpose::PlatformOp { max_duffs, .. } => Ok(max_duffs),
-        _ => Err(PlatformError::GrantInvalid.into()),
+        _ => Err(PlatformError::GrantInvalid),
     }
 }
 

@@ -67,8 +67,9 @@ pub struct TopUpOutcome {
 }
 
 /// Where a top-up's asset lock stands once the call returns. Past the
-/// funding, nothing is lost: the lock stays tracked until Platform takes
-/// it, `pending_top_ups` lists it and `resume_top_up` (or Tools ▸ Repair
+/// funding, nothing is lost: the lock stays tracked until Platform's
+/// proved apply takes it (or the user resolves an unknown one),
+/// `pending_top_ups` lists it and `resume_top_up` (or Tools ▸ Repair
 /// "Finish transfers") applies it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -79,9 +80,14 @@ pub enum TopUpState {
         credits_added: Option<u64>,
         balance: Option<u64>,
     },
-    /// Platform had taken the lock already (an earlier apply, or another
-    /// device's): nothing was added now. `balance` is read afresh.
+    /// The lock was applied before (the library holds Platform's proved
+    /// apply): nothing was added now. `balance` is read afresh.
     AlreadyApplied { balance: Option<u64> },
+    /// Platform answered that the lock is taken, an answer nothing
+    /// proves: nothing was added now, and the lock stays pending
+    /// (`consumption_unknown` once the library holds it final) until a
+    /// proved apply or `resolve_top_up`. `balance` is read afresh.
+    ConsumptionUnknown { balance: Option<u64> },
     /// The lock is out with no proof yet (InstantSend did not lock it in
     /// its window; a ChainLock will).
     ProofWaiting,
@@ -89,7 +95,8 @@ pub enum TopUpState {
     NotApplied { error: String },
 }
 
-/// A top-up lock of the wallet that Platform has not taken yet.
+/// A top-up lock of the wallet that Platform has not taken yet, as far as
+/// the wallet can prove.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingTopUp {
     /// The asset lock's txid (hex, display order).
@@ -101,6 +108,12 @@ pub struct PendingTopUp {
     pub duffs: u64,
     /// The lock has its proof: `resume_top_up` applies it at once.
     pub proved: bool,
+    /// A lock a top-up of this wallet funded, final on the chain, whose
+    /// consumption by Platform is not known (a restart lost its apply, or
+    /// Platform answered "already consumed" without proof). It blocks the
+    /// identity's top-ups until `resume_top_up` applies it with proof or
+    /// the user resolves it (`resolve_top_up`).
+    pub consumption_unknown: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,13 +181,14 @@ impl DashPay {
     pub async fn pending_top_ups(&self) -> Result<Vec<PendingTopUp>, CreditsError> {
         let wallet = self.wallet_id;
         topup::on_lib(&self.session, wallet, move |session, lib| async move {
-            Ok(topup::pending(&session, wallet, &*lib).await)
+            Ok(topup::pending(&session, wallet, &*lib).await?)
         })
         .await
     }
 
     /// Applies the tracked top-up lock `txid` (a `pending_top_ups` entry),
-    /// waiting briefly for its proof first.
+    /// waiting briefly for its proof first. A lock applied before reads
+    /// `AlreadyApplied`.
     pub async fn resume_top_up(
         &self,
         txid: String,
@@ -183,6 +197,18 @@ impl DashPay {
         let wallet = self.wallet_id;
         topup::on_lib(&self.session, wallet, move |session, lib| async move {
             topup::resume(&session, wallet, &*lib, &txid, &grant).await
+        })
+        .await
+    }
+
+    /// The user's resolution of the `consumption_unknown` top-up lock
+    /// `txid` (they saw its credits arrive): it no longer pends or blocks
+    /// the identity's top-ups. `resume_top_up` and "Finish transfers" still
+    /// apply it, so a lock Platform had not taken is not lost.
+    pub async fn resolve_top_up(&self, txid: String) -> Result<(), CreditsError> {
+        let wallet = self.wallet_id;
+        topup::on_lib(&self.session, wallet, move |session, lib| async move {
+            topup::resolve(&session, wallet, &*lib, &txid).await
         })
         .await
     }

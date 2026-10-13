@@ -1,7 +1,9 @@
 //! DP1-06's top-up against a real session, vault and dispatch journal,
 //! with the library scripted ([`Fake`]): the quote's refusals, the step and
 //! lock idempotency, a restart at each point of the flow, the vault locked
-//! under it, and "Finish transfers".
+//! under it, "Finish transfers", and Platform's unproved "already
+//! consumed". A [`Fake`] over storage keeps its locks in the wallet's own
+//! store, so a restart reads them back from `wallet.sqlite`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +17,10 @@ use dpp::prelude::Identifier;
 use dw_vault::{
     Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig, VaultSigner,
 };
-use platform_wallet::AssetLockFundingType;
+use platform_wallet::changeset::{
+    AssetLockChangeSet, AssetLockEntry, PlatformWalletChangeSet, PlatformWalletPersistence,
+};
+use platform_wallet::{AssetLockFundingType, AssetLockStatus, TrackedAssetLock};
 use zeroize::Zeroizing;
 
 use super::credits::{TopUpOutcome, TopUpState};
@@ -24,7 +29,7 @@ use super::flows::{DispatchState, FlowKind};
 use super::lease::mode_b::{TrackedRow, TrackedStatus, index_trusted};
 use super::lease::{CallPermit, FundingKey, Lease, StoredLock};
 use super::registration::{FinishReport, RegistrationWait};
-use super::registration_flow::{FundError, LockInfo, LockStatus, Spendable};
+use super::registration_flow::{FundError, LockInfo, LockStatus, PwLib, Spendable};
 use super::topup::{self, Applied, TopUpLib, top_up_step};
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
 
@@ -52,15 +57,16 @@ fn options() -> crate::SessionOptions {
     }
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     dir: tempfile::TempDir,
-    engine: Engine,
-    session: Arc<NetworkSession>,
-    wallet: WalletId,
+    pub(super) engine: Engine,
+    pub(super) session: Arc<NetworkSession>,
+    pub(super) wallet: WalletId,
     encrypted: bool,
 }
 
-fn fixture(encrypted: bool) -> Fixture {
+/// An engine with a regtest session (no network) and one wallet.
+pub(super) fn fixture(encrypted: bool) -> Fixture {
     let dir = dw_testutil::private_tempdir();
     let engine = Engine::new(
         EngineConfig {
@@ -132,27 +138,35 @@ impl Fixture {
     }
 
     fn fake(&self) -> Arc<Fake> {
-        let world = Arc::new(Mutex::new(World {
-            spendable: Spendable {
-                duffs: COIN,
-                inputs: 2,
-                protected: 0,
-            },
-            identities: vec![(0, b58(identity()))],
-            balances: [(identity(), START_BALANCE)].into(),
-            proof_arrives: true,
-            ..Default::default()
-        }));
-        self.fake_over(world)
+        self.fake_over(Arc::new(Mutex::new(World::new())))
     }
 
     /// A fake of this session over `world` (the library's state, which a
     /// restart keeps).
     fn fake_over(&self, world: Arc<Mutex<World>>) -> Arc<Fake> {
+        self.new_fake(world, false)
+    }
+
+    /// A fake whose locks live in the wallet's store: a restart reads them
+    /// back from `wallet.sqlite`, and `platform` (Platform's state, which
+    /// no restart touches) is all the fake keeps.
+    fn stored_fake(&self, platform: Option<&Fake>) -> Arc<Fake> {
+        let mut world = World::new();
+        if let Some(platform) = platform {
+            let w = platform.w();
+            (world.balances, world.consumed, world.false_taken) =
+                (w.balances.clone(), w.consumed.clone(), w.false_taken);
+            world.funds = w.funds;
+        }
+        self.new_fake(Arc::new(Mutex::new(world)), true)
+    }
+
+    fn new_fake(&self, world: Arc<Mutex<World>>, stored: bool) -> Arc<Fake> {
         let fake = Arc::new(Fake {
             session: Arc::downgrade(&self.session),
             wallet: self.wallet,
             hung: AtomicBool::new(false),
+            stored,
             w: world,
         });
         fake.sync_rows();
@@ -200,6 +214,12 @@ impl Fixture {
     fn pending(&self, lib: &Fake) -> Vec<super::credits::PendingTopUp> {
         self.engine
             .block_on(topup::pending(&self.session, self.wallet, lib))
+            .unwrap()
+    }
+
+    fn resolve(&self, lib: &Fake, txid: &str) -> Result<(), CreditsError> {
+        self.engine
+            .block_on(topup::resolve(&self.session, self.wallet, lib, txid))
     }
 
     fn finish(&self, lib: &Fake) -> FinishReport {
@@ -273,6 +293,55 @@ impl Fixture {
         self.fake_over(world)
     }
 
+    /// Removes the wallet (a wipe grant) and imports it again: the same
+    /// wallet id, its `wallet.sqlite` and app rows new, its dispatch
+    /// journal rows as the removal kept them.
+    fn remove_and_import_again(&self) {
+        let (vault, wallet) = (self.session.vault(), self.wallet);
+        let wipe = (vault.authorize(GrantPurpose::Wipe, Some(&wallet.0), Credential::None))
+            .unwrap()
+            .id;
+        (self.engine)
+            .block_on(self.session.remove_wallet(wallet, wipe))
+            .unwrap();
+        let again = (self.engine)
+            .block_on(self.session.import_wallet(
+                Zeroizing::new(PHRASE.as_bytes().to_vec()),
+                Zeroizing::new(Vec::new()),
+                ImportOptions {
+                    birth_height: Some(0),
+                    core_compat: false,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        assert_eq!(again, wallet);
+        assert!(
+            self.engine
+                .block_on(self.session.leases.refresh_funding(wallet))
+        );
+    }
+
+    /// A restart over a dispatch journal that cannot be opened: the
+    /// session runs with it unavailable (E0-04 §6.4).
+    fn reopen_without_journal(&mut self) {
+        self.engine
+            .block_on(self.engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        let path = self.session.data_dir().join("dispatch.sqlite");
+        for suffix in ["-wal", "-shm"] {
+            let mut side = path.clone().into_os_string();
+            side.push(suffix);
+            let _ = std::fs::remove_file(side);
+        }
+        std::fs::write(&path, b"not a journal").unwrap();
+        self.session = self
+            .engine
+            .block_on(self.engine.open_network(DashNetwork::Regtest, options()))
+            .unwrap();
+        assert!(!self.session.leases.journal_ready());
+    }
+
     /// A restart: the session closes and opens again over `journal` (the
     /// dispatch journal as a crash left it).
     fn reopen(&mut self, journal: Option<&std::path::Path>) {
@@ -299,7 +368,7 @@ impl Fixture {
     }
 }
 
-fn eventually(what: &str, mut ok: impl FnMut() -> bool) {
+pub(super) fn eventually(what: &str, mut ok: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(20);
     while !ok() {
         assert!(Instant::now() < deadline, "timed out: {what}");
@@ -310,6 +379,8 @@ fn eventually(what: &str, mut ok: impl FnMut() -> bool) {
 /// A library call of the top-up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Call {
+    /// The funding permit, which writes the step's marker.
+    Permit,
     Fund,
     Apply,
 }
@@ -317,7 +388,8 @@ enum Call {
 /// Where a scripted call hangs, as a kill -9 would leave it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum When {
-    /// Before the library acted (`Fund`: before its signature).
+    /// Before the library acted (`Permit`: before the step's marker;
+    /// `Fund`: before its signature).
     Before,
     /// `Fund` only: the lock is signed, recorded and tracked (`Built`),
     /// not yet broadcast.
@@ -363,9 +435,28 @@ struct World {
     /// The library cannot prove a lock Platform reports taken final (no
     /// ChainLock): it stays as it was, not `RecoveredFromChain`.
     taken_unproved: bool,
+    /// Platform answers "already consumed" for every lock, taken or not
+    /// (a lying node: the answer is unproved).
+    false_taken: bool,
     /// Right after the next listing of the locks, another apply takes
     /// every proved one (a concurrent resume).
     applied_after_list: bool,
+}
+
+impl World {
+    fn new() -> Self {
+        World {
+            spendable: Spendable {
+                duffs: COIN,
+                inputs: 2,
+                protected: 0,
+            },
+            identities: vec![(0, b58(identity()))],
+            balances: [(identity(), START_BALANCE)].into(),
+            proof_arrives: true,
+            ..Default::default()
+        }
+    }
 }
 
 /// platform-wallet and Platform as a top-up sees them, scripted.
@@ -373,6 +464,8 @@ struct Fake {
     session: Weak<NetworkSession>,
     wallet: WalletId,
     hung: AtomicBool,
+    /// The locks are the wallet's own, in its store, not `World::locks`.
+    stored: bool,
     w: Arc<Mutex<World>>,
 }
 
@@ -392,7 +485,16 @@ impl Fake {
         }
     }
 
-    fn set_status(&self, outpoint: OutPoint, status: LockStatus) {
+    async fn set_status(&self, outpoint: OutPoint, status: LockStatus) {
+        if self.stored {
+            let session = self.session();
+            let w = session.wallet(&self.wallet).await.unwrap();
+            let lock = (w.state().await.tracked_asset_locks.get(&outpoint)).cloned();
+            let mut lock = lock.expect("a stored lock");
+            lock.status = asset_lock_status(status);
+            self.store(lock).await;
+            return;
+        }
         {
             let mut w = self.w();
             if let Some(l) = w.locks.iter_mut().find(|l| l.outpoint == outpoint) {
@@ -402,19 +504,89 @@ impl Fake {
         self.sync_rows();
     }
 
+    /// Tracks `lock` as the library does: in the wallet's state and, through
+    /// the session's store (and its tap), in `wallet.sqlite`.
+    async fn store(&self, lock: TrackedAssetLock) {
+        let (session, wallet) = (self.session(), self.wallet);
+        let entry = AssetLockEntry::from(&lock);
+        let outpoint = lock.out_point;
+        let w = session.wallet(&wallet).await.unwrap();
+        w.state_mut()
+            .await
+            .tracked_asset_locks
+            .insert(outpoint, lock);
+        let changes = PlatformWalletChangeSet {
+            asset_locks: Some(AssetLockChangeSet {
+                asset_locks: [(outpoint, entry)].into(),
+                removed: Default::default(),
+            }),
+            ..Default::default()
+        };
+        (session.live().unwrap().store)
+            .store(wallet.0, changes)
+            .unwrap();
+    }
+
     /// Hands the session's evidence source the library's rows, as the
-    /// real wallet's tracked locks would be read.
+    /// real wallet's tracked locks would be read. A stored fake's rows are
+    /// the wallet's own.
     fn sync_rows(&self) {
+        if self.stored {
+            return;
+        }
         let rows = self.w().locks.iter().map(row_of).collect();
         (self.session().leases.test_rows.lock().unwrap()).insert(self.wallet, rows);
     }
 
+    /// The locks as the library lists them: a stored fake's through the
+    /// real `PwLib`, from the wallet.
+    async fn locks(&self) -> Vec<LockInfo> {
+        if !self.stored {
+            return self.w().locks.clone();
+        }
+        let session = self.session();
+        let (_, lib) = PwLib::open(&session, self.wallet).await.unwrap();
+        TopUpLib::top_up_locks(&lib).await
+    }
+
+    /// The library's locks (from the test's thread).
+    fn rt_locks(&self) -> Vec<LockInfo> {
+        self.session().rt.block_on(self.locks())
+    }
+
+    /// The library's tracked lock of `txid` (from the test's thread).
+    fn tracked(&self, txid: &str) -> TrackedAssetLock {
+        let outpoint = self.lock(txid).outpoint;
+        let session = self.session();
+        (session.rt).block_on(async {
+            let w = session.wallet(&self.wallet).await.unwrap();
+            w.state().await.tracked_asset_locks[&outpoint].clone()
+        })
+    }
+
+    /// Tracks `locks` as a restore reads them back from the chain:
+    /// `RecoveredFromChain`, stored (from the test's thread).
+    fn recover(&self, locks: &[TrackedAssetLock]) {
+        for lock in locks {
+            let mut lock = lock.clone();
+            lock.status = AssetLockStatus::RecoveredFromChain;
+            self.session().rt.block_on(self.store(lock));
+        }
+    }
+
+    /// The lock of `txid` (from the test's thread).
     fn lock(&self, txid: &str) -> LockInfo {
-        let w = self.w();
-        (w.locks.iter())
+        (self.rt_locks().into_iter())
             .find(|l| l.outpoint.txid.to_string() == txid)
-            .cloned()
             .unwrap()
+    }
+
+    /// [`Self::set_status`] from the test's thread.
+    fn mark(&self, txid: &str, status: LockStatus) {
+        let outpoint = self.lock(txid).outpoint;
+        self.session()
+            .rt
+            .block_on(self.set_status(outpoint, status));
     }
 
     fn balance(&self) -> u64 {
@@ -454,6 +626,17 @@ fn row_of(lock: &LockInfo) -> TrackedRow {
     }
 }
 
+fn asset_lock_status(status: LockStatus) -> AssetLockStatus {
+    match status {
+        LockStatus::Built => AssetLockStatus::Built,
+        LockStatus::Broadcast => AssetLockStatus::Broadcast,
+        LockStatus::InstantSendLocked => AssetLockStatus::InstantSendLocked,
+        LockStatus::ChainLocked => AssetLockStatus::ChainLocked,
+        LockStatus::Consumed => AssetLockStatus::Consumed,
+        LockStatus::RecoveredFromChain => AssetLockStatus::RecoveredFromChain,
+    }
+}
+
 /// The coin the lock `txid` spends.
 fn input_of(txid: Txid) -> OutPoint {
     OutPoint::new(
@@ -473,7 +656,7 @@ impl TopUpLib for Fake {
     }
 
     async fn top_up_locks(&self) -> Vec<LockInfo> {
-        let locks = self.w().locks.clone();
+        let locks = self.locks().await;
         if std::mem::take(&mut self.w().applied_after_list) {
             for lock in locks.iter().filter(|l| l.status.has_proof()) {
                 {
@@ -481,7 +664,7 @@ impl TopUpLib for Fake {
                     w.consumed.insert(lock.outpoint);
                     *w.balances.entry(identity()).or_default() += credited(lock.amount);
                 }
-                self.set_status(lock.outpoint, LockStatus::Consumed);
+                self.set_status(lock.outpoint, LockStatus::Consumed).await;
             }
         }
         locks
@@ -506,6 +689,7 @@ impl TopUpLib for Fake {
         key: FundingKey,
         duffs: u64,
     ) -> Result<CallPermit, FundError> {
+        self.maybe_hang(Call::Permit, When::Before).await;
         let session = self.session();
         let fence = session
             .coin_fence(self.wallet)
@@ -546,39 +730,78 @@ impl TopUpLib for Fake {
             _ => {}
         }
         // Signed by the permit's funding signer, recorded as the step's own
-        // (P2b's provenance check), then tracked as Built.
-        let outpoint = OutPoint::new(Txid::from_byte_array([n as u8; 32]), 0);
+        // (P2b's provenance check), then tracked as Built. A stored lock is
+        // a transaction of its own, tracked by the wallet.
+        let transaction = dashcore::Transaction {
+            version: 3,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([0x66; 32]), n),
+                ..Default::default()
+            }],
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        let outpoint = match self.stored {
+            true => OutPoint::new(transaction.txid(), 0),
+            false => OutPoint::new(Txid::from_byte_array([n as u8; 32]), 0),
+        };
+        let inputs = match self.stored {
+            true => vec![transaction.input[0].previous_output],
+            false => vec![input_of(outpoint.txid)],
+        };
         let sighash = outpoint.txid.to_byte_array();
         permit.note_signed(sighash);
         self.session().leases.record_signed_locks(
             self.wallet,
             &[StoredLock {
                 txid: outpoint.txid,
-                inputs: vec![input_of(outpoint.txid)],
+                inputs,
                 sighashes: Some(vec![sighash]),
                 built: true,
             }],
         );
-        self.w().locks.push(LockInfo {
-            outpoint,
-            registration: false,
-            identity_index: index,
-            account: 0,
-            amount: duffs,
-            status: LockStatus::Built,
-        });
-        self.sync_rows();
+        if self.stored {
+            // In the wallet's state only: the session's store refuses an
+            // unsigned `Built` lock while a funding call signs (fail
+            // closed). It is stored from its next status on.
+            let lock = TrackedAssetLock {
+                out_point: outpoint,
+                transaction,
+                account_index: 0,
+                funding_type: AssetLockFundingType::IdentityTopUp,
+                identity_index: index,
+                amount: duffs,
+                status: AssetLockStatus::Built,
+                proof: None,
+            };
+            let w = self.session().wallet(&self.wallet).await.unwrap();
+            w.state_mut()
+                .await
+                .tracked_asset_locks
+                .insert(outpoint, lock);
+        } else {
+            self.w().locks.push(LockInfo {
+                outpoint,
+                registration: false,
+                identity_index: index,
+                account: 0,
+                amount: duffs,
+                status: LockStatus::Built,
+            });
+            self.sync_rows();
+        }
         self.maybe_hang(Call::Fund, When::Tracked).await;
         if self.w().lock_vault_in_fund {
             self.session().lock_vault_sync().unwrap();
         }
         match script {
             FundScript::Ok => {
-                self.set_status(outpoint, LockStatus::InstantSendLocked);
+                (self.set_status(outpoint, LockStatus::InstantSendLocked)).await;
                 Ok(outpoint)
             }
             FundScript::IsTimeout => {
-                self.set_status(outpoint, LockStatus::Broadcast);
+                self.set_status(outpoint, LockStatus::Broadcast).await;
                 Err(FundError::IsTimeout)
             }
             FundScript::NotSent | FundScript::LostUntracked => unreachable!(),
@@ -589,11 +812,17 @@ impl TopUpLib for Fake {
         if !self.w().proof_arrives {
             return Err(FundError::IsTimeout);
         }
-        self.set_status(outpoint, LockStatus::ChainLocked);
+        self.set_status(outpoint, LockStatus::ChainLocked).await;
         Ok(())
     }
 
     async fn tracked_row(&self, outpoint: OutPoint) -> Option<TrackedRow> {
+        if self.stored {
+            let session = self.session();
+            let w = session.wallet(&self.wallet).await.unwrap();
+            let state = w.state().await;
+            return state.tracked_asset_locks.get(&outpoint).map(TrackedRow::of);
+        }
         (self.w().locks.iter())
             .find(|l| l.outpoint == outpoint)
             .map(row_of)
@@ -610,21 +839,25 @@ impl TopUpLib for Fake {
         _: &VaultSigner,
     ) -> Result<Applied, PlatformError> {
         self.maybe_hang(Call::Apply, When::Before).await;
-        let lock = {
+        {
             let mut w = self.w();
             w.applies += 1;
             if let Some(e) = w.apply_error.take() {
                 return Err(e);
             }
-            (w.locks.iter()).find(|l| l.outpoint == outpoint).cloned()
-        };
+        }
+        let lock = (self.locks().await.into_iter()).find(|l| l.outpoint == outpoint);
         let lock = lock.expect("a tracked lock");
         assert!(lock.status.has_proof(), "applied without a proof");
-        if self.w().consumed.contains(&outpoint) {
+        let taken = {
+            let w = self.w();
+            w.consumed.contains(&outpoint) || w.false_taken
+        };
+        if taken {
             // The library keeps it "consumption unknown" with its ChainLock
             // proof, when it can get one.
             if !self.w().taken_unproved {
-                self.set_status(outpoint, LockStatus::RecoveredFromChain);
+                (self.set_status(outpoint, LockStatus::RecoveredFromChain)).await;
             }
             return Ok(Applied::Taken);
         }
@@ -636,7 +869,7 @@ impl TopUpLib for Fake {
             *balance
         };
         self.maybe_hang(Call::Apply, When::After).await;
-        self.set_status(outpoint, LockStatus::Consumed);
+        self.set_status(outpoint, LockStatus::Consumed).await;
         Ok(Applied::Balance(balance))
     }
 }
@@ -652,6 +885,17 @@ fn already_applied(balance: u64) -> TopUpState {
     TopUpState::AlreadyApplied {
         balance: Some(balance),
     }
+}
+
+fn consumption_unknown(balance: u64) -> TopUpState {
+    TopUpState::ConsumptionUnknown {
+        balance: Some(balance),
+    }
+}
+
+/// `(resumed, completed, still_pending)`.
+fn counted(report: FinishReport) -> (u32, u32, u32) {
+    (report.resumed, report.completed, report.still_pending)
 }
 
 /// The quote prices the top-up from the network's table and the funding's
@@ -746,15 +990,23 @@ fn a_top_up_funds_one_lock_and_applies_it() {
 }
 
 /// A grant smaller than the quote's total is refused before anything is
-/// funded.
+/// funded, and before it is redeemed: a top-up it covers then funds under
+/// it (review Sol r1).
 #[test]
-fn a_grant_below_the_quote_funds_nothing() {
+fn a_grant_below_the_quote_funds_nothing_and_stays_usable() {
     let f = fixture(false);
     let lib = f.fake();
     let grant = f.grant(DUFFS);
     let err = f.top_up_with(&lib, DUFFS, &grant).unwrap_err();
     assert_eq!(err.code(), "platform.grant_exceeded");
     assert_eq!(lib.counts(), (0, 0));
+    let smaller = DUFFS - f.fee_bound();
+    let out = f.top_up_with(&lib, smaller, &grant).unwrap();
+    assert_eq!(
+        out.state,
+        applied(Some(credited(smaller)), START_BALANCE + credited(smaller))
+    );
+    assert_eq!(lib.counts(), (1, 1));
 }
 
 /// No InstantSend lock in the window: the lock waits for its proof, a new
@@ -866,11 +1118,13 @@ fn a_funding_not_sent_is_retried_under_its_step() {
     assert_eq!(lib.counts(), (2, 1));
 }
 
-/// Platform reports the lock taken (an earlier apply landed unseen): the
-/// top-up reads applied already, with the balance read afresh, and the lock
-/// no longer blocks a new top-up.
+/// Platform reports the lock taken, unproved (an earlier apply landed
+/// unseen, or a node lies): nothing is concluded. The top-up reads
+/// `ConsumptionUnknown` with the balance read afresh, and the lock, now
+/// final with its consumption unknown, stays pending and blocks a new
+/// top-up until the user resolves it (review Sol r1).
 #[test]
-fn a_lock_platform_took_already_reads_applied_already() {
+fn an_unproved_already_consumed_keeps_the_lock_pending_until_resolved() {
     let f = fixture(false);
     let lib = f.fake();
     lib.w().fund_script = Some(FundScript::IsTimeout);
@@ -883,14 +1137,132 @@ fn a_lock_platform_took_already_reads_applied_already() {
     }
     let resumed = f.resume(&lib, &out.txid).unwrap();
     let balance = START_BALANCE + credited(DUFFS);
-    assert_eq!(resumed.state, already_applied(balance));
+    assert_eq!(resumed.state, consumption_unknown(balance));
     assert_eq!(lib.lock(&out.txid).status, LockStatus::RecoveredFromChain);
+    let pending = f.pending(&lib);
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].proved && pending[0].consumption_unknown);
+    assert!(matches!(
+        f.top_up(&lib, DUFFS),
+        Err(CreditsError::TopUpPending { txid }) if txid == out.txid
+    ));
+    assert_eq!(counted(f.finish(&lib)), (1, 0, 1));
+
+    f.resolve(&lib, &out.txid).unwrap();
     assert!(f.pending(&lib).is_empty());
+    // Settled for the gates, and Finish counts Platform's answer as nothing.
+    assert_eq!(counted(f.finish(&lib)), (0, 0, 0));
     assert!(matches!(
         f.top_up(&lib, DUFFS).unwrap().state,
         TopUpState::Applied { .. }
     ));
     assert_eq!(lib.balance(), balance + credited(DUFFS));
+}
+
+/// Review Sol r1's regression: a lock a top-up funded that the library
+/// reads back final without consuming it (a restart lost its apply)
+/// stays pending and blocks a new top-up; resuming applies it.
+#[test]
+fn a_funded_lock_recovered_from_the_chain_stays_pending_and_blocks() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().fund_script = Some(FundScript::IsTimeout);
+    let out = f.top_up(&lib, DUFFS).unwrap();
+    lib.mark(&out.txid, LockStatus::RecoveredFromChain);
+    let pending = f.pending(&lib);
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].consumption_unknown);
+    assert!(matches!(
+        f.quote(&lib, DUFFS),
+        Err(CreditsError::TopUpPending { txid }) if txid == out.txid
+    ));
+    let resumed = f.resume(&lib, &out.txid).unwrap();
+    let balance = START_BALANCE + credited(DUFFS);
+    assert_eq!(resumed.state, applied(Some(credited(DUFFS)), balance));
+    assert!(f.pending(&lib).is_empty());
+    assert_eq!(lib.counts(), (1, 1));
+}
+
+/// Only a pending lock with its proof is resolved: one without a proof
+/// (never applied), a settled one and an unknown txid are refused, and a
+/// resolution keeps across a restart and whatever status the lock moves
+/// to (review F6). A resolved lock Platform had not taken is still
+/// applied by "Finish transfers".
+#[test]
+fn only_a_pending_proved_lock_is_resolved_and_finish_still_applies_it() {
+    let mut f = fixture(false);
+    let lib = f.fake();
+    lib.w().fund_script = Some(FundScript::IsTimeout);
+    let out = f.top_up(&lib, DUFFS).unwrap();
+    let refused = |r: Result<(), CreditsError>| r.unwrap_err().code();
+    assert_eq!(refused(f.resolve(&lib, &out.txid)), "invalid_argument");
+    assert_eq!(refused(f.resolve(&lib, "00")), "invalid_argument");
+    lib.mark(&out.txid, LockStatus::RecoveredFromChain);
+    f.resolve(&lib, &out.txid).unwrap();
+    assert!(f.pending(&lib).is_empty());
+    assert_eq!(refused(f.resolve(&lib, &out.txid)), "invalid_argument");
+    // The library's live advance may overwrite the final mark.
+    lib.mark(&out.txid, LockStatus::ChainLocked);
+    assert!(f.pending(&lib).is_empty());
+
+    f.reopen(None);
+    let lib = f.fake_over(Arc::clone(&lib.w));
+    assert!(f.pending(&lib).is_empty());
+    assert_eq!(counted(f.finish(&lib)), (1, 1, 0));
+    assert_eq!(lib.balance(), START_BALANCE + credited(DUFFS));
+    assert_eq!(lib.lock(&out.txid).status, LockStatus::Consumed);
+    assert_eq!(counted(f.finish(&lib)), (0, 0, 0));
+}
+
+/// A recovered lock no dw top-up funded (an earlier top-up a restore read
+/// back from the chain) is historical: it neither pends nor blocks, and
+/// "Finish transfers" offers it to Platform and counts any answer but an
+/// apply as nothing.
+#[test]
+fn a_historical_recovered_lock_neither_pends_nor_blocks() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let historical = OutPoint::new(Txid::from_byte_array([0xab; 32]), 0);
+    {
+        let mut w = lib.w();
+        w.locks.push(LockInfo {
+            outpoint: historical,
+            registration: false,
+            identity_index: 0,
+            account: 0,
+            amount: DUFFS,
+            status: LockStatus::RecoveredFromChain,
+        });
+        w.consumed.insert(historical);
+    }
+    lib.sync_rows();
+    assert!(f.pending(&lib).is_empty());
+    for _ in 0..2 {
+        assert_eq!(counted(f.finish(&lib)), (0, 0, 0));
+    }
+    // Any answer but an apply counts nothing for it (review F7).
+    lib.w().apply_error = Some(PlatformError::Unavailable);
+    assert_eq!(counted(f.finish(&lib)), (0, 0, 0));
+    assert_eq!(lib.counts(), (0, 3));
+    let out = f.top_up(&lib, DUFFS).unwrap();
+    assert!(matches!(out.state, TopUpState::Applied { .. }));
+    assert_eq!(lib.counts(), (1, 4));
+}
+
+/// A crash before the funding permit wrote the step's marker: after the
+/// restart the step stands unused, and the next top-up funds under it,
+/// once.
+#[test]
+fn a_crash_before_the_funding_marker_funds_under_its_step() {
+    let mut f = fixture(false);
+    let lib = f.fake();
+    let lib = f.crash_at(lib, (Call::Permit, When::Before));
+    let first = top_up_step(0, 0);
+    assert_eq!(f.status(&first), None);
+    let out = f.top_up(&lib, DUFFS).unwrap();
+    assert!(matches!(out.state, TopUpState::Applied { .. }));
+    assert_eq!(f.signed(&first), vec![lib.lock(&out.txid).outpoint.txid]);
+    assert_eq!(lib.counts(), (1, 1));
 }
 
 /// A crash inside the funding call before its signature: after the
@@ -969,8 +1341,8 @@ fn a_crash_before_the_apply_is_finished_by_finish_transfers() {
 }
 
 /// A crash once Platform took the lock, before the library marked it:
-/// resuming reads Platform's "already consumed" as applied, and the
-/// credits are added once.
+/// resuming adds the credits once and reads Platform's unproved "already
+/// consumed" as `ConsumptionUnknown`; the lock pends until resolved.
 #[test]
 fn a_crash_after_platform_took_the_lock_adds_the_credits_once() {
     let mut f = fixture(false);
@@ -980,77 +1352,146 @@ fn a_crash_after_platform_took_the_lock_adds_the_credits_once() {
     assert_eq!(pending.len(), 1);
     let resumed = f.resume(&lib, &pending[0].txid).unwrap();
     let balance = START_BALANCE + credited(DUFFS);
-    assert_eq!(resumed.state, already_applied(balance));
+    assert_eq!(resumed.state, consumption_unknown(balance));
     assert_eq!(lib.balance(), balance);
+    assert!(f.pending(&lib)[0].consumption_unknown);
+    f.resolve(&lib, &pending[0].txid).unwrap();
     assert!(f.pending(&lib).is_empty());
+    assert_eq!(lib.balance(), balance);
 }
 
 /// A lock Platform reports taken that the library cannot prove final stays
-/// tracked as InstantSend-locked: in this process it neither blocks a new
-/// top-up nor is applied again, and "Finish transfers" counts it as
-/// nothing. After a restart, Finish asks Platform once more and counts
-/// nothing again.
+/// tracked as InstantSend-locked: it stays pending and blocks a new top-up
+/// (no process-local note hides it), "Finish transfers" keeps it pending,
+/// and so does a restart. Once the library holds it final it reads
+/// `consumption_unknown` and is resolved (the user could resolve it
+/// before, too: it has its proof).
 #[test]
-fn a_lock_taken_without_a_chainlock_neither_blocks_nor_is_applied_again() {
+fn a_lock_taken_without_a_chainlock_stays_pending_across_a_restart() {
     let mut f = fixture(false);
     let lib = f.fake();
     let lib = f.crash_at(lib, (Call::Apply, When::After));
     lib.w().taken_unproved = true;
     let txid = f.pending(&lib)[0].txid.clone();
-    lib.set_status(lib.lock(&txid).outpoint, LockStatus::InstantSendLocked);
+    lib.mark(&txid, LockStatus::InstantSendLocked);
     let balance = START_BALANCE + credited(DUFFS);
     assert_eq!(
         f.resume(&lib, &txid).unwrap().state,
-        already_applied(balance)
+        consumption_unknown(balance)
     );
     assert_eq!(lib.lock(&txid).status, LockStatus::InstantSendLocked);
-    assert!(f.pending(&lib).is_empty());
-    let report = f.finish(&lib);
-    assert_eq!(
-        (report.resumed, report.completed, report.still_pending),
-        (0, 0, 0)
-    );
-    assert_eq!(
-        f.resume(&lib, &txid).unwrap().state,
-        already_applied(balance)
-    );
-    assert_eq!(lib.counts(), (1, 2));
-    let next = f.top_up(&lib, DUFFS).unwrap();
-    assert_eq!(
-        next.state,
-        applied(Some(credited(DUFFS)), balance + credited(DUFFS))
-    );
-    assert_eq!(lib.counts(), (2, 3));
+    let pending = f.pending(&lib);
+    assert!(pending.len() == 1 && !pending[0].consumption_unknown);
+    assert!(matches!(
+        f.top_up(&lib, DUFFS),
+        Err(CreditsError::TopUpPending { txid: t }) if t == txid
+    ));
+    assert_eq!(counted(f.finish(&lib)), (1, 0, 1));
 
     f.reopen(None);
     let lib = f.fake_over(Arc::clone(&lib.w));
-    for _ in 0..2 {
-        let report = f.finish(&lib);
-        assert_eq!(
-            (report.resumed, report.completed, report.still_pending),
-            (0, 0, 0)
-        );
-    }
-    assert_eq!(lib.counts(), (2, 4));
+    assert_eq!(f.pending(&lib).len(), 1);
+    assert_eq!(counted(f.finish(&lib)), (1, 0, 1));
+    lib.w().taken_unproved = false;
+    assert_eq!(counted(f.finish(&lib)), (1, 0, 1));
+    assert!(f.pending(&lib)[0].consumption_unknown);
+    f.resolve(&lib, &txid).unwrap();
+    assert!(f.pending(&lib).is_empty());
+    assert_eq!(lib.balance(), balance);
+    assert_eq!(lib.counts(), (1, 5));
 }
 
-/// "Finish transfers" applies a lock Platform reports taken (as a restore
-/// finds an earlier top-up, read back from the chain) once per process,
-/// and counts it as nothing.
+/// The locks live in the wallet's store: a restart reads a proved lock and
+/// its identity index back from `wallet.sqlite` (nothing kept in memory),
+/// and a `RecoveredFromChain` mark too; both pend and block, and "Finish
+/// transfers" applies the lock once, after which the store no longer loads
+/// it (review Sol r1).
 #[test]
-fn finish_asks_platform_about_a_taken_lock_once() {
-    let f = fixture(false);
-    let lib = f.fake();
+fn a_restart_reads_the_top_up_locks_back_from_wallet_storage() {
+    let mut f = fixture(false);
+    let lib = f.stored_fake(None);
+    lib.w().apply_error = Some(PlatformError::Unavailable);
     let out = f.top_up(&lib, DUFFS).unwrap();
-    lib.set_status(lib.lock(&out.txid).outpoint, LockStatus::RecoveredFromChain);
-    for _ in 0..2 {
-        let report = f.finish(&lib);
-        assert_eq!(
-            (report.resumed, report.completed, report.still_pending),
-            (0, 0, 0)
-        );
-    }
-    assert_eq!(lib.counts(), (1, 2));
+    assert!(matches!(out.state, TopUpState::NotApplied { .. }));
+
+    f.reopen(None);
+    let lib = f.stored_fake(Some(&lib));
+    let pending = f.pending(&lib);
+    assert_eq!(pending.len(), 1);
+    let read = &pending[0];
+    assert_eq!(
+        (
+            read.txid.as_str(),
+            read.identity_index,
+            read.duffs,
+            read.proved
+        ),
+        (out.txid.as_str(), 0, DUFFS, true)
+    );
+    assert!(!read.consumption_unknown);
+    assert_eq!(f.status(&top_up_step(0, 0)), Some(DispatchState::Sent));
+    assert!(matches!(
+        f.top_up(&lib, DUFFS),
+        Err(CreditsError::TopUpPending { .. })
+    ));
+    lib.mark(&out.txid, LockStatus::RecoveredFromChain);
+
+    f.reopen(None);
+    let lib = f.stored_fake(Some(&lib));
+    assert_eq!(lib.lock(&out.txid).status, LockStatus::RecoveredFromChain);
+    assert!(f.pending(&lib)[0].consumption_unknown);
+    assert!(matches!(
+        f.quote(&lib, DUFFS),
+        Err(CreditsError::TopUpPending { .. })
+    ));
+    assert_eq!(counted(f.finish(&lib)), (1, 1, 0));
+    assert_eq!(lib.balance(), START_BALANCE + credited(DUFFS));
+
+    // The store loads only unconsumed locks: the consumed one is gone.
+    assert_eq!(lib.lock(&out.txid).status, LockStatus::Consumed);
+    f.reopen(None);
+    let lib = f.stored_fake(Some(&lib));
+    assert!(lib.rt_locks().is_empty());
+    assert!(f.pending(&lib).is_empty());
+    let next = f.top_up(&lib, DUFFS).unwrap();
+    assert!(matches!(next.state, TopUpState::Applied { .. }));
+    assert_eq!(f.signed(&top_up_step(0, 1)).len(), 1);
+}
+
+/// A node answers "already consumed" for a lock Platform never took: the
+/// top-up reads `ConsumptionUnknown`, the lock (stored final, consumption
+/// unknown) stays pending and blocking across a restart, and once Platform
+/// answers honestly "Finish transfers" applies it, crediting it once
+/// (review Sol r1).
+#[test]
+fn a_false_already_consumed_survives_a_restart() {
+    let mut f = fixture(false);
+    let lib = f.stored_fake(None);
+    lib.w().false_taken = true;
+    let out = f.top_up(&lib, DUFFS).unwrap();
+    assert_eq!(out.state, consumption_unknown(START_BALANCE));
+    assert_eq!(lib.lock(&out.txid).status, LockStatus::RecoveredFromChain);
+
+    f.reopen(None);
+    let lib = f.stored_fake(Some(&lib));
+    let pending = f.pending(&lib);
+    assert!(pending.len() == 1 && pending[0].consumption_unknown);
+    assert!(matches!(
+        f.top_up(&lib, DUFFS),
+        Err(CreditsError::TopUpPending { txid }) if txid == out.txid
+    ));
+    assert_eq!(counted(f.finish(&lib)), (1, 0, 1));
+    assert_eq!(
+        f.resume(&lib, &out.txid).unwrap().state,
+        consumption_unknown(START_BALANCE)
+    );
+
+    lib.w().false_taken = false;
+    assert_eq!(counted(f.finish(&lib)), (1, 1, 0));
+    assert_eq!(lib.balance(), START_BALANCE + credited(DUFFS));
+    assert!(f.pending(&lib).is_empty());
+    assert_eq!(counted(f.finish(&lib)), (0, 0, 0));
+    assert_eq!(lib.balance(), START_BALANCE + credited(DUFFS));
 }
 
 /// "Finish transfers" reads each lock again under the identity's write
@@ -1084,7 +1525,7 @@ fn finish_transfers_applies_proved_top_up_locks_only() {
         (report.resumed, report.completed, report.still_pending),
         (0, 0, 1)
     );
-    lib.set_status(lib.lock(&out.txid).outpoint, LockStatus::ChainLocked);
+    lib.mark(&out.txid, LockStatus::ChainLocked);
     let report = f.finish(&lib);
     assert_eq!(
         (report.resumed, report.completed, report.still_pending),
@@ -1311,10 +1752,7 @@ fn t3_testnet_top_up() {
         table.top_up_fee,
         quote.credits
     );
-    assert!(matches!(
-        out.state,
-        TopUpState::Applied { .. } | TopUpState::AlreadyApplied { .. }
-    ));
+    assert!(matches!(out.state, TopUpState::Applied { .. }));
     assert!(
         added > 0 && added <= funded,
         "the balance rose by less than the lock"
@@ -1327,4 +1765,65 @@ fn t3_testnet_top_up() {
         assert_eq!(reported, added);
     }
     assert!(engine.block_on(dp.pending_top_ups()).unwrap().is_empty());
+}
+
+/// A wallet removed and imported again (the same wallet id) reads its
+/// applied and its resolved top-ups back settled when a restore recovers
+/// their locks: the journal's records outlive `wallet.sqlite`, whose
+/// `Consumed` mark the removal erased, as the steps' signed locks do
+/// (review F1). The identity tops up again at once.
+#[test]
+fn a_wallet_imported_again_reads_its_top_ups_settled() {
+    let f = fixture(false);
+    let lib = f.stored_fake(None);
+    let applied = f.top_up(&lib, DUFFS).unwrap();
+    assert!(matches!(applied.state, TopUpState::Applied { .. }));
+    lib.w().false_taken = true;
+    let resolved = f.top_up(&lib, DUFFS).unwrap();
+    assert_eq!(
+        resolved.state,
+        consumption_unknown(START_BALANCE + credited(DUFFS))
+    );
+    f.resolve(&lib, &resolved.txid).unwrap();
+    lib.w().false_taken = false;
+    let locks = [lib.tracked(&applied.txid), lib.tracked(&resolved.txid)];
+
+    f.remove_and_import_again();
+    let lib = f.stored_fake(Some(&lib));
+    assert!(lib.rt_locks().is_empty(), "wallet.sqlite went");
+    lib.recover(&locks);
+    assert_eq!(lib.rt_locks().len(), 2);
+    assert!(f.pending(&lib).is_empty());
+    // Finish still offers both to Platform: the applied one is taken
+    // (nothing counted), the resolved one Platform never took is applied.
+    assert_eq!(counted(f.finish(&lib)), (1, 1, 0));
+    let next = f.top_up(&lib, DUFFS).unwrap();
+    assert!(matches!(next.state, TopUpState::Applied { .. }));
+    assert_eq!(f.signed(&top_up_step(0, 2)).len(), 1);
+}
+
+/// Until the dispatch journal is read no recovered lock can be told
+/// apart: the quote, the list, the top-up and the resolution are
+/// `platform.unavailable`, never a pending lock or an empty list (review
+/// L5, F5).
+#[test]
+fn every_top_up_call_waits_for_the_journal() {
+    let mut f = fixture(false);
+    let lib = f.stored_fake(None);
+    lib.w().false_taken = true;
+    let out = f.top_up(&lib, DUFFS).unwrap();
+    assert_eq!(out.state, consumption_unknown(START_BALANCE));
+
+    f.reopen_without_journal();
+    let lib = f.stored_fake(Some(&lib));
+    let unavailable = |r: Result<(), CreditsError>| {
+        matches!(r, Err(CreditsError::Platform(PlatformError::Unavailable)))
+    };
+    assert!(unavailable(f.quote(&lib, DUFFS).map(drop)));
+    assert!(unavailable(f.top_up(&lib, DUFFS).map(drop)));
+    assert!(unavailable(f.resolve(&lib, &out.txid)));
+    let listed = f
+        .engine
+        .block_on(topup::pending(&f.session, f.wallet, &*lib));
+    assert!(matches!(listed, Err(PlatformError::Unavailable)));
 }

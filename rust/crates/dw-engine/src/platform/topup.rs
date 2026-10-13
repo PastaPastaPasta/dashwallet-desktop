@@ -13,18 +13,33 @@
 //!   top-up (`platform.broadcast_unknown`, `platform.will_be_sent`), so a
 //!   funding whose outcome is unknown is never repeated; one read `NotSent`
 //!   is retried under the same step, which the funding gate admits only so.
-//! - **The lock.** While a top-up lock of the identity is tracked and not
-//!   taken (no proof yet, or proved and not applied), a new top-up is
-//!   refused `credits.top_up_pending{txid}`: the host applies that one
+//! - **The lock.** While a top-up lock of the identity is [`Standing::Open`]
+//!   or [`Standing::ConsumptionUnknown`], a new top-up is refused
+//!   `credits.top_up_pending{txid}`: the host applies that one
 //!   (`resume_top_up`) rather than funding again. A lock is tracked before
 //!   it is broadcast (H12), so a lock that may be out is always found.
 //! - **The apply** builds nothing: `FromExistingAssetLock` signs only the
 //!   transition's proof with the lock's credit key, so it runs under a
 //!   plain call permit with the lease's uncounted funding signer, taken
-//!   before the funding call charges the budget. Applied again, Platform
-//!   answers "already consumed" (`AlreadyApplied`). The library marks such
-//!   a lock only when it can prove it final, so [`TakenTopUps`] keeps it
-//!   from blocking or being applied again in this process.
+//!   before the funding call charges the budget.
+//!
+//! Only the proved apply settles a lock: the library then marks it
+//! `Consumed`, and the journal records it settled (`top_up_settled`,
+//! schema 8). Platform's "already consumed" proves nothing (any node can
+//! say it), so it reads [`TopUpState::ConsumptionUnknown`] and settles
+//! nothing; the library keeps such a lock, and one a restore read back
+//! from the chain, `RecoveredFromChain` (final, consumption unknown). A
+//! lock a dw top-up funded is known by its funding step's signed-lock
+//! record, which the journal keeps for good: such a lock stays pending
+//! and blocking until a proved apply or the user's `resolve_top_up`, both
+//! recorded in the journal too. Those records outlive a wallet's removal
+//! like the signed locks do, while the library's `Consumed` mark goes with
+//! `wallet.sqlite`: a wallet removed and imported again reads its applied
+//! top-ups back settled (review). Any other recovered lock is historical,
+//! an earlier top-up of the identity: it neither pends nor blocks, and
+//! "Finish transfers" still offers it to Platform. Until the journal is
+//! read nothing can be told apart, so every call but Finish answers
+//! `platform.unavailable` (review L5).
 //!
 //! The identity's write lock (`identity_writes.rs`) is held throughout,
 //! from before the grant is redeemed, so a balance read before and after
@@ -32,11 +47,12 @@
 
 use std::collections::HashSet;
 use std::future::Future;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use dashcore::{OutPoint, Txid};
 use dpp::prelude::Identifier;
+use dw_appdb::dispatch::TopUpSettled;
 use dw_vault::VaultSigner;
 use platform_wallet::AssetLockFundingType;
 
@@ -46,7 +62,7 @@ use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::identity_writes::identity_locks;
 use super::lease::mode_b::TrackedRow;
 use super::lease::{CallPermit, FundingKey, Lease, LeaseError};
-use super::registration::{FinishReport, RegistrationWait};
+use super::registration::{FinishReport, RegistrationWait, funding_cap};
 use super::registration_flow::{
     FundError, LockInfo, LockStatus, PwLib, RegistrationLib as Reg, Spendable, parse_identity,
 };
@@ -61,33 +77,82 @@ const RESUME_PROOF_WAIT: Duration = Duration::from_secs(30);
 pub(crate) enum Applied {
     /// Platform's new balance, proved.
     Balance(u64),
-    /// Platform reported the lock taken already.
+    /// Platform reported the lock taken already, unproved.
     Taken,
 }
 
-/// Top-up locks Platform reported taken in this process, by wallet. A
-/// lock taken without a ChainLock proof stays tracked as InstantSend-locked
-/// (the library marks only what it can prove final), so without this it
-/// would block the identity's top-ups and Finish would apply it on every
-/// run. After a restart the first apply finds it taken again.
-#[derive(Default)]
-pub(crate) struct TakenTopUps(Mutex<HashSet<(WalletId, OutPoint)>>);
+/// What a tracked top-up lock is to the gates (module doc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Standing {
+    /// Out with no proof yet, or proved and not applied: it pends and
+    /// blocks the identity's top-ups.
+    Open,
+    /// A lock a dw top-up funded, final, its consumption unknown: it pends
+    /// and blocks until a proved apply or the user's resolution.
+    ConsumptionUnknown,
+    /// Applied with proof or resolved by the user (recorded in the
+    /// journal), or historical.
+    Settled,
+}
 
-impl TakenTopUps {
-    fn set(&self) -> std::sync::MutexGuard<'_, HashSet<(WalletId, OutPoint)>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+/// What the gates know of the wallet's locks beyond their status.
+struct Known {
+    /// The locks a dw top-up funded; `None` until the journal is read, when
+    /// every recovered lock counts as one (fail closed).
+    ours: Option<HashSet<Txid>>,
+    /// The locks the journal records settled (a proved apply or the
+    /// user's word); none when they cannot be read (they pend, fail
+    /// closed).
+    settled: HashSet<Txid>,
+}
+
+impl Known {
+    /// Also records settled each lock of ours among `locks` the library
+    /// holds `Consumed` and the journal does not yet (one applied before
+    /// the record existed, or whose record failed), so a wallet removed
+    /// and imported again still reads it settled.
+    async fn of(session: &NetworkSession, wallet: WalletId, locks: &[LockInfo]) -> Self {
+        let settled = (session.leases.top_ups_settled(wallet).await).unwrap_or_else(|e| {
+            tracing::warn!(wallet_id = %wallet, error = %e, "could not read the settled top-ups");
+            HashSet::new()
+        });
+        let known = Self {
+            ours: session.leases.top_up_lock_txids(wallet),
+            settled,
+        };
+        for lock in locks {
+            let txid = lock.outpoint.txid;
+            if lock.status == LockStatus::Consumed
+                && !known.settled.contains(&txid)
+                && known.ours.as_ref().is_some_and(|o| o.contains(&txid))
+            {
+                settle(session, wallet, txid, TopUpSettled::Applied).await;
+            }
+        }
+        known
     }
 
-    fn record(&self, wallet: WalletId, outpoint: OutPoint) {
-        self.set().insert((wallet, outpoint));
+    fn standing(&self, lock: &LockInfo) -> Standing {
+        let txid = lock.outpoint.txid;
+        match lock.status {
+            LockStatus::Consumed => Standing::Settled,
+            _ if self.settled.contains(&txid) => Standing::Settled,
+            LockStatus::RecoveredFromChain
+                if self.ours.as_ref().is_some_and(|o| !o.contains(&txid)) =>
+            {
+                Standing::Settled
+            }
+            LockStatus::RecoveredFromChain => Standing::ConsumptionUnknown,
+            _ => Standing::Open,
+        }
     }
+}
 
-    fn has(&self, wallet: WalletId, outpoint: OutPoint) -> bool {
-        self.set().contains(&(wallet, outpoint))
-    }
-
-    pub(crate) fn forget(&self, wallet: WalletId) {
-        self.set().retain(|(w, _)| *w != wallet);
+/// Records the lock `txid` settled in the journal; a failed write is
+/// logged (the lock then reads from the library's mark, or pends).
+async fn settle(session: &NetworkSession, wallet: WalletId, txid: Txid, how: TopUpSettled) {
+    if let Err(e) = session.leases.settle_top_up(wallet, txid, how).await {
+        tracing::warn!(%txid, ?how, error = %e, "could not record a top-up's lock settled");
     }
 }
 
@@ -195,8 +260,8 @@ async fn check<L: TopUpLib>(
             min: table.top_up_min_duffs,
         });
     }
-    if let Some(lock) =
-        (open_locks(session, wallet, lib).await.into_iter()).find(|l| l.identity_index == index)
+    if let Some((lock, _)) = (open_locks(session, wallet, lib).await?.into_iter())
+        .find(|(l, _)| l.identity_index == index)
     {
         return Err(CreditsError::TopUpPending {
             txid: lock.outpoint.txid.to_string(),
@@ -225,31 +290,26 @@ async fn check<L: TopUpLib>(
     })
 }
 
-/// Out or proved, and not reported taken: a new top-up of its identity
-/// would fund twice. A lock read back from the chain (`RecoveredFromChain`:
-/// final, Platform's consumption unknown, as a restore finds every earlier
-/// top-up) is not one: "Finish transfers" applies it.
-fn untaken(lock: &LockInfo) -> bool {
-    matches!(
-        lock.status,
-        LockStatus::Built
-            | LockStatus::Broadcast
-            | LockStatus::InstantSendLocked
-            | LockStatus::ChainLocked
-    )
-}
-
-/// The wallet's [`untaken`] top-up locks that Platform has not reported
-/// taken in this process.
+/// The wallet's top-up locks that pend and block (not [`Standing::Settled`]):
+/// a new top-up of their identity would fund twice. `platform.unavailable`
+/// until the dispatch journal is read: no recovered lock can be told
+/// apart before (review L5).
 async fn open_locks<L: TopUpLib>(
     session: &NetworkSession,
     wallet: WalletId,
     lib: &L,
-) -> Vec<LockInfo> {
-    let taken = &session.platform.taken_top_ups;
-    (lib.top_up_locks().await.into_iter())
-        .filter(|l| untaken(l) && !taken.has(wallet, l.outpoint))
-        .collect()
+) -> Result<Vec<(LockInfo, Standing)>, PlatformError> {
+    if !session.leases.journal_ready() {
+        return Err(PlatformError::Unavailable);
+    }
+    let locks = lib.top_up_locks().await;
+    let known = Known::of(session, wallet, &locks).await;
+    Ok((locks.into_iter())
+        .filter_map(|l| {
+            let standing = known.standing(&l);
+            (standing != Standing::Settled).then_some((l, standing))
+        })
+        .collect())
 }
 
 /// The base58 id of the wallet's identity at `index`.
@@ -354,6 +414,12 @@ pub(crate) async fn top_up<L: TopUpLib>(
     if let Some(wait) = lib.funding_hold() {
         return Err(held(wait).into());
     }
+    // Until the dispatch journal is read, every step would read `MaybeSent`
+    // and the recovered locks could not be told apart: a retry after the
+    // load funds (review L5).
+    if !session.leases.journal_ready() {
+        return Err(PlatformError::Unavailable.into());
+    }
     let locks = identity_locks(wallet, parse_identity(identity)?);
     let _write = locks.write.lock().await;
     // Under the write lock, so no concurrent top-up of the identity funds
@@ -363,10 +429,9 @@ pub(crate) async fn top_up<L: TopUpLib>(
         return Err(PlatformError::Unavailable.into());
     }
     let step = next_step(session, wallet, plan.index)?;
-    let lease = authority(session, wallet, grant).await?;
-    let remaining = lease
-        .available(BudgetPurpose::Funding)
-        .map_err(PlatformError::from)?;
+    // The cap is read without redeeming the grant, so a grant too small
+    // for the quote is left for a smaller top-up.
+    let remaining = funding_cap(session, wallet, grant).await?;
     if plan.total_duffs > remaining {
         return Err(PlatformError::GrantExceeded {
             purpose: BudgetPurpose::Funding,
@@ -375,6 +440,7 @@ pub(crate) async fn top_up<L: TopUpLib>(
         }
         .into());
     }
+    let lease = authority(session, wallet, grant).await?;
     // Before the funding charges the budget (module doc).
     let signer = lease
         .uncounted_funding_signer()
@@ -427,7 +493,8 @@ pub(crate) async fn top_up<L: TopUpLib>(
 }
 
 /// Applies the proved lock at `outpoint` to `identity` under a call
-/// permit of `lease`, the identity's write lock held by the caller.
+/// permit of `lease`, the identity's write lock held by the caller; a
+/// proved apply is recorded settled in the journal.
 async fn apply<L: TopUpLib>(
     session: &NetworkSession,
     wallet: WalletId,
@@ -437,7 +504,7 @@ async fn apply<L: TopUpLib>(
     identity: Identifier,
     outpoint: OutPoint,
 ) -> TopUpState {
-    let before = lib.refresh_balance(identity).await.ok().flatten();
+    let before = balance_of(lib, identity).await;
     let applied = lease
         .scope(async {
             let permit = lease.call_permit("top-up", None)?;
@@ -447,13 +514,18 @@ async fn apply<L: TopUpLib>(
         })
         .await;
     match applied {
-        Ok(Applied::Balance(balance)) => TopUpState::Applied {
-            credits_added: before.map(|b| balance.saturating_sub(b)),
-            balance: Some(balance),
-        },
+        Ok(Applied::Balance(balance)) => {
+            settle(session, wallet, outpoint.txid, TopUpSettled::Applied).await;
+            TopUpState::Applied {
+                credits_added: before.map(|b| balance.saturating_sub(b)),
+                balance: Some(balance),
+            }
+        }
         Ok(Applied::Taken) => {
-            session.platform.taken_top_ups.record(wallet, outpoint);
-            already_applied(lib, identity).await
+            tracing::warn!(%outpoint, "Platform reports a top-up's lock taken, unproved; it stays pending");
+            TopUpState::ConsumptionUnknown {
+                balance: balance_of(lib, identity).await,
+            }
         }
         Err(e) => {
             tracing::warn!(%outpoint, error = %e, "a top-up's apply failed; the lock stays tracked");
@@ -464,33 +536,41 @@ async fn apply<L: TopUpLib>(
     }
 }
 
-/// Platform took the lock before: its balance, read again (what that
-/// apply added is unknown).
-async fn already_applied<L: TopUpLib>(lib: &L, identity: Identifier) -> TopUpState {
-    TopUpState::AlreadyApplied {
-        balance: lib.refresh_balance(identity).await.ok().flatten(),
+fn invalid(detail: &str) -> PlatformError {
+    PlatformError::InvalidArgument {
+        detail: detail.into(),
     }
 }
 
-/// The wallet's top-up locks Platform has not taken (in flight, or
-/// proved and not applied), oldest identity index first.
+fn parse_txid(txid: &str) -> Result<Txid, PlatformError> {
+    txid.parse().map_err(|_| invalid("txid is not a hex txid"))
+}
+
+/// `identity`'s balance, read again; `None` when it cannot be.
+async fn balance_of<L: TopUpLib>(lib: &L, identity: Identifier) -> Option<u64> {
+    lib.refresh_balance(identity).await.ok().flatten()
+}
+
+/// The wallet's top-up locks that pend ([`open_locks`]), oldest identity
+/// index first.
 pub(crate) async fn pending<L: TopUpLib>(
     session: &NetworkSession,
     wallet: WalletId,
     lib: &L,
-) -> Vec<PendingTopUp> {
+) -> Result<Vec<PendingTopUp>, PlatformError> {
     let identities = lib.identities().await;
-    let mut out: Vec<PendingTopUp> = (open_locks(session, wallet, lib).await.into_iter())
-        .map(|l| PendingTopUp {
+    let mut out: Vec<PendingTopUp> = (open_locks(session, wallet, lib).await?.into_iter())
+        .map(|(l, standing)| PendingTopUp {
             txid: l.outpoint.txid.to_string(),
             identity: identity_at(&identities, l.identity_index).cloned(),
             identity_index: l.identity_index,
             duffs: l.amount,
             proved: l.status.has_proof(),
+            consumption_unknown: standing == Standing::ConsumptionUnknown,
         })
         .collect();
     out.sort_by(|a, b| (a.identity_index, &a.txid).cmp(&(b.identity_index, &b.txid)));
-    out
+    Ok(out)
 }
 
 pub(crate) async fn resume<L: TopUpLib>(
@@ -500,12 +580,7 @@ pub(crate) async fn resume<L: TopUpLib>(
     txid: &str,
     grant: &str,
 ) -> Result<TopUpOutcome, CreditsError> {
-    let invalid = |detail: &str| PlatformError::InvalidArgument {
-        detail: detail.into(),
-    };
-    let txid: Txid = txid
-        .parse()
-        .map_err(|_| invalid("txid is not a hex txid"))?;
+    let txid = parse_txid(txid)?;
     let lock_of = async || {
         (lib.top_up_locks().await.into_iter())
             .find(|l| l.outpoint.txid == txid)
@@ -523,12 +598,13 @@ pub(crate) async fn resume<L: TopUpLib>(
         state,
     };
     // Read again under the write lock: a concurrent apply may have taken
-    // it.
+    // it. Only the library's proved mark is taken: a lock Platform said
+    // was taken, unproved, a resolved or a historical one, is asked again.
     let lock = lock_of().await?;
-    if lock.status == LockStatus::Consumed
-        || session.platform.taken_top_ups.has(wallet, lock.outpoint)
-    {
-        return Ok(outcome(already_applied(lib, identity).await));
+    if lock.status == LockStatus::Consumed {
+        return Ok(outcome(TopUpState::AlreadyApplied {
+            balance: balance_of(lib, identity).await,
+        }));
     }
     if !lock.status.has_proof() {
         // The wait broadcasts a `Built` lock again: never one a funding
@@ -565,11 +641,50 @@ pub(crate) async fn resume<L: TopUpLib>(
     Ok(outcome(state))
 }
 
+/// Records the user's resolution of the pending, proved top-up lock `txid`
+/// (`resolve_top_up`) in the journal: a `consumption_unknown` one, or one
+/// a resume answered `ConsumptionUnknown` while its ChainLock was still to
+/// come. Under its identity's write lock, so no apply of it runs
+/// meanwhile; a lock without a proof was never applied and is refused.
+pub(crate) async fn resolve<L: TopUpLib>(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &L,
+    txid: &str,
+) -> Result<(), CreditsError> {
+    let txid = parse_txid(txid)?;
+    let lock_of = async || {
+        (open_locks(session, wallet, lib).await?.into_iter())
+            .find(|(l, _)| l.outpoint.txid == txid && l.status.has_proof())
+            .ok_or_else(|| invalid("no pending top-up of that txid is proved"))
+    };
+    let index = lock_of().await?.0.identity_index;
+    let identity = identity_at(&lib.identities().await, index)
+        .cloned()
+        .ok_or(PlatformError::Identity(IdentityError::NotFound))?;
+    let locks = identity_locks(wallet, parse_identity(&identity)?);
+    let _write = locks.write.lock().await;
+    lock_of().await?;
+    (session.leases)
+        .settle_top_up(wallet, txid, TopUpSettled::Resolved)
+        .await
+        .map_err(|e| {
+            tracing::warn!(%txid, error = %e, "could not record a top-up's resolution");
+            PlatformError::Unavailable
+        })?;
+    tracing::info!(%txid, "the user resolved a top-up lock");
+    Ok(())
+}
+
 /// "Finish transfers" for top-ups: every proved top-up lock of a known
-/// identity that Platform has not taken is applied under `lease`, one
-/// read back from the chain too (Platform's answer settles it). Builds no
-/// lock and waits for no proof: a lock without one stays pending (E0-04's
-/// catch-up sends it again).
+/// identity that the library does not hold applied is applied under
+/// `lease`, a settled one too (a historical or resolved lock Platform had
+/// not taken credits the identity). Builds no lock and waits for no proof:
+/// a lock without one stays pending (E0-04's catch-up sends it again). An
+/// unproved "already consumed" leaves a pending lock pending. A settled
+/// lock is counted only when Platform applies it: any other answer
+/// (already consumed, a cached refusal of the same transition, an error)
+/// counts nothing, as `pending_top_ups` lists nothing for it.
 pub(crate) async fn finish<L: TopUpLib>(
     session: &NetworkSession,
     wallet: WalletId,
@@ -585,17 +700,19 @@ pub(crate) async fn finish<L: TopUpLib>(
             None
         }
     };
-    let taken = &session.platform.taken_top_ups;
-    let settled = |l: &LockInfo| l.status == LockStatus::Consumed || taken.has(wallet, l.outpoint);
-    for lock in lib.top_up_locks().await {
-        if settled(&lock) {
+    let all = lib.top_up_locks().await;
+    let known = Known::of(session, wallet, &all).await;
+    let applied = |l: &LockInfo| l.status == LockStatus::Consumed;
+    for lock in all {
+        if applied(&lock) {
             continue;
         }
+        let settled = known.standing(&lock) == Standing::Settled;
         let identity =
             identity_at(&identities, lock.identity_index).and_then(|id| parse_identity(id).ok());
         let (Some(identity), Some(signer), true) = (identity, &signer, lock.status.has_proof())
         else {
-            report.still_pending += 1;
+            report.still_pending += u32::from(!settled);
             continue;
         };
         let locks = identity_locks(wallet, identity);
@@ -603,7 +720,7 @@ pub(crate) async fn finish<L: TopUpLib>(
         // Read again under the write lock: a concurrent apply may have
         // taken it.
         let now = (lib.top_up_locks().await.into_iter()).find(|l| l.outpoint == lock.outpoint);
-        if now.as_ref().is_none_or(settled) {
+        if now.as_ref().is_none_or(applied) {
             continue;
         }
         match apply(session, wallet, lib, lease, signer, identity, lock.outpoint).await {
@@ -611,8 +728,8 @@ pub(crate) async fn finish<L: TopUpLib>(
                 report.resumed += 1;
                 report.completed += 1;
             }
-            // Taken before: nothing was resumed.
-            TopUpState::AlreadyApplied { .. } => {}
+            // A settled lock Platform did not apply: nothing was resumed.
+            _ if settled => {}
             _ => {
                 report.resumed += 1;
                 report.still_pending += 1;

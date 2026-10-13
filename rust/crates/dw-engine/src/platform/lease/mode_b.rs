@@ -1359,6 +1359,46 @@ impl LeaseTable {
         })
     }
 
+    /// The txids of the asset locks `wallet`'s top-up funding steps
+    /// (`topup/<i>-<k>/funding`) signed: every lock a dw top-up funded
+    /// (DP1-06). `None` until the dispatch journal is read.
+    pub(crate) fn top_up_lock_txids(&self, wallet: WalletId) -> Option<HashSet<Txid>> {
+        self.with_j(|i, _| {
+            (i.fence.journal == JournalState::Ready).then(|| {
+                i.fence
+                    .signed_lock_txids_where(&wallet, |s| s.starts_with("topup/"))
+            })
+        })
+    }
+
+    /// The top-up locks of `wallet` the journal records settled (schema 8,
+    /// DP1-06): a proved apply or the user's word, kept as long as the
+    /// journal keeps those locks' `signed_lock` rows (a wallet's removal
+    /// erases neither). On the blocking pool.
+    pub(crate) async fn top_ups_settled(&self, wallet: WalletId) -> Result<HashSet<Txid>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        let rows = (self.rt)
+            .spawn_blocking(move || backend.top_ups_settled(&wallet.0))
+            .await
+            .map_err(|e| e.to_string())??;
+        Ok(rows.into_iter().map(Txid::from_byte_array).collect())
+    }
+
+    /// Records the top-up lock `txid` of `wallet` settled; the first record
+    /// stands. On the blocking pool.
+    pub(crate) async fn settle_top_up(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+        how: dw_appdb::dispatch::TopUpSettled,
+    ) -> Result<(), String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.settle_top_up(&wallet.0, &txid.to_byte_array(), how))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
     /// The funding step whose call of this process may have signed tracked
     /// row `row` of `wallet` while its record is not durable yet (§2a.7):
     /// a caller that resumes a row itself (DP1-02's outpoint calls) must
