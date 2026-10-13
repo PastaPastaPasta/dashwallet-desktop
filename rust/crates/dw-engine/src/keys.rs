@@ -22,6 +22,27 @@ use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePr
 use zeroize::Zeroizing;
 
 use crate::platform::runtime::PlatformSignal;
+
+/// Tests: the next wallet registration of the session on this data
+/// directory fails.
+#[cfg(test)]
+pub(crate) static FAIL_REGISTRATION_IN: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
+
+/// Tests: whether [`FAIL_REGISTRATION_IN`] refuses this registration.
+fn registration_refused(data_dir: &std::path::Path) -> bool {
+    #[cfg(test)]
+    return FAIL_REGISTRATION_IN
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take_if(|dir| dir == data_dir)
+        .is_some();
+    #[cfg(not(test))]
+    {
+        let _ = data_dir;
+        false
+    }
+}
 use crate::wallets::validate_name;
 use crate::{CreatedWallet, EngineError, EngineEvent, NetworkSession, WalletId};
 
@@ -488,14 +509,19 @@ impl NetworkSession {
             }
 
             let default_name = this.next_default_name();
-            let registered = manager
-                .create_wallet_from_seed_bytes(
-                    network,
-                    &seed,
-                    WalletAccountCreationOptions::Default,
-                    options.birth_height,
-                )
-                .await;
+            let registered = if registration_refused(this.data_dir()) {
+                Err(EngineError::Internal("test: registration refused".into()))
+            } else {
+                manager
+                    .create_wallet_from_seed_bytes(
+                        network,
+                        &seed,
+                        WalletAccountCreationOptions::Default,
+                        options.birth_height,
+                    )
+                    .await
+                    .map_err(EngineError::from)
+            };
             drop(seed);
             let wallet = match registered {
                 Ok(wallet) if wallet.wallet_id() == wallet_id.0 => wallet,
@@ -506,7 +532,6 @@ impl NetworkSession {
                     )));
                 }
                 Err(e) => {
-                    let e = EngineError::from(e);
                     // A concurrent registration of the same wallet now uses
                     // the stored seed, so only roll back our own failure.
                     if !matches!(e, EngineError::WalletAlreadyExists(_)) {

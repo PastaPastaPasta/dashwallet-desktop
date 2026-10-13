@@ -2551,3 +2551,24 @@ fn a_reopen_keeps_this_processs_removals_and_forgets_earlier_ones() {
     assert_eq!(db.main_identity(&earlier).unwrap(), Some(base58(ALICE)));
     engine.block_on(engine.shutdown()).unwrap();
 }
+
+/// An import that readmits a removed wallet and then fails to register it
+/// records the wallet as removed again, with what the import wrote of it.
+#[test]
+fn a_failed_import_records_the_wallet_as_removed_again() {
+    let (_dir, engine, s, id, wipe) = removable();
+    engine.block_on(s.remove_wallet(id, wipe)).unwrap();
+    *guard(&crate::keys::FAIL_REGISTRATION_IN) = Some(s.data_dir().to_path_buf());
+    let failed = engine.block_on(s.import_wallet(
+        Zeroizing::new(ABANDON_12.to_vec()),
+        Zeroizing::new(Vec::new()),
+        ImportOptions::default(),
+    ));
+    assert!(failed.is_err(), "{failed:?}");
+    let (db, wallet) = (s.live().unwrap().appdb, id.to_string());
+    let fingerprint = crate::send::psbt::FINGERPRINT_SETTING;
+    assert_eq!(db.setting(&wallet, fingerprint).unwrap(), None);
+    db.set_main_identity(&wallet, &base58(ALICE)).unwrap();
+    assert_eq!(db.main_identity(&wallet).unwrap(), None);
+    engine.block_on(engine.shutdown()).unwrap();
+}
