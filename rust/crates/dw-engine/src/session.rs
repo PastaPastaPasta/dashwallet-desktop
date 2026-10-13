@@ -641,6 +641,14 @@ impl NetworkSession {
         F: Future<Output = Result<T, EngineError>> + Send + 'static,
         T: Send + 'static,
     {
+        // Tests: a held app.sqlite job stays held in the spawned task.
+        #[cfg(test)]
+        if let Ok(pause) = crate::coins::HOLD_APPDB_JOB.try_with(Arc::clone) {
+            return self
+                .rt
+                .spawn(crate::coins::HOLD_APPDB_JOB.scope(pause, fut))
+                .await?;
+        }
         self.rt.spawn(fut).await?
     }
 

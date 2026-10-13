@@ -2342,3 +2342,231 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
         "{refetched:?}"
     );
 }
+
+// ---- DEC-210: writes after wallet removal ----
+
+use crate::coins::{HOLD_APPDB_JOB, TestPause as JobPause};
+
+/// Releases a held write at the end of a test, passed or failed: the
+/// runtime's drop would wait for it.
+struct ReleaseJob(Arc<JobPause>);
+
+impl Drop for ReleaseJob {
+    fn drop(&mut self) {
+        self.0.release.notify_one();
+    }
+}
+
+/// A session with the ABANDON_12 wallet restored and ALICE among its
+/// identities, and a removal grant for the wallet.
+fn removable() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    String,
+) {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    let manager = s.manager().unwrap();
+    engine.block_on(add_identities(&manager, id, &platform.identities));
+    let wipe = grant(&engine, &s, id, GrantPurpose::Wipe);
+    (dir, engine, s, id, wipe)
+}
+
+/// With a write held at `pause` in its app.sqlite job (its task, if any,
+/// cancelled): the wallet's removal returns while the write is held, and
+/// the write, run after it, leaves nothing (`nothing` reads the wallet's
+/// rows of that write).
+fn a_write_held_past_the_removal(
+    engine: &Engine,
+    s: &Arc<NetworkSession>,
+    (id, wipe): (WalletId, String),
+    pause: &Arc<JobPause>,
+    task: Option<tokio::task::JoinHandle<()>>,
+    nothing: impl Fn() -> bool,
+) {
+    let _release = ReleaseJob(Arc::clone(pause));
+    wait_until("the held write", || pause.reached.load(Ordering::SeqCst));
+    if let Some(task) = task {
+        task.abort();
+        assert!(engine.block_on(task).is_err_and(|e| e.is_cancelled()));
+    }
+    engine
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(60), s.remove_wallet(id, wipe)).await
+        })
+        .expect("the removal waited for the held write")
+        .unwrap();
+    assert!(!pause.done.load(Ordering::SeqCst), "held until now");
+    pause.release.notify_one();
+    wait_until("the late write", || pause.done.load(Ordering::SeqCst));
+    assert!(nothing(), "the late write left a row of the removed wallet");
+}
+
+/// Runs `write` on the session's runtime with its first app.sqlite job
+/// held at the returned pause.
+fn hold_first_job<F>(
+    s: &Arc<NetworkSession>,
+    write: F,
+) -> (Arc<JobPause>, tokio::task::JoinHandle<()>)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let pause = Arc::new(JobPause::default());
+    let task = s.rt.spawn(HOLD_APPDB_JOB.scope(Arc::clone(&pause), write));
+    (pause, task)
+}
+
+/// recovery.rs `set_main_identity_of`: its write held past a removal.
+#[test]
+fn a_main_identity_write_held_past_a_removal_leaves_nothing() {
+    let (_dir, engine, s, id, wipe) = removable();
+    let dp = s.dashpay(id);
+    let (pause, task) = hold_first_job(&s, async move {
+        let _ = dp.set_main_identity(base58(ALICE)).await;
+    });
+    let db = s.live().unwrap().appdb;
+    a_write_held_past_the_removal(&engine, &s, (id, wipe), &pause, Some(task), || {
+        db.main_identity(&id.to_string()).unwrap().is_none()
+    });
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// recovery.rs `set_name_pref`: its write held past a removal.
+#[test]
+fn a_name_pref_write_held_past_a_removal_leaves_nothing() {
+    let (_dir, engine, s, id, wipe) = removable();
+    let session = Arc::clone(&s);
+    let (pause, task) = hold_first_job(&s, async move {
+        let _ = session
+            .set_main_name(id, base58(ALICE), Some("alice".into()))
+            .await;
+    });
+    let db = s.live().unwrap().appdb;
+    a_write_held_past_the_removal(&engine, &s, (id, wipe), &pause, Some(task), || {
+        db.dp_prefs(&id.to_string(), super::recovery::MAIN_NAME_PREF)
+            .unwrap()
+            .is_empty()
+    });
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// The journal tap writes inside the persister's `store`, with no fence: a
+/// write held there does not hold up a removal, and lands nothing after it.
+#[test]
+fn a_journal_write_held_past_a_removal_leaves_nothing() {
+    let (_dir, engine, s, id, wipe) = removable();
+    let live = s.live().unwrap();
+    let pause = Arc::new(JobPause::default());
+    *guard(&live.tap.pause_journal) = Some(Arc::clone(&pause));
+    let store = Arc::clone(&live.store);
+    let request = super::journal_tests::contacts(super::journal_tests::incoming(ALICE[0], 9, 1));
+    let storing = s.rt.spawn_blocking(move || {
+        use platform_wallet::changeset::PlatformWalletPersistence;
+        store.store(id.0, request).unwrap();
+    });
+    a_write_held_past_the_removal(&engine, &s, (id, wipe), &pause, None, || {
+        journal(&engine, &s, id).is_empty()
+    });
+    engine.block_on(storing).unwrap();
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// The tap storing changesets of the wallet all through its removal: the
+/// removal returns, the tap's writes return, and none is left behind.
+#[test]
+fn the_tap_writing_during_a_removal_neither_blocks_nor_deadlocks() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+
+    let (_dir, engine, s, id, wipe) = removable();
+    let store = Arc::clone(&s.live().unwrap().store);
+    let stop = AtomicBool::new(false);
+    let stored = AtomicU32::new(0);
+    std::thread::scope(|scope| {
+        let tap = scope.spawn(|| {
+            for sender in (1..=u8::MAX).cycle() {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                let request = super::journal_tests::contacts(super::journal_tests::incoming(
+                    ALICE[0],
+                    sender,
+                    u64::from(sender),
+                ));
+                // After the removal the persister may refuse the wallet.
+                let _ = store.store(id.0, request);
+                stored.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        wait_until("the tap's first writes", || {
+            stored.load(Ordering::SeqCst) > 3
+        });
+        engine
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(60), s.remove_wallet(id, wipe)).await
+            })
+            .expect("the removal returns while the tap writes")
+            .unwrap();
+        let after = stored.load(Ordering::SeqCst);
+        wait_until("the tap's writes after the removal", || {
+            stored.load(Ordering::SeqCst) > after + 3
+        });
+        stop.store(true, Ordering::SeqCst);
+        wait_until("the tap's end", || tap.is_finished());
+    });
+    assert!(journal(&engine, &s, id).is_empty());
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// The pump's first-seen write (events.rs `flush_history`), a job no one
+/// waits for, held past a removal.
+#[test]
+fn a_first_seen_write_held_past_a_removal_leaves_nothing() {
+    use dashcore::hashes::Hash;
+
+    let (_dir, engine, s, id, wipe) = removable();
+    let pause = Arc::new(JobPause::default());
+    *guard(&s.hub.pause_seen) = Some(Arc::clone(&pause));
+    s.hub
+        .pump
+        .mark_history(id, Some(&[dashcore::Txid::from_byte_array([5; 32])]));
+    let db = s.live().unwrap().appdb;
+    a_write_held_past_the_removal(&engine, &s, (id, wipe), &pause, None, || {
+        db.tx_seen_times(&id.to_string()).unwrap().is_empty()
+    });
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// The same wallet imported again after its removal, in the same run, is
+/// written as any wallet: the import readmits it before its first write.
+#[test]
+fn a_wallet_imported_again_after_its_removal_is_written() {
+    let (_dir, engine, s, id, wipe) = removable();
+    engine.block_on(s.remove_wallet(id, wipe)).unwrap();
+    assert_eq!(restore(&engine, &s), id);
+    let db = s.live().unwrap().appdb;
+    let wallet = id.to_string();
+    assert!(
+        db.wallets().unwrap().iter().any(|(w, ..)| *w == wallet),
+        "the import's name"
+    );
+    let manager = s.manager().unwrap();
+    engine.block_on(add_identities(&manager, id, &[(ALICE, 0)]));
+    engine
+        .block_on(s.dashpay(id).set_main_identity(base58(ALICE)))
+        .unwrap();
+    assert_eq!(db.main_identity(&wallet).unwrap(), Some(base58(ALICE)));
+    let request = super::journal_tests::contacts(super::journal_tests::incoming(ALICE[0], 9, 1));
+    {
+        use platform_wallet::changeset::PlatformWalletPersistence;
+        s.live().unwrap().store.store(id.0, request).unwrap();
+    }
+    assert_eq!(journal(&engine, &s, id).len(), 1);
+    engine.block_on(engine.shutdown()).unwrap();
+}

@@ -377,6 +377,9 @@ pub(crate) struct ChangesetTap {
     /// The session's registration flows, whose actors write a tracked
     /// lock's outpoint (DEC-173). Set once the session exists.
     pub(crate) registrations: OnceLock<Arc<super::registration_flow::Flows>>,
+    /// Tests: holds the next journal write before it runs.
+    #[cfg(test)]
+    pub(crate) pause_journal: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
 
 impl ChangesetTap {
@@ -388,6 +391,8 @@ impl ChangesetTap {
             locks_changed: OnceLock::new(),
             on_funded: OnceLock::new(),
             registrations: OnceLock::new(),
+            #[cfg(test)]
+            pause_journal: Mutex::new(None),
         }
     }
 
@@ -620,10 +625,22 @@ impl ChangesetTap {
             })
             .collect();
 
+        #[cfg(test)]
+        let pause = (!entries.is_empty())
+            .then(|| guard(&self.pause_journal).take())
+            .flatten();
+        #[cfg(test)]
+        if let Some(pause) = &pause {
+            pause.hold();
+        }
         if !entries.is_empty()
             && let Err(e) = self.appdb.record_events(&wallet, &entries, now)
         {
             tracing::warn!(wallet_id = %id, error = %e, "could not write the DashPay journal");
+        }
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            pause.finish();
         }
         if !changes.is_empty() {
             self.hub.pump.mark_platform(id, changes);

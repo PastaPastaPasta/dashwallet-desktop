@@ -1623,3 +1623,44 @@ fn dust_locks_are_applied_only_under_the_fence() {
     expect.sort();
     assert_eq!(held, expect);
 }
+
+/// DEC-210, a facade writer: "Lock unspent" held in its app.sqlite job
+/// past the wallet's removal, its task cancelled, leaves no lock.
+#[test]
+fn a_lock_held_past_a_removal_leaves_nothing() {
+    use crate::coins::{HOLD_APPDB_JOB, TestPause};
+    use std::sync::atomic::Ordering;
+
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let wipe = f
+        .session
+        .vault()
+        .authorize(GrantPurpose::Wipe, Some(&f.wallet.0), Credential::None)
+        .unwrap()
+        .id;
+    let pause = Arc::new(TestPause::default());
+    let (s, w) = (Arc::clone(&f.session), f.wallet);
+    let task = f
+        .session
+        .rt
+        .spawn(HOLD_APPDB_JOB.scope(Arc::clone(&pause), async move {
+            let _ = s.lock_outpoints(w, vec![a]).await;
+        }));
+    eventually("the held lock", || pause.reached.load(Ordering::SeqCst));
+    task.abort();
+    assert!(f.engine.block_on(task).is_err_and(|e| e.is_cancelled()));
+    let removed = f.engine.block_on(async {
+        tokio::time::timeout(Duration::from_secs(60), f.session.remove_wallet(w, wipe)).await
+    });
+    let held = !pause.done.load(Ordering::SeqCst);
+    // Released before any assertion: the runtime's drop would wait for it.
+    pause.release.notify_one();
+    removed
+        .expect("the removal waited for the held lock")
+        .unwrap();
+    assert!(held, "held until the removal returned");
+    eventually("the late lock", || pause.done.load(Ordering::SeqCst));
+    let db = f.session.live().unwrap().appdb;
+    assert!(db.locks(&w.to_string()).unwrap().is_empty());
+}
