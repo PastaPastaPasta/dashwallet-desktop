@@ -10,9 +10,9 @@
 #   2. `dash-wallet <app args> --theme <theme>` launched again, with a screenshot.
 # <app args> default to a fresh regtest data root where dwcli made an encrypted vault and a wallet,
 # so the app opens on the real engine, locked (U-07 removed the in-app `--fixture` wallet; the
-# fixture backend runs in the browser only). The wallet has no history, so style checks whose
-# element is missing do not fail the run; every check whose element is there must pass. Both land in the artifact tauri-<os>. The ref must
-# contain the Tauri app (G-01 or later).
+# fixture backend runs in the browser only). The wallet has no history, so the style checks of
+# history rows and the hero breakdown, which find no element, do not fail the run. Both land in
+# the artifact tauri-<os>. The ref must contain the Tauri app (G-01 or later).
 name: Tauri selftest
 
 on:
@@ -105,11 +105,13 @@ jobs:
           pnpm tauri build --no-bundle
           exe=dash-wallet; [[ "$MATRIX_OS" != windows ]] || exe=dash-wallet.exe
           echo "APP=$GITHUB_WORKSPACE/rust/target/release/$exe" >> "$GITHUB_ENV"
-      # APP_ARGS: the input, or a fresh regtest data root with an encrypted vault and a wallet.
-      - name: App arguments (dwcli and a regtest wallet unless given)
+      # Without selftest_args: a fresh regtest data root with an encrypted vault and a wallet, whose
+      # arguments go to APP_ARGS. The steps below read `${SELFTEST_ARGS:-$APP_ARGS}`, so the input
+      # itself never passes through $GITHUB_ENV.
+      - name: dwcli and a regtest wallet
+        if: ${{ inputs.selftest_args == '' }}
         working-directory: rust
         run: |
-          if [[ -n "$SELFTEST_ARGS" ]]; then echo "APP_ARGS=$SELFTEST_ARGS" >> "$GITHUB_ENV"; exit 0; fi
           cargo build --release -p dwcli --locked
           data="$RUNNER_TEMP/dw-data"
           # Regtest needs a DAPI address; with --no-platform nothing connects to it.
@@ -128,7 +130,7 @@ jobs:
           if ($pv) { Write-Host "WebView2 runtime $pv" } else { Write-Host "::warning::no WebView2 runtime registered; the app may not start" }
       - name: --selftest
         run: |
-          read -ra args <<<"$APP_ARGS"
+          read -ra args <<<"${SELFTEST_ARGS:-$APP_ARGS}"
           report="$OUT/selftest-$MATRIX_OS.json"
           # macOS runners have no coreutils `timeout`; perl's alarm survives the exec.
           run_limited() { if command -v timeout >/dev/null; then timeout 600 "$@"; else perl -e 'alarm shift; exec @ARGV' 600 "$@"; fi; }
@@ -137,30 +139,33 @@ jobs:
             || { tail -n 40 "$OUT/selftest.log"; echo "::error::--selftest failed or timed out"; exit 1; }
           [[ -s "$report" ]] || { echo "::error::--selftest wrote no report"; exit 1; }
           # The app exits 0 whatever it found: judge the report (apps/desktop/src/app/selftest.ts).
-          # A new wallet has no history, so the checks of history rows and the hero breakdown find no
-          # element ("missing"): they are counted apart. Every element that is there must pass; the
-          # populated screens are checked by Playwright on the fixture backend (ci.yml, ui-playwright).
-          jq -r --arg os "$MATRIX_OS" --arg took "$(( $(date +%s) - start ))" '
+          # A new wallet has no history: the checks of history rows and the hero breakdown find no
+          # element ("missing"), and only those are excused. Every other check must pass, so a
+          # screen that stops rendering still fails. The populated screens are checked by
+          # Playwright on the fixture backend (ci.yml, ui-playwright).
+          excused='def excused: .actual == "missing" and (.selector | test("^\\.(tx-|breakdown-)|hero-breakdown"));'
+          jq -r --arg os "$MATRIX_OS" --arg took "$(( $(date +%s) - start ))" "$excused"'
             [.screens[] | .checks[] | select(.pass == false)] as $failed |
             "### Tauri --selftest on \($os) (\($took) s)",
-            "- checks: \(.checksTotal) total, \($failed | map(select(.actual != "missing")) | length) failed, \($failed | map(select(.actual == "missing")) | length) without their element, \(.checksNotApplicable) not applicable",
+            "- checks: \(.checksTotal) total, \($failed | map(select(excused | not)) | length) failed, \($failed | map(select(excused)) | length) without history to check, \(.checksNotApplicable) not applicable",
             "- first paint: \(.firstPaintMs // "n/a") ms; shell paint: \(.shellPaintMs // "n/a") ms",
             (.security // {} | to_entries[] | "- security \(.key): \(.value)")' "$report" | tee -a "$GITHUB_STEP_SUMMARY"
           # The final report only: a checkpoint (final false) lacks the navigation probe.
-          jq -e '.final != false and .security.navigation != null
-                 and ([.screens[] | .checks[] | select(.pass == false and .actual != "missing")] | length == 0)
+          jq -e "$excused"' .final != false and .security.navigation != null
+                 and ([.screens[] | .checks[] | select(.pass == false and (excused | not))] | length == 0)
                  and ([.security | .[] | select(startswith("NOT REFUSED"))] | length == 0)' \
             "$report" >/dev/null || { echo "::error::--selftest reported failed checks or an unrefused security probe"; exit 1; }
       - name: Launch (${{ inputs.theme }}) and take a screenshot (macOS)
         if: ${{ matrix.os == 'macos' }}
         run: |
-          read -ra args <<<"$APP_ARGS"
+          read -ra args <<<"${SELFTEST_ARGS:-$APP_ARGS}"
           ci/github/macos-launch-screenshot.sh "tauri-macos-$THEME" "$OUT" 30 "$APP" ${args[@]+"${args[@]}"} --theme "$THEME"
       - name: Launch (${{ inputs.theme }}) and take a screenshot (Windows)
         if: ${{ matrix.os == 'windows' }}
         shell: pwsh
         run: |
-          $appArgs = @(-split $env:APP_ARGS) + @('--theme', $env:THEME)
+          $given = if ($env:SELFTEST_ARGS) { $env:SELFTEST_ARGS } else { $env:APP_ARGS }
+          $appArgs = @(-split $given) + @('--theme', $env:THEME)
           ci/github/windows-launch-screenshot.ps1 -Name "tauri-windows-$env:THEME" -OutDir $env:OUT -Seconds 30 `
             -Exe $env:APP -ArgumentList $appArgs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
