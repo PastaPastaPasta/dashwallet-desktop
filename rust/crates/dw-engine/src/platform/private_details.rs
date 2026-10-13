@@ -715,10 +715,7 @@ impl NetworkSession {
                 let _held = held;
                 #[cfg(test)]
                 if let Some(pause) = pause {
-                    pause
-                        .reached
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    tokio::runtime::Handle::current().block_on(pause.release.notified());
+                    pause.hold();
                 }
                 f(db)
             })

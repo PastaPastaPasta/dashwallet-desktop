@@ -275,7 +275,7 @@ pub(crate) struct CoinFences {
 pub(crate) struct TestPause {
     pub(crate) reached: std::sync::atomic::AtomicBool,
     pub(crate) release: tokio::sync::Notify,
-    /// Set by the app.sqlite holds once the held work has run.
+    /// Set by [`Self::hold_then`] once the held work has run.
     pub(crate) done: std::sync::atomic::AtomicBool,
 }
 
@@ -289,9 +289,12 @@ impl TestPause {
         tokio::runtime::Handle::current().block_on(self.release.notified());
     }
 
-    /// Marks the held work done.
-    pub(crate) fn finish(&self) {
+    /// [`Self::hold`], then runs `f` and marks the held work done.
+    pub(crate) fn hold_then<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.hold();
+        let done = f();
         self.done.store(true, std::sync::atomic::Ordering::SeqCst);
+        done
     }
 }
 
@@ -558,10 +561,7 @@ impl NetworkSession {
         tokio::task::spawn_blocking(move || {
             #[cfg(test)]
             if let Some(pause) = pause {
-                pause.hold();
-                let done = f(&db);
-                pause.finish();
-                return done;
+                return pause.hold_then(|| f(&db));
             }
             f(&db)
         })

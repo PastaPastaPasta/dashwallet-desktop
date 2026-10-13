@@ -1202,11 +1202,7 @@ fn a_warm_start_keeps_events_from_while_closed_as_news() {
             && s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
     });
     assert_eq!(boundary(&engine, &s, id), Some(closed_at), "not moved");
-    let request = super::journal_tests::contacts(super::journal_tests::incoming(
-        ALICE[0],
-        9,
-        while_closed_ms,
-    ));
+    let request = contacts(incoming(ALICE[0], 9, while_closed_ms));
     s.live().unwrap().store.store(id.0, request).unwrap();
     assert_eq!(
         journal(&engine, &s, id),
@@ -2300,18 +2296,15 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
     // removed wallets with their triggers), which such a build never had,
     // or the runner refuses the gap below them.
     let conn = rusqlite::Connection::open(&appdb).unwrap();
-    let triggers: Vec<String> = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'")
-        .unwrap()
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
+    let drop_triggers: String = conn
+        .query_row(
+            "SELECT group_concat('DROP TRIGGER \"' || name || '\";', ' ')
+             FROM sqlite_master WHERE type = 'trigger'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert_eq!(triggers.len(), 15, "{triggers:?}");
-    for trigger in triggers {
-        conn.execute(&format!("DROP TRIGGER \"{trigger}\""), [])
-            .unwrap();
-    }
+    conn.execute_batch(&drop_triggers).unwrap();
     conn.execute_batch(
         "DROP TABLE removed_wallets;
              ALTER TABLE dp_trust_verified DROP COLUMN digest;
@@ -2345,17 +2338,11 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
 
 // ---- DEC-210: writes after wallet removal ----
 
-use crate::coins::{HOLD_APPDB_JOB, TestPause as JobPause};
+use platform_wallet::changeset::PlatformWalletPersistence;
 
-/// Releases a held write at the end of a test, passed or failed: the
-/// runtime's drop would wait for it.
-struct ReleaseJob(Arc<JobPause>);
-
-impl Drop for ReleaseJob {
-    fn drop(&mut self) {
-        self.0.release.notify_one();
-    }
-}
+use super::journal_tests::{contacts, incoming};
+use crate::coins::TestPause as JobPause;
+use crate::held_writes::{a_write_held_past_the_removal, hold_first_job};
 
 /// A session with the ABANDON_12 wallet restored and ALICE among its
 /// identities, and a removal grant for the wallet.
@@ -2377,50 +2364,6 @@ fn removable() -> (
     engine.block_on(add_identities(&manager, id, &platform.identities));
     let wipe = grant(&engine, &s, id, GrantPurpose::Wipe);
     (dir, engine, s, id, wipe)
-}
-
-/// With a write held at `pause` in its app.sqlite job (its task, if any,
-/// cancelled): the wallet's removal returns while the write is held, and
-/// the write, run after it, leaves nothing (`nothing` reads the wallet's
-/// rows of that write).
-fn a_write_held_past_the_removal(
-    engine: &Engine,
-    s: &Arc<NetworkSession>,
-    (id, wipe): (WalletId, String),
-    pause: &Arc<JobPause>,
-    task: Option<tokio::task::JoinHandle<()>>,
-    nothing: impl Fn() -> bool,
-) {
-    let _release = ReleaseJob(Arc::clone(pause));
-    wait_until("the held write", || pause.reached.load(Ordering::SeqCst));
-    if let Some(task) = task {
-        task.abort();
-        assert!(engine.block_on(task).is_err_and(|e| e.is_cancelled()));
-    }
-    engine
-        .block_on(async {
-            tokio::time::timeout(Duration::from_secs(60), s.remove_wallet(id, wipe)).await
-        })
-        .expect("the removal waited for the held write")
-        .unwrap();
-    assert!(!pause.done.load(Ordering::SeqCst), "held until now");
-    pause.release.notify_one();
-    wait_until("the late write", || pause.done.load(Ordering::SeqCst));
-    assert!(nothing(), "the late write left a row of the removed wallet");
-}
-
-/// Runs `write` on the session's runtime with its first app.sqlite job
-/// held at the returned pause.
-fn hold_first_job<F>(
-    s: &Arc<NetworkSession>,
-    write: F,
-) -> (Arc<JobPause>, tokio::task::JoinHandle<()>)
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    let pause = Arc::new(JobPause::default());
-    let task = s.rt.spawn(HOLD_APPDB_JOB.scope(Arc::clone(&pause), write));
-    (pause, task)
 }
 
 /// recovery.rs `set_main_identity_of`: its write held past a removal.
@@ -2466,11 +2409,9 @@ fn a_journal_write_held_past_a_removal_leaves_nothing() {
     let pause = Arc::new(JobPause::default());
     *guard(&live.tap.pause_journal) = Some(Arc::clone(&pause));
     let store = Arc::clone(&live.store);
-    let request = super::journal_tests::contacts(super::journal_tests::incoming(ALICE[0], 9, 1));
-    let storing = s.rt.spawn_blocking(move || {
-        use platform_wallet::changeset::PlatformWalletPersistence;
-        store.store(id.0, request).unwrap();
-    });
+    let request = contacts(incoming(ALICE[0], 9, 1));
+    let storing =
+        s.rt.spawn_blocking(move || store.store(id.0, request).unwrap());
     a_write_held_past_the_removal(&engine, &s, (id, wipe), &pause, None, || {
         journal(&engine, &s, id).is_empty()
     });
@@ -2482,8 +2423,6 @@ fn a_journal_write_held_past_a_removal_leaves_nothing() {
 /// removal returns, the tap's writes return, and none is left behind.
 #[test]
 fn the_tap_writing_during_a_removal_neither_blocks_nor_deadlocks() {
-    use platform_wallet::changeset::PlatformWalletPersistence;
-
     let (_dir, engine, s, id, wipe) = removable();
     let store = Arc::clone(&s.live().unwrap().store);
     let stop = AtomicBool::new(false);
@@ -2494,11 +2433,7 @@ fn the_tap_writing_during_a_removal_neither_blocks_nor_deadlocks() {
                 if stop.load(Ordering::SeqCst) {
                     break;
                 }
-                let request = super::journal_tests::contacts(super::journal_tests::incoming(
-                    ALICE[0],
-                    sender,
-                    u64::from(sender),
-                ));
+                let request = contacts(incoming(ALICE[0], sender, u64::from(sender)));
                 // After the removal the persister may refuse the wallet.
                 let _ = store.store(id.0, request);
                 stored.fetch_add(1, Ordering::SeqCst);
@@ -2562,11 +2497,8 @@ fn a_wallet_imported_again_after_its_removal_is_written() {
         .block_on(s.dashpay(id).set_main_identity(base58(ALICE)))
         .unwrap();
     assert_eq!(db.main_identity(&wallet).unwrap(), Some(base58(ALICE)));
-    let request = super::journal_tests::contacts(super::journal_tests::incoming(ALICE[0], 9, 1));
-    {
-        use platform_wallet::changeset::PlatformWalletPersistence;
-        s.live().unwrap().store.store(id.0, request).unwrap();
-    }
+    let request = contacts(incoming(ALICE[0], 9, 1));
+    s.live().unwrap().store.store(id.0, request).unwrap();
     assert_eq!(journal(&engine, &s, id).len(), 1);
     engine.block_on(engine.shutdown()).unwrap();
 }

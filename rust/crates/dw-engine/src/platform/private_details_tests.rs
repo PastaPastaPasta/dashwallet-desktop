@@ -33,6 +33,7 @@ use super::runtime::guard;
 use super::signers::VaultContactCrypto;
 use super::startup::StartupStatus;
 use crate::coins::TestPause;
+use crate::held_writes::ReleaseOnDrop;
 use crate::{DashNetwork, EngineEvent, PlatformChange};
 use dw_vault::{Credential, GrantPurpose, SeedDerivation, WalletSecret};
 use zeroize::Zeroizing;
@@ -1095,21 +1096,11 @@ fn a_load_across_a_forget_lands_nothing_old() {
     assert_eq!(f.reported(ERIN), PublishState::Published);
 }
 
-/// Releases a held job at the end of a test, passed or failed: the
-/// runtime's drop would wait for it.
-struct Release(Arc<TestPause>);
-
-impl Drop for Release {
-    fn drop(&mut self) {
-        self.0.release.notify_one();
-    }
-}
-
 /// Holds the next fenced app.sqlite write `what` in its blocking job.
-fn hold_job(f: &Fixture, what: &'static str) -> (Arc<TestPause>, Release) {
+fn hold_job(f: &Fixture, what: &'static str) -> (Arc<TestPause>, ReleaseOnDrop) {
     let pause = Arc::new(TestPause::default());
     *guard(&f.s.platform.contacts.job_pause) = Some((what, Arc::clone(&pause)));
-    let release = Release(Arc::clone(&pause));
+    let release = ReleaseOnDrop(Arc::clone(&pause));
     (pause, release)
 }
 
@@ -1132,7 +1123,7 @@ fn a_cancelled_job_holds<T: Send + 'static>(
     std::thread::scope(|scope| {
         let leaving = scope.spawn(leave);
         // Before the scope joins the leave, whatever happens here.
-        let _release = Release(Arc::clone(pause));
+        let _release = ReleaseOnDrop(Arc::clone(pause));
         // A writer waits at the fence: no read gets in.
         wait_until("the leave at the fence", Duration::from_secs(60), || {
             fence.try_read().is_err() || leaving.is_finished()

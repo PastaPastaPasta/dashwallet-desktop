@@ -27,6 +27,8 @@ mod events;
 mod fees;
 mod fsutil;
 mod gate;
+#[cfg(test)]
+mod held_writes;
 pub mod history;
 mod history_ops;
 mod keys;

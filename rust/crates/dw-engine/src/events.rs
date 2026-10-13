@@ -777,28 +777,27 @@ impl PumpTarget for SessionPump {
         // restarts (the persisted record has only the block time).
         let appdb = Arc::clone(&self.appdb);
         let now = unix_now();
-        #[cfg(test)]
-        let pause = self
-            .hub
-            .pause_seen
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take();
-        tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
-            if let Some(pause) = &pause {
-                pause.hold();
-            }
+        let write = move || {
             for (wallet_id, txids) in seen {
                 if let Err(e) = appdb.note_txs_seen(&wallet_id.to_string(), &txids, now) {
                     tracing::warn!(%wallet_id, error = %e, "could not store first-seen times");
                 }
             }
-            #[cfg(test)]
-            if let Some(pause) = pause {
-                pause.finish();
+        };
+        #[cfg(test)]
+        let write = {
+            let pause = self
+                .hub
+                .pause_seen
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            move || match pause {
+                Some(pause) => pause.hold_then(write),
+                None => write(),
             }
-        });
+        };
+        tokio::task::spawn_blocking(write);
     }
 
     fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>) {

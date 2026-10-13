@@ -625,22 +625,16 @@ impl ChangesetTap {
             })
             .collect();
 
-        #[cfg(test)]
-        let pause = (!entries.is_empty())
-            .then(|| guard(&self.pause_journal).take())
-            .flatten();
-        #[cfg(test)]
-        if let Some(pause) = &pause {
-            pause.hold();
-        }
-        if !entries.is_empty()
-            && let Err(e) = self.appdb.record_events(&wallet, &entries, now)
-        {
-            tracing::warn!(wallet_id = %id, error = %e, "could not write the DashPay journal");
-        }
-        #[cfg(test)]
-        if let Some(pause) = pause {
-            pause.finish();
+        if !entries.is_empty() {
+            let write = || self.appdb.record_events(&wallet, &entries, now);
+            #[cfg(test)]
+            let write = || match guard(&self.pause_journal).take() {
+                Some(pause) => pause.hold_then(write),
+                None => write(),
+            };
+            if let Err(e) = write() {
+                tracing::warn!(wallet_id = %id, error = %e, "could not write the DashPay journal");
+            }
         }
         if !changes.is_empty() {
             self.hub.pump.mark_platform(id, changes);
