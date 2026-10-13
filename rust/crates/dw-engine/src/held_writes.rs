@@ -70,3 +70,73 @@ pub(crate) fn a_write_held_past_the_removal(
     wait_until("the late write", || pause.done.load(Ordering::SeqCst));
     assert!(nothing(), "the late write left a row of the removed wallet");
 }
+
+/// Another process with a network's app.sqlite open (DEC-210 (3b)): it
+/// removed a wallet, and writes a row of it when told to. The child is
+/// this test binary running [`other_process_with_the_app_database`].
+pub(crate) struct OtherProcess {
+    child: std::process::Child,
+    out: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl OtherProcess {
+    /// Starts it on the database at `path`, removing `wallet`; returns once
+    /// the removal is committed.
+    pub(crate) fn start(path: &std::path::Path, wallet: &str) -> Self {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "held_writes::other_process_with_the_app_database",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("DW_ENGINE_CHILD_DB", path)
+            .env("DW_ENGINE_CHILD_WALLET", wallet)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut other = Self { child, out };
+        other.wait_for("removed");
+        other
+    }
+
+    /// Has it write a row of the removed wallet, and waits for it to end.
+    pub(crate) fn write_late(mut self) {
+        use std::io::Write;
+        let mut stdin = self.child.stdin.take().unwrap();
+        stdin.write_all(b"write\n").unwrap();
+        self.wait_for("written");
+        assert!(self.child.wait().unwrap().success());
+    }
+
+    fn wait_for(&mut self, line: &str) {
+        use std::io::BufRead;
+        let mut read = String::new();
+        loop {
+            read.clear();
+            assert!(self.out.read_line(&mut read).unwrap() > 0, "no {line:?}");
+            if read.trim_end().ends_with(line) {
+                return;
+            }
+        }
+    }
+}
+
+/// The child of [`OtherProcess`]; a test that does nothing otherwise.
+#[test]
+fn other_process_with_the_app_database() {
+    let (Some(path), Some(wallet)) = (
+        std::env::var_os("DW_ENGINE_CHILD_DB"),
+        std::env::var("DW_ENGINE_CHILD_WALLET").ok(),
+    ) else {
+        return;
+    };
+    let db = dw_appdb::AppDb::open(std::path::Path::new(&path)).unwrap();
+    db.delete_wallet(&wallet).unwrap();
+    println!("removed");
+    std::io::stdin().read_line(&mut String::new()).unwrap();
+    db.set_wallet_name(&wallet, "late", 1).unwrap();
+    println!("written");
+}

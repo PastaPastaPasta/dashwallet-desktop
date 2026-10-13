@@ -70,8 +70,8 @@ fn columns(conn: &rusqlite::Connection, table: &str) -> Result<Vec<(String, bool
 /// they hold is derived from the network and a restore records it again.
 /// `dp_contact_info` (DP2-04): what Platform holds of the private details,
 /// which the restore's own read of the `contactInfo` documents records.
-/// `removed_wallets` (DEC-210): which wallets were removed, forgotten by a
-/// later process.
+/// `removed_wallets` (DEC-210): which wallets were removed, forgotten by an
+/// open with no other instance of the database.
 const NOT_EXPORTED: [&str; 2] = ["dp_contact_info", "removed_wallets"];
 
 /// Tables and the column that scopes their rows to a wallet.
@@ -309,8 +309,8 @@ mod tests {
         assert_eq!(b.contact_info_digest(&w, "id", "contact").unwrap(), None);
     }
 
-    /// Which wallets were removed stays on its machine and in its run
-    /// (DEC-210): never exported, never imported.
+    /// Which wallets were removed stays with its database (DEC-210): never
+    /// exported, never imported.
     #[test]
     fn removed_wallets_are_not_carried() {
         let a = AppDb::open_in_memory().unwrap();

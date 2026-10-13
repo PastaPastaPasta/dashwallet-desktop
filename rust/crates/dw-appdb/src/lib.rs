@@ -13,8 +13,9 @@
 //! Every method is a short synchronous SQLite call on one connection behind a
 //! mutex. Async callers run them off their executor (`spawn_blocking`).
 
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::ffi::OsString;
+use std::fs::{File, TryLockError};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -52,19 +53,20 @@ pub fn local_scope(wallet_id: &str) -> String {
     format!("local:{wallet_id}")
 }
 
-/// The wallets this process removed, by database file (DEC-210): what
-/// [`AppDb::forget_earlier_removals`] keeps.
-fn removed_here() -> MutexGuard<'static, BTreeSet<(String, String)>> {
-    static REMOVED: Mutex<BTreeSet<(String, String)>> = Mutex::new(BTreeSet::new());
-    REMOVED.lock().unwrap_or_else(|p| p.into_inner())
+/// The lock file next to the database at `path` (`app.sqlite.lock`), never
+/// the database itself, whose bytes SQLite locks by range.
+fn lock_path(path: &Path) -> PathBuf {
+    let mut lock = OsString::from(path.as_os_str());
+    lock.push(".lock");
+    lock.into()
 }
 
-/// `wallet_id` of the database file of `conn`; `None` in memory or for a
-/// path that is not UTF-8 (a removal there is not kept across a reopen).
-fn removal_key(conn: &Connection, wallet_id: &str) -> Option<(String, String)> {
-    conn.path()
-        .filter(|p| !p.is_empty())
-        .map(|p| (p.to_owned(), wallet_id.to_owned()))
+fn open_lock_file(path: &Path) -> std::io::Result<File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
 }
 
 /// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
@@ -93,6 +95,9 @@ pub enum AppDbError {
     Sqlite(#[from] rusqlite::Error),
     #[error("migration: {0}")]
     Migration(#[from] refinery::Error),
+    /// The database's lock file could not be opened or locked.
+    #[error("lock file: {0}")]
+    Lock(#[from] std::io::Error),
     /// A value read from the database is outside its schema domain.
     #[error("corrupt row: {0}")]
     Corrupt(String),
@@ -203,13 +208,43 @@ impl LockRow {
 
 pub struct AppDb {
     conn: Mutex<Connection>,
+    /// A shared lock on the database's lock file for as long as this
+    /// instance lives, a job still holding it after its session closed
+    /// included: while it is held, no open forgets the removed wallets
+    /// (DEC-210). `None` in memory.
+    _alive: Option<File>,
 }
 
 impl AppDb {
     /// Opens (creating if needed) the database at `path` and applies pending
-    /// migrations.
+    /// migrations. When no other instance of the file is open, in this
+    /// process or another, it forgets the removed wallets: no write of
+    /// theirs can still be running (DEC-210).
     pub fn open(path: &Path) -> Result<Self> {
-        Self::init(Connection::open(path)?)
+        let lock_path = lock_path(path);
+        // Exclusive, on a handle of its own and before this instance's
+        // shared lock: granted only while no instance holds one. Never
+        // waited for; without it the removed wallets stay recorded.
+        let sole = open_lock_file(&lock_path)?;
+        let alone = match sole.try_lock() {
+            Ok(()) => true,
+            Err(TryLockError::WouldBlock) => false,
+            Err(TryLockError::Error(e)) => {
+                tracing::debug!(error = %e, "app database lock file: not locked exclusively");
+                false
+            }
+        };
+        let mut db = Self::init(Connection::open(path)?)?;
+        if alone {
+            db.conn().execute("DELETE FROM removed_wallets", [])?;
+        } else {
+            tracing::debug!("app database open elsewhere: the removed wallets stay recorded");
+        }
+        drop(sole);
+        let alive = open_lock_file(&lock_path)?;
+        alive.lock_shared()?;
+        db._alive = Some(alive);
+        Ok(db)
     }
 
     /// A private in-memory database (tests, fixture tooling).
@@ -227,6 +262,7 @@ impl AppDb {
             .run(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            _alive: None,
         })
     }
 
@@ -281,8 +317,8 @@ impl AppDb {
     }
 
     /// Deletes every row that belongs to `wallet_id` (wallet removal) and
-    /// records the wallet as removed: until [`Self::readmit_wallet`], or a
-    /// session of a later process ([`Self::forget_earlier_removals`]),
+    /// records the wallet as removed: until [`Self::readmit_wallet`], or an
+    /// open with no other instance of the file alive ([`Self::open`]),
     /// inserts of its rows are skipped (DEC-210), so a write still under way
     /// when the wallet was removed leaves nothing behind.
     pub fn delete_wallet(&self, wallet_id: &str) -> Result<()> {
@@ -302,18 +338,7 @@ impl AppDb {
             "DELETE FROM settings_kv WHERE scope IN (?1, ?2)",
             params![wallet_id, local_scope(wallet_id)],
         )?;
-        // Remembered before the commit, so no other connection's
-        // `forget_earlier_removals` can see the record without it.
-        let key = removal_key(&tx, wallet_id);
-        if let Some(key) = &key {
-            removed_here().insert(key.clone());
-        }
-        if let Err(e) = tx.commit() {
-            if let Some(key) = &key {
-                removed_here().remove(key);
-            }
-            return Err(e.into());
-        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -321,41 +346,10 @@ impl AppDb {
     /// [`Self::delete_wallet`]: an import of the wallet calls it before its
     /// first write. Whether the wallet was recorded as removed.
     pub fn readmit_wallet(&self, wallet_id: &str) -> Result<bool> {
-        let conn = self.conn();
-        let readmitted = conn.execute(
+        Ok(self.conn().execute(
             "DELETE FROM removed_wallets WHERE wallet_id = ?1",
             [wallet_id],
-        )? > 0;
-        if let Some(key) = removal_key(&conn, wallet_id) {
-            removed_here().remove(&key);
-        }
-        Ok(readmitted)
-    }
-
-    /// Forgets the wallets removed before this process started: no write of
-    /// theirs can still be running. The ones this process removed stay
-    /// recorded, since a write of theirs may still be queued after the
-    /// network was closed. The session calls it once it holds the network
-    /// directory.
-    pub fn forget_earlier_removals(&self) -> Result<()> {
-        let mut conn = self.conn();
-        let tx = conn.transaction()?;
-        let recorded: Vec<String> = tx
-            .prepare("SELECT wallet_id FROM removed_wallets")?
-            .query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        let here = removed_here();
-        for wallet_id in recorded {
-            if !removal_key(&tx, &wallet_id).is_some_and(|key| here.contains(&key)) {
-                tx.execute(
-                    "DELETE FROM removed_wallets WHERE wallet_id = ?1",
-                    [&wallet_id],
-                )?;
-            }
-        }
-        drop(here);
-        tx.commit()?;
-        Ok(())
+        )? > 0)
     }
 
     // ---- address book ----

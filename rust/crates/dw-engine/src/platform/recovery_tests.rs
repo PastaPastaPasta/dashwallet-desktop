@@ -576,17 +576,7 @@ fn session_with(
     passphrase: Option<&'static [u8]>,
 ) -> (Engine, Arc<NetworkSession>) {
     let engine = engine(dir);
-    let s = engine
-        .block_on(engine.open_network(
-            DashNetwork::Regtest,
-            SessionOptions {
-                dapi_addresses: vec!["http://127.0.0.1:1".into()],
-                quorum_url: Some("http://127.0.0.1:1".into()),
-                spv_peers: vec!["127.0.0.1:1".into()],
-                ..Default::default()
-            },
-        ))
-        .unwrap();
+    let s = open_offline(&engine);
     engine
         .block_on(s.vault_op(move |v| v.create(passphrase)))
         .unwrap();
@@ -596,9 +586,9 @@ fn session_with(
 
 /// The network of an engine opened again on `dir` (after a shutdown), its
 /// vault as left, its Platform `platform`.
-fn reopen(dir: &std::path::Path, platform: Arc<Platform>) -> (Engine, Arc<NetworkSession>) {
-    let engine = engine(dir);
-    let s = engine
+/// The network opened, offline.
+fn open_offline(engine: &Engine) -> Arc<NetworkSession> {
+    engine
         .block_on(engine.open_network(
             DashNetwork::Regtest,
             SessionOptions {
@@ -608,7 +598,12 @@ fn reopen(dir: &std::path::Path, platform: Arc<Platform>) -> (Engine, Arc<Networ
                 ..Default::default()
             },
         ))
-        .unwrap();
+        .unwrap()
+}
+
+fn reopen(dir: &std::path::Path, platform: Arc<Platform>) -> (Engine, Arc<NetworkSession>) {
+    let engine = engine(dir);
+    let s = open_offline(&engine);
     *guard(&s.platform.recovery.mock) = Some(platform);
     (engine, s)
 }
@@ -2354,16 +2349,22 @@ fn removable() -> (
     String,
 ) {
     let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, wipe) = removable_in(dir.path());
+    (dir, engine, s, id, wipe)
+}
+
+/// [`removable`] in `dir`.
+fn removable_in(dir: &std::path::Path) -> (Engine, Arc<NetworkSession>, WalletId, String) {
     let platform = Arc::new(Platform {
         identities: vec![(ALICE, 0)],
         ..Platform::default()
     });
-    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let (engine, s) = session(dir, Arc::clone(&platform));
     let id = restore(&engine, &s);
     let manager = s.manager().unwrap();
     engine.block_on(add_identities(&manager, id, &platform.identities));
     let wipe = grant(&engine, &s, id, GrantPurpose::Wipe);
-    (dir, engine, s, id, wipe)
+    (engine, s, id, wipe)
 }
 
 /// recovery.rs `set_main_identity_of`: its write held past a removal.
@@ -2511,44 +2512,69 @@ fn a_wallet_imported_again_after_its_removal_is_written() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
-/// A network closed and opened again in the same process keeps the
-/// wallets it removed recorded (a write of theirs may still be queued),
-/// and the open forgets one an earlier process removed.
-#[test]
-fn a_reopen_keeps_this_processs_removals_and_forgets_earlier_ones() {
-    let (_dir, engine, s, id, wipe) = removable();
+/// A network closed and opened again while the app database of the
+/// closed session is still alive (a job of it holds it) keeps the wallet
+/// it removed recorded, and a late write through it is skipped (DEC-210
+/// (3b)).
+fn a_removal_outlives_a_reopen(dir: &std::path::Path) {
+    let (engine, s, id, wipe) = removable_in(dir);
     engine.block_on(s.remove_wallet(id, wipe)).unwrap();
+    let old = s.live().unwrap().appdb;
+    drop(s);
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+
+    let s = open_offline(&engine);
+    let wallet = id.to_string();
+    old.set_main_identity(&wallet, &base58(ALICE)).unwrap();
+    assert_eq!(
+        s.live().unwrap().appdb.main_identity(&wallet).unwrap(),
+        None
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+#[test]
+fn a_removal_outlives_a_reopen_while_its_app_database_is_alive() {
+    a_removal_outlives_a_reopen(dw_testutil::private_tempdir().path());
+}
+
+/// [`a_removal_outlives_a_reopen`] in a directory whose path is not UTF-8.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_removal_outlives_a_reopen_in_a_directory_that_is_not_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = dw_testutil::private_tempdir();
+    let root = dir.path().join(std::ffi::OsStr::from_bytes(b"w-\xff"));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .unwrap();
+    assert!(root.to_str().is_none());
+    a_removal_outlives_a_reopen(&root);
+}
+
+/// A session opened while another process has the network's app database
+/// open, after it removed a wallet, keeps that wallet recorded: the other
+/// process's late write of it is skipped (DEC-210 (3b)).
+#[test]
+fn an_open_keeps_a_removal_by_another_process_with_the_database_open() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session(dir.path(), Arc::new(Platform::default()));
     let path = s.data_dir().join(dw_appdb::APP_DB_FILE);
     drop(s);
     engine
         .block_on(engine.close_network(DashNetwork::Regtest))
         .unwrap();
-    let earlier = "ee".repeat(32);
-    rusqlite::Connection::open(&path)
-        .unwrap()
-        .execute(
-            "INSERT INTO removed_wallets (wallet_id) VALUES (?1)",
-            [&earlier],
-        )
-        .unwrap();
+    let wallet = "ee".repeat(32);
+    let other = crate::held_writes::OtherProcess::start(&path, &wallet);
 
-    let s = engine
-        .block_on(engine.open_network(
-            DashNetwork::Regtest,
-            SessionOptions {
-                dapi_addresses: vec!["http://127.0.0.1:1".into()],
-                quorum_url: Some("http://127.0.0.1:1".into()),
-                spv_peers: vec!["127.0.0.1:1".into()],
-                ..Default::default()
-            },
-        ))
-        .unwrap();
-    let db = s.live().unwrap().appdb;
-    for wallet in [id.to_string(), earlier.clone()] {
-        db.set_main_identity(&wallet, &base58(ALICE)).unwrap();
-    }
-    assert_eq!(db.main_identity(&id.to_string()).unwrap(), None);
-    assert_eq!(db.main_identity(&earlier).unwrap(), Some(base58(ALICE)));
+    let s = open_offline(&engine);
+    other.write_late();
+    let names = s.live().unwrap().appdb.wallet_names().unwrap();
+    assert!(names.iter().all(|(w, _)| *w != wallet), "{names:?}");
     engine.block_on(engine.shutdown()).unwrap();
 }
 

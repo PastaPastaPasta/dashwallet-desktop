@@ -1,10 +1,11 @@
 -- Removed wallets (DEC-210). `AppDb::delete_wallet` records the wallet in
 -- the transaction that deletes its rows, and from then on an insert of a
 -- row of that wallet is skipped (`RAISE(IGNORE)`), so a write that was
--- already under way when the wallet was removed leaves nothing behind. A
--- session of a later process forgets the wallets removed before it started
--- (no write outlives the process that removed its wallet), and an import of
--- the wallet takes its row out before its first write. Not carried by a
+-- already under way when the wallet was removed leaves nothing behind. An
+-- open of the file while no other instance has it open, in any process,
+-- forgets them (`AppDb::open`: no write of theirs can still be running),
+-- and an import of the wallet takes its row out before its first write
+-- (DEC-210 (3b)). Not carried by a
 -- `.dwbackup` (dw-appdb `rows.rs`).
 CREATE TABLE removed_wallets (
     wallet_id TEXT PRIMARY KEY NOT NULL

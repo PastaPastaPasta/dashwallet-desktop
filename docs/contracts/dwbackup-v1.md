@@ -107,7 +107,7 @@ Payload plaintext (JSON):
 | `name` | Display name, or `null`. |
 | `birth_height` | The wallet's birth height; a restore scans from it (0 when `null`). |
 | `created_at` | When the wallet was added on the source device. |
-| `app_rows` | The wallet's `app.sqlite` rows: `[{table, columns, rows}]`, every table with a `wallet_id` column (but `dp_contact_info`, §3.1, and `removed_wallets`, DEC-210: which wallets were removed, until a later process forgets them) plus `settings_kv` rows scoped to the wallet; the DashPay `dp_*` rows of the wallet are among them (§3.1). Values are `null` or `{"i": int}`, `{"r": real}`, `{"t": text}`, `{"b": base64}`. Rowid aliases are left out. |
+| `app_rows` | The wallet's `app.sqlite` rows: `[{table, columns, rows}]`, every table with a `wallet_id` column (but `dp_contact_info`, §3.1, and `removed_wallets`, DEC-210: which wallets were removed, until an open with no other instance of the database forgets them) plus `settings_kv` rows scoped to the wallet; the DashPay `dp_*` rows of the wallet are among them (§3.1). Values are `null` or `{"i": int}`, `{"r": real}`, `{"t": text}`, `{"b": base64}`. Rowid aliases are left out. |
 
 The payload holds this wallet's data only and is built in memory (no temporary file). Backups
 written before review M4 also carry `wallet_sqlite`, a base64 online backup of the whole network's

@@ -332,14 +332,6 @@ impl NetworkSession {
             })
             .await??,
         );
-        // DEC-210: the directory is this session's now; no write of a wallet
-        // an earlier process removed can still be running.
-        {
-            let appdb = Arc::clone(&appdb);
-            tokio::task::spawn_blocking(move || appdb.forget_earlier_removals())
-                .await?
-                .map_err(|e| EngineError::Storage(format!("app database: {e}")))?;
-        }
         // dash-qt loads only the wallets of its settings list; an empty or
         // missing list loads every wallet.
         let startup_list = {

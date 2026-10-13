@@ -257,7 +257,7 @@ const CHECKSUM_TRUST_DIGEST: u64 = 5295667777470269757;
 const CHECKSUM_OWNER: u64 = 12040521178707991804;
 const CHECKSUM_OUTCOMES: u64 = 9183630881616259306;
 const CHECKSUM_CONTACT_INFO: u64 = 6330962680869650951;
-const CHECKSUM_REMOVED_WALLETS: u64 = 15796513014700437896;
+const CHECKSUM_REMOVED_WALLETS: u64 = 15219075048203792465;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -915,38 +915,156 @@ fn a_removed_wallets_rows_are_not_written_until_it_is_readmitted() {
     assert_eq!(settings(&db), [Some("v".into()), Some("v".into())]);
 }
 
-/// The record of removed wallets lasts one process: a later one forgets the
-/// wallets removed before it started, and the ones removed in this process
-/// stay recorded across a reopen of the file.
+fn recorded(db: &AppDb) -> Vec<String> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare("SELECT wallet_id FROM removed_wallets ORDER BY wallet_id")
+        .unwrap();
+    stmt.query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+/// An open with no other instance of the file alive forgets the removed
+/// wallets: no write of theirs can still be running (DEC-210 (3b)).
 #[test]
-fn a_later_process_forgets_the_removed_wallets() {
+fn an_open_with_no_other_instance_forgets_the_removed_wallets() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     let db = AppDb::open(&path).unwrap();
     db.delete_wallet(W).unwrap();
-    // As an earlier process left it.
-    db.conn()
-        .execute("INSERT INTO removed_wallets (wallet_id) VALUES (?1)", [W2])
-        .unwrap();
+    db.delete_wallet(W2).unwrap();
+    assert!(db.readmit_wallet(W2).unwrap());
+    assert!(!db.readmit_wallet(W2).unwrap());
     drop(db);
 
     let db = AppDb::open(&path).unwrap();
-    db.forget_earlier_removals().unwrap();
-    for w in [W, W2] {
-        db.set_wallet_name(w, "n", 1).unwrap();
+    assert!(recorded(&db).is_empty());
+    db.set_wallet_name(W, "n", 1).unwrap();
+    assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "n".into())]);
+}
+
+/// While another instance of the file is open in this process (a job a
+/// closed session left running holds one), an open keeps the removed
+/// wallets recorded and a late write through the other instance is skipped.
+#[test]
+fn a_removal_is_kept_while_another_instance_is_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(crate::APP_DB_FILE);
+    let old = AppDb::open(&path).unwrap();
+    old.delete_wallet(W).unwrap();
+
+    let new = AppDb::open(&path).unwrap();
+    assert_eq!(recorded(&new), [W]);
+    old.set_wallet_name(W, "late", 1).unwrap();
+    assert!(new.wallet_names().unwrap().is_empty());
+    // Not the newer instance's lock alone: `old` keeps it recorded too.
+    drop(new);
+    let newer = AppDb::open(&path).unwrap();
+    assert_eq!(recorded(&newer), [W]);
+    drop((old, newer));
+    assert!(recorded(&AppDb::open(&path).unwrap()).is_empty());
+}
+
+/// [`a_removal_is_kept_while_another_instance_is_open`] at a path that is
+/// not UTF-8.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_removal_is_kept_at_a_path_that_is_not_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    let net = dir.path().join(std::ffi::OsStr::from_bytes(b"net-\xff"));
+    std::fs::create_dir(&net).unwrap();
+    let path = net.join(crate::APP_DB_FILE);
+    assert!(path.to_str().is_none());
+    let old = AppDb::open(&path).unwrap();
+    old.delete_wallet(W).unwrap();
+
+    let new = AppDb::open(&path).unwrap();
+    old.set_wallet_name(W, "late", 1).unwrap();
+    assert_eq!(recorded(&new), [W]);
+    assert!(new.wallet_names().unwrap().is_empty());
+    drop((old, new));
+    assert!(recorded(&AppDb::open(&path).unwrap()).is_empty());
+}
+
+/// The lock is a file of its own next to the database, owner-only.
+#[test]
+fn the_lock_file_is_next_to_the_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(crate::APP_DB_FILE);
+    let _db = AppDb::open(&path).unwrap();
+    let lock = dir.path().join("app.sqlite.lock");
+    assert_eq!(crate::lock_path(&path), lock);
+    let meta = std::fs::metadata(&lock).unwrap();
+    assert!(meta.is_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(meta.permissions().mode() & 0o077, 0);
     }
-    assert_eq!(db.wallet_names().unwrap(), vec![(W2.into(), "n".into())]);
-    assert!(db.readmit_wallet(W).unwrap());
-    assert!(!db.readmit_wallet(W).unwrap());
+}
+
+/// Run by [`a_removal_is_kept_while_another_process_has_the_file_open`] as
+/// its child process (a test that does nothing otherwise): opens the file
+/// `DW_APPDB_CHILD` names, removes `W`, and writes a row of `W` when its
+/// parent says so.
+#[test]
+fn child_with_the_file_open() {
+    let Some(path) = std::env::var_os("DW_APPDB_CHILD") else {
+        return;
+    };
+    let db = AppDb::open(std::path::Path::new(&path)).unwrap();
     db.delete_wallet(W).unwrap();
-    db.readmit_wallet(W).unwrap();
-    drop(db);
-    // Readmitted, it is no longer this process's removal either.
-    let db = AppDb::open(&path).unwrap();
-    db.conn()
-        .execute("INSERT INTO removed_wallets (wallet_id) VALUES (?1)", [W])
+    println!("removed");
+    std::io::stdin().read_line(&mut String::new()).unwrap();
+    db.set_wallet_name(W, "late", 1).unwrap();
+    println!("written");
+}
+
+/// Reads `out` up to a line ending in `line` (libtest prints the test
+/// name first on it).
+fn wait_for_line(out: &mut impl std::io::BufRead, line: &str) {
+    let mut read = String::new();
+    loop {
+        read.clear();
+        assert!(out.read_line(&mut read).unwrap() > 0, "no {line:?}");
+        if read.trim_end().ends_with(line) {
+            return;
+        }
+    }
+}
+
+/// [`a_removal_is_kept_while_another_instance_is_open`] with the other
+/// instance in another process.
+#[test]
+fn a_removal_is_kept_while_another_process_has_the_file_open() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(crate::APP_DB_FILE);
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "migration_tests::child_with_the_file_open",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("DW_APPDB_CHILD", &path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
         .unwrap();
-    db.forget_earlier_removals().unwrap();
-    db.set_wallet_name(W, "n", 2).unwrap();
-    assert_eq!(db.wallet_names().unwrap().len(), 2);
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+    wait_for_line(&mut out, "removed");
+
+    let db = AppDb::open(&path).unwrap();
+    assert_eq!(recorded(&db), [W]);
+    child.stdin.take().unwrap().write_all(b"write\n").unwrap();
+    wait_for_line(&mut out, "written");
+    assert!(child.wait().unwrap().success());
+    assert!(db.wallet_names().unwrap().is_empty());
+    drop(db);
+    assert!(recorded(&AppDb::open(&path).unwrap()).is_empty());
 }
