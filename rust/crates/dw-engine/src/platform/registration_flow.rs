@@ -2518,7 +2518,7 @@ pub(crate) fn holds_own_key(lease: &Lease) -> bool {
     })
 }
 
-fn parse_identity(identity: &str) -> Result<Identifier, PlatformError> {
+pub(crate) fn parse_identity(identity: &str) -> Result<Identifier, PlatformError> {
     Identifier::from_string(identity, Encoding::Base58).map_err(|_| {
         PlatformError::InvalidArgument {
             detail: "identity is not a base58 identifier".into(),
@@ -2537,6 +2537,27 @@ pub(crate) struct PwLib {
     pub(crate) wallet_id: WalletId,
     pub(crate) wallet: Arc<platform_wallet::PlatformWallet>,
     pub(crate) sdk: Arc<dash_sdk::Sdk>,
+}
+
+impl PwLib {
+    /// The library of wallet `wallet_id`, with the manager holding it.
+    pub(crate) async fn open(
+        session: &Arc<NetworkSession>,
+        wallet_id: WalletId,
+    ) -> Result<(Arc<crate::session::Manager>, Self), PlatformError> {
+        let manager = session.manager()?;
+        let wallet = manager
+            .get_wallet(&wallet_id.0)
+            .await
+            .ok_or(PlatformError::WalletNotFound)?;
+        let lib = Self {
+            session: Arc::clone(session),
+            wallet_id,
+            wallet,
+            sdk: manager.sdk_arc(),
+        };
+        Ok((manager, lib))
+    }
 }
 
 pub(crate) fn lock_status(
@@ -2639,6 +2660,28 @@ impl PwLib {
         }
         Ok(fence)
     }
+
+    /// A lock of `duffs` of `funding_type` for identity `identity_index`,
+    /// funded from account 0 and signed by `permit`'s counting funding
+    /// signer: built, tracked, broadcast, and waited for its InstantSend
+    /// lock (DP1-02's registrations, DP1-06's top-ups).
+    pub(crate) async fn fund_lock(
+        &self,
+        funding_type: platform_wallet::AssetLockFundingType,
+        duffs: u64,
+        identity_index: u32,
+        permit: &CallPermit,
+    ) -> Result<OutPoint, FundError> {
+        let signer = permit
+            .funding_signer()
+            .map_err(|e| FundError::Refused(e.into()))?;
+        self.wallet
+            .asset_locks()
+            .create_funded_asset_lock_proof(duffs, 0, funding_type, identity_index, &signer)
+            .await
+            .map(|(_, _, outpoint)| outpoint)
+            .map_err(fund_error)
+    }
 }
 
 impl RegistrationLib for PwLib {
@@ -2729,21 +2772,13 @@ impl RegistrationLib for PwLib {
         permit: &CallPermit,
     ) -> Result<OutPoint, FundError> {
         use platform_wallet::AssetLockFundingType;
-        let signer = permit
-            .funding_signer()
-            .map_err(|e| FundError::Refused(e.into()))?;
-        self.wallet
-            .asset_locks()
-            .create_funded_asset_lock_proof(
-                lock_duffs,
-                0,
-                AssetLockFundingType::IdentityRegistration,
-                identity_index,
-                &signer,
-            )
-            .await
-            .map(|(_, _, outpoint)| outpoint)
-            .map_err(fund_error)
+        self.fund_lock(
+            AssetLockFundingType::IdentityRegistration,
+            lock_duffs,
+            identity_index,
+            permit,
+        )
+        .await
     }
 
     async fn wait_proof(&self, outpoint: OutPoint, timeout: Duration) -> Result<(), FundError> {

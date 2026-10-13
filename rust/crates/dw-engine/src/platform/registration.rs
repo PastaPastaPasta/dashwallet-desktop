@@ -254,14 +254,19 @@ impl DashPay {
         .await
     }
 
+    /// Also applies the wallet's proved top-up locks that Platform has not
+    /// taken (DP1-06, `topup.rs`).
     pub async fn finish_asset_locks(
         &self,
         grant: String,
     ) -> Result<FinishReport, RegistrationError> {
         let wallet = self.wallet_id;
-        self.on_lib(
-            move |session, _, lib| async move { finish(&session, wallet, &*lib, grant).await },
-        )
+        self.on_lib(move |session, _, lib| async move {
+            let lease = authority(&session, wallet, &grant).await?;
+            let mut report = finish_under(&session, wallet, &*lib, &lease).await?;
+            super::topup::finish(&session, wallet, &*lib, &lease, &mut report).await;
+            Ok(report)
+        })
         .await
     }
 
@@ -288,18 +293,8 @@ impl DashPay {
             .rt
             .spawn(async move {
                 let _op = session.enter().await.map_err(PlatformError::from)?;
-                let manager = session.manager().map_err(PlatformError::from)?;
-                let wallet = manager
-                    .get_wallet(&wallet_id.0)
-                    .await
-                    .ok_or(PlatformError::WalletNotFound)?;
-                let lib = Arc::new(PwLib {
-                    session: Arc::clone(&session),
-                    wallet_id,
-                    wallet,
-                    sdk: manager.sdk_arc(),
-                });
-                body(Arc::clone(&session), manager, lib).await
+                let (manager, lib) = PwLib::open(&session, wallet_id).await?;
+                body(Arc::clone(&session), manager, Arc::new(lib)).await
             })
             .await
             .map_err(|e| PlatformError::from(EngineError::from(e)))?
@@ -981,11 +976,8 @@ pub(crate) async fn discard<L: RegistrationLib + 'static>(
     Ok(())
 }
 
-/// Tools ▸ Repair "Finish transfers": every registration lock the wallet
-/// tracks that no row holds and no identity of the wallet consumed gets a
-/// row (the `KeysPrepared` row its known index names, else a new one at an
-/// unused index), and every funded row runs once under `grant`. Builds no
-/// lock and waits for no proof.
+/// [`finish_under`] under the lease `grant` gives (the tests' entry).
+#[cfg(test)]
 pub(crate) async fn finish<L: RegistrationLib>(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
@@ -993,6 +985,20 @@ pub(crate) async fn finish<L: RegistrationLib>(
     grant: String,
 ) -> Result<FinishReport, RegistrationError> {
     let lease = authority(session, wallet, &grant).await?;
+    finish_under(session, wallet, lib, &lease).await
+}
+
+/// Tools ▸ Repair "Finish transfers": every registration lock the wallet
+/// tracks that no row holds and no identity of the wallet consumed gets a
+/// row (the `KeysPrepared` row its known index names, else a new one at an
+/// unused index), and every funded row runs once under `lease`. Builds no
+/// lock and waits for no proof.
+async fn finish_under<L: RegistrationLib>(
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    lib: &L,
+    lease: &Lease,
+) -> Result<FinishReport, RegistrationError> {
     let mut report = FinishReport {
         resumed: 0,
         completed: 0,
@@ -1025,7 +1031,7 @@ pub(crate) async fn finish<L: RegistrationLib>(
             continue;
         }
         // One row's storage failure leaves it pending and the others run.
-        match finish_row(session, wallet, lib, &lease, row.id).await {
+        match finish_row(session, wallet, lib, lease, row.id).await {
             Ok(Finished::Skipped) => {}
             Ok(Finished::Held) => report.still_pending += 1,
             Ok(Finished::Ran { done }) => {

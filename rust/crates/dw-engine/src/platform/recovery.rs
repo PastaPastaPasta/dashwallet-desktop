@@ -75,6 +75,7 @@ use tokio::sync::watch;
 
 use super::VaultScanKey;
 use super::bringup::until;
+use super::credit_costs::{cost_table, credit_level};
 use super::errors::{IdentityError, PlatformError};
 use super::identity::IdentitySummary;
 use super::keys_policy::missing_dashpay_purposes;
@@ -365,6 +366,7 @@ pub(super) fn summaries(
                 identity: o.identity,
                 index: o.index,
                 balance: o.balance,
+                credit_level: None,
                 has_dashpay_keys: o.has_dashpay_keys,
                 profile: o.profile,
                 unverified,
@@ -491,9 +493,17 @@ impl NetworkSession {
             ..recovery.choices_of(&id)
         };
         let provenance = self.live()?.provenance;
-        Ok(summaries(owned, &choices, current, |e| {
-            provenance.is_unverified(e)
-        }))
+        let mut summaries = summaries(owned, &choices, current, |e| provenance.is_unverified(e));
+        // The levels are display data: a table the version cannot price
+        // leaves them unknown, never the identities.
+        if !summaries.is_empty()
+            && let Ok(table) = cost_table(manager.sdk_arc().protocol_version_number())
+        {
+            for s in &mut summaries {
+                s.credit_level = s.balance.map(|b| credit_level(b, &table));
+            }
+        }
+        Ok(summaries)
     }
 
     /// Takes the identity snapshot after a pass of ours changed the

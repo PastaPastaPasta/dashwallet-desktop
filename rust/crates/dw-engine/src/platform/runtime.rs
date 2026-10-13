@@ -96,6 +96,9 @@ pub(crate) struct PlatformRuntime {
     pub(crate) users: super::users::UsersRuntime,
     /// The registration flows running in this process (DP1-02).
     pub(crate) registrations: Arc<super::registration_flow::Flows>,
+    /// Top-up locks Platform reported taken in this process (DP1-06,
+    /// `topup.rs`).
+    pub(crate) taken_top_ups: super::topup::TakenTopUps,
     /// Tests: holds the next bring-up between building its keys and
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
@@ -267,6 +270,7 @@ impl PlatformRuntime {
             contacts: Default::default(),
             users: Default::default(),
             registrations: Default::default(),
+            taken_top_ups: Default::default(),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
         }
@@ -440,6 +444,7 @@ impl PlatformRuntime {
         self.contacts.forget(id);
         self.users.scans.forget(id);
         self.registrations.forget_wallet(*id);
+        self.taken_top_ups.forget(*id);
     }
 
     /// Takes wallet `id` out of `manager` (a removal, an unload, a restore's

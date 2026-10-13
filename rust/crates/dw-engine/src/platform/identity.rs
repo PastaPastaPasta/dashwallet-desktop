@@ -4,9 +4,12 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use super::credits::CreditLevel;
 use super::dashpay::{DashPay, stub};
 use super::errors::PlatformError;
 use super::profile::Profile;
+use super::registration_flow::parse_identity;
+use super::topup::{self, TopUpLib};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentitySummary {
@@ -22,6 +25,9 @@ pub struct IdentitySummary {
     pub is_main: bool,
     /// Credits.
     pub balance: Option<u64>,
+    /// `balance` against the cost table (DP1-06); `None` while the balance
+    /// is unknown.
+    pub credit_level: Option<CreditLevel>,
     pub has_dashpay_keys: bool,
     pub profile: Option<Profile>,
     /// Verified only through the trusted fallback (§2.2 rule 2).
@@ -106,9 +112,16 @@ impl DashPay {
         stub("DashPay.identity_detail")
     }
 
-    #[expect(unused_variables, reason = "stub until DP6-01")]
+    /// Platform's balance of one of the wallet's identities (DP1-06):
+    /// fetched with its proof, stored with its block time so an older
+    /// answer never replaces a newer one, and signalled
+    /// `Platform{Identities}`. `None` when Platform has no balance for it.
+    /// Needs no key, so it runs with the vault locked.
     pub async fn refresh_balance(&self, identity: String) -> Result<Option<u64>, PlatformError> {
-        stub("DashPay.refresh_balance")
+        topup::on_lib(&self.session, self.wallet_id, move |_, lib| async move {
+            lib.refresh_balance(parse_identity(&identity)?).await
+        })
+        .await
     }
 
     /// Same-seed discovery past the highest identity index on file (DP1-05,
