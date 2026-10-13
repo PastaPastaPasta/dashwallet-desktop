@@ -1544,7 +1544,7 @@ fn a_held_count(h: &Harness, between: impl FnOnce()) {
     let pause = Arc::new(crate::coins::TestPause::default());
     *h.tap.pause_count.lock().unwrap() = Some(Arc::clone(&pause));
     let release = ReleaseOnDrop(Arc::clone(&pause));
-    h.tap.load_unread(W, rt.handle());
+    h.tap.load_unread(W, h.tap.epoch(W), rt.handle());
     assert_eq!(h.unread(), Some(0), "the stand-in");
     let held = Duration::from_secs(20);
     wait_for("the held count", held, || pause.reached.load(SeqCst));

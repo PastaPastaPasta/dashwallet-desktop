@@ -598,7 +598,8 @@ impl ChangesetTap {
         self.hub.pump.forget_news(id);
     }
 
-    fn epoch(&self, id: WalletId) -> u64 {
+    /// The wallet's epoch: [`Self::forget`] moves it on.
+    pub(crate) fn epoch(&self, id: WalletId) -> u64 {
         guard(&self.epochs).get(&id).copied().unwrap_or_default()
     }
 
@@ -650,18 +651,26 @@ impl ChangesetTap {
     /// until a count lands, and goes again if this count fails while it
     /// still stands in, for the next call to retry. Both for the wallet as
     /// it is now: after a `forget` the count puts nothing back and its
-    /// failure clears nothing.
-    pub(crate) fn load_unread(self: &Arc<Self>, id: WalletId, rt: &tokio::runtime::Handle) {
+    /// failure clears nothing. Only while the wallet is still at `epoch`,
+    /// the caller's as it checked the wallet: a removal since then queues
+    /// nothing.
+    pub(crate) fn load_unread(
+        self: &Arc<Self>,
+        id: WalletId,
+        epoch: u64,
+        rt: &tokio::runtime::Handle,
+    ) {
         let queued = {
             let epochs = guard(&self.epochs);
             let mut unread = guard(&self.unread);
-            (!unread.contains_key(&id)).then(|| {
+            let now = epochs.get(&id).copied().unwrap_or_default();
+            (now == epoch && !unread.contains_key(&id)).then(|| {
                 let number = self.counts_queued.fetch_add(1, Ordering::Relaxed);
                 unread.insert(id, Unread::Counting(number));
-                (epochs.get(&id).copied().unwrap_or_default(), number)
+                number
             })
         };
-        if let Some((epoch, number)) = queued {
+        if let Some(number) = queued {
             self.count_later(id, epoch, number, rt);
         }
     }

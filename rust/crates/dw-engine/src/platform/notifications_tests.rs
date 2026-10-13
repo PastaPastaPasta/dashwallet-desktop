@@ -442,6 +442,28 @@ fn a_mark_read_admitted_before_a_removal_and_reimport_marks_nothing() {
     f.dave_still_unread();
 }
 
+/// Sol r2 new 2: an `unread_count` that checked the wallet before its
+/// removal finished starts no count after it: the removed wallet's counts
+/// stay gone.
+#[test]
+fn an_unread_count_checked_before_a_removal_starts_no_count() {
+    let f = Fixture::new(true);
+    f.give_me();
+    let (pause, _release) = f.pause_at("unread_count checked");
+    let dp = f.dp();
+    let count = std::thread::spawn(move || dp.unread_count(b58(ME)));
+    wait_for("the checked call", || pause.reached.load(Ordering::SeqCst));
+    f.engine.block_on(f.removing()).unwrap().unwrap();
+    pause.release.notify_one();
+    assert_eq!(count.join().unwrap().unwrap(), 0);
+    let tap = f.s.live().unwrap().tap;
+    assert_eq!(
+        tap.unread(f.wallet, &b58(ME)),
+        None,
+        "the removed wallet counted"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Live
 // ---------------------------------------------------------------------------

@@ -132,11 +132,16 @@ impl DashPay {
     pub fn unread_count(&self, identity: String) -> Result<u32, PlatformError> {
         let id = self.wallet_id();
         let _op = self.session.try_enter()?;
-        self.session.require_wallet(&id)?;
-        let identity = canonical(&identity)?;
         let tap = self.session.live()?.tap;
+        // Before the wallet check: a removal that finishes after it has
+        // moved the epoch on (its `forget`), and the count is not started.
+        let epoch = tap.epoch(id);
+        self.session.require_wallet(&id)?;
+        #[cfg(test)]
+        self.session.test_pause_here("unread_count checked");
+        let identity = canonical(&identity)?;
         Ok(tap.unread(id, &identity).unwrap_or_else(|| {
-            tap.load_unread(id, &self.session.rt);
+            tap.load_unread(id, epoch, &self.session.rt);
             0
         }))
     }
@@ -255,6 +260,15 @@ impl NetworkSession {
         }))
         .await?;
         Ok(())
+    }
+
+    /// Tests: [`Self::test_pause`] for a caller off the runtime.
+    #[cfg(test)]
+    fn test_pause_here(&self, at: &'static str) {
+        if let Some(pause) = self.take_job_pause(at) {
+            (pause.reached).store(true, std::sync::atomic::Ordering::SeqCst);
+            self.rt.block_on(pause.release.notified());
+        }
     }
 
     /// Tests: waits here while `job_pause` is set for `at`.
