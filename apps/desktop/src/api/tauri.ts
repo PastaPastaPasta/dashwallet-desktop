@@ -44,6 +44,7 @@ export const tauriTools = {
   startupMark: cmd.startupMark,
   selftestReport: (report: unknown) => cmd.selftestReport(report as JsonValue),
   selftestCheckpoint: cmd.selftestCheckpoint,
+  selftestUnlock: () => cmd.selftestUnlock(),
   ipcBenchRows: cmd.ipcBenchRows,
   historyPageTimed: cmd.historyPageTimed,
   probeUnlisted: cmd.probeUnlisted,

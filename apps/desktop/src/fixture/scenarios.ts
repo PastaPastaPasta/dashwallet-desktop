@@ -77,6 +77,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     launch: {
       selftest: false,
       selftestPauseMs: 0,
+      selftestUnlock: false,
       theme,
       // Testnet, like the reference images.
       network: { kind: "testnet", dirName: "testnet", unitName: "tDASH" },

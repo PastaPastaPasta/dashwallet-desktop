@@ -207,6 +207,7 @@ fn the_binding_refuses_with_app_codes() {
     );
     // The self-test's measurements are no command of the packaged app.
     demo.err("ipc_bench_rows", json!({ "rows": 2 }), "app.not_selftest");
+    demo.err("selftest_unlock", json!({}), "app.not_selftest");
     // A missing argument is Tauri's own refusal (a string, not an AppError).
     let e = demo.call("startup_mark", json!({})).unwrap_err();
     assert!(e.is_string(), "{e}");
@@ -222,6 +223,31 @@ fn the_selftest_commands_run_under_selftest() {
         demo.ok("selftest_checkpoint", json!({ "screen": "x" })),
         Value::Null
     );
+    // No passphrase file: the self-test cannot unlock.
+    demo.err("selftest_unlock", json!({}), "app.selftest");
+}
+
+/// `--selftest-passphrase-file`: `selftest_unlock` unlocks the vault with
+/// the file's first line, and a passphrase that no longer opens it fails as
+/// `unlock` does.
+#[test]
+fn the_selftest_unlocks_with_the_passphrase_file() {
+    let demo = Demo::launched(|launch, dir| {
+        launch.selftest = Some(dir.join("report.json"));
+        launch.selftest_passphrase_file = Some(dir.join("passphrase"));
+        std::fs::write(dir.join("passphrase"), "selftest pass\nignored\n").unwrap();
+    });
+    assert_eq!(demo.ok("launch_info", json!({}))["selftestUnlock"], true);
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "selftest pass" }));
+    demo.ok("lock", json!({}));
+    assert_eq!(demo.ok("selftest_unlock", json!({}))["state"], "unlocked");
+    demo.ok(
+        "change_passphrase",
+        json!({ "oldPassphrase": "selftest pass", "newPassphrase": "other" }),
+    );
+    demo.ok("lock", json!({}));
+    demo.err("selftest_unlock", json!({}), "vault.wrong_passphrase");
 }
 
 /// A representative command of each facade, through the IPC handler: the

@@ -9,7 +9,12 @@ export type LaunchInfo = { selftest: boolean,
 /**
  * Milliseconds the self-test waits on each screen (0 = no pause).
  */
-selftestPauseMs: number, theme: ThemeName | null, 
+selftestPauseMs: number, 
+/**
+ * The self-test can unlock the vault (`selftest_unlock`): the app was
+ * launched with `--selftest-passphrase-file`.
+ */
+selftestUnlock: boolean, theme: ThemeName | null, 
 /**
  * The network `open_network` opens when it names none.
  */

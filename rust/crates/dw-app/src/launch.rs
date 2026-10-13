@@ -22,6 +22,10 @@ pub struct LaunchOptions {
     /// stderr (`dw-app: selftest-screen <theme>/<screen>`), so a harness can
     /// capture the window.
     pub selftest_pause_ms: u32,
+    /// The vault passphrase, first line of this file, for `selftest_unlock`:
+    /// the self-test then records the unlocked screens and the lock screen
+    /// of an encrypted vault. The renderer never sees the passphrase.
+    pub selftest_passphrase_file: Option<PathBuf>,
     /// Start SPV once the network is open.
     pub sync: bool,
     pub spv_peers: Vec<String>,
@@ -50,6 +54,7 @@ impl Default for LaunchOptions {
             network: DashNetwork::Mainnet,
             selftest: None,
             selftest_pause_ms: 0,
+            selftest_passphrase_file: None,
             sync: false,
             spv_peers: Vec::new(),
             dapi_addresses: Vec::new(),
@@ -76,6 +81,8 @@ usage: dash-wallet [options]
   --no-platform          the chain has no Platform (a plain dashd regtest)
   --selftest <file>      render the gate screens, write element boxes to <file>, exit
   --selftest-pause <ms>  pause on each self-test screen (for screenshots)
+  --selftest-passphrase-file <file>
+                         the self-test unlocks the vault with this file's first line
   --theme light|dark     force an appearance
   --window-size <WxH>    the window's inner size in logical pixels (default 1280x820)
   --help                 print this text";
@@ -122,6 +129,10 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
                 opts.selftest_pause_ms = v
                     .parse()
                     .map_err(|_| format!("--selftest-pause: not a number: {v}"))?;
+            }
+            "--selftest-passphrase-file" => {
+                opts.selftest_passphrase_file =
+                    Some(PathBuf::from(value("--selftest-passphrase-file")?))
             }
             "--theme" => {
                 opts.theme = Some(match value("--theme")?.as_str() {
@@ -185,6 +196,8 @@ mod tests {
             "/tmp/boxes.json",
             "--selftest-pause",
             "1500",
+            "--selftest-passphrase-file",
+            "/tmp/pass",
             "--theme",
             "dark",
             "--window-size",
@@ -205,6 +218,7 @@ mod tests {
         assert_eq!(o.initial_protocol_version, Some(9));
         assert_eq!(o.selftest, Some(PathBuf::from("/tmp/boxes.json")));
         assert_eq!(o.selftest_pause_ms, 1500);
+        assert_eq!(o.selftest_passphrase_file, Some(PathBuf::from("/tmp/pass")));
         assert_eq!(o.theme, Some(ThemeName::Dark));
         assert_eq!(o.window_size, Some((1000, 620)));
     }

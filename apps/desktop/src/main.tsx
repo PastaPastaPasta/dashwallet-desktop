@@ -57,7 +57,7 @@ async function boot() {
       </QueryClientProvider>
     </StrictMode>,
   );
-  if (launch.selftest) void runTauriSelftest(backend, client, launch.selftestPauseMs);
+  if (launch.selftest) void runTauriSelftest(backend, client, launch.selftestPauseMs, launch.selftestUnlock);
 }
 
 boot().catch((e) => {

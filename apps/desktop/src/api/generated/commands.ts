@@ -193,8 +193,19 @@ export function selftestCheckpoint(screen: string): Promise<null> {
 }
 
 /**
+ * `--selftest` with `--selftest-passphrase-file`: a full unlock with
+ * the file's first line, as `unlock` does, so the self-test records the
+ * screens of an encrypted vault without the renderer holding its
+ * passphrase.
+ */
+export function selftestUnlock(): Promise<LockStatus> {
+  return invoke<LockStatus>("selftest_unlock");
+}
+
+/**
  * A synthetic page of `rows` records, the size and shape of a real
  * `historyPage` result: the IPC and serialisation cost alone (U5).
+ * Self-test runs only.
  */
 export function ipcBenchRows(rows: number): Promise<HistoryRows> {
   return invoke<HistoryRows>("ipc_bench_rows", { rows });
@@ -1918,6 +1929,7 @@ export type CommandArgs = {
   startup_mark: { mark: string };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
+  selftest_unlock: {  };
   ipc_bench_rows: { rows: number };
   history_page_timed: { walletId: string; request: HistoryRequest };
   probe_unlisted: {  };
@@ -2142,6 +2154,7 @@ export type CommandResults = {
   startup_mark: number;
   selftest_report: null;
   selftest_checkpoint: null;
+  selftest_unlock: LockStatus;
   ipc_bench_rows: HistoryRows;
   history_page_timed: TimedHistoryRows;
   probe_unlisted: string;
@@ -2368,6 +2381,7 @@ export const COMMANDS: Record<CommandName, string> = {
   startup_mark: "app",
   selftest_report: "app",
   selftest_checkpoint: "app",
+  selftest_unlock: "app",
   ipc_bench_rows: "app",
   history_page_timed: "app",
   probe_unlisted: "app",

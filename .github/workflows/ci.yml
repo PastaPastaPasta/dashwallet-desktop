@@ -3,8 +3,9 @@
 # - lint, rust-linux: fmt, clippy and `cargo test --workspace` on Linux; rust-linux then
 #   regenerates the Tauri bindings (apps/desktop/src/api/generated and the E0-13 facade
 #   coverage table) and fails if they differ from the committed ones.
-# - desktop-renderer: the Tauri renderer (apps/desktop): design tokens, tsc, vitest, and the
-#   production and fixture bundles (scripts/check-bundle.mjs: no fixture code in production).
+# - desktop-renderer: the Tauri renderer (apps/desktop): design tokens, tsc, vitest, the
+#   production and fixture bundles (scripts/check-bundle.mjs: no fixture code in production), and
+#   the test of tauri-selftest.yml's report judge.
 # - ui-playwright: Playwright on the fixture backend in Chromium and WebKit, light and dark, with
 #   axe, inside the pinned Playwright image and without Rust or the engine (U-07). Same commands
 #   locally: apps/desktop/scripts/e2e-docker.sh.
@@ -147,6 +148,10 @@ jobs:
       # dist-fixture/ must (the positive control).
       - run: pnpm build
       - run: pnpm build:fixture
+      # tauri-selftest.yml's verdict: a report missing a required screen must fail it.
+      - name: selftest judge (ci/github/selftest-judge.jq)
+        working-directory: .
+        run: ci/github/selftest-judge-test.sh
 
   ui-playwright:
     name: UI tests (Playwright, axe)

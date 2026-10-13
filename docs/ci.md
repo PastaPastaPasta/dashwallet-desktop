@@ -199,26 +199,38 @@ The scripts can use the launch-and-screenshot helpers in `ci/github/`. Playwrigh
 ```sh
 gh workflow run tauri-selftest.yml --ref <branch with G-01> -f os=both            # or macos / windows
 gh workflow run tauri-selftest.yml --ref <branch> -f os=windows -f theme=dark \
-    -f selftest_args="--datadir D:/a/wallet --network regtest"                   # instead of the new wallet
+    -f selftest_args="--datadir D:/a/wallet --network regtest \
+      --selftest-passphrase-file D:/a/pass"                                    # instead of the new wallet
 ```
 
 Per OS (`macos-latest`, `windows-latest`): Node 24 and pnpm from `apps/desktop/package.json`,
 `pnpm install --frozen-lockfile`, `pnpm tauri build --no-bundle` (the renderer and the release binary
 `rust/target/release/dash-wallet`). Without `selftest_args` the job builds `dwcli`, which makes an
-encrypted vault and a wallet in a fresh regtest data root (`--no-platform`); the app opens it on the real
-engine, locked. (Until U-07 the default was `--fixture`, an in-app TypeScript wallet; the fixture backend
-now runs in browsers only.) Then:
+encrypted vault and a wallet in a fresh regtest data root (`--no-platform`). `ci/github/regtest-fund.py`
+then starts a regtest `dashd` from the verified Dash Core release (`regtest/scripts/fetch-dashcore.sh`:
+the tarball on macOS and Linux, the zip on Windows), pays the wallet 1.5 DASH, mines the payment into a
+block and runs `dwcli sync` until the wallet holds it, then stops `dashd`. The history stays in the data
+root, so the app, which opens it on the real engine without a peer, shows the transaction. The vault's
+passphrase file goes to the self-test only (`--selftest-passphrase-file`). (Until U-07 the default was
+`--fixture`, an in-app TypeScript wallet; the fixture backend now runs in browsers only.) Then:
 
-1. `dash-wallet <app args> --selftest selftest-<os>.json` within 10 minutes. The app renders the four
-   screens in light and dark and writes the `data-testid` boxes, style checks, IPC timings and security
-   probes. The app exits 0 whatever it found, so the step judges the report. It fails when the app fails,
-   times out or writes no report; when the report is a checkpoint (`final: false`) rather than the final
-   one; when it has no `security.navigation` probe; when a style check fails; or when a security probe
-   says `NOT REFUSED`. The new wallet has no history, so the checks of history rows and the hero breakdown
-   (selectors `.tx-…`, `.breakdown-…`, `hero-breakdown`) find no element: only those are excused, and
-   counted apart (72 of 160 on Linux, locked or not). Any other check that finds no element fails the
-   run, so a screen that stops rendering is caught. The populated screens are checked by Playwright in
-   `ci.yml`, in Chromium and WebKit. The counts, paint times and probes go to the run's step summary.
+1. `dash-wallet <app args> --selftest-passphrase-file <file> --selftest selftest-<os>.json` within 10
+   minutes. dw-app unlocks the vault with the file's first line (`selftest_unlock`, refused without
+   `--selftest`; the renderer never holds the passphrase). The app renders Overview, Transactions and the
+   detail sheet of the newest transaction, then locks to render the lock screen and unlocks again, in light
+   and dark, and writes the `data-testid` boxes, style checks, IPC timings and security probes. The app
+   exits 0 whatever it found, so `ci/github/selftest-judge.jq` judges the report. The step fails when the
+   app fails, times out or writes no report, or when the judge finds any of these: a checkpoint report
+   (`final: false`) rather than the final one; any of the eight screens (`light`/`dark` × `overview`,
+   `transactions`, `txDetail`, `unlock`) not recorded; no history row shown; a failed style check; no
+   `security.navigation` probe; or a security probe that says `NOT REFUSED`. No failed check is excused
+   (until U-07 r1 the history checks were, because the wallet had none): on the funded wallet every check
+   finds its element or is not applicable (on Linux, 212 checks, 0 failed, 12 not applicable).
+   `ci/github/selftest-judge-test.sh` (run by `ci.yml`) proves that a
+   report missing each required screen fails. With `selftest_args`, pass `--selftest-passphrase-file`
+   and a wallet with history yourself, or the judge fails the run. The populated fixture screens are
+   also checked by Playwright in `ci.yml`, in Chromium and WebKit. The screens, counts, paint times and
+   probes go to the run's step summary.
 2. `dash-wallet <app args> --theme <theme>` launched again, with a screenshot (the helpers above). The window
    is 1280×820, and the Windows helper captures the primary screen, which may be smaller.
 

@@ -1,15 +1,18 @@
 //! The binding's own commands: launch facts, the start-up and self-test
-//! hooks (G-02's U5/U6 measurements) and the refusal probe. None reaches a
-//! facade.
+//! hooks (G-02's U5/U6 measurements) and the refusal probe. Only the
+//! self-test's `history_page_timed` and `selftest_unlock` reach a facade.
+
+use dw_vault::UnlockScope;
+use zeroize::Zeroizing;
 
 use std::time::Instant;
 
 use crate::bridge::RecentNotice;
-use crate::dto::LaunchInfo;
 use crate::dto::history::{
     HistoryRequest, HistoryRows, TimedHistoryRows, TxCategoryName, TxRow, TxStatusInfo,
     TxStatusKindName, TxTypeName,
 };
+use crate::dto::{LaunchInfo, LockStatus};
 use crate::error::{AppCode, AppError};
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
@@ -67,6 +70,32 @@ commands! {
         state.selftest_path()?;
         eprintln!("dw-app: selftest-screen {}", screen.escape_debug());
         Ok(())
+    }
+
+    /// `--selftest` with `--selftest-passphrase-file`: a full unlock with
+    /// the file's first line, as `unlock` does, so the self-test records the
+    /// screens of an encrypted vault without the renderer holding its
+    /// passphrase.
+    #[facade("NetworkSession::vault_op", "Vault::unlock")]
+    fn selftest_unlock(state) -> LockStatus {
+        state.selftest_path()?;
+        let file = state.launch.selftest_passphrase_file.as_deref().ok_or_else(|| {
+            AppError::app(
+                AppCode::Selftest,
+                "the app was not launched with --selftest-passphrase-file",
+            )
+        })?;
+        let text = Zeroizing::new(
+            tokio::fs::read_to_string(file)
+                .await
+                .map_err(|e| AppError::app(AppCode::Selftest, format!("{}: {e}", file.display())))?,
+        );
+        let passphrase = Zeroizing::new(text.lines().next().unwrap_or_default().as_bytes().to_vec());
+        let session = state.session().await?;
+        let status = session
+            .vault_op(move |v| v.unlock(&passphrase, UnlockScope::Full))
+            .await?;
+        Ok(status.into())
     }
 
     /// A synthetic page of `rows` records, the size and shape of a real

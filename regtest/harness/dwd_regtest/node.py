@@ -234,7 +234,7 @@ class LocalBinaryNode(RegtestNode):
     _owns_datadir: bool = False
 
     def start(self) -> None:
-        dashd = self.dashcore_dir / "bin" / "dashd"
+        dashd = self.dashcore_dir / "bin" / ("dashd.exe" if os.name == "nt" else "dashd")
         if not dashd.exists():
             raise FileNotFoundError(f"{dashd} not found; run scripts/fetch-dashcore.sh <dir> and set DASHCORE_DIR")
         if self.datadir is None:
