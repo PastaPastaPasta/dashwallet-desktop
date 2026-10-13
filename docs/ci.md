@@ -109,13 +109,14 @@ mock IPC answers the generated commands (`src/api/generated/commands.ts`, typed 
 `CommandResults`) from a scenario's data and emits `engine://event` like dw-app's bridge. Nothing of the
 engine is built or linked. Scenarios: `funded` (default), `empty`, `no-wallet`, `locked`, `large`, `xss`,
 `dashpay-no-identity`, `dashpay-registering`, `dashpay-registered`, `lock-report-omitted`,
-`lock-report-pending`, `lock-report-resolved`, and `error-<class>` for each `ErrorData` class (see
+`lock-report-omitted-settles`, `lock-report-pending`, `lock-report-resolved`, and `error-<class>` for each `ErrorData` class (see
 `apps/desktop/README.md` for the URL parameters).
 
 **No fixture code in production.** The renderer imports the fixture only under the build-time constant
 `__DW_FIXTURES__`, which is true for `vite` (dev server) and `vite build --mode fixture` and false for
-`vite build`, so the production bundle has no fixture chunk. `scripts/check-bundle.mjs` runs at the end of
-both builds: `dist/` fails if it contains the fixture's sentinel string or Tauri's mock IPC, and
+`vite build`, so the production bundle has no fixture chunk. Vite's `noFixtureModules` plugin fails a
+production build whose chunks hold any `src/fixture/` module or the mock IPC, whatever imports it, and
+`scripts/check-bundle.mjs` runs at the end of both builds: `dist/` fails if it contains the fixture's sentinel string or Tauri's mock IPC, and
 `dist-fixture/` fails if it does not (the positive control). `pnpm tauri build` runs `pnpm build`, so
 every app binary passes the check. dw-app has no fixture mode (`--fixture` is an unknown option).
 
@@ -124,7 +125,7 @@ every app binary passes the check. dw-app has no fixture mode (`--fixture` is an
 | `e2e/scenarios.spec.ts` | Chromium, WebKit | every scenario boots on the fixture alone; 8 states (empty wallet, no wallet, locked, loading, open failed, wallets error, history error, unresolved lock report) in light and dark, each with a screenshot artifact and 0 serious or critical axe issues |
 | `e2e/screens.spec.ts`, `e2e/a11y.spec.ts`, `e2e/style.spec.ts` | Chromium, WebKit | the four gate screens in light and dark: screenshots, axe and keyboard reach, the UX-SPEC §2 style checks |
 | `e2e/errors.spec.ts` | Chromium | each `ErrorData` class rendered with its message, axe-clean; the splash's retry |
-| `e2e/lockreport.spec.ts` | Chromium, WebKit | a lock report with omitted flows, artifacts or wallets stays unresolved until the leases end |
+| `e2e/lockreport.spec.ts` | Chromium, WebKit | a lock report with omitted flows, artifacts or wallets is unresolved: for good when the omitted ones may be pending, else until the listed artifacts settle and no call runs; a newer lock's drain hides the previous report |
 | `e2e/security.spec.ts` | Chromium, WebKit | hostile strings render as text |
 | `e2e/visual.spec.ts` | Chromium, `DW_VISUAL=1` only | `toHaveScreenshot` baselines (below) |
 | `e2e-tauri/smoke.ts` | WebKitGTK via tauri-driver | the real app on the real engine: lock screen, wrong passphrase refused, unlock, Overview and Transactions of a new regtest wallet, lock again |
@@ -210,11 +211,12 @@ now runs in browsers only.) Then:
    screens in light and dark and writes the `data-testid` boxes, style checks, IPC timings and security
    probes. The app exits 0 whatever it found, so the step judges the report. It fails when the app fails,
    times out or writes no report; when the report is a checkpoint (`final: false`) rather than the final
-   one; when it has no `security.navigation` probe; when a style check fails on an element that is there; or
-   when a security probe says `NOT REFUSED`. The new wallet has no history, so the checks of history rows
-   and the hero breakdown find no element; they are counted apart (72 of 160 on Linux, locked or not) and
-   do not fail the run. The populated screens are checked by Playwright in `ci.yml`, in Chromium and
-   WebKit. The counts, paint times and probes go to the run's step summary.
+   one; when it has no `security.navigation` probe; when a style check fails; or when a security probe
+   says `NOT REFUSED`. The new wallet has no history, so the checks of history rows and the hero breakdown
+   (selectors `.tx-…`, `.breakdown-…`, `hero-breakdown`) find no element: only those are excused, and
+   counted apart (72 of 160 on Linux, locked or not). Any other check that finds no element fails the
+   run, so a screen that stops rendering is caught. The populated screens are checked by Playwright in
+   `ci.yml`, in Chromium and WebKit. The counts, paint times and probes go to the run's step summary.
 2. `dash-wallet <app args> --theme <theme>` launched again, with a screenshot (the helpers above). The window
    is 1280×820, and the Windows helper captures the primary screen, which may be smaller.
 

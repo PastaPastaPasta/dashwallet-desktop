@@ -46,7 +46,7 @@ WebKitGTK development packages above, so on Linux `cargo build --workspace` now 
 | `pnpm dev` | Vite dev server on :1420 with the fixture backend (open in any browser; URL parameters below) |
 | `pnpm tauri dev` | the app with hot reload, on the real engine |
 | `pnpm build` | production renderer in `dist/`; fails if it holds fixture code (`scripts/check-bundle.mjs`) |
-| `pnpm build:fixture` | renderer with the fixture backend in `dist-fixture/` (`pnpm preview:fixture` serves it on :4173) |
+| `pnpm build:fixture` | renderer with the fixture backend in `dist-fixture/` (`pnpm preview:fixture` serves it on :1420) |
 | `pnpm tauri build` | release binary plus `.deb` and AppImage (`--no-bundle` for the binary only); runs `pnpm build` |
 | `pnpm test` | unit tests: amount formatting against `testdata/amount_format.json`, presentation, fixture, event bridge, token hygiene |
 | `pnpm e2e` | `pnpm build:fixture`, then Playwright in Chromium and WebKit; `DW_WRITE_SCREENSHOTS=1` writes into `docs/screenshots/gate/` |
@@ -85,21 +85,22 @@ a changed command fails `pnpm typecheck` until the fixture follows. A command wi
 with `platform.not_implemented`, as the engine's stubs do.
 
 It is reachable only where the build-time constant `__DW_FIXTURES__` is true: the dev server and
-`vite build --mode fixture`. `pnpm build` (and so every `pnpm tauri build`) leaves it out and
-`scripts/check-bundle.mjs` proves it: `dist/` must not contain the fixture's sentinel or the mock IPC,
-`dist-fixture/` must. In a fixture build `window.__dwFixture` lets tests emit events, fail commands and read
+`vite build --mode fixture`. `pnpm build` (and so every `pnpm tauri build`) leaves it out, and two checks
+prove it: Vite's `noFixtureModules` fails a production build whose chunks hold any `src/fixture/` module or
+the mock IPC, and `scripts/check-bundle.mjs` scans the files: `dist/` must not contain the fixture's
+sentinel or the mock IPC, `dist-fixture/` must. In a fixture build `window.__dwFixture` lets tests emit events, fail commands and read
 the calls made.
 
 URL parameters (`pnpm dev`, `pnpm preview:fixture`, Playwright):
 
 | Parameter | |
 |---|---|
-| `scenario=` | `funded` (default; passphrase `demo`), `empty`, `no-wallet`, `locked`, `large` (10,000 rows), `xss`, `dashpay-no-identity`, `dashpay-registering`, `dashpay-registered` (contacts in every relation and channel state, pending requests both ways), `lock-report-omitted` (the last lock omitted flows, artifacts and wallets: unresolved until its leases end), `lock-report-pending`, `lock-report-resolved`, or `error-<class>`: `funded` with `list_wallets` failing with a sample of that `ErrorData` class (`none`, `duffs`, `rpc`, `retryAfter`, …; `src/fixture/errors.ts`) |
+| `scenario=` | `funded` (default; passphrase `demo`), `empty`, `no-wallet`, `locked`, `large` (10,003 rows), `xss`, `dashpay-no-identity`, `dashpay-registering`, `dashpay-registered` (contacts in every relation and channel state, pending requests both ways), `lock-report-omitted` (the lock cut more flows than its report lists, after pending ones: unresolved for good), `lock-report-omitted-settles` (omissions the report's order shows are settled: resolved once the listed artifacts settle and the running call ends), `lock-report-pending`, `lock-report-resolved`, or `error-<class>`: `funded` with `list_wallets` failing with a sample of that `ErrorData` class (`none`, `duffs`, `rpc`, `retryAfter`, …; `src/fixture/errors.ts`) |
 | `theme=light\|dark` | the launch theme |
 | `fail=<command>:<class>` | that command rejects with a sample of the class (repeatable), e.g. `fail=history_page:rpc` |
 | `delay=<ms>` | every command but `launch_info` answers after this long (loading states) |
 
-Unknown names throw, so a typo shows an error rather than the default scenario.
+Unknown scenario, class or command names throw, so a typo shows an error rather than the default.
 
 The renderer has no DashPay screen yet (the DP tasks add them), so the `dashpay-*` scenarios are checked
 at the command level for now (`src/fixture/fixture.test.ts`): every relation and channel state, requests in
