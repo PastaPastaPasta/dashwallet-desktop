@@ -26,7 +26,7 @@ use zeroize::Zeroizing;
 use crate::context::LazyTrustedContext;
 use crate::events::{SessionHub, SessionPump, WalletName, WalletState};
 use crate::fsutil::{create_owned_dir, create_owned_file};
-use crate::gate::{OpGate, OpGuard};
+use crate::gate::{OpGate, OpGuard, WalletLifecycle};
 use crate::platform::trust::{self, SharedContext, TrustProvider};
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NoticeCode};
 
@@ -179,7 +179,7 @@ pub struct NetworkSession {
     /// Admission of operations vs close (review M1).
     gate: OpGate,
     /// Wallet registrations and removals, one at a time (DEC-210 (3b)).
-    pub(crate) wallet_lifecycle: crate::gate::WalletLifecycle,
+    pub(crate) wallet_lifecycle: WalletLifecycle,
     live: RwLock<Option<Live>>,
     pump: Mutex<Option<PumpTask>>,
     /// Inputs of prepared, not yet settled transactions (E2 send).
@@ -430,7 +430,7 @@ impl NetworkSession {
             spv_peers,
             hub,
             gate: OpGate::default(),
-            wallet_lifecycle: Default::default(),
+            wallet_lifecycle: WalletLifecycle::default(),
             live: RwLock::new(Some(Live {
                 manager: Arc::clone(&manager),
                 persister,

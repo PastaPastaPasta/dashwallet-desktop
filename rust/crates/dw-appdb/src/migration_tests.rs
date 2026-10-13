@@ -945,30 +945,33 @@ fn an_open_with_no_other_instance_forgets_the_removed_wallets() {
     assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "n".into())]);
 }
 
-/// While another instance of the file is open in this process (a job a
-/// closed session left running holds one), an open keeps the removed
+/// While another instance of the file at `path` is open in this process (a
+/// job a closed session left running holds one), an open keeps the removed
 /// wallets recorded and a late write through the other instance is skipped.
-#[test]
-fn a_removal_is_kept_while_another_instance_is_open() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join(crate::APP_DB_FILE);
-    let old = AppDb::open(&path).unwrap();
+fn removal_is_kept_while_another_instance_is_open(path: &std::path::Path) {
+    let old = AppDb::open(path).unwrap();
     old.delete_wallet(W).unwrap();
 
-    let new = AppDb::open(&path).unwrap();
+    let new = AppDb::open(path).unwrap();
     assert_eq!(recorded(&new), [W]);
     old.set_wallet_name(W, "late", 1).unwrap();
     assert!(new.wallet_names().unwrap().is_empty());
     // Not the newer instance's lock alone: `old` keeps it recorded too.
     drop(new);
-    let newer = AppDb::open(&path).unwrap();
+    let newer = AppDb::open(path).unwrap();
     assert_eq!(recorded(&newer), [W]);
     drop((old, newer));
-    assert!(recorded(&AppDb::open(&path).unwrap()).is_empty());
+    assert!(recorded(&AppDb::open(path).unwrap()).is_empty());
 }
 
-/// [`a_removal_is_kept_while_another_instance_is_open`] at a path that is
-/// not UTF-8.
+#[test]
+fn a_removal_is_kept_while_another_instance_is_open() {
+    let dir = tempfile::tempdir().unwrap();
+    removal_is_kept_while_another_instance_is_open(&dir.path().join(crate::APP_DB_FILE));
+}
+
+/// [`removal_is_kept_while_another_instance_is_open`] at a path that is not
+/// UTF-8.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_removal_is_kept_at_a_path_that_is_not_utf8() {
@@ -978,15 +981,7 @@ fn a_removal_is_kept_at_a_path_that_is_not_utf8() {
     std::fs::create_dir(&net).unwrap();
     let path = net.join(crate::APP_DB_FILE);
     assert!(path.to_str().is_none());
-    let old = AppDb::open(&path).unwrap();
-    old.delete_wallet(W).unwrap();
-
-    let new = AppDb::open(&path).unwrap();
-    old.set_wallet_name(W, "late", 1).unwrap();
-    assert_eq!(recorded(&new), [W]);
-    assert!(new.wallet_names().unwrap().is_empty());
-    drop((old, new));
-    assert!(recorded(&AppDb::open(&path).unwrap()).is_empty());
+    removal_is_kept_while_another_instance_is_open(&path);
 }
 
 /// The lock is a file of its own next to the database, owner-only.
@@ -1036,7 +1031,7 @@ fn wait_for_line(out: &mut impl std::io::BufRead, line: &str) {
     }
 }
 
-/// [`a_removal_is_kept_while_another_instance_is_open`] with the other
+/// [`removal_is_kept_while_another_instance_is_open`] with the other
 /// instance in another process.
 #[test]
 fn a_removal_is_kept_while_another_process_has_the_file_open() {

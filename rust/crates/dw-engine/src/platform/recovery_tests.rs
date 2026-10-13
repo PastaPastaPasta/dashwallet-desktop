@@ -584,8 +584,6 @@ fn session_with(
     (engine, s)
 }
 
-/// The network of an engine opened again on `dir` (after a shutdown), its
-/// vault as left, its Platform `platform`.
 /// The network opened, offline.
 fn open_offline(engine: &Engine) -> Arc<NetworkSession> {
     engine
@@ -601,6 +599,8 @@ fn open_offline(engine: &Engine) -> Arc<NetworkSession> {
         .unwrap()
 }
 
+/// The network of an engine opened again on `dir` (after a shutdown), its
+/// vault as left, its Platform `platform`.
 fn reopen(dir: &std::path::Path, platform: Arc<Platform>) -> (Engine, Arc<NetworkSession>) {
     let engine = engine(dir);
     let s = open_offline(&engine);
@@ -2563,10 +2563,11 @@ fn a_removal_outlives_a_reopen_in_a_directory_that_is_not_utf8() {
     a_removal_outlives_a_reopen(&root);
 }
 
-/// Whether no instance of the app database at `path` is open.
-fn lock_is_free(path: &std::path::Path) -> bool {
+/// No instance of the app database at `path` is open.
+fn assert_nothing_left_open(path: &std::path::Path) {
     let lock = path.with_file_name(dw_appdb::APP_DB_LOCK_FILE);
-    std::fs::File::open(lock).unwrap().try_lock().is_ok()
+    let free = std::fs::File::open(lock).unwrap().try_lock().is_ok();
+    assert!(free, "an instance of this process is left");
 }
 
 /// A network closed and opened again with nothing of the closed session
@@ -2580,7 +2581,7 @@ fn a_clean_reopen_forgets_the_removed_wallets() {
     engine
         .block_on(engine.close_network(DashNetwork::Regtest))
         .unwrap();
-    assert!(lock_is_free(&path), "an instance of this process is left");
+    assert_nothing_left_open(&path);
 
     let s = open_offline(&engine);
     let (db, wallet) = (s.live().unwrap().appdb, id.to_string());
@@ -2601,7 +2602,7 @@ fn an_open_keeps_a_removal_by_another_process_with_the_database_open() {
     engine
         .block_on(engine.close_network(DashNetwork::Regtest))
         .unwrap();
-    assert!(lock_is_free(&path), "an instance of this process is left");
+    assert_nothing_left_open(&path);
     let wallet = "ee".repeat(32);
     let other = crate::held_writes::OtherProcess::start(&path, &wallet);
 
@@ -2734,14 +2735,13 @@ fn the_other_lifecycle_operations_wait_for_a_held_removal() {
 fn a_failed_watch_only_import_records_the_wallet_as_removed_again() {
     let (_dir, engine, s, id, _) = removable();
     let xpub = engine.block_on(s.account_xpub(id, 0)).unwrap().xpub;
-    let options = || crate::WatchOnlyOptions::default();
     let watch = engine
-        .block_on(s.import_watch_only(xpub.clone(), options()))
+        .block_on(s.import_watch_only(xpub.clone(), Default::default()))
         .unwrap();
     let wipe = grant(&engine, &s, watch, GrantPurpose::Wipe);
     engine.block_on(s.remove_wallet(watch, wipe)).unwrap();
     guard(&crate::keys::FAIL_REGISTRATION_IN).push(s.data_dir().to_path_buf());
-    let failed = engine.block_on(s.import_watch_only(xpub, options()));
+    let failed = engine.block_on(s.import_watch_only(xpub, Default::default()));
     assert!(failed.is_err(), "{failed:?}");
     let (db, wallet) = (s.live().unwrap().appdb, watch.to_string());
     db.set_main_identity(&wallet, &base58(ALICE)).unwrap();

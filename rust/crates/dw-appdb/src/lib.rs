@@ -14,7 +14,7 @@
 //! mutex. Async callers run them off their executor (`spawn_blocking`).
 
 use std::ffi::OsString;
-use std::fs::{File, TryLockError};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -68,7 +68,10 @@ fn open_lock_file(path: &Path) -> Result<File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
     options.open(path).map_err(|e| lock_error(path, e))
 }
 
@@ -246,17 +249,14 @@ impl AppDb {
         let sole = open_lock_file(&lock_path)?;
         let alone = match sole.try_lock() {
             Ok(()) => true,
-            Err(TryLockError::WouldBlock) => false,
-            Err(TryLockError::Error(e)) => {
-                tracing::debug!(error = %e, "app database lock file: not locked exclusively");
+            Err(e) => {
+                tracing::debug!(error = %e, "app database open elsewhere: the removed wallets stay recorded");
                 false
             }
         };
         let mut db = Self::init(Connection::open(path)?)?;
         if alone {
             db.conn().execute("DELETE FROM removed_wallets", [])?;
-        } else {
-            tracing::debug!("app database open elsewhere: the removed wallets stay recorded");
         }
         // Released before the shared lock is taken, on a handle of its own:
         // a shared lock of a second handle would wait for this one (on
