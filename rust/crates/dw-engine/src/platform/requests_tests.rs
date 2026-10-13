@@ -1900,6 +1900,28 @@ mod accept_vectors {
                 vec![lock(), authorize(q), unlock(), accept("incoming", json!(1))],
             ),
             case(
+                "an unlock moves a lease begun while locked to needing a grant",
+                vec![
+                    lock(),
+                    authorize(q),
+                    begin("accept", &[1]),
+                    unlock(),
+                    accept("incoming", json!(2)),
+                    json!({ "leases": null }),
+                ],
+            ),
+            case(
+                "a lock revokes a lease that holds its own key, which keeps the flag",
+                vec![
+                    lock(),
+                    authorize(q),
+                    begin("accept", &[1]),
+                    lock(),
+                    json!({ "leases": null }),
+                    accept("incoming", json!(2)),
+                ],
+            ),
+            case(
                 "a lock revokes a lease",
                 vec![
                     authorize(q),

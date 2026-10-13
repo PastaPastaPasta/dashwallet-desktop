@@ -1336,6 +1336,165 @@
       ]
     },
     {
+      "name": "an unlock moves a lease begun while locked to needing a grant",
+      "steps": [
+        {
+          "lock": null
+        },
+        {
+          "authorize": {
+            "purpose": "platformOp",
+            "maxCredits": "150000000",
+            "wallet": "own"
+          }
+        },
+        {
+          "beginFlow": {
+            "flow": "accept",
+            "grants": [
+              1
+            ]
+          }
+        },
+        {
+          "unlock": null
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": 2
+          }
+        },
+        {
+          "leases": null
+        }
+      ],
+      "results": [
+        {
+          "ok": null
+        },
+        {
+          "ok": "grant"
+        },
+        {
+          "ok": "lease"
+        },
+        {
+          "ok": null
+        },
+        {
+          "error": {
+            "code": "platform.needs_grant",
+            "data": {
+              "kind": "needsGrant",
+              "purpose": "credits"
+            }
+          }
+        },
+        {
+          "ok": [
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "needsGrant"
+              },
+              "ownKey": true,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "0"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a lock revokes a lease that holds its own key, which keeps the flag",
+      "steps": [
+        {
+          "lock": null
+        },
+        {
+          "authorize": {
+            "purpose": "platformOp",
+            "maxCredits": "150000000",
+            "wallet": "own"
+          }
+        },
+        {
+          "beginFlow": {
+            "flow": "accept",
+            "grants": [
+              1
+            ]
+          }
+        },
+        {
+          "lock": null
+        },
+        {
+          "leases": null
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": 2
+          }
+        }
+      ],
+      "results": [
+        {
+          "ok": null
+        },
+        {
+          "ok": "grant"
+        },
+        {
+          "ok": "lease"
+        },
+        {
+          "ok": null
+        },
+        {
+          "ok": [
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "revoked",
+                "cause": "lock"
+              },
+              "ownKey": true,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "0"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            }
+          ]
+        },
+        {
+          "error": {
+            "code": "platform.lease_revoked",
+            "data": {
+              "kind": "revoked",
+              "cause": "lock"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "a lock revokes a lease",
       "steps": [
         {

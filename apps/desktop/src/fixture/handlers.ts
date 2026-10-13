@@ -5,10 +5,12 @@
 // A command without a handler rejects with `platform.not_implemented` (installFixture).
 //
 // Grants and leases follow dw-vault and the engine's lease table as the accept vector records
-// them (vectors/accept.json, from dw-engine's `accept_grant_vectors`): a lock or an unlock
-// revokes every vault grant; a passphrase or quick-unlock grant issued while locked carries its
-// own key, so it redeems while locked; a vault-grant write runs under a one-shot lease that
-// `leases` lists, ended. Not modelled: grant expiry and lease idle reaping (the clock is
+// them (vectors/accept.json, from dw-engine's `accept_grant_vectors`): a lock, and an unlock
+// that installs the data key (from locked or mixing-only), revoke every vault grant; a
+// passphrase or quick-unlock grant issued while locked carries its own key, so it redeems while
+// locked; a lock revokes every live lease (each keeps its `ownKey` flag); an unlock that
+// installs the key ends the vault's epoch, so every live lease needs a grant again, its key
+// dropped; a vault-grant write runs under a one-shot lease that `leases` lists, ended. Not modelled: grant expiry and lease idle reaping (the clock is
 // FIXTURE_NOW), quick unlock's spending limit and passphrase age, "authenticate every payment"
 // (`vault.credential_required`), held identity keys (`identity.keys_missing`), and the lock
 // report, which is the scenario's (`World.cut`), not derived from the leases.
@@ -82,6 +84,9 @@ const KEY_TTL_SECS = 240;
 const grantInvalid = () => fail("platform.grant_invalid", "grant invalid");
 const grantExceeded = (needed: bigint, remaining: bigint) =>
   fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: String(needed), remaining: String(remaining) });
+
+/** Not ended or revoked: a lock revokes it, an epoch change makes it need a grant. */
+const live = (l: Lease) => l.state.kind !== "ended" && l.state.kind !== "revoked";
 
 /** No data key in memory: dw-vault's `Locked`, `MixingOnly` or `NoVault`. */
 const keyless = (w: World) => w.lock.state === "locked" || w.lock.state === "unlockedMixingOnly" || w.lock.state === "noVault";
@@ -242,6 +247,7 @@ function writeLease(ctx: Ctx, walletId: string, grant: string, flows: FlowKindNa
   if (quote > remaining) throw grantExceeded(quote, remaining);
   if (lease.state.kind === "ended") throw fail("platform.lease_expired", "lease expired");
   if (lease.state.kind === "revoked") throw fail("platform.lease_revoked", "lease revoked", { kind: "revoked", cause: lease.state.cause });
+  if (lease.state.kind === "needsGrant") throw fail("platform.needs_grant", "needs a grant", { kind: "needsGrant", purpose: "credits" });
   return () => void leasedCall(ctx, lease, quote);
 }
 
@@ -268,8 +274,13 @@ export const HANDLERS: Handlers = {
         retryAfterSecs: null,
       });
     }
-    // Installing the data key ends every grant (dw-vault `install_key`).
-    if (world.lock.state !== "unlocked") revokeGrants(world);
+    // Installing the data key ends the epoch (dw-vault `install_key`): every grant goes, and
+    // every live lease needs a grant again, its key dropped (the lease table's `epoch_changed`).
+    if (world.lock.state !== "unlocked") {
+      revokeGrants(world);
+      for (const lease of world.leases.filter((l) => live(l) && l.state.kind !== "needsGrant"))
+        setLease(ctx, { ...lease, state: { kind: "needsGrant" }, keyExpiresInSecs: null });
+    }
     world.lock = { ...world.lock, failedAttempts: 0 };
     setLock(ctx, "unlocked");
     return world.lock;
@@ -277,9 +288,9 @@ export const HANDLERS: Handlers = {
   lock: (_, ctx) => {
     const { world, emit } = ctx;
     const network = world.launch.network.dirName;
-    // Revoke every live lease (the engine's lock barrier), then report what the cut did.
-    world.leases = world.leases.map((l) => (l.state.kind === "ended" ? l : { ...l, state: { kind: "revoked", cause: "lock" }, ownKey: false, keyExpiresInSecs: null }));
-    for (const lease of world.leases) emit({ kind: "leaseChanged", network, lease });
+    // Revoke every live lease (the engine's lock barrier: its key goes, its `ownKey` flag
+    // stays), then report what the cut did.
+    for (const lease of world.leases.filter(live)) setLease(ctx, { ...lease, state: { kind: "revoked", cause: "lock" }, keyExpiresInSecs: null });
     revokeGrants(world);
     setLock(ctx, "locked");
     const inFlight = world.leases.reduce((n, l) => n + l.inFlight, 0);

@@ -631,7 +631,9 @@ mod tests {
         for v in [
             view(LeaseStateView::Ended, true, quote),
             view(LeaseStateView::Active, false, 0),
+            view(LeaseStateView::NeedsGrant, true, 0),
             view(revoked, false, 0),
+            view(revoked, true, 0),
         ] {
             let mut lease = serde_json::to_value(crate::dto::platform::Lease::from(v)).unwrap();
             for k in ["id", "walletId", "keyExpiresInSecs"] {
