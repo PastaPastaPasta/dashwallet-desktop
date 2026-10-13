@@ -3,12 +3,16 @@
 #
 #   gh workflow run tauri-selftest.yml --ref <branch> -f os=both
 #
-# Per OS: `pnpm tauri build --no-bundle` (release binary), then
-#   1. `dash-wallet <selftest_args> --selftest selftest-<os>.json`: the app renders the four screens in
+# Per OS: `pnpm tauri build --no-bundle` (release binary) and dwcli, then
+#   1. `dash-wallet <app args> --selftest selftest-<os>.json`: the app renders the four screens in
 #      light and dark, writes the data-testid boxes, style checks, IPC timings and security probes,
 #      and exits (apps/desktop/README.md);
-#   2. `dash-wallet --fixture --theme <theme>` launched again, with a screenshot.
-# Both land in the artifact tauri-<os>. The ref must contain the Tauri app (G-01 or later).
+#   2. `dash-wallet <app args> --theme <theme>` launched again, with a screenshot.
+# <app args> default to a fresh regtest data root where dwcli made an encrypted vault and a wallet,
+# so the app opens on the real engine, locked (U-07 removed the in-app `--fixture` wallet; the
+# fixture backend runs in the browser only). The wallet has no history, so style checks whose
+# element is missing do not fail the run; every check whose element is there must pass. Both land in the artifact tauri-<os>. The ref must
+# contain the Tauri app (G-01 or later).
 name: Tauri selftest
 
 on:
@@ -20,9 +24,9 @@ on:
         options: [both, macos, windows]
         default: both
       selftest_args:
-        description: Arguments before --selftest (default the TypeScript fixture wallet)
+        description: App arguments (default a fresh regtest wallet made by dwcli)
         type: string
-        default: --fixture
+        default: ""
       theme:
         description: Theme of the screenshot launch
         type: choice
@@ -101,6 +105,20 @@ jobs:
           pnpm tauri build --no-bundle
           exe=dash-wallet; [[ "$MATRIX_OS" != windows ]] || exe=dash-wallet.exe
           echo "APP=$GITHUB_WORKSPACE/rust/target/release/$exe" >> "$GITHUB_ENV"
+      # APP_ARGS: the input, or a fresh regtest data root with an encrypted vault and a wallet.
+      - name: App arguments (dwcli and a regtest wallet unless given)
+        working-directory: rust
+        run: |
+          if [[ -n "$SELFTEST_ARGS" ]]; then echo "APP_ARGS=$SELFTEST_ARGS" >> "$GITHUB_ENV"; exit 0; fi
+          cargo build --release -p dwcli --locked
+          data="$RUNNER_TEMP/dw-data"
+          # Regtest needs a DAPI address; with --no-platform nothing connects to it.
+          chain=(--network regtest --no-platform --dapi https://127.0.0.1:1)
+          printf '%s\n' "selftest $GITHUB_RUN_ID" > "$RUNNER_TEMP/passphrase"
+          for cmd in init-vault create; do
+            target/release/dwcli --datadir "$data" "${chain[@]}" --passphrase-file "$RUNNER_TEMP/passphrase" "$cmd"
+          done
+          echo "APP_ARGS=--datadir $data ${chain[*]}" >> "$GITHUB_ENV"
       - name: WebView2 runtime (Windows)
         if: ${{ matrix.os == 'windows' }}
         shell: pwsh
@@ -110,7 +128,7 @@ jobs:
           if ($pv) { Write-Host "WebView2 runtime $pv" } else { Write-Host "::warning::no WebView2 runtime registered; the app may not start" }
       - name: --selftest
         run: |
-          read -ra args <<<"$SELFTEST_ARGS"
+          read -ra args <<<"$APP_ARGS"
           report="$OUT/selftest-$MATRIX_OS.json"
           # macOS runners have no coreutils `timeout`; perl's alarm survives the exec.
           run_limited() { if command -v timeout >/dev/null; then timeout 600 "$@"; else perl -e 'alarm shift; exec @ARGV' 600 "$@"; fi; }
@@ -119,24 +137,32 @@ jobs:
             || { tail -n 40 "$OUT/selftest.log"; echo "::error::--selftest failed or timed out"; exit 1; }
           [[ -s "$report" ]] || { echo "::error::--selftest wrote no report"; exit 1; }
           # The app exits 0 whatever it found: judge the report (apps/desktop/src/app/selftest.ts).
+          # A new wallet has no history, so the checks of history rows and the hero breakdown find no
+          # element ("missing"): they are counted apart. Every element that is there must pass; the
+          # populated screens are checked by Playwright on the fixture backend (ci.yml, ui-playwright).
           jq -r --arg os "$MATRIX_OS" --arg took "$(( $(date +%s) - start ))" '
+            [.screens[] | .checks[] | select(.pass == false)] as $failed |
             "### Tauri --selftest on \($os) (\($took) s)",
-            "- checks: \(.checksTotal) total, \(.checksFailed) failed, \(.checksNotApplicable) not applicable",
+            "- checks: \(.checksTotal) total, \($failed | map(select(.actual != "missing")) | length) failed, \($failed | map(select(.actual == "missing")) | length) without their element, \(.checksNotApplicable) not applicable",
             "- first paint: \(.firstPaintMs // "n/a") ms; shell paint: \(.shellPaintMs // "n/a") ms",
             (.security // {} | to_entries[] | "- security \(.key): \(.value)")' "$report" | tee -a "$GITHUB_STEP_SUMMARY"
           # The final report only: a checkpoint (final false) lacks the navigation probe.
-          jq -e '.final != false and .security.navigation != null and .checksFailed == 0
+          jq -e '.final != false and .security.navigation != null
+                 and ([.screens[] | .checks[] | select(.pass == false and .actual != "missing")] | length == 0)
                  and ([.security | .[] | select(startswith("NOT REFUSED"))] | length == 0)' \
             "$report" >/dev/null || { echo "::error::--selftest reported failed checks or an unrefused security probe"; exit 1; }
-      - name: Launch (fixture, ${{ inputs.theme }}) and take a screenshot (macOS)
+      - name: Launch (${{ inputs.theme }}) and take a screenshot (macOS)
         if: ${{ matrix.os == 'macos' }}
-        run: ci/github/macos-launch-screenshot.sh "tauri-macos-$THEME" "$OUT" 30 "$APP" --fixture --theme "$THEME"
-      - name: Launch (fixture, ${{ inputs.theme }}) and take a screenshot (Windows)
+        run: |
+          read -ra args <<<"$APP_ARGS"
+          ci/github/macos-launch-screenshot.sh "tauri-macos-$THEME" "$OUT" 30 "$APP" ${args[@]+"${args[@]}"} --theme "$THEME"
+      - name: Launch (${{ inputs.theme }}) and take a screenshot (Windows)
         if: ${{ matrix.os == 'windows' }}
         shell: pwsh
         run: |
+          $appArgs = @(-split $env:APP_ARGS) + @('--theme', $env:THEME)
           ci/github/windows-launch-screenshot.ps1 -Name "tauri-windows-$env:THEME" -OutDir $env:OUT -Seconds 30 `
-            -Exe $env:APP -ArgumentList '--fixture', '--theme', $env:THEME
+            -Exe $env:APP -ArgumentList $appArgs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
