@@ -5,7 +5,7 @@
 // marker is found as well.
 //
 // Derived from the fixture modules (every source file in `src/fixture/` of an EXTENSIONS type,
-// tests excluded) on every build, so a new fixture string is covered without a list to keep:
+// the `*.test.ts` vitest runs excluded) on every build, so a new fixture string is covered without a list to keep:
 // - string literals and template parts of at least MIN_LENGTH printable ASCII characters (no
 //   backslash, no `</`, which minifiers escape) that are not plain words: one that is only
 //   letters, digits and `_$.-` once surrounding spaces and punctuation are trimmed is a sentinel
@@ -17,14 +17,17 @@
 //   the fixture returns). Computed from those files, not kept by hand: they are exactly what
 //   dw-app's codegen writes (`codegen::tests::bindings_are_current` refuses an extra or edited
 //   file), so a fixture copy anywhere else exempts nothing;
-// - minus GENERIC, fixture literals any dependency could hold (2^32, a PRNG constant, the base58
-//   alphabet). Each entry gives its reason, and src/fixture/sentinels.test.ts admits only those
-//   shapes: never a literal of the fixture's own data.
+// - minus GENERIC, fixture literals a production dependency holds too. Empty: an entry needs its
+//   reason, a generic shape (a power of two, a published PRNG constant, an alphabet;
+//   src/fixture/sentinels.test.ts) and a real collision, since check-bundle fails a production
+//   build that does not hold it.
 //
 // Every fixture module must contribute a sentinel (or be in NO_SENTINEL with a reason), and a file
-// in `src/fixture/` of any other type fails, so no fixture code goes unchecked. A module moved out
+// in `src/fixture/` of any other type fails, so no fixture module goes unread. A module moved out
 // of `src/fixture/` (rather than copied) takes its literals along: src/fixture/fixture.test.ts pins
-// the list of fixture files, so a move fails there.
+// the list of fixture files, so a move fails there. The check works per literal, not per function:
+// a copy whose bundled part holds none of them (an import of one function, the rest tree-shaken)
+// is not found.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join, relative, sep } from "node:path";
 import { parseSync, transformWithOxc, Visitor } from "vite";
@@ -54,14 +57,11 @@ export const TEST_DATA = { "vectors/accept.json": "accept_grant_vectors for acce
 /** Fixture modules with no sentinel of their own, and why that is safe. */
 export const NO_SENTINEL = {};
 
-/** Fixture literals too generic to be sentinels: a dependency could hold them too. */
-export const GENERIC = [
-  { literal: "#4294967296", reason: "2^32, the uint32 range" },
-  { literal: "#1831565813", reason: "0x6D2B79F5, the mulberry32 PRNG increment" },
-  { literal: "#12345678", reason: "the digits 1 to 8, a placeholder number" },
-  { literal: "#9999999", reason: "a repdigit, a placeholder number" },
-  { literal: "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz", reason: "the base58 alphabet" },
-];
+/** Fixture literals a production dependency holds too, each with its reason: `{ literal, reason }`. */
+export const GENERIC = [];
+
+/** Files no tool reads: Finder's folder data and editor swap and backup files. */
+export const IGNORED = /(^|\/)\.DS_Store$|\.sw[op]$|~$/;
 
 function* walk(dir) {
   for (const name of readdirSync(dir).sort()) {
@@ -71,7 +71,8 @@ function* walk(dir) {
   }
 }
 
-const isTest = (path) => /\.test\.[cm]?[jt]sx?$/.test(path) || /\.d\.[cm]?ts$/.test(path);
+// Exactly what vitest runs (vite.config.ts `test.include`) and TypeScript's declarations.
+const isTest = (path) => /\.test\.ts$/.test(path) || /\.d\.ts$/.test(path);
 
 /** The fixture modules: every source file under `<app>/src/fixture`, tests excluded. A file of any
  * other type fails unless it is TEST_DATA. */
@@ -79,7 +80,7 @@ export function* fixtureModules(app) {
   const dir = join(app, "src", "fixture");
   for (const path of walk(dir)) {
     const name = relative(dir, path).split(sep).join("/");
-    if (isTest(path) || name in TEST_DATA) continue;
+    if (isTest(path) || name in TEST_DATA || IGNORED.test(name)) continue;
     if (!(extname(path) in EXTENSIONS)) throw new Error(`src/fixture/${name}: not a module type the sentinels read (${Object.keys(EXTENSIONS).join(" ")})`);
     yield path;
   }
@@ -102,12 +103,16 @@ export async function literalsOf(path) {
     ImportExpression: specifier,
     ExportNamedDeclaration: specifier,
     ExportAllDeclaration: specifier,
+    CallExpression(node) {
+      if (node.callee.type === "Identifier" && node.callee.name === "require" && node.arguments[0]) specifiers.add(node.arguments[0].start);
+    },
     Literal(node) {
       if (specifiers.has(node.start)) return;
       if (typeof node.value === "string") out.add(node.value);
       else if (Number.isSafeInteger(node.value)) out.add(`#${node.value}`);
     },
     TemplateLiteral(node) {
+      if (specifiers.has(node.start)) return;
       for (const quasi of node.quasis) if (quasi.value.cooked) out.add(quasi.value.cooked);
     },
   }).visit(program);
@@ -124,7 +129,7 @@ export function distinctive(literal) {
 /** The literals of the generated bindings (GENERATED). */
 export async function generatedLiterals(app) {
   const out = new Set();
-  for (const path of walk(join(app, GENERATED))) for (const literal of await literalsOf(path)) out.add(literal);
+  for (const path of walk(join(app, GENERATED))) if (extname(path) in EXTENSIONS) for (const literal of await literalsOf(path)) out.add(literal);
   return out;
 }
 

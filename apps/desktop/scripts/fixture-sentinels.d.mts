@@ -5,6 +5,7 @@ export declare const GENERATED: string;
 export declare const TEST_DATA: Record<string, string>;
 export declare const NO_SENTINEL: Record<string, string>;
 export declare const GENERIC: { literal: string; reason: string }[];
+export declare const IGNORED: RegExp;
 export declare function fixtureModules(app: string): Generator<string>;
 export declare function literalsOf(path: string): Promise<Set<string>>;
 export declare function distinctive(literal: string): boolean;

@@ -12,12 +12,13 @@
 // so fixture code moved out of `src/fixture/` without its marker is still found
 // (scripts/guard-negative-control.sh). Strings and long integers survive minification, so a
 // fixture build that loses any of them fails its own check here. What this proves is that none of
-// these strings is in the bundle, not that no line of fixture code is: code with none of them
-// (a helper with no distinctive literal) is not detected.
+// these strings is in the bundle, not that no line of fixture code is: it works per literal, not
+// per function, so code whose bundled part holds none of them (one function of a copy imported by
+// name, the rest tree-shaken away) is not detected.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fixtureSentinels, holds } from "./fixture-sentinels.mjs";
+import { fixtureSentinels, GENERIC, holds } from "./fixture-sentinels.mjs";
 
 const MARKERS = {
   "fixture sentinel": "dw-fixture-backend:U-07",
@@ -34,13 +35,14 @@ function* files(d) {
   for (const name of readdirSync(d)) {
     const p = join(d, name);
     if (statSync(p).isDirectory()) yield* files(p);
-    else if (/\.(js|mjs|html|css|map)$/.test(name)) yield p;
+    else yield p;
   }
 }
 
+// Every file: a module imported with `?url` or `?raw` is emitted as its own asset, of any type.
 const texts = [...files(dir)].map((f) => [relative(dir, f), readFileSync(f, "utf8")]);
 if (texts.length === 0) {
-  console.error(`check-bundle: no JS, HTML or CSS files in ${dir}`);
+  console.error(`check-bundle: no files in ${dir}`);
   process.exit(1);
 }
 const where = (has) => texts.filter(([, text]) => has(text)).map(([name]) => name);
@@ -71,6 +73,13 @@ if (mode === "--production" && present.length > 0) {
   console.error(`check-bundle: ${dir} is a production renderer but contains ${present.length} fixture sentinel(s), literals of the fixture sources:`);
   for (const line of present) console.error(`  ${line}`);
   console.error("  (a dependency's own number or alphabet: review it, then add it to GENERIC in scripts/fixture-sentinels.mjs with its reason)");
+  ok = false;
+}
+// A GENERIC entry exempts a literal only while a production dependency really holds it.
+const stale = GENERIC.filter(({ literal }) => where((text) => holds(text, literal)).length === 0);
+if (mode === "--production" && stale.length > 0) {
+  console.error(`check-bundle: ${dir} holds none of these GENERIC entries, so they exempt nothing but fixture literals: remove them`);
+  for (const { literal } of stale) console.error(`  ${shown(literal)}`);
   ok = false;
 }
 if (mode === "--fixture" && absent.length > 0) {

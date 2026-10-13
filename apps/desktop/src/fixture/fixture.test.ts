@@ -11,7 +11,7 @@ import type { HistoryRequest } from "../api/generated/HistoryRequest";
 import type { UserRelation } from "../api/generated/UserRelation";
 import type { ChannelStateName } from "../api/generated/ChannelStateName";
 import { IpcBackend } from "../api/tauri";
-import { fixtureSentinels } from "../../scripts/fixture-sentinels.mjs";
+import { fixtureSentinels, IGNORED } from "../../scripts/fixture-sentinels.mjs";
 import { ERROR_CLASSES } from "./errors";
 import { IDENTITY } from "./dashpay";
 import { fixtureOptionsFromUrl, FIXTURE_SENTINEL, installFixture, type FixtureOptions } from "./index";
@@ -39,7 +39,10 @@ describe("fixture backend", () => {
   // each module must give the check at least one sentinel of its own.
   it("every fixture module carries the production-build marker and has sentinels", async () => {
     const dir = fileURLToPath(new URL(".", import.meta.url));
-    const files = (readdirSync(dir, { recursive: true }) as string[]).filter((f) => statSync(join(dir, f)).isFile()).map((f) => f.split(sep).join("/"));
+    const files = (readdirSync(dir, { recursive: true }) as string[])
+      .filter((f) => statSync(join(dir, f)).isFile())
+      .map((f) => f.split(sep).join("/"))
+      .filter((f) => !IGNORED.test(f));
     expect(files.sort()).toEqual([
       "accept.test.ts",
       "dashpay.ts",
@@ -54,7 +57,8 @@ describe("fixture backend", () => {
       "vectors/history.json",
       "wallet.ts",
     ]);
-    const modules = files.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && !/\.test\.[cm]?[jt]sx?$/.test(f));
+    // Only `*.test.ts` is a test (vite.config.ts `test.include`): a `*.test.mts` is a module.
+    const modules = files.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && !f.endsWith(".test.ts"));
     expect(modules).toEqual(["dashpay.ts", "errors.ts", "handlers.ts", "index.ts", "scenarios.ts", "wallet.ts"]);
     const { byModule } = await fixtureSentinels(fileURLToPath(new URL("../..", import.meta.url)));
     for (const f of modules) {
@@ -62,7 +66,7 @@ describe("fixture backend", () => {
       expect(byModule.get(`src/fixture/${f}`)?.length ?? 0, f).toBeGreaterThan(0);
     }
     // The vectors are test data: no module imports them, so no fixture copy can carry them.
-    for (const f of modules) expect(readFileSync(join(dir, f), "utf8"), f).not.toMatch(/import[^;]*vectors\//);
+    for (const f of modules) expect(readFileSync(join(dir, f), "utf8"), f).not.toMatch(/(import|export|require)[^;]*vectors\//);
   });
 
   it("is deterministic and newest first", async () => {
