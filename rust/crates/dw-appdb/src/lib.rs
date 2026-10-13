@@ -51,6 +51,26 @@ pub fn local_scope(wallet_id: &str) -> String {
     format!("local:{wallet_id}")
 }
 
+/// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
+/// with an insert trigger that skips rows of a removed wallet (migration
+/// `V2026101302`, DEC-210). Settings are cleared by scope.
+pub(crate) const WALLET_TABLES: [&str; 14] = [
+    "wallets",
+    "address_book",
+    "labels",
+    "tx_meta",
+    "receive_requests",
+    "utxo_locks",
+    "dp_main_identity",
+    "dp_registration",
+    "dp_contest_watch",
+    "dp_events",
+    "dp_payment_lock",
+    "dp_trust_unverified",
+    "dp_prefs",
+    "dp_contact_info",
+];
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppDbError {
     #[error("sqlite: {0}")]
@@ -60,6 +80,9 @@ pub enum AppDbError {
     /// A value read from the database is outside its schema domain.
     #[error("corrupt row: {0}")]
     Corrupt(String),
+    /// The wallet was removed in this run: the row was not written.
+    #[error("wallet {0} was removed")]
+    WalletRemoved(String),
 }
 
 pub type Result<T> = std::result::Result<T, AppDbError>;
@@ -186,6 +209,9 @@ impl AppDb {
             .set_abort_divergent(true)
             .set_abort_missing(true)
             .run(&mut conn)?;
+        // A write of a removed wallet cannot outlive the run that removed
+        // it, so each open starts with no wallet recorded as removed.
+        conn.execute("DELETE FROM removed_wallets", [])?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -241,26 +267,18 @@ impl AppDb {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Deletes every row that belongs to `wallet_id` (wallet removal).
+    /// Deletes every row that belongs to `wallet_id` (wallet removal) and
+    /// records the wallet as removed: until [`Self::readmit_wallet`] or the
+    /// next open, inserts of its rows are skipped (DEC-210), so a write
+    /// still under way when the wallet was removed leaves nothing behind.
     pub fn delete_wallet(&self, wallet_id: &str) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        for table in [
-            "wallets",
-            "address_book",
-            "labels",
-            "tx_meta",
-            "receive_requests",
-            "utxo_locks",
-            "dp_main_identity",
-            "dp_registration",
-            "dp_contest_watch",
-            "dp_events",
-            "dp_payment_lock",
-            "dp_trust_unverified",
-            "dp_prefs",
-            "dp_contact_info",
-        ] {
+        tx.execute(
+            "INSERT OR IGNORE INTO removed_wallets (wallet_id) VALUES (?1)",
+            [wallet_id],
+        )?;
+        for table in WALLET_TABLES {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE wallet_id = ?1"),
                 [wallet_id],
@@ -271,6 +289,17 @@ impl AppDb {
             params![wallet_id, local_scope(wallet_id)],
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Lets rows of `wallet_id` be written again after
+    /// [`Self::delete_wallet`]: an import of the wallet calls it before its
+    /// first write.
+    pub fn readmit_wallet(&self, wallet_id: &str) -> Result<()> {
+        self.conn().execute(
+            "DELETE FROM removed_wallets WHERE wallet_id = ?1",
+            [wallet_id],
+        )?;
         Ok(())
     }
 
@@ -483,7 +512,8 @@ impl AppDb {
 
     // ---- receive requests ----
 
-    /// Stores a request and returns its id.
+    /// Stores a request and returns its id (`WalletRemoved` once the wallet
+    /// was removed, DEC-210).
     pub fn add_receive_request(
         &self,
         wallet_id: &str,
@@ -509,6 +539,9 @@ impl AppDb {
                 message
             ],
         )?;
+        if conn.changes() == 0 {
+            return Err(AppDbError::WalletRemoved(wallet_id.to_owned()));
+        }
         Ok(conn.last_insert_rowid())
     }
 
@@ -953,7 +986,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026101301);
+        assert_eq!(db.schema_version().unwrap(), 2026101302);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();

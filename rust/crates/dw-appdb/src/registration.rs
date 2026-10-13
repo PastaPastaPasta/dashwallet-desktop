@@ -164,7 +164,8 @@ fn is_lock_conflict(e: &rusqlite::Error) -> bool {
 }
 
 impl AppDb {
-    /// Inserts a flow and returns its id.
+    /// Inserts a flow and returns its id (`WalletRemoved` once the wallet was
+    /// removed, DEC-210).
     pub fn insert_registration(
         &self,
         wallet_id: &str,
@@ -189,6 +190,9 @@ impl AppDb {
                 now as i64,
             ],
         )?;
+        if conn.changes() == 0 {
+            return Err(AppDbError::WalletRemoved(wallet_id.to_owned()));
+        }
         Ok(conn.last_insert_rowid())
     }
 

@@ -2296,21 +2296,33 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
     drop(engine);
 
     // app.sqlite as a build from before E0-10b left it: without the later
-    // migrations too (DP1-02's registration columns, DP2-04's digests),
-    // which such a build never had, or the runner refuses the gap below
-    // them.
-    rusqlite::Connection::open(&appdb)
+    // migrations too (DP1-02's registration columns, DP2-04's digests and
+    // removed wallets with their triggers), which such a build never had,
+    // or the runner refuses the gap below them.
+    let conn = rusqlite::Connection::open(&appdb).unwrap();
+    let triggers: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'")
         .unwrap()
-        .execute_batch(
-            "ALTER TABLE dp_trust_verified DROP COLUMN digest;
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(triggers.len(), 15, "{triggers:?}");
+    for trigger in triggers {
+        conn.execute(&format!("DROP TRIGGER \"{trigger}\""), [])
+            .unwrap();
+    }
+    conn.execute_batch(
+        "DROP TABLE removed_wallets;
+             ALTER TABLE dp_trust_verified DROP COLUMN digest;
              ALTER TABLE dp_registration DROP COLUMN owner;
              ALTER TABLE dp_registration DROP COLUMN name_error;
              ALTER TABLE dp_registration DROP COLUMN profile_error;
              DROP TABLE dp_contact_info;
              DELETE FROM refinery_schema_history WHERE version >= 2026101101;
              DELETE FROM settings_kv WHERE key = 'trust.fallback_used_at';",
-        )
-        .unwrap();
+    )
+    .unwrap();
 
     let (engine, s) = reopen(dir.path(), Arc::new(Platform::default()));
     wait_until("the wallet's identity", || !unverified(&s).is_empty());

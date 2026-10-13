@@ -13,6 +13,7 @@ const TRUST_DIGEST: i64 = 2026101101;
 const OWNER: i64 = 2026101201;
 const OUTCOMES: i64 = 2026101202;
 const CONTACT_INFO: i64 = 2026101301;
+const REMOVED_WALLETS: i64 = 2026101302;
 
 const DP_TABLES: [&str; 10] = [
     "dp_avatar",
@@ -74,7 +75,7 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), CONTACT_INFO);
+    assert_eq!(db.schema_version().unwrap(), REMOVED_WALLETS);
     drop(db);
 
     let conn = Connection::open(&path).unwrap();
@@ -87,7 +88,8 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
             TRUST_DIGEST,
             OWNER,
             OUTCOMES,
-            CONTACT_INFO
+            CONTACT_INFO,
+            REMOVED_WALLETS
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -129,7 +131,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     }
 
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), CONTACT_INFO);
+    assert_eq!(db.schema_version().unwrap(), REMOVED_WALLETS);
     assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "Main".into())]);
     assert_eq!(
         db.label(W, crate::LabelKind::Tx, "t").unwrap().as_deref(),
@@ -151,7 +153,8 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
             TRUST_DIGEST,
             OWNER,
             OUTCOMES,
-            CONTACT_INFO
+            CONTACT_INFO,
+            REMOVED_WALLETS
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -169,7 +172,7 @@ fn reopening_and_rerunning_change_nothing() {
     }
     for _ in 0..3 {
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), CONTACT_INFO);
+        assert_eq!(db.schema_version().unwrap(), REMOVED_WALLETS);
         db.conn()
             .execute(
                 "INSERT OR IGNORE INTO dp_main_identity (wallet_id, identity) VALUES (?1, 'id1')",
@@ -195,7 +198,8 @@ fn reopening_and_rerunning_change_nothing() {
             TRUST_DIGEST,
             OWNER,
             OUTCOMES,
-            CONTACT_INFO
+            CONTACT_INFO,
+            REMOVED_WALLETS
         ]
     );
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_main_identity"), 1);
@@ -237,6 +241,11 @@ fn shipped_migrations_are_unchanged() {
                 "contact_info".to_string(),
                 CHECKSUM_CONTACT_INFO
             ),
+            (
+                REMOVED_WALLETS,
+                "removed_wallets".to_string(),
+                CHECKSUM_REMOVED_WALLETS
+            ),
         ]
     );
 }
@@ -248,6 +257,7 @@ const CHECKSUM_TRUST_DIGEST: u64 = 5295667777470269757;
 const CHECKSUM_OWNER: u64 = 12040521178707991804;
 const CHECKSUM_OUTCOMES: u64 = 9183630881616259306;
 const CHECKSUM_CONTACT_INFO: u64 = 6330962680869650951;
+const CHECKSUM_REMOVED_WALLETS: u64 = 13066344246219675486;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -698,7 +708,7 @@ fn verification_records_without_a_digest_verify_nothing() {
         .unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), CONTACT_INFO);
+    assert_eq!(db.schema_version().unwrap(), REMOVED_WALLETS);
     assert!(db.verified_entities().unwrap().is_empty(), "the old row");
     assert_eq!(
         count(
@@ -759,6 +769,59 @@ fn an_installation_with_wallets_starts_latched() {
     );
 }
 
+/// Tables with a `wallet_id` column, but `removed_wallets` (which records
+/// the removal itself).
+fn wallet_scoped_tables(conn: &Connection) -> Vec<String> {
+    conn.prepare(
+        "SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) c
+         WHERE m.type = 'table' AND c.name = 'wallet_id' AND m.name != 'removed_wallets'
+         ORDER BY m.name",
+    )
+    .unwrap()
+    .query_map([], |r| r.get(0))
+    .unwrap()
+    .collect::<rusqlite::Result<_>>()
+    .unwrap()
+}
+
+/// Inserts a row of `wallet` into `table`, every NOT NULL column set to a
+/// value of its type (the initial schema's CHECKs name the odd ones).
+/// Returns the number of rows inserted.
+fn insert_any_row(conn: &Connection, table: &str, wallet: &str) -> usize {
+    let columns: Vec<(String, String)> = conn
+        .prepare(&format!(
+            "SELECT name, type FROM pragma_table_info('{table}')
+             WHERE \"notnull\" = 1 OR name = 'wallet_id'"
+        ))
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let names: Vec<_> = columns.iter().map(|(name, _)| name.as_str()).collect();
+    let wallet = format!("'{wallet}'");
+    let values: Vec<_> = columns
+        .iter()
+        .map(|(name, ty)| match (name.as_str(), ty.as_str()) {
+            ("wallet_id", _) => wallet.as_str(),
+            ("purpose", _) => "'send'",
+            ("reason", _) => "'manual'",
+            ("retryable", _) => "0",
+            ("kind", _) if table == "labels" => "'tx'",
+            ("digest", "BLOB") => "zeroblob(32)",
+            (_, "INTEGER") => "1",
+            _ => "'x'",
+        })
+        .collect();
+    let insert = format!(
+        "INSERT INTO {table} ({}) VALUES ({})",
+        names.join(", "),
+        values.join(", ")
+    );
+    conn.execute(&insert, [])
+        .unwrap_or_else(|e| panic!("{insert}: {e}"))
+}
+
 /// `delete_wallet` lists its tables; the export finds them by their
 /// `wallet_id` column. A later migration that adds a wallet-scoped table must
 /// extend the list, and this fails until it does.
@@ -766,51 +829,10 @@ fn an_installation_with_wallets_starts_latched() {
 fn delete_wallet_covers_every_wallet_scoped_table() {
     let db = AppDb::open_in_memory().unwrap();
     let conn = db.conn();
-    let scoped: Vec<String> = conn
-        .prepare(
-            "SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) c
-             WHERE m.type = 'table' AND c.name = 'wallet_id' ORDER BY m.name",
-        )
-        .unwrap()
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
+    let scoped = wallet_scoped_tables(&conn);
     assert!(scoped.len() > 6, "{scoped:?}");
     for table in &scoped {
-        // A row with every NOT NULL column set to a value of its type (the
-        // initial schema's CHECKs name the odd ones) and the wallet column W.
-        let columns: Vec<(String, String)> = conn
-            .prepare(&format!(
-                "SELECT name, type FROM pragma_table_info('{table}')
-                 WHERE \"notnull\" = 1 OR name = 'wallet_id'"
-            ))
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        let names: Vec<_> = columns.iter().map(|(name, _)| name.as_str()).collect();
-        let values: Vec<_> = columns
-            .iter()
-            .map(|(name, ty)| match (name.as_str(), ty.as_str()) {
-                ("wallet_id", _) => "'aa'",
-                ("purpose", _) => "'send'",
-                ("reason", _) => "'manual'",
-                ("retryable", _) => "0",
-                ("kind", _) if table == "labels" => "'tx'",
-                ("digest", "BLOB") => "zeroblob(32)",
-                (_, "INTEGER") => "1",
-                _ => "'x'",
-            })
-            .collect();
-        let insert = format!(
-            "INSERT INTO {table} ({}) VALUES ({})",
-            names.join(", "),
-            values.join(", ")
-        );
-        conn.execute(&insert, [])
-            .unwrap_or_else(|e| panic!("{insert}: {e}"));
+        assert_eq!(insert_any_row(&conn, table, W), 1, "{table}");
     }
     drop(conn);
 
@@ -823,4 +845,89 @@ fn delete_wallet_covers_every_wallet_scoped_table() {
             "{table}"
         );
     }
+}
+
+/// DEC-210: every table `delete_wallet` clears has an insert trigger that
+/// skips rows of a removed wallet, and `WALLET_TABLES` is every
+/// wallet-scoped table, so a table added later without a trigger fails here.
+#[test]
+fn every_wallet_table_has_a_removal_trigger() {
+    let db = AppDb::open_in_memory().unwrap();
+    let conn = db.conn();
+    let mut listed = crate::WALLET_TABLES.map(String::from).to_vec();
+    listed.sort_unstable();
+    assert_eq!(wallet_scoped_tables(&conn), listed);
+    for table in listed.iter().map(String::as_str).chain(["settings_kv"]) {
+        let triggers = count(
+            &conn,
+            &format!(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'
+                 AND tbl_name = '{table}' AND sql LIKE '%BEFORE INSERT%'
+                 AND sql LIKE '%removed_wallets%' AND sql LIKE '%RAISE(IGNORE)%'"
+            ),
+        );
+        assert_eq!(triggers, 1, "{table}");
+    }
+}
+
+/// After `delete_wallet`, inserts of the wallet's rows are skipped in every
+/// table and settings scope of the wallet, while other wallets and the
+/// global scope are written as before; `readmit_wallet` lets them land again.
+#[test]
+fn a_removed_wallets_rows_are_not_written_until_it_is_readmitted() {
+    let db = AppDb::open_in_memory().unwrap();
+    db.delete_wallet(W).unwrap();
+    let settings = |db: &AppDb| {
+        for scope in [
+            W.to_owned(),
+            crate::local_scope(W),
+            W2.to_owned(),
+            String::new(),
+        ] {
+            db.set_setting(&scope, "k", Some("v")).unwrap();
+        }
+        [W.to_owned(), crate::local_scope(W)].map(|scope| db.setting(&scope, "k").unwrap())
+    };
+    {
+        let conn = db.conn();
+        for table in crate::WALLET_TABLES {
+            assert_eq!(insert_any_row(&conn, table, W), 0, "{table}");
+            assert_eq!(insert_any_row(&conn, table, W2), 1, "{table}");
+        }
+    }
+    assert_eq!(settings(&db), [None, None]);
+    assert_eq!(db.setting(W2, "k").unwrap().as_deref(), Some("v"));
+    assert_eq!(
+        db.setting(crate::GLOBAL_SCOPE, "k").unwrap().as_deref(),
+        Some("v")
+    );
+    assert!(matches!(
+        db.add_receive_request(W, 1, "a", None, None, None),
+        Err(crate::AppDbError::WalletRemoved(w)) if w == W
+    ));
+
+    db.readmit_wallet(W).unwrap();
+    let conn = db.conn();
+    for table in crate::WALLET_TABLES {
+        assert_eq!(insert_any_row(&conn, table, W), 1, "{table}");
+    }
+    drop(conn);
+    assert_eq!(settings(&db), [Some("v".into()), Some("v".into())]);
+}
+
+/// The record of removed wallets lasts one run: the next open empties it.
+#[test]
+fn an_open_forgets_the_removed_wallets() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(crate::APP_DB_FILE);
+    let db = AppDb::open(&path).unwrap();
+    db.delete_wallet(W).unwrap();
+    db.set_wallet_name(W, "n", 1).unwrap();
+    assert!(db.wallet_names().unwrap().is_empty());
+    drop(db);
+
+    let db = AppDb::open(&path).unwrap();
+    assert_eq!(count(&db.conn(), "SELECT COUNT(*) FROM removed_wallets"), 0);
+    db.set_wallet_name(W, "n", 1).unwrap();
+    assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "n".into())]);
 }

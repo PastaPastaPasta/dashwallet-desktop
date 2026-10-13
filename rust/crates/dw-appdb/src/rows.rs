@@ -70,7 +70,9 @@ fn columns(conn: &rusqlite::Connection, table: &str) -> Result<Vec<(String, bool
 /// they hold is derived from the network and a restore records it again.
 /// `dp_contact_info` (DP2-04): what Platform holds of the private details,
 /// which the restore's own read of the `contactInfo` documents records.
-const NOT_EXPORTED: [&str; 1] = ["dp_contact_info"];
+/// `removed_wallets` (DEC-210): which wallets this run removed, emptied at
+/// every open.
+const NOT_EXPORTED: [&str; 2] = ["dp_contact_info", "removed_wallets"];
 
 /// Tables and the column that scopes their rows to a wallet.
 fn scoped_tables(conn: &rusqlite::Connection) -> Result<Vec<(String, &'static str)>> {
@@ -305,5 +307,26 @@ mod tests {
         };
         assert_eq!(b.import_wallet_rows(&w, &[crafted]).unwrap(), 0);
         assert_eq!(b.contact_info_digest(&w, "id", "contact").unwrap(), None);
+    }
+
+    /// Which wallets were removed stays on its machine and in its run
+    /// (DEC-210): never exported, never imported.
+    #[test]
+    fn removed_wallets_are_not_carried() {
+        let a = AppDb::open_in_memory().unwrap();
+        let w = "ab".repeat(32);
+        a.set_wallet_name(&w, "Savings", 10).unwrap();
+        a.delete_wallet(&w).unwrap();
+        assert!(a.export_wallet_rows(&w).unwrap().is_empty());
+
+        let b = AppDb::open_in_memory().unwrap();
+        let crafted = TableRows {
+            table: "removed_wallets".into(),
+            columns: vec!["wallet_id".into()],
+            rows: vec![vec![SqlValue::Text(w.clone())]],
+        };
+        assert_eq!(b.import_wallet_rows(&w, &[crafted]).unwrap(), 0);
+        b.set_wallet_name(&w, "Savings", 10).unwrap();
+        assert_eq!(b.wallets().unwrap().len(), 1, "b's writes still land");
     }
 }

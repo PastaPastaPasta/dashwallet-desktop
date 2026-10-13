@@ -154,7 +154,9 @@ not exported. Restoring an unverified-entity flag (`dp_trust_unverified`) is the
 `wallet_id` column but is **not carried**, neither exported nor imported: it is derivable, and a restore
 rebuilds it from its first read of the identity's `contactInfo` documents (`m4-dashpay-engine.md` §7
 item 42). Carrying it could only make a restored wallet claim `Published` for details Platform no
-longer holds.
+longer holds. `removed_wallets` (DEC-210: the wallets removed since the network was opened, whose
+rows are no longer written) has a `wallet_id` column and is not carried either: every open of the
+database empties it, and an import of the wallet takes the wallet out of it.
 
 **Manager decision: `dp_registration` rows ARE restored on another machine**, so a registration whose
 asset lock is already funded resumes there and the locked funds are not stranded. The wallet scan
