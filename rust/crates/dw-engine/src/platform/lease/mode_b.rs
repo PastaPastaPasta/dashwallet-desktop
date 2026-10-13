@@ -49,16 +49,21 @@
 //!
 //! **Rows of earlier fundings.** The funding key (type, identity index,
 //! account) is not unique per step: every top-up of an identity carries
-//! the same one, and a `Consumed` row stays. The J step that marks a step
-//! records the rows its marker's key matches then as foreign to the step:
-//! they precede its call, so they are not its lock (the gate admitted the
-//! step, so none of them read as its own). That holds in its process; after
-//! a restart such rows count again, so a marked step whose key an earlier
-//! funding shares reads `Sent` or `WillBeSent` (fail closed: never `None`
-//! or `NotSent`). A row matching the draft's own key is never foreign, so
-//! a lost journal still finds the draft's row. A step's `NotSent` row
-//! drops its funding key with its marker, so later rows match it only by
-//! the draft's key.
+//! the same one, and a `Consumed` row stays. A top-up's step (its marker
+//! under an `IdentityTopUp` key) therefore matches only its own signed
+//! locks ([`own_row`]; DP1-06, as §2a.6 foresaw): every lock a call of it
+//! signed has its durable record before it can be stored or sent (§2a.7),
+//! so they are all of its rows, across restarts too. Any other step matches by
+//! its draft's own key and its marker's: the J step that marks it records
+//! the rows its marker's key matches then as foreign to it: they precede
+//! its call, so they are not its lock (the gate admitted the step, so none
+//! of them read as its own). That holds in its process; after a restart
+//! such rows count again, so a marked step whose key an earlier funding
+//! shares reads `Sent` or `WillBeSent` (fail closed: never `None` or
+//! `NotSent`). A row matching the draft's own key is never foreign, so a
+//! lost journal still finds the draft's row. A step's `NotSent` row drops
+//! its funding key with its marker, so later rows match it only by the
+//! draft's key.
 //!
 //! **Unattributed rows** (review H-1). The pin's reconstruction re-adds a
 //! lost row at identity index 0 for every singleton funding family
@@ -579,15 +584,24 @@ pub(crate) fn derive_funding(
     }
 }
 
-/// Whether tracked row `r` matches `step`: by the draft's own key, or by
-/// the marker's unless the row preceded the marker (`foreign`).
+/// Whether tracked row `r` matches `step`: a top-up's (its marker under
+/// an `IdentityTopUp` key) by being one of its `signed` locks (module
+/// doc); else by the draft's own key, or by the marker's unless the row
+/// preceded the marker (`foreign`).
 fn matches_step(
     s: &Snapshot,
     step: &str,
     info: &CallStepInfo,
     foreign: Option<&HashSet<Txid>>,
+    signed: &[SignedLock],
     r: &TrackedRow,
 ) -> bool {
+    if info
+        .funding
+        .is_some_and(|k| k.funding_type == AssetLockFundingType::IdentityTopUp)
+    {
+        return signed.iter().any(|l| l.txid == r.txid);
+    }
     s.drafts.iter().any(|d| d.step == step && d.matches(&r.key))
         || (info.funding.as_ref() == Some(&r.key) && !foreign.is_some_and(|f| f.contains(&r.txid)))
 }
@@ -655,14 +669,14 @@ fn derive_step(
 ) -> Option<DispatchState> {
     let snap = i.mode_b.snapshots.get(&wallet);
     let foreign = i.mode_b.foreign.get(&(wallet, step.to_owned()));
+    let signed = i.fence.signed_locks(&wallet, step);
     let rows: Option<Vec<TrackedStatus>> = snap.map(|s| {
         s.rows
             .iter()
-            .filter(|r| matches_step(s, step, &info, foreign, r))
+            .filter(|r| matches_step(s, step, &info, foreign, signed, r))
             .map(|r| r.status)
             .collect()
     });
-    let signed = i.fence.signed_locks(&wallet, step);
     let key = (wallet, step.to_owned());
     let tombstoned =
         i.fence.tombstones.contains_key(&key) || i.fence.owed_tombstones.contains_key(&key);
@@ -801,9 +815,10 @@ fn step_rows<'a>(i: &'a Inner, wallet: WalletId, step: &str) -> Vec<&'a TrackedR
     };
     let info = i.fence.call_step_info(&wallet, step);
     let foreign = i.mode_b.foreign.get(&(wallet, step.to_owned()));
+    let signed = i.fence.signed_locks(&wallet, step);
     s.rows
         .iter()
-        .filter(|r| matches_step(s, step, &info, foreign, r))
+        .filter(|r| matches_step(s, step, &info, foreign, signed, r))
         .collect()
 }
 
@@ -1257,6 +1272,13 @@ impl LeaseTable {
         })
     }
 
+    /// What the funding gate would answer a call of `step` now (§2a.3),
+    /// as the permit's J step decides it: `None` admits it. DP1-06 picks
+    /// a top-up's step by it (`topup.rs`).
+    pub(crate) fn funding_block(&self, wallet: WalletId, step: &str) -> Option<FundingBlock> {
+        self.with_j(|i, _| funding_gate(i, wallet, step))
+    }
+
     /// Whether `wallet`'s tracked rows were read this session.
     pub(crate) fn has_tracked_snapshot(&self, wallet: WalletId) -> bool {
         self.with_j(|i, _| i.mode_b.snapshots.contains_key(&wallet))
@@ -1327,10 +1349,6 @@ impl LeaseTable {
     /// `signed_lock` write runs is here already: the library's store waits
     /// for that write, and the process stops if it fails (§2a.7). A
     /// rejected broadcast leaves its txid here.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "DP1-02 attributes its rows by it")
-    )]
     pub(crate) fn signed_lock_txids(&self, wallet: WalletId, step: &str) -> Vec<Txid> {
         self.with_j(|i, _| {
             i.fence
@@ -1509,12 +1527,20 @@ impl TrackedLocks for SessionTracked {
             .wallet_managed_identities(&w.wallet_id())
             .filter_map(|m| Some((m.identity.id(), m.identity_index?)))
             .collect();
-        Some(
-            info.tracked_asset_locks
-                .values()
-                .map(|lock| attributed_row(lock, &identities))
-                .collect(),
-        )
+        #[cfg_attr(not(test), expect(unused_mut, reason = "tests add rows"))]
+        let mut rows: Vec<TrackedRow> = info
+            .tracked_asset_locks
+            .values()
+            .map(|lock| attributed_row(lock, &identities))
+            .collect();
+        #[cfg(test)]
+        rows.extend(
+            (session.leases.test_rows.lock().unwrap().get(&wallet))
+                .into_iter()
+                .flatten()
+                .cloned(),
+        );
+        Some(rows)
     }
 
     async fn drafts(&self, wallet: WalletId) -> Option<Vec<DraftKey>> {
@@ -1641,13 +1667,14 @@ impl NetworkSession {
     /// needs a new draft).
     ///
     /// Refused `invalid_argument` before anything is charged or marked
-    /// (review M-3, M-4): a step that is no funding step; a top-up step,
-    /// which has no funding key of its own after a lost journal until the
-    /// credit task gives it one (E0-04 §2a.6); and a registration step
-    /// whose `key` is not its draft's own (`DraftKey`, from `app.sqlite`),
-    /// or whose draft has no known key: a row under another key would be
+    /// (review M-3, M-4): a step that is no funding step; a top-up step
+    /// whose `key` is no `IdentityTopUp` key; a registration step whose
+    /// `key` is not its draft's own (`DraftKey`, from `app.sqlite`), or
+    /// whose draft has no known key: a row under another key would be
     /// found by neither the marker nor the draft; and a `fence` of another
-    /// wallet.
+    /// wallet. A top-up step needs no draft: its rows are its own signed
+    /// locks (module doc), and DP1-06 never calls a step again unless it
+    /// reads `None` or `NotSent` (`topup.rs`).
     pub async fn funding_call_permit(
         &self,
         lease: &Lease,
@@ -1664,8 +1691,9 @@ impl NetworkSession {
         if !is_funding_step(&step) {
             return refuse(format!("{step} is not a funding step"));
         }
-        if step.starts_with("topup/") {
-            return refuse("a top-up step has no own funding key yet (E0-04 §2a.6)".into());
+        let top_up = step.starts_with("topup/");
+        if top_up && key.funding_type != AssetLockFundingType::IdentityTopUp {
+            return refuse(format!("{key:?} is no top-up's funding key"));
         }
         let wallet = lease.wallet();
         let fee_bound_worst = self.fee_bound_worst(wallet).await?;
@@ -1673,6 +1701,7 @@ impl NetworkSession {
             return Err(LeaseError::FundingBlocked(FundingBlock::RowsUnknown).into());
         }
         match self.leases.draft_key(wallet, &step) {
+            _ if top_up => {}
             Some(d) if d.matches(&key) => {}
             Some(_) => return refuse(format!("{key:?} is not the funding key of {step}'s draft")),
             None => return refuse(format!("{step}'s draft has no funding key")),
