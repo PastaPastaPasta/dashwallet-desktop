@@ -2140,6 +2140,15 @@ renames or reshapes them takes the next version bump:
       manager (a removal, an unload, a restore's rollback): each of their writes lands only while the wallet it read
       is still the manager's, and the wallet leaves only after the writes in flight have landed, so a removal's delete
       of its rows comes after them.
+    - **Writes after a wallet's removal (DEC-210).** Any other app.sqlite write of a wallet still under way when
+      the wallet is removed (a DashPay choice or preference, the journal written as the library stores a changeset,
+      a coin lock, first-seen times) lands nothing either. The removal records the wallet (`removed_wallets`) in the
+      transaction that deletes its rows; from then on an insert of a row of that wallet, in any table the removal
+      clears and in its two settings scopes, is skipped, and an update finds no row. `add_receive_request` and a new
+      registration flow then fail (`storage`). The record lasts until an import of the same wallet (a seed, a
+      watch-only xpub, a restore), which takes it out before its first write, or until the network is opened again.
+      `.dwbackup` never carries it (dwbackup-v1 §3.1). **Residual (accepted, DEC-210 (5)):** a write of the removed
+      wallet still under way when the same wallet is imported again lands among the new import's rows.
     - **An edit of published details needs a grant.** The library's DashPay pass applies Platform's `contactInfo` over
       local details on every pass (remote wins), so a local-only edit of a contact Platform holds details for would
       go back silently. It is `platform.needs_grant{credits}` and the edit is not saved. Re-saving the same details

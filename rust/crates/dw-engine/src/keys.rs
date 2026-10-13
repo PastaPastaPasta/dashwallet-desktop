@@ -448,6 +448,15 @@ impl NetworkSession {
                 })
             })
             .await??;
+            // Rows of a wallet removed earlier in this run are skipped until
+            // it is readmitted (DEC-210), before its first write.
+            let readmit = wallet_id.to_string();
+            if let Err(e) = this.appdb_op(move |db| db.readmit_wallet(&readmit)).await {
+                if !had_secret {
+                    this.forget_secret(wallet_id).await;
+                }
+                return Err(e);
+            }
             this.store_fingerprint(wallet_id, fingerprint).await;
 
             // A closed (unloaded) wallet is registered: open it instead.

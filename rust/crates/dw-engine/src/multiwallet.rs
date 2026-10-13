@@ -443,6 +443,9 @@ impl NetworkSession {
                 standard_account_type: StandardAccountType::BIP44Account,
             };
             let changeset = watch_only_registration(id, account_type, key, network, birth_height)?;
+            // DEC-210: before the first write, as an import of a seed.
+            let readmit = id.to_string();
+            this.appdb_op(move |db| db.readmit_wallet(&readmit)).await?;
             let store = Arc::clone(&live.store);
             tokio::task::spawn_blocking(move || {
                 store.store(id.0, changeset)?;
