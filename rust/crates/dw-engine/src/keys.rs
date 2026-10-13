@@ -448,15 +448,18 @@ impl NetworkSession {
                 })
             })
             .await??;
-            // Rows of a wallet removed earlier in this run are skipped until
-            // it is readmitted (DEC-210), before its first write.
+            // Rows of a removed wallet are skipped until it is readmitted
+            // (DEC-210), before its first write.
             let readmit = wallet_id.to_string();
-            if let Err(e) = this.appdb_op(move |db| db.readmit_wallet(&readmit)).await {
-                if !had_secret {
-                    this.forget_secret(wallet_id).await;
+            let readmitted = match this.appdb_op(move |db| db.readmit_wallet(&readmit)).await {
+                Ok(readmitted) => readmitted,
+                Err(e) => {
+                    if !had_secret {
+                        this.forget_secret(wallet_id).await;
+                    }
+                    return Err(e);
                 }
-                return Err(e);
-            }
+            };
             this.store_fingerprint(wallet_id, fingerprint).await;
 
             // A closed (unloaded) wallet is registered: open it instead.
@@ -506,8 +509,13 @@ impl NetworkSession {
                     let e = EngineError::from(e);
                     // A concurrent registration of the same wallet now uses
                     // the stored seed, so only roll back our own failure.
-                    if !had_secret && !matches!(e, EngineError::WalletAlreadyExists(_)) {
-                        this.forget_secret(wallet_id).await;
+                    if !matches!(e, EngineError::WalletAlreadyExists(_)) {
+                        if !had_secret {
+                            this.forget_secret(wallet_id).await;
+                        }
+                        if readmitted {
+                            this.record_removed_again(wallet_id).await;
+                        }
                     }
                     return Err(e);
                 }
@@ -599,6 +607,16 @@ impl NetworkSession {
         .await;
         if !matches!(stored, Ok(Ok(()))) {
             tracing::warn!(%wallet_id, "could not store the master key fingerprint");
+        }
+    }
+
+    /// A removed wallet whose import failed after it was readmitted is
+    /// recorded as removed again, with what the import wrote of it
+    /// (DEC-210).
+    async fn record_removed_again(&self, wallet_id: WalletId) {
+        let id = wallet_id.to_string();
+        if let Err(e) = self.appdb_op(move |db| db.delete_wallet(&id)).await {
+            tracing::warn!(%wallet_id, error = %e, "could not record the wallet as removed again");
         }
     }
 

@@ -2146,8 +2146,9 @@ renames or reshapes them takes the next version bump:
       transaction that deletes its rows; from then on an insert of a row of that wallet, in any table the removal
       clears and in its two settings scopes, is skipped, and an update finds no row. `add_receive_request` and a new
       registration flow then fail (`storage`). The record lasts until an import of the same wallet (a seed, a
-      watch-only xpub, a restore), which takes it out before its first write, or until the network is opened again.
-      `.dwbackup` never carries it (dwbackup-v1 §3.1). **Residual (accepted, DEC-210 (5)):** a write of the removed
+      watch-only xpub, a restore), which takes it out before its first write (an import that then fails records the
+      wallet again), or until a session of a later process opens the network: a close and reopen in the same process
+      keeps it, since a write of the wallet may still be queued. `.dwbackup` never carries it (dwbackup-v1 §2.3). **Residual (accepted, DEC-210 (5)):** a write of the removed
       wallet still under way when the same wallet is imported again lands among the new import's rows.
     - **An edit of published details needs a grant.** The library's DashPay pass applies Platform's `contactInfo` over
       local details on every pass (remote wins), so a local-only edit of a contact Platform holds details for would
