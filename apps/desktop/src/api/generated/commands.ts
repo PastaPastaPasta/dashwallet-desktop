@@ -151,8 +151,8 @@ export const ENGINE_EVENT = "engine://event";
 export const MAX_TXIDS = 256;
 
 /**
- * How the app was launched: fixture or engine mode, the self-test, the
- * forced theme and the network `openNetwork` opens by default.
+ * How the app was launched: the self-test, the forced theme and the
+ * network `openNetwork` opens by default.
  */
 export function launchInfo(): Promise<LaunchInfo> {
   return invoke<LaunchInfo>("launch_info");
@@ -2587,7 +2587,6 @@ export const COMMANDS: Record<CommandName, string> = {
 
 /** Every error code. */
 export const ERROR_CODES: readonly ErrorCode[] = [
-  "app.fixture_mode",
   "app.not_selftest",
   "app.not_developer_build",
   "app.selftest",

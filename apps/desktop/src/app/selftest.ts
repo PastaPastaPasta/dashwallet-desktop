@@ -1,11 +1,10 @@
 // `--selftest` (DASHPAY §2.1 G-01): render the four gate screens in light and dark, record the
 // box of every `data-testid` element and the U3(a) style checks, and hand the report to dw-app,
-// which writes it and exits. In a browser (Playwright) the same routine is `window.__dwSelftest`.
+// which writes it and exits. In a fixture build (Playwright) the same routine is `window.__dwSelftest`.
 // Under Tauri the report also carries the U5 IPC timings and the U6 security probes.
 
 import type { QueryClient } from "@tanstack/react-query";
 import { errorMessage, type Backend } from "../api/backend";
-import { FIXTURE_PASSPHRASE } from "../api/fixture";
 import { tauriTools } from "../api/tauri";
 import { milestones, whenMarked } from "./startup";
 import { runStyleChecks, type CheckResult, type Screen } from "./styleChecks";
@@ -168,7 +167,9 @@ async function timeSplit(n: number, f: () => Promise<{ engineMicros: number }>) 
 type OnScreen = (name: string) => Promise<void>;
 
 /** Renders the gate screens in both appearances and records them. */
-export async function collectReport(backend: Backend, client: QueryClient, onScreen?: OnScreen): Promise<Report> {
+/** `passphrase`: the fixture's, which lets the routine lock and unlock to record the lock screen;
+ * `null` with the real vault, whose passphrase it never has. */
+export async function collectReport(backend: Backend, client: QueryClient, passphrase: string | null, onScreen?: OnScreen): Promise<Report> {
   const before = ui.get();
   const screens: Record<string, ScreenRecord> = {};
   let shown: Report["shown"];
@@ -203,11 +204,11 @@ export async function collectReport(backend: Backend, client: QueryClient, onScr
       ui.set({ detail: null });
     }
     // Only the fixture can be locked and unlocked without the user's passphrase.
-    if (backend.kind === "fixture") {
+    if (passphrase !== null) {
       await backend.lock();
       await settle(client);
       await record(theme, "unlock");
-      await backend.unlock(FIXTURE_PASSPHRASE);
+      await backend.unlock(passphrase);
       await settle(client);
     }
   }
@@ -236,8 +237,9 @@ declare global {
   }
 }
 
-export function exposeSelftest(backend: Backend, client: QueryClient) {
-  window.__dwSelftest = () => collectReport(backend, client);
+/** For Playwright, in fixture builds only. */
+export function exposeSelftest(backend: Backend, client: QueryClient, passphrase: string) {
+  window.__dwSelftest = () => collectReport(backend, client, passphrase);
 }
 
 async function refused(f: () => Promise<unknown>): Promise<string> {
@@ -282,7 +284,7 @@ export async function runTauriSelftest(backend: Backend, client: QueryClient, pa
     ? { responseEnd: round(nav.responseEnd), domInteractive: round(nav.domInteractive), domContentLoaded: round(nav.domContentLoadedEventEnd), load: round(nav.loadEventEnd) }
     : {};
   await sleep(300);
-  const report = await collectReport(backend, client, async (name) => {
+  const report = await collectReport(backend, client, null, async (name) => {
     if (pauseMs <= 0) return;
     await tauriTools.selftestCheckpoint(name);
     await sleep(pauseMs);

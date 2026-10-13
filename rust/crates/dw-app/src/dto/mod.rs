@@ -253,7 +253,6 @@ mirror_enum!(ThemeName => Theme { Light, Dark });
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchInfo {
-    pub fixture: bool,
     pub selftest: bool,
     /// Milliseconds the self-test waits on each screen (0 = no pause).
     pub selftest_pause_ms: u32,
@@ -267,7 +266,6 @@ pub struct LaunchInfo {
 impl LaunchInfo {
     pub fn new(opts: &LaunchOptions) -> Self {
         LaunchInfo {
-            fixture: opts.fixture,
             selftest: opts.selftest.is_some(),
             selftest_pause_ms: opts.selftest_pause_ms,
             theme: opts.theme,

@@ -17,8 +17,8 @@ use crate::state::parse_wallet_id;
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
 
 commands! {
-    /// How the app was launched: fixture or engine mode, the self-test, the
-    /// forced theme and the network `openNetwork` opens by default.
+    /// How the app was launched: the self-test, the forced theme and the
+    /// network `openNetwork` opens by default.
     #[facade()]
     fn launch_info(state) -> LaunchInfo {
         Ok(LaunchInfo::new(&state.launch))

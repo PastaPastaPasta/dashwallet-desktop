@@ -1,0 +1,154 @@
+import { clearMocks } from "@tauri-apps/api/mocks";
+import { listen } from "@tauri-apps/api/event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { isAppError } from "../api/backend";
+import * as cmd from "../api/generated/commands";
+import type { AppEvent } from "../api/generated/commands";
+import type { HistoryRequest } from "../api/generated/HistoryRequest";
+import type { UserRelation } from "../api/generated/UserRelation";
+import type { ChannelStateName } from "../api/generated/ChannelStateName";
+import { IpcBackend } from "../api/tauri";
+import { ERROR_CLASSES } from "./errors";
+import { MAIN_IDENTITY } from "./handlers";
+import { fixtureOptionsFromUrl, FIXTURE_SENTINEL, installFixture, type FixtureOptions } from "./index";
+import { FIXTURE_WALLET_ID, SCENARIO_NAMES } from "./scenarios";
+
+const ALL: HistoryRequest = { categories: [], text: null, sort: "newestFirst", cursor: null, limit: 500 };
+
+function backend(opts: FixtureOptions) {
+  const fixture = installFixture(opts);
+  return { fixture, b: new IpcBackend("fixture", () => fixture.now, fixture.locale) };
+}
+
+beforeEach(() => vi.stubGlobal("window", globalThis));
+afterEach(() => {
+  clearMocks();
+  vi.unstubAllGlobals();
+});
+
+describe("fixture backend", () => {
+  it("is deterministic and newest first", async () => {
+    const a = await backend({ scenario: "funded" }).b.historyPage(FIXTURE_WALLET_ID, ALL);
+    const b = await backend({ scenario: "funded" }).b.historyPage(FIXTURE_WALLET_ID, ALL);
+    expect(a).toEqual(b);
+    const times = a.rows.map((r) => r.timestamp ?? 0);
+    expect([...times].sort((x, y) => y - x)).toEqual(times);
+    expect(a.rows[0].amount).toBe(20_000_000);
+  });
+
+  it("pages with a cursor and filters by category", async () => {
+    const { b } = backend({ scenario: "large" });
+    const first = await b.historyPage(FIXTURE_WALLET_ID, { ...ALL, limit: 200 });
+    expect(first.rows).toHaveLength(200);
+    expect(first.totalMatching).toBe(10_003);
+    const second = await b.historyPage(FIXTURE_WALLET_ID, { ...ALL, cursor: first.nextCursor, limit: 200 });
+    expect(second.rows[0].txid).not.toBe(first.rows[0].txid);
+    const sent = await b.historyPage(FIXTURE_WALLET_ID, { ...ALL, categories: ["sent"], limit: 50 });
+    expect(sent.rows.every((r) => r.category === "sent")).toBe(true);
+  });
+
+  it("unlocks only with the fixture passphrase", async () => {
+    const { b, fixture } = backend({ scenario: "locked" });
+    expect((await b.lockStatus()).state).toBe("locked");
+    await expect(b.unlock("nope")).rejects.toMatchObject({ code: "vault.wrong_passphrase", data: { kind: "wrongPassphrase", failedAttempts: 1 } });
+    expect((await b.unlock(fixture.passphrase)).state).toBe("unlocked");
+  });
+
+  it("opens every scenario through the generated commands", async () => {
+    for (const scenario of SCENARIO_NAMES) {
+      const { b } = backend({ scenario });
+      const launch = await b.launchInfo();
+      expect(launch.engineVersion, scenario).toBe("fixture");
+      expect((await b.openNetwork()).network.dirName, scenario).toBe("testnet");
+      const wallets = await b.listWallets();
+      expect(wallets.length, scenario).toBe(scenario === "no-wallet" ? 0 : 1);
+      await b.syncStatus();
+      clearMocks();
+    }
+  });
+
+  it("covers every DashPay relation and channel state, in the right sections", async () => {
+    backend({ scenario: "dashpay-registered" });
+    const list = await cmd.dashpayContacts(FIXTURE_WALLET_ID, MAIN_IDENTITY, { sections: [], sort: "displayName", text: null });
+    const contacts = list.sections.flatMap((s) => s.contacts.map((c) => ({ ...c, section: s.section })));
+    const directory = await cmd.searchUsers(FIXTURE_WALLET_ID, "", 100);
+    const relations = new Set<UserRelation>(directory.map((u) => u.relation));
+    const channels = new Set<ChannelStateName>(contacts.map((c) => c.channel));
+    expect([...relations].sort()).toEqual(["contact", "ignored", "isSelf", "pendingIncoming", "pendingOutgoing", "stranger"]);
+    expect([...channels].sort()).toEqual(["broken", "notEstablished", "ready", "setupPending"]);
+    expect(contacts.filter((c) => c.section === "requests").every((c) => c.relation === "pendingIncoming")).toBe(true);
+    expect(contacts.filter((c) => c.section === "pending").every((c) => c.relation === "pendingOutgoing")).toBe(true);
+    expect(contacts.filter((c) => c.section === "hidden").map((c) => c.username).sort()).toEqual(["ivan", "judy"]);
+    const events = await cmd.dashpayEvents(FIXTURE_WALLET_ID, MAIN_IDENTITY, null, 10);
+    expect(events.pending.map((c) => c.username).sort()).toEqual(["grace", "heidi"]);
+    expect(await cmd.dashpayUnreadCount(FIXTURE_WALLET_ID, MAIN_IDENTITY)).toBe(2);
+    expect((await cmd.dashpayStatus(FIXTURE_WALLET_ID)).kind).toBe("ready");
+  });
+
+  it("accepting a request moves it to contacts and signals the change", async () => {
+    backend({ scenario: "dashpay-registered" });
+    const seen: AppEvent[] = [];
+    await listen<AppEvent>(cmd.ENGINE_EVENT, (e) => seen.push(e.payload));
+    const grace = (await cmd.resolveUser(FIXTURE_WALLET_ID, "grace"))!;
+    expect(await cmd.dashpayAcceptRequest(FIXTURE_WALLET_ID, MAIN_IDENTITY, grace.identity, "g")).toMatchObject({ kind: "established" });
+    expect((await cmd.dashpayContact(FIXTURE_WALLET_ID, MAIN_IDENTITY, grace.identity))?.summary).toMatchObject({ relation: "contact", channel: "setupPending" });
+    expect(seen).toContainEqual(expect.objectContaining({ kind: "platform", change: { domain: "contacts", identity: MAIN_IDENTITY } }));
+  });
+
+  it("has the DashPay states before registration", async () => {
+    backend({ scenario: "dashpay-no-identity" });
+    expect(await cmd.dashpayStatus(FIXTURE_WALLET_ID)).toEqual({ kind: "noIdentity", reason: null });
+    expect(await cmd.identities(FIXTURE_WALLET_ID)).toEqual([]);
+    clearMocks();
+    backend({ scenario: "dashpay-registering" });
+    expect(await cmd.dashpayStatus(FIXTURE_WALLET_ID)).toEqual({ kind: "registering", draft: "reg-1" });
+    expect((await cmd.registrations(FIXTURE_WALLET_ID))[0]).toMatchObject({ phase: "fundingSent", waiting: "instantSend", fundsCommitted: true });
+  });
+
+  it("rejects a command it does not implement with a typed AppError", async () => {
+    backend({ scenario: "funded" });
+    const e = await cmd.rotatePeers().catch((x: unknown) => x);
+    expect(isAppError(e)).toBe(true);
+    expect(e).toMatchObject({ code: "platform.not_implemented", data: { kind: "call", call: "rotate_peers" } });
+  });
+
+  it("injects a sample of every ErrorData class", async () => {
+    for (const cls of ERROR_CLASSES) {
+      const { b } = backend({ scenario: "funded", failures: { list_wallets: cls } });
+      const e = await b.listWallets().catch((x: unknown) => x);
+      expect(isAppError(e), cls).toBe(true);
+      expect((e as cmd.AppError).data?.kind ?? "none").toBe(cls);
+      // Only the failing command fails.
+      expect((await b.lockStatus()).state).toBe("unlocked");
+      clearMocks();
+    }
+  });
+
+  it("emits the engine's events when the vault locks", async () => {
+    const { b } = backend({ scenario: "funded" });
+    const seen: AppEvent["kind"][] = [];
+    const stop = await b.onEvent((e) => seen.push(e.kind));
+    const outcome = await b.lock();
+    expect(outcome.status.state).toBe("locked");
+    expect(seen).toEqual(["vaultLockState", "lockProgress"]);
+    expect(await b.lastLockReport()).toEqual(outcome);
+    stop();
+  });
+
+  it("selects scenarios, failures and delays from the URL", () => {
+    expect(fixtureOptionsFromUrl("")).toMatchObject({ scenario: "funded", theme: null, failures: {} });
+    expect(fixtureOptionsFromUrl("?scenario=locked&theme=dark")).toMatchObject({ scenario: "locked", theme: "dark" });
+    expect(fixtureOptionsFromUrl("?scenario=error-duffs").failures).toEqual({ list_wallets: "duffs" });
+    expect(fixtureOptionsFromUrl("?fail=balance:rpc&fail=sync_status:none&delay=50")).toMatchObject({
+      failures: { balance: "rpc", sync_status: "none" },
+      delayMs: 50,
+    });
+    expect(() => fixtureOptionsFromUrl("?scenario=nope")).toThrow("unknown fixture scenario");
+    expect(() => fixtureOptionsFromUrl("?scenario=error-nope")).toThrow("unknown error class");
+    expect(() => fixtureOptionsFromUrl("?fail=balance")).toThrow("expected <command>:<error class>");
+  });
+
+  it("carries the sentinel the production bundle check looks for", () => {
+    expect(installFixture({ scenario: "funded" }).sentinel).toBe(FIXTURE_SENTINEL);
+  });
+});

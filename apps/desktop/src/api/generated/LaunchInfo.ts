@@ -5,7 +5,7 @@ import type { ThemeName } from "./ThemeName";
 /**
  * What the renderer needs to know before its first query.
  */
-export type LaunchInfo = { fixture: boolean, selftest: boolean, 
+export type LaunchInfo = { selftest: boolean, 
 /**
  * Milliseconds the self-test waits on each screen (0 = no pause).
  */

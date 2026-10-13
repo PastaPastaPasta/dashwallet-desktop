@@ -15,8 +15,6 @@ pub struct LaunchOptions {
     /// Data root; `None` = the platform app-data directory.
     pub data_dir: Option<PathBuf>,
     pub network: DashNetwork,
-    /// The renderer uses its TypeScript fixture backend; no engine is created.
-    pub fixture: bool,
     /// Render the four gate screens, write every `data-testid` box to this
     /// file and exit (DASHPAY §2.1 G-01).
     pub selftest: Option<PathBuf>,
@@ -50,7 +48,6 @@ impl Default for LaunchOptions {
         Self {
             data_dir: None,
             network: DashNetwork::Mainnet,
-            fixture: false,
             selftest: None,
             selftest_pause_ms: 0,
             sync: false,
@@ -77,7 +74,6 @@ usage: dash-wallet [options]
   --ca-cert <file>       PEM CA certificate to trust for DAPI TLS (a devnet gateway)
   --protocol-version <n> Platform protocol version to start at
   --no-platform          the chain has no Platform (a plain dashd regtest)
-  --fixture              use the built-in sample wallet; no engine
   --selftest <file>      render the gate screens, write element boxes to <file>, exit
   --selftest-pause <ms>  pause on each self-test screen (for screenshots)
   --theme light|dark     force an appearance
@@ -120,7 +116,6 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
                 );
             }
             "--no-platform" => opts.no_platform = true,
-            "--fixture" => opts.fixture = true,
             "--selftest" => opts.selftest = Some(PathBuf::from(value("--selftest")?)),
             "--selftest-pause" => {
                 let v = value("--selftest-pause")?;
@@ -186,7 +181,6 @@ mod tests {
             "--protocol-version",
             "9",
             "--no-platform",
-            "--fixture",
             "--selftest",
             "/tmp/boxes.json",
             "--selftest-pause",
@@ -203,7 +197,7 @@ mod tests {
                 name: "paloma".into()
             }
         );
-        assert!(o.sync && o.fixture && o.no_platform);
+        assert!(o.sync && o.no_platform);
         assert_eq!(o.spv_peers, ["127.0.0.1:19899"]);
         assert_eq!(o.dapi_addresses, ["https://127.0.0.1:2443"]);
         assert_eq!(o.quorum_url.as_deref(), Some("https://127.0.0.1:22444"));
@@ -223,6 +217,9 @@ mod tests {
         assert!(err(&["--datadir"]).contains("needs a value"));
         assert!(err(&["--protocol-version", "nine"]).contains("not a number"));
         assert!(err(&["--bogus"]).contains("unknown option"));
+        // No build of the app runs on fixture data (U-07): the fixture backend
+        // exists only in the renderer's browser harness.
+        assert!(err(&["--fixture"]).contains("unknown option"));
         for bad in ["1000", "0x620", "1000x", "ax620"] {
             assert!(
                 err(&["--window-size", bad]).contains("expected WxH"),

@@ -1,25 +1,44 @@
 import { QueryClient } from "@tanstack/react-query";
-import { describe, expect, it } from "vitest";
+import { clearMocks } from "@tauri-apps/api/mocks";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InfiniteData } from "@tanstack/react-query";
 import { bridgeEvents, invalidationsFor } from "./events";
 import type { Backend } from "./backend";
 import type { AppEvent } from "./generated/commands";
 import type { HistoryRows } from "./generated/HistoryRows";
-import { FixtureBackend, FIXTURE_WALLET_ID } from "./fixture";
+import type { LockOutcome } from "./generated/LockOutcome";
+import { installFixture } from "../fixture";
+import { FIXTURE_WALLET_ID } from "../fixture/scenarios";
 import { keys } from "./queries";
+import { IpcBackend } from "./tauri";
+
+beforeEach(() => vi.stubGlobal("window", globalThis));
+afterEach(() => {
+  clearMocks();
+  vi.unstubAllGlobals();
+});
 
 describe("event bridge", () => {
   it("maps each signal to the queries it touches", () => {
     expect(invalidationsFor({ kind: "historyChanged", network: "testnet", walletId: "w", txids: [] })).toEqual([["history", "w"], ["txDetail", "w"]]);
-    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets]);
+    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile]);
+    expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: {} as never })).toEqual([keys.lockReconcile]);
     expect(invalidationsFor({ kind: "sessionOpened", network: "testnet" })).toBe("all");
     expect(invalidationsFor({ kind: "eventsOverflowed" })).toBe("all");
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } })).toEqual([]);
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "names" } })).toEqual([]);
+    const report: LockOutcome = {
+      status: { state: "locked", encrypted: true, quickUnlockEnrolled: false, failedAttempts: 0, retryAfterSecs: null, walletsWithSecrets: [] },
+      flows: [],
+      flowsOmitted: 0,
+      walletsWithSecretsOmitted: 0,
+    };
+    expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "done", report } })).toEqual([keys.lockStatus, keys.lastLockReport, keys.lockReconcile]);
   });
 
   it("invalidates the lock status when the fixture vault locks", async () => {
-    const backend = new FixtureBackend(FixtureBackend.browserLaunch());
+    installFixture({ scenario: "funded" });
+    const backend = new IpcBackend("fixture");
     const client = new QueryClient();
     client.setQueryData(keys.lockStatus, await backend.lockStatus());
     client.setQueryData(keys.balance(FIXTURE_WALLET_ID), await backend.balance(FIXTURE_WALLET_ID));

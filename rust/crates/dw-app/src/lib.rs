@@ -161,12 +161,10 @@ pub fn run() {
         });
     app.run(|handle, event| {
         if let RunEvent::Exit = event
-            && let Some(engine) = handle
-                .try_state::<AppState>()
-                .and_then(|s| s.inner().engine.as_ref())
+            && let Some(state) = handle.try_state::<AppState>()
         {
             // Flush and release every wallet database before the process ends.
-            if let Err(e) = tauri::async_runtime::block_on(engine.shutdown()) {
+            if let Err(e) = tauri::async_runtime::block_on(state.engine.shutdown()) {
                 eprintln!("dash-wallet: engine shutdown: {e}");
             }
         }
@@ -257,24 +255,6 @@ mod tests {
     }
 
     #[test]
-    fn fixture_mode_has_no_engine() {
-        let app = tauri::test::mock_app();
-        let opts = LaunchOptions {
-            fixture: true,
-            ..LaunchOptions::default()
-        };
-        let state = AppState::new(
-            app.handle(),
-            opts,
-            Instant::now(),
-            Default::default(),
-            || unreachable!("no data dir in fixture mode"),
-        )
-        .unwrap();
-        assert!(state.engine.is_none());
-    }
-
-    #[test]
     fn engine_mode_opens_the_data_root() {
         let app = tauri::test::mock_app();
         let dir = dw_testutil::private_tempdir();
@@ -291,7 +271,7 @@ mod tests {
             || unreachable!("--datadir given"),
         )
         .unwrap();
-        assert_eq!(state.engine.as_ref().unwrap().config().data_root, root);
+        assert_eq!(state.engine.config().data_root, root);
         assert!(root.is_dir());
     }
 

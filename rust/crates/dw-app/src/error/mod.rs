@@ -101,8 +101,6 @@ pub(crate) use codes;
 codes! {
     /// The binding's own refusals (`app.*`).
     AppCode {
-        /// The app runs on fixture data: there is no engine.
-        FixtureMode = "app.fixture_mode",
         /// A self-test command in a normal launch.
         NotSelftest = "app.not_selftest",
         /// A developer-only command in a release build.

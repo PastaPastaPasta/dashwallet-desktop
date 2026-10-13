@@ -140,7 +140,6 @@ fn engine_and_session_commands_over_ipc() {
 
     let launch = demo.ok("launch_info", json!({}));
     assert_eq!(launch["network"]["dirName"], "regtest");
-    assert_eq!(launch["fixture"], false);
 
     // Engine::open_network, with the renderer's settings over the launch's.
     let opened = demo.open();

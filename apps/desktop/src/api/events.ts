@@ -29,15 +29,17 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     case "historyChanged":
       return [keys.historyAll(event.walletId), keys.txDetailAll(event.walletId)];
     case "vaultLockState":
-      return [keys.lockStatus, keys.wallets];
+      return [keys.lockStatus, keys.wallets, keys.lockReconcile];
     case "lockProgress":
-      return event.progress.kind === "done" ? [keys.lockStatus] : [];
-    // No screen reads these yet (U-07 adds the DashPay, CoinJoin and lease views).
+      return event.progress.kind === "done" ? [keys.lockStatus, keys.lastLockReport, keys.lockReconcile] : [];
+    // The lock report's reconciliation reads leases and dispatch states (lockReport.ts).
+    case "leaseChanged":
+    case "dispatchResolved":
+      return [keys.lockReconcile];
+    // No screen reads these yet (the DashPay, CoinJoin and notice views come with their tasks).
     case "newTransactions":
     case "coinJoin":
     case "platform":
-    case "leaseChanged":
-    case "dispatchResolved":
     case "notice":
       return [];
     default:

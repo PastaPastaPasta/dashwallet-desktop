@@ -1,11 +1,11 @@
 import { expect, test } from "@playwright/test";
-import { XSS_PAYLOADS } from "../src/api/fixture";
+import { XSS_PAYLOADS } from "../src/fixture/scenarios";
 
 // U6: attacker-controlled text (labels, names) renders as text and never runs.
 test("XSS payloads in a label, a contact name and the wallet name render as text", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto("/?variant=xss");
+  await page.goto("/?scenario=xss");
   await page.getByTestId("hero").waitFor();
   await expect(page.getByTestId("toolbar")).toContainText(XSS_PAYLOADS.walletName);
   await expect(page.locator(".tx-row-title").first()).toHaveText(XSS_PAYLOADS.label);
