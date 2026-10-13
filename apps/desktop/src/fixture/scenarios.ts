@@ -3,6 +3,7 @@
 // handlers read and change. Pick one with `?scenario=<name>` (dev server, Playwright) or
 // `installFixture({ scenario })` (vitest).
 
+import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { DispatchStateName } from "../api/generated/DispatchStateName";
 import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
@@ -36,6 +37,12 @@ export interface World {
   /** The first wallet's DashPay state. */
   dashpay: DashPayWorld;
   leases: Lease[];
+  /** The vault grants `authorize` issued, single use, and whether one was redeemed or revoked. */
+  grants: { grant: AuthGrant; used: boolean }[];
+  /** `begin_flow`'s lease ids (`lease-` and 32 hex digits) to their `Lease.id` in `leases`. */
+  flowLeases: Record<string, string>;
+  /** Grant and lease ids issued so far: they are drawn from it, so runs repeat. */
+  issued: number;
   /** `dispatch_status` by artifact. */
   dispatch: Record<string, DispatchStateName>;
   lastLockReport: LockOutcome | null;
@@ -90,6 +97,9 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     sync: caughtUp(),
     dashpay: noIdentity(),
     leases: [],
+    grants: [],
+    flowLeases: {},
+    issued: 0,
     dispatch: {},
     lastLockReport: null,
     cut: { flows: [], flowsOmitted: 0 },

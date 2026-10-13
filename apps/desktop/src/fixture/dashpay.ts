@@ -24,6 +24,14 @@ export interface DashPayWorld {
   contacts: ContactDetailInfo[];
   /** What `search_users` / `resolve_user` find: the contacts plus a stranger and the wallet's own name. */
   directory: UserHit[];
+  /** Each contact's requests by contact id: their Platform `$createdAt` in ms, theirs to the
+   * main identity and its own to them (the engine's journal `ref` of a request, journal.rs). */
+  requestTimes: Record<string, RequestTimes>;
+}
+
+export interface RequestTimes {
+  incoming: number | null;
+  outgoing: number | null;
 }
 
 /** Base58 identity ids (44 characters, as Platform prints them). */
@@ -121,6 +129,13 @@ function contact(spec: ContactSpec): ContactDetailInfo {
   };
 }
 
+/** A request's `$createdAt` (ms) in the second its contact shows, with a millisecond part. */
+const ms = (at: number | null, i: number) => (at === null ? null : at * 1000 + ((i * 137 + 41) % 1000));
+
+function requestTimes(c: ContactDetailInfo, i: number): RequestTimes {
+  return { incoming: ms(c.requestReceivedAt, i), outgoing: ms(c.requestSentAt, i + 3) };
+}
+
 /** The section `dashpay_contacts` lists a contact in. */
 export function sectionOf(c: ContactDetailInfo): ContactSectionName {
   const { relation, hidden } = c.summary;
@@ -161,6 +176,7 @@ export function noIdentity(): DashPayWorld {
     registrations: [],
     contacts: [],
     directory: [],
+    requestTimes: {},
   };
 }
 
@@ -207,6 +223,7 @@ export function registered(): DashPayWorld {
     identities: [aliceIdentity()],
     registrations: [],
     contacts,
+    requestTimes: Object.fromEntries(contacts.map((c, i) => [c.summary.contact, requestTimes(c, i)])),
     directory: [
       ...contacts.map(hit),
       { identity: IDENTITY.mallory, username: "mallory", displayName: "Mallory", avatarUrl: null, relation: "stranger", unverified: false },

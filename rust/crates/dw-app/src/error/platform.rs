@@ -524,4 +524,67 @@ mod tests {
             serde_json::json!({ "kind": "draftWait", "draft": "d", "waitSecs": 600 })
         );
     }
+
+    /// dw-engine writes the `data` of the errors in the accept contract vector by hand
+    /// (`requests_tests.rs`, `accept_vectors::data`): every error the vector records must be
+    /// this crate's conversion of one of these engine errors, and each of them is recorded.
+    #[test]
+    fn accept_vector_errors_are_dw_apps() {
+        use serde_json::{Value, json};
+        let quote = 150_000_000;
+        let engine: [AppError; 9] = [
+            PlatformError::GrantInvalid.into(),
+            PlatformError::LeaseExpired.into(),
+            PlatformError::InvalidArgument { detail: "x".into() }.into(),
+            PlatformError::InsufficientCredits {
+                needed: quote,
+                available: quote - 1,
+            }
+            .into(),
+            PlatformError::GrantExceeded {
+                purpose: BudgetPurpose::Credits,
+                needed: quote,
+                remaining: quote - 1,
+            }
+            .into(),
+            PlatformError::NeedsGrant {
+                purpose: BudgetPurpose::Credits,
+            }
+            .into(),
+            ContactError::IsSelf.into(),
+            ContactError::AlreadyContact.into(),
+            ContactError::Ineligible {
+                reason: Eligibility::NoDashPayKeys,
+            }
+            .into(),
+        ];
+        let converted: Vec<Value> = (engine.iter())
+            .map(|e| {
+                let v = serde_json::to_value(e).unwrap();
+                json!({ "code": v["code"], "data": v["data"] })
+            })
+            .collect();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../apps/desktop/src/fixture/vectors/accept.json");
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let recorded: Vec<&Value> = (doc["cases"].as_array().unwrap().iter())
+            .flat_map(|c| c["results"].as_array().unwrap())
+            .filter_map(|r| r.get("error"))
+            .collect();
+        for e in &recorded {
+            assert!(
+                converted.contains(e),
+                "{e} in {} is not dw-app's conversion of any listed engine error: fix \
+                 `accept_vectors::data`, or list the new error here",
+                path.display()
+            );
+        }
+        for e in &converted {
+            assert!(
+                recorded.contains(&e),
+                "{e} is not in {}: drop it here",
+                path.display()
+            );
+        }
+    }
 }

@@ -12,7 +12,7 @@ import { IpcBackend } from "../api/tauri";
 import { ERROR_CLASSES } from "./errors";
 import { IDENTITY } from "./dashpay";
 import { fixtureOptionsFromUrl, FIXTURE_SENTINEL, installFixture, type FixtureOptions } from "./index";
-import { FIXTURE_WALLET_ID, SCENARIO_NAMES } from "./scenarios";
+import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID, SCENARIO_NAMES } from "./scenarios";
 
 const ALL: HistoryRequest = { categories: [], text: null, sort: "newestFirst", cursor: null, limit: 500 };
 
@@ -105,7 +105,12 @@ describe("fixture backend", () => {
     const seen: AppEvent[] = [];
     await listen<AppEvent>(cmd.ENGINE_EVENT, (e) => seen.push(e.payload));
     const grace = (await cmd.resolveUser(FIXTURE_WALLET_ID, "grace"))!;
-    expect(await cmd.dashpayAcceptRequest(FIXTURE_WALLET_ID, IDENTITY.alice, grace.identity, "g")).toMatchObject({ kind: "established" });
+    // The engine redeems an authorised platformOp grant (accept.test.ts replays its outcomes).
+    const grant = await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: "150000000" }, FIXTURE_WALLET_ID, {
+      kind: "passphrase",
+      passphrase: FIXTURE_PASSPHRASE,
+    });
+    expect(await cmd.dashpayAcceptRequest(FIXTURE_WALLET_ID, IDENTITY.alice, grace.identity, grant.id)).toMatchObject({ kind: "established" });
     expect((await cmd.dashpayContact(FIXTURE_WALLET_ID, IDENTITY.alice, grace.identity))?.summary).toMatchObject({ relation: "contact", channel: "setupPending" });
     expect(seen).toContainEqual(expect.objectContaining({ kind: "platform", change: { domain: "contacts", identity: IDENTITY.alice } }));
   });

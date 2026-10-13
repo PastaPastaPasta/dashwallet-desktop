@@ -5,12 +5,18 @@
 // A command without a handler rejects with `platform.not_implemented` (installFixture).
 
 import type { AppError, AppEvent, CommandArgs, CommandName, CommandResults } from "../api/generated/commands";
+import type { AuthGrant } from "../api/generated/AuthGrant";
+import type { Budget } from "../api/generated/Budget";
 import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
+import type { CredentialSpec } from "../api/generated/CredentialSpec";
+import type { FlowKindName } from "../api/generated/FlowKindName";
+import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
+import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
 import { isCheckable } from "../api/lockReport";
 import { sectionOf } from "./dashpay";
 import { MAX_REPORT_WALLETS, type World } from "./scenarios";
-import { historyPage, txDetails } from "./wallet";
+import { FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
 
 export interface Ctx {
   world: World;
@@ -55,6 +61,125 @@ function setLock({ world, emit }: Ctx, state: World["lock"]["state"]) {
   world.lock = { ...world.lock, state };
   emit({ kind: "vaultLockState", network: world.launch.network.dirName, state });
 }
+
+// Grants and leases (E0-04), as dw-vault and the engine's lease table answer them. The clock is
+// FIXTURE_NOW, so grant expiry (120 s) and a lease's idle reaping are not modelled.
+
+/** The quote of a contact request or its acceptance (dw-engine flows.rs `CONTACT_REQUEST_CREDITS`). */
+const CONTACT_REQUEST_CREDITS = 150_000_000n;
+const GRANT_TTL_SECS = 120;
+
+const grantInvalid = () => fail("platform.grant_invalid", "grant invalid");
+const grantExceeded = (needed: bigint, remaining: bigint) =>
+  fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: String(needed), remaining: String(remaining) });
+
+/** A fresh 32-hex-digit id whose first 8 digits are unique (a lease's `Lease.id`). */
+function freshId(w: World, tag: string): string {
+  w.issued += 1;
+  return (tag + w.issued.toString(16).padStart(4, "0")).repeat(4);
+}
+
+/** `parse_lease`: `lease-` and 32 hex digits, else a vault grant id. */
+function leaseKey(id: string): string | null {
+  return /^lease-[0-9a-f]{32}$/i.test(id) ? id.toLowerCase() : null;
+}
+
+/** dw-vault's credential check of `authorize` (the "every payment needs authentication"
+ * setting is not modelled: no credential is ever required beyond these). */
+function checkCredential(w: World, credential: CredentialSpec) {
+  if (w.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
+  switch (credential.kind) {
+    case "passphrase": {
+      if (credential.passphrase !== w.passphrase) {
+        // As `unlock` counts a wrong passphrase.
+        const failedAttempts = w.lock.failedAttempts + 1;
+        w.lock = { ...w.lock, failedAttempts };
+        throw fail("vault.wrong_passphrase", `wrong passphrase (${failedAttempts} failed)`, {
+          kind: "wrongPassphrase",
+          failedAttempts,
+          retryAfterSecs: null,
+        });
+      }
+      w.lock = { ...w.lock, failedAttempts: 0 };
+      return;
+    }
+    case "quickUnlock":
+      if (!w.lock.quickUnlockEnrolled) throw fail("vault.quick_unlock_unavailable", "quick unlock is not enrolled");
+      return;
+    case "unencrypted":
+      if (w.lock.state === "locked") throw fail("vault.locked", "vault locked");
+      if (w.lock.state === "unlockedMixingOnly") throw fail("vault.mixing_only", "vault unlocked for mixing only");
+      return;
+  }
+}
+
+/** `Vault::authorize_set`: one credential check, one single-use grant per purpose, all or none. */
+function authorizeSet(w: World, purposes: GrantPurposeSpec[], walletId: string | null, credential: CredentialSpec): AuthGrant[] {
+  if (walletId !== null && !/^[0-9a-f]{64}$/i.test(walletId)) throw fail("invalid_argument", `not a wallet id: ${walletId}`);
+  if (purposes.length === 0) throw fail("invalid_argument", "no grant purpose");
+  const unbound = purposes.find((p) => (p.kind !== "changeCredential") !== (walletId !== null));
+  if (unbound) throw fail("invalid_argument", `a ${unbound.kind} grant ${walletId === null ? "needs a wallet id" : "is not bound to a wallet"}`);
+  checkCredential(w, credential);
+  const expiresAt = secs(FIXTURE_NOW) + GRANT_TTL_SECS;
+  return purposes.map((purpose) => {
+    const grant: AuthGrant = { id: freshId(w, "9a7e"), purpose, walletId, expiresAt, singleUse: true };
+    w.grants.push({ grant, used: false });
+    return grant;
+  });
+}
+
+/** The unused vault grant `id` of `walletId`, if it is of one of `kinds`. */
+function liveGrant(w: World, id: string, walletId: string, kinds: GrantPurposeSpec["kind"][]): AuthGrant | null {
+  const g = w.grants.find((x) => x.grant.id === id && !x.used)?.grant;
+  return g && g.walletId === walletId && kinds.includes(g.purpose.kind) ? g : null;
+}
+
+function useGrant(w: World, id: string) {
+  for (const g of w.grants) if (g.grant.id === id) g.used = true;
+}
+
+function leaseChanged({ world, emit }: Ctx, lease: Lease) {
+  emit({ kind: "leaseChanged", network: world.launch.network.dirName, lease });
+}
+
+function setLease(ctx: Ctx, lease: Lease) {
+  ctx.world.leases = ctx.world.leases.map((l) => (l.id === lease.id && l.walletId === lease.walletId ? lease : l));
+  leaseChanged(ctx, lease);
+}
+
+/** The engine's `write_lease` for a write of one of `flows` costing `quote` credits, in its
+ * order: a lease id of the wallet's, of one of `flows`, whose Credits budget covers the quote;
+ * or an unused `platformOp` vault grant of the wallet's whose `maxCredits` covers it. Checks
+ * only: the returned commit charges the lease or redeems the grant once nothing else refuses. */
+function writeLease(ctx: Ctx, walletId: string, grant: string, flows: FlowKindName[], quote: bigint): () => void {
+  const { world } = ctx;
+  const key = leaseKey(grant);
+  if (key === null) {
+    const g = liveGrant(world, grant, walletId, ["platformOp"]);
+    if (g?.purpose.kind !== "platformOp") throw grantInvalid();
+    const remaining = BigInt(g.purpose.maxCredits);
+    if (quote > remaining) throw grantExceeded(quote, remaining);
+    if (world.lock.state === "locked") throw fail("platform.signer_unavailable", "signer unavailable");
+    return () => useGrant(world, g.id);
+  }
+  const lease = world.leases.find((l) => l.id === world.flowLeases[key] && l.walletId === walletId);
+  if (!lease || !flows.includes(lease.flow)) throw grantInvalid();
+  const credits = lease.budgets.find((b) => b.purpose === "credits" && BigInt(b.ceiling) > 0n);
+  if (!credits) throw fail("platform.needs_grant", "needs a grant", { kind: "needsGrant", purpose: "credits" });
+  const remaining = BigInt(credits.ceiling) - BigInt(credits.spent);
+  if (quote > remaining) throw grantExceeded(quote, remaining);
+  if (lease.state.kind === "ended") throw fail("platform.lease_expired", "lease expired");
+  if (lease.state.kind === "revoked") throw fail("platform.lease_revoked", "lease revoked", { kind: "revoked", cause: lease.state.cause });
+  return () => {
+    const budgets = lease.budgets.map((b) => (b === credits ? { ...b, spent: String(BigInt(b.spent) + quote) } : b));
+    setLease(ctx, { ...lease, budgets });
+  };
+}
+
+/** A base58 identity id, as `Pair::parse` takes one. */
+const isIdentityId = (s: string) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s);
+
+const BUDGET_ORDER: Budget["purpose"][] = ["funding", "credits", "spend"];
 
 export const HANDLERS: Handlers = {
   // App and network
@@ -102,6 +227,60 @@ export const HANDLERS: Handlers = {
   },
   last_lock_report: (_, { world }) => world.lastLockReport,
   leases: (_, { world }) => world.leases,
+  authorize: ({ purpose, walletId, credential }, { world }) => authorizeSet(world, [purpose], walletId, credential)[0],
+  authorize_set: ({ purposes, walletId, credential }, { world }) => authorizeSet(world, purposes, walletId, credential),
+  revoke_grant: ({ grantId }, { world }) => {
+    useGrant(world, grantId);
+    return null;
+  },
+  // NetworkSession::begin_flow: every grant checked before any is redeemed (lease/session.rs
+  // `issue`): unused, the wallet's, one per kind, of a kind the flow allows (a `platformOp`, and
+  // for "Accept and pay" a `spend` too). Budgets: a `platformOp`'s `maxDuffs` funds, its
+  // `maxCredits` credits, a `spend`'s `maxDuffs` spends; an empty one is not listed.
+  begin_flow: ({ walletId, flow, grants }, ctx) => {
+    const { world } = ctx;
+    wallet(world, walletId);
+    const kinds: GrantPurposeSpec["kind"][] = flow === "acceptAndPay" ? ["platformOp", "spend"] : ["platformOp"];
+    const found = grants.map((id) => liveGrant(world, id, walletId, kinds));
+    const purposes = new Set(found.map((g) => g?.purpose.kind));
+    const vaultOpen = world.lock.state !== "locked" && world.lock.state !== "unlockedMixingOnly";
+    if (!found.length || !vaultOpen || found.some((g) => !g) || purposes.size !== found.length) throw grantInvalid();
+    const budgets: Budget[] = [];
+    const budget = (purpose: Budget["purpose"], ceiling: string) => ceiling !== "0" && budgets.push({ purpose, ceiling, spent: "0" });
+    for (const g of found as AuthGrant[]) {
+      useGrant(world, g.id);
+      if (g.purpose.kind === "platformOp") {
+        budget("funding", String(g.purpose.maxDuffs));
+        budget("credits", g.purpose.maxCredits);
+      } else if (g.purpose.kind === "spend") budget("spend", String(g.purpose.maxDuffs));
+    }
+    budgets.sort((a, b) => BUDGET_ORDER.indexOf(a.purpose) - BUDGET_ORDER.indexOf(b.purpose));
+    const id = `lease-${freshId(world, "1ea5")}`;
+    const lease: Lease = {
+      id: id.slice("lease-".length, "lease-".length + 8),
+      walletId,
+      flow,
+      state: { kind: "active" },
+      ownKey: true,
+      keyExpiresInSecs: 240,
+      fundsCommitted: false,
+      budgets,
+      inFlight: 0,
+      callRunning: false,
+    };
+    world.flowLeases[id] = lease.id;
+    world.leases = [...world.leases, lease];
+    leaseChanged(ctx, lease);
+    return id;
+  },
+  // Idempotent; a lease id that does not parse is `platform.grant_invalid`.
+  end_flow: ({ lease: id }, ctx) => {
+    const key = leaseKey(id);
+    if (key === null) throw grantInvalid();
+    const lease = ctx.world.leases.find((l) => l.id === ctx.world.flowLeases[key]);
+    if (lease && lease.state.kind !== "ended") setLease(ctx, { ...lease, state: { kind: "ended" }, ownKey: false, keyExpiresInSecs: null });
+    return null;
+  },
   dispatch_status: ({ walletId, artifact }, { world }) => {
     wallet(world, walletId);
     // The engine's DashPay::dispatch_status: a txid, a transition hash or a step id.
@@ -163,12 +342,33 @@ export const HANDLERS: Handlers = {
     if (relation === "pendingOutgoing" || relation === "pendingIncoming") return relation;
     return "ok";
   },
-  dashpay_accept_request: ({ walletId, identity, from }, ctx) => {
-    const c = contact(ctx.world, walletId, identity, from);
-    if (c.summary.relation !== "pendingIncoming") throw fail("invalid_argument", `no request from ${from}`);
-    c.summary = { ...c.summary, relation: "contact", channel: "setupPending", since: Math.floor(ctx.world.sync.tipTime ?? 0) };
+  // DashPay::accept_request (requests.rs `accept`), in the engine's order: the ids, itself, the
+  // identity, a contact already, their request, its DashPay keys, its credits, then the grant
+  // (`writeLease`), consumed only once the write goes out. The request it returns is the
+  // `$createdAt` (decimal ms) of the reverse request it writes (journal.rs `request_ref`).
+  dashpay_accept_request: ({ walletId, identity, from, grant }, ctx) => {
+    const { world } = ctx;
+    wallet(world, walletId);
+    if (!isIdentityId(identity) || !isIdentityId(from)) throw fail("invalid_argument", "not an identity id");
+    if (from === identity) throw fail("contact.self", "contact is the identity itself");
+    const dp = dashpay(world, walletId, identity);
+    const me = dp.identities.find((i) => i.identity === identity)!;
+    const c = dp.contacts.find((x) => x.summary.contact === from);
+    if (c?.summary.relation === "contact") throw fail("contact.already_contact", "already a contact");
+    if (c?.summary.relation !== "pendingIncoming") throw fail("invalid_argument", "no contact request from this identity");
+    if (!me.hasDashpayKeys) throw fail("contact.ineligible", "contact ineligible: NoDashPayKeys", { kind: "ineligible", reason: "noDashPayKeys" });
+    // The engine reads the balance from Platform; the fixture's summary is its copy.
+    const quote = CONTACT_REQUEST_CREDITS;
+    const available = me.balance ?? "0";
+    if (BigInt(available) < quote) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(quote), available });
+    writeLease(ctx, walletId, grant, ["accept", "acceptAndPay"], quote)();
+    const createdAt = FIXTURE_NOW.getTime();
+    dp.requestTimes[from] = { incoming: dp.requestTimes[from]?.incoming ?? null, outgoing: createdAt };
+    const since = Math.floor(createdAt / 1000);
+    c.summary = { ...c.summary, relation: "contact", channel: "setupPending", since };
+    c.requestSentAt = since;
     contactsChanged(ctx, walletId, identity);
-    return { kind: "established", request: `req-${c.summary.username}` };
+    return { kind: "established", request: String(createdAt) };
   },
   dashpay_ignore_contact: ({ walletId, identity, contact: id }, ctx) => {
     const c = contact(ctx.world, walletId, identity, id);
