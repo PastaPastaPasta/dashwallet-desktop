@@ -1,3 +1,4 @@
+// dw-fixture-module: never in a production build (vite.config.ts, noFixtureModules).
 // One `AppError` per `ErrorData` class, with a code dw-app really pairs it with
 // (rust/crates/dw-app/src/error). The map is keyed by every `ErrorData["kind"]`, so a class
 // added on the Rust side fails `tsc` here until it has a sample. `null` data (most codes) is

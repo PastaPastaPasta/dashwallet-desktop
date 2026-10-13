@@ -1,5 +1,6 @@
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { listen } from "@tauri-apps/api/event";
+import { readdirSync, readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isAppError } from "../api/backend";
 import * as cmd from "../api/generated/commands";
@@ -27,6 +28,15 @@ afterEach(() => {
 });
 
 describe("fixture backend", () => {
+  // vite.config.ts fails a production build holding a module with this marker, wherever it
+  // lives: a fixture module copied or renamed out of src/fixture/ keeps it.
+  it("every fixture module carries the production-build marker", () => {
+    const dir = new URL(".", import.meta.url);
+    const modules = readdirSync(dir).filter((f) => /\.tsx?$/.test(f) && !f.endsWith(".test.ts"));
+    expect(modules.length).toBeGreaterThan(5);
+    for (const f of modules) expect(readFileSync(new URL(f, dir), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);
+  });
+
   it("is deterministic and newest first", async () => {
     const a = await backend({ scenario: "funded" }).b.historyPage(FIXTURE_WALLET_ID, ALL);
     const b = await backend({ scenario: "funded" }).b.historyPage(FIXTURE_WALLET_ID, ALL);

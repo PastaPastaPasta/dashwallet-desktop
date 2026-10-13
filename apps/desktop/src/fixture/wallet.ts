@@ -1,3 +1,4 @@
+// dw-fixture-module: never in a production build (vite.config.ts, noFixtureModules).
 // The sample wallet's chain data: the data of docs/design/ux/home-*.png plus a month of
 // history. Deterministic (seeded PRNG, fixed clock), so screenshots and element boxes are
 // comparable across engines and runs.

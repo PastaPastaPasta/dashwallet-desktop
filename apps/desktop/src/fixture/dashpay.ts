@@ -1,3 +1,4 @@
+// dw-fixture-module: never in a production build (vite.config.ts, noFixtureModules).
 // DashPay states for the fixture scenarios: no identity, a registration in flight, and a
 // registered identity with contacts in every relation and channel state, pending requests in
 // both directions, and a notification journal.

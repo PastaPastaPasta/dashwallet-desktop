@@ -115,7 +115,9 @@ engine is built or linked. Scenarios: `funded` (default), `empty`, `no-wallet`, 
 **No fixture code in production.** The renderer imports the fixture only under the build-time constant
 `__DW_FIXTURES__`, which is true for `vite` (dev server) and `vite build --mode fixture` and false for
 `vite build`, so the production bundle has no fixture chunk. Vite's `noFixtureModules` plugin fails a
-production build whose chunks hold any `src/fixture/` module or the mock IPC, whatever imports it, and
+production build whose chunks hold any `src/fixture/` module, any module whose source carries the line
+`// dw-fixture-module` (every fixture module starts with it, `fixture.test.ts` checks, so a copy or a
+rename outside `src/fixture/` still fails), or the mock IPC, whatever imports it, and
 `scripts/check-bundle.mjs` runs at the end of both builds: `dist/` fails if it contains the fixture's sentinel string or Tauri's mock IPC, and
 `dist-fixture/` fails if it does not (the positive control). `pnpm tauri build` runs `pnpm build`, so
 every app binary passes the check. dw-app has no fixture mode (`--fixture` is an unknown option).

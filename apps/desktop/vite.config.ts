@@ -11,22 +11,35 @@ const repo = resolve(import.meta.dirname, "../..");
 // `vite build --mode fixture` (into `dist-fixture/`, which Playwright serves), and false for
 // `vite build`, the production renderer Tauri embeds. Nothing else decides it: no environment
 // variable can put the fixture backend into `dist/`. Two checks: `noFixtureModules` fails a
-// production build whose chunks hold any `src/fixture/` module or Tauri's mock IPC, whoever
-// imports it, and scripts/check-bundle.mjs scans the written files.
-const noFixtureModules: Plugin = {
-  name: "dw-no-fixture-modules",
-  generateBundle(_, bundle) {
-    for (const chunk of Object.values(bundle))
-      if (chunk.type === "chunk")
-        for (const id of Object.keys(chunk.modules))
-          if (/[\\/]src[\\/]fixture[\\/]|@tauri-apps[\\/]api[\\/]mocks/.test(id)) this.error(`production build includes fixture code: ${id}`);
-  },
-};
+// production build whose chunks hold any `src/fixture/` module, any module whose source carries
+// the fixture marker (a fixture module copied or renamed elsewhere keeps it; fixture.test.ts
+// checks every fixture module has it) or Tauri's mock IPC, whoever imports it; and
+// scripts/check-bundle.mjs scans the written files.
+const FIXTURE_MARKER = /^\/\/ dw-fixture-module\b/m;
+function noFixtureModules(): Plugin {
+  const marked = new Set<string>();
+  return {
+    name: "dw-no-fixture-modules",
+    // Before any transform: the raw source, comments included.
+    enforce: "pre",
+    transform(code, id) {
+      if (FIXTURE_MARKER.test(code)) marked.add(id);
+      return null;
+    },
+    generateBundle(_, bundle) {
+      for (const chunk of Object.values(bundle))
+        if (chunk.type === "chunk")
+          for (const id of Object.keys(chunk.modules))
+            if (marked.has(id) || /[\\/]src[\\/]fixture[\\/]|@tauri-apps[\\/]api[\\/]mocks/.test(id))
+              this.error(`production build includes fixture code: ${id}`);
+    },
+  };
+}
 
 export default defineConfig(({ command, mode }) => {
   const fixtures = command === "serve" || mode === "fixture";
   return {
-    plugins: fixtures ? [react()] : [react(), noFixtureModules],
+    plugins: fixtures ? [react()] : [react(), noFixtureModules()],
     define: { __DW_FIXTURES__: JSON.stringify(fixtures) },
     clearScreen: false,
     resolve: {

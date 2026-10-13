@@ -86,8 +86,9 @@ with `platform.not_implemented`, as the engine's stubs do.
 
 It is reachable only where the build-time constant `__DW_FIXTURES__` is true: the dev server and
 `vite build --mode fixture`. `pnpm build` (and so every `pnpm tauri build`) leaves it out, and two checks
-prove it: Vite's `noFixtureModules` fails a production build whose chunks hold any `src/fixture/` module or
-the mock IPC, and `scripts/check-bundle.mjs` scans the files: `dist/` must not contain the fixture's
+prove it: Vite's `noFixtureModules` fails a production build whose chunks hold any `src/fixture/` module, any
+module carrying the `// dw-fixture-module` marker line (every fixture module starts with it, so a copy
+elsewhere is caught too) or the mock IPC, and `scripts/check-bundle.mjs` scans the files: `dist/` must not contain the fixture's
 sentinel or the mock IPC, `dist-fixture/` must. In a fixture build `window.__dwFixture` lets tests emit events, fail commands and read
 the calls made.
 

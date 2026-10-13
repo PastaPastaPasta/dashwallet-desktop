@@ -1,3 +1,4 @@
+// dw-fixture-module: never in a production build (vite.config.ts, noFixtureModules).
 // The fixture backend (U-07): an engine-free stand-in for dw-app at the IPC boundary. It
 // installs Tauri's mock IPC, so the renderer runs its real code path (the generated command
 // wrappers and the `engine://event` listener) against a scenario's `World`.

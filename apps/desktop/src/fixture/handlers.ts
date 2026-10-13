@@ -1,3 +1,4 @@
+// dw-fixture-module: never in a production build (vite.config.ts, noFixtureModules).
 // The fixture engine: dw-app's commands over a `World`. Each handler takes the command's
 // generated `CommandArgs` and returns its `CommandResults`, so a binding change the fixture
 // does not follow fails `tsc`. Mutating commands emit the `AppEvent`s the engine would.

@@ -1,3 +1,4 @@
+// dw-fixture-module: never in a production build (vite.config.ts, noFixtureModules).
 // Named fixture scenarios. Each builds a fresh `World`: the state the fixture's command
 // handlers read and change. Pick one with `?scenario=<name>` (dev server, Playwright) or
 // `installFixture({ scenario })` (vitest).
