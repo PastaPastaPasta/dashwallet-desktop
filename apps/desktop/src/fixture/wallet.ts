@@ -5,14 +5,18 @@
 
 import { COIN } from "../format/amount";
 import type { Balances } from "../api/generated/Balances";
+import type { AppError } from "../api/generated/AppError";
 import type { HistoryRequest } from "../api/generated/HistoryRequest";
 import type { HistoryRows } from "../api/generated/HistoryRows";
+import type { HistorySortName } from "../api/generated/HistorySortName";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxDetails } from "../api/generated/TxDetails";
 import type { TxRow } from "../api/generated/TxRow";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
+import type { TxStatusKindName } from "../api/generated/TxStatusKindName";
 import type { TxTypeName } from "../api/generated/TxTypeName";
+import type { WatchOnlyFilterName } from "../api/generated/WatchOnlyFilterName";
 
 /** `default`: the reference wallet; `xss`: hostile labels and names (U6); `empty`: no history;
  * `large`: 10,000 transactions (paging and render cost). */
@@ -190,20 +194,217 @@ export function caughtUp(): SyncStatus {
   };
 }
 
-/** `history_page` over `rows`, with the engine's filters, orders and cursor. */
+// ---------------------------------------------------------------------------
+// history_page: dw_engine::history::page over DTO rows (rust/crates/dw-engine/src/history.rs).
+// Checked case by case against vectors/history.json, which dw-app generates from the engine
+// (history_vectors_tests.rs) and CI regenerates; history.test.ts replays it.
+// ---------------------------------------------------------------------------
+
+/** Largest page (`MAX_PAGE`). */
+const MAX_PAGE = 500;
+/** Longest search text, in Unicode scalar values (`MAX_SEARCH_TEXT`). */
+const MAX_SEARCH_TEXT = 256;
+const U32_MAX = 0xffff_ffffn;
+const U64_MAX = (1n << 64n) - 1n;
+const I128_MIN = -(1n << 127n);
+const I128_MAX = (1n << 127n) - 1n;
+
+const engineError = (code: "invalid_query" | "stale_cursor", message: string): AppError => ({ code, message, data: null });
+const staleCursor = () => engineError("stale_cursor", "history cursor does not match the query");
+
+/** Rust's `char::is_whitespace` (Unicode White_Space): what `str::trim` strips. Not JS `trim`,
+ * which also strips U+FEFF and keeps U+0085. */
+const RUST_WS = "\\t-\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+const RUST_TRIM = new RegExp(`^[${RUST_WS}]+|[${RUST_WS}]+$`, "gu");
+const rustTrim = (s: string) => s.replace(RUST_TRIM, "");
+
+/** Characters Rust's `str` Debug writes as `\u{..}`: grapheme extenders and what
+ * `char::is_printable` refuses. Checked against rustc 1.98 for every code point; a Unicode
+ * version difference between Rust and the JS engine would only change the fixture's own tag. */
+const DEBUG_UNICODE_ESCAPE = /[\p{Grapheme_Extend}\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}\u115f\u1160\u3164\uffa0]/u;
+const DEBUG_SHORT: Record<string, string> = { "\0": "\\0", "\t": "\\t", "\r": "\\r", "\n": "\\n", '"': '\\"', "\\": "\\\\" };
+
+/** `format!("{s:?}")` of a Rust `&str`. */
+function rustDebugStr(s: string): string {
+  let out = '"';
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    if (ch in DEBUG_SHORT) out += DEBUG_SHORT[ch];
+    else if (cp !== 0x20 && cp !== 0xff9e && cp !== 0xff9f && DEBUG_UNICODE_ESCAPE.test(ch)) out += `\\u{${cp.toString(16)}}`;
+    else out += ch;
+  }
+  return out + '"';
+}
+
+/** A serde camelCase variant name back to the Rust variant. */
+const variant = (name: string) => name[0].toUpperCase() + name.slice(1);
+const debugOpt = (v: number | null | undefined) => (v == null ? "None" : `Some(${v})`);
+
+/** The engine's `HistoryFilter` as `HistoryRequest::into_query` builds it. */
+interface Filter {
+  types: TxTypeName[];
+  categories: TxCategoryName[];
+  statuses: TxStatusKindName[];
+  dateFrom: number | null;
+  dateTo: number | null;
+  /** Untrimmed; `null` when blank. */
+  text: string | null;
+  minAmount: number | null;
+  watchOnly: WatchOnlyFilterName;
+}
+
+function filterOf(r: HistoryRequest): Filter {
+  return {
+    types: r.types ?? [],
+    categories: r.categories,
+    statuses: r.statuses ?? [],
+    dateFrom: r.dateFrom ?? null,
+    dateTo: r.dateTo ?? null,
+    text: r.text != null && rustTrim(r.text) !== "" ? r.text : null,
+    minAmount: r.minAmount ?? null,
+    watchOnly: r.watchOnly ?? "all",
+  };
+}
+
+/** `query_tag`: FNV-1a 64 over `format!("{filter:?}|{sort:?}")`. */
+function queryTag(f: Filter, sort: HistorySortName): bigint {
+  const list = (xs: string[]) => `[${xs.map(variant).join(", ")}]`;
+  const debug =
+    `HistoryFilter { types: ${list(f.types)}, categories: ${list(f.categories)}, statuses: ${list(f.statuses)}, ` +
+    `date_from: ${debugOpt(f.dateFrom)}, date_to: ${debugOpt(f.dateTo)}, ` +
+    `text: ${f.text == null ? "None" : `Some(${rustDebugStr(f.text)})`}, min_amount: ${debugOpt(f.minAmount)}, ` +
+    `watch_only: ${variant(f.watchOnly)} }|${variant(sort)}`;
+  let h = 0xcbf2_9ce4_8422_2325n;
+  for (const b of new TextEncoder().encode(debug)) h = BigInt.asUintN(64, (h ^ BigInt(b)) * 0x0100_0000_01b3n);
+  return h;
+}
+
+/** `validate_query`: limit, then date range, then text length. */
+function validate(limit: number, f: Filter) {
+  if (limit === 0 || limit > MAX_PAGE) throw engineError("invalid_query", `limit ${limit} outside 1..=${MAX_PAGE}`);
+  if (f.dateFrom != null && f.dateTo != null && f.dateFrom > f.dateTo)
+    throw engineError("invalid_query", `date_from ${f.dateFrom} is after date_to ${f.dateTo}`);
+  if (f.text != null && [...f.text].length > MAX_SEARCH_TEXT)
+    throw engineError("invalid_query", `search text longer than ${MAX_SEARCH_TEXT} characters`);
+}
+
+/** `matches`; `needle` is the trimmed, lowercased text. */
+function matches(r: TxRow, f: Filter, needle: string | null): boolean {
+  if (f.types.length > 0 && !f.types.includes(r.txType)) return false;
+  if (f.categories.length > 0 && !f.categories.includes(r.category)) return false;
+  if (f.statuses.length > 0 && !f.statuses.includes(r.status.kind)) return false;
+  if (f.dateFrom != null || f.dateTo != null) {
+    const ts = r.timestamp;
+    if (ts == null) return false;
+    if ((f.dateFrom != null && ts < f.dateFrom) || (f.dateTo != null && ts >= f.dateTo)) return false;
+  }
+  if (f.minAmount != null && Math.abs(r.amount) < f.minAmount) return false;
+  if (f.watchOnly === "yes" && !r.involvesWatchOnly) return false;
+  if (f.watchOnly === "no" && r.involvesWatchOnly) return false;
+  if (needle != null)
+    return r.txid.includes(needle) || !!r.address?.toLowerCase().includes(needle) || !!r.label?.toLowerCase().includes(needle);
+  return true;
+}
+
+/** Rust `str` order (UTF-8 bytes, i.e. code points), not JS UTF-16 code-unit order. */
+function cmpStr(a: string, b: string): number {
+  if (a === b) return 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    let x = a.charCodeAt(i);
+    let y = b.charCodeAt(i);
+    if (x === y) continue;
+    // Surrogates (astral code points) sort after U+E000..U+FFFF.
+    if (x >= 0xd800 && y >= 0xd800) {
+      x = x < 0xe000 ? x + 0x2000 : x - 0x800;
+      y = y < 0xe000 ? y + 0x2000 : y - 0x800;
+    }
+    return x < y ? -1 : 1;
+  }
+  return a.length < b.length ? -1 : 1;
+}
+
+const byTime = (s: HistorySortName) => s === "newestFirst" || s === "oldestFirst";
+const descending = (s: HistorySortName) => s === "newestFirst" || s === "amountDescending";
+
+/** `key_of`'s primary as a JS number, for sorting: an unknown time sorts as `u64::MAX` (newest);
+ * every real time and amount is below 2^53, so `Infinity` stands in for it exactly. */
+const primaryNum = (r: TxRow, s: HistorySortName) => (byTime(s) ? (r.timestamp ?? Infinity) : r.amount);
+/** `key_of`'s primary, exact (an i128 in the engine). */
+const primaryBig = (r: TxRow, s: HistorySortName) => (byTime(s) ? (r.timestamp == null ? U64_MAX : BigInt(r.timestamp)) : BigInt(r.amount));
+
+interface CursorKey {
+  primary: bigint;
+  txid: string;
+  index: number;
+}
+
+/** `compare(row key, cursor key)`: the primary in the sort's direction, then txid, then index. */
+function cmpToKey(r: TxRow, k: CursorKey, s: HistorySortName): number {
+  const p = primaryBig(r, s);
+  if (p !== k.primary) return (p < k.primary) !== descending(s) ? -1 : 1;
+  return cmpStr(r.txid, k.txid) || Math.sign(r.recordIndex - k.index);
+}
+
+const encodeCursor = (tag: bigint, r: TxRow, s: HistorySortName) =>
+  `v1.${tag.toString(16).padStart(16, "0")}.${primaryBig(r, s)}.${r.txid}.${r.recordIndex}`;
+
+/** `decode_cursor`, with Rust's integer parsing: an optional `+` (and `-` for the signed
+ * primary), any number of digits, in range. */
+function decodeCursor(cursor: string, tag: bigint): CursorKey {
+  const parts = cursor.split(".");
+  if (parts.length !== 5 || parts[0] !== "v1") throw staleCursor();
+  const [, t, p, txid, i] = parts;
+  const big = (re: RegExp, s: string, min: bigint, max: bigint, hex = false) => {
+    if (!re.test(s)) throw staleCursor();
+    const digits = s.replace(/^\+/, "");
+    const v = hex ? BigInt(`0x${digits}`) : BigInt(digits);
+    if (v < min || v > max) throw staleCursor();
+    return v;
+  };
+  if (big(/^\+?[0-9a-fA-F]+$/, t, 0n, U64_MAX, true) !== tag) throw staleCursor();
+  return {
+    primary: big(/^[+-]?[0-9]+$/, p, I128_MIN, I128_MAX),
+    txid,
+    index: Number(big(/^\+?[0-9]+$/, i, 0n, U32_MAX)),
+  };
+}
+
+/** `history_page` over `rows`: the engine's validation, filters, order and keyset cursors.
+ * Throws the engine's `invalid_query` / `stale_cursor` AppErrors. */
 export function historyPage(rows: TxRow[], request: HistoryRequest): HistoryRows {
-  const text = request.text?.trim().toLowerCase();
-  let hits = rows.filter(
-    (r) =>
-      (request.categories.length === 0 || request.categories.includes(r.category)) &&
-      (!text || [r.label, r.address, r.txid].some((v) => v?.toLowerCase().includes(text))),
-  );
-  if (request.sort === "oldestFirst") hits = [...hits].reverse();
-  if (request.sort === "amountDescending") hits = [...hits].sort((a, b) => b.amount - a.amount);
-  if (request.sort === "amountAscending") hits = [...hits].sort((a, b) => a.amount - b.amount);
-  const start = request.cursor ? Number(request.cursor) : 0;
-  const end = start + request.limit;
-  return { rows: hits.slice(start, end), nextCursor: end < hits.length ? String(end) : null, totalMatching: hits.length };
+  const { sort, cursor, limit } = request;
+  const f = filterOf(request);
+  validate(limit, f);
+  const tag = queryTag(f, sort);
+  const after = cursor != null ? decodeCursor(cursor, tag) : null;
+  const needle = f.text == null ? null : rustTrim(f.text).toLowerCase();
+  const dir = descending(sort) ? -1 : 1;
+  const hits = rows
+    .filter((r) => matches(r, f, needle))
+    .sort((a, b) => {
+      const pa = primaryNum(a, sort);
+      const pb = primaryNum(b, sort);
+      if (pa !== pb) return pa < pb ? -dir : dir;
+      return cmpStr(a.txid, b.txid) || a.recordIndex - b.recordIndex;
+    });
+  // `partition_point`: the first row after the cursor's key.
+  let start = 0;
+  if (after) {
+    let hi = hits.length;
+    while (start < hi) {
+      const mid = (start + hi) >>> 1;
+      if (cmpToKey(hits[mid], after, sort) > 0) hi = mid;
+      else start = mid + 1;
+    }
+  }
+  const page = hits.slice(start, start + limit);
+  const more = hits.length - start > limit;
+  return {
+    rows: page,
+    nextCursor: more ? encodeCursor(tag, page[page.length - 1], sort) : null,
+    totalMatching: hits.length,
+  };
 }
 
 /** `tx_detail` of `row`: inputs, outputs and a raw size drawn from its txid. */

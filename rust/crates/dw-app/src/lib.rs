@@ -11,6 +11,8 @@ pub mod codegen;
 pub mod coverage;
 pub mod dto;
 pub mod error;
+#[cfg(test)]
+mod history_vectors_tests;
 mod ipc;
 #[cfg(test)]
 mod ipc_tests;
