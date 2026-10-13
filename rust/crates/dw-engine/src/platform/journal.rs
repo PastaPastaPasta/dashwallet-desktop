@@ -730,20 +730,23 @@ impl ChangesetTap {
     }
 
     fn unread_moved_since(&self, id: WalletId, epoch: u64) -> bool {
-        match self.refresh_unread(id, epoch) {
-            Ok(moved) if !moved.is_empty() => self.hub.pump.mark_platform(
-                id,
-                moved
-                    .into_iter()
-                    .map(|identity| PlatformChange::Events { identity }),
-            ),
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(wallet_id = %id, error = %e, "could not count the unread DashPay events");
-                return false;
-            }
+        let Some(moved) = self.recount(id, epoch) else {
+            return false;
+        };
+        if !moved.is_empty() {
+            self.hub.pump.mark_platform(id, moved);
         }
         true
+    }
+
+    /// [`Self::refresh_unread`], a failure logged: the `Platform{Events}`
+    /// of the identities whose count moved.
+    fn recount(&self, id: WalletId, epoch: u64) -> Option<BTreeSet<PlatformChange>> {
+        let moved = (self.refresh_unread(id, epoch)).inspect_err(|e| {
+            tracing::warn!(wallet_id = %id, error = %e, "could not count the unread DashPay events")
+        });
+        let events = |identity| PlatformChange::Events { identity };
+        Some(moved.ok()?.into_iter().map(events).collect())
     }
 
     /// Marks the identity's unread rows up to `up_to` read (with `contact`,
@@ -853,8 +856,9 @@ impl ChangesetTap {
         }
     }
 
-    /// Journals `events` (catch-up by their age), adding the feed signals
-    /// of the rows written to `changes` and queueing their news. The one
+    /// Journals `events` (catch-up by their age): once the write is done,
+    /// `changes`, the feed signals of the rows it wrote and the counts it
+    /// moved go out in one mark, then their news is queued. The one
     /// writer of `dp_events` rows that can be news: DP1-04's contest
     /// outcomes come through here. For the wallet at `epoch`: once `forget`
     /// moved it on (a removal, a rollback), nothing is written, even into
@@ -908,8 +912,10 @@ impl ChangesetTap {
             match write() {
                 Ok(added) => {
                     let (news, unread) = self.added(&entries, &kinds, &added, now, changes);
-                    if unread {
-                        self.unread_moved_since(id, epoch);
+                    // With the write's own signals, in one mark: the host
+                    // sees the count move with the rows that moved it.
+                    if unread && let Some(moved) = self.recount(id, epoch) {
+                        changes.extend(moved);
                     }
                     self.hub.pump.mark_platform(id, std::mem::take(changes));
                     // Under the lock `forget` takes: none for a wallet
