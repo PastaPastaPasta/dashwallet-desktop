@@ -296,7 +296,8 @@ impl Harness {
     /// What `WalletStore::store` does around an accepting persister.
     fn feed_to(&self, wallet: WalletId, cs: PlatformWalletChangeSet) {
         if let Some(c) = classify(&cs) {
-            self.tap.record(wallet, c, &self.times);
+            self.tap
+                .record(wallet, self.tap.epoch(wallet), c, &self.times);
         }
     }
 
@@ -1118,7 +1119,7 @@ fn the_first_bring_up_time_is_kept() {
     // A later session over the same database uses it.
     let later = ChangesetTap::new(Arc::clone(&h.hub), Arc::clone(&h.appdb));
     if let Some(c) = classify(&contacts(incoming(ME, BOB, OLD_MS))) {
-        later.record(W, c, &h.times);
+        later.record(W, later.epoch(W), c, &h.times);
     }
     assert!(h.journal()[0].read_at.is_some());
 }
@@ -1405,7 +1406,7 @@ fn news_is_each_unread_row_a_write_added_once() {
         contacts(established(ME, CAROL, NEW_MS + 30, NEW_MS + 20)),
         payment(ME, "aa11", BOB, PaymentDirection::Received),
     ] {
-        again.record(W, classify(&cs).unwrap(), &h.times);
+        again.record(W, again.epoch(W), classify(&cs).unwrap(), &h.times);
     }
     assert!(h.news().is_empty());
     assert_eq!(h.journal().len(), 4);
@@ -1608,11 +1609,12 @@ fn a_failed_first_count_keeps_a_count_that_landed_meanwhile() {
     assert_eq!(h.unread(), Some(1), "the failed first count wiped it");
 }
 
-/// A write begun before the wallet's removal that lands after the
-/// removal's `forget` makes no news and leaves no count (the tombstone
-/// stops writes that begin later).
+/// A write begun before the wallet's removal that reaches app.sqlite after
+/// the removal's `forget` writes no row, makes no news and leaves no
+/// count, though no tombstone stops it (a readmission would have cleared
+/// one).
 #[test]
-fn a_write_across_a_forget_makes_no_news_and_no_count() {
+fn a_write_across_a_forget_leaves_no_row_news_or_count() {
     let h = Harness::new();
     h.feed(contacts(incoming(ME, BOB, NEW_MS)));
     assert_eq!(h.unread(), Some(1));
@@ -1627,14 +1629,16 @@ fn a_write_across_a_forget_makes_no_news_and_no_count() {
             let _rt = rt.enter();
             h.feed(contacts(incoming(ME, CAROL, NEW_MS)));
         });
-        while !pause.reached.load(std::sync::atomic::Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        // Before the scope joins the writer, however this ends.
+        let release = ReleaseOnDrop(Arc::clone(&pause));
+        wait_for("the held write", Duration::from_secs(20), || {
+            pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+        });
         h.tap.forget(&W);
-        pause.release.notify_one();
+        drop(release);
         writer.join().unwrap();
     });
-    assert_eq!(h.journal().len(), 2, "no tombstone here: the row lands");
+    assert_eq!(h.journal().len(), 1, "the late write's row landed");
     assert!(h.news().is_empty());
     assert_eq!(h.unread(), None);
 }

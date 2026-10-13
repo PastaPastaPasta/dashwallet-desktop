@@ -14,6 +14,7 @@ use super::SpvState;
 use super::contacts::{ContactQuery, ContactSection, ContactSort, Relation};
 use super::contacts_tests::{Fixture, wait_for as wait_long};
 use super::errors::PlatformError;
+use super::journal::ChangesetTap;
 use super::journal_tests::{self, Recorder, b58, contacts, incoming, request};
 use super::notifications::{DashPayEvent, EventKind, EventPage};
 use crate::coins::TestPause;
@@ -462,6 +463,57 @@ fn an_unread_count_checked_before_a_removal_starts_no_count() {
         None,
         "the removed wallet counted"
     );
+}
+
+/// Sol r2 (E0-06's journal writer): a library changeset held at `at` (a
+/// test pause of the tap) across the wallet's removal and a same-seed
+/// reimport writes no row into the reimported wallet and makes no news.
+fn a_store_held_across_a_removal_and_reimport_journals_nothing(
+    at: fn(&ChangesetTap) -> &std::sync::Mutex<Option<Arc<TestPause>>>,
+) {
+    let dir = dw_testutil::private_tempdir();
+    let dest = dir.path().join("me.dwbackup");
+    let f = Fixture::new(true);
+    f.give_me();
+    (f.engine)
+        .block_on(f.s.backup_wallet(f.wallet, dest.clone(), backup_pw()))
+        .unwrap();
+    let live = f.s.live().unwrap();
+    let pause = Arc::new(TestPause::default());
+    *at(&live.tap).lock().unwrap() = Some(Arc::clone(&pause));
+    let _release = ReleaseOnDrop(Arc::clone(&pause));
+    let (store, rt, wallet) = (Arc::clone(&live.store), f.s.rt.clone(), f.wallet);
+    let writer = std::thread::spawn(move || {
+        let _rt = rt.enter();
+        let cs = contacts(incoming(ME, DAVE, NEW_MS));
+        platform_wallet::changeset::PlatformWalletPersistence::store(&*store, wallet.0, cs)
+            .unwrap();
+    });
+    wait_for("the held store", || pause.reached.load(Ordering::SeqCst));
+    f.engine.block_on(f.removing()).unwrap().unwrap();
+    f.reimport(&dest);
+    pause.release.notify_one();
+    writer.join().unwrap();
+    let rows = (live.appdb)
+        .journal_page(&f.wallet.to_string(), &b58(ME), None, 10, &[])
+        .unwrap()
+        .rows;
+    assert!(rows.is_empty(), "the late write landed: {rows:?}");
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(f.news().is_empty(), "{:?}", f.news());
+}
+
+/// ... held after the library's commit, before the tap's record began:
+/// the wallet is the one the store call began with.
+#[test]
+fn a_record_held_across_a_removal_and_reimport_journals_nothing() {
+    a_store_held_across_a_removal_and_reimport_journals_nothing(|tap| &tap.pause_record);
+}
+
+/// ... held in the journal write, before app.sqlite.
+#[test]
+fn a_journal_write_held_across_a_removal_and_reimport_writes_nothing() {
+    a_store_held_across_a_removal_and_reimport_journals_nothing(|tap| &tap.pause_journal);
 }
 
 // ---------------------------------------------------------------------------

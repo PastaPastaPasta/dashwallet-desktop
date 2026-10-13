@@ -61,7 +61,23 @@ impl AppDb {
         events: &[JournalEntry],
         now: u64,
     ) -> Result<Vec<(usize, i64)>> {
+        self.record_events_if(wallet_id, events, now, || true)
+    }
+
+    /// [`Self::record_events`] if `admit` agrees, asked with the database
+    /// held, so no other write of it (a removal, a readmission) lands
+    /// between the answer and the rows: `false` writes nothing.
+    pub fn record_events_if(
+        &self,
+        wallet_id: &str,
+        events: &[JournalEntry],
+        now: u64,
+        admit: impl FnOnce() -> bool,
+    ) -> Result<Vec<(usize, i64)>> {
         let mut conn = self.conn();
+        if !admit() {
+            return Ok(Vec::new());
+        }
         let tx = conn.transaction()?;
         let mut added = Vec::new();
         {
@@ -365,6 +381,24 @@ mod tests {
         assert!(db.record_events(W, &late, 3).unwrap().is_empty());
         assert!(db.journal(W).unwrap().is_empty());
         assert!(db.unread_counts(W).unwrap().is_empty());
+    }
+
+    /// A write its caller no longer admits (its wallet was removed and
+    /// imported again since it began) writes nothing, though the wallet is
+    /// readmitted.
+    #[test]
+    fn a_write_not_admitted_adds_nothing() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.delete_wallet(W).unwrap();
+        assert!(db.readmit_wallet(W).unwrap());
+        let late = [entry("request_received", "dave", "3")];
+        assert!(
+            db.record_events_if(W, &late, 3, || false)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(db.journal(W).unwrap().is_empty());
+        assert_eq!(db.record_events_if(W, &late, 3, || true).unwrap().len(), 1);
     }
 
     #[test]

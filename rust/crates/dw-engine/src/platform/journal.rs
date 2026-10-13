@@ -423,12 +423,18 @@ pub(crate) struct ChangesetTap {
     /// refresh, so the last to run counts every write before it.
     refreshing: Mutex<()>,
     /// Bumped by [`Self::forget`]: a write or count begun before a wallet
-    /// was removed (or a restore of it rolled back) leaves no news and no
-    /// count behind. Taken before `unread` and the pump.
+    /// was removed (or a restore of it rolled back) leaves no rows, no news
+    /// and no count behind, though the wallet was imported again since.
+    /// Taken before `unread` and the pump, and with app.sqlite held (a
+    /// journal write's check, [`AppDb::record_events_if`]).
     epochs: Mutex<HashMap<WalletId, u64>>,
     /// Tests: holds the next journal write before it runs.
     #[cfg(test)]
     pub(crate) pause_journal: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next store call between the library's commit and
+    /// its record ([`Self::hold_record`]).
+    #[cfg(test)]
+    pub(crate) pause_record: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next count scheduled off the caller's thread.
     #[cfg(test)]
     pub(crate) pause_count: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -452,6 +458,8 @@ impl ChangesetTap {
             epochs: Mutex::new(HashMap::new()),
             #[cfg(test)]
             pause_journal: Mutex::new(None),
+            #[cfg(test)]
+            pause_record: Mutex::new(None),
             #[cfg(test)]
             pause_count: Mutex::new(None),
             #[cfg(test)]
@@ -596,6 +604,17 @@ impl ChangesetTap {
         guard(&self.catch_up_before).remove(id);
         guard(&self.unread).remove(id);
         self.hub.pump.forget_news(id);
+    }
+
+    /// Tests: holds the store call here while `pause_record` is set.
+    #[cfg(test)]
+    pub(crate) fn hold_record(&self) {
+        // Taken first: the store calls the hold lets through (the
+        // reimport's) take this lock too.
+        let pause = guard(&self.pause_record).take();
+        if let Some(pause) = pause {
+            pause.hold();
+        }
     }
 
     /// The wallet's epoch: [`Self::forget`] moves it on.
@@ -754,8 +773,10 @@ impl ChangesetTap {
     }
 
     /// Finishes and records a changeset the persister accepted, reading
-    /// authoritative times from `times`.
-    pub(crate) fn record(&self, id: WalletId, mut c: Classified, times: &dyn Times) {
+    /// authoritative times from `times`. `epoch` is the wallet's as the
+    /// store call began ([`Self::epoch`]): its journal rows are written
+    /// only while the wallet is still at it.
+    pub(crate) fn record(&self, id: WalletId, epoch: u64, mut c: Classified, times: &dyn Times) {
         let wallet = id.to_string();
         let mut changes = std::mem::take(&mut c.changes);
         // Before the library broadcasts a registration's lock, its
@@ -826,7 +847,7 @@ impl ChangesetTap {
         }
         events.extend(self.name_events(id, std::mem::take(&mut c.names), times));
 
-        self.journal(id, events, &mut changes);
+        self.journal(id, epoch, events, &mut changes);
         if !changes.is_empty() {
             self.hub.pump.mark_platform(id, changes);
         }
@@ -835,10 +856,13 @@ impl ChangesetTap {
     /// Journals `events` (catch-up by their age), adding the feed signals
     /// of the rows written to `changes` and queueing their news. The one
     /// writer of `dp_events` rows that can be news: DP1-04's contest
-    /// outcomes come through here.
+    /// outcomes come through here. For the wallet at `epoch`: once `forget`
+    /// moved it on (a removal, a rollback), nothing is written, even into
+    /// the same wallet imported again, and nothing is news.
     pub(crate) fn journal(
         &self,
         id: WalletId,
+        epoch: u64,
         events: Vec<Event>,
         changes: &mut BTreeSet<PlatformChange>,
     ) {
@@ -867,13 +891,20 @@ impl ChangesetTap {
             .collect();
 
         if !entries.is_empty() {
-            let write = || self.appdb.record_events(&wallet, &entries, now);
+            // Checked with app.sqlite held: a removal's `forget` comes
+            // after its rows are gone and before a readmission, so a write
+            // that loses to it writes nothing.
+            let admit = || self.epoch(id) == epoch;
+            let write = || (self.appdb).record_events_if(&wallet, &entries, now, admit);
             #[cfg(test)]
-            let write = || match guard(&self.pause_journal).take() {
-                Some(pause) => pause.hold_then(write),
-                None => write(),
+            let write = || {
+                // Taken first: other writes go on while this one is held.
+                let pause = guard(&self.pause_journal).take();
+                match pause {
+                    Some(pause) => pause.hold_then(write),
+                    None => write(),
+                }
             };
-            let epoch = self.epoch(id);
             match write() {
                 Ok(added) => {
                     let (news, unread) = self.added(&entries, &kinds, &added, now, changes);

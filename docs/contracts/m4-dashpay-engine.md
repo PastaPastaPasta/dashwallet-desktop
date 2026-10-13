@@ -2259,6 +2259,12 @@ renames or reshapes them takes the next version bump:
     - **A mark is the admitted wallet's.** `mark_read` (and `ignore`'s mark) writes under DP2-04's per-wallet write
       fence, holding the wallet it was admitted for: a removal, an unload or a close waits for a mark in flight,
       and a mark that outlives the wallet fails with `wallet_not_found`, so a reimport's restored rows stay unread.
+    - **A journal write is its wallet's.** E0-06's writer journals a library changeset for the wallet as the store
+      call began: if the wallet's removal (or a restore's rollback) overtakes it before its rows are written, it
+      writes none and makes no news, even into the same wallet imported again. The check is made with app.sqlite
+      held, after the removal's rows are gone and before any readmission.
+      A restore's rollback that keeps the wallet (keys it attached to a watch-only wallet) drops such a write's
+      rows too; a watch-only wallet has no identities, so no DashPay changeset is in flight there.
     - **News only from inserted rows.** The tap's journal write reports the rows it added; nothing else (a read, an
       import, a replay) produces news, so a restart cannot announce again what a previous session announced.
     - **Hidden contacts** are not filtered (DASHPAY §3.5 journals nothing for hide or unhide; iOS's
