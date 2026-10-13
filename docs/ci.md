@@ -119,16 +119,23 @@ production build whose chunks hold any `src/fixture/` module, any module whose s
 `// dw-fixture-module` (every fixture module starts with it, `fixture.test.ts` checks, so a copy or a
 rename outside `src/fixture/` still fails), or the mock IPC, whatever imports it, and
 `scripts/check-bundle.mjs` runs at the end of both builds. `dist/` fails if it contains the fixture's
-sentinel string, Tauri's mock IPC or any **fixture sentinel**: the string literals of the fixture sources
-(tests excluded) of at least 8 printable characters that are not plain words (those need 20), and their
-integers of 7 digits or more (the PRNG seed `20261006`), derived on each build by
-`scripts/fixture-sentinels.mjs`, less two reviewed lists: literals the rest of `src/` holds too (error
-codes; `sentinels.test.ts` keeps the list equal to the actual overlap) and literals too generic to be
-evidence (2^32, a PRNG constant, the base58 alphabet). The sentinels come from the modules in
-`src/fixture/`, whose exact list `fixture.test.ts` pins, so moving one out fails that test. `dist-fixture/` fails unless it
-holds both markers and every sentinel (the positive control). The negative control,
-`scripts/guard-negative-control.sh` (in `ci.yml`), copies `src/fixture/wallet.ts` to `src/guard-copy/`
-without its marker, imports it from `main.tsx`, and requires `pnpm build` to fail at those sentinels.
+sentinel string, Tauri's mock IPC or any **fixture sentinel**, derived on each build by
+`scripts/fixture-sentinels.mjs` from the fixture modules: every file in `src/fixture/` of a type Vite loads
+as a module (`.ts .tsx .mts .cts .js .jsx .mjs .cjs`), tests excluded; a file of another type fails unless
+it is listed test data (the `vectors/`). A sentinel is a string literal of at least 8 printable characters
+that is not a plain word (one that is, once surrounding spaces and punctuation are trimmed, needs 20) or an
+integer of 7 digits or more (the PRNG seed `20261006`), less the literals the generated bindings
+(`src/api/generated/`, which `codegen::tests::bindings_are_current` keeps exactly what dw-app writes) also
+hold, the error codes, computed rather than listed, and less `GENERIC`, a short list of literals a
+dependency could hold too (2^32, a PRNG constant, the base58 alphabet), each with its reason, which
+`sentinels.test.ts` admits only in those shapes. Every fixture module must contribute a sentinel (or be
+listed in `NO_SENTINEL` with a reason), and `fixture.test.ts` pins the exact list of files in
+`src/fixture/`, so moving one out or adding one of another type fails there. `dist-fixture/` fails unless it
+holds both markers and every sentinel (the positive control). The negative controls,
+`scripts/guard-negative-control.sh` (in `ci.yml`), each import an unmarked copy in `src/guard-copy/` from
+`main.tsx` and require `pnpm build` to fail at that module's sentinels: a copy of `wallet.ts`, a new
+fixture module of type `.mts` and its copy, and a copy of `errors.ts`, whose error codes are exempt but
+whose messages are not.
 What the check proves is that no fixture marker or sentinel is in `dist/`; fixture code with no
 distinctive literal (a small helper) would not be found. `pnpm tauri build` runs `pnpm build`, so
 every app binary passes the check. dw-app has no fixture mode (`--fixture` is an unknown option).

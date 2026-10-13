@@ -58,7 +58,7 @@ for (const [name, marker] of Object.entries(MARKERS)) {
   }
 }
 
-const sentinels = await fixtureSentinels(join(dirname(fileURLToPath(import.meta.url)), ".."));
+const { sentinels } = await fixtureSentinels(join(dirname(fileURLToPath(import.meta.url)), ".."));
 const shown = (literal) => (literal.startsWith("#") ? literal.slice(1) : JSON.stringify(literal));
 const present = [];
 const absent = [];
@@ -70,7 +70,7 @@ for (const [literal, source] of sentinels) {
 if (mode === "--production" && present.length > 0) {
   console.error(`check-bundle: ${dir} is a production renderer but contains ${present.length} fixture sentinel(s), literals of the fixture sources:`);
   for (const line of present) console.error(`  ${line}`);
-  console.error("  (a collision with a dependency's own string: review it, then add it to GENERIC in scripts/fixture-sentinels.mjs)");
+  console.error("  (a dependency's own number or alphabet: review it, then add it to GENERIC in scripts/fixture-sentinels.mjs with its reason)");
   ok = false;
 }
 if (mode === "--fixture" && absent.length > 0) {

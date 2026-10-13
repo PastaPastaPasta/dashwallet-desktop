@@ -1,44 +1,76 @@
 #!/usr/bin/env bash
-# The negative control of the production fixture guard (U-07, Sol r2 finding 2): in a copy of the
-# app, src/fixture/wallet.ts is copied to src/guard-copy/ without its marker line and main.tsx
-# imports it dynamically. Neither the marker nor the `src/fixture/` path names it, so Vite's
-# noFixtureModules passes it; scripts/check-bundle.mjs must then fail `pnpm build` on the
-# fixture's literals. This fails unless the build fails at that check and for that reason.
+# The negative controls of the production fixture guard (U-07, Sol r2 finding 2, r3 findings 1 and
+# 2). Each works in its own copy of the app: fixture code is copied to src/guard-copy/ without its
+# marker line and main.tsx imports it dynamically. Neither the marker nor the `src/fixture/` path
+# names it, so Vite's noFixtureModules passes it; scripts/check-bundle.mjs must then fail
+# `pnpm build` on the fixture's literals. Each fails unless the build fails at that check and on a
+# literal of the expected fixture module:
+# - wallet: a copy of src/fixture/wallet.ts;
+# - mts: a new marked fixture module of another type, src/fixture/guard-extra.mts, and its copy;
+# - errors: a copy of src/fixture/errors.ts, whose error codes are the generated bindings' and
+#   exempt, but whose messages are not.
 # Run by ci.yml (desktop-renderer).
 #
 #   scripts/guard-negative-control.sh
 set -euo pipefail
 
 app="$(cd "$(dirname "$0")/.." && pwd)"
-# A sibling of the app, so its `../..` (the icon alias, the token sources) is still the repo.
-work="$(mktemp -d "$app/../.guard-control.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
+work=
 
-tar -C "$app" --exclude=./node_modules --exclude=./dist --exclude=./dist-fixture \
-  --exclude=./test-results --exclude=./playwright-report -cf - . | tar -C "$work" -xf -
-ln -s "$app/node_modules" "$work/node_modules"
+unmarked() { # <fixture source> <copy>
+  grep -v '^// dw-fixture-module' "$1" >"$2"
+  if grep -q 'dw-fixture-module' "$2"; then
+    echo "guard-negative-control: the copy still carries the fixture marker" >&2
+    exit 1
+  fi
+}
 
-mkdir "$work/src/guard-copy"
-grep -v '^// dw-fixture-module' "$app/src/fixture/wallet.ts" >"$work/src/guard-copy/wallet.ts"
-if grep -q 'dw-fixture-module' "$work/src/guard-copy/wallet.ts"; then
-  echo "guard-negative-control: the copy still carries the fixture marker" >&2
-  exit 1
-fi
-printf '\nvoid import("./guard-copy/wallet");\n' >>"$work/src/main.tsx"
+control() { # <name> <fixture module the found literals come from> <expected literal>
+  local name=$1 source=$2 literal=$3
+  # A sibling of the app, so its `../..` (the icon alias, the token sources) is still the repo.
+  work="$(mktemp -d "$app/../.guard-control.XXXXXX")"
+  tar -C "$app" --exclude=./node_modules --exclude=./dist --exclude=./dist-fixture \
+    --exclude=./test-results --exclude=./playwright-report -cf - . | tar -C "$work" -xf -
+  ln -s "$app/node_modules" "$work/node_modules"
+  mkdir "$work/src/guard-copy"
+  case $name in
+  wallet)
+    unmarked "$app/src/fixture/wallet.ts" "$work/src/guard-copy/wallet.ts"
+    printf '\nvoid import("./guard-copy/wallet");\n' >>"$work/src/main.tsx"
+    ;;
+  mts)
+    printf '// dw-fixture-module: a fixture module the guard must read.\nexport const GUARD_EXTRA = "guard extra fixture literal, a module of type .mts";\n' \
+      >"$work/src/fixture/guard-extra.mts"
+    unmarked "$work/src/fixture/guard-extra.mts" "$work/src/guard-copy/guard-extra.mts"
+    printf '\nvoid import("./guard-copy/guard-extra.mjs");\n' >>"$work/src/main.tsx"
+    ;;
+  errors)
+    unmarked "$app/src/fixture/errors.ts" "$work/src/guard-copy/errors.ts"
+    printf '\nvoid import("./guard-copy/errors");\n' >>"$work/src/main.tsx"
+    ;;
+  esac
 
-log="$work/build.log"
-if (cd "$work" && pnpm build) >"$log" 2>&1; then
-  cat "$log"
-  echo "guard-negative-control: FAIL: a production build holding an unmarked fixture copy passed" >&2
-  exit 1
-fi
-# Vite built it (the marker and path checks did not see it); check-bundle refused it.
-if ! grep -q '✓ built in' "$log" ||
-  ! grep -q 'is a production renderer but contains [0-9]* fixture sentinel' "$log" ||
-  ! grep -q '(src/fixture/wallet.ts)' "$log"; then
-  cat "$log"
-  echo "guard-negative-control: FAIL: the build failed, but not at check-bundle's fixture sentinels" >&2
-  exit 1
-fi
-grep 'fixture sentinel' "$log"
-echo "guard-negative-control: the unmarked copy in src/guard-copy/ fails the production build"
+  local log="$work/build.log"
+  if (cd "$work" && pnpm build) >"$log" 2>&1; then
+    cat "$log"
+    echo "guard-negative-control: FAIL ($name): a production build holding an unmarked fixture copy passed" >&2
+    exit 1
+  fi
+  # Vite built it (the marker and path checks did not see it); check-bundle refused it.
+  if ! grep -q '✓ built in' "$log" ||
+    ! grep -q 'is a production renderer but contains [0-9]* fixture sentinel' "$log" ||
+    ! grep -qF "$literal ($source)" "$log"; then
+    cat "$log"
+    echo "guard-negative-control: FAIL ($name): the build failed, but not at check-bundle's sentinels of $source" >&2
+    exit 1
+  fi
+  grep 'fixture sentinel' "$log"
+  echo "guard-negative-control: $name: the unmarked copy in src/guard-copy/ fails the production build"
+  rm -rf "$work"
+  work=
+}
+
+trap '[[ -z $work ]] || rm -rf "$work"' EXIT
+control wallet src/fixture/wallet.ts '"Coffee refund"'
+control mts src/fixture/guard-extra.mts '"guard extra fixture literal, a module of type .mts"'
+control errors src/fixture/errors.ts '"Block height out of range"'

@@ -4,74 +4,63 @@
 // the sentinels catch one by what it holds, so a copy moved out of `src/fixture/` without its
 // marker is found as well.
 //
-// Derived from the fixture sources (src/fixture/**/*.ts, tests excluded) on every build, so a new
-// fixture string is covered without a list to keep:
+// Derived from the fixture modules (every source file in `src/fixture/` of an EXTENSIONS type,
+// tests excluded) on every build, so a new fixture string is covered without a list to keep:
 // - string literals and template parts of at least MIN_LENGTH printable ASCII characters (no
-//   backslash, no `</`, which minifiers escape) that are not plain words: one made only of
-//   letters, digits and `_$.-` is a sentinel at 20 characters or more, since a shorter one (a
-//   field name, `unlocked`) also turns up as a property in any bundle;
+//   backslash, no `</`, which minifiers escape) that are not plain words: one that is only
+//   letters, digits and `_$.-` once surrounding spaces and punctuation are trimmed is a sentinel
+//   at 20 characters or more, since a shorter one (a field name, `unlocked`, ` failed)`) also
+//   turns up in any bundle;
 // - integer literals of at least 7 digits that do not end in 0 (the PRNG seed 20261006): a round
 //   number is minified to `5e9` and is not distinctive anyway;
-// - minus SHARED, the fixture literals the rest of `src/` holds too (error codes the fixture
-//   returns and the generated bindings list). SHARED is a reviewed list rather than computed on
-//   each build: computed, a fixture copy outside `src/fixture/` would exempt its own literals.
-//   src/fixture/sentinels.test.ts keeps it equal to the actual overlap;
+// - minus the shared literals: those the generated bindings also hold (GENERATED, the error codes
+//   the fixture returns). Computed from those files, not kept by hand: they are exactly what
+//   dw-app's codegen writes (`codegen::tests::bindings_are_current` refuses an extra or edited
+//   file), so a fixture copy anywhere else exempts nothing;
 // - minus GENERIC, fixture literals any dependency could hold (2^32, a PRNG constant, the base58
-//   alphabet). Add one only when a production dependency collides with it, never to let fixture
-//   code through; the test checks each is still a fixture literal.
+//   alphabet). Each entry gives its reason, and src/fixture/sentinels.test.ts admits only those
+//   shapes: never a literal of the fixture's own data.
 //
-// Sentinels come from the files in `src/fixture/`: a module moved out of it (rather than copied)
-// takes its literals along. src/fixture/fixture.test.ts pins the list of fixture modules, so a
-// move fails there.
+// Every fixture module must contribute a sentinel (or be in NO_SENTINEL with a reason), and a file
+// in `src/fixture/` of any other type fails, so no fixture code goes unchecked. A module moved out
+// of `src/fixture/` (rather than copied) takes its literals along: src/fixture/fixture.test.ts pins
+// the list of fixture files, so a move fails there.
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { extname, join, relative, sep } from "node:path";
 import { parseSync, transformWithOxc, Visitor } from "vite";
 
 export const MIN_LENGTH = 8;
 const MIN_WORD_LENGTH = 20;
 const MIN_DIGITS = 7;
 
-/** Fixture literals that non-fixture source in `src/` (tests excluded) also holds. */
-export const SHARED = [
-  "backup.already_exists",
-  "compat.network_mismatch",
-  "console.authorization_required",
-  "contact.already_contact",
-  "contact.details_too_long",
-  "contact.payment_locked",
-  "identity.keys_missing",
-  "insufficient_credits",
-  "platform.broadcast_unknown",
-  "platform.feature_off",
-  "platform.grant_exceeded",
-  "platform.grant_invalid",
-  "platform.insufficient_credits",
-  "platform.lease_expired",
-  "platform.lease_revoked",
-  "platform.needs_grant",
-  "platform.not_implemented",
-  "platform.signer_unavailable",
-  "psbt.fee_rate_too_high",
-  "registration.funding_unknown_recent",
-  "registration.in_progress",
-  "send.amount_exceeds_balance",
-  "send.amount_with_fee_exceeds_balance",
-  "send.broadcast_rejected",
-  "send.invalid_address",
-  "vault.quick_unlock_limit_exceeded",
-  "vault.quick_unlock_unavailable",
-  "vault.wrong_passphrase",
-];
+/** Every extension Vite loads as a JavaScript module, with the oxc language it is parsed as. */
+export const EXTENSIONS = {
+  ".ts": "ts",
+  ".mts": "ts",
+  ".cts": "ts",
+  ".tsx": "tsx",
+  ".js": "js",
+  ".mjs": "js",
+  ".cjs": "js",
+  ".jsx": "jsx",
+};
 
-/** Fixture literals too generic to be sentinels. */
+/** The generated files whose literals are shared with the fixture rather than its own. */
+export const GENERATED = "src/api/generated";
+
+/** Files in `src/fixture/` that are neither modules nor tests: test data no module imports. */
+export const TEST_DATA = { "vectors/accept.json": "accept_grant_vectors for accept.test.ts", "vectors/history.json": "history_page vectors for history.test.ts" };
+
+/** Fixture modules with no sentinel of their own, and why that is safe. */
+export const NO_SENTINEL = {};
+
+/** Fixture literals too generic to be sentinels: a dependency could hold them too. */
 export const GENERIC = [
-  "#4294967296",
-  "#1831565813",
-  "#12345678",
-  "#9999999",
-  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz",
-  " characters",
-  " failed)",
+  { literal: "#4294967296", reason: "2^32, the uint32 range" },
+  { literal: "#1831565813", reason: "0x6D2B79F5, the mulberry32 PRNG increment" },
+  { literal: "#12345678", reason: "the digits 1 to 8, a placeholder number" },
+  { literal: "#9999999", reason: "a repdigit, a placeholder number" },
+  { literal: "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz", reason: "the base58 alphabet" },
 ];
 
 function* walk(dir) {
@@ -82,21 +71,28 @@ function* walk(dir) {
   }
 }
 
-/** The renderer's TypeScript sources under `<app>/src`, tests excluded, as [path, isFixture]. */
-export function* sources(app) {
-  const src = join(app, "src");
-  for (const path of walk(src)) {
-    if (!/\.tsx?$/.test(path) || /\.test\.tsx?$/.test(path) || path.endsWith(".d.ts")) continue;
-    yield [path, relative(src, path).startsWith(`fixture${sep}`)];
+const isTest = (path) => /\.test\.[cm]?[jt]sx?$/.test(path) || /\.d\.[cm]?ts$/.test(path);
+
+/** The fixture modules: every source file under `<app>/src/fixture`, tests excluded. A file of any
+ * other type fails unless it is TEST_DATA. */
+export function* fixtureModules(app) {
+  const dir = join(app, "src", "fixture");
+  for (const path of walk(dir)) {
+    const name = relative(dir, path).split(sep).join("/");
+    if (isTest(path) || name in TEST_DATA) continue;
+    if (!(extname(path) in EXTENSIONS)) throw new Error(`src/fixture/${name}: not a module type the sentinels read (${Object.keys(EXTENSIONS).join(" ")})`);
+    yield path;
   }
 }
 
-/** The string and integer literals of a TypeScript file's emitted JavaScript: types and import
- * specifiers left out. Integers as `#<decimal>`. */
+/** The string and integer literals of a module's emitted JavaScript: types and import specifiers
+ * left out. Integers as `#<decimal>`. */
 export async function literalsOf(path) {
-  const ts = readFileSync(path, "utf8");
-  const { code } = await transformWithOxc(ts, path, { lang: path.endsWith("x") ? "tsx" : "ts", jsx: "preserve" });
-  const { program, errors } = parseSync(path.replace(/\.tsx?$/, ".jsx"), code);
+  const lang = EXTENSIONS[extname(path)];
+  if (!lang) throw new Error(`${path}: not a module type the sentinels read`);
+  const source = readFileSync(path, "utf8");
+  const { code } = await transformWithOxc(source, path, { lang, jsx: "preserve" });
+  const { program, errors } = parseSync(path.slice(0, -extname(path).length) + ".jsx", code);
   if (errors.length > 0) throw new Error(`${path}: ${errors[0].message}`);
   const specifiers = new Set();
   const specifier = (node) => node.source && specifiers.add(node.source.start);
@@ -118,31 +114,36 @@ export async function literalsOf(path) {
   return out;
 }
 
-function distinctive(literal) {
+export function distinctive(literal) {
   if (literal.startsWith("#")) return literal.length > MIN_DIGITS && !literal.endsWith("0");
   if (literal.length < MIN_LENGTH || !/^[\x20-\x7e]*$/.test(literal) || literal.includes("\\") || literal.includes("</")) return false;
-  return !/^[\w$.-]*$/.test(literal) || literal.length >= MIN_WORD_LENGTH;
+  const word = literal.replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, "");
+  return !/^[\w$.-]*$/.test(word) || word.length >= MIN_WORD_LENGTH;
 }
 
-/** The distinctive fixture literals and those the rest of `src/` also holds. */
-export async function overlap(app) {
-  const fixture = new Map();
-  const rest = new Set();
-  for (const [path, isFixture] of sources(app)) {
-    for (const literal of await literalsOf(path)) {
-      if (!isFixture) rest.add(literal);
-      else if (distinctive(literal) && !fixture.has(literal)) fixture.set(literal, relative(app, path));
-    }
-  }
-  const shared = [...fixture.keys()].filter((l) => rest.has(l)).sort();
-  return { fixture, shared };
+/** The literals of the generated bindings (GENERATED). */
+export async function generatedLiterals(app) {
+  const out = new Set();
+  for (const path of walk(join(app, GENERATED))) for (const literal of await literalsOf(path)) out.add(literal);
+  return out;
 }
 
-/** The sentinels, each with the fixture file it comes from. */
+/** The sentinels, each with the fixture module it first comes from (relative to `app`), and each
+ * fixture module's sentinels. */
 export async function fixtureSentinels(app) {
-  const { fixture } = await overlap(app);
-  for (const literal of [...SHARED, ...GENERIC]) fixture.delete(literal);
-  return fixture;
+  const generated = await generatedLiterals(app);
+  const generic = new Set(GENERIC.map((g) => g.literal));
+  const sentinels = new Map();
+  const byModule = new Map();
+  for (const path of fixtureModules(app)) {
+    const module = relative(app, path).split(sep).join("/");
+    const own = [...(await literalsOf(path))].filter((l) => distinctive(l) && !generated.has(l) && !generic.has(l));
+    byModule.set(module, own);
+    for (const literal of own) if (!sentinels.has(literal)) sentinels.set(literal, module);
+    const exempt = module.slice("src/fixture/".length) in NO_SENTINEL;
+    if (own.length === 0 && !exempt) throw new Error(`${module}: a fixture module with no sentinel: give it a distinctive literal or list it in NO_SENTINEL with a reason`);
+  }
+  return { sentinels, byModule };
 }
 
 /** Whether `text` (built JS, HTML or CSS) holds `sentinel` in any form a minifier writes it. */

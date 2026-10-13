@@ -158,8 +158,8 @@ jobs:
       # all (the positive control).
       - run: pnpm build
       - run: pnpm build:fixture
-      # The negative control: an unmarked copy of a fixture module outside src/fixture must fail
-      # the production build at check-bundle.
+      # The negative controls: an unmarked copy of a fixture module outside src/fixture (wallet.ts,
+      # a new .mts module, errors.ts) must fail the production build at check-bundle.
       - name: Fixture guard negative control
         run: scripts/guard-negative-control.sh
       # tauri-selftest.yml's verdict: a report missing a required screen must fail it.

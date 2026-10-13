@@ -1,6 +1,8 @@
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { listen } from "@tauri-apps/api/event";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isAppError } from "../api/backend";
 import * as cmd from "../api/generated/commands";
@@ -9,6 +11,7 @@ import type { HistoryRequest } from "../api/generated/HistoryRequest";
 import type { UserRelation } from "../api/generated/UserRelation";
 import type { ChannelStateName } from "../api/generated/ChannelStateName";
 import { IpcBackend } from "../api/tauri";
+import { fixtureSentinels } from "../../scripts/fixture-sentinels.mjs";
 import { ERROR_CLASSES } from "./errors";
 import { IDENTITY } from "./dashpay";
 import { fixtureOptionsFromUrl, FIXTURE_SENTINEL, installFixture, type FixtureOptions } from "./index";
@@ -31,12 +34,35 @@ describe("fixture backend", () => {
   // vite.config.ts fails a production build holding a module with this marker, wherever it
   // lives: a fixture module copied or renamed out of src/fixture/ keeps it. One whose marker
   // was also removed is found by its literals (scripts/check-bundle.mjs, sentinels.test.ts),
-  // which are derived from the modules here: the exact list makes moving one out fail.
-  it("every fixture module carries the production-build marker", () => {
-    const dir = new URL(".", import.meta.url);
-    const modules = readdirSync(dir).filter((f) => /\.tsx?$/.test(f) && !f.endsWith(".test.ts"));
-    expect(modules.sort()).toEqual(["dashpay.ts", "errors.ts", "handlers.ts", "index.ts", "scenarios.ts", "wallet.ts"]);
-    for (const f of modules) expect(readFileSync(new URL(f, dir), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);
+  // which are derived from the modules here. The exact list of files, of every type, makes
+  // moving one out or adding one the sentinels do not read (Sol r3: a `.mts`) fail here, and
+  // each module must give the check at least one sentinel of its own.
+  it("every fixture module carries the production-build marker and has sentinels", async () => {
+    const dir = fileURLToPath(new URL(".", import.meta.url));
+    const files = (readdirSync(dir, { recursive: true }) as string[]).filter((f) => statSync(join(dir, f)).isFile()).map((f) => f.split(sep).join("/"));
+    expect(files.sort()).toEqual([
+      "accept.test.ts",
+      "dashpay.ts",
+      "errors.ts",
+      "fixture.test.ts",
+      "handlers.ts",
+      "history.test.ts",
+      "index.ts",
+      "scenarios.ts",
+      "sentinels.test.ts",
+      "vectors/accept.json",
+      "vectors/history.json",
+      "wallet.ts",
+    ]);
+    const modules = files.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && !/\.test\.[cm]?[jt]sx?$/.test(f));
+    expect(modules).toEqual(["dashpay.ts", "errors.ts", "handlers.ts", "index.ts", "scenarios.ts", "wallet.ts"]);
+    const { byModule } = await fixtureSentinels(fileURLToPath(new URL("../..", import.meta.url)));
+    for (const f of modules) {
+      expect(readFileSync(join(dir, f), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);
+      expect(byModule.get(`src/fixture/${f}`)?.length ?? 0, f).toBeGreaterThan(0);
+    }
+    // The vectors are test data: no module imports them, so no fixture copy can carry them.
+    for (const f of modules) expect(readFileSync(join(dir, f), "utf8"), f).not.toMatch(/import[^;]*vectors\//);
   });
 
   it("is deterministic and newest first", async () => {
