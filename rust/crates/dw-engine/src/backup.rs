@@ -671,6 +671,9 @@ impl NetworkSession {
         let inserted =
             tokio::task::spawn_blocking(move || appdb.import_wallet_rows(&wid, &tables)).await??;
         tracing::info!(wallet_id = %id, rows = inserted, "restored app metadata from backup");
+        // The bell's count, which the imported rows moved (DP2-05).
+        let tap = self.live()?.tap;
+        tokio::task::spawn_blocking(move || tap.unread_moved(id)).await?;
         Ok(())
     }
 
@@ -712,6 +715,11 @@ impl NetworkSession {
                 if let Err(e) = removed {
                     tracing::warn!(wallet_id = %id, error = %e, "could not roll back a restored wallet");
                 }
+            }
+            // The tap's caches of it (the bell's count, news not sent),
+            // after its rows went.
+            if let Ok(live) = self.live() {
+                live.tap.forget(&id);
             }
             self.forget_secret(held, id).await;
             self.sink.emit(if created {

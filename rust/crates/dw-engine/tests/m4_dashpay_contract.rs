@@ -79,6 +79,10 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.enable_dashpay_keys",
     // DP2-04: private details.
     "DashPay.set_private_details",
+    // DP2-05: the notifications feed.
+    "DashPay.events",
+    "DashPay.unread_count",
+    "DashPay.mark_read",
     // DP1-06: credits.
     "DashPay.refresh_balance",
     "DashPay.cost_table",
@@ -116,10 +120,10 @@ const FACADE: &[&str] = &[
 /// usernames and its tests (DP2-01), user search, links and scans with
 /// their tests (DP2-03), the registration state machine, its row
 /// encodings and tests (DP1-02), and the contact-request writes, their
-/// network seam and tests, and the identity write locks (DP2-02), and the
-/// private details' publish and settle with their tests (DP2-04), and the
-/// credit costs, the balance refreshes and the top-up flow with its tests
-/// (DP1-06).
+/// network seam and tests, and the identity write locks (DP2-02), the
+/// private details' publish and settle with their tests (DP2-04), the
+/// bell's session tests (DP2-05), and the credit costs, the balance
+/// refreshes and the top-up flow with its tests (DP1-06).
 const NOT_FACADE: &[&str] = &[
     "balances.rs",
     "bringup.rs",
@@ -134,6 +138,7 @@ const NOT_FACADE: &[&str] = &[
     "lease",
     "mod.rs",
     "names_net.rs",
+    "notifications_tests.rs",
     "private_details.rs",
     "private_details_tests.rs",
     "provenance.rs",
@@ -1251,10 +1256,6 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 .await,
         );
         c.stub(dp.frequent_contacts(s(), 5));
-
-        c.stub(dp.events(s(), None, 20).await);
-        c.stub(dp.unread_count(s()));
-        c.stub(dp.mark_read(s(), 1).await);
 
         c.stub(dp.profile(s()));
         c.stub(dp.profile_limits());

@@ -1824,6 +1824,9 @@ mod tests {
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
         ("dashpay events", NO_IDENTITY),
+        ("dashpay events --identity I --cursor 3", NOT_BASE58),
+        ("dashpay unread --identity I", NOT_BASE58),
+        ("dashpay mark-read --identity I 7", NOT_BASE58),
         ("identity list", r#"{"ok":true,"result":[]}"#),
         ("identity show", NO_IDENTITY),
         ("identity set-main I", NO_IDENTITY),

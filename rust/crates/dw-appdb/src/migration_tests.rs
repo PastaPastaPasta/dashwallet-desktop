@@ -16,6 +16,7 @@ const OWNER: i64 = 2026101201;
 const OUTCOMES: i64 = 2026101202;
 const CONTACT_INFO: i64 = 2026101301;
 const REMOVED_WALLETS: i64 = 2026101302;
+const DP_EVENTS_PAGE: i64 = 2026101303;
 
 const DP_TABLES: [&str; 10] = [
     "dp_avatar",
@@ -77,7 +78,7 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), REMOVED_WALLETS);
+    assert_eq!(db.schema_version().unwrap(), DP_EVENTS_PAGE);
     drop(db);
 
     let conn = Connection::open(&path).unwrap();
@@ -91,7 +92,8 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
             OWNER,
             OUTCOMES,
             CONTACT_INFO,
-            REMOVED_WALLETS
+            REMOVED_WALLETS,
+            DP_EVENTS_PAGE
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -133,7 +135,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     }
 
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), REMOVED_WALLETS);
+    assert_eq!(db.schema_version().unwrap(), DP_EVENTS_PAGE);
     assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "Main".into())]);
     assert_eq!(
         db.label(W, crate::LabelKind::Tx, "t").unwrap().as_deref(),
@@ -156,7 +158,8 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
             OWNER,
             OUTCOMES,
             CONTACT_INFO,
-            REMOVED_WALLETS
+            REMOVED_WALLETS,
+            DP_EVENTS_PAGE
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -174,7 +177,7 @@ fn reopening_and_rerunning_change_nothing() {
     }
     for _ in 0..3 {
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), REMOVED_WALLETS);
+        assert_eq!(db.schema_version().unwrap(), DP_EVENTS_PAGE);
         db.conn()
             .execute(
                 "INSERT OR IGNORE INTO dp_main_identity (wallet_id, identity) VALUES (?1, 'id1')",
@@ -201,7 +204,8 @@ fn reopening_and_rerunning_change_nothing() {
             OWNER,
             OUTCOMES,
             CONTACT_INFO,
-            REMOVED_WALLETS
+            REMOVED_WALLETS,
+            DP_EVENTS_PAGE
         ]
     );
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_main_identity"), 1);
@@ -248,6 +252,11 @@ fn shipped_migrations_are_unchanged() {
                 "removed_wallets".to_string(),
                 CHECKSUM_REMOVED_WALLETS
             ),
+            (
+                DP_EVENTS_PAGE,
+                "dp_events_page".to_string(),
+                CHECKSUM_DP_EVENTS_PAGE
+            ),
         ]
     );
 }
@@ -260,6 +269,7 @@ const CHECKSUM_OWNER: u64 = 12040521178707991804;
 const CHECKSUM_OUTCOMES: u64 = 9183630881616259306;
 const CHECKSUM_CONTACT_INFO: u64 = 6330962680869650951;
 const CHECKSUM_REMOVED_WALLETS: u64 = 15219075048203792465;
+const CHECKSUM_DP_EVENTS_PAGE: u64 = 3406283282772175885;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -710,7 +720,7 @@ fn verification_records_without_a_digest_verify_nothing() {
         .unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), REMOVED_WALLETS);
+    assert_eq!(db.schema_version().unwrap(), DP_EVENTS_PAGE);
     assert!(db.verified_entities().unwrap().is_empty(), "the old row");
     assert_eq!(
         count(
@@ -945,6 +955,98 @@ fn an_open_with_no_other_instance_forgets_the_removed_wallets() {
     assert!(recorded(&db).is_empty());
     db.set_wallet_name(W, "n", 1).unwrap();
     assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "n".into())]);
+}
+
+/// Makes every delete of a `wallets` row fail, or stops doing so.
+fn fail_wallet_deletes(db: &AppDb, fail: bool) {
+    db.conn()
+        .execute_batch(if fail {
+            "CREATE TRIGGER fail_delete BEFORE DELETE ON wallets \
+             BEGIN SELECT RAISE(FAIL, 'injected delete failure'); END;"
+        } else {
+            "DROP TRIGGER fail_delete;"
+        })
+        .unwrap();
+}
+
+/// A removal whose row delete fails still records the wallet as removed, so
+/// its rows are not written; its readmission deletes the rows the removal
+/// left before it lets the wallet in, or fails and keeps the record.
+#[test]
+fn a_readmission_finishes_a_removal_that_failed_part_way() {
+    let db = AppDb::open_in_memory().unwrap();
+    db.set_wallet_name(W, "old", 1).unwrap();
+    db.set_wallet_name(W2, "other", 1).unwrap();
+    fail_wallet_deletes(&db, true);
+    assert!(db.delete_wallet(W).is_err());
+    assert_eq!(recorded(&db), [W]);
+    assert_eq!(insert_any_row(&db.conn(), "labels", W), 0);
+
+    assert!(matches!(
+        db.readmit_wallet(W),
+        Err(crate::AppDbError::RemovalUnfinished { wallet, .. }) if wallet == W
+    ));
+    assert_eq!(recorded(&db), [W]);
+    assert_eq!(db.wallet_names().unwrap().len(), 2);
+
+    fail_wallet_deletes(&db, false);
+    assert!(db.readmit_wallet(W).unwrap());
+    assert!(recorded(&db).is_empty());
+    assert_eq!(
+        db.wallet_names().unwrap(),
+        vec![(W2.into(), "other".into())]
+    );
+}
+
+/// A removal that could not even record the wallet is remembered by the
+/// instance: its readmission deletes the rows it left. A readmission of a
+/// wallet never removed deletes nothing.
+#[test]
+fn a_readmission_finishes_a_removal_that_could_not_record_the_wallet() {
+    let db = AppDb::open_in_memory().unwrap();
+    db.set_wallet_name(W, "old", 1).unwrap();
+    db.set_wallet_name(W2, "other", 1).unwrap();
+    db.conn()
+        .execute_batch(
+            "CREATE TRIGGER fail_record BEFORE INSERT ON removed_wallets \
+             BEGIN SELECT RAISE(FAIL, 'injected record failure'); END;",
+        )
+        .unwrap();
+    assert!(db.delete_wallet(W).is_err());
+    assert!(recorded(&db).is_empty());
+    assert_eq!(db.wallet_names().unwrap().len(), 2);
+
+    assert!(!db.readmit_wallet(W2).unwrap());
+    assert!(db.readmit_wallet(W).unwrap());
+    assert!(!db.readmit_wallet(W).unwrap());
+    assert_eq!(
+        db.wallet_names().unwrap(),
+        vec![(W2.into(), "other".into())]
+    );
+}
+
+/// An open with no other instance alive deletes the rows a removal that
+/// failed part-way left before it forgets the record; while they cannot be
+/// deleted it keeps the record.
+#[test]
+fn an_open_with_no_other_instance_finishes_a_removal_that_failed_part_way() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(crate::APP_DB_FILE);
+    let db = AppDb::open(&path).unwrap();
+    db.set_wallet_name(W, "old", 1).unwrap();
+    fail_wallet_deletes(&db, true);
+    assert!(db.delete_wallet(W).is_err());
+    drop(db);
+
+    let db = AppDb::open(&path).unwrap();
+    assert_eq!(recorded(&db), [W]);
+    assert_eq!(db.wallet_names().unwrap().len(), 1);
+    fail_wallet_deletes(&db, false);
+    drop(db);
+
+    let db = AppDb::open(&path).unwrap();
+    assert!(recorded(&db).is_empty());
+    assert!(db.wallet_names().unwrap().is_empty());
 }
 
 /// While another instance of the file at `path` is open in this process (a

@@ -2294,7 +2294,8 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
 
     // app.sqlite as a build from before E0-10b left it: without the later
     // migrations too (DP1-02's registration columns, DP2-04's digests and
-    // removed wallets with their triggers), which such a build never had,
+    // removed wallets with their triggers, DP2-05's page index), which such
+    // a build never had,
     // or the runner refuses the gap below them.
     let conn = rusqlite::Connection::open(&appdb).unwrap();
     let drop_triggers: String = conn
@@ -2307,7 +2308,8 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
         .unwrap();
     conn.execute_batch(&drop_triggers).unwrap();
     conn.execute_batch(
-        "DROP TABLE removed_wallets;
+        "DROP INDEX dp_events_page;
+             DROP TABLE removed_wallets;
              ALTER TABLE dp_trust_verified DROP COLUMN digest;
              ALTER TABLE dp_registration DROP COLUMN owner;
              ALTER TABLE dp_registration DROP COLUMN name_error;
@@ -2515,6 +2517,63 @@ fn a_wallet_imported_again_after_its_removal_is_written() {
     let request = contacts(incoming(ALICE[0], 9, 1));
     s.live().unwrap().store.store(id.0, request).unwrap();
     assert_eq!(journal(&engine, &s, id).len(), 1);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// The bring-up counts the bell (DP2-05): after a reopen the unread count
+/// is in memory before any `unread_count` call, so the first sync read
+/// answers it.
+#[test]
+fn the_bring_up_counts_the_bell() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, _) = removable_in(dir.path());
+    let request = contacts(incoming(ALICE[0], 9, u64::MAX / 2));
+    s.live().unwrap().store.store(id.0, request).unwrap();
+    drop(s);
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        ..Platform::default()
+    });
+    let (engine, s) = reopen(dir.path(), platform);
+    start(&engine, &s);
+    let alice = base58(ALICE);
+    wait_until("the bring-up's count", || {
+        s.live().unwrap().tap.unread(id, &alice) == Some(1)
+    });
+    assert_eq!(s.dashpay(id).unread_count(alice).unwrap(), 1);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A removed wallet's bell goes with its tombstone (DP2-05, DEC-210): its
+/// rows and counts are gone, the calls refuse it, and the same seed
+/// imported again starts with an empty bell.
+#[test]
+fn a_removed_wallets_bell_goes_with_it() {
+    let (_dir, engine, s, id, wipe) = removable();
+    let alice = base58(ALICE);
+    let request = || contacts(incoming(ALICE[0], 9, u64::MAX / 2));
+    s.live().unwrap().store.store(id.0, request()).unwrap();
+    let dp = s.dashpay(id);
+    dp.unread_count(alice.clone()).unwrap();
+    wait_until("the count", || dp.unread_count(alice.clone()).unwrap() == 1);
+
+    engine.block_on(s.remove_wallet(id, wipe)).unwrap();
+    assert!(journal(&engine, &s, id).is_empty());
+    assert_eq!(
+        dp.unread_count(alice.clone()).unwrap_err().code(),
+        "wallet_not_found"
+    );
+    assert_eq!(s.live().unwrap().tap.unread(id, &alice), None);
+
+    assert_eq!(restore(&engine, &s), id);
+    let manager = s.manager().unwrap();
+    engine.block_on(add_identities(&manager, id, &[(ALICE, 0)]));
+    assert_eq!(dp.unread_count(alice.clone()).unwrap(), 0);
+    let page = engine.block_on(dp.events(alice, None, 50)).unwrap();
+    assert!(page.new.is_empty() && page.earlier.is_empty(), "{page:?}");
     engine.block_on(engine.shutdown()).unwrap();
 }
 

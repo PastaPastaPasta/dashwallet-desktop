@@ -202,9 +202,14 @@ impl NetworkSession {
     /// stays listed and usable, and nothing else of it is removed. The
     /// wallet's leases are revoked and the grant is consumed either way.
     /// Once the seed is gone the removal is committed: a later step's
-    /// failure is returned and leaves the wallet without a seed. Removing it
-    /// again finishes the removal, after a reopen of the session when the
-    /// failure came after the wallet manager let it go. `WalletRemoved` is
+    /// failure is returned and leaves the wallet without a seed. If its
+    /// wallet rows could not be deleted, removing it again finishes the
+    /// removal, after a reopen of the session when the wallet manager let it
+    /// go. If only its app metadata could not be, the wallet is gone: an
+    /// import of it in this session deletes the metadata first, or is
+    /// refused (`Storage`) while it cannot, and so does the next lone open
+    /// of the app database when the wallet was recorded as removed.
+    /// `WalletRemoved` is
     /// sent once the wallet's rows are gone. The removal holds the wallet's
     /// barrier throughout, so a lease begun meanwhile finds no wallet.
     pub async fn remove_wallet(
@@ -250,7 +255,7 @@ impl NetworkSession {
             let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
             #[cfg(test)]
             let pause = crate::coins::held_appdb_job();
-            tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
+            let deleted = tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
                 #[cfg(test)]
                 if let Some(pause) = pause {
                     pause.hold();
@@ -260,8 +265,13 @@ impl NetworkSession {
                     .delete_wallet(&id.to_string())
                     .map_err(|e| EngineError::Storage(e.to_string()))
             })
-            .await??;
+            .await;
+            // The wallet has left the manager: a journal write begun before
+            // is not admitted from here on, even if a delete failed (review
+            // DP2-05 r3 finding 1). An import of it deletes what a failed
+            // delete left, or is refused (`AppDb::readmit_wallet`).
             live.tap.forget(&id);
+            deleted??;
             this.sink.emit(EngineEvent::WalletRemoved {
                 network: this.network.clone(),
                 wallet_id: id,

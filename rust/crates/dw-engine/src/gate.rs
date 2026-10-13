@@ -32,8 +32,8 @@ pub(crate) struct OpGuard<'a> {
 /// These operations are rare, so one lock covers every wallet.
 ///
 /// Lock order: an [`OpGuard`], then this lock, then the wallet's barrier
-/// (`revoke_wallet`), the end of its discoveries, and its private-details
-/// write fence and identity locks (`remove_from_manager`). It is taken
+/// (`revoke_wallet`), the end of its discoveries, and its write fence
+/// (private details, the bell's `mark_read`) and identity locks (`remove_from_manager`). It is taken
 /// only by an operation that holds its `OpGuard` and nothing later in the
 /// order, and its holder never asks the gate again: a nested admission
 /// waits behind a pending close, which waits for the holder's guard.

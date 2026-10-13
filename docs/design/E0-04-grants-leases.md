@@ -2029,7 +2029,7 @@ of Mode B (§2a.5).
   - Schema 8 (DP1-06) adds `top_up_settled`: a top-up's asset lock settled for good, by Platform's proved apply or
     the user's word, keyed by wallet and lock. No sweep and no removal deletes it, so it outlives `wallet.sqlite`'s
     `Consumed` mark as the `Sent` step's `signed_lock` row does, and a wallet imported again reads its applied
-    top-ups settled, not each pending (m4 §7 item 43).
+    top-ups settled, not each pending (m4 §7 item 44).
   - **No erase window for evidence** (DEC-163, review P2a r4 R4-F1). The delete needs no pause around it: every
     `Sent` row is the bundle of §6.2, so whichever of the delete and the bundle commits first, the log ends with the
     markers and the `Sent` row together. Sightings, `NotSent` writes and row-less copies run during the delete as

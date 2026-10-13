@@ -25,7 +25,8 @@
 //! - **Bounded payloads.** `historyChanged` sends at most [`MAX_TXIDS`]
 //!   txids; a larger batch is sent empty, which the engine already defines
 //!   as "reload the whole history". `newTransactions` sends the first
-//!   [`MAX_TXIDS`] with the full `count`. A notice's detail is cut to
+//!   [`MAX_TXIDS`] with the full `count`; `dashPayNews` the engine's first
+//!   `MAX_NEWS` events, the rest counted. A notice's detail is cut to
 //!   [`MAX_DETAIL_BYTES`], a lock report's lists to `dto::platform`'s
 //!   caps (the rest counted), and every engine id to `MAX_ID_BYTES`: no
 //!   event encodes to more than [`MAX_EVENT_BYTES`]. The copies
@@ -51,6 +52,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime};
 use ts_rs::TS;
 
+use dw_engine::platform::MAX_NEWS;
+
+use crate::api::social::DashPayEventInfo;
 use crate::dto::platform::{DispatchSettled, Lease, LockOutcome, LockProgress, MAX_ID_BYTES};
 use crate::dto::{Balances, LockStateName, SyncStatus, cap_text, mirror_enum};
 use crate::error::{AppError, EngineCode};
@@ -186,6 +190,17 @@ pub enum AppEvent {
         network: String,
         settled: DispatchSettled,
     },
+    /// DashPay news for the OS notifier (DP2-05): unread events of the
+    /// identity that notify, at most [`MAX_NEWS`] (the engine's), `more`
+    /// counting the rest. Public data only. Show one notification per event
+    /// for up to 3, else one summary; the bell (`dashpayEvents`) holds them.
+    DashPayNews {
+        network: String,
+        wallet_id: String,
+        identity: String,
+        events: Vec<DashPayEventInfo>,
+        more: u32,
+    },
 }
 
 /// The domain of a `platform` event. Identities are Base58.
@@ -211,6 +226,10 @@ pub enum PlatformChangeName {
     },
     /// The DPNS name states.
     Names,
+    /// The identity's notifications feed or unread count.
+    Events {
+        identity: String,
+    },
 }
 
 impl From<PlatformChange> for PlatformChangeName {
@@ -227,6 +246,9 @@ impl From<PlatformChange> for PlatformChangeName {
                 identity: cap_text(identity, MAX_ID_BYTES),
             },
             PlatformChange::Names => Self::Names,
+            PlatformChange::Events { identity } => Self::Events {
+                identity: cap_text(identity, MAX_ID_BYTES),
+            },
         }
     }
 }
@@ -383,6 +405,25 @@ impl From<EngineEvent> for AppEvent {
                 network: net(network),
                 settled: resolved.into(),
             },
+            EngineEvent::DashPayNews {
+                network,
+                wallet_id,
+                identity,
+                events,
+                more,
+            } => {
+                let dropped =
+                    u32::try_from(events.len().saturating_sub(MAX_NEWS)).unwrap_or(u32::MAX);
+                AppEvent::DashPayNews {
+                    network: net(network),
+                    wallet_id: wallet_id.to_string(),
+                    identity: cap_text(identity, MAX_ID_BYTES),
+                    events: (events.into_iter().take(MAX_NEWS))
+                        .map(|e| DashPayEventInfo::from(e).capped())
+                        .collect(),
+                    more: more.saturating_add(dropped),
+                }
+            }
         }
     }
 }
@@ -568,6 +609,42 @@ mod tests {
                 "walletId": wallet_id.to_string(),
                 "change": { "domain": "contacts", "identity": "Bob" }
             })
+        );
+        let news = |id| dw_engine::platform::DashPayEvent {
+            id,
+            kind: dw_engine::platform::EventKind::RequestReceived,
+            contact: Some("Bob".into()),
+            reference: Some("1700000000000".into()),
+            at: 5,
+            read_at: None,
+        };
+        let sent = json(EngineEvent::DashPayNews {
+            network: DashNetwork::Testnet,
+            wallet_id,
+            identity: "Me".into(),
+            events: (1..=MAX_NEWS as u64 + 2).map(news).collect(),
+            more: 3,
+        });
+        assert_eq!(sent["kind"], "dashPayNews");
+        assert_eq!(sent["identity"], "Me");
+        assert_eq!(sent["more"], 5, "the cut events are counted");
+        assert_eq!(sent["events"].as_array().unwrap().len(), MAX_NEWS);
+        assert_eq!(
+            sent["events"][0],
+            serde_json::json!({
+                "id": 1, "kind": "requestReceived", "contact": "Bob",
+                "reference": "1700000000000", "at": 5, "readAt": null
+            })
+        );
+        assert_eq!(
+            json(EngineEvent::Platform {
+                network: DashNetwork::Testnet,
+                wallet_id,
+                change: PlatformChange::Events {
+                    identity: "Me".into()
+                },
+            })["change"],
+            serde_json::json!({ "domain": "events", "identity": "Me" })
         );
         assert_eq!(
             json(EngineEvent::Notice {
@@ -814,6 +891,30 @@ mod tests {
                         resolution: DispatchResolution::NotSent,
                     },
                 },
+                EngineEvent::Platform {
+                    network: network(),
+                    wallet_id,
+                    change: PlatformChange::Events {
+                        identity: text(MAX_ID_BYTES),
+                    },
+                },
+                // More than the engine sends: the bridge cuts too.
+                EngineEvent::DashPayNews {
+                    network: network(),
+                    wallet_id,
+                    identity: text(MAX_ID_BYTES),
+                    events: (0..2 * MAX_NEWS as u64)
+                        .map(|id| dw_engine::platform::DashPayEvent {
+                            id: u64::MAX - id,
+                            kind: dw_engine::platform::EventKind::ContactEstablished,
+                            contact: Some(text(MAX_ID_BYTES)),
+                            reference: Some(text(MAX_ID_BYTES)),
+                            at: u64::MAX,
+                            read_at: Some(u64::MAX),
+                        })
+                        .collect(),
+                    more: u32::MAX,
+                },
             ]
             .into_iter()
             .map(AppEvent::from)
@@ -844,9 +945,10 @@ mod tests {
                 AppEvent::LeaseChanged { .. } => 15,
                 AppEvent::LockProgress { .. } => 16,
                 AppEvent::DispatchResolved { .. } => 17,
+                AppEvent::DashPayNews { .. } => 18,
             };
             let seen: std::collections::BTreeSet<_> = events.iter().map(variant).collect();
-            assert_eq!(seen, (0..18).collect());
+            assert_eq!(seen, (0..19).collect());
 
             let mut largest = (0, None);
             for event in &events {

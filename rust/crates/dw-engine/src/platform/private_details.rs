@@ -362,16 +362,17 @@ impl DigestCache {
     }
 }
 
-/// Private-details writes of a wallet (its library details, its
-/// `dp_contact_info` rows and their digests in memory) against the wallet
-/// leaving the manager: a write lands only while the wallet it read is
-/// still the manager's, and the wallet leaves only once the writes in
-/// flight have landed. So a settle or a publish that outlives a removal
-/// writes nothing of the removed wallet.
+/// A wallet's writes (its private details: library details,
+/// `dp_contact_info` rows and their digests in memory; the bell's
+/// `mark_read`) against the wallet leaving the manager: a write lands only
+/// while the wallet it read is still the manager's, and the wallet leaves
+/// only once the writes in flight have landed. So a settle, a publish or a
+/// `mark_read` that outlives a removal writes nothing of the removed
+/// wallet, nor of a reimport of it.
 #[derive(Default)]
 pub(crate) struct WriteFences(Mutex<BTreeMap<WalletId, Arc<tokio::sync::RwLock<()>>>>);
 
-/// Held over private-details writes: the wallet was the manager's when it
+/// Held over a wallet's writes: the wallet was the manager's when it
 /// was taken, and stays until it is dropped. Shared with the blocking job
 /// of each app.sqlite write, which keeps it until the job ends.
 pub(super) struct WriteFence(WalletId, Arc<tokio::sync::OwnedRwLockReadGuard<()>>);
@@ -695,10 +696,11 @@ impl NetworkSession {
             .await?)
     }
 
-    /// `f` on app.sqlite, the private-details write `what` under `fence`:
-    /// its blocking job holds the fence until it ends, even when the task
-    /// awaiting it is cancelled, so the wallet leaves after the write.
-    async fn fenced_op<T: Send + 'static>(
+    /// `f` on app.sqlite, the wallet write `what` (private details, the
+    /// bell's `mark_read`) under `fence`: its blocking job holds the fence
+    /// until it ends, even when the task awaiting it is cancelled, so the
+    /// wallet leaves after the write.
+    pub(super) async fn fenced_op<T: Send + 'static>(
         &self,
         fence: &WriteFence,
         what: &'static str,
@@ -706,10 +708,7 @@ impl NetworkSession {
     ) -> Result<T, PlatformError> {
         let (wallet_id, held) = (fence.0, Arc::clone(&fence.1));
         #[cfg(test)]
-        let pause = {
-            let mut slot = guard(&self.platform.contacts.job_pause);
-            slot.take_if(|(at, _)| *at == what).map(|(_, pause)| pause)
-        };
+        let pause = self.take_job_pause(what);
         let written = self
             .appdb_op(move |db| {
                 let _held = held;
@@ -721,7 +720,7 @@ impl NetworkSession {
             })
             .await;
         written.map_err(|e| {
-            tracing::warn!(%wallet_id, write = what, error = %e, "private details not written");
+            tracing::warn!(%wallet_id, write = what, error = %e, "wallet write failed");
             e.into()
         })
     }
@@ -765,9 +764,17 @@ impl NetworkSession {
         Arc::clone(&self.platform.contacts.digests)
     }
 
-    /// The fence for private-details writes of `wallet` ([`WriteFences`]);
-    /// `WalletNotFound` once it is no longer the manager's wallet `id`.
-    async fn write_fence(
+    /// Tests: the pause `job_pause` holds for `at`, taken.
+    #[cfg(test)]
+    pub(super) fn take_job_pause(&self, at: &str) -> Option<Arc<crate::coins::TestPause>> {
+        (guard(&self.platform.contacts.job_pause))
+            .take_if(|(held, _)| *held == at)
+            .map(|(_, pause)| pause)
+    }
+
+    /// The fence for writes of `wallet` ([`WriteFences`]); `WalletNotFound`
+    /// once it is no longer the manager's wallet `id`.
+    pub(super) async fn write_fence(
         &self,
         id: WalletId,
         wallet: &PlatformWallet,
