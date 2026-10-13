@@ -99,7 +99,15 @@ pub(crate) trait PumpTarget: Send + Sync {
 pub(crate) struct EventPump {
     pending: Mutex<Pending>,
     notify: Notify,
+    /// Tests: each [`Self::mark_platform`] call's changes, in order, while
+    /// `Some`.
+    #[cfg(test)]
+    pub(crate) platform_marks: Mutex<Option<Vec<PlatformMark>>>,
 }
+
+/// Tests: one [`EventPump::mark_platform`] call.
+#[cfg(test)]
+pub(crate) type PlatformMark = (WalletId, BTreeSet<PlatformChange>);
 
 impl EventPump {
     fn with_pending(&self, f: impl FnOnce(&mut Pending)) {
@@ -139,6 +147,12 @@ impl EventPump {
         wallet: WalletId,
         changes: impl IntoIterator<Item = PlatformChange>,
     ) {
+        #[cfg(test)]
+        let changes: BTreeSet<_> = changes.into_iter().collect();
+        #[cfg(test)]
+        if let Some(marks) = self.platform_marks.lock().unwrap().as_mut() {
+            marks.push((wallet, changes.clone()));
+        }
         self.with_pending(|p| p.platform.entry(wallet).or_default().extend(changes));
     }
 

@@ -1229,7 +1229,28 @@ fn the_session_store_taps_what_the_persister_accepts() {
     // Not a registered wallet: the persister refuses it.
     let stranger = WalletId([0x5A; 32]);
     assert!(store.store(stranger.0, names()).is_err());
+    *s.hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
     store.store(wallet.0, names()).unwrap();
+    // One mark carries the write's signals and the count it moved, so no
+    // flush can send the count's `Events` ahead of the rows that moved it
+    // (review DP2-05 r3 finding 2).
+    let marks = s.hub.pump.platform_marks.lock().unwrap().take().unwrap();
+    let counted: Vec<_> = (marks.iter())
+        .filter(|(w, changes)| *w == wallet && changes.contains(&events_of(ME)))
+        .collect();
+    assert_eq!(
+        counted,
+        [&(
+            wallet,
+            BTreeSet::from([
+                PlatformChange::Identities,
+                PlatformChange::Payments { identity: b58(ME) },
+                PlatformChange::Names,
+                events_of(ME),
+            ])
+        )],
+        "{marks:?}"
+    );
 
     let journal = |w: WalletId| {
         engine
