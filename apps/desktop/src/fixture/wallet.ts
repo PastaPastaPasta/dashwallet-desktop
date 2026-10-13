@@ -238,7 +238,7 @@ function rustDebugStr(s: string): string {
 
 /** A serde camelCase variant name back to the Rust variant. */
 const variant = (name: string) => name[0].toUpperCase() + name.slice(1);
-const debugOpt = (v: number | null | undefined) => (v == null ? "None" : `Some(${v})`);
+const debugOpt = (v: number | null) => (v === null ? "None" : `Some(${v})`);
 
 /** The engine's `HistoryFilter` as `HistoryRequest::into_query` builds it. */
 interface Filter {
@@ -327,27 +327,27 @@ function cmpStr(a: string, b: string): number {
 const byTime = (s: HistorySortName) => s === "newestFirst" || s === "oldestFirst";
 const descending = (s: HistorySortName) => s === "newestFirst" || s === "amountDescending";
 
-/** `key_of`'s primary as a JS number, for sorting: an unknown time sorts as `u64::MAX` (newest);
- * every real time and amount is below 2^53, so `Infinity` stands in for it exactly. */
-const primaryNum = (r: TxRow, s: HistorySortName) => (byTime(s) ? (r.timestamp ?? Infinity) : r.amount);
-/** `key_of`'s primary, exact (an i128 in the engine). */
-const primaryBig = (r: TxRow, s: HistorySortName) => (byTime(s) ? (r.timestamp == null ? U64_MAX : BigInt(r.timestamp)) : BigInt(r.amount));
-
 interface CursorKey {
+  /** An i128 in the engine. */
   primary: bigint;
   txid: string;
   index: number;
 }
 
-/** `compare(row key, cursor key)`: the primary in the sort's direction, then txid, then index. */
-function cmpToKey(r: TxRow, k: CursorKey, s: HistorySortName): number {
-  const p = primaryBig(r, s);
-  if (p !== k.primary) return (p < k.primary) !== descending(s) ? -1 : 1;
-  return cmpStr(r.txid, k.txid) || Math.sign(r.recordIndex - k.index);
+/** `key_of`: the sort's primary (an unknown time is `u64::MAX`, the newest), txid, record index. */
+const keyOf = (r: TxRow, s: HistorySortName): CursorKey => ({
+  primary: byTime(s) ? (r.timestamp == null ? U64_MAX : BigInt(r.timestamp)) : BigInt(r.amount),
+  txid: r.txid,
+  index: r.recordIndex,
+});
+
+/** `compare`: the primary in the sort's direction, then txid, then record index. */
+function cmpKey(a: CursorKey, b: CursorKey, s: HistorySortName): number {
+  if (a.primary !== b.primary) return (a.primary < b.primary) !== descending(s) ? -1 : 1;
+  return cmpStr(a.txid, b.txid) || Math.sign(a.index - b.index);
 }
 
-const encodeCursor = (tag: bigint, r: TxRow, s: HistorySortName) =>
-  `v1.${tag.toString(16).padStart(16, "0")}.${primaryBig(r, s)}.${r.txid}.${r.recordIndex}`;
+const encodeCursor = (tag: bigint, k: CursorKey) => `v1.${tag.toString(16).padStart(16, "0")}.${k.primary}.${k.txid}.${k.index}`;
 
 /** `decode_cursor`, with Rust's integer parsing: an optional `+` (and `-` for the signed
  * primary), any number of digits, in range. */
@@ -379,30 +379,25 @@ export function historyPage(rows: TxRow[], request: HistoryRequest): HistoryRows
   const tag = queryTag(f, sort);
   const after = cursor != null ? decodeCursor(cursor, tag) : null;
   const needle = f.text == null ? null : rustTrim(f.text).toLowerCase();
-  const dir = descending(sort) ? -1 : 1;
   const hits = rows
     .filter((r) => matches(r, f, needle))
-    .sort((a, b) => {
-      const pa = primaryNum(a, sort);
-      const pb = primaryNum(b, sort);
-      if (pa !== pb) return pa < pb ? -dir : dir;
-      return cmpStr(a.txid, b.txid) || a.recordIndex - b.recordIndex;
-    });
+    .map((row) => ({ row, key: keyOf(row, sort) }))
+    .sort((a, b) => cmpKey(a.key, b.key, sort));
   // `partition_point`: the first row after the cursor's key.
   let start = 0;
   if (after) {
     let hi = hits.length;
     while (start < hi) {
       const mid = (start + hi) >>> 1;
-      if (cmpToKey(hits[mid], after, sort) > 0) hi = mid;
+      if (cmpKey(hits[mid].key, after, sort) > 0) hi = mid;
       else start = mid + 1;
     }
   }
   const page = hits.slice(start, start + limit);
   const more = hits.length - start > limit;
   return {
-    rows: page,
-    nextCursor: more ? encodeCursor(tag, page[page.length - 1], sort) : null,
+    rows: page.map((h) => h.row),
+    nextCursor: more ? encodeCursor(tag, page[page.length - 1].key) : null,
     totalMatching: hits.length,
   };
 }
