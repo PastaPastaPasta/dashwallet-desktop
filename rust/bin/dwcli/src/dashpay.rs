@@ -1812,6 +1812,10 @@ mod tests {
         ("name check alice", ALICE),
         ("name availability alice", NO_PLATFORM),
         ("name register --identity I bob", NO_PLATFORM),
+        (
+            "name contest --identity I alice",
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: identity is not a base58 identifier","params":{"detail":"identity is not a base58 identifier"}}}"#,
+        ),
         ("dashpay sync-status", SYNC_STATUS),
         ("dashpay leases", r#"{"ok":true,"result":[]}"#),
         ("identity register --label alice", NO_PLATFORM),

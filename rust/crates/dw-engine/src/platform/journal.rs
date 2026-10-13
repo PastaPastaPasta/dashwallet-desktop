@@ -862,14 +862,15 @@ impl ChangesetTap {
     /// writer of `dp_events` rows that can be news: DP1-04's contest
     /// outcomes come through here. For the wallet at `epoch`: once `forget`
     /// moved it on (a removal, a rollback), nothing is written, even into
-    /// the same wallet imported again, and nothing is news.
+    /// the same wallet imported again, and nothing is news. `false` when
+    /// the write failed (logged).
     pub(crate) fn journal(
         &self,
         id: WalletId,
         epoch: u64,
         events: Vec<Event>,
         changes: &mut BTreeSet<PlatformChange>,
-    ) {
+    ) -> bool {
         let wallet = id.to_string();
         let now = unix_now();
         let before_ms = (!events.is_empty())
@@ -928,10 +929,12 @@ impl ChangesetTap {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(wallet_id = %id, error = %e, "could not write the DashPay journal")
+                    tracing::warn!(wallet_id = %id, error = %e, "could not write the DashPay journal");
+                    return false;
                 }
             }
         }
+        true
     }
 
     /// The rows a write added: each signals its identity's feed, and the
@@ -991,7 +994,9 @@ impl ChangesetTap {
         let mut out = Vec::new();
         for (identity_id, names) in names {
             let identity = b58(&identity_id);
-            let watches: Vec<(String, u64)> = self
+            // The row's own label: DP1-04 journals a win before the name
+            // is listed, perhaps in another spelling, under the same ref.
+            let watches: Vec<(String, String, u64)> = self
                 .appdb
                 .contest_watches(wallet, &identity)
                 .unwrap_or_else(|e| {
@@ -999,7 +1004,7 @@ impl ChangesetTap {
                     Vec::new()
                 })
                 .into_iter()
-                .map(|(label, ends_at)| (convert_to_homograph_safe_chars(&label), ends_at))
+                .map(|(label, ends_at)| (convert_to_homograph_safe_chars(&label), label, ends_at))
                 .collect();
             let event = |kind, reference, age| Event {
                 identity: identity.clone(),
@@ -1010,14 +1015,14 @@ impl ChangesetTap {
             };
             for name in names {
                 let safe = convert_to_homograph_safe_chars(&name.label);
-                let won = watches.iter().find(|(label, _)| *label == safe);
+                let won = watches.iter().find(|(watched, _, _)| *watched == safe);
                 let mut age = times
                     .name_time(id, &identity_id, &safe)
                     .map_or(Age::Unknown, Age::At);
-                if let Some((_, ends_at)) = won {
+                if let Some((_, label, ends_at)) = won {
                     out.push(event(
                         EventKind::ContestWon,
-                        name_ref(&name.label, Some(*ends_at)),
+                        name_ref(label, Some(*ends_at)),
                         age,
                     ));
                     age = Age::Shadowed;
@@ -1055,6 +1060,16 @@ impl NetworkSession {
             self.rt
                 .spawn_blocking(move || tap.unread_moved_since(id, epoch));
         }
+    }
+
+    /// Whether `id` has a catch-up boundary yet (its first bring-up here,
+    /// or a recovery phase, set it): before that, an old event would be
+    /// news, so the contest watch leaves the wallet alone (DP1-04).
+    pub(super) async fn has_catch_up(&self, id: WalletId) -> bool {
+        (self
+            .with_tap(move |tap| tap.catch_up_before(id).is_some())
+            .await)
+            .unwrap_or(false)
     }
 
     /// `None` when the session is closed or the blocking task failed.

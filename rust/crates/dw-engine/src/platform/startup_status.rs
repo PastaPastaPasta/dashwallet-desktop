@@ -101,8 +101,9 @@ pub struct PlatformCadence {
     /// A window is visible: `dashpay_sync` every 15 s; hidden or in the
     /// tray, every 60 s.
     pub window_visible: bool,
-    /// A watched DPNS contest ends within the hour: the contest watch polls
-    /// every minute instead of every 10.
+    /// The host follows a DPNS contest's last hour: the marketplace loop
+    /// (`dpns_sync`) runs every minute instead of every 10. The wallet's own
+    /// contests do not need it (DP1-04's watch paces itself).
     pub contest_ending_soon: bool,
 }
 

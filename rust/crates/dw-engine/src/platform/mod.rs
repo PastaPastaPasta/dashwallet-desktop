@@ -11,6 +11,9 @@ mod contacts;
 pub(crate) mod contacts_model;
 #[cfg(test)]
 mod contacts_tests;
+mod contest_watch;
+#[cfg(test)]
+mod contest_watch_tests;
 mod credits;
 mod dashpay;
 mod errors;

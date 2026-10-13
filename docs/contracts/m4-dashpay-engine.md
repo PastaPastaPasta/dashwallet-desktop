@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 17
+Contract-Version: 18
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -420,7 +420,9 @@ bodies decided where the rows leave room:
   (`NeedsFinish` when only locks "Finish transfers" recovers past wedged steps leave its index unattributed),
   otherwise `Unlock` or `Authorize` by the vault's state. An orphan step's entry waits the same way and is read-only:
   `resume_registration` and `discard_registration` refuse its draft. `failure.needed`/`available` of `registration.funding_insufficient` are computed when read.
-- **`contest_ends_at`** stays `None` until DP1-04's vote poll.
+- **`contest_ends_at`** is the end (UNIX s) on the identity's contest watch row for the label (DP1-04, item 44): set
+  when `register_name` learned it or the watch read it from the end-date index; `None` while unknown and once the
+  contest resolved (the row is gone).
 - **On E0-04.P2b (Mode B):** the funding step runs under P2b's funding call permit, which charges the Funding budget
   (the cap is also checked before the call), writes the funding marker, counts released signatures and records the
   signed lock (above). The identity step runs under P2b's step permit (`registration/<draft>/identity`, resumable):
@@ -440,7 +442,7 @@ bodies decided where the rows leave room:
 | `register_name(identity, label, grant)` | async | An extra name, or the name of a registration that parked before it. Its cost is budgeted, not capped: an estimated fee bound plus, for a contested label, the contest fund to join, which the grant's `max_credits` and the identity's balance must cover before the grant is redeemed or anything is sent (`platform.grant_exceeded`, `platform.insufficient_credits`; a refused grant stays usable). The fee bound is an estimate until DP1-06's cost table and E0-04's per-transition accounting; Platform may charge more. A contested label returns `ContestStarted{ends_at}`; joining another identity's contest whose join deadline is unknown is `platform.unavailable`, with nothing spent. A plain name registered while the identity's own contest is open becomes its temporary name. `grant` may be a lease id (§1); a vault grant id is redeemed into a one-shot lease that ends with the call. Either way the write runs under a call permit of the lease, charged the cost in credits, so a vault lock waits for it (E0-04 §2a.3, P2b). What became of a write comes from Platform only: a label whose write may be in flight is no owned name, and a retry (or the identity's next registration) asks Platform and records the answer. | `NameError` |
 | `set_main_name(identity, label)` | async | Picks which owned name the identity shows; `None` clears the pick. A name the identity does not own by Platform's evidence (a label whose write may be in flight included) is `invalid_argument`. The pick is the user's and sync never rewrites it (#4978). | `NameError` |
 | `main_name(identity)` | async | The name the identity shows: the pick while owned, else the temporary name during an open contest, else the label it contended for once won, else the name it got first by Platform's acquisition time (the marketplace row's `$transferredAt`, else `$createdAt`, else the library's stamp; untimed names last). `None` if it owns none. | `NameError` |
-| `contest_status(identity, label)` | async | The own contest: state, deadline, contenders and votes, the temporary name. | `NameError` |
+| `contest_status(identity, label)` | async | The own contest as Platform's vote state shows it now (one vote-state query): `state` `Open` (voting, or ended and waiting for the block that resolves it), `Won`, `Lost{winner}` (`winner` `None`: resolved with no winner) or `Locked`; `ends_at` (UNIX s) from the watch row, else from the end-date index while open; the contenders of the first page in Platform's order with their votes and `is_self`; the lock and abstain votes; the temporary name pref. An outcome found for a watched contest is applied as the contest watch applies it (item 44): journaled, the label out of the open contests, the row gone. A label the identity neither contends for (on a page that lists every contender) nor watches is `invalid_argument`; one it watches that DAPI does not show yet is `Open`. **Implemented (DP1-04).** | `NameError` (`identity.not_found` for an identity the wallet lacks; `invalid_argument` as above or for an id that is not Base58; `name.invalid` for a bad label) |
 | `search_users(prefix, limit)` | async | DPNS prefix search. Only the prefix goes to DAPI: trimmed and normalized (homograph-safe, lower case); blank or `limit` 0 is `invalid_argument`, a prefix no label could start with (anything outside `[a-z0-9-]` after normalizing, a `.dash` suffix included) returns no hits without a query, and `limit` is capped at 100. Hits in Platform's order, each with the label as Platform spells it and the identity's profile (the hits' profiles in one query, `$ownerId In`, once per identity; a failed fetch shows no profile). `relation` is relative to the wallet's main identity (`IsSelf` for it; `Stranger` with no main identity or no contacts snapshot yet). `unverified` (§5): the label as that identity's unless the names' fetch verified, and the profile shown unless the profiles' fetch did. Search writes no trust records. **Implemented (DP2-03).** | `NameError` |
 | `resolve_user(username)` | async | Exact lookup: trimmed, one `.dash` suffix dropped (any case), normalized; `None` if no such name, and without a query for a label DPNS cannot hold. Hit as in `search_users`. **Implemented (DP2-03).** | `NameError` |
 
@@ -538,7 +540,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 524c6fadd69a02d8606a6e111d53bbd0b868e6d1c4561fb86707b6bac83169ad version: 17 -->
+<!-- surface-sha256: 524c6fadd69a02d8606a6e111d53bbd0b868e6d1c4561fb86707b6bac83169ad version: 18 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1789,7 +1791,7 @@ The shapes are in §3. What they mean, where the name does not say:
   - **name kinds** store `<label>@<stamp>`, so a name that leaves and comes back is a new event (dw-appdb's `dp_events`
     rule; DPNS labels have no `@`, and the reader drops `@…` for `reference`). The stamp is the name's `acquired_at`
     (ms) for `UsernameRegistered`, omitted with the `@` when the library has none, and the contest's `ends_at` for the
-    `Contest*` kinds (DP1-04 writes `ContestLost` and `ContestLocked` the same way);
+    `Contest*` kinds, with the watch row's label as written (DP1-04 writes every outcome the same way, item 44);
   - **request kinds** use the request's `$createdAt` in ms as its id: the library's `ContactRequest` carries no
     document id, and with `contact` it names the request. `RequestReceived` cites the incoming request;
     `RequestAccepted` (ours came first) and `ContactEstablished` (we accepted theirs) cite the contact's request.
@@ -1821,9 +1823,10 @@ The shapes are in §3. What they mean, where the name does not say:
     signals follow the persister's acceptance and stay best-effort display data. The `dp_trust_unverified` table
     of the `dashpay` migration is dormant: nothing writes it, and it stays only because the schema is append-only
     and the `.dwbackup` wallet rows (E0-07) list it.
-  - **contest watches:** a label in `dp_contest_watch` that becomes an owned name is journaled `ContestWon`, with its
-    `UsernameRegistered` stored read. DP1-04 deletes the watch row when a contest resolves; a row left behind would
-    call a later purchase of the label a win.
+  - **contest watches:** a label in `dp_contest_watch` that becomes an owned name is journaled `ContestWon` (ref the
+    row's label and `ends_at`), with its `UsernameRegistered` stored read. DP1-04's watch deletes the row once the
+    contest resolved and, for a win, the library lists the name; a row left behind would call a later purchase of
+    the label a win.
   - **the feed (DP2-05):** `DashPayEvent` is a journal row as stored, with `reference` as above (`@…` dropped, `None`
     when empty) and `contact` `None` when empty; `at` is when the row was journaled (UNIX s, local), `read_at` when it
     was read (stored read: the journal time). A row of a kind this build does not know is left out. Read state is
@@ -2289,3 +2292,45 @@ renames or reshapes them takes the next version bump:
       a second per identity, and §6's "up to 3, else a summary" is per event.
     - **Residual (accepted): a payment is not news here.** An unread `PaymentReceived` counts and shows in the bell,
       but the OS notification is M2's `NewTransactions` one, with no contact name until DP3-02 adds `counterparty`.
+44. **The contest watch (DP1-04, version 18).** `contest_status` is implemented (§2.3) and the engine watches the
+    wallet's own contests until their vote resolves (`contest_watch.rs`, not facade). No surface or schema change: the
+    rows are E0-07's `dp_contest_watch`, the outcomes E0-06's `Contest*` kinds through `ChangesetTap::journal`.
+    - **Rows.** `register_name` (and the registration flow's name step through it) writes one when Platform shows
+      the identity contending, with the end it learned; each pass also adopts every open contest the library holds
+      (`contested_dpns_names`) with no row, end unknown, in the spelling of the identity's `contested_name` row when
+      it folds the same (the library keeps the folded label). One row per contest however the two race (one
+      transaction, DPNS's normalized compare); a registration clears an `unplaced` streak. `last_state` keeps what
+      the watch last saw: `open`, `won:<ms>:<since>`, `unplaced:<since>`. Nothing repopulates the library's open
+      contests on a seed restore, so a restored wallet's contests are watched only through rows a backup restored.
+    - **Outcomes** (DASHPAY §3.5): from `get_contested_dpns_vote_state`'s winner, as both mobile apps map it: this
+      identity → `ContestWon`, another identity → `ContestLost`, `Locked` → `ContestLocked` (nobody gets the name,
+      now or later at this pin; no outcome returns the contest fund; another name can be requested), `NoWinner`
+      (Drive stores it only for a poll with no contender) → `ContestLost`. No winner while the identity is among
+      the contenders is still voting. A poll that does not list the identity on a complete page (resolved or
+      not), or no poll at all, is no outcome (`contest_status` refuses it with `invalid_argument` unless the label
+      is watched); such a row stops being watched after a day, with no event. The event's age is the time of the
+      block that resolved the poll (authoritative), so catch-up silence applies: a restore that finds an old outcome
+      stores it read.
+    - **After an outcome.** A loss or lock is journaled, then the label leaves the library's open contests and the
+      row goes. A win is journaled at once; the row stays (`won:<ms>:<since>`, no further query) until the library
+      lists the name, so the tap's own `ContestWon` for that snapshot is the same row and the name's
+      `UsernameRegistered` is stored read; the watch asks the marketplace loop for a pass at most every 10 minutes
+      meanwhile, and stops waiting after a day (a later listing is a plain `UsernameRegistered`). The event's ref is
+      `label@ends_at` with the row's stored end, so a retry names the same event; the journal write comes first, and
+      a failed write is retried at the next pass (the dedup key makes it one row).
+    - **Cadence and budget.** The supervisor (E0-05) runs a pass for every wallet right after the loops start (a
+      contest that ended while the app was closed shows at once), after a wallet is brought up while SPV runs, and
+      when `register_name` writes a row; then when the next row is due: every 10 minutes while its end is unknown
+      or more than an hour away, every minute from an hour before the end to an hour after it, every 10 minutes
+      after that, a won row every minute (no query); at most one pass a second. No rows, no timer. A pass asks one
+      vote state per due row, in turn, at most 16 rows per wallet (the longest unchecked first, the rest next pass),
+      and the end-date index once while a due row's end is unknown (its first page: polls ending from an hour ago
+      on, which an end inside a long backlog can miss; the row then stays at 10 minutes); it has 20 s.
+      `PlatformCadence.contest_ending_soon` now only speeds the marketplace loop (m1-engine item 8).
+    - **Not before a bring-up.** A wallet with no catch-up boundary yet (a restore whose pass would come before its
+      first bring-up here) is not watched and arms no timer; its bring-up re-arms the watch, so an old outcome a
+      restore finds is stored read.
+    - **A pass is its wallet's.** Its reads are unfenced; every write (the row, the journal, the open contests)
+      holds DP2-04's write fence for the wallet object it read, with the tap epoch read under it, so a pass that
+      outlives the wallet (removed, or reimported) writes nothing, and a removal waits for one in flight. A removal
+      also ends the wallet's pass and forgets its schedule.

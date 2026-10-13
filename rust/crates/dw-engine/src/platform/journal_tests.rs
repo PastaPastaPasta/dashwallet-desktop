@@ -433,6 +433,7 @@ fn row_identities_signal_and_journal_usernames() {
 
 /// §3.5 row `identities`, contest outcome: a watched label that becomes an
 /// owned name is `ContestWon`, with its `UsernameRegistered` stored read.
+/// The win's ref is the watch row's label, as DP1-04's watch writes it.
 #[test]
 fn row_identities_journal_a_won_contest_once() {
     let h = Harness::new();
@@ -451,7 +452,7 @@ fn row_identities_journal_a_won_contest_once() {
     assert_eq!(
         h.rows(),
         vec![
-            row(EventKind::ContestWon, "", "a1ice@7000", false),
+            row(EventKind::ContestWon, "", "Alice@7000", false),
             row(
                 EventKind::UsernameRegistered,
                 "",
