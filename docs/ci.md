@@ -7,7 +7,7 @@ job's `GITHUB_TOKEN` is read-only (`contents: read`).
 
 | Workflow | Triggers | What it runs |
 |---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | push to `main` and `dw/**`, pull requests, manual | T0 on Linux, macOS and Windows; app launches with screenshots |
+| [`ci.yml`](../.github/workflows/ci.yml) | push to `main` and `dw/**`, pull requests, manual | T0 on Linux, macOS and Windows; UI tests (Playwright, axe, tauri-driver); app launches with screenshots |
 | [`nightly.yml`](../.github/workflows/nightly.yml) | 03:17 UTC daily (default branch only), manual | T1 regtest suites; the engine with its `shielded` feature; the Linux GUI (AT-SPI) demo |
 | [`gate.yml`](../.github/workflows/gate.yml) | manual only | G-02 / G-03 measurement scripts on the chosen OSes |
 | [`tauri-selftest.yml`](../.github/workflows/tauri-selftest.yml) | manual only | the Tauri app (G-01) built, run with `--selftest` and launched for a screenshot on macOS and Windows |
@@ -43,7 +43,9 @@ row):
 |---|---|---|
 | Rust lint | `ubuntu-24.04` | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings` |
 | Rust tests (Linux) | `ubuntu-24.04` | `cargo test --workspace --locked`; then the Tauri bindings regenerated (`DW_UPDATE_BINDINGS=1 cargo test -p dw-app` for `codegen` and `coverage`) and `git diff --exit-code` over `apps/desktop/src/api/generated` and `docs/design/E0-13-facade-coverage.md` (E0-13) |
-| Tauri renderer | `ubuntu-24.04`, Node 24, pnpm | `apps/desktop`: `pnpm install --frozen-lockfile`, `pnpm tokens:check`, `pnpm typecheck`, `pnpm test` (vitest, including the per-facade command test against a mocked IPC) |
+| Tauri renderer | `ubuntu-24.04`, Node 24, pnpm | `apps/desktop`: `pnpm install --frozen-lockfile`, `pnpm tokens:check`, `pnpm typecheck`, `pnpm test` (vitest, including the per-facade command test and the fixture backend against a mocked IPC), then `pnpm build` and `pnpm build:fixture`, each checked by `scripts/check-bundle.mjs` (see "UI tests") |
+| UI tests (Playwright, axe) | `ubuntu-24.04` in the container `mcr.microsoft.com/playwright:v1.64.0-noble` | no Rust and no engine: `pnpm build:fixture`, then `playwright test` in Chromium and WebKit on the fixture backend (see "UI tests"); `test-results/` and the HTML report uploaded as `ui-playwright` |
+| Tauri E2E (tauri-driver, Linux) | `ubuntu-24.04` | `linux-host-deps.sh tauri` (WebKitGTK, `webkit2gtk-driver`, Xvfb), `cargo install tauri-driver --version 2.1.0 --locked`, then `xvfb-run -a pnpm e2e:tauri`: the debug app with the production renderer and the real engine, driven through one smoke flow; screenshots and logs uploaded as `e2e-tauri-linux` |
 | Swift + UI T0 (Linux) | `ubuntu-24.04`, Swift 6.3.3 (swiftly) | `scripts/build-core.sh --check-bindings`; the Swift suites of `scripts/linux-docker-test.sh` (`SwiftCrossUIPatchTests`, the vendored SwiftCrossUI patches, among them) plus `DashUICrossTests`; `dash-wallet --demo` launched under Xvfb, with a screenshot of its window |
 | macOS | `macos-latest` (arm64) | `cargo test --workspace --locked`; `build-core.sh --check-bindings`; `swift build` and `swift test` (every suite; `MacUITests` write their offscreen renders with `DWD_WRITE_SCREENSHOTS=1`); the app generated with XcodeGen, built with `xcodebuild`, installed to `/Applications`, launched through LaunchServices with `--demo` in light and dark, with screenshots of its window; then, **non-blocking** (see "Known gaps"), `dash-wallet --demo` (SwiftCrossUI, AppKitBackend) |
 | Windows (engine) | `windows-latest` | `cargo build --workspace --locked`, `cargo test --workspace --exclude dw-app --locked` (see "Known gaps") and `cargo clippy --workspace --all-targets -- -D warnings` (MSVC; clippy lints the Windows code paths, which the Linux job never compiles) |
@@ -100,6 +102,52 @@ depending on the runner, and a warm one much less (see "Timings").
 `DWD_MIN_FREE_GB=5` for `scripts/disk-guard.sh`. The Linux test, nightly and gate jobs delete the
 preinstalled .NET, Android, GHC and CodeQL trees first (`ci/github/linux-free-disk.sh`).
 
+## UI tests (U-07)
+
+The renderer is tested in a browser against the **fixture backend** (`apps/desktop/src/fixture/`): Tauri's
+mock IPC answers the generated commands (`src/api/generated/commands.ts`, typed by `CommandArgs` and
+`CommandResults`) from a scenario's data and emits `engine://event` like dw-app's bridge. Nothing of the
+engine is built or linked. Scenarios: `funded` (default), `empty`, `no-wallet`, `locked`, `large`, `xss`,
+`dashpay-no-identity`, `dashpay-registering`, `dashpay-registered`, `lock-report-omitted`,
+`lock-report-pending`, `lock-report-resolved`, and `error-<class>` for each `ErrorData` class (see
+`apps/desktop/README.md` for the URL parameters).
+
+**No fixture code in production.** The renderer imports the fixture only under the build-time constant
+`__DW_FIXTURES__`, which is true for `vite` (dev server) and `vite build --mode fixture` and false for
+`vite build`, so the production bundle has no fixture chunk. `scripts/check-bundle.mjs` runs at the end of
+both builds: `dist/` fails if it contains the fixture's sentinel string or Tauri's mock IPC, and
+`dist-fixture/` fails if it does not (the positive control). `pnpm tauri build` runs `pnpm build`, so
+every app binary passes the check. dw-app has no fixture mode (`--fixture` is an unknown option).
+
+| Suite | Where | What |
+|---|---|---|
+| `e2e/scenarios.spec.ts` | Chromium, WebKit | every scenario boots on the fixture alone; 8 states (empty wallet, no wallet, locked, loading, open failed, wallets error, history error, unresolved lock report) in light and dark, each with a screenshot artifact and 0 serious or critical axe issues |
+| `e2e/screens.spec.ts`, `e2e/a11y.spec.ts`, `e2e/style.spec.ts` | Chromium, WebKit | the four gate screens in light and dark: screenshots, axe and keyboard reach, the UX-SPEC §2 style checks |
+| `e2e/errors.spec.ts` | Chromium | each `ErrorData` class rendered with its message, axe-clean; the splash's retry |
+| `e2e/lockreport.spec.ts` | Chromium, WebKit | a lock report with omitted flows, artifacts or wallets stays unresolved until the leases end |
+| `e2e/security.spec.ts` | Chromium, WebKit | hostile strings render as text |
+| `e2e/visual.spec.ts` | Chromium, `DW_VISUAL=1` only | `toHaveScreenshot` baselines (below) |
+| `e2e-tauri/smoke.ts` | WebKitGTK via tauri-driver | the real app on the real engine: lock screen, wrong passphrase refused, unlock, Overview and Transactions of a new regtest wallet, lock again |
+
+Run them locally with the CI commands:
+
+```sh
+cd apps/desktop
+pnpm e2e                          # host browsers (pnpm exec playwright install chromium webkit)
+scripts/e2e-docker.sh             # the CI job: same image, same commands, as the calling user
+xvfb-run -a pnpm e2e:tauri        # the tauri-driver smoke (or DISPLAY from `agent-gui start N`)
+```
+
+**Visual baselines.** `e2e/visual.spec.ts` compares the four gate screens in light and dark against
+`e2e/visual.spec.ts-snapshots/` (Chromium), and runs only with `DW_VISUAL=1`. The baselines were made in the
+Playwright image with `scripts/e2e-docker.sh --update-snapshots`. Three more runs there matched all eight
+pixel for pixel on agentbox at load 50–60. On the host, the same Chromium build differed on two screens
+(about 1,470 pixels each, font rasterisation), so they are only meaningful inside the image. Whether the
+hosted runners' CPUs rasterise identically is unproven, so CI runs the comparison as a **non-blocking**
+step. A mismatch leaves the actual and diff PNGs in the `ui-playwright` artifact. Make the step blocking
+once it has passed on the runners; regenerate the baselines in the image whenever a screen changes on
+purpose. The per-state screenshots of the other suites are artifacts only.
+
 ## `nightly.yml`
 
 | Job | What |
@@ -148,20 +196,26 @@ The scripts can use the launch-and-screenshot helpers in `ci/github/`. Playwrigh
 ```sh
 gh workflow run tauri-selftest.yml --ref <branch with G-01> -f os=both            # or macos / windows
 gh workflow run tauri-selftest.yml --ref <branch> -f os=windows -f theme=dark \
-    -f selftest_args="--datadir D:/a/wallet --network regtest"                   # instead of --fixture
+    -f selftest_args="--datadir D:/a/wallet --network regtest"                   # instead of the new wallet
 ```
 
 Per OS (`macos-latest`, `windows-latest`): Node 24 and pnpm from `apps/desktop/package.json`,
 `pnpm install --frozen-lockfile`, `pnpm tauri build --no-bundle` (the renderer and the release binary
-`rust/target/release/dash-wallet`), then:
+`rust/target/release/dash-wallet`). Without `selftest_args` the job builds `dwcli`, which makes an
+encrypted vault and a wallet in a fresh regtest data root (`--no-platform`); the app opens it on the real
+engine, locked. (Until U-07 the default was `--fixture`, an in-app TypeScript wallet; the fixture backend
+now runs in browsers only.) Then:
 
-1. `dash-wallet <selftest_args> --selftest selftest-<os>.json` within 10 minutes. The app renders the four
+1. `dash-wallet <app args> --selftest selftest-<os>.json` within 10 minutes. The app renders the four
    screens in light and dark and writes the `data-testid` boxes, style checks, IPC timings and security
    probes. The app exits 0 whatever it found, so the step judges the report. It fails when the app fails,
    times out or writes no report; when the report is a checkpoint (`final: false`) rather than the final
-   one; when it has no `security.navigation` probe; when `checksFailed` is not 0; or when a security probe
-   says `NOT REFUSED`. The counts, paint times and probes go to the run's step summary.
-2. `dash-wallet --fixture --theme <theme>` launched again, with a screenshot (the helpers above). The window
+   one; when it has no `security.navigation` probe; when a style check fails on an element that is there; or
+   when a security probe says `NOT REFUSED`. The new wallet has no history, so the checks of history rows
+   and the hero breakdown find no element; they are counted apart (72 of 160 on Linux, locked or not) and
+   do not fail the run. The populated screens are checked by Playwright in `ci.yml`, in Chromium and
+   WebKit. The counts, paint times and probes go to the run's step summary.
+2. `dash-wallet <app args> --theme <theme>` launched again, with a screenshot (the helpers above). The window
    is 1280×820, and the Windows helper captures the primary screen, which may be smaller.
 
 On Windows a step first logs the WebView2 runtime version, or warns that none is registered.
@@ -241,3 +295,6 @@ first step and says so.
 8. **The Tauri jobs are untested end to end.** `tauri-selftest.yml` and the `tauri` setup of `gate.yml` need a
    ref that contains G-01, and G-01 is not on GitHub yet. Their first dispatch after G-01 lands is their
    first real run.
+9. **The U-07 jobs have not run on GitHub yet.** `ui-playwright` and `e2e-tauri-linux` were run locally
+   with the same commands (the Playwright image; a private X display on agentbox). Their first
+   run on GitHub is the first push of U-07.
