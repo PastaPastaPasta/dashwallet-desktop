@@ -174,8 +174,15 @@ export async function generatedLiterals(app) {
 }
 
 /** The sentinels, each with the fixture file it first comes from (relative to `app`; modules
- * before test data), each fixture file's sentinels, and the files a fixture build bundles. */
-export async function fixtureSentinels(app) {
+ * before test data), each fixture file's sentinels, and the files a fixture build bundles. Derived
+ * once per process: the tests ask for it again and again, and the sources do not change meanwhile. */
+const derived = new Map();
+export function fixtureSentinels(app) {
+  if (!derived.has(app)) derived.set(app, derive(app));
+  return derived.get(app);
+}
+
+async function derive(app) {
   const generated = await generatedLiterals(app);
   const generic = new Set(GENERIC.map((g) => g.literal));
   const sentinels = new Map();
