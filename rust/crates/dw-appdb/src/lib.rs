@@ -59,7 +59,8 @@ fn removed_here() -> MutexGuard<'static, BTreeSet<(String, String)>> {
     REMOVED.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// `wallet_id` of the database file of `conn`; `None` in memory.
+/// `wallet_id` of the database file of `conn`; `None` in memory or for a
+/// path that is not UTF-8 (a removal there is not kept across a reopen).
 fn removal_key(conn: &Connection, wallet_id: &str) -> Option<(String, String)> {
     conn.path()
         .filter(|p| !p.is_empty())
@@ -95,7 +96,7 @@ pub enum AppDbError {
     /// A value read from the database is outside its schema domain.
     #[error("corrupt row: {0}")]
     Corrupt(String),
-    /// The wallet was removed in this run: the row was not written.
+    /// The wallet was removed (and not readmitted): the row was not written.
     #[error("wallet {0} was removed")]
     WalletRemoved(String),
 }
@@ -301,10 +302,17 @@ impl AppDb {
             "DELETE FROM settings_kv WHERE scope IN (?1, ?2)",
             params![wallet_id, local_scope(wallet_id)],
         )?;
+        // Remembered before the commit, so no other connection's
+        // `forget_earlier_removals` can see the record without it.
         let key = removal_key(&tx, wallet_id);
-        tx.commit()?;
-        if let Some(key) = key {
-            removed_here().insert(key);
+        if let Some(key) = &key {
+            removed_here().insert(key.clone());
+        }
+        if let Err(e) = tx.commit() {
+            if let Some(key) = &key {
+                removed_here().remove(key);
+            }
+            return Err(e.into());
         }
         Ok(())
     }

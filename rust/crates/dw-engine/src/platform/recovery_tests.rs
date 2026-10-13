@@ -2558,7 +2558,7 @@ fn a_reopen_keeps_this_processs_removals_and_forgets_earlier_ones() {
 fn a_failed_import_records_the_wallet_as_removed_again() {
     let (_dir, engine, s, id, wipe) = removable();
     engine.block_on(s.remove_wallet(id, wipe)).unwrap();
-    *guard(&crate::keys::FAIL_REGISTRATION_IN) = Some(s.data_dir().to_path_buf());
+    guard(&crate::keys::FAIL_REGISTRATION_IN).push(s.data_dir().to_path_buf());
     let failed = engine.block_on(s.import_wallet(
         Zeroizing::new(ABANDON_12.to_vec()),
         Zeroizing::new(Vec::new()),

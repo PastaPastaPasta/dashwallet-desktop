@@ -22,29 +22,30 @@ use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePr
 use zeroize::Zeroizing;
 
 use crate::platform::runtime::PlatformSignal;
-
-/// Tests: the next wallet registration of the session on this data
-/// directory fails.
-#[cfg(test)]
-pub(crate) static FAIL_REGISTRATION_IN: std::sync::Mutex<Option<std::path::PathBuf>> =
-    std::sync::Mutex::new(None);
-
-/// Tests: whether [`FAIL_REGISTRATION_IN`] refuses this registration.
-fn registration_refused(data_dir: &std::path::Path) -> bool {
-    #[cfg(test)]
-    return FAIL_REGISTRATION_IN
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .take_if(|dir| dir == data_dir)
-        .is_some();
-    #[cfg(not(test))]
-    {
-        let _ = data_dir;
-        false
-    }
-}
 use crate::wallets::validate_name;
 use crate::{CreatedWallet, EngineError, EngineEvent, NetworkSession, WalletId};
+
+/// Tests: the next wallet registration of a session on one of these data
+/// directories fails.
+#[cfg(test)]
+pub(crate) static FAIL_REGISTRATION_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Tests: whether [`FAIL_REGISTRATION_IN`] refuses this registration.
+#[cfg(test)]
+fn registration_refused(data_dir: &std::path::Path) -> bool {
+    let mut dirs = FAIL_REGISTRATION_IN
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let before = dirs.len();
+    dirs.retain(|dir| dir != data_dir);
+    dirs.len() < before
+}
+
+#[cfg(not(test))]
+fn registration_refused(_: &std::path::Path) -> bool {
+    false
+}
 
 /// Address lookahead of restores in Dash Core compatibility mode: dash-qt
 /// restores scan 1000 keys ahead (QT-105), which also finds funds Core mixed
@@ -538,7 +539,13 @@ impl NetworkSession {
                         if !had_secret {
                             this.forget_secret(wallet_id).await;
                         }
-                        if readmitted {
+                        // Unless another import registered it meanwhile.
+                        if readmitted
+                            && this
+                                .live()
+                                .is_ok_and(|live| !live.store.is_unloaded(&wallet_id.0))
+                            && manager.get_wallet(&wallet_id.0).await.is_none()
+                        {
                             this.record_removed_again(wallet_id).await;
                         }
                     }
