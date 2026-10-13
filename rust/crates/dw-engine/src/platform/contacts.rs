@@ -304,7 +304,7 @@ impl DashPay {
             // A local mute (iOS): the sender's unread events go quiet
             // (DP2-05). Display data: a failure is only logged.
             if let Err(e) = session
-                .mark_events_read_entered(wallet_id, identity, u64::MAX, Some(contact))
+                .mark_events_read(wallet_id, &wallet, identity, u64::MAX, Some(contact))
                 .await
             {
                 tracing::warn!(%wallet_id, error = %e, "could not mark an ignored sender's events read");

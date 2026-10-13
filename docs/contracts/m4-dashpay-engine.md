@@ -476,7 +476,7 @@ bodies decided where the rows leave room:
 |---|---|---|---|
 | `events(identity, cursor, limit)` | async | The bell, from `dp_events` (§5 "the feed"). `pending` is the identity's incoming requests, as `contacts`' `Requests` section has them (newest first, the same `ContactSummary`), on the first page only (`cursor` `None`). Then up to `limit` journal rows (clamped to 1–200) with an id below `cursor`, newest first, split into `new` (unread) and `earlier` (read); `next_cursor` is the last row's id while older rows remain, else `None`. Rows of a sender the identity currently ignores are left out (a local mute, as iOS); a hidden contact's are not (iOS, the only app with hidden contacts, filters neither its bell nor its notifications on it). Reads write nothing. Re-query on `Platform{Events}` and `Platform{Contacts}`. **Implemented (DP2-05).** | `PlatformError` (`identity.not_found` for an identity the wallet lacks, as `contacts`; `invalid_argument` for an id that is not Base58) |
 | `unread_count(identity)` | sync | The bell count: the identity's unread rows, ignored senders' included only until `ignore` marks them read. From memory, the counts the changeset tap keeps: counted at the wallet's bring-up and after a `.dwbackup` import, recounted after every journal write and `mark_read`. Before the first count (a wallet with no bring-up yet) it answers 0 and starts it; a count signals `Platform{Events}` for each identity whose count moved. A hidden contact's events count. **Implemented (DP2-05).** | `PlatformError` (`invalid_argument` for an id that is not Base58) |
-| `mark_read(identity, up_to)` | async | Marks the identity's unread events with id ≤ `up_to` read (the time is the call's), recounts and signals `Platform{Events}` when one changed; ids above `i64::MAX` mean all. Idempotent. `ignore` does the same for the ignored sender's events. **Implemented (DP2-05).** | `PlatformError` (`storage` when app.sqlite fails) |
+| `mark_read(identity, up_to)` | async | Marks the identity's unread events with id ≤ `up_to` read (the time is the call's), recounts and signals `Platform{Events}` when one changed; ids above `i64::MAX` mean all. Idempotent. `ignore` does the same for the ignored sender's events. It marks the rows of the wallet the call was admitted for: a removal waits for a mark in flight, and a call that outlives the wallet (removed, or reimported) marks nothing. **Implemented (DP2-05).** | `PlatformError` (`storage` when app.sqlite fails; `wallet_not_found` once the wallet it was admitted for is removed or reimported) |
 
 ### 2.7 Profile and avatars
 
@@ -2256,6 +2256,9 @@ renames or reshapes them takes the next version bump:
     - **Pages walk an index.** `events` reads `dp_events_page` (`wallet_id, identity, id DESC`; app.sqlite
       migration `V2026101303`) from the cursor down, so a page reads the rows it returns and the ignored ones it
       skips, never the identity's whole journal. An index only: `.dwbackup` classification is unchanged.
+    - **A mark is the admitted wallet's.** `mark_read` (and `ignore`'s mark) writes under DP2-04's per-wallet write
+      fence, holding the wallet it was admitted for: a removal, an unload or a close waits for a mark in flight,
+      and a mark that outlives the wallet fails with `wallet_not_found`, so a reimport's restored rows stay unread.
     - **News only from inserted rows.** The tap's journal write reports the rows it added; nothing else (a read, an
       import, a replay) produces news, so a restart cannot announce again what a previous session announced.
     - **Hidden contacts** are not filtered (DASHPAY §3.5 journals nothing for hide or unhide; iOS's

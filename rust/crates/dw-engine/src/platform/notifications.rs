@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use dpp::platform_value::string_encoding::Encoding;
+use platform_wallet::PlatformWallet;
 use serde::{Deserialize, Serialize};
 
 use super::contacts::{ContactQuery, ContactSection, ContactSort, ContactSummary, Relation};
@@ -140,14 +141,14 @@ impl DashPay {
         }))
     }
 
-    /// Marks the identity's events with id ≤ `up_to` read.
+    /// Marks the identity's events with id ≤ `up_to` read: those of the
+    /// wallet this call was admitted for, never a reimport's.
     pub async fn mark_read(&self, identity: String, up_to: u64) -> Result<(), PlatformError> {
-        let (session, id) = (Arc::clone(&self.session), self.wallet_id());
-        self.session
-            .on_runtime(
-                async move { Ok(session.mark_events_read(id, identity, up_to, None).await) },
-            )
-            .await?
+        let id = self.wallet_id();
+        self.on_wallet(move |session, _, wallet| async move {
+            (session.mark_events_read(id, &wallet, identity, up_to, None)).await
+        })
+        .await
     }
 }
 
@@ -179,15 +180,7 @@ impl NetworkSession {
     ) -> Result<EventPage, PlatformError> {
         let op = self.enter().await?;
         #[cfg(test)]
-        {
-            let pause = (super::runtime::guard(&self.platform.contacts.job_pause))
-                .take_if(|(at, _)| *at == "events")
-                .map(|(_, pause)| pause);
-            if let Some(pause) = pause {
-                (pause.reached).store(true, std::sync::atomic::Ordering::SeqCst);
-                pause.release.notified().await;
-            }
-        }
+        self.test_pause("events").await;
         self.require_wallet(&id)?;
         let identity = canonical(&identity)?;
         // The live relations: Requests is Pending, the ignored senders are
@@ -237,35 +230,39 @@ impl NetworkSession {
     }
 
     /// Marks the identity's events up to `up_to` read, with `contact` only
-    /// that contact's. Signals `Platform{Events}` when one changed.
+    /// that contact's. Signals `Platform{Events}` when one changed. The
+    /// caller is inside the gate (`on_wallet`), which found `wallet`: the
+    /// write lands under its fence ([`super::private_details::WriteFences`]),
+    /// so a removal waits for it, and once `wallet` has left the manager
+    /// (removed, or replaced by a reimport whose rows came back) it fails
+    /// with `WalletNotFound` and marks nothing.
     pub(super) async fn mark_events_read(
         &self,
         id: WalletId,
+        wallet: &PlatformWallet,
         identity: String,
         up_to: u64,
         contact: Option<String>,
     ) -> Result<(), PlatformError> {
-        let _op = self.enter().await?;
-        self.mark_events_read_entered(id, identity, up_to, contact)
-            .await
-    }
-
-    /// [`Self::mark_events_read`] for a caller already inside the gate
-    /// (`ignore`): the gate is fair, so entering it again would wait behind
-    /// a queued close that waits for the caller.
-    pub(super) async fn mark_events_read_entered(
-        &self,
-        id: WalletId,
-        identity: String,
-        up_to: u64,
-        contact: Option<String>,
-    ) -> Result<(), PlatformError> {
-        self.require_wallet(&id)?;
         let identity = canonical(&identity)?;
         let contact = contact.as_deref().map(canonical).transpose()?;
+        #[cfg(test)]
+        self.test_pause("mark_read admitted").await;
+        let fence = self.write_fence(id, wallet).await?;
         let tap = self.live()?.tap;
-        self.appdb_op(move |_| tap.mark_read(id, &identity, up_to, contact.as_deref()))
-            .await?;
+        (self.fenced_op(&fence, "mark_read", move |_| {
+            tap.mark_read(id, &identity, up_to, contact.as_deref())
+        }))
+        .await?;
         Ok(())
+    }
+
+    /// Tests: waits here while `job_pause` is set for `at`.
+    #[cfg(test)]
+    async fn test_pause(&self, at: &'static str) {
+        if let Some(pause) = self.take_job_pause(at) {
+            (pause.reached).store(true, std::sync::atomic::Ordering::SeqCst);
+            pause.release.notified().await;
+        }
     }
 }

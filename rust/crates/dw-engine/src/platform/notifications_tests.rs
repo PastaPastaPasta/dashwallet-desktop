@@ -5,14 +5,19 @@
 use std::time::{Duration, Instant};
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
+use dw_vault::{Credential, GrantPurpose};
 use zeroize::Zeroizing;
 
 use super::SpvState;
 use super::contacts::{ContactQuery, ContactSection, ContactSort, Relation};
 use super::contacts_tests::{Fixture, wait_for as wait_long};
+use super::errors::PlatformError;
 use super::journal_tests::{self, Recorder, b58, contacts, incoming, request};
 use super::notifications::{DashPayEvent, EventKind, EventPage};
+use crate::coins::TestPause;
+use crate::held_writes::ReleaseOnDrop;
 use crate::{
     DashNetwork, EngineEvent, EventSink, ImportOptions, PlatformChange, SessionOptions, WalletId,
 };
@@ -302,15 +307,12 @@ fn a_restored_bundles_unread_rows_count() {
 fn an_admitted_events_call_outlives_a_starting_close() {
     let f = Fixture::new(true);
     f.give_me();
-    let pause = Arc::new(crate::coins::TestPause::default());
-    *f.s.platform.contacts.job_pause.lock().unwrap() = Some(("events", Arc::clone(&pause)));
+    let (pause, _release) = f.pause_at("events");
     let dp = f.dp();
     let events =
         f.s.rt
             .spawn(async move { dp.events(b58(ME), None, 10).await });
-    wait_for("the admitted call", || {
-        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
-    });
+    wait_for("the admitted call", || pause.reached.load(Ordering::SeqCst));
     let s = Arc::clone(&f.s);
     let closing = f.s.rt.spawn(async move { s.close().await });
     wait_for("the close to start", || !f.s.is_open());
@@ -318,6 +320,126 @@ fn an_admitted_events_call_outlives_a_starting_close() {
     let page = f.engine.block_on(events).unwrap();
     assert!(page.is_ok(), "{page:?}");
     f.engine.block_on(closing).unwrap();
+}
+
+/// A wallet with Dave's request unread, backed up to `dest` as it is.
+fn dave_unread_backed_up(dest: &std::path::Path) -> Fixture {
+    let f = Fixture::new(true);
+    f.give_me();
+    f.dave_asks();
+    (f.engine)
+        .block_on(f.s.backup_wallet(f.wallet, dest.to_owned(), backup_pw()))
+        .unwrap();
+    f
+}
+
+fn backup_pw() -> Option<Zeroizing<Vec<u8>>> {
+    Some(Zeroizing::new(b"bk".to_vec()))
+}
+
+impl Fixture {
+    /// Removes the wallet, as `remove_wallet` with a wipe grant, in the
+    /// background.
+    fn removing(&self) -> tokio::task::JoinHandle<Result<(), crate::EngineError>> {
+        let (s, wallet) = (Arc::clone(&self.s), self.wallet);
+        let wipe = (s
+            .vault()
+            .authorize(GrantPurpose::Wipe, Some(&wallet.0), Credential::None))
+        .unwrap()
+        .id;
+        self.s
+            .rt
+            .spawn(async move { s.remove_wallet(wallet, wipe).await })
+    }
+
+    /// The same wallet imported again from `dest`: its rows come back with
+    /// the read state they were backed up with.
+    fn reimport(&self, dest: &std::path::Path) {
+        let ids = (self.engine)
+            .block_on(self.s.restore_backup(dest.to_owned(), backup_pw()))
+            .unwrap();
+        assert_eq!(ids, [self.wallet]);
+    }
+
+    /// Dave's restored request is unread, in the journal and in the count
+    /// (the reimported wallet's identity is not in memory: `give_me` made
+    /// it there only, so the feed's contacts read would not find it).
+    fn dave_still_unread(&self) {
+        let live = self.s.live().unwrap();
+        let journal = (live.appdb)
+            .journal_page(&self.wallet.to_string(), &b58(ME), None, 10, &[])
+            .unwrap();
+        let unread: Vec<_> = (journal.rows.iter())
+            .filter(|r| r.read_at.is_none())
+            .map(|r| (r.kind.as_str(), r.contact.clone()))
+            .collect();
+        assert_eq!(unread, [("request_received", b58(DAVE))], "{journal:?}");
+        let tap = live.tap;
+        assert_eq!(tap.unread(self.wallet, &b58(ME)), Some(1));
+    }
+
+    /// Holds the next call that reaches `at`; released at the latest when
+    /// the second value drops, so a failed assert leaves nothing held.
+    fn pause_at(&self, at: &'static str) -> (Arc<TestPause>, ReleaseOnDrop) {
+        let pause = Arc::new(TestPause::default());
+        *self.s.platform.contacts.job_pause.lock().unwrap() = Some((at, Arc::clone(&pause)));
+        let release = ReleaseOnDrop(Arc::clone(&pause));
+        (pause, release)
+    }
+}
+
+/// Sol r1 finding 1: a `mark_read(u64::MAX)` whose app.sqlite job is held
+/// holds the wallet's write fence, so a removal waits for it; the same
+/// wallet imported afterwards keeps its restored rows unread.
+#[test]
+fn a_held_mark_read_finishes_before_a_removal_and_reimport() {
+    let dir = dw_testutil::private_tempdir();
+    let dest = dir.path().join("me.dwbackup");
+    let f = dave_unread_backed_up(&dest);
+    let (pause, _release) = f.pause_at("mark_read");
+    let dp = f.dp();
+    let marking =
+        f.s.rt
+            .spawn(async move { dp.mark_read(b58(ME), u64::MAX).await });
+    wait_for("the held job", || pause.reached.load(Ordering::SeqCst));
+    let fence = f.s.platform.contacts.fences.of(f.wallet);
+    assert!(fence.try_write().is_err(), "the job holds no fence");
+    let removing = f.removing();
+    // A writer waits at the fence: no read gets in.
+    wait_long("the removal at the fence", Duration::from_secs(60), || {
+        fence.try_read().is_err() || removing.is_finished()
+    });
+    assert!(!removing.is_finished(), "the removal did not wait");
+    pause.release.notify_one();
+    f.engine.block_on(marking).unwrap().unwrap();
+    f.engine.block_on(removing).unwrap().unwrap();
+    f.reimport(&dest);
+    f.dave_still_unread();
+}
+
+/// Sol r1 finding 1: a `mark_read(u64::MAX)` admitted for the wallet but
+/// delayed past its removal and a same-seed reimport marks nothing of the
+/// reimported wallet: its restored rows stay unread.
+#[test]
+fn a_mark_read_admitted_before_a_removal_and_reimport_marks_nothing() {
+    let dir = dw_testutil::private_tempdir();
+    let dest = dir.path().join("me.dwbackup");
+    let f = dave_unread_backed_up(&dest);
+    let (pause, _release) = f.pause_at("mark_read admitted");
+    let dp = f.dp();
+    let marking =
+        f.s.rt
+            .spawn(async move { dp.mark_read(b58(ME), u64::MAX).await });
+    wait_for("the admitted call", || pause.reached.load(Ordering::SeqCst));
+    f.engine.block_on(f.removing()).unwrap().unwrap();
+    f.reimport(&dest);
+    pause.release.notify_one();
+    let marked = f.engine.block_on(marking).unwrap();
+    assert!(
+        matches!(marked, Err(PlatformError::WalletNotFound)),
+        "{marked:?}"
+    );
+    f.dave_still_unread();
 }
 
 // ---------------------------------------------------------------------------
