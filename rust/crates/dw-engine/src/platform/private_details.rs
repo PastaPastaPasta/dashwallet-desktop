@@ -974,6 +974,8 @@ pub(super) async fn set(
             max: MAX_PLAINTEXT_LEN as u32,
         });
     }
+    // Refreshes the spent balance once the write lock is released.
+    let _refresh = session.after_spend(pair.wallet, pair.identity);
     let locks = identity_locks(pair.wallet, pair.identity);
     let _write = locks.write.lock().await;
     let mut mine = Mine::of(wallet, &pair).await?;

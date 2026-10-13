@@ -96,9 +96,9 @@ pub(crate) struct PlatformRuntime {
     pub(crate) users: super::users::UsersRuntime,
     /// The registration flows running in this process (DP1-02).
     pub(crate) registrations: Arc<super::registration_flow::Flows>,
-    /// Top-up locks Platform reported taken in this process (DP1-06,
-    /// `topup.rs`).
-    pub(crate) taken_top_ups: super::topup::TakenTopUps,
+    /// The balances spent since their refresh, and the balance pass
+    /// (DP1-06, `balances.rs`).
+    pub(crate) balances: Arc<super::balances::Balances>,
     /// Tests: holds the next bring-up between building its keys and
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
@@ -270,7 +270,7 @@ impl PlatformRuntime {
             contacts: Default::default(),
             users: Default::default(),
             registrations: Default::default(),
-            taken_top_ups: Default::default(),
+            balances: Default::default(),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
         }
@@ -364,6 +364,11 @@ impl PlatformRuntime {
         // Work its tasks started before they saw the cancel.
         self.key_work.teardown(closing);
         self.loops_on.store(false, Ordering::Release);
+        // A background balance refresh holds the wallet: none outlives a
+        // close (DP1-06).
+        if closing {
+            self.balances.close().await;
+        }
         for entry in self.write_startup().values_mut() {
             if entry.startup == StartupStatus::Starting {
                 entry.startup = StartupStatus::NotRun;
@@ -444,7 +449,7 @@ impl PlatformRuntime {
         self.contacts.forget(id);
         self.users.scans.forget(id);
         self.registrations.forget_wallet(*id);
-        self.taken_top_ups.forget(*id);
+        self.balances.forget(id);
     }
 
     /// Takes wallet `id` out of `manager` (a removal, an unload, a restore's
@@ -574,6 +579,8 @@ impl NetworkSession {
                 dashpay.sync_now().await;
             }
         });
+        // The pass's balances too (DP1-06).
+        self.kick_balance_pass();
     }
 
     pub(super) fn apply_cadence(&self, manager: &Manager) {

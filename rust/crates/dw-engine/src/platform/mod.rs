@@ -5,6 +5,7 @@
 //! live in the domain files and are re-exported here one by one, so a `pub`
 //! helper never becomes API by accident.
 
+mod balances;
 mod bringup;
 mod contact_names;
 mod contacts;

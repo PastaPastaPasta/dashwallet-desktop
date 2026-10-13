@@ -9,7 +9,7 @@ use super::dashpay::{DashPay, stub};
 use super::errors::PlatformError;
 use super::profile::Profile;
 use super::registration_flow::parse_identity;
-use super::topup::{self, TopUpLib};
+use super::topup;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentitySummary {
@@ -25,6 +25,13 @@ pub struct IdentitySummary {
     pub is_main: bool,
     /// Credits.
     pub balance: Option<u64>,
+    /// The Platform block time (ms) of `balance`, once a refresh read it
+    /// (DP1-06).
+    pub balance_as_of: Option<u64>,
+    /// `balance` may be behind: never refreshed, older than ten minutes, or
+    /// spent by a write since its refresh. The engine refreshes it in the
+    /// background (`balances.rs`); it stays set while a refresh fails.
+    pub balance_stale: bool,
     /// `balance` against the cost table (DP1-06); `None` while the balance
     /// is unknown.
     pub credit_level: Option<CreditLevel>,
@@ -118,8 +125,9 @@ impl DashPay {
     /// `Platform{Identities}`. `None` when Platform has no balance for it.
     /// Needs no key, so it runs with the vault locked.
     pub async fn refresh_balance(&self, identity: String) -> Result<Option<u64>, PlatformError> {
-        topup::on_lib(&self.session, self.wallet_id, move |_, lib| async move {
-            lib.refresh_balance(parse_identity(&identity)?).await
+        let wallet = self.wallet_id;
+        topup::on_lib(&self.session, wallet, move |session, _| async move {
+            (session.refresh_balance_of(wallet, parse_identity(&identity)?)).await
         })
         .await
     }

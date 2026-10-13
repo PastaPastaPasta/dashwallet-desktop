@@ -111,6 +111,8 @@ pub(super) struct OwnedIdentity {
     /// The labels (normalized) a marketplace row says it owns.
     pub(super) row_owned: Vec<String>,
     pub(super) balance: Option<u64>,
+    /// `balance`'s Platform block time (ms), once refreshed.
+    pub(super) balance_as_of: Option<u64>,
     pub(super) has_dashpay_keys: bool,
     pub(super) profile: Option<Profile>,
     /// The identity and its shown profile as provenance sees them, digests
@@ -366,6 +368,8 @@ pub(super) fn summaries(
                 identity: o.identity,
                 index: o.index,
                 balance: o.balance,
+                balance_as_of: o.balance_as_of,
+                balance_stale: false,
                 credit_level: None,
                 has_dashpay_keys: o.has_dashpay_keys,
                 profile: o.profile,
@@ -432,6 +436,7 @@ fn owned_identities(info: &PlatformWalletInfo, id: &WalletId) -> Vec<OwnedIdenti
                 open_contests: m.contested_dpns_names.clone(),
                 row_owned: row_owned(m.identity.id(), &info.dpns_name_states),
                 balance: Some(m.identity.balance()),
+                balance_as_of: m.last_updated_balance_block_time.map(|t| t.timestamp),
                 has_dashpay_keys: missing_dashpay_purposes(m.identity.public_keys().values())
                     .is_empty(),
                 profile: m.dashpay().profile.as_ref().map(profile_of),
@@ -502,6 +507,12 @@ impl NetworkSession {
             for s in &mut summaries {
                 s.credit_level = s.balance.map(|b| credit_level(b, &table));
             }
+        }
+        for s in &mut summaries {
+            s.balance_stale = Identifier::from_string(&s.identity, Encoding::Base58)
+                .map_or(true, |i| {
+                    (self.platform.balances).stale(id, i, s.balance_as_of)
+                });
         }
         Ok(summaries)
     }

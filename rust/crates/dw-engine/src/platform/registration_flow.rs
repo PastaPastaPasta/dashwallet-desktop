@@ -2915,7 +2915,9 @@ impl RegistrationLib for PwLib {
     ) -> Result<(), PlatformError> {
         let id = parse_identity(identity)?;
         let signer = lease.identity_signer(&[identity_index])?;
-        // One write of the identity at a time (identity_writes.rs).
+        // One write of the identity at a time (identity_writes.rs); the
+        // spent balance is refreshed once it is released.
+        let _refresh = self.session.after_spend(self.wallet_id, id);
         let locks = identity_locks(self.wallet_id, id);
         let _write = locks.write.lock().await;
         self.wallet
@@ -2935,7 +2937,9 @@ impl RegistrationLib for PwLib {
     ) -> Result<(), PlatformError> {
         let id = parse_identity(identity)?;
         let signer = lease.identity_signer(&[identity_index])?;
-        // One write of the identity at a time (identity_writes.rs).
+        // One write of the identity at a time (identity_writes.rs); the
+        // spent balance is refreshed once it is released.
+        let _refresh = self.session.after_spend(self.wallet_id, id);
         let locks = identity_locks(self.wallet_id, id);
         let _write = locks.write.lock().await;
         self.wallet
