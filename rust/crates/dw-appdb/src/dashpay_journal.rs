@@ -1,6 +1,8 @@
 //! What the changeset tap (DASHPAY §3.5, ROADMAP E0-06) writes to the
 //! `dp_events` journal, and the rows it reads to classify a changeset.
 
+use std::collections::HashSet;
+
 use rusqlite::{OptionalExtension, params};
 
 use crate::{AppDb, Result};
@@ -32,6 +34,12 @@ pub struct JournalRow {
     pub at: u64,
     pub read_at: Option<u64>,
 }
+
+/// [`AppDb::journal_page`]'s query: it walks `dp_events_page` from the
+/// cursor down, so a page reads only the rows it returns and the ignored
+/// ones it skips.
+const PAGE_SQL: &str = "SELECT id, identity, kind, contact, ref, at, read_at FROM dp_events
+     WHERE wallet_id = ?1 AND identity = ?2 AND id < ?3 ORDER BY id DESC";
 
 /// The newest-first page of one identity's journal rows below a cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,11 +114,9 @@ impl AppDb {
         limit: usize,
         skip_contacts: &[String],
     ) -> Result<JournalPage> {
+        let skip: HashSet<&str> = skip_contacts.iter().map(String::as_str).collect();
         let conn = self.conn();
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, identity, kind, contact, ref, at, read_at FROM dp_events
-             WHERE wallet_id = ?1 AND identity = ?2 AND id < ?3 ORDER BY id DESC",
-        )?;
+        let mut stmt = conn.prepare_cached(PAGE_SQL)?;
         let before = before.unwrap_or(i64::MAX);
         let mut rows = stmt.query(params![wallet_id, identity, before])?;
         let (mut out, mut more) = (Vec::new(), false);
@@ -124,7 +130,7 @@ impl AppDb {
                 at: r.get::<_, i64>(5)? as u64,
                 read_at: r.get::<_, Option<i64>>(6)?.map(|t| t as u64),
             };
-            if skip_contacts.contains(&row.contact) {
+            if skip.contains(row.contact.as_str()) {
                 continue;
             }
             if out.len() == limit {
@@ -359,6 +365,25 @@ mod tests {
         assert!(db.record_events(W, &late, 3).unwrap().is_empty());
         assert!(db.journal(W).unwrap().is_empty());
         assert!(db.unread_counts(W).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_page_walks_its_index_without_sorting() {
+        let db = AppDb::open_in_memory().unwrap();
+        let conn = db.conn();
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {PAGE_SQL}"))
+            .unwrap()
+            .query_map(params![W, "me", i64::MAX], |r| r.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|p| p.contains("USING INDEX dp_events_page")),
+            "{plan:?}"
+        );
+        assert!(!plan.iter().any(|p| p.contains("TEMP B-TREE")), "{plan:?}");
     }
 
     #[test]

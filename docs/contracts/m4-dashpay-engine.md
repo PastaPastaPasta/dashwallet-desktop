@@ -2253,6 +2253,9 @@ renames or reshapes them takes the next version bump:
     - **Historic is the catch-up boundary's**, not "before the first completed sync": an event whose authoritative
       time predates the wallet's boundary is stored read and never news (DASHPAY §2.7). A seed restore therefore
       makes no news for the history it replays, and a `.dwbackup` restore none for the rows it imports.
+    - **Pages walk an index.** `events` reads `dp_events_page` (`wallet_id, identity, id DESC`; app.sqlite
+      migration `V2026101303`) from the cursor down, so a page reads the rows it returns and the ignored ones it
+      skips, never the identity's whole journal. An index only: `.dwbackup` classification is unchanged.
     - **News only from inserted rows.** The tap's journal write reports the rows it added; nothing else (a read, an
       import, a replay) produces news, so a restart cannot announce again what a previous session announced.
     - **Hidden contacts** are not filtered (DASHPAY §3.5 journals nothing for hide or unhide; iOS's

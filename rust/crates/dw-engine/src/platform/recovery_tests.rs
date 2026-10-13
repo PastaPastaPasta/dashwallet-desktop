@@ -2293,7 +2293,8 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
 
     // app.sqlite as a build from before E0-10b left it: without the later
     // migrations too (DP1-02's registration columns, DP2-04's digests and
-    // removed wallets with their triggers), which such a build never had,
+    // removed wallets with their triggers, DP2-05's page index), which such
+    // a build never had,
     // or the runner refuses the gap below them.
     let conn = rusqlite::Connection::open(&appdb).unwrap();
     let drop_triggers: String = conn
@@ -2306,7 +2307,8 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
         .unwrap();
     conn.execute_batch(&drop_triggers).unwrap();
     conn.execute_batch(
-        "DROP TABLE removed_wallets;
+        "DROP INDEX dp_events_page;
+             DROP TABLE removed_wallets;
              ALTER TABLE dp_trust_verified DROP COLUMN digest;
              ALTER TABLE dp_registration DROP COLUMN owner;
              ALTER TABLE dp_registration DROP COLUMN name_error;
