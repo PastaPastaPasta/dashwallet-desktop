@@ -2146,11 +2146,18 @@ renames or reshapes them takes the next version bump:
       transaction that deletes its rows; from then on an insert of a row of that wallet, in any table the removal
       clears and in its two settings scopes, is skipped, and an update finds no row. `add_receive_request` and a new
       registration flow then fail (`storage`). The record lasts until an import of the same wallet (a seed, a
-      watch-only xpub, a restore), which takes it out before its first write (a seed import or restore that then fails
-      to register the wallet records it again), or until a session of a later process opens the network: a close and
-      reopen in the same process keeps it, since a write of the wallet may still be queued. `.dwbackup` never carries
-      it (dwbackup-v1 §2.3). **Residual (accepted, DEC-210 (5)):** a write of the removed wallet still under way when
-      the same wallet is imported again lands among the new import's rows.
+      watch-only xpub, a restore), which takes it out before its first write (an import that then fails to register
+      the wallet records it again), or until an open of the network's `app.sqlite` while no other instance of it is
+      open, in this process or another (DEC-210 (3b)). Each open instance holds a shared lock on `app.sqlite.lock`
+      for its whole life, a job a closed session left running included; an open forgets the record only if an
+      exclusive lock on that file is granted at once, and otherwise keeps it. Imports, restores and their rollback,
+      removals, and the open and close of a wallet run one at a time per network (the engine's lifecycle lock, taken
+      after the operation's admission and before the wallet's barrier, discoveries and private-details fence), so a
+      wallet is recorded as removed exactly when it is not registered, and two imports of the same seed run one after
+      the other. `.dwbackup` never carries the record (dwbackup-v1 §2.3). **Residuals (accepted, DEC-210 (5) and
+      (3b)):** a write of the removed wallet still under way when the same wallet is imported again lands among the
+      new import's rows; an insert that is skipped shows in the log only as "no rows" (`raise_setting`) or as a held
+      index (`adopt_registration_lock`).
     - **An edit of published details needs a grant.** The library's DashPay pass applies Platform's `contactInfo` over
       local details on every pass (remote wins), so a local-only edit of a contact Platform holds details for would
       go back silently. It is `platform.needs_grant{credits}` and the edit is not saved. Re-saving the same details

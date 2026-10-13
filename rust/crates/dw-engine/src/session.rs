@@ -178,6 +178,8 @@ pub struct NetworkSession {
     pub(crate) hub: Arc<SessionHub>,
     /// Admission of operations vs close (review M1).
     gate: OpGate,
+    /// Wallet registrations and removals, one at a time (DEC-210 (3b)).
+    pub(crate) lifecycle: crate::gate::WalletLifecycle,
     live: RwLock<Option<Live>>,
     pump: Mutex<Option<PumpTask>>,
     /// Inputs of prepared, not yet settled transactions (E2 send).
@@ -427,6 +429,7 @@ impl NetworkSession {
             spv_peers,
             hub,
             gate: OpGate::default(),
+            lifecycle: Default::default(),
             live: RwLock::new(Some(Live {
                 manager: Arc::clone(&manager),
                 persister,

@@ -21,6 +21,7 @@ use key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use zeroize::Zeroizing;
 
+use crate::gate::Lifecycle;
 use crate::platform::runtime::PlatformSignal;
 use crate::wallets::validate_name;
 use crate::{CreatedWallet, EngineError, EngineEvent, NetworkSession, WalletId};
@@ -33,7 +34,7 @@ pub(crate) static FAIL_REGISTRATION_IN: std::sync::Mutex<Vec<std::path::PathBuf>
 
 /// Tests: whether [`FAIL_REGISTRATION_IN`] refuses this registration.
 #[cfg(test)]
-fn registration_refused(data_dir: &std::path::Path) -> bool {
+pub(crate) fn registration_refused(data_dir: &std::path::Path) -> bool {
     let mut dirs = FAIL_REGISTRATION_IN
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -43,7 +44,7 @@ fn registration_refused(data_dir: &std::path::Path) -> bool {
 }
 
 #[cfg(not(test))]
-fn registration_refused(_: &std::path::Path) -> bool {
+pub(crate) fn registration_refused(_: &std::path::Path) -> bool {
     false
 }
 
@@ -120,6 +121,32 @@ impl ImportOptions {
     fn effective_lookahead(&self) -> Option<u32> {
         self.lookahead
             .or(self.core_compat.then_some(CORE_COMPAT_LOOKAHEAD))
+    }
+}
+
+/// The options of an import, checked before its secret is made.
+pub(crate) struct Checked {
+    name: Option<String>,
+    lookahead: Option<u32>,
+    birth_height: Option<u32>,
+}
+
+impl Checked {
+    pub(crate) fn new(options: ImportOptions) -> Result<Self, EngineError> {
+        let name = options.name.as_deref().map(validate_name).transpose()?;
+        let lookahead = options.effective_lookahead();
+        if let Some(n) = lookahead
+            && !(1..=MAX_LOOKAHEAD).contains(&n)
+        {
+            return Err(EngineError::InvalidArgument(format!(
+                "lookahead {n} outside 1..={MAX_LOOKAHEAD}"
+            )));
+        }
+        Ok(Self {
+            name,
+            lookahead,
+            birth_height: options.birth_height,
+        })
     }
 }
 
@@ -421,170 +448,178 @@ impl NetworkSession {
     where
         F: FnOnce() -> Result<WalletSecret, EngineError> + Send + 'static,
     {
-        let name = options.name.as_deref().map(validate_name).transpose()?;
-        let lookahead = options.effective_lookahead();
-        if let Some(n) = lookahead
-            && !(1..=MAX_LOOKAHEAD).contains(&n)
-        {
-            return Err(EngineError::InvalidArgument(format!(
-                "lookahead {n} outside 1..={MAX_LOOKAHEAD}"
-            )));
-        }
+        let checked = Checked::new(options)?;
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let manager = this.manager()?;
-            let network = this.network.core_network();
-            let vault = this.vault.clone();
-            // PBKDF2, vault file writes and fsync stay off the async workers.
-            let Stored {
-                wallet_id,
-                seed,
+            // PBKDF2 stays off the async workers, and before the lifecycle
+            // lock.
+            let secret = tokio::task::spawn_blocking(make_secret).await??;
+            let held = this.lifecycle.hold().await;
+            this.import_secret_locked(&held, checked, secret, auto_backup, origin)
+                .await
+        })
+        .await
+    }
+
+    /// [`Self::import_secret_inner`] once the secret is made, under the
+    /// lifecycle lock (DEC-210 (3b)): from the seed stored in the vault to
+    /// the wallet registered, or what was stored of it undone.
+    pub(crate) async fn import_secret_locked(
+        self: &Arc<Self>,
+        held: &Lifecycle<'_>,
+        checked: Checked,
+        secret: WalletSecret,
+        auto_backup: AutoBackup,
+        origin: Origin,
+    ) -> Result<WalletId, EngineError> {
+        let Checked {
+            name,
+            lookahead,
+            birth_height,
+        } = checked;
+        let manager = self.manager()?;
+        let network = self.network.core_network();
+        let vault = self.vault.clone();
+        // Vault file writes and fsync stay off the async workers.
+        let Stored {
+            wallet_id,
+            seed,
+            had_secret,
+            fingerprint,
+        } = tokio::task::spawn_blocking(move || -> Result<Stored, EngineError> {
+            let id = mnemonic::wallet_id_for_seed(&secret.seed, network).map_err(mnemonic_error)?;
+            // The vault keeps a seed it holds: one stored before, perhaps
+            // with another derivation flag (the id derives from the seed),
+            // counts as one already there.
+            let had_secret = vault.has_wallet_secret(&id)
+                || match vault.store_wallet_secret(&id, &secret) {
+                    Err(VaultError::WalletSecretExists) => true,
+                    stored => {
+                        stored?;
+                        false
+                    }
+                };
+            // Kept for PSBT derivation records (watch-only use, no key needed).
+            let fingerprint =
+                key_wallet::bip32::ExtendedPrivKey::new_master(network, &secret.seed[..])
+                    .map(|m| m.fingerprint().to_string())
+                    .map_err(|e| EngineError::Internal(format!("master key: {e}")))?;
+            Ok(Stored {
+                wallet_id: WalletId(id),
+                seed: Zeroizing::new(*secret.seed),
                 had_secret,
                 fingerprint,
-            } = tokio::task::spawn_blocking(move || -> Result<Stored, EngineError> {
-                let secret = make_secret()?;
-                let id =
-                    mnemonic::wallet_id_for_seed(&secret.seed, network).map_err(mnemonic_error)?;
-                // The vault keeps a seed it holds: an import of the same seed
-                // (the id derives from it) stored meanwhile, perhaps with
-                // another derivation flag, counts as one already there.
-                let had_secret = vault.has_wallet_secret(&id)
-                    || match vault.store_wallet_secret(&id, &secret) {
-                        Err(VaultError::WalletSecretExists) => true,
-                        stored => {
-                            stored?;
-                            false
-                        }
-                    };
-                // Kept for PSBT derivation records (watch-only use, no key needed).
-                let fingerprint =
-                    key_wallet::bip32::ExtendedPrivKey::new_master(network, &secret.seed[..])
-                        .map(|m| m.fingerprint().to_string())
-                        .map_err(|e| EngineError::Internal(format!("master key: {e}")))?;
-                Ok(Stored {
-                    wallet_id: WalletId(id),
-                    seed: Zeroizing::new(*secret.seed),
-                    had_secret,
-                    fingerprint,
-                })
             })
-            .await??;
-            // Rows of a removed wallet are skipped until it is readmitted
-            // (DEC-210), before its first write.
-            let readmit = wallet_id.to_string();
-            let readmitted = match this.appdb_op(move |db| db.readmit_wallet(&readmit)).await {
-                Ok(readmitted) => readmitted,
-                Err(e) => {
-                    if !had_secret {
-                        this.forget_secret(wallet_id).await;
-                    }
-                    return Err(e);
-                }
-            };
-            this.store_fingerprint(wallet_id, fingerprint).await;
-
-            // A closed (unloaded) wallet is registered: open it instead.
-            if this.live()?.store.is_unloaded(&wallet_id.0) {
+        })
+        .await??;
+        // Rows of a removed wallet are skipped until it is readmitted
+        // (DEC-210), before its first write.
+        let readmit = wallet_id.to_string();
+        let readmitted = match self.appdb_op(move |db| db.readmit_wallet(&readmit)).await {
+            Ok(readmitted) => readmitted,
+            Err(e) => {
                 if !had_secret {
-                    this.forget_secret(wallet_id).await;
+                    self.forget_secret(held, wallet_id).await;
                 }
+                return Err(e);
+            }
+        };
+        self.store_fingerprint(wallet_id, fingerprint).await;
+
+        // A closed (unloaded) wallet is registered: open it instead.
+        if self.live()?.store.is_unloaded(&wallet_id.0) {
+            if !had_secret {
+                self.forget_secret(held, wallet_id).await;
+            }
+            return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));
+        }
+        if manager.get_wallet(&wallet_id.0).await.is_some() {
+            if had_secret {
                 return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));
             }
-            if manager.get_wallet(&wallet_id.0).await.is_some() {
-                if had_secret {
-                    return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));
-                }
-                // Keys attached: watch-only becomes false; hosts reload.
-                this.sink.emit(EngineEvent::WalletCreated {
-                    network: this.network.clone(),
-                    wallet_id,
-                });
-                if auto_backup == AutoBackup::Schedule {
-                    this.platform.signal(PlatformSignal::WalletAdded(wallet_id));
-                    // E0-04 §8.6 (review L-4): as `load_wallet`.
-                    this.leases.wallet_opened(wallet_id);
-                    this.schedule_automatic_backup(wallet_id);
-                }
-                return Ok(wallet_id);
-            }
-
-            let default_name = this.next_default_name();
-            let registered = if registration_refused(this.data_dir()) {
-                Err(EngineError::Internal("test: registration refused".into()))
-            } else {
-                manager
-                    .create_wallet_from_seed_bytes(
-                        network,
-                        &seed,
-                        WalletAccountCreationOptions::Default,
-                        options.birth_height,
-                    )
-                    .await
-                    .map_err(EngineError::from)
-            };
-            drop(seed);
-            let wallet = match registered {
-                Ok(wallet) if wallet.wallet_id() == wallet_id.0 => wallet,
-                Ok(wallet) => {
-                    return Err(EngineError::Internal(format!(
-                        "platform-wallet registered {} for the seed of {wallet_id}",
-                        hex::encode(wallet.wallet_id())
-                    )));
-                }
-                Err(e) => {
-                    // A concurrent registration of the same wallet now uses
-                    // the stored seed, so only roll back our own failure.
-                    if !matches!(e, EngineError::WalletAlreadyExists(_)) {
-                        if !had_secret {
-                            this.forget_secret(wallet_id).await;
-                        }
-                        // Unless another import registered it meanwhile.
-                        if readmitted
-                            && this
-                                .live()
-                                .is_ok_and(|live| !live.store.is_unloaded(&wallet_id.0))
-                            && manager.get_wallet(&wallet_id.0).await.is_none()
-                        {
-                            this.record_removed_again(wallet_id).await;
-                        }
-                    }
-                    return Err(e);
-                }
-            };
-            if let Some(gap) = lookahead {
-                if let Err(e) = apply_lookahead(&wallet, gap).await {
-                    tracing::warn!(%wallet_id, error = %e, "could not raise the restore lookahead");
-                }
-                this.store_lookahead(wallet_id, gap).await;
-            }
-            this.refresh_wallet_state(&manager, wallet_id).await;
-            // The wallet is registered; a failed name write leaves it with
-            // the computed default name and is reported in the log only.
-            if let Err(e) = this
-                .store_name(wallet_id, name.unwrap_or(default_name), None)
-                .await
-            {
-                tracing::warn!(%wallet_id, error = %e, "could not store the wallet name");
-            }
-            // Before the bring-up hears of the wallet, which reads it.
-            if origin == Origin::CreatedHere {
-                this.mark_created_here(wallet_id).await;
-            }
-            this.sink.emit(EngineEvent::WalletCreated {
-                network: this.network.clone(),
+            // Keys attached: watch-only becomes false; hosts reload.
+            self.sink.emit(EngineEvent::WalletCreated {
+                network: self.network.clone(),
                 wallet_id,
             });
             if auto_backup == AutoBackup::Schedule {
-                this.platform.signal(PlatformSignal::WalletAdded(wallet_id));
-                // E0-04 §8.6 (review L-4): its funding statuses read and
-                // its tracked rows resumed, as `load_wallet` does.
-                this.leases.wallet_opened(wallet_id);
-                this.schedule_automatic_backup(wallet_id);
+                self.platform.signal(PlatformSignal::WalletAdded(wallet_id));
+                // E0-04 §8.6 (review L-4): as `load_wallet`.
+                self.leases.wallet_opened(wallet_id);
+                self.schedule_automatic_backup(wallet_id);
             }
-            Ok(wallet_id)
-        })
-        .await
+            return Ok(wallet_id);
+        }
+
+        let default_name = self.next_default_name();
+        let registered = if registration_refused(self.data_dir()) {
+            Err(EngineError::Internal("test: registration refused".into()))
+        } else {
+            manager
+                .create_wallet_from_seed_bytes(
+                    network,
+                    &seed,
+                    WalletAccountCreationOptions::Default,
+                    birth_height,
+                )
+                .await
+                .map_err(EngineError::from)
+        };
+        drop(seed);
+        let wallet = match registered {
+            Ok(wallet) if wallet.wallet_id() == wallet_id.0 => wallet,
+            Ok(wallet) => {
+                return Err(EngineError::Internal(format!(
+                    "platform-wallet registered {} for the seed of {wallet_id}",
+                    hex::encode(wallet.wallet_id())
+                )));
+            }
+            Err(e) => {
+                // A registration that exists keeps the stored seed: only
+                // our own failure is rolled back.
+                if !matches!(e, EngineError::WalletAlreadyExists(_)) {
+                    if !had_secret {
+                        self.forget_secret(held, wallet_id).await;
+                    }
+                    if readmitted {
+                        self.record_removed_again(held, wallet_id).await;
+                    }
+                }
+                return Err(e);
+            }
+        };
+        if let Some(gap) = lookahead {
+            if let Err(e) = apply_lookahead(&wallet, gap).await {
+                tracing::warn!(%wallet_id, error = %e, "could not raise the restore lookahead");
+            }
+            self.store_lookahead(wallet_id, gap).await;
+        }
+        self.refresh_wallet_state(&manager, wallet_id).await;
+        // The wallet is registered; a failed name write leaves it with
+        // the computed default name and is reported in the log only.
+        if let Err(e) = self
+            .store_name(wallet_id, name.unwrap_or(default_name), None)
+            .await
+        {
+            tracing::warn!(%wallet_id, error = %e, "could not store the wallet name");
+        }
+        // Before the bring-up hears of the wallet, which reads it.
+        if origin == Origin::CreatedHere {
+            self.mark_created_here(wallet_id).await;
+        }
+        self.sink.emit(EngineEvent::WalletCreated {
+            network: self.network.clone(),
+            wallet_id,
+        });
+        if auto_backup == AutoBackup::Schedule {
+            self.platform.signal(PlatformSignal::WalletAdded(wallet_id));
+            // E0-04 §8.6 (review L-4): its funding statuses read and
+            // its tracked rows resumed, as `load_wallet` does.
+            self.leases.wallet_opened(wallet_id);
+            self.schedule_automatic_backup(wallet_id);
+        }
+        Ok(wallet_id)
     }
 
     pub(crate) async fn store_lookahead(&self, wallet_id: WalletId, gap: u32) {
@@ -643,9 +678,16 @@ impl NetworkSession {
     }
 
     /// A removed wallet whose import failed after it was readmitted is
-    /// recorded as removed again, with what the import wrote of it
-    /// (DEC-210).
-    async fn record_removed_again(&self, wallet_id: WalletId) {
+    /// recorded as removed again, with what the import wrote of it, unless
+    /// the failed call registered it after all (DEC-210). The lifecycle
+    /// lock keeps any other registration out meanwhile.
+    pub(crate) async fn record_removed_again(&self, _held: &Lifecycle<'_>, wallet_id: WalletId) {
+        let Ok(live) = self.live() else { return };
+        if live.store.is_unloaded(&wallet_id.0)
+            || live.manager.get_wallet(&wallet_id.0).await.is_some()
+        {
+            return;
+        }
         let id = wallet_id.to_string();
         if let Err(e) = self.appdb_op(move |db| db.delete_wallet(&id)).await {
             tracing::warn!(%wallet_id, error = %e, "could not record the wallet as removed again");
@@ -653,7 +695,7 @@ impl NetworkSession {
     }
 
     /// Deletes the vault records of a wallet whose registration failed.
-    pub(crate) async fn forget_secret(&self, wallet_id: WalletId) {
+    pub(crate) async fn forget_secret(&self, _held: &Lifecycle<'_>, wallet_id: WalletId) {
         let vault = self.vault.clone();
         let deleted = tokio::task::spawn_blocking(move || vault.delete_wallet_secret(&wallet_id.0))
             .await

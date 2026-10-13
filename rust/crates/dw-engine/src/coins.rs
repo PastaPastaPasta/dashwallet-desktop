@@ -305,6 +305,16 @@ tokio::task_local! {
     pub(crate) static HOLD_APPDB_JOB: Arc<TestPause>;
 }
 
+/// Tests: the pause of the first app.sqlite job of a task in the scope of
+/// [`HOLD_APPDB_JOB`], until it is reached.
+#[cfg(test)]
+pub(crate) fn held_appdb_job() -> Option<Arc<TestPause>> {
+    HOLD_APPDB_JOB
+        .try_with(Arc::clone)
+        .ok()
+        .filter(|p| !p.reached.load(std::sync::atomic::Ordering::SeqCst))
+}
+
 impl CoinFences {
     fn map(&self) -> std::sync::MutexGuard<'_, HashMap<WalletId, Arc<tokio::sync::Mutex<()>>>> {
         self.fences.lock().unwrap_or_else(|p| p.into_inner())
@@ -554,10 +564,7 @@ impl NetworkSession {
     {
         let db = self.live()?.appdb;
         #[cfg(test)]
-        let pause = HOLD_APPDB_JOB
-            .try_with(Arc::clone)
-            .ok()
-            .filter(|p| !p.reached.load(std::sync::atomic::Ordering::SeqCst));
+        let pause = held_appdb_job();
         tokio::task::spawn_blocking(move || {
             #[cfg(test)]
             if let Some(pause) = pause {

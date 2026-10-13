@@ -1581,7 +1581,12 @@ fn a_restore_rollback_admits_no_discovery_until_it_is_done() {
     let (late, outlived, replacement) = std::thread::scope(|scope| {
         let restoring = s.platform.restoring(vec![id]);
         let payment = engine.block_on(wallet.generation().payment_guard());
-        let rollback = scope.spawn(|| engine.block_on(s.roll_back_restore(&[(id, true)])));
+        let rollback = scope.spawn(|| {
+            engine.block_on(async {
+                let held = s.lifecycle.hold().await;
+                s.roll_back_restore(&held, &[(id, true)]).await
+            })
+        });
         wait_until("the rollback's forget", || {
             s.platform.startup_of(&id).is_none()
         });
@@ -2337,7 +2342,7 @@ use platform_wallet::changeset::PlatformWalletPersistence;
 
 use super::journal_tests::{contacts, incoming};
 use crate::coins::TestPause as JobPause;
-use crate::held_writes::{a_write_held_past_the_removal, hold_first_job};
+use crate::held_writes::{ReleaseOnDrop, a_write_held_past_the_removal, hold_first_job};
 
 /// A session with the ABANDON_12 wallet restored and ALICE among its
 /// identities, and a removal grant for the wallet.
@@ -2575,6 +2580,141 @@ fn an_open_keeps_a_removal_by_another_process_with_the_database_open() {
     other.write_late();
     let names = s.live().unwrap().appdb.wallet_names().unwrap();
     assert!(names.iter().all(|(w, _)| *w != wallet), "{names:?}");
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A removal and an import of the same wallet run one after the other
+/// (DEC-210 (3b)): an import begun while the removal is held, its wallet
+/// already out of the manager, waits for it, then registers the wallet
+/// with its writes accepted.
+#[test]
+fn an_import_during_a_removal_of_the_same_wallet_waits_for_it() {
+    let (_dir, engine, s, id, wipe) = removable();
+    let (pause, removal) = hold_removal(&engine, &s, id, wipe);
+    let _release = ReleaseOnDrop(Arc::clone(&pause));
+    let manager = s.manager().unwrap();
+
+    let session = Arc::clone(&s);
+    let mut import = s.rt.spawn(async move {
+        session
+            .import_wallet(
+                Zeroizing::new(ABANDON_12.to_vec()),
+                Zeroizing::new(Vec::new()),
+                ImportOptions::default(),
+            )
+            .await
+    });
+    let waited =
+        engine.block_on(async { tokio::time::timeout(Duration::from_secs(3), &mut import).await });
+    assert!(waited.is_err(), "the import ran during the removal");
+    assert!(s.lifecycle.is_held());
+    pause.release.notify_one();
+    engine.block_on(removal).unwrap();
+    assert_eq!(engine.block_on(import).unwrap().unwrap(), id);
+
+    assert!(engine.block_on(manager.get_wallet(&id.0)).is_some());
+    let (db, wallet) = (s.live().unwrap().appdb, id.to_string());
+    db.set_main_identity(&wallet, &base58(ALICE)).unwrap();
+    assert_eq!(db.main_identity(&wallet).unwrap(), Some(base58(ALICE)));
+    assert!(db.wallet_names().unwrap().iter().any(|(w, _)| *w == wallet));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// The removal of wallet `id`, held after the wallet left the manager and
+/// before its rows are deleted.
+fn hold_removal(
+    engine: &Engine,
+    s: &Arc<NetworkSession>,
+    id: WalletId,
+    wipe: String,
+) -> (Arc<JobPause>, tokio::task::JoinHandle<()>) {
+    let session = Arc::clone(s);
+    let (pause, removal) = hold_first_job(s, async move {
+        session.remove_wallet(id, wipe).await.unwrap();
+    });
+    wait_until("the held removal", || pause.reached.load(Ordering::SeqCst));
+    let manager = s.manager().unwrap();
+    assert!(engine.block_on(manager.get_wallet(&id.0)).is_none());
+    (pause, removal)
+}
+
+/// The other operations that register or remove a wallet wait for a held
+/// removal too (DEC-210 (3b)): a watch-only import, a restore, and the
+/// open and close of a wallet.
+#[test]
+fn the_other_lifecycle_operations_wait_for_a_held_removal() {
+    let (dir, engine, s, id, wipe) = removable();
+    let xpub = engine.block_on(s.account_xpub(id, 0)).unwrap().xpub;
+    let backup = dir.path().join("wallet.dwbackup");
+    let passphrase = || Some(Zeroizing::new(b"backup passphrase".to_vec()));
+    engine
+        .block_on(s.backup_wallet(id, backup.clone(), passphrase()))
+        .unwrap();
+    let (pause, removal) = hold_removal(&engine, &s, id, wipe);
+    let _release = ReleaseOnDrop(Arc::clone(&pause));
+
+    let (a, b, c, d) = (
+        Arc::clone(&s),
+        Arc::clone(&s),
+        Arc::clone(&s),
+        Arc::clone(&s),
+    );
+    let waiting = [
+        (
+            "a watch-only import",
+            s.rt.spawn(async move {
+                let _ = a.import_watch_only(xpub, Default::default()).await;
+            }),
+        ),
+        (
+            "a restore",
+            s.rt.spawn(async move {
+                let _ = b.restore_backup(backup, passphrase()).await;
+            }),
+        ),
+        (
+            "an open",
+            s.rt.spawn(async move {
+                let _ = c.load_wallet(id).await;
+            }),
+        ),
+        (
+            "a close",
+            s.rt.spawn(async move {
+                let _ = d.unload_wallet(id).await;
+            }),
+        ),
+    ];
+    engine.block_on(async { tokio::time::sleep(Duration::from_secs(3)).await });
+    for (what, task) in &waiting {
+        assert!(!task.is_finished(), "{what} ran during the removal");
+    }
+    pause.release.notify_one();
+    engine.block_on(removal).unwrap();
+    for (_, task) in waiting {
+        engine.block_on(task).unwrap();
+    }
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A watch-only import that readmits a removed wallet and then fails to
+/// store it records the wallet as removed again (DEC-210 (3b)).
+#[test]
+fn a_failed_watch_only_import_records_the_wallet_as_removed_again() {
+    let (_dir, engine, s, id, _) = removable();
+    let xpub = engine.block_on(s.account_xpub(id, 0)).unwrap().xpub;
+    let options = || crate::WatchOnlyOptions::default();
+    let watch = engine
+        .block_on(s.import_watch_only(xpub.clone(), options()))
+        .unwrap();
+    let wipe = grant(&engine, &s, watch, GrantPurpose::Wipe);
+    engine.block_on(s.remove_wallet(watch, wipe)).unwrap();
+    guard(&crate::keys::FAIL_REGISTRATION_IN).push(s.data_dir().to_path_buf());
+    let failed = engine.block_on(s.import_watch_only(xpub, options()));
+    assert!(failed.is_err(), "{failed:?}");
+    let (db, wallet) = (s.live().unwrap().appdb, watch.to_string());
+    db.set_main_identity(&wallet, &base58(ALICE)).unwrap();
+    assert_eq!(db.main_identity(&wallet).unwrap(), None);
     engine.block_on(engine.shutdown()).unwrap();
 }
 
