@@ -20,7 +20,16 @@ namesUpdating: boolean, isMain: boolean,
 /**
  * Credits; `null` while unknown.
  */
-balance: string | null, hasDashpayKeys: boolean, profile: DashPayProfile | null, 
+balance: string | null, 
+/**
+ * The Platform block time (ms) of `balance`, once refreshed.
+ */
+balanceAsOf: number | null, 
+/**
+ * `balance` may be behind (never refreshed, older than ten minutes, or
+ * spent since); the engine refreshes it in the background.
+ */
+balanceStale: boolean, hasDashpayKeys: boolean, profile: DashPayProfile | null, 
 /**
  * Verified only through the trusted fallback.
  */

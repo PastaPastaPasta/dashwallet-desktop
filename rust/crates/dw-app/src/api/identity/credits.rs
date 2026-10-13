@@ -152,9 +152,17 @@ pub enum TopUpState {
         #[serde(with = "crate::dto::credits::option")]
         balance: Option<u64>,
     },
-    /// Platform had taken the lock already: nothing was added now.
+    /// The lock was applied before, with proof: nothing was added now.
     /// `balance` is read afresh.
     AlreadyApplied {
+        #[ts(type = "string | null")]
+        #[serde(with = "crate::dto::credits::option")]
+        balance: Option<u64>,
+    },
+    /// Platform answered "already consumed" without proof: nothing was added
+    /// now, and the lock stays pending (`consumptionUnknown`) until a proved
+    /// apply or `resolveTopUp`. `balance` is read afresh.
+    ConsumptionUnknown {
         #[ts(type = "string | null")]
         #[serde(with = "crate::dto::credits::option")]
         balance: Option<u64>,
@@ -177,6 +185,7 @@ impl From<engine::TopUpState> for TopUpState {
                 balance,
             },
             S::AlreadyApplied { balance } => TopUpState::AlreadyApplied { balance },
+            S::ConsumptionUnknown { balance } => TopUpState::ConsumptionUnknown { balance },
             S::ProofWaiting => TopUpState::ProofWaiting,
             S::NotApplied { error } => TopUpState::NotApplied { error },
         }
@@ -195,6 +204,10 @@ pub struct PendingTopUp {
     pub duffs: u64,
     /// It has its proof: `resumeTopUp` applies it at once.
     pub proved: bool,
+    /// A lock a top-up of this wallet funded, final, whose consumption by
+    /// Platform is unknown: it blocks the identity's top-ups until
+    /// `resumeTopUp` applies it with proof or `resolveTopUp`.
+    pub consumption_unknown: bool,
 }
 
 impl From<engine::PendingTopUp> for PendingTopUp {
@@ -205,6 +218,7 @@ impl From<engine::PendingTopUp> for PendingTopUp {
             identity_index,
             duffs,
             proved,
+            consumption_unknown,
         } = p;
         PendingTopUp {
             txid,
@@ -212,6 +226,7 @@ impl From<engine::PendingTopUp> for PendingTopUp {
             identity_index,
             duffs,
             proved,
+            consumption_unknown,
         }
     }
 }

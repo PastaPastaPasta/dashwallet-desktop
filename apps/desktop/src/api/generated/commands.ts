@@ -1538,6 +1538,15 @@ export function creditsResumeTopUp(walletId: string, txid: string, grant: string
 }
 
 /**
+ * Resolves the pending top-up `txid` whose consumption is unknown (the
+ * user saw its credits arrive): it no longer blocks the identity's
+ * top-ups.
+ */
+export function creditsResolveTopUp(walletId: string, txid: string): Promise<null> {
+  return invoke<null>("credits_resolve_top_up", { walletId, txid });
+}
+
+/**
  * What a withdrawal takes and pays out.
  */
 export function creditsWithdrawQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawQuote> {
@@ -2100,6 +2109,7 @@ export type CommandArgs = {
   credits_top_up: { walletId: string; identity: string; duffs: number; grant: string };
   credits_pending_top_ups: { walletId: string };
   credits_resume_top_up: { walletId: string; txid: string; grant: string };
+  credits_resolve_top_up: { walletId: string; txid: string };
   credits_withdraw_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
@@ -2326,6 +2336,7 @@ export type CommandResults = {
   credits_top_up: TopUpOutcome;
   credits_pending_top_ups: Array<PendingTopUp>;
   credits_resume_top_up: TopUpOutcome;
+  credits_resolve_top_up: null;
   credits_withdraw_quote: WithdrawQuote;
   credits_withdraw: WithdrawOutcome;
   grant_request: GrantRequest;
@@ -2554,6 +2565,7 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_top_up: "identity",
   credits_pending_top_ups: "identity",
   credits_resume_top_up: "identity",
+  credits_resolve_top_up: "identity",
   credits_withdraw_quote: "identity",
   credits_withdraw: "identity",
   grant_request: "identity",

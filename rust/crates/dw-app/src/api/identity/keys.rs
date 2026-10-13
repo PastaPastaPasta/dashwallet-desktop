@@ -26,6 +26,11 @@ pub struct IdentitySummary {
     #[ts(type = "string | null")]
     #[serde(with = "crate::dto::credits::option")]
     pub balance: Option<u64>,
+    /// The Platform block time (ms) of `balance`, once refreshed.
+    pub balance_as_of: Option<u64>,
+    /// `balance` may be behind (never refreshed, older than ten minutes, or
+    /// spent since); the engine refreshes it in the background.
+    pub balance_stale: bool,
     pub has_dashpay_keys: bool,
     pub profile: Option<DashPayProfile>,
     /// Verified only through the trusted fallback.
@@ -44,6 +49,8 @@ impl From<engine::IdentitySummary> for IdentitySummary {
             names_updating,
             is_main,
             balance,
+            balance_as_of,
+            balance_stale,
             has_dashpay_keys,
             profile,
             unverified,
@@ -57,6 +64,8 @@ impl From<engine::IdentitySummary> for IdentitySummary {
             names_updating,
             is_main,
             balance,
+            balance_as_of,
+            balance_stale,
             has_dashpay_keys,
             profile: profile.map(Into::into),
             unverified,

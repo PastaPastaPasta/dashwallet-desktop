@@ -36,6 +36,7 @@
     "allow-credits-top-up",
     "allow-credits-pending-top-ups",
     "allow-credits-resume-top-up",
+    "allow-credits-resolve-top-up",
     "allow-credits-withdraw-quote",
     "allow-credits-withdraw",
     "allow-grant-request",

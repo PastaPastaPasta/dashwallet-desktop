@@ -4,4 +4,4 @@
  * Where a top-up's asset lock stands; past the funding nothing is lost
  * (`pendingTopUps`, `resumeTopUp`).
  */
-export type TopUpState = { "kind": "applied", creditsAdded: string | null, balance: string | null, } | { "kind": "alreadyApplied", balance: string | null, } | { "kind": "proofWaiting" } | { "kind": "notApplied", error: string, };
+export type TopUpState = { "kind": "applied", creditsAdded: string | null, balance: string | null, } | { "kind": "alreadyApplied", balance: string | null, } | { "kind": "consumptionUnknown", balance: string | null, } | { "kind": "proofWaiting" } | { "kind": "notApplied", error: string, };

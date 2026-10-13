@@ -293,6 +293,9 @@ pub enum IdentityCmd {
     TopUpPending,
     /// Apply a pending top-up lock (`identity top-up-pending`).
     TopUpResume { txid: String },
+    /// Resolve a pending top-up lock whose consumption is unknown (its
+    /// credits arrived): it no longer blocks the identity's top-ups.
+    TopUpResolve { txid: String },
     /// Withdraw credits to a Core address.
     Withdraw {
         #[command(flatten)]
@@ -1516,6 +1519,7 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
             )?;
             out(ctx.block_on(dp.resume_top_up(txid, grant))?)
         }
+        IdentityCmd::TopUpResolve { txid } => out(ctx.block_on(dp.resolve_top_up(txid))?),
         IdentityCmd::Withdraw {
             who,
             to,
@@ -1888,6 +1892,10 @@ mod tests {
             "identity top-up-resume abababababababababababababababababababababababababababababababab",
             r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: no top-up lock has that txid","params":{"detail":"no top-up lock has that txid"}}}"#,
         ),
+        (
+            "identity top-up-resolve abababababababababababababababababababababababababababababababab",
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: no pending top-up of that txid has an unknown consumption","params":{"detail":"no pending top-up of that txid has an unknown consumption"}}}"#,
+        ),
         ("identity costs", COSTS),
     ];
 
@@ -1896,7 +1904,7 @@ mod tests {
 
     /// The cost table at the SDK's seed protocol version (13), priced at
     /// its fee version.
-    const COSTS: &str = r#"{"ok":true,"result":{"protocol_version":13,"contact_request":99314660,"profile_update":115656740,"contact_info":129768820,"enable_dashpay_keys":98301600,"credits_per_duff":1000,"top_up_fee":50500000,"top_up_min_duffs":1000000,"low_credits":1156567400,"empty_credits":115656740}}"#;
+    const COSTS: &str = r#"{"ok":true,"result":{"protocol_version":13,"contact_request":139638280,"profile_update":222187240,"contact_info":230453000,"enable_dashpay_keys":98301600,"credits_per_duff":1000,"top_up_fee":50500000,"top_up_min_duffs":1000000,"low_credits":2221872400,"empty_credits":222187240}}"#;
 
     /// `SECRET`'s `dapk` is not Base58; the error does not quote it.
     const NOT_A_CODE: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a DashPay contact code","params":{"detail":"not a DashPay contact code"}}}"#;
@@ -1983,6 +1991,10 @@ mod tests {
         (
             "identity top-up-resume abababababababababababababababababababababababababababababababab",
             "DashPay.resume_top_up",
+        ),
+        (
+            "identity top-up-resolve abababababababababababababababababababababababababababababababab",
+            "DashPay.resolve_top_up",
         ),
         ("name check alice", "check_username"),
         ("name availability alice", "DashPay.name_availability"),

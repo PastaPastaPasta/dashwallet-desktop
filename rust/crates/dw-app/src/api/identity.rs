@@ -319,6 +319,15 @@ commands! {
         Ok(dashpay.resume_top_up(txid, grant).await?.into())
     }
 
+    /// Resolves the pending top-up `txid` whose consumption is unknown (the
+    /// user saw its credits arrive): it no longer blocks the identity's
+    /// top-ups.
+    #[facade("DashPay::resolve_top_up")]
+    fn credits_resolve_top_up(state, wallet_id: String, txid: String) -> () {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.resolve_top_up(txid).await?)
+    }
+
     /// What a withdrawal takes and pays out.
     #[facade("DashPay::withdraw_quote")]
     fn credits_withdraw_quote(

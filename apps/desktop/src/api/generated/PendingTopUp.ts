@@ -15,4 +15,10 @@ identity: string | null, identityIndex: number, duffs: number,
 /**
  * It has its proof: `resumeTopUp` applies it at once.
  */
-proved: boolean, };
+proved: boolean, 
+/**
+ * A lock a top-up of this wallet funded, final, whose consumption by
+ * Platform is unknown: it blocks the identity's top-ups until
+ * `resumeTopUp` applies it with proof or `resolveTopUp`.
+ */
+consumptionUnknown: boolean, };
