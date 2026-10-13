@@ -7,8 +7,11 @@ use dash_sdk::platform::Fetch;
 use dash_sdk::query_types::IdentityBalance;
 use dpp::identity::{Identity, IdentityPublicKey};
 use dpp::prelude::Identifier;
-use platform_wallet::{AutoAcceptProofSource, ContactRequest, PlatformWallet};
+use platform_wallet::{
+    AutoAcceptProofSource, ContactInfoPublishOutcome, ContactRequest, PlatformWallet,
+};
 
+use super::super::contacts::PrivateDetails;
 use super::{Arc, Future, PlatformError, VaultContactCrypto, VaultIdentitySigner};
 
 /// What a contact-request write asks of Platform.
@@ -67,6 +70,19 @@ pub(crate) trait RequestNet: Send + Sync {
         keys: Vec<IdentityPublicKey>,
         signer: &VaultIdentitySigner,
     ) -> impl Future<Output = Result<(), PlatformError>> + Send;
+    /// Publishes `owner`'s private details of `contact` as its
+    /// `contactInfo` (DP2-04). platform-wallet saves them with the contact
+    /// first, whatever the publish does, and defers it while the identity
+    /// has fewer than two contacts.
+    fn set_contact_info(
+        &self,
+        wallet: &PlatformWallet,
+        owner: Identifier,
+        contact: Identifier,
+        details: &PrivateDetails,
+        signer: &VaultIdentitySigner,
+        crypto: &VaultContactCrypto,
+    ) -> impl Future<Output = Result<ContactInfoPublishOutcome, PlatformError>> + Send;
 }
 
 pub(crate) struct SdkRequests(pub(crate) Arc<dash_sdk::Sdk>);
@@ -145,6 +161,30 @@ impl RequestNet for SdkRequests {
         Ok(wallet
             .identity()
             .update_identity_with_external_signer(&id, keys, Vec::new(), signer, None)
+            .await?)
+    }
+
+    async fn set_contact_info(
+        &self,
+        wallet: &PlatformWallet,
+        owner: Identifier,
+        contact: Identifier,
+        details: &PrivateDetails,
+        signer: &VaultIdentitySigner,
+        crypto: &VaultContactCrypto,
+    ) -> Result<ContactInfoPublishOutcome, PlatformError> {
+        Ok(wallet
+            .identity()
+            .dashpay()
+            .set_contact_info_with_external_signer(
+                &owner,
+                &contact,
+                details.alias.clone(),
+                details.note.clone(),
+                details.hidden,
+                signer,
+                crypto,
+            )
             .await?)
     }
 }

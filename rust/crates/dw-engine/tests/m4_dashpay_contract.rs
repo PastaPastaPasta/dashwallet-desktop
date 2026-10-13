@@ -77,6 +77,8 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.ignore",
     "DashPay.unignore",
     "DashPay.enable_dashpay_keys",
+    // DP2-04: private details.
+    "DashPay.set_private_details",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -106,7 +108,8 @@ const FACADE: &[&str] = &[
 /// usernames and its tests (DP2-01), user search, links and scans with
 /// their tests (DP2-03), the registration state machine, its row
 /// encodings and tests (DP1-02), and the contact-request writes, their
-/// network seam and tests, and the identity write locks (DP2-02).
+/// network seam and tests, and the identity write locks (DP2-02), and the
+/// private details' publish and settle with their tests (DP2-04).
 const NOT_FACADE: &[&str] = &[
     "bringup.rs",
     "contact_names.rs",
@@ -119,6 +122,8 @@ const NOT_FACADE: &[&str] = &[
     "lease",
     "mod.rs",
     "names_net.rs",
+    "private_details.rs",
+    "private_details_tests.rs",
     "provenance.rs",
     "recovery.rs",
     "recovery_tests.rs",
@@ -876,6 +881,7 @@ fn error_codes_match_the_contract() {
             ContactError::ScanExpired,
             ContactError::ScanUnverified,
             ContactError::NoUsername,
+            ContactError::DetailsTooLong { bytes: 0, max: 0 },
         ],
         ContactError::code,
     );
@@ -1203,9 +1209,13 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }
-        c.stub(
-            dp.set_private_details(s(), s(), PrivateDetails::default(), None)
-                .await,
+        // DP2-04's: an unknown wallet is refused.
+        assert_eq!(
+            (dp.set_private_details(s(), s(), PrivateDetails::default(), None))
+                .await
+                .unwrap_err()
+                .code(),
+            "wallet_not_found"
         );
         assert_eq!(dp.my_user_link(s()).unwrap_err().code(), "wallet_not_found");
         assert_eq!(

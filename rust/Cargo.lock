@@ -2269,10 +2269,12 @@ dependencies = [
 name = "dw-appdb"
 version = "0.1.0"
 dependencies = [
+ "dw-fs",
  "refinery",
  "rusqlite",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

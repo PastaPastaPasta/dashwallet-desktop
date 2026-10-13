@@ -316,6 +316,9 @@ pub(crate) struct SessionHub {
     /// transition (E0-04 H6 part 2), and its dispatch fence hears the
     /// wallet's positive network evidence (BL-76, [`Self::note_seen`]).
     leases: std::sync::OnceLock<std::sync::Weak<crate::platform::lease::LeaseTable>>,
+    /// Tests: holds the next first-seen write before it runs.
+    #[cfg(test)]
+    pub(crate) pause_seen: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
 
 impl SessionHub {
@@ -333,6 +336,8 @@ impl SessionHub {
             announced: Mutex::new(HashMap::new()),
             trust: OnceLock::new(),
             leases: std::sync::OnceLock::new(),
+            #[cfg(test)]
+            pause_seen: Mutex::new(None),
         }
     }
 
@@ -772,13 +777,27 @@ impl PumpTarget for SessionPump {
         // restarts (the persisted record has only the block time).
         let appdb = Arc::clone(&self.appdb);
         let now = unix_now();
-        tokio::task::spawn_blocking(move || {
+        let write = move || {
             for (wallet_id, txids) in seen {
                 if let Err(e) = appdb.note_txs_seen(&wallet_id.to_string(), &txids, now) {
                     tracing::warn!(%wallet_id, error = %e, "could not store first-seen times");
                 }
             }
-        });
+        };
+        #[cfg(test)]
+        let write = {
+            let pause = self
+                .hub
+                .pause_seen
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            move || match pause {
+                Some(pause) => pause.hold_then(write),
+                None => write(),
+            }
+        };
+        tokio::task::spawn_blocking(write);
     }
 
     fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>) {

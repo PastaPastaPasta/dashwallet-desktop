@@ -62,6 +62,7 @@ use super::contacts::{
     ContactSummary, ContactsPage, PrivateDetails, PublishState, Relation,
 };
 use super::errors::{ContactError, IdentityError, PlatformError};
+use super::private_details;
 use super::profile::Profile;
 use super::provenance::Entity;
 use super::recovery::profile_of;
@@ -243,11 +244,7 @@ pub(super) fn owner_contacts(
             setup_pending: channel == ChannelState::SetupPending,
             outgoing: Some((&c.outgoing_request).into()),
             incoming: Some((&c.incoming_request).into()),
-            private: PrivateDetails {
-                alias: c.alias.clone(),
-                note: c.note.clone(),
-                hidden: c.is_hidden,
-            },
+            private: PrivateDetails::from(c),
             ..entry(
                 *contact,
                 Relation::Contact,
@@ -281,6 +278,9 @@ pub(super) struct Join<'a> {
     pub(super) unverified: &'a dyn Fn(&Entity) -> bool,
     /// When a transaction happened, UNIX seconds.
     pub(super) tx_time: &'a dyn Fn(&Txid) -> Option<u64>,
+    /// What `dp_contact_info` records of the owner's details of a contact
+    /// (DP2-04), from memory; `None` too until the wallet's digests load.
+    pub(super) published: &'a dyn Fn(&Identifier) -> Option<[u8; 32]>,
 }
 
 fn b58(id: &Identifier) -> String {
@@ -433,16 +433,17 @@ pub(super) fn detail(
 ) -> Option<ContactDetail> {
     let e = owner.get(contact)?;
     let at = |r: Option<Request>| r.map(|r| r.created_at / 1000);
+    let publish_state = if e.relation == Relation::Contact {
+        let recorded = (join.published)(contact);
+        private_details::publish_state(owner.established(), &e.private, recorded)
+    } else {
+        PublishState::Local
+    };
     Some(ContactDetail {
         summary: e.summary(join),
         profile: e.profile.clone(),
         private_details: e.private.clone(),
-        // Whether a `contactInfo` was published is DP2-04's to record.
-        publish_state: if e.relation == Relation::Contact && owner.established() < 2 {
-            PublishState::DeferredUntilTwoContacts
-        } else {
-            PublishState::Local
-        },
+        publish_state,
         request_sent_at: at(e.outgoing),
         request_received_at: at(e.incoming),
         // DP3-01's `dp_payment_lock`.
@@ -459,6 +460,32 @@ pub(crate) struct ContactsRuntime {
     refreshing: Arc<Mutex<BTreeSet<WalletId>>>,
     pub(super) names: ContactNames,
     tasks: Mutex<Tasks>,
+    /// `dp_contact_info` in memory (DP2-04).
+    pub(super) digests: Arc<super::private_details::DigestCache>,
+    /// Private-details writes against a wallet leaving the manager (DP2-04).
+    pub(super) fences: Arc<super::private_details::WriteFences>,
+    /// Tests: holds the next settle after its snapshot of the contacts.
+    #[cfg(test)]
+    pub(super) settle_pause: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next settle once it holds its write fence.
+    #[cfg(test)]
+    pub(super) apply_pause: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next private-details publish once its permit ends.
+    #[cfg(test)]
+    pub(super) publish_pause: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next fenced app.sqlite write of that name in its
+    /// blocking job.
+    #[cfg(test)]
+    pub(super) job_pause: Mutex<Option<(&'static str, Arc<crate::coins::TestPause>)>>,
+    /// Tests: holds the next digest load after its read of app.sqlite.
+    #[cfg(test)]
+    pub(super) load_pause: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: replaces the SDK's `contactInfo` reads.
+    #[cfg(test)]
+    pub(super) info_source: Arc<Mutex<Option<Arc<dyn super::private_details::InfoSource>>>>,
+    /// Tests: what those reads see.
+    #[cfg(test)]
+    pub(super) read_hooks: Mutex<super::private_details::ReadHooks>,
 }
 
 #[derive(Default)]
@@ -472,6 +499,7 @@ impl ContactsRuntime {
         guard(&self.snapshots).remove(id);
         guard(&self.refreshing).remove(id);
         self.names.forget(id);
+        self.digests.forget(id);
     }
 
     /// Runs `task` on `rt` until it ends or the session closes; once closed
@@ -482,6 +510,12 @@ impl ContactsRuntime {
             tasks.running.retain(|t| !t.is_finished());
             tasks.running.push(rt.spawn(task));
         }
+    }
+
+    /// Tests: whether every background task has ended.
+    #[cfg(test)]
+    pub(super) fn idle(&self) -> bool {
+        guard(&self.tasks).running.iter().all(|t| t.is_finished())
     }
 
     /// Session close (DASHPAY §3.2: nothing runs while closed): ends every
@@ -601,10 +635,16 @@ impl NetworkSession {
             _ => None,
         };
         let username = |c: &Identifier| names.label(c);
+        // Memory only (m4 §1); the first read of a wallet loads its digests
+        // in the background and signals when they land.
+        self.load_digests(id);
+        let digests = &self.platform.contacts.digests;
+        let published = |contact: &Identifier| digests.get(id, &owner, contact);
         let join = Join {
             username: &username,
             unverified: &unverified,
             tx_time: &tx_time,
+            published: &published,
         };
         let result = f(owned, &join, updating);
         // After the read: it shows the names it had, whenever a fetch lands.

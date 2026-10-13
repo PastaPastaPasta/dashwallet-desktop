@@ -31,7 +31,8 @@ use zeroize::Zeroizing;
 
 use crate::compat::write_new_private;
 use crate::events::unix_now;
-use crate::keys::{AutoBackup, Origin};
+use crate::gate::Lifecycle;
+use crate::keys::{AutoBackup, Checked, Origin};
 use crate::platform::runtime::PlatformSignal;
 use crate::{
     DashNetwork, EngineError, EngineEvent, ImportOptions, NetworkSession, NoticeCode, WalletId,
@@ -569,6 +570,10 @@ impl NetworkSession {
             return Err(BackupFailure::VaultLocked.into());
         }
         let network = self.network.core_network();
+        // Registration and rollback under one admission and the lifecycle
+        // lock (DEC-210 (3b)), taken in that order.
+        let _op = self.enter().await?;
+        let held = self.wallet_lifecycle.hold().await;
         // What this call registered, for the rollback (review L3): the id
         // and whether the wallet was new (not keys attached to a watch-only
         // wallet that was there before).
@@ -581,10 +586,10 @@ impl NetworkSession {
             .restoring(opened.iter().map(|(id, _, _)| *id).collect());
         for (id, secret, payload) in opened {
             if let Err(e) = self
-                .restore_one(network, id, secret, payload, &mut done)
+                .restore_one(&held, network, id, secret, payload, &mut done)
                 .await
             {
-                self.roll_back_restore(&done).await;
+                self.roll_back_restore(&held, &done).await;
                 return Err(e);
             }
         }
@@ -609,6 +614,7 @@ impl NetworkSession {
     /// registered.
     async fn restore_one(
         self: &Arc<Self>,
+        held: &Lifecycle<'_>,
         network: dashcore::Network,
         id: WalletId,
         secret: dw_vault::WalletSecret,
@@ -644,9 +650,10 @@ impl NetworkSession {
             lookahead: None,
         };
         match self
-            .import_secret_inner(
-                options,
-                move || Ok(secret),
+            .import_secret_locked(
+                held,
+                Checked::new(options)?,
+                secret,
                 AutoBackup::Caller,
                 Origin::Imported,
             )
@@ -671,7 +678,11 @@ impl NetworkSession {
     /// is unloaded and its rows and vault records deleted; keys attached
     /// to a watch-only wallet are deleted again. Best effort: a failing
     /// step is logged and the rest still runs.
-    pub(crate) async fn roll_back_restore(self: &Arc<Self>, done: &[(WalletId, bool)]) {
+    pub(crate) async fn roll_back_restore(
+        self: &Arc<Self>,
+        held: &Lifecycle<'_>,
+        done: &[(WalletId, bool)],
+    ) {
         for &(id, created) in done.iter().rev() {
             // Still marked as being restored, so no bring-up was admitted for
             // it; a status read since is stale. Its discoveries end, and none
@@ -682,7 +693,7 @@ impl NetworkSession {
             if created {
                 let removed = async {
                     let live = self.live()?;
-                    live.manager.remove_wallet(&id.0).await?;
+                    self.platform.remove_from_manager(&live.manager, id).await?;
                     // Again, now that it is out of the manager: a scan begun
                     // since the first forget passed the wallet check.
                     self.platform.users.scans.forget(&id);
@@ -702,7 +713,7 @@ impl NetworkSession {
                     tracing::warn!(wallet_id = %id, error = %e, "could not roll back a restored wallet");
                 }
             }
-            self.forget_secret(id).await;
+            self.forget_secret(held, id).await;
             self.sink.emit(if created {
                 EngineEvent::WalletRemoved {
                     network: self.network.clone(),

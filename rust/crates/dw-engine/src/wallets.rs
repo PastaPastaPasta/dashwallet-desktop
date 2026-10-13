@@ -215,6 +215,9 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            // Before its wallet check: an import of the wallet runs wholly
+            // before or after the removal (DEC-210 (3b)).
+            let _lifecycle = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
             this.require_wallet(&id)?;
             if this.vault.has_wallet_secret(&id.0) {
@@ -240,12 +243,18 @@ impl NetworkSession {
             // removal closed, before anything else of the wallet goes.
             let vault = this.vault.clone();
             tokio::task::spawn_blocking(move || vault.wipe_wallet_secret(&id.0, &token)).await??;
-            live.manager.remove_wallet(&id.0).await?;
+            this.platform.remove_from_manager(&live.manager, id).await?;
             this.hub.forget_wallet(&id);
             this.coin_fences.forget(&id);
             this.platform.forget(&id);
             let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
+            #[cfg(test)]
+            let pause = crate::coins::held_appdb_job();
             tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
+                #[cfg(test)]
+                if let Some(pause) = pause {
+                    pause.hold();
+                }
                 persister.delete_wallet(id.0)?;
                 appdb
                     .delete_wallet(&id.to_string())

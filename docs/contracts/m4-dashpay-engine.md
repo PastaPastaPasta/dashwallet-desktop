@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 15
+Contract-Version: 16
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -55,7 +55,7 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
 DP1-01's `keys_policy.rs`, E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, and DP2-03's user search, links and scans `users.rs` with `users_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, and DP2-04's private details `private_details.rs` with `private_details_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -449,14 +449,14 @@ bodies decided where the rows leave room:
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
 | `contacts(identity, q)` | sync | The sections asked for (empty = all; each once, in the query's order), sorted, filtered by `text`. From the library's memory: the identity's sent and incoming requests, established contacts, ignored senders, cached contact profiles and deferred contact-crypto queue, and the Core wallet's DashPay accounts. One relation per contact, by precedence: `Contact`, then `Ignored`, then `PendingIncoming`, then `PendingOutgoing` (ignoring a contact's identity leaves the contact). Sections: `Requests` (incoming), `Contacts`, `Pending` (outgoing), `Hidden` (contacts with `hidden` set, and ignored senders, which un-ignore from there). `channel`: `NotEstablished` unless a contact; `Broken` as the library flags it; `SetupPending` while an account op (`RegisterReceiving`, `RegisterExternal`) is queued, or while the account that pays the contact is missing or was not built from the contact's current request, which the library builds or rebuilds with the signer; else `Ready`. `since` is the request a row rests on (for a contact the later of the two), `last_activity_at` the latest of that and its DashPay payments' block times (unconfirmed and failed payments do not count), all UNIX seconds from authoritative times only (DEC-114), so a restore that replays the same contacts sorts them the same way; ignored senders have neither. Declared residual: the library replaces a contact's request in place when either side rotates its key, so `since` and that request's time then show the rotation. Requests and Pending are newest first whatever `sort`; Contacts and Hidden follow it: `DisplayName` by the shown name (the first non-blank of alias, display name and username, else the id; case-folded), `Username` with known usernames first, `DateAdded` and `LastActivity` newest first with unknown times last; ties by id. `text` (trimmed; blank filters nothing) matches the username, display name or alias case-insensitively, or, from four characters, the start of the id. `display_name` is the cached contact profile's. `username` is the contact's DPNS name (of the first ten domains Platform returns for the contact, those whose owner and `records.identity` are the contact, the first by normalized label), fetched in the background, one contact at a time with a 30 s limit each, and kept in memory for an hour (a failure retries after a minute): a read never waits for it, and a name that lands or changes signals `Platform{Contacts}` for the identities that showed it. `unverified` (§5): the contact's `profile` if one is shown, its `dpns_label` if a username is shown (the record of that spelling as the contact's), and each `contact_request` the relation rests on (none for an ignored sender), each by the content shown (DEC-183). A contact's identity has no record of its own: its verified requests bind the keys and the xpub the channel uses. The library keeps no contact usernames, so the engine reports each one as a fetch lands it to E0-10b's re-fetch, which verifies the names shown; a fetch that finds the name gone withdraws it, and one no longer shown for another reason (a forgotten wallet, a dropped relation) stays listed for the session, where at worst it is re-fetched while unverified. While any writer holds the wallet's state (a sync pass, SPV processing a block) the last snapshot answers with `updating: true` (none yet: empty sections, and an identity it lacks is no error); once the writer is done the engine rebuilds the snapshot and signals `Platform{Contacts}` for each of the wallet's identities (`Identities` when it has none). Reads write nothing and make no news: catch-up silence is the tap's (DEC-125/135/139). Re-query on `Platform{Contacts}`, `Identities` and `Payments`, and on the wallet's `HistoryChanged`: a block that mines an already-confirmed (InstantSend) payment moves `last_activity_at` with no Platform change. **Implemented (DP2-01).** | `ContactError` (`identity.not_found` on a live read of an identity the wallet lacks; `invalid_argument` for an id that is not Base58) |
-| `contact(identity, contact)` | sync | One contact in any relation, as in `contacts`, with its profile, private details and both request times; `None` if unknown. While a writer holds the state and the snapshot lacks the identity, `platform.unavailable` (not "unknown"): re-query on the `Platform{Contacts}` that follows. `publish_state` is `DeferredUntilTwoContacts` for a contact while the identity has fewer than two, else `Local`: whether a `contactInfo` was published is DP2-04's to record. `payment_lock` is `None` until DP3-01. **Implemented (DP2-01).** | `ContactError` (as `contacts`; `platform.unavailable` as above) |
+| `contact(identity, contact)` | sync | One contact in any relation, as in `contacts`, with its profile, private details and both request times; `None` if unknown. While a writer holds the state and the snapshot lacks the identity, `platform.unavailable` (not "unknown"): re-query on the `Platform{Contacts}` that follows. `publish_state` is `DeferredUntilTwoContacts` for a contact while the identity has fewer than two, else `Published` when the details shown are what Platform holds for the contact (the digest DP2-04 records, held in memory and loaded in the background on a wallet's first read, item 42), else `Local`. `payment_lock` is `None` until DP3-01. **Implemented (DP2-01).** | `ContactError` (as `contacts`; `platform.unavailable` as above) |
 | `pending_setup_count()` | sync | Over every identity of the wallet: contacts whose channel is `SetupPending`, and requests with a queued auto-accept ("Unlock to finish setting up N contacts"). From the last snapshot while a writer holds the state; `platform.unavailable` with none yet. Re-query on `Platform{Contacts}` for any of the wallet's identities and on `Identities`. **Implemented (DP2-01).** | `ContactError` |
 | `eligibility(identity, contact)` | async | Before any prompt: `Ok`, `NoDashPayKeys`, `IsSelf`, `AlreadyContact`, `PendingOutgoing`, `PendingIncoming`, `ContactCannotReceive`. The wallet's own state answers first, in that order after `IsSelf`: a contact, our request out, theirs in (an ignored sender's is gone, so it is neither), then our identity's own DashPay keys (an enabled ECDSA `ENCRYPTION` and `DECRYPTION` key; their contract bounds are not checked, as on iOS); none of these asks Platform. Only then is the contact fetched: unknown to Platform is `identity.not_found`, one with no enabled ECDSA `ENCRYPTION` or `DECRYPTION` key (the SDK's recipient key) `ContactCannotReceive`, else `Ok`. A fetch that fails is its `platform.*` error, never `Ok`. Writes nothing and needs no grant. **Implemented (DP2-02).** | `ContactError` (`identity.not_found` for an identity the wallet lacks, or a contact Platform does not know; `invalid_argument` for an id that is not Base58) |
 | `send_request(identity, to, scan, grant)` | async | Sends a contact request. `scan` is the id in `ScannedContact.code` (`AutoAcceptClaim{scan}`) when the request comes from a `dapk` QR: the engine then sends it with the auto-accept proof (`send_contact_request_with_external_signer` with `AutoAcceptProofSource::SignWithKey`, the key and expiry of the scan, so that the send does not re-resolve the username the scan verified; DP2-02). The send claims the scan first, atomically: while one send holds it another is `contact.request_pending`, and a claim makes one proof (taking the proof source consumes it), so one scan never makes two requests. A send refused before it signs (a locked vault, an ineligible target, a refused grant) releases the scan for a retry; once it has signed the proof, the request may have been broadcast, so the scan is spent whatever happens next (fail closed). A scan within 60 s of its expiry when the send would redeem its grant is `contact.scan_expired`, the grant left unused (the key goes out with a request Platform receives a little later). Scans go with their wallet (removal, unload) and with the session's close, a claimed one included; the 16-scan bound never evicts a claimed one. An unknown, spent or expired scan is `contact.scan_expired`; a scan for another identity than `to` is `invalid_argument`. The outcome is `Pending` like any send's: the code's key is only claimed to be the recipient's (`verify_scanned`), so the auto-accept is unconfirmed until the recipient accepts. A scan whose shown name or profile was unverified (§5) says so to the send, which confirms before it auto-accepts on Platform's word alone. An ineligible target is `contact.ineligible{reason}` with the `eligibility` answer. With an unverified scan, while Platform writes wait for masternode sync (§4, `TrustProvider::writes_wait`, the `Enforcing` mode only), the send is `platform.context_unavailable`: once SPV's quorums have synced, the library's proof-checked fetch of the recipient confirms what was shown (Q8). Then, before the grant is redeemed: the identity's proved balance below the quote (`CONTACT_REQUEST_CREDITS`) is `platform.insufficient_credits`, a grant capped below it `platform.grant_exceeded`. The document is signed with the identity's first `HIGH` or `CRITICAL` authentication key that the vault holds, never the `MASTER` key (§2.11, item 41); an identity with no such key is `identity.keys_missing`, the grant left unused (its redemption checks that the vault holds the key, item 41). The ECDH runs through the vault's contact crypto. The write runs under a call permit charged the quote from the lease's credits budget (item 39): the quote goes back if the write fails before it signs anything (`Cancelled`), and is kept once a signature is out, whatever the outcome (item 41). A write that fails is read back from Platform: if the request is there it is the outcome, else the write's error. `Pending{request}`, or `Established` when the contact's request was already in. Every write of an identity (this, `accept_request`, `enable_dashpay_keys`, DP1-03's name writes, and DP1-02's name and profile writes) runs alone, under one per-identity lock. **Implemented (DP2-02).** | `ContactError` |
 | `accept_request(identity, from, grant)` | async | Sends the reverse request, as `send_request` signs and reads back. Needs the contact's request in the library (`invalid_argument` "no contact request from this identity" otherwise; `contact.already_contact` for a contact; `contact.self`); our own DashPay keys (`contact.ineligible{NoDashPayKeys}`); and the quote (`CONTACT_REQUEST_CREDITS`) as `send_request`. When our request is already on Platform the library adopts it and sends nothing. Returns `Established{request}`, `request` our side's. An "Accept and pay" lease (`AcceptAndPay`) runs the accept as one of its calls, so the idle reaper never ends it during the accept and the payment's `prepare` still finds its `Spend` part (E0-04 §16). **Implemented (DP2-02).** | `ContactError` |
 | `ignore(identity, contact)` | async | Adds to `ignored_senders` and drops the sender's pending request. Local and persisted; nothing goes to Platform, so no grant. Idempotent. **Implemented (DP2-02).** | `ContactError` (`contact.self`; `identity.not_found` for an identity the wallet lacks) |
 | `unignore(identity, contact)` | async | Removes it again, and the next sync pass fetches the sender's requests anew; a sender not ignored is a no-op. Local, no grant. **Implemented (DP2-02).** | `ContactError` (as `ignore`) |
-| `set_private_details(identity, contact, d, grant)` | async | Alias, note, hidden. Stored locally; published as an encrypted `contactInfo` once there are ≥ 2 contacts (`DeferredUntilTwoContacts` before that; `grant` is needed to publish). | `ContactError` |
+| `set_private_details(identity, contact, d, grant)` | async | Alias, note, hidden for an established contact (`invalid_argument` "not a contact of this identity" otherwise; `contact.self`). The alias and note are trimmed, blank is none; DIP-15's encoding over 2031 bytes is `contact.details_too_long{bytes, max}`. Saved with the contact in the library. With fewer than two contacts the publish waits (DIP-15: one `contactInfo` links to the pair's requests): `DeferredUntilTwoContacts`, nothing sent, the grant left unused; the next edit after the second contact publishes. Without a grant: `Local`, or `Published` when Platform already holds these details; an edit of details Platform holds for the contact is `platform.needs_grant{credits}` and does not save the edit, because the library's DashPay pass would put Platform's back over it (with nothing recorded for the contact, the edit reads Platform first, which may apply Platform's details; item 42). With a grant, details that are both shown and recorded as Platform's are `Published` with nothing sent and the grant unused; otherwise the encrypted `contactInfo` is created or updated, as `send_request` writes: refused before the grant is redeemed for no DashPay keys (`contact.ineligible{NoDashPayKeys}`), a watch-only identity (`invalid_argument`), the proved balance below the quote (`DOCUMENT_10K_CREDITS`), a document key the vault does not hold, or more than 1,000 `contactInfo` documents (`platform.not_implemented{call}`, item 42) or a failed fetch of them; a lease of another flow than `PrivateDetails` is `platform.grant_invalid`; signed with the first `HIGH` or `CRITICAL` authentication key, under the call permit and the identity's write lock. A write that signed nothing puts back the details shown before the edit (with none recorded, the edit stays, `Local`). One that failed after signing is read back: details Platform holds are `Published`; otherwise the edit stays, `Local`, with the write's error, until a later read finds it landed or puts Platform's back (item 42). **Implemented (DP2-04).** | `ContactError` |
 | `enable_dashpay_keys(identity, grant)` | async | Adds the DashPay `ENCRYPTION` and `DECRYPTION` keys to an identity that lacks them (F9), derived as registration derives them, with ids after the highest the identity has on Platform or in the library (4–5 for a base identity). A key of either purpose counts whatever its contract bounds (unchecked, as on iOS). Reads the identity from Platform first: nothing missing is `Ok` with nothing sent and the grant left unused. The quote (`KEY_UPDATE_CREDITS`) bounds the fee (item 41): a proved balance below it is `platform.insufficient_credits`, a grant capped below it `platform.grant_exceeded`, an identity with no enabled `MASTER` key that the vault holds `identity.keys_missing`, all before the grant is redeemed. The IdentityUpdate is signed by the `MASTER` key and by each added key (Platform's proof of possession), and by no other key. The added keys' public keys come from the call permit's identity signer (`derive_public_keys`), which hands out public keys and counted signatures only: its vault signer never leaves the type. Afterwards the identity is read back into the library: a failed write whose keys are there is `Ok`. Logs the credits charged, measured as the proved balance before less after, against the quote. **Implemented (DP2-02).** | `ContactError` |
 | `my_user_link(identity)` | sync | iOS's user link (dashwallet-ios `DashPayUserLink`): `dashpay://user?id=<Base58 identity>&username=<main name>`, the name as `main_name` gives it, percent-encoded (every character outside RFC 3986's unreserved set; a DPNS label has none, so the bytes are iOS's). An identity with no name is `contact.no_username`; while a sync pass holds the identities, `platform.unavailable` (also for an identity the last snapshot lacks, or before the first). The main name may change once the names pass has Platform's timestamps (DP1-03), and the link with it; any of the identity's names verifies. **Implemented (DP2-03).** | `ContactError` (`identity.not_found` for an identity the wallet lacks; `invalid_argument` for an id that is not Base58) |
 | `verify_scanned(text)` | async | A plain user link or a DIP-15 `dash:?du=&dapk=` payload, verified against Platform. A user link is parsed as iOS parses it (scheme, host and names case-insensitive; `id` and `username` once each, nothing else) and verifies as iOS's scanner does: its username must belong to its `id` now, else `contact.scan_unverified` ("couldn't be verified on the Dash network"). A DIP-15 code has `du` and `dapk` once each and nothing else (the merchant form `dash:<address>?du=…` is not a contact code, and an empty parameter such as a trailing `&` is refused); `dapk` is the 38-byte key blob (type 0, expiry, 32-byte key), whose expiry, UNIX seconds and the owner's hardened derivation index, must be below 2^31. An expired code is `contact.scan_expired` before any query; a `du` with no identity is `contact.scan_unverified`. The key stays in the engine as a scan for this wallet (16 at most; expired ones go at the next scan, then the oldest; all go with the wallet and with the session), and the result's `code` is `AutoAcceptClaim{scan, expires_at}`; a user link's is `UserLink`. A scan begun before its wallet was removed or unloaded keeps no key (`wallet_not_found`), even if the wallet is back by the time Platform answers. Neither form is signed: a verified scan shows that its username belongs to its identity now, not who made the QR. A code's key derives on a hardened path of its owner's seed (`m/9'/coin'/16'/expiry'`) that nothing on Platform reveals, so no scanner can tie it to the identity; only the recipient can check the proof, when the request arrives. `AutoAcceptClaim` is that claim, unconfirmed until the recipient accepts. Each form trims its username, then drops one `.dash`, once: a user link as iOS does (case-sensitive), a code in any case; the label is then normalized, and nothing drops a second `.dash`. Anything else is `invalid_argument`, which never quotes the text. `username` is Platform's spelling, `relation` and `unverified` as in `search_users`. **Implemented (DP2-03).** | `ContactError` |
@@ -538,7 +538,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 8a57eb1540ca91594cfb16bd3c5867cd08915a1e1266ccab7f21eb501ef61c81 version: 15 -->
+<!-- surface-sha256: e530a2273f8973f34cd4251e3e7150e3877e4c63f99a978a7eb41f9389288bda version: 16 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -833,6 +833,7 @@ pub enum ContactError {
     ScanExpired,
     ScanUnverified,
     NoUsername,
+    DetailsTooLong { bytes: u32, max: u32 },
     Platform(PlatformError),
 }
 impl ContactError {
@@ -1508,7 +1509,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
 | `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled`, `registration.not_synced`, `registration.funding_unknown_recent` |
 | `NameError` | `name.invalid`, `name.taken`, `name.contest_open`, `name.locked`, `name.unavailable_for_invite` |
-| `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired`, `contact.scan_unverified`, `contact.no_username` |
+| `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired`, `contact.scan_unverified`, `contact.no_username`, `contact.details_too_long` |
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
 | `AvatarError` | `avatar.too_large`, `avatar.unsupported`, `avatar.fetch_failed`, `avatar.hash_mismatch`, `avatar.upload_unconfigured` |
 | `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum` |
@@ -1574,7 +1575,8 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   leads to "Enable DashPay keys". `contact.scan_expired` is an expired `dapk` proof or a stale or used scan id: "this
   QR code has expired; ask for a new one". `contact.scan_unverified` is a scanned user link or code whose username
   Platform does not give to it (iOS: "… couldn't be verified on the Dash network. The QR code may be outdated.").
-  `contact.no_username` is `my_user_link` for an identity with no name.
+  `contact.no_username` is `my_user_link` for an identity with no name. `contact.details_too_long{bytes, max}` is
+  `set_private_details` with an alias and note whose DIP-15 encoding exceeds `max` (2031) bytes.
 - Refusals §3.6 names no code for, so that every DP task uses the same one:
   - a write from a watch-only wallet, or with a locked vault and no lease: `platform.signer_unavailable`;
   - a Platform write before SPV's masternode state has synced ("Waiting for the network to sync", §3.7), and money
@@ -1589,7 +1591,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   `broadcast_unknown{artifact}`, `will_be_sent{artifact}`, `insufficient_credits{needed, available}` (credits),
   `funding_insufficient{needed, available}` (duffs, both domains), `below_minimum{min}` (duffs),
   `feature_off{feature}`, `not_implemented{call}`, `keys_missing{purpose}`, `recoverable{draft}`, `invalid{rules}`,
-  `ineligible{reason}`, `payment_locked{txid}`.
+  `ineligible{reason}`, `payment_locked{txid}`, `details_too_long{bytes, max}`.
 
 ### 4.1 Funds committed and dispatch status (E0-04 §16.5 and §16.6, word for word)
 
@@ -2100,3 +2102,124 @@ renames or reshapes them takes the next version bump:
       nothing and returns `Ok`, so its call permit ends `Sent` (E0-04 P2b's `finish(ok)`) and the quote stays charged
       to the lease's credits budget though no Platform credits were spent. Conservative: the lease pays for at most
       one write either way.
+
+**From DP2-04** (version 16):
+
+42. **Private details** (§2.4). `set_private_details` is implemented, and `contact`'s `publish_state` can now be
+    `Published`. New: `ContactError::DetailsTooLong { bytes, max }` (`contact.details_too_long`); E0-13's bindings
+    regenerate for it.
+    - **What Platform holds is recorded as a digest.** app.sqlite `dp_contact_info` keeps, per (wallet, identity,
+      contact), SHA-256 over a domain and the details' DIP-15 encoding; no plaintext. Details read `Published` when
+      their digest equals the row's. A publish that landed writes the row, and so does each read of the identity's
+      documents; a contact Platform holds nothing for loses its row, and so does a contact no longer established.
+      `.dwbackup` does not carry the table (dwbackup-v1 §3.1): a restore rebuilds it from the read. `contact` reads
+      the rows from memory (§1): each wallet's are loaded in the background on its first read, which signals
+      `Platform{Contacts}` for the identities that have any (until then `publish_state` reads `Local`), and every
+      record and forget writes through.
+    - **The read (a settle).** A settle requires a verified seed binding: first the vault's prompt-free DashPay
+      crypto must derive the wallet's own account-0 xpub (platform-wallet `verify_seed_binds`), checked in every
+      settle, whatever a contact-crypto drain reported; a failed check changes nothing, and a proven mismatch makes
+      the wallet's startup `SeedBindingUnverified` (noticed once). The check needs the wallet's BIP44 account 0
+      (desktop creates a wallet from a seed with it, `WalletAccountCreationOptions::Default`); a wallet without it
+      never settles. Then the engine fetches the identity's `contactInfo` documents
+      (`$ownerId`, ordered by `$updatedAt`, pages of 100, at most 1,000 counted as Platform returns them, parsed or
+      not) and opens each with that crypto. One deadline, 30 s, covers the check, the fetch and the opens; it and the
+      session's close are checked before each open, the deadline again after the last open and before the apply phase.
+      Past it the settle fails with `platform.timeout` and applies nothing. The apply phase (the details saved with
+      each established contact and their `dp_contact_info` rows: local writes only, bounded by the established
+      contacts, no network) runs to its end under the lock once it has started within the deadline. A document whose keys the wallet does not hold or whose seal does
+      not open is skipped, with a warning; so is one whose plaintext does not decode, as the library skips it. A
+      locked vault, a failed fetch, the deadline, or documents of which none opens fail the read, which then changes
+      nothing and never guesses `Published`. A settle runs in the background (a bring-up or an unlock does not wait
+      for it) after each bring-up of a wallet with an identity and after each unlock drain, under the identity's write
+      lock (held across the read, so an edit of the identity waits for it), and applies Platform's details to each
+      established contact. A record that changes, with or without the details, signals `Platform{Contacts}` so a host
+      re-reads `publish_state`. That is how a restore gets its details back
+      (acceptance: `recovery_tests::a_restored_wallet_gets_its_private_details_back`, with the vault unlocked at the
+      bring-up, and locked until after it). A settle or an edit writes nothing of a wallet once it has left the wallet
+      manager (a removal, an unload, a restore's rollback): each of their writes lands only while the wallet it read
+      is still the manager's, and the wallet leaves only after the writes in flight have landed, so a removal's delete
+      of its rows comes after them.
+    - **Writes after a wallet's removal (DEC-210).** Any other app.sqlite write of a wallet still under way when the
+      wallet is removed (a DashPay choice or preference, the journal written as the library stores a changeset, a coin
+      lock, first-seen times) lands nothing either. The removal records the wallet (`removed_wallets`) in the
+      transaction that deletes its rows; from then on an insert of a row of that wallet, in any table the removal
+      clears and in its two settings scopes, is skipped, and an update finds no row. `add_receive_request` and a new
+      registration flow then fail (`storage`). The record lasts until an import of the same wallet (a seed, a
+      watch-only xpub, a restore), which takes it out before its first write (an import that then fails to register
+      the wallet records it again), or until an open of the network's `app.sqlite` while no other instance of it is
+      open, in this process or another (DEC-210 (3b)). Each open instance holds a shared lock on `app.sqlite.lock` for
+      its whole life, a job a closed session left running included; an open forgets the record only if an exclusive
+      lock on that file is granted at once, and otherwise keeps it. The lock file is named after the database, so each
+      has one name: an open refuses (`storage`) a database or lock file that is a symlink, not a regular file, or a
+      file with a second hard link, a name starting with `file:` (which SQLite reads as a URI), and an open whose
+      database or lock file changed between its check and its use; symlinked directories above the database are fine,
+      since they lead to the same lock file. Imports, restores and their rollback, removals, and the open and close of
+      a wallet run one at a time per network within a process (the engine's wallet lifecycle lock, taken after the
+      operation's admission and before the wallet's barrier, discoveries and private-details fence), so a wallet is
+      never recorded as removed while it is registered, and two imports of the same seed run one after the other.
+      `.dwbackup` never carries the record (dwbackup-v1 §2.3). **Residuals (accepted, DEC-210 (5) and (3b)):** a write
+      of the removed wallet still under way when the same wallet is imported again lands among the new import's rows;
+      an insert that is skipped shows in the log only as "no rows" (`raise_setting`) or as a held index
+      (`adopt_registration_lock`); on a file system whose advisory locks are not kept per open file (an NFS emulation
+      of `flock`), an open in the same process forgets the record while another instance is open; a long restore holds
+      the wallet lifecycle lock until its last bundle is done, so a removal or another import waits for it; and two
+      processes on one network directory are kept apart only by the record and the lock file, not by the wallet
+      lifecycle lock, which is per process. Renaming, moving or bind-mounting the database file while an instance is
+      open gives it a name with another lock file (SQLite does not support moving an open database either), and
+      deleting or replacing `app.sqlite.lock` after an open has returned leaves that instance's lock on a file later
+      opens no longer see; the app never removes the lock file itself. On Windows only a final symlink is refused:
+      hard links are not counted, file identities are not compared (std has no file id there), and other names of one
+      file (an 8.3 short name, a trailing dot, `::$DATA`) lead to another lock file.
+    - **An edit of published details needs a grant.** The library's DashPay pass applies Platform's `contactInfo` over
+      local details on every pass (remote wins), so a local-only edit of a contact Platform holds details for would
+      go back silently. It is `platform.needs_grant{credits}` and the edit is not saved. Re-saving the same details
+      needs no grant. With no record for the contact (Platform held nothing at the last read, or no read succeeded),
+      an edit without a grant first reads Platform when the vault is prompt-free, so details there (another device's
+      first publish too) are known before the edit is let through; that read applies them, as any read does.
+      **Residual (accepted):** when that read cannot run or fails (vault locked, offline), the edit is saved, `Local`,
+      and the library's next pass may put Platform's details back over it. **Residual (accepted):** the read runs on
+      every such edit of a contact that has no published details, under the identity's write lock, so an edit can
+      take up to the read's 30 s deadline.
+    - **No publish at the second contact by itself.** Details deferred below two contacts publish with the next edit
+      that has a grant. Follow-up (a later Contract-Version): publish every deferred contact's details at once when
+      the second contact is established, from one grant.
+    - **A stale record.** With a grant, details count as already on Platform only when the contact shows them and
+      the record matches; a record left over from before another device's edit does not skip the write.
+    - **A failed write.** One that signed nothing (`Cancelled`) puts back the details shown before the edit, since
+      the library saved the edit first; with nothing recorded the edit stays, `Local`. One that signed may still land, so it is read back: details Platform holds are `Published` and
+      recorded. Otherwise (other details, or the read-back failed) the edit stays, `Local`, with the write's error,
+      and the identity is read again 60 s later, up to 5 tries (a try while the vault needs a prompt reads nothing),
+      then at the next bring-up or unlock: details that landed late become `Published` without another write, and
+      details that did not are replaced by Platform's. **Residual (accepted):** these retries are not merged, so
+      several failed writes of one identity each schedule their own.
+    - **Refused before the grant is redeemed:** `contact.self`, `contact.details_too_long` (the engine's cap is
+      DIP-15's plaintext limit, 2031 bytes encoded; dwcli keeps its 256-byte argument caps), a contact that is not
+      established (`invalid_argument`), a watch-only identity (`invalid_argument`, no new surface), no DashPay keys
+      (`contact.ineligible{NoDashPayKeys}`), the balance below `DOCUMENT_10K_CREDITS`, no document key the vault
+      holds (`identity.keys_missing`), and more than 1,000 `contactInfo` documents
+      (`platform.not_implemented{call}`, see below), or a failed fetch of them. A lease of another flow is `platform.grant_invalid`. `PrivateDetails` signs
+      with the identity's first `HIGH` or `CRITICAL` authentication key, never `MASTER` (item 41).
+    - **Residual (accepted): `acceptedAccounts` is empty.** platform-wallet writes an empty list and never reads the
+      field. Routing is unaffected. A `contactInfo` is encrypted to its owner's own keys, so only the owner's devices
+      read it, and a contact pays to the xpub in the owner's `contactRequest` (account 0,
+      `register_external_contact_account`). DIP-15 defines `acceptedAccounts` as the contact's account references the
+      owner accepted; desktop uses account 0 only. iOS goes through the same rs-platform-wallet call, so it also
+      writes an empty list. Android's dash-wallet has no `contactInfo` yet (a TODO in `IdentityRepository.kt`; it picks
+      a request by timestamp). The cost: a document another client wrote with accepted accounts loses them when
+      desktop rewrites it.
+    - **Residual (accepted): the newest document wins.** Another device's later edit of the same contact replaces
+      ours, at the next read here and at the library's next pass.
+    - **Residual (accepted): the digest is unsalted.** A row's digest of short details could be matched by guessing,
+      but wallet.sqlite holds the same details in plaintext next to it.
+    - **The library's publish is not bounded.** platform-wallet's `set_contact_info_with_external_signer` fetches and
+      opens every `contactInfo` document the identity holds before it writes, with no cap or deadline of its own.
+      The engine reads them first, within the read's cap and deadline, and refuses a publish over 1,000 before the
+      grant is redeemed. **Residual (accepted, DEC-206):** documents added between that read and the library's own
+      fetch are still read without a bound, under the identity's write lock; that fetch only reads documents owned by
+      the wallet's own identity. A bounded publish API in platform-wallet closes it at the next fork bump. A publish costs two fetches, and a failed one's read-back a third.
+    - **T2 is pending tDASH.** `private_details_tests::t2_testnet_private_details` (ignored,
+      `DW_DP204_TESTNET_FIXTURE`) is written. Fixture wallets A and B stay read-only, and C has one contact (A), so the
+      run needs a new wallet D, an identity with DashPay keys funded with tDASH. D asks C, C accepts, and C publishes
+      details for A and D (charged ≤ quote); the same details again send nothing; and C restored into a fresh engine
+      shows them `Published`. It waits on pasta's tDASH, alongside DP1-02's testnet registration.

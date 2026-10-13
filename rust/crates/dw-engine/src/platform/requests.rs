@@ -75,7 +75,7 @@ fn b58(id: &Identifier) -> String {
     id.to_string(Encoding::Base58)
 }
 
-fn not_found() -> PlatformError {
+pub(super) fn not_found() -> PlatformError {
     IdentityError::NotFound.into()
 }
 
@@ -327,9 +327,10 @@ fn first_auth_key(
 /// The levels of the key `flow`'s transition signs with ([`flow_keys`]).
 fn flow_levels(flow: FlowKind) -> &'static [SecurityLevel] {
     match flow {
-        FlowKind::ContactRequest | FlowKind::Accept | FlowKind::AcceptAndPay => {
-            &[SecurityLevel::HIGH, SecurityLevel::CRITICAL]
-        }
+        FlowKind::ContactRequest
+        | FlowKind::Accept
+        | FlowKind::AcceptAndPay
+        | FlowKind::PrivateDetails => &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
         FlowKind::EnableDashPayKeys => &[SecurityLevel::MASTER],
         _ => &[],
     }
@@ -349,10 +350,11 @@ fn candidate_keys(
 }
 
 /// The keys `flow`'s transition signs with, and no others:
-/// - a contact request or accept: the document key, the identity's first
-///   HIGH or CRITICAL authentication key that is `usable` (the vault holds
-///   it; DPP refuses the master on document writes; the DashPay keys only do
-///   ECDH, in the crypto signer);
+/// - a contact request, an accept or a `contactInfo` (DP2-04): the document
+///   key, the identity's first HIGH or CRITICAL authentication key that is
+///   `usable` (the vault holds it; DPP refuses the master on document
+///   writes; the DashPay keys only do ECDH and the `contactInfo` AES keys,
+///   in the crypto signer);
 /// - a key upgrade: the master key, which signs the IdentityUpdate, and the
 ///   `added` keys, each of which signs its own proof of possession (dpp
 ///   `IdentityUpdateTransition::try_from_identity_with_signer`).
@@ -372,7 +374,10 @@ fn flow_keys(
         })
     };
     match flow {
-        FlowKind::ContactRequest | FlowKind::Accept | FlowKind::AcceptAndPay => {
+        FlowKind::ContactRequest
+        | FlowKind::Accept
+        | FlowKind::AcceptAndPay
+        | FlowKind::PrivateDetails => {
             let key = first_auth_key(identity, flow_levels(flow), usable);
             Ok(vec![key.ok_or_else(missing)?])
         }
@@ -419,29 +424,27 @@ fn flow_signer(
     Ok(signer.only_keys(keys))
 }
 
-/// What a contact-request write needs once its own checks pass, refused
-/// before anything is redeemed where it can be: the identity's credits
-/// against the quote, then the lease of one of `flows` (which checks the
-/// vault holds the document key, then `ready`, a scan's expiry), the call
-/// permit `label` charged the quote, its signer (the document key alone)
-/// and the lease's contact crypto.
-async fn prepare(
+/// What a document write (a contact request or accept, a `contactInfo`)
+/// needs once its own checks pass, refused before anything is redeemed
+/// where it can be: the credits of `identity` (index `index`) against
+/// `quote`, then the lease of one of `flows` (which checks the vault holds
+/// the document key, then `ready`, a scan's expiry), the call permit
+/// `label` charged the quote, its signer (the document key alone) and the
+/// lease's contact crypto.
+pub(super) async fn prepare(
     net: &impl RequestNet,
     session: &Arc<NetworkSession>,
-    own: &Own,
+    (index, identity): (u32, &Identity),
     (wallet, grant): (WalletId, &str),
-    (flows, label): (&[FlowKind], &str),
+    (flows, quote, label): (&[FlowKind], u64, &str),
     ready: impl FnOnce() -> Result<(), ContactError>,
 ) -> Result<(Lease, CallPermit, VaultIdentitySigner, VaultContactCrypto), ContactError> {
-    let index = own.index()?;
-    let id = own.identity.id();
-    let balance = net.balance(id).await?.ok_or_else(not_found)?;
-    cover(balance, CONTACT_REQUEST_CREDITS)?;
-    let signs = (index, &own.identity);
-    let cost = (flows, CONTACT_REQUEST_CREDITS);
-    let lease = write_lease(session, wallet, grant, cost, signs, ready).await?;
-    let permit = write_permit(&lease, label, CONTACT_REQUEST_CREDITS)?;
-    let signer = flow_signer(&permit, index, &own.identity, &[])?;
+    let balance = net.balance(identity.id()).await?.ok_or_else(not_found)?;
+    cover(balance, quote)?;
+    let signs = (index, identity);
+    let lease = write_lease(session, wallet, grant, (flows, quote), signs, ready).await?;
+    let permit = write_permit(&lease, label, quote)?;
+    let signer = flow_signer(&permit, index, identity, &[])?;
     let crypto = lease.contact_crypto().map_err(PlatformError::from)?;
     Ok((lease, permit, signer, crypto))
 }
@@ -546,9 +549,9 @@ pub(super) async fn send(
     let (lease, permit, signer, crypto) = prepare(
         net,
         session,
-        &own,
+        (own.index()?, &own.identity),
         (wallet_id, &grant),
-        (&flows, "send_request"),
+        (&flows, CONTACT_REQUEST_CREDITS, "send_request"),
         ready,
     )
     .await?;
@@ -609,9 +612,9 @@ pub(super) async fn accept(
     let (lease, permit, signer, crypto) = prepare(
         net,
         session,
-        &own,
+        (own.index()?, &own.identity),
         (pair.wallet, &grant),
-        (&flows, "accept_request"),
+        (&flows, CONTACT_REQUEST_CREDITS, "accept_request"),
         || Ok(()),
     )
     .await?;

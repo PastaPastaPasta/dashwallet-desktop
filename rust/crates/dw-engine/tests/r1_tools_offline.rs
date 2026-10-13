@@ -10,7 +10,7 @@ use dw_engine::{
     HistorySort, ImportOptions, NetworkSession, SessionOptions, WalletId, WarningCode,
     WatchOnlyOptions,
 };
-use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
+use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use zeroize::Zeroizing;
 
@@ -246,6 +246,46 @@ fn test_qt_114_watch_only_wallet_from_an_account_xpub() {
         csv,
         "\"Confirmed\",\"Watch-only\",\"Date\",\"Type\",\"Label\",\"Address\",\"Amount (tDASH)\",\"ID\"\n"
     );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DEC-210: a watch-only wallet imported again after its removal, in the
+/// same run, is written as any wallet: its new name survives a reopen.
+#[test]
+fn a_watch_only_wallet_imported_again_after_its_removal_keeps_its_name() {
+    let dir = dw_testutil::private_tempdir();
+    let rec = Arc::new(Recorder::default());
+    let engine = new_engine(
+        &dir.path().join("data"),
+        rec,
+        Arc::new(MemoryOsStore::new()),
+    );
+    let s = open(&engine);
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let tpub = account_tpub(ABANDON_12);
+    let named = |name: &str| WatchOnlyOptions {
+        name: Some(name.into()),
+        birth_height: Some(0),
+        lookahead: None,
+    };
+    let id = engine
+        .block_on(s.import_watch_only(tpub.clone(), named("Cold")))
+        .unwrap();
+    let wipe = engine
+        .block_on(
+            s.vault_op(move |v| v.authorize(GrantPurpose::Wipe, Some(&id.0), Credential::None)),
+        )
+        .unwrap();
+    engine.block_on(s.remove_wallet(id, wipe.id)).unwrap();
+    let again = engine
+        .block_on(s.import_watch_only(tpub, named("Again")))
+        .unwrap();
+    assert_eq!(again, id);
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    let s = open(&engine);
+    assert_eq!(s.wallet_info(&id).unwrap().name, "Again");
     engine.block_on(engine.shutdown()).unwrap();
 }
 

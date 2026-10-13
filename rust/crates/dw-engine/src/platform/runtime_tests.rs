@@ -921,11 +921,17 @@ impl EventSink for HoldTwo {
 
 /// Review DW-E0-05-r3-gpt M4-R3 (its probe
 /// `r3_overlapping_restore_loses_committed_wallet_bringup`, with the
-/// assertions turned to the fixed behaviour): R1 = [a] commits while R2 =
-/// [b, a] still marks `a`, so R1's bring-up signal is refused; when R2 fails
-/// and its last mark clears, `a` (committed, surviving) must be brought up,
-/// and `b` (rolled back) must not. Before the fix `a` stayed without a
-/// bring-up until the next start.
+/// assertions turned to the fixed behaviour): R1 = [a] commits while `a` is
+/// still marked as being restored, so R1's bring-up signal is refused; when
+/// the last mark clears, `a` (committed, surviving) must be brought up, and
+/// `b` (rolled back) must not. Before the fix `a` stayed without a bring-up
+/// until the next start.
+///
+/// Restores run one at a time since DEC-210 (3b): R2 = [b, a] waits at the
+/// wallet lifecycle lock until R1 has committed, then fails on `a` and rolls
+/// `b` back. The overlapping mark is still possible (R1's signal is handled
+/// after R2 has marked `a`, a matter of timing); a mark the test holds on
+/// [b, a] stands in for it.
 #[test]
 fn overlapping_restores_keep_a_committed_wallets_bring_up() {
     let _serial = serial();
@@ -970,7 +976,11 @@ fn overlapping_restores_keep_a_committed_wallets_bring_up() {
     let r1 = restore(first);
     hold.a_hold.wait_held();
     let r2 = restore(second);
-    hold.b_hold.wait_held();
+    wait_until("R2 at the lifecycle lock", Duration::from_secs(20), || {
+        r2.is_finished() || s.wallet_lifecycle.waiting() == 1
+    });
+    assert!(!r2.is_finished(), "R2 ran beside R1");
+    let marked = s.platform.restoring(vec![b, a]);
     engine.block_on(s.start_spv()).unwrap();
     wait_until("SPV running", Duration::from_secs(5), || {
         s.spv_state().unwrap() == SpvState::Running
@@ -980,7 +990,7 @@ fn overlapping_restores_keep_a_committed_wallets_bring_up() {
     hold.a_hold.let_go();
     assert_eq!(r1.join().unwrap().unwrap(), vec![a]);
     // A sentinel queued after R1's signal: once it is recorded, R1's signal
-    // was handled, and refused, since R2 still marks `a`.
+    // was handled, and refused, since `a` is still marked.
     let sentinel = WalletId([93; 32]);
     s.platform
         .signal(super::runtime::PlatformSignal::WalletAdded(sentinel));
@@ -989,8 +999,11 @@ fn overlapping_restores_keep_a_committed_wallets_bring_up() {
     });
     assert!(s.platform.startup_of(&a).is_none());
 
+    hold.b_hold.wait_held();
     hold.b_hold.let_go();
     assert!(r2.join().unwrap().is_err());
+    assert!(s.platform.startup_of(&a).is_none());
+    drop(marked);
     wait_until(
         "the committed wallet's bring-up",
         Duration::from_secs(5),

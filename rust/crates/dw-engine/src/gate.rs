@@ -11,7 +11,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 #[derive(Default)]
 pub(crate) struct OpGate {
@@ -22,6 +22,54 @@ pub(crate) struct OpGate {
 /// Held by one admitted operation; dropping it lets a pending close proceed.
 pub(crate) struct OpGuard<'a> {
     _guard: RwLockReadGuard<'a, ()>,
+}
+
+/// Serialises, per session, every operation that registers or removes a
+/// wallet: seed and watch-only imports, restores and their rollback, the
+/// removal, and dash-qt's open and close of a wallet (DEC-210 (3b)). A
+/// removal and an import of the same wallet run one after the other, so
+/// app.sqlite records it as removed exactly when it is not registered.
+/// These operations are rare, so one lock covers every wallet.
+///
+/// Lock order: an [`OpGuard`], then this lock, then the wallet's barrier
+/// (`revoke_wallet`), the end of its discoveries, and its private-details
+/// write fence and identity locks (`remove_from_manager`). It is taken
+/// only by an operation that holds its `OpGuard` and nothing later in the
+/// order, and its holder never asks the gate again: a nested admission
+/// waits behind a pending close, which waits for the holder's guard.
+/// `close` never takes it: once the gate has drained, no holder is left.
+/// It is unrelated to the SPV start and stop lock (`platform.lifecycle`):
+/// neither is taken while the other is held. It orders operations of
+/// one process; across processes only the removal records apply.
+#[derive(Default)]
+pub(crate) struct WalletLifecycle {
+    lock: Mutex<()>,
+    /// Tests: how many wait for it.
+    #[cfg(test)]
+    waiting: std::sync::atomic::AtomicUsize,
+}
+
+/// Held by a wallet registration or removal. Helpers that must run under
+/// it take a reference as proof.
+pub(crate) struct Lifecycle<'a> {
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl WalletLifecycle {
+    pub(crate) async fn hold(&self) -> Lifecycle<'_> {
+        #[cfg(test)]
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        let guard = self.lock.lock().await;
+        #[cfg(test)]
+        self.waiting.fetch_sub(1, Ordering::SeqCst);
+        Lifecycle { _guard: guard }
+    }
+
+    /// Tests: how many operations wait for it.
+    #[cfg(test)]
+    pub(crate) fn waiting(&self) -> usize {
+        self.waiting.load(Ordering::SeqCst)
+    }
 }
 
 impl OpGate {

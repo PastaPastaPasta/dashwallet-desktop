@@ -254,7 +254,7 @@ fn engine(e: EngineError) -> PlatformError {
 ///
 /// None of them funds from Core, so `max_duffs` is 0.
 pub(super) const CONTACT_REQUEST_CREDITS: u64 = 150_000_000;
-const DOCUMENT_10K_CREDITS: u64 = 300_000_000;
+pub(super) const DOCUMENT_10K_CREDITS: u64 = 300_000_000;
 pub(super) const KEY_UPDATE_CREDITS: u64 = 100_000_000;
 
 impl DashPay {

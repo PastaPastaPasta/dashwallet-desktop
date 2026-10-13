@@ -420,7 +420,7 @@ impl NetworkSession {
     /// one that Platform proved recently has no identity and has none on
     /// file. Its budget, counted from `since`, bounds all of it, the reads
     /// and the key acquisition included (review r1 M3).
-    async fn bring_up_wallet(&self, manager: &Manager, id: WalletId, since: Instant) {
+    async fn bring_up_wallet(self: &Arc<Self>, manager: &Manager, id: WalletId, since: Instant) {
         match self
             .platform
             .admit(&id, || self.vault.has_wallet_secret(&id.0))
@@ -544,9 +544,15 @@ impl NetworkSession {
         if identity.is_none() && startup.identity.is_some() {
             self.platform.recovery.names_due(id);
         }
+        let has_identity = startup.identity.is_some();
         self.finish_bring_up(id, startup, since, budget).await;
         self.load_identity_choices(id).await;
         self.refresh_identities(manager, id).await;
+        // A restore's private details, and their state, come back here
+        // (DP2-04), after the bring-up; the settle checks the seed binding.
+        if has_identity && let Some(crypto) = self.prompt_free_crypto(id).await {
+            self.settle_later(id, crypto);
+        }
     }
 
     /// At the Platform pass's admission: a recovery phase starts (catch-up
@@ -594,7 +600,7 @@ impl NetworkSession {
     }
 
     /// `Notice{DashPayStartupIncomplete}` (DASHPAY §3.7).
-    fn notice_incomplete(&self, id: WalletId, status: StartupStatus) {
+    pub(super) fn notice_incomplete(&self, id: WalletId, status: StartupStatus) {
         self.sink.emit(EngineEvent::Notice {
             network: Some(self.network.clone()),
             code: NoticeCode::DashPayStartupIncomplete,
@@ -673,7 +679,7 @@ impl NetworkSession {
     /// the identity unsettled, otherwise the seed-gated contact-crypto drain;
     /// then `reconcile_dashpay_rescan`, so payments to contacts whose
     /// accounts appear only now are found by a rescan.
-    async fn after_unlock(&self, manager: &Manager, id: WalletId) {
+    pub(super) async fn after_unlock(self: &Arc<Self>, manager: &Manager, id: WalletId) {
         // No seed, a restore not committed yet, or a signal from an unlock
         // the vault has since locked again.
         let admitted = self
@@ -703,19 +709,12 @@ impl NetworkSession {
         }
     }
 
-    async fn drain_contact_crypto(&self, manager: &Manager, id: WalletId) {
+    async fn drain_contact_crypto(self: &Arc<Self>, manager: &Manager, id: WalletId) {
         let Some(wallet) = manager.get_wallet(&id.0).await else {
             return;
         };
         let locks = self.platform.lock.borrow().locks;
-        let Some(crypto) = self
-            .platform
-            .key_work
-            .run(self.vault.clone(), move |vault| {
-                background_contact_crypto(vault, id)
-            })
-            .await
-        else {
+        let Some(crypto) = self.contact_crypto(id).await else {
             return;
         };
         let deadline = Instant::now() + DEFAULT_STARTUP_BUDGET;
@@ -746,6 +745,28 @@ impl NetworkSession {
         if let Some(entry) = self.platform.write_startup().get_mut(&id) {
             entry.contact_accounts_pending = u32::try_from(pending).unwrap_or(u32::MAX);
         }
+        // The settle checks the seed binding itself: a drain of an empty
+        // queue checks nothing.
+        self.settle_later(id, crypto);
+    }
+
+    /// The vault's DashPay crypto for wallet `id`
+    /// ([`background_contact_crypto`]), off the runtime.
+    async fn contact_crypto(&self, id: WalletId) -> Option<VaultContactCrypto> {
+        self.platform
+            .key_work
+            .run(self.vault.clone(), move |vault| {
+                background_contact_crypto(vault, id)
+            })
+            .await
+    }
+
+    /// [`Self::contact_crypto`]; `None` while it would need a prompt.
+    pub(super) async fn prompt_free_crypto(&self, id: WalletId) -> Option<VaultContactCrypto> {
+        if !prompt_free(self.platform.lock.borrow().state) {
+            return None;
+        }
+        self.contact_crypto(id).await
     }
 
     /// (created here, Platform proved no identity within

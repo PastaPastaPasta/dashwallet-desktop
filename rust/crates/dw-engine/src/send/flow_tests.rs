@@ -1623,3 +1623,27 @@ fn dust_locks_are_applied_only_under_the_fence() {
     expect.sort();
     assert_eq!(held, expect);
 }
+
+/// DEC-210, a facade writer: "Lock unspent" held in its app.sqlite job
+/// past the wallet's removal, its caller's task cancelled, leaves no lock.
+#[test]
+fn a_lock_held_past_a_removal_leaves_nothing() {
+    use crate::held_writes::{a_write_held_past_the_removal, hold_first_job};
+
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let wipe = f
+        .session
+        .vault()
+        .authorize(GrantPurpose::Wipe, Some(&f.wallet.0), Credential::None)
+        .unwrap()
+        .id;
+    let (s, w) = (Arc::clone(&f.session), f.wallet);
+    let (pause, task) = hold_first_job(&f.session, async move {
+        let _ = s.lock_outpoints(w, vec![a]).await;
+    });
+    let db = f.session.live().unwrap().appdb;
+    a_write_held_past_the_removal(&f.engine, &f.session, (w, wipe), &pause, Some(task), || {
+        db.locks(&w.to_string()).unwrap().is_empty()
+    });
+}

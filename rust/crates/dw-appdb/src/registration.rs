@@ -164,7 +164,8 @@ fn is_lock_conflict(e: &rusqlite::Error) -> bool {
 }
 
 impl AppDb {
-    /// Inserts a flow and returns its id.
+    /// Inserts a flow and returns its id (`WalletRemoved` once the wallet was
+    /// removed, DEC-210).
     pub fn insert_registration(
         &self,
         wallet_id: &str,
@@ -189,6 +190,9 @@ impl AppDb {
                 now as i64,
             ],
         )?;
+        if conn.changes() == 0 {
+            return Err(AppDbError::WalletRemoved(wallet_id.to_owned()));
+        }
         Ok(conn.last_insert_rowid())
     }
 
@@ -427,6 +431,20 @@ mod tests {
                 .as_str(),
             format!("{TXID}:4294967295")
         );
+    }
+
+    /// DEC-210: a new flow of a removed wallet is refused, not given the id
+    /// of another wallet's row.
+    #[test]
+    fn a_removed_wallet_gets_no_new_flow() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.delete_wallet(W).unwrap();
+        db.insert_registration("bb", &draft("bob"), 1).unwrap();
+        assert!(matches!(
+            db.insert_registration(W, &draft("alice"), 1),
+            Err(AppDbError::WalletRemoved(w)) if w == W
+        ));
+        assert!(db.registration_rows(W).unwrap().is_empty());
     }
 
     #[test]

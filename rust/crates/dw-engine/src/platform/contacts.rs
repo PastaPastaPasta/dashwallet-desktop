@@ -6,9 +6,10 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::contacts_model::identifier;
-use super::dashpay::{BearerSecret, DashPay, stub};
+use super::dashpay::{BearerSecret, DashPay};
 use super::errors::{ContactError, PlatformError};
 use super::payments::PaymentLock;
+use super::private_details;
 use super::profile::Profile;
 use super::requests::{self, Pair, SdkRequests};
 
@@ -314,7 +315,13 @@ impl DashPay {
         .await
     }
 
-    #[expect(unused_variables, reason = "stub until DP2-04")]
+    /// Saves `identity`'s alias, note and hidden flag for `contact`, an
+    /// established contact, and with `grant` (a `PlatformOp` grant or a
+    /// `PrivateDetails` lease) publishes them as its encrypted `contactInfo`
+    /// (DP2-04, `private_details.rs`). While the identity has fewer than two
+    /// contacts they are only saved (`DeferredUntilTwoContacts`). Without a
+    /// grant, details Platform already holds for the contact cannot change
+    /// (`platform.needs_grant`): DashPay's next pass would put them back.
     pub async fn set_private_details(
         &self,
         identity: String,
@@ -322,7 +329,13 @@ impl DashPay {
         d: PrivateDetails,
         grant: Option<String>,
     ) -> Result<PublishState, ContactError> {
-        stub("DashPay.set_private_details")
+        let wallet_id = self.wallet_id();
+        self.on_wallet(move |session, manager, wallet| async move {
+            let pair = Pair::parse(wallet_id, &identity, &contact)?;
+            let net = SdkRequests(manager.sdk_arc());
+            private_details::set(&net, &session, &wallet, pair, d, grant).await
+        })
+        .await
     }
 
     /// Adds the DashPay keys `identity` lacks on Platform (F9); nothing

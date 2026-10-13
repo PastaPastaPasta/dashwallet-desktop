@@ -75,6 +75,7 @@ codes! {
         ScanExpired = "contact.scan_expired",
         ScanUnverified = "contact.scan_unverified",
         NoUsername = "contact.no_username",
+        DetailsTooLong = "contact.details_too_long",
     }
 }
 
@@ -273,6 +274,10 @@ impl From<ContactError> for AppError {
             C::ScanExpired => (ContactCode::ScanExpired, None),
             C::ScanUnverified => (ContactCode::ScanUnverified, None),
             C::NoUsername => (ContactCode::NoUsername, None),
+            C::DetailsTooLong { bytes, max } => (
+                ContactCode::DetailsTooLong,
+                Some(ErrorData::Size { bytes, max }),
+            ),
             C::Platform(e) => return e.into(),
         };
         AppError {
@@ -437,6 +442,10 @@ mod tests {
             ContactError::ScanExpired,
             ContactError::ScanUnverified,
             ContactError::NoUsername,
+            ContactError::DetailsTooLong {
+                bytes: 2032,
+                max: 2031,
+            },
             ContactError::Platform(PlatformError::Unavailable),
         ];
         for e in contacts {

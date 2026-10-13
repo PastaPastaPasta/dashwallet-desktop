@@ -10,7 +10,7 @@ use dash_sdk::dapi_grpc::tonic::transport::{Certificate, ClientTlsConfig, Endpoi
 use dash_sdk::sdk::AddressList;
 use dash_spv::{ClientConfig, DevnetConfig};
 use dpp::version::PlatformVersion;
-use dw_appdb::{APP_DB_FILE, AppDb};
+use dw_appdb::{APP_DB_FILE, APP_DB_LOCK_FILE, AppDb};
 use dw_vault::{VAULT_DIR, Vault, VaultConfig};
 use key_wallet::wallet::balance::WalletCoreBalance;
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
@@ -26,7 +26,7 @@ use zeroize::Zeroizing;
 use crate::context::LazyTrustedContext;
 use crate::events::{SessionHub, SessionPump, WalletName, WalletState};
 use crate::fsutil::{create_owned_dir, create_owned_file};
-use crate::gate::{OpGate, OpGuard};
+use crate::gate::{OpGate, OpGuard, WalletLifecycle};
 use crate::platform::trust::{self, SharedContext, TrustProvider};
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NoticeCode};
 
@@ -178,6 +178,8 @@ pub struct NetworkSession {
     pub(crate) hub: Arc<SessionHub>,
     /// Admission of operations vs close (review M1).
     gate: OpGate,
+    /// Wallet registrations and removals, one at a time (DEC-210 (3b)).
+    pub(crate) wallet_lifecycle: WalletLifecycle,
     live: RwLock<Option<Live>>,
     pump: Mutex<Option<PumpTask>>,
     /// Inputs of prepared, not yet settled transactions (E2 send).
@@ -243,6 +245,7 @@ impl NetworkSession {
 
         let appdb_path = data_dir.join(APP_DB_FILE);
         create_owned_file(&data_dir, Path::new(APP_DB_FILE))?;
+        create_owned_file(&data_dir, Path::new(APP_DB_LOCK_FILE))?;
         let (appdb, names) = tokio::task::spawn_blocking(move || {
             let db = AppDb::open(&appdb_path)?;
             let names = db.wallets()?;
@@ -427,6 +430,7 @@ impl NetworkSession {
             spv_peers,
             hub,
             gate: OpGate::default(),
+            wallet_lifecycle: WalletLifecycle::default(),
             live: RwLock::new(Some(Live {
                 manager: Arc::clone(&manager),
                 persister,
@@ -641,6 +645,14 @@ impl NetworkSession {
         F: Future<Output = Result<T, EngineError>> + Send + 'static,
         T: Send + 'static,
     {
+        // Tests: a held app.sqlite job stays held in the spawned task.
+        #[cfg(test)]
+        if let Ok(pause) = crate::coins::HOLD_APPDB_JOB.try_with(Arc::clone) {
+            return self
+                .rt
+                .spawn(crate::coins::HOLD_APPDB_JOB.scope(pause, fut))
+                .await?;
+        }
         self.rt.spawn(fut).await?
     }
 
@@ -764,8 +776,11 @@ impl NetworkSession {
         //     (manager/mod.rs:522, wallet/core/balance_handler.rs:43-45)
         // `remove_wallet` is an in-memory unload (no persister writes:
         // manager/wallet_lifecycle.rs:676-900, key-wallet-manager accessors.rs:75).
+        // Through the private-details fence: the close returns after their
+        // writes in flight.
         for id in manager.list_wallet_ids_blocking() {
-            if let Err(e) = manager.remove_wallet(&id).await {
+            let unloaded = self.platform.remove_from_manager(&manager, WalletId(id));
+            if let Err(e) = unloaded.await {
                 tracing::warn!(wallet_id = %hex::encode(id), error = %e, "unload on close failed");
             }
         }

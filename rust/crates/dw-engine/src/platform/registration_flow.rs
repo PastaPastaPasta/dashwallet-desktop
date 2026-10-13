@@ -2582,7 +2582,7 @@ fn profile_update(profile: &ProfileRecord) -> platform_wallet::wallet::identity:
 
 /// The DashPay system contract, parsed once, at the version platform-wallet
 /// loads it (`PlatformVersion::latest()`).
-fn dashpay_contract() -> Result<Arc<dpp::prelude::DataContract>, PlatformError> {
+pub(super) fn dashpay_contract() -> Result<Arc<dpp::prelude::DataContract>, PlatformError> {
     static CONTRACT: std::sync::OnceLock<Arc<dpp::prelude::DataContract>> =
         std::sync::OnceLock::new();
     if let Some(contract) = CONTRACT.get() {

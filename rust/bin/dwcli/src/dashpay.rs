@@ -689,6 +689,7 @@ fn contact_params(e: &ContactError) -> Value {
     match e {
         C::Ineligible { reason } => json!({"reason": reason}),
         C::PaymentLocked { txid } => json!({"txid": txid}),
+        C::DetailsTooLong { bytes, max } => json!({"bytes": bytes, "max": max}),
         C::AlreadyContact
         | C::RequestPending
         | C::IsSelf
@@ -1853,6 +1854,11 @@ mod tests {
         ("contact ignore --identity I C", NOT_BASE58),
         ("contact unignore --identity I C", NOT_BASE58),
         ("contact enable-keys --identity I", NOT_BASE58),
+        (
+            "contact details --identity I C --alias Al --hidden",
+            NOT_BASE58,
+        ),
+        ("contact details --identity I C --publish", NOT_BASE58),
     ];
 
     /// `SECRET`'s `dapk` is not Base58; the error does not quote it.

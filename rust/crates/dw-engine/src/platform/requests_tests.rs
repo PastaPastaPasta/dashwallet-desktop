@@ -19,9 +19,12 @@ use dpp::identity::{Identity, IdentityPublicKey, KeyID, KeyType, Purpose, Securi
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dw_vault::{Credential, GrantKind, GrantPurpose};
-use platform_wallet::{AutoAcceptProofSource, ContactRequest, EstablishedContact, PlatformWallet};
+use platform_wallet::{
+    AutoAcceptProofSource, ContactInfoPublishOutcome, ContactRequest, EstablishedContact,
+    PlatformWallet,
+};
 
-use super::super::contacts::{Eligibility, RequestOutcome};
+use super::super::contacts::{Eligibility, PrivateDetails, RequestOutcome};
 use super::super::errors::{ContactError, PlatformError};
 use super::super::flows::{BudgetPurpose, CONTACT_REQUEST_CREDITS, FlowKind, KEY_UPDATE_CREDITS};
 use super::super::identity_writes::identity_locks;
@@ -29,6 +32,7 @@ use super::super::journal_tests::{
     Recorder, b58, engine, grant_unused, id, platform_grant, request, session,
 };
 use super::super::keys_policy::registration_specs;
+use super::super::private_details_tests::FakeInfos;
 use super::super::signers::{VaultContactCrypto, VaultIdentitySigner};
 use super::super::startup::SyncLoop;
 use super::*;
@@ -115,13 +119,17 @@ pub(crate) struct FakeRequests {
     /// Writes fail with this error, having landed or not as `landed` says.
     pub(crate) fails: Mutex<Option<PlatformError>>,
     /// Writes fail with this error before they sign anything.
-    fails_unsigned: Mutex<Option<PlatformError>>,
-    landed: AtomicBool,
+    pub(crate) fails_unsigned: Mutex<Option<PlatformError>>,
+    pub(crate) landed: AtomicBool,
     writes: AtomicU32,
     /// Runs inside each write, before it lands.
-    during: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    pub(crate) during: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// What a key upgrade costs.
     fee: u64,
+    /// The `contactInfo` documents a write publishes.
+    pub(crate) infos: Arc<FakeInfos>,
+    /// A `contactInfo` write takes their reads down as it lands (or not).
+    pub(crate) infos_down_after: AtomicBool,
 }
 
 impl FakeRequests {
@@ -291,13 +299,52 @@ impl RequestNet for FakeRequests {
         }
         landed
     }
+
+    /// As platform-wallet: the details saved with the contact first, the
+    /// publish deferred below two contacts and skipped without an index;
+    /// then signed and written, sealed into [`FakeInfos`] once landed.
+    async fn set_contact_info(
+        &self,
+        wallet: &PlatformWallet,
+        owner: Identifier,
+        contact: Identifier,
+        details: &PrivateDetails,
+        signer: &VaultIdentitySigner,
+        crypto: &VaultContactCrypto,
+    ) -> Result<ContactInfoPublishOutcome, PlatformError> {
+        let (contacts, index) = {
+            let mut state = wallet.state_mut().await;
+            let m = (state.identity_manager.managed_identity_mut(&owner)).unwrap();
+            let saved = m.set_contact_metadata(&contact, details.into(), wallet.persister());
+            assert!(saved.unwrap(), "an established contact");
+            (m.dashpay().established_contacts().len(), m.identity_index)
+        };
+        if contacts < 2 {
+            return Ok(ContactInfoPublishOutcome::DeferredUntilTwoContacts);
+        }
+        let Some(index) = index else {
+            return Ok(ContactInfoPublishOutcome::SkippedWatchOnly);
+        };
+        self.sign(owner, signer).await?;
+        let landed = self.write();
+        if landed.is_ok() || self.landed.load(Ordering::SeqCst) {
+            let at = (owner, index, contact);
+            self.infos.seal(crypto, at, details).await;
+        }
+        if self.infos_down_after.load(Ordering::SeqCst) {
+            self.infos.down.store(true, Ordering::SeqCst);
+        }
+        landed.map(|()| ContactInfoPublishOutcome::Published)
+    }
 }
 
-struct Fixture {
-    engine: Engine,
-    s: Arc<NetworkSession>,
-    wallet: WalletId,
-    net: Arc<FakeRequests>,
+pub(crate) struct Fixture {
+    pub(crate) engine: Engine,
+    pub(crate) s: Arc<NetworkSession>,
+    pub(crate) wallet: WalletId,
+    pub(crate) net: Arc<FakeRequests>,
+    /// What the engine emitted.
+    pub(crate) events: Arc<Recorder>,
     _dir: tempfile::TempDir,
 }
 
@@ -305,25 +352,23 @@ impl Fixture {
     /// Our identity at index 0 with its DashPay keys and `balance` credits,
     /// Erin a contact, Frank asking, Grace asked; Bob, Carol and Dave as
     /// their consts say.
-    fn new(balance: u64) -> Self {
+    pub(crate) fn new(balance: u64) -> Self {
         Self::with_keys(keys(true), balance)
     }
 
-    fn with_keys(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
+    pub(crate) fn with_keys(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
         Self::build(mine, balance, true)
     }
 
     /// Our identity with `mine` as they are: keys the vault does not hold.
-    fn foreign(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
+    pub(crate) fn foreign(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
         Self::build(mine, balance, false)
     }
 
     fn build(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64, held: bool) -> Self {
         let dir = dw_testutil::private_tempdir();
-        let engine = engine(
-            dir.path(),
-            Arc::new(Recorder::default()) as Arc<dyn EventSink>,
-        );
+        let events = Arc::new(Recorder::default());
+        let engine = engine(dir.path(), Arc::clone(&events) as Arc<dyn EventSink>);
         let (s, wallet) = session(&engine, true);
         let mine = if held {
             vault_keys(&engine, &s, wallet, mine)
@@ -363,11 +408,12 @@ impl Fixture {
             s,
             wallet,
             net,
+            events,
             _dir: dir,
         }
     }
 
-    fn pair(&self, contact: u8) -> Pair {
+    pub(crate) fn pair(&self, contact: u8) -> Pair {
         Pair {
             wallet: self.wallet,
             identity: id(ME),
@@ -376,7 +422,7 @@ impl Fixture {
     }
 
     /// Runs `body` as a facade call of the wallet does.
-    fn call<T: Send + 'static, Fut>(
+    pub(crate) fn call<T: Send + 'static, Fut>(
         &self,
         body: impl FnOnce(Arc<FakeRequests>, Arc<NetworkSession>, Arc<PlatformWallet>) -> Fut
         + Send
@@ -391,7 +437,7 @@ impl Fixture {
             .block_on(dp.on_wallet(move |session, _, wallet| body(net, session, wallet)))
     }
 
-    fn code<T: std::fmt::Debug>(r: Result<T, ContactError>) -> &'static str {
+    pub(crate) fn code<T: std::fmt::Debug>(r: Result<T, ContactError>) -> &'static str {
         r.unwrap_err().code()
     }
 
@@ -420,7 +466,7 @@ impl Fixture {
         })
     }
 
-    fn grant(&self, max_credits: u64) -> String {
+    pub(crate) fn grant(&self, max_credits: u64) -> String {
         platform_grant(&self.s, self.wallet, max_credits)
     }
 
@@ -436,11 +482,21 @@ impl Fixture {
             .id
     }
 
-    fn unused(&self, grant: &str) -> bool {
+    /// What the lease `lease` has spent of its credits budget.
+    pub(crate) fn credits_spent(&self, lease: &str) -> u64 {
+        let lease = self.s.lease_for(&self.wallet, lease).unwrap().unwrap();
+        let view = lease.view().unwrap();
+        (view.budgets.iter())
+            .find(|b| b.purpose == BudgetPurpose::Credits)
+            .unwrap()
+            .spent
+    }
+
+    pub(crate) fn unused(&self, grant: &str) -> bool {
         grant_unused(&self.s, self.wallet, grant)
     }
 
-    fn flow(&self, flow: FlowKind, grants: Vec<String>) -> String {
+    pub(crate) fn flow(&self, flow: FlowKind, grants: Vec<String>) -> String {
         self.engine
             .block_on(self.s.begin_flow(self.wallet, flow, grants))
             .unwrap()
@@ -692,21 +748,12 @@ fn a_quote_goes_back_only_when_nothing_was_signed() {
             keys(true)
         };
         let f = Fixture::with_keys(keys, u64::MAX / 2);
-        let spent = |lease: &str| {
-            let lease = f.s.lease_for(&f.wallet, lease).unwrap().unwrap();
-            let view = lease.view().unwrap();
-            (view.budgets.iter())
-                .find(|b| b.purpose == BudgetPurpose::Credits)
-                .unwrap()
-                .spent
-        };
-
         let lease = f.flow(flow, vec![f.grant(quote)]);
         *f.net.fails_unsigned.lock().unwrap() = Some(PlatformError::Unavailable);
         let refused = write(&f, &lease).unwrap_err();
         assert_eq!(refused.code(), "platform.unavailable", "{flow:?}");
         assert_eq!(
-            spent(&lease),
+            f.credits_spent(&lease),
             0,
             "{flow:?}: nothing signed, quote not returned"
         );
@@ -714,7 +761,11 @@ fn a_quote_goes_back_only_when_nothing_was_signed() {
 
         *f.net.fails.lock().unwrap() = Some(PlatformError::Timeout);
         assert_eq!(write(&f, &lease).unwrap_err().code(), "platform.timeout");
-        assert_eq!(spent(&lease), quote, "{flow:?}: signed, quote not kept");
+        assert_eq!(
+            f.credits_spent(&lease),
+            quote,
+            "{flow:?}: signed, quote not kept"
+        );
         *f.net.fails.lock().unwrap() = None;
         assert_eq!(
             write(&f, &lease).unwrap_err().code(),
@@ -987,10 +1038,15 @@ fn each_flow_signs_with_its_own_keys_only() {
     assert!(doc.can_sign_with(&real[&1]));
     sign(&doc, 1).unwrap();
     assert!(sign(&doc, 4).is_err(), "the DashPay keys only do ECDH");
-    assert_eq!(
-        flow_keys(FlowKind::Accept, &me, &[], |_| true).unwrap(),
-        flow_keys(FlowKind::AcceptAndPay, &me, &[], |_| true).unwrap()
-    );
+    let document_key = flow_keys(FlowKind::ContactRequest, &me, &[], |_| true).unwrap();
+    for flow in [
+        FlowKind::Accept,
+        FlowKind::AcceptAndPay,
+        FlowKind::PrivateDetails,
+    ] {
+        let keys = flow_keys(flow, &me, &[], |_| true).unwrap();
+        assert_eq!(keys, document_key, "{flow:?}");
+    }
 
     let upgrade_permit = permit(&lease_of(FlowKind::EnableDashPayKeys));
     let upgrade = flow_signer(&upgrade_permit, 0, &me, &[4, 5]).unwrap();
@@ -1113,7 +1169,7 @@ fn a_write_waits_for_the_identity_write_lock() {
 }
 
 /// The dashpay sync passes `dp` has seen finish.
-fn passes(dp: &crate::platform::DashPay) -> Option<u64> {
+pub(crate) fn passes(dp: &crate::platform::DashPay) -> Option<u64> {
     let status = dp.sync_status().ok()?;
     let pass = status
         .loops
@@ -1122,7 +1178,7 @@ fn passes(dp: &crate::platform::DashPay) -> Option<u64> {
     pass.last_run_at
 }
 
-fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
+pub(crate) fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
     let started = std::time::Instant::now();
     while !done() {
         assert!(started.elapsed() < timeout, "no {what} within {timeout:?}");

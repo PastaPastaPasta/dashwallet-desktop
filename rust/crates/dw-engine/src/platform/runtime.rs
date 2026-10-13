@@ -391,11 +391,14 @@ impl PlatformRuntime {
         self.write_startup().insert(id, startup);
     }
 
-    pub(super) fn set_status(&self, id: WalletId, status: StartupStatus) {
-        self.write_startup()
-            .entry(id)
-            .or_insert_with(|| DashPayStartup::new(status, false))
-            .startup = status;
+    /// Sets wallet `id`'s startup status; the one it replaced, if any.
+    pub(super) fn set_status(&self, id: WalletId, status: StartupStatus) -> Option<StartupStatus> {
+        let mut startup = self.write_startup();
+        if let Some(entry) = startup.get_mut(&id) {
+            return Some(std::mem::replace(&mut entry.startup, status));
+        }
+        startup.insert(id, DashPayStartup::new(status, false));
+        None
     }
 
     /// Whether bring-up or unlock work may start for `id` now: `None` while a
@@ -437,6 +440,21 @@ impl PlatformRuntime {
         self.contacts.forget(id);
         self.users.scans.forget(id);
         self.registrations.forget_wallet(*id);
+    }
+
+    /// Takes wallet `id` out of `manager` (a removal, an unload, a restore's
+    /// rollback): private-details writes of it in flight land first and none
+    /// lands afterwards ([`super::private_details::WriteFences`]), and its
+    /// digests leave memory.
+    pub(crate) async fn remove_from_manager(
+        &self,
+        manager: &Manager,
+        id: WalletId,
+    ) -> Result<(), EngineError> {
+        let _fence = self.contacts.fences.removal(id).await;
+        manager.remove_wallet(&id.0).await?;
+        self.contacts.digests.forget(&id);
+        Ok(())
     }
 
     pub(super) fn untrack(&self, id: WalletId, task: tokio::task::Id) {

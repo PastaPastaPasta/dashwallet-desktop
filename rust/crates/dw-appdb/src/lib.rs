@@ -13,10 +13,12 @@
 //! Every method is a short synchronous SQLite call on one connection behind a
 //! mutex. Async callers run them off their executor (`spawn_blocking`).
 
-use std::path::Path;
+use std::ffi::OsString;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 mod dashpay_journal;
 pub mod dispatch;
@@ -40,6 +42,9 @@ mod migration_tests;
 /// File name of the metadata database inside a network directory.
 pub const APP_DB_FILE: &str = "app.sqlite";
 
+/// File name of its lock file ([`AppDb::open`]), next to it.
+pub const APP_DB_LOCK_FILE: &str = "app.sqlite.lock";
+
 /// Settings scope for network-wide values (`settings_kv.scope`).
 pub const GLOBAL_SCOPE: &str = "";
 
@@ -51,15 +56,174 @@ pub fn local_scope(wallet_id: &str) -> String {
     format!("local:{wallet_id}")
 }
 
+/// The lock file next to the database at `path` (`<file>.lock`), never the
+/// database itself, whose bytes SQLite locks by range.
+fn lock_path(path: &Path) -> PathBuf {
+    let mut lock = OsString::from(path.as_os_str());
+    lock.push(".lock");
+    lock.into()
+}
+
+/// Opens the lock file without following a final symlink: a second name
+/// would be a second lock (DEC-210 (3b)).
+fn open_lock_file(path: &Path) -> Result<File> {
+    dw_fs::open_sole_file(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::InvalidInput => refused(path, &e.to_string()),
+        _ => file_error(path, e),
+    })
+}
+
+fn file_error(path: &Path, source: std::io::Error) -> AppDbError {
+    AppDbError::File {
+        path: path.to_owned(),
+        source,
+    }
+}
+
+fn refused(path: &Path, what: &str) -> AppDbError {
+    file_error(
+        path,
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{what}; the app database and its lock file must each be a regular file with one name"
+            ),
+        ),
+    )
+}
+
+/// Which file a database or lock file is: (device, inode). `None` where the
+/// platform has no stable id in std (Windows: the gap DEC-210 (3b) accepts
+/// there, with symlinks still refused).
+type FileId = Option<(u64, u64)>;
+
+#[cfg(unix)]
+fn file_id(meta: &std::fs::Metadata) -> FileId {
+    use std::os::unix::fs::MetadataExt;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_id(_: &std::fs::Metadata) -> FileId {
+    None
+}
+
+fn lock_id(path: &Path, lock: &File) -> Result<FileId> {
+    Ok(file_id(&lock.metadata().map_err(|e| file_error(path, e))?))
+}
+
+/// What is at the database's path, not following a final symlink: nothing
+/// yet (SQLite creates it), or the one name of a regular file and its id.
+fn sole_database(path: &Path) -> Result<Option<FileId>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => match dw_fs::not_sole(&meta) {
+            Some(why) => Err(refused(path, &why)),
+            None => Ok(Some(file_id(&meta))),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(file_error(path, e)),
+    }
+}
+
+/// `path` with its directory resolved: SQLite's `SQLITE_OPEN_NOFOLLOW`
+/// refuses a symlink anywhere in the name, and a symlinked directory leads
+/// to the same lock file anyway. The file name is kept, so a final symlink
+/// is still refused.
+#[cfg(unix)]
+fn resolve_directory(path: &Path) -> Result<PathBuf> {
+    let name = path.file_name().ok_or_else(|| {
+        file_error(
+            path,
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "names no file"),
+        )
+    })?;
+    let dir = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let dir = dir.canonicalize().map_err(|e| file_error(dir, e))?;
+    Ok(dir.join(name))
+}
+
+/// Windows: the name is kept.
+#[cfg(not(unix))]
+fn resolve_directory(path: &Path) -> Result<PathBuf> {
+    Ok(path.to_owned())
+}
+
+/// SQLite reads a name starting with `file:` as a URI (the bundled build
+/// sets `SQLITE_USE_URI`, whatever the open flags say), which can name the
+/// database another way; such a path is refused.
+fn refuse_uri(path: &Path) -> Result<()> {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    if bytes
+        .get(..5)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case(b"file:"))
+    {
+        return Err(refused(path, "reads as a SQLite URI"));
+    }
+    Ok(())
+}
+
+/// The lock file is not the database itself: one file with one name at
+/// each path is still possible under two mounts of it.
+fn refuse_same_file(lock_path: &Path, lock: FileId, database: FileId) -> Result<()> {
+    if database.is_some() && lock == database {
+        return Err(refused(lock_path, "is the database itself"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: runs once between the database's check and SQLite's open.
+    static BEFORE_SQLITE_OPEN: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::Cell::new(None) };
+    /// Tests: runs once between the lock file's two opens.
+    static BEFORE_SHARED_LOCK: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
+/// with an insert trigger that skips rows of a removed wallet (migration
+/// `V2026101302`, DEC-210). Settings are cleared by scope.
+pub(crate) const WALLET_TABLES: [&str; 14] = [
+    "wallets",
+    "address_book",
+    "labels",
+    "tx_meta",
+    "receive_requests",
+    "utxo_locks",
+    "dp_main_identity",
+    "dp_registration",
+    "dp_contest_watch",
+    "dp_events",
+    "dp_payment_lock",
+    "dp_trust_unverified",
+    "dp_prefs",
+    "dp_contact_info",
+];
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppDbError {
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("migration: {0}")]
     Migration(#[from] refinery::Error),
+    /// The database or its lock file could not be opened or locked, or was
+    /// refused: another name for the file (a symlink, a hard link, a SQLite
+    /// URI) or not a regular file.
+    #[error("{}: {source}", path.display())]
+    File {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// A value read from the database is outside its schema domain.
     #[error("corrupt row: {0}")]
     Corrupt(String),
+    /// The wallet was removed (and not readmitted): the row was not written.
+    #[error("wallet {0} was removed")]
+    WalletRemoved(String),
 }
 
 pub type Result<T> = std::result::Result<T, AppDbError>;
@@ -164,13 +328,89 @@ impl LockRow {
 
 pub struct AppDb {
     conn: Mutex<Connection>,
+    /// A shared lock on the database's lock file for as long as this
+    /// instance lives, a job still holding it after its session closed
+    /// included: while it is held, no open forgets the removed wallets
+    /// (DEC-210). With it, the id of the database file the lock is for.
+    /// `None` in memory.
+    _alive: Option<(File, FileId)>,
 }
 
 impl AppDb {
     /// Opens (creating if needed) the database at `path` and applies pending
-    /// migrations.
+    /// migrations. When no other instance of the file is open, in this
+    /// process or another, it forgets the removed wallets: no write of
+    /// theirs can still be running (DEC-210).
+    ///
+    /// Needs a file system whose advisory locks work per open file (local
+    /// disks, as SQLite's WAL mode does): without lock support the open
+    /// fails, and an NFS emulation of `flock` does not keep the removed
+    /// wallets of instances in the same process.
+    ///
+    /// The lock file is named after `path`, so the database must have no
+    /// other name that leads to another lock file: a symlink, a second hard
+    /// link or a `file:` URI is refused (DEC-210 (3b)). Symlinked
+    /// directories above it are fine; they lead to the same lock file.
     pub fn open(path: &Path) -> Result<Self> {
-        Self::init(Connection::open(path)?)
+        refuse_uri(path)?;
+        let path = &resolve_directory(path)?;
+        let before = sole_database(path)?;
+        let lock_path = lock_path(path);
+        // Exclusive, on a handle of its own and before this instance's
+        // shared lock: granted only while no instance holds one. Never
+        // waited for; without it the removed wallets stay recorded.
+        let sole = open_lock_file(&lock_path)?;
+        let lock = lock_id(&lock_path, &sole)?;
+        let alone = match sole.try_lock() {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::debug!(error = %e, "app database open elsewhere: the removed wallets stay recorded");
+                false
+            }
+        };
+        #[cfg(test)]
+        if let Some(hook) = BEFORE_SQLITE_OPEN.take() {
+            hook();
+        }
+        // No URI and no symlink. The database file itself is never opened
+        // here: closing a descriptor of it would drop SQLite's POSIX locks.
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        // SQLite opened the file checked, or created it just now.
+        let database = match sole_database(path)? {
+            Some(id) if before.is_none_or(|before| before == id) => id,
+            _ => return Err(refused(path, "changed while it was opened")),
+        };
+        refuse_same_file(&lock_path, lock, database)?;
+        let mut db = Self::init(conn)?;
+        if alone {
+            db.conn().execute("DELETE FROM removed_wallets", [])?;
+        }
+        // Released before the shared lock is taken, on a handle of its own:
+        // a shared lock of a second handle would wait for this one (on
+        // Windows, and with `flock` the conversion is not atomic either).
+        // An open in the gap may forget the removals again, which is safe:
+        // this instance has written nothing yet.
+        drop(sole);
+        #[cfg(test)]
+        if let Some(hook) = BEFORE_SHARED_LOCK.take() {
+            hook();
+        }
+        let alive = open_lock_file(&lock_path)?;
+        if lock_id(&lock_path, &alive)? != lock {
+            return Err(refused(&lock_path, "changed while it was opened"));
+        }
+        alive.lock_shared().map_err(|e| file_error(&lock_path, e))?;
+        // Deleting or replacing the lock file from outside after this
+        // returns leaves the lock on a file later opens no longer see (an
+        // accepted residual, m4 item 42); nothing here removes it.
+        db._alive = Some((alive, database));
+        Ok(db)
     }
 
     /// A private in-memory database (tests, fixture tooling).
@@ -188,6 +428,7 @@ impl AppDb {
             .run(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            _alive: None,
         })
     }
 
@@ -241,25 +482,19 @@ impl AppDb {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Deletes every row that belongs to `wallet_id` (wallet removal).
+    /// Deletes every row that belongs to `wallet_id` (wallet removal) and
+    /// records the wallet as removed: until [`Self::readmit_wallet`], or an
+    /// open with no other instance of the file alive ([`Self::open`]),
+    /// inserts of its rows are skipped (DEC-210), so a write still under way
+    /// when the wallet was removed leaves nothing behind.
     pub fn delete_wallet(&self, wallet_id: &str) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        for table in [
-            "wallets",
-            "address_book",
-            "labels",
-            "tx_meta",
-            "receive_requests",
-            "utxo_locks",
-            "dp_main_identity",
-            "dp_registration",
-            "dp_contest_watch",
-            "dp_events",
-            "dp_payment_lock",
-            "dp_trust_unverified",
-            "dp_prefs",
-        ] {
+        tx.execute(
+            "INSERT OR IGNORE INTO removed_wallets (wallet_id) VALUES (?1)",
+            [wallet_id],
+        )?;
+        for table in WALLET_TABLES {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE wallet_id = ?1"),
                 [wallet_id],
@@ -271,6 +506,16 @@ impl AppDb {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Lets rows of `wallet_id` be written again after
+    /// [`Self::delete_wallet`]: an import of the wallet calls it before its
+    /// first write. Whether the wallet was recorded as removed.
+    pub fn readmit_wallet(&self, wallet_id: &str) -> Result<bool> {
+        Ok(self.conn().execute(
+            "DELETE FROM removed_wallets WHERE wallet_id = ?1",
+            [wallet_id],
+        )? > 0)
     }
 
     // ---- address book ----
@@ -482,7 +727,8 @@ impl AppDb {
 
     // ---- receive requests ----
 
-    /// Stores a request and returns its id.
+    /// Stores a request and returns its id (`WalletRemoved` once the wallet
+    /// was removed, DEC-210).
     pub fn add_receive_request(
         &self,
         wallet_id: &str,
@@ -508,6 +754,9 @@ impl AppDb {
                 message
             ],
         )?;
+        if conn.changes() == 0 {
+            return Err(AppDbError::WalletRemoved(wallet_id.to_owned()));
+        }
         Ok(conn.last_insert_rowid())
     }
 
@@ -776,6 +1025,122 @@ impl AppDb {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// The digest `dp_contact_info` holds for `identity`'s details of
+    /// `contact` (DP2-04), if any.
+    pub fn contact_info_digest(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        contact: &str,
+    ) -> Result<Option<[u8; 32]>> {
+        let digest: Option<Vec<u8>> = self
+            .conn()
+            .query_row(
+                "SELECT digest FROM dp_contact_info
+                 WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3",
+                params![wallet_id, identity, contact],
+                |r| r.get(0),
+            )
+            .optional()?;
+        digest
+            .map(|d| {
+                <[u8; 32]>::try_from(d.as_slice())
+                    .map_err(|_| AppDbError::Corrupt("dp_contact_info.digest".into()))
+            })
+            .transpose()
+    }
+
+    /// Records what Platform holds of `identity`'s details of `contact`;
+    /// whether that changed the row (`recorded_at` is when its digest was
+    /// first recorded).
+    pub fn set_contact_info_digest(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        contact: &str,
+        digest: &[u8; 32],
+        now: u64,
+    ) -> Result<bool> {
+        let changed = self.conn().execute(
+            "INSERT INTO dp_contact_info (wallet_id, identity, contact, digest, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (wallet_id, identity, contact)
+             DO UPDATE SET digest = excluded.digest, recorded_at = excluded.recorded_at
+             WHERE digest != excluded.digest",
+            params![wallet_id, identity, contact, &digest[..], now as i64],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Forgets the digest of `identity`'s details of `contact`: Platform
+    /// holds none. Whether there was one.
+    pub fn forget_contact_info_digest(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        contact: &str,
+    ) -> Result<bool> {
+        let changed = self.conn().execute(
+            "DELETE FROM dp_contact_info WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3",
+            params![wallet_id, identity, contact],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Every digest `dp_contact_info` holds for the wallet, as (identity,
+    /// contact, digest): what the engine keeps in memory for its sync reads.
+    pub fn contact_info_digests(&self, wallet_id: &str) -> Result<Vec<(String, String, [u8; 32])>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT identity, contact, digest FROM dp_contact_info WHERE wallet_id = ?1
+             ORDER BY identity, contact",
+        )?;
+        let rows = stmt
+            .query_map([wallet_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|(identity, contact, digest)| {
+                let digest = <[u8; 32]>::try_from(digest.as_slice())
+                    .map_err(|_| AppDbError::Corrupt("dp_contact_info.digest".into()))?;
+                Ok((identity, contact, digest))
+            })
+            .collect()
+    }
+
+    /// Forgets the digests of `identity`'s details of every contact not in
+    /// `keep` (no longer established); the contacts it forgot.
+    pub fn forget_contact_infos_except(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        keep: &[String],
+    ) -> Result<Vec<String>> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let held = {
+            let mut stmt = tx.prepare(
+                "SELECT contact FROM dp_contact_info WHERE wallet_id = ?1 AND identity = ?2",
+            )?;
+            stmt.query_map(params![wallet_id, identity], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let gone: Vec<String> = held.into_iter().filter(|c| !keep.contains(c)).collect();
+        for contact in &gone {
+            tx.execute(
+                "DELETE FROM dp_contact_info WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3",
+                params![wallet_id, identity, contact],
+            )?;
+        }
+        tx.commit()?;
+        Ok(gone)
+    }
+
     /// Sets an identity's preference, or deletes it for `None`.
     pub fn set_dp_pref(
         &self,
@@ -836,7 +1201,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026101202);
+        assert_eq!(db.schema_version().unwrap(), 2026101302);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();

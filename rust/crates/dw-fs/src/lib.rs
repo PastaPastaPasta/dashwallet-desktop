@@ -65,6 +65,64 @@ pub fn create_owned_dir(base: &Path, owned: &Path) -> io::Result<()> {
     }
 }
 
+/// Why the file `meta` describes is not the one name of a regular file,
+/// or `None`. From `symlink_metadata`, a symlink shows as one. Windows does
+/// not count hard links.
+pub fn not_sole(meta: &std::fs::Metadata) -> Option<String> {
+    if meta.file_type().is_symlink() {
+        return Some("is a symbolic link".into());
+    }
+    if !meta.is_file() {
+        return Some("is not a regular file".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.nlink() != 1 {
+            return Some(format!("has {} hard links", meta.nlink()));
+        }
+    }
+    None
+}
+
+/// Opens the file at `path` for reading and writing as the one name of a
+/// regular file: created empty and 0600 when missing, never through a
+/// symlink in its last component (`O_NOFOLLOW`), and refused
+/// (`InvalidInput`, see [`not_sole`]) when it is not a regular file or has
+/// another hard link. Symlinks above it are followed. Errors do not name
+/// the path; the caller does.
+pub fn open_sole_file(path: &Path) -> io::Result<std::fs::File> {
+    let refused = |what| io::Error::new(io::ErrorKind::InvalidInput, what);
+    let last_is_link =
+        || std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink());
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use rustix::fs::OFlags;
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags((OFlags::NOFOLLOW | OFlags::NOCTTY).bits() as i32);
+    }
+    // Windows follows a symlink on open.
+    #[cfg(not(unix))]
+    if last_is_link() {
+        return Err(refused("is a symbolic link".into()));
+    }
+    let file = options.open(path).map_err(|e| {
+        if last_is_link() {
+            refused("is a symbolic link".into())
+        } else {
+            e
+        }
+    })?;
+    match not_sole(&file.metadata()?) {
+        Some(why) => Err(refused(why)),
+        None => Ok(file),
+    }
+}
+
 /// [`create_owned_dir`] for the parent of `owned`, then the file itself:
 /// created empty and 0600 when missing, otherwise its group and other
 /// permissions go and its contents stay. A symlink there is left alone.
@@ -741,6 +799,42 @@ mod tests {
         std::fs::hard_link(&db, tmp.path().join("other")).unwrap();
         create_owned_file(tmp.path(), Path::new("app.sqlite")).unwrap();
         assert_eq!(mode(&db), 0o664);
+    }
+
+    #[test]
+    fn a_sole_file_is_one_regular_file_reached_without_a_final_symlink() {
+        let tmp = private_tempdir();
+        let file = tmp.path().join("app.sqlite.lock");
+        open_sole_file(&file).unwrap();
+        assert_eq!(mode(&file), 0o600);
+        std::fs::write(&file, b"kept").unwrap();
+        open_sole_file(&file).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"kept");
+
+        // Through a directory symlink: the same file.
+        symlink(tmp.path(), tmp.path().join("alias")).unwrap();
+        open_sole_file(&tmp.path().join("alias/app.sqlite.lock")).unwrap();
+
+        let link = tmp.path().join("link");
+        symlink(&file, &link).unwrap();
+        let refused = open_sole_file(&link).unwrap_err().to_string();
+        assert!(refused.contains("symbolic link"), "{refused}");
+        let dangling = tmp.path().join("dangling");
+        symlink(tmp.path().join("missing"), &dangling).unwrap();
+        assert!(open_sole_file(&dangling).is_err());
+        assert!(!tmp.path().join("missing").exists());
+
+        std::fs::hard_link(&file, tmp.path().join("second")).unwrap();
+        let refused = open_sole_file(&file).unwrap_err().to_string();
+        assert!(refused.contains("2 hard links"), "{refused}");
+
+        mkdir(&tmp.path().join("dir"), 0o700);
+        assert!(open_sole_file(&tmp.path().join("dir")).is_err());
+        let fifo = tmp.path().join("fifo");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        assert!(made.unwrap().success());
+        let refused = open_sole_file(&fifo).unwrap_err().to_string();
+        assert!(refused.contains("is not a regular file"), "{refused}");
     }
 
     #[test]

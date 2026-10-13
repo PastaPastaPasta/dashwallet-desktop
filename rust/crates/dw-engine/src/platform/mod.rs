@@ -26,6 +26,9 @@ pub mod lease;
 mod names;
 mod notifications;
 mod payments;
+mod private_details;
+#[cfg(test)]
+mod private_details_tests;
 mod profile;
 pub(crate) mod provenance;
 mod recovery;

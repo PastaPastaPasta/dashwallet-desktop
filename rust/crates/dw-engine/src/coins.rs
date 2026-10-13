@@ -275,6 +275,44 @@ pub(crate) struct CoinFences {
 pub(crate) struct TestPause {
     pub(crate) reached: std::sync::atomic::AtomicBool,
     pub(crate) release: tokio::sync::Notify,
+    /// Set by [`Self::hold_then`] once the held work has run.
+    pub(crate) done: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
+impl TestPause {
+    /// Marks the pause reached and blocks until it is released. On a
+    /// blocking-pool thread of the runtime.
+    pub(crate) fn hold(&self) {
+        self.reached
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        tokio::runtime::Handle::current().block_on(self.release.notified());
+    }
+
+    /// [`Self::hold`], then runs `f` and marks the held work done.
+    pub(crate) fn hold_then<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.hold();
+        let done = f();
+        self.done.store(true, std::sync::atomic::Ordering::SeqCst);
+        done
+    }
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    /// Tests: holds the first [`NetworkSession::appdb_op`] job of the task
+    /// in scope before it runs.
+    pub(crate) static HOLD_APPDB_JOB: Arc<TestPause>;
+}
+
+/// Tests: the pause of the first app.sqlite job of a task in the scope of
+/// [`HOLD_APPDB_JOB`], until it is reached.
+#[cfg(test)]
+pub(crate) fn held_appdb_job() -> Option<Arc<TestPause>> {
+    HOLD_APPDB_JOB
+        .try_with(Arc::clone)
+        .ok()
+        .filter(|p| !p.reached.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 impl CoinFences {
@@ -331,7 +369,7 @@ impl CoinFences {
 }
 
 #[cfg(test)]
-async fn pause_at(slot: &std::sync::Mutex<Option<Arc<TestPause>>>) {
+pub(crate) async fn pause_at(slot: &std::sync::Mutex<Option<Arc<TestPause>>>) {
     let pause = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
     if let Some(pause) = pause {
         pause
@@ -525,9 +563,17 @@ impl NetworkSession {
         T: Send + 'static,
     {
         let db = self.live()?.appdb;
-        tokio::task::spawn_blocking(move || f(&db))
-            .await?
-            .map_err(EngineError::from)
+        #[cfg(test)]
+        let pause = held_appdb_job();
+        tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                return pause.hold_then(|| f(&db));
+            }
+            f(&db)
+        })
+        .await?
+        .map_err(EngineError::from)
     }
 
     /// Waits for `wallet_id`'s coin fence (module doc). A holder passes it

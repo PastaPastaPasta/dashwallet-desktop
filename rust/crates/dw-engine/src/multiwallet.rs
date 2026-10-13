@@ -262,6 +262,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            let _lifecycle = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
             if live.store.is_unloaded(&id.0) {
                 return Ok(());
@@ -276,9 +277,9 @@ impl NetworkSession {
             // Its discoveries end first, as for a removal: none may apply
             // what it finds to the wallet once it is loaded again.
             let _discoveries = this.platform.recovery.end_discoveries(id).await;
-            if let Err(e) = live.manager.remove_wallet(&id.0).await {
+            if let Err(e) = this.platform.remove_from_manager(&live.manager, id).await {
                 live.store.set_unloaded(id.0, false);
-                return Err(e.into());
+                return Err(e);
             }
             this.hub.unload_wallet(&id);
             this.spends.forget_wallet(&id);
@@ -301,6 +302,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            let _lifecycle = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
             if !live.store.is_unloaded(&id.0) {
                 return this.require_wallet(&id);
@@ -434,6 +436,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            let held = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
             if live.store.is_unloaded(&id.0) || live.manager.get_wallet(&id.0).await.is_some() {
                 return Err(EngineError::WalletAlreadyExists(id.to_string()));
@@ -443,13 +446,28 @@ impl NetworkSession {
                 standard_account_type: StandardAccountType::BIP44Account,
             };
             let changeset = watch_only_registration(id, account_type, key, network, birth_height)?;
+            // DEC-210: before the first write, as an import of a seed.
+            let readmit = id.to_string();
+            let readmitted = this.appdb_op(move |db| db.readmit_wallet(&readmit)).await?;
             let store = Arc::clone(&live.store);
-            tokio::task::spawn_blocking(move || {
-                store.store(id.0, changeset)?;
-                store.flush(id.0)
+            let refused = crate::keys::registration_refused(this.data_dir());
+            let stored = tokio::task::spawn_blocking(move || {
+                if refused {
+                    return Err("test: registration refused".to_owned());
+                }
+                store
+                    .store(id.0, changeset)
+                    .and_then(|()| store.flush(id.0))
+                    .map_err(|e| e.to_string())
             })
-            .await?
-            .map_err(|e| EngineError::Storage(format!("watch-only registration: {e}")))?;
+            .await?;
+            if let Err(e) = stored {
+                // Not registered: removed again, as a failed seed import.
+                if readmitted {
+                    this.record_removed_again(&held, id).await;
+                }
+                return Err(EngineError::Storage(format!("watch-only registration: {e}")));
+            }
             live.manager.load_from_persistor().await?;
             let wallet = live
                 .manager
