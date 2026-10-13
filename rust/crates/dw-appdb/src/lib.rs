@@ -18,7 +18,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 mod dashpay_journal;
 pub mod dispatch;
@@ -64,22 +64,117 @@ fn lock_path(path: &Path) -> PathBuf {
     lock.into()
 }
 
+/// The lock file, its one name (DEC-210 (3b)): a second name would be a
+/// second lock for the same file.
 fn open_lock_file(path: &Path) -> Result<File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    options.open(path).map_err(|e| lock_error(path, e))
+    dw_fs::open_sole_file(path).map_err(|e| file_error(path, e))
 }
 
-fn lock_error(path: &Path, source: std::io::Error) -> AppDbError {
-    AppDbError::Lock {
+fn file_error(path: &Path, source: std::io::Error) -> AppDbError {
+    AppDbError::File {
         path: path.to_owned(),
         source,
     }
+}
+
+fn refused(path: &Path, what: &str) -> AppDbError {
+    file_error(
+        path,
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, what.to_owned()),
+    )
+}
+
+/// Which file a database or lock file is: (device, inode). `None` where the
+/// platform has no stable id in std (Windows: the gap DEC-210 (3b) accepts
+/// there, with symlinks still refused).
+type FileId = Option<(u64, u64)>;
+
+#[cfg(unix)]
+fn file_id(meta: &std::fs::Metadata) -> FileId {
+    use std::os::unix::fs::MetadataExt;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_id(_: &std::fs::Metadata) -> FileId {
+    None
+}
+
+/// What is at the database's path, not following a final symlink: nothing
+/// yet (SQLite creates it), or the one name of a regular file and its id.
+/// Another name for the database would come with another lock file.
+fn sole_database(path: &Path) -> Result<Option<FileId>> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(file_error(path, e)),
+    };
+    if meta.file_type().is_symlink() {
+        return Err(refused(path, "is a symbolic link"));
+    }
+    if !meta.is_file() {
+        return Err(refused(path, "is not a regular file"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.nlink() != 1 {
+            return Err(refused(path, &format!("has {} hard links", meta.nlink())));
+        }
+    }
+    Ok(Some(file_id(&meta)))
+}
+
+/// `path` with its directory resolved and its file name kept: SQLite's
+/// `SQLITE_OPEN_NOFOLLOW` refuses a symlink anywhere in the name, while
+/// symlinked directories are fine (they lead to the same lock file) and a
+/// final symlink is still refused. The lock file and the database are then
+/// named in one directory.
+#[cfg(unix)]
+fn resolve_directory(path: &Path) -> Result<PathBuf> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| refused(path, "names no file"))?;
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    let dir = dir.canonicalize().map_err(|e| file_error(dir, e))?;
+    Ok(dir.join(name))
+}
+
+/// Elsewhere SQLite follows no symlink checks of its own; the name is kept.
+#[cfg(not(unix))]
+fn resolve_directory(path: &Path) -> Result<PathBuf> {
+    Ok(path.to_owned())
+}
+
+/// SQLite reads a name starting with `file:` as a URI (the bundled build
+/// sets `SQLITE_USE_URI`, whatever the open flags say), which can name the
+/// database another way; such a path is refused.
+fn refuse_uri(path: &Path) -> Result<()> {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    if bytes.len() >= 5 && bytes[..5].eq_ignore_ascii_case(b"file:") {
+        return Err(refused(path, "reads as a SQLite URI"));
+    }
+    Ok(())
+}
+
+/// The lock file is not the database itself: one file with one name at
+/// each path is still possible under two mounts of it.
+fn refuse_same_file(lock_path: &Path, lock: &File, database: FileId) -> Result<()> {
+    let meta = lock.metadata().map_err(|e| file_error(lock_path, e))?;
+    if database.is_some() && file_id(&meta) == database {
+        return Err(refused(lock_path, "is the database itself"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: runs once between the database's check and SQLite's open.
+    static BEFORE_SQLITE_OPEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
@@ -108,9 +203,11 @@ pub enum AppDbError {
     Sqlite(#[from] rusqlite::Error),
     #[error("migration: {0}")]
     Migration(#[from] refinery::Error),
-    /// The database's lock file could not be opened or locked.
-    #[error("lock file {}: {source}", path.display())]
-    Lock {
+    /// The database or its lock file could not be opened or locked, or was
+    /// refused: another name for the file (a symlink, a hard link, a SQLite
+    /// URI) or not a regular file.
+    #[error("{}: {source}", path.display())]
+    File {
         path: PathBuf,
         source: std::io::Error,
     },
@@ -227,8 +324,9 @@ pub struct AppDb {
     /// A shared lock on the database's lock file for as long as this
     /// instance lives, a job still holding it after its session closed
     /// included: while it is held, no open forgets the removed wallets
-    /// (DEC-210). `None` in memory.
-    _alive: Option<File>,
+    /// (DEC-210). With it, the id of the database file the lock is for.
+    /// `None` in memory.
+    _alive: Option<(File, FileId)>,
 }
 
 impl AppDb {
@@ -241,7 +339,14 @@ impl AppDb {
     /// disks, as SQLite's WAL mode does): without lock support the open
     /// fails, and an NFS emulation of `flock` does not keep the removed
     /// wallets of instances in the same process.
+    ///
+    /// The lock file is named after `path`, so the database must have no
+    /// other name that leads to another lock file: a symlink, a second hard
+    /// link or a `file:` URI is refused (DEC-210 (3b)). Symlinked
+    /// directories above it are fine; they lead to the same lock file.
     pub fn open(path: &Path) -> Result<Self> {
+        refuse_uri(path)?;
+        let path = &resolve_directory(path)?;
         let lock_path = lock_path(path);
         // Exclusive, on a handle of its own and before this instance's
         // shared lock: granted only while no instance holds one. Never
@@ -254,7 +359,26 @@ impl AppDb {
                 false
             }
         };
-        let mut db = Self::init(Connection::open(path)?)?;
+        let checked = sole_database(path)?;
+        #[cfg(test)]
+        BEFORE_SQLITE_OPEN.with(|hook| hook.take().map(|f| f()));
+        // No URI and no symlink; the database file itself is never
+        // opened here: closing a descriptor of it would drop SQLite's POSIX
+        // locks on it.
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        // The file SQLite opened is the one checked (or created now).
+        let database = match sole_database(path)? {
+            Some(id) if checked.is_none_or(|before| before == id) => id,
+            _ => return Err(refused(path, "changed while it was opened")),
+        };
+        refuse_same_file(&lock_path, &sole, database)?;
+        let mut db = Self::init(conn)?;
         if alone {
             db.conn().execute("DELETE FROM removed_wallets", [])?;
         }
@@ -265,8 +389,8 @@ impl AppDb {
         // this instance has written nothing yet.
         drop(sole);
         let alive = open_lock_file(&lock_path)?;
-        alive.lock_shared().map_err(|e| lock_error(&lock_path, e))?;
-        db._alive = Some(alive);
+        alive.lock_shared().map_err(|e| file_error(&lock_path, e))?;
+        db._alive = Some((alive, database));
         Ok(db)
     }
 
