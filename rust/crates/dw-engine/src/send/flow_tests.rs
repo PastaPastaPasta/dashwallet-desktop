@@ -1625,7 +1625,7 @@ fn dust_locks_are_applied_only_under_the_fence() {
 }
 
 /// DEC-210, a facade writer: "Lock unspent" held in its app.sqlite job
-/// past the wallet's removal, its task cancelled, leaves no lock.
+/// past the wallet's removal, its caller's task cancelled, leaves no lock.
 #[test]
 fn a_lock_held_past_a_removal_leaves_nothing() {
     use crate::held_writes::{a_write_held_past_the_removal, hold_first_job};

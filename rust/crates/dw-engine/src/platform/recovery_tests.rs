@@ -2428,6 +2428,14 @@ fn the_tap_writing_during_a_removal_neither_blocks_nor_deadlocks() {
     let stop = AtomicBool::new(false);
     let stored = AtomicU32::new(0);
     std::thread::scope(|scope| {
+        // Stops the tap however the scope ends: its join waits for it.
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let _stop = Stop(&stop);
         let tap = scope.spawn(|| {
             for sender in (1..=u8::MAX).cycle() {
                 if stop.load(Ordering::SeqCst) {

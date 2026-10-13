@@ -40,8 +40,9 @@ fn wait_until(what: &str, done: impl Fn() -> bool) {
     }
 }
 
-/// With a write held at `pause` in its app.sqlite job (its task, if any,
-/// cancelled): the removal of wallet `id` with the `wipe` grant returns
+/// With a write held at `pause` in its app.sqlite job (the test's task
+/// awaiting it, if any, cancelled; a task `on_runtime` spawned for it runs
+/// on): the removal of wallet `id` with the `wipe` grant returns
 /// while the write is held, and the write, run after it, leaves nothing
 /// (`nothing` reads the wallet's rows of that write).
 pub(crate) fn a_write_held_past_the_removal(
