@@ -2,10 +2,10 @@
 //! hooks (G-02's U5/U6 measurements) and the refusal probe. Only the
 //! self-test's `history_page_timed` and `selftest_unlock` reach a facade.
 
+use std::time::Instant;
+
 use dw_vault::UnlockScope;
 use zeroize::Zeroizing;
-
-use std::time::Instant;
 
 use crate::bridge::RecentNotice;
 use crate::dto::history::{
