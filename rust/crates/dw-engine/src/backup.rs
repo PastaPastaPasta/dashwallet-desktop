@@ -573,7 +573,7 @@ impl NetworkSession {
         // Registration and rollback under one admission and the lifecycle
         // lock (DEC-210 (3b)), taken in that order.
         let _op = self.enter().await?;
-        let held = self.lifecycle.hold().await;
+        let held = self.wallet_lifecycle.hold().await;
         // What this call registered, for the rollback (review L3): the id
         // and whether the wallet was new (not keys attached to a watch-only
         // wallet that was there before).

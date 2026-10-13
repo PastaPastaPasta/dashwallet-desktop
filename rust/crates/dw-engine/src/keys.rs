@@ -455,7 +455,7 @@ impl NetworkSession {
             // PBKDF2 stays off the async workers, and before the lifecycle
             // lock.
             let secret = tokio::task::spawn_blocking(make_secret).await??;
-            let held = this.lifecycle.hold().await;
+            let held = this.wallet_lifecycle.hold().await;
             this.import_secret_locked(&held, checked, secret, auto_backup, origin)
                 .await
         })

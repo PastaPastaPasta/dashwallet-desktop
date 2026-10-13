@@ -262,7 +262,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let _lifecycle = this.lifecycle.hold().await;
+            let _lifecycle = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
             if live.store.is_unloaded(&id.0) {
                 return Ok(());
@@ -302,7 +302,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let _lifecycle = this.lifecycle.hold().await;
+            let _lifecycle = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
             if !live.store.is_unloaded(&id.0) {
                 return this.require_wallet(&id);
@@ -436,7 +436,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let held = this.lifecycle.hold().await;
+            let held = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
             if live.store.is_unloaded(&id.0) || live.manager.get_wallet(&id.0).await.is_some() {
                 return Err(EngineError::WalletAlreadyExists(id.to_string()));

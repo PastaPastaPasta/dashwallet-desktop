@@ -1583,7 +1583,7 @@ fn a_restore_rollback_admits_no_discovery_until_it_is_done() {
         let payment = engine.block_on(wallet.generation().payment_guard());
         let rollback = scope.spawn(|| {
             engine.block_on(async {
-                let held = s.lifecycle.hold().await;
+                let held = s.wallet_lifecycle.hold().await;
                 s.roll_back_restore(&held, &[(id, true)]).await
             })
         });
@@ -2529,6 +2529,8 @@ fn a_removal_outlives_a_reopen(dir: &std::path::Path) {
     engine
         .block_on(engine.close_network(DashNetwork::Regtest))
         .unwrap();
+    // `old` is the only instance left.
+    assert_eq!(Arc::strong_count(&old), 1);
 
     let s = open_offline(&engine);
     let wallet = id.to_string();
@@ -2561,6 +2563,32 @@ fn a_removal_outlives_a_reopen_in_a_directory_that_is_not_utf8() {
     a_removal_outlives_a_reopen(&root);
 }
 
+/// Whether no instance of the app database at `path` is open.
+fn lock_is_free(path: &std::path::Path) -> bool {
+    let lock = path.with_file_name(dw_appdb::APP_DB_LOCK_FILE);
+    std::fs::File::open(lock).unwrap().try_lock().is_ok()
+}
+
+/// A network closed and opened again with nothing of the closed session
+/// left forgets the wallets it removed (DEC-210 (3b)).
+#[test]
+fn a_clean_reopen_forgets_the_removed_wallets() {
+    let (_dir, engine, s, id, wipe) = removable();
+    engine.block_on(s.remove_wallet(id, wipe)).unwrap();
+    let path = s.data_dir().join(dw_appdb::APP_DB_FILE);
+    drop(s);
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    assert!(lock_is_free(&path), "an instance of this process is left");
+
+    let s = open_offline(&engine);
+    let (db, wallet) = (s.live().unwrap().appdb, id.to_string());
+    db.set_main_identity(&wallet, &base58(ALICE)).unwrap();
+    assert_eq!(db.main_identity(&wallet).unwrap(), Some(base58(ALICE)));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// A session opened while another process has the network's app database
 /// open, after it removed a wallet, keeps that wallet recorded: the other
 /// process's late write of it is skipped (DEC-210 (3b)).
@@ -2573,6 +2601,7 @@ fn an_open_keeps_a_removal_by_another_process_with_the_database_open() {
     engine
         .block_on(engine.close_network(DashNetwork::Regtest))
         .unwrap();
+    assert!(lock_is_free(&path), "an instance of this process is left");
     let wallet = "ee".repeat(32);
     let other = crate::held_writes::OtherProcess::start(&path, &wallet);
 
@@ -2595,7 +2624,7 @@ fn an_import_during_a_removal_of_the_same_wallet_waits_for_it() {
     let manager = s.manager().unwrap();
 
     let session = Arc::clone(&s);
-    let mut import = s.rt.spawn(async move {
+    let import = s.rt.spawn(async move {
         session
             .import_wallet(
                 Zeroizing::new(ABANDON_12.to_vec()),
@@ -2604,10 +2633,10 @@ fn an_import_during_a_removal_of_the_same_wallet_waits_for_it() {
             )
             .await
     });
-    let waited =
-        engine.block_on(async { tokio::time::timeout(Duration::from_secs(3), &mut import).await });
-    assert!(waited.is_err(), "the import ran during the removal");
-    assert!(s.lifecycle.is_held());
+    wait_until("the import at the lifecycle lock", || {
+        import.is_finished() || s.wallet_lifecycle.waiting() == 1
+    });
+    assert!(!import.is_finished(), "the import ran during the removal");
     pause.release.notify_one();
     engine.block_on(removal).unwrap();
     assert_eq!(engine.block_on(import).unwrap().unwrap(), id);
@@ -2685,7 +2714,9 @@ fn the_other_lifecycle_operations_wait_for_a_held_removal() {
             }),
         ),
     ];
-    engine.block_on(async { tokio::time::sleep(Duration::from_secs(3)).await });
+    wait_until("all four at the lifecycle lock", || {
+        waiting.iter().any(|(_, task)| task.is_finished()) || s.wallet_lifecycle.waiting() == 4
+    });
     for (what, task) in &waiting {
         assert!(!task.is_finished(), "{what} ran during the removal");
     }

@@ -2150,11 +2150,12 @@ renames or reshapes them takes the next version bump:
       the wallet records it again), or until an open of the network's `app.sqlite` while no other instance of it is
       open, in this process or another (DEC-210 (3b)). Each open instance holds a shared lock on `app.sqlite.lock`
       for its whole life, a job a closed session left running included; an open forgets the record only if an
-      exclusive lock on that file is granted at once, and otherwise keeps it. Imports, restores and their rollback,
-      removals, and the open and close of a wallet run one at a time per network (the engine's lifecycle lock, taken
-      after the operation's admission and before the wallet's barrier, discoveries and private-details fence), so a
-      wallet is recorded as removed exactly when it is not registered, and two imports of the same seed run one after
-      the other. `.dwbackup` never carries the record (dwbackup-v1 §2.3). **Residuals (accepted, DEC-210 (5) and
+      exclusive lock on that file is granted at once, and otherwise keeps it (local file systems; an NFS emulation of
+      the lock does not keep the instances of one process apart). Imports, restores and their rollback, removals, and
+      the open and close of a wallet run one at a time per network within a process (the engine's wallet lifecycle
+      lock, taken after the operation's admission and before the wallet's barrier, discoveries and private-details
+      fence), so a wallet is never recorded as removed while it is registered, and two imports of the same seed run
+      one after the other. `.dwbackup` never carries the record (dwbackup-v1 §2.3). **Residuals (accepted, DEC-210 (5) and
       (3b)):** a write of the removed wallet still under way when the same wallet is imported again lands among the
       new import's rows; an insert that is skipped shows in the log only as "no rows" (`raise_setting`) or as a held
       index (`adopt_registration_lock`).

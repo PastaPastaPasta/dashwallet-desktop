@@ -10,7 +10,7 @@ use dash_sdk::dapi_grpc::tonic::transport::{Certificate, ClientTlsConfig, Endpoi
 use dash_sdk::sdk::AddressList;
 use dash_spv::{ClientConfig, DevnetConfig};
 use dpp::version::PlatformVersion;
-use dw_appdb::{APP_DB_FILE, AppDb};
+use dw_appdb::{APP_DB_FILE, APP_DB_LOCK_FILE, AppDb};
 use dw_vault::{VAULT_DIR, Vault, VaultConfig};
 use key_wallet::wallet::balance::WalletCoreBalance;
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
@@ -179,7 +179,7 @@ pub struct NetworkSession {
     /// Admission of operations vs close (review M1).
     gate: OpGate,
     /// Wallet registrations and removals, one at a time (DEC-210 (3b)).
-    pub(crate) lifecycle: crate::gate::WalletLifecycle,
+    pub(crate) wallet_lifecycle: crate::gate::WalletLifecycle,
     live: RwLock<Option<Live>>,
     pump: Mutex<Option<PumpTask>>,
     /// Inputs of prepared, not yet settled transactions (E2 send).
@@ -245,6 +245,7 @@ impl NetworkSession {
 
         let appdb_path = data_dir.join(APP_DB_FILE);
         create_owned_file(&data_dir, Path::new(APP_DB_FILE))?;
+        create_owned_file(&data_dir, Path::new(APP_DB_LOCK_FILE))?;
         let (appdb, names) = tokio::task::spawn_blocking(move || {
             let db = AppDb::open(&appdb_path)?;
             let names = db.wallets()?;
@@ -429,7 +430,7 @@ impl NetworkSession {
             spv_peers,
             hub,
             gate: OpGate::default(),
-            lifecycle: Default::default(),
+            wallet_lifecycle: Default::default(),
             live: RwLock::new(Some(Live {
                 manager: Arc::clone(&manager),
                 persister,

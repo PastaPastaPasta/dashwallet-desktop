@@ -995,7 +995,7 @@ fn the_lock_file_is_next_to_the_database() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     let _db = AppDb::open(&path).unwrap();
-    let lock = dir.path().join("app.sqlite.lock");
+    let lock = dir.path().join(crate::APP_DB_LOCK_FILE);
     assert_eq!(crate::lock_path(&path), lock);
     let meta = std::fs::metadata(&lock).unwrap();
     assert!(meta.is_file());

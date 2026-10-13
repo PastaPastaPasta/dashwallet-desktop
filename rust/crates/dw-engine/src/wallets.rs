@@ -217,7 +217,7 @@ impl NetworkSession {
             let _op = this.enter().await?;
             // Before its wallet check: an import of the wallet runs wholly
             // before or after the removal (DEC-210 (3b)).
-            let _lifecycle = this.lifecycle.hold().await;
+            let _lifecycle = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
             this.require_wallet(&id)?;
             if this.vault.has_wallet_secret(&id.0) {

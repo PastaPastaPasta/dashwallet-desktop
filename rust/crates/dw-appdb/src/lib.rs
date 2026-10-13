@@ -42,6 +42,9 @@ mod migration_tests;
 /// File name of the metadata database inside a network directory.
 pub const APP_DB_FILE: &str = "app.sqlite";
 
+/// File name of its lock file ([`AppDb::open`]), next to it.
+pub const APP_DB_LOCK_FILE: &str = "app.sqlite.lock";
+
 /// Settings scope for network-wide values (`settings_kv.scope`).
 pub const GLOBAL_SCOPE: &str = "";
 
@@ -53,20 +56,27 @@ pub fn local_scope(wallet_id: &str) -> String {
     format!("local:{wallet_id}")
 }
 
-/// The lock file next to the database at `path` (`app.sqlite.lock`), never
-/// the database itself, whose bytes SQLite locks by range.
+/// The lock file next to the database at `path` (`<file>.lock`), never the
+/// database itself, whose bytes SQLite locks by range.
 fn lock_path(path: &Path) -> PathBuf {
     let mut lock = OsString::from(path.as_os_str());
     lock.push(".lock");
     lock.into()
 }
 
-fn open_lock_file(path: &Path) -> std::io::Result<File> {
+fn open_lock_file(path: &Path) -> Result<File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(path)
+    options.open(path).map_err(|e| lock_error(path, e))
+}
+
+fn lock_error(path: &Path, source: std::io::Error) -> AppDbError {
+    AppDbError::Lock {
+        path: path.to_owned(),
+        source,
+    }
 }
 
 /// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
@@ -96,8 +106,11 @@ pub enum AppDbError {
     #[error("migration: {0}")]
     Migration(#[from] refinery::Error),
     /// The database's lock file could not be opened or locked.
-    #[error("lock file: {0}")]
-    Lock(#[from] std::io::Error),
+    #[error("lock file {}: {source}", path.display())]
+    Lock {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// A value read from the database is outside its schema domain.
     #[error("corrupt row: {0}")]
     Corrupt(String),
@@ -220,6 +233,11 @@ impl AppDb {
     /// migrations. When no other instance of the file is open, in this
     /// process or another, it forgets the removed wallets: no write of
     /// theirs can still be running (DEC-210).
+    ///
+    /// Needs a file system whose advisory locks work per open file (local
+    /// disks, as SQLite's WAL mode does): without lock support the open
+    /// fails, and an NFS emulation of `flock` does not keep the removed
+    /// wallets of instances in the same process.
     pub fn open(path: &Path) -> Result<Self> {
         let lock_path = lock_path(path);
         // Exclusive, on a handle of its own and before this instance's
@@ -240,9 +258,14 @@ impl AppDb {
         } else {
             tracing::debug!("app database open elsewhere: the removed wallets stay recorded");
         }
+        // Released before the shared lock is taken, on a handle of its own:
+        // a shared lock of a second handle would wait for this one (on
+        // Windows, and with `flock` the conversion is not atomic either).
+        // An open in the gap may forget the removals again, which is safe:
+        // this instance has written nothing yet.
         drop(sole);
         let alive = open_lock_file(&lock_path)?;
-        alive.lock_shared()?;
+        alive.lock_shared().map_err(|e| lock_error(&lock_path, e))?;
         db._alive = Some(alive);
         Ok(db)
     }
