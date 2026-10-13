@@ -896,8 +896,8 @@ impl ChangesetTap {
 
         if !entries.is_empty() {
             // Checked with app.sqlite held: a removal's `forget` comes
-            // after its rows are gone and before a readmission, so a write
-            // that loses to it writes nothing.
+            // after its delete (done or failed) and before a readmission, so
+            // a write that loses to it writes nothing.
             let admit = || self.epoch(id) == epoch;
             let write = || (self.appdb).record_events_if(&wallet, &entries, now, admit);
             #[cfg(test)]

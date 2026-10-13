@@ -957,6 +957,98 @@ fn an_open_with_no_other_instance_forgets_the_removed_wallets() {
     assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "n".into())]);
 }
 
+/// Makes every delete of a `wallets` row fail, or stops doing so.
+fn fail_wallet_deletes(db: &AppDb, fail: bool) {
+    db.conn()
+        .execute_batch(if fail {
+            "CREATE TRIGGER fail_delete BEFORE DELETE ON wallets \
+             BEGIN SELECT RAISE(FAIL, 'injected delete failure'); END;"
+        } else {
+            "DROP TRIGGER fail_delete;"
+        })
+        .unwrap();
+}
+
+/// A removal whose row delete fails still records the wallet as removed, so
+/// its rows are not written; its readmission deletes the rows the removal
+/// left before it lets the wallet in, or fails and keeps the record.
+#[test]
+fn a_readmission_finishes_a_removal_that_failed_part_way() {
+    let db = AppDb::open_in_memory().unwrap();
+    db.set_wallet_name(W, "old", 1).unwrap();
+    db.set_wallet_name(W2, "other", 1).unwrap();
+    fail_wallet_deletes(&db, true);
+    assert!(db.delete_wallet(W).is_err());
+    assert_eq!(recorded(&db), [W]);
+    assert_eq!(insert_any_row(&db.conn(), "labels", W), 0);
+
+    assert!(matches!(
+        db.readmit_wallet(W),
+        Err(crate::AppDbError::RemovalUnfinished { wallet, .. }) if wallet == W
+    ));
+    assert_eq!(recorded(&db), [W]);
+    assert_eq!(db.wallet_names().unwrap().len(), 2);
+
+    fail_wallet_deletes(&db, false);
+    assert!(db.readmit_wallet(W).unwrap());
+    assert!(recorded(&db).is_empty());
+    assert_eq!(
+        db.wallet_names().unwrap(),
+        vec![(W2.into(), "other".into())]
+    );
+}
+
+/// A removal that could not even record the wallet is remembered by the
+/// instance: its readmission deletes the rows it left. A readmission of a
+/// wallet never removed deletes nothing.
+#[test]
+fn a_readmission_finishes_a_removal_that_could_not_record_the_wallet() {
+    let db = AppDb::open_in_memory().unwrap();
+    db.set_wallet_name(W, "old", 1).unwrap();
+    db.set_wallet_name(W2, "other", 1).unwrap();
+    db.conn()
+        .execute_batch(
+            "CREATE TRIGGER fail_record BEFORE INSERT ON removed_wallets \
+             BEGIN SELECT RAISE(FAIL, 'injected record failure'); END;",
+        )
+        .unwrap();
+    assert!(db.delete_wallet(W).is_err());
+    assert!(recorded(&db).is_empty());
+    assert_eq!(db.wallet_names().unwrap().len(), 2);
+
+    assert!(!db.readmit_wallet(W2).unwrap());
+    assert!(db.readmit_wallet(W).unwrap());
+    assert!(!db.readmit_wallet(W).unwrap());
+    assert_eq!(
+        db.wallet_names().unwrap(),
+        vec![(W2.into(), "other".into())]
+    );
+}
+
+/// An open with no other instance alive deletes the rows a removal that
+/// failed part-way left before it forgets the record; while they cannot be
+/// deleted it keeps the record.
+#[test]
+fn an_open_with_no_other_instance_finishes_a_removal_that_failed_part_way() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(crate::APP_DB_FILE);
+    let db = AppDb::open(&path).unwrap();
+    db.set_wallet_name(W, "old", 1).unwrap();
+    fail_wallet_deletes(&db, true);
+    assert!(db.delete_wallet(W).is_err());
+    drop(db);
+
+    let db = AppDb::open(&path).unwrap();
+    assert_eq!(recorded(&db), [W]);
+    assert_eq!(db.wallet_names().unwrap().len(), 1);
+    fail_wallet_deletes(&db, false);
+    drop(db);
+
+    let db = AppDb::open(&path).unwrap();
+    assert!(recorded(&db).is_empty());
+    assert!(db.wallet_names().unwrap().is_empty());
+}
+
 /// While another instance of the file at `path` is open in this process (a
 /// job a closed session left running holds one), an open, at `path` or at
 /// `alias`, keeps the removed wallets recorded and a late write through the

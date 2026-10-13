@@ -516,6 +516,88 @@ fn a_journal_write_held_across_a_removal_and_reimport_writes_nothing() {
     a_store_held_across_a_removal_and_reimport_journals_nothing(|tap| &tap.pause_journal);
 }
 
+/// Sol r3 finding 1: a removal whose app.sqlite delete fails (`fail`, a
+/// trigger named `fail_delete`), after the wallet left the manager, still
+/// fences a journal write begun before it. An import of the wallet deletes
+/// the rows the removal left, or is refused while it cannot
+/// (`refused_first`), so the reimported wallet gets neither those rows nor
+/// the late write.
+fn a_failed_removal_leaves_nothing_to_a_reimport(fail: &str, refused_first: bool) {
+    let dir = dw_testutil::private_tempdir();
+    let dest = dir.path().join("me.dwbackup");
+    let f = Fixture::new(true);
+    f.give_me();
+    (f.engine)
+        .block_on(f.s.backup_wallet(f.wallet, dest.clone(), backup_pw()))
+        .unwrap();
+    // A row the backup does not have, for the delete to fail on.
+    f.dave_asks();
+    let live = f.s.live().unwrap();
+    let pause = Arc::new(TestPause::default());
+    *live.tap.pause_journal.lock().unwrap() = Some(Arc::clone(&pause));
+    let _release = ReleaseOnDrop(Arc::clone(&pause));
+    let (store, rt, wallet) = (Arc::clone(&live.store), f.s.rt.clone(), f.wallet);
+    let writer = std::thread::spawn(move || {
+        let _rt = rt.enter();
+        let cs = contacts(incoming(ME, 3, NEW_MS));
+        platform_wallet::changeset::PlatformWalletPersistence::store(&*store, wallet.0, cs)
+            .unwrap();
+    });
+    wait_for("the held store", || pause.reached.load(Ordering::SeqCst));
+    let sqlite = rusqlite::Connection::open(f.s.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    sqlite.execute_batch(fail).unwrap();
+    assert!(f.engine.block_on(f.removing()).unwrap().is_err());
+    if refused_first {
+        let refused = (f.engine).block_on(f.s.restore_backup(dest.clone(), backup_pw()));
+        assert!(
+            matches!(&refused, Err(crate::EngineError::Storage(m)) if m.contains("could not be finished")),
+            "{refused:?}"
+        );
+    }
+    sqlite.execute_batch("DROP TRIGGER fail_delete;").unwrap();
+    f.reimport(&dest);
+    let news = f.news().len();
+    pause.release.notify_one();
+    writer.join().unwrap();
+    let rows = (live.appdb)
+        .journal_page(&f.wallet.to_string(), &b58(ME), None, 10, &[])
+        .unwrap()
+        .rows;
+    assert!(
+        rows.is_empty(),
+        "a row of the removed wallet landed: {rows:?}"
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(f.news().len(), news, "{:?}", f.news());
+}
+
+/// The delete of the wallet's journal rows fails.
+const FAIL_ROW_DELETE: &str = "CREATE TRIGGER fail_delete BEFORE DELETE ON dp_events \
+     BEGIN SELECT RAISE(FAIL, 'injected delete failure'); END;";
+
+/// ... the import finishes the removal.
+#[test]
+fn a_failed_removal_is_finished_by_the_reimport() {
+    a_failed_removal_leaves_nothing_to_a_reimport(FAIL_ROW_DELETE, false);
+}
+
+/// ... an import while the delete still fails is refused.
+#[test]
+fn a_reimport_is_refused_while_a_failed_removal_cannot_finish() {
+    a_failed_removal_leaves_nothing_to_a_reimport(FAIL_ROW_DELETE, true);
+}
+
+/// ... the removal could not even record the wallet as removed (Opus
+/// review of fix round 3): the import still finishes it.
+#[test]
+fn a_removal_that_could_not_record_the_wallet_is_finished_by_the_reimport() {
+    a_failed_removal_leaves_nothing_to_a_reimport(
+        "CREATE TRIGGER fail_delete BEFORE INSERT ON removed_wallets \
+         BEGIN SELECT RAISE(FAIL, 'injected record failure'); END;",
+        false,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Live
 // ---------------------------------------------------------------------------
