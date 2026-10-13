@@ -1531,6 +1531,63 @@ fn a_removed_wallets_news_and_counts_are_dropped() {
     assert!(h.journal().is_empty());
 }
 
+/// A queued count across `forget`.
+fn a_held_count(h: &Harness, between: impl FnOnce()) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *h.tap.pause_count.lock().unwrap() = Some(Arc::clone(&pause));
+    h.tap.load_unread(W, rt.handle());
+    assert_eq!(h.unread(), Some(0), "the stand-in");
+    while !pause.reached.load(std::sync::atomic::Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    between();
+    pause.release.notify_one();
+    while !pause.done.load(std::sync::atomic::Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    rt.shutdown_timeout(Duration::from_secs(5));
+}
+
+/// Sol r1 finding 4: a first count queued before the wallet's removal and
+/// run after its `forget` puts nothing back, though the rows it counts are
+/// still there.
+#[test]
+fn a_count_queued_across_a_removal_puts_nothing_back() {
+    let h = Harness::new();
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    h.tap.forget(&W);
+    a_held_count(&h, || h.tap.forget(&W));
+    assert_eq!(h.unread(), None);
+}
+
+/// ... and when it fails, it leaves the count of the wallet as it is now
+/// alone; at its own epoch it takes its stand-in out, for a retry.
+#[test]
+fn a_failed_count_clears_only_its_own_stand_in() {
+    let h = Harness::new();
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    h.tap.forget(&W);
+    let fail = || {
+        h.tap
+            .fail_count
+            .store(true, std::sync::atomic::Ordering::SeqCst)
+    };
+    a_held_count(&h, || {
+        h.tap.forget(&W);
+        assert!(h.tap.unread_moved(W), "a later generation's count");
+        fail();
+    });
+    assert_eq!(h.unread(), Some(1));
+
+    h.tap.forget(&W);
+    a_held_count(&h, fail);
+    assert_eq!(h.unread(), None, "retried by the next call");
+}
+
 /// A write begun before the wallet's removal that lands after the
 /// removal's `forget` makes no news and leaves no count (the tombstone
 /// stops writes that begin later).

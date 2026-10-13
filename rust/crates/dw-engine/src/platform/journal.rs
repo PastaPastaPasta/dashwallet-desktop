@@ -418,6 +418,12 @@ pub(crate) struct ChangesetTap {
     /// Tests: holds the next journal write before it runs.
     #[cfg(test)]
     pub(crate) pause_journal: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next count scheduled off the caller's thread.
+    #[cfg(test)]
+    pub(crate) pause_count: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: counts fail while set.
+    #[cfg(test)]
+    pub(crate) fail_count: std::sync::atomic::AtomicBool,
 }
 
 impl ChangesetTap {
@@ -434,6 +440,10 @@ impl ChangesetTap {
             epochs: Mutex::new(HashMap::new()),
             #[cfg(test)]
             pause_journal: Mutex::new(None),
+            #[cfg(test)]
+            pause_count: Mutex::new(None),
+            #[cfg(test)]
+            fail_count: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -595,6 +605,12 @@ impl ChangesetTap {
         epoch: u64,
     ) -> dw_appdb::Result<BTreeSet<String>> {
         let _order = guard(&self.refreshing);
+        #[cfg(test)]
+        if self.fail_count.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(dw_appdb::AppDbError::Corrupt(
+                "test: the count fails".into(),
+            ));
+        }
         let counts: HashMap<String, u32> = (self.appdb.unread_counts(&id.to_string())?)
             .into_iter()
             .collect();
@@ -616,21 +632,44 @@ impl ChangesetTap {
     /// count is not 0 signals `Platform{Events}` (until then `unread_count`
     /// answers 0). Started once per wallet: an empty count stands in until
     /// it lands, and goes again if the count fails, for the next call to
-    /// retry.
+    /// retry. Both for the wallet as it is now: after a `forget` the count
+    /// puts nothing back and its failure clears nothing.
     pub(crate) fn load_unread(self: &Arc<Self>, id: WalletId, rt: &tokio::runtime::Handle) {
-        let mut first = false;
-        guard(&self.unread).entry(id).or_insert_with(|| {
-            first = true;
-            HashMap::new()
-        });
-        if first {
-            let tap = Arc::clone(self);
-            rt.spawn_blocking(move || {
-                if !tap.unread_moved(id) {
+        let epoch = {
+            let epochs = guard(&self.epochs);
+            let mut first = false;
+            guard(&self.unread).entry(id).or_insert_with(|| {
+                first = true;
+                HashMap::new()
+            });
+            first.then(|| epochs.get(&id).copied().unwrap_or_default())
+        };
+        if let Some(epoch) = epoch {
+            self.count_later(id, epoch, rt);
+        }
+    }
+
+    /// [`Self::unread_moved_since`] `epoch` on the blocking pool; a failed
+    /// count takes out the stand-in [`Self::load_unread`] left, if the
+    /// wallet is still at `epoch`.
+    fn count_later(self: &Arc<Self>, id: WalletId, epoch: u64, rt: &tokio::runtime::Handle) {
+        let tap = Arc::clone(self);
+        #[cfg(test)]
+        let pause = guard(&self.pause_count).take();
+        rt.spawn_blocking(move || {
+            let count = || tap.unread_moved_since(id, epoch);
+            #[cfg(test)]
+            let count = || match pause {
+                Some(pause) => pause.hold_then(count),
+                None => count(),
+            };
+            if !count() {
+                let epochs = guard(&tap.epochs);
+                if epochs.get(&id).copied().unwrap_or_default() == epoch {
                     guard(&tap.unread).remove(&id);
                 }
-            });
-        }
+            }
+        });
     }
 
     /// [`Self::refresh_unread`] now, signalling `Platform{Events}` for each
@@ -940,8 +979,12 @@ impl NetworkSession {
     /// awaited, so the bring-up's budget never waits for the bell.
     pub(super) async fn note_first_bring_up(&self, id: WalletId) {
         self.with_tap(move |tap| tap.note_first_bring_up(id)).await;
+        // Detached, for the wallet as it is now; a failure keeps the
+        // counts it has.
         if let Ok(live) = self.live() {
-            self.rt.spawn_blocking(move || live.tap.unread_moved(id));
+            let (tap, epoch) = (Arc::clone(&live.tap), live.tap.epoch(id));
+            self.rt
+                .spawn_blocking(move || tap.unread_moved_since(id, epoch));
         }
     }
 
