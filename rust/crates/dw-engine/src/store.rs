@@ -97,6 +97,9 @@ impl PlatformWalletPersistence for WalletStore {
         wallet_id: RawWalletId,
         changeset: PlatformWalletChangeSet,
     ) -> Result<(), PersistenceError> {
+        // The wallet as the call began: a removal (and a reimport) that
+        // overtakes the record below leaves it unjournaled.
+        let epoch = self.tap.epoch(WalletId(wallet_id));
         // Classified before the persister takes it, recorded once it has;
         // a funding call's own locks are recorded before (§2a.6).
         let classified = classify(&changeset);
@@ -109,8 +112,9 @@ impl PlatformWalletPersistence for WalletStore {
             self.tap.core_changed(WalletId(wallet_id));
         }
         if let Some(classified) = classified {
-            self.tap
-                .record(WalletId(wallet_id), classified, self.inner.as_ref());
+            #[cfg(test)]
+            self.tap.hold_record();
+            (self.tap).record(WalletId(wallet_id), epoch, classified, self.inner.as_ref());
         }
         Ok(())
     }

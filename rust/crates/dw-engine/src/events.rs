@@ -114,6 +114,20 @@ pub enum EngineEvent {
         wallet_id: WalletId,
         change: PlatformChange,
     },
+    /// DashPay news for the OS notifier (DP2-05): journal rows of the
+    /// identity that this session added unread and that notify: never
+    /// catch-up, our own accept or name, or a payment (the
+    /// `NewTransactions` notice covers it). On the `Platform` clock (≤ 4 Hz, trailing edge kept),
+    /// at most [`crate::platform::MAX_NEWS`] per event in arrival order,
+    /// `more` counting the rest. Public data only: ids, kinds, a label, a
+    /// request time or a txid; no alias, note or amount.
+    DashPayNews {
+        network: DashNetwork,
+        wallet_id: WalletId,
+        identity: String,
+        events: Vec<crate::platform::DashPayEvent>,
+        more: u32,
+    },
     /// E0-04 §16.7, engine-side until E0-13: a lease's view changed.
     LeaseChanged {
         network: DashNetwork,
@@ -138,6 +152,7 @@ impl EngineEvent {
     pub fn engine_side(&self) -> bool {
         match self {
             Self::Platform { .. }
+            | Self::DashPayNews { .. }
             | Self::LeaseChanged { .. }
             | Self::LockProgress { .. }
             | Self::DispatchResolved { .. } => true,
@@ -164,6 +179,8 @@ pub enum PlatformChange {
     Payments { identity: String },
     /// The DPNS name states (the username marketplace).
     Names,
+    /// The identity's notifications feed or unread count (DP2-05).
+    Events { identity: String },
 }
 
 /// Non-fatal conditions the UI may surface.
@@ -812,13 +829,28 @@ impl PumpTarget for SessionPump {
         }
     }
 
-    fn flush_platform(&self, changes: BTreeMap<WalletId, BTreeSet<PlatformChange>>) {
+    fn flush_platform(
+        &self,
+        changes: BTreeMap<WalletId, BTreeSet<PlatformChange>>,
+        news: crate::pump::NewsBatch,
+    ) {
         for (wallet_id, set) in changes {
             for change in set {
                 self.hub.emit(EngineEvent::Platform {
                     network: self.hub.network.clone(),
                     wallet_id,
                     change,
+                });
+            }
+        }
+        for (wallet_id, identities) in news {
+            for (identity, n) in identities {
+                self.hub.emit(EngineEvent::DashPayNews {
+                    network: self.hub.network.clone(),
+                    wallet_id,
+                    identity,
+                    events: n.events,
+                    more: n.more,
                 });
             }
         }

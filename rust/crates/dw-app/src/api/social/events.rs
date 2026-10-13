@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::contacts::ContactSummaryInfo;
-use crate::dto::mirror_enum;
+use crate::dto::platform::MAX_ID_BYTES;
+use crate::dto::{cap_text, mirror_enum};
 
 /// The journal kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -39,6 +40,18 @@ pub struct DashPayEventInfo {
     pub reference: Option<String>,
     pub at: u64,
     pub read_at: Option<u64>,
+}
+
+impl DashPayEventInfo {
+    /// With its texts cut to the bridge's id bound (`dashPayNews`).
+    pub(crate) fn capped(self) -> Self {
+        let cap = |t: Option<String>| t.map(|t| cap_text(t, MAX_ID_BYTES));
+        Self {
+            contact: cap(self.contact),
+            reference: cap(self.reference),
+            ..self
+        }
+    }
 }
 
 impl From<DashPayEvent> for DashPayEventInfo {

@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 16
+Contract-Version: 17
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -55,7 +55,7 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
 DP1-01's `keys_policy.rs`, E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, and DP2-04's private details `private_details.rs` with `private_details_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, DP2-04's private details `private_details.rs` with `private_details_tests.rs`, and DP2-05's bell session tests `notifications_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -83,7 +83,7 @@ type is `pub(crate)`.
 | Ids | Wallet: `WalletId` (the facade is bound to one wallet). Identities and contacts: Base58 `String`. Txids: lower-case hex. Drafts, candidates, scans, faucet keys, invitation links, activity cursors: opaque `String` ids the engine issued, each 1–64 characters of `[0-9a-z_-]` (`dwcli dashpay session` checks them by that form), as is the `<id>` of a funding step id (`registration/<id>/funding`, `topup/<id>/funding`). |
 | Amounts | Duffs and credits are `u64`; the field name or doc says which. |
 | Every call returns `Result` | Including the in-memory reads DASHPAY §3.6 sketched without one (`status`, `identities`, `contacts`, …) and `check_username`. A stub has to return `platform.not_implemented`, and the finished reads need `network_not_open` and `wallet_not_found`. |
-| Sync and async | A sync call reads in-memory state only (m1 rule 3): no SQLite on the caller's thread. An async call touches the network or persistence; once implemented it runs on the engine runtime (`NetworkSession::on_runtime`), so any executor may poll it. The sync reads are served from caches their owners keep in the session's Platform runtime, filled at bring-up and refreshed on each `Platform` signal: the status snapshot (`status`, `sync_status`; E0-05), the identity list with the main identity (`identities`, `profile`; DP1-05), the contacts read model (`contacts`, `contact`, `pending_setup_count`, `frequent_contacts`, `my_user_link`; DP2-01), the payment locks (`payment_lock`; DP3-01), the unread counts (`unread_count`; DP2-05) and the static tables (`profile_limits`, `cost_table`, `avatar_upload_available`). The contacts read model (DP2-01) reads the library's memory on each call instead, under a non-blocking read lock, and keeps the result as a snapshot that answers only while a writer holds that lock (§2.4). Paged or unbounded reads (`events`, `registrations`) are async. |
+| Sync and async | A sync call reads in-memory state only (m1 rule 3): no SQLite on the caller's thread. An async call touches the network or persistence; once implemented it runs on the engine runtime (`NetworkSession::on_runtime`), so any executor may poll it. The sync reads are served from caches their owners keep in the session's Platform runtime, filled at bring-up and refreshed on each `Platform` signal: the status snapshot (`status`, `sync_status`; E0-05), the identity list with the main identity (`identities`, `profile`; DP1-05), the contacts read model (`contacts`, `contact`, `pending_setup_count`, `frequent_contacts`, `my_user_link`; DP2-01), the payment locks (`payment_lock`; DP3-01), the unread counts (`unread_count`; DP2-05, kept by the changeset tap, which recounts after each journal write) and the static tables (`profile_limits`, `cost_table`, `avatar_upload_available`). The contacts read model (DP2-01) reads the library's memory on each call instead, under a non-blocking read lock, and keeps the result as a snapshot that answers only while a writer holds that lock (§2.4). Paged or unbounded reads (`events`, `registrations`) are async. |
 | Static tables before Platform answers | `profile_limits` returns the built-in 25 / 140 until the DashPay contract is fetched; `cost_table` returns the fee table of the SDK's current protocol version. Neither waits for the network. |
 | Grants and leases | `grant: String` is either a grant id from `Vault.authorize` or a lease id from `NetworkSession.begin_flow` (§2.11). The purposes, caps and budgets are E0-04's (DASHPAY §2.6). A flow that spans calls ("Accept and pay": `accept_request`, then the payment's `TxDraft.prepare`, §2.3) redeems its grants once with `begin_flow`, from one credential prompt, and passes the lease id to each call, so the 120 s grant lifetime cannot run out between them; `end_flow` releases it. **A lease id is accepted only by a call of the lease's own wallet, and only for a purpose the lease carries**: another wallet's lease is `platform.grant_invalid`, and a lease without the purpose the call needs (a `ProfileEdit` lease passed to `top_up`) is `platform.needs_grant{purpose}`; a write that names the flows whose leases it takes refuses a lease of another flow with `platform.grant_invalid` (§7 item 41, E0-04 amendment 3). The idle reaper ends a vault-key lease after **10 minutes** with no call, no permit and no running flow task; an own-key lease's key is dropped at its `key_until` (the flow then needs a grant again), so a host that abandons a sheet leaks nothing. Every write's quote says what to authorize (`grant: GrantRequest`, or `grant_request(identity, action)`), and the engine charges no more than it quoted. Where Platform meters the fee against its state (IdentityUpdate, `contactRequest`), the quote is a bound and the charge is measured afterwards (DEC-195, §7 item 41). |
 | Records | Derive `serde` `Serialize` and `Deserialize`, plus `Debug`, `Clone` and `PartialEq`. The exceptions are inputs that carry private data, which derive `Deserialize` only: `AvatarSource` (the Gravatar e-mail). Enums with data are internally tagged with `kind` and snake-case names; unit enums serialize as snake-case strings. Byte payloads (`AvatarSource::File.bytes`, `AvatarImage.png`) serialize as standard base64 strings, never as number arrays. |
@@ -474,9 +474,9 @@ bodies decided where the rows leave room:
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `events(identity, cursor, limit)` | async | Pending (incoming requests), New (unread) and Earlier (read) from `dp_events`. `cursor` is an event id. | `PlatformError` |
-| `unread_count(identity)` | sync | The bell count. | `PlatformError` |
-| `mark_read(identity, up_to)` | async | Marks events with id ≤ `up_to` read. | `PlatformError` |
+| `events(identity, cursor, limit)` | async | The bell, from `dp_events` (§5 "the feed"). `pending` is the identity's incoming requests, as `contacts`' `Requests` section has them (newest first, the same `ContactSummary`), on the first page only (`cursor` `None`). Then up to `limit` journal rows (clamped to 1–200) with an id below `cursor`, newest first, split into `new` (unread) and `earlier` (read); `next_cursor` is the last row's id while older rows remain, else `None`. Rows of a sender the identity currently ignores are left out (a local mute, as iOS); a hidden contact's are not (iOS, the only app with hidden contacts, filters neither its bell nor its notifications on it). Reads write nothing. Re-query on `Platform{Events}` and `Platform{Contacts}`. **Implemented (DP2-05).** | `PlatformError` (`identity.not_found` for an identity the wallet lacks, as `contacts`; `invalid_argument` for an id that is not Base58) |
+| `unread_count(identity)` | sync | The bell count: the identity's unread rows, ignored senders' included only until `ignore` marks them read. From memory, the counts the changeset tap keeps: counted at the wallet's bring-up and after a `.dwbackup` import, recounted after every journal write and `mark_read`. Before the first count (a wallet with no bring-up yet) it answers 0 and starts it; a count signals `Platform{Events}` for each identity whose count moved. A hidden contact's events count. **Implemented (DP2-05).** | `PlatformError` (`invalid_argument` for an id that is not Base58) |
+| `mark_read(identity, up_to)` | async | Marks the identity's unread events with id ≤ `up_to` read (the time is the call's), recounts and signals `Platform{Events}` when one changed; ids above `i64::MAX` mean all. Idempotent. `ignore` does the same for the ignored sender's events. It marks the rows of the wallet the call was admitted for: a removal waits for a mark in flight, and a call that outlives the wallet (removed, or reimported) marks nothing. **Implemented (DP2-05).** | `PlatformError` (`storage` when app.sqlite fails; `wallet_not_found` once the wallet it was admitted for is removed or reimported) |
 
 ### 2.7 Profile and avatars
 
@@ -538,7 +538,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: e530a2273f8973f34cd4251e3e7150e3877e4c63f99a978a7eb41f9389288bda version: 16 -->
+<!-- surface-sha256: 524c6fadd69a02d8606a6e111d53bbd0b868e6d1c4561fb86707b6bac83169ad version: 17 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1160,6 +1160,7 @@ impl DashPay {
     pub async fn resolve_user(&self, username: String) -> Result<Option<UserHit>, NameError>;
 }
 // src/platform/notifications.rs
+pub const MAX_NEWS: usize;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventPage {
     pub pending: Vec<ContactSummary>,
@@ -1823,6 +1824,27 @@ The shapes are in §3. What they mean, where the name does not say:
   - **contest watches:** a label in `dp_contest_watch` that becomes an owned name is journaled `ContestWon`, with its
     `UsernameRegistered` stored read. DP1-04 deletes the watch row when a contest resolves; a row left behind would
     call a later purchase of the label a win.
+  - **the feed (DP2-05):** `DashPayEvent` is a journal row as stored, with `reference` as above (`@…` dropped, `None`
+    when empty) and `contact` `None` when empty; `at` is when the row was journaled (UNIX s, local), `read_at` when it
+    was read (stored read: the journal time). A row of a kind this build does not know is left out. Read state is
+    `dp_events.read_at`, so it travels in `.dwbackup` with the rows (dwbackup-v1 §3.1); the catch-up boundary does
+    not, so a restore from a bundle keeps the bundle's read state and journals later history read.
+  - **news (DP2-05):** a row the tap's write **inserted** unread, of a kind that notifies, is news:
+    `EngineEvent::DashPayNews` (§6). The kinds that notify are `RequestReceived`, `RequestAccepted` and the
+    `Contest*` kinds. `ContactEstablished` is our own accept and `UsernameRegistered` our own name (a restore
+    journals the identity's names unread while their marketplace time is unknown, DEC-114 (4); iOS notifies
+    contacts only), and `PaymentReceived` is announced by the transaction's `NewTransactions` (DASHPAY F16: OS
+    notifications through the existing notifier). The
+    dedup key is the journal's: `(wallet_id, identity, kind, contact, ref)`, with the once-per-relationship rule
+    above, so a replayed changeset, a restart, a re-sync, the same request reached by a sync pass and by an accept's
+    read-back, and a key rotation add no row and no news; rows a `.dwbackup` import or catch-up writes (stored read)
+    are never news. DP1-04's contest outcomes are journaled through the same writer (`ChangesetTap::journal`) and
+    become news with no change here. While the vault is locked news is sent all the same: it carries public data only (ids, a kind, a label, a
+    request time, a txid), never an alias, a note or an amount, and a host's notification text names the contact by
+    username or display name, never by alias. A removed wallet's undelivered news is dropped, and its rows go with its
+    tombstone (DEC-210), whose trigger also drops a write still in flight, so it makes no news; a write that began
+    before the removal and lands after it makes no news and leaves no count either (the tap's per-wallet epoch,
+    which a restore's rollback moves too).
 - **`ProfileEdit`** is the whole new profile. `AvatarChange`: `Keep`, `Remove`, or `Set{candidate}` with a
   `prepare_avatar` candidate (after `upload_avatar` when `needs_upload`).
 - **`AvatarSize`.** `Small` is 128 px, `Large` 256 px. `AvatarImage.png` is the engine-re-encoded thumbnail, never
@@ -1844,9 +1866,10 @@ changes code paths or bindings that would otherwise need behaviour now:
 | History and transaction records gain `counterparty: Option<Counterparty>` | DP3-02 |
 | `NoticeCode` gains `PlatformTrustMismatch` (E0-10b) and `DashPayStartupIncomplete` (E0-05). `dw-ffi` maps `NoticeCode` one to one, and the Swift bindings are frozen until E0-13. **Done (E0-05, E0-10b):** both are engine-side, and `dw-ffi` withholds them until E0-13 binds them. `PlatformTrustMismatch` goes out once per quorum and session; its detail names the LLMQ type and quorum hash | E0-05, E0-10b, E0-13 |
 | `NetworkSession` gains `quorum_source()` (sync) and the developer toggle `trusted_quorums_only()` / `set_trusted_quorums_only(on)` (the global setting `trust.trusted_only`): quorum keys from the trusted service only, SPV not consulted. **Done (E0-10b).** Not a user setting; the binding exposes it in developer builds | E0-10b, E0-13 |
-| `EngineEvent::Platform{network, wallet_id, change: PlatformChange}` (§3.5). **Done (E0-06):** `PlatformChange` is `Identities` (identities, their keys and profiles), `Contacts{identity}`, `Registration{draft}` (`draft` is the `dp_registration` id as decimal text; `None` for a lock no row names, a top-up), `Payments{identity}` and `Names`. The tap sends no `Startup` change: the startup status has its own snapshot (E0-05). `dw-ffi` withholds the variant until E0-13 binds it | E0-06, E0-13 |
+| `EngineEvent::Platform{network, wallet_id, change: PlatformChange}` (§3.5). **Done (E0-06):** `PlatformChange` is `Identities` (identities, their keys and profiles), `Contacts{identity}`, `Registration{draft}` (`draft` is the `dp_registration` id as decimal text; `None` for a lock no row names, a top-up), `Payments{identity}`, `Names`, and (DP2-05) `Events{identity}`: the identity's feed or unread count changed (rows journaled, read or recounted). The tap sends no `Startup` change: the startup status has its own snapshot (E0-05). `dw-ffi` withholds the variant until E0-13 binds it | E0-06, E0-13 |
 | `EngineEvent::DispatchResolved{network, resolved: DispatchResolved}`, sent when a provisional outcome settles. Its sources are E0-04 §4.6's: a Resend is accepted, or the wallet sees the transaction (`Sent`); a reload refuses and cleans up an `Unsent` row (`NotSent`); a row-less artifact settles definitely unsent (`NotSent`); Mode B's derived status moves (E0-04 §2a.5); H16's evidence settles a row-less transition. Its `artifact` is a txid, a state-transition hash or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`). DP1-02 then moves a registration row back to retryable, and the payment and top-up UIs clear their "may have been sent" or "will be sent" state. With E0-04's `LeaseChanged` and `LockProgress`. The payload record exists now (§3); the variant waits because `dw-ffi` maps `EngineEvent` one to one | E0-04 (P2), E0-13 |
 | `NoticeCode` gains `DispatchRecordMissing`, `UnscopedDispatch` and `DispatchJournalUnavailable` | E0-04 (P2), E0-13 |
+| `EngineEvent::DashPayNews{network, wallet_id, identity, events: Vec<DashPayEvent>, more}`: the OS-notification signal (§5 "news"). **Done (DP2-05):** on the `Platform` clock (≤ 4 Hz per session, trailing edge kept), after the flush's `Platform` changes; one per identity with news, at most `MAX_NEWS` (32) events in arrival order and `more` counting the rest. Hosts show one notification per event for up to 3, else one summary ("N new DashPay notifications"), skip it while the window is frontmost (the bell updates), honour the notifications toggle, and open the bell on a click; the bell (`events`) is the state behind it. Engine-side for `dw-ffi`; `dw-app` forwards it as `dashPayNews` | DP2-05, E0-13 |
 | `EngineEvent::LeaseChanged{network, lease: LeaseView}` and `LockProgress{network, phase}`, engine-side until E0-13 | E0-04 (P2a), E0-13 |
 | m1's `SendError` gains `send.cancelled` for a contact payment that Lock refused (E0-04 §16.11) | DP3-01 (P5 reuses it for M1 sends) |
 | Tools ▸ Repair "Unrecorded asset locks" (E0-04 §6.5, §16.10 C9) gets a facade call; engine-internal until then | DP1-02 |
@@ -2142,35 +2165,39 @@ renames or reshapes them takes the next version bump:
       of its rows comes after them.
     - **Writes after a wallet's removal (DEC-210).** Any other app.sqlite write of a wallet still under way when the
       wallet is removed (a DashPay choice or preference, the journal written as the library stores a changeset, a coin
-      lock, first-seen times) lands nothing either. The removal records the wallet (`removed_wallets`) in the
-      transaction that deletes its rows; from then on an insert of a row of that wallet, in any table the removal
-      clears and in its two settings scopes, is skipped, and an update finds no row. `add_receive_request` and a new
-      registration flow then fail (`storage`). The record lasts until an import of the same wallet (a seed, a
-      watch-only xpub, a restore), which takes it out before its first write (an import that then fails to register
-      the wallet records it again), or until an open of the network's `app.sqlite` while no other instance of it is
-      open, in this process or another (DEC-210 (3b)). Each open instance holds a shared lock on `app.sqlite.lock` for
-      its whole life, a job a closed session left running included; an open forgets the record only if an exclusive
-      lock on that file is granted at once, and otherwise keeps it. The lock file is named after the database, so each
-      has one name: an open refuses (`storage`) a database or lock file that is a symlink, not a regular file, or a
-      file with a second hard link, a name starting with `file:` (which SQLite reads as a URI), and an open whose
-      database or lock file changed between its check and its use; symlinked directories above the database are fine,
-      since they lead to the same lock file. Imports, restores and their rollback, removals, and the open and close of
-      a wallet run one at a time per network within a process (the engine's wallet lifecycle lock, taken after the
-      operation's admission and before the wallet's barrier, discoveries and private-details fence), so a wallet is
-      never recorded as removed while it is registered, and two imports of the same seed run one after the other.
-      `.dwbackup` never carries the record (dwbackup-v1 §2.3). **Residuals (accepted, DEC-210 (5) and (3b)):** a write
-      of the removed wallet still under way when the same wallet is imported again lands among the new import's rows;
-      an insert that is skipped shows in the log only as "no rows" (`raise_setting`) or as a held index
-      (`adopt_registration_lock`); on a file system whose advisory locks are not kept per open file (an NFS emulation
-      of `flock`), an open in the same process forgets the record while another instance is open; a long restore holds
-      the wallet lifecycle lock until its last bundle is done, so a removal or another import waits for it; and two
+      lock, first-seen times) lands nothing either. The removal records the wallet (`removed_wallets`), committed before
+      the transaction that deletes its rows; from then on an insert of a row of that wallet, in any table the removal
+      clears and in its two settings scopes, is skipped, and, once its rows are gone, an update finds none.
+      `add_receive_request` and a new registration flow then fail (`storage`). If that delete fails, or the record
+      cannot be written, an import of the wallet in the same session deletes the rows the removal left before its first
+      write, and is refused (`storage`, "the removal of wallet … could not be finished") while it cannot; an open that
+      forgets a record deletes them first too, and keeps the record while it cannot. A removal that could not write the
+      record leaves its rows to an import in a later session (residual). The record lasts until an import of the same
+      wallet (a seed, a watch-only xpub, a restore), which takes it out before its first write (an import that then
+      fails to register the wallet records it again), or until an open of the network's `app.sqlite` while no other
+      instance of it is open, in this process or another (DEC-210 (3b)). Each open instance holds a shared lock on
+      `app.sqlite.lock` for its whole life, a job a closed session left running included; an open forgets the record
+      only if an exclusive lock on that file is granted at once, and otherwise keeps it. The lock file is named after
+      the database, so each has one name: an open refuses (`storage`) a database or lock file that is a symlink, not a
+      regular file, or a file with a second hard link, a name starting with `file:` (which SQLite reads as a URI), and
+      an open whose database or lock file changed between its check and its use; symlinked directories above the
+      database are fine, since they lead to the same lock file. Imports, restores and their rollback, removals, and the
+      open and close of a wallet run one at a time per network within a process (the engine's wallet lifecycle lock,
+      taken after the operation's admission and before the wallet's barrier, discoveries and private-details fence), so
+      a wallet is never recorded as removed while it is registered, and two imports of the same seed run one after the
+      other. `.dwbackup` never carries the record (dwbackup-v1 §2.3). **Residuals (accepted, DEC-210 (5) and (3b)):** a
+      write of the removed wallet still under way when the same wallet is imported again lands among the new import's
+      rows; an insert that is skipped shows in the log only as "no rows" (`raise_setting`) or as a held index
+      (`adopt_registration_lock`); on a file system whose advisory locks are not kept per open file (an NFS emulation of
+      `flock`), an open in the same process forgets the record while another instance is open; a long restore holds the
+      wallet lifecycle lock until its last bundle is done, so a removal or another import waits for it; and two
       processes on one network directory are kept apart only by the record and the lock file, not by the wallet
       lifecycle lock, which is per process. Renaming, moving or bind-mounting the database file while an instance is
-      open gives it a name with another lock file (SQLite does not support moving an open database either), and
-      deleting or replacing `app.sqlite.lock` after an open has returned leaves that instance's lock on a file later
-      opens no longer see; the app never removes the lock file itself. On Windows only a final symlink is refused:
-      hard links are not counted, file identities are not compared (std has no file id there), and other names of one
-      file (an 8.3 short name, a trailing dot, `::$DATA`) lead to another lock file.
+      open gives it a name with another lock file (SQLite does not support moving an open database either), and deleting
+      or replacing `app.sqlite.lock` after an open has returned leaves that instance's lock on a file later opens no
+      longer see; the app never removes the lock file itself. On Windows only a final symlink is refused: hard links are
+      not counted, file identities are not compared (std has no file id there), and other names of one file (an 8.3
+      short name, a trailing dot, `::$DATA`) lead to another lock file.
     - **An edit of published details needs a grant.** The library's DashPay pass applies Platform's `contactInfo` over
       local details on every pass (remote wins), so a local-only edit of a contact Platform holds details for would
       go back silently. It is `platform.needs_grant{credits}` and the edit is not saved. Re-saving the same details
@@ -2223,3 +2250,42 @@ renames or reshapes them takes the next version bump:
       run needs a new wallet D, an identity with DashPay keys funded with tDASH. D asks C, C accepts, and C publishes
       details for A and D (charged ≤ quote); the same details again send nothing; and C restored into a fresh engine
       shows them `Published`. It waits on pasta's tDASH, alongside DP1-02's testnet registration.
+43. **Notifications (DP2-05, version 17).** `events`, `unread_count` and `mark_read` are implemented (§2.6) over E0-06's
+    journal, with no new table: read state is `dp_events.read_at`, which `.dwbackup` already carries and wallet removal
+    already deletes. `PlatformChange` gains `Events{identity}`, and `EngineEvent` gains `DashPayNews` with the public
+    const `MAX_NEWS` (§6); the rules are §5's "the feed" and "news".
+    - **Historic is the catch-up boundary's**, not "before the first completed sync": an event whose authoritative
+      time predates the wallet's boundary is stored read and never news (DASHPAY §2.7). A seed restore therefore
+      makes no news for the history it replays, and a `.dwbackup` restore none for the rows it imports.
+    - **Pages walk an index.** `events` reads `dp_events_page` (`wallet_id, identity, id DESC`; app.sqlite
+      migration `V2026101303`) from the cursor down, so a page reads the rows it returns and the ignored ones it
+      skips, never the identity's whole journal. An index only: `.dwbackup` classification is unchanged.
+    - **A mark is the admitted wallet's.** `mark_read` (and `ignore`'s mark) writes under DP2-04's per-wallet write
+      fence, holding the wallet it was admitted for: a removal, an unload or a close waits for a mark in flight,
+      and a mark that outlives the wallet fails with `wallet_not_found`, so a reimport's restored rows stay unread.
+    - **A journal write is its wallet's.** E0-06's writer journals a library changeset for the wallet as the store
+      call began: if the wallet's removal (or a restore's rollback) overtakes it before its rows are written, it
+      writes none and makes no news, even into the same wallet imported again. The check is made with app.sqlite
+      held, after the removal's rows are gone and before any readmission. A removal whose app.sqlite delete then
+      fails has still moved the wallet on once it left the wallet manager, so such a write is dropped then too.
+      A restore's rollback that keeps the wallet (keys it attached to a watch-only wallet) drops such a write's
+      rows too; a watch-only wallet has no identities, so no DashPay changeset is in flight there.
+    - **News only from inserted rows.** The tap's journal write reports the rows it added; nothing else (a read, an
+      import, a replay) produces news, so a restart cannot announce again what a previous session announced.
+    - **Hidden contacts** are not filtered (DASHPAY §3.5 journals nothing for hide or unhide; iOS's
+      `DashPayContactsNotificationProducer` and `DashPayNotificationsReadState` never consult `isHidden`). **Ignored
+      senders** are a local mute: the library stops ingesting their requests, `ignore` marks their unread events read,
+      and `events` leaves their rows out until `unignore`.
+    - **Residual (accepted): a restore's names may count unread.** DEC-114 (4): a name journaled before its
+      marketplace time is known is stored unread, so a restored identity's names can show in the bell's `new` and
+      count once. They are never OS news (`UsernameRegistered` does not notify); the public-testnet T2 run saw two.
+    - **Residual (accepted): a restored contest watch.** `dp_contest_watch` travels in `.dwbackup`, so a bundle
+      restored while its contest was open can journal `ContestWon` unread, and notify it, if the name's
+      marketplace time is not yet known (DEC-114 (4)). It is the outcome of a contest the user watched.
+    - **Residual (accepted): an ignored sender's late row.** The library stops ingesting an ignored sender's
+      requests, so no new row comes from them; one that did (a journal write that had failed before the ignore)
+      would count unread while `events` leaves it out, until a `mark_read(u64::MAX)` or the next `ignore`.
+    - **Cadence.** `MAX_NEWS` caps one event, not a time window: a steady stream can bring up to 4 `DashPayNews`
+      a second per identity, and §6's "up to 3, else a summary" is per event.
+    - **Residual (accepted): a payment is not news here.** An unread `PaymentReceived` counts and shows in the bell,
+      but the OS notification is M2's `NewTransactions` one, with no contact name until DP3-02 adds `counterparty`.
