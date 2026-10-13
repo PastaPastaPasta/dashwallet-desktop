@@ -1118,10 +1118,10 @@ fn a_removal_is_kept_through_a_symlinked_directory() {
 #[cfg(unix)]
 type Link = fn(&Path, &Path) -> std::io::Result<()>;
 
-#[cfg(unix)]
 /// The removal outlives an open refused at `alias`, another name `link`
 /// makes for the database open at `path` (it would lead to another lock
 /// file, which the refused open does not create).
+#[cfg(unix)]
 fn an_alias_is_refused(path: &Path, alias: &Path, link: Link, what: &str) {
     let old = AppDb::open(path).unwrap();
     old.delete_wallet(W).unwrap();
@@ -1263,9 +1263,16 @@ fn a_bare_name_opens_in_the_working_directory() {
 }
 
 #[cfg(unix)]
-/// Runs `swap` between the open's check of the database and SQLite's open.
-fn open_swapped(path: &Path, swap: impl FnOnce() + 'static) -> crate::Result<AppDb> {
-    crate::BEFORE_SQLITE_OPEN.set(Some(Box::new(swap)));
+type Hook = std::thread::LocalKey<std::cell::Cell<Option<Box<dyn FnOnce()>>>>;
+
+/// Opens `path` with `swap` run at the `hook`'s point of the open.
+#[cfg(unix)]
+fn open_swapped(
+    path: &Path,
+    hook: &'static Hook,
+    swap: impl FnOnce() + 'static,
+) -> crate::Result<AppDb> {
+    hook.set(Some(Box::new(swap)));
     AppDb::open(path)
 }
 
@@ -1280,7 +1287,9 @@ fn a_database_replaced_during_the_open_is_refused() {
     let other = dir.path().join("other.sqlite");
     drop(AppDb::open(&other).unwrap());
     let (from, to) = (other.clone(), path.clone());
-    let opened = open_swapped(&path, move || std::fs::rename(from, to).unwrap());
+    let opened = open_swapped(&path, &crate::BEFORE_SQLITE_OPEN, move || {
+        std::fs::rename(from, to).unwrap()
+    });
     assert_refused(opened, &real(&path), "changed while it was opened");
 }
 
@@ -1294,12 +1303,28 @@ fn a_symlink_swapped_in_during_the_open_is_not_followed() {
     drop(AppDb::open(&path).unwrap());
     let target = dir.path().join("target.sqlite");
     let (link, to) = (path.clone(), target.clone());
-    let opened = open_swapped(&path, move || {
+    let opened = open_swapped(&path, &crate::BEFORE_SQLITE_OPEN, move || {
         std::fs::remove_file(&link).unwrap();
         std::os::unix::fs::symlink(to, link).unwrap();
     });
     assert!(opened.is_err());
     assert!(!target.exists());
+}
+
+/// A lock file replaced between its two opens is refused: the shared lock
+/// would be on another file than a later open's exclusive one.
+#[cfg(unix)]
+#[test]
+fn a_lock_file_replaced_during_the_open_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(crate::APP_DB_FILE);
+    let lock = crate::lock_path(&real(&path));
+    let replaced = lock.clone();
+    let opened = open_swapped(&path, &crate::BEFORE_SHARED_LOCK, move || {
+        std::fs::remove_file(&replaced).unwrap();
+        std::fs::File::create(&replaced).unwrap();
+    });
+    assert_refused(opened, &lock, "changed while it was opened");
 }
 
 /// The lock file and the database are one file only under two mounts of it

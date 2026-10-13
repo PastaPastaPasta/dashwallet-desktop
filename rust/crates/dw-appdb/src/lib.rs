@@ -179,6 +179,9 @@ thread_local! {
     /// Tests: runs once between the database's check and SQLite's open.
     static BEFORE_SQLITE_OPEN: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::Cell::new(None) };
+    /// Tests: runs once between the lock file's two opens.
+    static BEFORE_SHARED_LOCK: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
@@ -394,6 +397,10 @@ impl AppDb {
         // An open in the gap may forget the removals again, which is safe:
         // this instance has written nothing yet.
         drop(sole);
+        #[cfg(test)]
+        if let Some(hook) = BEFORE_SHARED_LOCK.take() {
+            hook();
+        }
         let alive = open_lock_file(&lock_path)?;
         if lock_id(&lock_path, &alive)? != lock {
             return Err(refused(&lock_path, "changed while it was opened"));
