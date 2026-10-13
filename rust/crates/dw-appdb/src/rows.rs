@@ -70,8 +70,8 @@ fn columns(conn: &rusqlite::Connection, table: &str) -> Result<Vec<(String, bool
 /// they hold is derived from the network and a restore records it again.
 /// `dp_contact_info` (DP2-04): what Platform holds of the private details,
 /// which the restore's own read of the `contactInfo` documents records.
-/// `removed_wallets` (DEC-210): which wallets this run removed, emptied at
-/// every open.
+/// `removed_wallets` (DEC-210): which wallets were removed, forgotten by a
+/// later process.
 const NOT_EXPORTED: [&str; 2] = ["dp_contact_info", "removed_wallets"];
 
 /// Tables and the column that scopes their rows to a wallet.

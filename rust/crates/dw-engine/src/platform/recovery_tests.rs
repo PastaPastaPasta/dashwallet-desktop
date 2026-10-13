@@ -2502,3 +2502,44 @@ fn a_wallet_imported_again_after_its_removal_is_written() {
     assert_eq!(journal(&engine, &s, id).len(), 1);
     engine.block_on(engine.shutdown()).unwrap();
 }
+
+/// A network closed and opened again in the same process keeps the
+/// wallets it removed recorded (a write of theirs may still be queued),
+/// and the open forgets one an earlier process removed.
+#[test]
+fn a_reopen_keeps_this_processs_removals_and_forgets_earlier_ones() {
+    let (_dir, engine, s, id, wipe) = removable();
+    engine.block_on(s.remove_wallet(id, wipe)).unwrap();
+    let path = s.data_dir().join(dw_appdb::APP_DB_FILE);
+    drop(s);
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    let earlier = "ee".repeat(32);
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO removed_wallets (wallet_id) VALUES (?1)",
+            [&earlier],
+        )
+        .unwrap();
+
+    let s = engine
+        .block_on(engine.open_network(
+            DashNetwork::Regtest,
+            SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    let db = s.live().unwrap().appdb;
+    for wallet in [id.to_string(), earlier.clone()] {
+        db.set_main_identity(&wallet, &base58(ALICE)).unwrap();
+    }
+    assert_eq!(db.main_identity(&id.to_string()).unwrap(), None);
+    assert_eq!(db.main_identity(&earlier).unwrap(), Some(base58(ALICE)));
+    engine.block_on(engine.shutdown()).unwrap();
+}

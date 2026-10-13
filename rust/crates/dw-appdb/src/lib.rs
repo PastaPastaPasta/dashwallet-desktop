@@ -13,6 +13,7 @@
 //! Every method is a short synchronous SQLite call on one connection behind a
 //! mutex. Async callers run them off their executor (`spawn_blocking`).
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
@@ -49,6 +50,20 @@ pub const GLOBAL_SCOPE: &str = "";
 /// equal to the wallet id.
 pub fn local_scope(wallet_id: &str) -> String {
     format!("local:{wallet_id}")
+}
+
+/// The wallets this process removed, by database file (DEC-210): what
+/// [`AppDb::forget_earlier_removals`] keeps.
+fn removed_here() -> MutexGuard<'static, BTreeSet<(String, String)>> {
+    static REMOVED: Mutex<BTreeSet<(String, String)>> = Mutex::new(BTreeSet::new());
+    REMOVED.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// `wallet_id` of the database file of `conn`; `None` in memory.
+fn removal_key(conn: &Connection, wallet_id: &str) -> Option<(String, String)> {
+    conn.path()
+        .filter(|p| !p.is_empty())
+        .map(|p| (p.to_owned(), wallet_id.to_owned()))
 }
 
 /// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
@@ -209,9 +224,6 @@ impl AppDb {
             .set_abort_divergent(true)
             .set_abort_missing(true)
             .run(&mut conn)?;
-        // A write of a removed wallet cannot outlive the run that removed
-        // it, so each open starts with no wallet recorded as removed.
-        conn.execute("DELETE FROM removed_wallets", [])?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -268,9 +280,10 @@ impl AppDb {
     }
 
     /// Deletes every row that belongs to `wallet_id` (wallet removal) and
-    /// records the wallet as removed: until [`Self::readmit_wallet`] or the
-    /// next open, inserts of its rows are skipped (DEC-210), so a write
-    /// still under way when the wallet was removed leaves nothing behind.
+    /// records the wallet as removed: until [`Self::readmit_wallet`], or a
+    /// session of a later process ([`Self::forget_earlier_removals`]),
+    /// inserts of its rows are skipped (DEC-210), so a write still under way
+    /// when the wallet was removed leaves nothing behind.
     pub fn delete_wallet(&self, wallet_id: &str) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -288,18 +301,52 @@ impl AppDb {
             "DELETE FROM settings_kv WHERE scope IN (?1, ?2)",
             params![wallet_id, local_scope(wallet_id)],
         )?;
+        let key = removal_key(&tx, wallet_id);
         tx.commit()?;
+        if let Some(key) = key {
+            removed_here().insert(key);
+        }
         Ok(())
     }
 
     /// Lets rows of `wallet_id` be written again after
     /// [`Self::delete_wallet`]: an import of the wallet calls it before its
-    /// first write.
-    pub fn readmit_wallet(&self, wallet_id: &str) -> Result<()> {
-        self.conn().execute(
+    /// first write. Whether the wallet was recorded as removed.
+    pub fn readmit_wallet(&self, wallet_id: &str) -> Result<bool> {
+        let conn = self.conn();
+        let readmitted = conn.execute(
             "DELETE FROM removed_wallets WHERE wallet_id = ?1",
             [wallet_id],
-        )?;
+        )? > 0;
+        if let Some(key) = removal_key(&conn, wallet_id) {
+            removed_here().remove(&key);
+        }
+        Ok(readmitted)
+    }
+
+    /// Forgets the wallets removed before this process started: no write of
+    /// theirs can still be running. The ones this process removed stay
+    /// recorded, since a write of theirs may still be queued after the
+    /// network was closed. The session calls it once it holds the network
+    /// directory.
+    pub fn forget_earlier_removals(&self) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let recorded: Vec<String> = tx
+            .prepare("SELECT wallet_id FROM removed_wallets")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let here = removed_here();
+        for wallet_id in recorded {
+            if !removal_key(&tx, &wallet_id).is_some_and(|key| here.contains(&key)) {
+                tx.execute(
+                    "DELETE FROM removed_wallets WHERE wallet_id = ?1",
+                    [&wallet_id],
+                )?;
+            }
+        }
+        drop(here);
+        tx.commit()?;
         Ok(())
     }
 

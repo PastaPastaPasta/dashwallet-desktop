@@ -257,7 +257,7 @@ const CHECKSUM_TRUST_DIGEST: u64 = 5295667777470269757;
 const CHECKSUM_OWNER: u64 = 12040521178707991804;
 const CHECKSUM_OUTCOMES: u64 = 9183630881616259306;
 const CHECKSUM_CONTACT_INFO: u64 = 6330962680869650951;
-const CHECKSUM_REMOVED_WALLETS: u64 = 13066344246219675486;
+const CHECKSUM_REMOVED_WALLETS: u64 = 15796513014700437896;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -915,19 +915,38 @@ fn a_removed_wallets_rows_are_not_written_until_it_is_readmitted() {
     assert_eq!(settings(&db), [Some("v".into()), Some("v".into())]);
 }
 
-/// The record of removed wallets lasts one run: the next open empties it.
+/// The record of removed wallets lasts one process: a later one forgets the
+/// wallets removed before it started, and the ones removed in this process
+/// stay recorded across a reopen of the file.
 #[test]
-fn an_open_forgets_the_removed_wallets() {
+fn a_later_process_forgets_the_removed_wallets() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     let db = AppDb::open(&path).unwrap();
     db.delete_wallet(W).unwrap();
-    db.set_wallet_name(W, "n", 1).unwrap();
-    assert!(db.wallet_names().unwrap().is_empty());
+    // As an earlier process left it.
+    db.conn()
+        .execute("INSERT INTO removed_wallets (wallet_id) VALUES (?1)", [W2])
+        .unwrap();
     drop(db);
 
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(count(&db.conn(), "SELECT COUNT(*) FROM removed_wallets"), 0);
-    db.set_wallet_name(W, "n", 1).unwrap();
-    assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "n".into())]);
+    db.forget_earlier_removals().unwrap();
+    for w in [W, W2] {
+        db.set_wallet_name(w, "n", 1).unwrap();
+    }
+    assert_eq!(db.wallet_names().unwrap(), vec![(W2.into(), "n".into())]);
+    assert!(db.readmit_wallet(W).unwrap());
+    assert!(!db.readmit_wallet(W).unwrap());
+    db.delete_wallet(W).unwrap();
+    db.readmit_wallet(W).unwrap();
+    drop(db);
+    // Readmitted, it is no longer this process's removal either.
+    let db = AppDb::open(&path).unwrap();
+    db.conn()
+        .execute("INSERT INTO removed_wallets (wallet_id) VALUES (?1)", [W])
+        .unwrap();
+    db.forget_earlier_removals().unwrap();
+    db.set_wallet_name(W, "n", 2).unwrap();
+    assert_eq!(db.wallet_names().unwrap().len(), 2);
 }
