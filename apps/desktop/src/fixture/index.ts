@@ -37,6 +37,9 @@ export interface FixtureHandle {
   emit(event: AppEvent): void;
   /** Makes `command` reject with a sample of `cls` from now on (`null` clears it). */
   fail(command: CommandName, cls: ErrorClass | null): void;
+  /** Holds the next call of `command`: it answers from the world as it is when called, but only
+   * once the returned function is called (a reply that arrives late). */
+  hold(command: CommandName): () => void;
   /** Every command called so far, in order. */
   readonly calls: string[];
   readonly now: Date;
@@ -53,6 +56,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   const world = buildWorld(opts.scenario, opts.theme ?? null);
   const failures = new Map(Object.entries(opts.failures ?? {}) as [CommandName, ErrorClass][]);
   const calls: string[] = [];
+  const held = new Map<string, Promise<void>>();
   const ctx: Ctx = { world, emit: (event) => void emit(ENGINE_EVENT, event) };
 
   mockIPC(
@@ -63,7 +67,13 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
       if (cls) throw sampleError(cls);
       const handler = HANDLERS[cmd as CommandName] as ((args: unknown, ctx: Ctx) => unknown) | undefined;
       if (!handler) throw notImplemented(cmd);
-      return handler(payload ?? {}, ctx);
+      const result = handler(payload ?? {}, ctx);
+      const release = held.get(cmd);
+      if (release) {
+        held.delete(cmd);
+        await release;
+      }
+      return result;
     },
     { shouldMockEvents: true },
   );
@@ -74,6 +84,11 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
     world,
     emit: ctx.emit,
     fail: (command, cls) => (cls ? failures.set(command, cls) : failures.delete(command)),
+    hold: (command) => {
+      let release = () => {};
+      held.set(command, new Promise<void>((r) => (release = r)));
+      return () => release();
+    },
     calls,
     now: FIXTURE_NOW,
     locale: "en-US",

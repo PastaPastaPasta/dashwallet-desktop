@@ -116,6 +116,37 @@ test("while a newer lock drains, the previous report is not shown", async ({ pag
   await expect(page.getByTestId("lock-report")).toHaveAttribute("data-resolved", "true");
 });
 
+test("a slow report reply cannot bring back the previous lock's report", async ({ page }) => {
+  await lockFrom(page, "lock-report-resolved");
+  const notice = page.getByTestId("lock-report");
+  await expect(notice).toHaveAttribute("data-resolved", "true");
+
+  // A refetch of every query (an overflow) whose lastLockReport reply, read now, arrives late.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    (window as unknown as { release: () => void }).release = f.hold("last_lock_report");
+    f.emit({ kind: "eventsOverflowed" });
+  });
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("last_lock_report"))).toBe(true);
+
+  // Meanwhile a newer lock ends with a report that leaves flows out.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    const newer = { ...f.world.lastLockReport!, flowsOmitted: 3 };
+    f.world.lastLockReport = newer;
+    f.emit({ kind: "lockProgress", network: "testnet", progress: { kind: "done", report: newer } });
+  });
+  const omitted = page.getByTestId("lock-report-omitted");
+  await expect(omitted).toHaveText("3 more actions not listed here.");
+
+  // The late reply lands: the screen keeps the newer report.
+  await page.evaluate(async () => {
+    (window as unknown as { release: () => void }).release();
+    await new Promise((r) => setTimeout(r, 250));
+  });
+  expect(await omitted.textContent()).toBe("3 more actions not listed here.");
+});
+
 test("a lock that cut nothing shows no report", async ({ page }) => {
   await lockFrom(page, "funded");
   await page.getByTestId("lock-screen").waitFor();

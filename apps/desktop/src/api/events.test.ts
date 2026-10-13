@@ -64,6 +64,29 @@ describe("event bridge", () => {
     }
   });
 
+  // A `lastLockReport` reply the app sent before it kept the new report, arriving after `done`.
+  it("a slow lastLockReport reply cannot replace the report done brought", async () => {
+    const fixture = installFixture({ scenario: "lock-report-resolved" });
+    const backend = new IpcBackend("fixture");
+    const client = new QueryClient();
+    await bridgeEvents(backend, client);
+    const previous = await backend.lock();
+    await vi.waitFor(() => expect(client.getQueryData(keys.lastLockReport)).toEqual(previous));
+
+    const release = fixture.hold("last_lock_report");
+    const slow = client.fetchQuery({ queryKey: keys.lastLockReport, queryFn: () => backend.lastLockReport(), staleTime: 0 }).catch(() => null);
+    await vi.waitFor(() => expect(fixture.calls.at(-1)).toBe("last_lock_report"));
+    const newer: LockOutcome = { ...previous, flowsOmitted: 7 };
+    fixture.world.lastLockReport = newer;
+    fixture.emit({ kind: "lockProgress", network: "testnet", progress: { kind: "done", report: newer } });
+    await vi.waitFor(() => expect(client.getQueryData(keys.lastLockReport)).toEqual(newer));
+
+    release();
+    await slow;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(client.getQueryData(keys.lastLockReport)).toEqual(newer);
+  });
+
   it("a steady stream of events still reconciles, and unsubscribing drops a pending one", async () => {
     vi.useFakeTimers();
     try {
