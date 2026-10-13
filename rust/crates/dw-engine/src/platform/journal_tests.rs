@@ -27,9 +27,11 @@ use platform_wallet::wallet::identity::{PaymentDirection, PaymentEntry, PaymentS
 use platform_wallet::{ContactRequest, DpnsNameInfo, EstablishedContact, IdentityStatus};
 use zeroize::Zeroizing;
 
+use super::contacts_tests::wait_for;
 use super::journal::{CATCH_UP_BEFORE_KEY, ChangesetTap, Times, classify, kind_name};
 use super::notifications::EventKind;
 use crate::events::SessionHub;
+use crate::held_writes::ReleaseOnDrop;
 use crate::{
     DashNetwork, Engine, EngineConfig, EngineEvent, EventSink, ImportOptions, NetworkSession,
     PlatformChange, SessionOptions, WalletId,
@@ -1531,24 +1533,24 @@ fn a_removed_wallets_news_and_counts_are_dropped() {
     assert!(h.journal().is_empty());
 }
 
-/// A queued count across `forget`.
+/// A queued count held while `between` runs. The count is released
+/// however `between` ends, so a failed assert leaves no worker waiting.
 fn a_held_count(h: &Harness, between: impl FnOnce()) {
+    use std::sync::atomic::Ordering::SeqCst;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .build()
         .unwrap();
     let pause = Arc::new(crate::coins::TestPause::default());
     *h.tap.pause_count.lock().unwrap() = Some(Arc::clone(&pause));
+    let release = ReleaseOnDrop(Arc::clone(&pause));
     h.tap.load_unread(W, rt.handle());
     assert_eq!(h.unread(), Some(0), "the stand-in");
-    while !pause.reached.load(std::sync::atomic::Ordering::SeqCst) {
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    let held = Duration::from_secs(20);
+    wait_for("the held count", held, || pause.reached.load(SeqCst));
     between();
-    pause.release.notify_one();
-    while !pause.done.load(std::sync::atomic::Ordering::SeqCst) {
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    drop(release);
+    wait_for("the count's end", held, || pause.done.load(SeqCst));
     rt.shutdown_timeout(Duration::from_secs(5));
 }
 
