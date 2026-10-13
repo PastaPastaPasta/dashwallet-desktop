@@ -38,6 +38,14 @@ describe("lock report consumer", () => {
     expect(summarizeLockReport(report([flow("willBeSent")])).unresolved).toBe(true);
   });
 
+  // A flow's outcome is the strongest of its artifacts' (E0-04 §8.4): `sent` funding with an
+  // identity call still out reads `sent`.
+  it("a sent flow holding a pending artifact is unresolved", () => {
+    const sentFlow = flow("sent", 0, ["maybeSent", "sent"]);
+    const s = summarizeLockReport(report([sentFlow, flow("cancelled")]));
+    expect(s).toMatchObject({ complete: true, unresolved: true, beyondReach: false, pending: [sentFlow] });
+  });
+
   it.each([
     ["flowsOmitted", report([flow("sent")], 1)],
     ["artifactsOmitted", report([flow("sent", 1)])],
@@ -53,10 +61,12 @@ describe("lock report consumer", () => {
   // Listed unresolved first: what follows a pending item may be pending, and has no id to ask about.
   it.each([
     ["flows omitted after a pending flow", report([flow("sent"), flow("maybeSent")], 1), true],
-    ["flows omitted after a settled flow", report([flow("maybeSent"), flow("cancelled")], 1), false],
+    ["flows omitted after a cancelled flow", report([flow("maybeSent"), flow("cancelled")], 1), false],
+    // Flows are listed by outcome: those after a `sent` one may be `sent` with an artifact pending.
+    ["flows omitted after a sent flow", report([flow("maybeSent"), flow("sent")], 1), true],
     ["flows omitted with nothing listed", report([], 5), true],
     ["artifacts omitted after a pending one", report([flow("willBeSent", 3, ["willBeSent", "willBeSent"])]), true],
-    ["artifacts omitted after a sent one", report([flow("willBeSent", 3, ["willBeSent", "sent"])]), false],
+    ["artifacts omitted after a sent one", report([flow("sent", 3, ["willBeSent", "sent"])]), false],
     ["a pending flow with no pending artifact listed", report([flow("maybeSent", 0, [])]), true],
     ["only wallets omitted", report([flow("maybeSent")], 0, 4), false],
   ])("%s: beyond reach %s", (_, r, beyond) => {
@@ -100,15 +110,18 @@ describe("lock report consumer", () => {
       expect(summary.omitted).toEqual({ flows: 2, artifacts: 4, wallets: 2 });
       expect(summary).toMatchObject({ complete: false, unresolved: true, beyondReach: false });
 
+      // The top-up reads `sent`, its strongest artifact's, with one still to be sent.
+      const [registration, topUp] = outcome.flows;
+      expect(topUp.outcome).toBe("sent");
       let r = await reconcileLockReport(outcome, b);
       expect(r.artifacts.map((a) => [a.artifact, a.state])).toEqual([
-        ["tx:3f9a1c27", "maybeSent"],
-        ["st:8be04d11-0", "willBeSent"],
+        [registration.artifacts[0].artifact, "maybeSent"],
+        [topUp.artifacts[0].artifact, "willBeSent"],
       ]);
       expect(r.settled).toBe(false);
 
-      fixture.world.dispatch["tx:3f9a1c27"] = "notSent";
-      fixture.world.dispatch["st:8be04d11-0"] = "sent";
+      fixture.world.dispatch[registration.artifacts[0].artifact] = "notSent";
+      fixture.world.dispatch[topUp.artifacts[0].artifact] = "sent";
       r = await reconcileLockReport(outcome, b);
       // The registration's call is still running.
       expect(r.live.map((l) => l.id)).toEqual(["3f9a1c27"]);
@@ -126,10 +139,17 @@ describe("lock report consumer", () => {
       const fixture = installFixture({ scenario: "lock-report-pending" });
       const b = new IpcBackend("fixture");
       const outcome = await b.lock();
-      expect(summarizeLockReport(outcome)).toMatchObject({ complete: true, unresolved: true, beyondReach: false });
-      expect((await reconcileLockReport(outcome, b)).settled).toBe(false);
-      fixture.world.dispatch["tx:3f9a1c27"] = "sent";
-      fixture.world.dispatch["st:8be04d11"] = "sent";
+      const summary = summarizeLockReport(outcome);
+      expect(summary).toMatchObject({ complete: true, unresolved: true, beyondReach: false });
+      // The registration's funding was sent; its identity call may have gone out.
+      expect(summary.pending.map((f) => [f.flow, f.outcome])).toEqual([
+        ["topUp", "willBeSent"],
+        ["registration", "sent"],
+      ]);
+      const r = await reconcileLockReport(outcome, b);
+      expect(r.artifacts.map((a) => a.state)).toEqual(["willBeSent", "maybeSent"]);
+      expect(r.settled).toBe(false);
+      for (const a of r.artifacts) fixture.world.dispatch[a.artifact] = "sent";
       expect((await reconcileLockReport(outcome, b)).settled).toBe(true);
     });
 

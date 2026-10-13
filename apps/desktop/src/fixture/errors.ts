@@ -34,7 +34,7 @@ const SAMPLES: Samples = {
   budget: { code: "platform.grant_exceeded", data: { kind: "budget", purpose: "credits", needed: "50000000", remaining: "1000000" } },
   needsGrant: { code: "platform.needs_grant", data: { kind: "needsGrant", purpose: "funding" } },
   revoked: { code: "platform.lease_revoked", data: { kind: "revoked", cause: "lock" } },
-  artifact: { code: "platform.broadcast_unknown", data: { kind: "artifact", artifact: "st:3f9a1c27" } },
+  artifact: { code: "platform.broadcast_unknown", data: { kind: "artifact", artifact: "3f9a1c27".repeat(8) } },
   txid: { code: "contact.payment_locked", data: { kind: "txid", txid: TXID } },
   draft: { code: "registration.in_progress", data: { kind: "draft", draft: "reg-1" } },
   draftWait: { code: "registration.funding_unknown_recent", data: { kind: "draftWait", draft: "reg-1", waitSecs: 600 } },

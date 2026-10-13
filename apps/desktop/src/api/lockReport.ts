@@ -4,6 +4,11 @@
 // leaves out is unresolved: the renderer never reads "nothing pending" from it, and reconciles
 // through `leases`, `dispatchStatus` and `lockStatus` instead. Omitted flows and artifacts have
 // no ids, so they settle only when the report's order proves none of them is pending.
+//
+// A flow's `outcome` is the strongest of its artifacts' (`sent` > `willBeSent` > `maybeSent` >
+// `cancelled`, E0-04 §8.4), so it does not say whether anything of the flow is still pending: a
+// `sent` registration may hold an identity call still running (`maybeSent`). Only `cancelled`
+// proves a flow has nothing pending; each artifact's own outcome says the rest.
 
 import type { Backend } from "./backend";
 import type { DispatchStateName } from "./generated/DispatchStateName";
@@ -38,10 +43,19 @@ export const FLOW_NAME: Record<FlowKindName, string> = {
 const PENDING: ReadonlySet<FlowOutcomeName> = new Set(["maybeSent", "willBeSent"]);
 const isPending = (x: { outcome: FlowOutcomeName }) => PENDING.has(x.outcome);
 
-/** Whether a list cut to `listed` may have left a pending item out. Flows and artifacts are
- * listed unresolved first (D3), so a settled last item means everything after it is settled. */
-const tailMayBePending = (listed: { outcome: FlowOutcomeName }[], omitted: number) =>
-  omitted > 0 && (listed.length === 0 || isPending(listed[listed.length - 1]));
+/** Whether a flow's artifacts, cut to the listed ones, may have left a pending one out. They are
+ * listed unresolved first by their own outcome (D3), so a settled last one settles the rest. */
+const artifactTailMayBePending = (f: FlowLockReport) =>
+  f.artifactsOmitted > 0 && (f.artifacts.length === 0 || isPending(f.artifacts[f.artifacts.length - 1]));
+
+/** Whether flows cut from the list may have something pending. Flows are listed by their outcome,
+ * the strongest of their artifacts', so only a `cancelled` last one proves the rest cancelled. */
+const flowTailMayBePending = (report: LockOutcome) =>
+  report.flowsOmitted > 0 && (report.flows.length === 0 || report.flows[report.flows.length - 1].outcome !== "cancelled");
+
+/** Something of the flow may still reach the network: a listed pending artifact, an omitted one
+ * that may be, or a pending outcome (which the strongest of its artifacts' then is). */
+const mayBePending = (f: FlowLockReport) => isPending(f) || f.artifacts.some(isPending) || artifactTailMayBePending(f);
 
 export interface LockReportSummary {
   /** Nothing was left out: every flow, artifact and wallet is listed. */
@@ -51,8 +65,9 @@ export interface LockReportSummary {
   pending: FlowLockReport[];
   /** Something may still be sent, or the report cannot say: reconcile before saying otherwise. */
   unresolved: boolean;
-  /** Something pending that no query can name: an omitted flow or artifact after a pending one,
-   * or a pending flow with no pending artifact listed. Nothing the renderer can read settles it. */
+  /** Something pending that no query can name: omitted flows after a flow not `cancelled`, an
+   * omitted artifact after a pending one, or a pending flow with no pending artifact listed.
+   * Nothing the renderer can read settles it. */
   beyondReach: boolean;
 }
 
@@ -63,11 +78,9 @@ export function summarizeLockReport(report: LockOutcome): LockReportSummary {
     wallets: report.walletsWithSecretsOmitted,
   };
   const complete = omitted.flows === 0 && omitted.artifacts === 0 && omitted.wallets === 0;
-  // A flow's `outcome` covers all its artifacts, listed or not, so it decides "pending".
-  const pending = report.flows.filter(isPending);
+  const pending = report.flows.filter(mayBePending);
   const beyondReach =
-    tailMayBePending(report.flows, report.flowsOmitted) ||
-    report.flows.some((f) => tailMayBePending(f.artifacts, f.artifactsOmitted) || (isPending(f) && !f.artifacts.some(isPending)));
+    flowTailMayBePending(report) || report.flows.some((f) => artifactTailMayBePending(f) || (isPending(f) && !f.artifacts.some(isPending)));
   return { complete, omitted, pending, unresolved: !complete || pending.length > 0, beyondReach };
 }
 

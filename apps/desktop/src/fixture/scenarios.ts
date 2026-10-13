@@ -105,75 +105,84 @@ const lease = (id: string, flow: Lease["flow"], fundsCommitted: boolean, inFligh
   callRunning: inFlight > 0,
 });
 
-/** A cut flow: its artifacts as ids (with the flow's outcome) or `[id, outcome]`. */
-const flow = (lease: string, kind: FlowLockReport["flow"], outcome: FlowOutcomeName, artifacts: (string | [string, FlowOutcomeName])[], omitted = 0): FlowLockReport => ({
-  lease,
+/** The engine's outcome order, weakest first (E0-04 §8.4): a flow's is the strongest of its
+ * artifacts'. And dw-app's listing order, unresolved first (`keep_unresolved_first`). */
+const STRENGTH: FlowOutcomeName[] = ["cancelled", "maybeSent", "willBeSent", "sent"];
+const LISTING: FlowOutcomeName[] = ["maybeSent", "willBeSent", "sent", "cancelled"];
+const listed = <T extends { outcome: FlowOutcomeName }>(items: T[]) => items.toSorted((a, b) => LISTING.indexOf(a.outcome) - LISTING.indexOf(b.outcome));
+
+/** A 32-byte artifact id (a txid or a state-transition hash): plain lower-case hex. */
+const artifactId = (seed: string) => seed.repeat(64 / seed.length);
+/** A step id, as a running call or a funding step is named. */
+const step = (flow: string, draft: string, part: string) => `${flow}/${draft}/${part}`;
+
+/** A cut flow as the bridge reports it: the facade's lease id (`lease-` and 32 hex digits, the
+ * first 8 being `Lease.id`), the outcome derived from the artifacts, those listed unresolved first. */
+const flow = (lease: string, kind: FlowLockReport["flow"], artifacts: [string, FlowOutcomeName][], omitted = 0): FlowLockReport => ({
+  lease: `lease-${lease.repeat(4)}`,
   walletId: FIXTURE_WALLET_ID,
   flow: kind,
-  outcome,
-  artifacts: artifacts.map((a) => (typeof a === "string" ? { artifact: a, outcome } : { artifact: a[0], outcome: a[1] })),
+  outcome: artifacts.reduce<FlowOutcomeName>((o, [, a]) => (STRENGTH.indexOf(a) > STRENGTH.indexOf(o) ? a : o), "cancelled"),
+  artifacts: listed(artifacts.map(([artifact, outcome]) => ({ artifact, outcome }))),
   artifactsOmitted: omitted,
 });
 
-/** Locks `w` with these flows cut; the lock revokes each flow's lease. The dispatch state of
- * every listed artifact starts at its outcome. */
+/** Locks `w` with these flows cut, listed as the bridge lists them; the lock revokes each flow's
+ * lease. The dispatch state of every listed artifact starts at its outcome. */
 function cutting(w: World, flows: FlowLockReport[], flowsOmitted = 0, walletsWithSecretsOmitted = 0): World {
   w.dashpay = registered();
-  w.leases = flows.map((f) => lease(f.lease, f.flow, f.flow === "registration" || f.flow === "topUp" || f.flow === "acceptAndPay"));
+  w.leases = flows.map((f) => lease(f.lease.slice("lease-".length, "lease-".length + 8), f.flow, f.flow === "registration" || f.flow === "topUp" || f.flow === "acceptAndPay"));
   w.dispatch = Object.fromEntries(flows.flatMap((f) => f.artifacts.map((a) => [a.artifact, a.outcome === "cancelled" ? "notSent" : a.outcome])));
-  w.cut = { flows, flowsOmitted, walletsWithSecretsOmitted };
+  w.cut = { flows: listed(flows), flowsOmitted, walletsWithSecretsOmitted };
   return w;
 }
 
 const hex = (i: number) => i.toString(16).padStart(2, "0");
+/** A contact request cut by the lock: its state transition, with this outcome. */
+const request = (i: number, outcome: FlowOutcomeName) =>
+  flow(`5eed00${hex(i)}`, "contactRequest", outcome === "cancelled" ? [] : [[artifactId(`5eed00${hex(i)}`), outcome]]);
 
-/** The cut flows of a full report (E0-13 D3: 16 flows of 8 artifacts, unresolved first):
- * `tail` after the pending ones. */
-function sixteen(tail: (i: number) => FlowLockReport, pendingTopUp: FlowOutcomeName[], topUpOmitted: number): FlowLockReport[] {
+/** The cut flows of a full report (E0-13 D3: 16 flows of 8 artifacts): a registration whose
+ * identity call was still running, a top-up with these artifact outcomes, and 14 requests. */
+function sixteen(requests: FlowOutcomeName, topUp: FlowOutcomeName[], topUpOmitted: number): FlowLockReport[] {
   return [
-    flow("3f9a1c27", "registration", "maybeSent", ["tx:3f9a1c27"]),
-    flow("8be04d11", "topUp", "willBeSent", pendingTopUp.map((o, i) => [`st:8be04d11-${i}`, o]), topUpOmitted),
-    ...Array.from({ length: 14 }, (_, i) => tail(i)),
+    flow("3f9a1c27", "registration", [[step("registration", "3f9a1c27", "identity"), "maybeSent"]]),
+    flow("8be04d11", "topUp", topUp.map((o, i) => [artifactId(`8be04d${hex(i)}`), o]), topUpOmitted),
+    ...Array.from({ length: 14 }, (_, i) => request(i, requests)),
   ];
 }
 
 /** Every listed flow and artifact is pending and more were cut: the omitted ones may be pending
  * too, and no query names them. Unresolved for good. */
-const omittedPending = (w: World) =>
-  cutting(
-    w,
-    sixteen((i) => flow(`5eed00${hex(i)}`, "contactRequest", "willBeSent", [`st:5eed00${hex(i)}`]), Array(8).fill("willBeSent"), 7),
-    3,
-    2,
-  );
+const omittedPending = (w: World) => cutting(w, sixteen("willBeSent", Array(8).fill("willBeSent"), 7), 3, 2);
 
 /** Counts above 0, but the order proves nothing omitted is pending: the listed flows end with
- * cancelled ones and the top-up's listed artifacts with sent ones. Unresolved until the listed
- * pending artifacts settle and the registration's call, still running, ends. */
+ * cancelled ones and the top-up's listed artifacts with sent ones (the top-up itself reads
+ * `sent`, its strongest). Unresolved until the listed pending artifacts settle and the
+ * registration's call, still running, ends. */
 function omittedSettled(w: World): World {
-  cutting(
-    w,
-    sixteen((i) => flow(`5eed00${hex(i)}`, "contactRequest", "cancelled", []), ["willBeSent", ...Array<FlowOutcomeName>(7).fill("sent")], 4),
-    2,
-    2,
-  );
+  cutting(w, sixteen("cancelled", ["willBeSent", ...Array<FlowOutcomeName>(7).fill("sent")], 4), 2, 2);
   w.leases[0] = { ...w.leases[0], inFlight: 1, callRunning: true };
   return w;
 }
 
-/** Flows in flight when the user locks, all listed: a registration whose funding may have been
- * sent, a top-up handed off, a sent payment and a cancelled request. */
+/** Flows in flight when the user locks, all listed: a registration whose funding was sent while
+ * its identity call may have gone out (E0-04 §8.4: it reads `sent`, yet something of it is
+ * pending), a top-up handed off, a sent payment and a cancelled request. */
 const listedFlows = (w: World) =>
   cutting(w, [
-    flow("3f9a1c27", "registration", "maybeSent", ["tx:3f9a1c27"]),
-    flow("8be04d11", "topUp", "willBeSent", ["st:8be04d11"]),
-    flow("c0ffee01", "acceptAndPay", "sent", ["tx:c0ffee01"]),
-    flow("5eed5eed", "contactRequest", "cancelled", []),
+    flow("3f9a1c27", "registration", [
+      [step("registration", "3f9a1c27", "funding"), "sent"],
+      [step("registration", "3f9a1c27", "identity"), "maybeSent"],
+    ]),
+    flow("8be04d11", "topUp", [[artifactId("8be04d11"), "willBeSent"]]),
+    flow("c0ffee01", "acceptAndPay", [[artifactId("c0ffee01"), "sent"]]),
+    request(0, "cancelled"),
   ]);
 
 /** Everything resolved: the payment was sent and the request cancelled. */
 function resolvedFlows(w: World): World {
-  return cutting(w, [flow("c0ffee01", "acceptAndPay", "sent", ["tx:c0ffee01"]), flow("5eed5eed", "contactRequest", "cancelled", [])]);
+  return cutting(w, [flow("c0ffee01", "acceptAndPay", [[artifactId("c0ffee01"), "sent"]]), request(0, "cancelled")]);
 }
 
 const SCENARIOS = {
