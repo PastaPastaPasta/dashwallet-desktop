@@ -112,14 +112,25 @@ engine is built or linked. Scenarios: `funded` (default), `empty`, `no-wallet`, 
 `lock-report-omitted-settles`, `lock-report-pending`, `lock-report-resolved`, `lock-report-call`, and `error-<class>` for each `ErrorData` class (see
 `apps/desktop/README.md` for the URL parameters).
 
-**No fixture code in production.** The renderer imports the fixture only under the build-time constant
+**No fixture marker or fixture literal in production.** The renderer imports the fixture only under the build-time constant
 `__DW_FIXTURES__`, which is true for `vite` (dev server) and `vite build --mode fixture` and false for
 `vite build`, so the production bundle has no fixture chunk. Vite's `noFixtureModules` plugin fails a
 production build whose chunks hold any `src/fixture/` module, any module whose source carries the line
 `// dw-fixture-module` (every fixture module starts with it, `fixture.test.ts` checks, so a copy or a
 rename outside `src/fixture/` still fails), or the mock IPC, whatever imports it, and
-`scripts/check-bundle.mjs` runs at the end of both builds: `dist/` fails if it contains the fixture's sentinel string or Tauri's mock IPC, and
-`dist-fixture/` fails if it does not (the positive control). `pnpm tauri build` runs `pnpm build`, so
+`scripts/check-bundle.mjs` runs at the end of both builds. `dist/` fails if it contains the fixture's
+sentinel string, Tauri's mock IPC or any **fixture sentinel**: the string literals of the fixture sources
+(tests excluded) of at least 8 printable characters that are not plain words (those need 20), and their
+integers of 7 digits or more (the PRNG seed `20261006`), derived on each build by
+`scripts/fixture-sentinels.mjs`, less two reviewed lists: literals the rest of `src/` holds too (error
+codes; `sentinels.test.ts` keeps the list equal to the actual overlap) and literals too generic to be
+evidence (2^32, a PRNG constant, the base58 alphabet). The sentinels come from the modules in
+`src/fixture/`, whose exact list `fixture.test.ts` pins, so moving one out fails that test. `dist-fixture/` fails unless it
+holds both markers and every sentinel (the positive control). The negative control,
+`scripts/guard-negative-control.sh` (in `ci.yml`), copies `src/fixture/wallet.ts` to `src/guard-copy/`
+without its marker, imports it from `main.tsx`, and requires `pnpm build` to fail at those sentinels.
+What the check proves is that no fixture marker or sentinel is in `dist/`; fixture code with no
+distinctive literal (a small helper) would not be found. `pnpm tauri build` runs `pnpm build`, so
 every app binary passes the check. dw-app has no fixture mode (`--fixture` is an unknown option).
 
 | Suite | Where | What |

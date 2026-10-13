@@ -10,11 +10,12 @@ const repo = resolve(import.meta.dirname, "../..");
 // Fixtures (U-07): `__DW_FIXTURES__` is true for the dev server, vitest and
 // `vite build --mode fixture` (into `dist-fixture/`, which Playwright serves), and false for
 // `vite build`, the production renderer Tauri embeds. Nothing else decides it: no environment
-// variable can put the fixture backend into `dist/`. Two checks: `noFixtureModules` fails a
-// production build whose chunks hold any `src/fixture/` module, any module whose source carries
-// the fixture marker (a fixture module copied or renamed elsewhere keeps it; fixture.test.ts
-// checks every fixture module has it) or Tauri's mock IPC, whoever imports it; and
-// scripts/check-bundle.mjs scans the written files.
+// variable can put the fixture backend into `dist/`. Two checks: `noFixtureModules`, the fast
+// first one, fails a production build whose chunks hold any `src/fixture/` module, any module
+// whose source carries the fixture marker (a fixture module copied or renamed elsewhere keeps it;
+// fixture.test.ts checks every fixture module has it) or Tauri's mock IPC, whoever imports it;
+// then scripts/check-bundle.mjs scans the written files for the markers and for the fixture
+// sources' distinctive literals, which a copy stripped of its marker still holds.
 const FIXTURE_MARKER = /^\/\/ dw-fixture-module\b/m;
 function noFixtureModules(): Plugin {
   const marked = new Set<string>();

@@ -45,7 +45,7 @@ WebKitGTK development packages above, so on Linux `cargo build --workspace` now 
 |---|---|
 | `pnpm dev` | Vite dev server on :1420 with the fixture backend (open in any browser; URL parameters below) |
 | `pnpm tauri dev` | the app with hot reload, on the real engine |
-| `pnpm build` | production renderer in `dist/`; fails if it holds fixture code (`scripts/check-bundle.mjs`) |
+| `pnpm build` | production renderer in `dist/`; fails if it holds a fixture marker or a fixture sentinel, a distinctive literal of `src/fixture/` (`scripts/check-bundle.mjs`) |
 | `pnpm build:fixture` | renderer with the fixture backend in `dist-fixture/` (`pnpm preview:fixture` serves it on :1420) |
 | `pnpm tauri build` | release binary plus `.deb` and AppImage (`--no-bundle` for the binary only); runs `pnpm build` |
 | `pnpm test` | unit tests: amount formatting against `testdata/amount_format.json`, presentation, fixture, event bridge, token hygiene |

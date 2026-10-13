@@ -29,11 +29,13 @@ afterEach(() => {
 
 describe("fixture backend", () => {
   // vite.config.ts fails a production build holding a module with this marker, wherever it
-  // lives: a fixture module copied or renamed out of src/fixture/ keeps it.
+  // lives: a fixture module copied or renamed out of src/fixture/ keeps it. One whose marker
+  // was also removed is found by its literals (scripts/check-bundle.mjs, sentinels.test.ts),
+  // which are derived from the modules here: the exact list makes moving one out fail.
   it("every fixture module carries the production-build marker", () => {
     const dir = new URL(".", import.meta.url);
     const modules = readdirSync(dir).filter((f) => /\.tsx?$/.test(f) && !f.endsWith(".test.ts"));
-    expect(modules.length).toBeGreaterThan(5);
+    expect(modules.sort()).toEqual(["dashpay.ts", "errors.ts", "handlers.ts", "index.ts", "scenarios.ts", "wallet.ts"]);
     for (const f of modules) expect(readFileSync(new URL(f, dir), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);
   });
 
