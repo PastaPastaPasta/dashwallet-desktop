@@ -6,7 +6,6 @@
 import type { ChannelStateName } from "../api/generated/ChannelStateName";
 import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
 import type { ContactSectionName } from "../api/generated/ContactSectionName";
-import type { DashPayEventInfo } from "../api/generated/DashPayEventInfo";
 import type { DashPayProfile } from "../api/generated/DashPayProfile";
 import type { DashPayStartupInfo } from "../api/generated/DashPayStartupInfo";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
@@ -23,8 +22,6 @@ export interface DashPayWorld {
   registrations: RegistrationStatus[];
   /** The main identity's contacts, every relation but `stranger` and `isSelf`. */
   contacts: ContactDetailInfo[];
-  /** The journal, newest first. */
-  events: DashPayEventInfo[];
   /** What `search_users` / `resolve_user` find: the contacts plus a stranger and the wallet's own name. */
   directory: UserHit[];
 }
@@ -163,7 +160,6 @@ export function noIdentity(): DashPayWorld {
     identities: [],
     registrations: [],
     contacts: [],
-    events: [],
     directory: [],
   };
 }
@@ -205,28 +201,12 @@ export function registered(): DashPayWorld {
     relation: c.summary.relation,
     unverified: c.summary.unverified,
   });
-  const event = (id: number, kind: DashPayEventInfo["kind"], who: keyof typeof IDENTITY | null, at: number, read: boolean, reference: string | null = null): DashPayEventInfo => ({
-    id,
-    kind,
-    contact: who ? IDENTITY[who] : null,
-    reference,
-    at,
-    readAt: read ? at + 60 : null,
-  });
   return {
     status: { kind: "ready", main: IDENTITY.alice },
     startup: startup("ready", IDENTITY.alice),
     identities: [aliceIdentity()],
     registrations: [],
     contacts,
-    events: [
-      event(6, "requestReceived", "heidi", at(0, 2), false, "req-heidi"),
-      event(5, "requestReceived", "grace", at(0, 6), false, "req-grace"),
-      event(4, "paymentReceived", "bob", at(1, 3), true, "b0".repeat(32)),
-      event(3, "contactEstablished", "carol", at(2), true, "req-carol"),
-      event(2, "requestAccepted", "erin", at(5), true, "req-erin"),
-      event(1, "usernameRegistered", null, at(45), true, "alice"),
-    ],
     directory: [
       ...contacts.map(hit),
       { identity: IDENTITY.mallory, username: "mallory", displayName: "Mallory", avatarUrl: null, relation: "stranger", unverified: false },

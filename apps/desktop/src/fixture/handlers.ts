@@ -35,6 +35,12 @@ function dashpay(w: World, walletId: string, identity?: string) {
   return w.dashpay;
 }
 
+/** An engine stub: `platform.not_implemented` naming the engine call, after the wallet lookup. */
+function notYet(w: World, walletId: string, call: string): never {
+  dashpay(w, walletId);
+  throw fail("platform.not_implemented", `${call} is not implemented`, { kind: "call", call });
+}
+
 function contact(w: World, walletId: string, identity: string, id: string): ContactDetailInfo {
   const c = dashpay(w, walletId, identity).contacts.find((x) => x.summary.contact === id);
   if (!c) throw fail("invalid_argument", `not a contact: ${id}`);
@@ -187,24 +193,9 @@ export const HANDLERS: Handlers = {
   dashpay_profile: ({ walletId, identity }, { world }) =>
     dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!.profile,
 
-  // DashPay: notifications
-  dashpay_events: ({ walletId, identity, cursor, limit }, { world }) => {
-    const dp = dashpay(world, walletId, identity);
-    const older = dp.events.filter((e) => cursor === null || e.id < cursor);
-    const page = older.slice(0, limit);
-    return {
-      pending: dp.contacts.filter((c) => c.summary.relation === "pendingIncoming").map((c) => c.summary),
-      new: page.filter((e) => e.readAt === null),
-      earlier: page.filter((e) => e.readAt !== null),
-      nextCursor: older.length > limit ? page[page.length - 1].id : null,
-    };
-  },
-  dashpay_unread_count: ({ walletId, identity }, { world }) => dashpay(world, walletId, identity).events.filter((e) => e.readAt === null).length,
-  dashpay_mark_read: ({ walletId, identity, upTo }, ctx) => {
-    const dp = dashpay(ctx.world, walletId, identity);
-    const now = ctx.world.sync.tipTime ?? 0;
-    dp.events = dp.events.map((e) => (e.id <= upTo && e.readAt === null ? { ...e, readAt: now } : e));
-    contactsChanged(ctx, walletId, identity);
-    return null;
-  },
+  // DashPay: notifications. The engine's are stubs until DP2-05 (platform/notifications.rs):
+  // the wallet is looked up, then the call fails. DP2-05 replaces these with the engine's own.
+  dashpay_events: ({ walletId }, { world }) => notYet(world, walletId, "DashPay.events"),
+  dashpay_unread_count: ({ walletId }, { world }) => notYet(world, walletId, "DashPay.unread_count"),
+  dashpay_mark_read: ({ walletId }, { world }) => notYet(world, walletId, "DashPay.mark_read"),
 };

@@ -92,9 +92,11 @@ describe("fixture backend", () => {
     expect(contacts.filter((c) => c.section === "requests").every((c) => c.relation === "pendingIncoming")).toBe(true);
     expect(contacts.filter((c) => c.section === "pending").every((c) => c.relation === "pendingOutgoing")).toBe(true);
     expect(contacts.filter((c) => c.section === "hidden").map((c) => c.username).sort()).toEqual(["ivan", "judy"]);
-    const events = await cmd.dashpayEvents(FIXTURE_WALLET_ID, IDENTITY.alice, null, 10);
-    expect(events.pending.map((c) => c.username).sort()).toEqual(["grace", "heidi"]);
-    expect(await cmd.dashpayUnreadCount(FIXTURE_WALLET_ID, IDENTITY.alice)).toBe(2);
+    // The engine's notification calls are stubs until DP2-05, and so are the fixture's.
+    const stub = (call: string) => ({ code: "platform.not_implemented", data: { kind: "call", call } });
+    await expect(cmd.dashpayEvents(FIXTURE_WALLET_ID, IDENTITY.alice, null, 10)).rejects.toMatchObject(stub("DashPay.events"));
+    await expect(cmd.dashpayUnreadCount(FIXTURE_WALLET_ID, IDENTITY.alice)).rejects.toMatchObject(stub("DashPay.unread_count"));
+    await expect(cmd.dashpayMarkRead(FIXTURE_WALLET_ID, IDENTITY.alice, 6)).rejects.toMatchObject(stub("DashPay.mark_read"));
     expect((await cmd.dashpayStatus(FIXTURE_WALLET_ID)).kind).toBe("ready");
   });
 
