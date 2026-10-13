@@ -2729,6 +2729,27 @@ fn the_other_lifecycle_operations_wait_for_a_held_removal() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+/// An import that readmits a removed wallet and fails after registering it
+/// leaves it registered, so not recorded as removed: its writes land.
+#[test]
+fn an_import_failing_after_registering_leaves_the_wallet_writable() {
+    let (_dir, engine, s, id, wipe) = removable();
+    engine.block_on(s.remove_wallet(id, wipe)).unwrap();
+    guard(&crate::keys::FAIL_AFTER_REGISTRATION_IN).push(s.data_dir().to_path_buf());
+    let failed = engine.block_on(s.import_wallet(
+        Zeroizing::new(ABANDON_12.to_vec()),
+        Zeroizing::new(Vec::new()),
+        ImportOptions::default(),
+    ));
+    assert!(failed.is_err(), "{failed:?}");
+    let manager = s.manager().unwrap();
+    assert!(engine.block_on(manager.get_wallet(&id.0)).is_some());
+    let (db, wallet) = (s.live().unwrap().appdb, id.to_string());
+    db.set_main_identity(&wallet, &base58(ALICE)).unwrap();
+    assert_eq!(db.main_identity(&wallet).unwrap(), Some(base58(ALICE)));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// A watch-only import that readmits a removed wallet and then fails to
 /// store it records the wallet as removed again (DEC-210 (3b)).
 #[test]

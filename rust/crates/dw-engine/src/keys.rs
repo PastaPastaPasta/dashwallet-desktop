@@ -32,15 +32,28 @@ use crate::{CreatedWallet, EngineError, EngineEvent, NetworkSession, WalletId};
 pub(crate) static FAIL_REGISTRATION_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
     std::sync::Mutex::new(Vec::new());
 
-/// Tests: whether [`FAIL_REGISTRATION_IN`] refuses this registration.
+/// Tests: the next seed import of a session on one of these data
+/// directories reports a failure after registering the wallet.
 #[cfg(test)]
-pub(crate) fn registration_refused(data_dir: &std::path::Path) -> bool {
-    let mut dirs = FAIL_REGISTRATION_IN
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+pub(crate) static FAIL_AFTER_REGISTRATION_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Tests: whether `list` names `data_dir`, taking it out.
+#[cfg(test)]
+fn take_test_failure(
+    list: &std::sync::Mutex<Vec<std::path::PathBuf>>,
+    data_dir: &std::path::Path,
+) -> bool {
+    let mut dirs = list.lock().unwrap_or_else(|p| p.into_inner());
     let before = dirs.len();
     dirs.retain(|dir| dir != data_dir);
     dirs.len() < before
+}
+
+/// Tests: whether [`FAIL_REGISTRATION_IN`] refuses this registration.
+#[cfg(test)]
+pub(crate) fn registration_refused(data_dir: &std::path::Path) -> bool {
+    take_test_failure(&FAIL_REGISTRATION_IN, data_dir)
 }
 
 #[cfg(not(test))]
@@ -566,6 +579,15 @@ impl NetworkSession {
                 .await
                 .map_err(EngineError::from)
         };
+        #[cfg(test)]
+        let registered = registered.and_then(|wallet| {
+            if take_test_failure(&FAIL_AFTER_REGISTRATION_IN, self.data_dir()) {
+                return Err(EngineError::Internal(
+                    "test: failed after registering".into(),
+                ));
+            }
+            Ok(wallet)
+        });
         drop(seed);
         let wallet = match registered {
             Ok(wallet) if wallet.wallet_id() == wallet_id.0 => wallet,
