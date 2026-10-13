@@ -32,6 +32,10 @@ dash-sdk = { git = "https://github.com/PastaPastaPasta/platform", rev = "ebe37f8
 # feature unification).
 dpp = { git = "https://github.com/PastaPastaPasta/platform", rev = "ebe37f8a679b1a552483dc7ff12c306291e9a32b", features = ["ed25519-dalek"] }
 dash-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "ebe37f8a679b1a552483dc7ff12c306291e9a32b" }
+# Drive's document cost estimator (`drive::drive::document::cost`, the one
+# wasm-sdk exposes), for the credits cost table (DP1-06). `verify` is the
+# feature dash-sdk already builds it with.
+drive = { git = "https://github.com/PastaPastaPasta/platform", rev = "ebe37f8a679b1a552483dc7ff12c306291e9a32b", default-features = false, features = ["verify"] }
 # `dpns-contract`: the provider serves the DPNS contract that the contested-name
 # vote-state proofs need (DP1-03), as rs-sdk-ffi (the iOS build) enables it;
 # `dashpay-contract`: the DashPay contract that a broadcast contactRequest's

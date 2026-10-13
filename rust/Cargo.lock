@@ -2352,6 +2352,7 @@ dependencies = [
  "dash-spv",
  "dashcore",
  "dpp",
+ "drive",
  "dw-appdb",
  "dw-coinjoin",
  "dw-compat",
