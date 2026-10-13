@@ -142,11 +142,19 @@ const hex = (i: number) => i.toString(16).padStart(2, "0");
 const request = (i: number, outcome: FlowOutcomeName) =>
   flow(`5eed00${hex(i)}`, "contactRequest", outcome === "cancelled" ? [] : [[artifactId(`5eed00${hex(i)}`), outcome]]);
 
+/** A registration whose funding was sent and whose identity call may have gone out: the engine
+ * lists the funding step too, so it reads `sent` (E0-04 §8.4). */
+const registrationCut = () =>
+  flow("3f9a1c27", "registration", [
+    [step("registration", "3f9a1c27", "funding"), "sent"],
+    [step("registration", "3f9a1c27", "identity"), "maybeSent"],
+  ]);
+
 /** The cut flows of a full report (E0-13 D3: 16 flows of 8 artifacts): a registration whose
  * identity call was still running, a top-up with these artifact outcomes, and 14 requests. */
 function sixteen(requests: FlowOutcomeName, topUp: FlowOutcomeName[], topUpOmitted: number): FlowLockReport[] {
   return [
-    flow("3f9a1c27", "registration", [[step("registration", "3f9a1c27", "identity"), "maybeSent"]]),
+    registrationCut(),
     flow("8be04d11", "topUp", topUp.map((o, i) => [artifactId(`8be04d${hex(i)}`), o]), topUpOmitted),
     ...Array.from({ length: 14 }, (_, i) => request(i, requests)),
   ];
@@ -171,13 +179,20 @@ function omittedSettled(w: World): World {
  * pending), a top-up handed off, a sent payment and a cancelled request. */
 const listedFlows = (w: World) =>
   cutting(w, [
-    flow("3f9a1c27", "registration", [
-      [step("registration", "3f9a1c27", "funding"), "sent"],
-      [step("registration", "3f9a1c27", "identity"), "maybeSent"],
-    ]),
+    registrationCut(),
     flow("8be04d11", "topUp", [[artifactId("8be04d11"), "willBeSent"]]),
     flow("c0ffee01", "acceptAndPay", [[artifactId("c0ffee01"), "sent"]]),
     request(0, "cancelled"),
+  ]);
+
+/** An accept-and-pay whose payment was sent while its `accept_request` call may have gone out.
+ * A call is reported under its label, which `dispatchStatus` cannot name: unresolved for good. */
+const unnamedCall = (w: World) =>
+  cutting(w, [
+    flow("c0ffee01", "acceptAndPay", [
+      [artifactId("c0ffee01"), "sent"],
+      ["accept_request", "maybeSent"],
+    ]),
   ]);
 
 /** Everything resolved: the payment was sent and the request cancelled. */
@@ -229,6 +244,8 @@ const SCENARIOS = {
   "lock-report-pending": (t) => listedFlows(base(t)),
   /** Locking cuts flows that all ended: sent or cancelled. */
   "lock-report-resolved": (t) => resolvedFlows(base(t)),
+  /** A cut call reported under its label (no id to check): unresolved for good. */
+  "lock-report-call": (t) => unnamedCall(base(t)),
 } satisfies Record<string, (theme: ThemeName | null) => World>;
 
 export type ScenarioName = keyof typeof SCENARIOS;

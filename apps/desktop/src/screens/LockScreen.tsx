@@ -55,16 +55,16 @@ function LockReportBody({ report }: { report: LockOutcome }) {
   const check = resolved
     ? null
     : summary.beyondReach
-      ? "The app cannot check all of them, so some may still be sent."
+      ? "The app cannot check all of these actions, so some may still be sent."
       : reconciled.isError
-        ? "Could not check whether they may still be sent."
-        : "Checking whether they may still be sent…";
+        ? "Could not check whether any of these actions may still be sent."
+        : "Checking whether any of these actions may still be sent…";
   return (
     <section
       className="lock-report"
       data-testid="lock-report"
       data-resolved={resolved}
-      data-checked-at={reconciled.dataUpdatedAt}
+      data-checked-at={reconciled.data?.checkedAt}
       aria-labelledby="lock-report-title"
     >
       <p id="lock-report-title" className="lock-report-title" role="status">

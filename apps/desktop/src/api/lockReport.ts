@@ -53,6 +53,11 @@ const artifactTailMayBePending = (f: FlowLockReport) =>
 const flowTailMayBePending = (report: LockOutcome) =>
   report.flowsOmitted > 0 && (report.flows.length === 0 || report.flows[report.flows.length - 1].outcome !== "cancelled");
 
+/** Whether `dispatchStatus` can name an artifact: a txid or transition hash (64 hex digits) or a
+ * step id (it has a `/`). A library call is reported under its label (`send_request`,
+ * `register_name`), which the engine rejects, so nothing settles it. */
+export const isCheckable = (artifact: string) => /^[0-9a-f]{64}$/.test(artifact) || artifact.includes("/");
+
 /** Something of the flow may still reach the network: a listed pending artifact, an omitted one
  * that may be, or a pending outcome (which the strongest of its artifacts' then is). */
 const mayBePending = (f: FlowLockReport) => isPending(f) || f.artifacts.some(isPending) || artifactTailMayBePending(f);
@@ -66,8 +71,8 @@ export interface LockReportSummary {
   /** Something may still be sent, or the report cannot say: reconcile before saying otherwise. */
   unresolved: boolean;
   /** Something pending that no query can name: omitted flows after a flow not `cancelled`, an
-   * omitted artifact after a pending one, or a pending flow with no pending artifact listed.
-   * Nothing the renderer can read settles it. */
+   * omitted artifact after a pending one, a pending flow with no pending artifact listed, or a
+   * pending artifact named by a call's label. Nothing the renderer can read settles it. */
   beyondReach: boolean;
 }
 
@@ -80,7 +85,13 @@ export function summarizeLockReport(report: LockOutcome): LockReportSummary {
   const complete = omitted.flows === 0 && omitted.artifacts === 0 && omitted.wallets === 0;
   const pending = report.flows.filter(mayBePending);
   const beyondReach =
-    flowTailMayBePending(report) || report.flows.some((f) => artifactTailMayBePending(f) || (isPending(f) && !f.artifacts.some(isPending)));
+    flowTailMayBePending(report) ||
+    report.flows.some(
+      (f) =>
+        artifactTailMayBePending(f) ||
+        (isPending(f) && !f.artifacts.some(isPending)) ||
+        f.artifacts.some((a) => isPending(a) && !isCheckable(a.artifact)),
+    );
   return { complete, omitted, pending, unresolved: !complete || pending.length > 0, beyondReach };
 }
 
@@ -90,8 +101,10 @@ export function reportsAnything(report: LockOutcome): boolean {
 }
 
 export interface Reconciled {
-  /** The listed pending artifacts, with what the engine knows of each now (`null`: unknown,
-   * including a failed query). */
+  /** When the reconciliation started reading (ms since epoch): what it says is as of then. */
+  checkedAt: number;
+  /** The listed pending artifacts `dispatchStatus` can name, with what the engine knows of each
+   * now (`null`: unknown, including a failed query). */
   artifacts: { walletId: string; artifact: string; state: DispatchStateName | null }[];
   /** Leases with a call or permit in flight: something is being handed off now. */
   live: Lease[];
@@ -108,8 +121,11 @@ export async function reconcileLockReport(
   report: LockOutcome,
   backend: Pick<Backend, "leases" | "dispatchStatus" | "lockStatus">,
 ): Promise<Reconciled> {
+  const checkedAt = Date.now();
   const summary = summarizeLockReport(report);
-  const wanted = report.flows.flatMap((f) => f.artifacts.filter(isPending).map((a) => ({ walletId: f.walletId, artifact: a.artifact })));
+  const wanted = report.flows.flatMap((f) =>
+    f.artifacts.filter((a) => isPending(a) && isCheckable(a.artifact)).map((a) => ({ walletId: f.walletId, artifact: a.artifact })),
+  );
   const [leases, lock, states] = await Promise.all([
     backend.leases(),
     backend.lockStatus(),
@@ -119,5 +135,5 @@ export async function reconcileLockReport(
   const artifacts = wanted.map((a, i) => ({ ...a, state: states[i] }));
   const live = leases.filter((l) => l.inFlight > 0 || l.callRunning);
   const settled = !summary.beyondReach && live.length === 0 && artifacts.every((a) => a.state === "sent" || a.state === "notSent");
-  return { artifacts, live, lock, settled };
+  return { checkedAt, artifacts, live, lock, settled };
 }

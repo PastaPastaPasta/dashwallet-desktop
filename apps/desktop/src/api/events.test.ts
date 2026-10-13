@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InfiniteData } from "@tanstack/react-query";
-import { bridgeEvents, invalidationsFor, RECONCILE_COALESCE_MS } from "./events";
+import { bridgeEvents, invalidationsFor, RECONCILE_COALESCE_MS, RECONCILE_MAX_WAIT_MS } from "./events";
 import type { Backend } from "./backend";
 import type { AppEvent } from "./generated/commands";
 import type { HistoryRows } from "./generated/HistoryRows";
@@ -59,6 +59,32 @@ describe("event bridge", () => {
       expect(reconcile()).toBe(false);
       await vi.advanceTimersByTimeAsync(RECONCILE_COALESCE_MS);
       expect(reconcile()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a steady stream of events still reconciles, and unsubscribing drops a pending one", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new QueryClient();
+      const key = [...keys.lockReconcile, REPORT];
+      client.setQueryData(key, { settled: false });
+      let emit: (e: AppEvent) => void = () => undefined;
+      const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
+      const unsubscribe = await bridgeEvents(fake, client);
+      const lease = () => emit({ kind: "leaseChanged", network: "testnet", lease: {} as never });
+      for (let t = 0; t < RECONCILE_MAX_WAIT_MS; t += RECONCILE_COALESCE_MS / 2) {
+        lease();
+        await vi.advanceTimersByTimeAsync(RECONCILE_COALESCE_MS / 2);
+      }
+      expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+
+      client.setQueryData(key, { settled: false });
+      lease();
+      unsubscribe();
+      await vi.advanceTimersByTimeAsync(RECONCILE_MAX_WAIT_MS);
+      expect(client.getQueryState(key)?.isInvalidated).toBe(false);
     } finally {
       vi.useRealTimers();
     }

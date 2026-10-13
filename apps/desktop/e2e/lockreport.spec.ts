@@ -12,7 +12,7 @@ async function lockFrom(page: Page, scenario: string) {
 }
 
 /** Changes the fixture's state and announces it as the engine would, then waits until the lock
- * screen shows a reconciliation that ran after the change (`data-checked-at`, the result's time). */
+ * screen shows a reconciliation that started after the change (`data-checked-at`). */
 async function settleAndReconcile(page: Page, change: "artifacts" | "leases") {
   const changedAt = await page.evaluate((change) => {
     const f = window.__dwFixture!;
@@ -36,9 +36,11 @@ test("flows omitted after pending ones keep the report unresolved whatever settl
   await expect(notice).toHaveAttribute("data-resolved", "false");
   await expect(notice.getByRole("status")).toHaveText("Lock stops new signatures; a transaction already signed may still be sent");
   await expect(page.getByTestId("lock-report-flow")).toHaveCount(16);
-  await expect(page.getByTestId("lock-report-flow").first()).toHaveText("Username registration: May have been sent");
+  // Listed unresolved first by outcome: the registration reads Sent (its funding was), so it is last.
+  await expect(page.getByTestId("lock-report-flow").first()).toHaveText("Credit top-up: Will be sent");
+  await expect(page.getByTestId("lock-report-flow").last()).toHaveText("Username registration: Sent");
   await expect(page.getByTestId("lock-report-omitted")).toHaveText("3 more actions, 7 more steps, 2 more wallets not listed here.");
-  const beyondReach = "The app cannot check all of them, so some may still be sent.";
+  const beyondReach = "The app cannot check all of these actions, so some may still be sent.";
   await expect(page.getByTestId("lock-report-check")).toHaveText(beyondReach);
 
   await settleAndReconcile(page, "artifacts");
@@ -52,7 +54,7 @@ test("omissions the order shows are settled resolve with the listed artifacts", 
   const notice = page.getByTestId("lock-report");
   await expect(notice).toHaveAttribute("data-resolved", "false");
   await expect(page.getByTestId("lock-report-omitted")).toHaveText("2 more actions, 4 more steps, 2 more wallets not listed here.");
-  await expect(page.getByTestId("lock-report-check")).toHaveText("Checking whether they may still be sent…");
+  await expect(page.getByTestId("lock-report-check")).toHaveText("Checking whether any of these actions may still be sent…");
 
   // The listed artifacts settle, but the registration's call is still running.
   await settleAndReconcile(page, "artifacts");
@@ -72,17 +74,26 @@ test("a sent flow with a step still out is unresolved until the step settles", a
   // have gone out.
   await expect(page.getByTestId("lock-report-flow").filter({ hasText: "Username registration" })).toHaveText("Username registration: Sent");
   await expect(notice).toHaveAttribute("data-resolved", "false");
-  await expect(page.getByTestId("lock-report-check")).toHaveText("Checking whether they may still be sent…");
+  await expect(page.getByTestId("lock-report-check")).toHaveText("Checking whether any of these actions may still be sent…");
 
   await settleAndReconcile(page, "artifacts");
   await expect(notice).toHaveAttribute("data-resolved", "true");
+});
+
+test("a call reported under its label cannot be checked, so it stays unresolved", async ({ page }) => {
+  await lockFrom(page, "lock-report-call");
+  const notice = page.getByTestId("lock-report");
+  await expect(page.getByTestId("lock-report-flow")).toHaveText(["Accept and pay: Sent"]);
+  await expect(page.getByTestId("lock-report-check")).toHaveText("The app cannot check all of these actions, so some may still be sent.");
+  await settleAndReconcile(page, "leases");
+  await expect(notice).toHaveAttribute("data-resolved", "false");
 });
 
 test("a failed check says so, complete report or not", async ({ page }) => {
   await page.goto(fixtureUrl("lock-report-pending", "light", "&fail=leases:none"));
   await page.getByTestId("toolbar-lock").click();
   await expect(page.getByTestId("lock-report")).toHaveAttribute("data-resolved", "false");
-  await expect(page.getByTestId("lock-report-check")).toHaveText("Could not check whether they may still be sent.");
+  await expect(page.getByTestId("lock-report-check")).toHaveText("Could not check whether any of these actions may still be sent.");
 });
 
 test("a complete report of ended flows is resolved at once", async ({ page }) => {

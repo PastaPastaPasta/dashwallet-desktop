@@ -6,6 +6,7 @@
 import type { AppError, AppEvent, CommandArgs, CommandName, CommandResults } from "../api/generated/commands";
 import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
 import type { LockOutcome } from "../api/generated/LockOutcome";
+import { isCheckable } from "../api/lockReport";
 import { sectionOf } from "./dashpay";
 import type { World } from "./scenarios";
 import { historyPage, txDetails } from "./wallet";
@@ -90,6 +91,8 @@ export const HANDLERS: Handlers = {
   leases: (_, { world }) => world.leases,
   dispatch_status: ({ walletId, artifact }, { world }) => {
     wallet(world, walletId);
+    // The engine's DashPay::dispatch_status: a txid, a transition hash or a step id.
+    if (!isCheckable(artifact)) throw fail("invalid_argument", "not a txid, transition hash or step id");
     return world.dispatch[artifact] ?? null;
   },
 

@@ -55,12 +55,18 @@ function unreachable(event: never): never {
 
 /** A lock that cuts 16 flows sends a `leaseChanged` for each, and every reconciliation reads
  * `leases`, `lockStatus` and up to 128 `dispatchStatus`: one runs this long after the last of a
- * burst. */
+ * burst, and at most RECONCILE_MAX_WAIT_MS after its first event. */
 export const RECONCILE_COALESCE_MS = 100;
+export const RECONCILE_MAX_WAIT_MS = 500;
 
 /** Subscribes the query client to the backend's events; returns the unsubscribe function. */
 export async function bridgeEvents(backend: Backend, client: QueryClient): Promise<() => void> {
   let reconcile: ReturnType<typeof setTimeout> | undefined;
+  let reconcileBy = 0;
+  const stopReconcile = () => {
+    clearTimeout(reconcile);
+    reconcile = undefined;
+  };
   const unsubscribe = await backend.onEvent((event) => {
     if (event.kind === "notice") console.warn("engine notice", event.code, event.detail);
     if (event.kind === "historyChanged") {
@@ -72,24 +78,38 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
     }
     if (event.kind === "lockProgress") {
       const { progress } = event;
-      // The new report shows with its `done`, never the previous lock's while a refetch runs.
-      if (progress.kind === "done") client.setQueryData(keys.lastLockReport, progress.report);
+      // The new report shows with its `done`, never the previous lock's while a refetch runs: a
+      // fetch already under way may hold the previous one, so it is dropped first.
+      if (progress.kind === "done") {
+        void client.cancelQueries({ queryKey: keys.lastLockReport });
+        client.setQueryData(keys.lastLockReport, progress.report);
+      }
       // While a lock drains, the last report is the previous lock's (useLockDrain).
       client.setQueryData(keys.lockDrain, progress.kind === "draining" ? progress : null);
     }
     const stale = invalidationsFor(event);
-    if (stale === "all") void client.invalidateQueries({ predicate: (q) => q.queryKey[0] !== keys.network[0] });
-    else
+    if (stale === "all") {
+      stopReconcile();
+      void client.invalidateQueries({ predicate: (q) => q.queryKey[0] !== keys.network[0] });
+    } else
       for (const queryKey of stale) {
         if (queryKey !== keys.lockReconcile) void client.invalidateQueries({ queryKey });
         else {
-          clearTimeout(reconcile);
-          reconcile = setTimeout(() => void client.invalidateQueries({ queryKey }), RECONCILE_COALESCE_MS);
+          const now = Date.now();
+          if (reconcile === undefined) reconcileBy = now + RECONCILE_MAX_WAIT_MS;
+          stopReconcile();
+          reconcile = setTimeout(
+            () => {
+              reconcile = undefined;
+              void client.invalidateQueries({ queryKey });
+            },
+            Math.min(RECONCILE_COALESCE_MS, reconcileBy - now),
+          );
         }
       }
   });
   return () => {
-    clearTimeout(reconcile);
+    stopReconcile();
     unsubscribe();
   };
 }

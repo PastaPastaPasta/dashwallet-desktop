@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installFixture, type FixtureHandle } from "../fixture";
 import type { FlowLockReport } from "./generated/FlowLockReport";
 import type { LockOutcome } from "./generated/LockOutcome";
-import { reconcileLockReport, reportsAnything, summarizeLockReport } from "./lockReport";
+import { isCheckable, reconcileLockReport, reportsAnything, summarizeLockReport } from "./lockReport";
 import { IpcBackend } from "./tauri";
 
 const W = "a1".repeat(32);
@@ -14,7 +14,7 @@ const flow = (outcome: Outcome, artifactsOmitted = 0, artifacts: Outcome[] = [ou
   walletId: W,
   flow: "topUp",
   outcome,
-  artifacts: artifacts.map((o, i) => ({ artifact: `a-${outcome}-${i}`, outcome: o })),
+  artifacts: artifacts.map((o, i) => ({ artifact: `topup/${outcome}/${i}`, outcome: o })),
   artifactsOmitted,
 });
 const report = (flows: FlowLockReport[], flowsOmitted = 0, walletsWithSecretsOmitted = 0): LockOutcome => ({
@@ -69,8 +69,18 @@ describe("lock report consumer", () => {
     ["artifacts omitted after a sent one", report([flow("sent", 3, ["willBeSent", "sent"])]), false],
     ["a pending flow with no pending artifact listed", report([flow("maybeSent", 0, [])]), true],
     ["only wallets omitted", report([flow("maybeSent")], 0, 4), false],
+    ["a pending call named by its label", report([{ ...flow("sent", 0, ["sent"]), artifacts: [{ artifact: "accept_request", outcome: "maybeSent" }] }]), true],
+    ["a settled call named by its label", report([{ ...flow("sent", 0, ["sent"]), artifacts: [{ artifact: "accept_request", outcome: "sent" }] }]), false],
   ])("%s: beyond reach %s", (_, r, beyond) => {
     expect(summarizeLockReport(r).beyondReach).toBe(beyond);
+  });
+
+  it("checks only what dispatchStatus can name", () => {
+    expect(isCheckable("ab".repeat(32))).toBe(true);
+    expect(isCheckable("registration/d1/identity")).toBe(true);
+    expect(isCheckable("accept_request")).toBe(false);
+    expect(isCheckable("AB".repeat(32))).toBe(false);
+    expect(isCheckable("ab".repeat(31))).toBe(false);
   });
 
   it("an empty complete report shows nothing", () => {
@@ -151,6 +161,21 @@ describe("lock report consumer", () => {
       expect(r.settled).toBe(false);
       for (const a of r.artifacts) fixture.world.dispatch[a.artifact] = "sent";
       expect((await reconcileLockReport(outcome, b)).settled).toBe(true);
+    });
+
+    it("a call named by its label is never asked about, and keeps the report unresolved", async () => {
+      const fixture = installFixture({ scenario: "lock-report-call" });
+      const b = new IpcBackend("fixture");
+      const outcome = await b.lock();
+      expect(outcome.flows.map((f) => f.outcome)).toEqual(["sent"]);
+      expect(summarizeLockReport(outcome)).toMatchObject({ complete: true, unresolved: true, beyondReach: true });
+      endAllLeases(fixture);
+      const r = await reconcileLockReport(outcome, b);
+      expect(r.artifacts).toEqual([]);
+      expect(fixture.calls).not.toContain("dispatch_status");
+      expect(r.settled).toBe(false);
+      // The engine rejects a label, and so does the fixture.
+      await expect(b.dispatchStatus(W, "accept_request")).rejects.toMatchObject({ code: "invalid_argument" });
     });
 
     it("a failed dispatchStatus leaves its artifact unknown, not the whole check failed", async () => {
