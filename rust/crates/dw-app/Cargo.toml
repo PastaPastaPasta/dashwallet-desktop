@@ -17,6 +17,13 @@ path = "src/lib.rs"
 name = "dash-wallet"
 path = "src/main.rs"
 
+[features]
+# The self-test (`--selftest`, `--selftest-pause`, `--selftest-passphrase-file`)
+# and its commands and grants (src/api/selftest.rs, capabilities-selftest/).
+# Off in release and packaged builds; tauri-selftest.yml builds a binary with
+# it (E0-13 D17).
+selftest = ["dep:dw-fs"]
+
 [build-dependencies]
 tauri-build = { version = "2.6", features = [] }
 
@@ -29,7 +36,7 @@ dw-coinjoin = { workspace = true }
 dw-console = { workspace = true }
 dw-engine = { workspace = true }
 # open_owner_only: the self-test's passphrase file must be the user's alone.
-dw-fs = { workspace = true }
+dw-fs = { workspace = true, optional = true }
 dw-message = { workspace = true }
 dw-psbt = { workspace = true }
 dw-units = { workspace = true }

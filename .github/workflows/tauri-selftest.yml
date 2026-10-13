@@ -3,7 +3,8 @@
 #
 #   gh workflow run tauri-selftest.yml --ref <branch> -f os=both
 #
-# Per OS: `pnpm tauri build --no-bundle` (release binary) and dwcli, then
+# Per OS: `pnpm tauri build --no-bundle --features selftest` (a release-profile binary with the
+# self-test, which release and packaged builds lack: E0-13 D17) and dwcli, then
 #   1. `dash-wallet <app args> --selftest selftest-<os>.json`: the app renders the four screens in
 #      light and dark, writes the data-testid boxes, style checks, IPC timings and security probes,
 #      and exits (apps/desktop/README.md);
@@ -103,10 +104,13 @@ jobs:
       - name: pnpm install
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
-      - name: pnpm tauri build --no-bundle (renderer + release binary)
+      # The self-test's options, commands and grants exist only with dw-app's `selftest` feature
+      # (E0-13 D17): this is a dedicated self-test binary, release profile otherwise. Release and
+      # packaged builds leave the feature off.
+      - name: pnpm tauri build --no-bundle --features selftest (renderer + self-test binary)
         working-directory: apps/desktop
         run: |
-          pnpm tauri build --no-bundle
+          pnpm tauri build --no-bundle --features selftest
           exe=dash-wallet; [[ "$MATRIX_OS" != windows ]] || exe=dash-wallet.exe
           echo "APP=$GITHUB_WORKSPACE/rust/target/release/$exe" >> "$GITHUB_ENV"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

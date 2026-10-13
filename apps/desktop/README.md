@@ -64,6 +64,10 @@ dash-wallet [--datadir DIR] [--network mainnet|testnet|regtest|devnet-NAME] [--s
             [--selftest FILE [--selftest-pause MS] [--selftest-passphrase-file FILE]]
 ```
 
+The `--selftest` options exist only in a build with dw-app's `selftest` feature
+(`pnpm tauri build --no-bundle --features selftest`, as `tauri-selftest.yml` does); release and
+packaged builds leave it off and refuse them as unknown options (E0-13 D17).
+
 The app always runs on the engine; there is no fixture mode in it (the fixture backend is for browsers,
 below). `--selftest FILE` renders the four screens in light and dark, writes every `data-testid` box, the style-check results, the
 IPC timings and the security probes to `FILE`, and exits. With `--selftest-passphrase-file`, dw-app

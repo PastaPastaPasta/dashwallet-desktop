@@ -147,11 +147,11 @@ pub fn run() {
     let launch = match launch::parse(std::env::args().skip(1)) {
         Ok(ParseOutcome::Run(o)) => *o,
         Ok(ParseOutcome::Help) => {
-            println!("{}", launch::USAGE);
+            println!("{}", launch::usage());
             return;
         }
         Err(e) => {
-            eprintln!("dash-wallet: {e}\n{}", launch::USAGE);
+            eprintln!("dash-wallet: {e}\n{}", launch::usage());
             std::process::exit(2);
         }
     };
@@ -161,6 +161,12 @@ pub fn run() {
             eprintln!("dash-wallet: could not start: {e}");
             std::process::exit(1);
         });
+    // The self-test's grant, outside `capabilities/` so that no other build
+    // embeds it (build.rs, E0-13 D17). Tauri panics on one it cannot parse
+    // or resolve (`api::selftest` tests it parses; every permission exists).
+    #[cfg(feature = "selftest")]
+    app.add_capability(api::selftest::CAPABILITY)
+        .expect("the self-test capability");
     app.run(|handle, event| {
         if let RunEvent::Exit = event
             && let Some(state) = handle.try_state::<AppState>()

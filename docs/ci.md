@@ -215,8 +215,10 @@ gh workflow run tauri-selftest.yml --ref <branch> -f os=windows -f theme=dark \
 ```
 
 Per OS (`macos-latest`, `windows-latest`): Node 24 and pnpm from `apps/desktop/package.json`,
-`pnpm install --frozen-lockfile`, `pnpm tauri build --no-bundle` (the renderer and the release binary
-`rust/target/release/dash-wallet`). Without `selftest_args` the job builds `dwcli`, which makes an
+`pnpm install --frozen-lockfile`, `pnpm tauri build --no-bundle --features selftest` (the renderer and a
+dedicated self-test binary `rust/target/release/dash-wallet`: release profile with dw-app's `selftest`
+feature, which every release and packaged build leaves off, so they have no self-test options,
+commands or grants; E0-13 D17). Without `selftest_args` the job builds `dwcli`, which makes an
 encrypted vault and a wallet in a fresh regtest data root (`--no-platform`). `ci/github/regtest-fund.py`
 then starts a regtest `dashd` from the verified Dash Core release (`regtest/scripts/fetch-dashcore.sh`:
 the tarball on macOS and Linux, the zip on Windows), pays the wallet 1.5 DASH, mines the payment into a

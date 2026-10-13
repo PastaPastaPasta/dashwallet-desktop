@@ -1,8 +1,10 @@
 # CI on Linux, macOS and Windows (DEC-13, roadmap T-03).
 #
-# - lint, rust-linux: fmt, clippy and `cargo test --workspace` on Linux; rust-linux then
-#   regenerates the Tauri bindings (apps/desktop/src/api/generated and the E0-13 facade
-#   coverage table) and fails if they differ from the committed ones.
+# - lint, rust-linux: fmt, clippy and `cargo test --workspace` on Linux, and dw-app again with
+#   its `selftest` feature (E0-13 D17: the workspace build proves the self-test is absent, the
+#   feature build that it works); rust-linux then regenerates the Tauri bindings
+#   (apps/desktop/src/api/generated and the E0-13 facade coverage table) and fails if they
+#   differ from the committed ones.
 # - desktop-renderer: the Tauri renderer (apps/desktop): design tokens, tsc, vitest, the
 #   production and fixture bundles (scripts/check-bundle.mjs: neither fixture marker and none of
 #   the fixture sources' literals in production), the guard's negative control, and the test of
@@ -81,6 +83,7 @@ jobs:
           workspaces: rust -> target
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo clippy -p dw-app --all-targets --features selftest --locked -- -D warnings
 
   rust-linux:
     name: Rust tests (Linux)
@@ -110,6 +113,11 @@ jobs:
           workspaces: rust -> target
       - run: cargo test --workspace --no-run --locked
       - run: cargo test --workspace --locked --no-fail-fast
+      # Without the feature, dw-app's tests prove the self-test's options, commands and grant
+      # are absent; with it, that they work (E0-13 D17).
+      - name: dw-app with the selftest feature
+        if: ${{ !cancelled() }}
+        run: cargo test -p dw-app --features selftest --locked --no-fail-fast
       # E0-13: the TypeScript bindings and the facade coverage table are generated from dw-app;
       # regenerate them and fail when the committed files differ (or a new file is missing).
       - name: Regenerate the Tauri bindings and check them in
