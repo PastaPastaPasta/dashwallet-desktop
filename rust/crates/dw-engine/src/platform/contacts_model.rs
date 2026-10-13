@@ -68,6 +68,7 @@ use super::provenance::Entity;
 use super::recovery::profile_of;
 use super::reverify::{Held, ShownProfile};
 use super::runtime::guard;
+use crate::gate::OpGuard;
 use crate::{EngineError, NetworkSession, PlatformChange, WalletId};
 
 /// The sections in the order a page lists them when the query names none.
@@ -616,7 +617,20 @@ impl NetworkSession {
         identity: &str,
         f: impl FnOnce(Option<&OwnerContacts>, &Join, bool) -> Result<R, ContactError>,
     ) -> Result<R, ContactError> {
-        let _op = self.try_enter().map_err(PlatformError::from)?;
+        let op = self.try_enter().map_err(PlatformError::from)?;
+        self.with_contacts_entered(&op, id, identity, f)
+    }
+
+    /// [`Self::with_contacts`] for a caller the gate already admitted (`_op`
+    /// proves it): admitting it again would fail once a close has started,
+    /// though the close waits for that caller.
+    fn with_contacts_entered<R>(
+        &self,
+        _op: &OpGuard<'_>,
+        id: WalletId,
+        identity: &str,
+        f: impl FnOnce(Option<&OwnerContacts>, &Join, bool) -> Result<R, ContactError>,
+    ) -> Result<R, ContactError> {
         self.require_wallet(&id).map_err(PlatformError::from)?;
         let owner = identifier(identity)?;
         let (contacts, updating) = self.read_contacts(id).map_err(PlatformError::from)?;
@@ -661,7 +675,19 @@ impl NetworkSession {
         identity: String,
         q: ContactQuery,
     ) -> Result<ContactsPage, ContactError> {
-        self.with_contacts(id, &identity, |owned, join, updating| {
+        let op = self.try_enter().map_err(PlatformError::from)?;
+        self.contacts_page_entered(&op, id, identity, q)
+    }
+
+    /// [`Self::contacts_page`] inside the caller's admission (`events`).
+    pub(super) fn contacts_page_entered(
+        &self,
+        op: &OpGuard<'_>,
+        id: WalletId,
+        identity: String,
+        q: ContactQuery,
+    ) -> Result<ContactsPage, ContactError> {
+        self.with_contacts_entered(op, id, &identity, |owned, join, updating| {
             let none = OwnerContacts::default();
             Ok(page(owned.unwrap_or(&none), &q, join, updating))
         })

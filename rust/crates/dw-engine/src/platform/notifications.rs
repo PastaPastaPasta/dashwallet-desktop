@@ -177,7 +177,17 @@ impl NetworkSession {
         cursor: Option<u64>,
         limit: u32,
     ) -> Result<EventPage, PlatformError> {
-        let _op = self.enter().await?;
+        let op = self.enter().await?;
+        #[cfg(test)]
+        {
+            let pause = (super::runtime::guard(&self.platform.contacts.job_pause))
+                .take_if(|(at, _)| *at == "events")
+                .map(|(_, pause)| pause);
+            if let Some(pause) = pause {
+                (pause.reached).store(true, std::sync::atomic::Ordering::SeqCst);
+                pause.release.notified().await;
+            }
+        }
         self.require_wallet(&id)?;
         let identity = canonical(&identity)?;
         // The live relations: Requests is Pending, the ignored senders are
@@ -187,7 +197,8 @@ impl NetworkSession {
             sort: ContactSort::DateAdded,
             text: None,
         };
-        let page = (self.contacts_page(id, identity.clone(), q)).map_err(platform_error)?;
+        let page =
+            (self.contacts_page_entered(&op, id, identity.clone(), q)).map_err(platform_error)?;
         let mut pending = Vec::new();
         let mut ignored = Vec::new();
         for section in page.sections {

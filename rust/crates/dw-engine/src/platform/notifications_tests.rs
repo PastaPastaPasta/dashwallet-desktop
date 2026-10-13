@@ -295,6 +295,31 @@ fn a_restored_bundles_unread_rows_count() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+/// Sol r1 finding 3: an `events` call the gate admitted reads the
+/// contacts inside that admission, so a close that starts meanwhile (and
+/// waits for it) does not fail it with `network_not_open`.
+#[test]
+fn an_admitted_events_call_outlives_a_starting_close() {
+    let f = Fixture::new(true);
+    f.give_me();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.s.platform.contacts.job_pause.lock().unwrap() = Some(("events", Arc::clone(&pause)));
+    let dp = f.dp();
+    let events =
+        f.s.rt
+            .spawn(async move { dp.events(b58(ME), None, 10).await });
+    wait_for("the admitted call", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let s = Arc::clone(&f.s);
+    let closing = f.s.rt.spawn(async move { s.close().await });
+    wait_for("the close to start", || !f.s.is_open());
+    pause.release.notify_one();
+    let page = f.engine.block_on(events).unwrap();
+    assert!(page.is_ok(), "{page:?}");
+    f.engine.block_on(closing).unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // Live
 // ---------------------------------------------------------------------------
