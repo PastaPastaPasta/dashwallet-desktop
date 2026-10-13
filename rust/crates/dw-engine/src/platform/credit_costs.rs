@@ -375,6 +375,49 @@ mod tests {
         }
     }
 
+    /// Each document price covers the dearest single insert Drive charged
+    /// at protocol version 13 over 64,000 inserts into one tree (a tree
+    /// rebalance, past Drive's own estimate; m4 §7 item 44).
+    #[test]
+    fn the_document_prices_cover_drives_measured_maxima() {
+        let t = cost_table(13).unwrap();
+        for (name, price, measured) in [
+            ("contactRequest", t.contact_request, 103_078_900),
+            ("profile", t.profile_update, 133_172_080),
+            ("contactInfo", t.contact_info, 146_105_500),
+        ] {
+            assert!(
+                price >= measured,
+                "{name}: price {price} < measured {measured}"
+            );
+        }
+    }
+
+    /// Only the estimated processing is doubled: the storage and the
+    /// exact processing parts are Drive's own figures (module doc).
+    #[test]
+    fn only_the_estimated_processing_is_doubled() {
+        for v in known_versions() {
+            let network = PlatformVersion::get(v).unwrap();
+            let contract = load_system_data_contract(SystemDataContract::Dashpay, network).unwrap();
+            let pricing = pricing_version(&contract, network).unwrap();
+            let mut assumptions = CostAssumptions::new(&pricing);
+            assumptions.existing_documents = MAX_TREE_ENTRIES;
+            for name in ["contactRequest", "profile", "contactInfo"] {
+                let cost = document_estimate(&contract, name, &assumptions, &pricing).unwrap();
+                let (exact, estimated): (Vec<_>, Vec<_>) =
+                    cost.processing.iter().partition(|part| part.exact);
+                assert!(!exact.is_empty() && !estimated.is_empty(), "{v} {name}");
+                let estimated: u64 = estimated.iter().map(|part| part.credits.new_values).sum();
+                assert_eq!(
+                    document_cost(&contract, name, &pricing).unwrap(),
+                    cost.total_credits().new_values + estimated,
+                    "{v} {name}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn levels_follow_android() {
         let t = cost_table(PlatformVersion::latest().protocol_version).unwrap();

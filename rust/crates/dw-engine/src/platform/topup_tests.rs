@@ -1360,6 +1360,27 @@ fn a_crash_after_platform_took_the_lock_adds_the_credits_once() {
     assert_eq!(lib.balance(), balance);
 }
 
+/// A crash once the library marked the lock `Consumed`, before the
+/// journal recorded it applied: the next read records it, so a removal
+/// (which erases the mark) does not turn it back into a pending lock
+/// (review F1).
+#[test]
+fn a_lock_applied_without_its_record_is_recorded_on_the_next_read() {
+    let mut f = fixture(false);
+    let lib = f.fake();
+    let lib = f.crash_at(lib, (Call::Apply, When::After));
+    let txid = f.pending(&lib)[0].txid.clone();
+    lib.mark(&txid, LockStatus::Consumed);
+    let settled = |f: &Fixture| {
+        (f.engine)
+            .block_on(f.session.leases.top_ups_settled(f.wallet))
+            .unwrap()
+    };
+    assert!(settled(&f).is_empty());
+    assert!(f.pending(&lib).is_empty());
+    assert_eq!(settled(&f), [txid.parse::<Txid>().unwrap()].into());
+}
+
 /// A lock Platform reports taken that the library cannot prove final stays
 /// tracked as InstantSend-locked: it stays pending and blocks a new top-up
 /// (no process-local note hides it), "Finish transfers" keeps it pending,

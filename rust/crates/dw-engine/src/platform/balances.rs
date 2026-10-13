@@ -484,6 +484,29 @@ mod tests {
         assert!(!balances.spent(f.wallet, id));
     }
 
+    /// A spend marked while a refresh is in flight outlives that refresh,
+    /// even when its balance is newer than the spend: the refresh may have
+    /// read Platform before the write landed (module doc).
+    #[test]
+    fn a_spend_during_a_refresh_outlives_it() {
+        let f = fixture(false);
+        let balances = Arc::clone(&f.session.platform.balances);
+        let id = Identifier::new([9; 32]);
+        let marker = Arc::clone(&balances);
+        let refresh: TestRefresh = Arc::new(move |wallet, identity| {
+            marker.mark(wallet, identity);
+            Ok(Some(Refreshed {
+                balance: 5,
+                as_of: Some(now_ms()),
+            }))
+        });
+        *balances.test_refresh.lock().unwrap() = Some(refresh);
+        f.engine
+            .block_on(f.session.refresh_balance_of(f.wallet, id))
+            .unwrap();
+        assert!(balances.spent(f.wallet, id));
+    }
+
     /// A close aborts the background refreshes, and none starts after it
     /// (review F2).
     #[test]
