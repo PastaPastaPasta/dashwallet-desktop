@@ -2140,33 +2140,35 @@ renames or reshapes them takes the next version bump:
       manager (a removal, an unload, a restore's rollback): each of their writes lands only while the wallet it read
       is still the manager's, and the wallet leaves only after the writes in flight have landed, so a removal's delete
       of its rows comes after them.
-    - **Writes after a wallet's removal (DEC-210).** Any other app.sqlite write of a wallet still under way when
-      the wallet is removed (a DashPay choice or preference, the journal written as the library stores a changeset,
-      a coin lock, first-seen times) lands nothing either. The removal records the wallet (`removed_wallets`) in the
+    - **Writes after a wallet's removal (DEC-210).** Any other app.sqlite write of a wallet still under way when the
+      wallet is removed (a DashPay choice or preference, the journal written as the library stores a changeset, a coin
+      lock, first-seen times) lands nothing either. The removal records the wallet (`removed_wallets`) in the
       transaction that deletes its rows; from then on an insert of a row of that wallet, in any table the removal
       clears and in its two settings scopes, is skipped, and an update finds no row. `add_receive_request` and a new
       registration flow then fail (`storage`). The record lasts until an import of the same wallet (a seed, a
       watch-only xpub, a restore), which takes it out before its first write (an import that then fails to register
       the wallet records it again), or until an open of the network's `app.sqlite` while no other instance of it is
-      open, in this process or another (DEC-210 (3b)). Each open instance holds a shared lock on `app.sqlite.lock`
-      for its whole life, a job a closed session left running included; an open forgets the record only if an
-      exclusive lock on that file is granted at once, and otherwise keeps it. The lock file is named after the
-      database, so the database has one name: an open refuses a database path that is a symlink, a file with a second
-      hard link, a lock file that is a symlink or a second hard link, and a name starting with `file:` (which SQLite
-      reads as a URI), and an open whose database changed between its check and SQLite's open (`storage`); symlinked
-      directories above the database are fine, since they lead to the same lock file. Imports, restores and their rollback, removals, and
-      the open and close of a wallet run one at a time per network within a process (the engine's wallet lifecycle
-      lock, taken after the operation's admission and before the wallet's barrier, discoveries and private-details
-      fence), so a wallet is never recorded as removed while it is registered, and two imports of the same seed run
-      one after the other. `.dwbackup` never carries the record (dwbackup-v1 §2.3). **Residuals (accepted, DEC-210 (5) and
-      (3b)):** a write of the removed wallet still under way when the same wallet is imported again lands among the
-      new import's rows; an insert that is skipped shows in the log only as "no rows" (`raise_setting`) or as a held
-      index (`adopt_registration_lock`); on a file system whose advisory locks are not kept per open file (an NFS
-      emulation of `flock`), an open in the same process forgets the record while another instance is open; a long
-      restore holds the wallet lifecycle lock until its last bundle is done, so a removal or another import waits for
-      it; and two processes on one network directory are kept apart only by the record and the lock file, not by the
-      wallet lifecycle lock, which is per process. On Windows the database's identity is not compared (std has no
-      file id there); symlinks are still refused.
+      open, in this process or another (DEC-210 (3b)). Each open instance holds a shared lock on `app.sqlite.lock` for
+      its whole life, a job a closed session left running included; an open forgets the record only if an exclusive
+      lock on that file is granted at once, and otherwise keeps it. The lock file is named after the database, so each
+      has one name: an open refuses (`storage`) a database or lock file that is a symlink, not a regular file, or a
+      file with a second hard link, a name starting with `file:` (which SQLite reads as a URI), and an open whose
+      database or lock file changed between its check and its use; symlinked directories above the database are fine,
+      since they lead to the same lock file. Imports, restores and their rollback, removals, and the open and close of
+      a wallet run one at a time per network within a process (the engine's wallet lifecycle lock, taken after the
+      operation's admission and before the wallet's barrier, discoveries and private-details fence), so a wallet is
+      never recorded as removed while it is registered, and two imports of the same seed run one after the other.
+      `.dwbackup` never carries the record (dwbackup-v1 §2.3). **Residuals (accepted, DEC-210 (5) and (3b)):** a write
+      of the removed wallet still under way when the same wallet is imported again lands among the new import's rows;
+      an insert that is skipped shows in the log only as "no rows" (`raise_setting`) or as a held index
+      (`adopt_registration_lock`); on a file system whose advisory locks are not kept per open file (an NFS emulation
+      of `flock`), an open in the same process forgets the record while another instance is open; a long restore holds
+      the wallet lifecycle lock until its last bundle is done, so a removal or another import waits for it; and two
+      processes on one network directory are kept apart only by the record and the lock file, not by the wallet
+      lifecycle lock, which is per process. Renaming, moving or bind-mounting the database file while an instance is
+      open gives it a name with another lock file (SQLite does not support moving an open database either). On Windows
+      only a final symlink is refused: hard links are not counted, file identities are not compared (std has no file
+      id there), and other names of one file (an 8.3 short name, a trailing dot, `::$DATA`) lead to another lock file.
     - **An edit of published details needs a grant.** The library's DashPay pass applies Platform's `contactInfo` over
       local details on every pass (remote wins), so a local-only edit of a contact Platform holds details for would
       go back silently. It is `platform.needs_grant{credits}` and the edit is not saved. Re-saving the same details

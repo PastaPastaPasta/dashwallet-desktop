@@ -65,57 +65,61 @@ pub fn create_owned_dir(base: &Path, owned: &Path) -> io::Result<()> {
     }
 }
 
+/// Why the file `meta` describes is not the one name of a regular file,
+/// or `None`. From `symlink_metadata`, a symlink shows as one. Windows does
+/// not count hard links.
+pub fn not_sole(meta: &std::fs::Metadata) -> Option<String> {
+    if meta.file_type().is_symlink() {
+        return Some("is a symbolic link".into());
+    }
+    if !meta.is_file() {
+        return Some("is not a regular file".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.nlink() != 1 {
+            return Some(format!("has {} hard links", meta.nlink()));
+        }
+    }
+    None
+}
+
 /// Opens the file at `path` for reading and writing as the one name of a
 /// regular file: created empty and 0600 when missing, never through a
-/// symlink in its last component (`O_NOFOLLOW`), and refused, with an error
-/// naming the path, when it is not a regular file or has another hard link.
-/// Symlinks above it are followed.
-///
-/// Windows refuses a symlink there too, but does not count hard links.
+/// symlink in its last component (`O_NOFOLLOW`), and refused
+/// (`InvalidInput`, see [`not_sole`]) when it is not a regular file or has
+/// another hard link. Symlinks above it are followed. Errors do not name
+/// the path; the caller does.
 pub fn open_sole_file(path: &Path) -> io::Result<std::fs::File> {
-    let refused = |what: String| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{} {what}", path.display()),
-        )
-    };
+    let refused = |what| io::Error::new(io::ErrorKind::InvalidInput, what);
+    let last_is_link =
+        || std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink());
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
     {
         use rustix::fs::OFlags;
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        use std::os::unix::fs::OpenOptionsExt;
         options
             .mode(0o600)
             .custom_flags((OFlags::NOFOLLOW | OFlags::NOCTTY).bits() as i32);
-        let file = options.open(path).map_err(|e| {
-            if e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) {
-                refused("is a symbolic link".into())
-            } else {
-                io::Error::new(e.kind(), format!("{}: {e}", path.display()))
-            }
-        })?;
-        let meta = file.metadata()?;
-        if !meta.is_file() {
-            return Err(refused("is not a regular file".into()));
-        }
-        if meta.nlink() != 1 {
-            return Err(refused(format!("has {} hard links", meta.nlink())));
-        }
-        Ok(file)
     }
+    // Windows follows a symlink on open.
     #[cfg(not(unix))]
-    {
-        if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
-            return Err(refused("is a symbolic link".into()));
+    if last_is_link() {
+        return Err(refused("is a symbolic link".into()));
+    }
+    let file = options.open(path).map_err(|e| {
+        if last_is_link() {
+            refused("is a symbolic link".into())
+        } else {
+            e
         }
-        let file = options
-            .open(path)
-            .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
-        if !file.metadata()?.is_file() {
-            return Err(refused("is not a regular file".into()));
-        }
-        Ok(file)
+    })?;
+    match not_sole(&file.metadata()?) {
+        Some(why) => Err(refused(why)),
+        None => Ok(file),
     }
 }
 
@@ -826,6 +830,11 @@ mod tests {
 
         mkdir(&tmp.path().join("dir"), 0o700);
         assert!(open_sole_file(&tmp.path().join("dir")).is_err());
+        let fifo = tmp.path().join("fifo");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        assert!(made.unwrap().success());
+        let refused = open_sole_file(&fifo).unwrap_err().to_string();
+        assert!(refused.contains("is not a regular file"), "{refused}");
     }
 
     #[test]

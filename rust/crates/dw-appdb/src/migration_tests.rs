@@ -1073,7 +1073,7 @@ fn real(path: &Path) -> std::path::PathBuf {
     crate::resolve_directory(path).unwrap()
 }
 
-/// Sol r6: the open fails with the reason `what`, naming `path`.
+/// The open fails with the reason `what`, naming `path`.
 fn assert_refused(opened: crate::Result<AppDb>, path: &Path, what: &str) {
     match opened {
         Ok(_) => panic!("{} opened", path.display()),
@@ -1086,6 +1086,18 @@ fn assert_refused(opened: crate::Result<AppDb>, path: &Path, what: &str) {
         }
         Err(e) => panic!("{} refused for another reason: {e}", path.display()),
     }
+}
+
+/// An open at `path` fails with the reason `what`, naming it.
+fn assert_refused_at(path: &Path, what: &str) {
+    assert_refused(AppDb::open(path), &real(path), what);
+}
+
+/// `W`, removed through `old`, stays removed: a late write is skipped.
+fn assert_removal_kept(old: &AppDb) {
+    old.set_wallet_name(W, "late", 1).unwrap();
+    assert!(old.wallet_names().unwrap().is_empty());
+    assert_eq!(recorded(old), [W]);
 }
 
 /// An open through a directory symlink names the same lock file: the
@@ -1103,23 +1115,25 @@ fn a_removal_is_kept_through_a_symlinked_directory() {
     );
 }
 
+#[cfg(unix)]
 type Link = fn(&Path, &Path) -> std::io::Result<()>;
 
+#[cfg(unix)]
 /// The removal outlives an open refused at `alias`, another name `link`
 /// makes for the database open at `path` (it would lead to another lock
-/// file).
+/// file, which the refused open does not create).
 fn an_alias_is_refused(path: &Path, alias: &Path, link: Link, what: &str) {
     let old = AppDb::open(path).unwrap();
     old.delete_wallet(W).unwrap();
     std::fs::create_dir_all(alias.parent().unwrap()).unwrap();
     link(path, alias).unwrap();
-    assert_refused(AppDb::open(alias), &real(alias), what);
-    old.set_wallet_name(W, "late", 1).unwrap();
-    assert!(old.wallet_names().unwrap().is_empty());
-    assert_eq!(recorded(&old), [W]);
+    assert_refused_at(alias, what);
+    assert!(!crate::lock_path(alias).exists());
+    assert_removal_kept(&old);
 }
 
-/// Sol r6's repro: a symlink to the database is refused.
+/// A symlink to the database is refused, and not followed when nothing is
+/// at its target yet.
 #[cfg(unix)]
 #[test]
 fn a_symlink_to_the_database_is_refused() {
@@ -1129,18 +1143,14 @@ fn a_symlink_to_the_database_is_refused() {
     let alias = dir.path().join("b").join(crate::APP_DB_FILE);
     let symlink: Link = |path, link| std::os::unix::fs::symlink(path, link);
     an_alias_is_refused(&path, &alias, symlink, "is a symbolic link");
-    // Nor is a symlink to where no database is yet followed.
     let dangling = dir.path().join(crate::APP_DB_FILE);
     symlink(&dir.path().join("d"), &dangling).unwrap();
-    assert_refused(
-        AppDb::open(&dangling),
-        &real(&dangling),
-        "is a symbolic link",
-    );
+    assert_refused_at(&dangling, "is a symbolic link");
     assert!(!dir.path().join("d").exists());
 }
 
 /// A second hard link of the database is refused, at either name.
+#[cfg(unix)]
 #[test]
 fn a_hard_link_to_the_database_is_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -1148,7 +1158,7 @@ fn a_hard_link_to_the_database_is_refused() {
     let alias = dir.path().join("b").join(crate::APP_DB_FILE);
     let hard_link: Link = |path, link| std::fs::hard_link(path, link);
     an_alias_is_refused(&path, &alias, hard_link, "has 2 hard links");
-    assert_refused(AppDb::open(&path), &real(&path), "has 2 hard links");
+    assert_refused_at(&path, "has 2 hard links");
 }
 
 /// A directory where the database would be is refused as such, not left to
@@ -1158,83 +1168,110 @@ fn a_database_that_is_not_a_file_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     std::fs::create_dir(&path).unwrap();
-    assert_refused(AppDb::open(&path), &real(&path), "is not a regular file");
+    assert_refused_at(&path, "is not a regular file");
 }
 
-/// A symlink in place of the lock file is refused, and not followed.
+/// A symlink or a second hard link in place of the lock file is refused,
+/// and a symlink is not followed.
 #[cfg(unix)]
 #[test]
-fn a_symlinked_lock_file_is_refused() {
+fn a_lock_file_with_another_name_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
-    let lock = dir.path().join(crate::APP_DB_LOCK_FILE);
+    let lock = crate::lock_path(&real(&path));
     let elsewhere = dir.path().join("elsewhere.lock");
     std::os::unix::fs::symlink(&elsewhere, &lock).unwrap();
-    assert_refused(
-        AppDb::open(&path),
-        &crate::lock_path(&real(&path)),
-        "is a symbolic link",
-    );
+    assert_refused(AppDb::open(&path), &lock, "is a symbolic link");
     assert!(!elsewhere.exists());
-    // Pointing at a file that exists changes nothing.
     std::fs::write(&elsewhere, b"").unwrap();
-    assert_refused(
-        AppDb::open(&path),
-        &crate::lock_path(&real(&path)),
-        "is a symbolic link",
-    );
+    assert_refused(AppDb::open(&path), &lock, "is a symbolic link");
+
+    std::fs::remove_file(&lock).unwrap();
+    std::fs::hard_link(&elsewhere, &lock).unwrap();
+    assert_refused(AppDb::open(&path), &lock, "has 2 hard links");
 }
 
-/// Run by [`a_uri_is_refused`] as its child process in the directory the
-/// parent chose: opens the name `DW_APPDB_URI` gives.
+/// Run by [`open_in_child`] as its child process, in the directory its
+/// parent chose: opens the name `DW_APPDB_NAME` gives and prints what
+/// happened.
 #[test]
-fn child_opening_a_uri() {
-    let Some(name) = std::env::var_os("DW_APPDB_URI") else {
+fn child_opening_a_name() {
+    let Some(name) = std::env::var_os("DW_APPDB_NAME") else {
         return;
     };
-    let name = Path::new(&name);
-    assert_refused(AppDb::open(name), name, "reads as a SQLite URI");
+    match AppDb::open(Path::new(&name)) {
+        Ok(db) => println!("recorded {:?}", recorded(&db)),
+        Err(e) => println!("refused: {e}"),
+    }
+}
+
+/// What [`child_opening_a_name`] printed opening `name` in `dir`.
+fn open_in_child(dir: &Path, name: &str) -> String {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "migration_tests::child_opening_a_name",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .current_dir(dir)
+        .env("DW_APPDB_NAME", name)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in out.lines() {
+        for said in ["refused: ", "recorded "] {
+            if let Some(at) = line.find(said) {
+                return line[at..].to_owned();
+            }
+        }
+    }
+    panic!("the child printed no outcome: {out}");
 }
 
 /// A `file:` name, which SQLite would read as a URI naming the database
 /// open at `a/app.sqlite` (with its lock file at `file:a/app.sqlite.lock`),
-/// is refused and the removal kept. In a child process: the name is
-/// relative to its working directory.
+/// is refused and the removal kept.
 #[test]
 fn a_uri_is_refused() {
-    use std::process::Command;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("a").join(crate::APP_DB_FILE);
     std::fs::create_dir(path.parent().unwrap()).unwrap();
+    // Not a name Windows allows.
+    #[cfg(unix)]
     std::fs::create_dir(dir.path().join("file:a")).unwrap();
     let old = AppDb::open(&path).unwrap();
     old.delete_wallet(W).unwrap();
     for name in ["file:a/app.sqlite", "FILE:a/app.sqlite"] {
-        let status = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "migration_tests::child_opening_a_uri",
-                "--test-threads=1",
-            ])
-            .current_dir(dir.path())
-            .env("DW_APPDB_URI", name)
-            .status()
-            .unwrap();
-        assert!(status.success(), "{name}");
+        let said = open_in_child(dir.path(), name);
+        assert!(said.starts_with("refused: "), "{name}: {said}");
+        assert!(said.contains("reads as a SQLite URI"), "{name}: {said}");
     }
-    old.set_wallet_name(W, "late", 1).unwrap();
-    assert!(old.wallet_names().unwrap().is_empty());
-    assert_eq!(recorded(&old), [W]);
+    assert_removal_kept(&old);
 }
 
+/// A bare file name is the file in the working directory, with its lock.
+#[test]
+fn a_bare_name_opens_in_the_working_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = AppDb::open(&dir.path().join(crate::APP_DB_FILE)).unwrap();
+    old.delete_wallet(W).unwrap();
+    let said = open_in_child(dir.path(), crate::APP_DB_FILE);
+    assert_eq!(said, format!("recorded {:?}", [W]));
+    assert_removal_kept(&old);
+}
+
+#[cfg(unix)]
 /// Runs `swap` between the open's check of the database and SQLite's open.
 fn open_swapped(path: &Path, swap: impl FnOnce() + 'static) -> crate::Result<AppDb> {
-    crate::BEFORE_SQLITE_OPEN.with(|hook| *hook.borrow_mut() = Some(Box::new(swap)));
+    crate::BEFORE_SQLITE_OPEN.set(Some(Box::new(swap)));
     AppDb::open(path)
 }
 
 /// A database replaced by another file after the open checked it is
 /// refused: the lock file belongs to the one checked.
+#[cfg(unix)]
 #[test]
 fn a_database_replaced_during_the_open_is_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -1266,7 +1303,8 @@ fn a_symlink_swapped_in_during_the_open_is_not_followed() {
 }
 
 /// The lock file and the database are one file only under two mounts of it
-/// (each name with one link); refused as well.
+/// (each name with one link); refused as well. Without file ids (Windows)
+/// there is nothing to compare.
 #[test]
 fn a_lock_file_that_is_the_database_is_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -1274,8 +1312,9 @@ fn a_lock_file_that_is_the_database_is_refused() {
     drop(AppDb::open(&path).unwrap());
     let database = crate::sole_database(&path).unwrap().unwrap();
     let lock = crate::lock_path(&path);
-    let same = std::fs::File::open(&path).unwrap();
-    let refused = crate::refuse_same_file(&lock, &same, database);
+    let lock_id = crate::lock_id(&lock, &std::fs::File::open(&lock).unwrap()).unwrap();
+    crate::refuse_same_file(&lock, lock_id, database).unwrap();
+    let refused = crate::refuse_same_file(&lock, database, database);
     if database.is_some() {
         assert!(
             refused
@@ -1286,6 +1325,4 @@ fn a_lock_file_that_is_the_database_is_refused() {
     } else {
         refused.unwrap();
     }
-    let other = std::fs::File::open(&lock).unwrap();
-    crate::refuse_same_file(&lock, &other, database).unwrap();
 }
