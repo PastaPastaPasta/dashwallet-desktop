@@ -15,8 +15,9 @@
 //   name, `unlocked`, ` failed)`) also turns up in any bundle;
 // - integer literals (in test data, integer values) of at least 7 digits that do not end in 0 (the
 //   PRNG seed 20261006): a round number is minified to `5e9` and is not distinctive anyway;
-// - minus the shared literals: those the generated bindings also hold, in values or literal types
-//   (GENERATED: the error codes the fixture returns, the transaction types the vectors hold).
+// - minus the shared literals: those the generated bindings also hold, in values, literal types or
+//   field names (GENERATED: the error codes the fixture returns, the transaction types and the
+//   keys the vectors hold).
 //   Computed from those files, not kept by hand: they are exactly what dw-app's codegen writes
 //   (`codegen::tests::bindings_are_current` refuses an extra or edited file), so a fixture copy
 //   anywhere else exempts nothing;
@@ -117,7 +118,7 @@ function jsonLiterals(value, out = new Set()) {
 }
 
 /** The string and integer literals of a module's emitted JavaScript, types and import specifiers
- * left out (with `types`, those of its literal types too), or of a test-data file. Integers as
+ * left out (with `types`, those of its literal types and property names too), or of a test-data file. Integers as
  * `#<decimal>`. */
 export async function literalsOf(path, { types = false } = {}) {
   const data = DATA_TYPES[extname(path)];
@@ -144,6 +145,11 @@ export async function literalsOf(path, { types = false } = {}) {
       if (typeof node.value === "string") out.add(node.value);
       else if (Number.isSafeInteger(node.value)) out.add(`#${node.value}`);
     },
+    // With `types`, a property signature's name too: the generated bindings' field names, which
+    // the vectors hold as keys.
+    TSPropertySignature(node) {
+      if (types && node.key.type === "Identifier") out.add(node.key.name);
+    },
     TemplateLiteral(node) {
       if (specifiers.has(node.start)) return;
       for (const quasi of node.quasis) if (quasi.value.cooked) out.add(quasi.value.cooked);
@@ -153,7 +159,7 @@ export async function literalsOf(path, { types = false } = {}) {
 }
 
 export function distinctive(literal) {
-  if (literal.startsWith("#")) return literal.length > MIN_DIGITS && !literal.endsWith("0");
+  if (literal.startsWith("#")) return literal.replace(/^#-?/, "").length >= MIN_DIGITS && !literal.endsWith("0");
   if (literal.length < MIN_LENGTH || !/^[\x20-\x7e]*$/.test(literal) || literal.includes("\\") || literal.includes("</")) return false;
   const word = literal.replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, "");
   return !/^[\w$.-]*$/.test(word) || word.length >= MIN_WORD_LENGTH;
@@ -188,12 +194,14 @@ export async function fixtureSentinels(app) {
   return { sentinels, bySource, bundled };
 }
 
-/** Whether `text` (a built file, or a base64 `data:` URL in one, decoded) holds `sentinel` in any form a minifier writes it. */
+/** Whether `text` (a built file, or a `data:` URL in one, decoded) holds `sentinel` in any form a
+ * minifier or an asset encoder writes it. */
 export function holds(text, sentinel) {
   if (sentinel.startsWith("#")) {
     const n = Number(sentinel.slice(1));
     return [String(n), `0x${n.toString(16)}`].some((f) => new RegExp(`(?<![\\w$.])${f}(?![\\w$.])`, "i").test(text));
   }
   const template = sentinel.replaceAll("`", "\\`").replaceAll("${", "\\${");
-  return [sentinel, sentinel.replaceAll('"', '\\"'), sentinel.replaceAll("'", "\\'"), template].some((f) => text.includes(f));
+  const svg = sentinel.replaceAll('"', "'");
+  return [sentinel, sentinel.replaceAll('"', '\\"'), sentinel.replaceAll("'", "\\'"), template, svg].some((f) => text.includes(f));
 }

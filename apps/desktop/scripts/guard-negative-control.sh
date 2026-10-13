@@ -9,11 +9,13 @@
 # - mts: a new marked fixture module of another type, src/fixture/guard-extra.mts, and its copy;
 # - errors: a copy of src/fixture/errors.ts, whose error codes are the generated bindings' and
 #   exempt, but whose messages are not;
-# - data-raw, data-url, data-inline, data-url-inline, data-json (Sol r4): a copy of the test data
-#   src/fixture/vectors/accept.json, which carries no marker, loaded by an unmarked module as
-#   `?raw` (a string in a chunk; a bare `import "…?raw"` ships nothing, Rollup drops it), `?url` (an asset file of its own), `?inline` on a known asset
+# - data-raw, data-url, data-inline, data-url-inline, data-svg, data-json (Sol r4): a copy of the
+#   test data src/fixture/vectors/accept.json, which carries no marker, loaded by an unmarked module
+#   as `?raw` (a string in a chunk; a bare `import "…?raw"` ships nothing, Rollup drops it), `?url` (an asset file of its own), `?inline` on a known asset
 #   type (`.txt`: a base64 data: URL; Vite parses `x.json?inline` as JavaScript and fails the
-#   build), `?url&inline` (a base64 data: URL) or a plain JSON import (an object in a chunk).
+#   build), `?url&inline` (a base64 data: URL), `?inline` as `.svg` (its lines without a `'`, which
+#   Vite inlines percent-encoded, spaces as %20 and `"` as `'`) or a plain JSON import (an object in
+#   a chunk).
 #   `@ts-ignore` keeps tsc from standing in for the guard.
 # Run by ci.yml (desktop-renderer).
 #
@@ -61,9 +63,14 @@ control() { # <name> <fixture module the found literals come from> <expected lit
     data-url) query='?url' ;;
     data-inline) file=accept.txt query='?inline' ;;
     data-url-inline) query='?url&inline' ;;
+    data-svg) file=accept.svg query='?inline' ;;
     data-json) query='' ;;
     esac
-    cp "$app/src/fixture/vectors/accept.json" "$work/src/guard-copy/$file"
+    if [[ $name == data-svg ]]; then
+      grep -v "'" "$app/src/fixture/vectors/accept.json" >"$work/src/guard-copy/$file"
+    else
+      cp "$app/src/fixture/vectors/accept.json" "$work/src/guard-copy/$file"
+    fi
     printf '// @ts-ignore\nimport data from "./%s%s";\nexport default data;\n' "$file" "$query" >"$work/src/guard-copy/data.ts"
     printf '\nvoid import("./guard-copy/data");\n' >>"$work/src/main.tsx"
     ;;
@@ -97,3 +104,5 @@ control errors src/fixture/errors.ts '"Block height out of range"'
 for query in raw url inline url-inline json; do
   control "data-$query" src/fixture/vectors/accept.json '"lease-0123456789abcdef0123456789abcdef"'
 done
+# A literal with spaces, which the SVG holds only percent-encoded.
+control data-svg src/fixture/vectors/accept.json '"a missing grant"'

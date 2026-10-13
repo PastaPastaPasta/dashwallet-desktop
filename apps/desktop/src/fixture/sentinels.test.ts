@@ -81,6 +81,8 @@ describe("fixture sentinels", () => {
     expect(sentinels.get("#20261006")).toBe("src/fixture/wallet.ts");
     for (const word of ["unlocked", " failed)", " characters", "fixture: "]) expect(sentinels.has(word), word).toBe(false);
     for (const { literal } of GENERIC) expect(sentinels.has(literal), literal).toBe(false);
+    // Seven digits, not counting a sign.
+    expect(sentinels.has("#-100001")).toBe(false);
     // The sample wallet's amounts and the PRNG constant are its own.
     for (const literal of ["#12345678", "#9999999", "#1831565813"]) expect(sentinels.has(literal), literal).toBe(true);
   });
@@ -90,6 +92,7 @@ describe("fixture sentinels", () => {
     expect(holds("x='it\\'s here'", "it's here")).toBe(true);
     expect(holds('x="say \\"hi\\" now"', 'say "hi" now')).toBe(true);
     expect(holds("x=`run \\`cargo\\` with \\${x}`", "run `cargo` with ${x}")).toBe(true);
+    expect(holds("data:image/svg+xml,a 'quoted' word", 'a "quoted" word')).toBe(true);
     expect(holds("seed=20261006,", "#20261006")).toBe(true);
     expect(holds("seed=0x135288E;", "#20261006")).toBe(true);
     expect(holds("h=a20261006b", "#20261006")).toBe(false);

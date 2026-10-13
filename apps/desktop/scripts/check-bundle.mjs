@@ -44,23 +44,26 @@ function* files(d) {
 }
 
 // Every file: a module imported with `?url` is emitted as its own asset, of any type. And every
-// `data:` URL in one, decoded: `?inline` embeds a file as base64 (or, an SVG, percent-encoded).
+// base64 `data:` URL in one, decoded: `?inline` embeds a file as base64. Of each, also a plain
+// view, with every `%XX` escape decoded and digit separators (`3_019_698_287`) dropped: an SVG is
+// inlined percent-encoded (its spaces as `%20`, `"` as `'`, the rest raw), and a `?raw` or `?url`
+// copy of a module keeps its source's separators.
 function* dataUrls(text) {
-  for (const [, base64, payload] of text.matchAll(/data:[\w.+/-]*(?:;[\w=.-]+)*?(;base64)?,([\w+/=%.!~*'()-]+)/g)) {
-    try {
-      yield base64 ? Buffer.from(payload, "base64").toString("utf8") : decodeURIComponent(payload);
-    } catch {
-      // Not a data URL after all: a malformed escape.
-    }
-  }
+  for (const [, payload] of text.matchAll(/data:[\w.+/-]*(?:;[\w=.-]+)*?;base64,([\w+/=]+)/g)) yield Buffer.from(payload, "base64").toString("utf8");
+}
+const plain = (text) => text.replace(/%([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16))).replace(/(?<=\d)_(?=\d)/g, "");
+function* views(name, text) {
+  yield [name, text];
+  const read = plain(text);
+  if (read !== text) yield [`${name} (escapes and separators read)`, read];
 }
 const texts = [];
 let fileCount = 0;
 for (const f of files(dir)) {
   fileCount += 1;
   const text = readFileSync(f, "utf8");
-  texts.push([relative(dir, f), text]);
-  for (const decoded of dataUrls(text)) texts.push([`${relative(dir, f)} (a data: URL)`, decoded]);
+  texts.push(...views(relative(dir, f), text));
+  for (const decoded of dataUrls(text)) texts.push(...views(`${relative(dir, f)} (a data: URL)`, decoded));
 }
 if (fileCount === 0) {
   console.error(`check-bundle: no files in ${dir}`);
