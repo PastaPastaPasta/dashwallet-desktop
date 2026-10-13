@@ -298,9 +298,18 @@ impl DashPay {
     /// Hides `contact`'s requests from `identity`, locally (m4 §2.4).
     pub async fn ignore(&self, identity: String, contact: String) -> Result<(), ContactError> {
         let wallet_id = self.wallet_id();
-        self.on_wallet(move |_, _, wallet| async move {
+        self.on_wallet(move |session, _, wallet| async move {
             let pair = Pair::parse(wallet_id, &identity, &contact)?;
-            requests::set_ignored(&wallet, pair, true).await
+            requests::set_ignored(&wallet, pair, true).await?;
+            // A local mute (iOS): the sender's unread events go quiet
+            // (DP2-05). Display data: a failure is only logged.
+            if let Err(e) = session
+                .mark_events_read_entered(wallet_id, identity, u64::MAX, Some(contact))
+                .await
+            {
+                tracing::warn!(%wallet_id, error = %e, "could not mark an ignored sender's events read");
+            }
+            Ok(())
         })
         .await
     }

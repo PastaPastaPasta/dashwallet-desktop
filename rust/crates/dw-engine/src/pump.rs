@@ -11,7 +11,7 @@
 //!
 //! Domains are `Sync`, `Balances` (dirty wallet set), `History` (dirty
 //! txids per wallet) and `Platform` (DashPay changes per wallet, DASHPAY
-//! §3.5). Each has its own interval clock.
+//! §3.5, with the DashPay news of DP2-05). Each has its own interval clock.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -22,6 +22,7 @@ use dashcore::Txid;
 use tokio::sync::{Notify, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
+use crate::platform::{DashPayEvent, MAX_NEWS};
 use crate::{PlatformChange, WalletId};
 
 /// Minimum spacing between two events of one domain.
@@ -60,7 +61,20 @@ struct Pending {
     /// When the current new-transaction batch is delivered.
     new_txs_due: Option<Instant>,
     platform: BTreeMap<WalletId, BTreeSet<PlatformChange>>,
+    /// DashPay news per wallet and identity, delivered with `platform`.
+    news: BTreeMap<WalletId, BTreeMap<String, News>>,
 }
+
+/// One identity's DashPay news of a flush: the first [`MAX_NEWS`] events in
+/// arrival order, and how many more came.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct News {
+    pub(crate) events: Vec<DashPayEvent>,
+    pub(crate) more: u32,
+}
+
+/// What one `Platform` flush delivers.
+pub(crate) type NewsBatch = BTreeMap<WalletId, BTreeMap<String, News>>;
 
 /// Receives the merged changes of one flush. Implemented by the session.
 pub(crate) trait PumpTarget: Send + Sync {
@@ -70,7 +84,13 @@ pub(crate) trait PumpTarget: Send + Sync {
     /// One batch of first-seen transactions, [`NEW_TX_BATCH`] after the
     /// first of them.
     fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>);
-    fn flush_platform(&self, changes: BTreeMap<WalletId, BTreeSet<PlatformChange>>);
+    /// The changes first, then the news: a host that re-queries on a
+    /// change already sees the rows the news names.
+    fn flush_platform(
+        &self,
+        changes: BTreeMap<WalletId, BTreeSet<PlatformChange>>,
+        news: NewsBatch,
+    );
     /// Called every [`TICK_INTERVAL`].
     fn tick(&self);
 }
@@ -122,10 +142,43 @@ impl EventPump {
         self.with_pending(|p| p.platform.entry(wallet).or_default().extend(changes));
     }
 
+    /// DashPay news of the wallet's identity (the changeset tap), on the
+    /// `Platform` clock. Past [`MAX_NEWS`] pending for the identity, an
+    /// event is only counted.
+    pub(crate) fn mark_news(&self, wallet: WalletId, identity: &str, events: Vec<DashPayEvent>) {
+        if events.is_empty() {
+            return;
+        }
+        self.with_pending(|p| {
+            let news = (p.news.entry(wallet).or_default())
+                .entry(identity.to_owned())
+                .or_default();
+            for event in events {
+                if news.events.len() < MAX_NEWS {
+                    news.events.push(event);
+                } else {
+                    news.more = news.more.saturating_add(1);
+                }
+            }
+        });
+    }
+
+    /// Drops a removed wallet's news not delivered yet: nothing announces
+    /// a wallet that is gone.
+    pub(crate) fn forget_news(&self, wallet: &WalletId) {
+        self.take(|p| p.news.remove(wallet));
+    }
+
     /// Takes the pending Platform changes without delivering them.
     #[cfg(test)]
     pub(crate) fn take_platform(&self) -> BTreeMap<WalletId, BTreeSet<PlatformChange>> {
         self.take(|p| std::mem::take(&mut p.platform))
+    }
+
+    /// Takes the pending DashPay news without delivering it.
+    #[cfg(test)]
+    pub(crate) fn take_news(&self) -> NewsBatch {
+        self.take(|p| std::mem::take(&mut p.news))
     }
 
     /// `txids = None` asks hosts to reload the whole history.
@@ -183,7 +236,7 @@ impl EventPump {
                     p.sync,
                     !p.balances.is_empty(),
                     !p.history.is_empty(),
-                    !p.platform.is_empty(),
+                    !p.platform.is_empty() || !p.news.is_empty(),
                     p.new_txs_due,
                 )
             };
@@ -231,8 +284,10 @@ impl EventPump {
             if platform {
                 match due(last_platform) {
                     Ok(()) => {
-                        let changes = self.take(|p| std::mem::take(&mut p.platform));
-                        target.flush_platform(changes);
+                        let (changes, news) = self.take(|p| {
+                            (std::mem::take(&mut p.platform), std::mem::take(&mut p.news))
+                        });
+                        target.flush_platform(changes, news);
                         last_platform = Some(now);
                     }
                     Err(at) => push_deadline(at),
@@ -298,7 +353,11 @@ mod tests {
             let n: usize = batches.values().map(Vec::len).sum();
             self.push(format!("new={n}/{}", batches.len()));
         }
-        fn flush_platform(&self, changes: BTreeMap<WalletId, BTreeSet<PlatformChange>>) {
+        fn flush_platform(
+            &self,
+            changes: BTreeMap<WalletId, BTreeSet<PlatformChange>>,
+            news: NewsBatch,
+        ) {
             let all: Vec<String> = changes
                 .values()
                 .flatten()
@@ -307,7 +366,13 @@ mod tests {
                     other => format!("{other:?}"),
                 })
                 .collect();
-            self.push(format!("platform={}", all.join(",")));
+            if !all.is_empty() {
+                self.push(format!("platform={}", all.join(",")));
+            }
+            for (identity, n) in news.values().flatten() {
+                let ids: Vec<String> = n.events.iter().map(|e| e.id.to_string()).collect();
+                self.push(format!("news:{identity}={}+{}", ids.join(","), n.more));
+            }
         }
         fn tick(&self) {}
     }
@@ -512,6 +577,62 @@ mod tests {
         pump.mark_balances(wallet);
         settle().await;
         assert_eq!(rec.log().last().unwrap().1, "balances=1");
+
+        stop_tx.send(true).unwrap();
+        task.await.unwrap();
+    }
+
+    fn news(id: u64) -> DashPayEvent {
+        DashPayEvent {
+            id,
+            kind: crate::platform::EventKind::RequestReceived,
+            contact: Some("c".into()),
+            reference: Some(id.to_string()),
+            at: 1,
+            read_at: None,
+        }
+    }
+
+    /// DP2-05: DashPay news rides the `Platform` clock after the changes of
+    /// its flush, at most `MAX_NEWS` per identity and event with the rest
+    /// counted, and a removed wallet's pending news is dropped.
+    #[tokio::test(start_paused = true)]
+    async fn news_rides_the_platform_clock_capped_per_identity() {
+        let pump = Arc::new(EventPump::default());
+        let rec = Arc::new(Recorder::default());
+        *rec.start.lock().unwrap() = Some(Instant::now());
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let task = {
+            let (pump, rec) = (Arc::clone(&pump), Arc::clone(&rec));
+            tokio::spawn(async move { pump.run(&*rec, stop_rx).await })
+        };
+        let (wallet, gone) = (WalletId([9; 32]), WalletId([8; 32]));
+        let events = PlatformChange::Events {
+            identity: "a".into(),
+        };
+
+        pump.mark_platform(wallet, [events.clone()]);
+        pump.mark_news(wallet, "a", vec![news(1)]);
+        settle().await;
+        // Inside the interval: held, merged, capped.
+        pump.mark_news(wallet, "a", (2..=40).map(news).collect());
+        pump.mark_news(wallet, "b", vec![news(41)]);
+        pump.mark_news(gone, "a", vec![news(42)]);
+        pump.forget_news(&gone);
+        pump.mark_news(wallet, "c", Vec::new());
+        settle().await;
+        let early: Vec<String> = rec.log().into_iter().map(|(_, w)| w).collect();
+        assert_eq!(early, ["platform=Events { identity: \"a\" }", "news:a=1+0"]);
+
+        tokio::time::advance(MIN_INTERVAL).await;
+        settle().await;
+        let log = rec.log();
+        let (at, last) = &log[2];
+        assert!(*at >= 250, "{log:?}");
+        let ids: Vec<String> = (2..2 + MAX_NEWS as u64).map(|n| n.to_string()).collect();
+        assert_eq!(last, &format!("news:a={}+{}", ids.join(","), 39 - MAX_NEWS));
+        assert_eq!(log[3].1, "news:b=41+0");
+        assert_eq!(log.len(), 4, "{log:?}");
 
         stop_tx.send(true).unwrap();
         task.await.unwrap();

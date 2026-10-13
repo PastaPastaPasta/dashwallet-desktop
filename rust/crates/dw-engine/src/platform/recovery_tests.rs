@@ -2517,6 +2517,63 @@ fn a_wallet_imported_again_after_its_removal_is_written() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+/// The bring-up counts the bell (DP2-05): after a reopen the unread count
+/// is in memory before any `unread_count` call, so the first sync read
+/// answers it.
+#[test]
+fn the_bring_up_counts_the_bell() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, _) = removable_in(dir.path());
+    let request = contacts(incoming(ALICE[0], 9, u64::MAX / 2));
+    s.live().unwrap().store.store(id.0, request).unwrap();
+    drop(s);
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        ..Platform::default()
+    });
+    let (engine, s) = reopen(dir.path(), platform);
+    start(&engine, &s);
+    let alice = base58(ALICE);
+    wait_until("the bring-up's count", || {
+        s.live().unwrap().tap.unread(id, &alice) == Some(1)
+    });
+    assert_eq!(s.dashpay(id).unread_count(alice).unwrap(), 1);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A removed wallet's bell goes with its tombstone (DP2-05, DEC-210): its
+/// rows and counts are gone, the calls refuse it, and the same seed
+/// imported again starts with an empty bell.
+#[test]
+fn a_removed_wallets_bell_goes_with_it() {
+    let (_dir, engine, s, id, wipe) = removable();
+    let alice = base58(ALICE);
+    let request = || contacts(incoming(ALICE[0], 9, u64::MAX / 2));
+    s.live().unwrap().store.store(id.0, request()).unwrap();
+    let dp = s.dashpay(id);
+    dp.unread_count(alice.clone()).unwrap();
+    wait_until("the count", || dp.unread_count(alice.clone()).unwrap() == 1);
+
+    engine.block_on(s.remove_wallet(id, wipe)).unwrap();
+    assert!(journal(&engine, &s, id).is_empty());
+    assert_eq!(
+        dp.unread_count(alice.clone()).unwrap_err().code(),
+        "wallet_not_found"
+    );
+    assert_eq!(s.live().unwrap().tap.unread(id, &alice), None);
+
+    assert_eq!(restore(&engine, &s), id);
+    let manager = s.manager().unwrap();
+    engine.block_on(add_identities(&manager, id, &[(ALICE, 0)]));
+    assert_eq!(dp.unread_count(alice.clone()).unwrap(), 0);
+    let page = engine.block_on(dp.events(alice, None, 50)).unwrap();
+    assert!(page.new.is_empty() && page.earlier.is_empty(), "{page:?}");
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// A network closed and opened again while the app database of the
 /// closed session is still alive (a job of it holds it) keeps the wallet
 /// it removed recorded, and a late write through it is skipped (DEC-210

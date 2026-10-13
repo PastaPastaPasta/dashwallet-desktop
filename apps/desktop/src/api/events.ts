@@ -34,6 +34,7 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       return event.progress.kind === "done" ? [keys.lockStatus] : [];
     // No screen reads these yet (U-07 adds the DashPay, CoinJoin and lease views).
     case "newTransactions":
+    case "dashPayNews":
     case "coinJoin":
     case "platform":
     case "leaseChanged":

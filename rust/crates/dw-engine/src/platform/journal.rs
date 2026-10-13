@@ -25,6 +25,13 @@
 //!   entity to count as unverified.
 //! - A refused changeset leaves no event. The journal is display data: a
 //!   failure to write it is logged, never returned to the library.
+//! - The bell (DP2-05). Rows this tap adds signal `Platform{Events}`, and
+//!   those it adds unread and that notify (`notifications::notifies`) are
+//!   the identity's `EngineEvent::DashPayNews`, on the same clock: news
+//!   comes only from rows a write actually inserted, so a replay, a
+//!   restart, a second path to the same request or a `.dwbackup` import
+//!   never announces a row twice, and catch-up rows (stored read) never.
+//!   The tap also keeps the unread counts `unread_count` answers from.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::str::FromStr;
@@ -43,7 +50,7 @@ use platform_wallet::wallet::identity::{PaymentDirection, PaymentStatus};
 use platform_wallet::{ContactRequest, DpnsNameInfo};
 
 use super::lease::{FundingKey, LeaseTable, StoredLock};
-use super::notifications::EventKind;
+use super::notifications::{DashPayEvent, EventKind, notifies};
 use super::runtime::guard;
 use crate::events::{SessionHub, unix_now};
 use crate::{NetworkSession, PlatformChange, WalletId};
@@ -65,6 +72,26 @@ pub(crate) fn kind_name(kind: EventKind) -> &'static str {
         EventKind::ContactEstablished => "contact_established",
         EventKind::PaymentReceived => "payment_received",
     }
+}
+
+/// The `EventKind` of a `dp_events.kind` text (its serde name, as
+/// [`kind_name`]); `None` for one this build does not know.
+pub(crate) fn kind_of(name: &str) -> Option<EventKind> {
+    use serde::de::{Deserialize, IntoDeserializer, value::Error};
+    EventKind::deserialize(IntoDeserializer::<Error>::into_deserializer(name)).ok()
+}
+
+/// A journal row as the facade shows it; `None` for a kind this build does
+/// not know.
+pub(crate) fn event_of(row: &dw_appdb::JournalRow) -> Option<DashPayEvent> {
+    Some(DashPayEvent::journaled(
+        u64::try_from(row.id).ok()?,
+        kind_of(&row.kind)?,
+        &row.contact,
+        &row.reference,
+        row.at,
+        row.read_at,
+    ))
 }
 
 /// Kinds whose row for the same contact makes an event no news: one
@@ -109,7 +136,7 @@ fn b58(id: &Identifier) -> String {
 
 /// How old what an event reports is, for catch-up (DEC-114).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Age {
+pub(crate) enum Age {
     /// The source's authoritative time, UNIX ms.
     At(u64),
     /// No authoritative time: news.
@@ -153,12 +180,12 @@ impl<P: PlatformWalletPersistence + ?Sized> Times for P {
 
 /// One journal event before its read state is known.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Event {
-    identity: String,
-    kind: EventKind,
-    contact: String,
-    reference: String,
-    age: Age,
+pub(crate) struct Event {
+    pub(crate) identity: String,
+    pub(crate) kind: EventKind,
+    pub(crate) contact: String,
+    pub(crate) reference: String,
+    pub(crate) age: Age,
 }
 
 /// What a changeset means for DashPay, before the lookups that finish it
@@ -377,6 +404,17 @@ pub(crate) struct ChangesetTap {
     /// The session's registration flows, whose actors write a tracked
     /// lock's outpoint (DEC-173). Set once the session exists.
     pub(crate) registrations: OnceLock<Arc<super::registration_flow::Flows>>,
+    /// Unread journal rows per wallet and identity (DP2-05), as the last
+    /// [`Self::refresh_unread`] counted them; a wallet is absent until its
+    /// first count.
+    unread: Mutex<HashMap<WalletId, HashMap<String, u32>>>,
+    /// Orders [`Self::refresh_unread`]: every write is followed by a
+    /// refresh, so the last to run counts every write before it.
+    refreshing: Mutex<()>,
+    /// Bumped by [`Self::forget`]: a write or count begun before a wallet
+    /// was removed (or a restore of it rolled back) leaves no news and no
+    /// count behind. Taken before `unread` and the pump.
+    epochs: Mutex<HashMap<WalletId, u64>>,
     /// Tests: holds the next journal write before it runs.
     #[cfg(test)]
     pub(crate) pause_journal: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -391,6 +429,9 @@ impl ChangesetTap {
             locks_changed: OnceLock::new(),
             on_funded: OnceLock::new(),
             registrations: OnceLock::new(),
+            unread: Mutex::new(HashMap::new()),
+            refreshing: Mutex::new(()),
+            epochs: Mutex::new(HashMap::new()),
             #[cfg(test)]
             pause_journal: Mutex::new(None),
         }
@@ -524,17 +565,127 @@ impl ChangesetTap {
         }
     }
 
-    /// Forgets a removed wallet's cached boundary: the same seed imported
-    /// again starts from what is on file (nothing, after removal).
+    /// Forgets a removed wallet's cached boundary (the same seed imported
+    /// again starts from what is on file: nothing, after removal), its
+    /// unread counts and the news not delivered yet.
     pub(crate) fn forget(&self, id: &WalletId) {
+        let mut epochs = guard(&self.epochs);
+        *epochs.entry(*id).or_default() += 1;
         guard(&self.catch_up_before).remove(id);
+        guard(&self.unread).remove(id);
+        self.hub.pump.forget_news(id);
+    }
+
+    fn epoch(&self, id: WalletId) -> u64 {
+        guard(&self.epochs).get(&id).copied().unwrap_or_default()
+    }
+
+    /// The identity's unread count; `None` until the wallet's first count.
+    pub(crate) fn unread(&self, id: WalletId, identity: &str) -> Option<u32> {
+        let unread = guard(&self.unread);
+        Some(unread.get(&id)?.get(identity).copied().unwrap_or(0))
+    }
+
+    /// Counts the wallet's unread rows again; the identities whose count
+    /// moved. For work begun at the wallet's `epoch`: nothing once `forget`
+    /// ran since. Blocking (app.sqlite).
+    pub(crate) fn refresh_unread(
+        &self,
+        id: WalletId,
+        epoch: u64,
+    ) -> dw_appdb::Result<BTreeSet<String>> {
+        let _order = guard(&self.refreshing);
+        let counts: HashMap<String, u32> = (self.appdb.unread_counts(&id.to_string())?)
+            .into_iter()
+            .collect();
+        let epochs = guard(&self.epochs);
+        if epochs.get(&id).copied().unwrap_or_default() != epoch {
+            return Ok(BTreeSet::new());
+        }
+        let old = guard(&self.unread)
+            .insert(id, counts.clone())
+            .unwrap_or_default();
+        drop(epochs);
+        Ok((old.keys().chain(counts.keys()))
+            .filter(|i| old.get(*i) != counts.get(*i))
+            .cloned()
+            .collect())
+    }
+
+    /// The wallet's first count, off the caller's thread: an identity whose
+    /// count is not 0 signals `Platform{Events}` (until then `unread_count`
+    /// answers 0). Started once per wallet: an empty count stands in until
+    /// it lands, and goes again if the count fails, for the next call to
+    /// retry.
+    pub(crate) fn load_unread(self: &Arc<Self>, id: WalletId, rt: &tokio::runtime::Handle) {
+        let mut first = false;
+        guard(&self.unread).entry(id).or_insert_with(|| {
+            first = true;
+            HashMap::new()
+        });
+        if first {
+            let tap = Arc::clone(self);
+            rt.spawn_blocking(move || {
+                if !tap.unread_moved(id) {
+                    guard(&tap.unread).remove(&id);
+                }
+            });
+        }
+    }
+
+    /// [`Self::refresh_unread`] now, signalling `Platform{Events}` for each
+    /// identity whose count moved; a failure is logged. Whether it counted.
+    pub(crate) fn unread_moved(&self, id: WalletId) -> bool {
+        self.unread_moved_since(id, self.epoch(id))
+    }
+
+    fn unread_moved_since(&self, id: WalletId, epoch: u64) -> bool {
+        match self.refresh_unread(id, epoch) {
+            Ok(moved) if !moved.is_empty() => self.hub.pump.mark_platform(
+                id,
+                moved
+                    .into_iter()
+                    .map(|identity| PlatformChange::Events { identity }),
+            ),
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(wallet_id = %id, error = %e, "could not count the unread DashPay events");
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Marks the identity's unread rows up to `up_to` read (with `contact`,
+    /// only that contact's), recounts and signals `Platform{Events}` when a
+    /// row changed. How many changed. Blocking (app.sqlite).
+    pub(crate) fn mark_read(
+        &self,
+        id: WalletId,
+        identity: &str,
+        up_to: u64,
+        contact: Option<&str>,
+    ) -> dw_appdb::Result<usize> {
+        let up_to = i64::try_from(up_to).unwrap_or(i64::MAX);
+        let epoch = self.epoch(id);
+        let changed =
+            (self.appdb).mark_events_read(&id.to_string(), identity, up_to, contact, unix_now())?;
+        if changed > 0 {
+            self.unread_moved_since(id, epoch);
+            self.hub.pump.mark_platform(
+                id,
+                [PlatformChange::Events {
+                    identity: identity.to_owned(),
+                }],
+            );
+        }
+        Ok(changed)
     }
 
     /// Finishes and records a changeset the persister accepted, reading
     /// authoritative times from `times`.
     pub(crate) fn record(&self, id: WalletId, mut c: Classified, times: &dyn Times) {
         let wallet = id.to_string();
-        let now = unix_now();
         let mut changes = std::mem::take(&mut c.changes);
         // Before the library broadcasts a registration's lock, its
         // outpoint goes to the flow's row (§3.4 Restore rule 3).
@@ -604,6 +755,24 @@ impl ChangesetTap {
         }
         events.extend(self.name_events(id, std::mem::take(&mut c.names), times));
 
+        self.journal(id, events, &mut changes);
+        if !changes.is_empty() {
+            self.hub.pump.mark_platform(id, changes);
+        }
+    }
+
+    /// Journals `events` (catch-up by their age), adding the feed signals
+    /// of the rows written to `changes` and queueing their news. The one
+    /// writer of `dp_events` rows that can be news: DP1-04's contest
+    /// outcomes come through here.
+    pub(crate) fn journal(
+        &self,
+        id: WalletId,
+        events: Vec<Event>,
+        changes: &mut BTreeSet<PlatformChange>,
+    ) {
+        let wallet = id.to_string();
+        let now = unix_now();
         let before_ms = (!events.is_empty())
             .then(|| self.catch_up_before(id))
             .flatten()
@@ -613,6 +782,7 @@ impl ChangesetTap {
             Age::Shadowed => true,
             Age::Unknown => false,
         };
+        let kinds: Vec<EventKind> = events.iter().map(|e| e.kind).collect();
         let entries: Vec<JournalEntry> = events
             .into_iter()
             .map(|e| JournalEntry {
@@ -632,13 +802,66 @@ impl ChangesetTap {
                 Some(pause) => pause.hold_then(write),
                 None => write(),
             };
-            if let Err(e) = write() {
-                tracing::warn!(wallet_id = %id, error = %e, "could not write the DashPay journal");
+            let epoch = self.epoch(id);
+            match write() {
+                Ok(added) => {
+                    let (news, unread) = self.added(&entries, &kinds, &added, now, changes);
+                    if unread {
+                        self.unread_moved_since(id, epoch);
+                    }
+                    self.hub.pump.mark_platform(id, std::mem::take(changes));
+                    // Under the lock `forget` takes: none for a wallet
+                    // removed since the write began.
+                    let epochs = guard(&self.epochs);
+                    if epochs.get(&id).copied().unwrap_or_default() == epoch {
+                        for (identity, events) in news {
+                            self.hub.pump.mark_news(id, &identity, events);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(wallet_id = %id, error = %e, "could not write the DashPay journal")
+                }
             }
         }
-        if !changes.is_empty() {
-            self.hub.pump.mark_platform(id, changes);
+    }
+
+    /// The rows a write added: each signals its identity's feed, and the
+    /// unread ones that notify are the news, by identity. Whether one was
+    /// unread.
+    fn added(
+        &self,
+        entries: &[JournalEntry],
+        kinds: &[EventKind],
+        added: &[(usize, i64)],
+        now: u64,
+        changes: &mut BTreeSet<PlatformChange>,
+    ) -> (BTreeMap<String, Vec<DashPayEvent>>, bool) {
+        let mut news: BTreeMap<String, Vec<DashPayEvent>> = BTreeMap::new();
+        let mut unread = false;
+        for &(i, row) in added {
+            let (e, kind) = (&entries[i], kinds[i]);
+            changes.insert(PlatformChange::Events {
+                identity: e.identity.clone(),
+            });
+            if e.read_at.is_some() {
+                continue;
+            }
+            unread = true;
+            if notifies(kind) {
+                news.entry(e.identity.clone())
+                    .or_default()
+                    .push(DashPayEvent::journaled(
+                        row as u64,
+                        kind,
+                        &e.contact,
+                        &e.reference,
+                        now,
+                        None,
+                    ));
+            }
         }
+        (news, unread)
     }
 
     /// The name events. A name won in a watched contest is `ContestWon`,
@@ -711,9 +934,15 @@ impl NetworkSession {
             .unwrap_or(false)
     }
 
-    /// [`ChangesetTap::note_first_bring_up`] off the caller's thread.
+    /// [`ChangesetTap::note_first_bring_up`] off the caller's thread. Then
+    /// the wallet's unread counts for `unread_count` (DP2-05), which signal
+    /// `Platform{Events}` for each identity with unread events: not
+    /// awaited, so the bring-up's budget never waits for the bell.
     pub(super) async fn note_first_bring_up(&self, id: WalletId) {
         self.with_tap(move |tap| tap.note_first_bring_up(id)).await;
+        if let Ok(live) = self.live() {
+            self.rt.spawn_blocking(move || live.tap.unread_moved(id));
+        }
     }
 
     /// `None` when the session is closed or the blocking task failed.

@@ -25,6 +25,8 @@ pub mod keys_policy;
 pub mod lease;
 mod names;
 mod notifications;
+#[cfg(test)]
+mod notifications_tests;
 mod payments;
 mod private_details;
 #[cfg(test)]
@@ -83,7 +85,7 @@ pub use names::{
     ContestContender, ContestState, ContestStatus, NameAvailability, NameOutcome, UserHit,
     UsernameCheck, UsernameRule, UsernameRuleCheck, check_username,
 };
-pub use notifications::{DashPayEvent, EventKind, EventPage};
+pub use notifications::{DashPayEvent, EventKind, EventPage, MAX_NEWS};
 pub use payments::{
     ActivityDirection, ActivityFilter, ActivityItem, ActivityPage, Counterparty, LockResolution,
     PaymentLock,
