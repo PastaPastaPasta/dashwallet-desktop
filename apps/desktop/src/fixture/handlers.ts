@@ -9,7 +9,7 @@ import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
 import type { LockOutcome } from "../api/generated/LockOutcome";
 import { isCheckable } from "../api/lockReport";
 import { sectionOf } from "./dashpay";
-import type { World } from "./scenarios";
+import { MAX_REPORT_WALLETS, type World } from "./scenarios";
 import { historyPage, txDetails } from "./wallet";
 
 export interface Ctx {
@@ -89,7 +89,13 @@ export const HANDLERS: Handlers = {
     setLock(ctx, "locked");
     const inFlight = world.leases.reduce((n, l) => n + l.inFlight, 0);
     if (inFlight > 0) emit({ kind: "lockProgress", network, progress: { kind: "draining", inFlight, deadlineInMs: 30_000 } });
-    const report: LockOutcome = { status: world.lock, ...world.cut };
+    // As dw-app's bridge: the first 16 wallets with secrets, and how many more.
+    const all = world.lock.walletsWithSecrets;
+    const report: LockOutcome = {
+      status: { ...world.lock, walletsWithSecrets: all.slice(0, MAX_REPORT_WALLETS) },
+      ...world.cut,
+      walletsWithSecretsOmitted: Math.max(0, all.length - MAX_REPORT_WALLETS),
+    };
     world.lastLockReport = report;
     emit({ kind: "lockProgress", network, progress: { kind: "done", report } });
     return report;

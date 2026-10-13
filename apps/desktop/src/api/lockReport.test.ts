@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installFixture, type FixtureHandle } from "../fixture";
 import type { FlowLockReport } from "./generated/FlowLockReport";
 import type { LockOutcome } from "./generated/LockOutcome";
-import { isCheckable, reconcileLockReport, reportsAnything, summarizeLockReport } from "./lockReport";
+import { isCheckable, lockAccountsFor, reconcileLockReport, reportsAnything, summarizeLockReport } from "./lockReport";
 import { IpcBackend } from "./tauri";
 
 const W = "a1".repeat(32);
@@ -75,6 +75,17 @@ describe("lock report consumer", () => {
     expect(summarizeLockReport(r).beyondReach).toBe(beyond);
   });
 
+  // Sol r1 #1: omitted wallets settle only when lockStatus, read after the lock, accounts for them.
+  it.each([
+    ["no wallet omitted, whatever lockStatus says", report([], 0, 0), { state: "unlocked", walletsWithSecrets: [] }, true],
+    ["still locked, every wallet there", report([], 0, 2), { state: "locked", walletsWithSecrets: [W, "b", "c"] }, true],
+    ["unlocked since", report([], 0, 2), { state: "unlocked", walletsWithSecrets: [W, "b", "c"] }, false],
+    ["a listed wallet gone", report([], 0, 2), { state: "locked", walletsWithSecrets: ["b", "c", "d"] }, false],
+    ["fewer wallets than listed and counted", report([], 0, 2), { state: "locked", walletsWithSecrets: [W, "b"] }, false],
+  ] as const)("lockStatus accounts for omitted wallets: %s", (_, r, lock, accounted) => {
+    expect(lockAccountsFor(r, { ...r.status, ...lock, walletsWithSecrets: [...lock.walletsWithSecrets] })).toBe(accounted);
+  });
+
   it("checks only what dispatchStatus can name", () => {
     expect(isCheckable("ab".repeat(32))).toBe(true);
     expect(isCheckable("registration/d1/identity")).toBe(true);
@@ -143,6 +154,34 @@ describe("lock report consumer", () => {
       expect(r.settled).toBe(true);
       // lockStatus lists every wallet, the ones the report cut included.
       expect(r.lock.walletsWithSecrets).toEqual(fixture.world.lock.walletsWithSecrets);
+    });
+
+    it("omitted wallets keep the report unresolved unless lockStatus accounts for them", async () => {
+      const fixture = installFixture({ scenario: "lock-report-omitted-settles" });
+      const b = new IpcBackend("fixture");
+      const outcome = await b.lock();
+      expect(outcome.status.walletsWithSecrets).toHaveLength(16);
+      expect(outcome.walletsWithSecretsOmitted).toBe(2);
+      for (const a of Object.keys(fixture.world.dispatch)) fixture.world.dispatch[a] = "sent";
+      fixture.world.leases = fixture.world.leases.map((l) => ({ ...l, inFlight: 0, callRunning: false }));
+      const locked = fixture.world.lock;
+      expect(await reconcileLockReport(outcome, b)).toMatchObject({ walletsAccounted: true, settled: true });
+
+      // lockStatus disagrees with the report: unlocked since, a listed wallet gone, too few wallets.
+      const disagreeing = [
+        { ...locked, state: "unlocked" as const },
+        { ...locked, walletsWithSecrets: locked.walletsWithSecrets.filter((w) => w !== outcome.status.walletsWithSecrets[0]) },
+        { ...locked, walletsWithSecrets: locked.walletsWithSecrets.filter((w) => outcome.status.walletsWithSecrets.includes(w)) },
+      ];
+      for (const lock of disagreeing) {
+        fixture.world.lock = lock;
+        expect(await reconcileLockReport(outcome, b)).toMatchObject({ walletsAccounted: false, settled: false });
+      }
+
+      // lockStatus fails: no reconciliation, so nothing settles.
+      fixture.world.lock = locked;
+      fixture.fail("lock_status", "none");
+      await expect(reconcileLockReport(outcome, b)).rejects.toMatchObject({ code: expect.any(String) });
     });
 
     it("a complete report settles once its pending artifacts do", async () => {

@@ -3,7 +3,10 @@
 // `walletsWithSecretsOmitted`). A report with any of those above 0 is not complete, so what it
 // leaves out is unresolved: the renderer never reads "nothing pending" from it, and reconciles
 // through `leases`, `dispatchStatus` and `lockStatus` instead. Omitted flows and artifacts have
-// no ids, so they settle only when the report's order proves none of them is pending.
+// no ids, so they settle only when the report's order proves none of them is pending. Omitted
+// wallets settle only when `lockStatus`, read after the lock, accounts for them: the vault still
+// locked and holding every listed wallet and at least as many as the report listed and counted;
+// a vault unlocked since, a set that disagrees, or a failed read keeps the report unresolved.
 //
 // A flow's `outcome` is the strongest of its artifacts' (`sent` > `willBeSent` > `maybeSent` >
 // `cancelled`, E0-04 §8.4), so it does not say whether anything of the flow is still pending: a
@@ -110,11 +113,26 @@ export interface Reconciled {
   live: Lease[];
   /** Every wallet with secrets: the report lists at most 16 (`walletsWithSecretsOmitted`). */
   lock: LockStatus;
+  /** `lock` accounts for the wallets the report left out (`lockAccountsFor`). */
+  walletsAccounted: boolean;
   /** Nothing the report covers can still be sent: no pending item beyond reach, every listed
-   * pending artifact `sent` or `notSent`, and no hand-off in flight. A lease's absence or end
-   * never settles anything by itself: a revoked flow without committed funds, or one the reaper
-   * ended, may still have a state transition or transaction out. */
+   * pending artifact `sent` or `notSent`, no hand-off in flight, and the omitted wallets accounted
+   * for. A lease's absence or end never settles anything by itself: a revoked flow without
+   * committed funds, or one the reaper ended, may still have a state transition or transaction
+   * out. */
   settled: boolean;
+}
+
+/** Whether `lock` (a `lockStatus` read after the lock) establishes the state of the wallets the
+ * report left out. With none left out, nothing to establish. Otherwise the vault must still be
+ * locked, and its wallets with secrets must hold every wallet the report lists and at least as
+ * many as it listed and counted (E0-13 D3: `lockStatus` lists every wallet). A vault unlocked
+ * since, or a wallet set that lost a listed wallet or is too small, says nothing about them. */
+export function lockAccountsFor(report: LockOutcome, lock: LockStatus): boolean {
+  if (report.walletsWithSecretsOmitted === 0) return true;
+  const all = new Set(lock.walletsWithSecrets);
+  const listed = report.status.walletsWithSecrets;
+  return lock.state === "locked" && listed.every((w) => all.has(w)) && all.size >= listed.length + report.walletsWithSecretsOmitted;
 }
 
 export async function reconcileLockReport(
@@ -134,6 +152,8 @@ export async function reconcileLockReport(
   ]);
   const artifacts = wanted.map((a, i) => ({ ...a, state: states[i] }));
   const live = leases.filter((l) => l.inFlight > 0 || l.callRunning);
-  const settled = !summary.beyondReach && live.length === 0 && artifacts.every((a) => a.state === "sent" || a.state === "notSent");
-  return { checkedAt, artifacts, live, lock, settled };
+  const walletsAccounted = lockAccountsFor(report, lock);
+  const settled =
+    walletsAccounted && !summary.beyondReach && live.length === 0 && artifacts.every((a) => a.state === "sent" || a.state === "notSent");
+  return { checkedAt, artifacts, live, lock, walletsAccounted, settled };
 }

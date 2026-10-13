@@ -96,6 +96,24 @@ test("a failed check says so, complete report or not", async ({ page }) => {
   await expect(page.getByTestId("lock-report-check")).toHaveText("Could not check whether any of these actions may still be sent.");
 });
 
+test("a lockStatus that disagrees with the report's wallets keeps it unresolved", async ({ page }) => {
+  await lockFrom(page, "lock-report-omitted-settles");
+  const notice = page.getByTestId("lock-report");
+  await settleAndReconcile(page, "artifacts");
+  await settleAndReconcile(page, "leases");
+  await expect(notice).toHaveAttribute("data-resolved", "true");
+
+  // A wallet the report lists is no longer among the vault's wallets with secrets.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    const listed = f.world.lastLockReport!.status.walletsWithSecrets[0];
+    f.world.lock = { ...f.world.lock, walletsWithSecrets: f.world.lock.walletsWithSecrets.filter((w) => w !== listed) };
+  });
+  await settleAndReconcile(page, "leases");
+  await expect(notice).toHaveAttribute("data-resolved", "false");
+  await expect(page.getByTestId("lock-report-check")).toHaveText("Checking whether any of these actions may still be sent…");
+});
+
 test("a complete report of ended flows is resolved at once", async ({ page }) => {
   await lockFrom(page, "lock-report-resolved");
   await expect(page.getByTestId("lock-report")).toHaveAttribute("data-resolved", "true");

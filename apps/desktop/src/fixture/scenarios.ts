@@ -40,9 +40,12 @@ export interface World {
   dispatch: Record<string, DispatchStateName>;
   lastLockReport: LockOutcome | null;
   /** What the next `lock` cuts and reports (E0-13 D3's bounded report). */
-  cut: Pick<LockOutcome, "flows" | "flowsOmitted" | "walletsWithSecretsOmitted">;
+  cut: Pick<LockOutcome, "flows" | "flowsOmitted">;
   notices: RecentNotice[];
 }
+
+/** dw-app's `MAX_REPORT_WALLETS`: a lock report lists this many wallets and counts the rest. */
+export const MAX_REPORT_WALLETS = 16;
 
 const unlocked = (walletIds: string[]): LockStatus => ({
   state: "unlocked",
@@ -88,7 +91,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     leases: [],
     dispatch: {},
     lastLockReport: null,
-    cut: { flows: [], flowsOmitted: 0, walletsWithSecretsOmitted: 0 },
+    cut: { flows: [], flowsOmitted: 0 },
     notices: [],
   };
 }
@@ -129,12 +132,17 @@ const flow = (lease: string, kind: FlowLockReport["flow"], artifacts: [string, F
 });
 
 /** Locks `w` with these flows cut, listed as the bridge lists them; the lock revokes each flow's
- * lease. The dispatch state of every listed artifact starts at its outcome. */
-function cutting(w: World, flows: FlowLockReport[], flowsOmitted = 0, walletsWithSecretsOmitted = 0): World {
+ * lease. The dispatch state of every listed artifact starts at its outcome. With `walletsOmitted`
+ * above 0 the vault holds that many wallets with secrets beyond the 16 a report lists. */
+function cutting(w: World, flows: FlowLockReport[], flowsOmitted = 0, walletsOmitted = 0): World {
+  if (walletsOmitted > 0) {
+    const others = Array.from({ length: MAX_REPORT_WALLETS - 1 + walletsOmitted }, (_, i) => hex(i + 1).repeat(32));
+    w.lock = { ...w.lock, walletsWithSecrets: [...w.lock.walletsWithSecrets, ...others].sort() };
+  }
   w.dashpay = registered();
   w.leases = flows.map((f) => lease(f.lease.slice("lease-".length, "lease-".length + 8), f.flow, f.flow === "registration" || f.flow === "topUp" || f.flow === "acceptAndPay"));
   w.dispatch = Object.fromEntries(flows.flatMap((f) => f.artifacts.map((a) => [a.artifact, a.outcome === "cancelled" ? "notSent" : a.outcome])));
-  w.cut = { flows: listed(flows), flowsOmitted, walletsWithSecretsOmitted };
+  w.cut = { flows: listed(flows), flowsOmitted };
   return w;
 }
 
