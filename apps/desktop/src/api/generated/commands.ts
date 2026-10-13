@@ -152,8 +152,8 @@ export const ENGINE_EVENT = "engine://event";
 export const MAX_TXIDS = 256;
 
 /**
- * How the app was launched: fixture or engine mode, the self-test, the
- * forced theme and the network `openNetwork` opens by default.
+ * How the app was launched: the self-test, the forced theme and the
+ * network `openNetwork` opens by default.
  */
 export function launchInfo(): Promise<LaunchInfo> {
   return invoke<LaunchInfo>("launch_info");
@@ -174,39 +174,6 @@ export function recentNotices(): Promise<Array<RecentNotice>> {
  */
 export function startupMark(mark: string): Promise<number> {
   return invoke<number>("startup_mark", { mark });
-}
-
-/**
- * `--selftest`: writes the renderer's report, and exits once the report
- * is final (`"final": false` is a checkpoint before a probe that could
- * end the page).
- */
-export function selftestReport(report: JsonValue): Promise<null> {
-  return invoke<null>("selftest_report", { report });
-}
-
-/**
- * `--selftest`: the renderer shows `screen`; announced on stderr so a
- * harness can capture the window during the pause that follows.
- */
-export function selftestCheckpoint(screen: string): Promise<null> {
-  return invoke<null>("selftest_checkpoint", { screen });
-}
-
-/**
- * A synthetic page of `rows` records, the size and shape of a real
- * `historyPage` result: the IPC and serialisation cost alone (U5).
- */
-export function ipcBenchRows(rows: number): Promise<HistoryRows> {
-  return invoke<HistoryRows>("ipc_bench_rows", { rows });
-}
-
-/**
- * `historyPage` with the engine's share of the time (U5): the renderer
- * subtracts `engineMicros` from its round trip. Self-test runs only.
- */
-export function historyPageTimed(walletId: string, request: HistoryRequest): Promise<TimedHistoryRows> {
-  return invoke<TimedHistoryRows>("history_page_timed", { walletId, request });
 }
 
 /**
@@ -1935,15 +1902,56 @@ export function unitName(unit: DisplayUnit, network: string): Promise<string> {
   return invoke<string>("unit_name", { unit, network });
 }
 
+/**
+ * `--selftest`: writes the renderer's report, and exits once the report
+ * is final (`"final": false` is a checkpoint before a probe that could
+ * end the page).
+ */
+export function selftestReport(report: JsonValue): Promise<null> {
+  return invoke<null>("selftest_report", { report });
+}
+
+/**
+ * `--selftest`: the renderer shows `screen`; announced on stderr so a
+ * harness can capture the window during the pause that follows.
+ */
+export function selftestCheckpoint(screen: string): Promise<null> {
+  return invoke<null>("selftest_checkpoint", { screen });
+}
+
+/**
+ * `--selftest` with `--selftest-passphrase-file`: a full unlock with
+ * the file's first line, as `unlock` does, so the self-test records the
+ * screens of an encrypted vault without the renderer holding its
+ * passphrase. A file others could read or replace is refused
+ * (`app.selftest_passphrase_file`; Unix only, E0-13 D16).
+ */
+export function selftestUnlock(): Promise<LockStatus> {
+  return invoke<LockStatus>("selftest_unlock");
+}
+
+/**
+ * A synthetic page of `rows` records, the size and shape of a real
+ * `historyPage` result: the IPC and serialisation cost alone (U5).
+ * Self-test runs only.
+ */
+export function ipcBenchRows(rows: number): Promise<HistoryRows> {
+  return invoke<HistoryRows>("ipc_bench_rows", { rows });
+}
+
+/**
+ * `historyPage` with the engine's share of the time (U5): the renderer
+ * subtracts `engineMicros` from its round trip. Self-test runs only.
+ */
+export function historyPageTimed(walletId: string, request: HistoryRequest): Promise<TimedHistoryRows> {
+  return invoke<TimedHistoryRows>("history_page_timed", { walletId, request });
+}
+
 /** Each command's arguments, as `invoke` sends them. */
 export type CommandArgs = {
   launch_info: {  };
   recent_notices: {  };
   startup_mark: { mark: string };
-  selftest_report: { report: JsonValue };
-  selftest_checkpoint: { screen: string };
-  ipc_bench_rows: { rows: number };
-  history_page_timed: { walletId: string; request: HistoryRequest };
   probe_unlisted: {  };
   open_network: { network: string | null; settings: SessionSettings | null };
   close_network: {  };
@@ -2160,6 +2168,11 @@ export type CommandArgs = {
   format_amount: { amount: number; unit: DisplayUnit; network: string; style: AmountStyle };
   parse_amount: { text: string; unit: DisplayUnit };
   unit_name: { unit: DisplayUnit; network: string };
+  selftest_report: { report: JsonValue };
+  selftest_checkpoint: { screen: string };
+  selftest_unlock: {  };
+  ipc_bench_rows: { rows: number };
+  history_page_timed: { walletId: string; request: HistoryRequest };
 };
 
 /** Each command's result. */
@@ -2167,10 +2180,6 @@ export type CommandResults = {
   launch_info: LaunchInfo;
   recent_notices: Array<RecentNotice>;
   startup_mark: number;
-  selftest_report: null;
-  selftest_checkpoint: null;
-  ipc_bench_rows: HistoryRows;
-  history_page_timed: TimedHistoryRows;
   probe_unlisted: string;
   open_network: OpenedNetwork;
   close_network: boolean;
@@ -2387,6 +2396,11 @@ export type CommandResults = {
   format_amount: string;
   parse_amount: number | null;
   unit_name: string;
+  selftest_report: null;
+  selftest_checkpoint: null;
+  selftest_unlock: LockStatus;
+  ipc_bench_rows: HistoryRows;
+  history_page_timed: TimedHistoryRows;
 };
 
 export type CommandName = keyof CommandResults;
@@ -2396,10 +2410,6 @@ export const COMMANDS: Record<CommandName, string> = {
   launch_info: "app",
   recent_notices: "app",
   startup_mark: "app",
-  selftest_report: "app",
-  selftest_checkpoint: "app",
-  ipc_bench_rows: "app",
-  history_page_timed: "app",
   probe_unlisted: "app",
   open_network: "network",
   close_network: "network",
@@ -2616,14 +2626,19 @@ export const COMMANDS: Record<CommandName, string> = {
   format_amount: "units",
   parse_amount: "units",
   unit_name: "units",
+  selftest_report: "selftest",
+  selftest_checkpoint: "selftest",
+  selftest_unlock: "selftest",
+  ipc_bench_rows: "selftest",
+  history_page_timed: "selftest",
 };
 
 /** Every error code. */
 export const ERROR_CODES: readonly ErrorCode[] = [
-  "app.fixture_mode",
   "app.not_selftest",
   "app.not_developer_build",
   "app.selftest",
+  "app.selftest_passphrase_file",
   "app.data_dir",
   "app.unknown_handle",
   "app.too_many_handles",

@@ -10,42 +10,41 @@ import "./styles/app.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import type { Backend } from "./api/backend";
 import { bridgeEvents } from "./api/events";
-import { FixtureBackend, type FixtureVariant } from "./api/fixture";
 import { BackendContext } from "./api/queries";
-import { inTauri, TauriBackend } from "./api/tauri";
+import { inTauri, IpcBackend } from "./api/tauri";
 import { App, LaunchContext } from "./app/App";
 import { exposeSelftest, runTauriSelftest } from "./app/selftest";
 import { milestones } from "./app/startup";
-import { ui, type ThemeChoice } from "./app/ui";
+import { ui } from "./app/ui";
 
-/** Browser runs (Playwright, `vite dev`) choose the fixture with `?variant=&theme=&locked=1`. */
-function urlOptions() {
-  const p = new URLSearchParams(location.search);
-  const t = p.get("theme");
-  const theme: ThemeChoice = t === "light" || t === "dark" ? t : null;
-  return {
-    variant: (p.get("variant") ?? "default") as FixtureVariant,
-    theme,
-    locked: p.get("locked") === "1",
-  };
+/** Inside Tauri: dw-app and the engine. In a fixture build (`vite dev`, `pnpm build:fixture`)
+ * outside Tauri: the fixture backend, chosen with `?scenario=&theme=&fail=&delay=`. A
+ * production build has no fixture code at all (`__DW_FIXTURES__` is false, so Vite drops the
+ * import), and outside Tauri it only says where it runs. */
+async function connect(): Promise<{ backend: IpcBackend; fixturePassphrase: string | null }> {
+  if (inTauri()) return { backend: new IpcBackend("tauri"), fixturePassphrase: null };
+  if (__DW_FIXTURES__) {
+    const { installFixture, fixtureOptionsFromUrl } = await import("./fixture");
+    const fixture = installFixture(fixtureOptionsFromUrl(location.search));
+    window.__dwFixture = fixture;
+    return { backend: new IpcBackend("fixture", () => fixture.now, fixture.locale), fixturePassphrase: fixture.world.passphrase };
+  }
+  throw new Error("this page runs only inside the Dash Wallet app");
 }
 
 async function boot() {
-  const opts = urlOptions();
-  const tauri = inTauri() ? new TauriBackend() : null;
-  const launch = tauri ? await tauri.launchInfo() : FixtureBackend.browserLaunch();
+  const { backend, fixturePassphrase } = await connect();
+  const launch = await backend.launchInfo();
   milestones.launchInfo = performance.now();
-  const backend: Backend = tauri && !launch.fixture ? tauri : new FixtureBackend(launch, opts.variant, { locked: opts.locked });
-  ui.set({ theme: launch.theme ?? opts.theme });
+  ui.set({ theme: launch.theme });
 
   const client = new QueryClient({
     // Engine data changes only when a signal says so: no polling, no refetch on focus.
     defaultOptions: { queries: { staleTime: Infinity, refetchOnWindowFocus: false, retry: false } },
   });
   await bridgeEvents(backend, client);
-  exposeSelftest(backend, client);
+  if (fixturePassphrase !== null) exposeSelftest(backend, client, fixturePassphrase);
 
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
@@ -58,7 +57,7 @@ async function boot() {
       </QueryClientProvider>
     </StrictMode>,
   );
-  if (launch.selftest) void runTauriSelftest(backend, client, launch.selftestPauseMs);
+  if (launch.selftest) void runTauriSelftest(backend, client, launch.selftestPauseMs, launch.selftestUnlock);
 }
 
 boot().catch((e) => {

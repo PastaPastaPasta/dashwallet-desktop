@@ -10,6 +10,9 @@
 //! - `specs()`, one [`CommandSpec`] per command: its arguments and result as
 //!   ts-rs types, its doc comment and the engine facade methods it reaches.
 //!
+//! A block that starts with `#![cfg(..)]` compiles its functions and
+//! registers them only under that condition; its specs are always there.
+//!
 //! `codegen` turns the specs into `apps/desktop/src/api/generated/commands.ts`,
 //! so the TypeScript signature of every command comes from its Rust one, and
 //! `coverage` checks the facade claims against the engine's sources.
@@ -150,13 +153,20 @@ fn export_with_imports<T: TS + 'static>(cfg: &Config, exports: &mut Exports) -> 
 
 /// See the module documentation.
 macro_rules! commands {
-    ($(
+    // `#![cfg(..)]` first in the block compiles the functions and registers
+    // them only under that condition (the self-test's, E0-13 D17). The specs
+    // stay, so the generated bindings are the same in every build.
+    (#![cfg($cfg:meta)] $($commands:tt)*) => {
+        $crate::ipc::commands!(@cfg($cfg) $($commands)*);
+    };
+    (@cfg($cfg:meta) $(
         $(#[doc = $doc:literal])*
         #[facade($($facade:literal),* $(,)?)]
         fn $name:ident($state:ident $(, $arg:ident : $ty:ty)* $(,)?) -> $ret:ty $body:block
     )*) => {
         $(
             $(#[doc = $doc])*
+            #[cfg($cfg)]
             #[tauri::command]
             pub async fn $name(
                 $state: ::tauri::State<'_, $crate::state::AppState>,
@@ -171,10 +181,18 @@ macro_rules! commands {
         pub(crate) const NAMES: &[&str] = &[$(stringify!($name)),*];
 
         /// Runs one of [`NAMES`]; `false` for any other command.
+        #[cfg($cfg)]
         pub(crate) fn invoke<R: ::tauri::Runtime>(invoke: ::tauri::ipc::Invoke<R>) -> bool {
             let handler: fn(::tauri::ipc::Invoke<R>) -> bool =
                 ::tauri::generate_handler![$($name),*];
             handler(invoke)
+        }
+
+        /// Without the condition none of [`NAMES`] is registered: `false`,
+        /// Tauri's "command not found".
+        #[cfg(not($cfg))]
+        pub(crate) fn invoke<R: ::tauri::Runtime>(_: ::tauri::ipc::Invoke<R>) -> bool {
+            false
         }
 
         /// What `codegen` and `coverage` read.
@@ -189,6 +207,9 @@ macro_rules! commands {
                 }
             ),*]
         }
+    };
+    ($($commands:tt)*) => {
+        $crate::ipc::commands!(@cfg(all()) $($commands)*);
     };
 }
 

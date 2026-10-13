@@ -111,6 +111,10 @@ struct RoleTokenTests {
             ("warning on canvas (light)", contrast(aa.warning.light, role.canvas.light)),
             ("warning on card (dark)", contrast(aa.warning.dark, role.card.dark)),
             ("white on the network capsule", contrast(white, aa.networkCapsule.light)),
+            ("danger on canvas (light)", contrast(aa.danger.light, role.canvas.light)),
+            ("danger on dangerTint (light)", contrast(aa.danger.light, role.dangerTint.light, base: role.card.light)),
+            ("danger on canvas (dark)", contrast(aa.danger.dark, role.canvas.dark)),
+            ("danger on dangerTint (dark)", contrast(aa.danger.dark, role.dangerTint.dark, base: role.card.dark)),
         ]
         for (name, ratio) in pairs {
             #expect(ratio >= 4.5, "\(name): \(ratio)")

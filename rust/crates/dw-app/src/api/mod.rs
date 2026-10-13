@@ -4,7 +4,9 @@
 //! also gives it `NAMES`, `invoke` and `specs`, and lists in `EXCLUDED` the
 //! facade methods it deliberately does not bind, with the reason
 //! (`coverage` checks that every facade method is in exactly one of the
-//! two). Its commands are granted in `capabilities/<module>.json`.
+//! two). Its commands are granted in `capabilities/<module>.json`, except
+//! the self-test's: `selftest` is compiled, registered and granted only with
+//! the `selftest` feature (`capabilities-selftest/selftest.json`, E0-13 D17).
 
 use tauri::Runtime;
 use tauri::ipc::Invoke;
@@ -15,7 +17,7 @@ macro_rules! domains {
     ($($domain:ident),+ $(,)?) => {
         $(pub mod $domain;)+
 
-        /// The domains (each has `capabilities/<domain>.json` once it declares commands).
+        /// The domains (each has a capability file named after it once it declares commands).
         #[cfg(test)]
         pub(crate) const DOMAINS: &[&str] = &[$(stringify!($domain)),+];
 
@@ -48,7 +50,7 @@ macro_rules! domains {
 
 domains!(
     app, network, vault, wallets, chain, history, backup, send, coinjoin, identity, social,
-    console, units,
+    console, units, selftest,
 );
 
 /// Registered with the handler but granted by no capability: the U6 probe
@@ -63,8 +65,8 @@ mod tests {
 
     use super::*;
 
-    fn capabilities() -> Vec<(String, serde_json::Value)> {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+    fn capabilities(dir: &str) -> Vec<(String, serde_json::Value)> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
         let mut files: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
             .flatten()
@@ -81,12 +83,12 @@ mod tests {
             .collect()
     }
 
-    /// Each domain's commands are granted in `capabilities/<domain>.json`,
-    /// to the main window only, and nothing else is granted: no command
-    /// another file declares, no plugin beyond event listening. With
-    /// `build.rs` deriving the permissions from the same files, a command
-    /// without a grant cannot be called and a grant without a command does
-    /// not build.
+    /// Each domain's commands are granted in `capabilities/<domain>.json`
+    /// (the self-test's in `capabilities-selftest/selftest.json`), to the
+    /// main window only, and nothing else is granted: no command another
+    /// file declares, no plugin beyond event listening. With `build.rs`
+    /// deriving the permissions from the same files, a command without a
+    /// grant cannot be called and a grant without a command does not build.
     #[test]
     fn every_command_is_granted_in_its_domain_file() {
         let conf: serde_json::Value =
@@ -97,14 +99,20 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
-        let caps = capabilities();
-        let files: BTreeSet<String> = caps.iter().map(|(n, _)| n.clone()).collect();
+        let caps = capabilities("capabilities");
+        let mut files: BTreeSet<String> = caps.iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(
             listed, files,
             "tauri.conf.json must list every capability file"
         );
+        let selftest = capabilities("capabilities-selftest");
+        assert_eq!(
+            selftest.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            ["selftest"]
+        );
+        files.insert("selftest".into());
         let specs = specs();
-        for (name, cap) in &caps {
+        for (name, cap) in caps.iter().chain(&selftest) {
             assert_eq!(cap["identifier"], name.as_str());
             assert_eq!(cap["windows"], serde_json::json!(["main"]), "{name}");
             assert!(
@@ -141,6 +149,28 @@ mod tests {
                     spec.name
                 );
             }
+        }
+    }
+
+    /// What `generate_context!` embeds is tauri-build's copy of
+    /// `capabilities/` (`OUT_DIR/capabilities.json`): the same capabilities
+    /// in every build, and none grants a self-test command. Only `run` adds
+    /// `selftest.json`, in a build with the feature (E0-13 D17).
+    #[test]
+    fn the_embedded_capabilities_grant_no_selftest_command() {
+        let embedded: serde_json::Value =
+            serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/capabilities.json")))
+                .unwrap();
+        let ids: BTreeSet<String> = embedded.as_object().unwrap().keys().cloned().collect();
+        let files: BTreeSet<String> = capabilities("capabilities")
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(ids, files);
+        let text = embedded.to_string();
+        for name in selftest::NAMES {
+            let permission = format!("allow-{}", name.replace('_', "-"));
+            assert!(!text.contains(&permission), "{permission}");
         }
     }
 

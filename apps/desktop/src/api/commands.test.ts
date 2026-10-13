@@ -58,9 +58,12 @@ const fixture: Fixture = {
       namesUpdating: false,
       isMain: walletId === WALLET,
       balance: "123456789012345678",
+      balanceAsOf: 1_760_000_000_000,
+      balanceStale: false,
       hasDashpayKeys: true,
       profile: null,
       unverified: false,
+      creditLevel: "ok",
     },
   ],
   // Free functions
@@ -130,7 +133,7 @@ describe("generated commands", () => {
       .sort();
     expect(wrappers).toEqual(Object.keys(cmd.COMMANDS).map(camel).sort());
     expect(new Set(Object.values(cmd.COMMANDS))).toEqual(
-      new Set(["app", "network", "vault", "wallets", "chain", "history", "backup", "send", "coinjoin", "identity", "social", "console", "units"]),
+      new Set(["app", "network", "vault", "wallets", "chain", "history", "backup", "send", "coinjoin", "identity", "social", "console", "units", "selftest"]),
     );
   });
 });

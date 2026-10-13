@@ -449,7 +449,7 @@ commands! {
         if path.is_empty() {
             return Err(AppError::invalid_argument("empty path"));
         }
-        let kind = state.engine()?.inspect_wallet_file(PathBuf::from(path)).await?;
+        let kind = state.engine.inspect_wallet_file(PathBuf::from(path)).await?;
         Ok(kind.into())
     }
 

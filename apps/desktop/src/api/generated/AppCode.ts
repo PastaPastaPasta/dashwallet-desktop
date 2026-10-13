@@ -3,4 +3,4 @@
 /**
  * The binding's own refusals (`app.*`).
  */
-export type AppCode = "app.fixture_mode" | "app.not_selftest" | "app.not_developer_build" | "app.selftest" | "app.data_dir" | "app.unknown_handle" | "app.too_many_handles";
+export type AppCode = "app.not_selftest" | "app.not_developer_build" | "app.selftest" | "app.selftest_passphrase_file" | "app.data_dir" | "app.unknown_handle" | "app.too_many_handles";

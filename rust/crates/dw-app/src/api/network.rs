@@ -159,7 +159,7 @@ commands! {
         network: Option<String>,
         settings: Option<SessionSettings>,
     ) -> OpenedNetwork {
-        let engine = state.engine()?;
+        let engine = &state.engine;
         let network = match network {
             Some(name) => parse_network(&name)?,
             None => state.launch.network.clone(),
@@ -198,7 +198,7 @@ commands! {
     /// none was open.
     #[facade("Engine::close_network")]
     fn close_network(state) -> bool {
-        let engine = state.engine()?;
+        let engine = &state.engine;
         let mut slot = state.session_slot().await;
         let Some(session) = slot.take() else {
             return Ok(false);
@@ -220,7 +220,7 @@ commands! {
     /// Every network with data under the data root, in network order.
     #[facade("Engine::existing_networks")]
     fn existing_networks(state) -> Vec<NetworkData> {
-        let networks = state.engine()?.existing_networks().await?;
+        let networks = state.engine.existing_networks().await?;
         Ok(networks.into_iter().map(Into::into).collect())
     }
 }

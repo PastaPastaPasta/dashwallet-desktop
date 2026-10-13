@@ -4,3 +4,5 @@ rust/crates/dw-appdb/migrations/*.sql text eol=lf
 # dw-app compares these with what it generates, byte for byte (E0-13).
 apps/desktop/src/api/generated/** text eol=lf
 docs/design/E0-13-facade-coverage.md text eol=lf
+# Shared engine vectors (U-07): dw-app's tests compare history.json byte for byte.
+apps/desktop/src/fixture/vectors/** text eol=lf

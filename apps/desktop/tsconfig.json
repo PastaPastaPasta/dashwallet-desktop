@@ -16,5 +16,5 @@
     "types": ["vite/client", "node"],
     "paths": { "@icons/*": ["../../Resources/Icons/*"] }
   },
-  "include": ["src", "e2e", "vite.config.ts", "playwright.config.ts"]
+  "include": ["src", "e2e", "e2e-tauri", "vite.config.ts", "playwright.config.ts"]
 }

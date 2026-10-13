@@ -39,12 +39,19 @@ pub(crate) fn offline_settings() -> Value {
 
 impl Demo {
     pub(crate) fn new() -> Self {
+        Self::launched(|_, _| {})
+    }
+
+    /// A demo whose launch options `edit` changes (given the private data
+    /// root), as a command line would: `--selftest <file>`, for one.
+    pub(crate) fn launched(edit: impl FnOnce(&mut LaunchOptions, &std::path::Path)) -> Self {
         let dir = dw_testutil::private_tempdir();
-        let launch = LaunchOptions {
+        let mut launch = LaunchOptions {
             data_dir: Some(dir.path().join("data")),
             network: DashNetwork::Regtest,
             ..LaunchOptions::default()
         };
+        edit(&mut launch, dir.path());
         let vault = VaultConfig {
             kdf: KdfPolicy::Fixed(KdfParams::TEST),
             os_store: Arc::new(MemoryOsStore::new()),
@@ -140,7 +147,6 @@ fn engine_and_session_commands_over_ipc() {
 
     let launch = demo.ok("launch_info", json!({}));
     assert_eq!(launch["network"]["dirName"], "regtest");
-    assert_eq!(launch["fixture"], false);
 
     // Engine::open_network, with the renderer's settings over the launch's.
     let opened = demo.open();
@@ -192,17 +198,115 @@ fn engine_and_session_commands_over_ipc() {
 }
 
 #[test]
-fn the_binding_refuses_with_app_codes() {
+fn a_missing_argument_is_tauris_refusal() {
+    let demo = Demo::new();
+    // A string, not an AppError.
+    let e = demo.call("startup_mark", json!({})).unwrap_err();
+    assert!(e.is_string(), "{e}");
+    assert!(demo.ok("startup_mark", json!({ "mark": "test" })).is_u64());
+}
+
+/// Without the `selftest` feature (every release and packaged build) the
+/// self-test's commands are not registered, even in an app whose launch
+/// options ask for the self-test: Tauri answers "not found" (E0-13 D17).
+#[cfg(not(feature = "selftest"))]
+#[test]
+fn a_build_without_the_selftest_feature_registers_no_selftest_command() {
+    let demo = Demo::launched(|launch, dir| {
+        launch.selftest = Some(dir.join("report.json"));
+        launch.selftest_passphrase_file = Some(dir.join("passphrase"));
+    });
+    assert_eq!(crate::api::selftest::NAMES.len(), 5);
+    for name in crate::api::selftest::NAMES {
+        let e = demo.call(name, json!({})).unwrap_err();
+        assert!(
+            e.as_str().is_some_and(|e| e.contains("not found")),
+            "{name}: {e}"
+        );
+    }
+}
+
+#[cfg(feature = "selftest")]
+#[test]
+fn the_selftest_commands_refuse_without_selftest() {
     let demo = Demo::new();
     demo.err(
         "selftest_checkpoint",
         json!({ "screen": "x" }),
         "app.not_selftest",
     );
-    // A missing argument is Tauri's own refusal (a string, not an AppError).
-    let e = demo.call("startup_mark", json!({})).unwrap_err();
-    assert!(e.is_string(), "{e}");
-    assert!(demo.ok("startup_mark", json!({ "mark": "test" })).is_u64());
+    demo.err("ipc_bench_rows", json!({ "rows": 2 }), "app.not_selftest");
+    demo.err("selftest_unlock", json!({}), "app.not_selftest");
+}
+
+#[cfg(feature = "selftest")]
+#[test]
+fn the_selftest_commands_run_under_selftest() {
+    let demo = Demo::launched(|launch, dir| launch.selftest = Some(dir.join("report.json")));
+    let page = demo.ok("ipc_bench_rows", json!({ "rows": 2 }));
+    assert_eq!(page["rows"].as_array().map(Vec::len), Some(2), "{page}");
+    assert_eq!(
+        demo.ok("selftest_checkpoint", json!({ "screen": "x" })),
+        Value::Null
+    );
+    // No passphrase file: the self-test cannot unlock.
+    demo.err("selftest_unlock", json!({}), "app.selftest");
+}
+
+/// `--selftest-passphrase-file`: `selftest_unlock` unlocks the vault with
+/// the file's first line, and a passphrase that no longer opens it fails as
+/// `unlock` does.
+#[cfg(feature = "selftest")]
+#[test]
+fn the_selftest_unlocks_with_the_passphrase_file() {
+    let demo = Demo::launched(|launch, dir| {
+        launch.selftest = Some(dir.join("report.json"));
+        launch.selftest_passphrase_file = Some(dir.join("passphrase"));
+        write_passphrase_file(&dir.join("passphrase"), "selftest pass\nignored\n", 0o600);
+    });
+    assert_eq!(demo.ok("launch_info", json!({}))["selftestUnlock"], true);
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "selftest pass" }));
+    demo.ok("lock", json!({}));
+    assert_eq!(demo.ok("selftest_unlock", json!({}))["state"], "unlocked");
+    demo.ok(
+        "change_passphrase",
+        json!({ "oldPassphrase": "selftest pass", "newPassphrase": "other" }),
+    );
+    demo.ok("lock", json!({}));
+    demo.err("selftest_unlock", json!({}), "vault.wrong_passphrase");
+}
+
+/// The passphrase file at `path`, with `mode` on Unix.
+#[cfg(feature = "selftest")]
+fn write_passphrase_file(path: &std::path::Path, text: &str, mode: u32) {
+    std::fs::write(path, text).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+}
+
+/// A passphrase file others can read is refused before the vault is
+/// touched, with a code the self-test's report carries (E0-13 D16).
+#[cfg(all(unix, feature = "selftest"))]
+#[test]
+fn the_selftest_refuses_a_passphrase_file_others_can_read() {
+    let demo = Demo::launched(|launch, dir| {
+        launch.selftest = Some(dir.join("report.json"));
+        launch.selftest_passphrase_file = Some(dir.join("passphrase"));
+        write_passphrase_file(&dir.join("passphrase"), "selftest pass\n", 0o644);
+    });
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "selftest pass" }));
+    demo.ok("lock", json!({}));
+    let e = demo.err("selftest_unlock", json!({}), "app.selftest_passphrase_file");
+    let message = e["message"].as_str().unwrap();
+    assert!(message.contains("has mode 644"), "{message}");
+    assert_eq!(demo.ok("lock_status", json!({}))["state"], "locked");
 }
 
 /// A representative command of each facade, through the IPC handler: the

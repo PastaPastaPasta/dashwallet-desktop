@@ -1,0 +1,15 @@
+{
+  "identifier": "selftest",
+  "description": "The self-test's commands (--selftest). Not in capabilities/, so tauri-build does not embed it: only a build with the `selftest` feature adds it, at start-up (lib.rs `run`). Granted to the main window only.",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-selftest-report",
+    "allow-selftest-checkpoint",
+    "allow-selftest-unlock",
+    "allow-ipc-bench-rows",
+    "allow-history-page-timed"
+  ]
+}
