@@ -1590,6 +1590,24 @@ fn a_failed_count_clears_only_its_own_stand_in() {
     assert_eq!(h.unread(), None, "retried by the next call");
 }
 
+/// Sol r2 new 1: a first count that fails after a journal write counted
+/// the wallet at the same epoch leaves that count alone: only its own
+/// stand-in goes.
+#[test]
+fn a_failed_first_count_keeps_a_count_that_landed_meanwhile() {
+    let h = Harness::new();
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    h.tap.forget(&W);
+    a_held_count(&h, || {
+        assert!(h.tap.unread_moved(W), "a journal write's count");
+        assert_eq!(h.unread(), Some(1));
+        h.tap
+            .fail_count
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    assert_eq!(h.unread(), Some(1), "the failed first count wiped it");
+}
+
 /// A write begun before the wallet's removal that lands after the
 /// removal's `forget` makes no news and leaves no count (the tombstone
 /// stops writes that begin later).

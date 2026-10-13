@@ -35,6 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use dashcore::{OutPoint, Txid};
@@ -386,6 +387,15 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
     (!c.changes.is_empty() || !c.locks.is_empty()).then_some(c)
 }
 
+/// A wallet's unread journal rows in memory.
+enum Unread {
+    /// Its first count, queued as number `.0`, has not landed: 0 for now.
+    Counting(u64),
+    /// Per identity, as the last [`ChangesetTap::refresh_unread`] counted
+    /// them.
+    Counted(HashMap<String, u32>),
+}
+
 /// The session's changeset tap: where classified changesets go.
 pub(crate) struct ChangesetTap {
     hub: Arc<SessionHub>,
@@ -404,10 +414,11 @@ pub(crate) struct ChangesetTap {
     /// The session's registration flows, whose actors write a tracked
     /// lock's outpoint (DEC-173). Set once the session exists.
     pub(crate) registrations: OnceLock<Arc<super::registration_flow::Flows>>,
-    /// Unread journal rows per wallet and identity (DP2-05), as the last
-    /// [`Self::refresh_unread`] counted them; a wallet is absent until its
-    /// first count.
-    unread: Mutex<HashMap<WalletId, HashMap<String, u32>>>,
+    /// Unread journal rows per wallet (DP2-05); a wallet is absent until
+    /// its first count is queued.
+    unread: Mutex<HashMap<WalletId, Unread>>,
+    /// Tells apart the first counts [`Self::load_unread`] queues.
+    counts_queued: AtomicU64,
     /// Orders [`Self::refresh_unread`]: every write is followed by a
     /// refresh, so the last to run counts every write before it.
     refreshing: Mutex<()>,
@@ -436,6 +447,7 @@ impl ChangesetTap {
             on_funded: OnceLock::new(),
             registrations: OnceLock::new(),
             unread: Mutex::new(HashMap::new()),
+            counts_queued: AtomicU64::new(0),
             refreshing: Mutex::new(()),
             epochs: Mutex::new(HashMap::new()),
             #[cfg(test)]
@@ -590,10 +602,13 @@ impl ChangesetTap {
         guard(&self.epochs).get(&id).copied().unwrap_or_default()
     }
 
-    /// The identity's unread count; `None` until the wallet's first count.
+    /// The identity's unread count; `None` until the wallet's first count
+    /// is queued, 0 until it lands.
     pub(crate) fn unread(&self, id: WalletId, identity: &str) -> Option<u32> {
-        let unread = guard(&self.unread);
-        Some(unread.get(&id)?.get(identity).copied().unwrap_or(0))
+        match guard(&self.unread).get(&id)? {
+            Unread::Counting(_) => Some(0),
+            Unread::Counted(counts) => Some(counts.get(identity).copied().unwrap_or(0)),
+        }
     }
 
     /// Counts the wallet's unread rows again; the identities whose count
@@ -618,9 +633,10 @@ impl ChangesetTap {
         if epochs.get(&id).copied().unwrap_or_default() != epoch {
             return Ok(BTreeSet::new());
         }
-        let old = guard(&self.unread)
-            .insert(id, counts.clone())
-            .unwrap_or_default();
+        let old = match guard(&self.unread).insert(id, Unread::Counted(counts.clone())) {
+            Some(Unread::Counted(old)) => old,
+            _ => HashMap::new(),
+        };
         drop(epochs);
         Ok((old.keys().chain(counts.keys()))
             .filter(|i| old.get(*i) != counts.get(*i))
@@ -630,29 +646,36 @@ impl ChangesetTap {
 
     /// The wallet's first count, off the caller's thread: an identity whose
     /// count is not 0 signals `Platform{Events}` (until then `unread_count`
-    /// answers 0). Started once per wallet: an empty count stands in until
-    /// it lands, and goes again if the count fails, for the next call to
-    /// retry. Both for the wallet as it is now: after a `forget` the count
-    /// puts nothing back and its failure clears nothing.
+    /// answers 0). Started once per wallet: [`Unread::Counting`] stands in
+    /// until a count lands, and goes again if this count fails while it
+    /// still stands in, for the next call to retry. Both for the wallet as
+    /// it is now: after a `forget` the count puts nothing back and its
+    /// failure clears nothing.
     pub(crate) fn load_unread(self: &Arc<Self>, id: WalletId, rt: &tokio::runtime::Handle) {
-        let epoch = {
+        let queued = {
             let epochs = guard(&self.epochs);
-            let mut first = false;
-            guard(&self.unread).entry(id).or_insert_with(|| {
-                first = true;
-                HashMap::new()
-            });
-            first.then(|| epochs.get(&id).copied().unwrap_or_default())
+            let mut unread = guard(&self.unread);
+            (!unread.contains_key(&id)).then(|| {
+                let number = self.counts_queued.fetch_add(1, Ordering::Relaxed);
+                unread.insert(id, Unread::Counting(number));
+                (epochs.get(&id).copied().unwrap_or_default(), number)
+            })
         };
-        if let Some(epoch) = epoch {
-            self.count_later(id, epoch, rt);
+        if let Some((epoch, number)) = queued {
+            self.count_later(id, epoch, number, rt);
         }
     }
 
     /// [`Self::unread_moved_since`] `epoch` on the blocking pool; a failed
-    /// count takes out the stand-in [`Self::load_unread`] left, if the
-    /// wallet is still at `epoch`.
-    fn count_later(self: &Arc<Self>, id: WalletId, epoch: u64, rt: &tokio::runtime::Handle) {
+    /// count takes out its own stand-in (`number`), never a count that
+    /// landed meanwhile (a journal write's, say) nor a later stand-in.
+    fn count_later(
+        self: &Arc<Self>,
+        id: WalletId,
+        epoch: u64,
+        number: u64,
+        rt: &tokio::runtime::Handle,
+    ) {
         let tap = Arc::clone(self);
         #[cfg(test)]
         let pause = guard(&self.pause_count).take();
@@ -664,9 +687,9 @@ impl ChangesetTap {
                 None => count(),
             };
             if !count() {
-                let epochs = guard(&tap.epochs);
-                if epochs.get(&id).copied().unwrap_or_default() == epoch {
-                    guard(&tap.unread).remove(&id);
+                let mut unread = guard(&tap.unread);
+                if matches!(unread.get(&id), Some(Unread::Counting(n)) if *n == number) {
+                    unread.remove(&id);
                 }
             }
         });
