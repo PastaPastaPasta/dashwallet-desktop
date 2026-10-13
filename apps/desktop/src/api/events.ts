@@ -62,6 +62,8 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
         d && d.pages.length > 1 ? { pages: d.pages.slice(0, 1), pageParams: d.pageParams.slice(0, 1) } : d,
       );
     }
+    // While a lock drains, the last report is the previous lock's (useLockDrain).
+    if (event.kind === "lockProgress") client.setQueryData(keys.lockDrain, event.progress.kind === "draining" ? event.progress : null);
     const stale = invalidationsFor(event);
     if (stale === "all") void client.invalidateQueries({ predicate: (q) => q.queryKey[0] !== keys.network[0] });
     else for (const queryKey of stale) void client.invalidateQueries({ queryKey });

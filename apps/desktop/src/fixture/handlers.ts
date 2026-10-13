@@ -6,7 +6,7 @@
 import type { AppError, AppEvent, CommandArgs, CommandName, CommandResults } from "../api/generated/commands";
 import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
 import type { LockOutcome } from "../api/generated/LockOutcome";
-import { IDENTITY, sectionOf } from "./dashpay";
+import { sectionOf } from "./dashpay";
 import type { World } from "./scenarios";
 import { historyPage, txDetails } from "./wallet";
 
@@ -15,7 +15,7 @@ export interface Ctx {
   emit(event: AppEvent): void;
 }
 
-export type Handlers = { [K in CommandName]?: (args: CommandArgs[K], ctx: Ctx) => CommandResults[K] };
+type Handlers = { [K in CommandName]?: (args: CommandArgs[K], ctx: Ctx) => CommandResults[K] };
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
 
@@ -79,6 +79,8 @@ export const HANDLERS: Handlers = {
     world.leases = world.leases.map((l) => (l.state.kind === "ended" ? l : { ...l, state: { kind: "revoked", cause: "lock" }, ownKey: false, keyExpiresInSecs: null }));
     for (const lease of world.leases) emit({ kind: "leaseChanged", network, lease });
     setLock(ctx, "locked");
+    const inFlight = world.leases.reduce((n, l) => n + l.inFlight, 0);
+    if (inFlight > 0) emit({ kind: "lockProgress", network, progress: { kind: "draining", inFlight, deadlineInMs: 30_000 } });
     const report: LockOutcome = { status: world.lock, ...world.cut };
     world.lastLockReport = report;
     emit({ kind: "lockProgress", network, progress: { kind: "done", report } });
@@ -202,6 +204,3 @@ export const HANDLERS: Handlers = {
     return null;
   },
 };
-
-/** The identity every DashPay scenario's wallet uses as its main one. */
-export const MAIN_IDENTITY = IDENTITY.alice;

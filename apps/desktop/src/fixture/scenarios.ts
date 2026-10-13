@@ -4,6 +4,7 @@
 
 import type { DispatchStateName } from "../api/generated/DispatchStateName";
 import type { FlowLockReport } from "../api/generated/FlowLockReport";
+import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
@@ -14,16 +15,10 @@ import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
-import { buildRows, caughtUp, FUNDED_BALANCES, ZERO_BALANCES, type HistoryVariant } from "./wallet";
+import { buildRows, caughtUp, FUNDED_BALANCES, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
 export const FIXTURE_PASSPHRASE = "demo";
 export const FIXTURE_WALLET_ID = "a1".repeat(32);
-
-export const XSS_PAYLOADS = {
-  label: `<img src=x onerror="window.__xss='label'">`,
-  walletName: `<script>window.__xss='name'</script>Main`,
-  contact: `"><svg onload="window.__xss='contact'">`,
-};
 
 export interface FixtureWallet {
   summary: WalletSummary;
@@ -110,46 +105,75 @@ const lease = (id: string, flow: Lease["flow"], fundsCommitted: boolean, inFligh
   callRunning: inFlight > 0,
 });
 
-const flow = (lease: string, kind: FlowLockReport["flow"], outcome: FlowLockReport["outcome"], artifacts: string[], omitted = 0): FlowLockReport => ({
+/** A cut flow: its artifacts as ids (with the flow's outcome) or `[id, outcome]`. */
+const flow = (lease: string, kind: FlowLockReport["flow"], outcome: FlowOutcomeName, artifacts: (string | [string, FlowOutcomeName])[], omitted = 0): FlowLockReport => ({
   lease,
   walletId: FIXTURE_WALLET_ID,
   flow: kind,
   outcome,
-  artifacts: artifacts.map((artifact) => ({ artifact, outcome })),
+  artifacts: artifacts.map((a) => (typeof a === "string" ? { artifact: a, outcome } : { artifact: a[0], outcome: a[1] })),
   artifactsOmitted: omitted,
 });
 
-/** Flows in flight when the user locks: a registration whose funding may have been sent, a
- * top-up handed off, a sent payment and a cancelled request. */
-function withFlows(w: World, omitted: boolean): World {
+/** Locks `w` with these flows cut; the lock revokes each flow's lease. The dispatch state of
+ * every listed artifact starts at its outcome. */
+function cutting(w: World, flows: FlowLockReport[], flowsOmitted = 0, walletsWithSecretsOmitted = 0): World {
   w.dashpay = registered();
-  w.leases = [lease("3f9a1c27", "registration", true, 1), lease("8be04d11", "topUp", true), lease("c0ffee01", "acceptAndPay", true), lease("5eed5eed", "contactRequest", false)];
-  w.dispatch = { "tx:3f9a1c27": "maybeSent", "st:8be04d11": "willBeSent", "tx:c0ffee01": "sent" };
-  w.cut = {
-    flows: [
-      flow("3f9a1c27", "registration", "maybeSent", ["tx:3f9a1c27"]),
-      flow("8be04d11", "topUp", "willBeSent", ["st:8be04d11"], omitted ? 7 : 0),
-      flow("c0ffee01", "acceptAndPay", "sent", ["tx:c0ffee01"]),
-      flow("5eed5eed", "contactRequest", "cancelled", []),
-    ],
-    // The engine cut the rest: 16 flows listed at most (E0-13 D3), here 4 + 3 more.
-    flowsOmitted: omitted ? 3 : 0,
-    walletsWithSecretsOmitted: omitted ? 2 : 0,
-  };
+  w.leases = flows.map((f) => lease(f.lease, f.flow, f.flow === "registration" || f.flow === "topUp" || f.flow === "acceptAndPay"));
+  w.dispatch = Object.fromEntries(flows.flatMap((f) => f.artifacts.map((a) => [a.artifact, a.outcome === "cancelled" ? "notSent" : a.outcome])));
+  w.cut = { flows, flowsOmitted, walletsWithSecretsOmitted };
   return w;
 }
 
+const hex = (i: number) => i.toString(16).padStart(2, "0");
+
+/** The cut flows of a full report (E0-13 D3: 16 flows of 8 artifacts, unresolved first):
+ * `tail` after the pending ones. */
+function sixteen(tail: (i: number) => FlowLockReport, pendingTopUp: FlowOutcomeName[], topUpOmitted: number): FlowLockReport[] {
+  return [
+    flow("3f9a1c27", "registration", "maybeSent", ["tx:3f9a1c27"]),
+    flow("8be04d11", "topUp", "willBeSent", pendingTopUp.map((o, i) => [`st:8be04d11-${i}`, o]), topUpOmitted),
+    ...Array.from({ length: 14 }, (_, i) => tail(i)),
+  ];
+}
+
+/** Every listed flow and artifact is pending and more were cut: the omitted ones may be pending
+ * too, and no query names them. Unresolved for good. */
+const omittedPending = (w: World) =>
+  cutting(
+    w,
+    sixteen((i) => flow(`5eed00${hex(i)}`, "contactRequest", "willBeSent", [`st:5eed00${hex(i)}`]), Array(8).fill("willBeSent"), 7),
+    3,
+    2,
+  );
+
+/** Counts above 0, but the order proves nothing omitted is pending: the listed flows end with
+ * cancelled ones and the top-up's listed artifacts with sent ones. Unresolved until the listed
+ * pending artifacts settle and the registration's call, still running, ends. */
+function omittedSettled(w: World): World {
+  cutting(
+    w,
+    sixteen((i) => flow(`5eed00${hex(i)}`, "contactRequest", "cancelled", []), ["willBeSent", ...Array<FlowOutcomeName>(7).fill("sent")], 4),
+    2,
+    2,
+  );
+  w.leases[0] = { ...w.leases[0], inFlight: 1, callRunning: true };
+  return w;
+}
+
+/** Flows in flight when the user locks, all listed: a registration whose funding may have been
+ * sent, a top-up handed off, a sent payment and a cancelled request. */
+const listedFlows = (w: World) =>
+  cutting(w, [
+    flow("3f9a1c27", "registration", "maybeSent", ["tx:3f9a1c27"]),
+    flow("8be04d11", "topUp", "willBeSent", ["st:8be04d11"]),
+    flow("c0ffee01", "acceptAndPay", "sent", ["tx:c0ffee01"]),
+    flow("5eed5eed", "contactRequest", "cancelled", []),
+  ]);
+
 /** Everything resolved: the payment was sent and the request cancelled. */
 function resolvedFlows(w: World): World {
-  w.dashpay = registered();
-  w.leases = [lease("c0ffee01", "acceptAndPay", true), lease("5eed5eed", "contactRequest", false)];
-  w.dispatch = { "tx:c0ffee01": "sent" };
-  w.cut = {
-    flows: [flow("c0ffee01", "acceptAndPay", "sent", ["tx:c0ffee01"]), flow("5eed5eed", "contactRequest", "cancelled", [])],
-    flowsOmitted: 0,
-    walletsWithSecretsOmitted: 0,
-  };
-  return w;
+  return cutting(w, [flow("c0ffee01", "acceptAndPay", "sent", ["tx:c0ffee01"]), flow("5eed5eed", "contactRequest", "cancelled", [])]);
 }
 
 const SCENARIOS = {
@@ -188,10 +212,12 @@ const SCENARIOS = {
     w.dashpay = registered();
     return w;
   },
-  /** Locking cuts flows and the bounded report omits some (E0-13 D3): unresolved. */
-  "lock-report-omitted": (t) => withFlows(base(t), true),
+  /** Locking cuts more flows than the report lists, some pending (E0-13 D3): unresolved for good. */
+  "lock-report-omitted": (t) => omittedPending(base(t)),
+  /** The report omits flows, artifacts and wallets that its order shows are not pending. */
+  "lock-report-omitted-settles": (t) => omittedSettled(base(t)),
   /** Locking cuts flows; the report lists them all, some still pending. */
-  "lock-report-pending": (t) => withFlows(base(t), false),
+  "lock-report-pending": (t) => listedFlows(base(t)),
   /** Locking cuts flows that all ended: sent or cancelled. */
   "lock-report-resolved": (t) => resolvedFlows(base(t)),
 } satisfies Record<string, (theme: ThemeName | null) => World>;

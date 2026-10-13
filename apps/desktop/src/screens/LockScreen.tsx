@@ -3,9 +3,10 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { errorMessage, hasCode, retryAfterSecs } from "../api/backend";
+import type { LockOutcome } from "../api/generated/LockOutcome";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { FLOW_NAME, OUTCOME_LINE, reportsAnything, summarizeLockReport } from "../api/lockReport";
-import { useBackend, useLastLockReport, useLockReconcile } from "../api/queries";
+import { useBackend, useLastLockReport, useLockDrain, useLockReconcile } from "../api/queries";
 import { SIGNED_BEFORE_LOCK } from "../api/send";
 import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
 
@@ -26,21 +27,44 @@ function waitText(secs: number): string {
   return m === 1 ? "1 minute" : `${m} minutes`;
 }
 
-/** What the last lock did to running flows (E0-13 D3, E0-04 §16.10 C4). A report that left
- * anything out is unresolved until `leases` and `dispatchStatus` show otherwise. */
+const more = (n: number, noun: string) => n > 0 && `${n} more ${noun}${n === 1 ? "" : "s"}`;
+
+/** What the last lock did to running flows (E0-13 D3, E0-04 §16.10 C4). Hidden while a newer
+ * lock drains: until its `done`, the last report is the previous lock's. */
 function LockReportNotice() {
+  const drain = useLockDrain().data;
   const report = useLastLockReport().data;
-  const summary = report ? summarizeLockReport(report) : null;
-  const reconciled = useLockReconcile(report, summary?.unresolved ?? false);
-  if (!report || !summary || !reportsAnything(report)) return null;
+  if (drain)
+    return (
+      <section className="lock-report" data-testid="lock-drain">
+        <p className="lock-report-title" role="status">
+          Stopping {drain.inFlight === 1 ? "1 running action" : `${drain.inFlight} running actions`}…
+        </p>
+      </section>
+    );
+  return report && reportsAnything(report) ? <LockReportBody report={report} /> : null;
+}
+
+/** Unresolved while anything listed may still be sent, or anything left out cannot be shown not
+ * to be; `leases`, `dispatchStatus` and `lockStatus` settle only what the report lets them. */
+function LockReportBody({ report }: { report: LockOutcome }) {
+  const summary = summarizeLockReport(report);
+  const reconciled = useLockReconcile(report, summary.unresolved);
   const resolved = !summary.unresolved || reconciled.data?.settled === true;
   const { flows, artifacts, wallets } = summary.omitted;
+  const check = resolved
+    ? ""
+    : summary.beyondReach
+      ? " The app cannot check them, so some may still be sent."
+      : reconciled.isError
+        ? " Could not check whether they may still be sent."
+        : " Checking whether they may still be sent…";
   return (
     <section className="lock-report" data-testid="lock-report" data-resolved={resolved} aria-labelledby="lock-report-title">
       <p id="lock-report-title" className="lock-report-title" role="status">
         {resolved ? "Every action the lock stopped has ended." : SIGNED_BEFORE_LOCK}
       </p>
-      <ul className="lock-report-flows">
+      <ul className="lock-report-flows" aria-label="At the time of the lock">
         {report.flows.map((f) => (
           <li key={f.lease} data-testid="lock-report-flow" data-outcome={f.outcome}>
             {FLOW_NAME[f.flow]}: {OUTCOME_LINE[f.outcome]}
@@ -49,10 +73,7 @@ function LockReportNotice() {
       </ul>
       {!summary.complete && (
         <p className="lock-report-omitted" data-testid="lock-report-omitted">
-          {[flows > 0 && `${flows} more ${flows === 1 ? "action" : "actions"}`, artifacts > 0 && `${artifacts} more ${artifacts === 1 ? "step" : "steps"}`, wallets > 0 && `${wallets} more ${wallets === 1 ? "wallet" : "wallets"}`]
-            .filter(Boolean)
-            .join(", ")}{" "}
-          not listed here.{resolved ? "" : " Checking whether they may still be sent…"}
+          {[more(flows, "action"), more(artifacts, "step"), more(wallets, "wallet")].filter(Boolean).join(", ")} not listed here.{check}
         </p>
       )}
     </section>

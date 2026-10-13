@@ -1,18 +1,20 @@
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installFixture } from "../fixture";
+import { installFixture, type FixtureHandle } from "../fixture";
 import type { FlowLockReport } from "./generated/FlowLockReport";
 import type { LockOutcome } from "./generated/LockOutcome";
 import { reconcileLockReport, reportsAnything, summarizeLockReport } from "./lockReport";
 import { IpcBackend } from "./tauri";
 
 const W = "a1".repeat(32);
-const flow = (outcome: FlowLockReport["outcome"], artifactsOmitted = 0): FlowLockReport => ({
+type Outcome = FlowLockReport["outcome"];
+/** A flow with one artifact of its outcome, or the artifacts given. */
+const flow = (outcome: Outcome, artifactsOmitted = 0, artifacts: Outcome[] = [outcome]): FlowLockReport => ({
   lease: `l-${outcome}`,
   walletId: W,
   flow: "topUp",
   outcome,
-  artifacts: [{ artifact: `a-${outcome}`, outcome }],
+  artifacts: artifacts.map((o, i) => ({ artifact: `a-${outcome}-${i}`, outcome: o })),
   artifactsOmitted,
 });
 const report = (flows: FlowLockReport[], flowsOmitted = 0, walletsWithSecretsOmitted = 0): LockOutcome => ({
@@ -21,13 +23,14 @@ const report = (flows: FlowLockReport[], flowsOmitted = 0, walletsWithSecretsOmi
   flowsOmitted,
   walletsWithSecretsOmitted,
 });
+const endAllLeases = (f: FixtureHandle) => (f.world.leases = f.world.leases.map((l) => ({ ...l, state: { kind: "ended" }, inFlight: 0, callRunning: false })));
 
 // E0-13 D3 (Sol r4 Low 1): a report with any omitted count above 0 is not complete, and the
 // renderer treats what it leaves out as unresolved.
 describe("lock report consumer", () => {
   it("a complete report of ended flows is resolved", () => {
     const s = summarizeLockReport(report([flow("sent"), flow("cancelled")]));
-    expect(s).toMatchObject({ complete: true, unresolved: false, pending: [] });
+    expect(s).toMatchObject({ complete: true, unresolved: false, beyondReach: false, pending: [] });
   });
 
   it("a listed pending flow is unresolved", () => {
@@ -47,6 +50,19 @@ describe("lock report consumer", () => {
     expect(reportsAnything(r)).toBe(true);
   });
 
+  // Listed unresolved first: what follows a pending item may be pending, and has no id to ask about.
+  it.each([
+    ["flows omitted after a pending flow", report([flow("sent"), flow("maybeSent")], 1), true],
+    ["flows omitted after a settled flow", report([flow("maybeSent"), flow("cancelled")], 1), false],
+    ["flows omitted with nothing listed", report([], 5), true],
+    ["artifacts omitted after a pending one", report([flow("willBeSent", 3, ["willBeSent", "willBeSent"])]), true],
+    ["artifacts omitted after a sent one", report([flow("willBeSent", 3, ["willBeSent", "sent"])]), false],
+    ["a pending flow with no pending artifact listed", report([flow("maybeSent", 0, [])]), true],
+    ["only wallets omitted", report([flow("maybeSent")], 0, 4), false],
+  ])("%s: beyond reach %s", (_, r, beyond) => {
+    expect(summarizeLockReport(r).beyondReach).toBe(beyond);
+  });
+
   it("an empty complete report shows nothing", () => {
     expect(reportsAnything(report([]))).toBe(false);
   });
@@ -58,30 +74,51 @@ describe("lock report consumer", () => {
       vi.unstubAllGlobals();
     });
 
-    it("the omitted-counts fixture stays unresolved until no lease may still send", async () => {
+    it("omitted flows after pending ones stay unresolved whatever settles", async () => {
       const fixture = installFixture({ scenario: "lock-report-omitted" });
       const b = new IpcBackend("fixture");
       const outcome = await b.lock();
       const summary = summarizeLockReport(outcome);
+      expect(outcome.flows).toHaveLength(16);
       expect(summary.omitted).toEqual({ flows: 3, artifacts: 7, wallets: 2 });
-      expect(summary.unresolved).toBe(true);
+      expect(summary).toMatchObject({ unresolved: true, beyondReach: true });
+
+      // Every listed artifact settles and every lease ends: the 3 omitted flows may still be
+      // pending, and nothing names them.
+      for (const a of Object.keys(fixture.world.dispatch)) fixture.world.dispatch[a] = "sent";
+      endAllLeases(fixture);
+      const r = await reconcileLockReport(outcome, b);
+      expect(r.artifacts.every((a) => a.state === "sent")).toBe(true);
+      expect(r.settled).toBe(false);
+    });
+
+    it("omissions the order shows are settled resolve with the listed artifacts", async () => {
+      const fixture = installFixture({ scenario: "lock-report-omitted-settles" });
+      const b = new IpcBackend("fixture");
+      const outcome = await b.lock();
+      const summary = summarizeLockReport(outcome);
+      expect(summary.omitted).toEqual({ flows: 2, artifacts: 4, wallets: 2 });
+      expect(summary).toMatchObject({ complete: false, unresolved: true, beyondReach: false });
 
       let r = await reconcileLockReport(outcome, b);
+      expect(r.artifacts.map((a) => [a.artifact, a.state])).toEqual([
+        ["tx:3f9a1c27", "maybeSent"],
+        ["st:8be04d11-0", "willBeSent"],
+      ]);
       expect(r.settled).toBe(false);
-      expect(r.artifacts.map((a) => a.state)).toEqual(["maybeSent", "willBeSent"]);
 
-      // Every listed artifact settles, but leases still hold committed funds: what the
-      // report left out may still be sent.
       fixture.world.dispatch["tx:3f9a1c27"] = "notSent";
-      fixture.world.dispatch["st:8be04d11"] = "sent";
+      fixture.world.dispatch["st:8be04d11-0"] = "sent";
       r = await reconcileLockReport(outcome, b);
+      // The registration's call is still running.
+      expect(r.live.map((l) => l.id)).toEqual(["3f9a1c27"]);
       expect(r.settled).toBe(false);
-      expect(r.live.length).toBeGreaterThan(0);
 
-      fixture.world.leases = fixture.world.leases.map((l) => ({ ...l, state: { kind: "ended" }, inFlight: 0, callRunning: false }));
+      // The call ends; the revoked leases stay revoked (not ended): they settle nothing either way.
+      fixture.world.leases = fixture.world.leases.map((l) => ({ ...l, inFlight: 0, callRunning: false }));
       r = await reconcileLockReport(outcome, b);
       expect(r.settled).toBe(true);
-      // lockStatus lists the wallets the report cut.
+      // lockStatus lists every wallet, the ones the report cut included.
       expect(r.lock.walletsWithSecrets).toEqual(fixture.world.lock.walletsWithSecrets);
     });
 
@@ -89,11 +126,21 @@ describe("lock report consumer", () => {
       const fixture = installFixture({ scenario: "lock-report-pending" });
       const b = new IpcBackend("fixture");
       const outcome = await b.lock();
-      expect(summarizeLockReport(outcome)).toMatchObject({ complete: true, unresolved: true });
+      expect(summarizeLockReport(outcome)).toMatchObject({ complete: true, unresolved: true, beyondReach: false });
       expect((await reconcileLockReport(outcome, b)).settled).toBe(false);
       fixture.world.dispatch["tx:3f9a1c27"] = "sent";
       fixture.world.dispatch["st:8be04d11"] = "sent";
       expect((await reconcileLockReport(outcome, b)).settled).toBe(true);
+    });
+
+    it("a failed dispatchStatus leaves its artifact unknown, not the whole check failed", async () => {
+      const fixture = installFixture({ scenario: "lock-report-pending" });
+      const b = new IpcBackend("fixture");
+      const outcome = await b.lock();
+      fixture.fail("dispatch_status", "none");
+      const r = await reconcileLockReport(outcome, b);
+      expect(r.artifacts.map((a) => a.state)).toEqual([null, null]);
+      expect(r.settled).toBe(false);
     });
   });
 });
