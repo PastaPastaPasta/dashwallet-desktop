@@ -124,9 +124,11 @@ pub fn open_sole_file(path: &Path) -> io::Result<std::fs::File> {
 }
 
 /// Opens the file at `path` for reading when it is the current user's
-/// alone: a regular file, not reached through a symlink in its last
-/// component (`O_NOFOLLOW`), owned by the effective user, with no group or
-/// other permission bits (0600 or stricter). For a secret another program
+/// alone: a regular file whose final component is not a symlink (it is
+/// not followed: `O_NOFOLLOW`), owned by the effective user, with no group
+/// or other permission bits (0600 or stricter). A symlink among the parent
+/// directories is followed: what protects the secret is the opened file's
+/// owner and mode, checked on the descriptor. For a secret another program
 /// wrote, such as the self-test's passphrase file. Refused files are
 /// `PermissionDenied` with the reason. Errors do not name the path; the
 /// caller does.
@@ -910,6 +912,13 @@ mod tests {
         symlink(&file, &link).unwrap();
         let refused = open_owner_only(&link).unwrap_err().to_string();
         assert!(refused.contains("symbolic link"), "{refused}");
+        // Only the final component: a parent directory symlink is followed,
+        // and the file it reaches is checked like any other.
+        symlink(tmp.path(), tmp.path().join("alias")).unwrap();
+        open_owner_only(&tmp.path().join("alias/passphrase")).unwrap();
+        chmod(&file, 0o640);
+        assert!(open_owner_only(&tmp.path().join("alias/passphrase")).is_err());
+        chmod(&file, 0o600);
 
         mkdir(&tmp.path().join("dir"), 0o700);
         let refused = open_owner_only(&tmp.path().join("dir"))

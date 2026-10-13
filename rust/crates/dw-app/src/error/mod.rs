@@ -109,7 +109,7 @@ codes! {
         Selftest = "app.selftest",
         /// The self-test's passphrase file cannot be read, or is not the
         /// user's alone (on Unix: a regular file the user owns, mode 0600 or
-        /// stricter, not reached through a symlink).
+        /// stricter, its final component not a symlink).
         SelftestPassphraseFile = "app.selftest_passphrase_file",
         /// The platform's app-data directory is unknown.
         DataDir = "app.data_dir",
