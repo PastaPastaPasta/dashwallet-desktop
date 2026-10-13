@@ -102,6 +102,8 @@ codes! {
     CreditsCode {
         FundingInsufficient = "credits.funding_insufficient",
         BelowMinimum = "credits.below_minimum",
+        CoinsLocked = "credits.coins_locked",
+        TopUpPending = "credits.top_up_pending",
     }
 }
 
@@ -326,15 +328,24 @@ impl From<CreditsError> for AppError {
         let (code, data) = match e {
             C::FundingInsufficient { needed, available } => (
                 CreditsCode::FundingInsufficient,
-                ErrorData::Duffs {
+                Some(ErrorData::Duffs {
                     needed: Some(needed),
                     available,
-                },
+                }),
             ),
-            C::BelowMinimum { min } => (CreditsCode::BelowMinimum, ErrorData::Limit { duffs: min }),
+            C::BelowMinimum { min } => (
+                CreditsCode::BelowMinimum,
+                Some(ErrorData::Limit { duffs: min }),
+            ),
+            C::CoinsLocked => (CreditsCode::CoinsLocked, None),
+            C::TopUpPending { txid } => (CreditsCode::TopUpPending, Some(ErrorData::Txid { txid })),
             C::Platform(e) => return e.into(),
         };
-        AppError::new(code, message).with(data)
+        AppError {
+            code: code.into(),
+            message,
+            data,
+        }
     }
 }
 
@@ -478,6 +489,8 @@ mod tests {
                 available: 1,
             },
             CreditsError::BelowMinimum { min: 5 },
+            CreditsError::CoinsLocked,
+            CreditsError::TopUpPending { txid: s() },
             CreditsError::Platform(PlatformError::Unavailable),
         ];
         for e in credits {

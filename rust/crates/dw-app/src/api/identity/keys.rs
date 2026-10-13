@@ -4,6 +4,7 @@ use dw_engine::platform as engine;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::credits::CreditLevelName;
 use crate::dto::mirror_enum;
 use crate::dto::platform::{DashPayProfile, KeyPurposeName};
 
@@ -29,6 +30,8 @@ pub struct IdentitySummary {
     pub profile: Option<DashPayProfile>,
     /// Verified only through the trusted fallback.
     pub unverified: bool,
+    /// The balance against the cost table; `null` while either is unknown.
+    pub credit_level: Option<CreditLevelName>,
 }
 
 impl From<engine::IdentitySummary> for IdentitySummary {
@@ -44,6 +47,7 @@ impl From<engine::IdentitySummary> for IdentitySummary {
             has_dashpay_keys,
             profile,
             unverified,
+            credit_level,
         } = s;
         IdentitySummary {
             identity,
@@ -56,6 +60,7 @@ impl From<engine::IdentitySummary> for IdentitySummary {
             has_dashpay_keys,
             profile: profile.map(Into::into),
             unverified,
+            credit_level: credit_level.map(Into::into),
         }
     }
 }

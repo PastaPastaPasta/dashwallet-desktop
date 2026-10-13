@@ -193,7 +193,8 @@ pub enum ErrorData {
     /// `platform.broadcast_unknown`, `platform.will_be_sent`: what to ask
     /// `dispatch_status` about.
     Artifact { artifact: String },
-    /// `contact.payment_locked`, and a txid elsewhere.
+    /// `contact.payment_locked`, `credits.top_up_pending` (the lock to
+    /// resume), and a txid elsewhere.
     Txid { txid: String },
     /// `registration.recoverable`: the draft to resume;
     /// `registration.in_progress`: the draft that blocks (or

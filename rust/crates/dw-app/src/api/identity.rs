@@ -17,7 +17,10 @@ mod startup;
 
 use dw_engine::platform::{BearerSecret, FlowKind};
 
-use self::credits::{CostTable, TopUpOutcome, TopUpQuote, WithdrawAmount, WithdrawOutcome, WithdrawQuote};
+use self::credits::{
+    CostTable, PendingTopUp, TopUpOutcome, TopUpQuote, WithdrawAmount, WithdrawOutcome,
+    WithdrawQuote,
+};
 use self::flows::{GrantAction, GrantRequest};
 use self::invitations::InvitationStatus;
 use self::keys::{IdentityDetail, IdentitySummary};
@@ -295,6 +298,25 @@ commands! {
     ) -> TopUpOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         Ok(dashpay.top_up(identity, duffs, grant).await?.into())
+    }
+
+    /// The wallet's top-up locks Platform has not taken.
+    #[facade("DashPay::pending_top_ups")]
+    fn credits_pending_top_ups(state, wallet_id: String) -> Vec<PendingTopUp> {
+        let pending = state.dashpay(&wallet_id).await?.pending_top_ups().await?;
+        Ok(pending.into_iter().map(Into::into).collect())
+    }
+
+    /// Applies the pending top-up lock `txid` under `grant`.
+    #[facade("DashPay::resume_top_up")]
+    fn credits_resume_top_up(
+        state,
+        wallet_id: String,
+        txid: String,
+        grant: String,
+    ) -> TopUpOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.resume_top_up(txid, grant).await?.into())
     }
 
     /// What a withdrawal takes and pays out.

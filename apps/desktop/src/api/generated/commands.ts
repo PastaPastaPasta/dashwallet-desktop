@@ -93,6 +93,7 @@ import type { OpenedNetwork } from "./OpenedNetwork";
 import type { OutPoint } from "./OutPoint";
 import type { PaymentLockInfo } from "./PaymentLockInfo";
 import type { PeerSummary } from "./PeerSummary";
+import type { PendingTopUp } from "./PendingTopUp";
 import type { PlatformPacing } from "./PlatformPacing";
 import type { PlatformReachability } from "./PlatformReachability";
 import type { PreparedTxHandle } from "./PreparedTxHandle";
@@ -1523,6 +1524,20 @@ export function creditsTopUp(walletId: string, identity: string, duffs: number, 
 }
 
 /**
+ * The wallet's top-up locks Platform has not taken.
+ */
+export function creditsPendingTopUps(walletId: string): Promise<Array<PendingTopUp>> {
+  return invoke<Array<PendingTopUp>>("credits_pending_top_ups", { walletId });
+}
+
+/**
+ * Applies the pending top-up lock `txid` under `grant`.
+ */
+export function creditsResumeTopUp(walletId: string, txid: string, grant: string): Promise<TopUpOutcome> {
+  return invoke<TopUpOutcome>("credits_resume_top_up", { walletId, txid, grant });
+}
+
+/**
  * What a withdrawal takes and pays out.
  */
 export function creditsWithdrawQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawQuote> {
@@ -2083,6 +2098,8 @@ export type CommandArgs = {
   credits_cost_table: { walletId: string };
   credits_top_up_quote: { walletId: string; identity: string; duffs: number };
   credits_top_up: { walletId: string; identity: string; duffs: number; grant: string };
+  credits_pending_top_ups: { walletId: string };
+  credits_resume_top_up: { walletId: string; txid: string; grant: string };
   credits_withdraw_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
@@ -2307,6 +2324,8 @@ export type CommandResults = {
   credits_cost_table: CostTable;
   credits_top_up_quote: TopUpQuote;
   credits_top_up: TopUpOutcome;
+  credits_pending_top_ups: Array<PendingTopUp>;
+  credits_resume_top_up: TopUpOutcome;
   credits_withdraw_quote: WithdrawQuote;
   credits_withdraw: WithdrawOutcome;
   grant_request: GrantRequest;
@@ -2533,6 +2552,8 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_cost_table: "identity",
   credits_top_up_quote: "identity",
   credits_top_up: "identity",
+  credits_pending_top_ups: "identity",
+  credits_resume_top_up: "identity",
   credits_withdraw_quote: "identity",
   credits_withdraw: "identity",
   grant_request: "identity",
@@ -2786,4 +2807,6 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "avatar.upload_unconfigured",
   "credits.funding_insufficient",
   "credits.below_minimum",
+  "credits.coins_locked",
+  "credits.top_up_pending",
 ];
