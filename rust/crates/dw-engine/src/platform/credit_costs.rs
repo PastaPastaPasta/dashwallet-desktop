@@ -6,15 +6,20 @@
 //! last proved (each verified response's metadata ratchets it;
 //! `refresh_protocol_version` asks for it), and its `FeeVersion` prices:
 //!
-//! - a document action at Drive's own estimate of creating the document
-//!   (`drive::drive::document::cost`, the estimator wasm-sdk exposes): every
-//!   element the insert writes at the version's per-byte rates, the
-//!   batch's processing and the contract's action fees, for the document at
-//!   the largest sizes the DashPay contract allows, every index value new.
-//!   The estimator follows protocol version 14's insert methods; below that
-//!   it prices version 14's layout at the network's `FeeVersion` (the
-//!   DashPay documents use no index feature version 14 added, so the
-//!   elements are the same);
+//! - a document action at an upper bound built on Drive's own estimate of
+//!   creating the document (`drive::drive::document::cost`, the estimator
+//!   wasm-sdk exposes), for the document at the largest sizes the DashPay
+//!   contract allows, every index value new. The estimate's storage (every
+//!   element the insert writes at the version's per-byte rates), its exact
+//!   processing parts and the contract's action fees are Drive's own
+//!   figures. Its other processing (the seeks and hashing of the paths the
+//!   insert walks) depends on how full the trees are, so it is taken at
+//!   [`MAX_TREE_ENTRIES`] in every tree and doubled: Drive's estimator
+//!   holds that part within a factor of two of what Drive charges. The
+//!   estimator follows protocol version 14's insert methods; below that it
+//!   prices version 14's layout at the network's `FeeVersion` (the DashPay
+//!   documents use no index feature version 14 added, so the elements are
+//!   the same);
 //! - the key upgrade at the version's `identity_update` minimum plus its
 //!   two keys' stored bytes at the version's per-byte rates (no estimator
 //!   prices an identity update; the byte bound is the engine's);
@@ -34,7 +39,9 @@ use dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
 use dpp::state_transition::identity_topup_transition::v0::IdentityTopUpTransitionV0;
 use dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dpp::version::PlatformVersion;
-use drive::drive::document::cost::{CostAssumptions, FieldChoice, document_type_create_cost};
+use drive::drive::document::cost::{
+    CostAssumptions, DocumentCreateCost, FieldChoice, document_type_create_cost,
+};
 
 use super::credits::{CostTable, CreditLevel};
 use super::errors::PlatformError;
@@ -53,6 +60,14 @@ const DASHPAY_KEYS: u64 = 2;
 /// Android's ratio (`CreditBalanceInfo`): the balance is low at ten of the
 /// dearest action.
 const LOW_ACTIONS: u64 = 10;
+/// The entries every tree a document insert walks is priced at: 2^48. A
+/// Merk tree is an AVL tree, at most 1.44·log2(n + 2) high, so this
+/// height (48) bounds every tree of up to 2^33 entries, past any DashPay
+/// document type's (module doc).
+pub(super) const MAX_TREE_ENTRIES: u64 = 1 << 48;
+/// Drive's estimator holds the processing it estimates within this factor
+/// of Drive's charge (its `…within_a_factor_of_two` test).
+const ESTIMATED_PROCESSING_FACTOR: u64 = 2;
 
 /// The cost table at `protocol_version`, computed once per version.
 pub(crate) fn cost_table(protocol_version: u32) -> Result<CostTable, PlatformError> {
@@ -162,17 +177,36 @@ fn pricing_version(
     })
 }
 
-/// Creating a `name` document at the largest sizes the contract allows,
-/// every optional field present and every index value new.
+/// The bound on creating a `name` document at the largest sizes the
+/// contract allows, every optional field present and every index value
+/// new, in trees of [`MAX_TREE_ENTRIES`] (module doc).
 fn document_cost(
     contract: &DataContract,
     name: &str,
     version: &PlatformVersion,
 ) -> Result<u64, PlatformError> {
+    let mut assumptions = CostAssumptions::new(version);
+    assumptions.existing_documents = MAX_TREE_ENTRIES;
+    let cost = document_estimate(contract, name, &assumptions, version)?;
+    let estimated: u64 = (cost.processing.iter())
+        .filter(|part| !part.exact)
+        .map(|part| part.credits.new_values)
+        .sum();
+    Ok((cost.total_credits().new_values)
+        .saturating_add(estimated.saturating_mul(ESTIMATED_PROCESSING_FACTOR - 1)))
+}
+
+/// Drive's estimate of creating a `name` document at the largest sizes the
+/// contract allows under `assumptions`.
+fn document_estimate(
+    contract: &DataContract,
+    name: &str,
+    assumptions: &CostAssumptions,
+    version: &PlatformVersion,
+) -> Result<DocumentCreateCost, PlatformError> {
     let document_type = contract.document_type_for_name(name).map_err(internal)?;
-    let assumptions = CostAssumptions::new(version);
     let estimate = |choices: &BTreeMap<String, FieldChoice>| {
-        document_type_create_cost(contract, document_type, choices, &assumptions, version)
+        document_type_create_cost(contract, document_type, choices, assumptions, version)
             .map_err(internal)
     };
     let largest = estimate(&BTreeMap::new())?
@@ -186,7 +220,7 @@ fn document_cost(
             (f.path, choice)
         })
         .collect();
-    Ok(estimate(&largest)?.total_credits().new_values)
+    estimate(&largest)
 }
 
 fn internal(e: impl std::fmt::Display) -> PlatformError {
@@ -307,6 +341,38 @@ mod tests {
         .total_credits()
         .new_values;
         assert!(document_cost(&contract, "profile", v).unwrap() > middle);
+    }
+
+    /// Each document price bounds Drive's estimate at any fill of the
+    /// trees, a million documents of the type and far past (review Sol r1:
+    /// at 1,000 documents a price fell below the estimate at 1,000,000),
+    /// and at protocol version 13's fees (testnet's).
+    #[test]
+    fn the_document_prices_bound_the_estimate_in_full_trees() {
+        for v in known_versions() {
+            let network = PlatformVersion::get(v).unwrap();
+            let contract = load_system_data_contract(SystemDataContract::Dashpay, network).unwrap();
+            let pricing = pricing_version(&contract, network).unwrap();
+            let t = cost_table(v).unwrap();
+            for (name, price) in [
+                ("contactRequest", t.contact_request),
+                ("profile", t.profile_update),
+                ("contactInfo", t.contact_info),
+            ] {
+                for entries in [1_000, 1_000_000, 1 << 32, MAX_TREE_ENTRIES] {
+                    let mut assumptions = CostAssumptions::new(&pricing);
+                    assumptions.existing_documents = entries;
+                    let estimate = document_estimate(&contract, name, &assumptions, &pricing)
+                        .unwrap()
+                        .total_credits()
+                        .new_values;
+                    assert!(
+                        estimate <= price,
+                        "{v} {name} at {entries} entries: estimate {estimate} > price {price}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
