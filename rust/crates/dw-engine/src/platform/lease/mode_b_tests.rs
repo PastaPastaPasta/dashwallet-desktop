@@ -2656,6 +2656,7 @@ async fn review_r3_schema3_heuristic_repair_must_not_survive_as_negative_evidenc
              ALTER TABLE funding_marker DROP COLUMN durable_record;
              DROP TABLE funding_tombstone;
              DROP TABLE funding_release;
+             DROP TABLE top_up_settled;
              DROP TABLE signed_lock;
              UPDATE meta SET v = 3 WHERE k = 'schema'",
         )
@@ -2942,6 +2943,7 @@ async fn review_r4_legacy_self_spend_and_complete_chain_scan_do_not_kill_a_withh
              ALTER TABLE funding_marker DROP COLUMN durable_record;
              DROP TABLE funding_tombstone;
              DROP TABLE funding_release;
+             DROP TABLE top_up_settled;
              DROP TABLE signed_lock;
              UPDATE meta SET v = 3 WHERE k = 'schema'",
         )
@@ -3012,6 +3014,7 @@ async fn a_legacy_step_resolves_only_by_a_fresh_recorded_self_spend() {
              ALTER TABLE funding_marker DROP COLUMN durable_record;
              DROP TABLE funding_tombstone;
              DROP TABLE funding_release;
+             DROP TABLE top_up_settled;
              UPDATE meta SET v = 4 WHERE k = 'schema'",
         )
         .unwrap();

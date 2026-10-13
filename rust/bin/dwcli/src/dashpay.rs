@@ -1894,7 +1894,7 @@ mod tests {
         ),
         (
             "identity top-up-resolve abababababababababababababababababababababababababababababababab",
-            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: no pending top-up of that txid has an unknown consumption","params":{"detail":"no pending top-up of that txid has an unknown consumption"}}}"#,
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: no pending top-up of that txid is proved","params":{"detail":"no pending top-up of that txid is proved"}}}"#,
         ),
         ("identity costs", COSTS),
     ];
