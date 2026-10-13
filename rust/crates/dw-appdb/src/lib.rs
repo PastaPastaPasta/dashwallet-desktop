@@ -406,6 +406,9 @@ impl AppDb {
             return Err(refused(&lock_path, "changed while it was opened"));
         }
         alive.lock_shared().map_err(|e| file_error(&lock_path, e))?;
+        // Deleting or replacing the lock file from outside after this
+        // returns leaves the lock on a file later opens no longer see (an
+        // accepted residual, m4 item 42); nothing here removes it.
         db._alive = Some((alive, database));
         Ok(db)
     }

@@ -2166,9 +2166,11 @@ renames or reshapes them takes the next version bump:
       the wallet lifecycle lock until its last bundle is done, so a removal or another import waits for it; and two
       processes on one network directory are kept apart only by the record and the lock file, not by the wallet
       lifecycle lock, which is per process. Renaming, moving or bind-mounting the database file while an instance is
-      open gives it a name with another lock file (SQLite does not support moving an open database either). On Windows
-      only a final symlink is refused: hard links are not counted, file identities are not compared (std has no file
-      id there), and other names of one file (an 8.3 short name, a trailing dot, `::$DATA`) lead to another lock file.
+      open gives it a name with another lock file (SQLite does not support moving an open database either), and
+      deleting or replacing `app.sqlite.lock` after an open has returned leaves that instance's lock on a file later
+      opens no longer see; the app never removes the lock file itself. On Windows only a final symlink is refused:
+      hard links are not counted, file identities are not compared (std has no file id there), and other names of one
+      file (an 8.3 short name, a trailing dot, `::$DATA`) lead to another lock file.
     - **An edit of published details needs a grant.** The library's DashPay pass applies Platform's `contactInfo` over
       local details on every pass (remote wins), so a local-only edit of a contact Platform holds details for would
       go back silently. It is `platform.needs_grant{credits}` and the edit is not saved. Re-saving the same details
