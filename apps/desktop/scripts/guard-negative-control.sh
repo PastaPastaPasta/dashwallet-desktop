@@ -8,7 +8,13 @@
 # - wallet: a copy of src/fixture/wallet.ts;
 # - mts: a new marked fixture module of another type, src/fixture/guard-extra.mts, and its copy;
 # - errors: a copy of src/fixture/errors.ts, whose error codes are the generated bindings' and
-#   exempt, but whose messages are not.
+#   exempt, but whose messages are not;
+# - data-raw, data-url, data-inline, data-url-inline, data-json (Sol r4): a copy of the test data
+#   src/fixture/vectors/accept.json, which carries no marker, loaded by an unmarked module as
+#   `?raw` (a string in a chunk; a bare `import "…?raw"` ships nothing, Rollup drops it), `?url` (an asset file of its own), `?inline` on a known asset
+#   type (`.txt`: a base64 data: URL; Vite parses `x.json?inline` as JavaScript and fails the
+#   build), `?url&inline` (a base64 data: URL) or a plain JSON import (an object in a chunk).
+#   `@ts-ignore` keeps tsc from standing in for the guard.
 # Run by ci.yml (desktop-renderer).
 #
 #   scripts/guard-negative-control.sh
@@ -48,6 +54,19 @@ control() { # <name> <fixture module the found literals come from> <expected lit
     unmarked "$app/src/fixture/errors.ts" "$work/src/guard-copy/errors.ts"
     printf '\nvoid import("./guard-copy/errors");\n' >>"$work/src/main.tsx"
     ;;
+  data-*)
+    local file=accept.json query
+    case $name in
+    data-raw) query='?raw' ;;
+    data-url) query='?url' ;;
+    data-inline) file=accept.txt query='?inline' ;;
+    data-url-inline) query='?url&inline' ;;
+    data-json) query='' ;;
+    esac
+    cp "$app/src/fixture/vectors/accept.json" "$work/src/guard-copy/$file"
+    printf '// @ts-ignore\nimport data from "./%s%s";\nexport default data;\n' "$file" "$query" >"$work/src/guard-copy/data.ts"
+    printf '\nvoid import("./guard-copy/data");\n' >>"$work/src/main.tsx"
+    ;;
   esac
 
   local log="$work/build.log"
@@ -65,6 +84,7 @@ control() { # <name> <fixture module the found literals come from> <expected lit
     exit 1
   fi
   grep 'fixture sentinel' "$log"
+  grep -F "$literal ($source)" "$log"
   echo "guard-negative-control: $name: the unmarked copy in src/guard-copy/ fails the production build"
   rm -rf "$work"
   work=
@@ -74,3 +94,6 @@ trap '[[ -z $work ]] || rm -rf "$work"' EXIT
 control wallet src/fixture/wallet.ts '"Coffee refund"'
 control mts src/fixture/guard-extra.mts '"guard extra fixture literal, a module of type .mts"'
 control errors src/fixture/errors.ts '"Block height out of range"'
+for query in raw url inline url-inline json; do
+  control "data-$query" src/fixture/vectors/accept.json '"lease-0123456789abcdef0123456789abcdef"'
+done

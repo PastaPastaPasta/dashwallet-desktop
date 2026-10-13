@@ -41,9 +41,9 @@ describe("fixture sentinels", () => {
   // GENERIC exempts by hand, so each entry says why and has a generic shape (and check-bundle
   // fails a production build that does not hold it): the fixture's own data cannot be listed.
   it("GENERIC lists only generic shapes, each with its reason, all fixture literals", async () => {
-    const { byModule } = await fixtureSentinels(app);
+    const { bySource } = await fixtureSentinels(app);
     const fixture = new Set<string>();
-    for (const module of byModule.keys()) for (const literal of await literalsOf(`${app}/${module}`)) fixture.add(literal);
+    for (const module of bySource.keys()) for (const literal of await literalsOf(`${app}/${module}`)) fixture.add(literal);
     expect(GENERIC.length).toBeLessThanOrEqual(3);
     for (const { literal, reason } of GENERIC) {
       expect(reason.length, literal).toBeGreaterThan(8);
@@ -55,11 +55,23 @@ describe("fixture sentinels", () => {
   });
 
   it("NO_SENTINEL lists only fixture modules without a sentinel, each with its reason", async () => {
-    const { byModule } = await fixtureSentinels(app);
+    const { bySource } = await fixtureSentinels(app);
     for (const [module, reason] of Object.entries(NO_SENTINEL)) {
-      expect(byModule.get(`src/fixture/${module}`), module).toEqual([]);
+      expect(bySource.get(`src/fixture/${module}`), module).toEqual([]);
       expect(reason.length, module).toBeGreaterThan(8);
     }
+  });
+
+  // The vectors are sentinel sources too, though a fixture build does not bundle them: their
+  // literals that no module holds are expected only in a production build that must not hold them.
+  it("include the test data's, which a fixture build does not bundle", async () => {
+    const { sentinels, bySource, bundled } = await fixtureSentinels(app);
+    for (const data of ["src/fixture/vectors/accept.json", "src/fixture/vectors/history.json"]) {
+      expect(bundled.has(data), data).toBe(false);
+      expect(bySource.get(data)?.length ?? 0, data).toBeGreaterThan(0);
+    }
+    expect(bundled.has("src/fixture/wallet.ts")).toBe(true);
+    expect(sentinels.get("lease-0123456789abcdef0123456789abcdef")).toBe("src/fixture/vectors/accept.json");
   });
 
   it("include the sample wallet's labels and seed, and no plain word", async () => {
@@ -77,6 +89,7 @@ describe("fixture sentinels", () => {
     expect(holds('n("Coffee refund")', "Coffee refund")).toBe(true);
     expect(holds("x='it\\'s here'", "it's here")).toBe(true);
     expect(holds('x="say \\"hi\\" now"', 'say "hi" now')).toBe(true);
+    expect(holds("x=`run \\`cargo\\` with \\${x}`", "run `cargo` with ${x}")).toBe(true);
     expect(holds("seed=20261006,", "#20261006")).toBe(true);
     expect(holds("seed=0x135288E;", "#20261006")).toBe(true);
     expect(holds("h=a20261006b", "#20261006")).toBe(false);

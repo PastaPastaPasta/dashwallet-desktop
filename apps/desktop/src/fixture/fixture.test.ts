@@ -60,11 +60,13 @@ describe("fixture backend", () => {
     // Only `*.test.ts` is a test (vite.config.ts `test.include`): a `*.test.mts` is a module.
     const modules = files.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && !f.endsWith(".test.ts"));
     expect(modules).toEqual(["dashpay.ts", "errors.ts", "handlers.ts", "index.ts", "scenarios.ts", "wallet.ts"]);
-    const { byModule } = await fixtureSentinels(fileURLToPath(new URL("../..", import.meta.url)));
+    const { bySource } = await fixtureSentinels(fileURLToPath(new URL("../..", import.meta.url)));
     for (const f of modules) {
       expect(readFileSync(join(dir, f), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);
-      expect(byModule.get(`src/fixture/${f}`)?.length ?? 0, f).toBeGreaterThan(0);
+      expect(bySource.get(`src/fixture/${f}`)?.length ?? 0, f).toBeGreaterThan(0);
     }
+    // Test data has no marker, so it is found by its sentinels alone (Sol r4: a `?raw` copy).
+    for (const f of files.filter((f) => f.startsWith("vectors/"))) expect(bySource.get(`src/fixture/${f}`)?.length ?? 0, f).toBeGreaterThan(0);
     // The vectors are test data: no module imports them, so no fixture copy can carry them.
     for (const f of modules) expect(readFileSync(join(dir, f), "utf8"), f).not.toMatch(/(import|export|require)[^;]*vectors\//);
   });

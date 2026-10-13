@@ -120,23 +120,30 @@ production build whose chunks hold any `src/fixture/` module, any module whose s
 rename outside `src/fixture/` still fails), or the mock IPC, whatever imports it, and
 `scripts/check-bundle.mjs` runs at the end of both builds. `dist/` fails if it contains the fixture's
 sentinel string, Tauri's mock IPC or any **fixture sentinel**, derived on each build by
-`scripts/fixture-sentinels.mjs` from the fixture modules: every file in `src/fixture/` of a type Vite loads
-as a module (`.ts .tsx .mts .cts .js .jsx .mjs .cjs`), the `*.test.ts` vitest runs excluded; a file of another
-type fails unless it is listed test data (the `vectors/`). A sentinel is a string literal of at least 8 printable characters
-that is not a plain word (one that is, once surrounding spaces and punctuation are trimmed, needs 20) or an
-integer of 7 digits or more (the PRNG seed `20261006`), less the literals the generated bindings
-(`src/api/generated/`, which `codegen::tests::bindings_are_current` keeps exactly what dw-app writes) also
-hold, the error codes, computed rather than listed, and less `GENERIC`, literals a production dependency
-holds too. `GENERIC` is empty: an entry needs a reason, a generic shape (a power of two, a published PRNG
-constant, an alphabet; `sentinels.test.ts`) and a real collision, since `--production` fails when `dist/`
-does not hold it. Every fixture module must contribute a sentinel (or be
-listed in `NO_SENTINEL` with a reason), and `fixture.test.ts` pins the exact list of files in
-`src/fixture/`, so moving one out or adding one of another type fails there. Every file in the output is scanned, whatever its type.
-`dist-fixture/` fails unless it holds both markers and every sentinel (the positive control). The negative controls,
-`scripts/guard-negative-control.sh` (in `ci.yml`), each import an unmarked copy in `src/guard-copy/` from
-`main.tsx` and require `pnpm build` to fail at that module's sentinels: a copy of `wallet.ts`, a new
-fixture module of type `.mts` and its copy, and a copy of `errors.ts`, whose error codes are exempt but
-whose messages are not.
+`scripts/fixture-sentinels.mjs` from the fixture modules, every file in `src/fixture/` of a type Vite loads
+as a module (`.ts .tsx .mts .cts .js .jsx .mjs .cjs`), the `*.test.ts` vitest runs excluded, and from its
+test data, the engine's vectors in `src/fixture/vectors/` (listed in `TEST_DATA`, of a type the script reads:
+JSON). No module imports the vectors, but a copy loaded as `?raw`, `?url`, `?inline` or a JSON module would
+ship them; a file in `src/fixture/` of any other type fails. A sentinel is a string literal (in test data, a
+string value or key) of at least 8 printable characters that is not a plain word (one that is, once
+surrounding spaces and punctuation are trimmed, needs 20) or an integer of 7 digits or more (the PRNG seed
+`20261006`), less the literals the generated bindings (`src/api/generated/`, which
+`codegen::tests::bindings_are_current` keeps exactly what dw-app writes) also hold in values or literal
+types, the error codes and transaction types, computed rather than listed, and less `GENERIC`, literals a
+production dependency holds too. `GENERIC` is empty: an entry needs a reason, a generic shape (a power of
+two, a published PRNG constant, an alphabet; `sentinels.test.ts`) and a real collision, since `--production`
+fails when `dist/` does not hold it. Every fixture module and test-data file must contribute a sentinel (or
+be listed in `NO_SENTINEL` with a reason), and `fixture.test.ts` pins the exact list of files in
+`src/fixture/`, so moving one out or adding one of another type fails there. Every file in the output is
+scanned, chunks and emitted assets of any type, and so is every `data:` URL in one, decoded. `dist-fixture/`
+fails unless it holds both markers and every sentinel of the modules (the positive control); the fixture
+build does not bundle the test data, so its sentinels are expected only to be absent from `dist/`. The
+negative controls, `scripts/guard-negative-control.sh` (in `ci.yml`), each import an unmarked copy in
+`src/guard-copy/` from `main.tsx` and require `pnpm build` to fail at that file's sentinels: a copy of
+`wallet.ts`, a new fixture module of type `.mts` and its copy, a copy of `errors.ts`, whose error codes are
+exempt but whose messages are not, and a copy of `vectors/accept.json` loaded five ways: `?raw` (a string in
+a chunk), `?url` (an asset of its own), `?inline` as `.txt` and `?url&inline` (base64 `data:` URLs) and as a
+JSON module (Vite fails `x.json?inline` itself).
 What the check proves is that no fixture marker or sentinel is in `dist/`. It works per literal, not
 per function: fixture code whose bundled part holds no sentinel (one function of an unmarked copy
 imported by name, the rest tree-shaken away) would not be found. `pnpm tauri build` runs `pnpm build`, so
