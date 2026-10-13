@@ -10,10 +10,11 @@
 // passphrase or quick-unlock grant issued while locked carries its own key, so it redeems while
 // locked; a lock revokes every live lease (each keeps its `ownKey` flag); an unlock that
 // installs the key ends the vault's epoch, so every live lease needs a grant again, its key
-// dropped; a vault-grant write runs under a one-shot lease that `leases` lists, ended. Not modelled: grant expiry and lease idle reaping (the clock is
-// FIXTURE_NOW), quick unlock's spending limit and passphrase age, "authenticate every payment"
-// (`vault.credential_required`), held identity keys (`identity.keys_missing`), and the lock
-// report, which is the scenario's (`World.cut`), not derived from the leases.
+// dropped; a vault-grant write runs under a one-shot lease that `leases` lists, ended. Not
+// modelled: grant expiry and lease idle reaping (the clock is FIXTURE_NOW), quick unlock's
+// spending limit and passphrase age, "authenticate every payment" (`vault.credential_required`),
+// held identity keys (`identity.keys_missing`), and the lock report, which is the scenario's
+// (`World.cut`), not derived from the leases.
 
 import type { AppError, AppEvent, CommandArgs, CommandName, CommandResults } from "../api/generated/commands";
 import type { AuthGrant } from "../api/generated/AuthGrant";
