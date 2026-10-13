@@ -1102,6 +1102,29 @@ button {
   line-height: var(--dw-type-footnote-line);
 }
 
+/* What the last lock did to running flows (E0-13 D3); hero text colours as .lock-prompt. */
+.lock-report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  width: 100%;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.lock-report-title {
+  font-weight: 600;
+}
+
+.lock-report-flows {
+  margin: 0;
+  padding-left: var(--dw-space-l);
+}
+
+.lock-report-omitted {
+  color: color-mix(in srgb, var(--dw-role-text-on-hero) calc(var(--dw-opacity-hero-secondary-text) * 100%), transparent);
+}
+
 /* ------------------------------------------------------------------ toast (C21) */
 
 .toast-host {

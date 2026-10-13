@@ -4,7 +4,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { errorMessage, hasCode, retryAfterSecs } from "../api/backend";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { useBackend } from "../api/queries";
+import { FLOW_NAME, OUTCOME_LINE, reportsAnything, summarizeLockReport } from "../api/lockReport";
+import { useBackend, useLastLockReport, useLockReconcile } from "../api/queries";
+import { SIGNED_BEFORE_LOCK } from "../api/send";
 import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
 
 const Lock = {
@@ -22,6 +24,39 @@ function waitText(secs: number): string {
   }
   const m = Math.max(1, Math.ceil(secs / 60));
   return m === 1 ? "1 minute" : `${m} minutes`;
+}
+
+/** What the last lock did to running flows (E0-13 D3, E0-04 §16.10 C4). A report that left
+ * anything out is unresolved until `leases` and `dispatchStatus` show otherwise. */
+function LockReportNotice() {
+  const report = useLastLockReport().data;
+  const summary = report ? summarizeLockReport(report) : null;
+  const reconciled = useLockReconcile(report, summary?.unresolved ?? false);
+  if (!report || !summary || !reportsAnything(report)) return null;
+  const resolved = !summary.unresolved || reconciled.data?.settled === true;
+  const { flows, artifacts, wallets } = summary.omitted;
+  return (
+    <section className="lock-report" data-testid="lock-report" data-resolved={resolved} aria-labelledby="lock-report-title">
+      <p id="lock-report-title" className="lock-report-title" role="status">
+        {resolved ? "Every action the lock stopped has ended." : SIGNED_BEFORE_LOCK}
+      </p>
+      <ul className="lock-report-flows">
+        {report.flows.map((f) => (
+          <li key={f.lease} data-testid="lock-report-flow" data-outcome={f.outcome}>
+            {FLOW_NAME[f.flow]}: {OUTCOME_LINE[f.outcome]}
+          </li>
+        ))}
+      </ul>
+      {!summary.complete && (
+        <p className="lock-report-omitted" data-testid="lock-report-omitted">
+          {[flows > 0 && `${flows} more ${flows === 1 ? "action" : "actions"}`, artifacts > 0 && `${artifacts} more ${artifacts === 1 ? "step" : "steps"}`, wallets > 0 && `${wallets} more ${wallets === 1 ? "wallet" : "wallets"}`]
+            .filter(Boolean)
+            .join(", ")}{" "}
+          not listed here.{resolved ? "" : " Checking whether they may still be sent…"}
+        </p>
+      )}
+    </section>
+  );
 }
 
 export function LockScreen({ network }: { network: NetworkInfo }) {
@@ -100,6 +135,7 @@ export function LockScreen({ network }: { network: NetworkInfo }) {
             {busy ? "Unlocking…" : "Unlock"}
           </DashButton>
         </form>
+        <LockReportNotice />
       </div>
     </div>
   );
