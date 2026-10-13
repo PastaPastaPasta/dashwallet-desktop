@@ -13,6 +13,7 @@
 //! Every method is a short synchronous SQLite call on one connection behind a
 //! mutex. Async callers run them off their executor (`spawn_blocking`).
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -25,7 +26,7 @@ pub mod dispatch;
 mod provenance;
 mod registration;
 mod rows;
-pub use dashpay_journal::{JournalEntry, JournalRow};
+pub use dashpay_journal::{JournalEntry, JournalPage, JournalRow};
 pub use registration::{
     Adoption, LockOutpoint, NewRegistration, RegistrationChange, RegistrationRow,
     RegistrationUpdate,
@@ -224,9 +225,38 @@ pub enum AppDbError {
     /// The wallet was removed (and not readmitted): the row was not written.
     #[error("wallet {0} was removed")]
     WalletRemoved(String),
+    /// The wallet's rows, left by a removal that failed part-way, could not
+    /// be deleted: it stays removed and is not readmitted.
+    #[error("the removal of wallet {wallet} could not be finished: {source}")]
+    RemovalUnfinished {
+        wallet: String,
+        source: rusqlite::Error,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, AppDbError>;
+
+/// [`AppDb::unfinished`]; a poisoned lock is still a usable set (each
+/// change is one insert or removal).
+fn unfinished(set: &Mutex<HashSet<String>>) -> MutexGuard<'_, HashSet<String>> {
+    set.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Deletes every row of `wallet_id`: the tables [`WALLET_TABLES`] and its
+/// two settings scopes.
+fn delete_wallet_rows(tx: &rusqlite::Transaction<'_>, wallet_id: &str) -> rusqlite::Result<()> {
+    for table in WALLET_TABLES {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE wallet_id = ?1"),
+            [wallet_id],
+        )?;
+    }
+    tx.execute(
+        "DELETE FROM settings_kv WHERE scope IN (?1, ?2)",
+        params![wallet_id, local_scope(wallet_id)],
+    )?;
+    Ok(())
+}
 
 /// Address-book page an entry belongs to (dash-qt `AddressTableModel` purpose).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -334,13 +364,18 @@ pub struct AppDb {
     /// (DEC-210). With it, the id of the database file the lock is for.
     /// `None` in memory.
     _alive: Option<(File, FileId)>,
+    /// Wallets whose [`Self::delete_wallet`] failed in this instance, even
+    /// before it could record them as removed: their readmission deletes
+    /// their rows first. Used with `conn` held.
+    unfinished: Mutex<HashSet<String>>,
 }
 
 impl AppDb {
     /// Opens (creating if needed) the database at `path` and applies pending
     /// migrations. When no other instance of the file is open, in this
     /// process or another, it forgets the removed wallets: no write of
-    /// theirs can still be running (DEC-210).
+    /// theirs can still be running (DEC-210). Rows a removal that failed
+    /// part-way left are deleted first.
     ///
     /// Needs a file system whose advisory locks work per open file (local
     /// disks, as SQLite's WAL mode does): without lock support the open
@@ -389,7 +424,7 @@ impl AppDb {
         refuse_same_file(&lock_path, lock, database)?;
         let mut db = Self::init(conn)?;
         if alone {
-            db.conn().execute("DELETE FROM removed_wallets", [])?;
+            db.forget_removals();
         }
         // Released before the shared lock is taken, on a handle of its own:
         // a shared lock of a second handle would wait for this one (on
@@ -429,6 +464,7 @@ impl AppDb {
         Ok(Self {
             conn: Mutex::new(conn),
             _alive: None,
+            unfinished: Mutex::default(),
         })
     }
 
@@ -487,35 +523,83 @@ impl AppDb {
     /// open with no other instance of the file alive ([`Self::open`]),
     /// inserts of its rows are skipped (DEC-210), so a write still under way
     /// when the wallet was removed leaves nothing behind.
+    ///
+    /// The record is committed first, on its own (the migration's "in the
+    /// transaction that deletes its rows" predates this): if deleting the
+    /// rows then fails, the wallet stays recorded as removed, and its
+    /// readmission or the next such open deletes them before anything else.
+    /// Whatever failed, this instance remembers the wallet, so its
+    /// readmission deletes the rows even if the record could not be written.
     pub fn delete_wallet(&self, wallet_id: &str) -> Result<()> {
         let mut conn = self.conn();
-        let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT OR IGNORE INTO removed_wallets (wallet_id) VALUES (?1)",
-            [wallet_id],
-        )?;
-        for table in WALLET_TABLES {
-            tx.execute(
-                &format!("DELETE FROM {table} WHERE wallet_id = ?1"),
+        let delete = |conn: &mut Connection| -> rusqlite::Result<()> {
+            conn.execute(
+                "INSERT OR IGNORE INTO removed_wallets (wallet_id) VALUES (?1)",
                 [wallet_id],
             )?;
+            let tx = conn.transaction()?;
+            delete_wallet_rows(&tx, wallet_id)?;
+            tx.commit()
+        };
+        let deleted = delete(&mut conn);
+        let mut failed = unfinished(&self.unfinished);
+        match deleted {
+            Ok(()) => failed.remove(wallet_id),
+            Err(_) => failed.insert(wallet_id.to_owned()),
+        };
+        Ok(deleted?)
+    }
+
+    /// Forgets every wallet recorded as removed (an open with no other
+    /// instance alive: no write of it can be under way), deleting first the
+    /// rows a removal that failed part-way left. If they cannot be deleted
+    /// the records stay, so the wallets' readmission deletes them.
+    fn forget_removals(&self) {
+        let mut conn = self.conn();
+        let forget = |conn: &mut Connection| -> rusqlite::Result<()> {
+            let tx = conn.transaction()?;
+            let removed = tx
+                .prepare("SELECT wallet_id FROM removed_wallets")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for wallet_id in &removed {
+                delete_wallet_rows(&tx, wallet_id)?;
+            }
+            tx.execute("DELETE FROM removed_wallets", [])?;
+            tx.commit()
+        };
+        if let Err(e) = forget(&mut conn) {
+            tracing::warn!(error = %e, "kept the removed wallets' records: their rows could not be deleted");
         }
-        tx.execute(
-            "DELETE FROM settings_kv WHERE scope IN (?1, ?2)",
-            params![wallet_id, local_scope(wallet_id)],
-        )?;
-        tx.commit()?;
-        Ok(())
     }
 
     /// Lets rows of `wallet_id` be written again after
     /// [`Self::delete_wallet`]: an import of the wallet calls it before its
-    /// first write. Whether the wallet was recorded as removed.
+    /// first write. Whether the wallet was removed (recorded, or its
+    /// removal failed in this instance).
+    ///
+    /// Rows a removal that failed part-way left are deleted in the same
+    /// transaction; if they cannot be, the wallet stays removed and the call
+    /// fails ([`AppDbError::RemovalUnfinished`]).
     pub fn readmit_wallet(&self, wallet_id: &str) -> Result<bool> {
-        Ok(self.conn().execute(
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let removed = tx.execute(
             "DELETE FROM removed_wallets WHERE wallet_id = ?1",
             [wallet_id],
-        )? > 0)
+        )? > 0;
+        if !(removed || unfinished(&self.unfinished).contains(wallet_id)) {
+            tx.commit()?;
+            return Ok(false);
+        }
+        (delete_wallet_rows(&tx, wallet_id).and_then(|()| tx.commit())).map_err(|source| {
+            AppDbError::RemovalUnfinished {
+                wallet: wallet_id.to_owned(),
+                source,
+            }
+        })?;
+        unfinished(&self.unfinished).remove(wallet_id);
+        Ok(true)
     }
 
     // ---- address book ----
@@ -1201,7 +1285,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026101302);
+        assert_eq!(db.schema_version().unwrap(), 2026101303);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();

@@ -17,6 +17,7 @@ use self::contacts::{
     ContactDetailInfo, ContactList, ContactQueryArgs, ContactRequestOutcome, ContactSummaryInfo,
     PrivateContactDetails, PublishStateName, ScannedContactInfo,
 };
+pub(crate) use self::events::DashPayEventInfo;
 use self::events::DashPayEventPage;
 use self::payments::{
     ActivityFilterName, ContactActivityPage, LockResolutionName, PaymentLockInfo,

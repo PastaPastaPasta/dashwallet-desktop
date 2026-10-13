@@ -40,6 +40,7 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       return [keys.lockReconcile];
     // No screen reads these yet (the DashPay, CoinJoin and notice views come with their tasks).
     case "newTransactions":
+    case "dashPayNews":
     case "coinJoin":
     case "platform":
     case "notice":

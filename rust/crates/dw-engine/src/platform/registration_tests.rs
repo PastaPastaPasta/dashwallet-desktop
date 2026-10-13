@@ -2615,7 +2615,7 @@ async fn build_and_track(
         .insert(lock, tracked);
     let tap = &f.session.live().unwrap().tap;
     tap.note_signed(f.wallet, &classified);
-    tap.record(f.wallet, classified, &NoTimes);
+    tap.record(f.wallet, tap.epoch(f.wallet), classified, &NoTimes);
     (lock, inputs)
 }
 
@@ -2834,11 +2834,8 @@ async fn track_and_tap(
     });
     until(|| f.session.coin_fences.users(f.wallet) >= 2).await;
     assert!(!reader.is_finished());
-    f.session
-        .live()
-        .unwrap()
-        .tap
-        .record(f.wallet, classified, &NoTimes);
+    let tap = f.session.live().unwrap().tap;
+    tap.record(f.wallet, tap.epoch(f.wallet), classified, &NoTimes);
     reader
 }
 

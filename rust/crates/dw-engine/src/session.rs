@@ -776,8 +776,8 @@ impl NetworkSession {
         //     (manager/mod.rs:522, wallet/core/balance_handler.rs:43-45)
         // `remove_wallet` is an in-memory unload (no persister writes:
         // manager/wallet_lifecycle.rs:676-900, key-wallet-manager accessors.rs:75).
-        // Through the private-details fence: the close returns after their
-        // writes in flight.
+        // Through the wallets' write fence: the close returns after their
+        // fenced writes in flight (private details, the bell's `mark_read`).
         for id in manager.list_wallet_ids_blocking() {
             let unloaded = self.platform.remove_from_manager(&manager, WalletId(id));
             if let Err(e) = unloaded.await {

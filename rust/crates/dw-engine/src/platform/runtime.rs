@@ -443,8 +443,8 @@ impl PlatformRuntime {
     }
 
     /// Takes wallet `id` out of `manager` (a removal, an unload, a restore's
-    /// rollback): private-details writes of it in flight land first and none
-    /// lands afterwards ([`super::private_details::WriteFences`]), and its
+    /// rollback): its fenced writes in flight (private details, the bell's
+    /// `mark_read`) land first and none lands afterwards ([`super::private_details::WriteFences`]), and its
     /// digests leave memory.
     pub(crate) async fn remove_from_manager(
         &self,

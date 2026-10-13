@@ -941,16 +941,16 @@ fn a_replayed_restore_reads_the_same() {
 // ---------------------------------------------------------------------------
 
 /// An offline session with an imported wallet, and our identity in it.
-struct Fixture {
-    engine: Engine,
-    s: Arc<NetworkSession>,
-    wallet: WalletId,
-    sink: Arc<Recorder>,
+pub(super) struct Fixture {
+    pub(super) engine: Engine,
+    pub(super) s: Arc<NetworkSession>,
+    pub(super) wallet: WalletId,
+    pub(super) sink: Arc<Recorder>,
     _dir: tempfile::TempDir,
 }
 
 impl Fixture {
-    fn new(no_platform: bool) -> Self {
+    pub(super) fn new(no_platform: bool) -> Self {
         let dir = dw_testutil::private_tempdir();
         let sink = Arc::new(Recorder::default());
         let engine = engine(dir.path(), Arc::clone(&sink) as Arc<dyn EventSink>);
@@ -964,7 +964,7 @@ impl Fixture {
         }
     }
 
-    fn give_me(&self) {
+    pub(super) fn give_me(&self) {
         let manager = self.s.manager().unwrap();
         let wallet_id = self.wallet;
         self.engine.block_on(async move {
@@ -975,7 +975,10 @@ impl Fixture {
         });
     }
 
-    fn with_me(&self, f: impl FnOnce(&mut ManagedIdentity, &WalletPersister) + Send + 'static) {
+    pub(super) fn with_me(
+        &self,
+        f: impl FnOnce(&mut ManagedIdentity, &WalletPersister) + Send + 'static,
+    ) {
         let manager = self.s.manager().unwrap();
         let wallet_id = self.wallet;
         self.engine.block_on(async move {
@@ -988,7 +991,7 @@ impl Fixture {
         });
     }
 
-    fn dp(&self) -> Arc<DashPay> {
+    pub(super) fn dp(&self) -> Arc<DashPay> {
         self.s.dashpay(self.wallet)
     }
 
@@ -1000,7 +1003,7 @@ impl Fixture {
 
     /// Stores `cs` as the library does, through the session's
     /// `WalletStore` and its tap.
-    fn store(&self, cs: PlatformWalletChangeSet) {
+    pub(super) fn store(&self, cs: PlatformWalletChangeSet) {
         let store = self.s.live().unwrap().store;
         store.store(self.wallet.0, cs).unwrap();
     }
@@ -1015,7 +1018,7 @@ impl Fixture {
         self.signals(&PlatformChange::Contacts { identity: b58(ME) })
     }
 
-    fn journal(&self) -> Vec<dw_appdb::JournalRow> {
+    pub(super) fn journal(&self) -> Vec<dw_appdb::JournalRow> {
         let w = self.wallet;
         (self.engine)
             .block_on(self.s.appdb_op(move |db| db.journal(&w.to_string())))
@@ -1023,7 +1026,7 @@ impl Fixture {
     }
 }
 
-fn wait_for(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
+pub(super) fn wait_for(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + timeout;
     while !done() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");

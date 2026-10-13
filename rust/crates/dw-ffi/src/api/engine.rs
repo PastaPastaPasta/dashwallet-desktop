@@ -256,9 +256,11 @@ impl EngineEvent {
                 network: network.into(),
                 wallet_id: wallet_id.to_string(),
             },
-            // Withheld until E0-13 binds them: the DashPay signals (E0-06)
-            // and E0-04's lease, lock and dispatch events.
+            // Withheld until E0-13 binds them: the DashPay signals (E0-06),
+            // the DashPay news (DP2-05) and E0-04's lease, lock and
+            // dispatch events.
             E::Platform { .. }
+            | E::DashPayNews { .. }
             | E::LeaseChanged { .. }
             | E::LockProgress { .. }
             | E::DispatchResolved { .. } => return None,

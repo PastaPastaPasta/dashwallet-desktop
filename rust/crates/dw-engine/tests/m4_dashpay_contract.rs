@@ -79,6 +79,10 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.enable_dashpay_keys",
     // DP2-04: private details.
     "DashPay.set_private_details",
+    // DP2-05: the notifications feed.
+    "DashPay.events",
+    "DashPay.unread_count",
+    "DashPay.mark_read",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -108,8 +112,9 @@ const FACADE: &[&str] = &[
 /// usernames and its tests (DP2-01), user search, links and scans with
 /// their tests (DP2-03), the registration state machine, its row
 /// encodings and tests (DP1-02), and the contact-request writes, their
-/// network seam and tests, and the identity write locks (DP2-02), and the
-/// private details' publish and settle with their tests (DP2-04).
+/// network seam and tests, and the identity write locks (DP2-02), the
+/// private details' publish and settle with their tests (DP2-04), and the
+/// bell's session tests (DP2-05).
 const NOT_FACADE: &[&str] = &[
     "bringup.rs",
     "contact_names.rs",
@@ -122,6 +127,7 @@ const NOT_FACADE: &[&str] = &[
     "lease",
     "mod.rs",
     "names_net.rs",
+    "notifications_tests.rs",
     "private_details.rs",
     "private_details_tests.rs",
     "provenance.rs",
@@ -1230,10 +1236,6 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 .await,
         );
         c.stub(dp.frequent_contacts(s(), 5));
-
-        c.stub(dp.events(s(), None, 20).await);
-        c.stub(dp.unread_count(s()));
-        c.stub(dp.mark_read(s(), 1).await);
 
         c.stub(dp.profile(s()));
         c.stub(dp.profile_limits());

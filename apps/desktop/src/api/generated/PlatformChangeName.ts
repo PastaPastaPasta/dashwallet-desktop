@@ -3,4 +3,4 @@
 /**
  * The domain of a `platform` event. Identities are Base58.
  */
-export type PlatformChangeName = { "domain": "identities" } | { "domain": "contacts", identity: string, } | { "domain": "registration", draft: string | null, } | { "domain": "payments", identity: string, } | { "domain": "names" };
+export type PlatformChangeName = { "domain": "identities" } | { "domain": "contacts", identity: string, } | { "domain": "registration", draft: string | null, } | { "domain": "payments", identity: string, } | { "domain": "names" } | { "domain": "events", identity: string, };
