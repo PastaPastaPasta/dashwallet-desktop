@@ -43,6 +43,8 @@ for theme in light dark; do
 done
 expect "no screens at all" 'del(.screens)' "screen light/overview was not recorded"
 expect "checkpoint report" '.final = false' "the report is a checkpoint"
+expect "a failed run" '{final: true, error: "vault.wrong_passphrase: wrong passphrase"}' \
+  "the self-test failed: vault.wrong_passphrase: wrong passphrase"
 expect "no history rows" '.shown.rows = []' "showed no history row"
 expect "nothing shown" 'del(.shown)' "showed no history row"
 expect "a failed check" '.screens["dark/txDetail"].checks[0] |= (.pass = false | .actual = "blue")' \

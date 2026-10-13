@@ -279,8 +279,18 @@ function windowOpenProbe(): string {
 
 /** Under Tauri: the report plus IPC timings and security probes, then dw-app writes it and exits.
  * `canUnlock`: launched with `--selftest-passphrase-file`; a vault opened locked is unlocked
- * first, so the screens show its wallet rather than the lock screen. */
+ * first, so the screens show its wallet rather than the lock screen. A step that fails (a wrong
+ * passphrase, a network that does not open) ends the run at once with a final report that says
+ * why, rather than leaving the app open until the harness times out. */
 export async function runTauriSelftest(backend: Backend, client: QueryClient, pauseMs: number, canUnlock: boolean) {
+  try {
+    await selftestRun(backend, client, pauseMs, canUnlock);
+  } catch (e) {
+    await tauriTools.selftestReport({ final: true, error: errorMessage(e) });
+  }
+}
+
+async function selftestRun(backend: Backend, client: QueryClient, pauseMs: number, canUnlock: boolean) {
   const shellPaintMs = await within(whenMarked("shell"), 60_000, null);
   const unlock = canUnlock ? tauriTools.selftestUnlock : null;
   if (unlock && (await backend.lockStatus()).state === "locked") await unlock();

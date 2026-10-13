@@ -13,6 +13,7 @@
 def required_screens: [("light", "dark") as $theme | ("overview", "transactions", "txDetail", "unlock") as $screen | "\($theme)/\($screen)"];
 
 . as $root |
+(if .error != null then "the self-test failed: \(.error)" else empty end),
 (if .final == false then "the report is a checkpoint: the self-test did not finish" else empty end),
 (required_screens[] as $screen | select($root.screens[$screen] == null) | "screen \($screen) was not recorded"),
 (if (.shown.rows // []) == [] then "the Transactions screen showed no history row" else empty end),
