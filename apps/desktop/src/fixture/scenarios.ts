@@ -37,8 +37,8 @@ export interface World {
   /** The first wallet's DashPay state. */
   dashpay: DashPayWorld;
   leases: Lease[];
-  /** The vault grants `authorize` issued, single use, and whether one was redeemed or revoked. */
-  grants: { grant: AuthGrant; used: boolean }[];
+  /** The vault grants `authorize` issued since the last lock or unlock (each revokes them all). */
+  grants: FixtureGrant[];
   /** `begin_flow`'s lease ids (`lease-` and 32 hex digits) to their `Lease.id` in `leases`. */
   flowLeases: Record<string, string>;
   /** Grant and lease ids issued so far: they are drawn from it, so runs repeat. */
@@ -49,6 +49,14 @@ export interface World {
   /** What the next `lock` cuts and reports (E0-13 D3's bounded report). */
   cut: Pick<LockOutcome, "flows" | "flowsOmitted">;
   notices: RecentNotice[];
+}
+
+/** A vault grant: single use (`used` once redeemed or revoked); `ownKey` when it was issued
+ * while the vault held no data key, so it carries its own. */
+export interface FixtureGrant {
+  grant: AuthGrant;
+  used: boolean;
+  ownKey: boolean;
 }
 
 /** dw-app's `MAX_REPORT_WALLETS`: a lock report lists this many wallets and counts the rest. */

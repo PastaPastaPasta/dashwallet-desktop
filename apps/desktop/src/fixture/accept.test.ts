@@ -11,6 +11,7 @@ import * as cmd from "../api/generated/commands";
 import type { AppEvent } from "../api/generated/commands";
 import type { FlowKindName } from "../api/generated/FlowKindName";
 import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
+import type { Lease } from "../api/generated/Lease";
 import { IDENTITY } from "./dashpay";
 import { installFixture, type FixtureHandle } from "./index";
 import { FIXTURE_WALLET_ID } from "./scenarios";
@@ -19,10 +20,14 @@ type Ref = number | "" | "unknownVault" | "unknownLease";
 type Party = "incoming" | "self" | "contact" | "stranger";
 type Step =
   | { authorize: { purpose: "platformOp"; maxCredits: string; wallet: "own" | "other" } | { purpose: "spend"; maxDuffs: number; wallet: "own" | "other" } }
-  | { beginFlow: { flow: FlowKindName; grants: number[] } }
+  | { beginFlow: { flow: FlowKindName; grants: Ref[] } }
   | { endFlow: number }
   | { accept: { from: Party; grant: Ref } }
-  | { credits: number };
+  | { credits: number }
+  | { lock: null }
+  | { unlock: null }
+  | { leases: null }
+  | { leaseEvents: null };
 type Outcome = { ok: unknown } | { error: { code: string; data: unknown } };
 interface Case {
   name: string;
@@ -66,9 +71,31 @@ function parties(fixture: FixtureHandle): Record<Party, string> {
   return { incoming, self: ME, contact, stranger };
 }
 
+/** A lease as the vector records it: less what depends on the run. */
+const leaseShape = ({ id: _id, walletId: _w, keyExpiresInSecs: _k, ...rest }: Lease) => rest;
+
+/** JSON with sorted keys: the order the vector lists leases in (serde_json's `Value::to_string`). */
+const canonical = (v: unknown): string =>
+  v !== null && typeof v === "object" && !Array.isArray(v)
+    ? `{${Object.keys(v)
+        .sort()
+        .map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`)
+        .join(",")}}`
+    : Array.isArray(v)
+      ? `[${v.map(canonical).join(",")}]`
+      : JSON.stringify(v);
+
+const ok = (o: Outcome): Outcome => ("ok" in o ? { ok: null } : o);
+
 async function replay(c: Case) {
   clearMocks();
   const fixture = installFixture({ scenario: "dashpay-registered" });
+  const before = new Set(fixture.world.leases.map((l) => l.id));
+  const events: Lease[] = [];
+  await listen<AppEvent>(cmd.ENGINE_EVENT, (e) => {
+    if (e.payload.kind === "leaseChanged" && !before.has(e.payload.lease.id)) events.push(e.payload.lease);
+  });
+  let eventsSeen = 0;
   const me = fixture.world.dashpay.identities.find((i) => i.identity === ME)!;
   if (c.balance !== undefined) me.balance = c.balance;
   if (c.dashpayKeys === false) me.hasDashpayKeys = false;
@@ -96,6 +123,17 @@ async function replay(c: Case) {
       from = who[step.accept.from];
       incomingBefore = fixture.world.dashpay.requestTimes[from]?.incoming ?? null;
       actual = await settle(cmd.dashpayAcceptRequest(W, ME, from, ref(step.accept.grant)));
+    } else if ("lock" in step) {
+      actual = ok(await settle(cmd.lock()));
+    } else if ("unlock" in step) {
+      actual = ok(await settle(cmd.unlock(fixture.world.passphrase)));
+    } else if ("leases" in step) {
+      const leases = (await cmd.leases()).filter((l) => !before.has(l.id)).map(leaseShape);
+      actual = { ok: leases.sort((a, b) => (canonical(a) < canonical(b) ? -1 : 1)) };
+    } else if ("leaseEvents" in step) {
+      await new Promise((r) => setTimeout(r, 0));
+      actual = { ok: events.slice(eventsSeen).map(leaseShape) };
+      eventsSeen = events.length;
     } else {
       const id = ref(step.credits);
       const lease = (await cmd.leases()).find((l) => l.id === id.slice("lease-".length, "lease-".length + 8))!;
@@ -170,6 +208,7 @@ describe("fixture grants and leases", () => {
     await cmd.endFlow(id);
     await cmd.endFlow(id);
     expect((await cmd.leases()).find((l) => l.id === id.slice(6, 14))?.state).toEqual({ kind: "ended" });
-    expect(seen.filter((e) => e.kind === "leaseChanged")).toHaveLength(2);
+    // One as it begins, two as it ends (the engine's owner drop, then its table's `end`).
+    expect(seen.filter((e) => e.kind === "leaseChanged")).toHaveLength(3);
   });
 });

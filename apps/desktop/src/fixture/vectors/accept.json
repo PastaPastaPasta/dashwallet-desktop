@@ -664,6 +664,15 @@
         },
         {
           "credits": 1
+        },
+        {
+          "endFlow": 1
+        },
+        {
+          "leases": null
+        },
+        {
+          "leaseEvents": null
         }
       ],
       "results": [
@@ -684,6 +693,740 @@
             "ceiling": "150000000",
             "spent": "150000000"
           }
+        },
+        {
+          "ok": null
+        },
+        {
+          "ok": [
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "ended"
+              },
+              "ownKey": false,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "150000000"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            }
+          ]
+        },
+        {
+          "ok": [
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "active"
+              },
+              "ownKey": false,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "0"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            },
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "active"
+              },
+              "ownKey": false,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "150000000"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": true
+            },
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "active"
+              },
+              "ownKey": false,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "150000000"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            },
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "ended"
+              },
+              "ownKey": false,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "150000000"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            },
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "ended"
+              },
+              "ownKey": false,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "150000000"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a vault-grant accept runs under a one-shot accept lease",
+      "steps": [
+        {
+          "authorize": {
+            "purpose": "platformOp",
+            "maxCredits": "150000000",
+            "wallet": "own"
+          }
+        },
+        {
+          "leaseEvents": null
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": 0
+          }
+        },
+        {
+          "leases": null
+        },
+        {
+          "leaseEvents": null
+        }
+      ],
+      "results": [
+        {
+          "ok": "grant"
+        },
+        {
+          "ok": []
+        },
+        {
+          "ok": {
+            "kind": "established",
+            "request": "8500"
+          }
+        },
+        {
+          "ok": [
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "ended"
+              },
+              "ownKey": false,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "150000000"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            }
+          ]
+        },
+        {
+          "ok": [
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "active"
+              },
+              "ownKey": false,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "0"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            },
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "active"
+              },
+              "ownKey": false,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "150000000"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": true
+            },
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "active"
+              },
+              "ownKey": false,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "150000000"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            },
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "ended"
+              },
+              "ownKey": false,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "150000000"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a lock revokes the grants issued before it",
+      "steps": [
+        {
+          "authorize": {
+            "purpose": "platformOp",
+            "maxCredits": "150000000",
+            "wallet": "own"
+          }
+        },
+        {
+          "lock": null
+        },
+        {
+          "unlock": null
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": 0
+          }
+        },
+        {
+          "beginFlow": {
+            "flow": "accept",
+            "grants": [
+              0
+            ]
+          }
+        }
+      ],
+      "results": [
+        {
+          "ok": "grant"
+        },
+        {
+          "ok": null
+        },
+        {
+          "ok": null
+        },
+        {
+          "error": {
+            "code": "platform.grant_invalid",
+            "data": null
+          }
+        },
+        {
+          "error": {
+            "code": "platform.grant_invalid",
+            "data": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a grant issued before a lock, used while locked",
+      "steps": [
+        {
+          "authorize": {
+            "purpose": "platformOp",
+            "maxCredits": "150000000",
+            "wallet": "own"
+          }
+        },
+        {
+          "lock": null
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": 0
+          }
+        },
+        {
+          "beginFlow": {
+            "flow": "accept",
+            "grants": [
+              0
+            ]
+          }
+        }
+      ],
+      "results": [
+        {
+          "ok": "grant"
+        },
+        {
+          "ok": null
+        },
+        {
+          "error": {
+            "code": "platform.signer_unavailable",
+            "data": null
+          }
+        },
+        {
+          "error": {
+            "code": "platform.grant_invalid",
+            "data": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "unknown grants while locked",
+      "steps": [
+        {
+          "lock": null
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": ""
+          }
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": "unknownVault"
+          }
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": "unknownLease"
+          }
+        },
+        {
+          "beginFlow": {
+            "flow": "accept",
+            "grants": [
+              "unknownVault"
+            ]
+          }
+        }
+      ],
+      "results": [
+        {
+          "ok": null
+        },
+        {
+          "error": {
+            "code": "platform.signer_unavailable",
+            "data": null
+          }
+        },
+        {
+          "error": {
+            "code": "platform.signer_unavailable",
+            "data": null
+          }
+        },
+        {
+          "error": {
+            "code": "platform.grant_invalid",
+            "data": null
+          }
+        },
+        {
+          "error": {
+            "code": "platform.grant_invalid",
+            "data": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a passphrase grant issued while locked carries its key into an accept",
+      "steps": [
+        {
+          "lock": null
+        },
+        {
+          "authorize": {
+            "purpose": "platformOp",
+            "maxCredits": "150000000",
+            "wallet": "own"
+          }
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": 1
+          }
+        },
+        {
+          "leases": null
+        }
+      ],
+      "results": [
+        {
+          "ok": null
+        },
+        {
+          "ok": "grant"
+        },
+        {
+          "ok": {
+            "kind": "established",
+            "request": "8500"
+          }
+        },
+        {
+          "ok": [
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "ended"
+              },
+              "ownKey": true,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "150000000"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a passphrase grant issued while locked carries its key into a lease",
+      "steps": [
+        {
+          "lock": null
+        },
+        {
+          "authorize": {
+            "purpose": "platformOp",
+            "maxCredits": "150000000",
+            "wallet": "own"
+          }
+        },
+        {
+          "beginFlow": {
+            "flow": "accept",
+            "grants": [
+              1
+            ]
+          }
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": 2
+          }
+        },
+        {
+          "leases": null
+        }
+      ],
+      "results": [
+        {
+          "ok": null
+        },
+        {
+          "ok": "grant"
+        },
+        {
+          "ok": "lease"
+        },
+        {
+          "ok": {
+            "kind": "established",
+            "request": "8500"
+          }
+        },
+        {
+          "ok": [
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "active"
+              },
+              "ownKey": true,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "150000000"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a lock revokes the grants issued while locked",
+      "steps": [
+        {
+          "lock": null
+        },
+        {
+          "authorize": {
+            "purpose": "platformOp",
+            "maxCredits": "150000000",
+            "wallet": "own"
+          }
+        },
+        {
+          "lock": null
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": 1
+          }
+        },
+        {
+          "beginFlow": {
+            "flow": "accept",
+            "grants": [
+              1
+            ]
+          }
+        }
+      ],
+      "results": [
+        {
+          "ok": null
+        },
+        {
+          "ok": "grant"
+        },
+        {
+          "ok": null
+        },
+        {
+          "error": {
+            "code": "platform.signer_unavailable",
+            "data": null
+          }
+        },
+        {
+          "error": {
+            "code": "platform.grant_invalid",
+            "data": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "an unlock revokes the grants issued while locked",
+      "steps": [
+        {
+          "lock": null
+        },
+        {
+          "authorize": {
+            "purpose": "platformOp",
+            "maxCredits": "150000000",
+            "wallet": "own"
+          }
+        },
+        {
+          "unlock": null
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": 1
+          }
+        }
+      ],
+      "results": [
+        {
+          "ok": null
+        },
+        {
+          "ok": "grant"
+        },
+        {
+          "ok": null
+        },
+        {
+          "error": {
+            "code": "platform.grant_invalid",
+            "data": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a lock revokes a lease",
+      "steps": [
+        {
+          "authorize": {
+            "purpose": "platformOp",
+            "maxCredits": "150000000",
+            "wallet": "own"
+          }
+        },
+        {
+          "beginFlow": {
+            "flow": "accept",
+            "grants": [
+              0
+            ]
+          }
+        },
+        {
+          "lock": null
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": 1
+          }
+        },
+        {
+          "unlock": null
+        },
+        {
+          "accept": {
+            "from": "incoming",
+            "grant": 1
+          }
+        },
+        {
+          "leases": null
+        }
+      ],
+      "results": [
+        {
+          "ok": "grant"
+        },
+        {
+          "ok": "lease"
+        },
+        {
+          "ok": null
+        },
+        {
+          "error": {
+            "code": "platform.lease_revoked",
+            "data": {
+              "kind": "revoked",
+              "cause": "lock"
+            }
+          }
+        },
+        {
+          "ok": null
+        },
+        {
+          "error": {
+            "code": "platform.lease_revoked",
+            "data": {
+              "kind": "revoked",
+              "cause": "lock"
+            }
+          }
+        },
+        {
+          "ok": [
+            {
+              "flow": "accept",
+              "state": {
+                "kind": "revoked",
+                "cause": "lock"
+              },
+              "ownKey": false,
+              "fundsCommitted": false,
+              "budgets": [
+                {
+                  "purpose": "credits",
+                  "ceiling": "150000000",
+                  "spent": "0"
+                }
+              ],
+              "inFlight": 0,
+              "callRunning": false
+            }
+          ]
         }
       ]
     },

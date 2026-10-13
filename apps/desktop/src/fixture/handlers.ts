@@ -3,6 +3,15 @@
 // generated `CommandArgs` and returns its `CommandResults`, so a binding change the fixture
 // does not follow fails `tsc`. Mutating commands emit the `AppEvent`s the engine would.
 // A command without a handler rejects with `platform.not_implemented` (installFixture).
+//
+// Grants and leases follow dw-vault and the engine's lease table as the accept vector records
+// them (vectors/accept.json, from dw-engine's `accept_grant_vectors`): a lock or an unlock
+// revokes every vault grant; a passphrase or quick-unlock grant issued while locked carries its
+// own key, so it redeems while locked; a vault-grant write runs under a one-shot lease that
+// `leases` lists, ended. Not modelled: grant expiry and lease idle reaping (the clock is
+// FIXTURE_NOW), quick unlock's spending limit and passphrase age, "authenticate every payment"
+// (`vault.credential_required`), held identity keys (`identity.keys_missing`), and the lock
+// report, which is the scenario's (`World.cut`), not derived from the leases.
 
 import type { AppError, AppEvent, CommandArgs, CommandName, CommandResults } from "../api/generated/commands";
 import type { AuthGrant } from "../api/generated/AuthGrant";
@@ -15,7 +24,7 @@ import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
 import { isCheckable } from "../api/lockReport";
 import { sectionOf } from "./dashpay";
-import { MAX_REPORT_WALLETS, type World } from "./scenarios";
+import { MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
 
 export interface Ctx {
@@ -62,16 +71,20 @@ function setLock({ world, emit }: Ctx, state: World["lock"]["state"]) {
   emit({ kind: "vaultLockState", network: world.launch.network.dirName, state });
 }
 
-// Grants and leases (E0-04), as dw-vault and the engine's lease table answer them. The clock is
-// FIXTURE_NOW, so grant expiry (120 s) and a lease's idle reaping are not modelled.
+// Grants and leases (E0-04), as dw-vault and the engine's lease table answer them.
 
 /** The quote of a contact request or its acceptance (dw-engine flows.rs `CONTACT_REQUEST_CREDITS`). */
 const CONTACT_REQUEST_CREDITS = 150_000_000n;
 const GRANT_TTL_SECS = 120;
+/** How long a lease holds an own key (the engine's `key_ttl`, as the scenarios' leases show it). */
+const KEY_TTL_SECS = 240;
 
 const grantInvalid = () => fail("platform.grant_invalid", "grant invalid");
 const grantExceeded = (needed: bigint, remaining: bigint) =>
   fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: String(needed), remaining: String(remaining) });
+
+/** No data key in memory: dw-vault's `Locked`, `MixingOnly` or `NoVault`. */
+const keyless = (w: World) => w.lock.state === "locked" || w.lock.state === "unlockedMixingOnly" || w.lock.state === "noVault";
 
 /** A fresh 32-hex-digit id whose first 8 digits are unique (a lease's `Lease.id`). */
 function freshId(w: World, tag: string): string {
@@ -113,7 +126,8 @@ function checkCredential(w: World, credential: CredentialSpec) {
   }
 }
 
-/** `Vault::authorize_set`: one credential check, one single-use grant per purpose, all or none. */
+/** `Vault::authorize_set`: one credential check, one single-use grant per purpose, all or none.
+ * A grant issued while the vault holds no data key carries its own. */
 function authorizeSet(w: World, purposes: GrantPurposeSpec[], walletId: string | null, credential: CredentialSpec): AuthGrant[] {
   if (walletId !== null && !/^[0-9a-f]{64}$/i.test(walletId)) throw fail("invalid_argument", `not a wallet id: ${walletId}`);
   if (purposes.length === 0) throw fail("invalid_argument", "no grant purpose");
@@ -121,17 +135,24 @@ function authorizeSet(w: World, purposes: GrantPurposeSpec[], walletId: string |
   if (unbound) throw fail("invalid_argument", `a ${unbound.kind} grant ${walletId === null ? "needs a wallet id" : "is not bound to a wallet"}`);
   checkCredential(w, credential);
   const expiresAt = secs(FIXTURE_NOW) + GRANT_TTL_SECS;
+  const ownKey = keyless(w);
   return purposes.map((purpose) => {
     const grant: AuthGrant = { id: freshId(w, "9a7e"), purpose, walletId, expiresAt, singleUse: true };
-    w.grants.push({ grant, used: false });
+    w.grants.push({ grant, used: false, ownKey });
     return grant;
   });
 }
 
-/** The unused vault grant `id` of `walletId`, if it is of one of `kinds`. */
-function liveGrant(w: World, id: string, walletId: string, kinds: GrantPurposeSpec["kind"][]): AuthGrant | null {
-  const g = w.grants.find((x) => x.grant.id === id && !x.used)?.grant;
-  return g && g.walletId === walletId && kinds.includes(g.purpose.kind) ? g : null;
+/** dw-vault's `revoke`: a lock, or an unlock that installs the data key, ends every grant. */
+function revokeGrants(w: World) {
+  w.grants = [];
+}
+
+/** `Vault::check_grant`: the unused grant `id` of `walletId` and of one of `kinds`, if a key
+ * can use it: its own, or the vault's. */
+function checkGrant(w: World, id: string, walletId: string, kinds: GrantPurposeSpec["kind"][]): FixtureGrant | null {
+  const g = w.grants.find((x) => x.grant.id === id && !x.used);
+  return g && g.grant.walletId === walletId && kinds.includes(g.grant.purpose.kind) && (g.ownKey || !keyless(w)) ? g : null;
 }
 
 function useGrant(w: World, id: string) {
@@ -142,25 +163,76 @@ function leaseChanged({ world, emit }: Ctx, lease: Lease) {
   emit({ kind: "leaseChanged", network: world.launch.network.dirName, lease });
 }
 
-function setLease(ctx: Ctx, lease: Lease) {
+function setLease(ctx: Ctx, lease: Lease): Lease {
   ctx.world.leases = ctx.world.leases.map((l) => (l.id === lease.id && l.walletId === lease.walletId ? lease : l));
   leaseChanged(ctx, lease);
+  return lease;
+}
+
+const BUDGET_ORDER: Budget["purpose"][] = ["funding", "credits", "spend"];
+
+/** Redeems `grants` into a new active lease of `flow` (lease/session.rs `issue`), listed and
+ * signalled; returns its full id. Budgets: a `platformOp`'s `maxDuffs` funds, its `maxCredits`
+ * credits, a `spend`'s `maxDuffs` spends; an empty one is not listed. */
+function newLease(ctx: Ctx, walletId: string, flow: FlowKindName, grants: FixtureGrant[]): [string, Lease] {
+  const { world } = ctx;
+  const budgets: Budget[] = [];
+  const budget = (purpose: Budget["purpose"], ceiling: string) => ceiling !== "0" && budgets.push({ purpose, ceiling, spent: "0" });
+  for (const { grant } of grants) {
+    useGrant(world, grant.id);
+    if (grant.purpose.kind === "platformOp") {
+      budget("funding", String(grant.purpose.maxDuffs));
+      budget("credits", grant.purpose.maxCredits);
+    } else if (grant.purpose.kind === "spend") budget("spend", String(grant.purpose.maxDuffs));
+  }
+  budgets.sort((a, b) => BUDGET_ORDER.indexOf(a.purpose) - BUDGET_ORDER.indexOf(b.purpose));
+  const id = `lease-${freshId(world, "1ea5")}`;
+  const ownKey = grants.some((g) => g.ownKey);
+  const lease: Lease = {
+    id: id.slice("lease-".length, "lease-".length + 8),
+    walletId,
+    flow,
+    state: { kind: "active" },
+    ownKey,
+    keyExpiresInSecs: ownKey ? KEY_TTL_SECS : null,
+    fundsCommitted: false,
+    budgets,
+    inFlight: 0,
+    callRunning: false,
+  };
+  world.leases = [...world.leases, lease];
+  leaseChanged(ctx, lease);
+  return [id, lease];
+}
+
+/** One library call of `lease`'s flow costing `quote` credits: charged as it starts, then done. */
+function leasedCall(ctx: Ctx, lease: Lease, quote: bigint): Lease {
+  const budgets = lease.budgets.map((b) => (b.purpose === "credits" ? { ...b, spent: String(BigInt(b.spent) + quote) } : b));
+  const running = setLease(ctx, { ...lease, budgets, callRunning: true });
+  return setLease(ctx, { ...running, callRunning: false });
 }
 
 /** The engine's `write_lease` for a write of one of `flows` costing `quote` credits, in its
  * order: a lease id of the wallet's, of one of `flows`, whose Credits budget covers the quote;
- * or an unused `platformOp` vault grant of the wallet's whose `maxCredits` covers it. Checks
- * only: the returned commit charges the lease or redeems the grant once nothing else refuses. */
+ * or an unused `platformOp` vault grant of the wallet's whose `maxCredits` covers it, which
+ * runs the write under a one-shot lease of `flows[0]` that ends after it. Checks only: the
+ * returned commit runs the call once nothing else refuses. */
 function writeLease(ctx: Ctx, walletId: string, grant: string, flows: FlowKindName[], quote: bigint): () => void {
   const { world } = ctx;
   const key = leaseKey(grant);
   if (key === null) {
-    const g = liveGrant(world, grant, walletId, ["platformOp"]);
-    if (g?.purpose.kind !== "platformOp") throw grantInvalid();
-    const remaining = BigInt(g.purpose.maxCredits);
+    // `Vault::grant_purpose`: a grant of another kind or wallet is refused as such; a missing
+    // one, or one without its own key, reports a vault without a data key first.
+    const g = world.grants.find((x) => x.grant.id === grant && !x.used);
+    if (g && (g.grant.walletId !== walletId || g.grant.purpose.kind !== "platformOp")) throw grantInvalid();
+    if (!g?.ownKey && keyless(world)) throw fail("platform.signer_unavailable", "signer unavailable");
+    if (g?.grant.purpose.kind !== "platformOp") throw grantInvalid();
+    const remaining = BigInt(g.grant.purpose.maxCredits);
     if (quote > remaining) throw grantExceeded(quote, remaining);
-    if (world.lock.state === "locked") throw fail("platform.signer_unavailable", "signer unavailable");
-    return () => useGrant(world, g.id);
+    return () => {
+      const [, lease] = newLease(ctx, walletId, flows[0], [g]);
+      setLease(ctx, { ...leasedCall(ctx, lease, quote), state: { kind: "ended" }, keyExpiresInSecs: null });
+    };
   }
   const lease = world.leases.find((l) => l.id === world.flowLeases[key] && l.walletId === walletId);
   if (!lease || !flows.includes(lease.flow)) throw grantInvalid();
@@ -170,16 +242,11 @@ function writeLease(ctx: Ctx, walletId: string, grant: string, flows: FlowKindNa
   if (quote > remaining) throw grantExceeded(quote, remaining);
   if (lease.state.kind === "ended") throw fail("platform.lease_expired", "lease expired");
   if (lease.state.kind === "revoked") throw fail("platform.lease_revoked", "lease revoked", { kind: "revoked", cause: lease.state.cause });
-  return () => {
-    const budgets = lease.budgets.map((b) => (b === credits ? { ...b, spent: String(BigInt(b.spent) + quote) } : b));
-    setLease(ctx, { ...lease, budgets });
-  };
+  return () => void leasedCall(ctx, lease, quote);
 }
 
 /** A base58 identity id, as `Pair::parse` takes one. */
 const isIdentityId = (s: string) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s);
-
-const BUDGET_ORDER: Budget["purpose"][] = ["funding", "credits", "spend"];
 
 export const HANDLERS: Handlers = {
   // App and network
@@ -201,6 +268,8 @@ export const HANDLERS: Handlers = {
         retryAfterSecs: null,
       });
     }
+    // Installing the data key ends every grant (dw-vault `install_key`).
+    if (world.lock.state !== "unlocked") revokeGrants(world);
     world.lock = { ...world.lock, failedAttempts: 0 };
     setLock(ctx, "unlocked");
     return world.lock;
@@ -211,6 +280,7 @@ export const HANDLERS: Handlers = {
     // Revoke every live lease (the engine's lock barrier), then report what the cut did.
     world.leases = world.leases.map((l) => (l.state.kind === "ended" ? l : { ...l, state: { kind: "revoked", cause: "lock" }, ownKey: false, keyExpiresInSecs: null }));
     for (const lease of world.leases) emit({ kind: "leaseChanged", network, lease });
+    revokeGrants(world);
     setLock(ctx, "locked");
     const inFlight = world.leases.reduce((n, l) => n + l.inFlight, 0);
     if (inFlight > 0) emit({ kind: "lockProgress", network, progress: { kind: "draining", inFlight, deadlineInMs: 30_000 } });
@@ -234,51 +304,29 @@ export const HANDLERS: Handlers = {
     return null;
   },
   // NetworkSession::begin_flow: every grant checked before any is redeemed (lease/session.rs
-  // `issue`): unused, the wallet's, one per kind, of a kind the flow allows (a `platformOp`, and
-  // for "Accept and pay" a `spend` too). Budgets: a `platformOp`'s `maxDuffs` funds, its
-  // `maxCredits` credits, a `spend`'s `maxDuffs` spends; an empty one is not listed.
+  // `issue`): unused, the wallet's, usable by a key, one per kind, of a kind the flow allows (a
+  // `platformOp`, and for "Accept and pay" a `spend` too).
   begin_flow: ({ walletId, flow, grants }, ctx) => {
     const { world } = ctx;
     wallet(world, walletId);
     const kinds: GrantPurposeSpec["kind"][] = flow === "acceptAndPay" ? ["platformOp", "spend"] : ["platformOp"];
-    const found = grants.map((id) => liveGrant(world, id, walletId, kinds));
-    const purposes = new Set(found.map((g) => g?.purpose.kind));
-    const vaultOpen = world.lock.state !== "locked" && world.lock.state !== "unlockedMixingOnly";
-    if (!found.length || !vaultOpen || found.some((g) => !g) || purposes.size !== found.length) throw grantInvalid();
-    const budgets: Budget[] = [];
-    const budget = (purpose: Budget["purpose"], ceiling: string) => ceiling !== "0" && budgets.push({ purpose, ceiling, spent: "0" });
-    for (const g of found as AuthGrant[]) {
-      useGrant(world, g.id);
-      if (g.purpose.kind === "platformOp") {
-        budget("funding", String(g.purpose.maxDuffs));
-        budget("credits", g.purpose.maxCredits);
-      } else if (g.purpose.kind === "spend") budget("spend", String(g.purpose.maxDuffs));
-    }
-    budgets.sort((a, b) => BUDGET_ORDER.indexOf(a.purpose) - BUDGET_ORDER.indexOf(b.purpose));
-    const id = `lease-${freshId(world, "1ea5")}`;
-    const lease: Lease = {
-      id: id.slice("lease-".length, "lease-".length + 8),
-      walletId,
-      flow,
-      state: { kind: "active" },
-      ownKey: true,
-      keyExpiresInSecs: 240,
-      fundsCommitted: false,
-      budgets,
-      inFlight: 0,
-      callRunning: false,
-    };
+    const found = grants.map((id) => checkGrant(world, id, walletId, kinds));
+    const purposes = new Set(found.map((g) => g?.grant.purpose.kind));
+    if (!found.length || found.some((g) => !g) || purposes.size !== found.length) throw grantInvalid();
+    const [id, lease] = newLease(ctx, walletId, flow, found as FixtureGrant[]);
     world.flowLeases[id] = lease.id;
-    world.leases = [...world.leases, lease];
-    leaseChanged(ctx, lease);
     return id;
   },
-  // Idempotent; a lease id that does not parse is `platform.grant_invalid`.
+  // Idempotent; a lease id that does not parse is `platform.grant_invalid`. Ending a live lease
+  // signals it twice, as the engine does (the owner's drop, then the table's `end`).
   end_flow: ({ lease: id }, ctx) => {
     const key = leaseKey(id);
     if (key === null) throw grantInvalid();
     const lease = ctx.world.leases.find((l) => l.id === ctx.world.flowLeases[key]);
-    if (lease && lease.state.kind !== "ended") setLease(ctx, { ...lease, state: { kind: "ended" }, ownKey: false, keyExpiresInSecs: null });
+    if (lease && lease.state.kind !== "ended") {
+      const ended = setLease(ctx, { ...lease, state: { kind: "ended" }, keyExpiresInSecs: null });
+      leaseChanged(ctx, ended);
+    }
     return null;
   },
   dispatch_status: ({ walletId, artifact }, { world }) => {
