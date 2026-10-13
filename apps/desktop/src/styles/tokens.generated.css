@@ -438,7 +438,7 @@
   --dw-role-field-stroke: rgb(117 128 138 / 0.25);
   --dw-role-success: #3DB58A;
   --dw-role-success-tint: rgb(61 181 138 / 0.1);
-  --dw-role-danger: #EB3842;
+  --dw-role-danger: #C8202B;
   --dw-role-danger-tint: rgb(235 56 66 / 0.1);
   --dw-role-warning: #B6542C;
   --dw-role-warning-tint: rgb(250 145 105 / 0.1);
@@ -759,7 +759,7 @@
   --dw-role-field-stroke: rgb(117 128 138 / 0.25);
   --dw-role-success: #3DB58A;
   --dw-role-success-tint: rgb(61 181 138 / 0.1);
-  --dw-role-danger: #EB3842;
+  --dw-role-danger: #FF6961;
   --dw-role-danger-tint: rgb(235 56 66 / 0.1);
   --dw-role-warning: #FA9169;
   --dw-role-warning-tint: rgb(250 145 105 / 0.1);
@@ -1081,7 +1081,7 @@
     --dw-role-field-stroke: rgb(117 128 138 / 0.25);
     --dw-role-success: #3DB58A;
     --dw-role-success-tint: rgb(61 181 138 / 0.1);
-    --dw-role-danger: #EB3842;
+    --dw-role-danger: #FF6961;
     --dw-role-danger-tint: rgb(235 56 66 / 0.1);
     --dw-role-warning: #FA9169;
     --dw-role-warning-tint: rgb(250 145 105 / 0.1);

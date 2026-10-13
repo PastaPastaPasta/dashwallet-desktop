@@ -11,6 +11,8 @@ pub mod codegen;
 pub mod coverage;
 pub mod dto;
 pub mod error;
+#[cfg(test)]
+mod history_vectors_tests;
 mod ipc;
 #[cfg(test)]
 mod ipc_tests;
@@ -145,11 +147,11 @@ pub fn run() {
     let launch = match launch::parse(std::env::args().skip(1)) {
         Ok(ParseOutcome::Run(o)) => *o,
         Ok(ParseOutcome::Help) => {
-            println!("{}", launch::USAGE);
+            println!("{}", launch::usage());
             return;
         }
         Err(e) => {
-            eprintln!("dash-wallet: {e}\n{}", launch::USAGE);
+            eprintln!("dash-wallet: {e}\n{}", launch::usage());
             std::process::exit(2);
         }
     };
@@ -159,14 +161,18 @@ pub fn run() {
             eprintln!("dash-wallet: could not start: {e}");
             std::process::exit(1);
         });
+    // The self-test's grant, outside `capabilities/` so that no other build
+    // embeds it (build.rs, E0-13 D17). Tauri panics on one it cannot parse
+    // or resolve (`api::selftest` tests it parses; every permission exists).
+    #[cfg(feature = "selftest")]
+    app.add_capability(api::selftest::CAPABILITY)
+        .expect("the self-test capability");
     app.run(|handle, event| {
         if let RunEvent::Exit = event
-            && let Some(engine) = handle
-                .try_state::<AppState>()
-                .and_then(|s| s.inner().engine.as_ref())
+            && let Some(state) = handle.try_state::<AppState>()
         {
             // Flush and release every wallet database before the process ends.
-            if let Err(e) = tauri::async_runtime::block_on(engine.shutdown()) {
+            if let Err(e) = tauri::async_runtime::block_on(state.engine.shutdown()) {
                 eprintln!("dash-wallet: engine shutdown: {e}");
             }
         }
@@ -257,24 +263,6 @@ mod tests {
     }
 
     #[test]
-    fn fixture_mode_has_no_engine() {
-        let app = tauri::test::mock_app();
-        let opts = LaunchOptions {
-            fixture: true,
-            ..LaunchOptions::default()
-        };
-        let state = AppState::new(
-            app.handle(),
-            opts,
-            Instant::now(),
-            Default::default(),
-            || unreachable!("no data dir in fixture mode"),
-        )
-        .unwrap();
-        assert!(state.engine.is_none());
-    }
-
-    #[test]
     fn engine_mode_opens_the_data_root() {
         let app = tauri::test::mock_app();
         let dir = dw_testutil::private_tempdir();
@@ -291,7 +279,7 @@ mod tests {
             || unreachable!("--datadir given"),
         )
         .unwrap();
-        assert_eq!(state.engine.as_ref().unwrap().config().data_root, root);
+        assert_eq!(state.engine.config().data_root, root);
         assert!(root.is_dir());
     }
 

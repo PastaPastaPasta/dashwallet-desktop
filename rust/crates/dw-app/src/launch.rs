@@ -15,15 +15,19 @@ pub struct LaunchOptions {
     /// Data root; `None` = the platform app-data directory.
     pub data_dir: Option<PathBuf>,
     pub network: DashNetwork,
-    /// The renderer uses its TypeScript fixture backend; no engine is created.
-    pub fixture: bool,
     /// Render the four gate screens, write every `data-testid` box to this
-    /// file and exit (DASHPAY §2.1 G-01).
+    /// file and exit (DASHPAY §2.1 G-01). This and the next two are set only
+    /// in a build with the `selftest` feature; elsewhere their options are
+    /// unknown (E0-13 D17).
     pub selftest: Option<PathBuf>,
     /// Pause this long on each self-test screen after announcing it on
     /// stderr (`dw-app: selftest-screen <theme>/<screen>`), so a harness can
     /// capture the window.
     pub selftest_pause_ms: u32,
+    /// The vault passphrase, first line of this file, for `selftest_unlock`:
+    /// the self-test then records the unlocked screens and the lock screen
+    /// of an encrypted vault. The renderer never sees the passphrase.
+    pub selftest_passphrase_file: Option<PathBuf>,
     /// Start SPV once the network is open.
     pub sync: bool,
     pub spv_peers: Vec<String>,
@@ -50,9 +54,9 @@ impl Default for LaunchOptions {
         Self {
             data_dir: None,
             network: DashNetwork::Mainnet,
-            fixture: false,
             selftest: None,
             selftest_pause_ms: 0,
+            selftest_passphrase_file: None,
             sync: false,
             spv_peers: Vec::new(),
             dapi_addresses: Vec::new(),
@@ -77,12 +81,25 @@ usage: dash-wallet [options]
   --ca-cert <file>       PEM CA certificate to trust for DAPI TLS (a devnet gateway)
   --protocol-version <n> Platform protocol version to start at
   --no-platform          the chain has no Platform (a plain dashd regtest)
-  --fixture              use the built-in sample wallet; no engine
-  --selftest <file>      render the gate screens, write element boxes to <file>, exit
-  --selftest-pause <ms>  pause on each self-test screen (for screenshots)
   --theme light|dark     force an appearance
   --window-size <WxH>    the window's inner size in logical pixels (default 1280x820)
   --help                 print this text";
+
+/// The self-test's options: a build with the `selftest` feature only.
+#[cfg(feature = "selftest")]
+const SELFTEST_USAGE: &str = "
+  --selftest <file>      render the gate screens, write element boxes to <file>, exit
+  --selftest-pause <ms>  pause on each self-test screen (for screenshots)
+  --selftest-passphrase-file <file>
+                         the self-test unlocks the vault with this file's first line";
+
+/// [`USAGE`], plus the self-test's options in a `selftest` build.
+pub fn usage() -> String {
+    #[cfg(feature = "selftest")]
+    return format!("{USAGE}{SELFTEST_USAGE}");
+    #[cfg(not(feature = "selftest"))]
+    USAGE.to_string()
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ParseOutcome {
@@ -120,13 +137,20 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
                 );
             }
             "--no-platform" => opts.no_platform = true,
-            "--fixture" => opts.fixture = true,
+            // Without the `selftest` feature these are unknown options (E0-13 D17).
+            #[cfg(feature = "selftest")]
             "--selftest" => opts.selftest = Some(PathBuf::from(value("--selftest")?)),
+            #[cfg(feature = "selftest")]
             "--selftest-pause" => {
                 let v = value("--selftest-pause")?;
                 opts.selftest_pause_ms = v
                     .parse()
                     .map_err(|_| format!("--selftest-pause: not a number: {v}"))?;
+            }
+            #[cfg(feature = "selftest")]
+            "--selftest-passphrase-file" => {
+                opts.selftest_passphrase_file =
+                    Some(PathBuf::from(value("--selftest-passphrase-file")?))
             }
             "--theme" => {
                 opts.theme = Some(match value("--theme")?.as_str() {
@@ -186,11 +210,6 @@ mod tests {
             "--protocol-version",
             "9",
             "--no-platform",
-            "--fixture",
-            "--selftest",
-            "/tmp/boxes.json",
-            "--selftest-pause",
-            "1500",
             "--theme",
             "dark",
             "--window-size",
@@ -203,16 +222,47 @@ mod tests {
                 name: "paloma".into()
             }
         );
-        assert!(o.sync && o.fixture && o.no_platform);
+        assert!(o.sync && o.no_platform);
         assert_eq!(o.spv_peers, ["127.0.0.1:19899"]);
         assert_eq!(o.dapi_addresses, ["https://127.0.0.1:2443"]);
         assert_eq!(o.quorum_url.as_deref(), Some("https://127.0.0.1:22444"));
         assert_eq!(o.ca_cert_path, Some(PathBuf::from("/tmp/gw.pem")));
         assert_eq!(o.initial_protocol_version, Some(9));
-        assert_eq!(o.selftest, Some(PathBuf::from("/tmp/boxes.json")));
-        assert_eq!(o.selftest_pause_ms, 1500);
         assert_eq!(o.theme, Some(ThemeName::Dark));
         assert_eq!(o.window_size, Some((1000, 620)));
+    }
+
+    #[cfg(feature = "selftest")]
+    #[test]
+    fn parses_the_selftest_options() {
+        let o = run(&[
+            "--selftest",
+            "/tmp/boxes.json",
+            "--selftest-pause",
+            "1500",
+            "--selftest-passphrase-file",
+            "/tmp/pass",
+        ]);
+        assert_eq!(o.selftest, Some(PathBuf::from("/tmp/boxes.json")));
+        assert_eq!(o.selftest_pause_ms, 1500);
+        assert_eq!(o.selftest_passphrase_file, Some(PathBuf::from("/tmp/pass")));
+        assert!(usage().contains("--selftest-passphrase-file"));
+    }
+
+    /// A build without the `selftest` feature (every release and packaged
+    /// build) refuses the self-test's options (E0-13 D17).
+    #[cfg(not(feature = "selftest"))]
+    #[test]
+    fn a_build_without_the_selftest_feature_refuses_its_options() {
+        for args in [
+            ["--selftest", "/tmp/boxes.json"],
+            ["--selftest-pause", "1500"],
+            ["--selftest-passphrase-file", "/tmp/pass"],
+        ] {
+            let e = parse(args.iter().map(|s| s.to_string())).unwrap_err();
+            assert_eq!(e, format!("unknown option {}", args[0]));
+        }
+        assert!(!usage().contains("--selftest"));
     }
 
     #[test]
@@ -223,6 +273,9 @@ mod tests {
         assert!(err(&["--datadir"]).contains("needs a value"));
         assert!(err(&["--protocol-version", "nine"]).contains("not a number"));
         assert!(err(&["--bogus"]).contains("unknown option"));
+        // No build of the app runs on fixture data (U-07): the fixture backend
+        // exists only in the renderer's browser harness.
+        assert!(err(&["--fixture"]).contains("unknown option"));
         for bad in ["1000", "0x620", "1000x", "ax620"] {
             assert!(
                 err(&["--window-size", bad]).contains("expected WxH"),

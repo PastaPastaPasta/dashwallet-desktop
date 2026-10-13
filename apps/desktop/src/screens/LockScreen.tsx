@@ -3,8 +3,11 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { errorMessage, hasCode, retryAfterSecs } from "../api/backend";
+import type { LockOutcome } from "../api/generated/LockOutcome";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { useBackend } from "../api/queries";
+import { FLOW_NAME, OUTCOME_LINE, reportsAnything, summarizeLockReport } from "../api/lockReport";
+import { useBackend, useLastLockReport, useLockDrain, useLockReconcile } from "../api/queries";
+import { SIGNED_BEFORE_LOCK } from "../api/send";
 import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
 
 const Lock = {
@@ -22,6 +25,70 @@ function waitText(secs: number): string {
   }
   const m = Math.max(1, Math.ceil(secs / 60));
   return m === 1 ? "1 minute" : `${m} minutes`;
+}
+
+const more = (n: number, noun: string) => n > 0 && `${n} more ${noun}${n === 1 ? "" : "s"}`;
+
+/** What the last lock did to running flows (E0-13 D3, E0-04 §16.10 C4). Hidden while a newer
+ * lock drains: until its `done`, the last report is the previous lock's. */
+function LockReportNotice() {
+  const drain = useLockDrain().data;
+  const report = useLastLockReport().data;
+  if (drain)
+    return (
+      <section className="lock-report" data-testid="lock-drain">
+        <p className="lock-report-title" role="status">
+          Stopping {drain.inFlight === 1 ? "1 running action" : `${drain.inFlight} running actions`}…
+        </p>
+      </section>
+    );
+  return report && reportsAnything(report) ? <LockReportBody report={report} /> : null;
+}
+
+/** Unresolved while anything listed may still be sent, or anything left out cannot be shown not
+ * to be; `leases`, `dispatchStatus` and `lockStatus` settle only what the report lets them. */
+function LockReportBody({ report }: { report: LockOutcome }) {
+  const summary = summarizeLockReport(report);
+  const reconciled = useLockReconcile(report, summary.unresolved);
+  const resolved = !summary.unresolved || reconciled.data?.settled === true;
+  const { flows, artifacts, wallets } = summary.omitted;
+  const check = resolved
+    ? null
+    : summary.beyondReach
+      ? "The app cannot check all of these actions, so some may still be sent."
+      : reconciled.isError
+        ? "Could not check whether any of these actions may still be sent."
+        : "Checking whether any of these actions may still be sent…";
+  return (
+    <section
+      className="lock-report"
+      data-testid="lock-report"
+      data-resolved={resolved}
+      data-checked-at={reconciled.data?.checkedAt}
+      aria-labelledby="lock-report-title"
+    >
+      <p id="lock-report-title" className="lock-report-title" role="status">
+        {resolved ? "Every action the lock stopped has ended." : SIGNED_BEFORE_LOCK}
+      </p>
+      {check && (
+        <p className="lock-report-note" data-testid="lock-report-check">
+          {check}
+        </p>
+      )}
+      <ul className="lock-report-flows" aria-label="At the time of the lock">
+        {report.flows.map((f) => (
+          <li key={f.lease} data-testid="lock-report-flow" data-outcome={f.outcome}>
+            {FLOW_NAME[f.flow]}: {OUTCOME_LINE[f.outcome]}
+          </li>
+        ))}
+      </ul>
+      {!summary.complete && (
+        <p className="lock-report-note" data-testid="lock-report-omitted">
+          {[more(flows, "action"), more(artifacts, "step"), more(wallets, "wallet")].filter(Boolean).join(", ")} not listed here.
+        </p>
+      )}
+    </section>
+  );
 }
 
 export function LockScreen({ network }: { network: NetworkInfo }) {
@@ -100,6 +167,7 @@ export function LockScreen({ network }: { network: NetworkInfo }) {
             {busy ? "Unlocking…" : "Unlock"}
           </DashButton>
         </form>
+        <LockReportNotice />
       </div>
     </div>
   );

@@ -191,7 +191,7 @@ or excluded with a reason (`rust/crates/dw-app/src/coverage.rs`).
 | `NetworkSession::unlock_outpoints` | dw-engine/src/coins.rs | `unlock_outpoints` |
 | `NetworkSession::utxos` | dw-engine/src/coins.rs | `utxos` |
 | `NetworkSession::vault` | dw-engine/src/keys.rs | `lock_status`, `quick_unlock_policy`, `revoke_grant` |
-| `NetworkSession::vault_op` | dw-engine/src/keys.rs | `authorize`, `authorize_set`, `create_vault`, `enroll_quick_unlock`, `remove_quick_unlock`, `reveal_mnemonic`, `set_quick_unlock_spend_limit`, `unlock`, `unlock_for`, `unlock_mixing_only` |
+| `NetworkSession::vault_op` | dw-engine/src/keys.rs | `authorize`, `authorize_set`, `create_vault`, `enroll_quick_unlock`, `remove_quick_unlock`, `reveal_mnemonic`, `selftest_unlock`, `set_quick_unlock_spend_limit`, `unlock`, `unlock_for`, `unlock_mixing_only` |
 | `NetworkSession::wallet_info` | dw-engine/src/wallets.rs | `wallet_info` |
 | `NetworkSession::wallet_infos` | dw-engine/src/wallets.rs | `list_wallets` |
 | `NetworkSession::wallet_load_states` | dw-engine/src/multiwallet.rs | `wallet_load_states` |
@@ -257,7 +257,7 @@ or excluded with a reason (`rust/crates/dw-app/src/coverage.rs`).
 | `Vault::signer_held` | dw-vault/src/vault.rs | excluded (vault): internal: signers never cross the IPC boundary; the lease table builds them |
 | `Vault::status` | dw-vault/src/vault.rs | `lock_status` |
 | `Vault::store_wallet_secret` | dw-vault/src/vault.rs | excluded (vault): internal: `importWallet` and the backup restore store seeds, never the host directly |
-| `Vault::unlock` | dw-vault/src/vault.rs | `unlock`, `unlock_for`, `unlock_mixing_only` |
+| `Vault::unlock` | dw-vault/src/vault.rs | `selftest_unlock`, `unlock`, `unlock_for`, `unlock_mixing_only` |
 | `Vault::vault_id` | dw-vault/src/vault.rs | excluded (vault): internal: keys the engine's per-vault settings (`paymentAuthentication`); the id itself means nothing to the UI |
 | `Vault::wipe_wallet_secret` | dw-vault/src/vault.rs | excluded (vault): internal: `removeWallet` redeems the Wipe grant and calls it |
 | `Vault::with_revealed_seed` | dw-vault/src/vault/masternode.rs | excluded (vault): internal: a closure over the seed for the engine's own key derivations (masternode keys, MG), never a host call |

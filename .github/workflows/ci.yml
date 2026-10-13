@@ -1,9 +1,19 @@
 # CI on Linux, macOS and Windows (DEC-13, roadmap T-03).
 #
-# - lint, rust-linux: fmt, clippy and `cargo test --workspace` on Linux; rust-linux then
-#   regenerates the Tauri bindings (apps/desktop/src/api/generated and the E0-13 facade
-#   coverage table) and fails if they differ from the committed ones.
-# - desktop-renderer: the Tauri renderer (apps/desktop): design tokens, tsc and vitest.
+# - lint, rust-linux: fmt, clippy and `cargo test --workspace` on Linux, and dw-app again with
+#   its `selftest` feature (E0-13 D17: the workspace build proves the self-test is absent, the
+#   feature build that it works); rust-linux then regenerates the Tauri bindings
+#   (apps/desktop/src/api/generated and the E0-13 facade coverage table) and fails if they
+#   differ from the committed ones.
+# - desktop-renderer: the Tauri renderer (apps/desktop): design tokens, tsc, vitest, the
+#   production and fixture bundles (scripts/check-bundle.mjs: neither fixture marker and none of
+#   the fixture sources' literals in production), the guard's negative control, and the test of
+#   tauri-selftest.yml's report judge.
+# - ui-playwright: Playwright on the fixture backend in Chromium and WebKit, light and dark, with
+#   axe, inside the pinned Playwright image and without Rust or the engine (U-07). Same commands
+#   locally: apps/desktop/scripts/e2e-docker.sh.
+# - e2e-tauri-linux: tauri-driver drives the real app on the real engine (a dwcli regtest wallet)
+#   under Xvfb: apps/desktop/scripts/e2e-tauri.sh.
 # - swift-linux: the Linux Swift tests (the headless suites of scripts/linux-docker-test.sh
 #   plus DashUICrossTests: the UI T0 tier) with Swift 6.3.3, then the SwiftCrossUI app launched
 #   under Xvfb with a screenshot.
@@ -73,6 +83,7 @@ jobs:
           workspaces: rust -> target
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo clippy -p dw-app --all-targets --features selftest --locked -- -D warnings
 
   rust-linux:
     name: Rust tests (Linux)
@@ -102,6 +113,11 @@ jobs:
           workspaces: rust -> target
       - run: cargo test --workspace --no-run --locked
       - run: cargo test --workspace --locked --no-fail-fast
+      # Without the feature, dw-app's tests prove the self-test's options, commands and grant
+      # are absent; with it, that they work (E0-13 D17).
+      - name: dw-app with the selftest feature
+        if: ${{ !cancelled() }}
+        run: cargo test -p dw-app --features selftest --locked --no-fail-fast
       # E0-13: the TypeScript bindings and the facade coverage table are generated from dw-app;
       # regenerate them and fail when the committed files differ (or a new file is missing).
       - name: Regenerate the Tauri bindings and check them in
@@ -137,6 +153,119 @@ jobs:
       - run: pnpm tokens:check
       - run: pnpm typecheck
       - run: pnpm test
+      # Each build ends with scripts/check-bundle.mjs: dist/ must hold neither fixture marker and
+      # none of the fixture sentinels (literals of src/fixture), and dist-fixture/ must hold them
+      # all (the positive control).
+      - run: pnpm build
+      - run: pnpm build:fixture
+      # The negative controls: an unmarked copy of a fixture module outside src/fixture (wallet.ts,
+      # a new .mts module, errors.ts) or of its test data (vectors/accept.json as ?raw, ?url,
+      # ?inline, ?url&inline and JSON) must fail the production build at check-bundle.
+      - name: Fixture guard negative control
+        run: scripts/guard-negative-control.sh
+      # tauri-selftest.yml's verdict: a report missing a required screen must fail it.
+      - name: selftest judge (ci/github/selftest-judge.jq)
+        working-directory: .
+        run: ci/github/selftest-judge-test.sh
+
+  ui-playwright:
+    name: UI tests (Playwright, axe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The browsers and their libraries, pinned to @playwright/test in package.json (bump both).
+    # No Rust and no engine: the renderer runs on the fixture backend.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.0-noble
+      options: --ipc=host --init
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: apps/desktop/package.json
+      - run: pnpm install --frozen-lockfile
+      - name: The image matches @playwright/test
+        run: |
+          want=$(node -p 'require("./package.json").devDependencies["@playwright/test"]')
+          have=$(pnpm exec playwright --version)
+          [[ "$have" == "Version $want" ]] || { echo "::error::image has $have, package.json pins $want"; exit 1; }
+      - run: pnpm build:fixture
+      - name: playwright test (scenarios, light and dark, axe, errors, lock report, security)
+        env:
+          CI: "1"
+        run: pnpm exec playwright test
+      # Non-blocking until the baselines (made with scripts/e2e-docker.sh) have proven stable on the
+      # hosted runners (docs/ci.md, "UI tests"); a mismatch uploads the actual and diff images.
+      - name: Visual baselines (non-blocking)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          CI: "1"
+          DW_VISUAL: "1"
+        run: pnpm exec playwright test --project=chromium e2e/visual.spec.ts --output test-results/visual --reporter=list
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: ui-playwright
+          path: |
+            apps/desktop/test-results/
+            apps/desktop/playwright-report/
+          if-no-files-found: warn
+
+  e2e-tauri-linux:
+    name: Tauri E2E (tauri-driver, Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        working-directory: .
+        run: ci/github/linux-free-disk.sh
+      - name: protoc
+        working-directory: .
+        run: ci/github/install-protoc.sh
+      - name: Linux packages (WebKitGTK, its WebDriver, Xvfb)
+        working-directory: .
+        run: ci/github/linux-host-deps.sh tauri
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+          key: tauri-e2e
+      - name: tauri-driver
+        run: cargo install tauri-driver --version 2.1.0 --locked
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: apps/desktop/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Smoke (debug app + dwcli, real engine, regtest wallet) under Xvfb
+        env:
+          DW_E2E_OUT: ${{ github.workspace }}/e2e-tauri-out
+        run: xvfb-run -a -s "-screen 0 1280x800x24" pnpm e2e:tauri
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: e2e-tauri-linux
+          path: e2e-tauri-out/
+          if-no-files-found: warn
 
   swift-linux:
     name: Swift + UI T0 (Linux)

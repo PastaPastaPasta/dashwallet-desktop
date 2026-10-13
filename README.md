@@ -328,6 +328,11 @@ option named.
 Demo mode runs the real screens and view models on in-memory services. Both apps use the same ones,
 `Sources/WalletDemo`, which implement the WalletRuntime service protocols.
 
+**Superseded for UI tests (U-07).** The Tauri app's renderer is tested on the fixture backend
+(`apps/desktop/src/fixture`, [`apps/desktop/README.md`](apps/desktop/README.md)), with DashPay, lock-report
+and error scenarios; new UI tests go there. `WalletDemo` and `--demo` stay for the Swift apps until U-08
+removes the Swift targets.
+
 - Units, `dash:` URIs, address checks, message verification, mnemonic checks and QR codes go
   through the real Rust functions (`EngineFunctions` in WalletRuntime).
 - The rules are the engine's (`docs/contracts/m1-engine.md`), with its error codes: single-use,

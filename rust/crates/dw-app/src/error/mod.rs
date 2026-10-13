@@ -101,14 +101,16 @@ pub(crate) use codes;
 codes! {
     /// The binding's own refusals (`app.*`).
     AppCode {
-        /// The app runs on fixture data: there is no engine.
-        FixtureMode = "app.fixture_mode",
         /// A self-test command in a normal launch.
         NotSelftest = "app.not_selftest",
         /// A developer-only command in a release build.
         NotDeveloperBuild = "app.not_developer_build",
         /// The self-test report could not be written.
         Selftest = "app.selftest",
+        /// The self-test's passphrase file cannot be read, or is not the
+        /// user's alone (on Unix: a regular file the user owns, mode 0600 or
+        /// stricter, its final component not a symlink).
+        SelftestPassphraseFile = "app.selftest_passphrase_file",
         /// The platform's app-data directory is unknown.
         DataDir = "app.data_dir",
         /// A handle id that is not (or no longer) open.

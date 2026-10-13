@@ -1382,3 +1382,617 @@ fn t2_testnet_requests() {
     eprintln!("T2 established after {seen:?} passes (A, C)");
     engine.block_on(engine.shutdown()).unwrap();
 }
+
+/// The contract vector of `dashpay_accept_request`'s grant rules (U-07, Sol
+/// r1 #3), in the step language `apps/desktop/src/fixture/accept.test.ts`
+/// replays against the fixture backend. Each case runs on a fresh
+/// [`Fixture`]; the file is compared with what the engine does here, and
+/// `DW_UPDATE_VECTORS=1` rewrites it.
+mod accept_vectors {
+    use dw_vault::UnlockScope;
+    use serde_json::{Value, json};
+
+    use super::super::super::flows::{LeaseStateView, LeaseView, RevokeCause};
+    use super::*;
+
+    const REGENERATE: &str = "DW_UPDATE_VECTORS=1 cargo test -p dw-engine accept_grant_vectors";
+    /// What the fake Platform stamps on the request Frank sent and on the
+    /// reverse request an accept writes (`FakeRequests::accept`).
+    const INCOMING_CREATED_AT: &str = "3000";
+    const ACCEPT_CREATED_AT: &str = "8500";
+    const UNKNOWN_VAULT: &str = "0123456789abcdef0123456789abcdef";
+    const UNKNOWN_LEASE: &str = "lease-0123456789abcdef0123456789abcdef";
+    const OTHER_WALLET: [u8; 32] = [0xee; 32];
+    /// The vault's passphrase: every case runs on an encrypted vault,
+    /// unlocked, as the fixture backend's world (`FIXTURE_PASSPHRASE`).
+    const PASSPHRASE: &[u8] = b"demo";
+
+    fn path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../apps/desktop/src/fixture/vectors/accept.json")
+    }
+
+    fn purpose_name(p: BudgetPurpose) -> &'static str {
+        match p {
+            BudgetPurpose::Funding => "funding",
+            BudgetPurpose::Credits => "credits",
+            BudgetPurpose::Spend => "spend",
+            BudgetPurpose::Crypto => "crypto",
+        }
+    }
+
+    /// dw-app's `ErrorData` for `e`, written out by hand (dw-engine cannot
+    /// build an `AppError`). dw-app's `accept_vector_errors_are_dw_apps`
+    /// converts the same values and checks every error recorded here.
+    fn data(e: &ContactError) -> Value {
+        use PlatformError as P;
+        match e {
+            ContactError::Ineligible {
+                reason: Eligibility::NoDashPayKeys,
+            } => json!({ "kind": "ineligible", "reason": "noDashPayKeys" }),
+            ContactError::IsSelf | ContactError::AlreadyContact => Value::Null,
+            ContactError::Platform(p) => match p {
+                P::GrantInvalid
+                | P::LeaseExpired
+                | P::InvalidArgument { .. }
+                | P::SignerUnavailable => Value::Null,
+                P::InsufficientCredits { needed, available } => json!({
+                    "kind": "credits",
+                    "needed": needed.to_string(),
+                    "available": available.to_string(),
+                }),
+                P::GrantExceeded {
+                    purpose,
+                    needed,
+                    remaining,
+                } => json!({
+                    "kind": "budget",
+                    "purpose": purpose_name(*purpose),
+                    "needed": needed.to_string(),
+                    "remaining": remaining.to_string(),
+                }),
+                P::NeedsGrant { purpose } => {
+                    json!({ "kind": "needsGrant", "purpose": purpose_name(*purpose) })
+                }
+                P::LeaseRevoked { cause } => {
+                    json!({ "kind": "revoked", "cause": cause_name(*cause) })
+                }
+                other => panic!("no vector data mapping for {other:?}: add one"),
+            },
+            other => panic!("no vector data mapping for {other:?}: add one"),
+        }
+    }
+
+    fn cause_name(c: RevokeCause) -> &'static str {
+        match c {
+            RevokeCause::Lock => "lock",
+            RevokeCause::Close => "close",
+            RevokeCause::PassphraseChange => "passphraseChange",
+            RevokeCause::WalletRemoved => "walletRemoved",
+            RevokeCause::WalletClosed => "walletClosed",
+        }
+    }
+
+    /// dw-app's `Lease` of `l`, by hand as [`data`], less what depends on
+    /// the run (`id`, `walletId`, `keyExpiresInSecs`).
+    fn lease_json(l: &LeaseView) -> Value {
+        let flow = match l.flow {
+            FlowKind::Accept => "accept",
+            FlowKind::AcceptAndPay => "acceptAndPay",
+            FlowKind::ContactRequest => "contactRequest",
+            FlowKind::ProfileEdit => "profileEdit",
+            other => panic!("no vector name for {other:?}: add one"),
+        };
+        let state = match l.state {
+            LeaseStateView::Active => json!({ "kind": "active" }),
+            LeaseStateView::AwaitingProof => json!({ "kind": "awaitingProof" }),
+            LeaseStateView::Parked { .. } => json!({ "kind": "parked" }),
+            LeaseStateView::NeedsGrant => json!({ "kind": "needsGrant" }),
+            LeaseStateView::Revoked { cause } => {
+                json!({ "kind": "revoked", "cause": cause_name(cause) })
+            }
+            LeaseStateView::Ended => json!({ "kind": "ended" }),
+        };
+        let budgets: Vec<Value> = (l.budgets.iter())
+            .map(|b| {
+                json!({
+                    "purpose": purpose_name(b.purpose),
+                    "ceiling": b.ceiling.to_string(),
+                    "spent": b.spent.to_string(),
+                })
+            })
+            .collect();
+        json!({
+            "flow": flow,
+            "state": state,
+            "ownKey": l.own_key,
+            "fundsCommitted": l.funds_committed,
+            "budgets": budgets,
+            "inFlight": l.in_flight,
+            "callRunning": l.call_running,
+        })
+    }
+
+    fn result<T>(r: Result<T, ContactError>, ok: impl FnOnce(T) -> Value) -> Value {
+        match r {
+            Ok(v) => json!({ "ok": ok(v) }),
+            Err(e) => json!({ "error": { "code": e.code(), "data": data(&e) } }),
+        }
+    }
+
+    fn flow_kind(name: &str) -> FlowKind {
+        match name {
+            "accept" => FlowKind::Accept,
+            "acceptAndPay" => FlowKind::AcceptAndPay,
+            "contactRequest" => FlowKind::ContactRequest,
+            "profileEdit" => FlowKind::ProfileEdit,
+            other => panic!("unknown flow {other}"),
+        }
+    }
+
+    fn who(name: &str) -> u8 {
+        match name {
+            "incoming" => FRANK,
+            "self" => ME,
+            "contact" => ERIN,
+            "stranger" => BOB,
+            other => panic!("unknown party {other}"),
+        }
+    }
+
+    /// Runs one case's steps; returns each step's result. `ids[i]` is the
+    /// grant or lease id step `i` returned.
+    fn run(case: &Value) -> Vec<Value> {
+        let balance = case["balance"]
+            .as_str()
+            .map_or(u64::MAX / 2, |b| b.parse().unwrap());
+        let f = if case["dashpayKeys"] == json!(false) {
+            Fixture::with_keys(keys(false), balance)
+        } else {
+            Fixture::new(balance)
+        };
+        // Through the session, so its leases see the epoch the encryption
+        // ends.
+        let encrypt = f.s.vault_op(|v| {
+            let change = v.authorize(GrantPurpose::ChangeCredential, None, Credential::None)?;
+            v.encrypt(PASSPHRASE, &change.id)?;
+            v.unlock(PASSPHRASE, UnlockScope::Full)
+        });
+        f.engine.block_on(encrypt).unwrap();
+        let vault = f.s.vault.clone();
+        let mut events_seen = f.events.0.lock().unwrap().len();
+        // The harness's own lease (`vault_keys`) is no lease of the case.
+        let before: Vec<String> = (f.s.leases().unwrap().into_iter()).map(|l| l.id).collect();
+        let mut ids: Vec<Option<String>> = Vec::new();
+        let mut results = Vec::new();
+        let id_of = |ids: &[Option<String>], r: &Value| -> String {
+            match r {
+                Value::Number(n) => ids[n.as_u64().unwrap() as usize].clone().unwrap(),
+                Value::String(s) if s == "unknownVault" => UNKNOWN_VAULT.into(),
+                Value::String(s) if s == "unknownLease" => UNKNOWN_LEASE.into(),
+                Value::String(s) if s.is_empty() => String::new(),
+                other => panic!("bad grant ref {other}"),
+            }
+        };
+        for step in case["steps"].as_array().unwrap() {
+            let (name, arg) = step.as_object().unwrap().iter().next().unwrap();
+            let mut id = None;
+            let r = match name.as_str() {
+                "authorize" => {
+                    let purpose = match arg["purpose"].as_str().unwrap() {
+                        "platformOp" => GrantPurpose::PlatformOp {
+                            max_duffs: 0,
+                            max_credits: arg["maxCredits"].as_str().unwrap().parse().unwrap(),
+                        },
+                        "spend" => GrantPurpose::Spend {
+                            max_duffs: arg["maxDuffs"].as_u64().unwrap(),
+                        },
+                        other => panic!("unknown purpose {other}"),
+                    };
+                    let wallet = match arg["wallet"].as_str().unwrap() {
+                        "own" => f.wallet.0,
+                        "other" => OTHER_WALLET,
+                        other => panic!("unknown wallet {other}"),
+                    };
+                    let credential = Credential::Passphrase(PASSPHRASE);
+                    let g = (vault.authorize(purpose, Some(&wallet), credential))
+                        .unwrap()
+                        .id;
+                    assert!(g.len() == 32 && g.bytes().all(|b| b.is_ascii_hexdigit()));
+                    id = Some(g);
+                    json!({ "ok": "grant" })
+                }
+                "beginFlow" => {
+                    let grants = (arg["grants"].as_array().unwrap().iter())
+                        .map(|r| id_of(&ids, r))
+                        .collect();
+                    let kind = flow_kind(arg["flow"].as_str().unwrap());
+                    let begun = f.engine.block_on(f.s.begin_flow(f.wallet, kind, grants));
+                    result(begun.map_err(ContactError::from), |lease| {
+                        assert!(lease.starts_with("lease-") && lease.len() == 38);
+                        id = Some(lease);
+                        json!("lease")
+                    })
+                }
+                "endFlow" => {
+                    let ended = f.s.end_flow(id_of(&ids, arg));
+                    result(ended.map_err(ContactError::from), |()| Value::Null)
+                }
+                "accept" => {
+                    let from = who(arg["from"].as_str().unwrap());
+                    result(f.accept(from, &id_of(&ids, &arg["grant"])), |o| match o {
+                        RequestOutcome::Established { request } => {
+                            json!({ "kind": "established", "request": request })
+                        }
+                        RequestOutcome::Pending { request } => {
+                            json!({ "kind": "pending", "request": request })
+                        }
+                    })
+                }
+                "credits" => {
+                    let lease = id_of(&ids, arg);
+                    let lease = f.s.lease_for(&f.wallet, &lease).unwrap().unwrap();
+                    let view = lease.view().unwrap();
+                    let b = (view.budgets.iter())
+                        .find(|b| b.purpose == BudgetPurpose::Credits)
+                        .unwrap();
+                    json!({ "ok": { "ceiling": b.ceiling.to_string(), "spent": b.spent.to_string() } })
+                }
+                "lock" => {
+                    f.engine.block_on(f.s.lock_vault()).unwrap();
+                    json!({ "ok": null })
+                }
+                "unlock" => {
+                    let unlock = f.s.vault_op(|v| v.unlock(PASSPHRASE, UnlockScope::Full));
+                    f.engine.block_on(unlock).unwrap();
+                    json!({ "ok": null })
+                }
+                // Every lease `leases` lists, in a stable order.
+                "leases" => {
+                    let mut leases: Vec<Value> = (f.s.leases().unwrap().iter())
+                        .filter(|l| !before.contains(&l.id))
+                        .map(lease_json)
+                        .collect();
+                    leases.sort_by_key(Value::to_string);
+                    json!({ "ok": leases })
+                }
+                // The `leaseChanged` events since the case began or the last
+                // `leaseEvents` step, in order.
+                "leaseEvents" => {
+                    let events = f.events.0.lock().unwrap();
+                    let changed: Vec<Value> = (events[events_seen..].iter())
+                        .filter_map(|e| match e {
+                            crate::EngineEvent::LeaseChanged { lease, .. }
+                                if !before.contains(&lease.id) =>
+                            {
+                                Some(lease_json(lease))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    events_seen = events.len();
+                    json!({ "ok": changed })
+                }
+                other => panic!("unknown step {other}"),
+            };
+            ids.push(id);
+            results.push(r);
+        }
+        results
+    }
+
+    fn authorize(max_credits: u64) -> Value {
+        json!({ "authorize": { "purpose": "platformOp", "maxCredits": max_credits.to_string(), "wallet": "own" } })
+    }
+
+    fn accept(from: &str, grant: Value) -> Value {
+        json!({ "accept": { "from": from, "grant": grant } })
+    }
+
+    fn lock() -> Value {
+        json!({ "lock": null })
+    }
+
+    fn unlock() -> Value {
+        json!({ "unlock": null })
+    }
+
+    fn begin(flow: &str, grants: &[usize]) -> Value {
+        json!({ "beginFlow": { "flow": flow, "grants": grants } })
+    }
+
+    /// Each case: its `name`, its `steps`, and optionally our identity's
+    /// credit `balance` and `dashpayKeys: false`.
+    fn cases() -> Vec<Value> {
+        let q = CONTACT_REQUEST_CREDITS;
+        let spend = json!({ "authorize": { "purpose": "spend", "maxDuffs": 100_000_000, "wallet": "own" } });
+        let other = json!({ "authorize": { "purpose": "platformOp", "maxCredits": q.to_string(), "wallet": "other" } });
+        let case = |name: &str, steps: Vec<Value>| json!({ "name": name, "steps": steps });
+        let mut low = case(
+            "an identity below the quote is refused before the grant, which stays unused",
+            vec![
+                authorize(q),
+                accept("incoming", json!(0)),
+                begin("accept", &[0]),
+            ],
+        );
+        low["balance"] = json!((q - 1).to_string());
+        let mut keyless = case(
+            "an identity without DashPay keys is refused before the grant, which stays unused",
+            vec![
+                authorize(q),
+                accept("incoming", json!(0)),
+                begin("accept", &[0]),
+            ],
+        );
+        keyless["dashpayKeys"] = json!(false);
+        vec![
+            case("a missing grant", vec![accept("incoming", json!(""))]),
+            case(
+                "an unknown vault grant",
+                vec![accept("incoming", json!("unknownVault"))],
+            ),
+            case(
+                "an unknown lease",
+                vec![accept("incoming", json!("unknownLease"))],
+            ),
+            case(
+                "a vault grant a flow already redeemed",
+                vec![
+                    authorize(q),
+                    begin("contactRequest", &[0]),
+                    accept("incoming", json!(0)),
+                    begin("accept", &[0]),
+                ],
+            ),
+            case(
+                "a spend grant, for the accept or its lease",
+                vec![
+                    spend.clone(),
+                    accept("incoming", json!(0)),
+                    begin("accept", &[0]),
+                ],
+            ),
+            case(
+                "another wallet's grant",
+                vec![other, accept("incoming", json!(0)), begin("accept", &[0])],
+            ),
+            case(
+                "a vault grant below the quote stays unused",
+                vec![
+                    authorize(q - 1),
+                    accept("incoming", json!(0)),
+                    begin("accept", &[0]),
+                    accept("incoming", json!(2)),
+                    authorize(q),
+                    accept("incoming", json!(4)),
+                ],
+            ),
+            case(
+                "a lease of another flow is refused and not charged",
+                vec![
+                    authorize(q),
+                    begin("contactRequest", &[0]),
+                    accept("incoming", json!(1)),
+                    json!({ "credits": 1 }),
+                ],
+            ),
+            case(
+                "a lease without credits",
+                vec![
+                    authorize(0),
+                    begin("accept", &[0]),
+                    accept("incoming", json!(1)),
+                ],
+            ),
+            case(
+                "an ended lease",
+                vec![
+                    authorize(q),
+                    begin("accept", &[0]),
+                    json!({ "endFlow": 1 }),
+                    accept("incoming", json!(1)),
+                ],
+            ),
+            case(
+                "refusals before the grant keep it",
+                vec![
+                    authorize(q),
+                    accept("self", json!(0)),
+                    accept("contact", json!(0)),
+                    accept("stranger", json!(0)),
+                    accept("incoming", json!(0)),
+                ],
+            ),
+            low,
+            keyless,
+            case(
+                "a vault grant establishes once and is spent",
+                vec![
+                    authorize(q),
+                    accept("incoming", json!(0)),
+                    accept("incoming", json!(0)),
+                    begin("accept", &[0]),
+                ],
+            ),
+            case(
+                "an accept lease establishes and is charged the quote",
+                vec![
+                    authorize(q),
+                    begin("accept", &[0]),
+                    accept("incoming", json!(1)),
+                    json!({ "credits": 1 }),
+                    json!({ "endFlow": 1 }),
+                    json!({ "leases": null }),
+                    json!({ "leaseEvents": null }),
+                ],
+            ),
+            case(
+                "a vault-grant accept runs under a one-shot accept lease",
+                vec![
+                    authorize(q),
+                    json!({ "leaseEvents": null }),
+                    accept("incoming", json!(0)),
+                    json!({ "leases": null }),
+                    json!({ "leaseEvents": null }),
+                ],
+            ),
+            case(
+                "a lock revokes the grants issued before it",
+                vec![
+                    authorize(q),
+                    lock(),
+                    unlock(),
+                    accept("incoming", json!(0)),
+                    begin("accept", &[0]),
+                ],
+            ),
+            case(
+                "a grant issued before a lock, used while locked",
+                vec![
+                    authorize(q),
+                    lock(),
+                    accept("incoming", json!(0)),
+                    begin("accept", &[0]),
+                ],
+            ),
+            case(
+                "unknown grants while locked",
+                vec![
+                    lock(),
+                    accept("incoming", json!("")),
+                    accept("incoming", json!("unknownVault")),
+                    accept("incoming", json!("unknownLease")),
+                    json!({ "beginFlow": { "flow": "accept", "grants": ["unknownVault"] } }),
+                ],
+            ),
+            case(
+                "a passphrase grant issued while locked carries its key into an accept",
+                vec![
+                    lock(),
+                    authorize(q),
+                    accept("incoming", json!(1)),
+                    json!({ "leases": null }),
+                ],
+            ),
+            case(
+                "a passphrase grant issued while locked carries its key into a lease",
+                vec![
+                    lock(),
+                    authorize(q),
+                    begin("accept", &[1]),
+                    accept("incoming", json!(2)),
+                    json!({ "leases": null }),
+                ],
+            ),
+            case(
+                "a lock revokes the grants issued while locked",
+                vec![
+                    lock(),
+                    authorize(q),
+                    lock(),
+                    accept("incoming", json!(1)),
+                    begin("accept", &[1]),
+                ],
+            ),
+            case(
+                "an unlock revokes the grants issued while locked",
+                vec![lock(), authorize(q), unlock(), accept("incoming", json!(1))],
+            ),
+            case(
+                "an unlock moves a lease begun while locked to needing a grant",
+                vec![
+                    lock(),
+                    authorize(q),
+                    begin("accept", &[1]),
+                    unlock(),
+                    accept("incoming", json!(2)),
+                    json!({ "leases": null }),
+                ],
+            ),
+            case(
+                "a lock revokes a lease that holds its own key, which keeps the flag",
+                vec![
+                    lock(),
+                    authorize(q),
+                    begin("accept", &[1]),
+                    lock(),
+                    json!({ "leases": null }),
+                    accept("incoming", json!(2)),
+                ],
+            ),
+            case(
+                "a lock revokes a lease",
+                vec![
+                    authorize(q),
+                    begin("accept", &[0]),
+                    lock(),
+                    accept("incoming", json!(1)),
+                    unlock(),
+                    accept("incoming", json!(1)),
+                    json!({ "leases": null }),
+                ],
+            ),
+            case(
+                "an acceptAndPay lease establishes",
+                vec![
+                    authorize(q),
+                    spend.clone(),
+                    begin("acceptAndPay", &[0, 1]),
+                    accept("incoming", json!(2)),
+                ],
+            ),
+        ]
+    }
+
+    #[test]
+    fn accept_grant_vectors() {
+        let cases: Vec<Value> = (cases().into_iter())
+            .map(|mut case| {
+                let results = run(&case);
+                case["results"] = Value::Array(results);
+                case
+            })
+            .collect();
+        // An accept's `request` is the `$createdAt` (ms, decimal) of the
+        // reverse request it writes, not of the request it accepts.
+        for case in &cases {
+            for r in case["results"].as_array().unwrap() {
+                if r["ok"]["kind"] == json!("established") {
+                    assert_eq!(r["ok"]["request"], json!(ACCEPT_CREATED_AT));
+                }
+            }
+        }
+        let doc = json!({
+            "comment": format!(
+                "Generated by dw-engine (platform/requests_tests.rs, accept_vectors); do not edit. Regenerate with `{REGENERATE}`. Replayed against the fixture backend by src/fixture/accept.test.ts."
+            ),
+            "quote": CONTACT_REQUEST_CREDITS.to_string(),
+            "unknownVault": UNKNOWN_VAULT,
+            "unknownLease": UNKNOWN_LEASE,
+            "otherWallet": hex::encode(OTHER_WALLET),
+            "request": {
+                "rule": "an accept's `request` is the decimal millisecond `$createdAt` of the reverse request it writes, not of the request it accepts",
+                "incomingCreatedAt": INCOMING_CREATED_AT,
+                "acceptCreatedAt": ACCEPT_CREATED_AT,
+            },
+            "cases": cases,
+        });
+        let text = serde_json::to_string_pretty(&doc).unwrap() + "\n";
+        let path = path();
+        if std::env::var_os("DW_UPDATE_VECTORS").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: {e}; regenerate with `{REGENERATE}`", path.display()));
+        // Parsed, so a CRLF checkout compares equal.
+        let committed: Value = serde_json::from_str(&committed).unwrap();
+        assert!(
+            committed == doc,
+            "{} is not what the engine does; regenerate with `{REGENERATE}`",
+            path.display()
+        );
+    }
+}

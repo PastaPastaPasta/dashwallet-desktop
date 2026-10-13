@@ -21,8 +21,7 @@ pub struct AppState {
     pub launch: LaunchOptions,
     /// Taken at the top of `main`, for the cold-start measurement (U5).
     pub started: Instant,
-    /// `None` in fixture mode: the renderer brings its own data.
-    pub engine: Option<Engine>,
+    pub engine: Engine,
     /// The network the window shows (D-row "one active session"). Session
     /// commands act on it; `open_network` and `close_network` change it.
     session: Mutex<Option<Arc<NetworkSession>>>,
@@ -153,22 +152,18 @@ impl AppState {
         default_data_dir: impl FnOnce() -> Result<PathBuf, AppError>,
     ) -> Result<Self, AppError> {
         let memory = Arc::new(EventMemory::default());
-        let engine = if launch.fixture {
-            None
-        } else {
-            let data_root = match &launch.data_dir {
-                Some(dir) => dir.clone(),
-                None => default_data_dir()?,
-            };
-            Some(Engine::new(
-                EngineConfig {
-                    data_root,
-                    worker_threads: None,
-                    vault,
-                },
-                Arc::new(TauriSink::new(app.clone(), Arc::clone(&memory))?),
-            )?)
+        let data_root = match &launch.data_dir {
+            Some(dir) => dir.clone(),
+            None => default_data_dir()?,
         };
+        let engine = Engine::new(
+            EngineConfig {
+                data_root,
+                worker_threads: None,
+                vault,
+            },
+            Arc::new(TauriSink::new(app.clone(), Arc::clone(&memory))?),
+        )?;
         let handle = app.clone();
         Ok(AppState {
             launch,
@@ -196,15 +191,6 @@ impl AppState {
         {
             seam.pass();
         }
-    }
-
-    pub fn engine(&self) -> Result<&Engine, AppError> {
-        self.engine.as_ref().ok_or_else(|| {
-            AppError::app(
-                AppCode::FixtureMode,
-                "the app runs on fixture data; no engine",
-            )
-        })
     }
 
     /// The active session; `network_not_open` before `open_network`.

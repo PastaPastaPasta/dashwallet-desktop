@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { AXE_TAGS } from "./axe";
 import { artifactPath, SCREENS, show, THEMES, writeJson } from "./helpers";
 
 // U4: 0 serious or critical axe issues per screen, and every action reachable by keyboard.
@@ -19,7 +20,7 @@ for (const theme of THEMES) {
   for (const screen of SCREENS) {
     test(`axe ${screen} ${theme}`, async ({ page }, info) => {
       await show(page, screen, theme);
-      const result = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "best-practice"]).analyze();
+      const result = await new AxeBuilder({ page }).withTags(AXE_TAGS).analyze();
       const bad = result.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 
       const contrast = result.violations.find((v) => v.id === "color-contrast");
