@@ -359,6 +359,10 @@ pub(crate) async fn top_up<L: TopUpLib>(
     // Under the write lock, so no concurrent top-up of the identity funds
     // in between, and before the grant is redeemed, so a refusal keeps it.
     let plan = check(session, wallet, lib, identity, duffs).await?;
+    if !session.leases.refresh_funding(wallet).await {
+        return Err(PlatformError::Unavailable.into());
+    }
+    let step = next_step(session, wallet, plan.index)?;
     let lease = authority(session, wallet, grant).await?;
     let remaining = lease
         .available(BudgetPurpose::Funding)
@@ -375,10 +379,6 @@ pub(crate) async fn top_up<L: TopUpLib>(
     let signer = lease
         .uncounted_funding_signer()
         .map_err(PlatformError::from)?;
-    if !session.leases.refresh_funding(wallet).await {
-        return Err(PlatformError::Unavailable.into());
-    }
-    let step = next_step(session, wallet, plan.index)?;
     let key = FundingKey {
         funding_type: AssetLockFundingType::IdentityTopUp,
         identity_index: plan.index,
@@ -523,17 +523,13 @@ pub(crate) async fn resume<L: TopUpLib>(
         state,
     };
     // Read again under the write lock: a concurrent apply may have taken
-    // it. Taken, it is settled before the grant is redeemed.
+    // it.
     let lock = lock_of().await?;
     if lock.status == LockStatus::Consumed
         || session.platform.taken_top_ups.has(wallet, lock.outpoint)
     {
         return Ok(outcome(already_applied(lib, identity).await));
     }
-    let lease = authority(session, wallet, grant).await?;
-    let signer = lease
-        .uncounted_funding_signer()
-        .map_err(PlatformError::from)?;
     if !lock.status.has_proof() {
         // The wait broadcasts a `Built` lock again: never one a funding
         // call of this process signed before its record is durable (E0-04
@@ -551,6 +547,11 @@ pub(crate) async fn resume<L: TopUpLib>(
             return Ok(outcome(TopUpState::ProofWaiting));
         }
     }
+    // Only the apply needs the grant: every refusal above keeps it.
+    let lease = authority(session, wallet, grant).await?;
+    let signer = lease
+        .uncounted_funding_signer()
+        .map_err(PlatformError::from)?;
     let state = apply(
         session,
         wallet,

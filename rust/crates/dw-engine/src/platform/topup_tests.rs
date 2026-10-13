@@ -841,7 +841,12 @@ fn an_unknown_funding_outcome_is_never_funded_again() {
     };
     assert_eq!(unknown(f.top_up(&lib, DUFFS)), first);
     assert_eq!(f.status(&first), Some(DispatchState::MaybeSent));
-    assert_eq!(unknown(f.top_up(&lib, DUFFS)), first);
+    // Refused before its grant is redeemed: the same grant is refused alike
+    // again, never `platform.grant_invalid`.
+    let grant = f.grant(DUFFS + f.fee_bound());
+    for _ in 0..2 {
+        assert_eq!(unknown(f.top_up_with(&lib, DUFFS, &grant)), first);
+    }
     assert_eq!(lib.counts(), (1, 0));
 }
 
