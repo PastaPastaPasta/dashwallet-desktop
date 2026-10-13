@@ -39,12 +39,19 @@ pub(crate) fn offline_settings() -> Value {
 
 impl Demo {
     pub(crate) fn new() -> Self {
+        Self::launched(|_, _| {})
+    }
+
+    /// A demo whose launch options `edit` changes (given the private data
+    /// root), as a command line would: `--selftest <file>`, for one.
+    pub(crate) fn launched(edit: impl FnOnce(&mut LaunchOptions, &std::path::Path)) -> Self {
         let dir = dw_testutil::private_tempdir();
-        let launch = LaunchOptions {
+        let mut launch = LaunchOptions {
             data_dir: Some(dir.path().join("data")),
             network: DashNetwork::Regtest,
             ..LaunchOptions::default()
         };
+        edit(&mut launch, dir.path());
         let vault = VaultConfig {
             kdf: KdfPolicy::Fixed(KdfParams::TEST),
             os_store: Arc::new(MemoryOsStore::new()),
@@ -198,10 +205,23 @@ fn the_binding_refuses_with_app_codes() {
         json!({ "screen": "x" }),
         "app.not_selftest",
     );
+    // The self-test's measurements are no command of the packaged app.
+    demo.err("ipc_bench_rows", json!({ "rows": 2 }), "app.not_selftest");
     // A missing argument is Tauri's own refusal (a string, not an AppError).
     let e = demo.call("startup_mark", json!({})).unwrap_err();
     assert!(e.is_string(), "{e}");
     assert!(demo.ok("startup_mark", json!({ "mark": "test" })).is_u64());
+}
+
+#[test]
+fn the_selftest_commands_run_under_selftest() {
+    let demo = Demo::launched(|launch, dir| launch.selftest = Some(dir.join("report.json")));
+    let page = demo.ok("ipc_bench_rows", json!({ "rows": 2 }));
+    assert_eq!(page["rows"].as_array().map(Vec::len), Some(2), "{page}");
+    assert_eq!(
+        demo.ok("selftest_checkpoint", json!({ "screen": "x" })),
+        Value::Null
+    );
 }
 
 /// A representative command of each facade, through the IPC handler: the

@@ -71,8 +71,10 @@ commands! {
 
     /// A synthetic page of `rows` records, the size and shape of a real
     /// `historyPage` result: the IPC and serialisation cost alone (U5).
+    /// Self-test runs only.
     #[facade()]
     fn ipc_bench_rows(state, rows: u32) -> HistoryRows {
+        state.selftest_path()?;
         Ok(bench_rows(rows))
     }
 
