@@ -31,8 +31,10 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     case "vaultLockState":
       return [keys.lockStatus, keys.wallets, keys.lockReconcile];
     case "lockProgress":
-      return event.progress.kind === "done" ? [keys.lockStatus, keys.lastLockReport, keys.lockReconcile] : [];
-    // The lock report's reconciliation reads leases and dispatch states (lockReport.ts).
+      // `done` carries the report itself (bridgeEvents sets it).
+      return event.progress.kind === "done" ? [keys.lockStatus, keys.lockReconcile] : [];
+    // The lock report's reconciliation reads leases and dispatch states (lockReport.ts); its
+    // invalidations are coalesced (RECONCILE_COALESCE_MS).
     case "leaseChanged":
     case "dispatchResolved":
       return [keys.lockReconcile];
@@ -51,9 +53,15 @@ function unreachable(event: never): never {
   throw new Error(`unhandled engine event ${JSON.stringify(event)}`);
 }
 
+/** A lock that cuts 16 flows sends a `leaseChanged` for each, and every reconciliation reads
+ * `leases`, `lockStatus` and up to 128 `dispatchStatus`: one runs this long after the last of a
+ * burst. */
+export const RECONCILE_COALESCE_MS = 100;
+
 /** Subscribes the query client to the backend's events; returns the unsubscribe function. */
 export async function bridgeEvents(backend: Backend, client: QueryClient): Promise<() => void> {
-  return backend.onEvent((event) => {
+  let reconcile: ReturnType<typeof setTimeout> | undefined;
+  const unsubscribe = await backend.onEvent((event) => {
     if (event.kind === "notice") console.warn("engine notice", event.code, event.detail);
     if (event.kind === "historyChanged") {
       // Refetch only the first page of each list: every history_page call re-reads the whole
@@ -62,10 +70,26 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
         d && d.pages.length > 1 ? { pages: d.pages.slice(0, 1), pageParams: d.pageParams.slice(0, 1) } : d,
       );
     }
-    // While a lock drains, the last report is the previous lock's (useLockDrain).
-    if (event.kind === "lockProgress") client.setQueryData(keys.lockDrain, event.progress.kind === "draining" ? event.progress : null);
+    if (event.kind === "lockProgress") {
+      const { progress } = event;
+      // The new report shows with its `done`, never the previous lock's while a refetch runs.
+      if (progress.kind === "done") client.setQueryData(keys.lastLockReport, progress.report);
+      // While a lock drains, the last report is the previous lock's (useLockDrain).
+      client.setQueryData(keys.lockDrain, progress.kind === "draining" ? progress : null);
+    }
     const stale = invalidationsFor(event);
     if (stale === "all") void client.invalidateQueries({ predicate: (q) => q.queryKey[0] !== keys.network[0] });
-    else for (const queryKey of stale) void client.invalidateQueries({ queryKey });
+    else
+      for (const queryKey of stale) {
+        if (queryKey !== keys.lockReconcile) void client.invalidateQueries({ queryKey });
+        else {
+          clearTimeout(reconcile);
+          reconcile = setTimeout(() => void client.invalidateQueries({ queryKey }), RECONCILE_COALESCE_MS);
+        }
+      }
   });
+  return () => {
+    clearTimeout(reconcile);
+    unsubscribe();
+  };
 }

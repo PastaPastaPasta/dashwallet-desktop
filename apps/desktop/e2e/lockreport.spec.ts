@@ -12,18 +12,22 @@ async function lockFrom(page: Page, scenario: string) {
 }
 
 /** Changes the fixture's state and announces it as the engine would, then waits until the lock
- * screen has re-run its reconciliation (a `dispatch_status` call after the events). */
-async function settleAndReconcile(page: Page, change: string) {
-  const before = await page.evaluate(() => window.__dwFixture!.calls.length);
-  await page.evaluate((change) => {
+ * screen shows a reconciliation that ran after the change (`data-checked-at`, the result's time). */
+async function settleAndReconcile(page: Page, change: "artifacts" | "leases") {
+  const changedAt = await page.evaluate((change) => {
     const f = window.__dwFixture!;
     const walletId = f.world.wallets[0].summary.walletId;
     if (change === "artifacts") for (const artifact of Object.keys(f.world.dispatch)) f.world.dispatch[artifact] = "sent";
     else f.world.leases = f.world.leases.map((l) => ({ ...l, state: { kind: "ended" }, inFlight: 0, callRunning: false }));
+    const changedAt = Date.now();
     for (const lease of f.world.leases) f.emit({ kind: "leaseChanged", network: "testnet", lease });
-    f.emit({ kind: "dispatchResolved", network: "testnet", settled: { walletId, artifact: "tx:3f9a1c27", resolution: "sent" } });
+    const artifact = f.world.cut.flows[0].artifacts[0].artifact;
+    f.emit({ kind: "dispatchResolved", network: "testnet", settled: { walletId, artifact, resolution: "sent" } });
+    return changedAt;
   }, change);
-  await expect.poll(() => page.evaluate((n) => window.__dwFixture!.calls.slice(n).includes("dispatch_status"), before)).toBe(true);
+  await expect
+    .poll(async () => Number(await page.getByTestId("lock-report").getAttribute("data-checked-at")))
+    .toBeGreaterThan(changedAt);
 }
 
 test("flows omitted after pending ones keep the report unresolved whatever settles", async ({ page }) => {
@@ -33,22 +37,22 @@ test("flows omitted after pending ones keep the report unresolved whatever settl
   await expect(notice.getByRole("status")).toHaveText("Lock stops new signatures; a transaction already signed may still be sent");
   await expect(page.getByTestId("lock-report-flow")).toHaveCount(16);
   await expect(page.getByTestId("lock-report-flow").first()).toHaveText("Username registration: May have been sent");
-  const omitted = "3 more actions, 7 more steps, 2 more wallets not listed here. The app cannot check them, so some may still be sent.";
-  await expect(page.getByTestId("lock-report-omitted")).toHaveText(omitted);
+  await expect(page.getByTestId("lock-report-omitted")).toHaveText("3 more actions, 7 more steps, 2 more wallets not listed here.");
+  const beyondReach = "The app cannot check all of them, so some may still be sent.";
+  await expect(page.getByTestId("lock-report-check")).toHaveText(beyondReach);
 
   await settleAndReconcile(page, "artifacts");
   await settleAndReconcile(page, "leases");
   await expect(notice).toHaveAttribute("data-resolved", "false");
-  await expect(page.getByTestId("lock-report-omitted")).toHaveText(omitted);
+  await expect(page.getByTestId("lock-report-check")).toHaveText(beyondReach);
 });
 
 test("omissions the order shows are settled resolve with the listed artifacts", async ({ page }) => {
   await lockFrom(page, "lock-report-omitted-settles");
   const notice = page.getByTestId("lock-report");
   await expect(notice).toHaveAttribute("data-resolved", "false");
-  await expect(page.getByTestId("lock-report-omitted")).toHaveText(
-    "2 more actions, 4 more steps, 2 more wallets not listed here. Checking whether they may still be sent…",
-  );
+  await expect(page.getByTestId("lock-report-omitted")).toHaveText("2 more actions, 4 more steps, 2 more wallets not listed here.");
+  await expect(page.getByTestId("lock-report-check")).toHaveText("Checking whether they may still be sent…");
 
   // The listed artifacts settle, but the registration's call is still running.
   await settleAndReconcile(page, "artifacts");
@@ -57,7 +61,28 @@ test("omissions the order shows are settled resolve with the listed artifacts", 
   await settleAndReconcile(page, "leases");
   await expect(notice).toHaveAttribute("data-resolved", "true");
   await expect(notice.getByRole("status")).toHaveText("Every action the lock stopped has ended.");
+  await expect(page.getByTestId("lock-report-check")).toHaveCount(0);
   await expect(page.getByTestId("lock-report-omitted")).toHaveText("2 more actions, 4 more steps, 2 more wallets not listed here.");
+});
+
+test("a sent flow with a step still out is unresolved until the step settles", async ({ page }) => {
+  await lockFrom(page, "lock-report-pending");
+  const notice = page.getByTestId("lock-report");
+  // E0-04 §8.4: the registration's funding was sent, so it reads Sent, but its identity call may
+  // have gone out.
+  await expect(page.getByTestId("lock-report-flow").filter({ hasText: "Username registration" })).toHaveText("Username registration: Sent");
+  await expect(notice).toHaveAttribute("data-resolved", "false");
+  await expect(page.getByTestId("lock-report-check")).toHaveText("Checking whether they may still be sent…");
+
+  await settleAndReconcile(page, "artifacts");
+  await expect(notice).toHaveAttribute("data-resolved", "true");
+});
+
+test("a failed check says so, complete report or not", async ({ page }) => {
+  await page.goto(fixtureUrl("lock-report-pending", "light", "&fail=leases:none"));
+  await page.getByTestId("toolbar-lock").click();
+  await expect(page.getByTestId("lock-report")).toHaveAttribute("data-resolved", "false");
+  await expect(page.getByTestId("lock-report-check")).toHaveText("Could not check whether they may still be sent.");
 });
 
 test("a complete report of ended flows is resolved at once", async ({ page }) => {

@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InfiniteData } from "@tanstack/react-query";
-import { bridgeEvents, invalidationsFor } from "./events";
+import { bridgeEvents, invalidationsFor, RECONCILE_COALESCE_MS } from "./events";
 import type { Backend } from "./backend";
 import type { AppEvent } from "./generated/commands";
 import type { HistoryRows } from "./generated/HistoryRows";
@@ -11,6 +11,13 @@ import { installFixture } from "../fixture";
 import { FIXTURE_WALLET_ID } from "../fixture/scenarios";
 import { keys } from "./queries";
 import { IpcBackend } from "./tauri";
+
+const REPORT: LockOutcome = {
+  status: { state: "locked", encrypted: true, quickUnlockEnrolled: false, failedAttempts: 0, retryAfterSecs: null, walletsWithSecrets: [] },
+  flows: [],
+  flowsOmitted: 0,
+  walletsWithSecretsOmitted: 0,
+};
 
 beforeEach(() => vi.stubGlobal("window", globalThis));
 afterEach(() => {
@@ -27,13 +34,34 @@ describe("event bridge", () => {
     expect(invalidationsFor({ kind: "eventsOverflowed" })).toBe("all");
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } })).toEqual([]);
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "names" } })).toEqual([]);
-    const report: LockOutcome = {
-      status: { state: "locked", encrypted: true, quickUnlockEnrolled: false, failedAttempts: 0, retryAfterSecs: null, walletsWithSecrets: [] },
-      flows: [],
-      flowsOmitted: 0,
-      walletsWithSecretsOmitted: 0,
-    };
-    expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "done", report } })).toEqual([keys.lockStatus, keys.lastLockReport, keys.lockReconcile]);
+    const report = REPORT;
+    expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "done", report } })).toEqual([keys.lockStatus, keys.lockReconcile]);
+  });
+
+  it("shows a lock's report with its done, and coalesces reconciliations", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new QueryClient();
+      const previous = { ...REPORT, flowsOmitted: 1 };
+      client.setQueryData(keys.lastLockReport, previous);
+      client.setQueryData([...keys.lockReconcile, previous], { settled: false });
+      let emit: (e: AppEvent) => void = () => undefined;
+      const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
+      await bridgeEvents(fake, client);
+      emit({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } });
+      expect(client.getQueryData(keys.lockDrain)).toMatchObject({ inFlight: 1 });
+      emit({ kind: "lockProgress", network: "testnet", progress: { kind: "done", report: REPORT } });
+      expect(client.getQueryData(keys.lastLockReport)).toEqual(REPORT);
+      expect(client.getQueryData(keys.lockDrain)).toBeNull();
+
+      const reconcile = () => client.getQueryState([...keys.lockReconcile, previous])?.isInvalidated;
+      for (let i = 0; i < 16; i++) emit({ kind: "leaseChanged", network: "testnet", lease: {} as never });
+      expect(reconcile()).toBe(false);
+      await vi.advanceTimersByTimeAsync(RECONCILE_COALESCE_MS);
+      expect(reconcile()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("invalidates the lock status when the fixture vault locks", async () => {

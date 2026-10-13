@@ -53,17 +53,28 @@ function LockReportBody({ report }: { report: LockOutcome }) {
   const resolved = !summary.unresolved || reconciled.data?.settled === true;
   const { flows, artifacts, wallets } = summary.omitted;
   const check = resolved
-    ? ""
+    ? null
     : summary.beyondReach
-      ? " The app cannot check them, so some may still be sent."
+      ? "The app cannot check all of them, so some may still be sent."
       : reconciled.isError
-        ? " Could not check whether they may still be sent."
-        : " Checking whether they may still be sent…";
+        ? "Could not check whether they may still be sent."
+        : "Checking whether they may still be sent…";
   return (
-    <section className="lock-report" data-testid="lock-report" data-resolved={resolved} aria-labelledby="lock-report-title">
+    <section
+      className="lock-report"
+      data-testid="lock-report"
+      data-resolved={resolved}
+      data-checked-at={reconciled.dataUpdatedAt}
+      aria-labelledby="lock-report-title"
+    >
       <p id="lock-report-title" className="lock-report-title" role="status">
         {resolved ? "Every action the lock stopped has ended." : SIGNED_BEFORE_LOCK}
       </p>
+      {check && (
+        <p className="lock-report-note" data-testid="lock-report-check">
+          {check}
+        </p>
+      )}
       <ul className="lock-report-flows" aria-label="At the time of the lock">
         {report.flows.map((f) => (
           <li key={f.lease} data-testid="lock-report-flow" data-outcome={f.outcome}>
@@ -72,8 +83,8 @@ function LockReportBody({ report }: { report: LockOutcome }) {
         ))}
       </ul>
       {!summary.complete && (
-        <p className="lock-report-omitted" data-testid="lock-report-omitted">
-          {[more(flows, "action"), more(artifacts, "step"), more(wallets, "wallet")].filter(Boolean).join(", ")} not listed here.{check}
+        <p className="lock-report-note" data-testid="lock-report-omitted">
+          {[more(flows, "action"), more(artifacts, "step"), more(wallets, "wallet")].filter(Boolean).join(", ")} not listed here.
         </p>
       )}
     </section>

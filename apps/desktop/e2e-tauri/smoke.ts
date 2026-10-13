@@ -207,5 +207,9 @@ main()
     } catch {
       // ESRCH
     }
-    if (work) rmSync(work, { recursive: true, force: true, maxRetries: 3 });
+    try {
+      if (work) rmSync(work, { recursive: true, force: true, maxRetries: 3 });
+    } catch (e) {
+      console.warn(`smoke: could not remove ${work}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   });

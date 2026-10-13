@@ -125,7 +125,7 @@ every app binary passes the check. dw-app has no fixture mode (`--fixture` is an
 | `e2e/scenarios.spec.ts` | Chromium, WebKit | every scenario boots on the fixture alone; 8 states (empty wallet, no wallet, locked, loading, open failed, wallets error, history error, unresolved lock report) in light and dark, each with a screenshot artifact and 0 serious or critical axe issues |
 | `e2e/screens.spec.ts`, `e2e/a11y.spec.ts`, `e2e/style.spec.ts` | Chromium, WebKit | the four gate screens in light and dark: screenshots, axe and keyboard reach, the UX-SPEC §2 style checks |
 | `e2e/errors.spec.ts` | Chromium | each `ErrorData` class rendered with its message, axe-clean; the splash's retry |
-| `e2e/lockreport.spec.ts` | Chromium, WebKit | a lock report with omitted flows, artifacts or wallets is unresolved: for good when the omitted ones may be pending, else until the listed artifacts settle and no call runs; a newer lock's drain hides the previous report |
+| `e2e/lockreport.spec.ts` | Chromium, WebKit | a lock report with omitted flows, artifacts or wallets is unresolved: for good when the omitted ones may be pending, else until the listed artifacts settle and no call runs; a `sent` flow with a step still out is unresolved; a failed check says so; a newer lock's drain hides the previous report |
 | `e2e/security.spec.ts` | Chromium, WebKit | hostile strings render as text |
 | `e2e/visual.spec.ts` | Chromium, `DW_VISUAL=1` only | `toHaveScreenshot` baselines (below) |
 | `e2e-tauri/smoke.ts` | WebKitGTK via tauri-driver | the real app on the real engine: lock screen, wrong passphrase refused, unlock, Overview and Transactions of a new regtest wallet, lock again |

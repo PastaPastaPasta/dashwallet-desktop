@@ -1121,7 +1121,7 @@ button {
   padding-left: var(--dw-space-l);
 }
 
-.lock-report-omitted {
+.lock-report-note {
   color: color-mix(in srgb, var(--dw-role-text-on-hero) calc(var(--dw-opacity-hero-secondary-text) * 100%), transparent);
 }
 
