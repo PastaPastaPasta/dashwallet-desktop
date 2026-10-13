@@ -28,7 +28,7 @@ async function connect(): Promise<{ backend: IpcBackend; fixturePassphrase: stri
     const { installFixture, fixtureOptionsFromUrl } = await import("./fixture");
     const fixture = installFixture(fixtureOptionsFromUrl(location.search));
     window.__dwFixture = fixture;
-    return { backend: new IpcBackend("fixture", () => fixture.now, fixture.locale), fixturePassphrase: fixture.passphrase };
+    return { backend: new IpcBackend("fixture", () => fixture.now, fixture.locale), fixturePassphrase: fixture.world.passphrase };
   }
   throw new Error("this page runs only inside the Dash Wallet app");
 }

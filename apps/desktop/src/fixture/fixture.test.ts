@@ -9,7 +9,7 @@ import type { UserRelation } from "../api/generated/UserRelation";
 import type { ChannelStateName } from "../api/generated/ChannelStateName";
 import { IpcBackend } from "../api/tauri";
 import { ERROR_CLASSES } from "./errors";
-import { MAIN_IDENTITY } from "./handlers";
+import { IDENTITY } from "./dashpay";
 import { fixtureOptionsFromUrl, FIXTURE_SENTINEL, installFixture, type FixtureOptions } from "./index";
 import { FIXTURE_WALLET_ID, SCENARIO_NAMES } from "./scenarios";
 
@@ -51,7 +51,7 @@ describe("fixture backend", () => {
     const { b, fixture } = backend({ scenario: "locked" });
     expect((await b.lockStatus()).state).toBe("locked");
     await expect(b.unlock("nope")).rejects.toMatchObject({ code: "vault.wrong_passphrase", data: { kind: "wrongPassphrase", failedAttempts: 1 } });
-    expect((await b.unlock(fixture.passphrase)).state).toBe("unlocked");
+    expect((await b.unlock(fixture.world.passphrase)).state).toBe("unlocked");
   });
 
   it("opens every scenario through the generated commands", async () => {
@@ -69,19 +69,22 @@ describe("fixture backend", () => {
 
   it("covers every DashPay relation and channel state, in the right sections", async () => {
     backend({ scenario: "dashpay-registered" });
-    const list = await cmd.dashpayContacts(FIXTURE_WALLET_ID, MAIN_IDENTITY, { sections: [], sort: "displayName", text: null });
+    const list = await cmd.dashpayContacts(FIXTURE_WALLET_ID, IDENTITY.alice, { sections: [], sort: "displayName", text: null });
     const contacts = list.sections.flatMap((s) => s.contacts.map((c) => ({ ...c, section: s.section })));
     const directory = await cmd.searchUsers(FIXTURE_WALLET_ID, "", 100);
     const relations = new Set<UserRelation>(directory.map((u) => u.relation));
     const channels = new Set<ChannelStateName>(contacts.map((c) => c.channel));
-    expect([...relations].sort()).toEqual(["contact", "ignored", "isSelf", "pendingIncoming", "pendingOutgoing", "stranger"]);
-    expect([...channels].sort()).toEqual(["broken", "notEstablished", "ready", "setupPending"]);
+    // Records over the generated unions: a new relation or channel state fails to compile here.
+    const allRelations: Record<UserRelation, true> = { contact: true, ignored: true, isSelf: true, pendingIncoming: true, pendingOutgoing: true, stranger: true };
+    const allChannels: Record<ChannelStateName, true> = { broken: true, notEstablished: true, ready: true, setupPending: true };
+    expect([...relations].sort()).toEqual(Object.keys(allRelations).sort());
+    expect([...channels].sort()).toEqual(Object.keys(allChannels).sort());
     expect(contacts.filter((c) => c.section === "requests").every((c) => c.relation === "pendingIncoming")).toBe(true);
     expect(contacts.filter((c) => c.section === "pending").every((c) => c.relation === "pendingOutgoing")).toBe(true);
     expect(contacts.filter((c) => c.section === "hidden").map((c) => c.username).sort()).toEqual(["ivan", "judy"]);
-    const events = await cmd.dashpayEvents(FIXTURE_WALLET_ID, MAIN_IDENTITY, null, 10);
+    const events = await cmd.dashpayEvents(FIXTURE_WALLET_ID, IDENTITY.alice, null, 10);
     expect(events.pending.map((c) => c.username).sort()).toEqual(["grace", "heidi"]);
-    expect(await cmd.dashpayUnreadCount(FIXTURE_WALLET_ID, MAIN_IDENTITY)).toBe(2);
+    expect(await cmd.dashpayUnreadCount(FIXTURE_WALLET_ID, IDENTITY.alice)).toBe(2);
     expect((await cmd.dashpayStatus(FIXTURE_WALLET_ID)).kind).toBe("ready");
   });
 
@@ -90,9 +93,9 @@ describe("fixture backend", () => {
     const seen: AppEvent[] = [];
     await listen<AppEvent>(cmd.ENGINE_EVENT, (e) => seen.push(e.payload));
     const grace = (await cmd.resolveUser(FIXTURE_WALLET_ID, "grace"))!;
-    expect(await cmd.dashpayAcceptRequest(FIXTURE_WALLET_ID, MAIN_IDENTITY, grace.identity, "g")).toMatchObject({ kind: "established" });
-    expect((await cmd.dashpayContact(FIXTURE_WALLET_ID, MAIN_IDENTITY, grace.identity))?.summary).toMatchObject({ relation: "contact", channel: "setupPending" });
-    expect(seen).toContainEqual(expect.objectContaining({ kind: "platform", change: { domain: "contacts", identity: MAIN_IDENTITY } }));
+    expect(await cmd.dashpayAcceptRequest(FIXTURE_WALLET_ID, IDENTITY.alice, grace.identity, "g")).toMatchObject({ kind: "established" });
+    expect((await cmd.dashpayContact(FIXTURE_WALLET_ID, IDENTITY.alice, grace.identity))?.summary).toMatchObject({ relation: "contact", channel: "setupPending" });
+    expect(seen).toContainEqual(expect.objectContaining({ kind: "platform", change: { domain: "contacts", identity: IDENTITY.alice } }));
   });
 
   it("has the DashPay states before registration", async () => {

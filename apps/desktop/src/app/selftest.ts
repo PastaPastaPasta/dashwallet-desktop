@@ -166,9 +166,9 @@ async function timeSplit(n: number, f: () => Promise<{ engineMicros: number }>) 
 /** Called after each screen is recorded (the Tauri harness screenshots it). */
 type OnScreen = (name: string) => Promise<void>;
 
-/** Renders the gate screens in both appearances and records them. */
-/** `passphrase`: the fixture's, which lets the routine lock and unlock to record the lock screen;
- * `null` with the real vault, whose passphrase it never has. */
+/** Renders the gate screens in both appearances and records them. `passphrase`: the fixture's,
+ * which lets the routine lock and unlock to record the lock screen; `null` with the real vault,
+ * whose passphrase it never has. */
 export async function collectReport(backend: Backend, client: QueryClient, passphrase: string | null, onScreen?: OnScreen): Promise<Report> {
   const before = ui.get();
   const screens: Record<string, ScreenRecord> = {};

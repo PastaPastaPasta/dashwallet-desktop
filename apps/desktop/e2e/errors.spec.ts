@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { ERROR_CLASSES, sampleError } from "../src/fixture/errors";
 import { seriousAxeViolations } from "./axe";
-import { fixtureUrl } from "./helpers";
+import { fixtureUrl, trackPageErrors } from "./helpers";
 
 // One error state per `ErrorData` class: `error-<class>` makes `list_wallets` reject with the
 // class's sample, and the shell shows it as an error state, not a crash. Chromium only: the
@@ -11,8 +11,7 @@ test.describe("error classes", () => {
 
   for (const cls of ERROR_CLASSES) {
     test(`error-${cls} renders as an error state`, async ({ page }) => {
-      const errors: string[] = [];
-      page.on("pageerror", (e) => errors.push(e.message));
+      const errors = trackPageErrors(page);
       await page.goto(fixtureUrl(`error-${cls}`, "light"));
       const state = page.getByTestId("wallets-error");
       await expect(state).toContainText("Could not load the wallets");

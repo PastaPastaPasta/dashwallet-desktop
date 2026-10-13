@@ -26,9 +26,9 @@ export const XSS_PAYLOADS = {
   contact: `"><svg onload="window.__xss='contact'">`,
 };
 
-export const TIP = 1_352_000;
+const TIP = 1_352_000;
 
-export function prng(seed: number) {
+function prng(seed: number) {
   let s = seed >>> 0;
   return () => {
     s = (s + 0x6d2b79f5) >>> 0;
@@ -41,7 +41,7 @@ export function prng(seed: number) {
 
 const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-export function makeIds(rand: () => number) {
+function makeIds(rand: () => number) {
   const hex = (n: number) => Array.from({ length: n }, () => "0123456789abcdef"[Math.floor(rand() * 16)]).join("");
   const address = () => "y" + Array.from({ length: 33 }, () => BASE58[Math.floor(rand() * 58)]).join("");
   return { hex, address };
@@ -240,6 +240,6 @@ export function txDetails(row: TxRow): TxDetails {
     message: null,
     label: row.label,
   };
-  // Placeholder bytes of the stated size (drawn after the rest, so the ids stay as they were).
+  // Placeholder bytes of the stated size.
   return { ...details, rawHex: "00".repeat(details.sizeBytes) };
 }

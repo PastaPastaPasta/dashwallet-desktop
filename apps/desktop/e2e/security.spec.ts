@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { XSS_PAYLOADS } from "../src/fixture/scenarios";
+import { XSS_PAYLOADS } from "../src/fixture/wallet";
 
 // U6: attacker-controlled text (labels, names) renders as text and never runs.
 test("XSS payloads in a label, a contact name and the wallet name render as text", async ({ page }) => {

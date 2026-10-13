@@ -8,17 +8,15 @@
 
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
-import { ENGINE_EVENT, type AppError, type AppEvent, type CommandName } from "../api/generated/commands";
+import { COMMANDS, ENGINE_EVENT, type AppError, type AppEvent, type CommandName } from "../api/generated/commands";
 import type { ThemeName } from "../api/generated/ThemeName";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
 import { HANDLERS, type Ctx } from "./handlers";
-import { buildWorld, DEFAULT_SCENARIO, FIXTURE_PASSPHRASE, isScenario, type ScenarioName, type World } from "./scenarios";
+import { buildWorld, DEFAULT_SCENARIO, isScenario, type ScenarioName, type World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
 
 /** Present in every fixture build and in no production build (scripts/check-bundle.mjs). */
 export const FIXTURE_SENTINEL = "dw-fixture-backend:U-07";
-
-export { FIXTURE_PASSPHRASE, FIXTURE_NOW };
 
 export interface FixtureOptions {
   scenario: ScenarioName;
@@ -42,7 +40,6 @@ export interface FixtureHandle {
   readonly calls: string[];
   readonly now: Date;
   readonly locale: string;
-  readonly passphrase: string;
 }
 
 const notImplemented = (call: string): AppError => ({
@@ -79,7 +76,6 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
     calls,
     now: FIXTURE_NOW,
     locale: "en-US",
-    passphrase: world.passphrase,
   };
 }
 
@@ -103,7 +99,7 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
   }
   for (const f of p.getAll("fail")) {
     const [command, cls] = f.split(":");
-    if (!cls || !isErrorClass(cls)) throw new Error(`bad fail=${f}: expected <command>:<error class>`);
+    if (!Object.hasOwn(COMMANDS, command) || !cls || !isErrorClass(cls)) throw new Error(`bad fail=${f}: expected <command>:<error class>`);
     failures[command as CommandName] = cls;
   }
   const delay = Number(p.get("delay") ?? 0);

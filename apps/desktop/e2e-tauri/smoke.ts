@@ -12,7 +12,8 @@
 // stripping); it uses W3C WebDriver over fetch and no other dependency.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, createWriteStream, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createWriteStream, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const env = (name: string, fallback?: string): string => {
@@ -30,6 +31,17 @@ const PASSPHRASE = "e2e smoke passphrase";
 // Regtest needs a DAPI address; with --no-platform nothing connects to it.
 const CHAIN = ["--network", "regtest", "--no-platform", "--dapi", "https://127.0.0.1:1"];
 const TIMEOUT_MS = Number(env("DW_E2E_TIMEOUT_MS", "120000"));
+
+/** Calls `probe` every 250 ms until it returns a value, for at most `ms`. */
+async function poll<T>(ms: number, what: string, probe: () => Promise<T | undefined>): Promise<T> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    const v = await probe();
+    if (v !== undefined) return v;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(`timed out after ${ms} ms waiting for ${what}`);
+}
 
 // ------------------------------------------------------------------ W3C WebDriver client
 
@@ -68,28 +80,22 @@ class WebDriver {
     return found[0]?.[ELEMENT] ?? null;
   }
 
-  async waitFor(css: string, what = css): Promise<string> {
-    const until = Date.now() + TIMEOUT_MS;
-    while (Date.now() < until) {
+  waitFor(css: string, what = css): Promise<string> {
+    return poll(TIMEOUT_MS, what, async () => {
       const el = await this.find(css);
-      if (el && (await this.call<boolean>("GET", this.s(`/element/${el}/displayed`)))) return el;
-      await new Promise((r) => setTimeout(r, 250));
-    }
-    throw new Error(`timed out after ${TIMEOUT_MS} ms waiting for ${what}`);
+      return el && (await this.call<boolean>("GET", this.s(`/element/${el}/displayed`))) ? el : undefined;
+    });
   }
 
   async waitGone(css: string, what = css) {
-    const until = Date.now() + TIMEOUT_MS;
-    while (Date.now() < until) {
-      if (!(await this.find(css))) return;
-      await new Promise((r) => setTimeout(r, 250));
-    }
-    throw new Error(`timed out after ${TIMEOUT_MS} ms waiting for ${what} to go`);
+    await poll(TIMEOUT_MS, `${what} to go`, async () => ((await this.find(css)) ? undefined : true));
   }
 
   text = (el: string) => this.call<string>("GET", this.s(`/element/${el}/text`));
   click = (el: string) => this.call<null>("POST", this.s(`/element/${el}/click`), {});
   type = (el: string, text: string) => this.call<null>("POST", this.s(`/element/${el}/value`), { text });
+  press = async (css: string) => void (await this.click(await this.waitFor(css)));
+  fill = async (css: string, text: string) => void (await this.type(await this.waitFor(css), text));
   script = <T>(script: string) => this.call<T>("POST", this.s("/execute/sync"), { script, args: [] });
 
   async screenshot(name: string) {
@@ -103,7 +109,9 @@ class WebDriver {
 // ------------------------------------------------------------------ steps
 
 const tid = (id: string) => `[data-testid="${id}"]`;
-const children: ChildProcess[] = [];
+let driver: ChildProcess | undefined;
+/** Holds the vault and its passphrase file: out of OUT, which CI uploads; removed at the end. */
+let work: string | undefined;
 
 function dwcli(dataRoot: string, passFile: string, ...args: string[]): string {
   const r = spawnSync(DWCLI, ["--datadir", dataRoot, ...CHAIN, "--passphrase-file", passFile, ...args], { encoding: "utf8" });
@@ -111,23 +119,17 @@ function dwcli(dataRoot: string, passFile: string, ...args: string[]): string {
   return r.stdout;
 }
 
-async function waitForDriver(base: string) {
-  const until = Date.now() + 30_000;
-  while (Date.now() < until) {
-    try {
-      if ((await fetch(`${base}/status`)).ok) return;
-    } catch {
-      // not listening yet
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  throw new Error("tauri-driver did not start");
-}
+const waitForDriver = (base: string) =>
+  poll(30_000, "tauri-driver to listen", () =>
+    fetch(`${base}/status`).then(
+      (r) => (r.ok ? true : undefined),
+      () => undefined,
+    ),
+  );
 
 async function main() {
   mkdirSync(OUT, { recursive: true });
-  const work = mkdtempSync(join(OUT, "run-"));
-  chmodSync(work, 0o700);
+  work = mkdtempSync(join(tmpdir(), "dw-e2e-")); // mode 0700
   const dataRoot = join(work, "data");
   const passFile = join(work, "passphrase");
   writeFileSync(passFile, `${PASSPHRASE}\n`, { mode: 0o600 });
@@ -139,8 +141,7 @@ async function main() {
 
   const log = createWriteStream(join(OUT, "tauri-driver.log"));
   // Its own process group: the cleanup below ends the driver, WebKitWebDriver and the app.
-  const driver = spawn(DRIVER, ["--port", String(PORT), "--native-port", String(PORT + 1)], { stdio: ["ignore", "pipe", "pipe"], detached: true });
-  children.push(driver);
+  driver = spawn(DRIVER, ["--port", String(PORT), "--native-port", String(PORT + 1)], { stdio: ["ignore", "pipe", "pipe"], detached: true });
   driver.stdout!.pipe(log);
   driver.stderr!.pipe(log);
   const base = `http://127.0.0.1:${PORT}`;
@@ -149,7 +150,10 @@ async function main() {
   const wd = new WebDriver(base);
   await wd.start({ alwaysMatch: { "tauri:options": { application: APP, args: ["--datadir", dataRoot, ...CHAIN, "--theme", "light"] } } });
   const steps: string[] = [];
-  const step = (s: string) => (steps.push(s), console.log(`smoke: ${s}`));
+  const step = (s: string) => {
+    steps.push(s);
+    console.log(`smoke: ${s}`);
+  };
   try {
     // The engine opened the vault locked; the production renderer has no fixture.
     const field = await wd.waitFor(tid("lock-field"), "the lock screen");
@@ -158,13 +162,13 @@ async function main() {
     step("lock screen on the real vault");
 
     await wd.type(field, "not the passphrase");
-    await wd.click(await wd.waitFor(tid("lock-submit")));
+    await wd.press(tid("lock-submit"));
     const error = await wd.waitFor("#lock-error:not(:empty)", "the wrong-passphrase message");
     if (!(await wd.text(error)).includes("incorrect")) throw new Error(`unexpected lock error: ${await wd.text(error)}`);
     step("wrong passphrase refused by the vault");
 
-    await wd.type(await wd.waitFor(tid("lock-field")), PASSPHRASE);
-    await wd.click(await wd.waitFor(tid("lock-submit")));
+    await wd.fill(tid("lock-field"), PASSPHRASE);
+    await wd.press(tid("lock-submit"));
     // The shell is rendered under the lock screen, so wait for the lock screen to go first.
     await wd.waitGone(tid("lock-screen"), "the lock screen");
     await wd.waitFor(tid("hero"), "the Overview after unlock");
@@ -172,12 +176,12 @@ async function main() {
     await wd.screenshot("2-overview");
     step("unlocked: Overview of the new wallet, history empty");
 
-    await wd.click(await wd.waitFor(tid("sidebar-transactions")));
+    await wd.press(tid("sidebar-transactions"));
     await wd.waitFor(tid("tx-empty"), "the Transactions page");
     await wd.screenshot("3-transactions");
     step("Transactions page");
 
-    await wd.click(await wd.waitFor(tid("toolbar-lock")));
+    await wd.press(tid("toolbar-lock"));
     await wd.waitFor(tid("lock-field"), "the lock screen after locking");
     await wd.screenshot("4-locked-again");
     step("locked again");
@@ -197,5 +201,11 @@ main()
     process.exitCode = 1;
   })
   .finally(() => {
-    for (const c of children) if (c.pid) process.kill(-c.pid, "SIGTERM");
+    // The driver's process group: tauri-driver, WebKitWebDriver and the app. Gone already is fine.
+    try {
+      if (driver?.pid) process.kill(-driver.pid, "SIGTERM");
+    } catch {
+      // ESRCH
+    }
+    if (work) rmSync(work, { recursive: true, force: true, maxRetries: 3 });
   });
