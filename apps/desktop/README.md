@@ -68,7 +68,8 @@ The app always runs on the engine; there is no fixture mode in it (the fixture b
 below). `--selftest FILE` renders the four screens in light and dark, writes every `data-testid` box, the style-check results, the
 IPC timings and the security probes to `FILE`, and exits. With `--selftest-passphrase-file`, dw-app
 unlocks an encrypted vault with that file's first line (the renderer never sees it), so the run also
-records the detail sheet and the lock screen. `--no-platform` opens a chain without Platform
+records the detail sheet and the lock screen. On Unix the file must be the user's alone (mode 0600 or
+stricter, no symlink); dw-app refuses any other (E0-13 D16). `--no-platform` opens a chain without Platform
 (a plain dashd regtest; regtest still needs a `--dapi` address, which nothing connects to).
 `--window-size` sets the window's inner size; the gate's self-tests use 1000x620 on every OS.
 

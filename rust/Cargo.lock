@@ -2247,6 +2247,7 @@ dependencies = [
  "dw-coinjoin",
  "dw-console",
  "dw-engine",
+ "dw-fs",
  "dw-message",
  "dw-psbt",
  "dw-testutil",

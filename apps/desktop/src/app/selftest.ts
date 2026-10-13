@@ -5,7 +5,7 @@
 // Under Tauri the report also carries the U5 IPC timings and the U6 security probes.
 
 import type { QueryClient } from "@tanstack/react-query";
-import { errorMessage, type Backend } from "../api/backend";
+import { errorMessage, isAppError, type Backend } from "../api/backend";
 import { tauriTools } from "../api/tauri";
 import { milestones, whenMarked } from "./startup";
 import { runStyleChecks, type CheckResult, type Screen } from "./styleChecks";
@@ -286,7 +286,9 @@ export async function runTauriSelftest(backend: Backend, client: QueryClient, pa
   try {
     await selftestRun(backend, client, pauseMs, canUnlock);
   } catch (e) {
-    await tauriTools.selftestReport({ final: true, error: errorMessage(e) });
+    // The code too, so the judge tells a refused passphrase file from a wrong passphrase.
+    const error = isAppError(e) ? `${e.code}: ${e.message}` : errorMessage(e);
+    await tauriTools.selftestReport({ final: true, error });
   }
 }
 

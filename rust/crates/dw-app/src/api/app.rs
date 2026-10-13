@@ -2,6 +2,8 @@
 //! hooks (G-02's U5/U6 measurements) and the refusal probe. Only the
 //! self-test's `history_page_timed` and `selftest_unlock` reach a facade.
 
+use std::io::Read;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use dw_vault::UnlockScope;
@@ -75,7 +77,8 @@ commands! {
     /// `--selftest` with `--selftest-passphrase-file`: a full unlock with
     /// the file's first line, as `unlock` does, so the self-test records the
     /// screens of an encrypted vault without the renderer holding its
-    /// passphrase.
+    /// passphrase. A file others could read or replace is refused
+    /// (`app.selftest_passphrase_file`; Unix only, E0-13 D16).
     #[facade("NetworkSession::vault_op", "Vault::unlock")]
     fn selftest_unlock(state) -> LockStatus {
         state.selftest_path()?;
@@ -85,11 +88,7 @@ commands! {
                 "the app was not launched with --selftest-passphrase-file",
             )
         })?;
-        let text = Zeroizing::new(
-            tokio::fs::read_to_string(file)
-                .await
-                .map_err(|e| AppError::app(AppCode::Selftest, format!("{}: {e}", file.display())))?,
-        );
+        let text = read_passphrase_file(file.to_path_buf()).await?;
         let passphrase = Zeroizing::new(text.lines().next().unwrap_or_default().as_bytes().to_vec());
         let session = state.session().await?;
         let status = session
@@ -129,6 +128,23 @@ commands! {
     fn probe_unlisted(state) -> String {
         Ok("reached".into())
     }
+}
+
+/// The passphrase file's text, if the file is the user's alone
+/// (`dw_fs::open_owner_only`).
+async fn read_passphrase_file(path: PathBuf) -> Result<Zeroizing<String>, AppError> {
+    tokio::task::spawn_blocking(move || {
+        let mut text = Zeroizing::new(String::new());
+        dw_fs::open_owner_only(&path)
+            .and_then(|mut file| file.read_to_string(&mut text))
+            .map_err(|e| {
+                let message = format!("{}: {e}", path.display());
+                AppError::app(AppCode::SelftestPassphraseFile, message)
+            })?;
+        Ok(text)
+    })
+    .await
+    .map_err(|e| AppError::app(AppCode::Selftest, e.to_string()))?
 }
 
 fn bench_rows(rows: u32) -> HistoryRows {

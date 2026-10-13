@@ -28,6 +28,8 @@ dashcore = { workspace = true }
 dw-coinjoin = { workspace = true }
 dw-console = { workspace = true }
 dw-engine = { workspace = true }
+# open_owner_only: the self-test's passphrase file must be the user's alone.
+dw-fs = { workspace = true }
 dw-message = { workspace = true }
 dw-psbt = { workspace = true }
 dw-units = { workspace = true }

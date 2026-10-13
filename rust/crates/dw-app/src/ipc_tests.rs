@@ -235,7 +235,7 @@ fn the_selftest_unlocks_with_the_passphrase_file() {
     let demo = Demo::launched(|launch, dir| {
         launch.selftest = Some(dir.join("report.json"));
         launch.selftest_passphrase_file = Some(dir.join("passphrase"));
-        std::fs::write(dir.join("passphrase"), "selftest pass\nignored\n").unwrap();
+        write_passphrase_file(&dir.join("passphrase"), "selftest pass\nignored\n", 0o600);
     });
     assert_eq!(demo.ok("launch_info", json!({}))["selftestUnlock"], true);
     demo.open();
@@ -248,6 +248,37 @@ fn the_selftest_unlocks_with_the_passphrase_file() {
     );
     demo.ok("lock", json!({}));
     demo.err("selftest_unlock", json!({}), "vault.wrong_passphrase");
+}
+
+/// The passphrase file at `path`, with `mode` on Unix.
+fn write_passphrase_file(path: &std::path::Path, text: &str, mode: u32) {
+    std::fs::write(path, text).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+}
+
+/// A passphrase file others can read is refused before the vault is
+/// touched, with a code the self-test's report carries (E0-13 D16).
+#[cfg(unix)]
+#[test]
+fn the_selftest_refuses_a_passphrase_file_others_can_read() {
+    let demo = Demo::launched(|launch, dir| {
+        launch.selftest = Some(dir.join("report.json"));
+        launch.selftest_passphrase_file = Some(dir.join("passphrase"));
+        write_passphrase_file(&dir.join("passphrase"), "selftest pass\n", 0o644);
+    });
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "selftest pass" }));
+    demo.ok("lock", json!({}));
+    let e = demo.err("selftest_unlock", json!({}), "app.selftest_passphrase_file");
+    let message = e["message"].as_str().unwrap();
+    assert!(message.contains("has mode 644"), "{message}");
+    assert_eq!(demo.ok("lock_status", json!({}))["state"], "locked");
 }
 
 /// A representative command of each facade, through the IPC handler: the

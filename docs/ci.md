@@ -211,7 +211,9 @@ then starts a regtest `dashd` from the verified Dash Core release (`regtest/scri
 the tarball on macOS and Linux, the zip on Windows), pays the wallet 1.5 DASH, mines the payment into a
 block and runs `dwcli sync` until the wallet holds it, then stops `dashd`. The history stays in the data
 root, so the app, which opens it on the real engine without a peer, shows the transaction. The vault's
-passphrase file goes to the self-test only (`--selftest-passphrase-file`). (Until U-07 the default was
+passphrase file goes to the self-test only (`--selftest-passphrase-file`); the job creates it under
+`umask 077` and `chmod 600` (Windows: `icacls`, inheritance removed, full control for the job's user only),
+because `selftest_unlock` refuses a file others can read (E0-13 D16). (Until U-07 the default was
 `--fixture`, an in-app TypeScript wallet; the fixture backend now runs in browsers only.) Then:
 
 1. `dash-wallet <app args> --selftest-passphrase-file <file> --selftest selftest-<os>.json` within 10
@@ -228,7 +230,7 @@ passphrase file goes to the self-test only (`--selftest-passphrase-file`). (Unti
    finds its element or is not applicable (on Linux, 212 checks, 0 failed, 12 not applicable).
    `ci/github/selftest-judge-test.sh` (run by `ci.yml`) proves that a
    report missing each required screen fails. With `selftest_args`, pass `--selftest-passphrase-file`
-   and a wallet with history yourself, or the judge fails the run. The populated fixture screens are
+   (a file only its owner can read) and a wallet with history yourself, or the judge fails the run. The populated fixture screens are
    also checked by Playwright in `ci.yml`, in Chromium and WebKit. The screens, counts, paint times and
    probes go to the run's step summary.
 2. `dash-wallet <app args> --theme <theme>` launched again, with a screenshot (the helpers above). The window

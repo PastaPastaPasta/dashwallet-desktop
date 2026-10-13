@@ -131,6 +131,18 @@ jobs:
           pass="$RUNNER_TEMP/passphrase"
           # Regtest needs a DAPI address; with --no-platform nothing connects to it.
           chain=(--network regtest --no-platform --dapi https://127.0.0.1:1)
+          # The passphrase file is the job user's alone before it holds the passphrase: dw-app's
+          # selftest_unlock refuses one others can read on Unix (E0-13 D16). On Windows dw-app does
+          # not check; the file gets an ACL of one entry, full control for the job's user, with
+          # the inherited entries removed.
+          umask 077
+          : > "$pass"
+          if [[ "$MATRIX_OS" == windows ]]; then
+            icacls "$(cygpath -w "$pass")" //inheritance:r //grant:r "$USERNAME:F"
+            icacls "$(cygpath -w "$pass")"
+          else
+            chmod 600 "$pass"
+          fi
           printf '%s\n' "selftest $GITHUB_RUN_ID" > "$pass"
           for cmd in init-vault create; do
             "$dwcli" --datadir "$data" "${chain[@]}" --passphrase-file "$pass" "$cmd"

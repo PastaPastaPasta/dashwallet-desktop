@@ -45,6 +45,9 @@ expect "no screens at all" 'del(.screens)' "screen light/overview was not record
 expect "checkpoint report" '.final = false' "the report is a checkpoint"
 expect "a failed run" '{final: true, error: "vault.wrong_passphrase: wrong passphrase"}' \
   "the self-test failed: vault.wrong_passphrase: wrong passphrase"
+expect "a refused passphrase file" \
+  '{final: true, error: "app.selftest_passphrase_file: /t/passphrase: has mode 644: group and others must have no access (chmod 600)"}' \
+  "the self-test failed: app.selftest_passphrase_file: /t/passphrase: has mode 644"
 expect "no history rows" '.shown.rows = []' "showed no history row"
 expect "nothing shown" 'del(.shown)' "showed no history row"
 expect "a failed check" '.screens["dark/txDetail"].checks[0] |= (.pass = false | .actual = "blue")' \

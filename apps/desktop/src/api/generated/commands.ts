@@ -196,7 +196,8 @@ export function selftestCheckpoint(screen: string): Promise<null> {
  * `--selftest` with `--selftest-passphrase-file`: a full unlock with
  * the file's first line, as `unlock` does, so the self-test records the
  * screens of an encrypted vault without the renderer holding its
- * passphrase.
+ * passphrase. A file others could read or replace is refused
+ * (`app.selftest_passphrase_file`; Unix only, E0-13 D16).
  */
 export function selftestUnlock(): Promise<LockStatus> {
   return invoke<LockStatus>("selftest_unlock");
@@ -2604,6 +2605,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.not_selftest",
   "app.not_developer_build",
   "app.selftest",
+  "app.selftest_passphrase_file",
   "app.data_dir",
   "app.unknown_handle",
   "app.too_many_handles",

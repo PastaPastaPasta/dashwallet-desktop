@@ -107,6 +107,10 @@ codes! {
         NotDeveloperBuild = "app.not_developer_build",
         /// The self-test report could not be written.
         Selftest = "app.selftest",
+        /// The self-test's passphrase file cannot be read, or is not the
+        /// user's alone (on Unix: a regular file the user owns, mode 0600 or
+        /// stricter, not reached through a symlink).
+        SelftestPassphraseFile = "app.selftest_passphrase_file",
         /// The platform's app-data directory is unknown.
         DataDir = "app.data_dir",
         /// A handle id that is not (or no longer) open.
