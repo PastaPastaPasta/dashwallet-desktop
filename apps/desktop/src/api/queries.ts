@@ -41,6 +41,7 @@ export const keys = {
   receiveAll: (walletId: string) => ["receive", walletId] as const,
   receiveAddress: (walletId: string) => ["receive", walletId, "address"] as const,
   receiveRequests: (walletId: string) => ["receive", walletId, "requests"] as const,
+  receiveUsername: (walletId: string) => ["receive", walletId, "username"] as const,
   /** The coin control list of a wallet: history and balance changes move coins. */
   coinsAll: (walletId: string) => ["coins", walletId] as const,
   utxos: (walletId: string) => ["coins", walletId, "utxos"] as const,
@@ -120,6 +121,12 @@ export function useTxDetailExtras(walletId: string, txid: string) {
 export function useReceiveAddress(walletId: string) {
   const b = useBackend();
   return useQuery({ queryKey: keys.receiveAddress(walletId), queryFn: () => b.currentReceiveAddress(walletId) });
+}
+
+/** The DashPay username a Receive QR carries (DP3-03); `null` without one. */
+export function useReceiveUsername(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.receiveUsername(walletId), queryFn: () => b.receiveUsername(walletId) });
 }
 
 export function useReceiveRequests(walletId: string) {

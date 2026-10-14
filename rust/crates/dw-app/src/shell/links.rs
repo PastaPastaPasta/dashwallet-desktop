@@ -269,7 +269,8 @@ fn payment_link(network: &str, req: dw_uri::ext::PaymentRequest) -> Result<LinkR
     let Some(address) = req.address else {
         return payment(UriRejected::Unparsable);
     };
-    match uri::build_payment_uri(address, req.amount, req.label, req.message) {
+    // The username travels beside the URI, not in it.
+    match uri::build_payment_uri(address, req.amount, req.label, req.message, None) {
         Ok(dash_uri) => pay(network, &dash_uri, req.dashpay_username),
         Err(_) => payment(UriRejected::InvalidAmount),
     }

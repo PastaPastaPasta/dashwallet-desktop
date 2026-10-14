@@ -108,6 +108,21 @@ pub fn format_bitcoin_uri(info: &SendCoinsRecipient) -> String {
     ret
 }
 
+/// A receive request's URI (IOS-055, DP3-03): [`format_bitcoin_uri`] with
+/// the DashPay username as `user=` last, as iOS's `PaymentURIBuilder` and
+/// Android write it. iOS appends the name raw; a DPNS label is unreserved
+/// ASCII, so percent-encoding it changes nothing for a real name and keeps
+/// anything else from breaking the URI. dash-qt ignores the key.
+pub fn format_request_uri(info: &SendCoinsRecipient, user: Option<&str>) -> String {
+    let mut ret = format_bitcoin_uri(info);
+    if let Some(user) = user.filter(|u| !u.is_empty()) {
+        ret.push(if ret.contains('?') { '&' } else { '?' });
+        ret.push_str("user=");
+        ret.push_str(&qurl::to_percent_encoding(user));
+    }
+    ret
+}
+
 /// Why dash-qt's URI handler did not open the Send page for a URI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UriRejection {
@@ -203,6 +218,36 @@ mod tests {
                 .amount,
             100_000_000
         );
+    }
+
+    #[test]
+    fn request_uri_puts_the_username_last() {
+        let info = |amount, label: &str| SendCoinsRecipient {
+            address: X.into(),
+            label: label.into(),
+            message: String::new(),
+            amount,
+        };
+        assert_eq!(format_request_uri(&info(0, ""), None), format!("dash:{X}"));
+        assert_eq!(
+            format_request_uri(&info(0, ""), Some("")),
+            format!("dash:{X}")
+        );
+        assert_eq!(
+            format_request_uri(&info(0, ""), Some("al1ce")),
+            format!("dash:{X}?user=al1ce")
+        );
+        assert_eq!(
+            format_request_uri(&info(150_000_000, "Rent May"), Some("al-1ce")),
+            format!("dash:{X}?amount=1.50000000&label=Rent%20May&user=al-1ce")
+        );
+        assert_eq!(
+            format_request_uri(&info(0, ""), Some("a&b=c")),
+            format!("dash:{X}?user=a%26b%3Dc")
+        );
+        // dash-qt reads it as the request without the key.
+        let uri = format_request_uri(&info(150_000_000, "Rent"), Some("al1ce"));
+        assert_eq!(parse_bitcoin_uri(&uri), Some(info(150_000_000, "Rent")));
     }
 
     #[test]

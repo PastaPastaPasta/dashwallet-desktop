@@ -350,6 +350,15 @@ impl NetworkSession {
         .to_uri())
     }
 
+    /// The main name of the wallet's main identity, for the receive QR
+    /// (`NetworkSession::receive_username`, DP3-03); `None` on any failure
+    /// to read it.
+    pub(crate) fn main_username(&self, wallet: WalletId) -> Option<String> {
+        let summaries = self.identity_summaries(wallet).ok()?;
+        let main = summaries.into_iter().find(|s| s.is_main)?;
+        main.main_name.filter(|_| !main.names_updating)
+    }
+
     /// `DashPay::verify_scanned`: a user link must name the identity that
     /// owns its username now; a DIP-15 code must not have expired, and its
     /// username must exist. Anything else is `invalid_argument`, which never

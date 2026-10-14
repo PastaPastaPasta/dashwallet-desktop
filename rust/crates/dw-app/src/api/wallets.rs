@@ -193,6 +193,8 @@ pub struct ReceiveRequest {
     pub amount: Option<u64>,
     pub label: Option<String>,
     pub message: Option<String>,
+    /// The wallet's DashPay username, as `uri` carries it (DP3-03).
+    pub username: Option<String>,
     /// The `dash:` URI of the request.
     pub uri: String,
 }
@@ -206,6 +208,7 @@ impl From<dw_engine::ReceiveRequest> for ReceiveRequest {
             amount,
             label,
             message,
+            username,
             uri,
         } = r;
         ReceiveRequest {
@@ -215,6 +218,7 @@ impl From<dw_engine::ReceiveRequest> for ReceiveRequest {
             amount,
             label,
             message,
+            username,
             uri,
         }
     }
@@ -592,6 +596,14 @@ commands! {
         let id = parse_wallet_id(&wallet_id)?;
         let requests = state.session().await?.receive_requests(id).await?;
         Ok(requests.into_iter().map(ReceiveRequest::from).collect())
+    }
+
+    /// The username the Receive QR carries as `user=` (IOS-055): the main
+    /// name of the wallet's main DashPay identity, if any.
+    #[facade("NetworkSession::receive_username")]
+    fn receive_username(state, wallet_id: String) -> Option<String> {
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(state.session().await?.receive_username(id).await?)
     }
 
     #[facade("NetworkSession::delete_receive_request")]

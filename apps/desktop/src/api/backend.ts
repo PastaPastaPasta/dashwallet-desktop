@@ -111,7 +111,10 @@ export interface Backend {
   createReceiveRequest(walletId: string, amount: number | null, label: string | null, message: string | null): Promise<ReceiveRequest>;
   receiveRequests(walletId: string): Promise<ReceiveRequest[]>;
   deleteReceiveRequest(walletId: string, requestId: number): Promise<null>;
-  buildPaymentUri(address: string, amount: number | null, label: string | null, message: string | null): Promise<string>;
+  /** The wallet's DashPay username for the Receive QR (DP3-03); `null` without one. */
+  receiveUsername(walletId: string): Promise<string | null>;
+  /** dash-qt's payment URI, with `user=` last when `user` is set (DP3-03, IOS-055). */
+  buildPaymentUri(address: string, amount: number | null, label: string | null, message: string | null, user: string | null): Promise<string>;
   qrMatrix(text: string): Promise<QrMatrix>;
   // Send (U-03 D2, E0-13 D8): a draft and its prepared transactions are handles.
   classifyAddress(network: string, text: string): Promise<AddressClass>;

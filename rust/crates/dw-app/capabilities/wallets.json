@@ -28,6 +28,7 @@
     "allow-addresses",
     "allow-create-receive-request",
     "allow-receive-requests",
+    "allow-receive-username",
     "allow-delete-receive-request",
     "allow-address-book",
     "allow-save-address-book-entry",

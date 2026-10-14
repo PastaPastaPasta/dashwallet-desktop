@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 20
+Contract-Version: 21
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -55,7 +55,7 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
 DP1-01's `keys_policy.rs`, E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, DP2-04's private details `private_details.rs` with `private_details_tests.rs`, DP2-05's bell session tests `notifications_tests.rs`, and DP1-06's cost table `credit_costs.rs`, balance refreshes `balances.rs` and top-up flow `topup.rs` with `topup_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, DP2-04's private details `private_details.rs` with `private_details_tests.rs`, DP2-05's bell session tests `notifications_tests.rs`, DP1-06's cost table `credit_costs.rs`, balance refreshes `balances.rs` and top-up flow `topup.rs` with `topup_tests.rs`, DP1-04's contest watch `contest_watch.rs` with `contest_watch_tests.rs`, and DP3-02's contact payment attribution `attribution.rs` with `payments_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -470,8 +470,8 @@ bodies decided where the rows leave room:
 |---|---|---|---|
 | `payment_lock(identity, contact)` | sync | The lock an ambiguous broadcast set (`dp_payment_lock`), if any. | `ContactError` |
 | `resolve_payment_lock(identity, contact)` | async | Reconciles the lock with E0-04 §16.6's evidence (§4.1) for the locked payment's txid. `Sent` (an attempt or a Resend finished `Sent`, or the wallet has seen the transaction) clears the lock. `NotSent` clears it only on **positive evidence**: in this process, `dispatch_status(txid)` is `Some(NotSent)` (the send's tombstone), or a ChainLocked conflicting spend of one of its inputs exists. Never "not found on chain or in the wallet": a peer may be withholding it. Anything else is `Unknown`, which reads like `MaybeSent` and `None`: the lock stays. | `ContactError` |
-| `contact_activity(identity, contact, cursor, f)` | async | Payments to and from the contact, newest first, filtered All / Sent / Received. | `ContactError` |
-| `frequent_contacts(identity, limit)` | sync | The Pay screen's frequent strip. | `ContactError` |
+| `contact_activity(identity, contact, cursor, f)` | async | Payments to and from the contact, newest first, filtered All / Sent / Received; 50 per page, `cursor` the previous page's `next_cursor`. Attributed as history records are (item 47): one item per transaction and direction, `amount` what the contact got or sent (no fee), mined ones by block time with unmined ones first (`timestamp` the block time, else first-seen), abandoned, not-accepted and conflicted ones left out. A contact never paid is an empty page, not an error. Re-query on `Platform{Payments}`, `Platform{Contacts}` and the wallet's `HistoryChanged`. **Implemented (DP3-02).** | `ContactError`: unknown wallet; `invalid_argument` (an id, or a cursor this call did not issue, including one another query issued); `contact.self`; `identity.not_found` (not this wallet's) |
+| `frequent_contacts(identity, limit)` | sync | The Pay screen's frequent strip (Android's rule): at most `limit` (clamped to 1–20) established contacts that are not hidden, the ones `identity` paid most often in the last 90 days first, then the ones that paid it most often; ties by the latest payment, then the id; none without a payment. In memory (the contacts read model and the history); while a writer holds the library's state it answers from the last view it read, empty before one. **Implemented (DP3-02).** | `ContactError`: as `contacts` |
 
 ### 2.6 Notifications
 
@@ -544,7 +544,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 4ce1a0ba0ce2e321acc609bc29b9a84a495b73524dfc277b95c30706520c581d version: 20 -->
+<!-- surface-sha256: 4ce1a0ba0ce2e321acc609bc29b9a84a495b73524dfc277b95c30706520c581d version: 21 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1913,8 +1913,10 @@ The shapes are in §3. What they mean, where the name does not say:
   `pending_top_ups` lists; `proved` means `resume_top_up` applies it at once; `consumption_unknown` means a lock a
   top-up of this wallet funded is final and Platform's consumption of it unknown (`resolve_top_up`). **`WithdrawQuote`**:
   the credits taken, the fee in credits and the duffs expected.
-- **`Counterparty`** is the record history and transaction records gain as `counterparty` (DP3-02); here it is also
-  the inviter in `InvitationStatus::Valid`.
+- **`Counterparty`** is the record history and transaction records gain as `counterparty` (DP3-02, item 47); here
+  it is also the inviter in `InvitationStatus::Valid`. In a history record its `username` comes from the contacts'
+  username cache (filled in the background; a landing name sends `Platform{Contacts}`) and its `display_name` and
+  `avatar_url` from the cached profile.
 
 ## 6. Outside the facade
 
@@ -1924,7 +1926,7 @@ changes code paths or bindings that would otherwise need behaviour now:
 | Item | Task |
 |---|---|
 | `TxDraft` gains `Recipient::Contact{identity, contact, amount, subtract_fee, note}` | DP3-01 |
-| History and transaction records gain `counterparty: Option<Counterparty>` | DP3-02 |
+| History and transaction records gain `counterparty: Option<Counterparty>`. **Done (DP3-02, item 47):** on m1's `TxRecord` (so `history_page` and `tx_detail`'s records); `dw-app`'s `TxRow` binds it (optional), `dw-ffi` withholds it until E0-13 | DP3-02 |
 | `NoticeCode` gains `PlatformTrustMismatch` (E0-10b) and `DashPayStartupIncomplete` (E0-05). `dw-ffi` maps `NoticeCode` one to one, and the Swift bindings are frozen until E0-13. **Done (E0-05, E0-10b):** both are engine-side, and `dw-ffi` withholds them until E0-13 binds them. `PlatformTrustMismatch` goes out once per quorum and session; its detail names the LLMQ type and quorum hash | E0-05, E0-10b, E0-13 |
 | `NetworkSession` gains `quorum_source()` (sync) and the developer toggle `trusted_quorums_only()` / `set_trusted_quorums_only(on)` (the global setting `trust.trusted_only`): quorum keys from the trusted service only, SPV not consulted. **Done (E0-10b).** Not a user setting; the binding exposes it in developer builds | E0-10b, E0-13 |
 | `EngineEvent::Platform{network, wallet_id, change: PlatformChange}` (§3.5). **Done (E0-06):** `PlatformChange` is `Identities` (identities, their keys and profiles), `Contacts{identity}`, `Registration{draft}` (`draft` is the `dp_registration` id as decimal text; `None` for a lock no row names, a top-up), `Payments{identity}`, `Names`, and (DP2-05) `Events{identity}`: the identity's feed or unread count changed (rows journaled, read or recounted). The tap sends no `Startup` change: the startup status has its own snapshot (E0-05). `dw-ffi` withholds the variant until E0-13 binds it | E0-06, E0-13 |
@@ -2349,7 +2351,8 @@ renames or reshapes them takes the next version bump:
     - **Cadence.** `MAX_NEWS` caps one event, not a time window: a steady stream can bring up to 4 `DashPayNews`
       a second per identity, and §6's "up to 3, else a summary" is per event.
     - **Residual (accepted): a payment is not news here.** An unread `PaymentReceived` counts and shows in the bell,
-      but the OS notification is M2's `NewTransactions` one, with no contact name until DP3-02 adds `counterparty`.
+      but the OS notification is M2's `NewTransactions` one, with no contact name; DP3-02 added `counterparty` to
+      the records, and the notification is unchanged (item 47).
 
 **From DP1-06** (version 18):
 
@@ -2543,3 +2546,48 @@ renames or reshapes them takes the next version bump:
       Platform charged 7,897,240 credits and added 992,102,760, against a quote of 949,500,000. So
       `TopUpQuote.credits` is an estimate below what a top-up adds as far as measured (T3 now asserts it), not "at
       most"; nothing proves the metered charge stays below `top_up_fee`. `credits_added` reports what was added.
+
+**From DP3-02** (version 21):
+
+47. **Contact payments: attribution, activity and the frequent strip (DP3-02, version 21).** `contact_activity` and
+    `frequent_contacts` are implemented (§2.5); history and transaction records carry `counterparty` (§6). No surface
+    change in the facade; m1's `TxRecord` gains the field. `attribution.rs` (not facade) builds it; the notes are in
+    `docs/design/DP3-02-notes.md`.
+    - **Attribution (DIP-15).** A record is a contact's when its output pays an address of a DashPay account: one
+      of `identity`'s receival accounts with that contact (a receive record: *from* the contact) or one of its
+      external accounts (a send record the wallet funded: *to* the contact). The pools a wallet holds always cover
+      what it detected, so a received payment is attributed after a restore even when its coin was spent. A send to
+      an external address past the resident pool (a restore regrows external pools only to the gap) takes the
+      library's word: its `Sent` payment entries for the txid, when they name exactly one (identity, contact) pair
+      and the transaction has exactly one unattributed payee record and no output to any DashPay address the wallet
+      holds (else the entry may name that output, such as one paying the wallet's own other identity, not the
+      payee). Anything else stays unattributed.
+    - **Shared addresses.** A script DashPay accounts of two sides hold (two contacts', or a receival and an
+      external one) is nobody's, and so is every address of two sides' accounts on one xpub (the same first
+      address), even past where one pool reaches: their outputs stay unattributed in history, activity and the
+      strip, and the library's word is refused for their transactions. The library's word is also refused for the
+      pair of an external account on a shared xpub, for any output, so a payment past both pools stays unattributed
+      too. A contact chooses the xpub it gives us, so it can derive another contact's addresses or our receival
+      ones.
+    - **Not attributed:** a payment between two identities of one wallet (a SendToSelf), mixed or foreign-funded
+      debits (`Other`), coinbase, CoinJoin mixing, denominations and collateral, and Platform transfers. A CoinJoin
+      Send (mixed coins paying a contact) is attributed like any send. The history text search does not match contact
+      names.
+    - **One source.** Activity and the strip read the same attribution as history, so the three agree. A sent
+      activity amount sums the transaction's outputs to the contact (no fee, no change).
+    - **Cursor.** 64 characters, `[0-9a-f]` plus the direction: a tag of the query (15 hex digits of SHA-256 over
+      the identity, the contact and the filter), the block time (9 hex digits; unmined: after every block time), the
+      txid's first 39 hex digits, `s` or `r`. A cursor of another query (identity, contact or filter) is
+      `invalid_argument`, as a malformed one is, except with probability about 2^-60; an accepted one pages the
+      current query from that position, so it shows nothing of the other query. For an unchanged set of payments
+      pages never repeat or skip an item (unless two same-time, same-direction txids share their first 156 bits,
+      infeasible in chain data).
+      A payment that lands meanwhile shows on a re-query; one mined between pages, a block whose time is earlier
+      than the cursor's, or a reorg can move an item across the cursor (re-query from the first page on
+      `HistoryChanged`). Unmined items sort by txid, not first-seen.
+    - **The strip** counts one per transaction and direction; an unmined payment counts as now. Its contacts are
+      `contacts`' established and not hidden ones.
+    - **Residual (accepted):** a restored send whose address is past the pool and whose library entry is not yet
+      rebuilt (the DashPay pass after a restore) shows no counterparty until the pass; the host re-queries on
+      `Platform{Payments}`. The OS notification for a payment is unchanged (M2's `NewTransactions`). The strip
+      rebuilds the view (pools, payees) and walks the window's history on each call: O(wallet), in memory.

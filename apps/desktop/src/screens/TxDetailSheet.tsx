@@ -15,7 +15,7 @@ import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
 import { CopyValue, DetailRow } from "../components/detail";
 import { useDisplay } from "../format/display";
-import { detailDate, isProblem, rowDate, shownAmount, txChip, txIcon, txTitle } from "../format/tx";
+import { contactName, detailDate, isProblem, rowDate, shownAmount, txChip, txIcon, txTitle } from "../format/tx";
 
 /** dash-qt `TransactionDesc::FormatTxStatus`, for the states the engine reports. */
 function statusText(s: TxStatusInfo): string {
@@ -169,6 +169,8 @@ function Body({ d, network, walletId }: { d: TxDetails; network: NetworkInfo; wa
   const own = d.outputs.some((o) => o.isMine && o.address === counterparty);
   const display = useDisplay(network);
   const unit = display.name;
+  // The DashPay contact of the record whose title and address the sheet shows (DP3-02 D24).
+  const contact = contactName(row?.counterparty);
   return (
     <>
       <div className="tx-detail-summary" data-testid="tx-detail-summary">
@@ -181,6 +183,11 @@ function Body({ d, network, walletId }: { d: TxDetails; network: NetworkInfo; wa
         </div>
       </div>
       <dl className="detail-list card-l1" data-testid="tx-detail-facts">
+        {contact && (
+          <DetailRow label={amount < 0 ? "Sent to contact" : "Received from contact"} testId="tx-detail-contact">
+            {contact}
+          </DetailRow>
+        )}
         {counterparty && (
           <DetailRow label={amount < 0 ? "To" : "Received with"}>
             <CopyValue value={counterparty} label="address" />

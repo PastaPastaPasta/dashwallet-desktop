@@ -27,6 +27,7 @@ import type { TxRow } from "../api/generated/TxRow";
 import type { Utxo } from "../api/generated/Utxo";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
+import { mainUsername } from "./dashpay";
 import { BASE58, FIXTURE_NOW, makeIds, prng, secs, TIP, txDetails, type HistoryVariant } from "./wallet";
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -151,17 +152,29 @@ export function parseAmount(text: string, unit: DisplayUnit): number | null {
   return digits === "" ? null : Number(digits);
 }
 
-/** dash-qt's `formatBitcoinURI`. */
-export function paymentUri(address: string, amount: number | null, label: string | null, message: string | null): string {
+/** Qt's `QUrl::toPercentEncoding`: everything but RFC 3986's unreserved characters. */
+const percentEncode = (s: string) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+
+/** dw-uri's `format_request_uri`: dash-qt's `formatBitcoinURI`, then `user=` last when `user`
+ * is set (DP3-03, iOS's `PaymentURIBuilder`). */
+export function paymentUri(address: string, amount: number | null, label: string | null, message: string | null, user: string | null = null): string {
   if (amount !== null && (amount < 0 || amount > MAX_MONEY)) throw fail("invalid_argument", "amount out of range");
   const fields: [string, string | null][] = [
     ["amount", amount === null ? null : (amount / 1e8).toFixed(8).replace(/\.?0+$/, "")],
-    ["label", label && encodeURIComponent(label)],
-    ["message", message && encodeURIComponent(message)],
+    ["label", label && percentEncode(label)],
+    ["message", message && percentEncode(message)],
   ];
   const query = fields.filter(([, v]) => v).map(([k, v]) => `${k}=${v}`);
+  if (user) query.push(`user=${percentEncode(user)}`);
   return `dash:${address}${query.length ? `?${query.join("&")}` : ""}`;
 }
+
+/** A stored request as a read shows it: `username` and its `uri` follow the current main name. */
+const withUsername = (r: ReceiveRequest, username: string | null): ReceiveRequest => ({
+  ...r,
+  username,
+  uri: paymentUri(r.address, r.amount, r.label, r.message, username),
+});
 
 /** A stand-in for dw-uri's QR encoder: the size of the QR version the text needs, the three
  * finder patterns and timing lines, and modules drawn from the text. Not scannable (D18). */
@@ -451,7 +464,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
     fee_policy: () => feePolicy(),
     classify_address: ({ network, text }) => classifyAddress(network, text),
     parse_amount: ({ text, unit }) => parseAmount(text, unit),
-    build_payment_uri: ({ address, amount, label, message }) => paymentUri(address, amount, label, message),
+    build_payment_uri: ({ address, amount, label, message, user }) => paymentUri(address, amount, label, message, user),
     qr_matrix: ({ text }) => qrMatrix(text),
     payment_authentication: (_, { world }) => world.paymentAuth,
 
@@ -645,12 +658,21 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
         amount,
         label,
         message,
-        uri: paymentUri(address, amount, label, message),
+        username: null,
+        uri: "",
       };
+      // Before it is stored: an amount out of range stores nothing, as the engine.
+      const shown = withUsername(request, mainUsername(world.dashpay));
       w.receive.requests = [request, ...w.receive.requests];
-      return request;
+      return shown;
     },
-    receive_requests: ({ walletId }, { world }) => wallet(world, walletId).receive.requests,
+    // The username is the current main name, not stored (DP3-03 D18).
+    receive_requests: ({ walletId }, { world }) =>
+      wallet(world, walletId).receive.requests.map((r) => withUsername(r, mainUsername(world.dashpay))),
+    receive_username: ({ walletId }, { world }) => {
+      wallet(world, walletId);
+      return mainUsername(world.dashpay);
+    },
     delete_receive_request: ({ walletId, requestId }, { world }) => {
       const w = wallet(world, walletId);
       if (!w.receive.requests.some((r) => r.id === requestId)) throw fail("request_not_found", `no request ${requestId}`);

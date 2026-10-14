@@ -18,9 +18,10 @@ use platform_wallet::PlatformWalletInfo;
 use platform_wallet::changeset::PlatformWalletPersistence;
 
 use crate::history::{
-    AddressChain, ChainView, HistoryPage, HistoryQuery, Labels, Owned, TxDetail, detail_of, page,
-    records_of, validate_query,
+    AddressChain, ChainView, HistoryPage, HistoryQuery, Labels, Owned, TxDetail, TxEntry,
+    detail_of, page, records_of, validate_query,
 };
+use crate::platform::attribution::Payees;
 use crate::session::{Manager, WALLET_DB_FILE};
 use crate::{EngineError, NetworkSession, WalletId};
 
@@ -105,6 +106,31 @@ fn persisted_txids(db_path: &Path) -> Result<HashMap<[u8; 32], Vec<Txid>>, rusql
         out.entry(wallet).or_default().push(txid);
     }
     Ok(out)
+}
+
+/// The parts of a [`ChainView`] read from the library's state.
+pub(crate) struct ViewParts {
+    pub owned: HashMap<ScriptBuf, Owned>,
+    pub payees: Payees,
+    pub tip: u32,
+    pub chainlock_height: Option<u32>,
+}
+
+impl ViewParts {
+    pub(crate) fn view<'a>(
+        &'a self,
+        history: &'a HashMap<Txid, TxEntry>,
+        network: dashcore::Network,
+    ) -> ChainView<'a> {
+        ChainView {
+            owned: &self.owned,
+            history,
+            tip: self.tip,
+            chainlock_height: self.chainlock_height,
+            network,
+            payees: &self.payees,
+        }
+    }
 }
 
 /// Persisted records, first-seen times and abandoned transactions of one
@@ -238,6 +264,26 @@ impl NetworkSession {
         .map_err(|e| EngineError::Storage(e.to_string()))
     }
 
+    /// What a chain view needs from the library's state, read under its
+    /// lock: the owned scripts, the DashPay payees, the tip and the best
+    /// ChainLock height.
+    pub(crate) fn view_parts(&self, info: &PlatformWalletInfo, wallet: &WalletId) -> ViewParts {
+        let meta = &info.core_wallet.metadata;
+        ViewParts {
+            owned: owned_scripts(info),
+            payees: self.payees(info, wallet),
+            tip: meta
+                .last_processed_height
+                .max(meta.synced_height)
+                .max(self.hub.wallet_state(wallet).map_or(0, |s| s.tip())),
+            chainlock_height: meta
+                .last_applied_chain_lock
+                .as_ref()
+                .map(|c| c.block_height)
+                .max(self.hub.tracker().chainlock_height()),
+        }
+    }
+
     /// Runs `f` with the wallet's chain view. `WalletNotFound` for an
     /// unknown wallet.
     pub(crate) async fn with_view<R>(
@@ -251,27 +297,10 @@ impl NetworkSession {
         let info = wm
             .get_wallet_info(&wallet.0)
             .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
-        let owned = owned_scripts(info);
-        let meta = &info.core_wallet.metadata;
-        let tip = meta
-            .last_processed_height
-            .max(meta.synced_height)
-            .max(self.hub.wallet_state(&wallet).map_or(0, |s| s.tip()));
-        let chainlock_height = meta
-            .last_applied_chain_lock
-            .as_ref()
-            .map(|c| c.block_height)
-            .max(self.hub.tracker().chainlock_height());
+        let parts = self.view_parts(info, &wallet);
         drop(wm);
         let history = self.hub.history.snapshot(&wallet);
-        let view = ChainView {
-            owned: &owned,
-            history: &history,
-            tip,
-            chainlock_height,
-            network: self.network.core_network(),
-        };
-        Ok(f(&view))
+        Ok(f(&parts.view(&history, self.network.core_network())))
     }
 
     /// One page of dash-qt history records (QT-086…089, IOS-027/028).
@@ -302,6 +331,7 @@ impl NetworkSession {
         let watch_only = !self.vault.has_wallet_secret(&wallet.0);
         let mut records = self
             .with_view(&live.manager, wallet, |view| {
+                self.fetch_payee_names(wallet, view.payees);
                 view.history
                     .iter()
                     .flat_map(|(txid, entry)| records_of(txid, entry, view, &labels).0)
@@ -338,6 +368,7 @@ impl NetworkSession {
             let watch_only = !this.vault.has_wallet_secret(&wallet.0);
             let mut detail = this
                 .with_view(&live.manager, wallet, |view| {
+                    this.fetch_payee_names(wallet, view.payees);
                     view.history
                         .get(&parsed)
                         .map(|entry| detail_of(&parsed, entry, view, &labels, message))

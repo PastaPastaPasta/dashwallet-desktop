@@ -1,11 +1,13 @@
 //! Contact payments: the per-contact lock, contact activity and the frequent
 //! strip (DP3-01, DP3-02). The `TxDraft` recipient lives in `send/`.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use super::contacts::ContactSummary;
 use super::dashpay::{DashPay, stub};
-use super::errors::ContactError;
+use super::errors::{ContactError, PlatformError};
 
 /// A per-contact send lock after an ambiguous broadcast (`dp_payment_lock`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,8 +71,8 @@ pub struct Counterparty {
     pub avatar_url: Option<String>,
 }
 
-#[expect(unused_variables, reason = "stubs until DP3-01 and DP3-02")]
 impl DashPay {
+    #[expect(unused_variables, reason = "stub until DP3-01")]
     pub fn payment_lock(
         &self,
         identity: String,
@@ -79,6 +81,7 @@ impl DashPay {
         stub("DashPay.payment_lock")
     }
 
+    #[expect(unused_variables, reason = "stub until DP3-01")]
     pub async fn resolve_payment_lock(
         &self,
         identity: String,
@@ -87,6 +90,12 @@ impl DashPay {
         stub("DashPay.resolve_payment_lock")
     }
 
+    /// `identity`'s payments to and from `contact`, newest first (mined by
+    /// block time, unmined first), 50 per page; `cursor` is the previous
+    /// page's `next_cursor`. Attributed as history attributes them
+    /// (`attribution.rs`); abandoned and refused transactions are left out.
+    /// Re-query on `Platform{Payments}`, `Platform{Contacts}` and the
+    /// wallet's `HistoryChanged` (DP3-02).
     pub async fn contact_activity(
         &self,
         identity: String,
@@ -94,14 +103,27 @@ impl DashPay {
         cursor: Option<String>,
         f: ActivityFilter,
     ) -> Result<ActivityPage, ContactError> {
-        stub("DashPay.contact_activity")
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id());
+        self.session
+            .on_runtime(async move {
+                Ok(session
+                    .contact_activity_of(id, identity, contact, cursor, f)
+                    .await)
+            })
+            .await
+            .map_err(PlatformError::from)?
     }
 
+    /// The Pay screen's frequent strip (Android's top contacts): at most
+    /// `limit` (clamped to 1–20) established contacts that are not hidden,
+    /// the ones `identity` paid most often in the last 90 days first, then
+    /// the ones that paid it most often; in memory, from the contacts read
+    /// model and the history (DP3-02).
     pub fn frequent_contacts(
         &self,
         identity: String,
         limit: u32,
     ) -> Result<Vec<ContactSummary>, ContactError> {
-        stub("DashPay.frequent_contacts")
+        self.session.frequent_of(self.wallet_id(), identity, limit)
     }
 }

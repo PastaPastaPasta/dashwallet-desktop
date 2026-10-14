@@ -511,6 +511,52 @@ fn my_user_link_uses_the_main_name() {
     drop(held);
 }
 
+/// Receive requests and the Receive QR carry the main identity's main
+/// name as `user=` (IOS-055, DP3-03); no name, a plain Core URI.
+#[test]
+fn receive_carries_the_main_name() {
+    let f = Fixture::new();
+    let s = &f.s;
+    let request = (f.engine)
+        .block_on(s.create_receive_request(f.wallet, Some(150_000_000), Some("Rent".into()), None))
+        .unwrap();
+    assert_eq!(request.username.as_deref(), Some("me1"));
+    assert_eq!(
+        request.uri,
+        format!(
+            "dash:{}?amount=1.50000000&label=Rent&user=me1",
+            request.address
+        )
+    );
+    let stored = f.engine.block_on(s.receive_requests(f.wallet)).unwrap();
+    assert_eq!(stored, vec![request]);
+    let username = |f: &Fixture| f.engine.block_on(f.s.receive_username(f.wallet)).unwrap();
+    assert_eq!(username(&f), Some("me1".into()));
+
+    // While a pass holds the identities the name is not known: none.
+    let wm = s.manager().unwrap().wallet_manager_arc();
+    let held = f.engine.block_on(wm.write());
+    assert_eq!(username(&f), None);
+    drop(held);
+
+    let nameless = Fixture::named(FakeNet::default(), &[]);
+    assert_eq!(username(&nameless), None);
+    let request = (nameless.engine)
+        .block_on(
+            nameless
+                .s
+                .create_receive_request(nameless.wallet, None, None, None),
+        )
+        .unwrap();
+    assert_eq!(
+        (request.username, request.uri),
+        (None, format!("dash:{}", request.address))
+    );
+
+    let stranger = f.engine.block_on(s.receive_username(WalletId([9; 32])));
+    assert_eq!(stranger.unwrap_err().code(), "wallet_not_found");
+}
+
 /// The iOS-made links (`testdata/dashpay_user_links.json`), as iOS verifies
 /// a scan: the link's username must belong to the link's identity now.
 #[test]

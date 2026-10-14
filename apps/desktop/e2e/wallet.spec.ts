@@ -507,6 +507,59 @@ test.describe("Activity", () => {
   });
 });
 
+// DP3-02 / DP3-03 on U-03's screens: the fixture's `dashpay-registered` wallet ("alice") has a
+// payment from Bob ("Bob Builder") and one to Dave (no display name) attributed.
+test.describe("DashPay attribution and username", () => {
+  const attributed = (page: Page) =>
+    world(page, (w) => {
+      const of = (id: string) => w.wallets[0].rows.find((r) => r.counterparty?.identity === id)!.txid.slice(0, 10);
+      return { bob: of("8GopLQQPjKr2gXjNEt9G8k2PzRZrdbBqQBNTCXV2DYiN"), dave: of("DpPxRMjXzAv1hJDCFnRWGDSEZtqVvtxRrD9AAbGvVdsY") };
+    });
+
+  test("Activity names the contact of a payment, in rows, the table and the detail sheet", async ({ page }) => {
+    const errors = await open(page, "dashpay-registered");
+    const { bob, dave } = await attributed(page);
+    await page.getByTestId("sidebar-activity").click();
+    await expect(page.getByTestId(`tx-row-${bob}-0`).locator(".tx-row-title")).toHaveText("Bob Builder");
+    await expect(page.getByTestId(`tx-row-${dave}-0`).locator(".tx-row-title")).toHaveText("@dave");
+    await page.getByTestId(`tx-row-${bob}-0`).click();
+    await expect(page.getByTestId("tx-detail-contact")).toHaveText(/Received from contact\s*Bob Builder/);
+    await expect(page.getByTestId("tx-detail-summary")).toContainText("Bob Builder");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.keyboard.press("Escape");
+    await page.getByTestId("tx-mode-table").click();
+    await expect(page.getByTestId("tx-table").locator("tbody tr", { hasText: "@dave" })).toHaveCount(1);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test("a wallet without DashPay names no contact", async ({ page }) => {
+    await open(page);
+    await page.getByTestId("sidebar-activity").click();
+    await expect(page.getByTestId("tx-group-0")).toBeVisible();
+    await expect(page.getByText("Bob Builder")).toHaveCount(0);
+  });
+
+  test("Receive's link and requests carry the main name as user= (DP3-03)", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        value: { writeText: async (t: string) => void ((window as unknown as { __copied: string }).__copied = t) },
+      });
+    });
+    const errors = await open(page, "dashpay-registered");
+    await page.getByTestId("sidebar-receive").click();
+    const address = (await page.getByTestId("receive-address").textContent())!;
+    await expect(page.getByTestId("receive-copy-uri")).toBeEnabled();
+    await page.getByTestId("receive-copy-uri").click();
+    expect(await page.evaluate(() => (window as unknown as { __copied: string }).__copied)).toBe(`dash:${address}?user=alice`);
+    await page.getByTestId("request-label").fill("Rent");
+    await page.getByTestId("request-create").click();
+    await expect(page.getByTestId("request-uri")).toContainText("?label=Rent&user=alice");
+    await expect(page.getByTestId("request-username")).toHaveText(/@alice/);
+    expect(errors).toEqual([]);
+  });
+});
+
 test.describe("axe", () => {
   for (const theme of THEMES)
     for (const view of WALLET_VIEWS)

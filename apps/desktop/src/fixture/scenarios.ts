@@ -18,7 +18,7 @@ import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
-import { noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
+import { IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
 import type { Utxo } from "../api/generated/Utxo";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
@@ -279,6 +279,19 @@ function resolvedFlows(w: World): World {
   return cutting(w, [flow("c0ffee01", "acceptAndPay", [[artifactId("c0ffee01"), "sent"]]), request(0, "cancelled")]);
 }
 
+/** The engine's counterparty attribution (DP3-02) for the first unlabelled payment from Bob
+ * (named "Bob Builder") and to Dave (no display name: `@dave`). */
+function attributePayments(w: World) {
+  const party = (name: "bob" | "dave") => {
+    const c = w.dashpay.contacts.find((x) => x.summary.contact === IDENTITY[name])!.summary;
+    return { identity: c.contact, username: c.username, displayName: c.displayName, avatarUrl: null };
+  };
+  const rows = w.wallets[0].rows;
+  const first = (type: TxRow["txType"]) => rows.find((r) => r.txType === type && !r.label && r.status.kind === "confirmed");
+  first("recvWithAddress")!.counterparty = party("bob");
+  first("sendToAddress")!.counterparty = party("dave");
+}
+
 function twoWallets(w: World): World {
   w.wallets.push(emptyWallet(SECOND_WALLET_ID, "Savings"));
   w.lock = unlocked([FIXTURE_WALLET_ID, SECOND_WALLET_ID]);
@@ -339,10 +352,12 @@ const SCENARIOS = {
     w.leases = [lease("9a0b1c2d", "registration", true)];
     return w;
   },
-  /** "alice", with contacts in every relation and channel state and two requests waiting. */
+  /** "alice", with contacts in every relation and channel state and two requests waiting;
+   * payments from Bob and to Dave attributed in the history (DP3-02). */
   "dashpay-registered": (t) => {
     const w = base(t);
     w.dashpay = registered();
+    attributePayments(w);
     return w;
   },
   /** Locking cuts more flows than the report lists, some pending (E0-13 D3): unresolved for good. */
