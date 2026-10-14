@@ -63,8 +63,15 @@ describe("fixture send engine", () => {
 
   it("requires a passphrase for a spend grant while every payment needs authentication", async () => {
     await expect(cmd.authorize({ kind: "spend", maxDuffs: 1 }, W, { kind: "unencrypted" })).rejects.toMatchObject({ code: "vault.credential_required" });
+    await expect(cmd.authorize({ kind: "platformOp", maxDuffs: 1, maxCredits: "1" }, W, { kind: "unencrypted" })).rejects.toMatchObject({
+      code: "vault.credential_required",
+    });
     fixture.world.paymentAuth = false;
     await expect(cmd.authorize({ kind: "spend", maxDuffs: 1 }, W, { kind: "unencrypted" })).resolves.toMatchObject({ walletId: W });
+    // A locked vault answers that it is locked (`check_payment_auth` skips it).
+    fixture.world.paymentAuth = true;
+    fixture.world.lock = { ...fixture.world.lock, state: "locked" };
+    await expect(cmd.authorize({ kind: "spend", maxDuffs: 1 }, W, { kind: "unencrypted" })).rejects.toMatchObject({ code: "vault.locked" });
   });
 
   it("signs only within the spend grant, once", async () => {
@@ -95,15 +102,57 @@ describe("fixture send engine", () => {
     expect(await cmd.draftBroadcast(d, p.handle).catch((e) => e)).toMatchObject({ code: "app.unknown_handle" });
   });
 
-  it("keeps the handle after broadcast_unknown and drops it after a rejection", async () => {
+  it("drops the handle and frees the inputs after a first rejection", async () => {
+    fixture.world.send.broadcast = "rejected";
+    const { d, p } = await prepared(pay(1_000_000));
+    await expect(cmd.draftBroadcast(d, p.handle)).rejects.toMatchObject({ code: "send.broadcast_rejected", data: { kind: "reason" } });
+    await expect(cmd.draftBroadcast(d, p.handle)).rejects.toMatchObject({ code: "app.unknown_handle" });
+    expect((await cmd.utxos(W, { includeLocked: true, fullyMixedOnly: false, minConfirmations: null })).some((u) => u.reserved)).toBe(false);
+  });
+
+  it("never releases a transaction once its outcome was unknown", async () => {
+    const reserved = async () => (await cmd.utxos(W, { includeLocked: true, fullyMixedOnly: false, minConfirmations: null })).filter((u) => u.reserved);
     fixture.world.send.broadcast = "unknown";
     const { d, p } = await prepared(pay(1_000_000));
     await expect(cmd.draftBroadcast(d, p.handle)).rejects.toMatchObject({ code: "send.broadcast_unknown" });
-    fixture.world.send.broadcast = "rejected";
-    await expect(cmd.draftBroadcast(d, p.handle)).rejects.toMatchObject({ code: "send.broadcast_rejected", data: { kind: "reason" } });
+    // The wallet recorded it, as the engine does for a transaction it handed over.
+    const [row] = (await cmd.historyPage(W, { categories: [], text: null, sort: "newestFirst", cursor: null, limit: 1 })).rows;
+    expect(row).toMatchObject({ txid: p.summary.txid, amount: -p.summary.totalDebit });
+    // A retry that fails stays unknown; the handle stays, abandon is refused.
+    fixture.world.send.broadcast = "noPeers";
+    await expect(cmd.draftBroadcast(d, p.handle)).rejects.toMatchObject({ code: "send.broadcast_unknown" });
+    await expect(cmd.draftAbandon(d, p.handle)).rejects.toMatchObject({ code: "send.prepared_tx_spent" });
+    // A retry that lands is sent once: no second row, no second debit.
+    fixture.world.send.broadcast = "ok";
+    await expect(cmd.draftBroadcast(d, p.handle)).resolves.toEqual({ txid: p.summary.txid });
+    expect((await cmd.balance(W))?.confirmed).toBe(3_019_698_287 - p.summary.totalDebit);
+    expect((await cmd.historyPage(W, { categories: [], text: null, sort: "newestFirst", cursor: null, limit: 2 })).rows[1].txid).not.toBe(p.summary.txid);
+    expect(await reserved()).toEqual([]);
+  });
+
+  it("keeps an unknown transaction's coins when its draft closes", async () => {
+    fixture.world.send.broadcast = "unknown";
+    const { d, p } = await prepared(pay(1_000_000));
+    await expect(cmd.draftBroadcast(d, p.handle)).rejects.toMatchObject({ code: "send.broadcast_unknown" });
+    const before = (await cmd.balance(W))?.confirmed;
+    await cmd.closeDraft(d);
     await expect(cmd.draftBroadcast(d, p.handle)).rejects.toMatchObject({ code: "app.unknown_handle" });
-    // The rejected transaction's inputs are free again.
-    expect((await cmd.utxos(W, { includeLocked: true, fullyMixedOnly: false, minConfirmations: null })).some((u) => u.reserved)).toBe(false);
+    // Spent by the recorded transaction, not given back.
+    expect((await cmd.balance(W))?.confirmed).toBe(before);
+    const coins = await cmd.utxos(W, { includeLocked: true, fullyMixedOnly: false, minConfirmations: null });
+    expect(coins.some((u) => p.summary.inputs.some((i) => i.outpoint.txid === u.outpoint.txid && i.outpoint.vout === u.outpoint.vout))).toBe(false);
+  });
+
+  it("counts change to a foreign address against the grant (U-03 D21)", async () => {
+    const d = await draftFor(pay(50_000_000));
+    await cmd.draftSetChange(d, { kind: "address", address: "yMpwVCKWHgSfCBbpB5fmhn7m2AFS2sMgtp" });
+    const est = await cmd.draftEstimate(d);
+    const short = await cmd.authorize({ kind: "spend", maxDuffs: est.totalSent + est.fee }, W, PASS);
+    expect(await cmd.draftPrepare(d, short.id).catch((e) => e)).toMatchObject({ code: "send.grant_exceeded" });
+    const full = await cmd.authorize({ kind: "spend", maxDuffs: est.totalSent + est.fee + (est.change ?? 0) }, W, PASS);
+    const p = await cmd.draftPrepare(d, full.id);
+    expect(p.summary).toMatchObject({ totalDebit: est.totalSent + est.fee + (est.change ?? 0), externalSent: est.totalSent + (est.change ?? 0) });
+    expect(p.summary.outputs[1]).toMatchObject({ isChange: true, isMine: false });
   });
 
   it("abandons its own unconfirmed send and gives the coins back", async () => {

@@ -60,6 +60,8 @@ interface Prepared {
   walletId: string;
   summary: PreparedTxSummary;
   recipient: Recipient;
+  /** A broadcast's outcome was unknown: it may be on the network, so it is never released. */
+  handedOver: boolean;
 }
 
 export interface SendWorld {
@@ -347,6 +349,13 @@ function receiveAddress(wallet: FixtureWallet, index: number, label: string | nu
   };
 }
 
+/** Whether the wallet owns `address`: a coin's, or a receiving address it issued. */
+function owns(wallet: FixtureWallet, address: string): boolean {
+  if (wallet.coins.some((u) => u.address === address)) return true;
+  for (let i = 0; i <= wallet.receive.issued; i++) if (receiveAddress(wallet, i, null).address === address) return true;
+  return false;
+}
+
 /** Issues the next receiving address, up to the gap limit. */
 function issueAddress(wallet: FixtureWallet, label: string | null): AddressInfo {
   if (wallet.receive.issued - wallet.receive.firstUnused + 1 >= GAP_LIMIT) throw fail("gap_limit", "gap limit reached");
@@ -384,6 +393,54 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
     for (const u of wallet(w, prep.walletId).coins)
       if (prep.summary.inputs.some((i) => sameOutpoint(i.outpoint, u.outpoint))) Object.assign(u, { reserved: false, spendable: true });
     delete w.send.prepared[p];
+  };
+  /** The wallet records a transaction it handed to the network (once): its inputs are spent, its
+   * change is a new coin, a row and the balance move. */
+  const handOver = (ctx: Ctx, prep: Prepared) => {
+    const s = prep.summary;
+    prep.handedOver = true;
+    if (ctx.world.send.sent[s.txid]) return;
+    const w = wallet(ctx.world, prep.walletId);
+    const spent = w.coins.filter((u) => s.inputs.some((i) => sameOutpoint(i.outpoint, u.outpoint)));
+    w.coins = w.coins.filter((u) => !spent.includes(u));
+    const changeOut = s.outputs.findIndex((o) => o.isChange && o.isMine);
+    const change: OutPoint | null = changeOut < 0 ? null : { txid: s.txid, vout: changeOut };
+    if (change)
+      w.coins.push({
+        ...spent[0],
+        outpoint: change,
+        address: s.outputs[changeOut].address!,
+        amount: s.outputs[changeOut].amount,
+        confirmations: 0,
+        blockHeight: null,
+        timestamp: secs(FIXTURE_NOW),
+        // The fixture's network InstantSend-locks it at once, so it can pay again.
+        instantLocked: true,
+        chainLocked: false,
+        reserved: false,
+        label: null,
+        isChange: true,
+        spendable: true,
+      });
+    const row: TxRow = {
+      txid: s.txid,
+      recordIndex: 0,
+      txType: "sendToAddress",
+      category: "sent",
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+      timestamp: secs(FIXTURE_NOW),
+      blockHeight: null,
+      amount: -s.totalDebit,
+      fee: s.fee,
+      address: prep.recipient.address,
+      label: prep.recipient.label,
+      countsTowardBalance: true,
+      involvesWatchOnly: false,
+    };
+    w.rows = [row, ...w.rows];
+    moveBalance(w, -s.totalDebit);
+    ctx.world.send.sent[s.txid] = { walletId: prep.walletId, spent, change };
+    changed(ctx, w, [s.txid]);
   };
   const set = (w: World, h: number, patch: Partial<Draft>) => {
     w.send.drafts[h] = { ...draftOf(w, h), ...patch };
@@ -441,9 +498,11 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
       world.send.drafts[h] = { walletId, recipients: [], source: { kind: "any" }, fee: { kind: "recommended", targetBlocks: 6 }, change: { kind: "auto" } };
       return h;
     },
+    // A transaction that may be on the network keeps its inputs; its handle goes with the draft.
     close_draft: ({ draft }, { world }) => {
       if (!world.send.drafts[draft]) return false;
-      for (const [p, prep] of Object.entries(world.send.prepared)) if (prep.draft === draft) release(world, Number(p));
+      for (const [p, prep] of Object.entries(world.send.prepared))
+        if (prep.draft === draft) prep.handedOver ? delete world.send.prepared[Number(p)] : release(world, Number(p));
       delete world.send.drafts[draft];
       return true;
     },
@@ -457,98 +516,64 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
       return estimate;
     },
 
-    // The `spend` grant caps what leaves the wallet: inputs minus change, the fee included.
+    // The `spend` grant caps what leaves the wallet: the outputs it does not own (recipients, a
+    // foreign change address) plus the fee. The plan is checked before the grant, as the engine.
     draft_prepare: ({ draft, grantId }, { world }) => {
       const d = draftOf(world, draft);
       const w = wallet(world, d.walletId);
+      const built = build(world, w, d);
       const grant = spendGrant(world, grantId, d.walletId);
       if (!grant) throw fail("send.grant_invalid", "grant invalid");
-      const built = build(world, w, d);
-      const debit = built.totalSent + built.fee;
+      const h = world.send.handles + 1;
+      const recipient = d.recipients[0];
+      const changeAddress = d.change.kind === "address" ? d.change.address : receiveAddress(w, 1000 + h, null).address;
+      const outputs = [
+        ...d.recipients.map((r) => ({ address: r.address, amount: r === recipient ? built.totalSent : r.amount, isChange: false, label: r.label, isMine: owns(w, r.address) })),
+        ...(built.change === null ? [] : [{ address: changeAddress, amount: built.change, isChange: true, label: null, isMine: d.change.kind === "auto" || owns(w, changeAddress) }]),
+      ];
+      const externalSent = outputs.filter((o) => !o.isMine).reduce((n, o) => n + o.amount, 0);
+      const debit = externalSent + built.fee;
       const cap = grant.grant.purpose.kind === "spend" ? grant.grant.purpose.maxDuffs : 0;
       useGrant(world, grantId);
       if (debit > cap) throw fail("send.grant_exceeded", "grant exceeded", { kind: "spendCap", maxDuffs: cap, outflow: debit });
       for (const u of built.inputs) Object.assign(u, { reserved: true, spendable: false });
-      const h = ++world.send.handles;
-      const recipient = d.recipients[0];
-      const changeAddress = d.change.kind === "address" ? d.change.address : receiveAddress(w, 1000 + h, null).address;
+      world.send.handles = h;
       const summary: PreparedTxSummary = {
         txid: `5e17${h.toString(16).padStart(4, "0")}`.repeat(8),
         fee: built.fee,
         feeRatePerKb: rateOf(d.fee),
         sizeBytes: built.sizeBytes,
         inputs: built.inputs.map((u) => ({ outpoint: u.outpoint, address: u.address, amount: u.amount })),
-        outputs: [
-          ...d.recipients.map((r) => ({ address: r.address, amount: r === recipient ? built.totalSent : r.amount, isChange: false, label: r.label, isMine: false })),
-          ...(built.change === null ? [] : [{ address: changeAddress, amount: built.change, isChange: true, label: null, isMine: d.change.kind === "auto" }]),
-        ],
+        outputs,
         totalSent: built.totalSent,
         totalDebit: debit,
-        externalSent: built.totalSent,
+        externalSent,
       };
-      world.send.prepared[h] = { draft, walletId: d.walletId, summary, recipient };
+      world.send.prepared[h] = { draft, walletId: d.walletId, summary, recipient, handedOver: false };
       return { handle: h, summary };
     },
 
     // E0-13 D8: accepted or released, the handle is dropped; after `broadcast_unknown` it stays.
+    // Only a first attempt is released: once unknown, a failure stays unknown. The wallet records
+    // the transaction when it is handed over, whatever the outcome.
     draft_broadcast: ({ draft, prepared }, ctx) => {
       const { world } = ctx;
       const prep = preparedOf(world, draft, prepared);
       const mode = world.send.broadcast;
-      if (mode === "unknown") throw fail("send.broadcast_unknown", "no answer from the network");
-      if (mode !== "ok") {
+      if (mode === "noPeers" || mode === "rejected") {
+        if (prep.handedOver) throw fail("send.broadcast_unknown", "no answer from the network");
         release(world, prepared);
         throw mode === "noPeers"
           ? fail("send.no_peers", "no peers")
           : fail("send.broadcast_rejected", "rejected", { kind: "reason", reason: "bad-txns-inputs-missingorspent" });
       }
-      const w = wallet(world, prep.walletId);
-      const s = prep.summary;
-      const spent = w.coins.filter((u) => s.inputs.some((i) => sameOutpoint(i.outpoint, u.outpoint)));
-      w.coins = w.coins.filter((u) => !spent.includes(u));
-      const changeOut = s.outputs.findIndex((o) => o.isChange && o.isMine);
-      const change: OutPoint | null = changeOut < 0 ? null : { txid: s.txid, vout: changeOut };
-      if (change)
-        w.coins.push({
-          ...spent[0],
-          outpoint: change,
-          address: s.outputs[changeOut].address!,
-          amount: s.outputs[changeOut].amount,
-          confirmations: 0,
-          blockHeight: null,
-          timestamp: secs(FIXTURE_NOW),
-          // The fixture's network InstantSend-locks it at once, so it can pay again.
-          instantLocked: true,
-          chainLocked: false,
-          reserved: false,
-          label: null,
-          isChange: true,
-          spendable: true,
-        });
-      const row: TxRow = {
-        txid: s.txid,
-        recordIndex: 0,
-        txType: "sendToAddress",
-        category: "sent",
-        status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
-        timestamp: secs(FIXTURE_NOW),
-        blockHeight: null,
-        amount: -s.totalDebit,
-        fee: s.fee,
-        address: prep.recipient.address,
-        label: prep.recipient.label,
-        countsTowardBalance: true,
-        involvesWatchOnly: false,
-      };
-      w.rows = [row, ...w.rows];
-      moveBalance(w, -s.totalDebit);
-      world.send.sent[s.txid] = { walletId: prep.walletId, spent, change };
+      handOver(ctx, prep);
+      if (mode === "unknown") throw fail("send.broadcast_unknown", "no answer from the network");
       delete world.send.prepared[prepared];
-      changed(ctx, w, [s.txid]);
-      return { txid: s.txid };
+      return { txid: prep.summary.txid };
     },
     draft_abandon: ({ draft, prepared }, { world }) => {
-      preparedOf(world, draft, prepared);
+      if (preparedOf(world, draft, prepared).handedOver) throw fail("send.prepared_tx_spent", "the transaction may be on the network");
       release(world, prepared);
       return null;
     },

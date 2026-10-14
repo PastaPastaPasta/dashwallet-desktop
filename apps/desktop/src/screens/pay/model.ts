@@ -5,6 +5,7 @@
 import { hasCode, isAppError, retryAfterSecs } from "../../api/backend";
 import type { AddressClass } from "../../api/generated/AddressClass";
 import type { AppError } from "../../api/generated/AppError";
+import type { ChangePolicy } from "../../api/generated/ChangePolicy";
 import type { CoinSource } from "../../api/generated/CoinSource";
 import type { FeeMode } from "../../api/generated/FeeMode";
 import type { LockStatus } from "../../api/generated/LockStatus";
@@ -59,6 +60,14 @@ export function coinSource(a: Advanced): CoinSource {
 export function feeMode(a: Advanced): FeeMode | null {
   if (a.fee.kind === "recommended") return { kind: "recommended", targetBlocks: a.fee.targetBlocks };
   return a.fee.duffsPerKb === null ? null : { kind: "perKb", duffsPerKb: a.fee.duffsPerKb };
+}
+
+/** The draft's change: automatic, or the custom address (trimmed); `null` holds the payment
+ * while the custom address is empty. */
+export function changePolicy(a: Advanced): ChangePolicy | null {
+  if (a.changeAddress === null) return { kind: "auto" };
+  const address = a.changeAddress.trim();
+  return address === "" ? null : { kind: "address", address };
 }
 
 /** What the form holds once its fields parse. */
@@ -204,33 +213,53 @@ export function authRefusal(e: AppError): AuthRefusal {
 export interface Confirmed {
   recipient: Recipient;
   estimate: TxEstimate;
-  /** What leaves the wallet at most: the recipients' amount plus the fee. The `spend` grant's cap. */
+  /** The custom change address, if any. */
+  changeAddress: string | null;
+  /** What leaves the wallet at most: the recipients' amount plus the fee, and the change when it
+   * goes to a custom address (U-03 D21: the engine counts it if the wallet does not own the
+   * address, and the renderer cannot tell). The `spend` grant's cap. */
   total: number;
 }
 
-export function confirmedOf(recipient: Recipient, estimate: TxEstimate): Confirmed {
-  return { recipient, estimate, total: estimate.totalSent + estimate.fee };
+export function confirmedOf(recipient: Recipient, estimate: TxEstimate, change: ChangePolicy): Confirmed {
+  const changeAddress = change.kind === "address" ? change.address : null;
+  const total = estimate.totalSent + estimate.fee + (changeAddress === null ? 0 : (estimate.change ?? 0));
+  return { recipient, estimate, changeAddress, total };
 }
 
 /** The signed transaction keeps the sheet's promise (U-03 D2): it pays the address what the
- * sheet said, and takes no more than the confirmed total from the wallet. */
+ * sheet said, sends change only where the sheet said, and takes no more than the confirmed total
+ * from the wallet. */
 export function keepsPromise(c: Confirmed, s: PreparedTxSummary): boolean {
   const paid = s.outputs.filter((o) => !o.isChange && o.address === c.recipient.address).reduce((n, o) => n + o.amount, 0);
-  return paid === c.estimate.totalSent && s.totalSent === c.estimate.totalSent && s.totalDebit <= c.total;
+  const change = s.outputs.filter((o) => o.isChange);
+  const changeKept = c.changeAddress === null ? change.every((o) => o.isMine) : change.every((o) => o.address === c.changeAddress);
+  return paid === c.estimate.totalSent && s.totalSent === c.estimate.totalSent && changeKept && s.totalDebit <= c.total;
 }
 
 // ---------------------------------------------------------------- the result
 
 export type Outcome =
   | { kind: "sent"; txid: string; amount: number; fee: number }
-  /** `send.broadcast_unknown`: the prepared transaction is still held, so it can be retried. */
-  | { kind: "unknown"; text: string; draft: number; prepared: number; amount: number; fee: number }
+  /** The transaction may have reached the network. `retry`: the engine still holds it, so Try
+   * again repeats the broadcast. */
+  | { kind: "unknown"; text: string; retry: boolean; draft: number; prepared: number; amount: number; fee: number }
   | { kind: "failed"; text: string };
 
-/** The outcome of a failed broadcast of `prepared` (E0-13 D8: only `broadcast_unknown` keeps it). */
-export function broadcastFailure(e: unknown, chain: Chain, held: { draft: number; prepared: number; amount: number; fee: number }): Outcome {
-  const text = failureText(e, chain);
-  return hasCode(e, "send.broadcast_unknown") ? { kind: "unknown", text, ...held } : { kind: "failed", text };
+/** The engine's codes for a first broadcast that released the transaction (E0-13 D8, `released`
+ * in send.rs): nothing was sent and its handle is gone. */
+const RELEASED = ["send.no_peers", "send.broadcast_rejected", "send.prepared_tx_spent", "send.cancelled"] as const;
+
+/** The outcome of a failed broadcast of `prepared` (U-03 D10). Only a first attempt the engine
+ * released, or one whose handle was already gone (never dispatched), is "not sent". Anything
+ * else may have reached the network: it stays unknown, never abandoned, so the user is not
+ * invited to pay twice. A retry is never released (the engine keeps an unknown transaction). */
+export function broadcastFailure(e: unknown, chain: Chain, held: { draft: number; prepared: number; amount: number; fee: number }, first: boolean): Outcome {
+  const gone = hasCode(e, "app.unknown_handle");
+  if (first && (gone || RELEASED.some((c) => hasCode(e, c)))) return { kind: "failed", text: failureText(e, chain) };
+  // The handle went with the draft (a lock or network switch closed it): nothing to retry here.
+  const text = gone ? "The payment may have been sent, and it can no longer be retried here." : failureText(e, chain);
+  return { kind: "unknown", text, retry: !gone, ...held };
 }
 
 export function failureText(e: unknown, chain: Chain): string {

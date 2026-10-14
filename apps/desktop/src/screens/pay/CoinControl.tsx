@@ -164,7 +164,10 @@ function Fee({ advanced, onChange, network }: Props) {
   const p = policy.data;
   const rate = parsed.data;
   const problem = advanced.fee.kind !== "custom" || custom === "" || parsed.isPending || !p ? null : rateProblem(rate, p, network.unitName);
-  const good = rate !== null && rate !== undefined && problem === null && custom !== "" ? rate : null;
+  // Still typing (`text` ahead of the debounced `custom`) or parsing: the old rate must not be
+  // the one Review confirms.
+  const settled = custom === text.trim() && !parsed.isPending;
+  const good = settled && rate !== null && rate !== undefined && problem === null && custom !== "" ? rate : null;
   // The parsed rate goes up once it settles; `null` holds the payment until it is valid.
   useEffect(() => {
     if (advanced.fee.kind === "custom" && advanced.fee.duffsPerKb !== good) onChange({ ...advanced, fee: { kind: "custom", duffsPerKb: good } });

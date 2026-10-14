@@ -109,9 +109,14 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
                 inputMode="decimal"
                 placeholder="0.00"
                 aria-invalid={minError}
-                title={minError ? "Enter an amount in DASH; this one is ignored" : undefined}
+                aria-describedby={minError ? "tx-min-amount-error" : undefined}
                 onChange={(e) => setMinText(e.target.value)}
               />
+              {minError && (
+                <span id="tx-min-amount-error" className="field-error" data-testid="tx-min-amount-error">
+                  Not an amount in DASH: ignored
+                </span>
+              )}
             </label>
           </div>
           <div className="filter-chips" role="group" aria-label="Transaction type" data-testid="tx-categories">

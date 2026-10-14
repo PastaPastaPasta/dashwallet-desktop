@@ -6,6 +6,7 @@ import {
   addressProblem,
   authRefusal,
   broadcastFailure,
+  changePolicy,
   coinSource,
   confirmedOf,
   credentialPrompt,
@@ -30,7 +31,8 @@ const lock = (over: Partial<LockStatus> = {}): LockStatus => ({
 });
 const PAYEE = "yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd";
 const recipient = recipientOf({ address: PAYEE, amount: 50_000_000, subtractFee: false, label: "  Alice ", message: " " });
-const confirmed = confirmedOf(recipient, { fee: 226, sizeBytes: 226, inputCount: 1, change: 10, totalSent: 50_000_000 });
+const estimate = { fee: 226, sizeBytes: 226, inputCount: 1, change: 10, totalSent: 50_000_000 };
+const confirmed = confirmedOf(recipient, estimate, { kind: "auto" });
 
 const summary = (over: Partial<PreparedTxSummary> = {}): PreparedTxSummary => ({
   txid: "ab".repeat(32),
@@ -65,6 +67,12 @@ describe("the form's draft", () => {
     expect(feeMode({ ...DEFAULT_ADVANCED, fee: { kind: "custom", duffsPerKb: 5000 } })).toEqual({ kind: "perKb", duffsPerKb: 5000 });
   });
 
+  it("holds the payment while the custom change address is empty", () => {
+    expect(changePolicy(DEFAULT_ADVANCED)).toEqual({ kind: "auto" });
+    expect(changePolicy({ ...DEFAULT_ADVANCED, changeAddress: "  " })).toBeNull();
+    expect(changePolicy({ ...DEFAULT_ADVANCED, changeAddress: " yChange " })).toEqual({ kind: "address", address: "yChange" });
+  });
+
   it("explains addresses it cannot pay", () => {
     expect(addressProblem({ kind: "core", scriptHash: false })).toBeNull();
     expect(addressProblem({ kind: "platform" })).toMatch(/Platform address/);
@@ -85,14 +93,25 @@ describe("the engine's refusals", () => {
     expect(sendErrorText(new Error("x"), "test")).toBeNull();
   });
 
-  it("keeps the transaction only after broadcast_unknown (E0-13 D8)", () => {
+  it("is not sent only when the engine released a first attempt (E0-13 D8)", () => {
     const held = { draft: 1, prepared: 2, amount: 5, fee: 1 };
-    expect(broadcastFailure(err("send.broadcast_unknown"), "test", held)).toMatchObject({ kind: "unknown", ...held });
-    expect(broadcastFailure(err("send.broadcast_rejected", { kind: "reason", reason: "bad-txns" }), "test", held)).toEqual({
+    expect(broadcastFailure(err("send.broadcast_unknown"), "test", held, true)).toMatchObject({ kind: "unknown", retry: true, ...held });
+    expect(broadcastFailure(err("send.broadcast_rejected", { kind: "reason", reason: "bad-txns" }), "test", held, true)).toEqual({
       kind: "failed",
       text: "The network rejected the transaction: bad-txns. The payment was not sent.",
     });
-    expect(broadcastFailure(err("send.no_peers"), "test", held).kind).toBe("failed");
+    for (const code of ["send.no_peers", "send.prepared_tx_spent", "send.cancelled", "app.unknown_handle"] as const)
+      expect(broadcastFailure(err(code), "test", held, true).kind).toBe("failed");
+    // A code the renderer does not know may come after the bytes left: unknown, never abandoned.
+    expect(broadcastFailure(err("internal"), "test", held, true)).toMatchObject({ kind: "unknown", retry: true });
+  });
+
+  it("never turns an unknown payment into not sent on a retry", () => {
+    const held = { draft: 1, prepared: 2, amount: 5, fee: 1 };
+    expect(broadcastFailure(err("send.no_peers"), "test", held, false)).toMatchObject({ kind: "unknown", retry: true });
+    expect(broadcastFailure(err("send.broadcast_rejected"), "test", held, false)).toMatchObject({ kind: "unknown", retry: true });
+    // The handle went with the draft (a lock closed it): still unknown, nothing to retry.
+    expect(broadcastFailure(err("app.unknown_handle"), "test", held, false)).toMatchObject({ kind: "unknown", retry: false });
   });
 });
 
@@ -119,6 +138,17 @@ describe("the payment policy (E0-13 D11, U-03 D3)", () => {
 describe("the confirm sheet's promise (U-03 D2)", () => {
   it("caps the grant at the amount plus the fee", () => {
     expect(confirmed.total).toBe(50_000_226);
+  });
+
+  it("counts the change in the cap when it goes to a custom address (D21)", () => {
+    const custom = confirmedOf(recipient, estimate, { kind: "address", address: "yForeign" });
+    expect(custom).toMatchObject({ changeAddress: "yForeign", total: 50_000_236 });
+    const outputs = summary().outputs;
+    const foreign = summary({ outputs: [outputs[0], { ...outputs[1], address: "yForeign", isMine: false }], totalDebit: 50_000_236 });
+    expect(keepsPromise(custom, foreign)).toBe(true);
+    expect(keepsPromise(confirmed, foreign)).toBe(false);
+    // Change somewhere the sheet did not show.
+    expect(keepsPromise(custom, summary({ outputs: [outputs[0], { ...outputs[1], address: "yElse", isMine: false }], totalDebit: 50_000_236 }))).toBe(false);
   });
 
   it("holds when the signed transaction pays what the sheet showed", () => {

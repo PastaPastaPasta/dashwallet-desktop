@@ -1,7 +1,8 @@
-// The payment's result (UX-SPEC §4.7, U-03 D10): sent, outcome unknown (the prepared
-// transaction is held, so Try again repeats the broadcast), or not sent.
+// The payment's result (UX-SPEC §4.7, U-03 D10): sent, outcome unknown (the engine holds the
+// prepared transaction, so Try again repeats the broadcast), or not sent. Once unknown, a
+// payment never becomes "not sent": a retry's failure stays unknown.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { AmountText, DashButton, Icon } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
@@ -41,21 +42,25 @@ export function ResultSheet({
   const [busy, setBusy] = useState(false);
   const unit = network.unitName;
 
+  const retryButton = useRef<HTMLButtonElement>(null);
   const retry = async () => {
-    if (outcome.kind !== "unknown" || busy) return;
+    if (outcome.kind !== "unknown" || !outcome.retry || busy) return;
     setBusy(true);
     const { draft: d, prepared, amount, fee } = outcome;
     try {
       const { txid } = await draft.broadcast(d, prepared);
       onOutcome({ kind: "sent", txid, amount, fee });
     } catch (e) {
-      const next = broadcastFailure(e, chainOf(network), { draft: d, prepared, amount, fee });
-      if (next.kind === "failed") await draft.abandon(d, prepared);
-      onOutcome(next);
+      onOutcome(broadcastFailure(e, chainOf(network), { draft: d, prepared, amount, fee }, false));
     } finally {
       setBusy(false);
     }
   };
+  // The button was disabled while the retry ran: focus goes back to it, or to Close.
+  const closeButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!busy && outcome.kind === "unknown") (outcome.retry ? retryButton : closeButton).current?.focus();
+  }, [busy, outcome]);
 
   return (
     <Sheet title={TITLE[outcome.kind]} width="small" testId="pay-result" onClose={() => !busy && onDone(false)}>
@@ -99,12 +104,14 @@ export function ResultSheet({
         )}
         {outcome.kind === "unknown" && (
           <>
-            <DashButton variant="tintedGray" size="large" data-testid="pay-result-close" disabled={busy} onClick={() => onDone(false)}>
+            <DashButton ref={closeButton} variant="tintedGray" size="large" data-testid="pay-result-close" disabled={busy} onClick={() => onDone(false)}>
               Close
             </DashButton>
-            <DashButton variant="filledBlue" size="large" data-testid="pay-result-retry" data-autofocus disabled={busy} onClick={() => void retry()}>
-              {busy ? "Sending…" : "Try again"}
-            </DashButton>
+            {outcome.retry && (
+              <DashButton ref={retryButton} variant="filledBlue" size="large" data-testid="pay-result-retry" data-autofocus disabled={busy} onClick={() => void retry()}>
+                {busy ? "Sending…" : "Try again"}
+              </DashButton>
+            )}
           </>
         )}
         {outcome.kind === "failed" && (

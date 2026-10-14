@@ -114,11 +114,14 @@ test.describe("Pay", () => {
     await expect(page.getByTestId("pay-confirm-fee")).toContainText("0.00000226");
     await expect(page.getByTestId("pay-confirm-total")).toContainText("0.50000226");
     await expect(page.getByTestId("pay-confirm-passphrase")).toBeFocused();
+    // The shell behind the sheet takes no focus (U-03 D22).
+    await expect(page.locator(".app-chrome")).toHaveAttribute("inert", "");
 
-    // A wrong passphrase is refused and cleared; nothing is signed.
+    // A wrong passphrase is refused and cleared, and the field has the focus again; nothing is signed.
     await sendWithPassphrase(page, "wrong");
     await expect(page.getByTestId("pay-confirm-error")).toHaveText("The passphrase you entered was incorrect.");
     await expect(page.getByTestId("pay-confirm-passphrase")).toHaveValue("");
+    await expect(page.getByTestId("pay-confirm-passphrase")).toBeFocused();
     expect(await world(page, (w) => Object.keys(w.send.prepared).length)).toBe(0);
 
     await sendWithPassphrase(page);
@@ -177,9 +180,19 @@ test.describe("Pay", () => {
     await expect(page.getByTestId("pay-result-unknown")).toBeVisible();
     await expect(page.getByTestId("pay-result-text")).toContainText("Check Activity before you pay again.");
     await expect(page.getByTestId("pay-result-retry")).toBeFocused();
+    // A retry that fails is still unknown, never "not sent" (U-03 D10): the user must not pay twice.
+    // (The engine answers `broadcast_unknown` for a handed-over transaction whatever went wrong.)
+    await world(page, (w) => (w.send.broadcast = "noPeers"));
+    await page.getByTestId("pay-result-retry").click();
+    await expect(page.getByTestId("pay-result-retry")).toHaveText("Try again");
+    await expect(page.getByTestId("pay-result-unknown")).toBeVisible();
+    await expect(page.getByTestId("pay-result-failed")).toHaveCount(0);
+    await expect(page.getByTestId("pay-result-retry")).toBeFocused();
+    expect(await world(page, (w) => w.wallets[0].coins.some((u) => u.reserved))).toBe(false);
     await world(page, (w) => (w.send.broadcast = "ok"));
     await page.getByTestId("pay-result-retry").click();
     await expect(page.getByTestId("pay-result-sent")).toBeVisible();
+    // Recorded once, when it was handed over (the fixture history already had one such row).
     expect(await world(page, (w) => w.wallets[0].rows.filter((r) => r.amount === -50_000_226).length)).toBe(2);
   });
 
@@ -230,6 +243,21 @@ test.describe("Pay", () => {
     await page.getByTestId("change-address").fill(PAYEE.replace("Cd", "Ce"));
     await review(page);
     await expect(page.getByTestId("pay-confirm-facts")).toContainText("2 selected coins");
+    // Change to an address the wallet may not own counts toward the total and the grant (D21).
+    await expect(page.getByTestId("pay-confirm-change")).toContainText(PAYEE.replace("Cd", "Ce"));
+    await sendWithPassphrase(page);
+    await expect(page.getByTestId("pay-result-sent")).toBeVisible();
+    const [cap, debit] = await world(page, (w) => [w.grants[0].grant.purpose, -w.wallets[0].rows[0].amount]);
+    expect(cap).toEqual({ kind: "spend", maxDuffs: debit });
+  });
+
+  test("an empty custom change address holds the payment", async ({ page }) => {
+    await open(page);
+    await fillPayment(page, PAYEE, "0.5");
+    await page.getByTestId("pay-advanced").locator("summary").click();
+    await page.getByTestId("change-custom").check();
+    await expect(page.getByTestId("pay-problem")).toHaveText("Enter the custom change address.");
+    await expect(page.getByTestId("pay-continue")).toBeDisabled();
   });
 });
 
@@ -283,6 +311,10 @@ test.describe("Receive", () => {
     await page.getByTestId("request-amount").fill("abc");
     await expect(page.getByText("Enter an amount in DASH, for example 0.25.")).toBeVisible();
     await expect(page.getByTestId("request-create")).toBeDisabled();
+    // Zero is not "no amount": it is refused, not dropped.
+    await page.getByTestId("request-amount").fill("0");
+    await expect(page.getByText("The amount must be larger than 0, or empty.")).toBeVisible();
+    await expect(page.getByTestId("request-create")).toBeDisabled();
   });
 });
 
@@ -319,6 +351,7 @@ test.describe("Activity", () => {
     expect(n).toBeLessThan(45);
     await page.getByTestId("tx-min-amount").fill("x");
     await expect(page.getByTestId("tx-min-amount")).toHaveAttribute("aria-invalid", "true");
+    await expect(page.getByTestId("tx-min-amount-error")).toBeVisible();
     await expect(page.getByTestId("tx-footer")).toHaveText("45 transactions");
   });
 
@@ -340,6 +373,7 @@ test.describe("Activity", () => {
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
     await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
+    await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
   });
 });
 

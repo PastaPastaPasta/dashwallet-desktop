@@ -1,8 +1,33 @@
 // SheetScaffold (UX-SPEC C23): a modal dialog with the 64 pt header (title, close), Escape to
 // close, focus kept inside while open and returned to the opener on close. Focus starts on the
 // element marked `data-autofocus`, else on the first focusable one (the close button).
+//
+// A sheet opened from inside the shell (Pay, Receive) renders into App's sheet layer, above the
+// shell and below the lock screen, and the shell goes inert while it is open (U-03 D22).
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+
+/** App's layer for sheets opened inside the shell; `null` renders a sheet in place. */
+export const SheetLayer = createContext<HTMLElement | null>(null);
+
+let layered = 0;
+const watchers = new Set<() => void>();
+function hold(by: number) {
+  layered += by;
+  for (const w of watchers) w();
+}
+
+/** Whether a sheet is open in the layer: the shell behind it takes no focus. */
+export function useLayeredSheet(): boolean {
+  return useSyncExternalStore(
+    (w) => {
+      watchers.add(w);
+      return () => void watchers.delete(w);
+    },
+    () => layered > 0,
+  );
+}
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select, textarea, summary, [tabindex]:not([tabindex="-1"])';
 
@@ -20,6 +45,12 @@ export function Sheet({
   children: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement>(null);
+  const layer = useContext(SheetLayer);
+  useEffect(() => {
+    if (!layer) return;
+    hold(1);
+    return () => hold(-1);
+  }, [layer]);
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
     const start = panel.current?.querySelector<HTMLElement>("[data-autofocus]") ?? panel.current?.querySelector<HTMLElement>(FOCUSABLE);
@@ -47,7 +78,7 @@ export function Sheet({
     }
   };
 
-  return (
+  const sheet = (
     <div className="sheet-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
         ref={panel}
@@ -75,4 +106,5 @@ export function Sheet({
       </div>
     </div>
   );
+  return layer ? createPortal(sheet, layer) : sheet;
 }

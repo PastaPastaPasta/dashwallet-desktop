@@ -133,7 +133,8 @@ export const DATE_CHOICES: { id: DateChoice; title: string }[] = [
   { id: "thisYear", title: "This year" },
 ];
 
-/** The UNIX-second bounds of a date choice in local time (weeks start on Monday, as dash-qt's). */
+/** The UNIX-second bounds of a date choice in local time (weeks start on Monday, as dash-qt's);
+ * `dateTo` is exclusive, as the engine's `date_to`. */
 export function dateRange(choice: DateChoice, now: Date): { dateFrom?: number; dateTo?: number } {
   const s = (d: Date) => Math.floor(d.getTime() / 1000);
   const y = now.getFullYear();
@@ -148,7 +149,7 @@ export function dateRange(choice: DateChoice, now: Date): { dateFrom?: number; d
     case "thisMonth":
       return { dateFrom: s(new Date(y, m, 1)) };
     case "lastMonth":
-      return { dateFrom: s(new Date(y, m - 1, 1)), dateTo: s(new Date(y, m, 1)) - 1 };
+      return { dateFrom: s(new Date(y, m - 1, 1)), dateTo: s(new Date(y, m, 1)) };
     case "thisYear":
       return { dateFrom: s(new Date(y, 0, 1)) };
   }

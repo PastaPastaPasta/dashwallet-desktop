@@ -88,7 +88,7 @@ describe("date filter", () => {
     expect(dateRange("today", now)).toEqual({ dateFrom: s(new Date(2026, 9, 6)) });
     expect(dateRange("thisWeek", now)).toEqual({ dateFrom: s(new Date(2026, 9, 5)) });
     expect(dateRange("thisMonth", now)).toEqual({ dateFrom: s(new Date(2026, 9, 1)) });
-    expect(dateRange("lastMonth", now)).toEqual({ dateFrom: s(new Date(2026, 8, 1)), dateTo: s(new Date(2026, 9, 1)) - 1 });
+    expect(dateRange("lastMonth", now)).toEqual({ dateFrom: s(new Date(2026, 8, 1)), dateTo: s(new Date(2026, 9, 1)) });
     expect(dateRange("thisYear", now)).toEqual({ dateFrom: s(new Date(2026, 0, 1)) });
   });
 
@@ -97,6 +97,6 @@ describe("date filter", () => {
   });
 
   it("takes last December in January", () => {
-    expect(dateRange("lastMonth", new Date(2027, 0, 15))).toEqual({ dateFrom: s(new Date(2026, 11, 1)), dateTo: s(new Date(2027, 0, 1)) - 1 });
+    expect(dateRange("lastMonth", new Date(2027, 0, 15))).toEqual({ dateFrom: s(new Date(2026, 11, 1)), dateTo: s(new Date(2027, 0, 1)) });
   });
 });

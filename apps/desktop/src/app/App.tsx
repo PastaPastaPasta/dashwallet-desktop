@@ -1,10 +1,11 @@
-import { createContext, useContext, useEffect } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import { errorMessage } from "../api/backend";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { useBackend, useDashPayShell, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { EmptyState, LoadingState } from "../components/history";
+import { SheetLayer, useLayeredSheet } from "../components/sheet";
 import { chipState, Sidebar, StatusBar, Toolbar } from "../components/shell";
 import { showToast, ToastHost } from "../components/toast";
 import { LockScreen } from "../screens/LockScreen";
@@ -105,15 +106,18 @@ function Shell() {
   // A contested username still has its identity: Contacts, not Join DashPay (D11).
   const joined = !(dashpay.status?.kind === "noIdentity" || dashpay.status?.kind === "registering");
   const sheet = !!(detail && wallet && !locked);
+  const layered = useLayeredSheet();
+  const [layer, setLayer] = useState<HTMLDivElement | null>(null);
   // A dialog asked for while locked or behind a sheet is dropped, not kept for later.
-  const shown = locked || sheet ? null : dialog;
+  const shown = locked || sheet || layered ? null : dialog;
   useEffect(() => {
     if (dialog !== shown) ui.set({ dialog: null });
   }, [dialog, shown]);
   return (
     <>
       {/* Behind a sheet or the lock screen the shell takes no focus and is hidden from assistive tech. */}
-      <div className="app-chrome" inert={locked || sheet || shown !== null}>
+      <div className="app-chrome" inert={locked || sheet || layered || shown !== null}>
+        <SheetLayer.Provider value={layer}>
         <Toolbar
           wallets={wallets.data ?? []}
           wallet={wallet}
@@ -127,7 +131,10 @@ function Shell() {
           {content}
         </div>
         <StatusBar sync={sync.data} lock={lock.data} unitName={network.unitName} hd={wallet?.hd ?? false} />
+        </SheetLayer.Provider>
       </div>
+      {/* Sheets opened inside the shell (Pay, Receive): above it, below the lock screen. */}
+      <div className="sheet-layer" ref={setLayer} inert={locked} />
       {sheet && <TxDetailSheet walletId={wallet!.walletId} txid={detail!} network={network} />}
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
       {shown === "about" && <AboutSheet launch={launch} />}

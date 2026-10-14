@@ -104,7 +104,9 @@ function leaseKey(id: string): string | null {
  * unlocked vault's own (`unencrypted`) is `vault.credential_required`. */
 function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
   if (w.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
-  if (credential.kind === "unencrypted" && w.lock.encrypted && w.paymentAuth && purposes.some((p) => p.kind === "spend"))
+  // E0-13 D11 (`check_payment_auth`): a locked vault answers `vault.locked` below instead.
+  const pays = purposes.some((p) => p.kind === "spend" || p.kind === "platformOp");
+  if (credential.kind === "unencrypted" && w.lock.encrypted && w.lock.state !== "locked" && w.paymentAuth && pays)
     throw fail("vault.credential_required", "every payment needs authentication");
   switch (credential.kind) {
     case "passphrase": {

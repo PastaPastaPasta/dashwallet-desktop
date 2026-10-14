@@ -5,6 +5,9 @@
 // Writing a draft takes several calls (recipients, coins, fee, change), so every write runs on
 // one promise chain: an estimate never interleaves with another, and a prepare signs exactly the
 // spec it was given, written again right before it.
+//
+// Closing ends every write queued before it: such a write makes no new draft (it would outlive
+// the page, wallet or unlock it was for) and fails with `send.cancelled`.
 
 import { useCallback, useEffect, useRef } from "react";
 import { hasCode } from "../../api/backend";
@@ -13,6 +16,7 @@ import type { ChangePolicy } from "../../api/generated/ChangePolicy";
 import type { CoinSource } from "../../api/generated/CoinSource";
 import type { FeeMode } from "../../api/generated/FeeMode";
 import type { PreparedTxHandle } from "../../api/generated/PreparedTxHandle";
+import type { AppError } from "../../api/generated/AppError";
 import type { Recipient } from "../../api/generated/Recipient";
 import type { TxEstimate } from "../../api/generated/TxEstimate";
 import { closeSendDraft } from "../../api/send";
@@ -39,11 +43,15 @@ export interface DraftApi {
   close(): Promise<void>;
 }
 
+const CLOSED: AppError = { code: "send.cancelled", message: "The payment form was closed.", data: null };
+
 export function useDraft(walletId: string, locked: boolean): DraftApi {
   const b = useBackend();
   const draft = useRef<Promise<number> | null>(null);
   const chain = useRef<Promise<unknown>>(Promise.resolve());
   const broadcasts = useRef(0);
+  /** Bumped by `close`: a write queued under an older generation is cancelled. */
+  const generation = useRef(0);
 
   /** Runs `job` after every write queued before it. */
   const serial = useCallback(<T,>(job: () => Promise<T>): Promise<T> => {
@@ -53,6 +61,7 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
   }, []);
 
   const close = useCallback(async () => {
+    generation.current++;
     const pending = draft.current;
     draft.current = null;
     const handle = await pending?.catch(() => null);
@@ -65,11 +74,13 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
     }
   }, []);
 
-  /** Writes `spec` into the open draft (a new one if none), then runs `then` on it. A draft a
-   * network switch dropped (`app.unknown_handle`) is replaced once. */
+  /** Writes `spec` into the open draft (a new one if none), then runs `then` on it, unless the
+   * draft was closed since generation `gen`. With `replace`, a draft a network switch dropped
+   * (`app.unknown_handle`) is replaced once. */
   const write = useCallback(
-    async <T,>(spec: DraftSpec, then: (d: number) => Promise<T>): Promise<T> => {
+    async <T,>(gen: number, spec: DraftSpec, then: (d: number) => Promise<T>, replace: boolean): Promise<T> => {
       for (let attempt = 0; ; attempt++) {
+        if (generation.current !== gen) throw CLOSED;
         if (!draft.current) draft.current = b.newTxDraft(walletId);
         const made = draft.current;
         let d: number;
@@ -86,7 +97,7 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
           await b.draftSetChange(d, spec.change);
           return await then(d);
         } catch (e) {
-          if (attempt === 0 && hasCode(e, "app.unknown_handle")) {
+          if (replace && attempt === 0 && hasCode(e, "app.unknown_handle")) {
             if (draft.current === made) draft.current = null;
             continue;
           }
@@ -97,10 +108,20 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
     [b, walletId],
   );
 
-  const estimate = useCallback((spec: DraftSpec) => serial(() => write(spec, (d) => b.draftEstimate(d))), [b, serial, write]);
+  const estimate = useCallback(
+    (spec: DraftSpec) => {
+      const gen = generation.current;
+      return serial(() => write(gen, spec, (d) => b.draftEstimate(d), true));
+    },
+    [b, serial, write],
+  );
 
+  // A signature is never retried on another draft: the confirm sheet showed this one's estimate.
   const prepare = useCallback(
-    (spec: DraftSpec, grantId: string) => serial(() => write(spec, async (d) => ({ draft: d, prepared: await b.draftPrepare(d, grantId) }))),
+    (spec: DraftSpec, grantId: string) => {
+      const gen = generation.current;
+      return serial(() => write(gen, spec, async (d) => ({ draft: d, prepared: await b.draftPrepare(d, grantId) }), false));
+    },
     [b, serial, write],
   );
 

@@ -94,7 +94,9 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
   const [note, setNote] = useState<{ text: string; problem: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const x = extras.data;
-  if (!x || !(x.canAbandon || x.canResend)) return null;
+  const can = !!x && (x.canAbandon || x.canResend);
+  // After an abandon the actions go, but its note stays.
+  if (!x || (!can && !note)) return null;
   const run = async (what: "abandon" | "resend") => {
     setBusy(true);
     setNote(null);
@@ -128,18 +130,20 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
           </span>
         </>
       ) : (
-        <span className="tx-actions-row">
-          {x.canResend && (
-            <DashButton variant="tintedBlue" size="small" data-testid="tx-resend" disabled={busy} onClick={() => void run("resend")}>
-              Resend
-            </DashButton>
-          )}
-          {x.canAbandon && (
-            <DashButton variant="plainRed" size="small" data-testid="tx-abandon" disabled={busy} onClick={() => setConfirming(true)}>
-              Abandon transaction
-            </DashButton>
-          )}
-        </span>
+        can && (
+          <span className="tx-actions-row">
+            {x.canResend && (
+              <DashButton variant="tintedBlue" size="small" data-testid="tx-resend" disabled={busy} onClick={() => void run("resend")}>
+                Resend
+              </DashButton>
+            )}
+            {x.canAbandon && (
+              <DashButton variant="plainRed" size="small" data-testid="tx-abandon" disabled={busy} onClick={() => setConfirming(true)}>
+                Abandon transaction
+              </DashButton>
+            )}
+          </span>
+        )
       )}
       {note && (
         <p className={note.problem ? "form-problem" : "placeholder-note"} role={note.problem ? "alert" : "status"} data-testid="tx-action-note">

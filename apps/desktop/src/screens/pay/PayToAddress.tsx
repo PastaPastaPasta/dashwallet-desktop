@@ -16,6 +16,7 @@ import { ConfirmSheet } from "./ConfirmSheet";
 import {
   addressProblem,
   coinSource,
+  changePolicy,
   confirmedOf,
   DEFAULT_ADVANCED,
   feeMode,
@@ -106,20 +107,14 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
     duffs === null ? "Enter an amount in DASH, for example 0.25." : duffs === 0 ? "The amount to pay must be larger than 0." : null;
 
   const fee = feeMode(advanced);
+  const change = changePolicy(advanced);
   const noCoins = advanced.coins === "selected" && advanced.selected.length === 0;
   const recipient =
     addrClass.data?.kind === "core" && checkedAddr !== "" && typeof duffs === "number" && duffs > 0
       ? recipientOf({ address: checkedAddr, amount: duffs, subtractFee, label, message })
       : null;
   const spec: DraftSpec | null =
-    recipient && fee && !noCoins
-      ? {
-          recipient,
-          source: coinSource(advanced),
-          fee,
-          change: advanced.changeAddress ? { kind: "address", address: advanced.changeAddress } : { kind: "auto" },
-        }
-      : null;
+    recipient && fee && change && !noCoins ? { recipient, source: coinSource(advanced), fee, change } : null;
 
   // Under the wallet's coin keys: a payment or new coins refresh the estimate (events.ts).
   const estimate = useQuery({
@@ -134,6 +129,7 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
   if (estimate.isError) generalError = refusal ? (refusal.field ? null : refusal.text) : errorMessage(estimate.error);
   else if (noCoins) generalError = "Choose the coins to pay with.";
   else if (!fee) generalError = "Enter a custom fee rate.";
+  else if (!change) generalError = "Enter the custom change address.";
   const fieldError = (f: "address" | "amount") => (refusal?.field === f ? refusal.text : null);
   const ready = !!spec && settled && estimate.isSuccess && !estimate.isFetching && !locked;
 
@@ -150,7 +146,7 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
   };
 
   const review = () => {
-    if (ready && estimate.data && spec) setPhase({ kind: "confirm", confirmed: confirmedOf(spec.recipient, estimate.data), spec });
+    if (ready && estimate.data && spec) setPhase({ kind: "confirm", confirmed: confirmedOf(spec.recipient, estimate.data, spec.change), spec });
   };
 
   /** A payment left the editing form behind: start a new one (the draft too). */

@@ -57,7 +57,7 @@ export function ConfirmSheet({
   const [busy, setBusy] = useState(false);
   const fieldId = useId();
   const unit = network.unitName;
-  const { recipient, estimate, total } = confirmed;
+  const { recipient, estimate, changeAddress, total } = confirmed;
 
   // A failed read of the policy counts as "on" (U-03 D3): the prompt waits only while it loads.
   const policyKnown = !policy.isPending;
@@ -68,6 +68,11 @@ export function ConfirmSheet({
   useEffect(() => {
     if (policyKnown && prompt === "none") cancel.current?.focus();
   }, [policyKnown, prompt]);
+  // The field was disabled while `authorize` ran: after a refusal, focus goes back to it.
+  const field = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!busy && error) field.current?.focus();
+  }, [busy, error]);
 
   const send = async () => {
     if (busy || !policyKnown) return;
@@ -112,10 +117,8 @@ export function ConfirmSheet({
       const { txid } = await draft.broadcast(d, prepared.handle);
       onOutcome({ kind: "sent", txid, ...sent });
     } catch (e) {
-      const outcome = broadcastFailure(e, chain, { draft: d, prepared: prepared.handle, ...sent });
-      // Released by the engine already, or never handed over: nothing stays reserved.
-      if (outcome.kind === "failed") await draft.abandon(d, prepared.handle);
-      onOutcome(outcome);
+      // "Not sent" only when the engine released it; nothing is abandoned after a broadcast.
+      onOutcome(broadcastFailure(e, chain, { draft: d, prepared: prepared.handle, ...sent }, true));
     }
   };
 
@@ -144,11 +147,18 @@ export function ConfirmSheet({
             <AmountText text={full(estimate.fee, false)} unitName={unit} glyph={false} />
           </DetailRow>
           <DetailRow label="Using">{coinsText(coins)}</DetailRow>
+          {changeAddress !== null && (
+            <DetailRow label="Change to" testId="pay-confirm-change">
+              <span className="address-full">{changeAddress}</span>
+              <AmountText text={full(estimate.change ?? 0, false)} unitName={unit} glyph={false} />
+            </DetailRow>
+          )}
           <DetailRow label="Total" testId="pay-confirm-total">
             <AmountText text={full(total, false)} unitName={unit} glyph={false} />
           </DetailRow>
         </dl>
         {recipient.subtractFeeFromAmount && <p className="placeholder-note">The fee is subtracted from the amount: the payee receives the amount above.</p>}
+        {changeAddress !== null && <p className="placeholder-note">The total includes the change: the custom change address may not belong to this wallet.</p>}
         {!policyKnown ? (
           <LoadingState testId="pay-confirm-policy" text="Checking the payment settings" />
         ) : (
@@ -156,6 +166,7 @@ export function ConfirmSheet({
             <div className="form-field">
               <label htmlFor={fieldId}>Passphrase</label>
               <input
+                ref={field}
                 id={fieldId}
                 type="password"
                 data-testid="pay-confirm-passphrase"

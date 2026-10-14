@@ -109,8 +109,9 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
   const amt = amountText.trim();
   const checked = useDebounced(amt, 300);
   const parsed = useQuery({ queryKey: ["parseAmount", checked], queryFn: () => b.parseAmount(checked), enabled: checked !== "", staleTime: Infinity });
-  const amountError = checked !== "" && parsed.data === null ? "Enter an amount in DASH, for example 0.25." : null;
-  const ready = !busy && checked === amt && (amt === "" || typeof parsed.data === "number");
+  const amountError =
+    checked === "" ? null : parsed.data === null ? "Enter an amount in DASH, for example 0.25." : parsed.data === 0 ? "The amount must be larger than 0, or empty." : null;
+  const ready = !busy && checked === amt && (amt === "" || (typeof parsed.data === "number" && parsed.data > 0));
 
   const clear = () => {
     setLabel("");
