@@ -40,8 +40,21 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       return [keys.lockReconcile];
     // The shell's chip, bell and Contacts badge (the DashPay screens come with their tasks).
     case "dashPayNews":
-    case "platform":
       return [keys.dashpayAll];
+    // A contact's username lands after the first history read, and a restored send is
+    // attributed after the library's DashPay pass (DP3-02 D5); a main name change moves the
+    // receive reads' `user=` (DP3-03).
+    case "platform":
+      switch (event.change.domain) {
+        case "contacts":
+        case "payments":
+          return [keys.dashpayAll, keys.historyAll(event.walletId), keys.txDetailAll(event.walletId)];
+        case "identities":
+        case "names":
+          return [keys.dashpayAll, keys.receiveAll(event.walletId)];
+        default:
+          return [keys.dashpayAll];
+      }
     // No screen reads these yet (the CoinJoin and notice views come with their tasks).
     case "newTransactions":
     case "coinJoin":

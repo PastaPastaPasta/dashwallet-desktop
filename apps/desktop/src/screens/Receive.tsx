@@ -8,7 +8,7 @@ import { errorMessage, hasCode } from "../api/backend";
 import type { AddressInfo } from "../api/generated/AddressInfo";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ReceiveRequest } from "../api/generated/ReceiveRequest";
-import { keys, useBackend, useQrMatrix, useReceiveAddress, useReceiveRequests } from "../api/queries";
+import { keys, useBackend, useQrMatrix, useReceiveAddress, useReceiveRequests, useReceiveUsername } from "../api/queries";
 import { useDebounced } from "../app/useDebounced";
 import { AmountText, DashButton } from "../components/basics";
 import { CopyValue, DetailRow } from "../components/detail";
@@ -44,10 +44,13 @@ function AddressCard({ walletId }: { walletId: string }) {
   const [fresh, setFresh] = useState<AddressInfo | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const shown = fresh ?? current.data;
+  // The QR carries the wallet's DashPay username as `user=` (DP3-03); a failed read is none.
+  const username = useReceiveUsername(walletId);
+  const user = username.isError ? null : username.data;
   const uri = useQuery({
-    queryKey: ["paymentUri", shown?.address ?? ""] as const,
-    queryFn: () => b.buildPaymentUri(shown!.address, null, null, null, null),
-    enabled: !!shown,
+    queryKey: ["paymentUri", shown?.address ?? "", user ?? null] as const,
+    queryFn: () => b.buildPaymentUri(shown!.address, null, null, null, user ?? null),
+    enabled: !!shown && user !== undefined,
     staleTime: Infinity,
   });
   const newAddress = async () => {
@@ -214,6 +217,11 @@ function RequestSheet({ request, network, onClose }: { request: ReceiveRequest; 
         )}
         {request.label && <DetailRow label="Label">{request.label}</DetailRow>}
         {request.message && <DetailRow label="Message">{request.message}</DetailRow>}
+        {request.username && (
+          <DetailRow label="DashPay username" testId="request-username">
+            @{request.username}
+          </DetailRow>
+        )}
       </dl>
     </Sheet>
   );

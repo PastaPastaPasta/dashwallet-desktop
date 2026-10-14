@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
-import { dateRange, dayTitle, groupByDay, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
+import { contactName, dateRange, dayTitle, groupByDay, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
 
 const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
   kind: "confirmed",
@@ -15,6 +15,21 @@ describe("titles", () => {
   it("prefers the label and never shows an address", () => {
     expect(txTitle({ txType: "recvWithAddress", category: "received", amount: 1, label: "Coffee refund" })).toBe("Coffee refund");
     expect(txTitle({ txType: "recvWithAddress", category: "received", amount: 1, label: null })).toBe("Received");
+  });
+
+  it("names a DashPay counterparty after the label, never by its identity id (DP3-02)", () => {
+    const bob = { identity: "8GopL", username: "bob", displayName: "Bob Builder", avatarUrl: null };
+    const recv = { txType: "recvWithAddress", category: "received", amount: 1, label: null } as const;
+    expect(contactName(bob)).toBe("Bob Builder");
+    expect(contactName({ ...bob, displayName: null })).toBe("@bob");
+    expect(contactName({ ...bob, displayName: "", username: null })).toBeNull();
+    expect(contactName(undefined)).toBeNull();
+    expect(txTitle({ ...recv, counterparty: bob })).toBe("Bob Builder");
+    expect(txTitle({ ...recv, counterparty: { ...bob, displayName: null, username: null } })).toBe("Received");
+    expect(txTitle({ ...recv, label: "Rent", counterparty: bob })).toBe("Rent");
+    expect(rowParty({ label: null, address: "yAddr", counterparty: { ...bob, displayName: null } })).toBe("@bob");
+    expect(rowParty({ label: "Rent", address: "yAddr", counterparty: bob })).toBe("Rent");
+    expect(rowParty({ label: null, address: "yAddr", counterparty: { ...bob, displayName: null, username: null } })).toBe("yAddr");
   });
 
   it("maps dash-qt types to iOS titles", () => {
