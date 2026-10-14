@@ -22,3 +22,13 @@ outcome (m4 item 47, m1 `history_page` / `tx_detail` / receive rows); this file 
 | D13 | The OS notification for a payment stays M2's `NewTransactions`, with no contact name. | Out of scope for an engine-only task; the m4 residual says so. |
 | D14 | `dw-app`'s `TxRow` binds `counterparty` as optional (left out when `None`); `dw-ffi` withholds it until E0-13. | Hosts get it now without changing the TS fixtures; the Swift bindings are frozen until E0-13. |
 | D15 | `reserve_contact_payment_address` (E0-11's carried branch) is not needed. | Attribution reads the pools the wallet already holds; nothing here issues an address. The platform pin is unchanged. |
+
+## DP3-03: the username in Receive and in payment requests
+
+| # | Decision | Why |
+|---|---|---|
+| D16 | The username is the main name of the wallet's main identity (`IdentitySummary.is_main`, `main_name`). | iOS uses the wallet's DashPay username; the desktop's "main" choice (DP1-05) is that identity. |
+| D17 | The URI is dash-qt's `formatBitcoinURI` followed by `user=<username>` last, as iOS's `PaymentURIBuilder` (from DashSync's `DSPaymentRequest`) writes it. The name is percent-encoded; a DPNS label is unreserved ASCII, so the bytes match iOS's raw append for every real name. dash-qt's parser ignores the key. | Byte parity with iOS for real names; encoding guards anything else. |
+| D18 | `ReceiveRequest.username` is computed when the request is read, not stored with it; a stored request's `uri` follows the current main name. | A request outlives a name change; showing a name the wallet no longer has would point payers at the wrong user. No schema change. |
+| D19 | `None` (a plain Core URI) without a main identity or name, while a sync pass holds the identity state (`names_updating`), or when Platform's state cannot be read; never an error. | The username decorates a Core request; a receive screen must not fail on Platform. |
+| D20 | A new async m1 call `NetworkSession::receive_username(id)` serves the plain Receive QR; `dw-app`'s `build_payment_uri` gains `user`. `dw-ffi` keeps its signatures (frozen until E0-13). | The Receive screen builds its own URI (QT-085); the read touches the name rows (DEC-124), so it is async and runs off the runtime threads. |

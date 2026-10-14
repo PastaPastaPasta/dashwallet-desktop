@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use dashcore::Address;
 use dw_appdb::{BookPurpose, LabelKind};
-use dw_uri::core::{SendCoinsRecipient, format_bitcoin_uri};
+use dw_uri::core::{SendCoinsRecipient, format_request_uri};
 use key_wallet::managed_account::address_pool::{AddressPool, AddressState};
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use key_wallet::managed_account::managed_account_type::ManagedAccountType;
@@ -54,6 +54,9 @@ pub struct ReceiveRequest {
     pub amount: Option<u64>,
     pub label: Option<String>,
     pub message: Option<String>,
+    /// The wallet's DashPay username, as `uri` carries it (DP3-03): read
+    /// with the request, not stored with it.
+    pub username: Option<String>,
     pub uri: String,
 }
 
@@ -86,19 +89,22 @@ fn pool_addresses(pool: &AddressPool, chain: AddressChain) -> Vec<PoolAddress> {
         .collect()
 }
 
-/// Builds the `dash:` URI of a request (dash-qt `formatBitcoinURI`).
+/// Builds the `dash:` URI of a request (dash-qt `formatBitcoinURI`, then
+/// iOS's `user=`).
 fn request_uri(
     address: &str,
     amount: Option<u64>,
     label: Option<&str>,
     message: Option<&str>,
+    username: Option<&str>,
 ) -> String {
-    format_bitcoin_uri(&SendCoinsRecipient {
+    let info = SendCoinsRecipient {
         address: address.to_string(),
         label: label.unwrap_or_default().to_string(),
         message: message.unwrap_or_default().to_string(),
         amount: amount.and_then(|a| i64::try_from(a).ok()).unwrap_or(0),
-    })
+    };
+    format_request_uri(&info, username)
 }
 
 impl NetworkSession {
@@ -337,6 +343,7 @@ impl NetworkSession {
             })
             .await?
             .map_err(|e| EngineError::Storage(e.to_string()))?;
+            let username = this.username_of(wallet).await?;
             Ok(ReceiveRequest {
                 id: u64::try_from(id)
                     .map_err(|_| EngineError::Internal(format!("request id {id}")))?,
@@ -346,11 +353,13 @@ impl NetworkSession {
                     amount,
                     label.as_deref(),
                     message.as_deref(),
+                    username.as_deref(),
                 ),
                 address: issued.address,
                 amount,
                 label,
                 message,
+                username,
             })
         })
         .await
@@ -370,6 +379,7 @@ impl NetworkSession {
                 tokio::task::spawn_blocking(move || appdb.receive_requests(&wallet.to_string()))
                     .await?
                     .map_err(|e| EngineError::Storage(e.to_string()))?;
+            let username = this.username_of(wallet).await?;
             Ok(rows
                 .into_iter()
                 .filter_map(|r| {
@@ -381,16 +391,45 @@ impl NetworkSession {
                             r.amount,
                             r.label.as_deref(),
                             r.message.as_deref(),
+                            username.as_deref(),
                         ),
                         address: r.address,
                         amount: r.amount,
                         label: r.label,
                         message: r.message,
+                        username: username.clone(),
                     })
                 })
                 .collect())
         })
         .await
+    }
+
+    /// The username the Receive screen's QR carries as `user=` (IOS-055,
+    /// DP3-03): the main name of the wallet's main DashPay identity. `None`
+    /// without one, while a sync pass holds the names, or while Platform's
+    /// state cannot be read: the QR is then a plain Core one.
+    pub async fn receive_username(
+        self: &Arc<Self>,
+        wallet: WalletId,
+    ) -> Result<Option<String>, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.require_wallet(&wallet)?;
+            this.username_of(wallet).await
+        })
+        .await
+    }
+
+    /// [`Self::receive_username`] inside an operation: the identity read
+    /// touches the database, so it runs off the runtime's threads.
+    async fn username_of(
+        self: &Arc<Self>,
+        wallet: WalletId,
+    ) -> Result<Option<String>, EngineError> {
+        let this = Arc::clone(self);
+        Ok(tokio::task::spawn_blocking(move || this.main_username(wallet)).await?)
     }
 
     pub async fn delete_receive_request(
@@ -426,10 +465,18 @@ mod tests {
 
     #[test]
     fn request_uri_matches_dash_qt_format() {
-        assert_eq!(request_uri("yAddr", None, None, None), "dash:yAddr");
+        assert_eq!(request_uri("yAddr", None, None, None, None), "dash:yAddr");
         assert_eq!(
-            request_uri("yAddr", Some(150_000_000), Some("Rent"), Some("May")),
+            request_uri("yAddr", Some(150_000_000), Some("Rent"), Some("May"), None),
             "dash:yAddr?amount=1.50000000&label=Rent&message=May"
+        );
+        assert_eq!(
+            request_uri("yAddr", Some(150_000_000), None, Some("May"), Some("al1ce")),
+            "dash:yAddr?amount=1.50000000&message=May&user=al1ce"
+        );
+        assert_eq!(
+            request_uri("yAddr", None, None, None, Some("al1ce")),
+            "dash:yAddr?user=al1ce"
         );
     }
 }
