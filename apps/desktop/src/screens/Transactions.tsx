@@ -2,7 +2,7 @@
 // minimum amount; List mode (day-group cards, the default) or Table mode (dash-qt's columns,
 // sorted by the engine); pages of 200 records loaded as the list scrolls.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { HistorySortName } from "../api/generated/HistorySortName";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
@@ -10,6 +10,7 @@ import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxRow } from "../api/generated/TxRow";
 import { errorMessage } from "../api/backend";
 import { useBackend, useHistory } from "../api/queries";
+import { useLocalDay } from "../app/localDay";
 import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, TxTable, useRowContext } from "../components/history";
@@ -41,8 +42,11 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   const parsedMin = useQuery({ queryKey: ["parseAmount", min], queryFn: () => backend.parseAmount(min), enabled: min !== "", staleTime: Infinity });
   const minAmount = min !== "" && typeof parsedMin.data === "number" && parsedMin.data > 0 ? parsedMin.data : undefined;
   const minError = min !== "" && parsedMin.data === null;
-  // The date bounds are taken when the choice is made, from the backend's clock (fixed in fixtures).
-  const range = useMemo(() => dateRange(date, backend.now()), [date, backend]);
+  // The date bounds come from the backend's clock (fixed in fixtures), taken again when the choice
+  // changes and when the local day does (midnight, or the window coming back: D25).
+  const clock = useCallback(() => backend.now(), [backend]);
+  const day = useLocalDay(clock);
+  const range = useMemo(() => dateRange(date, clock()), [date, clock, day]);
   // List mode always shows the newest first (it groups by day); Table mode sorts.
   const order = mode === "table" ? sort : "newestFirst";
   // Query keys are hashed structurally, so a fresh filter object per render is fine.
