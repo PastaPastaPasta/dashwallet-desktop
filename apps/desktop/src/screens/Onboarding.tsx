@@ -62,7 +62,7 @@ export function Onboarding({
         <header className="onboarding-header">
           <span className="onboarding-header-side">
             {BACK_STEPS.has(step) && (
-              <DashButton variant="plainBlue" size="small" data-testid="onboarding-back" onClick={() => model.back()}>
+              <DashButton variant="plainBlue" size="small" data-testid="onboarding-back" disabled={model.busy} onClick={() => model.back()}>
                 Back
               </DashButton>
             )}

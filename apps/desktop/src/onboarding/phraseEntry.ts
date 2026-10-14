@@ -30,6 +30,8 @@ export class PhraseEntry {
   suggestions: string[] = [];
   #phrase: string | null = null;
   #generation = 0;
+  /** The edit whose answer `check` holds. */
+  #answered = 0;
 
   constructor(private readonly checkMnemonic: Backend["checkMnemonic"]) {}
 
@@ -38,8 +40,14 @@ export class PhraseEntry {
     return this.valid ? this.#phrase : null;
   }
 
+  /** Not while a newer edit's answer is still to come: the shown one may no longer hold. */
   get valid(): boolean {
-    return this.check !== null && this.problem === null;
+    return !this.pending && this.check !== null && this.problem === null;
+  }
+
+  /** The last edit is still being checked. */
+  get pending(): boolean {
+    return this.#answered !== this.#generation;
   }
 
   get coreOnly(): boolean {
@@ -70,11 +78,13 @@ export class PhraseEntry {
     try {
       const check = await this.checkMnemonic(normalized);
       if (generation !== this.#generation) return;
+      this.#answered = generation;
       this.#phrase = normalized;
       this.check = check;
       this.problem = phraseProblem(check);
     } catch (e) {
       if (generation !== this.#generation) return;
+      this.#answered = generation;
       this.#phrase = null;
       this.check = null;
       this.problem = failureText(e);
@@ -83,7 +93,7 @@ export class PhraseEntry {
   }
 
   clear() {
-    this.#generation++;
+    this.#answered = ++this.#generation;
     this.#phrase = null;
     this.check = null;
     this.problem = null;

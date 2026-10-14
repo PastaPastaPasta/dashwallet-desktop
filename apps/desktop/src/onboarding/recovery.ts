@@ -33,7 +33,9 @@ export class RecoveryPhraseModel extends Model {
   words: string[] = [];
   /** The wallet also has a BIP39 passphrase; the sheet says so but never shows it. */
   hasBip39 = false;
-  #disposed = false;
+  /** Bumped when the sheet closes: a reveal started before is dropped (StrictMode closes and
+   * opens the same model again, so not a flag). */
+  #epoch = 0;
 
   constructor(private readonly api: Api) {
     super();
@@ -70,6 +72,7 @@ export class RecoveryPhraseModel extends Model {
   async reveal(passphrase: string) {
     const walletId = this.walletId;
     if (this.step !== "confirm" || !walletId || this.lock.working) return;
+    const epoch = this.#epoch;
     this.error = null;
     let grant: string | null = null;
     const authorize = async (p: string) => {
@@ -79,6 +82,8 @@ export class RecoveryPhraseModel extends Model {
     let authorized: boolean;
     if (this.encrypted) authorized = await this.lock.attempt(passphrase, authorize);
     else {
+      // Out of `confirm` at once: the button takes no second click.
+      this.#go("working");
       authorized = await authorize("").then(
         () => true,
         (e) => {
@@ -86,14 +91,15 @@ export class RecoveryPhraseModel extends Model {
           return false;
         },
       );
+      if (!authorized) this.#go("confirm");
     }
     if (!authorized || !grant) return this.changed();
-    if (this.#disposed) return this.#revoke(grant);
+    if (epoch !== this.#epoch) return this.#revoke(grant);
     this.#go("working");
     try {
       const revealed = await this.api.revealMnemonic(walletId, grant);
       // The sheet closed meanwhile: the phrase is not kept.
-      if (this.#disposed) return;
+      if (epoch !== this.#epoch) return;
       this.words = wordsOf(revealed.phrase);
       this.hasBip39 = revealed.bip39Passphrase !== "";
       this.#go("shown");
@@ -107,7 +113,7 @@ export class RecoveryPhraseModel extends Model {
 
   /** Hides the phrase (the sheet closed); a reveal still in flight is dropped. */
   dispose() {
-    this.#disposed = true;
+    this.#epoch++;
     this.words = [];
     this.hasBip39 = false;
   }

@@ -250,6 +250,36 @@ describe("onboarding view model: create", () => {
     expect(model.step).not.toBe("showPhrase");
   });
 
+  it("backWhileAPhraseIsGeneratedIsIgnored", async () => {
+    // Review r2 #1: Back used to drop the chosen passphrase while the phrase arrived anyway, and
+    // the wallet was then added to a vault without one.
+    const world = new FakeWorld();
+    let open!: () => void;
+    world.generateGate = new Promise((r) => (open = r));
+    const model = make(world);
+    await model.startCreate();
+    const submit = model.submitPassphrase("Correct horse 9!", "Correct horse 9!");
+    model.back();
+    expect(model.step).toBe("choosePassphrase");
+    open();
+    await submit;
+    expect(model.step).toBe("showPhrase");
+    model.confirmWrittenDown();
+    await solve(model);
+    expect(model.step).toBe("done");
+    expect(world.creates).toEqual(["Correct horse 9!"]);
+  });
+
+  it("aModelMountedAgainStillWorks", async () => {
+    // Review r2 #2: StrictMode disposes and mounts the same model; a flag left it dropping
+    // every phrase.
+    const model = make(unlockedWorld());
+    model.dispose();
+    await model.startCreate();
+    expect(model.step).toBe("showPhrase");
+    expect(model.phraseWords).toEqual(WORDS);
+  });
+
   it("aRefusedVaultPassphraseCanBeReplacedWithoutANewPhrase", async () => {
     // Review r1 #6: the vault refuses the passphrase at the last chip; another one is chosen and
     // the verified phrase is added, with no second phrase and no passphrase kept meanwhile.
@@ -352,6 +382,24 @@ describe("onboarding view model: unlock before adding", () => {
     await model.unlockVault("");
     expect(world.unlockCalls).toEqual([]);
     expect(model.lock.message).toBe("Enter your wallet passphrase.");
+  });
+  it("backWhileUnlockingIsIgnored", async () => {
+    // Review r2 #4: Back during the unlock left the restore going on with no flow.
+    const world = unlockedWorld();
+    world.status = status({ state: "locked", walletsWithSecrets: [WALLET_A] });
+    const model = make(world);
+    await model.startRestore();
+    expect(model.step).toBe("unlockVault");
+    const unlock = model.unlockVault("right");
+    model.back();
+    await unlock;
+    expect(model.step).toBe("restorePhrase");
+    expect(model.flow).toBe("restore");
+    await model.updateRestoreText(PHRASE);
+    model.continueRestore();
+    await model.finishRestore();
+    expect(model.step).toBe("done");
+    expect(world.imports).toHaveLength(1);
   });
 });
 

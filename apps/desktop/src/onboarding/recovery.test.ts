@@ -113,6 +113,39 @@ describe("recovery phrase view model", () => {
     expect(model.error).toBe("Something went wrong (storage).");
   });
 
+  it("aSheetMountedAgainStillReveals", async () => {
+    // Review r2 #2: StrictMode disposes and mounts the same model.
+    const model = new RecoveryPhraseModel(world());
+    void model.load(WALLET_A);
+    model.dispose();
+    await model.load(WALLET_A);
+    await model.reveal("right");
+    expect(model.step).toBe("shown");
+    expect(model.words).toEqual(PHRASE.split(" "));
+  });
+
+  it("aRevealFailureAfterTheRightPassphraseIsExplained", async () => {
+    // Review r2 #3: the prompt shows `lock.message ?? error`; the passphrase was right, so the
+    // reason is in `error`.
+    const w = world();
+    w.revealErrors = [appError("vault.locked")];
+    const model = new RecoveryPhraseModel(w);
+    await model.load(WALLET_A);
+    await model.reveal("right");
+    expect(model.step).toBe("confirm");
+    expect(model.lock.message).toBeNull();
+    expect(model.error).toBe("Unlock the wallet and try again.");
+  });
+
+  it("anUnencryptedRevealTakesOneClick", async () => {
+    const w = world(false);
+    const model = new RecoveryPhraseModel(w);
+    await model.load(WALLET_A);
+    await Promise.all([model.reveal(""), model.reveal("")]);
+    expect(model.step).toBe("shown");
+    expect(w.authorizations).toHaveLength(1);
+  });
+
   it("noWalletWithAPhrase", async () => {
     const w = world();
     w.status = status({ walletsWithSecrets: [] });

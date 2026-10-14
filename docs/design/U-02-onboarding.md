@@ -79,6 +79,7 @@ zeroed: dropping every reference is the most the renderer can do (G-01 H-01, E0-
 | D23 | The Settings route shows `SettingsPage` (D14's Wallet card and a placeholder) instead of U-01's "not yet" page; `NOT_YET.settings` stays for U-04 to remove. | The flows need a way in that WebDriver and a pointer can reach. |
 | D24 | The visual baselines mask the verify step's slots and chips. The other onboarding, lock-wait, Forgot and recovery baselines show fixture data only. | The challenge is drawn at random (D4). |
 | D25 | The restore options read a creation date against the checkpoints in `birthHeight.ts` (D7), leaving out mainnet 750,000: in rust-dashcore's table at 67b307c6d its block time (1491953700, 2017-04-12) is earlier than 700,000's (2017-07-08), which would map April–June 2017 dates past their blocks. | Never start a scan past the wallet's first transaction. Follow-up: correct that checkpoint in rust-dashcore. |
+| D26 | Onboarding's Back is disabled, and `back()`/`cancel()` do nothing, while an engine call runs (an unlock is one Argon2id run). A reply that arrives after the screen went away is dropped by an epoch that `dispose()` bumps, not a flag, so a model that React StrictMode disposes and mounts again keeps working; the recovery sheet does the same. A phrase is not valid while a newer edit is still being checked. | Review r2: Back during a call let its reply continue a flow the user had left; Continue could act on an answer that no longer held. |
 
 ## T1 and GL evidence (D20)
 
@@ -99,10 +100,12 @@ WebKitGTK 2.52.6 through tauri-driver), `dwd-regtest-dashd:24.0.0-rc.2` (compose
 10. the old passphrase fails, the new one unlocks
 11. three failures: the wait, kept across a relaunch
 12. after the wait: the new passphrase unlocks
-13. no phrase or passphrase in the data root, the logs or the screenshots
+13. no phrase or passphrase in the data root, the logs or the other files of OUT
 
-The 13 screenshots skip every screen with phrase words (the phrase, verify and restore-entry
-steps, the revealed recovery phrase, Forgot's phrase step). U-07's `scripts/e2e-tauri.sh` smoke
+Step 13 searches the files' bytes, on a failed run too, so it cannot see text drawn into a PNG:
+the screenshots are kept off every screen with phrase words instead (the phrase, verify and
+restore-entry steps, the revealed recovery phrase, Forgot's phrase step), and a failure
+screenshot is dropped if a phrase screen came up while it was taken. U-07's `scripts/e2e-tauri.sh` smoke
 passes on the same binary (11 steps).
 
 ## Ported view-model tests
@@ -154,3 +157,4 @@ vitest). Rows without a Swift counterpart cover U-02's own decisions and review 
 | (U-02) | `onboarding.test.ts`: `IOS002_firstWalletAsksForThePassphraseBeforeThePhrase`, `IOS004_thePhraseIsDroppedOnceTheWalletIsAdded`, `abandoningCreateStoresNothing`, `D16_failuresShowCopyByCodeNeverTheEngineMessage`, `aMixingOnlyVaultIsUnlockedFullyBeforeCreating`, `emptyUnlockPassphraseIsNotSent`, `IOS007_aLateCheckDoesNotOverwriteANewerOne`, `IOS010_restoreAsksForThePassphraseLastWhenThereIsNoVault` |
 | (U-02) | `lock.test.ts`: `IOS012_aWaitThatRanOutWhileClosedIsNotShown`, `IOS013_offersForgotPassphraseOnlyWhenTheVaultHoldsSecrets`; `forgot.test.ts`: `IOS014_thePhraseIsDroppedWhateverTheOutcome`, `IOS014_theBip39PassphraseIsPassedOn`, `IOS014_nothingToRecoverWithoutSecrets`, `aWalletWithoutASummaryIsNamedByItsId`; `recovery.test.ts`: `IOS108_aWrongPassphraseRevealsNothing`, `IOS003_closingDropsThePhrase`, `IOS108_anUnencryptedVaultUsesTheUnencryptedCredential`, `aGrantThatDidNotReachTheRevealIsRevoked`, `noWalletWithAPhrase` |
 | (review r1) | `onboarding.test.ts`: `aSecondClickWhileACallRunsIsIgnored`, `aPhraseThatArrivesAfterTheScreenClosedIsDropped`, `aRefusedVaultPassphraseCanBeReplacedWithoutANewPhrase`, `everyWrongChipIsAnnounced`, `theScanStartSurvivesGoingBackAndForth`, `todayIsNotInTheFuture`; `recovery.test.ts`: `revealFollowsTheLockScreenPolicy`, `revealWaitsOutTheThrottle`, `aRevealThatEndsAfterTheSheetClosedIsDropped`; `forgot.test.ts`: `backFromTheNewPassphraseDropsThePhrase`, `backAfterALoadFailureLoadsAgain` |
+| (review r2) | `onboarding.test.ts`: `backWhileAPhraseIsGeneratedIsIgnored`, `aModelMountedAgainStillWorks`, `backWhileUnlockingIsIgnored`; `recovery.test.ts`: `aSheetMountedAgainStillReveals`, `aRevealFailureAfterTheRightPassphraseIsExplained`, `anUnencryptedRevealTakesOneClick`; `forgot.test.ts`: `continueWaitsForTheNewestCheck` |

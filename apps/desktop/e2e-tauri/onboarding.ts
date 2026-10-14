@@ -9,8 +9,9 @@
 // passphrase (attempts remaining), unlock for mixing only, then fully from the status bar ▸
 // lock ▸ Forgot passphrase with the restored phrase: the created wallet becomes watch-only ▸ the
 // old passphrase fails, the new one unlocks ▸ three failures make the lock screen wait, and a
-// relaunch keeps the wait ▸ after it, the new passphrase unlocks. At the end no log, screenshot
-// or file of the data root holds the phrases or the passphrases.
+// relaunch keeps the wait ▸ after it, the new passphrase unlocks. At the end, pass or fail, no
+// file of the data root or of OUT (logs included) holds the phrases or the passphrases in plain
+// text; the screenshots are kept off phrase screens.
 //
 // Settings is opened with its menu shortcut (Ctrl+,), pressed through xdotool. Screenshots skip
 // every screen that shows a phrase. `scripts/e2e-tauri-onboarding.sh` brings up the node, builds
@@ -173,6 +174,7 @@ async function main() {
 
   await launch();
   let created: string[] = [];
+  let failure: unknown = null;
   try {
     // ---- first run: Welcome, nothing to cancel (IOS-002)
     await wd.waitFor(tid("onboarding-welcome"), "Welcome on a fresh data root");
@@ -339,23 +341,34 @@ async function main() {
     await wd.screenshot("13-unlocked-after-wait");
     step("after the wait: the new passphrase unlocks");
   } catch (e) {
-    // Never on a phrase screen: those would put the phrase in OUT.
-    const onPhrase = await wd
-      .script<boolean>(`return !!document.querySelector('.phrase-grid, .verify-chips, .phrase-input')`)
-      .catch(() => true);
-    if (!onPhrase) await wd.screenshot("failure").catch(() => undefined);
-    throw e;
+    failure = e;
+    // Never of a phrase screen, which would put the phrase in OUT: checked before and after,
+    // and dropped if one came up meanwhile.
+    const onPhrase = () =>
+      wd.script<boolean>(`return !!document.querySelector('.phrase-grid, .verify-chips, .phrase-input')`).catch(() => true);
+    if (!(await onPhrase())) {
+      await wd.screenshot("failure").catch(() => undefined);
+      if (await onPhrase()) rmSync(join(OUT, "failure.png"), { force: true });
+    }
   } finally {
     await wd.end().catch(() => undefined);
   }
 
-  // The app has exited (the session ended): its data root and logs are complete.
+  // Whatever the outcome (CI uploads OUT either way), once the app has exited (the session
+  // ended) and its data root and logs are complete. The screenshots are kept off phrase screens
+  // above: text drawn into a PNG is not found here.
   stopDriver(driver);
   driver = undefined;
-  const secrets = [funded.phrase, created.join(" "), PASSPHRASE, NEW_PASSPHRASE];
+  const secrets = [funded.phrase, created.join(" "), PASSPHRASE, NEW_PASSPHRASE].filter((s) => s !== "");
   const found = [...leaks(appRoot, secrets), ...leaks(OUT, secrets)];
-  if (found.length > 0) throw new Error(`secrets in plain text: ${found.join(", ")}`);
-  step("no phrase or passphrase in the data root, the logs or the screenshots");
+  if (found.length > 0) {
+    // Not uploaded.
+    for (const f of found) if (f.startsWith(OUT)) rmSync(f.replace(/ \(\d+\)$/, ""), { force: true });
+    const leak = `secrets in plain text: ${found.join(", ")}`;
+    throw new Error(failure ? `${failure instanceof Error ? failure.message : String(failure)}; ${leak}` : leak);
+  }
+  if (failure) throw failure;
+  step("no phrase or passphrase in the data root, the logs or the other files of OUT");
 
   writeFileSync(join(OUT, "result.json"), JSON.stringify({ ok: true, txid: funded.txid, steps }, null, 2));
   console.log(`onboarding: PASS (${steps.length} steps); screenshots in ${OUT}`);

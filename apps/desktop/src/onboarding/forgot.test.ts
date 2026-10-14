@@ -98,6 +98,25 @@ describe("forgot passphrase view model", () => {
     const model = await loaded(w);
     expect(model.wallets.map((x) => x.name)).toEqual(["Main", `Wallet ${WALLET_B.slice(0, 8)}`]);
   });
+  it("continueWaitsForTheNewestCheck", async () => {
+    // Review r2 #5: Continue on the last answer while a newer edit was still being checked.
+    const w = world([WALLET_A]);
+    const model = await loaded(w);
+    await model.updatePhrase(PHRASE);
+    expect(model.entry.valid).toBe(true);
+    let open!: () => void;
+    const typo = `${PHRASE} zzzz`;
+    w.held.set(typo, new Promise((r) => (open = r)));
+    const check = model.updatePhrase(typo);
+    expect(model.entry.valid).toBe(false);
+    model.continuePhrase();
+    expect(model.step).toBe("phrase");
+    open();
+    await check;
+    expect(model.entry.valid).toBe(false);
+    expect(model.entry.problem).not.toBeNull();
+  });
+
   it("backFromTheNewPassphraseDropsThePhrase", async () => {
     // The phrase field starts empty again, so the model's copy goes too.
     const model = await loaded(world([WALLET_A]));

@@ -52,7 +52,7 @@ export function RecoveryPhraseSheet({ walletId, onClose }: { walletId: string | 
           {model.encrypted ? (
             <PassphrasePrompt
               testId="recovery-passphrase"
-              error={model.lock.message}
+              error={model.lock.message ?? model.error}
               busy={model.lock.working}
               disabled={model.lock.blocked}
               submitLabel="Show recovery phrase"

@@ -105,8 +105,11 @@ export class OnboardingModel extends Model {
   #skipEncryption = false;
   /** What a successful unlock goes on with. */
   #afterUnlock: "create" | "restore" | "finish" = "create";
-  /** The screen went away: replies that arrive later are dropped. */
-  #disposed = false;
+  /** Bumped when the screen goes away: a reply to a call made before is dropped. Not a flag:
+   * StrictMode disposes and mounts the same model again. */
+  #epoch = 0;
+  /** `#epoch` when the running call started (calls run one at a time: `#exclusive`). */
+  #callEpoch = 0;
   readonly #random: () => number;
   readonly #now: () => Date;
 
@@ -332,8 +335,10 @@ export class OnboardingModel extends Model {
     else await this.#exclusive(() => this.#finish());
   }
 
-  /** Returns to the previous screen; from a failure, to where the user can try again. */
+  /** Returns to the previous screen; from a failure, to where the user can try again. Not while
+   * an engine call runs: its reply would land in a flow the user left (review r2 #1). */
   back() {
+    if (this.busy) return;
     switch (this.step) {
       case "showPhrase":
       case "restorePhrase":
@@ -363,8 +368,9 @@ export class OnboardingModel extends Model {
     }
   }
 
-  /** Drops everything and returns to Welcome. */
+  /** Drops everything and returns to Welcome; not while an engine call runs. */
   cancel() {
+    if (this.busy) return;
     this.#clear();
     this.flow = null;
     this.#go("welcome");
@@ -372,7 +378,7 @@ export class OnboardingModel extends Model {
 
   /** Drops every secret (the screen went away); replies still in flight are dropped too. */
   dispose() {
-    this.#disposed = true;
+    this.#epoch++;
     this.#clear();
   }
 
@@ -382,6 +388,7 @@ export class OnboardingModel extends Model {
   async #exclusive(op: () => Promise<void>) {
     if (this.busy) return;
     this.busy = true;
+    this.#callEpoch = this.#epoch;
     this.changed();
     try {
       await op();
@@ -393,10 +400,12 @@ export class OnboardingModel extends Model {
 
   /** Creates the vault when there is none, adds the wallet, and drops every secret. A refused
    * vault passphrase (or a missing OS store) returns to Choose passphrase with the phrase and its
-   * verification kept, so another passphrase can be tried (review r1 #6). */
+   * verification kept, so another passphrase can be tried (review r1 #6). A vault is created
+   * without a passphrase only when the user chose that. */
   async #finish() {
     const phrase = this.#activePhrase;
     if (!phrase || this.step === "working") return;
+    if (this.vaultState === "noVault" && !this.#vaultPassphrase && !this.#skipEncryption) return this.#go("choosePassphrase");
     this.#go("working");
     if (this.vaultState === "noVault") {
       try {
@@ -410,7 +419,7 @@ export class OnboardingModel extends Model {
         this.#skipEncryption = false;
       }
     }
-    if (this.#disposed) return;
+    if (this.#stale) return;
     try {
       const id = await this.api.importWallet(phrase, this.#bip39, {
         name: null,
@@ -432,6 +441,11 @@ export class OnboardingModel extends Model {
     }
   }
 
+  /** The screen went away since the running call started: its replies are dropped. */
+  get #stale(): boolean {
+    return this.#callEpoch !== this.#epoch;
+  }
+
   get #activePhrase(): string | null {
     return this.flow === "restore" ? this.entry.phrase : this.#phrase;
   }
@@ -439,7 +453,7 @@ export class OnboardingModel extends Model {
   async #generate() {
     try {
       const phrase = await this.api.generateMnemonic(this.wordCount);
-      if (this.#disposed) return;
+      if (this.#stale) return;
       this.#phrase = phrase;
     } catch (e) {
       this.failure = failureText(e);
