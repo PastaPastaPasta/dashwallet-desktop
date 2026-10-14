@@ -8,10 +8,12 @@ import type { DispatchStateName } from "../api/generated/DispatchStateName";
 import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
+import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
 import type { LockStatus } from "../api/generated/LockStatus";
 import type { RecentNotice } from "../api/generated/RecentNotice";
+import type { ShellSync } from "../api/generated/ShellSync";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
@@ -21,6 +23,8 @@ import { buildRows, caughtUp, FUNDED_BALANCES, XSS_PAYLOADS, ZERO_BALANCES, type
 
 export const FIXTURE_PASSPHRASE = "demo";
 export const FIXTURE_WALLET_ID = "a1".repeat(32);
+/** The `two-wallets` scenario's second wallet. */
+export const SECOND_WALLET_ID = "b2".repeat(32);
 
 export interface FixtureWallet {
   summary: WalletSummary;
@@ -49,6 +53,10 @@ export interface World {
   /** What the next `lock` cuts and reports (E0-13 D3's bounded report). */
   cut: Pick<LockOutcome, "flows" | "flowsOmitted">;
   notices: RecentNotice[];
+  /** Deep links waiting for `take_links` (`FixtureHandle.deliverLinks`), already routed. */
+  links: LinkRoute[];
+  /** The last `shell_sync`: what the native menus would show. */
+  shellSync: ShellSync | null;
 }
 
 /** A vault grant: single use (`used` once redeemed or revoked); `ownKey` when it was issued
@@ -93,6 +101,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
       selftest: false,
       selftestPauseMs: 0,
       selftestUnlock: false,
+      selftestLinkTrace: false,
       theme,
       // Testnet, like the reference images.
       network: { kind: "testnet", dirName: "testnet", unitName: "tDASH" },
@@ -112,6 +121,8 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     lastLockReport: null,
     cut: { flows: [], flowsOmitted: 0 },
     notices: [],
+    links: [],
+    shellSync: null,
   };
 }
 
@@ -244,6 +255,15 @@ const SCENARIOS = {
   locked: (t) => {
     const w = base(t);
     w.lock = { ...w.lock, state: "locked" };
+    return w;
+  },
+  /** Two wallets: the toolbar's wallet picker. */
+  "two-wallets": (t) => {
+    const w = base(t);
+    const savings = wallet("empty");
+    savings.summary = { ...savings.summary, walletId: SECOND_WALLET_ID, name: "Savings" };
+    w.wallets.push(savings);
+    w.lock = unlocked([FIXTURE_WALLET_ID, SECOND_WALLET_ID]);
     return w;
   },
   /** 10,003 transactions: paging and render cost. */

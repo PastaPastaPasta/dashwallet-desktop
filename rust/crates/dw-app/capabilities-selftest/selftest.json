@@ -9,6 +9,7 @@
     "allow-selftest-report",
     "allow-selftest-checkpoint",
     "allow-selftest-unlock",
+    "allow-selftest-link-routed",
     "allow-ipc-bench-rows",
     "allow-history-page-timed"
   ]

@@ -5,7 +5,7 @@
 #
 #   scripts/e2e-docker.sh                                  # the whole suite
 #   DW_VISUAL=1 scripts/e2e-docker.sh --project=chromium e2e/visual.spec.ts
-#   DW_VISUAL=1 scripts/e2e-docker.sh --project=chromium --update-snapshots e2e/visual.spec.ts
+#   DW_VISUAL=1 scripts/e2e-docker.sh --project=chromium --update-snapshots=all e2e/visual.spec.ts
 #
 # The image has the browsers and their system libraries; pnpm, its store and the container's
 # own node_modules (mounted over the checkout's, so a local run leaves the host install alone)
@@ -21,8 +21,15 @@ image="mcr.microsoft.com/playwright:v${playwright}-noble"
 cache=${DW_E2E_CACHE:-$app/.e2e-cache}
 mkdir -p "$cache/node_modules"
 
+# DW_ROUTE_SHOTS=<dir>: e2e/routes.spec.ts also writes each route's screenshot there.
+shots=()
+if [[ -n "${DW_ROUTE_SHOTS:-}" ]]; then
+  mkdir -p "$DW_ROUTE_SHOTS"
+  shots=(-e "DW_ROUTE_SHOTS=$DW_ROUTE_SHOTS" -v "$DW_ROUTE_SHOTS:$DW_ROUTE_SHOTS")
+fi
+
 docker run --rm --init --ipc=host --user "$(id -u):$(id -g)" \
-  -e CI=1 -e HOME=/cache/home -e npm_config_cache=/cache/npm -e DW_VISUAL="${DW_VISUAL:-}" \
+  -e CI=1 -e HOME=/cache/home -e npm_config_cache=/cache/npm -e DW_VISUAL="${DW_VISUAL:-}" "${shots[@]}" \
   -v "$repo:$repo" -v "$cache/node_modules:$app/node_modules" -v "$cache:/cache" -w "$app" "$image" \
   bash -euo pipefail -c '
     npm install --global --prefix /cache/npm-global "pnpm@$0" >/dev/null

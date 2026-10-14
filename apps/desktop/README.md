@@ -62,6 +62,8 @@ dash-wallet [--datadir DIR] [--network mainnet|testnet|regtest|devnet-NAME] [--s
             [--spv-peer IP:PORT]… [--dapi URL]… [--no-platform] [--theme light|dark]
             [--window-size WxH]
             [--selftest FILE [--selftest-pause MS] [--selftest-passphrase-file FILE]]
+            [--selftest-link-trace FILE]
+            [link]…
 ```
 
 The `--selftest` options exist only in a build with dw-app's `selftest` feature
@@ -76,6 +78,16 @@ records the detail sheet and the lock screen. On Unix the file must be the user'
 stricter, its final component not a symlink); dw-app refuses any other (E0-13 D16). `--no-platform` opens a chain without Platform
 (a plain dashd regtest; regtest still needs a `--dapi` address, which nothing connects to).
 `--window-size` sets the window's inner size; the gate's self-tests use 1000x620 on every OS.
+
+**Shell (U-01, [`docs/design/U-01-shell.md`](../../docs/design/U-01-shell.md)).** The routes of DASHPAY §4,
+the toolbar (identity chip, bell, wallet picker, discreet, lock), native menus with shortcuts, a tray, one
+instance per data root and the saved window geometry (not with `--window-size` or `--selftest`). A
+`dash:`, `pay:`, `dashwallet:` or `dashpay:` argument is a link: dw-app queues it, routes it for the
+window's network and the window opens its page. A second launch hands its links to the running app and
+exits. The packages register the four schemes (`tauri.conf.json`); nothing is registered at run time.
+`--selftest-link-trace FILE` (the `selftest` feature) appends `received <source> <scheme>` for each link
+and `routed <route>` for each route the renderer opens, never the link itself; `ci/github/deep-links.sh`
+reads it.
 
 On Linux without a GPU (no `/dev/dri/renderD*`), the app sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` before
 GTK starts: WebKitGTK's DMA-BUF renderer falls back to slow software rendering there (about 1 s of first

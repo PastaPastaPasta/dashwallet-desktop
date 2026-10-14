@@ -50,7 +50,7 @@ macro_rules! domains {
 
 domains!(
     app, network, vault, wallets, chain, history, backup, send, coinjoin, identity, social,
-    console, units, selftest,
+    console, units, shell, selftest,
 );
 
 /// Registered with the handler but granted by no capability: the U6 probe

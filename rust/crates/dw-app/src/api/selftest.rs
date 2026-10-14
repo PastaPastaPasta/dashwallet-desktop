@@ -84,6 +84,21 @@ commands! {
         Ok(status.into())
     }
 
+    /// `--selftest-link-trace`: appends `routed <route>` to the link trace,
+    /// for each link the renderer routes (and `routed ready` once it takes
+    /// the queue at start-up). The CI link jobs read it.
+    #[facade()]
+    fn selftest_link_routed(state, route: String) -> () {
+        if state.launch.selftest_link_trace.is_none() {
+            return Err(AppError::app(
+                AppCode::NotSelftest,
+                "the app was not launched with --selftest-link-trace",
+            ));
+        }
+        state.shell.trace(&format!("routed {}", crate::dto::cap_text(route, 64)));
+        Ok(())
+    }
+
     /// A synthetic page of `rows` records, the size and shape of a real
     /// `historyPage` result: the IPC and serialisation cost alone (U5).
     /// Self-test runs only.

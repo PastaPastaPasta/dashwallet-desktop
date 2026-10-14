@@ -6,7 +6,7 @@ import type { Balances } from "../api/generated/Balances";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
-import { ui, useUi } from "../app/ui";
+import { navigate, ui, useUi } from "../app/ui";
 import { useBalance, useHistory, useSyncStatus, type HistoryFilter } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
@@ -117,7 +117,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   }, [balance.isPending, recent.isPending]);
 
   return (
-    <main className="page page-overview" data-testid="page-overview">
+    <main className="page page-overview" data-testid="page-home">
       <div className="hero-band" data-testid="hero-band">
         <BalanceHero balances={balance.data ?? null} network={network} syncing={syncing} />
         <ShortcutCard />
@@ -127,7 +127,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
           <h2 className="history-title">History</h2>
           <span className="history-actions">
             {syncing && percent !== null && <span className="history-syncing">Syncing {percent.toFixed(1)}%</span>}
-            <DashButton variant="plainBlue" size="small" onClick={() => ui.set({ page: "transactions" })}>
+            <DashButton variant="plainBlue" size="small" onClick={() => navigate("activity")}>
               Filter
             </DashButton>
           </span>
@@ -142,7 +142,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
           <>
             <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="overview" />
             <div className="see-all" data-testid="see-all">
-              <DashButton variant="plainBlue" size="medium" onClick={() => ui.set({ page: "transactions" })}>
+              <DashButton variant="plainBlue" size="medium" onClick={() => navigate("activity")}>
                 See all transactions
               </DashButton>
             </div>

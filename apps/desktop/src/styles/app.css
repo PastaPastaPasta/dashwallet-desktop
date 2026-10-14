@@ -4,6 +4,12 @@
 
 /* ------------------------------------------------------------------ base */
 
+/* A page title focused after a link or menu opened its page (shellBridge.ts focusPage) shows no
+   ring: it is not a control. */
+.page h1[tabindex="-1"]:focus {
+  outline: none;
+}
+
 *,
 *::before,
 *::after {
@@ -100,12 +106,85 @@ button {
   line-height: var(--dw-type-subhead-medium-line);
 }
 
+.toolbar-start,
 .toolbar-actions {
   display: flex;
+  align-items: center;
   gap: var(--dw-space-xs);
 }
 
+.toolbar-start {
+  gap: var(--dw-space-m);
+  min-width: 0;
+}
+
+/* The identity chip (DASHPAY §4): avatar and @username, or the way into DashPay. */
+.identity-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  height: 28px; /* the toolbar buttons' 28 px (.toolbar-button), one row */
+  padding: 0 var(--dw-space-sm);
+  border: 0;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.identity-chip:hover {
+  background: var(--dw-role-accent-tint-strong);
+}
+
+.identity-chip-avatar {
+  display: grid;
+  place-items: center;
+  /* 20 px: the chip's 28 px less a 4 px ring above and below. */
+  width: 20px;
+  height: 20px;
+  margin-left: calc(-1 * var(--dw-space-xxs));
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-accent);
+  color: var(--dw-role-text-on-hero);
+  font-size: var(--dw-type-caption2-size);
+  line-height: var(--dw-type-caption2-line);
+}
+
+.wallet-picker {
+  max-width: var(--dw-layout-sidebar-ideal-width);
+  padding: var(--dw-space-xxs) var(--dw-space-xs);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-small);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+}
+
+/* 16 px: one caption2 digit's line, so a single-digit badge is round. */
+.toolbar-badge,
+.sidebar-badge {
+  min-width: 16px;
+  padding: 0 var(--dw-space-xxs);
+  border-radius: var(--dw-radius-badge);
+  background: var(--dw-role-danger);
+  color: var(--dw-role-text-on-hero);
+  font-size: var(--dw-type-caption2-size);
+  font-weight: var(--dw-type-caption1-medium-weight);
+  line-height: 16px;
+  text-align: center;
+}
+
+.toolbar-badge {
+  position: absolute;
+  top: calc(-1 * var(--dw-space-xxxs));
+  right: calc(-1 * var(--dw-space-xxs));
+}
+
 .toolbar-button {
+  position: relative;
   display: grid;
   place-items: center;
   width: 28px;
@@ -176,6 +255,10 @@ button {
   transition: background-color var(--dw-motion-hover);
 }
 
+.sidebar-title {
+  flex: 1;
+}
+
 .sidebar-item .sidebar-icon {
   color: var(--dw-role-accent);
 }
@@ -229,6 +312,131 @@ button {
 }
 
 /* ------------------------------------------------------------------ pages */
+
+/* Routes a later task builds, their tabs and the prefilled forms links open (screens/Routes.tsx). */
+.placeholder {
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+  color: var(--dw-role-text-secondary);
+}
+
+.placeholder-note,
+.form-problem {
+  margin: 0 0 var(--dw-space-m);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  color: var(--dw-role-text-secondary);
+}
+
+.form-problem {
+  color: var(--dw-role-danger);
+}
+
+.tabs {
+  display: flex;
+  gap: var(--dw-space-xxs);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-space-xxxs);
+  border-radius: var(--dw-radius-switcher);
+  background: var(--dw-role-neutral-tint);
+  width: fit-content;
+  flex-wrap: wrap;
+}
+
+.tab {
+  padding: var(--dw-space-xxs) var(--dw-space-m);
+  border: 0;
+  border-radius: var(--dw-radius-switcher);
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+  cursor: default;
+}
+
+.tab[aria-selected="true"] {
+  background: var(--dw-role-card);
+  box-shadow: var(--dw-shadow-card);
+}
+
+.pay-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  max-width: var(--dw-layout-form-max-width);
+}
+
+.pay-form .placeholder {
+  margin: 0;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.form-field input {
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-body-size);
+  font-weight: var(--dw-type-body-weight);
+  line-height: var(--dw-type-body-line);
+}
+
+.form-field input.mono {
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-footnote-size);
+}
+
+.add-contact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.add-contact p {
+  margin: 0;
+}
+
+.add-contact-title {
+  margin: 0;
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.add-contact-actions {
+  display: flex;
+  gap: var(--dw-space-s);
+  margin-top: var(--dw-space-s);
+}
+
+.about-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--dw-space-xs) var(--dw-space-l);
+  margin: 0;
+}
+
+.about-list dt {
+  color: var(--dw-role-text-secondary);
+}
+
+.about-list dd {
+  margin: 0;
+}
 
 .page {
   min-height: 0;

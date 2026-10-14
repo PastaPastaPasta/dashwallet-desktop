@@ -275,6 +275,11 @@ impl DashPayUserLink {
         })
     }
 
+    /// The identity id in plain Base58, as Platform writes identifiers.
+    pub fn identity_base58(&self) -> String {
+        base58(&self.identity_id)
+    }
+
     /// iOS `uriString`: `dashpay://user?id=<base58>&username=<label>`. The
     /// label is percent-encoded outside RFC 3986's unreserved set; a DPNS
     /// label (`[A-Za-z0-9-]`) needs none, so for any name Platform holds the

@@ -56,10 +56,10 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
 
   return (
-    <main className="page page-transactions" data-testid="page-transactions">
+    <main className="page page-transactions" data-testid="page-activity">
       <div className="page-column">
         <header className="top-intro" data-testid="tx-intro">
-          <h1 className="top-intro-title">Transactions</h1>
+          <h1 className="top-intro-title">Activity</h1>
         </header>
         <div className="tx-filter-bar" data-testid="tx-filter-bar">
           <label className="search-field" data-testid="tx-search">

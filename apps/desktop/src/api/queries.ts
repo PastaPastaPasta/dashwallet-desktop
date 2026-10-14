@@ -35,6 +35,12 @@ export const keys = {
   history: (walletId: string, filter: HistoryFilter, limit: number) => ["history", walletId, filter, limit] as const,
   txDetailAll: (walletId: string) => ["txDetail", walletId] as const,
   txDetail: (walletId: string, txid: string) => ["txDetail", walletId, txid] as const,
+  /** Every DashPay read below: a `platform` or `dashPayNews` signal makes them all stale. */
+  dashpayAll: ["dashpay"] as const,
+  dashpayStatus: (walletId: string) => ["dashpay", "status", walletId] as const,
+  identities: (walletId: string) => ["dashpay", "identities", walletId] as const,
+  unread: (walletId: string, identity: string) => ["dashpay", "unread", walletId, identity] as const,
+  requests: (walletId: string, identity: string) => ["dashpay", "requests", walletId, identity] as const,
 };
 
 /** Opens the network; its lock status seeds `lockStatus`, so the shell never renders
@@ -107,4 +113,41 @@ export type LockDrain = Extract<LockProgress, { kind: "draining" }>;
  * it, so a dropped `done` cannot hide reports for good. */
 export function useLockDrain() {
   return useQuery<LockDrain | null>({ queryKey: keys.lockDrain, queryFn: () => null, initialData: null });
+}
+
+/** The identity chip's, the sidebar's and the bell's DashPay state (DASHPAY §4
+ * `DashPayStatusModel`): the status, the main identity's name, its unread events and the contact
+ * requests waiting. Each read is `undefined` while unknown or when it fails (no Platform). */
+export function useDashPayShell(walletId: string | undefined) {
+  const b = useBackend();
+  const status = useQuery({
+    queryKey: keys.dashpayStatus(walletId ?? ""),
+    queryFn: () => b.dashpayStatus(walletId!),
+    enabled: !!walletId,
+  });
+  const main = status.data?.kind === "ready" ? status.data.main : null;
+  const identities = useQuery({
+    queryKey: keys.identities(walletId ?? ""),
+    queryFn: () => b.identities(walletId!),
+    enabled: !!walletId && main !== null,
+  });
+  const unread = useQuery({
+    queryKey: keys.unread(walletId ?? "", main ?? ""),
+    queryFn: () => b.dashpayUnreadCount(walletId!, main!),
+    enabled: !!walletId && main !== null,
+  });
+  const requests = useQuery({
+    queryKey: keys.requests(walletId ?? "", main ?? ""),
+    queryFn: async () => {
+      const list = await b.dashpayContacts(walletId!, main!, { sections: ["requests"], sort: "dateAdded", text: null });
+      return list.sections.reduce((n, s) => n + (s.section === "requests" ? s.contacts.length : 0), 0);
+    },
+    enabled: !!walletId && main !== null,
+  });
+  return {
+    status: status.data,
+    mainName: identities.data?.find((i) => i.identity === main)?.mainName,
+    unread: unread.data ?? null,
+    requests: requests.data ?? 0,
+  };
 }

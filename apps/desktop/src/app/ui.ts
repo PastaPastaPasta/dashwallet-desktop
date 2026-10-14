@@ -1,16 +1,53 @@
-// UI state that is not server state: the page, the open detail sheet, discreet mode and
-// the appearance. A tiny external store so the self-test can drive it.
+// UI state that is not server state: the route and what a link or menu put on it, the open
+// detail sheet or dialog, discreet mode and the appearance. A tiny external store so the
+// self-test and the shell bridge can drive it.
 
 import { useSyncExternalStore } from "react";
+import type { Route } from "../api/generated/Route";
 import type { ThemeName } from "../api/generated/ThemeName";
+import type { ToolsTab } from "../api/generated/ToolsTab";
 
-export type Page = "overview" | "transactions";
+export type { Route, ToolsTab };
 export type ThemeChoice = ThemeName | null;
 
+/** Pay's two ways (DASHPAY §4): to a contact, or to an address. */
+export type PayTab = "contact" | "address";
+
+/** What a payment link or Open URI put in Pay ▸ To an address. */
+export interface PayPrefill {
+  address: string;
+  /** Duffs. */
+  amount: number | null;
+  label: string | null;
+  message: string | null;
+  /** The DashPay username the link claims for the payee, unverified. */
+  username: string | null;
+}
+
+/** What a `dashpay://user` link put in Contacts ▸ Add contact. */
+export interface ContactPrefill {
+  /** Base58 identity id. */
+  identity: string;
+  username: string;
+}
+
+export type Dialog = "openUri" | "about";
+
 export interface UiState {
-  page: Page;
+  route: Route;
+  payTab: PayTab;
+  payPrefill: PayPrefill | null;
+  /** Counts the links that opened Pay: each one starts a fresh form, the same link again too. */
+  payLinks: number;
+  contactPrefill: ContactPrefill | null;
+  toolsTab: ToolsTab;
+  /** An invitation link arrived (DP5-01 adds its intake; Join DashPay says so meanwhile). */
+  invitation: boolean;
+  /** The wallet the window shows; `null` = the first. */
+  walletId: string | null;
   /** Txid whose detail sheet is open. */
   detail: string | null;
+  dialog: Dialog | null;
   discreet: boolean;
   /** A forced appearance; `null` follows the system. */
   theme: ThemeChoice;
@@ -18,7 +55,21 @@ export interface UiState {
   system: ThemeName;
 }
 
-let state: UiState = { page: "overview", detail: null, discreet: false, theme: null, system: "light" };
+let state: UiState = {
+  route: "home",
+  payTab: "contact",
+  payPrefill: null,
+  payLinks: 0,
+  contactPrefill: null,
+  toolsTab: "information",
+  invitation: false,
+  walletId: null,
+  detail: null,
+  dialog: null,
+  discreet: false,
+  theme: null,
+  system: "light",
+};
 const listeners = new Set<() => void>();
 
 export const ui = {
@@ -32,6 +83,11 @@ export const ui = {
     return () => void listeners.delete(l);
   },
 };
+
+/** Opens `route`, closing the detail sheet. */
+export function navigate(route: Route, patch: Partial<UiState> = {}) {
+  ui.set({ route, detail: null, ...patch });
+}
 
 export function useUi<T>(select: (s: UiState) => T): T {
   return useSyncExternalStore(ui.subscribe, () => select(ui.get()));

@@ -259,6 +259,9 @@ pub struct LaunchInfo {
     /// The self-test can unlock the vault (`selftest_unlock`): the app was
     /// launched with `--selftest-passphrase-file`.
     pub selftest_unlock: bool,
+    /// The renderer reports each link it routes (`selftest_link_routed`):
+    /// the app was launched with `--selftest-link-trace`.
+    pub selftest_link_trace: bool,
     pub theme: Option<ThemeName>,
     /// The network `open_network` opens when it names none.
     pub network: NetworkInfo,
@@ -272,6 +275,7 @@ impl LaunchInfo {
             selftest: opts.selftest.is_some(),
             selftest_pause_ms: opts.selftest_pause_ms,
             selftest_unlock: opts.selftest.is_some() && opts.selftest_passphrase_file.is_some(),
+            selftest_link_trace: opts.selftest_link_trace.is_some(),
             theme: opts.theme,
             network: NetworkInfo::from(&opts.network),
             app_version: env!("CARGO_PKG_VERSION").into(),

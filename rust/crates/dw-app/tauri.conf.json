@@ -49,10 +49,23 @@
         "identity",
         "social",
         "console",
-        "units"
+        "units",
+        "shell"
       ]
     },
     "withGlobalTauri": false
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "dash",
+          "pay",
+          "dashwallet",
+          "dashpay"
+        ]
+      }
+    }
   },
   "bundle": {
     "active": true,
@@ -77,7 +90,11 @@
     ],
     "linux": {
       "deb": {
-        "depends": []
+        "depends": [],
+        "desktopTemplate": "linux/dash-wallet.desktop"
+      },
+      "rpm": {
+        "desktopTemplate": "linux/dash-wallet.desktop"
       }
     }
   }

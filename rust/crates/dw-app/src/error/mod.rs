@@ -111,8 +111,12 @@ codes! {
         /// user's alone (on Unix: a regular file the user owns, mode 0600 or
         /// stricter, its final component not a symlink).
         SelftestPassphraseFile = "app.selftest_passphrase_file",
-        /// The platform's app-data directory is unknown.
+        /// The data root cannot be found (the platform's app-data directory
+        /// is unknown), created or locked.
         DataDir = "app.data_dir",
+        /// Another process holds the data root's instance lock: the wallet
+        /// is not opened twice (U-01 D2).
+        AlreadyRunning = "app.already_running",
         /// A handle id that is not (or no longer) open.
         UnknownHandle = "app.unknown_handle",
         /// More than `SendHandles::MAX` handles of a kind are open.

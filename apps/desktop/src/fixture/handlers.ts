@@ -28,6 +28,7 @@ import type { LockOutcome } from "../api/generated/LockOutcome";
 import { isCheckable } from "../api/lockReport";
 import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
 import { eventOf, sectionOf, type DashPayWorld } from "./dashpay";
+import { routeLink } from "./links";
 import { MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { BASE58, FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
 
@@ -400,6 +401,17 @@ export const HANDLERS: Handlers = {
     // The engine's DashPay::dispatch_status: a txid, a transition hash or a step id.
     if (!isCheckable(artifact)) throw fail("invalid_argument", "not a txid, transition hash or step id");
     return world.dispatch[artifact] ?? null;
+  },
+
+  // The shell (U-01): links are queued already routed (FixtureHandle.deliverLinks).
+  take_links: ({ network }, { world }) => {
+    if (network !== world.launch.network.dirName) throw fail("invalid_argument", `not the window's network: ${network}`);
+    return world.links.splice(0);
+  },
+  route_link: ({ text }) => routeLink(text),
+  shell_sync: ({ sync }, { world }) => {
+    world.shellSync = sync;
+    return null;
   },
 
   // Wallets and chain

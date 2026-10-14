@@ -28,6 +28,14 @@ pub struct LaunchOptions {
     /// the self-test then records the unlocked screens and the lock screen
     /// of an encrypted vault. The renderer never sees the passphrase.
     pub selftest_passphrase_file: Option<PathBuf>,
+    /// Append what happens to deep links to this file: `received <source>
+    /// <scheme>` from the shell, `routed …` from the renderer
+    /// (`selftest_link_routed`). The CI link jobs read it (U-01).
+    pub selftest_link_trace: Option<PathBuf>,
+    /// Links among the arguments (`dash:`, `pay:`, `dashwallet:`,
+    /// `dashpay:`), as the OS passes a clicked link. The shell takes them
+    /// into its queue at start-up (`shell::links`).
+    pub links: Vec<String>,
     /// Start SPV once the network is open.
     pub sync: bool,
     pub spv_peers: Vec<String>,
@@ -57,6 +65,8 @@ impl Default for LaunchOptions {
             selftest: None,
             selftest_pause_ms: 0,
             selftest_passphrase_file: None,
+            selftest_link_trace: None,
+            links: Vec::new(),
             sync: false,
             spv_peers: Vec::new(),
             dapi_addresses: Vec::new(),
@@ -71,7 +81,8 @@ impl Default for LaunchOptions {
 }
 
 pub const USAGE: &str = "\
-usage: dash-wallet [options]
+usage: dash-wallet [options] [link]
+  link                   a dash:, pay:, dashwallet: or dashpay: link to open
   --datadir <dir>        data root (default: the platform app-data directory)
   --network <name>       mainnet | testnet | regtest | devnet-<name> (default mainnet)
   --sync                 start SPV after opening the network
@@ -91,7 +102,9 @@ const SELFTEST_USAGE: &str = "
   --selftest <file>      render the gate screens, write element boxes to <file>, exit
   --selftest-pause <ms>  pause on each self-test screen (for screenshots)
   --selftest-passphrase-file <file>
-                         the self-test unlocks the vault with this file's first line";
+                         the self-test unlocks the vault with this file's first line
+  --selftest-link-trace <file>
+                         append each deep link's scheme and route to <file>";
 
 /// [`USAGE`], plus the self-test's options in a `selftest` build.
 pub fn usage() -> String {
@@ -152,6 +165,10 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
                 opts.selftest_passphrase_file =
                     Some(PathBuf::from(value("--selftest-passphrase-file")?))
             }
+            #[cfg(feature = "selftest")]
+            "--selftest-link-trace" => {
+                opts.selftest_link_trace = Some(PathBuf::from(value("--selftest-link-trace")?))
+            }
             "--theme" => {
                 opts.theme = Some(match value("--theme")?.as_str() {
                     "light" => ThemeName::Light,
@@ -169,6 +186,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
                     Some(size.ok_or_else(|| format!("--window-size: expected WxH, got {v:?}"))?);
             }
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
+            link if crate::shell::links::link_scheme(link).is_some() => {
+                opts.links.push(link.to_owned())
+            }
             _ => {}
         }
     }
@@ -242,8 +262,11 @@ mod tests {
             "1500",
             "--selftest-passphrase-file",
             "/tmp/pass",
+            "--selftest-link-trace",
+            "/tmp/links",
         ]);
         assert_eq!(o.selftest, Some(PathBuf::from("/tmp/boxes.json")));
+        assert_eq!(o.selftest_link_trace, Some(PathBuf::from("/tmp/links")));
         assert_eq!(o.selftest_pause_ms, 1500);
         assert_eq!(o.selftest_passphrase_file, Some(PathBuf::from("/tmp/pass")));
         assert!(usage().contains("--selftest-passphrase-file"));
@@ -258,6 +281,7 @@ mod tests {
             ["--selftest", "/tmp/boxes.json"],
             ["--selftest-pause", "1500"],
             ["--selftest-passphrase-file", "/tmp/pass"],
+            ["--selftest-link-trace", "/tmp/links"],
         ] {
             let e = parse(args.iter().map(|s| s.to_string())).unwrap_err();
             assert_eq!(e, format!("unknown option {}", args[0]));
@@ -288,5 +312,22 @@ mod tests {
     fn ignores_runtime_positional_arguments() {
         assert_eq!(run(&["-psn_0_12345", "file.txt"]), LaunchOptions::default());
         assert_eq!(parse(["--help".to_string()]).unwrap(), ParseOutcome::Help);
+    }
+
+    #[test]
+    fn links_among_the_arguments_are_kept_in_order() {
+        let o = run(&[
+            "--network",
+            "testnet",
+            "dash:yXabc?amount=1",
+            "file.txt",
+            "DashPay://user?id=x&username=bob",
+            "https://example.com",
+        ]);
+        assert_eq!(o.network, DashNetwork::Testnet);
+        assert_eq!(
+            o.links,
+            ["dash:yXabc?amount=1", "DashPay://user?id=x&username=bob"]
+        );
     }
 }

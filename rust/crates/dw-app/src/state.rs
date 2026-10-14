@@ -5,17 +5,19 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dw_engine::platform::DashPay;
 use dw_engine::{Engine, EngineConfig, NetworkSession, PreparedTx, TxDraft, WalletId};
 use dw_vault::VaultConfig;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::Mutex;
 
 use crate::bridge::{EventMemory, TauriSink};
 use crate::error::{AppCode, AppError, EngineCode};
+use crate::instance::InstanceLock;
 use crate::launch::LaunchOptions;
+use crate::shell::Shell;
 
 pub struct AppState {
     pub launch: LaunchOptions,
@@ -35,6 +37,14 @@ pub struct AppState {
     /// Orders "require authentication for every payment" against the
     /// grants issued under it (`api::vault`, D11).
     pub payment_policy: Arc<PaymentPolicy>,
+    /// Deep links and the native menus' state (U-01). The same `Arc` is
+    /// Tauri-managed, for the callbacks that run before this state exists.
+    pub shell: Arc<Shell>,
+    /// The data root's instance lock, when `run` did not take it already
+    /// (it does, before any window exists, and keeps it Tauri-managed; the
+    /// mock-runtime builders do not). Declared after `engine`, so it is
+    /// released after the engine is dropped.
+    _instance: Option<InstanceLock>,
     /// Test seam: a payment `authorize` passes it between reading the
     /// setting and issuing the grant.
     #[cfg(test)]
@@ -156,6 +166,20 @@ impl AppState {
             Some(dir) => dir.clone(),
             None => default_data_dir()?,
         };
+        // The lock before the engine: a second process on this root stops
+        // here, before it opens any wallet database.
+        let instance = match app.try_state::<InstanceLock>() {
+            Some(_) => None,
+            None => {
+                dw_fs::create_private_dir(&data_root).map_err(|e| {
+                    AppError::app(
+                        AppCode::DataDir,
+                        format!("cannot create {}: {e}", data_root.display()),
+                    )
+                })?;
+                Some(InstanceLock::acquire(&data_root, Duration::ZERO)?)
+            }
+        };
         let engine = Engine::new(
             EngineConfig {
                 data_root,
@@ -165,6 +189,8 @@ impl AppState {
             Arc::new(TauriSink::new(app.clone(), Arc::clone(&memory))?),
         )?;
         let handle = app.clone();
+        let shell = crate::shell::shell(app)
+            .unwrap_or_else(|| Arc::new(Shell::new(launch.selftest_link_trace.clone())));
         Ok(AppState {
             launch,
             started,
@@ -174,6 +200,8 @@ impl AppState {
             sends: SendHandles::default(),
             memory,
             payment_policy: Arc::default(),
+            shell,
+            _instance: instance,
             #[cfg(test)]
             payment_seam: StdMutex::default(),
             #[cfg(test)]

@@ -12,7 +12,7 @@ export async function show(page: Page, screen: Screen, theme: Theme) {
   await page.goto(fixtureUrl("funded", theme));
   await page.getByTestId("hero").waitFor();
   if (screen === "transactions" || screen === "txDetail") {
-    await page.getByTestId("sidebar-transactions").click();
+    await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
   }
   if (screen === "txDetail") {
