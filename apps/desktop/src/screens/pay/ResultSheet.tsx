@@ -8,9 +8,8 @@ import { AmountText, DashButton, Icon } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
 import type { UsedIcon } from "../../components/icons";
 import { Sheet } from "../../components/sheet";
-import { full } from "../../format/amount";
+import { useDisplay } from "../../format/display";
 import { broadcastFailure, type Outcome } from "./model";
-import { chainOf } from "./PayToAddress";
 import type { DraftApi } from "./useDraft";
 
 const TITLE: Record<Outcome["kind"], string> = {
@@ -42,7 +41,8 @@ export function ResultSheet({
   onDone: (show: boolean) => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const unit = network.unitName;
+  const shown = useDisplay(network);
+  const unit = shown.name;
 
   const retryButton = useRef<HTMLButtonElement>(null);
   const retry = async () => {
@@ -53,7 +53,7 @@ export function ResultSheet({
       const { txid } = await draft.broadcast(d, prepared);
       onOutcome({ kind: "sent", txid, amount, fee });
     } catch (e) {
-      onOutcome(broadcastFailure(e, chainOf(network), { draft: d, prepared, amount, fee }, false));
+      onOutcome(broadcastFailure(e, shown.chain, { draft: d, prepared, amount, fee }, false, shown.amountUnit));
     } finally {
       setBusy(false);
     }
@@ -74,7 +74,7 @@ export function ResultSheet({
           </p>
         ) : (
           <>
-            <AmountText className="result-amount" text={full(outcome.amount, false)} unitName={unit} glyphFactor={0.8} />
+            <AmountText className="result-amount" text={shown.full(outcome.amount)} unitName={unit} glyphFactor={0.8} />
             {outcome.kind === "unknown" && (
               <p className="result-text" role="alert" data-testid="pay-result-text">
                 {outcome.text} Check Activity before you pay again.
@@ -86,7 +86,7 @@ export function ResultSheet({
       {outcome.kind === "sent" && (
         <dl className="detail-list card-l1" data-testid="pay-result-facts">
           <DetailRow label="Network fee">
-            <AmountText text={full(outcome.fee, false)} unitName={unit} glyph={false} />
+            <AmountText text={shown.full(outcome.fee)} unitName={unit} glyph={false} />
           </DetailRow>
           <DetailRow label="Transaction ID" testId="pay-result-txid">
             <CopyValue value={outcome.txid} label="transaction ID" mono />

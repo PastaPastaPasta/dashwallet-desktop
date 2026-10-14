@@ -6,7 +6,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { useBackend } from "../api/queries";
 import type { HistorySortName } from "../api/generated/HistorySortName";
-import { compact, full } from "../format/amount";
+import { useDisplay, type Display } from "../format/display";
 import {
   dayTitle,
   detailDate,
@@ -37,15 +37,15 @@ const TX_ICON: Record<TxIcon, UsedIcon> = {
 };
 
 export interface RowContext {
-  unitName: string;
+  display: Display;
   locale: string | undefined;
   now: Date;
 }
 
-/** Unit name, locale and clock the rows of a screen format with. */
+/** Display unit, locale and clock the rows of a screen format with. */
 export function useRowContext(network: NetworkInfo): RowContext {
   const backend = useBackend();
-  return { unitName: network.unitName, locale: backend.locale, now: backend.now() };
+  return { display: useDisplay(network), locale: backend.locale, now: backend.now() };
 }
 
 /** Test id of a row: stable across engines and runs for the same transaction record. */
@@ -65,7 +65,7 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
   const trailing = trailingStatus(row.status);
   const date = rowDate(row);
   const shown = shownAmount(row.amount, row.txType);
-  const amount = compact(shown.duffs, shown.signed);
+  const amount = ctx.display.compact(shown.duffs, shown.signed);
   return (
     <li className="tx-row-item">
       <button type="button" className="tx-row" data-testid={rowTestId(row)} data-txid={row.txid} onClick={() => onOpen(row)}>
@@ -79,7 +79,7 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
         </span>
         <span className="tx-row-trailing">
           {trailing && <span className="tx-row-status">{trailing}</span>}
-          <AmountText className="tx-row-amount" text={amount} unitName={ctx.unitName} />
+          <AmountText className="tx-row-amount" text={amount} unitName={ctx.display.name} />
         </span>
       </button>
     </li>
@@ -208,7 +208,7 @@ export function TxTable({
             <SortHeader column="date" title="Date" sort={sort} onSort={onSort} />
             <th scope="col">Type</th>
             <th scope="col">Address / Label</th>
-            <SortHeader column="amount" title={`Amount (${ctx.unitName})`} sort={sort} onSort={onSort} className="num" />
+            <SortHeader column="amount" title={`Amount (${ctx.display.name})`} sort={sort} onSort={onSort} className="num" />
           </tr>
         </thead>
         <tbody>
@@ -230,7 +230,7 @@ export function TxTable({
                 <td className="tx-table-party" title={row.address ?? undefined}>
                   {rowParty(row)}
                 </td>
-                <td className="num">{full(shown.duffs, shown.signed)}</td>
+                <td className="num">{ctx.display.full(shown.duffs, shown.signed)}</td>
               </tr>
             );
           })}

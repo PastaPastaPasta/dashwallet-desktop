@@ -4,6 +4,7 @@
 import { DEFAULT_PREFS } from "../app/ui";
 import type { DisplayUnit } from "../api/generated/DisplayUnit";
 import type { UiSettings } from "../api/generated/UiSettings";
+import { UNIT_LABEL } from "../format/display";
 
 export const OptionsText = {
   /** QT-075. */
@@ -25,12 +26,10 @@ export const OptionsText = {
   unavailable: "Not available yet.",
 };
 
-export const UNIT_CHOICES: { unit: DisplayUnit; label: string }[] = [
-  { unit: "dash", label: "DASH" },
-  { unit: "milliDash", label: "mDASH" },
-  { unit: "microDash", label: "μDASH" },
-  { unit: "duffs", label: "duffs" },
-];
+export const UNIT_CHOICES: { unit: DisplayUnit; label: string }[] = (["dash", "milliDash", "microDash", "duffs"] as const).map((unit) => ({
+  unit,
+  label: UNIT_LABEL[unit],
+}));
 
 export const DIGIT_CHOICES = [2, 3, 4, 5, 6, 7, 8];
 

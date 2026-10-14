@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
+import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { FeeMode } from "./generated/FeeMode";
 import type { OutPoint } from "./generated/OutPoint";
 import type { JsonValue } from "./generated/serde_json/JsonValue";
@@ -58,7 +59,7 @@ export class IpcBackend implements Backend {
   buildPaymentUri = cmd.buildPaymentUri;
   qrMatrix = cmd.qrMatrix;
   classifyAddress = cmd.classifyAddress;
-  parseAmount = (text: string) => cmd.parseAmount(text, "dash");
+  parseAmount = (text: string, unit: DisplayUnit) => cmd.parseAmount(text, unit);
   newTxDraft = cmd.newTxDraft;
   closeDraft = cmd.closeDraft;
   draftSetRecipients = cmd.draftSetRecipients;

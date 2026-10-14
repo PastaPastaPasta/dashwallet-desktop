@@ -8,6 +8,7 @@ import type { AppError, AppEvent, ErrorCode } from "./generated/commands";
 import { ERROR_CODES } from "./generated/commands";
 import type { AuthGrant } from "./generated/AuthGrant";
 import type { Balances } from "./generated/Balances";
+import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { ContactList } from "./generated/ContactList";
 import type { ContactQueryArgs } from "./generated/ContactQueryArgs";
 import type { CredentialSpec } from "./generated/CredentialSpec";
@@ -114,8 +115,8 @@ export interface Backend {
   qrMatrix(text: string): Promise<QrMatrix>;
   // Send (U-03 D2, E0-13 D8): a draft and its prepared transactions are handles.
   classifyAddress(network: string, text: string): Promise<AddressClass>;
-  /** dw-units' parser for a DASH amount the user typed; `null` when it is not one. */
-  parseAmount(text: string): Promise<number | null>;
+  /** dw-units' parser for an amount the user typed in `unit`; `null` when it is not one. */
+  parseAmount(text: string, unit: DisplayUnit): Promise<number | null>;
   newTxDraft(walletId: string): Promise<number>;
   closeDraft(draft: number): Promise<boolean>;
   draftSetRecipients(draft: number, recipients: Recipient[]): Promise<null>;

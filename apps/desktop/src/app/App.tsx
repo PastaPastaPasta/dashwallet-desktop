@@ -21,6 +21,7 @@ import { AboutSheet, OpenUriSheet } from "../screens/ShellDialogs";
 import { Transactions } from "../screens/Transactions";
 import { TxDetailSheet } from "../screens/TxDetailSheet";
 import { ACTIVITY_EVENTS, armedFor, AutoLockTimer } from "../settings/autoLock";
+import { useDisplay } from "../format/display";
 import { SecurityText } from "../settings/security";
 import { useShellBridge } from "./shellBridge";
 import { mark } from "./startup";
@@ -86,6 +87,7 @@ function Shell() {
   const backend = useBackend();
   const launch = useLaunch();
   const { network } = launch;
+  const unitName = useDisplay(network).name;
   const route = useUi((s) => s.route);
   const detail = useUi((s) => s.detail);
   const dialog = useUi((s) => s.dialog);
@@ -210,7 +212,7 @@ function Shell() {
         <StatusBar
           sync={sync.data}
           lock={lock.data}
-          unitName={network.unitName}
+          unitName={unitName}
           hd={wallet?.hd ?? false}
           onUnlock={() => ui.set({ dialog: "unlock" })}
         />

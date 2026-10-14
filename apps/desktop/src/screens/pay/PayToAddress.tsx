@@ -7,10 +7,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { keys, useBackend, useBalance, useLockStatus } from "../../api/queries";
-import { navigate, type PayPrefill } from "../../app/ui";
+import { navigate, ui, type PayPrefill } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton } from "../../components/basics";
-import { full, type Chain } from "../../format/amount";
+import { useDisplay } from "../../format/display";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
 import {
@@ -33,10 +33,6 @@ import { useDraft, type DraftSpec } from "./useDraft";
 const SETTLE_MS = 300;
 
 type Phase = { kind: "editing" } | { kind: "confirm"; confirmed: Confirmed; spec: DraftSpec } | { kind: "result"; outcome: Outcome };
-
-export function chainOf(network: NetworkInfo): Chain {
-  return network.kind === "mainnet" ? "main" : "test";
-}
 
 function FormField({
   label,
@@ -73,14 +69,17 @@ function FormField({
 export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefill | null; walletId: string; network: NetworkInfo }) {
   const b = useBackend();
   const client = useQueryClient();
-  const chain = chainOf(network);
+  const shown = useDisplay(network);
+  const { chain, amountUnit } = shown;
   const locked = useLockStatus().data?.state === "locked";
   const draft = useDraft(walletId, locked);
   const balance = useBalance(walletId);
 
   const [address, setAddress] = useState(prefill?.address ?? "");
-  const [amountText, setAmountText] = useState(prefill?.amount ? full(prefill.amount, false) : "");
-  const [subtractFee, setSubtractFee] = useState(false);
+  const [amountText, setAmountText] = useState(prefill?.amount ? shown.full(prefill.amount) : "");
+  // Settings ▸ General's default starts each new form (U-04 D5); Max still turns it on.
+  const subtractFeeByDefault = () => ui.get().prefs.subtractFeeByDefault;
+  const [subtractFee, setSubtractFee] = useState(subtractFeeByDefault);
   const [label, setLabel] = useState(prefill?.label ?? "");
   const [message, setMessage] = useState(prefill?.message ?? "");
   const [advanced, setAdvanced] = useState<Advanced>(DEFAULT_ADVANCED);
@@ -103,12 +102,17 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
     enabled: checkedAddr !== "",
     staleTime: Infinity,
   });
-  const parsed = useQuery({ queryKey: ["parseAmount", checkedAmt], queryFn: () => b.parseAmount(checkedAmt), enabled: checkedAmt !== "", staleTime: Infinity });
+  const parsed = useQuery({
+    queryKey: ["parseAmount", shown.unit, checkedAmt],
+    queryFn: () => b.parseAmount(checkedAmt, shown.unit),
+    enabled: checkedAmt !== "",
+    staleTime: Infinity,
+  });
 
   const addrError = checkedAddr !== "" && addrClass.data ? addressProblem(addrClass.data) : null;
   const duffs = checkedAmt !== "" ? parsed.data : undefined;
   const amountError =
-    duffs === null ? "Enter an amount in DASH, for example 0.25." : duffs === 0 ? "The amount to pay must be larger than 0." : null;
+    duffs === null ? shown.invalidAmount : duffs === 0 ? "The amount to pay must be larger than 0." : null;
 
   const fee = feeMode(advanced);
   const change = changePolicy(advanced);
@@ -128,7 +132,7 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
     retry: false,
     gcTime: 0,
   });
-  const refusal = estimate.isError ? sendErrorText(estimate.error, chain) : null;
+  const refusal = estimate.isError ? sendErrorText(estimate.error, chain, amountUnit) : null;
   let generalError: string | null = null;
   if (estimate.isError) generalError = refusal ? (refusal.field ? null : refusal.text) : errorMessage(estimate.error);
   else if (noCoins) generalError = "Choose the coins to pay with.";
@@ -142,10 +146,10 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
     if (!fee) return;
     try {
       const max = await b.maxSpendable(walletId, coinSource(advanced), fee);
-      setAmountText(full(max, false));
+      setAmountText(shown.full(max));
       setSubtractFee(true);
     } catch (e) {
-      setMaxError(sendErrorText(e, chain)?.text ?? errorMessage(e));
+      setMaxError(sendErrorText(e, chain, amountUnit)?.text ?? errorMessage(e));
     }
   };
 
@@ -157,7 +161,7 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
   const reset = () => {
     setAddress("");
     setAmountText("");
-    setSubtractFee(false);
+    setSubtractFee(subtractFeeByDefault());
     setLabel("");
     setMessage("");
     setAdvanced(DEFAULT_ADVANCED);
@@ -205,9 +209,9 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
             )}
           </FormField>
           <FormField
-            label={`Amount (${network.unitName})`}
+            label={`Amount (${shown.name})`}
             error={amountError ?? fieldError("amount") ?? maxError}
-            hint={available !== undefined && <>Available: {full(available, false)} {network.unitName}</>}
+            hint={available !== undefined && <>Available: {shown.full(available)} {shown.name}</>}
           >
             {(p) => (
               <span className="amount-entry">
@@ -217,7 +221,7 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
                   value={amountText}
                   inputMode="decimal"
                   autoComplete="off"
-                  placeholder="0.00"
+                  placeholder={shown.placeholder}
                   onChange={(e) => setAmountText(e.target.value)}
                 />
                 <DashButton variant="tintedBlue" size="small" data-testid="pay-max" onClick={() => void useMax()} disabled={!fee}>
@@ -246,7 +250,7 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
               </span>
             ) : estimate.data && spec ? (
               <span className="pay-fee-line" data-testid="pay-fee-line">
-                Network fee <AmountText text={full(estimate.data.fee, false)} unitName={network.unitName} glyph={false} />
+                Network fee <AmountText text={shown.full(estimate.data.fee)} unitName={shown.name} glyph={false} />
               </span>
             ) : null}
           </div>
