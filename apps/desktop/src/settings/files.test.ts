@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 describe("file names (D19)", () => {
-  it("names a file after its wallet and the minute, in the folder's own separator", () => {
+  it("names a file after its wallet and the second, in the folder's own separator", () => {
     expect(fileName("Main", AT, "backup")).toBe("Main-2026-10-06-09-05-00.dwbackup");
     expect(fileName("Mon portefeuille é/../x", AT, "dumpWallet")).toBe("Mon-portefeuille-e-x-2026-10-06-09-05-00-dumpwallet.txt");
     expect(fileName("💰", AT, "importDescriptorsJson")).toBe("wallet-2026-10-06-09-05-00-descriptors.json");
@@ -45,7 +45,7 @@ describe("back up", () => {
     const model = new BackupModel(b, () => AT);
     await model.backup(A, "Main", null, null);
     expect(model.done).toMatchObject({ path: `${FIXTURE_BACKUP_DIR}/Main-2026-10-06-09-05-00.dwbackup`, walletId: A, automatic: false });
-    // The same minute again: the engine never writes over a file.
+    // The same second again: the engine never writes over a file.
     await model.backup(A, "Main", null, null);
     expect(model.error).toMatch(/a file with that name exists/);
   });

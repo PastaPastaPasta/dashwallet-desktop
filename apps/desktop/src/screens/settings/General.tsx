@@ -147,6 +147,7 @@ export function GeneralTab() {
       {resetting && (
         <Sheet title={OptionsText.resetTitle} width="small" testId="settings-reset-sheet" onClose={() => setResetting(false)}>
           <p className="sheet-text">{OptionsText.resetMessage}</p>
+          <Problem text={problem} testId="settings-reset-error" />
           <div className="sheet-actions">
             <DashButton variant="tintedGray" data-autofocus onClick={() => setResetting(false)}>
               Cancel
@@ -156,9 +157,11 @@ export function GeneralTab() {
               data-testid="settings-reset-confirm"
               // Reset Options (QT-141, D8): every display setting back to its default.
               onClick={() =>
+                // A failed save keeps the sheet open with the problem.
                 void save(DEFAULT_PREFS).then((saved) => {
+                  if (!saved) return;
                   setResetting(false);
-                  setResetDone(saved);
+                  setResetDone(true);
                 })
               }
             >

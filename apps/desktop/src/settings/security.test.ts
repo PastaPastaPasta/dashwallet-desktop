@@ -149,6 +149,20 @@ describe("wipe", () => {
     expect(fixture.world.lock.state).toBe("unlocked");
   });
 
+  it("IOS109_aClosedWalletThatCannotOpenStopsTheWipeBeforeAnyRemoval", async () => {
+    install("two-wallets");
+    await b.unloadWallet(SECOND_WALLET_ID);
+    fixture.fail("load_wallet", "none");
+    const model = new WipeModel(b);
+    await model.load();
+    model.accept(SecurityText.wipeAcceptPhrase);
+    await model.wipe(PASS);
+    expect(model.step).toBe("stopped");
+    expect(model.error).toMatch(/Nothing was deleted\.$/);
+    expect(fixture.calls).not.toContain("remove_wallet");
+    expect(fixture.world.wallets).toHaveLength(2);
+  });
+
   it("IOS109_aStoppedWipeSaysWhatItAlreadyRemoved", () => {
     expect(SecurityText.wipeStopped("Main", "Busy.", 0)).toBe("Main could not be removed: Busy. Nothing was deleted.");
     expect(SecurityText.wipeStopped("C", "Busy.", 1)).toBe("C could not be removed: Busy. The wallet before it was removed; the others and the vault were kept.");

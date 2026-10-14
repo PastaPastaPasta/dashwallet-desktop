@@ -216,7 +216,9 @@ export function useDashPayShell(walletId: string | undefined) {
 // Settings (U-04): read when the tab shows, kept until the change that moves them.
 export function useAutomaticBackups() {
   const b = useBackend();
-  return useQuery({ queryKey: keys.automaticBackups, queryFn: () => b.automaticBackups(null) });
+  // The engine writes an automatic backup on its own after an import or a restore and says nothing
+  // when it is done, so the list is read again whenever the tab shows (D28).
+  return useQuery({ queryKey: keys.automaticBackups, queryFn: () => b.automaticBackups(null), refetchOnMount: "always" });
 }
 
 export function useBackupPolicy() {

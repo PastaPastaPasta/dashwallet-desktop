@@ -96,6 +96,15 @@ function WalletItem({
   const busy = model.busy !== null;
   const closable = model.canClose(row);
   const removable = model.canRemove(row);
+  const cannotClose = row.loaded && !closable && !model.fallback;
+  const hint =
+    cannotClose && !removable
+      ? WalletsText.openAnotherToCloseOrRemove
+      : cannotClose
+        ? WalletsText.openAnotherToClose
+        : row.loaded && !removable
+          ? WalletsText.openAnotherToRemove
+          : null;
   return (
     <li className="settings-wallet" data-testid={testId} aria-labelledby={`${id}-name`}>
       <div className="settings-wallet-head">
@@ -160,8 +169,7 @@ function WalletItem({
           Remove…
         </DashButton>
       </div>
-      {row.loaded && !closable && !model.fallback && <span className="field-hint">{WalletsText.openAnotherToClose}</span>}
-      {row.loaded && !removable && <span className="field-hint">{WalletsText.openAnotherToRemove}</span>}
+      {hint && <span className="field-hint">{hint}</span>}
     </li>
   );
 }

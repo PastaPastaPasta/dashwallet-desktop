@@ -27,7 +27,8 @@ export const SecurityText = {
   encryptFirst: "Encrypt the wallet first.",
   autohideBalance: "Hide balances when the app starts",
   lockedAutomatically: "Locked automatically.",
-  autoLockSeconds: (secs: number) => `${secs} seconds`,
+  autoLockSeconds: (secs: number) =>
+    secs % 60 === 0 ? `${secs / 60} minute${secs === 60 ? "" : "s"}` : `${secs} second${secs === 1 ? "" : "s"}`,
   /** IOS-009 "Delete All Wallets?". */
   wipeTitle: "Delete all wallet data?",
   wipeMessage:
@@ -35,7 +36,7 @@ export const SecurityText = {
   /** iOS's sentence, typed exactly. */
   wipeAcceptPhrase: "I accept that I will lose my coins if I no longer possess the recovery phrase",
   acceptPhraseMismatch: "Type the sentence exactly as shown.",
-  wiped: "All wallet data was deleted.",
+  wiped: "The wallets and the vault were deleted. Backups and exports were kept.",
   /** Backups and exports are files the user chose to keep: the wipe leaves them (D27). */
   wipeKeeps: (dir: string) =>
     `Backups and exports in ${dir} are not deleted. An export for Dash Core holds private keys in plain text: delete it yourself if you no longer need it.`,
@@ -268,12 +269,21 @@ export class WipeModel extends Model {
     }
     if (wallets.length === 0) return this.#go("done");
     this.#go("working");
+    // The engine removes only loaded wallets. Every closed one is opened before the first removal:
+    // once the open ones are gone onboarding covers the sheet, and a closed wallet that then failed
+    // to open would be out of reach (D26).
+    for (const w of wallets.filter((w) => !w.loaded)) {
+      try {
+        await this.api.loadWallet(w.walletId);
+      } catch (e) {
+        if (first) this.api.revokeGrant(first).catch(() => {});
+        return this.#stop(SecurityText.wipeStopped(w.name, failureText(e), 0));
+      }
+    }
     for (const [i, w] of wallets.entries()) {
       let grant: string | null = i === 0 ? first : null;
       try {
         grant ??= (await this.api.authorize({ kind: "wipe" }, w.walletId, vaultCredential(this.encrypted, p))).id;
-        // The engine removes only loaded wallets: a closed one is opened first.
-        if (!w.loaded) await this.api.loadWallet(w.walletId);
         await this.api.removeWallet(w.walletId, grant);
       } catch (e) {
         if (grant) this.api.revokeGrant(grant).catch(() => {});

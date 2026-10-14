@@ -195,7 +195,9 @@ test.describe("Wallets", () => {
     await expect(page.getByTestId(`${B}-startup`)).not.toBeChecked();
     // The last open wallet stays open.
     await expect(page.getByTestId(`${A}-close`)).toBeDisabled();
+    await expect(page.getByTestId(`${A}-remove`)).toBeDisabled(); // D26
     await page.getByTestId(`${B}-open`).click();
+    await expect(page.getByTestId(`${A}-remove`)).toBeEnabled();
     await expect(page.getByTestId(`${B}-state`)).toHaveText("Open");
   });
 

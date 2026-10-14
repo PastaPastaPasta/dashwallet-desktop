@@ -12,6 +12,7 @@ export const WalletsText = {
   openAnotherFirst: "Open another wallet first.",
   openAnotherToClose: "Open another wallet first to close this one.",
   openAnotherToRemove: "Open another wallet first to remove this one: closed wallets cannot be reached with no wallet open.",
+  openAnotherToCloseOrRemove: "Open another wallet first to close or remove this one.",
   noLoadStates: "Closed wallets are not shown: this engine does not list them yet.",
   nameRule: "A wallet name is 1 to 64 characters.",
   /** IOS-110. */
