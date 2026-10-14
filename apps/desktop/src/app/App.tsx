@@ -100,13 +100,18 @@ function Shell() {
   else if (route === "tools") content = <ToolsPage />;
   else content = <Placeholder route={route} />;
 
+  // A contested username still has its identity: Contacts, not Join DashPay (D11).
   const joined = !(dashpay.status?.kind === "noIdentity" || dashpay.status?.kind === "registering");
   const sheet = !!(detail && wallet && !locked);
-  const modal = !locked && (sheet || dialog !== null);
+  // A dialog asked for while locked or behind a sheet is dropped, not kept for later.
+  const shown = locked || sheet ? null : dialog;
+  useEffect(() => {
+    if (dialog !== shown) ui.set({ dialog: null });
+  }, [dialog, shown]);
   return (
     <>
       {/* Behind a sheet or the lock screen the shell takes no focus and is hidden from assistive tech. */}
-      <div className="app-chrome" inert={locked || modal}>
+      <div className="app-chrome" inert={locked || sheet || shown !== null}>
         <Toolbar
           wallets={wallets.data ?? []}
           wallet={wallet}
@@ -122,8 +127,8 @@ function Shell() {
         <StatusBar sync={sync.data} lock={lock.data} unitName={network.unitName} hd={wallet?.hd ?? false} />
       </div>
       {sheet && <TxDetailSheet walletId={wallet!.walletId} txid={detail!} network={network} />}
-      {!locked && !sheet && dialog === "openUri" && <OpenUriSheet network={network.dirName} />}
-      {!locked && !sheet && dialog === "about" && <AboutSheet launch={launch} />}
+      {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
+      {shown === "about" && <AboutSheet launch={launch} />}
       {locked && <LockScreen network={network} />}
     </>
   );

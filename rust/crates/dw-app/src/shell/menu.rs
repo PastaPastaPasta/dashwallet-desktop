@@ -14,8 +14,8 @@
 //! WebView2 handle them themselves.
 
 use tauri::menu::{
-    AboutMetadataBuilder, CheckMenuItem, CheckMenuItemBuilder, IsMenuItem, Menu, MenuEvent,
-    MenuItem, MenuItemBuilder, PredefinedMenuItem, Submenu, SubmenuBuilder,
+    AboutMetadataBuilder, CheckMenuItem, CheckMenuItemBuilder, Menu, MenuEvent, MenuItem,
+    MenuItemBuilder, SubmenuBuilder,
 };
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -28,7 +28,8 @@ pub enum Action {
     Shell(ShellCommand),
     /// Ends the app (through `RunEvent::Exit`, which shuts the engine down).
     Quit,
-    /// Tray: shows the window, or hides it when it is shown and focused.
+    /// Tray: shows the window, or hides it when it is shown (and, except on
+    /// Windows, focused).
     ToggleWindow,
 }
 
@@ -217,23 +218,10 @@ pub(super) fn menu_item<R: Runtime, M: Manager<R>>(
     b.build(manager)
 }
 
-fn refs<R: Runtime>(v: &[Box<dyn IsMenuItem<R>>]) -> Vec<&dyn IsMenuItem<R>> {
-    v.iter().map(|b| b.as_ref()).collect()
-}
-
-fn submenu<R: Runtime>(
-    app: &AppHandle<R>,
-    label: &str,
-    items: &[&dyn IsMenuItem<R>],
-) -> tauri::Result<Submenu<R>> {
-    SubmenuBuilder::new(app, label).items(items).build()
-}
-
 /// The menu bar. Wallet ▸ Lock and Discreet Mode follow the renderer
 /// (`shell_sync`).
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let it = |id| menu_item(app, id);
-    let sep = || PredefinedMenuItem::separator(app);
     let mac = cfg!(target_os = "macos");
 
     let lock = it("wallet.lock")?;
@@ -252,17 +240,15 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         }));
     }
 
-    let mut file: Vec<Box<dyn IsMenuItem<R>>> = vec![
-        Box::new(it("file.open-uri")?),
-        Box::new(sep()?),
-        Box::new(it("file.sign-verify")?),
-        Box::new(it("file.psbt")?),
-    ];
+    let mut file = SubmenuBuilder::new(app, "File")
+        .item(&it("file.open-uri")?)
+        .separator()
+        .item(&it("file.sign-verify")?)
+        .item(&it("file.psbt")?);
     if !mac {
-        file.push(Box::new(sep()?));
-        file.push(Box::new(it("file.exit")?));
+        file = file.separator().item(&it("file.exit")?);
     }
-    let mut view: Vec<Box<dyn IsMenuItem<R>>> = Vec::new();
+    let mut view = SubmenuBuilder::new(app, "View");
     for id in [
         "view.home",
         "view.pay",
@@ -271,29 +257,29 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "view.activity",
         "view.coinjoin",
     ] {
-        view.push(Box::new(it(id)?));
+        view = view.item(&it(id)?);
     }
-    view.push(Box::new(sep()?));
-    view.push(Box::new(it("view.notifications")?));
-    view.push(Box::new(it("view.profile")?));
+    view = view
+        .separator()
+        .item(&it("view.notifications")?)
+        .item(&it("view.profile")?);
     if mac {
-        view.push(Box::new(sep()?));
-        view.push(Box::new(PredefinedMenuItem::fullscreen(app, None)?));
+        view = view.separator().fullscreen();
     }
-    let mut wallet: Vec<Box<dyn IsMenuItem<R>>> = vec![Box::new(lock), Box::new(discreet)];
+    let mut wallet = SubmenuBuilder::new(app, "Wallet")
+        .item(&lock)
+        .item(&discreet);
     if !mac {
-        wallet.push(Box::new(sep()?));
-        wallet.push(Box::new(it("wallet.settings")?));
+        wallet = wallet.separator().item(&it("wallet.settings")?);
     }
-    let tools: Vec<Box<dyn IsMenuItem<R>>> = vec![
-        Box::new(it("tools.information")?),
-        Box::new(it("tools.console")?),
-        Box::new(it("tools.peers")?),
-        Box::new(it("tools.repair")?),
-        Box::new(sep()?),
-        Box::new(it("tools.address-book")?),
-        Box::new(it("tools.coin-selection")?),
-    ];
+    let tools = SubmenuBuilder::new(app, "Tools")
+        .item(&it("tools.information")?)
+        .item(&it("tools.console")?)
+        .item(&it("tools.peers")?)
+        .item(&it("tools.repair")?)
+        .separator()
+        .item(&it("tools.address-book")?)
+        .item(&it("tools.coin-selection")?);
 
     let menu = Menu::new(app)?;
     if mac {
@@ -301,57 +287,45 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             .name(Some("Dash Wallet"))
             .version(Some(env!("CARGO_PKG_VERSION")))
             .build();
-        menu.append(&submenu(
-            app,
-            "Dash Wallet",
-            &[
-                &PredefinedMenuItem::about(app, Some("About Dash Wallet"), Some(about))?,
-                &sep()?,
-                &it("wallet.settings")?,
-                &sep()?,
-                &PredefinedMenuItem::services(app, None)?,
-                &sep()?,
-                &PredefinedMenuItem::hide(app, None)?,
-                &PredefinedMenuItem::hide_others(app, None)?,
-                &PredefinedMenuItem::show_all(app, None)?,
-                &sep()?,
-                &PredefinedMenuItem::quit(app, None)?,
-            ],
-        )?)?;
+        let app_menu = SubmenuBuilder::new(app, "Dash Wallet")
+            .about(Some(about))
+            .separator()
+            .item(&it("wallet.settings")?)
+            .separator()
+            .services()
+            .separator()
+            .hide()
+            .hide_others()
+            .show_all()
+            .separator()
+            .quit();
+        menu.append(&app_menu.build()?)?;
     }
-    menu.append(&submenu(app, "File", &refs(&file))?)?;
+    menu.append(&file.build()?)?;
     if mac {
-        menu.append(&submenu(
-            app,
-            "Edit",
-            &[
-                &PredefinedMenuItem::undo(app, None)?,
-                &PredefinedMenuItem::redo(app, None)?,
-                &sep()?,
-                &PredefinedMenuItem::cut(app, None)?,
-                &PredefinedMenuItem::copy(app, None)?,
-                &PredefinedMenuItem::paste(app, None)?,
-                &PredefinedMenuItem::select_all(app, None)?,
-            ],
-        )?)?;
+        let edit = SubmenuBuilder::new(app, "Edit")
+            .undo()
+            .redo()
+            .separator()
+            .cut()
+            .copy()
+            .paste()
+            .select_all();
+        menu.append(&edit.build()?)?;
     }
-    menu.append(&submenu(app, "View", &refs(&view))?)?;
-    menu.append(&submenu(app, "Wallet", &refs(&wallet))?)?;
-    menu.append(&submenu(app, "Tools", &refs(&tools))?)?;
-    if mac {
-        menu.append(&submenu(
-            app,
-            "Window",
-            &[
-                &PredefinedMenuItem::minimize(app, None)?,
-                &PredefinedMenuItem::maximize(app, None)?,
-                &sep()?,
-                &PredefinedMenuItem::bring_all_to_front(app, None)?,
-            ],
-        )?)?;
+    menu.append(&view.build()?)?;
+    menu.append(&wallet.build()?)?;
+    menu.append(&tools.build()?)?;
+    let last = if mac {
+        SubmenuBuilder::new(app, "Window")
+            .minimize()
+            .maximize()
+            .separator()
+            .bring_all_to_front()
     } else {
-        menu.append(&submenu(app, "Help", &[&it("help.about")?])?)?;
-    }
+        SubmenuBuilder::new(app, "Help").item(&it("help.about")?)
+    };
+    menu.append(&last.build()?)?;
     Ok(menu)
 }
 
@@ -375,9 +349,11 @@ pub fn run<R: Runtime>(app: &AppHandle<R>, action: Action) {
             let Some(window) = app.get_webview_window("main") else {
                 return;
             };
-            let shown = window.is_visible().unwrap_or(false)
-                && !window.is_minimized().unwrap_or(false)
-                && window.is_focused().unwrap_or(false);
+            let shown =
+                window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
+            // A click in the Windows notification area focuses the taskbar
+            // first, so there an unfocused window counts as shown too.
+            let shown = shown && (cfg!(windows) || window.is_focused().unwrap_or(false));
             if shown {
                 let _ = window.hide();
             } else {

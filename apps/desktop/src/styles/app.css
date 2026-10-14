@@ -4,6 +4,12 @@
 
 /* ------------------------------------------------------------------ base */
 
+/* A page title focused after a link or menu opened its page (shellBridge.ts focusPage) shows no
+   ring: it is not a control. */
+.page h1[tabindex="-1"]:focus {
+  outline: none;
+}
+
 *,
 *::before,
 *::after {
@@ -117,7 +123,7 @@ button {
   display: flex;
   align-items: center;
   gap: var(--dw-space-xs);
-  height: 28px;
+  height: 28px; /* the toolbar buttons' 28 px (.toolbar-button), one row */
   padding: 0 var(--dw-space-sm);
   border: 0;
   border-radius: var(--dw-radius-capsule);
@@ -137,6 +143,7 @@ button {
 .identity-chip-avatar {
   display: grid;
   place-items: center;
+  /* 20 px: the chip's 28 px less a 4 px ring above and below. */
   width: 20px;
   height: 20px;
   margin-left: calc(-1 * var(--dw-space-xxs));
@@ -156,6 +163,7 @@ button {
   color: var(--dw-role-text-primary);
 }
 
+/* 16 px: one caption2 digit's line, so a single-digit badge is round. */
 .toolbar-badge,
 .sidebar-badge {
   min-width: 16px;

@@ -161,8 +161,10 @@ pub fn run() {
     };
     // The single-instance plugin first: a second launch hands its links to
     // the running app and exits before anything else starts.
-    let mut base =
-        tauri::Builder::<tauri::Wry>::new().plugin(shell::native::single_instance(&launch));
+    let mut base = tauri::Builder::<tauri::Wry>::new();
+    if let Some(single_instance) = shell::native::single_instance(&launch) {
+        base = base.plugin(single_instance);
+    }
     if let Some(window_state) = shell::native::window_state(&launch) {
         base = base.plugin(window_state);
     }

@@ -7,7 +7,6 @@ use tauri::Runtime;
 use tauri::plugin::TauriPlugin;
 use tauri_plugin_window_state::StateFlags;
 
-use super::links::LinkSource;
 use crate::launch::LaunchOptions;
 
 /// A second launch hands its command line to the running app, which comes
@@ -16,22 +15,36 @@ use crate::launch::LaunchOptions;
 /// The instance is the data root's, as in dash-qt (its IPC server name
 /// hashes the data directory): on Linux a `--datadir` launch takes a D-Bus
 /// name of its own, so wallets in two data roots (and parallel test runs)
-/// do not meet. On macOS and Windows the plugin keys by the bundle
-/// identifier only: one instance per user. Without a D-Bus session bus the
-/// plugin cannot register and every launch runs on its own.
-pub fn single_instance<R: Runtime>(launch: &LaunchOptions) -> TauriPlugin<R> {
-    let builder = tauri_plugin_single_instance::Builder::new().callback(|app, args, _cwd| {
-        super::reveal(app);
-        super::deliver_links(app, args, LinkSource::Forwarded);
-    });
-    #[cfg(target_os = "linux")]
-    let builder = match &launch.data_dir {
-        Some(dir) => builder.dbus_id(dbus_id(dir)),
-        None => builder,
-    };
-    #[cfg(not(target_os = "linux"))]
-    let _ = launch;
-    builder.build()
+/// do not meet. On Windows the plugin keys by the bundle identifier only:
+/// one instance per user session; it joins the forwarded arguments with
+/// `|`, so a link holding one arrives cut short. Without a D-Bus session
+/// bus the plugin cannot register and every launch runs on its own.
+///
+/// Not on macOS (`None`): LaunchServices already keeps one app instance
+/// and hands links over as `RunEvent::Opened`, and the plugin's macOS
+/// socket has a fixed name in the shared `/tmp`, which another local user
+/// could take first and so swallow every launch and its arguments.
+pub fn single_instance<R: Runtime>(launch: &LaunchOptions) -> Option<TauriPlugin<R>> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = launch;
+        None
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let builder = tauri_plugin_single_instance::Builder::new().callback(|app, args, _cwd| {
+            super::reveal(app);
+            super::deliver_links(app, args, super::links::LinkSource::Forwarded);
+        });
+        #[cfg(target_os = "linux")]
+        let builder = match &launch.data_dir {
+            Some(dir) => builder.dbus_id(dbus_id(dir)),
+            None => builder,
+        };
+        #[cfg(not(target_os = "linux"))]
+        let _ = launch;
+        Some(builder.build())
+    }
 }
 
 fn absolute(dir: &Path) -> PathBuf {
@@ -39,10 +52,11 @@ fn absolute(dir: &Path) -> PathBuf {
 }
 
 /// The D-Bus name prefix of the instance for data root `dir`: the bundle
-/// identifier and a 64-bit FNV-1a of the absolute path (an element may not
-/// start with a digit, hence the `d`).
+/// identifier and a 64-bit FNV-1a of the canonical path (the absolute one
+/// before the root exists), so a symlinked spelling meets the same
+/// instance. An element may not start with a digit, hence the `d`.
 pub fn dbus_id(dir: &Path) -> String {
-    let path = absolute(dir);
+    let path = std::fs::canonicalize(dir).unwrap_or_else(|_| absolute(dir));
     let hash = path
         .as_os_str()
         .as_encoded_bytes()
@@ -91,6 +105,17 @@ mod tests {
         let last = a.rsplit('.').next().unwrap();
         assert!(last.starts_with('d') && last.len() == 17, "{a}");
         assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '.'));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_data_root_meets_the_same_instance() {
+        let dir = dw_testutil::private_tempdir();
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink(&root, dir.path().join("link")).unwrap();
+        assert_eq!(dbus_id(&root), dbus_id(&dir.path().join("link")));
+        assert_eq!(dbus_id(&root), dbus_id(&dir.path().join("link/../root")));
     }
 
     #[test]

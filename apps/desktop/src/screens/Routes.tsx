@@ -23,9 +23,9 @@ const TITLES: Record<Route, string> = {
   joinDashPay: "Join DashPay",
 };
 
-const NOT_YET: Partial<Record<Route, string>> = {
+/** The placeholder text of each route that `Placeholder` renders. */
+const NOT_YET: Record<Exclude<Route, "home" | "pay" | "contacts" | "activity" | "tools">, string> = {
   receive: "Receiving addresses and payment requests are not available yet.",
-  contacts: "Your DashPay contacts are not available yet.",
   coinJoin: "CoinJoin mixing is not available yet.",
   explore: "Explore is not available yet.",
   notifications: "DashPay notifications are not available yet.",
@@ -47,16 +47,16 @@ function Page({ route, children }: { route: Route; children?: ReactNode }) {
   );
 }
 
-function NotYet({ route, text }: { route: Route; text: string }) {
+function NotYet({ testId, children }: { testId: string; children: ReactNode }) {
   return (
-    <p className="placeholder card-l1" data-testid={`placeholder-${route}`}>
-      {text}
+    <p className="placeholder card-l1" data-testid={testId}>
+      {children}
     </p>
   );
 }
 
 /** A page whose content comes with a later task. */
-export function Placeholder({ route }: { route: Route }) {
+export function Placeholder({ route }: { route: keyof typeof NOT_YET }) {
   const invitation = useUi((s) => s.invitation);
   return (
     <Page route={route}>
@@ -66,7 +66,7 @@ export function Placeholder({ route }: { route: Route }) {
           again once it is.
         </p>
       )}
-      <NotYet route={route} text={NOT_YET[route] ?? `${TITLES[route]} is not available yet.`} />
+      <NotYet testId={`placeholder-${route}`}>{NOT_YET[route]}</NotYet>
     </Page>
   );
 }
@@ -94,11 +94,11 @@ function Tabs<T extends string>({
 }) {
   const id = useId();
   const onKeyDown = (e: React.KeyboardEvent) => {
-    const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
-    if (!step) return;
-    e.preventDefault();
     const i = tabs.findIndex((t) => t.id === current);
-    const next = tabs[(i + step + tabs.length) % tabs.length].id;
+    const to: Record<string, number> = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 };
+    if (!(e.key in to)) return;
+    e.preventDefault();
+    const next = tabs[(to[e.key] + tabs.length) % tabs.length].id;
     onSelect(next);
     document.getElementById(`${id}-${next}`)?.focus();
   };
@@ -152,7 +152,7 @@ function PayToAddress({ prefill }: { prefill: PayPrefill | null }) {
       <Field label="Amount (DASH)" value={prefill?.amount ? full(prefill.amount, false) : ""} testId="pay-amount" />
       <Field label="Label" value={prefill?.label ?? ""} testId="pay-label" />
       <Field label="Message" value={prefill?.message ?? ""} testId="pay-message" />
-      <NotYet route="pay" text="Sending is not available yet." />
+      <NotYet testId="placeholder-pay">Sending is not available yet.</NotYet>
       <DashButton variant="filledWhiteBlue" disabled data-testid="pay-continue">
         Continue
       </DashButton>
@@ -168,16 +168,15 @@ const PAY_TABS: Tab<PayTab>[] = [
 export function PayPage() {
   const tab = useUi((s) => s.payTab);
   const prefill = useUi((s) => s.payPrefill);
+  const links = useUi((s) => s.payLinks);
   return (
     <Page route="pay">
       <Tabs label="Pay" tabs={PAY_TABS} current={tab} onSelect={(payTab) => ui.set({ payTab })} testId="pay-tabs">
         {tab === "address" ? (
-          // Keyed by the prefill, so a new link resets what was typed.
-          <PayToAddress key={JSON.stringify(prefill)} prefill={prefill} />
+          // Keyed by the links that opened Pay, so each one resets what was typed.
+          <PayToAddress key={links} prefill={prefill} />
         ) : (
-          <p className="placeholder card-l1" data-testid="pay-contact">
-            Paying a DashPay contact is not available yet.
-          </p>
+          <NotYet testId="pay-contact">Paying a DashPay contact is not available yet.</NotYet>
         )}
       </Tabs>
     </Page>
@@ -208,7 +207,7 @@ export function ContactsPage() {
           </span>
         </section>
       )}
-      <NotYet route="contacts" text={NOT_YET.contacts!} />
+      <NotYet testId="placeholder-contacts">Your DashPay contacts are not available yet.</NotYet>
     </Page>
   );
 }
@@ -230,9 +229,7 @@ export function ToolsPage() {
   return (
     <Page route="tools">
       <Tabs label="Tools" tabs={TOOLS_TABS} current={tab} onSelect={(toolsTab) => navigate("tools", { toolsTab })} testId="tools-tabs">
-        <p className="placeholder card-l1" data-testid={`placeholder-tools-${tab}`}>
-          {title} is not available yet.
-        </p>
+        <NotYet testId={`placeholder-tools-${tab}`}>{title} is not available yet.</NotYet>
       </Tabs>
     </Page>
   );

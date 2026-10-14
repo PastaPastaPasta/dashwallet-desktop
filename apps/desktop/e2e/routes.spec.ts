@@ -4,6 +4,7 @@ import { expect, test, type Page } from "@playwright/test";
 import type { LinkRoute } from "../src/api/generated/LinkRoute";
 import type { Route } from "../src/api/generated/Route";
 import type { ShellCommand } from "../src/api/generated/ShellCommand";
+import { FIXTURE_WALLET_ID } from "../src/fixture/scenarios";
 import { seriousAxeViolations } from "./axe";
 import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors } from "./helpers";
 
@@ -90,6 +91,12 @@ test("a payment link opens Pay ▸ To an address, prefilled", async ({ page }) =
   await expect(page.getByTestId("pay-message")).toHaveValue("Thanks");
   await expect(page.getByTestId("pay-username")).toContainText("@bob");
   await expect(page.getByTestId("pay-continue")).toBeDisabled();
+  // The page's title takes the focus.
+  await expect(page.getByTestId("page-pay").locator("h1")).toBeFocused();
+  // The same link again starts a fresh form.
+  await page.getByTestId("pay-label").fill("Edited");
+  await deliver(page, [{ kind: "pay", uri: { address: ADDRESS, amount: 150_000_000, label: "Coffee", message: "Thanks" }, username: "bob" }]);
+  await expect(page.getByTestId("pay-label")).toHaveValue("Coffee");
 });
 
 test("dashpay and dashwallet links open their routes; refused ones say why", async ({ page }) => {
@@ -146,11 +153,17 @@ test("menu commands: navigate, tools tabs, discreet, about, lock; the menus mirr
   await open(page, "funded");
   await command(page, { kind: "tools", tab: "console" });
   await expect(page.getByTestId("tools-tabs-console")).toHaveAttribute("aria-selected", "true");
-  // Arrow keys move between tabs.
+  // The command focuses the page's title (D19).
+  await expect(page.getByTestId("page-tools").locator("h1")).toBeFocused();
+  // Arrow keys, Home and End move between tabs.
   await page.getByTestId("tools-tabs-console").focus();
   await page.keyboard.press("ArrowRight");
   await expect(page.getByTestId("tools-tabs-peers")).toBeFocused();
   await expect(page.getByTestId("placeholder-tools-peers")).toBeVisible();
+  await page.keyboard.press("End");
+  await expect(page.getByTestId("tools-tabs-coinSelection")).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(page.getByTestId("tools-tabs-information")).toHaveAttribute("aria-selected", "true");
 
   await command(page, { kind: "toggleDiscreet" });
   await expect(page.getByTestId("toolbar-discreet")).toHaveAttribute("aria-pressed", "true");
@@ -164,6 +177,13 @@ test("menu commands: navigate, tools tabs, discreet, about, lock; the menus mirr
   await command(page, { kind: "lock" });
   await expect(page.getByTestId("lock-screen")).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__dwFixture!.world.shellSync?.canLock)).toBe(false);
+
+  // A dialog asked for while locked is dropped, not shown after unlocking.
+  await command(page, { kind: "openUri" });
+  await page.getByTestId("lock-field").fill("demo");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("lock-screen")).toHaveCount(0);
+  await expect(page.getByTestId("open-uri")).toHaveCount(0);
 });
 
 test("in a browser the menus' shortcuts work from the keyboard", async ({ page }) => {
@@ -210,7 +230,7 @@ test("toolbar: the wallet picker switches the wallet the window shows", async ({
   await open(page, "two-wallets");
   await page.getByTestId("hero").waitFor();
   const picker = page.getByTestId("toolbar-wallet-picker");
-  await expect(picker).toHaveValue("a1".repeat(32));
+  await expect(picker).toHaveValue(FIXTURE_WALLET_ID);
   await picker.selectOption({ label: "Savings" });
   await expect(page.getByTestId("history-empty")).toBeVisible();
 });

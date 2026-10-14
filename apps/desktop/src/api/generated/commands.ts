@@ -1911,8 +1911,8 @@ export function unitName(unit: DisplayUnit, network: string): Promise<string> {
 /**
  * Takes the queued deep links (after `linksPending`, and once at
  * start-up), routed for `network` (a directory name: the network the
- * window shows), in arrival order. An invitation's link stays in the
- * shell.
+ * window shows), in arrival order. An invitation comes as a bare
+ * `invitation`: its link never crosses IPC.
  */
 export function takeLinks(network: string): Promise<Array<LinkRoute>> {
   return invoke<Array<LinkRoute>>("take_links", { network });
@@ -1920,7 +1920,7 @@ export function takeLinks(network: string): Promise<Array<LinkRoute>> {
 
 /**
  * Where `text` leads, for File ▸ Open URI… (QT-019): the routing a
- * queued link gets.
+ * queued link gets, a text over `MAX_LINK_BYTES` included.
  */
 export function routeLink(network: string, text: string): Promise<LinkRoute> {
   return invoke<LinkRoute>("route_link", { network, text });

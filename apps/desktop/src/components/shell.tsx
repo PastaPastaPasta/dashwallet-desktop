@@ -43,6 +43,8 @@ const EXPLORE: SidebarItem = { route: "explore", title: "Explore", icon: <path d
 
 /** Home, Pay, Receive, Contacts (Join DashPay while there is no identity; a badge for requests
  * waiting), Activity, CoinJoin and Explore when enabled (DASHPAY §4). */
+const badgeText = (n: number) => (n > 99 ? "99+" : String(n));
+
 export function Sidebar({ joined, requests }: { joined: boolean; requests: number }) {
   const route = useUi((s) => s.route);
   const contacts: SidebarItem = joined
@@ -70,7 +72,7 @@ export function Sidebar({ joined, requests }: { joined: boolean; requests: numbe
                 <span className="sidebar-title">{item.title}</span>
                 {badge !== null && (
                   <span className="sidebar-badge" data-testid="sidebar-contacts-badge" aria-label={`${badge} waiting`}>
-                    {badge > 99 ? "99+" : badge}
+                    {badgeText(badge)}
                   </span>
                 )}
               </button>
@@ -135,18 +137,14 @@ export function chipState(status: DashPayStatus | undefined, mainName: string | 
 
 function IdentityChip({ chip }: { chip: ChipState }) {
   if (chip === null) return null;
-  if (chip.kind === "join")
+  if (chip.kind !== "identity") {
+    const text = chip.kind === "join" ? "Join DashPay" : chip.label ? `@${chip.label} · Pending` : "Registering…";
     return (
       <button type="button" className="identity-chip" data-testid="toolbar-chip" onClick={() => navigate("joinDashPay")}>
-        Join DashPay
+        {text}
       </button>
     );
-  if (chip.kind === "registering")
-    return (
-      <button type="button" className="identity-chip" data-testid="toolbar-chip" onClick={() => navigate("joinDashPay")}>
-        {chip.label ? `@${chip.label} · Pending` : "Registering…"}
-      </button>
-    );
+  }
   const name = chip.username;
   return (
     <button
@@ -219,7 +217,7 @@ export function Toolbar({
           <BellIcon />
           {!!unread && (
             <span className="toolbar-badge" data-testid="toolbar-bell-badge" aria-hidden="true">
-              {unread > 99 ? "99+" : unread}
+              {badgeText(unread)}
             </span>
           )}
         </button>

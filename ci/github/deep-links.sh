@@ -19,10 +19,18 @@
 # `received <source> <scheme>` from the shell and `routed <route>` from the renderer
 # (dw-app shell/links.rs, apps/desktop/src/app/shellBridge.ts). The data root is the platform
 # default, as for a link the OS opens (a `--datadir` launch has an instance of its own on Linux).
+#
+# CI only on macOS and Windows: there it replaces ~/Applications/Dash Wallet.app or installs into
+# %LOCALAPPDATA%, claims the schemes for the user and uses the default data root. Set
+# DW_LINKS_LOCAL=1 to run it anyway. The Linux leg keeps everything under its work directory.
 set -euo pipefail
 
 os=${1:?usage: $0 linux|macos|windows <bundle>}
 bundle=${2:?usage: $0 linux|macos|windows <bundle>}
+if [[ "$os" != linux && -z "${CI:-}" && -z "${DW_LINKS_LOCAL:-}" ]]; then
+  echo "deep-links: $os changes the user's apps and URL handlers; CI only (DW_LINKS_LOCAL=1 to override)" >&2
+  exit 2
+fi
 work=${DW_LINKS_WORK:-$(mktemp -d)}
 trace="$work/links.trace"
 out=${DW_LINKS_OUT:-$work/out}
@@ -109,10 +117,12 @@ case "$os" in
     exe="$(cygpath -u "$LOCALAPPDATA")/Dash Wallet/dash-wallet.exe"
     [[ -f "$exe" ]] || fail "the installer put no $exe"
     for scheme in dash pay dashwallet dashpay; do
-      reg query "HKCU\\Software\\Classes\\$scheme\\shell\\open\\command" /ve | tee -a "$out/registry.txt" | grep -qi 'dash-wallet.exe" "%1"' \
+      reg query "HKCU\\Software\\Classes\\$scheme\\shell\\open\\command" //ve | tee -a "$out/registry.txt" | grep -qi 'dash-wallet.exe" "%1"' \
         || fail "HKCU\\Software\\Classes\\$scheme does not open dash-wallet.exe with the link"
     done
-    open_link() { cmd //c start "" "$1"; }
+    # Not `cmd /c start`: Git Bash does not quote an argument without spaces, so cmd would
+    # split the link at `&`. The URL handler takes the rest of its command line as is.
+    open_link() { rundll32 url.dll,FileProtocolHandler "$1"; }
     ;;
   *)
     echo "unknown OS $os" >&2

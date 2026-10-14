@@ -3,7 +3,7 @@
 // menus carry the shortcuts; in a browser (the fixture harness) `browserShortcuts` binds the
 // same keys.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useEffectEvent } from "react";
 import type { Backend } from "../api/backend";
 import { errorMessage } from "../api/backend";
 import type { LinkRoute } from "../api/generated/LinkRoute";
@@ -64,6 +64,18 @@ export function traceName(route: LinkRoute): string {
 
 /** Opens what `route` leads to. Links open while the vault is locked too: the page is there
  * once it unlocks. */
+/** Moves focus to the page a link or a menu opened (its title, else the page), so keyboard and
+ * screen reader users land on it. Sidebar clicks keep their focus. */
+function focusPage() {
+  requestAnimationFrame(() => {
+    const page = document.querySelector<HTMLElement>(".app-body > main");
+    const target = page?.querySelector<HTMLElement>("h1") ?? page;
+    if (!target) return;
+    if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
+    target.focus({ preventScroll: true });
+  });
+}
+
 export function applyLink(route: LinkRoute) {
   ui.set({ dialog: null });
   switch (route.kind) {
@@ -72,21 +84,24 @@ export function applyLink(route: LinkRoute) {
       navigate("pay", {
         payTab: "address",
         payPrefill: { address: uri.address, amount: uri.amount, label: uri.label, message: uri.message, username },
+        payLinks: ui.get().payLinks + 1,
       });
-      return;
+      break;
     }
     case "scanQr":
-      navigate("pay", { payTab: "address", payPrefill: null });
-      return;
+      navigate("pay", { payTab: "address", payPrefill: null, payLinks: ui.get().payLinks + 1 });
+      break;
     case "addContact":
       navigate("contacts", { contactPrefill: { identity: route.identity, username: route.username } });
-      return;
+      break;
     case "invitation":
       navigate("joinDashPay", { invitation: true });
-      return;
+      break;
     default:
       showToast(linkProblem(route)!);
+      return;
   }
+  focusPage();
 }
 
 /** Carries out a menu or tray command. */
@@ -94,9 +109,11 @@ export function runCommand(command: ShellCommand, lock: () => void) {
   switch (command.kind) {
     case "navigate":
       navigate(command.route);
+      focusPage();
       return;
     case "tools":
       navigate("tools", { toolsTab: command.tab });
+      focusPage();
       return;
     case "openUri":
       ui.set({ dialog: "openUri" });
@@ -140,12 +157,8 @@ export function shortcutFor(e: Pick<KeyboardEvent, "ctrlKey" | "metaKey" | "shif
  * commands. With `--selftest-link-trace` each route is reported, and `ready` once the first
  * take has run. */
 export function useShellBridge(backend: Backend, network: string, trace: boolean, lock: () => void) {
-  const lockRef = useRef(lock);
+  const lockNow = useEffectEvent(lock);
   useEffect(() => {
-    lockRef.current = lock;
-  });
-  useEffect(() => {
-    const lockNow = () => lockRef.current();
     const report = (line: string) => {
       if (trace) tauriTools.selftestLinkRouted(line).catch(() => {});
     };
@@ -161,11 +174,14 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
         showToast(`Could not open the link: ${errorMessage(e)}`);
       }
     };
-    void take().then(() => report("ready"));
     const unlisten = backend.onShellEvent((event) => {
       if (event.kind === "linksPending") void take();
       else runCommand(event.command, lockNow);
     });
+    // The first take once the listener is in: a link queued in between still gets heard.
+    void unlisten
+      .then(take, take)
+      .then(() => report("ready"));
     const onKey = (e: KeyboardEvent) => {
       const command = shortcutFor(e);
       if (!command) return;

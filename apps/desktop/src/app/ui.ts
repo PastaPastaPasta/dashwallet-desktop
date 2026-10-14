@@ -37,9 +37,11 @@ export interface UiState {
   route: Route;
   payTab: PayTab;
   payPrefill: PayPrefill | null;
+  /** Counts the links that opened Pay: each one starts a fresh form, the same link again too. */
+  payLinks: number;
   contactPrefill: ContactPrefill | null;
   toolsTab: ToolsTab;
-  /** An invitation link arrived (DP5-01 takes it over; Join DashPay says so meanwhile). */
+  /** An invitation link arrived (DP5-01 adds its intake; Join DashPay says so meanwhile). */
   invitation: boolean;
   /** The wallet the window shows; `null` = the first. */
   walletId: string | null;
@@ -57,6 +59,7 @@ let state: UiState = {
   route: "home",
   payTab: "contact",
   payPrefill: null,
+  payLinks: 0,
   contactPrefill: null,
   toolsTab: "information",
   invitation: false,

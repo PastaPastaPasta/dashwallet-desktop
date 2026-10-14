@@ -329,13 +329,15 @@ jobs:
             windows) kind=nsis; glob='nsis/*-setup.exe' ;;
           esac
           pnpm tauri build --debug --features selftest --bundles "$kind"
-          bundle=$(compgen -G "$GITHUB_WORKSPACE/rust/target/debug/bundle/$glob" | head -n 1)
+          # Through `pwd`, not $GITHUB_WORKSPACE: on Windows that is a `D:\a\…` path, whose
+          # backslashes a glob reads as escapes.
+          dir=$(cd ../../rust/target/debug/bundle && pwd)
+          bundle=$(compgen -G "$dir/$glob" | head -n 1)
           [[ -n "$bundle" ]] || { echo "::error::no $kind bundle"; exit 1; }
           echo "BUNDLE=$bundle" >> "$GITHUB_ENV"
       - name: Links through the OS
-        env:
-          DW_LINKS_OUT: ${{ github.workspace }}/deep-links-out
         run: |
+          export DW_LINKS_OUT=$PWD/deep-links-out
           if [[ "$MATRIX_OS" == linux ]]; then
             dbus-run-session -- xvfb-run -a -s "-screen 0 1280x800x24" ci/github/deep-links.sh linux "$BUNDLE"
           else

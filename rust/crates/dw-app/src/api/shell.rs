@@ -4,31 +4,25 @@
 
 use crate::ipc::commands;
 use crate::shell::ShellSync;
-use crate::shell::links::{self, LinkRejected, LinkRoute, MAX_LINK_BYTES};
+use crate::shell::links::{self, LinkRoute};
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
 
 commands! {
     /// Takes the queued deep links (after `linksPending`, and once at
     /// start-up), routed for `network` (a directory name: the network the
-    /// window shows), in arrival order. An invitation's link stays in the
-    /// shell.
+    /// window shows), in arrival order. An invitation comes as a bare
+    /// `invitation`: its link never crosses IPC.
     #[facade()]
     fn take_links(state, network: String) -> Vec<LinkRoute> {
         state.shell.inbox.take(&network)
     }
 
     /// Where `text` leads, for File ▸ Open URI… (QT-019): the routing a
-    /// queued link gets.
+    /// queued link gets, a text over `MAX_LINK_BYTES` included.
     #[facade()]
     fn route_link(state, network: String, text: String) -> LinkRoute {
-        let text = zeroize::Zeroizing::new(text);
-        if text.len() > MAX_LINK_BYTES {
-            return Ok(LinkRoute::Rejected {
-                reason: LinkRejected::TooLong,
-            });
-        }
-        links::route(&network, &text)
+        links::route(&network, &zeroize::Zeroizing::new(text))
     }
 
     /// What the native menus and the tray mirror: Discreet Mode's check

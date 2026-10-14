@@ -14,8 +14,11 @@
 //! - **Secret-safe.** An invitation link is a bearer secret (DASHPAY §3.8):
 //!   queued links are zeroed when dropped, their text is never logged (the
 //!   self-test trace records the scheme only), and an invitation reaches the
-//!   renderer as a bare [`LinkRoute::Invitation`]. DP5-01 owns its intake
-//!   and stash.
+//!   renderer as a bare [`LinkRoute::Invitation`]. The shell keeps nothing:
+//!   the link is dropped once routed, and DP5-01 adds its intake and stash.
+//!   Zeroing is best effort: the copies `classify_link` makes and the
+//!   forwarded command line (D-Bus, the plugin's buffers) are not zeroed,
+//!   and a link typed into File ▸ Open URI comes from the renderer.
 //! - **Payment links are Core's.** `dash:` and `pay:` go through dash-qt's
 //!   URI handler (`api::send::uri`) for the window's network, with `pay:`
 //!   read as `dash:` and the iOS `user=` key kept as the DashPay username.
@@ -111,9 +114,7 @@ impl Inbox {
             .iter()
             .map(|q| match q {
                 Queued::Link(text) => route(network, text),
-                Queued::TooLong => Ok(LinkRoute::Rejected {
-                    reason: LinkRejected::TooLong,
-                }),
+                Queued::TooLong => Ok(LinkRoute::rejected(LinkRejected::TooLong)),
             })
             .collect()
     }
@@ -149,8 +150,8 @@ pub enum LinkRoute {
         identity: String,
         username: String,
     },
-    /// A DashPay invitation. The link, a bearer secret, stays in the shell;
-    /// DP5-01 takes it over.
+    /// A DashPay invitation. The link, a bearer secret, does not cross IPC;
+    /// the shell drops it (zeroed), and DP5-01 adds its intake.
     Invitation,
     /// A link the desktop wallet recognises but does not act on.
     Unsupported {
@@ -192,61 +193,59 @@ pub enum LinkRejected {
     Payment { reason: UriRejected },
 }
 
-fn rejected(reason: LinkRejected) -> Result<LinkRoute, AppError> {
-    Ok(LinkRoute::Rejected { reason })
+impl LinkRoute {
+    fn rejected(reason: LinkRejected) -> Self {
+        LinkRoute::Rejected { reason }
+    }
 }
 
 /// Routes one link (Open URI, or a queued one) for `network`.
 pub fn route(network: &str, text: &str) -> Result<LinkRoute, AppError> {
+    if text.len() > MAX_LINK_BYTES {
+        return Ok(LinkRoute::rejected(LinkRejected::TooLong));
+    }
     let text = text.trim();
-    match link_scheme(text) {
-        Some("dash" | "pay") => {
-            let rest = &text[text.find(':').map_or(0, |i| i + 1)..];
-            let username = dw_uri::ext::parse_payment_uri(text)
-                .and_then(|r| r.dashpay_username)
-                .filter(|u| !u.trim().is_empty());
-            pay(network, &Zeroizing::new(format!("dash:{rest}")), username)
+    if let Some("dash" | "pay") = link_scheme(text) {
+        let rest = text.split_once(':').map_or("", |(_, rest)| rest);
+        let username = dw_uri::ext::parse_payment_uri(text)
+            .and_then(|r| r.dashpay_username)
+            .filter(|u| !u.trim().is_empty());
+        return pay(network, &Zeroizing::new(format!("dash:{rest}")), username);
+    }
+    Ok(match classify_deep_link(text) {
+        DeepLink::Payment(req) => return payment_link(network, req),
+        DeepLink::ScanQr => LinkRoute::ScanQr,
+        DeepLink::DashPayUser(user) => LinkRoute::AddContact {
+            identity: user.identity_base58(),
+            username: user.username,
+        },
+        DeepLink::Invitation(secret) => {
+            drop(Zeroizing::new(secret));
+            LinkRoute::Invitation
         }
-        _ => Ok(match classify_deep_link(text) {
-            DeepLink::Payment(req) => {
-                // `dashwallet://pay=…` (or, from Open URI, an https payment
-                // string): rebuilt and checked as dash-qt reads it.
-                let Some(address) = req.address else {
-                    return rejected(LinkRejected::Payment {
-                        reason: UriRejected::Unparsable,
-                    });
-                };
-                let Ok(dash_uri) =
-                    uri::build_payment_uri(address, req.amount, req.label, req.message)
-                else {
-                    return rejected(LinkRejected::Payment {
-                        reason: UriRejected::InvalidAmount,
-                    });
-                };
-                return pay(network, &dash_uri, req.dashpay_username);
-            }
-            DeepLink::ScanQr => LinkRoute::ScanQr,
-            DeepLink::DashPayUser(user) => LinkRoute::AddContact {
-                identity: user.identity_base58(),
-                username: user.username,
-            },
-            DeepLink::Invitation(secret) => {
-                drop(Zeroizing::new(secret));
-                LinkRoute::Invitation
-            }
-            DeepLink::AddressRequest { .. } => LinkRoute::Unsupported {
-                what: UnsupportedLink::AddressRequest,
-            },
-            DeepLink::DashConnectKey(_) | DeepLink::DashConnectSt(_) => LinkRoute::Unsupported {
-                what: UnsupportedLink::DashConnect,
-            },
-            DeepLink::Integration(_) => LinkRoute::Unsupported {
-                what: UnsupportedLink::Integration,
-            },
-            DeepLink::Unknown => LinkRoute::Rejected {
-                reason: LinkRejected::NotALink,
-            },
-        }),
+        DeepLink::AddressRequest { .. } => LinkRoute::Unsupported {
+            what: UnsupportedLink::AddressRequest,
+        },
+        DeepLink::DashConnectKey(_) | DeepLink::DashConnectSt(_) => LinkRoute::Unsupported {
+            what: UnsupportedLink::DashConnect,
+        },
+        DeepLink::Integration(_) => LinkRoute::Unsupported {
+            what: UnsupportedLink::Integration,
+        },
+        DeepLink::Unknown => LinkRoute::rejected(LinkRejected::NotALink),
+    })
+}
+
+/// `dashwallet://pay=…` (or, from Open URI, an https payment string):
+/// rebuilt as a `dash:` URI and checked as dash-qt reads it.
+fn payment_link(network: &str, req: dw_uri::ext::PaymentRequest) -> Result<LinkRoute, AppError> {
+    let payment = |reason| Ok(LinkRoute::rejected(LinkRejected::Payment { reason }));
+    let Some(address) = req.address else {
+        return payment(UriRejected::Unparsable);
+    };
+    match uri::build_payment_uri(address, req.amount, req.label, req.message) {
+        Ok(dash_uri) => pay(network, &dash_uri, req.dashpay_username),
+        Err(_) => payment(UriRejected::InvalidAmount),
     }
 }
 
@@ -258,9 +257,7 @@ fn pay(network: &str, dash_uri: &str, username: Option<String>) -> Result<LinkRo
         } => LinkRoute::Unsupported {
             what: UnsupportedLink::PaymentRequest,
         },
-        UriParse::Rejected { reason } => LinkRoute::Rejected {
-            reason: LinkRejected::Payment { reason },
-        },
+        UriParse::Rejected { reason } => LinkRoute::rejected(LinkRejected::Payment { reason }),
     })
 }
 
