@@ -349,8 +349,8 @@ from, and when:
    3. swaps the reserved address into the same-size output, so the fee cannot change;
    4. signs and reserves the inputs.
 
-   The reserved address is stored on the draft. Another `prepare` of the same draft reuses it instead of reserving a
-   new one — for example after `send.no_peers`, which in M1 means the transaction was definitely never sent. Grants
+   The reserved address is kept for the contact (in the session; DP3-01 D21). Another `prepare` to the contact reuses it
+   instead of reserving a new one — for example after `send.no_peers`, which in M1 means the transaction was definitely never sent. Grants
    are single-use, so that retry prompts again, as in M1.
 6. `broadcast` runs at once.
 7. `reconcile_sent_payments_from_tx_history` attributes the payment.
@@ -375,6 +375,9 @@ accept and `Spend` for the payment.
 
 **Where the primitive comes from.**
 
+- **Since 2026-10-14: the v5.1 pin.** The pin `PastaPastaPasta/platform@ebe37f8a67` (DEC-168) contains #4623
+  (`6499c680c6`, public `DashPayView::reserve_payment_address`) and #4997 (`e52344c905`), so E0-11 is retired and
+  DP3-01 calls the pinned API (DP3-01 D17). What follows is the plan it replaced.
 - #4623 applies to v5.0-dev head as text, and #4997 stacks on it (verified, not yet compiled).
 - E0-11 puts "v5.0-dev + #4623 + #4997" on a branch of pasta's public fork `PastaPastaPasta/platform`. It holds
   upstream code only. DEC-13 covers only this repo, so the manager records this as its own decision before the first
@@ -1014,7 +1017,8 @@ bump where both of these hold:
 - #5256 and the restore stack have merged there.
 
 The pin also moves when iOS moves, if that comes first. The move brings #4623 and #4997, and the carried branch
-(E0-11) is retired.
+(E0-11) is retired. **Done:** the v5.1 pin (`ebe37f8a67`, DEC-168) holds both; E0-11 was retired 2026-10-14 without
+a branch ever being pushed (DP3-01 D17).
 
 **Our own patches.**
 
