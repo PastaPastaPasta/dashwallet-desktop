@@ -6,7 +6,7 @@
 //! renderer picks its copy by the reason.
 
 use dw_units::MAX_MONEY;
-use dw_uri::core::{SendCoinsRecipient, UriRejection, format_bitcoin_uri, handle_uri};
+use dw_uri::core::{SendCoinsRecipient, UriRejection, format_request_uri, handle_uri};
 use dw_uri::keyio::{self, AddressKind, Destination, DestinationError};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -163,6 +163,7 @@ pub fn build_payment_uri(
     amount: Option<u64>,
     label: Option<String>,
     message: Option<String>,
+    user: Option<String>,
 ) -> Result<String, AppError> {
     let amount = amount.unwrap_or(0);
     let Some(amount) = i64::try_from(amount).ok().filter(|a| *a <= MAX_MONEY) else {
@@ -170,12 +171,13 @@ pub fn build_payment_uri(
             "amount {amount} is above the maximum supply"
         )));
     };
-    Ok(format_bitcoin_uri(&SendCoinsRecipient {
+    let info = SendCoinsRecipient {
         address,
         label: label.unwrap_or_default(),
         message: message.unwrap_or_default(),
         amount,
-    }))
+    };
+    Ok(format_request_uri(&info, user.as_deref()))
 }
 
 /// Classifies a pasted or scanned destination for `network` (whitespace
@@ -215,9 +217,14 @@ mod tests {
 
     #[test]
     fn a_uri_round_trips_and_rejections_are_data() {
-        let uri =
-            build_payment_uri(ADDR.into(), Some(150_000_000), Some("a b".into()), None).unwrap();
-        assert_eq!(uri, format!("dash:{ADDR}?amount=1.50000000&label=a%20b"));
+        let build = |user: Option<&str>| {
+            let (label, user) = (Some("a b".into()), user.map(str::to_owned));
+            build_payment_uri(ADDR.into(), Some(150_000_000), label, None, user).unwrap()
+        };
+        assert_eq!(build(None), format!("dash:{ADDR}?amount=1.50000000&label=a%20b"));
+        // The username goes last, and dash-qt's parse ignores it.
+        let uri = build(Some("al1ce"));
+        assert_eq!(uri, format!("dash:{ADDR}?amount=1.50000000&label=a%20b&user=al1ce"));
         let UriParse::Accepted { uri: parsed } = parse_payment_uri("mainnet", &uri).unwrap()
         else {
             panic!("accepted");
@@ -268,9 +275,9 @@ mod tests {
     #[test]
     fn amounts_above_the_supply_cannot_be_built() {
         let max = MAX_MONEY.unsigned_abs();
-        assert!(build_payment_uri(ADDR.into(), Some(max), None, None).is_ok());
+        assert!(build_payment_uri(ADDR.into(), Some(max), None, None, None).is_ok());
         assert_eq!(
-            build_payment_uri(ADDR.into(), Some(max + 1), None, None)
+            build_payment_uri(ADDR.into(), Some(max + 1), None, None, None)
                 .unwrap_err()
                 .code_str(),
             "invalid_argument"

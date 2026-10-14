@@ -3,6 +3,7 @@
 // transactions the same way.
 
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
+import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import type { TxRow } from "../api/generated/TxRow";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import type { TxTypeName } from "../api/generated/TxTypeName";
@@ -64,10 +65,18 @@ export function typeTitle(type: TxTypeName, category: TxCategoryName | null, amo
   }
 }
 
-/** Label first, then the type title. Never the raw address. A row's title comes only from here
- * (U-03 D14): counterparty attribution (DP3-02) adds the contact's name here. */
-export function txTitle(row: Pick<TxRow, "txType" | "category" | "amount" | "label">): string {
-  return row.label ? row.label : typeTitle(row.txType, row.category, row.amount);
+/** How a DashPay counterparty (DP3-02) is named: its display name (trimmed; the contact chose
+ * it), else `@username`; `null` while neither is known (the username lands later), never the
+ * identity id. */
+export function contactName(c: TxCounterparty | undefined): string | null {
+  if (!c) return null;
+  return c.displayName?.trim() || (c.username ? `@${c.username}` : null);
+}
+
+/** Label first, then the DashPay contact's name (DP3-02), then the type title. Never the raw
+ * address. A row's title comes only from here (U-03 D14). */
+export function txTitle(row: Pick<TxRow, "txType" | "category" | "amount" | "label" | "counterparty">): string {
+  return row.label || contactName(row.counterparty) || typeTitle(row.txType, row.category, row.amount);
 }
 
 /** dash-qt `TransactionTableModel::formatTxType`: the Type column of table mode. */
@@ -113,10 +122,10 @@ export function tableTypeTitle(type: TxTypeName): string {
   }
 }
 
-/** Table mode's Address / Label column (dash-qt): the label, else the address, else "(n/a)".
- * Counterparty attribution (DP3-02) adds the contact here too (U-03 D14). */
-export function rowParty(row: Pick<TxRow, "address" | "label">): string {
-  return row.label || row.address || "(n/a)";
+/** Table mode's Address / Label column (dash-qt): the label, else the DashPay contact's name
+ * (DP3-02, U-03 D14), else the address, else "(n/a)". */
+export function rowParty(row: Pick<TxRow, "address" | "label" | "counterparty">): string {
+  return row.label || contactName(row.counterparty) || row.address || "(n/a)";
 }
 
 // ---------------------------------------------------------------- filters

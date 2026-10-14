@@ -93,6 +93,9 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.resolve_top_up",
     // DP1-04: the contest watch.
     "DashPay.contest_status",
+    // DP3-02: contact payments.
+    "DashPay.contact_activity",
+    "DashPay.frequent_contacts",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -126,8 +129,10 @@ const FACADE: &[&str] = &[
 /// private details' publish and settle with their tests (DP2-04), the
 /// bell's session tests (DP2-05), the credit costs, the balance refreshes
 /// and the top-up flow with its tests (DP1-06), and the contest watch with
-/// its tests (DP1-04).
+/// its tests (DP1-04), and contact payment attribution with its tests
+/// (DP3-02).
 const NOT_FACADE: &[&str] = &[
+    "attribution.rs",
     "balances.rs",
     "bringup.rs",
     "contact_names.rs",
@@ -144,6 +149,7 @@ const NOT_FACADE: &[&str] = &[
     "mod.rs",
     "names_net.rs",
     "notifications_tests.rs",
+    "payments_tests.rs",
     "private_details.rs",
     "private_details_tests.rs",
     "provenance.rs",
@@ -1260,11 +1266,19 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
 
         c.stub(dp.payment_lock(s(), s()));
         c.stub(dp.resolve_payment_lock(s(), s()).await);
-        c.stub(
-            dp.contact_activity(s(), s(), None, ActivityFilter::All)
-                .await,
+        // DP3-02's: an unknown wallet is refused; the strip reads the
+        // identity id first.
+        assert_eq!(
+            (dp.contact_activity(s(), s(), None, ActivityFilter::All))
+                .await
+                .unwrap_err()
+                .code(),
+            "wallet_not_found"
         );
-        c.stub(dp.frequent_contacts(s(), 5));
+        assert_eq!(
+            dp.frequent_contacts(s(), 5).unwrap_err().code(),
+            "invalid_argument"
+        );
 
         c.stub(dp.profile(s()));
         c.stub(dp.profile_limits());

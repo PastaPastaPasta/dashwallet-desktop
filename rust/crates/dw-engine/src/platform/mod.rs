@@ -5,6 +5,7 @@
 //! live in the domain files and are re-exported here one by one, so a `pub`
 //! helper never becomes API by accident.
 
+pub(crate) mod attribution;
 mod balances;
 mod bringup;
 mod contact_names;
@@ -33,6 +34,8 @@ mod notifications;
 #[cfg(test)]
 mod notifications_tests;
 mod payments;
+#[cfg(test)]
+mod payments_tests;
 mod private_details;
 #[cfg(test)]
 mod private_details_tests;

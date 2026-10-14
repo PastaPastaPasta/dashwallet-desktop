@@ -309,7 +309,7 @@ impl Entry {
             .any(|e| (join.unverified)(e))
     }
 
-    fn summary(&self, join: &Join) -> ContactSummary {
+    pub(super) fn summary(&self, join: &Join) -> ContactSummary {
         let username = (join.username)(&self.contact);
         let since = self.since_ms().map(|ms| ms / 1000);
         let paid = (self.payments.iter())
@@ -461,6 +461,9 @@ pub(crate) struct ContactsRuntime {
     refreshing: Arc<Mutex<BTreeSet<WalletId>>>,
     pub(super) names: ContactNames,
     tasks: Mutex<Tasks>,
+    /// Each wallet's last chain-view parts, for the frequent strip while a
+    /// writer holds the library's state (DP3-02).
+    pub(super) views: Mutex<BTreeMap<WalletId, Arc<crate::history_ops::ViewParts>>>,
     /// `dp_contact_info` in memory (DP2-04).
     pub(super) digests: Arc<super::private_details::DigestCache>,
     /// Private-details writes against a wallet leaving the manager (DP2-04).
@@ -499,6 +502,7 @@ impl ContactsRuntime {
     pub(crate) fn forget(&self, id: &WalletId) {
         guard(&self.snapshots).remove(id);
         guard(&self.refreshing).remove(id);
+        guard(&self.views).remove(id);
         self.names.forget(id);
         self.digests.forget(id);
     }
@@ -611,7 +615,7 @@ impl NetworkSession {
     /// Runs `f` over `identity`'s contacts with the read's joins. A live
     /// read that lacks the identity is `identity.not_found`; a stale one
     /// passes `None`.
-    fn with_contacts<R>(
+    pub(super) fn with_contacts<R>(
         &self,
         id: WalletId,
         identity: &str,
@@ -624,7 +628,7 @@ impl NetworkSession {
     /// [`Self::with_contacts`] for a caller the gate already admitted (`_op`
     /// proves it): admitting it again would fail once a close has started,
     /// though the close waits for that caller.
-    fn with_contacts_entered<R>(
+    pub(super) fn with_contacts_entered<R>(
         &self,
         _op: &OpGuard<'_>,
         id: WalletId,
