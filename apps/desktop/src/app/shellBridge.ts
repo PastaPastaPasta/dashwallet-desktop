@@ -62,8 +62,6 @@ export function traceName(route: LinkRoute): string {
   }
 }
 
-/** Opens what `route` leads to. Links open while the vault is locked too: the page is there
- * once it unlocks. */
 /** Moves focus to the page a link or a menu opened (its title, else the page), so keyboard and
  * screen reader users land on it. Sidebar clicks keep their focus. */
 function focusPage() {
@@ -76,6 +74,8 @@ function focusPage() {
   });
 }
 
+/** Opens what `route` leads to. Links open while the vault is locked too: the page is there
+ * once it unlocks. */
 export function applyLink(route: LinkRoute) {
   ui.set({ dialog: null });
   switch (route.kind) {
@@ -104,15 +104,16 @@ export function applyLink(route: LinkRoute) {
   focusPage();
 }
 
-/** Carries out a menu or tray command. */
+/** Carries out a menu or tray command. A route command closes an open dialog first, as a link
+ * does, so the page it opens takes the focus. */
 export function runCommand(command: ShellCommand, lock: () => void) {
   switch (command.kind) {
     case "navigate":
-      navigate(command.route);
+      navigate(command.route, { dialog: null });
       focusPage();
       return;
     case "tools":
-      navigate("tools", { toolsTab: command.tab });
+      navigate("tools", { toolsTab: command.tab, dialog: null });
       focusPage();
       return;
     case "openUri":
@@ -153,8 +154,8 @@ export function shortcutFor(e: Pick<KeyboardEvent, "ctrlKey" | "metaKey" | "shif
   return SHORTCUTS[e.shiftKey ? `shift+${key}` : key] ?? null;
 }
 
-/** Takes the queued links now and whenever the shell says more wait, and runs the menus'
- * commands. With `--selftest-link-trace` each route is reported, and `ready` once the first
+/** Takes the queued links now and whenever the shell says more wait, one take at a time, and
+ * runs the menus' commands. With `--selftest-link-trace` each route is reported, and `ready` once the first
  * take has run. */
 export function useShellBridge(backend: Backend, network: string, trace: boolean, lock: () => void) {
   const lockNow = useEffectEvent(lock);
@@ -162,7 +163,7 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
     const report = (line: string) => {
       if (trace) tauriTools.selftestLinkRouted(line).catch(() => {});
     };
-    const take = async () => {
+    const drain = async () => {
       try {
         // Applied even after an unmount: the queue is drained, so these routes exist only here.
         const routes = await backend.takeLinks(network);
@@ -174,6 +175,10 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
         showToast(`Could not open the link: ${errorMessage(e)}`);
       }
     };
+    // One chain of drains: each starts once the batch before it is applied, so batches apply
+    // in the order they were drained, and a slow reply cannot land after a later one.
+    let drains = Promise.resolve();
+    const take = () => (drains = drains.then(drain));
     const unlisten = backend.onShellEvent((event) => {
       if (event.kind === "linksPending") void take();
       else runCommand(event.command, lockNow);

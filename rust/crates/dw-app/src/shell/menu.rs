@@ -11,11 +11,12 @@
 //! File, Edit, View, Wallet, Tools, Window. Elsewhere: File (… Exit),
 //! View, Wallet (… Settings…), Tools, Help (About). Edit exists on macOS
 //! only: there the menu carries the clipboard shortcuts; WebKitGTK and
-//! WebView2 handle them themselves.
+//! WebView2 handle them themselves. About is the `help.about` row on every
+//! OS (on macOS too, not the predefined item), so it opens the renderer's
+//! dialog.
 
 use tauri::menu::{
-    AboutMetadataBuilder, CheckMenuItem, CheckMenuItemBuilder, Menu, MenuEvent, MenuItem,
-    MenuItemBuilder, SubmenuBuilder,
+    CheckMenuItem, CheckMenuItemBuilder, Menu, MenuEvent, MenuItem, MenuItemBuilder, SubmenuBuilder,
 };
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -221,8 +222,12 @@ pub(super) fn menu_item<R: Runtime, M: Manager<R>>(
 /// The menu bar. Wallet ▸ Lock and Discreet Mode follow the renderer
 /// (`shell_sync`).
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    layout(app, cfg!(target_os = "macos"))
+}
+
+/// The menu bar of [`build`], in the macOS layout when `mac`.
+fn layout<R: Runtime>(app: &AppHandle<R>, mac: bool) -> tauri::Result<Menu<R>> {
     let it = |id| menu_item(app, id);
-    let mac = cfg!(target_os = "macos");
 
     let lock = it("wallet.lock")?;
     lock.set_enabled(false)?;
@@ -283,12 +288,11 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 
     let menu = Menu::new(app)?;
     if mac {
-        let about = AboutMetadataBuilder::new()
-            .name(Some("Dash Wallet"))
-            .version(Some(env!("CARGO_PKG_VERSION")))
-            .build();
+        // Our About item, not the predefined one: that opens the native
+        // panel without a menu event, so it would bypass the renderer's
+        // dialog and its rules (D20: none while locked or behind a sheet).
         let app_menu = SubmenuBuilder::new(app, "Dash Wallet")
-            .about(Some(about))
+            .item(&it("help.about")?)
             .separator()
             .item(&it("wallet.settings")?)
             .separator()
@@ -414,6 +418,36 @@ mod tests {
             ToolsTab::CoinSelection,
         ] {
             assert!(actions.contains(&tools(tab)), "{tab:?}");
+        }
+    }
+
+    #[test]
+    fn about_is_our_item_in_both_layouts() {
+        use tauri::menu::MenuItemKind;
+        fn ids<R: Runtime>(items: Vec<MenuItemKind<R>>, out: &mut Vec<String>) {
+            for item in items {
+                if let Some(sub) = item.as_submenu() {
+                    ids(sub.items().unwrap(), out);
+                } else {
+                    out.push(item.id().0.clone());
+                }
+            }
+        }
+        let app = tauri::test::mock_app();
+        for mac in [true, false] {
+            let mut found = Vec::new();
+            ids(
+                layout(app.handle(), mac).unwrap().items().unwrap(),
+                &mut found,
+            );
+            // About sends ShellCommand::About (the renderer's dialog, D20):
+            // on macOS too, where the predefined item would send nothing.
+            let about = found.iter().filter(|id| *id == "help.about").count();
+            assert_eq!(about, 1, "mac={mac}: {found:?}");
+            assert_eq!(
+                find("help.about").unwrap().action,
+                Action::Shell(ShellCommand::About)
+            );
         }
     }
 

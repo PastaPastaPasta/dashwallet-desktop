@@ -126,6 +126,28 @@ test("several links route in order; the last one shows", async ({ page }) => {
   expect(await page.evaluate(() => window.__dwFixture!.world.links.length)).toBe(0);
 });
 
+test("overlapping link drains apply in drain order; the later link shows", async ({ page }) => {
+  await open(page, "funded");
+  // The start-up take is done, so the hold catches link A's drain.
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("take_links"))).toBe(true);
+  // Link A is drained first and its reply held; link B arrives meanwhile.
+  await page.evaluate(() => {
+    (window as unknown as { release: () => void }).release = window.__dwFixture!.hold("take_links");
+  });
+  await deliver(page, [{ kind: "pay", uri: { address: ADDRESS, amount: null, label: null, message: null }, username: null }]);
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.world.links.length)).toBe(0);
+  await deliver(page, [{ kind: "invitation" }]);
+  // Give a concurrent drain the time to take B and apply it before A's reply.
+  await page.waitForTimeout(250);
+  await expect(page.getByTestId("page-pay")).toHaveCount(0);
+  await page.evaluate(() => (window as unknown as { release: () => void }).release());
+  await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
+  // B stays: A's late batch did not land on top of it.
+  await page.waitForTimeout(250);
+  await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
+  expect(await page.evaluate(() => window.__dwFixture!.world.links.length)).toBe(0);
+});
+
 test("a link that arrives while locked shows its page after unlocking", async ({ page }) => {
   await open(page, "locked");
   await deliver(page, [{ kind: "pay", uri: { address: ADDRESS, amount: null, label: null, message: null }, username: null }]);
@@ -184,6 +206,20 @@ test("menu commands: navigate, tools tabs, discreet, about, lock; the menus mirr
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("lock-screen")).toHaveCount(0);
   await expect(page.getByTestId("open-uri")).toHaveCount(0);
+});
+
+test("a route command closes an open dialog and focuses its page", async ({ page }) => {
+  await open(page, "funded");
+  await command(page, { kind: "openUri" });
+  await expect(page.getByTestId("open-uri-input")).toBeFocused();
+  await command(page, { kind: "navigate", route: "activity" });
+  await expect(page.getByTestId("open-uri")).toHaveCount(0);
+  await expect(page.getByTestId("page-activity").locator("h1")).toBeFocused();
+  await command(page, { kind: "about" });
+  await expect(page.getByTestId("about")).toBeVisible();
+  await command(page, { kind: "tools", tab: "peers" });
+  await expect(page.getByTestId("about")).toHaveCount(0);
+  await expect(page.getByTestId("page-tools").locator("h1")).toBeFocused();
 });
 
 test("in a browser the menus' shortcuts work from the keyboard", async ({ page }) => {
