@@ -49,7 +49,8 @@ export interface FixtureHandle {
   hold(command: CommandName): () => void;
   /** Every command called so far, in order. */
   readonly calls: string[];
-  readonly now: Date;
+  /** The renderer's clock (`Backend.now`). A test may move it; the handlers keep FIXTURE_NOW. */
+  now: Date;
   readonly locale: string;
 }
 

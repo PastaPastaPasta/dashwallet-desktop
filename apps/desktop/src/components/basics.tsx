@@ -1,7 +1,7 @@
 // Small building blocks (UX-SPEC §3.1): icons, the Dash glyph and wordmark, AmountText (C10),
 // chips and the network capsule (C20) and DashButton (C14). Styles are in styles/app.css and read only --dw-* tokens.
 
-import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from "react";
+import type { ButtonHTMLAttributes, CSSProperties, ReactNode, Ref } from "react";
 import { useAppearance } from "../app/theme";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { iconFiles, type IconFiles, type UsedIcon } from "./icons";
@@ -81,7 +81,7 @@ export function Chip({ tone = "info", children }: { tone?: Tone; children: React
 }
 
 // The styles and sizes the gate screens use; the rest of DashUIKit's catalogue comes with the screens that need it.
-export type ButtonStyle = "plainBlue" | "filledWhiteBlue";
+export type ButtonStyle = "plainBlue" | "plainRed" | "filledWhiteBlue" | "filledBlue" | "tintedBlue" | "tintedGray";
 export type ButtonSize = "large" | "medium" | "small";
 
 export function DashButton({
@@ -91,7 +91,7 @@ export function DashButton({
   className,
   children,
   ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant: ButtonStyle; size?: ButtonSize; fill?: boolean }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & { variant: ButtonStyle; size?: ButtonSize; fill?: boolean; ref?: Ref<HTMLButtonElement> }) {
   return (
     <button
       type="button"

@@ -53,6 +53,32 @@ pub fn link_scheme(arg: &str) -> Option<&'static str> {
     SCHEMES.into_iter().find(|s| s.eq_ignore_ascii_case(scheme))
 }
 
+/// Undoes the `/` the Windows shell adds to a URL-protocol link whose
+/// authority has no path. Launched through `ShellExecute` (a click, `start`,
+/// `url.dll`), `dashpay://user?id=…` reaches the app as
+/// `dashpay://user/?id=…` and `dashwallet://scanqr` as `dashwallet://scanqr/`
+/// (electron/electron#10786). The `dashpay:` and `dashwallet:` links the app
+/// reads never have a path, so a lone `/` there is dropped. `dash:` and
+/// `pay:` links are opaque (no `//`) and never get one (D24).
+pub fn without_shell_slash(link: String) -> String {
+    let text = link.trim();
+    let Some(scheme @ ("dashpay" | "dashwallet")) = link_scheme(text) else {
+        return link;
+    };
+    let Some(after) = text[scheme.len() + 1..].strip_prefix("//") else {
+        return link;
+    };
+    let Some(end) = after.find(['/', '?', '#']) else {
+        return link;
+    };
+    match after[end..].strip_prefix('/') {
+        Some(rest) if rest.is_empty() || rest.starts_with(['?', '#']) => {
+            format!("{}//{}{rest}", &text[..=scheme.len()], &after[..end])
+        }
+        _ => link,
+    }
+}
+
 /// Where a link came from, for the self-test trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkSource {
@@ -355,6 +381,33 @@ mod tests {
                 what: UnsupportedLink::PaymentRequest
             }
         );
+    }
+
+    #[test]
+    fn the_windows_shell_slash_is_undone_for_hierarchical_links() {
+        let fix = |s: &str| without_shell_slash(s.to_owned());
+        let id = "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx";
+        let user = format!("dashpay://user?id={id}&username=bob");
+        assert_eq!(fix(&format!("dashpay://user/?id={id}&username=bob")), user);
+        assert_eq!(fix(&user), user);
+        assert_eq!(fix("dashwallet://scanqr/"), "dashwallet://scanqr");
+        assert_eq!(fix("DashPay://user/#x"), "DashPay://user#x");
+        // A real path, and the opaque payment links, stay as they are.
+        assert_eq!(fix("dashwallet://x/scanqr"), "dashwallet://x/scanqr");
+        assert_eq!(fix("dashpay://user//?id=1"), "dashpay://user//?id=1");
+        assert_eq!(fix("pay:yAddr?label=a/"), "pay:yAddr?label=a/");
+        assert_eq!(fix("dash:yAddr/"), "dash:yAddr/");
+        assert_eq!(fix("dashpay:user"), "dashpay:user");
+        // As the router reads it: the slashed link is not a link at all.
+        let r = |s: &str| route("mainnet", s).unwrap();
+        assert!(matches!(
+            r(&format!("dashpay://user/?id={id}&username=bob")),
+            LinkRoute::Rejected { .. }
+        ));
+        assert!(matches!(
+            r(&fix(&format!("dashpay://user/?id={id}&username=bob"))),
+            LinkRoute::AddContact { .. }
+        ));
     }
 
     #[test]
