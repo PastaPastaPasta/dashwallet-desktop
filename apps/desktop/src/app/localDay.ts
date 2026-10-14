@@ -1,6 +1,7 @@
 // The local calendar day, for Activity's date filters (U-03 D25): "Today", "This week", "This
 // month" and "This year" all move at a local midnight, so their bounds are taken again then, and
-// when the window comes back (a suspended machine fires no timers while it sleeps).
+// when the window comes back or a minute's check sees the day changed (a suspended machine fires
+// no timers while it sleeps).
 
 import { useCallback, useSyncExternalStore } from "react";
 
@@ -16,14 +17,23 @@ export function msToNextMidnight(now: Date): number {
 /** Calls `onChange` at every local midnight by `clock`, and when the window regains focus or
  * becomes visible. Returns the unsubscribe. */
 export function watchLocalDay(onChange: () => void, clock: () => Date): () => void {
+  let day = dayKey(clock());
   let timer: ReturnType<typeof setTimeout>;
   const arm = () => {
     timer = setTimeout(() => {
+      day = dayKey(clock());
       onChange();
       arm();
     }, msToNextMidnight(clock()));
   };
   arm();
+  // A suspended machine's timers stop with it, and a resume need not move the focus: a check
+  // every minute catches the day changing meanwhile.
+  const poll = setInterval(() => {
+    if (dayKey(clock()) === day) return;
+    day = dayKey(clock());
+    onChange();
+  }, 60_000);
   // Absent outside a browser (unit tests).
   const win = typeof window === "undefined" ? undefined : window;
   const doc = typeof document === "undefined" ? undefined : document;
@@ -34,6 +44,7 @@ export function watchLocalDay(onChange: () => void, clock: () => Date): () => vo
   doc?.addEventListener("visibilitychange", back);
   return () => {
     clearTimeout(timer);
+    clearInterval(poll);
     win?.removeEventListener("focus", back);
     doc?.removeEventListener("visibilitychange", back);
   };

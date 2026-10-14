@@ -38,6 +38,19 @@ describe("the local day", () => {
     expect(seen).toHaveLength(2);
   });
 
+  it("notices a day that changed while the machine slept", () => {
+    vi.setSystemTime(new Date(2026, 9, 14, 10, 0, 0));
+    const calls = vi.fn();
+    const stop = watchLocalDay(calls, () => new Date());
+    // Asleep for a day: the clock moved, the midnight timer (due in 14 h) did not run.
+    vi.setSystemTime(new Date(2026, 9, 15, 10, 0, 0));
+    vi.advanceTimersByTime(60_000);
+    expect(calls).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(10 * 60_000);
+    expect(calls).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
   it("reads the day again when the window comes back", () => {
     const win = new EventTarget();
     const doc = Object.assign(new EventTarget(), { visibilityState: "visible" });
