@@ -2,7 +2,7 @@
 // address; Request payment stores a request on a fresh address and shows it; the requested
 // payments list keeps them (dash-qt's Receive tab, QT-081…085).
 
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { errorMessage, hasCode } from "../api/backend";
 import type { AddressInfo } from "../api/generated/AddressInfo";
@@ -44,14 +44,22 @@ function AddressCard({ walletId }: { walletId: string }) {
   const [fresh, setFresh] = useState<AddressInfo | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const shown = fresh ?? current.data;
-  // The QR carries the wallet's DashPay username as `user=` (DP3-03); a failed read is none.
+  // The QR carries the wallet's DashPay username as `user=` (DP3-03). The engine reads none
+  // while names are updating (a busy identity store during sync), so the card keeps the last
+  // name it showed for this wallet rather than dropping it (DP3-02 D25); a failed read is none.
   const username = useReceiveUsername(walletId);
-  const user = username.isError ? null : username.data;
+  const held = useRef<{ walletId: string; name: string } | null>(null);
+  if (username.data) held.current = { walletId, name: username.data };
+  const last = held.current?.walletId === walletId ? held.current.name : null;
+  const user = username.isError ? last : username.data === undefined ? undefined : (username.data ?? last);
   const uri = useQuery({
     queryKey: ["paymentUri", shown?.address ?? "", user ?? null] as const,
     queryFn: () => b.buildPaymentUri(shown!.address, null, null, null, user ?? null),
     enabled: !!shown && user !== undefined,
     staleTime: Infinity,
+    // While the username changes the QR keeps the address's previous link, not a loading
+    // state; a new address never shows the old one's.
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === shown?.address ? prev : undefined),
   });
   const newAddress = async () => {
     setProblem(null);

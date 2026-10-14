@@ -167,8 +167,8 @@ function Body({ d, network, walletId }: { d: TxDetails; network: NetworkInfo; wa
     row?.address ?? d.outputs.find((o) => (amount >= 0 ? o.isMine : !o.isMine) && !o.isChange)?.address ?? null;
   const shown = shownAmount(amount, row?.txType ?? "other");
   const own = d.outputs.some((o) => o.isMine && o.address === counterparty);
-  // The DashPay contact the payment went to or came from (DP3-02); one per transaction.
-  const contact = contactName(d.rows.find((r) => r.counterparty)?.counterparty);
+  // The DashPay contact of the record whose title and address the sheet shows (DP3-02 D24).
+  const contact = contactName(row?.counterparty);
   const unit = network.unitName;
   return (
     <>

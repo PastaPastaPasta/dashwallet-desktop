@@ -53,6 +53,11 @@ describe("fixture receive username (DP3-03)", () => {
     expect(await cmd.receiveUsername(W)).toBeNull();
     await expect(cmd.receiveUsername("ff".repeat(32))).rejects.toMatchObject({ code: "wallet_not_found" });
   });
+
+  it("stores no request whose amount is out of range", async () => {
+    await expect(cmd.createReceiveRequest(W, -1, "Rent", null)).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(await cmd.receiveRequests(W)).toEqual([]);
+  });
 });
 
 describe("fixture send engine", () => {
@@ -227,6 +232,8 @@ describe("fixture text helpers", () => {
     expect(paymentUri(PAYEE, null, "A B", null, "alice")).toBe(`dash:${PAYEE}?label=A%20B&user=alice`);
     expect(paymentUri(PAYEE, null, null, null, "a(b)!")).toBe(`dash:${PAYEE}?user=a%28b%29%21`);
     expect(paymentUri(PAYEE, null, null, null, "")).toBe(`dash:${PAYEE}`);
+    // As the engine (qurl::to_percent_encoding): only alphanumerics and `-._~` stay.
+    expect(paymentUri(PAYEE, null, "Rent (May)!", null)).toBe(`dash:${PAYEE}?label=Rent%20%28May%29%21`);
     const qr = qrMatrix(paymentUri(PAYEE, 100_000_000, null, null));
     expect(qr.modules).toHaveLength(qr.size * qr.size);
     expect(() => qrMatrix("x".repeat(256))).toThrow();

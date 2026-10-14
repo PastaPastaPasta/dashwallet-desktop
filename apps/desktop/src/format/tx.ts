@@ -65,11 +65,12 @@ export function typeTitle(type: TxTypeName, category: TxCategoryName | null, amo
   }
 }
 
-/** How a DashPay counterparty (DP3-02) is named: its display name, else `@username`; `null`
- * while neither is known (the username lands later), never the identity id. */
+/** How a DashPay counterparty (DP3-02) is named: its display name (trimmed; the contact chose
+ * it), else `@username`; `null` while neither is known (the username lands later), never the
+ * identity id. */
 export function contactName(c: TxCounterparty | undefined): string | null {
   if (!c) return null;
-  return c.displayName || (c.username ? `@${c.username}` : null);
+  return c.displayName?.trim() || (c.username ? `@${c.username}` : null);
 }
 
 /** Label first, then the DashPay contact's name (DP3-02), then the type title. Never the raw

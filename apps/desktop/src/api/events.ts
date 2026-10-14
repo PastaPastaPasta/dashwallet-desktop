@@ -7,6 +7,7 @@ import type { InfiniteData, QueryClient, QueryKey } from "@tanstack/react-query"
 import type { Backend } from "./backend";
 import type { AppEvent } from "./generated/commands";
 import type { HistoryRows } from "./generated/HistoryRows";
+import type { PlatformChangeName } from "./generated/PlatformChangeName";
 import { keys } from "./queries";
 
 /** The query keys an event makes stale; `"all"` means every query but the network itself. */
@@ -49,7 +50,9 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
         case "contacts":
         case "payments":
           return [keys.dashpayAll, keys.historyAll(event.walletId), keys.txDetailAll(event.walletId)];
+        // Contacts' cached profiles (display names, D4) change with the identities.
         case "identities":
+          return [keys.dashpayAll, keys.historyAll(event.walletId), keys.txDetailAll(event.walletId), keys.receiveAll(event.walletId)];
         case "names":
           return [keys.dashpayAll, keys.receiveAll(event.walletId)];
         default:
@@ -72,6 +75,9 @@ function unreachable(event: never): never {
 /** A lock that cuts 16 flows sends a `leaseChanged` for each, and every reconciliation reads
  * `leases`, `lockStatus` and up to 128 `dispatchStatus`: one runs this long after the last of a
  * burst, and at most RECONCILE_MAX_WAIT_MS after its first event. */
+/** The `platform` domains whose events move history rows' counterparties (DP3-02 D5, D25). */
+const rereadsHistory = (domain: PlatformChangeName["domain"]) => domain === "contacts" || domain === "payments" || domain === "identities";
+
 export const RECONCILE_COALESCE_MS = 100;
 export const RECONCILE_MAX_WAIT_MS = 500;
 
@@ -85,9 +91,10 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
   };
   const unsubscribe = await backend.onEvent((event) => {
     if (event.kind === "notice") console.warn("engine notice", event.code, event.detail);
-    if (event.kind === "historyChanged") {
+    if (event.kind === "historyChanged" || (event.kind === "platform" && rereadsHistory(event.change.domain))) {
       // Refetch only the first page of each list: every history_page call re-reads the whole
-      // history in the engine, and during sync events arrive up to 4 times a second.
+      // history in the engine, and during sync events arrive up to 4 times a second (contacts
+      // events in bursts, one per identity and landing name).
       client.setQueriesData<InfiniteData<HistoryRows, string | null>>({ queryKey: keys.historyAll(event.walletId) }, (d) =>
         d && d.pages.length > 1 ? { pages: d.pages.slice(0, 1), pageParams: d.pageParams.slice(0, 1) } : d,
       );

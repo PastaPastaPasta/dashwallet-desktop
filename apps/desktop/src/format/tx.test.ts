@@ -23,6 +23,8 @@ describe("titles", () => {
     expect(contactName(bob)).toBe("Bob Builder");
     expect(contactName({ ...bob, displayName: null })).toBe("@bob");
     expect(contactName({ ...bob, displayName: "", username: null })).toBeNull();
+    expect(contactName({ ...bob, displayName: "  Bob  " })).toBe("Bob");
+    expect(contactName({ ...bob, displayName: " \t " })).toBe("@bob");
     expect(contactName(undefined)).toBeNull();
     expect(txTitle({ ...recv, counterparty: bob })).toBe("Bob Builder");
     expect(txTitle({ ...recv, counterparty: { ...bob, displayName: null, username: null } })).toBe("Received");

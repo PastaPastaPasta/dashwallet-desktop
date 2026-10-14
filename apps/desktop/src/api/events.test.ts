@@ -35,7 +35,12 @@ describe("event bridge", () => {
     expect(invalidationsFor({ kind: "eventsOverflowed" })).toBe("all");
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } })).toEqual([]);
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "names" } })).toEqual([keys.dashpayAll, keys.receiveAll("w")]);
-    expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "identities" } })).toEqual([keys.dashpayAll, keys.receiveAll("w")]);
+    expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "identities" } })).toEqual([
+      keys.dashpayAll,
+      keys.historyAll("w"),
+      keys.txDetailAll("w"),
+      keys.receiveAll("w"),
+    ]);
     for (const change of [{ domain: "contacts", identity: "i" }, { domain: "payments", identity: "i" }] as const)
       expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change })).toEqual([keys.dashpayAll, keys.historyAll("w"), keys.txDetailAll("w")]);
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "events", identity: "i" } })).toEqual([keys.dashpayAll]);

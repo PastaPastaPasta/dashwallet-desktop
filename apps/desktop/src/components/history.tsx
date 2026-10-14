@@ -51,8 +51,8 @@ export function useRowContext(network: NetworkInfo): RowContext {
 /** Test id of a row: stable across engines and runs for the same transaction record. */
 export const rowTestId = (row: TxRow) => `tx-row-${row.txid.slice(0, 10)}-${row.recordIndex}`;
 
-/** What a row shows beyond its record (U-03 D14): counterparty attribution (DP3-02) fills the
- * title and the leading avatar here. */
+/** What a row shows beyond its record (U-03 D14). Counterparty attribution (DP3-02) names the
+ * contact through `txTitle`; the leading avatar is a follow-up (DP3-02 D26). */
 export interface RowDecor {
   title?: string;
   leading?: ReactNode;

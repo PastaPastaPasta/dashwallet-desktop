@@ -161,8 +161,8 @@ export function paymentUri(address: string, amount: number | null, label: string
   if (amount !== null && (amount < 0 || amount > MAX_MONEY)) throw fail("invalid_argument", "amount out of range");
   const fields: [string, string | null][] = [
     ["amount", amount === null ? null : (amount / 1e8).toFixed(8).replace(/\.?0+$/, "")],
-    ["label", label && encodeURIComponent(label)],
-    ["message", message && encodeURIComponent(message)],
+    ["label", label && percentEncode(label)],
+    ["message", message && percentEncode(message)],
   ];
   const query = fields.filter(([, v]) => v).map(([k, v]) => `${k}=${v}`);
   if (user) query.push(`user=${percentEncode(user)}`);
@@ -661,8 +661,10 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
         username: null,
         uri: "",
       };
+      // Before it is stored: an amount out of range stores nothing, as the engine.
+      const shown = withUsername(request, mainUsername(world.dashpay));
       w.receive.requests = [request, ...w.receive.requests];
-      return withUsername(request, mainUsername(world.dashpay));
+      return shown;
     },
     // The username is the current main name, not stored (DP3-03 D18).
     receive_requests: ({ walletId }, { world }) =>
