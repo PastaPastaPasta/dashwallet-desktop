@@ -320,9 +320,7 @@ impl NetworkSession {
                     let ids = manager.wallet_ids().await.into_iter().map(WalletId);
                     (ids.collect(), Job::Unlock)
                 }
-                PlatformSignal::WalletAdded(id)
-                | PlatformSignal::Readmit(id)
-                | PlatformSignal::RetryStartup(id)
+                PlatformSignal::WalletAdded(id) | PlatformSignal::Readmit(id)
                     if admitted.get(&id).is_some_and(|&pass| at < pass) =>
                 {
                     continue;
@@ -331,7 +329,8 @@ impl NetworkSession {
                 PlatformSignal::Readmit(id) if manager.get_wallet(&id.0).await.is_none() => {
                     continue;
                 }
-                // Not once a bring-up since (an unlock's) has answered.
+                // Not once a bring-up since has answered; one that has not
+                // (a 3 s budget, the marker) is no rerun, whenever admitted.
                 PlatformSignal::RetryStartup(id)
                     if !this.platform.awaits_rerun(&id)
                         || manager.get_wallet(&id.0).await.is_none() =>
@@ -519,6 +518,10 @@ impl NetworkSession {
             }
             Some(true) => {}
         }
+        // A rerun repeats no notice of an outcome it only confirms.
+        let last = rerun
+            .then(|| self.platform.startup_of(&id).map(|s| s.startup))
+            .flatten();
         self.note_first_bring_up(id).await;
         // The budget is known once the markers are read (a rerun's at
         // once); until then the shorter one bounds reading them.
@@ -537,7 +540,8 @@ impl NetworkSession {
             tokio::time::timeout_at((since + first_budget).into(), prelude).await
         else {
             let startup = DashPayStartup::new(StartupStatus::PartialNoIdentity, false);
-            self.finish_bring_up(id, startup, since, first_budget).await;
+            self.finish_bring_up(id, startup, since, first_budget, last)
+                .await;
             return;
         };
         if identity.is_none() && no_identity && !rerun {
@@ -633,7 +637,7 @@ impl NetworkSession {
             self.platform.recovery.names_due(id);
         }
         let has_identity = startup.identity.is_some();
-        self.finish_bring_up(id, startup, since, budget).await;
+        self.finish_bring_up(id, startup, since, budget, last).await;
         self.load_identity_choices(id).await;
         self.refresh_identities(manager, id).await;
         // A restore's private details, and their state, come back here
@@ -662,13 +666,15 @@ impl NetworkSession {
     }
 
     /// Records a bring-up's outcome: the proven-absence marker, the notice
-    /// and the status.
+    /// (not again for a rerun that ended as the `last` one did) and the
+    /// status.
     async fn finish_bring_up(
         &self,
         id: WalletId,
         mut startup: DashPayStartup,
         since: Instant,
         budget: Duration,
+        last: Option<StartupStatus>,
     ) {
         startup.finished_at = Some(unix_now());
         tracing::info!(
@@ -681,7 +687,7 @@ impl NetworkSession {
         if startup.startup == StartupStatus::NoIdentity {
             self.set_bring_up_marker(id, NO_IDENTITY_KEY).await;
         }
-        if startup.startup.is_incomplete() {
+        if startup.startup.is_incomplete() && last != Some(startup.startup) {
             self.notice_incomplete(id, startup.startup);
         }
         self.platform.record(id, startup);

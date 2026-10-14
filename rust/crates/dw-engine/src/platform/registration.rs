@@ -724,7 +724,7 @@ pub(crate) async fn statuses<L: RegistrationLib>(
             (Some(_), _) if !awaiting => None,
             (None, Some(Phase::Done)) => None,
             _ if state.running() => state.wait,
-            _ => Some(idle_wait(session, lib, row, phase, &ledger)),
+            _ => Some(idle_wait(session, wallet, lib, row, phase, &ledger)),
         };
         out.push(RegistrationStatus {
             draft: row.id.to_string(),
@@ -804,9 +804,12 @@ async fn contest_watches(session: &NetworkSession, wallet: WalletId) -> Vec<Cont
 
 /// What a flow no task drives waits for: the funding hold before funding,
 /// the ChainLock for a lock without a proof or for evidence at its index it
-/// cannot attribute yet, else an authority.
+/// cannot attribute yet, else an authority. A row held on the bring-up has
+/// it run again, as a run waiting there does: no run of the row's asks, and
+/// the host prompts for none until the hold lifts.
 fn idle_wait<L: RegistrationLib>(
     session: &NetworkSession,
+    wallet: WalletId,
     lib: &L,
     row: &RegistrationRow,
     phase: Option<Phase>,
@@ -825,6 +828,9 @@ fn idle_wait<L: RegistrationLib>(
     }
     let unfunded = phase.is_some_and(Phase::unfunded) && row.identity.is_none();
     if unfunded && let Some(hold) = lib.funding_hold() {
+        if hold == RegistrationWait::Startup {
+            session.platform.retry_startup(wallet);
+        }
         return hold;
     }
     if unfunded && ledger.live(row).is_none() && ledger.unattributed(row) {

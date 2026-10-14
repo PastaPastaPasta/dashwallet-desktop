@@ -25,9 +25,9 @@ pub struct CostTable {
     /// What Drive requires a top-up's lock to hold before it processes the
     /// top-up, in credits (`calculate_min_required_fee`: its 50,000-duff
     /// processing floor plus the top-up's base cost). Not the fee charged:
-    /// Platform meters that at execution, and it has been far lower, so a
-    /// lock of `duffs` adds at least `duffs × credits_per_duff` less this
-    /// as far as measured (m4 §7 item 46).
+    /// Platform meters that at execution, and the one testnet measurement
+    /// was far lower, so a lock of `duffs` added more than
+    /// `duffs × credits_per_duff` less this (m4 §7 item 46).
     pub top_up_fee: u64,
     pub top_up_min_duffs: u64,
     /// At or below this balance the credits are low.
@@ -57,8 +57,8 @@ pub struct TopUpQuote {
     /// `duffs + fee_duffs`: what the grant must cover.
     pub total_duffs: u64,
     /// `duffs × credits_per_duff` less the table's `top_up_fee`: an
-    /// estimate that errs low. The top-up adds the lock's credits less
-    /// Platform's metered fee, which has stayed below `top_up_fee`.
+    /// estimate that errs low as far as measured. The top-up adds the
+    /// lock's credits less Platform's metered fee, which no bound proves.
     pub credits: u64,
     pub grant: GrantRequest,
 }

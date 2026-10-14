@@ -130,7 +130,7 @@ fn compute(network: &PlatformVersion) -> Result<CostTable, PlatformError> {
         enable_dashpay_keys,
         credits_per_duff: CREDITS_PER_DUFF,
         top_up_fee,
-        // A lock always pays its own fee.
+        // A lock always holds what Drive needs to process it.
         top_up_min_duffs: TOP_UP_MIN_DUFFS.max(top_up_fee.div_ceil(CREDITS_PER_DUFF)),
         low_credits: LOW_ACTIONS * dearest,
         empty_credits: dearest,

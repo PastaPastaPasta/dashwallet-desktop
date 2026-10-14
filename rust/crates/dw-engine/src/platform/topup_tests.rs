@@ -1737,21 +1737,23 @@ fn t3_testnet_top_up() {
         .unwrap()
         .id;
     // The quote has no SPV gate; the top-up is held back until SPV has
-    // caught up (`platform.context_unavailable`, the grant kept: m4 §2.8),
-    // so it is retried while held, for as long as the coins may take.
+    // caught up (`platform.context_unavailable`) and the bring-up has
+    // answered (`platform.unavailable`, which also runs it again; the quote
+    // ruled out the journal), the grant kept (m4 §2.8), so it is retried
+    // while held, for as long as the coins may take.
     let held_since = Instant::now();
     let out = loop {
         match engine.block_on(dp.top_up(identity.clone(), duffs, grant.clone())) {
-            Err(CreditsError::Platform(PlatformError::ContextUnavailable))
-                if held_since.elapsed() < Duration::from_secs(1800) =>
-            {
+            Err(CreditsError::Platform(
+                PlatformError::ContextUnavailable | PlatformError::Unavailable,
+            )) if held_since.elapsed() < Duration::from_secs(1800) => {
                 std::thread::sleep(Duration::from_secs(2))
             }
             other => break other.unwrap(),
         }
     };
     eprintln!(
-        "T3 held back (SPV catching up) for {:?}",
+        "T3 held back (SPV or the bring-up) for {:?}",
         held_since.elapsed()
     );
     eprintln!("T3 top-up {duffs} duffs: {out:?} (quote {quote:?})");

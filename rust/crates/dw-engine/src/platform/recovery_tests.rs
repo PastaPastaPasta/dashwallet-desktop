@@ -1895,6 +1895,19 @@ fn bring_up_reruns_back_off_to_ten_minutes() {
             runs() == ran + 1 && startup(&s, id) == StartupStatus::PartialNoIdentity
         });
     }
+    // An outcome that holds nothing ends the schedule: the next hold's
+    // first request runs at once.
+    assert!(!s.platform.retry_startup_at(id, t0 + at));
+    let outcome = |s| super::DashPayStartup::new(s, false);
+    s.platform.record(id, outcome(StartupStatus::NoIdentity));
+    assert!(!s.platform.retry_startup_at(id, t0 + at));
+    s.platform
+        .record(id, outcome(StartupStatus::PartialNoIdentity));
+    let ran = runs();
+    assert!(s.platform.retry_startup_at(id, t0 + at), "a fresh schedule");
+    wait_until("the rerun", || {
+        runs() == ran + 1 && startup(&s, id) == StartupStatus::PartialNoIdentity
+    });
     // Stopped, nothing runs it; the next start does, and the schedule
     // starts over.
     engine.block_on(s.stop_spv()).unwrap();

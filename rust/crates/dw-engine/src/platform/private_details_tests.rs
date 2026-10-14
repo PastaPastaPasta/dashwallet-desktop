@@ -1496,13 +1496,13 @@ fn t2_testnet_private_details() {
             .unwrap()
     };
     // A proved balance read right after a write can come from a node a
-    // block behind, before the write's fee (dw-tdash B3): read again until
-    // it moves, for a minute at most.
+    // block behind, before the write's fee (dw-tdash B3), or behind the
+    // `before` read: read again until it falls, for a minute at most.
     let balance_after = |id: &str, before: u64| {
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
         loop {
             let after = balance(id);
-            if after != before || std::time::Instant::now() >= deadline {
+            if after < before || std::time::Instant::now() >= deadline {
                 return after;
             }
             std::thread::sleep(Duration::from_secs(2));
