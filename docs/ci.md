@@ -148,7 +148,8 @@ a chunk), `?url` (an asset of its own), `?inline` as `.txt` and `?url&inline` (b
 `?inline` as `.svg` (percent-encoded) and as a JSON module (Vite fails `x.json?inline` itself).
 What the check proves is that no fixture marker or sentinel is in `dist/`. It works per literal, not
 per function: fixture code whose bundled part holds no sentinel (one function of an unmarked copy
-imported by name, the rest tree-shaken away) would not be found. `pnpm tauri build` runs `pnpm build`, so
+imported by name, the rest tree-shaken away) would not be found, and neither would a copy deliberately
+compressed or re-encoded as UTF-16, the same limit (BL-132). `pnpm tauri build` runs `pnpm build`, so
 every app binary passes the check. dw-app has no fixture mode (`--fixture` is an unknown option).
 
 | Suite | Where | What |
