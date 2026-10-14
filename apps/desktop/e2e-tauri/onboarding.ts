@@ -7,7 +7,7 @@
 // Wallet ▸ Restore a phrase dashd funded (an unknown word flagged, the last word completed
 // from a suggestion), scan from genesis ▸ its balance arrives through SPV ▸ lock: a wrong
 // passphrase (attempts remaining), unlock for mixing only (the engine refuses a spend without a
-// credential), then fully from the status bar ▸ lock ▸ Forgot passphrase with the restored
+// credential: the payment-authentication setting, then with it off the vault), then fully from the status bar ▸ lock ▸ Forgot passphrase with the restored
 // phrase: the engine lists the created wallet as watch-only and the restored one not ▸ the
 // old passphrase fails, the new one unlocks ▸ three failures make the lock screen wait, and a
 // relaunch keeps the wait ▸ after it, the new passphrase unlocks. At the end, pass or fail, no
@@ -24,6 +24,7 @@ import { spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { AuthGrant } from "../src/api/generated/AuthGrant";
 import type { WalletSummary } from "../src/api/generated/WalletSummary";
 import { env, poll, startDriver, stopDriver, tid, WebDriver } from "./webdriver.ts";
 
@@ -293,22 +294,36 @@ async function main() {
     await wd.press(tid("lock-mixing-only"));
     await unlock(PASSPHRASE);
     await wd.waitGone(tid("lock-screen"), "the lock screen");
-    // The engine itself, not only the UI, refuses to spend for mixing only (review r1-Sol).
+    // The engine itself, not only the UI, refuses to spend for mixing only (review r1-Sol):
+    // first dw-app's "require authentication for every payment" (on by default), then, with it
+    // off, the vault.
     const restoredId = (await wallets()).find((w) => w.name === restoredName)?.walletId;
     if (!restoredId) throw new Error("list_wallets has no restored wallet");
-    const spend = await invoke("authorize", {
-      purpose: { kind: "spend", maxDuffs: 100_000 },
-      walletId: restoredId,
-      credential: { kind: "unencrypted" },
-    });
-    if (spend.err !== "vault.mixing_only") throw new Error(`a spend grant for mixing only: ${spend.err ?? "issued"}`);
+    const spend = () =>
+      invoke("authorize", { purpose: { kind: "spend", maxDuffs: 100_000 }, walletId: restoredId, credential: { kind: "unencrypted" } });
+    const paymentAuthentication = async (on: boolean) => {
+      const grant = await invoke<AuthGrant>("authorize", {
+        purpose: { kind: "changeCredential" },
+        walletId: null,
+        credential: { kind: "passphrase", passphrase: PASSPHRASE },
+      });
+      if (!grant.ok) throw new Error(`a changeCredential grant: ${grant.err}`);
+      const set = await invoke("set_payment_authentication", { on, grantId: grant.ok.id });
+      if (set.err) throw new Error(`set_payment_authentication(${on}): ${set.err}`);
+    };
+    const gated = await spend();
+    if (gated.err !== "vault.credential_required") throw new Error(`a spend grant for mixing only: ${gated.err ?? "issued"}`);
+    await paymentAuthentication(false);
+    const refused = await spend();
+    if (refused.err !== "vault.mixing_only") throw new Error(`a spend grant for mixing only, payment authentication off: ${refused.err ?? "issued"}`);
+    await paymentAuthentication(true);
     await wd.press(tid("status-unlock"));
     await wd.screenshot("08-unlock-sheet");
     await enter("unlock-sheet-field", PASSPHRASE);
     await wd.press(tid("unlock-sheet-submit"));
     await wd.waitGone(tid("unlock-sheet"), "the unlock sheet");
     await wd.waitGone(tid("status-unlock"), "the mixing-only status");
-    step("lock: wrong passphrase (attempts remaining), mixing only (a spend refused: vault.mixing_only), unlock sheet to full");
+    step("lock: wrong passphrase (attempts remaining), mixing only (a spend refused: credential_required, then mixing_only), unlock sheet to full");
 
     // ---- Forgot passphrase with the restored phrase (IOS-014)
     await lock();
