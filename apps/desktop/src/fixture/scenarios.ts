@@ -19,6 +19,8 @@ import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
+import type { Utxo } from "../api/generated/Utxo";
+import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { buildRows, caughtUp, FUNDED_BALANCES, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
 export const FIXTURE_PASSPHRASE = "demo";
@@ -29,6 +31,8 @@ export const SECOND_WALLET_ID = "b2".repeat(32);
 export interface FixtureWallet {
   summary: WalletSummary;
   rows: TxRow[];
+  coins: Utxo[];
+  receive: ReceiveWorld;
 }
 
 /** What the fixture's engine knows. Handlers mutate it, like the engine's own state. */
@@ -57,6 +61,10 @@ export interface World {
   links: LinkRoute[];
   /** The last `shell_sync`: what the native menus would show. */
   shellSync: ShellSync | null;
+  /** "Require authentication for every payment" (E0-13 D11; on by default). */
+  paymentAuth: boolean;
+  /** Drafts, prepared transactions and what the next broadcast does (send.ts). */
+  send: SendWorld;
 }
 
 /** A vault grant: single use (`used` once redeemed or revoked); `ownKey` when it was issued
@@ -92,6 +100,8 @@ function wallet(variant: HistoryVariant): FixtureWallet {
       balances: variant === "empty" ? ZERO_BALANCES : FUNDED_BALANCES,
     },
     rows: buildRows(variant),
+    coins: buildCoins(variant),
+    receive: newReceiveWorld(),
   };
 }
 
@@ -123,6 +133,8 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     notices: [],
     links: [],
     shellSync: null,
+    paymentAuth: true,
+    send: newSendWorld(),
   };
 }
 

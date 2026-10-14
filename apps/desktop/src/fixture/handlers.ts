@@ -12,8 +12,7 @@
 // installs the key ends the vault's epoch, so every live lease needs a grant again, its key
 // dropped; a vault-grant write runs under a one-shot lease that `leases` lists, ended. Not
 // modelled: grant expiry and lease idle reaping (the clock is FIXTURE_NOW), quick unlock's
-// spending limit and passphrase age, "authenticate every payment" (`vault.credential_required`),
-// held identity keys (`identity.keys_missing`), and the lock report, which is the scenario's
+// spending limit and passphrase age, held identity keys (`identity.keys_missing`), and the lock report, which is the scenario's
 // (`World.cut`), not derived from the leases.
 
 import type { AppError, AppEvent, CommandArgs, CommandName, CommandResults } from "../api/generated/commands";
@@ -29,6 +28,7 @@ import { isCheckable } from "../api/lockReport";
 import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
 import { eventOf, sectionOf, type DashPayWorld } from "./dashpay";
 import { routeLink } from "./links";
+import { sendHandlers } from "./send";
 import { MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { BASE58, FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
 
@@ -37,7 +37,7 @@ export interface Ctx {
   emit(event: AppEvent): void;
 }
 
-type Handlers = { [K in CommandName]?: (args: CommandArgs[K], ctx: Ctx) => CommandResults[K] };
+export type Handlers = { [K in CommandName]?: (args: CommandArgs[K], ctx: Ctx) => CommandResults[K] };
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
 
@@ -99,10 +99,13 @@ function leaseKey(id: string): string | null {
   return /^lease-[0-9a-f]{32}$/i.test(id) ? id.toLowerCase() : null;
 }
 
-/** dw-vault's credential check of `authorize` (the "every payment needs authentication"
- * setting is not modelled: no credential is ever required beyond these). */
-function checkCredential(w: World, credential: CredentialSpec) {
+/** dw-vault's credential check of `authorize`. While "Require authentication for every payment"
+ * is on (E0-13 D11), a `spend` grant of an encrypted vault needs a real credential: the
+ * unlocked vault's own (`unencrypted`) is `vault.credential_required`. */
+function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
   if (w.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
+  if (credential.kind === "unencrypted" && w.lock.encrypted && w.paymentAuth && purposes.some((p) => p.kind === "spend"))
+    throw fail("vault.credential_required", "every payment needs authentication");
   switch (credential.kind) {
     case "passphrase": {
       if (credential.passphrase !== w.passphrase) {
@@ -135,7 +138,7 @@ function authorizeSet(w: World, purposes: GrantPurposeSpec[], walletId: string |
   if (purposes.length === 0) throw fail("invalid_argument", "no grant purpose");
   const unbound = purposes.find((p) => (p.kind !== "changeCredential") !== (walletId !== null));
   if (unbound) throw fail("invalid_argument", `a ${unbound.kind} grant ${walletId === null ? "needs a wallet id" : "is not bound to a wallet"}`);
-  checkCredential(w, credential);
+  checkCredential(w, credential, purposes);
   const expiresAt = secs(FIXTURE_NOW) + GRANT_TTL_SECS;
   const ownKey = keyless(w);
   return purposes.map((purpose) => {
@@ -311,6 +314,13 @@ function markRead(ctx: Ctx, walletId: string, dp: DashPayWorld, identity: string
 }
 
 export const HANDLERS: Handlers = {
+  // Pay and Receive (U-03): send.ts.
+  ...sendHandlers({
+    wallet,
+    spendGrant: (w, id, walletId) => checkGrant(w, id, walletId, ["spend"]),
+    useGrant,
+  }),
+
   // App and network
   launch_info: (_, { world }) => world.launch,
   recent_notices: (_, { world }) => world.notices,
