@@ -76,17 +76,25 @@ pub struct PaymentPolicy {
 /// each arrival and, if it pauses, waits until the test resumes it. When
 /// the test's [`SeamHandle`] is dropped (a failing test unwinds), a waiting
 /// pass goes on, so a failure never leaves a thread parked.
+///
+/// A pause awaits; it never blocks its thread. The commands that pass a
+/// seam run on Tauri's global runtime, which has one worker per core and is
+/// shared by every test in the process. A blocking pause held a worker for
+/// as long as the test kept it paused: three tests paused at once took all
+/// three workers of a macOS runner, and the commands they waited for never
+/// ran (main CI 38608334643, `authorize_waits_for_a_policy_write_in_progress`
+/// timed out at its gate seam; with `TOKIO_WORKER_THREADS=1` it hung alone).
 #[cfg(test)]
 pub(crate) struct Seam {
     arrived: std::sync::mpsc::Sender<()>,
-    resume: Option<StdMutex<std::sync::mpsc::Receiver<()>>>,
+    resume: Option<Mutex<tokio::sync::mpsc::UnboundedReceiver<()>>>,
 }
 
 /// The test's side of a [`Seam`].
 #[cfg(test)]
 pub(crate) struct SeamHandle {
     arrived: std::sync::mpsc::Receiver<()>,
-    resume: Option<std::sync::mpsc::Sender<()>>,
+    resume: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 #[cfg(test)]
@@ -94,8 +102,8 @@ impl Seam {
     pub(crate) fn new(pauses: bool) -> (Arc<Seam>, SeamHandle) {
         let (arrived_tx, arrived) = std::sync::mpsc::channel();
         let (resume, resume_rx) = if pauses {
-            let (tx, rx) = std::sync::mpsc::channel();
-            (Some(tx), Some(StdMutex::new(rx)))
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            (Some(tx), Some(Mutex::new(rx)))
         } else {
             (None, None)
         };
@@ -108,18 +116,18 @@ impl Seam {
         )
     }
 
-    pub(crate) fn pass(&self) {
+    pub(crate) async fn pass(&self) {
         let _ = self.arrived.send(());
         if let Some(resume) = &self.resume {
-            let _ = resume.lock().unwrap().recv();
+            let _ = resume.lock().await.recv().await;
         }
     }
 
     /// Passes the seam in `slot`, if a test set one.
-    pub(crate) fn pass_slot(slot: &StdMutex<Option<Arc<Seam>>>) {
+    pub(crate) async fn pass_slot(slot: &StdMutex<Option<Arc<Seam>>>) {
         let seam = slot.lock().unwrap().clone();
         if let Some(seam) = seam {
-            seam.pass();
+            seam.pass().await;
         }
     }
 }
@@ -127,11 +135,16 @@ impl Seam {
 #[cfg(test)]
 impl SeamHandle {
     /// Waits for the code under test to reach the seam; fails the test if
-    /// it does not within two minutes (it returned early, say).
+    /// it does not within two minutes (it returned early, say). The panic
+    /// names the caller's line, so a failure says which seam it was.
+    #[track_caller]
     pub(crate) fn arrived(&self) {
-        self.arrived
+        if let Err(e) = self
+            .arrived
             .recv_timeout(std::time::Duration::from_secs(120))
-            .expect("the code under test never reached its seam");
+        {
+            panic!("the code under test never reached its seam: {e:?}");
+        }
     }
 
     pub(crate) fn resume(&self) {
@@ -212,12 +225,12 @@ impl AppState {
     }
 
     #[cfg(test)]
-    pub(crate) fn pause_payment_set(&self, at: SetPause) {
+    pub(crate) async fn pause_payment_set(&self, at: SetPause) {
         let pause = self.payment_set_pause.lock().unwrap().clone();
         if let Some((stage, seam)) = pause
             && stage == at
         {
-            seam.pass();
+            seam.pass().await;
         }
     }
 
@@ -541,5 +554,28 @@ mod tests {
         let epoch = t.epoch();
         t.clear();
         assert_eq!(t.epoch(), epoch + 1);
+    }
+
+    /// A paused seam leaves its worker to other tasks: on a runtime with
+    /// one worker, a task spawned while another is paused still runs. A
+    /// blocking pause hangs here (main CI 38608334643, see [`Seam`]).
+    #[test]
+    fn a_paused_seam_does_not_hold_its_worker() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let (seam, handle) = Seam::new(true);
+        let paused = runtime.spawn(async move { seam.pass().await });
+        handle.arrived();
+        let (ran_tx, ran) = std::sync::mpsc::channel();
+        runtime.spawn(async move { ran_tx.send(()) });
+        // The spawned task either runs or never will; the bound only turns
+        // a hang into a failure.
+        ran.recv_timeout(std::time::Duration::from_secs(120))
+            .expect("the paused seam held the only worker");
+        assert!(!paused.is_finished());
+        handle.resume();
+        runtime.block_on(paused).unwrap();
     }
 }
