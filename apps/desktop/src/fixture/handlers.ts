@@ -29,7 +29,7 @@ import { isCheckable } from "../api/lockReport";
 import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
 import { eventOf, sectionOf, type DashPayWorld } from "./dashpay";
 import { MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
-import { FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
+import { BASE58, FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
 
 export interface Ctx {
   world: World;
@@ -247,8 +247,14 @@ function writeLease(ctx: Ctx, walletId: string, grant: string, flows: FlowKindNa
   return () => void leasedCall(ctx, lease, quote);
 }
 
-/** A base58 identity id, as `Pair::parse` takes one. */
-const isIdentityId = (s: string) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s);
+/** A Base58 identity id, as `Identifier::from_string` takes one: 32 bytes once decoded (each
+ * leading `1` a zero byte), so 32 to 44 characters. */
+function isIdentityId(s: string): boolean {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s)) return false;
+  const zeros = s.length - s.replace(/^1+/, "").length;
+  const n = [...s.slice(zeros)].reduce((n, c) => n * 58n + BigInt(BASE58.indexOf(c)), 0n);
+  return zeros + (n === 0n ? 0 : Math.ceil(n.toString(16).length / 2)) === 32;
+}
 
 // The bell (platform/notifications.rs), as vectors/notifications.json records the engine's, which
 // notifications.test.ts replays: each call looks the wallet up, then refuses an id that is not

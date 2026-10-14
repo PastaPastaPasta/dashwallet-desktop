@@ -78,7 +78,7 @@ export interface RequestTimes {
   outgoing: number | null;
 }
 
-/** Base58 identity ids (44 characters, as Platform prints them). */
+/** Base58 identity ids: 32 bytes, 43 or 44 characters as Platform prints them. */
 export const IDENTITY = {
   alice: "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF",
   bob: "8GopLQQPjKr2gXjNEt9G8k2PzRZrdbBqQBNTCXV2DYiN",
@@ -88,9 +88,9 @@ export const IDENTITY = {
   frank: "FjhP3PdtkjBY9wzaLNVTmJD6fUjSHH8bFRxZVoSWkLrJ",
   grace: "GrAC3eQhZmKGwKu4R7PDuBkaxWDcXuspNwGM8RHm9ZsZ",
   heidi: "H31dSvQyJfALgo7SoD9w4uU2vYFXR3BpbYXr7FFTH2pa",
-  ivan: "1vANuoMbBJYGLx5tPxaa5LSXmVSA7oHzJJvWmrHMKtpH",
-  judy: "JudyGQjdXR1xmWvHFS3Kq8fQ5Jmpw3T6YVY6HAYtnBpW",
-  mallory: "MALLoRyCRFtBn7r9fqD4yZcVaxu3Rx1oEkJ38EN6Hbnm",
+  ivan: "1vANuoMbBJYGLx5tPxaaLSXmVSA7oHzJJvWmrHMKtpH",
+  judy: "JudyGQjdXR1xmWvHFS3K8fQ5Jmpw3T6YVY6HAYtnBpW",
+  mallory: "MALLoRyCRFtBn7r9fqD4ZcVaxu3Rx1oEkJ38EN6Hbnm",
 } as const;
 
 const at = (daysAgo: number, hours = 0) => secs(FIXTURE_NOW) - daysAgo * 86_400 - hours * 3_600;

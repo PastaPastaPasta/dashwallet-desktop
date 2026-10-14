@@ -48,6 +48,8 @@ interface Step {
 interface Vectors {
   comment: string;
   notBase58: string;
+  /** Base58 of an identity id's length that does not decode to 32 bytes. */
+  wrongLength: string[];
   kinds: Record<string, string>;
   /** The requests waiting, as the engine was given them. */
   requests: { contact: string; id: string; since: number }[];
@@ -131,6 +133,14 @@ describe("fixture bell matches the engine", () => {
     expect(VECTORS.cases.map((c) => c.name)).toEqual(["pages", "markRead", "ignore", "refusals"]);
     const codes = VECTORS.cases.flatMap((c) => c.steps).flatMap((s) => (s.result && "error" in s.result ? [s.result.error.code] : []));
     expect(new Set(codes)).toEqual(new Set(["invalid_argument", "identity.not_found", "wallet_not_found"]));
+    // Only decoding refuses these: each looks like an id.
+    expect(VECTORS.wrongLength.length).toBeGreaterThan(0);
+    for (const id of VECTORS.wrongLength) expect(id).toMatch(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
+  });
+
+  it("takes every identity id of the fixture's worlds", async () => {
+    installFixture({ scenario: "dashpay-registered" });
+    for (const id of Object.values(IDENTITY)) expect(await cmd.dashpayUnreadCount(W, id), id).toBeGreaterThanOrEqual(0);
   });
 
   it("names the kinds as the engine", () => {
