@@ -110,6 +110,26 @@ describe("lock view model", () => {
     expect(model.canRecover).toBe(true);
   });
 
+  it("anEighthFailureBeforeTheFirstReadIsTheCutOff", async () => {
+    // Review r2-Sol minor 1: without the read's `canRecover`, the eighth failure was judged a
+    // wait; once the read says the vault holds a wallet's secrets, it is the cut-off.
+    const world = lockedWorld(7);
+    let open!: () => void;
+    world.statusGate = new Promise((r) => (open = r));
+    const model = new LockModel(world, world.now);
+    const read = model.load();
+    await failOnce(model);
+    expect(model.failedAttempts).toBe(8);
+    expect(model.disabled).toBe(false);
+    open();
+    await read;
+    expect(model.canRecover).toBe(true);
+    expect(model.failedAttempts).toBe(8);
+    expect(model.disabled).toBe(true);
+    expect(model.retryAfterSecs).toBeNull();
+    expect(model.message).toBe(LockText.disabled);
+  });
+
   it("IOS012_fourthFailureWaitsSixMinutes", async () => {
     const world = lockedWorld();
     const model = await loaded(world);

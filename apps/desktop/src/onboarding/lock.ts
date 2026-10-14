@@ -90,6 +90,13 @@ export class LockModel extends Model {
         // holds, which no attempt reports (D29).
         this.lockState ??= status.state;
         this.canRecover = status.encrypted && status.walletsWithSecrets.length > 0;
+        // The attempt judged its count without `canRecover`: with it, eight failures may be the
+        // cut-off rather than a wait (review r2-Sol minor 1).
+        if (!this.disabled && this.#verdict(this.failedAttempts).kind === "disabled") {
+          this.disabled = true;
+          this.retryAt = null;
+          this.message = LockText.disabled;
+        }
         this.changed();
       }
     } catch (e) {
