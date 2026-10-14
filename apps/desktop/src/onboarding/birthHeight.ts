@@ -1,19 +1,52 @@
 // A wallet creation date as a conservative scan start height (QT-105, U-02 D7).
 //
-// The estimate assumes 200 s per block (the target is 157.5 s), so it lands below the real
-// height, and subtracts one more week. Starting early only costs scan time; starting late would
-// miss transactions. Devnets and regtest always start at 0.
+// The height of the last checkpoint mined at least a week before the date: Dash Core's checkpoints
+// as rust-dashcore's dash-spv ships them (dash-spv/src/chain/checkpoints.rs at 67b307c6d, with
+// their block times), so the estimate is a real block's height and never past the date. A date
+// after the last checkpoint starts there: no extrapolation, as testnet's block rate has varied
+// by years. Starting early only costs scan time; starting late would miss transactions.
+// Devnets and regtest always start at 0. Mainnet 750,000 is left out: its time in that table is
+// earlier than 700,000's.
 
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 
-const SECONDS_PER_BLOCK = 200;
 const SAFETY_MARGIN_SECS = 7 * 24 * 3600;
-/** Genesis block times (Dash Core chainparams). */
-const GENESIS_SECS: Partial<Record<NetworkInfo["kind"], number>> = { mainnet: 1_390_095_618, testnet: 1_390_666_206 };
+
+/** `[height, block time (Unix seconds)]`, both ascending. */
+const ANCHORS: Partial<Record<NetworkInfo["kind"], readonly (readonly [number, number])[]>> = {
+  mainnet: [
+    [0, 1_390_095_618], [50_000, 1_397_301_812], [100_000, 1_405_041_879], [150_000, 1_412_903_320],
+    [200_000, 1_420_768_974], [250_000, 1_428_659_404], [300_000, 1_436_534_243], [350_000, 1_444_408_229],
+    [400_000, 1_452_288_263], [450_000, 1_460_172_189], [500_000, 1_468_042_975], [550_000, 1_475_917_900],
+    [600_000, 1_483_795_508], [650_000, 1_491_673_696], [700_000, 1_499_552_504], [800_000, 1_515_298_907],
+    [850_000, 1_523_178_072], [900_000, 1_531_055_382], [950_000, 1_538_933_769], [1_000_000, 1_546_810_296],
+    [1_050_000, 1_554_685_961], [1_100_000, 1_562_561_033], [1_150_000, 1_570_440_452], [1_200_000, 1_578_321_180],
+    [1_250_000, 1_586_201_239], [1_300_000, 1_594_082_464], [1_350_000, 1_601_962_865], [1_400_000, 1_609_844_689],
+    [1_450_000, 1_617_723_659], [1_500_000, 1_625_606_293], [1_550_000, 1_633_490_545], [1_600_000, 1_641_372_443],
+    [1_650_000, 1_649_256_541], [1_700_000, 1_657_142_113], [1_750_000, 1_665_028_811], [1_800_000, 1_672_914_957],
+    [1_850_000, 1_680_802_702], [1_900_000, 1_688_744_911], [1_950_000, 1_696_625_297], [2_000_000, 1_704_505_832],
+    [2_050_000, 1_712_376_595], [2_100_000, 1_720_248_149], [2_150_000, 1_728_118_239], [2_200_000, 1_736_001_490],
+    [2_250_000, 1_743_884_816], [2_300_000, 1_751_767_455], [2_350_000, 1_759_648_416], [2_400_000, 1_767_528_049],
+    [2_450_000, 1_775_408_495], [2_500_000, 1_783_288_591],
+  ],
+  testnet: [
+    [0, 1_390_666_206], [50_000, 1_550_935_893], [100_000, 1_558_052_383], [150_000, 1_565_028_909],
+    [200_000, 1_572_008_328], [250_000, 1_579_348_172], [300_000, 1_588_424_121], [350_000, 1_595_733_312],
+    [400_000, 1_605_654_012], [450_000, 1_614_003_669], [500_000, 1_621_049_765], [550_000, 1_628_063_334],
+    [600_000, 1_635_070_663], [650_000, 1_642_100_742], [700_000, 1_649_138_427], [750_000, 1_656_190_491],
+    [800_000, 1_671_238_603], [850_000, 1_686_814_109], [900_000, 1_698_142_346], [950_000, 1_705_215_051],
+    [1_000_000, 1_712_086_681], [1_050_000, 1_718_985_215], [1_100_000, 1_725_934_127], [1_150_000, 1_732_966_902],
+    [1_200_000, 1_740_094_681], [1_250_000, 1_747_103_471], [1_300_000, 1_754_134_922], [1_350_000, 1_761_146_995],
+    [1_400_000, 1_768_147_275], [1_450_000, 1_775_019_403], [1_500_000, 1_782_027_920],
+  ],
+};
 
 export function birthHeightFor(date: Date, network: NetworkInfo["kind"]): number {
-  const genesis = GENESIS_SECS[network];
-  if (genesis === undefined) return 0;
-  const elapsed = date.getTime() / 1000 - genesis - SAFETY_MARGIN_SECS;
-  return elapsed > 0 ? Math.min(0xffff_ffff, Math.floor(elapsed / SECONDS_PER_BLOCK)) : 0;
+  const cutoff = date.getTime() / 1000 - SAFETY_MARGIN_SECS;
+  let height = 0;
+  for (const [h, time] of ANCHORS[network] ?? []) {
+    if (time > cutoff) break;
+    height = h;
+  }
+  return height;
 }

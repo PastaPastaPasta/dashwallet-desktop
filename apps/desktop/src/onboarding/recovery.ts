@@ -1,10 +1,11 @@
 // Show Recovery Phrase (IOS-003, IOS-108, U-02 D13): a single-use `revealSecret` grant, then the
-// phrase while the sheet shows it. Closing the sheet drops it.
+// phrase while the sheet shows it. Closing the sheet drops it. The passphrase goes through the
+// lock screen's policy (`LockModel.attempt`): `authorize` counts a failure as `unlock` does.
 
 import type { Backend } from "../api/backend";
-import { Model, PASSPHRASE_REQUIRED, unlockFailureText } from "./model";
+import { LockModel } from "./lock";
+import { failureText, Model, type WalletChoice } from "./model";
 import { wordsOf } from "./words";
-import type { WalletChoice } from "./forgot";
 
 export type RecoveryStep = "loading" | "wallet" | "confirm" | "working" | "shown" | "unavailable" | "failed";
 
@@ -16,7 +17,7 @@ export const RecoveryText = {
   noPhrase: "No wallet on this network has a recovery phrase in Dash Wallet.",
 };
 
-type Api = Pick<Backend, "lockStatus" | "listWallets" | "authorize" | "revealMnemonic" | "revokeGrant">;
+type Api = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly" | "listWallets" | "authorize" | "revealMnemonic" | "revokeGrant">;
 
 export class RecoveryPhraseModel extends Model {
   step: RecoveryStep = "loading";
@@ -24,13 +25,19 @@ export class RecoveryPhraseModel extends Model {
   walletId: string | null = null;
   /** A passphrase is needed (encrypted vault). */
   encrypted = true;
+  /** The passphrase prompt's count, wait and copy. */
+  readonly lock: LockModel;
+  /** A failure outside the passphrase prompt (loading, an unencrypted vault's reveal). */
   error: string | null = null;
   /** The phrase while it shows; empty otherwise. */
   words: string[] = [];
-  bip39Passphrase = "";
+  /** The wallet also has a BIP39 passphrase; the sheet says so but never shows it. */
+  hasBip39 = false;
+  #disposed = false;
 
   constructor(private readonly api: Api) {
     super();
+    this.lock = new LockModel(api);
   }
 
   /** `preferred` is chosen when it has a phrase (the window's wallet). */
@@ -43,9 +50,10 @@ export class RecoveryPhraseModel extends Model {
         .filter((s) => s.hasMnemonic && !s.watchOnly && secrets.has(s.walletId))
         .map((s) => ({ walletId: s.walletId, name: s.name }));
     } catch (e) {
-      this.error = unlockFailureText(e);
+      this.error = failureText(e);
       return this.#go("failed");
     }
+    if (this.encrypted) await this.lock.load();
     if (this.wallets.length === 0) this.#go("unavailable");
     else if (preferred && this.wallets.some((w) => w.walletId === preferred)) this.choose(preferred);
     else if (this.wallets.length === 1) this.choose(this.wallets[0].walletId);
@@ -61,39 +69,51 @@ export class RecoveryPhraseModel extends Model {
   /** Checks the passphrase (ignored on an unencrypted vault) and shows the phrase. */
   async reveal(passphrase: string) {
     const walletId = this.walletId;
-    if (this.step !== "confirm" || !walletId) return;
-    if (this.encrypted && !passphrase) {
-      this.error = PASSPHRASE_REQUIRED;
-      return this.changed();
-    }
+    if (this.step !== "confirm" || !walletId || this.lock.working) return;
     this.error = null;
-    this.#go("working");
     let grant: string | null = null;
+    const authorize = async (p: string) => {
+      const credential = this.encrypted ? ({ kind: "passphrase", passphrase: p } as const) : ({ kind: "unencrypted" } as const);
+      grant = (await this.api.authorize({ kind: "revealSecret" }, walletId, credential)).id;
+    };
+    let authorized: boolean;
+    if (this.encrypted) authorized = await this.lock.attempt(passphrase, authorize);
+    else {
+      authorized = await authorize("").then(
+        () => true,
+        (e) => {
+          this.error = failureText(e);
+          return false;
+        },
+      );
+    }
+    if (!authorized || !grant) return this.changed();
+    if (this.#disposed) return this.#revoke(grant);
+    this.#go("working");
     try {
-      grant = (
-        await this.api.authorize(
-          { kind: "revealSecret" },
-          walletId,
-          this.encrypted ? { kind: "passphrase", passphrase } : { kind: "unencrypted" },
-        )
-      ).id;
       const revealed = await this.api.revealMnemonic(walletId, grant);
-      grant = null;
+      // The sheet closed meanwhile: the phrase is not kept.
+      if (this.#disposed) return;
       this.words = wordsOf(revealed.phrase);
-      this.bip39Passphrase = revealed.bip39Passphrase;
+      this.hasBip39 = revealed.bip39Passphrase !== "";
       this.#go("shown");
     } catch (e) {
       // An issued grant that did not reach the reveal is revoked, not left to expire.
-      if (grant) this.api.revokeGrant(grant).catch(() => {});
-      this.error = unlockFailureText(e);
+      this.#revoke(grant);
+      this.error = failureText(e);
       this.#go("confirm");
     }
   }
 
-  /** Hides the phrase (the sheet closed). */
+  /** Hides the phrase (the sheet closed); a reveal still in flight is dropped. */
   dispose() {
+    this.#disposed = true;
     this.words = [];
-    this.bip39Passphrase = "";
+    this.hasBip39 = false;
+  }
+
+  #revoke(grant: string) {
+    this.api.revokeGrant(grant).catch(() => {});
   }
 
   #go(step: RecoveryStep) {

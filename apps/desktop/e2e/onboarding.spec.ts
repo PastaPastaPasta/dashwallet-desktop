@@ -49,6 +49,8 @@ test("create: passphrase first, the phrase, verify with a wrong word, then the w
   await expect(page.getByTestId("onboarding-welcome")).toBeVisible();
   // First run: nothing to cancel.
   await expect(page.getByTestId("onboarding-cancel")).toHaveCount(0);
+  // The window is content-protected for the whole flow, before any phrase shows (D15, IOS-006).
+  await expect.poll(() => secretShown(page)).toBe(true);
   await page.getByTestId("onboarding-create").click();
   await expect(page.getByTestId("onboarding-choosePassphrase")).toBeVisible();
   await expect(page.getByTestId("onboarding-passphrase-new")).toBeFocused();
@@ -62,6 +64,8 @@ test("create: passphrase first, the phrase, verify with a wrong word, then the w
 
   await expect(page.getByTestId("onboarding-showPhrase")).toBeVisible();
   await expect(page.getByTestId("onboarding-phrase-words").locator(".phrase-word")).toHaveText(CREATED_12.split(" "));
+  // No copy (D18): the words cannot be selected.
+  await expect(page.getByTestId("onboarding-phrase-words")).toHaveCSS("user-select", "none");
   await expect.poll(() => secretShown(page)).toBe(true);
   // Nothing is stored yet.
   expect(await calls(page)).not.toContain("create_vault");
@@ -83,9 +87,9 @@ test("create: passphrase first, the phrase, verify with a wrong word, then the w
   await expect(page.getByTestId("onboarding-done")).toBeVisible();
   expect(await calls(page)).toEqual(expect.arrayContaining(["create_vault", "import_wallet"]));
   expect(await world(page, (w) => w.passphrase)).toBe("Fixture pass 42!");
-  await expect.poll(() => secretShown(page)).toBe(false);
   await page.getByTestId("onboarding-open").click();
   await expect(page.getByTestId("onboarding")).toHaveCount(0);
+  await expect.poll(() => secretShown(page)).toBe(false);
   await expect(page.getByTestId("hero")).toBeVisible();
   await expect(page.getByTestId("status-bar")).toContainText("Unlocked");
   expect(errors).toEqual([]);
@@ -296,6 +300,12 @@ test("Forgot passphrase: which wallet, what happens, a mismatch, the new passphr
   // The phrase was dropped with the attempt.
   await expect(page.getByTestId("forgot-phrase-input")).toHaveValue("");
 
+  // Back from the new passphrase: the phrase is typed again.
+  await page.getByTestId("forgot-phrase-input").fill(MAIN_PHRASE);
+  await page.getByTestId("forgot-continue").click();
+  await page.getByTestId("forgot-back").click();
+  await expect(page.getByTestId("forgot-phrase-input")).toHaveValue("");
+  await expect(page.getByTestId("forgot-continue")).toBeDisabled();
   await page.getByTestId("forgot-phrase-input").fill(MAIN_PHRASE);
   await page.getByTestId("forgot-continue").click();
   await page.getByTestId("forgot-new-new").fill("brand new");
@@ -336,6 +346,8 @@ test("Show Recovery Phrase: the passphrase, then the words; closing drops them (
   await open(page, "two-wallets");
   await command(page, { kind: "recoveryPhrase" });
   await expect(page.getByTestId("recovery-phrase")).toBeVisible();
+  // Protected from the sheet's start, before the phrase can show (D15).
+  await expect.poll(() => secretShown(page)).toBe(true);
   // The window's wallet is chosen; the warning comes first.
   await expect(page.getByTestId("recovery-passphrase-field")).toBeFocused();
   await page.getByTestId("recovery-passphrase-field").fill("wrong");

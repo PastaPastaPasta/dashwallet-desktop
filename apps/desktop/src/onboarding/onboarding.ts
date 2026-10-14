@@ -6,11 +6,11 @@
 import type { Backend } from "../api/backend";
 import { hasCode } from "../api/backend";
 import type { LockStateName } from "../api/generated/LockStateName";
-import type { MnemonicCheck } from "../api/generated/MnemonicCheck";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { birthHeightFor } from "./birthHeight";
-import { failureText, Model, PASSPHRASE_REQUIRED, unlockFailureText } from "./model";
-import { passphraseProblem, passphraseStrength, type Strength } from "./passphrase";
+import { LockModel } from "./lock";
+import { failureText, Model } from "./model";
+import { passphraseProblem } from "./passphrase";
 import { PhraseEntry } from "./phraseEntry";
 import { CREATE_COUNTS, wordsOf, type CreateCount } from "./words";
 
@@ -40,6 +40,9 @@ export interface VerifyChip {
   used: boolean;
 }
 
+/** Where a restore's scan starts: genesis, a creation date's estimate, or a block height. */
+export type ScanStart = "genesis" | "date" | "height";
+
 export interface RestoreOptions {
   /** `null`: the engine's default, its tip, right for a new wallet only. */
   birthHeight: number | null;
@@ -50,7 +53,7 @@ export const OnboardingText = {
   birthDateInFuture: "The wallet creation date cannot be in the future.",
 };
 
-type Api = Pick<Backend, "lockStatus" | "unlock" | "createVault" | "generateMnemonic" | "checkMnemonic" | "importWallet">;
+type Api = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly" | "createVault" | "generateMnemonic" | "checkMnemonic" | "importWallet">;
 
 /** A number in [0, 1) from the system's CSPRNG. */
 const systemRandom = () => crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32;
@@ -62,6 +65,8 @@ export class OnboardingModel extends Model {
   step: OnboardingStep = "welcome";
   flow: OnboardingFlow | null = null;
   vaultState: LockStateName | null = null;
+  /** An engine call is running: the screen's actions wait, and a second submit is ignored. */
+  busy = false;
 
   // Create.
   wordCount: CreateCount = 12;
@@ -70,19 +75,24 @@ export class OnboardingModel extends Model {
   /** Phrase positions (0-based) to confirm, ascending. */
   verifyChallenge: number[] = [];
   verifyChips: VerifyChip[] = [];
-  verifiedCount = 0;
   /** The words picked so far, in the challenge's order. */
   verifiedWords: string[] = [];
   verifyMistake = false;
+  /** Wrong chips so far: each one is announced again. */
+  verifyMistakes = 0;
 
   // The vault passphrase.
-  passphraseStrength: Strength = "none";
   passphraseError: string | null = null;
-  unlockError: string | null = null;
+  /** The unlock step's count, wait and copy: the lock screen's policy (D12). */
+  readonly lock: LockModel;
 
   // Restore.
   readonly entry: PhraseEntry;
-  birthDate: Date | null = null;
+  /** The scan start and the date (`YYYY-MM-DD`) or height typed for it, kept while the flow
+   * goes back and forth (review r1 #8). */
+  scanStart: ScanStart = "genesis";
+  scanDate = "";
+  scanHeight = "";
   birthDateError: string | null = null;
   options: RestoreOptions = { birthHeight: null, coreCompat: false };
 
@@ -95,6 +105,8 @@ export class OnboardingModel extends Model {
   #skipEncryption = false;
   /** What a successful unlock goes on with. */
   #afterUnlock: "create" | "restore" | "finish" = "create";
+  /** The screen went away: replies that arrive later are dropped. */
+  #disposed = false;
   readonly #random: () => number;
   readonly #now: () => Date;
 
@@ -105,37 +117,17 @@ export class OnboardingModel extends Model {
   ) {
     super();
     this.entry = new PhraseEntry(api.checkMnemonic);
+    this.lock = new LockModel(api);
     this.#random = opts.random ?? systemRandom;
     this.#now = opts.now ?? (() => new Date());
   }
 
+  get verifiedCount(): number {
+    return this.verifiedWords.length;
+  }
+
   get isVerified(): boolean {
     return this.verifyChallenge.length > 0 && this.verifiedCount === this.verifyChallenge.length;
-  }
-
-  /** A phrase is on screen: the window is kept out of screen capture (D15). */
-  get phraseVisible(): boolean {
-    return this.step === "showPhrase" || this.step === "verifyPhrase";
-  }
-
-  get restoreCheck(): MnemonicCheck | null {
-    return this.entry.check;
-  }
-
-  get restoreProblem(): string | null {
-    return this.entry.problem;
-  }
-
-  get wordSuggestions(): string[] {
-    return this.entry.suggestions;
-  }
-
-  get coreOnlyWarning(): boolean {
-    return this.entry.coreOnly;
-  }
-
-  get canContinueRestore(): boolean {
-    return this.entry.valid;
   }
 
   setWordCount(count: number) {
@@ -148,15 +140,17 @@ export class OnboardingModel extends Model {
 
   /** Starts a new wallet: the passphrase or the unlock first when the vault needs one, then a
    * fresh phrase. Nothing is stored yet. */
-  async startCreate() {
-    this.#clear();
-    this.flow = "create";
-    // A new wallet has no history: `null` lets the engine start at its tip (review H-5).
-    this.options = { birthHeight: null, coreCompat: false };
-    if (!(await this.#readVault())) return;
-    if (this.vaultState === "noVault") this.#go("choosePassphrase");
-    else if (this.#needsUnlock("create")) this.#go("unlockVault");
-    else await this.#generate();
+  startCreate(): Promise<void> {
+    return this.#exclusive(async () => {
+      this.#clear();
+      this.flow = "create";
+      // A new wallet has no history: `null` lets the engine start at its tip (review H-5).
+      this.options = { birthHeight: null, coreCompat: false };
+      if (!(await this.#readVault())) return;
+      if (this.vaultState === "noVault") this.#go("choosePassphrase");
+      else if (this.#needsUnlock()) await this.#askUnlock("create");
+      else await this.#generate();
+    });
   }
 
   /** The user wrote the phrase down: hide it and draw the verify challenge (D4). */
@@ -170,7 +164,6 @@ export class OnboardingModel extends Model {
     const decoys = [...new Set(positions.slice(size).map((i) => words[i]).filter((w) => !asked.has(w)))].sort().slice(0, 2);
     const chipWords = this.#shuffled([...this.verifyChallenge.map((i) => words[i]), ...decoys]);
     this.verifyChips = chipWords.map((word, id) => ({ id, word, used: false }));
-    this.verifiedCount = 0;
     this.verifiedWords = [];
     this.verifyMistake = false;
     this.phraseWords = [];
@@ -186,33 +179,33 @@ export class OnboardingModel extends Model {
   /** Picks a chip for the next position. A wrong one marks the step and does not advance; the
    * last right one adds the wallet. */
   async select(chipId: number) {
-    if (this.step !== "verifyPhrase" || this.isVerified) return;
+    if (this.step !== "verifyPhrase" || this.isVerified || this.busy) return;
     const chip = this.verifyChips.find((c) => c.id === chipId && !c.used);
     if (!chip) return;
     if (this.verify(chip.word, this.verifyChallenge[this.verifiedCount])) {
       this.verifyChips = this.verifyChips.map((c) => (c === chip ? { ...c, used: true } : c));
       this.verifiedWords = [...this.verifiedWords, chip.word];
-      this.verifiedCount++;
       this.verifyMistake = false;
       this.changed();
-      if (this.isVerified) await this.finish();
+      if (this.isVerified) await this.#exclusive(() => this.#finish());
     } else {
       this.verifyMistake = true;
+      this.verifyMistakes++;
       this.changed();
     }
   }
 
   // The vault passphrase
 
-  updatePassphraseDraft(text: string) {
-    this.passphraseStrength = passphraseStrength(text);
+  /** The passphrase fields changed: the last refusal no longer applies. */
+  passphraseEdited() {
     this.passphraseError = null;
     this.changed();
   }
 
   /** Takes the new vault's passphrase; `false` with `passphraseError` when it is refused. */
   async submitPassphrase(text: string, confirmation: string): Promise<boolean> {
-    if (this.step !== "choosePassphrase") return false;
+    if (this.step !== "choosePassphrase" || this.busy) return false;
     const problem = passphraseProblem(text, confirmation);
     if (problem) {
       this.passphraseError = problem;
@@ -221,50 +214,47 @@ export class OnboardingModel extends Model {
     }
     this.#vaultPassphrase = text;
     this.#skipEncryption = false;
-    await this.#afterPassphrase();
+    await this.#exclusive(() => this.#afterPassphrase());
     return true;
   }
 
   /** No passphrase: the vault's key goes to the OS secret store (D17). */
   async skipEncryption() {
-    if (this.step !== "choosePassphrase") return;
+    if (this.step !== "choosePassphrase" || this.busy) return;
     this.#vaultPassphrase = null;
     this.#skipEncryption = true;
-    await this.#afterPassphrase();
+    await this.#exclusive(() => this.#afterPassphrase());
   }
 
-  /** Unlocks the existing vault fully, then goes on. A wrong passphrase stays here. */
+  /** Unlocks the existing vault fully under the lock screen's policy, then goes on. A wrong
+   * passphrase stays here, with `lock.message`. */
   async unlockVault(passphrase: string) {
     if (this.step !== "unlockVault") return;
-    if (!passphrase) {
-      this.unlockError = PASSPHRASE_REQUIRED;
-      this.changed();
-      return;
-    }
-    try {
-      this.vaultState = (await this.api.unlock(passphrase)).state;
-    } catch (e) {
-      this.unlockError = unlockFailureText(e);
-      this.changed();
-      return;
-    }
-    this.unlockError = null;
-    if (this.#afterUnlock === "create") await this.#generate();
-    else if (this.#afterUnlock === "restore") this.#go("restorePhrase");
-    else await this.finish();
+    await this.#exclusive(async () => {
+      if (!(await this.lock.unlock(passphrase, false))) return;
+      this.vaultState = this.lock.lockState;
+      if (this.#afterUnlock === "create") await this.#generate();
+      else if (this.#afterUnlock === "restore") this.#go("restorePhrase");
+      else await this.#finish();
+    });
   }
 
   // Restore
 
-  async startRestore() {
-    this.#clear();
-    this.flow = "restore";
-    // Scan from genesis by default (review H-5); no lookahead: the engine's default.
-    this.options = { birthHeight: 0, coreCompat: false };
-    this.birthDate = null;
-    this.birthDateError = null;
-    if (!(await this.#readVault())) return;
-    this.#go(this.#needsUnlock("restore") ? "unlockVault" : "restorePhrase");
+  startRestore(): Promise<void> {
+    return this.#exclusive(async () => {
+      this.#clear();
+      this.flow = "restore";
+      // Scan from genesis by default (review H-5); no lookahead: the engine's default.
+      this.options = { birthHeight: 0, coreCompat: false };
+      this.scanStart = "genesis";
+      this.scanDate = "";
+      this.scanHeight = "";
+      this.birthDateError = null;
+      if (!(await this.#readVault())) return;
+      if (this.#needsUnlock()) await this.#askUnlock("restore");
+      else this.#go("restorePhrase");
+    });
   }
 
   /** Checks the typed phrase (D7). */
@@ -281,8 +271,13 @@ export class OnboardingModel extends Model {
   }
 
   /** The BIP39 passphrase ("25th word"); empty means none. */
+  get bip39Passphrase(): string {
+    return this.#bip39 ?? "";
+  }
+
   setBip39Passphrase(text: string) {
     this.#bip39 = text || null;
+    this.changed();
   }
 
   /** Dash Core compatibility (QT-104); stays on for a phrase that passes only Core's checksum. */
@@ -291,25 +286,40 @@ export class OnboardingModel extends Model {
     this.changed();
   }
 
+  setScanStart(start: ScanStart) {
+    this.scanStart = start;
+    if (start === "genesis") this.setBirthHeight(null);
+    else if (start === "date") this.setScanDate(this.scanDate);
+    else this.setScanHeight(this.scanHeight);
+  }
+
+  /** The date field's text (`YYYY-MM-DD`), read as a local date, so today is never in the
+   * future (an input's `valueAsDate` is UTC midnight). */
+  setScanDate(text: string) {
+    this.scanDate = text;
+    const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+    this.setBirthDate(ymd ? new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])) : null);
+  }
+
+  /** The height field's text; anything but a number scans from genesis. */
+  setScanHeight(text: string) {
+    this.scanHeight = text;
+    const height = text.trim() === "" ? Number.NaN : Number(text);
+    this.setBirthHeight(Number.isFinite(height) ? Math.max(0, Math.floor(height)) : null);
+  }
+
   /** Scan start from the wallet's creation date; `null` scans from genesis. */
   setBirthDate(date: Date | null) {
     this.birthDateError = null;
-    if (!date || Number.isNaN(date.getTime())) {
-      this.birthDate = null;
-      this.options = { ...this.options, birthHeight: 0 };
-    } else if (date > this.#now()) {
-      this.birthDateError = OnboardingText.birthDateInFuture;
-    } else {
-      this.birthDate = date;
-      this.options = { ...this.options, birthHeight: birthHeightFor(date, this.network) };
-    }
+    if (!date || Number.isNaN(date.getTime())) this.options = { ...this.options, birthHeight: 0 };
+    else if (date > this.#now()) this.birthDateError = OnboardingText.birthDateInFuture;
+    else this.options = { ...this.options, birthHeight: birthHeightFor(date, this.network) };
     this.changed();
   }
 
   /** Scan start as a block height; `null` (or anything but a whole number) scans from genesis:
    * NaN would cross IPC as `null`, which starts at the tip. */
   setBirthHeight(height: number | null) {
-    this.birthDate = null;
     this.birthDateError = null;
     const valid = height !== null && Number.isSafeInteger(height) && height >= 0;
     this.options = { ...this.options, birthHeight: valid ? height : 0 };
@@ -318,44 +328,8 @@ export class OnboardingModel extends Model {
 
   async finishRestore() {
     if (this.step !== "restoreOptions" || this.birthDateError !== null) return;
-    if (this.vaultState === "noVault") {
-      this.passphraseStrength = "none";
-      this.#go("choosePassphrase");
-    } else await this.finish();
-  }
-
-  // Finish
-
-  /** Creates the vault when there is none, adds the wallet, and drops every secret. */
-  async finish() {
-    const phrase = this.flow === "restore" ? this.entry.phrase : this.#phrase;
-    if (!phrase) return;
-    this.#go("working");
-    try {
-      if (this.vaultState === "noVault") {
-        this.vaultState = (await this.api.createVault(this.#skipEncryption ? null : this.#vaultPassphrase)).state;
-        this.#vaultPassphrase = null;
-      }
-      const id = await this.api.importWallet(phrase, this.#bip39, {
-        name: null,
-        birthHeight: this.options.birthHeight,
-        coreCompat: this.options.coreCompat,
-        lookahead: null,
-      });
-      this.#clear();
-      this.walletId = id;
-      this.#go("done");
-    } catch (e) {
-      if (hasCode(e, "vault.locked") || hasCode(e, "vault.mixing_only")) {
-        this.vaultState = "locked";
-        this.unlockError = null;
-        this.#afterUnlock = "finish";
-        this.#go("unlockVault");
-      } else {
-        this.failure = failureText(e);
-        this.#go("failed");
-      }
-    }
+    if (this.vaultState === "noVault") this.#go("choosePassphrase");
+    else await this.#exclusive(() => this.#finish());
   }
 
   /** Returns to the previous screen; from a failure, to where the user can try again. */
@@ -376,13 +350,12 @@ export class OnboardingModel extends Model {
         else this.cancel();
         return;
       case "unlockVault":
-        this.unlockError = null;
         if (this.#afterUnlock === "finish" && this.flow === "restore") this.#go("restoreOptions");
         else if (this.#afterUnlock === "finish") this.#showPhrase();
         else this.cancel();
         return;
       case "failed":
-        if (!(this.flow === "restore" ? this.entry.phrase : this.#phrase)) this.cancel();
+        if (!this.#activePhrase) this.cancel();
         else if (this.flow === "restore") this.#go("restoreOptions");
         else this.#showPhrase();
         return;
@@ -397,16 +370,77 @@ export class OnboardingModel extends Model {
     this.#go("welcome");
   }
 
-  /** Drops every secret (the screen went away). */
+  /** Drops every secret (the screen went away); replies still in flight are dropped too. */
   dispose() {
+    this.#disposed = true;
     this.#clear();
   }
 
   // Private
 
+  /** Runs `op` unless another engine call is running (a double click, a second Enter). */
+  async #exclusive(op: () => Promise<void>) {
+    if (this.busy) return;
+    this.busy = true;
+    this.changed();
+    try {
+      await op();
+    } finally {
+      this.busy = false;
+      this.changed();
+    }
+  }
+
+  /** Creates the vault when there is none, adds the wallet, and drops every secret. A refused
+   * vault passphrase (or a missing OS store) returns to Choose passphrase with the phrase and its
+   * verification kept, so another passphrase can be tried (review r1 #6). */
+  async #finish() {
+    const phrase = this.#activePhrase;
+    if (!phrase || this.step === "working") return;
+    this.#go("working");
+    if (this.vaultState === "noVault") {
+      try {
+        this.vaultState = (await this.api.createVault(this.#skipEncryption ? null : this.#vaultPassphrase)).state;
+      } catch (e) {
+        this.passphraseError = failureText(e);
+        this.#go("choosePassphrase");
+        return;
+      } finally {
+        this.#vaultPassphrase = null;
+        this.#skipEncryption = false;
+      }
+    }
+    if (this.#disposed) return;
+    try {
+      const id = await this.api.importWallet(phrase, this.#bip39, {
+        name: null,
+        birthHeight: this.options.birthHeight,
+        coreCompat: this.options.coreCompat,
+        lookahead: null,
+      });
+      this.#clear();
+      this.walletId = id;
+      this.#go("done");
+    } catch (e) {
+      if (hasCode(e, "vault.locked") || hasCode(e, "vault.mixing_only")) {
+        this.vaultState = "locked";
+        await this.#askUnlock("finish");
+      } else {
+        this.failure = failureText(e);
+        this.#go("failed");
+      }
+    }
+  }
+
+  get #activePhrase(): string | null {
+    return this.flow === "restore" ? this.entry.phrase : this.#phrase;
+  }
+
   async #generate() {
     try {
-      this.#phrase = await this.api.generateMnemonic(this.wordCount);
+      const phrase = await this.api.generateMnemonic(this.wordCount);
+      if (this.#disposed) return;
+      this.#phrase = phrase;
     } catch (e) {
       this.failure = failureText(e);
       this.#go("failed");
@@ -418,18 +452,15 @@ export class OnboardingModel extends Model {
   #showPhrase() {
     if (!this.#phrase) return;
     this.phraseWords = wordsOf(this.#phrase);
-    this.verifyChips = [];
-    this.verifyChallenge = [];
-    this.verifiedCount = 0;
-    this.verifiedWords = [];
-    this.verifyMistake = false;
+    this.#resetVerify();
     this.#go("showPhrase");
   }
 
   async #afterPassphrase() {
     this.passphraseError = null;
-    if (this.flow === "create") await this.#generate();
-    else await this.finish();
+    // A create flow comes back here verified when the vault refused its passphrase.
+    if (this.flow === "create" && !this.isVerified) await this.#generate();
+    else await this.#finish();
   }
 
   async #readVault(): Promise<boolean> {
@@ -443,11 +474,23 @@ export class OnboardingModel extends Model {
     }
   }
 
-  #needsUnlock(next: "create" | "restore"): boolean {
-    if (!this.vaultState || !NEEDS_UNLOCK.has(this.vaultState)) return false;
+  #needsUnlock(): boolean {
+    return this.vaultState !== null && NEEDS_UNLOCK.has(this.vaultState);
+  }
+
+  /** The unlock step, with the vault's count and wait read first (D3, D12). */
+  async #askUnlock(next: "create" | "restore" | "finish") {
     this.#afterUnlock = next;
-    this.unlockError = null;
-    return true;
+    this.lock.message = null;
+    this.#go("unlockVault");
+    await this.lock.load();
+  }
+
+  #resetVerify() {
+    this.verifyChips = [];
+    this.verifyChallenge = [];
+    this.verifiedWords = [];
+    this.verifyMistake = false;
   }
 
   #shuffled<T>(items: T[]): T[] {
@@ -470,11 +513,7 @@ export class OnboardingModel extends Model {
     this.#vaultPassphrase = null;
     this.#skipEncryption = false;
     this.phraseWords = [];
-    this.verifyChips = [];
-    this.verifyChallenge = [];
-    this.verifiedCount = 0;
-    this.verifiedWords = [];
-    this.verifyMistake = false;
+    this.#resetVerify();
     this.entry.clear();
     this.failure = null;
     this.walletId = null;

@@ -1,6 +1,7 @@
 // Show Recovery Phrase (IOS-003, IOS-108): the Swift IOS-108 test, ported, and U-02 D13.
 
 import { describe, expect, it } from "vitest";
+import { LockText } from "./lock";
 import { RecoveryPhraseModel } from "./recovery";
 import { appError, FakeWorld, PHRASE, status, summary, WALLET_A, WALLET_B } from "./testWorld";
 
@@ -22,7 +23,7 @@ describe("recovery phrase view model", () => {
     expect(model.step).toBe("wallet");
     model.choose(WALLET_A);
     await model.reveal("");
-    expect(model.error).toBe("Enter your wallet passphrase.");
+    expect(model.lock.message).toBe("Enter your wallet passphrase.");
     expect(w.authorizations).toEqual([]);
     await model.reveal("right");
     expect(model.step).toBe("shown");
@@ -37,8 +38,34 @@ describe("recovery phrase view model", () => {
     expect(model.step).toBe("confirm");
     await model.reveal("wrong");
     expect(model.step).toBe("confirm");
-    expect(model.error).toBe("The passphrase entered for the wallet decryption was incorrect.");
+    expect(model.lock.message).toBe("The passphrase entered for the wallet decryption was incorrect. 7 attempts remaining");
     expect(model.words).toEqual([]);
+  });
+
+  it("revealFollowsTheLockScreenPolicy", async () => {
+    // `authorize` counts failures as `unlock` does (review r1 #4): the eighth stops the prompt.
+    const w = world();
+    w.status = status({ state: "unlockedMixingOnly", walletsWithSecrets: [WALLET_A], failedAttempts: 7 });
+    const model = new RecoveryPhraseModel(w);
+    await model.load(WALLET_A);
+    expect(model.lock.blocked).toBe(false);
+    await model.reveal("wrong");
+    expect(model.lock.disabled).toBe(true);
+    expect(model.lock.message).toBe(LockText.disabled);
+    await model.reveal("right");
+    expect(w.authorizations).toHaveLength(1);
+    expect(model.words).toEqual([]);
+  });
+
+  it("revealWaitsOutTheThrottle", async () => {
+    const w = world();
+    w.status = status({ walletsWithSecrets: [WALLET_A], failedAttempts: 3 });
+    w.lastFailureAt = w.clock;
+    const model = new RecoveryPhraseModel(w);
+    await model.load(WALLET_A);
+    expect(model.lock.blocked).toBe(true);
+    await model.reveal("right");
+    expect(w.authorizations).toEqual([]);
   });
 
   it("IOS003_closingDropsThePhrase", async () => {
@@ -47,7 +74,22 @@ describe("recovery phrase view model", () => {
     await model.reveal("right");
     model.dispose();
     expect(model.words).toEqual([]);
-    expect(model.bip39Passphrase).toBe("");
+    expect(model.hasBip39).toBe(false);
+  });
+
+  it("aRevealThatEndsAfterTheSheetClosedIsDropped", async () => {
+    const w = world();
+    let open!: () => void;
+    w.revealGate = new Promise((r) => (open = r));
+    const model = new RecoveryPhraseModel(w);
+    await model.load(WALLET_A);
+    const reveal = model.reveal("right");
+    await Promise.resolve();
+    model.dispose();
+    open();
+    await reveal;
+    expect(model.words).toEqual([]);
+    expect(model.step).not.toBe("shown");
   });
 
   it("IOS108_anUnencryptedVaultUsesTheUnencryptedCredential", async () => {

@@ -3,11 +3,11 @@
 
 import type { Backend } from "../api/backend";
 import type { MnemonicCheck } from "../api/generated/MnemonicCheck";
-import { failureText } from "./model";
+import { failureText, INVALID_PHRASE } from "./model";
 import { normalizePhrase, partialWord, RESTORE_COUNTS, suggestions } from "./words";
 
 export const PhraseText = {
-  invalid: "The recovery phrase is not valid. Check every word.",
+  invalid: INVALID_PHRASE,
   wordCount: "Recovery phrases have 12, 15, 18, 21 or 24 words.",
   coreOnly: "This recovery phrase only passes Dash Core's legacy checksum. It will be restored with Dash Core compatibility.",
   unknownWords(positions: number[]): string {

@@ -1460,7 +1460,6 @@ button {
 }
 
 .form-ok {
-  margin: 0;
   color: var(--dw-role-success);
 }
 
@@ -1517,7 +1516,8 @@ button {
 }
 
 .secret-form .form-problem,
-.phrase-input .form-problem {
+.phrase-input .form-problem,
+.scan-start .form-problem {
   margin: 0;
 }
 
@@ -1554,6 +1554,14 @@ button {
 [data-strength="good"] .strength-bar-on,
 [data-strength="strong"] .strength-bar-on {
   background: var(--dw-role-success);
+}
+
+/* A phrase's words cannot be selected (D18); the elements refuse copy events too. */
+.phrase-grid,
+.verify-slots,
+.verify-chips {
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* The phrase (IOS-003): numbered words in three columns. */
@@ -1709,11 +1717,6 @@ button {
   font: inherit;
 }
 
-.scan-start .form-hint,
-.scan-start .form-problem {
-  margin: 0;
-}
-
 /* Wallet choices in Forgot passphrase and Show Recovery Phrase. */
 .choice-list {
   display: flex;
@@ -1763,14 +1766,7 @@ button {
   line-height: var(--dw-type-headline-line);
 }
 
-.lock-check {
-  display: flex;
-  align-items: center;
-  gap: var(--dw-space-s);
-  font-size: var(--dw-type-subhead-size);
-  line-height: var(--dw-type-subhead-line);
-}
-
+/* After `.check-row input`, which it overrides on hero blue. */
 .lock-check input {
   accent-color: var(--dw-c-white);
 }

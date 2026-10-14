@@ -1,12 +1,12 @@
 // Forgot passphrase (IOS-014, U-02 D11): a sheet over the lock screen. The recovery unlocks the
 // vault, so the sheet stays over the shell to say what happened; closing it drops the phrase.
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import { useBackend } from "../api/queries";
 import { useSecretScreen } from "../app/ui";
 import { DashButton } from "../components/basics";
 import { NewPassphraseForm } from "../components/passphrase";
-import { PhraseInput } from "../components/phrase";
+import { Bip39Field, PhraseInput, WalletChoiceList } from "../components/phrase";
 import { Sheet } from "../components/sheet";
 import { ForgotPassphraseModel, ForgotText } from "../onboarding/forgot";
 import { useModel } from "../onboarding/model";
@@ -21,17 +21,26 @@ export function ForgotPassphraseSheet({ onClose }: { onClose: () => void }) {
   }, [model]);
   const [phrase, setPhrase] = useState("");
   const [bip39, setBip39] = useState("");
-  // The fields go when the model drops its copies: on leaving the phrase steps, and on a submit
-  // whatever its outcome (it passes through `working`).
-  const entering = model.step === "phrase" || model.step === "newPassphrase";
+  // The fields go once the phrase step ends: the model keeps the accepted phrase for the reset
+  // (and drops it on Back or after the reset), the screen has no use for it any more.
+  const entering = model.step === "phrase";
   useEffect(() => {
     if (entering) return;
     setPhrase("");
     setBip39("");
   }, [entering]);
-  useSecretScreen(model.step === "phrase");
+  // The whole sheet, so protection is on before a phrase is typed (D15).
+  useSecretScreen(true);
   return (
-    <Sheet title={ForgotText.title} width="medium" testId="forgot-passphrase" focusKey={model.step} onClose={onClose}>
+    <Sheet
+      title={ForgotText.title}
+      width="medium"
+      testId="forgot-passphrase"
+      focusKey={model.step}
+      // The reset unlocks the vault and may leave wallets watch-only: Done must say so.
+      closable={model.step !== "working"}
+      onClose={onClose}
+    >
       <ForgotStep model={model} phrase={phrase} setPhrase={setPhrase} bip39={bip39} setBip39={setBip39} onClose={onClose} />
     </Sheet>
   );
@@ -52,7 +61,6 @@ function ForgotStep({
   setBip39: (text: string) => void;
   onClose: () => void;
 }) {
-  const id = useId();
   switch (model.step) {
     case "loading":
     case "working":
@@ -67,13 +75,7 @@ function ForgotStep({
       return (
         <>
           <p className="sheet-text">Which wallet's recovery phrase do you have?</p>
-          <div className="choice-list" role="group" aria-label="Wallets">
-            {model.wallets.map((w) => (
-              <button key={w.walletId} type="button" className="choice-row" data-testid="forgot-wallet" onClick={() => model.chooseWallet(w.walletId)}>
-                {w.name}
-              </button>
-            ))}
-          </div>
+          <WalletChoiceList wallets={model.wallets} testId="forgot-wallet" onChoose={(id) => model.chooseWallet(id)} />
         </>
       );
     case "consequences":
@@ -110,42 +112,40 @@ function ForgotStep({
               void model.updatePhrase(text);
             }}
           />
-          <div className="form-field">
-            <label htmlFor={`${id}-bip39`}>BIP39 passphrase (optional)</label>
-            <input
-              id={`${id}-bip39`}
-              type="password"
-              autoComplete="off"
-              data-testid="forgot-bip39"
-              value={bip39}
-              onChange={(e) => {
-                setBip39(e.target.value);
-                model.setBip39Passphrase(e.target.value);
-              }}
-            />
+          <Bip39Field
+            testId="forgot-bip39"
+            value={bip39}
+            onChange={(text) => {
+              setBip39(text);
+              model.setBip39Passphrase(text);
+            }}
+          />
+          <div className="sheet-actions">
+            {model.wallets.length > 1 && (
+              <DashButton variant="plainBlue" data-testid="forgot-back" onClick={() => model.back()}>
+                Back
+              </DashButton>
+            )}
+            <DashButton variant="filledBlue" disabled={!model.entry.valid} data-testid="forgot-continue" onClick={() => model.continuePhrase()}>
+              Continue
+            </DashButton>
           </div>
-          <DashButton
-            variant="filledBlue"
-            size="large"
-            fill
-            disabled={!model.entry.valid}
-            data-testid="forgot-continue"
-            onClick={() => model.continuePhrase()}
-          >
-            Continue
-          </DashButton>
         </>
       );
     case "newPassphrase":
       return (
-        <NewPassphraseForm
-          testId="forgot-new"
-          strength={model.passphraseStrength}
-          error={model.error}
-          submitLabel="Reset passphrase"
-          onDraft={(text) => model.updatePassphraseDraft(text)}
-          onSubmit={(text, confirmation) => model.submitNewPassphrase(text, confirmation)}
-        />
+        <>
+          <NewPassphraseForm
+            testId="forgot-new"
+            error={model.error}
+            submitLabel="Reset passphrase"
+            onEdit={() => model.passphraseEdited()}
+            onSubmit={(text, confirmation) => model.submitNewPassphrase(text, confirmation)}
+          />
+          <DashButton variant="plainBlue" data-testid="forgot-back" onClick={() => model.back()}>
+            Back
+          </DashButton>
+        </>
       );
     case "done":
       return (

@@ -1,7 +1,8 @@
 // SheetScaffold (UX-SPEC C23): a modal dialog with the 64 pt header (title, close), Escape to
 // close, focus kept inside while open and returned to the opener on close. Focus starts on the
 // element marked `data-autofocus`, else on the first focusable one (the close button), and again
-// whenever `focusKey` changes (a sheet with steps).
+// whenever `focusKey` changes (a sheet with steps). `closable={false}` holds the sheet open while
+// something it must report back is running.
 
 import { useEffect, useRef, type ReactNode } from "react";
 
@@ -17,6 +18,7 @@ export function Sheet({
   width,
   testId,
   focusKey,
+  closable = true,
   children,
 }: {
   title: string;
@@ -24,25 +26,21 @@ export function Sheet({
   width: "small" | "medium" | "large";
   testId: string;
   focusKey?: string;
+  closable?: boolean;
   children: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement>(null);
+  // The opener first: the effect below moves focus away from it.
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
-    focusStart(panel.current);
     return () => opener?.focus?.();
   }, []);
-  const shownKey = useRef(focusKey);
-  useEffect(() => {
-    if (shownKey.current === focusKey) return;
-    shownKey.current = focusKey;
-    focusStart(panel.current);
-  }, [focusKey]);
+  useEffect(() => focusStart(panel.current), [focusKey]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       e.stopPropagation();
-      onClose();
+      if (closable) onClose();
       return;
     }
     if (e.key !== "Tab" || !panel.current) return;
@@ -60,7 +58,7 @@ export function Sheet({
   };
 
   return (
-    <div className="sheet-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="sheet-scrim" onMouseDown={(e) => closable && e.target === e.currentTarget && onClose()}>
       <div
         ref={panel}
         className={`sheet sheet-${width}`}
@@ -76,7 +74,7 @@ export function Sheet({
             {title}
           </h2>
           <span className="sheet-header-side">
-            <button type="button" className="sheet-close" aria-label="Close" onClick={onClose}>
+            <button type="button" className="sheet-close" aria-label="Close" disabled={!closable} onClick={onClose}>
               <svg viewBox="0 0 20 20" aria-hidden="true">
                 <path d="M5 5l10 10M15 5 5 15" />
               </svg>

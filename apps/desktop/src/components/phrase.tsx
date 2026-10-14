@@ -1,15 +1,21 @@
-// The recovery phrase on screen (IOS-003) and typed (IOS-007, U-02 D7, D18). The grid has no
-// copy button; the input is checked live and turns spell checking, autocorrect and autofill off.
+// The recovery phrase on screen (IOS-003) and typed (IOS-007, U-02 D7, D18), with the BIP39
+// passphrase and the wallet choice of the flows that take one. The grid has no copy button; the
+// input is checked live and turns spell checking, autocorrect and autofill off.
 
 import { useId, useState } from "react";
+import type { WalletChoice } from "../onboarding/model";
 import type { PhraseEntry } from "../onboarding/phraseEntry";
 import { PhraseText } from "../onboarding/phraseEntry";
 import { completeWord, partialWord } from "../onboarding/words";
 
+/** Copying a phrase puts it where clipboard managers keep it: the phrase's elements refuse it
+ * (D18), and their text cannot be selected (`.phrase-grid`, `.verify-*` in app.css). */
+export const noCopy = (e: React.ClipboardEvent) => e.preventDefault();
+
 /** The words, numbered, in columns. */
 export function PhraseGrid({ words, testId }: { words: string[]; testId: string }) {
   return (
-    <ol className="phrase-grid" data-testid={testId} translate="no">
+    <ol className="phrase-grid" data-testid={testId} translate="no" onCopy={noCopy} onCut={noCopy}>
       {words.map((word, i) => (
         <li key={i} className="phrase-cell">
           <span className="phrase-index" aria-hidden="true">
@@ -91,6 +97,56 @@ export function PhraseInput({
           </p>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/** The BIP39 passphrase ("25th word") of a restored phrase; optional. */
+export function Bip39Field({
+  testId,
+  value,
+  onChange,
+  autoFocus = false,
+  hint,
+}: {
+  testId: string;
+  value: string;
+  onChange: (text: string) => void;
+  autoFocus?: boolean;
+  hint?: string;
+}) {
+  const id = useId();
+  return (
+    <div className="form-field">
+      <label htmlFor={id}>BIP39 passphrase (optional)</label>
+      <input
+        id={id}
+        type="password"
+        autoComplete="off"
+        data-testid={testId}
+        data-autofocus={autoFocus || undefined}
+        value={value}
+        aria-describedby={hint ? `${id}-hint` : undefined}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      {hint && (
+        <span id={`${id}-hint`} className="form-hint">
+          {hint}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Which wallet a flow is for, when several qualify. */
+export function WalletChoiceList({ wallets, testId, onChoose }: { wallets: WalletChoice[]; testId: string; onChoose: (walletId: string) => void }) {
+  return (
+    <div className="choice-list" role="group" aria-label="Wallets">
+      {wallets.map((w) => (
+        <button key={w.walletId} type="button" className="choice-row" data-testid={testId} onClick={() => onChoose(w.walletId)}>
+          {w.name}
+        </button>
+      ))}
     </div>
   );
 }

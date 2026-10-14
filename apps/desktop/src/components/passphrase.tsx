@@ -4,7 +4,7 @@
 // every submit.
 
 import { useId, useState, type FormEvent, type ReactNode } from "react";
-import { STRENGTH_NAME, STRENGTHS, type Strength } from "../onboarding/passphrase";
+import { passphraseStrength, STRENGTH_NAME, STRENGTHS, type Strength } from "../onboarding/passphrase";
 import { DashButton } from "./basics";
 
 /** Four bars and the strength's name. */
@@ -24,22 +24,20 @@ export function StrengthMeter({ strength }: { strength: Strength }) {
   );
 }
 
-/** The new passphrase and its confirmation. `onDraft` sees the first field as it is typed (for
- * the meter); `onSubmit` gets both. */
+/** The new passphrase and its confirmation, with the meter for the first. `onEdit` hears every
+ * keystroke (to clear the last refusal); `onSubmit` gets both fields. */
 export function NewPassphraseForm({
   testId,
-  strength,
   error,
   submitLabel,
-  onDraft,
+  onEdit,
   onSubmit,
   children,
 }: {
   testId: string;
-  strength: Strength;
   error: string | null;
   submitLabel: string;
-  onDraft: (text: string) => void;
+  onEdit: () => void;
   onSubmit: (text: string, confirmation: string) => void | Promise<unknown>;
   children?: ReactNode;
 }) {
@@ -68,11 +66,11 @@ export function NewPassphraseForm({
           aria-describedby={error ? `${id}-error` : undefined}
           onChange={(e) => {
             setText(e.target.value);
-            onDraft(e.target.value);
+            onEdit();
           }}
         />
       </div>
-      <StrengthMeter strength={strength} />
+      <StrengthMeter strength={passphraseStrength(text)} />
       <div className="form-field">
         <label htmlFor={`${id}-repeat`}>Repeat the passphrase</label>
         <input
@@ -82,7 +80,10 @@ export function NewPassphraseForm({
           data-testid={`${testId}-repeat`}
           value={confirmation}
           aria-invalid={error ? true : undefined}
-          onChange={(e) => setConfirmation(e.target.value)}
+          onChange={(e) => {
+            setConfirmation(e.target.value);
+            onEdit();
+          }}
         />
       </div>
       {error && (
@@ -102,14 +103,14 @@ export function NewPassphraseForm({
 export function PassphrasePrompt({
   testId,
   error,
-  busy,
+  busy = false,
   disabled = false,
   submitLabel,
   onSubmit,
 }: {
   testId: string;
   error: string | null;
-  busy: boolean;
+  busy?: boolean;
   disabled?: boolean;
   submitLabel: string;
   onSubmit: (passphrase: string) => void | Promise<unknown>;
@@ -132,7 +133,8 @@ export function PassphrasePrompt({
           type="password"
           autoComplete="current-password"
           data-testid={`${testId}-field`}
-          data-autofocus
+          // A disabled field cannot take focus: the sheet's first enabled control does.
+          data-autofocus={!disabled || undefined}
           value={text}
           disabled={disabled}
           aria-invalid={error ? true : undefined}

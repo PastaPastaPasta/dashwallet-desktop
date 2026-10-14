@@ -9,11 +9,12 @@ import { useBackend } from "../api/queries";
 import { useSecretScreen } from "../app/ui";
 import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
 import { NewPassphraseForm, PassphrasePrompt } from "../components/passphrase";
-import { PhraseGrid, PhraseInput } from "../components/phrase";
+import { Bip39Field, noCopy, PhraseGrid, PhraseInput } from "../components/phrase";
 import { useModel } from "../onboarding/model";
 import { OnboardingModel, type OnboardingStep } from "../onboarding/onboarding";
 import { PassphraseText } from "../onboarding/passphrase";
 import { RecoveryText } from "../onboarding/recovery";
+import { useLockTimer } from "./LockScreen";
 
 const BACK_STEPS: ReadonlySet<OnboardingStep> = new Set([
   "choosePassphrase",
@@ -23,9 +24,6 @@ const BACK_STEPS: ReadonlySet<OnboardingStep> = new Set([
   "restorePhrase",
   "restoreOptions",
 ]);
-
-/** Steps where a phrase is on screen or typed (D15). */
-const PHRASE_STEPS: ReadonlySet<OnboardingStep> = new Set(["showPhrase", "verifyPhrase", "restorePhrase"]);
 
 export function Onboarding({
   network,
@@ -40,6 +38,7 @@ export function Onboarding({
   const backend = useBackend();
   const [model] = useState(() => new OnboardingModel(backend, network.kind));
   useModel(model);
+  useLockTimer(model.lock);
   const { step } = model;
   const [restoreText, setRestoreText] = useState("");
   useEffect(() => () => model.dispose(), [model]);
@@ -47,7 +46,8 @@ export function Onboarding({
   useEffect(() => {
     if (step === "done" || step === "welcome") setRestoreText("");
   }, [step]);
-  useSecretScreen(PHRASE_STEPS.has(step));
+  // The whole flow, so protection is on before any phrase shows or is typed (D15).
+  useSecretScreen(true);
 
   // Each step starts on its first field, else its title, so screen readers hear the step.
   const body = useRef<HTMLElement>(null);
@@ -114,8 +114,9 @@ function Step({
           <p className="onboarding-text">Enter your wallet passphrase to add a wallet.</p>
           <PassphrasePrompt
             testId="onboarding-unlock"
-            error={model.unlockError}
-            busy={false}
+            error={model.lock.message}
+            busy={model.busy}
+            disabled={model.lock.blocked}
             submitLabel="Unlock"
             onSubmit={(p) => model.unlockVault(p)}
           />
@@ -143,7 +144,7 @@ function Step({
             variant="filledBlue"
             size="large"
             fill
-            disabled={!model.canContinueRestore}
+            disabled={!model.entry.valid}
             data-testid="restore-continue"
             onClick={() => model.continueRestore()}
           >
@@ -197,10 +198,10 @@ function Welcome({ model, onCancel }: { model: OnboardingModel; onCancel: (() =>
       <Title>{onCancel ? "Add a wallet" : "Welcome to Dash Wallet"}</Title>
       <p className="onboarding-text">Create a new wallet, or restore one with its recovery phrase.</p>
       <div className="onboarding-actions">
-        <DashButton variant="filledBlue" size="large" fill data-testid="onboarding-create" onClick={() => void model.startCreate()}>
+        <DashButton variant="filledBlue" size="large" fill disabled={model.busy} data-testid="onboarding-create" onClick={() => void model.startCreate()}>
           Create a new wallet
         </DashButton>
-        <DashButton variant="plainBlue" size="large" fill data-testid="onboarding-restore" onClick={() => void model.startRestore()}>
+        <DashButton variant="plainBlue" size="large" fill disabled={model.busy} data-testid="onboarding-restore" onClick={() => void model.startRestore()}>
           Restore from recovery phrase
         </DashButton>
         {onCancel && (
@@ -234,10 +235,9 @@ function ChoosePassphrase({ model }: { model: OnboardingModel }) {
       </p>
       <NewPassphraseForm
         testId="onboarding-passphrase"
-        strength={model.passphraseStrength}
         error={model.passphraseError}
         submitLabel="Continue"
-        onDraft={(text) => model.updatePassphraseDraft(text)}
+        onEdit={() => model.passphraseEdited()}
         onSubmit={(text, confirmation) => model.submitPassphrase(text, confirmation)}
       >
         <p className="onboarding-note">{PassphraseText.warning}</p>
@@ -248,7 +248,7 @@ function ChoosePassphrase({ model }: { model: OnboardingModel }) {
           Without a passphrase, the wallet's key is kept in this computer's secret store, and anyone who can use your
           account on this computer can spend your Dash.
         </p>
-        <DashButton variant="plainBlue" data-testid="onboarding-skip-passphrase" onClick={() => void model.skipEncryption()}>
+        <DashButton variant="plainBlue" disabled={model.busy} data-testid="onboarding-skip-passphrase" onClick={() => void model.skipEncryption()}>
           Continue without a passphrase
         </DashButton>
       </details>
@@ -289,7 +289,7 @@ function VerifyPhrase({ model }: { model: OnboardingModel }) {
     <>
       <Title>Verify your recovery phrase</Title>
       <p className="onboarding-text">Choose the words in the order of their numbers.</p>
-      <ol className="verify-slots">
+      <ol className="verify-slots" onCopy={noCopy}>
         {model.verifyChallenge.map((position, i) => (
           <li key={position} className="verify-slot" data-testid="verify-slot" data-filled={i < model.verifiedCount}>
             <span className="verify-slot-label">Word {position + 1}</span>
@@ -297,68 +297,48 @@ function VerifyPhrase({ model }: { model: OnboardingModel }) {
           </li>
         ))}
       </ol>
-      <div className={model.verifyMistake ? "verify-chips verify-chips-mistake" : "verify-chips"} role="group" aria-label="Words">
+      <div className={model.verifyMistake ? "verify-chips verify-chips-mistake" : "verify-chips"} role="group" aria-label="Words" onCopy={noCopy}>
         {model.verifyChips.map((chip) => (
           <button
             key={chip.id}
             type="button"
             className="verify-chip"
             data-testid="verify-chip"
-            disabled={chip.used}
+            disabled={chip.used || model.busy}
             onClick={() => void model.select(chip.id)}
           >
             {chip.word}
           </button>
         ))}
       </div>
-      <p className="form-problem" role="alert" data-testid="verify-mistake">
+      {/* A new element per wrong chip, so each one is announced. */}
+      <p key={model.verifyMistakes} className="form-problem" role="alert" data-testid="verify-mistake">
         {model.verifyMistake ? "Wrong word. Try again." : ""}
       </p>
     </>
   );
 }
 
-type ScanStart = "genesis" | "date" | "height";
-
 function RestoreOptions({ model }: { model: OnboardingModel }) {
   const id = useId();
-  const [scan, setScan] = useState<ScanStart>("genesis");
-  const [bip39, setBip39] = useState("");
-  // The field starts empty each time the step shows, and so does the model's copy.
-  useEffect(() => model.setBip39Passphrase(""), [model]);
-  const choose = (next: ScanStart) => {
-    setScan(next);
-    if (next === "genesis") model.setBirthHeight(null);
-  };
+  const scan = model.scanStart;
   const { birthHeight, coreCompat } = model.options;
   return (
     <>
       <Title>Restore options</Title>
-      <div className="form-field">
-        <label htmlFor={`${id}-bip39`}>BIP39 passphrase (optional)</label>
-        <input
-          id={`${id}-bip39`}
-          type="password"
-          autoComplete="off"
-          data-testid="restore-bip39"
-          data-autofocus
-          value={bip39}
-          aria-describedby={`${id}-bip39-note`}
-          onChange={(e) => {
-            setBip39(e.target.value);
-            model.setBip39Passphrase(e.target.value);
-          }}
-        />
-        <span id={`${id}-bip39-note`} className="form-hint">
-          Only if the wallet was created with one. It is not your wallet passphrase.
-        </span>
-      </div>
+      <Bip39Field
+        testId="restore-bip39"
+        autoFocus
+        hint="Only if the wallet was created with one. It is not your wallet passphrase."
+        value={model.bip39Passphrase}
+        onChange={(text) => model.setBip39Passphrase(text)}
+      />
       <label className="check-row">
         <input
           type="checkbox"
           data-testid="restore-core-compat"
           checked={coreCompat}
-          disabled={model.coreOnlyWarning}
+          disabled={model.entry.coreOnly}
           onChange={(e) => model.setCoreCompatible(e.target.checked)}
         />
         Dash Core compatible (a recovery phrase from Dash Core)
@@ -366,11 +346,11 @@ function RestoreOptions({ model }: { model: OnboardingModel }) {
       <fieldset className="scan-start">
         <legend>Scan the blockchain from</legend>
         <label className="check-row">
-          <input type="radio" name={`${id}-scan`} data-testid="restore-scan-genesis" checked={scan === "genesis"} onChange={() => choose("genesis")} />
+          <input type="radio" name={`${id}-scan`} data-testid="restore-scan-genesis" checked={scan === "genesis"} onChange={() => model.setScanStart("genesis")} />
           The beginning (slowest, finds every transaction)
         </label>
         <label className="check-row">
-          <input type="radio" name={`${id}-scan`} data-testid="restore-scan-date" checked={scan === "date"} onChange={() => choose("date")} />
+          <input type="radio" name={`${id}-scan`} data-testid="restore-scan-date" checked={scan === "date"} onChange={() => model.setScanStart("date")} />
           The date the wallet was created
         </label>
         {scan === "date" && (
@@ -379,11 +359,12 @@ function RestoreOptions({ model }: { model: OnboardingModel }) {
             className="scan-input"
             aria-label="Wallet creation date"
             data-testid="restore-date"
-            onChange={(e) => model.setBirthDate(e.target.valueAsDate)}
+            value={model.scanDate}
+            onChange={(e) => model.setScanDate(e.target.value)}
           />
         )}
         <label className="check-row">
-          <input type="radio" name={`${id}-scan`} data-testid="restore-scan-height" checked={scan === "height"} onChange={() => choose("height")} />
+          <input type="radio" name={`${id}-scan`} data-testid="restore-scan-height" checked={scan === "height"} onChange={() => model.setScanStart("height")} />
           A block height
         </label>
         {scan === "height" && (
@@ -394,11 +375,8 @@ function RestoreOptions({ model }: { model: OnboardingModel }) {
             className="scan-input"
             aria-label="Block height"
             data-testid="restore-height"
-            // Anything but a number scans from genesis: NaN would reach the engine as `null`, its tip.
-            onChange={(e) => {
-              const height = e.target.valueAsNumber;
-              model.setBirthHeight(Number.isFinite(height) ? Math.max(0, Math.floor(height)) : null);
-            }}
+            value={model.scanHeight}
+            onChange={(e) => model.setScanHeight(e.target.value)}
           />
         )}
         {model.birthDateError ? (
@@ -415,7 +393,7 @@ function RestoreOptions({ model }: { model: OnboardingModel }) {
         variant="filledBlue"
         size="large"
         fill
-        disabled={model.birthDateError !== null}
+        disabled={model.birthDateError !== null || model.busy}
         data-testid="restore-finish"
         onClick={() => void model.finishRestore()}
       >

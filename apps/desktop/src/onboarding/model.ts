@@ -28,18 +28,25 @@ export function useModel<M extends Model>(model: M): M {
   return model;
 }
 
+/** A wallet the user picks in a flow, by name. */
+export interface WalletChoice {
+  walletId: string;
+  name: string;
+}
+
 /** dash-qt `AskPassphraseDialog`. */
 export const WRONG_PASSPHRASE = "The passphrase entered for the wallet decryption was incorrect.";
 export const PASSPHRASE_REQUIRED = "Enter your wallet passphrase.";
+export const INVALID_PHRASE = "The recovery phrase is not valid. Check every word.";
 
 /** Copy for a failure chosen by its code alone (U-02 D16): the engine's `message` can quote the
  * input (a mnemonic error names the word), so it is never shown. */
 const BY_CODE: Partial<Record<ErrorCode, string>> = {
-  invalid_mnemonic: "The recovery phrase is not valid. Check every word.",
+  invalid_mnemonic: INVALID_PHRASE,
   wallet_already_exists: "This wallet has already been added.",
   "vault.wallet_secret_exists": "This wallet's keys are already in the wallet.",
-  "vault.locked": "Unlock the wallet before adding another wallet.",
-  "vault.mixing_only": "Unlock the wallet before adding another wallet.",
+  "vault.locked": "Unlock the wallet and try again.",
+  "vault.mixing_only": "Unlock the wallet fully and try again.",
   "vault.passphrase_rejected": "The wallet rejected this passphrase. Choose another one.",
   "vault.os_store_unavailable": "This computer has no secret store to keep an unencrypted wallet's key. Choose a passphrase instead.",
   "vault.recovery_mismatch": "This recovery phrase does not belong to the selected wallet.",

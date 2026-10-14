@@ -85,12 +85,17 @@ export class FakeWorld implements Api {
   creates: (string | null)[] = [];
   imports: { mnemonic: string; bip39Passphrase: string | null; options: ImportOptions }[] = [];
   importErrors: AppError[] = [];
+  createErrors: AppError[] = [];
+  /** Holds `generateMnemonic` until it settles (a screen closing mid-call, a double click). */
+  generateGate: Promise<void> | null = null;
   unlockCalls: { passphrase: string; mixingOnly: boolean }[] = [];
   unlockErrors: AppError[] = [];
   recoveries: { walletId: string; mnemonic: string; bip39Passphrase: string; newPassphrase: string }[] = [];
   authorizations: { kind: string; walletId: string | null; credential: string }[] = [];
   revoked: string[] = [];
   revealErrors: AppError[] = [];
+  /** Holds `revealMnemonic` until it settles (a sheet closing mid-reveal). */
+  revealGate: Promise<void> | null = null;
 
   now = () => this.clock;
 
@@ -101,10 +106,8 @@ export class FakeWorld implements Api {
 
   listWallets = async () => this.wallets;
 
-  #unlock(passphrase: string, mixingOnly: boolean): LockStatus {
-    this.unlockCalls.push({ passphrase, mixingOnly });
-    const scripted = this.unlockErrors.shift();
-    if (scripted) throw scripted;
+  /** dw-vault `check_passphrase`: every passphrase check counts a failure, whatever asked. */
+  #check(passphrase: string) {
     if (passphrase !== this.passphrase) {
       const failedAttempts = this.status.failedAttempts + 1;
       this.status = { ...this.status, failedAttempts };
@@ -112,8 +115,16 @@ export class FakeWorld implements Api {
       const wait = throttleSecs(failedAttempts);
       throw appError("vault.wrong_passphrase", { kind: "wrongPassphrase", failedAttempts, retryAfterSecs: wait || null });
     }
-    this.status = { ...this.status, state: mixingOnly ? "unlockedMixingOnly" : "unlocked", failedAttempts: 0 };
+    this.status = { ...this.status, failedAttempts: 0 };
     this.lastFailureAt = null;
+  }
+
+  #unlock(passphrase: string, mixingOnly: boolean): LockStatus {
+    this.unlockCalls.push({ passphrase, mixingOnly });
+    const scripted = this.unlockErrors.shift();
+    if (scripted) throw scripted;
+    this.#check(passphrase);
+    this.status = { ...this.status, state: mixingOnly ? "unlockedMixingOnly" : "unlocked" };
     return this.status;
   }
 
@@ -122,12 +133,15 @@ export class FakeWorld implements Api {
 
   createVault = async (passphrase: string | null) => {
     this.creates.push(passphrase);
+    const scripted = this.createErrors.shift();
+    if (scripted) throw scripted;
     this.status = status({ state: passphrase === null ? "noKeys" : "unlocked", encrypted: passphrase !== null });
     return this.status;
   };
 
   generateMnemonic = async (wordCount: number) => {
     this.generateCalls.push(wordCount);
+    await this.generateGate;
     return this.generated;
   };
 
@@ -157,8 +171,7 @@ export class FakeWorld implements Api {
 
   authorize: Api["authorize"] = async (purpose, walletId, credential) => {
     this.authorizations.push({ kind: purpose.kind, walletId, credential: credential.kind });
-    if (credential.kind === "passphrase" && credential.passphrase !== this.passphrase)
-      throw appError("vault.wrong_passphrase", { kind: "wrongPassphrase", failedAttempts: 1, retryAfterSecs: null });
+    if (credential.kind === "passphrase") this.#check(credential.passphrase);
     return { id: `grant-${this.authorizations.length}`, purpose, walletId, expiresAt: 0, singleUse: true };
   };
 
@@ -168,6 +181,7 @@ export class FakeWorld implements Api {
   };
 
   revealMnemonic = async (walletId: string) => {
+    await this.revealGate;
     const scripted = this.revealErrors.shift();
     if (scripted) throw scripted;
     const phrase = this.phrases.get(walletId);

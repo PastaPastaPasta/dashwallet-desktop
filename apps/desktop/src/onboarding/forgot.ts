@@ -4,8 +4,8 @@
 
 import type { Backend } from "../api/backend";
 import { hasCode } from "../api/backend";
-import { failureText, Model } from "./model";
-import { passphraseProblem, passphraseStrength, type Strength } from "./passphrase";
+import { failureText, Model, type WalletChoice } from "./model";
+import { passphraseProblem } from "./passphrase";
 import { PhraseEntry } from "./phraseEntry";
 
 export type ForgotStep =
@@ -22,15 +22,9 @@ export type ForgotStep =
   | "done"
   | "failed";
 
-export interface WalletChoice {
-  walletId: string;
-  name: string;
-}
-
 export const ForgotText = {
   title: "Reset passphrase",
   prompt: "Enter the recovery phrase of one of your wallets.",
-  mismatch: "This recovery phrase does not belong to the selected wallet.",
   reset: "Your passphrase was reset.",
   consequences: (names: string[]) =>
     `Only the wallet whose recovery phrase you enter keeps its keys. ${names.join(", ")} will be watch-only until you import ${names.length === 1 ? "its recovery phrase" : "their recovery phrases"} again.`,
@@ -48,7 +42,6 @@ export class ForgotPassphraseModel extends Model {
   wallets: WalletChoice[] = [];
   walletId: string | null = null;
   readonly entry: PhraseEntry;
-  passphraseStrength: Strength = "none";
   error: string | null = null;
   /** Names of the wallets left watch-only by the recovery. */
   walletsWithoutSecrets: string[] = [];
@@ -103,12 +96,11 @@ export class ForgotPassphraseModel extends Model {
 
   continuePhrase() {
     if (this.step !== "phrase" || !this.entry.valid) return;
-    this.passphraseStrength = "none";
     this.#go("newPassphrase");
   }
 
-  updatePassphraseDraft(text: string) {
-    this.passphraseStrength = passphraseStrength(text);
+  /** The passphrase fields changed: the last refusal no longer applies. */
+  passphraseEdited() {
     this.error = null;
     this.changed();
   }
@@ -134,7 +126,7 @@ export class ForgotPassphraseModel extends Model {
     } catch (e) {
       this.#dropSecrets();
       if (hasCode(e, "vault.recovery_mismatch")) {
-        this.error = ForgotText.mismatch;
+        this.error = failureText(e);
         this.#go("phrase");
       } else this.#fail(failureText(e));
     }
@@ -152,10 +144,16 @@ export class ForgotPassphraseModel extends Model {
         else if (this.wallets.length > 1) this.#go("wallet");
         return;
       case "newPassphrase":
+        // The phrase field starts empty again, and so does the model's copy.
+        this.#dropSecrets();
         this.#go("phrase");
         return;
       case "failed":
-        this.#go(this.walletId ? "phrase" : "loading");
+        if (this.walletId) this.#go("phrase");
+        else {
+          this.#go("loading");
+          void this.load();
+        }
         return;
       default:
     }

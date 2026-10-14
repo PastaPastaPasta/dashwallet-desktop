@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect } from "react";
+import { createContext, useContext, useEffect, useRef } from "react";
 import { errorMessage } from "../api/backend";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
@@ -24,6 +24,7 @@ import { navigate, ui, useUi } from "./ui";
 
 const closeDialog = () => ui.set({ dialog: null });
 const closeOnboarding = () => ui.set({ onboarding: false });
+const closeForgot = () => ui.set({ forgotPassphrase: false });
 
 export const LaunchContext = createContext<LaunchInfo | null>(null);
 export const useLaunch = () => useContext(LaunchContext)!;
@@ -80,21 +81,30 @@ function Shell() {
   };
   useShellBridge(backend, network.dirName, launch.selftestLinkTrace, lockNow);
   // The native menus' Discreet Mode check and Lock Wallet follow the window, and so does its
-  // content protection while a recovery phrase shows (U-02 D15).
+  // content protection while a flow that shows or takes a recovery phrase is open (U-02 D15).
+  // One call at a time, in order: a stale `secretShown` never lands last (review r1 #2).
+  const shellSynced = useRef(Promise.resolve());
   useEffect(() => {
-    backend.shellSync({ discreet, canLock, secretShown }).catch(() => {});
+    const sync = { discreet, canLock, secretShown };
+    shellSynced.current = shellSynced.current.then(() => backend.shellSync(sync).then(
+      () => {},
+      () => {},
+    ));
   }, [backend, discreet, canLock, secretShown]);
 
   // Onboarding (U-02 D1): a network without a wallet opens it, and it stays open until its
-  // Done, once the wallet it added is listed too. Add Wallet… is dropped by the lock, which
-  // drops what it held; the first wallet's flow unlocks the vault itself.
+  // Done. The lock screen replaces it, and drops what it held: Add Wallet… closes, the first
+  // wallet's flow starts again at Welcome once unlocked.
   const noWallet = wallets.isSuccess && wallets.data.length === 0;
-  const onboarding = addWallet || noWallet;
+  const onboarding = !locked && (addWallet || noWallet);
   useEffect(() => {
     if (noWallet) ui.set({ onboarding: true });
     else if (locked && addWallet) ui.set({ onboarding: false });
   }, [noWallet, locked, addWallet]);
-  const finishOnboarding = (id: string | null) => {
+  // The new wallet is listed before onboarding closes: a list still empty would open it again
+  // (review r1 #5).
+  const finishOnboarding = async (id: string | null) => {
+    await wallets.refetch();
     ui.set({ onboarding: false, ...(id ? { walletId: id } : {}) });
     navigate("home");
   };
@@ -164,9 +174,9 @@ function Shell() {
       {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={wallet?.walletId ?? null} onClose={closeDialog} />}
       {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
       {onboarding && <Onboarding network={network} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
-      {locked && !onboarding && <LockScreen network={network} onForgot={() => ui.set({ forgotPassphrase: true })} />}
+      {locked && <LockScreen network={network} covered={forgot} onForgot={() => ui.set({ forgotPassphrase: true })} />}
       {/* Over the lock screen, and still open once the recovery unlocked the vault (U-02 D11). */}
-      {forgot && !onboarding && <ForgotPassphraseSheet onClose={() => ui.set({ forgotPassphrase: false })} />}
+      {forgot && !onboarding && <ForgotPassphraseSheet onClose={closeForgot} />}
     </>
   );
 }

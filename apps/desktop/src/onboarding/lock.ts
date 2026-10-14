@@ -1,7 +1,9 @@
 // The lock screen (IOS-012, IOS-013, QT-111, QT-112): the Swift `LockViewModel`, ported (U-02 D8).
 // The vault throttles by itself (dw-vault `throttle_wait_secs`: 6^(n−3) minutes from the third
 // failure) and stores the failure count in its file; the policy adds the count of attempts left
-// and the cut-off at eight, after which only Forgot passphrase is offered.
+// and the cut-off at eight, after which only Forgot passphrase is offered. Every prompt that
+// checks the vault passphrase (the lock screen, the unlock sheet, the onboarding unlock step,
+// Show Recovery Phrase) goes through `LockModel.attempt`, as every one counts a failure (D12).
 
 import type { Backend } from "../api/backend";
 import { hasCode, retryAfterSecs } from "../api/backend";
@@ -19,7 +21,11 @@ export const LockoutPolicy = {
   verdict(failures: number): LockVerdict {
     if (failures >= this.disabledAfter) return { kind: "disabled" };
     if (failures < this.freeAttempts) return { kind: "allowed" };
-    return { kind: "wait", secs: 60 * 6 ** (failures - this.freeAttempts) };
+    return { kind: "wait", secs: this.waitSecs(failures) };
+  },
+  /** The wait after `failures ≥ 3`, as dw-vault's. */
+  waitSecs(failures: number): number {
+    return 60 * 6 ** (failures - this.freeAttempts);
   },
   attemptsRemaining(failures: number): number {
     return Math.max(0, this.disabledAfter - failures);
@@ -61,6 +67,11 @@ export class LockModel extends Model {
     return left > 0 ? left : null;
   }
 
+  /** No passphrase is taken now: disabled, or waiting. */
+  get blocked(): boolean {
+    return this.disabled || this.retryAt !== null;
+  }
+
   get locked(): boolean {
     return this.lockState === "locked" || this.lockState === "unlockedMixingOnly";
   }
@@ -84,7 +95,14 @@ export class LockModel extends Model {
   }
 
   /** Unlocks fully, or for mixing only. Refused while waiting or disabled; `true` on success. */
-  async unlock(passphrase: string, mixingOnly: boolean): Promise<boolean> {
+  unlock(passphrase: string, mixingOnly: boolean): Promise<boolean> {
+    return this.attempt(passphrase, (p) => (mixingOnly ? this.api.unlockMixingOnly(p) : this.api.unlock(p)));
+  }
+
+  /** One check of the vault passphrase by `check` (which throws the engine's error when it is
+   * wrong), under the policy: refused while waiting or disabled, a failure counted and worded as
+   * on the lock screen. `check` may return the vault's new status. `true` on success. */
+  async attempt(passphrase: string, check: (passphrase: string) => Promise<LockStatus | void>): Promise<boolean> {
     if (this.working) return false;
     this.refresh();
     if (this.disabled) return this.#say(LockText.disabled);
@@ -94,9 +112,14 @@ export class LockModel extends Model {
     this.working = true;
     this.changed();
     try {
-      const status = await (mixingOnly ? this.api.unlockMixingOnly(passphrase) : this.api.unlock(passphrase));
+      const status = await check(passphrase);
       this.message = null;
-      this.#apply(status);
+      if (status) this.#apply(status);
+      else {
+        // A good passphrase resets the vault's count.
+        this.failedAttempts = 0;
+        this.retryAt = null;
+      }
       return true;
     } catch (e) {
       if (hasCode(e, "vault.wrong_passphrase")) {
@@ -119,7 +142,7 @@ export class LockModel extends Model {
     this.lockState = status.state;
     this.failedAttempts = status.failedAttempts;
     this.canRecover = status.encrypted && status.walletsWithSecrets.length > 0;
-    this.disabled = LockoutPolicy.verdict(this.failedAttempts).kind === "disabled";
+    this.disabled = this.#verdict(this.failedAttempts).kind === "disabled";
     // The vault's wait counts from its last failure, so it is the one to trust here.
     this.#wait(status.retryAfterSecs ?? 0);
     if (this.disabled) this.message = LockText.disabled;
@@ -129,7 +152,7 @@ export class LockModel extends Model {
 
   #failed(failures: number, vaultWait: number) {
     this.failedAttempts = failures;
-    const verdict = LockoutPolicy.verdict(failures);
+    const verdict = this.#verdict(failures);
     this.disabled = verdict.kind === "disabled";
     if (this.disabled) {
       this.retryAt = null;
@@ -142,6 +165,13 @@ export class LockModel extends Model {
       wait > 0
         ? `${WRONG_PASSPHRASE} ${tryAgainIn(wait)}`
         : `${WRONG_PASSPHRASE} ${LockText.attemptsRemaining(LockoutPolicy.attemptsRemaining(failures))}`;
+  }
+
+  /** The policy's verdict, except that a vault with nothing to recover keeps waiting past the
+   * cut-off: Forgot passphrase cannot help it, and it would never take a passphrase again. */
+  #verdict(failures: number): LockVerdict {
+    const verdict = LockoutPolicy.verdict(failures);
+    return verdict.kind === "disabled" && !this.canRecover ? { kind: "wait", secs: LockoutPolicy.waitSecs(failures) } : verdict;
   }
 
   #wait(secs: number) {

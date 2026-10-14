@@ -65,17 +65,20 @@ describe("onboarding view model: create", () => {
     expect(world.generateCalls).toEqual([24]);
   });
 
-  it("IOS006_phraseIsVisibleOnlyOnThePhraseAndVerifySteps", async () => {
+  it("IOS006_theWordsAreOnScreenOnlyOnThePhraseStep", async () => {
+    // The window's content protection covers the whole flow (D15, e2e/onboarding.spec.ts); the
+    // model keeps the word list only while the phrase step shows.
     const model = make(unlockedWorld());
-    expect(model.phraseVisible).toBe(false);
+    expect(model.phraseWords).toEqual([]);
     await model.startCreate();
-    expect(model.phraseVisible).toBe(true);
+    expect(model.phraseWords).toEqual(WORDS);
     model.confirmWrittenDown();
-    expect(model.phraseVisible).toBe(true);
-    // Leaving the phrase step drops the words on screen.
     expect(model.phraseWords).toEqual([]);
     await solve(model);
-    expect(model.phraseVisible).toBe(false);
+    expect(model.step).toBe("done");
+    expect(model.phraseWords).toEqual([]);
+    expect(model.verifiedWords).toEqual([]);
+    expect(model.verifyChips).toEqual([]);
   });
 
   it("IOS004_verifyChallengeNeedsTheRightWordsInOrder", async () => {
@@ -137,9 +140,9 @@ describe("onboarding view model: create", () => {
     const long = "x".repeat(1025);
     expect(await model.submitPassphrase(long, long)).toBe(false);
     expect(model.passphraseError).toBe(PassphraseText.tooLong);
-    model.updatePassphraseDraft("Tr0ub4dor&3xyz");
+    model.passphraseEdited();
     expect(model.passphraseError).toBeNull();
-    expect(["good", "strong"]).toContain(model.passphraseStrength);
+    expect(["good", "strong"]).toContain(passphraseStrength("Tr0ub4dor&3xyz"));
     const max = "x".repeat(1024);
     expect(await model.submitPassphrase(max, max)).toBe(true);
     expect(model.passphraseError).toBeNull();
@@ -213,6 +216,68 @@ describe("onboarding view model: create", () => {
     await solve(model);
     expect(model.failure).toBe("Something went wrong (storage).");
   });
+
+  it("aSecondClickWhileACallRunsIsIgnored", async () => {
+    // Review r1 #3: a double click must not generate twice (the phrase on screen would change).
+    const world = unlockedWorld();
+    let open!: () => void;
+    world.generateGate = new Promise((r) => (open = r));
+    const model = make(world);
+    const first = model.startCreate();
+    await Promise.resolve();
+    expect(model.busy).toBe(true);
+    await model.startCreate();
+    await model.startRestore();
+    open();
+    await first;
+    expect(world.generateCalls).toEqual([12]);
+    expect(model.step).toBe("showPhrase");
+    expect(model.flow).toBe("create");
+    expect(model.busy).toBe(false);
+  });
+
+  it("aPhraseThatArrivesAfterTheScreenClosedIsDropped", async () => {
+    const world = unlockedWorld();
+    let open!: () => void;
+    world.generateGate = new Promise((r) => (open = r));
+    const model = make(world);
+    const start = model.startCreate();
+    await Promise.resolve();
+    model.dispose();
+    open();
+    await start;
+    expect(model.phraseWords).toEqual([]);
+    expect(model.step).not.toBe("showPhrase");
+  });
+
+  it("aRefusedVaultPassphraseCanBeReplacedWithoutANewPhrase", async () => {
+    // Review r1 #6: the vault refuses the passphrase at the last chip; another one is chosen and
+    // the verified phrase is added, with no second phrase and no passphrase kept meanwhile.
+    const world = new FakeWorld();
+    world.createErrors = [appError("vault.os_store_unavailable")];
+    const model = make(world);
+    await model.startCreate();
+    await model.skipEncryption();
+    model.confirmWrittenDown();
+    await solve(model);
+    expect(model.step).toBe("choosePassphrase");
+    expect(model.passphraseError).toContain("no secret store");
+    expect(await model.submitPassphrase("Fixture pass 42!", "Fixture pass 42!")).toBe(true);
+    expect(world.generateCalls).toEqual([12]);
+    expect(world.creates).toEqual([null, "Fixture pass 42!"]);
+    expect(world.imports.map((i) => i.mnemonic)).toEqual([PHRASE]);
+    expect(model.step).toBe("done");
+  });
+
+  it("everyWrongChipIsAnnounced", async () => {
+    const model = make(unlockedWorld());
+    await model.startCreate();
+    model.confirmWrittenDown();
+    const wrong = model.verifyChips.find((c) => c.word !== WORDS[model.verifyChallenge[0]])!;
+    await model.select(wrong.id);
+    await model.select(wrong.id);
+    expect(model.verifyMistakes).toBe(2);
+  });
 });
 
 describe("onboarding view model: unlock before adding", () => {
@@ -224,7 +289,8 @@ describe("onboarding view model: unlock before adding", () => {
     expect(model.step).toBe("unlockVault");
     await model.unlockVault("wrong");
     expect(model.step).toBe("unlockVault");
-    expect(model.unlockError).toBe("The passphrase entered for the wallet decryption was incorrect.");
+    // The lock screen's policy and copy (D12): the count of attempts left.
+    expect(model.lock.message).toBe("The passphrase entered for the wallet decryption was incorrect. 7 attempts remaining");
     await model.unlockVault("right");
     expect(world.unlockCalls).toEqual([
       { passphrase: "wrong", mixingOnly: false },
@@ -285,7 +351,7 @@ describe("onboarding view model: unlock before adding", () => {
     await model.startCreate();
     await model.unlockVault("");
     expect(world.unlockCalls).toEqual([]);
-    expect(model.unlockError).toBe("Enter your wallet passphrase.");
+    expect(model.lock.message).toBe("Enter your wallet passphrase.");
   });
 });
 
@@ -301,15 +367,15 @@ describe("onboarding view model: restore", () => {
     const model = make(unlockedWorld());
     await model.startRestore();
     await model.updateRestoreText("aban");
-    expect(model.wordSuggestions).toEqual(["abandon"]);
+    expect(model.entry.suggestions).toEqual(["abandon"]);
     await model.updateRestoreText("abandon ");
-    expect(model.wordSuggestions).toEqual([]);
-    expect(model.restoreProblem).toBe(PhraseText.wordCount);
-    expect(model.canContinueRestore).toBe(false);
+    expect(model.entry.suggestions).toEqual([]);
+    expect(model.entry.problem).toBe(PhraseText.wordCount);
+    expect(model.entry.valid).toBe(false);
     await model.updateRestoreText(`  ABANDON   ${WORDS.slice(1).join(" ")} `);
-    expect(model.restoreCheck?.wordCount).toBe(12);
-    expect(model.restoreProblem).toBeNull();
-    expect(model.canContinueRestore).toBe(true);
+    expect(model.entry.check?.wordCount).toBe(12);
+    expect(model.entry.problem).toBeNull();
+    expect(model.entry.valid).toBe(true);
     model.continueRestore();
     expect(model.step).toBe("restoreOptions");
   });
@@ -323,17 +389,17 @@ describe("onboarding view model: restore", () => {
     const model = make(world);
     await model.startRestore();
     await model.updateRestoreText(unknown);
-    expect(model.restoreProblem).toBe("Word 2 is not in the word list.");
+    expect(model.entry.problem).toBe("Word 2 is not in the word list.");
     // While the last word is typed, only an earlier unknown word is worth saying.
     expect(model.entry.shownProblem(true)).toBe("Word 2 is not in the word list.");
     await model.updateRestoreText(badSum);
-    expect(model.restoreProblem).toBe(PhraseText.invalid);
+    expect(model.entry.problem).toBe(PhraseText.invalid);
     expect(model.entry.shownProblem(true)).toBeNull();
     expect(model.entry.shownProblem(false)).toBe(PhraseText.invalid);
     world.checks.set("abandon abil", { wordCount: 2, unknownWordIndices: [1], language: null, checksum: "invalid" });
     await model.updateRestoreText("abandon abil");
     expect(model.entry.shownProblem(true)).toBeNull();
-    expect(model.canContinueRestore).toBe(false);
+    expect(model.entry.valid).toBe(false);
   });
 
   it("IOS007_aLateCheckDoesNotOverwriteANewerOne", async () => {
@@ -344,11 +410,11 @@ describe("onboarding view model: restore", () => {
     await model.startRestore();
     const slow = model.updateRestoreText("abandon");
     await model.updateRestoreText(PHRASE);
-    expect(model.canContinueRestore).toBe(true);
+    expect(model.entry.valid).toBe(true);
     release();
     await slow;
-    expect(model.restoreCheck?.wordCount).toBe(12);
-    expect(model.canContinueRestore).toBe(true);
+    expect(model.entry.check?.wordCount).toBe(12);
+    expect(model.entry.valid).toBe(true);
   });
 
   it("QT104_coreOnlyChecksumForcesCoreCompatibility", async () => {
@@ -357,9 +423,9 @@ describe("onboarding view model: restore", () => {
     const model = make(world);
     await model.startRestore();
     await model.updateRestoreText(PHRASE);
-    expect(model.coreOnlyWarning).toBe(true);
+    expect(model.entry.coreOnly).toBe(true);
     expect(model.options.coreCompat).toBe(true);
-    expect(model.canContinueRestore).toBe(true);
+    expect(model.entry.valid).toBe(true);
     model.setCoreCompatible(false);
     expect(model.options.coreCompat).toBe(true);
   });
@@ -423,12 +489,61 @@ describe("onboarding view model: restore", () => {
     expect(model.options.birthHeight).toBe(0);
   });
 
+  it("theScanStartSurvivesGoingBackAndForth", async () => {
+    // Review r1 #8: the options step remounts; its choice and the typed height stay.
+    const model = make(unlockedWorld());
+    await model.startRestore();
+    await model.updateRestoreText(PHRASE);
+    model.continueRestore();
+    model.setScanStart("height");
+    model.setScanHeight("1234.7");
+    model.setBip39Passphrase("25th word");
+    model.back();
+    model.continueRestore();
+    expect(model.scanStart).toBe("height");
+    expect(model.scanHeight).toBe("1234.7");
+    expect(model.options.birthHeight).toBe(1234);
+    expect(model.bip39Passphrase).toBe("25th word");
+    model.setScanHeight("abc");
+    expect(model.options.birthHeight).toBe(0);
+    model.setScanStart("genesis");
+    expect(model.options.birthHeight).toBe(0);
+  });
+
+  it("todayIsNotInTheFuture", async () => {
+    // Review r1 #14: the date field's text is a local date; `valueAsDate` (UTC midnight) made
+    // today "future" east of UTC early in the day.
+    const world = unlockedWorld();
+    const now = new Date(2026, 9, 14, 0, 30); // 00:30 local
+    const model = new OnboardingModel(world, "mainnet", { random: seeded(42n), now: () => now });
+    await model.startRestore();
+    await model.updateRestoreText(PHRASE);
+    model.continueRestore();
+    model.setScanStart("date");
+    model.setScanDate("2026-10-14");
+    expect(model.birthDateError).toBeNull();
+    model.setScanDate("2026-10-15");
+    expect(model.birthDateError).not.toBeNull();
+    model.setScanDate("");
+    expect(model.birthDateError).toBeNull();
+    expect(model.options.birthHeight).toBe(0);
+  });
+
   it("birthHeightEstimateIsBelowTheRealHeight", () => {
-    // Mainnet block 1,900,000 was mined around 2023-08-22 (2.5 min blocks).
-    const estimate = birthHeightFor(new Date(1_692_700_000_000), "mainnet");
-    expect(estimate).toBeGreaterThan(1_000_000);
-    expect(estimate).toBeLessThan(1_900_000);
+    // A real checkpoint mined at least a week before the date, never an extrapolation (review r1
+    // #1). Mainnet 1,900,000 was mined at 1_688_744_911 (2023-07-07).
+    const day = 24 * 3600 * 1000;
+    expect(birthHeightFor(new Date(1_688_744_911_000 + 8 * day), "mainnet")).toBe(1_900_000);
+    expect(birthHeightFor(new Date(1_688_744_911_000 + 1 * day), "mainnet")).toBe(1_850_000);
     expect(birthHeightFor(new Date(0), "mainnet")).toBe(0);
+    // Testnet's block rate varied by years. Testnet 1,000,000 was mined at 1_712_086_681.
+    expect(birthHeightFor(new Date(1_712_086_681_000 + 8 * day), "testnet")).toBe(1_000_000);
+    expect(birthHeightFor(new Date(1_712_086_681_000 + 6 * day), "testnet")).toBe(950_000);
+    // Testnet stood near 941,877 on 2024-01-01 and 1,506,112 on 2026-07-01 (its headers).
+    expect(birthHeightFor(new Date("2024-01-01"), "testnet")).toBeLessThanOrEqual(941_877);
+    expect(birthHeightFor(new Date("2026-07-01"), "testnet")).toBeLessThanOrEqual(1_506_112);
+    // After the last checkpoint: that checkpoint, not a guess.
+    expect(birthHeightFor(new Date("2030-01-01"), "testnet")).toBe(1_500_000);
     expect(birthHeightFor(new Date(), "regtest")).toBe(0);
     expect(birthHeightFor(new Date(), "devnet")).toBe(0);
   });

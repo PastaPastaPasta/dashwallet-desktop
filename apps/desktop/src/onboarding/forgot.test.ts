@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { ForgotPassphraseModel, ForgotText } from "./forgot";
 import { PassphraseText } from "./passphrase";
-import { FakeWorld, PHRASE, status, summary, WALLET_A, WALLET_B } from "./testWorld";
+import { appError, FakeWorld, PHRASE, status, summary, WALLET_A, WALLET_B } from "./testWorld";
 
 function world(walletsWithSecrets = [WALLET_A, WALLET_B]): FakeWorld {
   const w = new FakeWorld();
@@ -58,7 +58,7 @@ describe("forgot passphrase view model", () => {
     model.continuePhrase();
     await model.submitNewPassphrase("new", "new");
     expect(model.step).toBe("phrase");
-    expect(model.error).toBe(ForgotText.mismatch);
+    expect(model.error).toBe("This recovery phrase does not belong to the selected wallet.");
     expect(w.passphrase).toBe("right");
   });
 
@@ -97,5 +97,31 @@ describe("forgot passphrase view model", () => {
     w.wallets = [summary(WALLET_A, "Main")];
     const model = await loaded(w);
     expect(model.wallets.map((x) => x.name)).toEqual(["Main", `Wallet ${WALLET_B.slice(0, 8)}`]);
+  });
+  it("backFromTheNewPassphraseDropsThePhrase", async () => {
+    // The phrase field starts empty again, so the model's copy goes too.
+    const model = await loaded(world([WALLET_A]));
+    await model.updatePhrase(PHRASE);
+    model.continuePhrase();
+    expect(model.step).toBe("newPassphrase");
+    model.back();
+    expect(model.step).toBe("phrase");
+    expect(model.entry.phrase).toBeNull();
+    expect(model.entry.valid).toBe(false);
+  });
+
+  it("backAfterALoadFailureLoadsAgain", async () => {
+    // Review r1 #9: Back used to leave the sheet on "Loading…".
+    const w = world();
+    const listWallets = w.listWallets;
+    w.listWallets = async () => {
+      throw appError("storage");
+    };
+    const model = await loaded(w);
+    expect(model.step).toBe("failed");
+    w.listWallets = listWallets;
+    model.back();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(model.step).toBe("wallet");
   });
 });

@@ -16,18 +16,22 @@ import { Sheet } from "../components/sheet";
 import { LockModel, LockText } from "../onboarding/lock";
 import { useModel } from "../onboarding/model";
 
-/** A `LockModel` that reads the vault's count and wait when it appears, and clears a wait when
- * it runs out. */
-function useLockModel(backend: Backend): LockModel {
-  const [model] = useState(() => new LockModel(backend));
+/** Re-renders with `model` and clears its wait when it runs out. */
+export function useLockTimer(model: LockModel) {
   useModel(model);
-  useEffect(() => void model.load(), [model]);
   const { retryAt } = model;
   useEffect(() => {
     if (retryAt === null) return;
     const t = window.setTimeout(() => model.refresh(), Math.max(0, retryAt - Date.now()) + 50);
     return () => window.clearTimeout(t);
   }, [model, retryAt]);
+}
+
+/** A `LockModel` that reads the vault's count and wait when it appears. */
+function useLockModel(backend: Backend): LockModel {
+  const [model] = useState(() => new LockModel(backend));
+  useLockTimer(model);
+  useEffect(() => void model.load(), [model]);
   return model;
 }
 
@@ -95,16 +99,21 @@ function LockReportBody({ report }: { report: LockOutcome }) {
   );
 }
 
-export function LockScreen({ network, onForgot }: { network: NetworkInfo; onForgot: () => void }) {
+/** `covered`: Forgot passphrase is open over it, so it takes no focus and is hidden from
+ * assistive tech. */
+export function LockScreen({ network, covered = false, onForgot }: { network: NetworkInfo; covered?: boolean; onForgot: () => void }) {
   const model = useLockModel(useBackend());
   const [passphrase, setPassphrase] = useState("");
   const [mixingOnly, setMixingOnly] = useState(false);
-  // No attempt is taken during a wait, nor after eight failures.
-  const blocked = model.disabled || model.retryAt !== null;
+  // No attempt is taken during a wait, nor after eight failures; then Forgot passphrase is
+  // the way on.
+  const { blocked, disabled } = model;
+  const root = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (!blocked) field.current?.focus();
-  }, [blocked]);
+    else if (disabled) root.current?.querySelector<HTMLElement>('[data-testid="lock-forgot"]')?.focus();
+  }, [blocked, disabled]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -116,7 +125,7 @@ export function LockScreen({ network, onForgot }: { network: NetworkInfo; onForg
   };
 
   return (
-    <div className="lock-screen" role="dialog" aria-modal="true" aria-labelledby="lock-title" data-testid="lock-screen">
+    <div ref={root} className="lock-screen" role="dialog" aria-modal="true" aria-labelledby="lock-title" data-testid="lock-screen" inert={covered}>
       <div className="lock-column" data-testid="lock-column">
         <DashLogo className="lock-logo" />
         <NetworkCapsule network={network} />
@@ -140,7 +149,7 @@ export function LockScreen({ network, onForgot }: { network: NetworkInfo; onForg
             aria-describedby={model.message ? "lock-error" : undefined}
             onChange={(e) => setPassphrase(e.target.value)}
           />
-          <label className="lock-check">
+          <label className="check-row lock-check">
             <input type="checkbox" data-testid="lock-mixing-only" checked={mixingOnly} disabled={blocked} onChange={(e) => setMixingOnly(e.target.checked)} />
             For mixing only
           </label>
@@ -179,7 +188,7 @@ export function UnlockSheet({ onClose }: { onClose: () => void }) {
         testId="unlock-sheet"
         error={model.message}
         busy={model.working}
-        disabled={model.disabled || model.retryAt !== null}
+        disabled={model.blocked}
         submitLabel="Unlock"
         onSubmit={async (p) => {
           if (await model.unlock(p, false)) onClose();
