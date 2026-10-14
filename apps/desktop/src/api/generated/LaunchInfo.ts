@@ -14,7 +14,12 @@ selftestPauseMs: number,
  * The self-test can unlock the vault (`selftest_unlock`): the app was
  * launched with `--selftest-passphrase-file`.
  */
-selftestUnlock: boolean, theme: ThemeName | null, 
+selftestUnlock: boolean, 
+/**
+ * The renderer reports each link it routes (`selftest_link_routed`):
+ * the app was launched with `--selftest-link-trace`.
+ */
+selftestLinkTrace: boolean, theme: ThemeName | null, 
 /**
  * The network `open_network` opens when it names none.
  */

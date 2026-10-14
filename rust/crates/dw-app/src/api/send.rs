@@ -18,7 +18,7 @@
 
 mod coins;
 mod draft;
-mod uri;
+pub(crate) mod uri;
 
 use std::sync::Arc;
 

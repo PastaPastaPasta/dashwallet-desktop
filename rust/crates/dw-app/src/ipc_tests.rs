@@ -216,7 +216,7 @@ fn a_build_without_the_selftest_feature_registers_no_selftest_command() {
         launch.selftest = Some(dir.join("report.json"));
         launch.selftest_passphrase_file = Some(dir.join("passphrase"));
     });
-    assert_eq!(crate::api::selftest::NAMES.len(), 5);
+    assert_eq!(crate::api::selftest::NAMES.len(), 6);
     for name in crate::api::selftest::NAMES {
         let e = demo.call(name, json!({})).unwrap_err();
         assert!(
@@ -1135,5 +1135,99 @@ fn handles_belong_to_their_session() {
         "draft_wallet_id",
         json!({ "draft": handle }),
         "app.unknown_handle",
+    );
+}
+
+/// U-01: links among the launch arguments wait in the shell until the
+/// renderer takes them, routed for its network; `route_link` routes typed
+/// text the same way; `shell_sync` reaches the native menus.
+#[test]
+fn launch_links_wait_for_take_links() {
+    const ADDR: &str = "yMsgnH1xKGa85n4bq2imrZbG2KgrmGttAV";
+    let demo = Demo::launched(|launch, _| {
+        launch.links = vec![
+            format!("dash:{ADDR}?amount=0.5&label=Launch"),
+            "dashpay://invite?du=alice&pk=secret".into(),
+        ];
+    });
+    demo.err(
+        "take_links",
+        json!({ "network": "moon" }),
+        "invalid_argument",
+    );
+    let routes = demo.ok("take_links", json!({ "network": "regtest" }));
+    assert_eq!(
+        routes,
+        json!([
+            {
+                "kind": "pay",
+                "uri": { "address": ADDR, "amount": 50_000_000, "label": "Launch", "message": null },
+                "username": null,
+            },
+            { "kind": "invitation" },
+        ])
+    );
+    assert_eq!(
+        demo.ok("take_links", json!({ "network": "regtest" })),
+        json!([])
+    );
+    assert_eq!(
+        demo.ok(
+            "route_link",
+            json!({ "network": "regtest", "text": "dashwallet://scanqr" })
+        ),
+        json!({ "kind": "scanQr" })
+    );
+    let long = format!("dash:{ADDR}?label={}", "x".repeat(5000));
+    assert_eq!(
+        demo.ok("route_link", json!({ "network": "regtest", "text": long }))["reason"]["kind"],
+        "tooLong"
+    );
+    use tauri::Manager;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    demo.app
+        .state::<crate::state::AppState>()
+        .shell
+        .on_sync(Box::new(move |s| sink.lock().unwrap().push(s)));
+    demo.ok(
+        "shell_sync",
+        json!({ "sync": { "discreet": true, "canLock": false } }),
+    );
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [crate::shell::ShellSync {
+            discreet: true,
+            can_lock: false
+        }]
+    );
+}
+
+/// `--selftest-link-trace`: the shell records each launch link's scheme
+/// and the renderer each route, never the link's text.
+#[cfg(feature = "selftest")]
+#[test]
+fn the_link_trace_records_schemes_and_routes() {
+    let demo = Demo::launched(|launch, dir| {
+        launch.selftest_link_trace = Some(dir.join("trace"));
+        launch.links = vec!["dashpay://user?id=secretish&username=bob".into()];
+    });
+    assert_eq!(demo.ok("launch_info", json!({}))["selftestLinkTrace"], true);
+    demo.ok(
+        "selftest_link_routed",
+        json!({ "route": "rejected notALink" }),
+    );
+    let trace = std::fs::read_to_string(demo._dir.path().join("trace")).unwrap();
+    assert_eq!(trace, "received launch dashpay\nrouted rejected notALink\n");
+    assert!(!trace.contains("secretish"));
+}
+
+#[cfg(feature = "selftest")]
+#[test]
+fn the_link_trace_command_refuses_without_the_option() {
+    Demo::new().err(
+        "selftest_link_routed",
+        json!({ "route": "pay" }),
+        "app.not_selftest",
     );
 }

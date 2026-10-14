@@ -49,10 +49,23 @@
         "identity",
         "social",
         "console",
-        "units"
+        "units",
+        "shell"
       ]
     },
     "withGlobalTauri": false
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "dash",
+          "pay",
+          "dashwallet",
+          "dashpay"
+        ]
+      }
+    }
   },
   "bundle": {
     "active": true,

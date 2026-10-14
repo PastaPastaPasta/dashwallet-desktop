@@ -28,7 +28,12 @@ selftest = ["dep:dw-fs"]
 tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
-tauri = { version = "2.12", features = [] }
+# `tray-icon`: the tray companion (U-01, src/shell/tray.rs).
+tauri = { version = "2.12", features = ["tray-icon"] }
+# U-01: a second launch hands its links to the running app and exits.
+tauri-plugin-single-instance = "2.5"
+# U-01: the main window's size and position, saved and restored.
+tauri-plugin-window-state = "2.5"
 # Byte payloads (avatars, raw transactions) cross IPC as base64 strings.
 base64 = "0.22"
 dashcore = { workspace = true }
@@ -54,8 +59,12 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["signal"] }
 zeroize = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The tray's AppIndicator probe: libappindicator-sys aborts without one.
+libloading = "0.8"
+
 [dev-dependencies]
-tauri = { version = "2.12", features = ["test"] }
+tauri = { version = "2.12", features = ["test", "tray-icon"] }
 tempfile = { workspace = true }
 # Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
 dw-vault = { workspace = true, features = ["insecure-test-kdf"] }

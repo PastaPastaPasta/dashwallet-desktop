@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use crate::bridge::{EventMemory, TauriSink};
 use crate::error::{AppCode, AppError, EngineCode};
 use crate::launch::LaunchOptions;
+use crate::shell::Shell;
 
 pub struct AppState {
     pub launch: LaunchOptions,
@@ -35,6 +36,9 @@ pub struct AppState {
     /// Orders "require authentication for every payment" against the
     /// grants issued under it (`api::vault`, D11).
     pub payment_policy: Arc<PaymentPolicy>,
+    /// Deep links and the native menus' state (U-01). The same `Arc` is
+    /// Tauri-managed, for the callbacks that run before this state exists.
+    pub shell: Arc<Shell>,
     /// Test seam: a payment `authorize` passes it between reading the
     /// setting and issuing the grant.
     #[cfg(test)]
@@ -165,6 +169,8 @@ impl AppState {
             Arc::new(TauriSink::new(app.clone(), Arc::clone(&memory))?),
         )?;
         let handle = app.clone();
+        let shell = crate::shell::shell(app)
+            .unwrap_or_else(|| Arc::new(Shell::new(launch.selftest_link_trace.clone())));
         Ok(AppState {
             launch,
             started,
@@ -174,6 +180,7 @@ impl AppState {
             sends: SendHandles::default(),
             memory,
             payment_policy: Arc::default(),
+            shell,
             #[cfg(test)]
             payment_seam: StdMutex::default(),
             #[cfg(test)]

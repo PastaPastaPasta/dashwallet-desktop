@@ -17,8 +17,10 @@ mod ipc;
 #[cfg(test)]
 mod ipc_tests;
 pub mod launch;
+pub mod shell;
 pub mod state;
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use tauri::plugin::TauriPlugin;
@@ -26,6 +28,8 @@ use tauri::{Manager, RunEvent, Runtime, Url};
 
 use crate::error::{AppCode, AppError};
 use crate::launch::{LaunchOptions, ParseOutcome};
+use crate::shell::Shell;
+use crate::shell::links::LinkSource;
 use crate::state::AppState;
 
 /// Origins the main webview may show: the bundled assets (`tauri://localhost`
@@ -155,7 +159,16 @@ pub fn run() {
             std::process::exit(2);
         }
     };
-    let app = builder::<tauri::Wry>(launch, started)
+    // The single-instance plugin first: a second launch hands its links to
+    // the running app and exits before anything else starts.
+    let mut base =
+        tauri::Builder::<tauri::Wry>::new().plugin(shell::native::single_instance(&launch));
+    if let Some(window_state) = shell::native::window_state(&launch) {
+        base = base.plugin(window_state);
+    }
+    let app = app_builder(base, launch, started, dw_vault::VaultConfig::default())
+        .menu(|handle| shell::menu::build(handle))
+        .on_menu_event(shell::menu::handle)
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {
             eprintln!("dash-wallet: could not start: {e}");
@@ -167,7 +180,19 @@ pub fn run() {
     #[cfg(feature = "selftest")]
     app.add_capability(api::selftest::CAPABILITY)
         .expect("the self-test capability");
+    if let Err(e) = shell::tray::install(app.handle()) {
+        eprintln!("dw-app: tray icon: {e}");
+    }
     app.run(|handle, event| {
+        // macOS hands a clicked link to the running app as an event.
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Opened { urls } = &event {
+            shell::deliver_links(
+                handle,
+                urls.iter().map(|u| u.to_string()),
+                LinkSource::Opened,
+            );
+        }
         if let RunEvent::Exit = event
             && let Some(state) = handle.try_state::<AppState>()
         {
@@ -190,7 +215,21 @@ pub fn builder_with_vault<R: Runtime>(
     started: Instant,
     vault: dw_vault::VaultConfig,
 ) -> tauri::Builder<R> {
-    tauri::Builder::<R>::new()
+    app_builder(tauri::Builder::<R>::new(), launch, started, vault)
+}
+
+/// The app on `base` (which `run` gives the native plugins).
+fn app_builder<R: Runtime>(
+    base: tauri::Builder<R>,
+    mut launch: LaunchOptions,
+    started: Instant,
+    vault: dw_vault::VaultConfig,
+) -> tauri::Builder<R> {
+    // Managed before any plugin runs, so a link forwarded during start-up
+    // waits in the queue. The launch's own links move into it.
+    let shell = Arc::new(Shell::new(launch.selftest_link_trace.clone()));
+    shell.queue(std::mem::take(&mut launch.links), LinkSource::Launch);
+    base.manage(shell)
         .plugin(navigation_guard())
         // Start-up breakdown for U5, next to the renderer's own marks (`startup_mark`).
         .on_page_load(move |_, payload| {

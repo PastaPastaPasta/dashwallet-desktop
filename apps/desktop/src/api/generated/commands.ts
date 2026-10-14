@@ -75,6 +75,7 @@ import type { JsonValue } from "./serde_json/JsonValue";
 import type { KeyMaterialInput } from "./KeyMaterialInput";
 import type { LaunchInfo } from "./LaunchInfo";
 import type { Lease } from "./Lease";
+import type { LinkRoute } from "./LinkRoute";
 import type { LockOutcome } from "./LockOutcome";
 import type { LockResolutionName } from "./LockResolutionName";
 import type { LockStatus } from "./LockStatus";
@@ -116,6 +117,8 @@ import type { RescanStatus } from "./RescanStatus";
 import type { RevealedMnemonic } from "./RevealedMnemonic";
 import type { ScannedContactInfo } from "./ScannedContactInfo";
 import type { SessionSettings } from "./SessionSettings";
+import type { ShellEvent } from "./ShellEvent";
+import type { ShellSync } from "./ShellSync";
 import type { SpvStateName } from "./SpvStateName";
 import type { SyncLoopStatus } from "./SyncLoopStatus";
 import type { SyncPassReport } from "./SyncPassReport";
@@ -143,10 +146,13 @@ import type { WithdrawAmount } from "./WithdrawAmount";
 import type { WithdrawOutcome } from "./WithdrawOutcome";
 import type { WithdrawQuote } from "./WithdrawQuote";
 
-export type { AppError, AppEvent, ErrorCode };
+export type { AppError, AppEvent, ErrorCode, ShellEvent };
 
 /** The Tauri event every engine event is sent on, with an `AppEvent` payload. */
 export const ENGINE_EVENT = "engine://event";
+
+/** The Tauri event the shell (menus, tray, deep links) sends, with a `ShellEvent` payload. */
+export const SHELL_EVENT = "shell://event";
 
 /** Txids per `historyChanged` or `newTransactions` event. */
 export const MAX_TXIDS = 256;
@@ -1903,6 +1909,32 @@ export function unitName(unit: DisplayUnit, network: string): Promise<string> {
 }
 
 /**
+ * Takes the queued deep links (after `linksPending`, and once at
+ * start-up), routed for `network` (a directory name: the network the
+ * window shows), in arrival order. An invitation's link stays in the
+ * shell.
+ */
+export function takeLinks(network: string): Promise<Array<LinkRoute>> {
+  return invoke<Array<LinkRoute>>("take_links", { network });
+}
+
+/**
+ * Where `text` leads, for File ▸ Open URI… (QT-019): the routing a
+ * queued link gets.
+ */
+export function routeLink(network: string, text: string): Promise<LinkRoute> {
+  return invoke<LinkRoute>("route_link", { network, text });
+}
+
+/**
+ * What the native menus and the tray mirror: Discreet Mode's check
+ * and whether Lock Wallet is enabled.
+ */
+export function shellSync(sync: ShellSync): Promise<null> {
+  return invoke<null>("shell_sync", { sync });
+}
+
+/**
  * `--selftest`: writes the renderer's report, and exits once the report
  * is final (`"final": false` is a checkpoint before a probe that could
  * end the page).
@@ -1928,6 +1960,15 @@ export function selftestCheckpoint(screen: string): Promise<null> {
  */
 export function selftestUnlock(): Promise<LockStatus> {
   return invoke<LockStatus>("selftest_unlock");
+}
+
+/**
+ * `--selftest-link-trace`: appends `routed <route>` to the link trace,
+ * for each link the renderer routes (and `routed ready` once it takes
+ * the queue at start-up). The CI link jobs read it.
+ */
+export function selftestLinkRouted(route: string): Promise<null> {
+  return invoke<null>("selftest_link_routed", { route });
 }
 
 /**
@@ -2168,9 +2209,13 @@ export type CommandArgs = {
   format_amount: { amount: number; unit: DisplayUnit; network: string; style: AmountStyle };
   parse_amount: { text: string; unit: DisplayUnit };
   unit_name: { unit: DisplayUnit; network: string };
+  take_links: { network: string };
+  route_link: { network: string; text: string };
+  shell_sync: { sync: ShellSync };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
+  selftest_link_routed: { route: string };
   ipc_bench_rows: { rows: number };
   history_page_timed: { walletId: string; request: HistoryRequest };
 };
@@ -2396,9 +2441,13 @@ export type CommandResults = {
   format_amount: string;
   parse_amount: number | null;
   unit_name: string;
+  take_links: Array<LinkRoute>;
+  route_link: LinkRoute;
+  shell_sync: null;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
+  selftest_link_routed: null;
   ipc_bench_rows: HistoryRows;
   history_page_timed: TimedHistoryRows;
 };
@@ -2626,9 +2675,13 @@ export const COMMANDS: Record<CommandName, string> = {
   format_amount: "units",
   parse_amount: "units",
   unit_name: "units",
+  take_links: "shell",
+  route_link: "shell",
+  shell_sync: "shell",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",
+  selftest_link_routed: "selftest",
   ipc_bench_rows: "selftest",
   history_page_timed: "selftest",
 };

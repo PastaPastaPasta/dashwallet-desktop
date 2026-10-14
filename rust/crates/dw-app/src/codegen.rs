@@ -14,6 +14,7 @@ use ts_rs::{Config, TS};
 use crate::bridge::{AppEvent, EVENT, MAX_TXIDS};
 use crate::error::{AppError, ErrorCode};
 use crate::ipc::{Exports, Imports, TypeSpec};
+use crate::shell::{EVENT as SHELL_EVENT, ShellEvent};
 
 /// The generated directory, from this crate's manifest directory.
 pub fn generated_dir() -> PathBuf {
@@ -34,7 +35,11 @@ pub fn write_bindings(dir: &Path) -> Result<(), String> {
     let types = specs
         .iter()
         .flat_map(|(_, s)| s.args.iter().map(|(_, t)| *t).chain([s.ret]))
-        .chain([TypeSpec::of::<AppEvent>(), TypeSpec::of::<AppError>()]);
+        .chain([
+            TypeSpec::of::<AppEvent>(),
+            TypeSpec::of::<ShellEvent>(),
+            TypeSpec::of::<AppError>(),
+        ]);
     for t in types {
         t.export(&cfg, &mut exports)?;
     }
@@ -80,9 +85,11 @@ fn commands_ts(cfg: &Config, imports: &Imports) -> String {
     }
     let _ = writeln!(
         ts,
-        "\nexport type {{ AppError, AppEvent, ErrorCode }};\n\n\
+        "\nexport type {{ AppError, AppEvent, ErrorCode, ShellEvent }};\n\n\
          /** The Tauri event every engine event is sent on, with an `AppEvent` payload. */\n\
          export const ENGINE_EVENT = {EVENT:?};\n\n\
+         /** The Tauri event the shell (menus, tray, deep links) sends, with a `ShellEvent` payload. */\n\
+         export const SHELL_EVENT = {SHELL_EVENT:?};\n\n\
          /** Txids per `historyChanged` or `newTransactions` event. */\n\
          export const MAX_TXIDS = {MAX_TXIDS};"
     );
