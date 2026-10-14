@@ -58,9 +58,12 @@ const fixture: Fixture = {
       namesUpdating: false,
       isMain: walletId === WALLET,
       balance: "123456789012345678",
+      balanceAsOf: 1_760_000_000_000,
+      balanceStale: false,
       hasDashpayKeys: true,
       profile: null,
       unverified: false,
+      creditLevel: "ok",
     },
   ],
   // Free functions

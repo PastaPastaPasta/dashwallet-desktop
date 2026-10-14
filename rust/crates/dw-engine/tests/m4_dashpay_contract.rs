@@ -83,6 +83,14 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.events",
     "DashPay.unread_count",
     "DashPay.mark_read",
+    // DP1-06: credits.
+    "DashPay.refresh_balance",
+    "DashPay.cost_table",
+    "DashPay.top_up_quote",
+    "DashPay.top_up",
+    "DashPay.pending_top_ups",
+    "DashPay.resume_top_up",
+    "DashPay.resolve_top_up",
     // DP1-04: the contest watch.
     "DashPay.contest_status",
 ];
@@ -116,15 +124,18 @@ const FACADE: &[&str] = &[
 /// encodings and tests (DP1-02), and the contact-request writes, their
 /// network seam and tests, and the identity write locks (DP2-02), the
 /// private details' publish and settle with their tests (DP2-04), the
-/// bell's session tests (DP2-05), and the contest watch with its tests
-/// (DP1-04).
+/// bell's session tests (DP2-05), the credit costs, the balance refreshes
+/// and the top-up flow with its tests (DP1-06), and the contest watch with
+/// its tests (DP1-04).
 const NOT_FACADE: &[&str] = &[
+    "balances.rs",
     "bringup.rs",
     "contact_names.rs",
     "contacts_model.rs",
     "contacts_tests.rs",
     "contest_watch.rs",
     "contest_watch_tests.rs",
+    "credit_costs.rs",
     "identity_writes.rs",
     "journal.rs",
     "journal_tests.rs",
@@ -153,6 +164,8 @@ const NOT_FACADE: &[&str] = &[
     "signers.rs",
     "startup_status.rs",
     "status.rs",
+    "topup.rs",
+    "topup_tests.rs",
     "trust.rs",
     "trust_tests.rs",
     "users.rs",
@@ -928,6 +941,10 @@ fn error_codes_match_the_contract() {
                 available: 0,
             },
             CreditsError::BelowMinimum { min: 0 },
+            CreditsError::CoinsLocked,
+            CreditsError::TopUpPending {
+                txid: String::new(),
+            },
         ],
         CreditsError::code,
     );
@@ -1198,7 +1215,10 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         assert_eq!(dp.sync_status().unwrap_err().code(), "wallet_not_found");
         c.stub(dp.sync_now().await);
         c.stub(dp.identity_detail(s()).await);
-        c.stub(dp.refresh_balance(s()).await);
+        assert_eq!(
+            dp.refresh_balance(s()).await.unwrap_err().code(),
+            "wallet_not_found"
+        );
 
         // DP1-04's: a malformed identity is refused before anything else.
         assert_eq!(
@@ -1254,9 +1274,18 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         c.stub(dp.update_profile(s(), edit, s()).await);
         c.stub(dp.avatar(s(), AvatarSize::Small).await);
 
-        c.stub(dp.cost_table());
-        c.stub(dp.top_up_quote(s(), 1).await);
-        c.stub(dp.top_up(s(), 1, s()).await);
+        // DP1-06: the cost table is the network's, so it reads no wallet;
+        // the others refuse an unknown one.
+        assert!(dp.cost_table().is_ok());
+        for refused in [
+            dp.top_up_quote(s(), 1).await.map(drop),
+            dp.top_up(s(), 1, s()).await.map(drop),
+            dp.pending_top_ups().await.map(drop),
+            dp.resume_top_up(s(), s()).await.map(drop),
+            dp.resolve_top_up(s()).await.map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
         c.stub(dp.withdraw_quote(s(), WithdrawAmount::All).await);
         c.stub(dp.withdraw(s(), s(), WithdrawAmount::All, s()).await);
     });

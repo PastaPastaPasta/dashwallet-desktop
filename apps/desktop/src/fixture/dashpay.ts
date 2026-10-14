@@ -153,9 +153,14 @@ function aliceIdentity(): IdentitySummary {
     namesUpdating: false,
     isMain: true,
     balance: "184500000000",
+    // Refreshed a minute before FIXTURE_NOW, so not stale (the engine's ten minutes); far above
+    // the cost table's low threshold (ten of its dearest action), so `ok`.
+    balanceAsOf: FIXTURE_NOW.getTime() - 60_000,
+    balanceStale: false,
     hasDashpayKeys: true,
     profile: profile("Alice Liddell", "Down the rabbit hole"),
     unverified: false,
+    creditLevel: "ok",
   };
 }
 

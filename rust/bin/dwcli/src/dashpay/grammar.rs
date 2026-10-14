@@ -38,6 +38,8 @@ pub(super) enum Ty {
     /// lower-case hex) or a funding step id (`registration/<id>/funding`,
     /// `topup/<id>/funding`).
     Artifact,
+    /// A txid: 64 lower-case hex.
+    Txid,
     /// What `registration.in_progress` names: a draft id, or a funding
     /// step id (`registration/<id>/funding`).
     Blocker,
@@ -80,6 +82,7 @@ fn value_type(cmd: &str, arg: &str) -> Option<Ty> {
         ("activity", "cursor") => Ty::EngineId,
         (_, "draft" | "invitation_id" | "link_id" | "faucet_key") => Ty::EngineId,
         (_, "artifact") => Ty::Artifact,
+        (_, "txid") => Ty::Txid,
         (_, "past_unknown_funding") => Ty::Blocker,
         (_, "to") => Ty::Address,
         (_, "cursor" | "up_to" | "max_duffs" | "max_credits" | "duffs" | "credits" | "amount") => {
@@ -111,6 +114,7 @@ impl Ty {
             Ty::Identity => "an identity id (Base58 of 32 bytes)",
             Ty::EngineId => "an id the engine issued (1-64 of [0-9a-z_-])",
             Ty::Artifact => "a txid, a state-transition hash or a funding step id",
+            Ty::Txid => "a txid (64 lower-case hex characters)",
             Ty::Blocker => "a draft id or a registration's funding step id",
             Ty::Address => "a Dash address",
             Ty::U64 | Ty::U32 => "a decimal number",
@@ -132,6 +136,7 @@ impl Ty {
             Ty::WalletId => is_hex64(b),
             Ty::Identity => b.len() <= 44 && base58_len(b) == Some(32),
             Ty::EngineId => is_engine_id(b),
+            Ty::Txid => is_hex64(b),
             Ty::Artifact => {
                 is_hex64(b)
                     || ["registration/", "topup/"].iter().any(|p| {
@@ -486,6 +491,7 @@ mod tests {
                 &[&hex, "registration/d1/funding", "topup/7/funding"],
                 &["registration//funding", "topup/7", "x/7/funding", "AB"],
             ),
+            (Ty::Txid, &[&hex], &["topup/7/funding", "AB", ""]),
             (
                 Ty::Blocker,
                 &["7", "d1", "registration/7/funding"],

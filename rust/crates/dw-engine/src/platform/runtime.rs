@@ -103,6 +103,9 @@ pub(crate) struct PlatformRuntime {
     pub(crate) registrations: Arc<super::registration_flow::Flows>,
     /// When the contest watch last checked each row (DP1-04).
     pub(crate) contests: super::contest_watch::ContestsRuntime,
+    /// The balances spent since their refresh, and the balance pass
+    /// (DP1-06, `balances.rs`).
+    pub(crate) balances: Arc<super::balances::Balances>,
     /// Tests: holds the next bring-up between building its keys and
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
@@ -275,6 +278,7 @@ impl PlatformRuntime {
             users: Default::default(),
             registrations: Default::default(),
             contests: Default::default(),
+            balances: Default::default(),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
         }
@@ -368,6 +372,11 @@ impl PlatformRuntime {
         // Work its tasks started before they saw the cancel.
         self.key_work.teardown(closing);
         self.loops_on.store(false, Ordering::Release);
+        // A background balance refresh holds the wallet: none outlives a
+        // close (DP1-06).
+        if closing {
+            self.balances.close().await;
+        }
         for entry in self.write_startup().values_mut() {
             if entry.startup == StartupStatus::Starting {
                 entry.startup = StartupStatus::NotRun;
@@ -449,6 +458,7 @@ impl PlatformRuntime {
         self.users.scans.forget(id);
         self.registrations.forget_wallet(*id);
         self.contests.forget(id);
+        self.balances.forget(id);
     }
 
     /// Takes wallet `id` out of `manager` (a removal, an unload, a restore's
@@ -578,6 +588,8 @@ impl NetworkSession {
                 dashpay.sync_now().await;
             }
         });
+        // The pass's balances too (DP1-06).
+        self.kick_balance_pass();
     }
 
     pub(super) fn apply_cadence(&self, manager: &Manager) {

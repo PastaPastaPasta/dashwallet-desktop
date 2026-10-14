@@ -433,6 +433,16 @@ pub enum CreditsError {
     /// Below `CostTable.top_up_min_duffs`.
     #[error("below the minimum of {min} duffs")]
     BelowMinimum { min: u64 },
+    /// A coin the funding accounts hold back (a user's lock, the dust
+    /// protection, a send's reservation) would be selected: the pinned
+    /// asset-lock builder cannot exclude it (as `registration.coins_locked`).
+    #[error("a locked coin of the funding accounts blocks the asset lock")]
+    CoinsLocked,
+    /// An earlier top-up of the identity is not applied yet: its lock `txid`
+    /// waits for its proof or for `resume_top_up`, and a new top-up would
+    /// fund it twice.
+    #[error("the top-up {txid} is not applied yet")]
+    TopUpPending { txid: String },
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -442,6 +452,8 @@ impl CreditsError {
         match self {
             Self::FundingInsufficient { .. } => "credits.funding_insufficient",
             Self::BelowMinimum { .. } => "credits.below_minimum",
+            Self::CoinsLocked => "credits.coins_locked",
+            Self::TopUpPending { .. } => "credits.top_up_pending",
             Self::Platform(e) => e.code(),
         }
     }

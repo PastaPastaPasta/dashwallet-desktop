@@ -4,7 +4,9 @@
 //! key upgrade) holds [`IdentityLocks::write`] for its whole run, whichever
 //! feature makes it: two writes never race on the nonce, the revision or a
 //! unique index, and a balance read before and after a write measures that
-//! write alone.
+//! write alone. A write that spends credits binds `balances.rs`'s
+//! `AfterSpend` just before it, so the balance is refreshed once the lock
+//! is released.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};

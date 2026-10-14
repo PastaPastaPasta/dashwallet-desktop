@@ -100,7 +100,7 @@ DASHPAY §3.2 left these open; E0-05 implements them as below (rulings by pasta,
    Signals are stamped with when their event happened; the supervisor skips a bring-up signal older than the wallet's
    last admitted pass, so one event brings a wallet up once (a restore's commit and its readmission are one event),
    and signals arriving while a pass runs make one follow-up pass.
-8. **Contest cadence.** The engine watches the wallet's own contests itself (DP1-04, m4-dashpay-engine item 44), at 1
+8. **Contest cadence.** The engine watches the wallet's own contests itself (DP1-04, m4-dashpay-engine item 45), at 1
    minute around each end. `PlatformCadence.contest_ending_soon` only speeds the DPNS marketplace loop (`dpns_sync`),
    which lists a won name; a host sets it when it wants other names' contests followed closely.
 9. **Passphrase change.** A passphrase change is not treated as a lock by the bring-up; E0-04 §8.6 owns it.
