@@ -1414,19 +1414,30 @@ fn a_symlink_swapped_in_during_the_open_is_not_followed() {
 }
 
 /// A lock file replaced between its two opens is refused: the shared lock
-/// would be on another file than a later open's exclusive one.
+/// would be on another file than a later open's exclusive one. Removed and
+/// created again, the new file would get the freed inode number back on
+/// ext4 if the open did not keep its first handle; renamed over the old
+/// one, it is created while the old one still exists.
 #[cfg(unix)]
 #[test]
 fn a_lock_file_replaced_during_the_open_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join(crate::APP_DB_FILE);
-    let lock = crate::lock_path(&real(&path));
-    let replaced = lock.clone();
-    let opened = open_swapped(&path, &crate::BEFORE_SHARED_LOCK, move || {
-        std::fs::remove_file(&replaced).unwrap();
-        std::fs::File::create(&replaced).unwrap();
-    });
-    assert_refused(opened, &lock, "changed while it was opened");
+    for rename in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(crate::APP_DB_FILE);
+        let lock = crate::lock_path(&real(&path));
+        let replaced = lock.clone();
+        let opened = open_swapped(&path, &crate::BEFORE_SHARED_LOCK, move || {
+            if rename {
+                let new = replaced.with_extension("new");
+                std::fs::File::create(&new).unwrap();
+                std::fs::rename(new, &replaced).unwrap();
+            } else {
+                std::fs::remove_file(&replaced).unwrap();
+                std::fs::File::create(&replaced).unwrap();
+            }
+        });
+        assert_refused(opened, &lock, "changed while it was opened");
+    }
 }
 
 /// The lock file and the database are one file only under two mounts of it
