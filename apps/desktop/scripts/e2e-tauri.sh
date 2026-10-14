@@ -8,6 +8,8 @@
 #   DW_E2E_SKIP_BUILD=1   reuse <target>/debug/{dash-wallet,dwcli} (<target>: $CARGO_TARGET_DIR,
 #                         else rust/target)
 #   DW_E2E_OUT=<dir>      screenshots, logs and result.json (default test-results/tauri-e2e)
+#   DW_E2E_SCRIPT=<file>  the script to run instead of e2e-tauri/smoke.ts
+#                         (scripts/e2e-tauri-onboarding.sh: e2e-tauri/onboarding.ts)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 repo=$(cd ../.. && pwd)
@@ -36,4 +38,4 @@ fi
 
 target=${CARGO_TARGET_DIR:-$repo/rust/target}
 DW_APP="$target/debug/dash-wallet" DWCLI="$target/debug/dwcli" TAURI_DRIVER="$driver" \
-  node e2e-tauri/smoke.ts
+  node "${DW_E2E_SCRIPT:-e2e-tauri/smoke.ts}"
