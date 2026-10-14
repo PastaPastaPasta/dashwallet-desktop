@@ -430,8 +430,14 @@ impl AppDb {
         // a shared lock of a second handle would wait for this one (on
         // Windows, and with `flock` the conversion is not atomic either).
         // An open in the gap may forget the removals again, which is safe:
-        // this instance has written nothing yet.
-        drop(sole);
+        // this instance has written nothing yet. The handle stays open
+        // until the second one is compared: a file still open keeps its
+        // inode, so a replacement cannot reuse it (ext4 hands a freed inode
+        // number straight back) and pass for the file checked.
+        // (Windows refuses to unlock a handle that holds no lock.)
+        if alone {
+            sole.unlock().map_err(|e| file_error(&lock_path, e))?;
+        }
         #[cfg(test)]
         if let Some(hook) = BEFORE_SHARED_LOCK.take() {
             hook();
@@ -440,6 +446,7 @@ impl AppDb {
         if lock_id(&lock_path, &alive)? != lock {
             return Err(refused(&lock_path, "changed while it was opened"));
         }
+        drop(sole);
         alive.lock_shared().map_err(|e| file_error(&lock_path, e))?;
         // Deleting or replacing the lock file from outside after this
         // returns leaves the lock on a file later opens no longer see (an
