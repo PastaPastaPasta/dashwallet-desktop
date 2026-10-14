@@ -5,6 +5,7 @@
 import { useEffect, useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
+import type { FeePolicy } from "../../api/generated/FeePolicy";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { Utxo } from "../../api/generated/Utxo";
 import { useBackend, useFeePolicy, useUtxos } from "../../api/queries";
@@ -37,6 +38,14 @@ function targetTitle(blocks: number): string {
   const minutes = blocks * BLOCK_MINUTES;
   const time = minutes < 60 ? `${minutes} minutes` : `${+(minutes / 60).toFixed(1)} hours`;
   return `${time} (${blocks} ${blocks === 1 ? "block" : "blocks"})`;
+}
+
+/** Why a typed custom rate cannot be used, or `null` when it can. */
+function rateProblem(rate: number | null | undefined, policy: FeePolicy, unit: string): string | null {
+  if (rate === null || rate === undefined) return "Enter a fee rate in DASH per kB.";
+  if (rate < policy.minRelayPerKb) return `The fee rate must be at least ${full(policy.minRelayPerKb, false)} ${unit}/kB (the minimum relay fee).`;
+  if (rate > policy.maxCustomPerKb) return `The fee rate must be at most ${full(policy.maxCustomPerKb, false)} ${unit}/kB.`;
+  return null;
 }
 
 function Coins({ walletId, network, advanced, onChange, payAmount }: Props) {
@@ -154,16 +163,7 @@ function Fee({ advanced, onChange, network }: Props) {
   const parsed = useQuery({ queryKey: ["parseAmount", custom], queryFn: () => b.parseAmount(custom), enabled: custom !== "", staleTime: Infinity });
   const p = policy.data;
   const rate = parsed.data;
-  const problem =
-    advanced.fee.kind !== "custom" || custom === "" || parsed.isPending || !p
-      ? null
-      : rate === null || rate === undefined
-        ? "Enter a fee rate in DASH per kB."
-        : rate < p.minRelayPerKb
-          ? `The fee rate must be at least ${full(p.minRelayPerKb, false)} ${network.unitName}/kB (the minimum relay fee).`
-          : rate > p.maxCustomPerKb
-            ? `The fee rate must be at most ${full(p.maxCustomPerKb, false)} ${network.unitName}/kB.`
-            : null;
+  const problem = advanced.fee.kind !== "custom" || custom === "" || parsed.isPending || !p ? null : rateProblem(rate, p, network.unitName);
   const good = rate !== null && rate !== undefined && problem === null && custom !== "" ? rate : null;
   // The parsed rate goes up once it settles; `null` holds the payment until it is valid.
   useEffect(() => {

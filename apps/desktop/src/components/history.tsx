@@ -219,7 +219,10 @@ export function TxTable({
               <tr key={`${row.txid}:${row.recordIndex}`} className={isProblem(row.status) ? "is-problem" : undefined} onClick={() => onOpen(row)}>
                 <td className="tx-table-status">{tableStatus(row.status)}</td>
                 <td>
-                  <button type="button" className="table-open" data-testid={`table-${rowTestId(row)}`} data-txid={row.txid} onClick={(e) => (e.stopPropagation(), onOpen(row))}>
+                  <button type="button" className="table-open" data-testid={`table-${rowTestId(row)}`} data-txid={row.txid} onClick={(e) => {
+                    e.stopPropagation();
+                    onOpen(row);
+                  }}>
                     {date ? detailDate(date, ctx.locale) : "Undated"}
                   </button>
                 </td>

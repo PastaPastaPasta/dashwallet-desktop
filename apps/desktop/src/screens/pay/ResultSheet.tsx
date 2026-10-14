@@ -5,6 +5,7 @@ import { useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { AmountText, DashButton, Icon } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
+import type { UsedIcon } from "../../components/icons";
 import { Sheet } from "../../components/sheet";
 import { full } from "../../format/amount";
 import { broadcastFailure, type Outcome } from "./model";
@@ -15,6 +16,12 @@ const TITLE: Record<Outcome["kind"], string> = {
   sent: "Payment sent",
   unknown: "Payment status unknown",
   failed: "Payment not sent",
+};
+
+const ICON: Record<Outcome["kind"], UsedIcon> = {
+  sent: "txDetailSent",
+  unknown: "messageWarning",
+  failed: "txDetailError",
 };
 
 export function ResultSheet({
@@ -53,7 +60,7 @@ export function ResultSheet({
   return (
     <Sheet title={TITLE[outcome.kind]} width="small" testId="pay-result" onClose={() => !busy && onDone(false)}>
       <div className={`result result-${outcome.kind}`} data-testid={`pay-result-${outcome.kind}`}>
-        <Icon id={outcome.kind === "sent" ? "txDetailSent" : outcome.kind === "unknown" ? "messageWarning" : "txDetailError"} size={50} />
+        <Icon id={ICON[outcome.kind]} size={50} />
         {outcome.kind === "failed" ? (
           <p className="result-text" role="alert" data-testid="pay-result-text">
             {outcome.text}

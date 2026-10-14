@@ -123,8 +123,8 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
     setBusy(true);
     setProblem(null);
     try {
-      const amount = amt === "" ? null : (parsed.data ?? null);
-      const r = await b.createReceiveRequest(walletId, amount || null, label.trim() || null, message.trim() || null);
+      const amount = amt === "" ? null : parsed.data || null;
+      const r = await b.createReceiveRequest(walletId, amount, label.trim() || null, message.trim() || null);
       void client.invalidateQueries({ queryKey: keys.receiveAll(walletId) });
       clear();
       onCreated(r);
@@ -232,7 +232,6 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
       setProblem(errorMessage(e));
     }
   };
-  const locale = b.locale;
   const rows = requests.data ?? [];
   return (
     <section className="requests" aria-labelledby="requests-title" data-testid="requests">
@@ -264,7 +263,7 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
             <tbody>
               {rows.map((r) => (
                 <tr key={r.id} data-testid={`request-row-${r.id}`}>
-                  <td>{new Date(r.createdAt * 1000).toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" })}</td>
+                  <td>{new Date(r.createdAt * 1000).toLocaleDateString(b.locale, { year: "numeric", month: "short", day: "numeric" })}</td>
                   <td>{r.label || <span className="text-secondary">(no label)</span>}</td>
                   <td>{r.message || <span className="text-secondary">(no message)</span>}</td>
                   <td className="num">{r.amount === null ? <span className="text-secondary">(no amount requested)</span> : full(r.amount, false)}</td>

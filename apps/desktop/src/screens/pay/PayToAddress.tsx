@@ -130,12 +130,10 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
     gcTime: 0,
   });
   const refusal = estimate.isError ? sendErrorText(estimate.error, chain) : null;
-  const generalError = estimate.isError ? (refusal ? (refusal.field ? null : refusal.text) : errorMessage(estimate.error))
-    : noCoins
-      ? "Choose the coins to pay with."
-      : !fee
-        ? "Enter a custom fee rate."
-        : null;
+  let generalError: string | null = null;
+  if (estimate.isError) generalError = refusal ? (refusal.field ? null : refusal.text) : errorMessage(estimate.error);
+  else if (noCoins) generalError = "Choose the coins to pay with.";
+  else if (!fee) generalError = "Enter a custom fee rate.";
   const fieldError = (f: "address" | "amount") => (refusal?.field === f ? refusal.text : null);
   const ready = !!spec && settled && estimate.isSuccess && !estimate.isFetching && !locked;
 

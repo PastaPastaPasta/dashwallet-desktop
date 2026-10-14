@@ -219,17 +219,22 @@ function checkRate(fee: FeeMode) {
 /** The coins `source` may spend, largest first. */
 function sourceCoins(wallet: FixtureWallet, source: CoinSource): Utxo[] {
   const coins = wallet.coins.filter((u) => u.spendable);
-  const picked =
-    source.kind === "any"
-      ? coins
-      : source.kind === "fullyMixedOnly"
-        ? coins.filter((u) => u.coinjoinRounds !== null)
-        : source.outpoints.map((o) => {
-            const u = coins.find((x) => sameOutpoint(x.outpoint, o));
-            if (!u) throw fail("send.outpoint_unavailable", "coin unavailable", { kind: "outpoint", txid: o.txid, vout: o.vout });
-            return u;
-          });
-  return picked.toSorted((a, b) => b.amount - a.amount);
+  return pickCoins(coins, source).toSorted((a, b) => b.amount - a.amount);
+}
+
+function pickCoins(coins: Utxo[], source: CoinSource): Utxo[] {
+  switch (source.kind) {
+    case "any":
+      return coins;
+    case "fullyMixedOnly":
+      return coins.filter((u) => u.coinjoinRounds !== null);
+    case "outpoints":
+      return source.outpoints.map((o) => {
+        const u = coins.find((x) => sameOutpoint(x.outpoint, o));
+        if (!u) throw fail("send.outpoint_unavailable", "coin unavailable", { kind: "outpoint", txid: o.txid, vout: o.vout });
+        return u;
+      });
+  }
 }
 
 interface Built extends TxEstimate {
@@ -306,6 +311,13 @@ function txActionRefusal(row: TxRow): TxActionRefusalName | null {
   return null;
 }
 
+/** The wallet's row for `txid`, or `tx_not_found`. */
+function rowOf(wallet: FixtureWallet, txid: string): TxRow {
+  const row = wallet.rows.find((r) => r.txid === txid);
+  if (!row) throw fail("tx_not_found", `transaction not found: ${txid}`);
+  return row;
+}
+
 const refused = (refusal: TxActionRefusalName) => fail("tx_action_refused", `refused: ${refusal}`, { kind: "txAction", refusal });
 
 // ---------------------------------------------------------------- the handlers
@@ -335,6 +347,13 @@ function receiveAddress(wallet: FixtureWallet, index: number, label: string | nu
   };
 }
 
+/** Issues the next receiving address, up to the gap limit. */
+function issueAddress(wallet: FixtureWallet, label: string | null): AddressInfo {
+  if (wallet.receive.issued - wallet.receive.firstUnused + 1 >= GAP_LIMIT) throw fail("gap_limit", "gap limit reached");
+  wallet.receive.issued += 1;
+  return receiveAddress(wallet, wallet.receive.issued, label);
+}
+
 function changed({ world, emit }: Ctx, wallet: FixtureWallet, txids: string[]) {
   const network = world.launch.network.dirName;
   emit({ kind: "balances", network, walletId: wallet.summary.walletId, balances: wallet.summary.balances });
@@ -348,7 +367,11 @@ function moveBalance(wallet: FixtureWallet, delta: number) {
 }
 
 export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handlers {
-  const draftOf = (w: World, h: number) => w.send.drafts[h] ?? (() => { throw unknownHandle(h); })();
+  const draftOf = (w: World, h: number) => {
+    const found = w.send.drafts[h];
+    if (!found) throw unknownHandle(h);
+    return found;
+  };
   const preparedOf = (w: World, d: number, p: number) => {
     const found = w.send.prepared[p];
     if (!found || found.draft !== d) throw unknownHandle(p);
@@ -532,8 +555,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
 
     // The transaction actions (QT-105) and the detail sheet's extras.
     tx_detail_extras: ({ walletId, txid }, { world }) => {
-      const row = wallet(world, walletId).rows.find((r) => r.txid === txid);
-      if (!row) throw fail("tx_not_found", `transaction not found: ${txid}`);
+      const row = rowOf(wallet(world, walletId), txid);
       const d = txDetails(row);
       const refusal = txActionRefusal(row);
       const extras: TxDetailExtrasInfo = {
@@ -554,8 +576,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
     },
     abandon_transaction: ({ walletId, txid }, ctx) => {
       const w = wallet(ctx.world, walletId);
-      const row = w.rows.find((r) => r.txid === txid);
-      if (!row) throw fail("tx_not_found", `transaction not found: ${txid}`);
+      const row = rowOf(w, txid);
       const refusal = txActionRefusal(row);
       if (refusal) throw refused(refusal);
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, status: { ...r.status, kind: "abandoned" }, countsTowardBalance: false } : r));
@@ -569,16 +590,14 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
       return null;
     },
     resend_transaction: ({ walletId, txid }, { world }) => {
-      const row = wallet(world, walletId).rows.find((r) => r.txid === txid);
-      if (!row) throw fail("tx_not_found", `transaction not found: ${txid}`);
-      const refusal = txActionRefusal(row);
+      const refusal = txActionRefusal(rowOf(wallet(world, walletId), txid));
       if (refusal) throw refused(refusal);
       world.send.announced[txid] = secs(FIXTURE_NOW);
       return null;
     },
     set_tx_label: ({ walletId, txid, label }, ctx) => {
       const w = wallet(ctx.world, walletId);
-      if (!w.rows.some((r) => r.txid === txid)) throw fail("tx_not_found", `transaction not found: ${txid}`);
+      rowOf(w, txid);
       const text = label?.trim() || null;
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, label: text } : r));
       ctx.emit({ kind: "historyChanged", network: ctx.world.launch.network.dirName, walletId, txids: [txid] });
@@ -590,17 +609,10 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
       const w = wallet(world, walletId);
       return receiveAddress(w, w.receive.firstUnused, null);
     },
-    next_receive_address: ({ walletId, label }, { world }) => {
-      const w = wallet(world, walletId);
-      if (w.receive.issued - w.receive.firstUnused + 1 >= GAP_LIMIT) throw fail("gap_limit", "gap limit reached");
-      w.receive.issued += 1;
-      return receiveAddress(w, w.receive.issued, label);
-    },
+    next_receive_address: ({ walletId, label }, { world }) => issueAddress(wallet(world, walletId), label),
     create_receive_request: ({ walletId, amount, label, message }, { world }) => {
       const w = wallet(world, walletId);
-      if (w.receive.issued - w.receive.firstUnused + 1 >= GAP_LIMIT) throw fail("gap_limit", "gap limit reached");
-      w.receive.issued += 1;
-      const { address } = receiveAddress(w, w.receive.issued, label);
+      const { address } = issueAddress(w, label);
       const request: ReceiveRequest = {
         id: w.receive.nextRequest++,
         createdAt: secs(FIXTURE_NOW),

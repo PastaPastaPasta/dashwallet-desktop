@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
-import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
 import { PAYEE, WALLET_VIEWS, showWalletView } from "./wallet";
 
 // U-03: Home's shortcuts, Pay ▸ To an address (estimate, refusals, coin control, confirm with
@@ -123,7 +123,7 @@ test.describe("Pay", () => {
 
     await sendWithPassphrase(page);
     await expect(page.getByTestId("pay-result-sent")).toBeVisible();
-    const txid = (await world(page, (w) => w.wallets[0].rows[0].txid)) as string;
+    const txid = await world(page, (w) => w.wallets[0].rows[0].txid);
     await expect(page.getByTestId("pay-result-txid")).toContainText(txid);
     // The spend grant was capped at the confirmed total.
     expect(await world(page, (w) => w.grants.map((g) => [g.grant.purpose, g.used]))).toEqual([[{ kind: "spend", maxDuffs: 50_000_226 }, true]]);
@@ -349,7 +349,6 @@ test.describe("axe", () => {
       test(`axe ${view} ${theme}`, async ({ page }) => {
         const errors = trackPageErrors(page);
         await showWalletView(page, view, theme);
-        await fontsReady(page);
         expect(await seriousAxeViolations(page)).toEqual([]);
         expect(errors).toEqual([]);
       });
