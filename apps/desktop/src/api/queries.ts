@@ -35,6 +35,17 @@ export const keys = {
   history: (walletId: string, filter: HistoryFilter, limit: number) => ["history", walletId, filter, limit] as const,
   txDetailAll: (walletId: string) => ["txDetail", walletId] as const,
   txDetail: (walletId: string, txid: string) => ["txDetail", walletId, txid] as const,
+  /** Under the detail's key, so `historyChanged` refreshes the actions with the facts. */
+  txDetailExtras: (walletId: string, txid: string) => ["txDetail", walletId, txid, "extras"] as const,
+  /** Every receive read of a wallet: a payment uses the current address up. */
+  receiveAll: (walletId: string) => ["receive", walletId] as const,
+  receiveAddress: (walletId: string) => ["receive", walletId, "address"] as const,
+  receiveRequests: (walletId: string) => ["receive", walletId, "requests"] as const,
+  /** The coin control list of a wallet: history and balance changes move coins. */
+  coinsAll: (walletId: string) => ["coins", walletId] as const,
+  utxos: (walletId: string) => ["coins", walletId, "utxos"] as const,
+  feePolicy: ["feePolicy"] as const,
+  paymentAuth: ["paymentAuth"] as const,
   /** Every DashPay read below: a `platform` or `dashPayNews` signal makes them all stale. */
   dashpayAll: ["dashpay"] as const,
   dashpayStatus: (walletId: string) => ["dashpay", "status", walletId] as const,
@@ -92,6 +103,49 @@ export function useHistory(walletId: string, filter: HistoryFilter, limit: numbe
 export function useTxDetail(walletId: string, txid: string) {
   const b = useBackend();
   return useQuery({ queryKey: keys.txDetail(walletId, txid), queryFn: () => b.txDetail(walletId, txid) });
+}
+
+export function useTxDetailExtras(walletId: string, txid: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.txDetailExtras(walletId, txid), queryFn: () => b.txDetailExtras(walletId, txid) });
+}
+
+export function useReceiveAddress(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.receiveAddress(walletId), queryFn: () => b.currentReceiveAddress(walletId) });
+}
+
+export function useReceiveRequests(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.receiveRequests(walletId), queryFn: () => b.receiveRequests(walletId) });
+}
+
+/** The QR modules of `text` (dw-uri; level L). */
+export function useQrMatrix(text: string | undefined) {
+  const b = useBackend();
+  return useQuery({ queryKey: ["qr", text ?? ""] as const, queryFn: () => b.qrMatrix(text!), enabled: !!text, staleTime: Infinity });
+}
+
+/** Every coin of the wallet, the locked and reserved ones too (coin control, U-03 D7). */
+export function useUtxos(walletId: string, enabled: boolean) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.utxos(walletId),
+    queryFn: () => b.utxos(walletId, { includeLocked: true, fullyMixedOnly: false, minConfirmations: null }),
+    enabled,
+  });
+}
+
+/** The network's fee rules (constant on SPV). */
+export function useFeePolicy() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.feePolicy, queryFn: () => b.feePolicy(), staleTime: Infinity });
+}
+
+/** "Require authentication for every payment"; read again each time the confirm sheet opens. */
+export function usePaymentAuthentication() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.paymentAuth, queryFn: () => b.paymentAuthentication(), staleTime: 0, gcTime: 0, retry: false });
 }
 
 /** The network's last lock report (E0-13 D3); `null` until something locks the vault. */

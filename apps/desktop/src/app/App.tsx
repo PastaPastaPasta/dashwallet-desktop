@@ -9,6 +9,7 @@ import { chipState, Sidebar, StatusBar, Toolbar } from "../components/shell";
 import { showToast, ToastHost } from "../components/toast";
 import { LockScreen } from "../screens/LockScreen";
 import { Overview } from "../screens/Overview";
+import { ReceivePage } from "../screens/Receive";
 import { ContactsPage, PayPage, Placeholder, ToolsPage } from "../screens/Routes";
 import { AboutSheet, OpenUriSheet } from "../screens/ShellDialogs";
 import { Transactions } from "../screens/Transactions";
@@ -75,7 +76,7 @@ function Shell() {
   }, [backend, discreet, canLock]);
 
   let content;
-  if (route === "home" || route === "activity") {
+  if (route === "home" || route === "activity" || route === "pay" || route === "receive") {
     if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
     else if (wallets.isError)
       content = (
@@ -94,9 +95,10 @@ function Shell() {
         </main>
       );
     else if (route === "home") content = <Overview walletId={wallet.walletId} network={network} onOpen={open} />;
+    else if (route === "pay") content = <PayPage walletId={wallet.walletId} network={network} />;
+    else if (route === "receive") content = <ReceivePage walletId={wallet.walletId} network={network} />;
     else content = <Transactions walletId={wallet.walletId} network={network} onOpen={open} />;
-  } else if (route === "pay") content = <PayPage />;
-  else if (route === "contacts") content = <ContactsPage />;
+  } else if (route === "contacts") content = <ContactsPage />;
   else if (route === "tools") content = <ToolsPage />;
   else content = <Placeholder route={route} />;
 
