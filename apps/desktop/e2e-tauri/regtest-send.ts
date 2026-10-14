@@ -228,10 +228,13 @@ async function main() {
       throw new Error("the result sheet shows another transaction id");
     step(`result: ${evidence.result === "pay-result-sent" ? "Payment sent, with dashd's txid" : "status unknown (the block settles it)"}; block ${evidence.block}`);
 
-    // Activity: the transaction, in a block.
-    await wd.press(tid(evidence.result === "pay-result-sent" ? "pay-result-show" : "pay-result-close"));
-    if (evidence.result !== "pay-result-sent") await wd.press(tid("sidebar-activity"));
-    await wd.press(`[data-txid="${txid}"]`);
+    // Activity: the transaction, in a block. Show in Activity opens its detail sheet (U-03 D10).
+    if (evidence.result === "pay-result-sent") await wd.press(tid("pay-result-show"));
+    else {
+      await wd.press(tid("pay-result-close"));
+      await wd.press(tid("sidebar-activity"));
+      await wd.press(`[data-txid="${txid}"]`);
+    }
     await poll(LOAD_WAIT_MS, "the transaction in a block", async () => ((await textOf(tid("tx-detail-facts"))).includes("Block") ? true : undefined));
     evidence.activity = await textOf(tid("tx-detail-facts"));
     await wd.screenshot("5-activity-detail");
