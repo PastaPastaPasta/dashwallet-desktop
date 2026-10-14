@@ -355,7 +355,7 @@ async fn issue_grants(
     let payment_policy = Arc::clone(&state.payment_policy);
     let (read_at, policy) = if pays(purposes) {
         #[cfg(test)]
-        crate::state::Seam::pass_slot(&state.payment_gate_seam);
+        crate::state::Seam::pass_slot(&state.payment_gate_seam).await;
         let _gate = payment_policy.gate.lock().await;
         let read_at = payment_policy.generation.load(Ordering::SeqCst);
         (read_at, Some(session.payment_authentication().await?))
@@ -364,7 +364,7 @@ async fn issue_grants(
     };
     #[cfg(test)]
     if policy.is_some() {
-        crate::state::Seam::pass_slot(&state.payment_seam);
+        crate::state::Seam::pass_slot(&state.payment_seam).await;
     }
     let grants = session
         .vault_op(move |v| {
@@ -850,10 +850,10 @@ commands! {
         // write that then fails only makes such a grant ask again.
         state.payment_policy.generation.fetch_add(1, Ordering::SeqCst);
         #[cfg(test)]
-        state.pause_payment_set(crate::state::SetPause::AfterBump);
+        state.pause_payment_set(crate::state::SetPause::AfterBump).await;
         session.set_payment_authentication(on, grant_id).await?;
         #[cfg(test)]
-        state.pause_payment_set(crate::state::SetPause::AfterWrite);
+        state.pause_payment_set(crate::state::SetPause::AfterWrite).await;
         Ok(())
     }
 

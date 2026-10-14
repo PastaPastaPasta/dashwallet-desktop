@@ -1,6 +1,8 @@
 // SheetScaffold (UX-SPEC C23): a modal dialog with the 64 pt header (title, close), Escape to
 // close, focus kept inside while open and returned to the opener on close. Focus starts on the
-// element marked `data-autofocus`, else on the first focusable one (the close button).
+// element marked `data-autofocus`, else on the first focusable one (the close button), and again
+// whenever `focusKey` changes (a sheet with steps). `closable={false}` holds the sheet open while
+// something it must report back is running.
 //
 // A sheet opened from inside the shell (Pay, Receive) renders into App's sheet layer, above the
 // shell and below the lock screen, and the shell goes inert while it is open (U-03 D22).
@@ -31,11 +33,17 @@ export function useLayeredSheet(): boolean {
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select, textarea, summary, [tabindex]:not([tabindex="-1"])';
 
+function focusStart(panel: HTMLElement | null) {
+  (panel?.querySelector<HTMLElement>("[data-autofocus]") ?? panel?.querySelector<HTMLElement>(FOCUSABLE))?.focus();
+}
+
 export function Sheet({
   title,
   onClose,
   width,
   testId,
+  focusKey,
+  closable = true,
   returnFocus,
   children,
 }: {
@@ -43,6 +51,8 @@ export function Sheet({
   onClose: () => void;
   width: "small" | "medium" | "large";
   testId: string;
+  focusKey?: string;
+  closable?: boolean;
   /** Where focus goes on close, instead of the element focused at open (gone, or `<body>`
    * when one sheet replaced another). */
   returnFocus?: () => HTMLElement | null;
@@ -56,9 +66,8 @@ export function Sheet({
     return () => hold(-1);
   }, [layer]);
   useEffect(() => {
+    // The opener first: the effect below moves focus away from it.
     const opener = document.activeElement as HTMLElement | null;
-    const start = panel.current?.querySelector<HTMLElement>("[data-autofocus]") ?? panel.current?.querySelector<HTMLElement>(FOCUSABLE);
-    start?.focus();
     return () => {
       const back = () => {
         const to = returnFocus?.() ?? opener;
@@ -73,11 +82,12 @@ export function Sheet({
     };
     // The opener and the return target are read when the sheet opens and closes.
   }, []);
+  useEffect(() => focusStart(panel.current), [focusKey]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       e.stopPropagation();
-      onClose();
+      if (closable) onClose();
       return;
     }
     if (e.key !== "Tab" || !panel.current) return;
@@ -95,7 +105,7 @@ export function Sheet({
   };
 
   const sheet = (
-    <div className="sheet-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="sheet-scrim" onMouseDown={(e) => closable && e.target === e.currentTarget && onClose()}>
       <div
         ref={panel}
         className={`sheet sheet-${width}`}
@@ -111,7 +121,7 @@ export function Sheet({
             {title}
           </h2>
           <span className="sheet-header-side">
-            <button type="button" className="sheet-close" aria-label="Close" onClick={onClose}>
+            <button type="button" className="sheet-close" aria-label="Close" disabled={!closable} onClick={onClose}>
               <svg viewBox="0 0 20 20" aria-hidden="true">
                 <path d="M5 5l10 10M15 5 5 15" />
               </svg>

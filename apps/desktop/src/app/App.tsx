@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { errorMessage } from "../api/backend";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
@@ -8,17 +8,25 @@ import { EmptyState, LoadingState } from "../components/history";
 import { SheetLayer, useLayeredSheet } from "../components/sheet";
 import { chipState, Sidebar, StatusBar, Toolbar } from "../components/shell";
 import { showToast, ToastHost } from "../components/toast";
-import { LockScreen } from "../screens/LockScreen";
+import { ForgotPassphraseSheet } from "../screens/ForgotPassphrase";
+import { LockScreen, UnlockSheet } from "../screens/LockScreen";
+import { Onboarding } from "../screens/Onboarding";
 import { Overview } from "../screens/Overview";
 import { ReceivePage } from "../screens/Receive";
+import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
 import { ContactsPage, PayPage, Placeholder, ToolsPage } from "../screens/Routes";
+import { SettingsPage } from "../screens/Settings";
 import { AboutSheet, OpenUriSheet } from "../screens/ShellDialogs";
 import { Transactions } from "../screens/Transactions";
 import { TxDetailSheet } from "../screens/TxDetailSheet";
 import { useShellBridge } from "./shellBridge";
 import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
-import { ui, useUi } from "./ui";
+import { navigate, ui, useUi } from "./ui";
+
+const closeDialog = () => ui.set({ dialog: null });
+const closeOnboarding = () => ui.set({ onboarding: false });
+const closeForgot = () => ui.set({ forgotPassphrase: false });
 
 export const LaunchContext = createContext<LaunchInfo | null>(null);
 export const useLaunch = () => useContext(LaunchContext)!;
@@ -58,6 +66,9 @@ function Shell() {
   const dialog = useUi((s) => s.dialog);
   const walletId = useUi((s) => s.walletId);
   const discreet = useUi((s) => s.discreet);
+  const addWallet = useUi((s) => s.onboarding);
+  const forgot = useUi((s) => s.forgotPassphrase);
+  const secretShown = useUi((s) => s.secrets > 0);
   const lock = useLockStatus();
   const sync = useSyncStatus();
   const wallets = useWallets();
@@ -71,10 +82,46 @@ function Shell() {
     if (canLock) backend.lock().catch((e) => showToast(`Could not lock: ${errorMessage(e)}`));
   };
   useShellBridge(backend, network.dirName, launch.selftestLinkTrace, lockNow);
-  // The native menus' Discreet Mode check and Lock Wallet follow the window.
+  // The native menus' Discreet Mode check and Lock Wallet follow the window, and so does its
+  // content protection while a flow that shows or takes a recovery phrase is open (U-02 D15).
+  // One call at a time, in order: a stale `secretShown` never lands last (review r1 #2). The
+  // shell answers once the protection is in effect, and only then do those flows show their
+  // secret part (`protection: "on"`, D27); only the latest call's answer counts.
+  const protectionTries = useUi((s) => s.protectionTries);
+  const shellSynced = useRef(Promise.resolve());
+  const syncs = useRef(0);
   useEffect(() => {
-    backend.shellSync({ discreet, canLock }).catch(() => {});
-  }, [backend, discreet, canLock]);
+    const sync = { discreet, canLock, secretShown };
+    const call = ++syncs.current;
+    if (!secretShown) ui.set({ protection: "off" });
+    else if (ui.get().protection !== "on") ui.set({ protection: "pending" });
+    const settle = (protection: "on" | "failed") => {
+      if (secretShown && call === syncs.current) ui.set({ protection });
+    };
+    shellSynced.current = shellSynced.current.then(() =>
+      backend.shellSync(sync).then(
+        () => settle("on"),
+        () => settle("failed"),
+      ),
+    );
+  }, [backend, discreet, canLock, secretShown, protectionTries]);
+
+  // Onboarding (U-02 D1): a network without a wallet opens it, and it stays open until its
+  // Done. The lock screen replaces it, and drops what it held: Add Wallet… closes, the first
+  // wallet's flow starts again at Welcome once unlocked.
+  const noWallet = wallets.isSuccess && wallets.data.length === 0;
+  const onboarding = !locked && (addWallet || noWallet);
+  useEffect(() => {
+    if (noWallet) ui.set({ onboarding: true });
+    else if (locked && addWallet) ui.set({ onboarding: false });
+  }, [noWallet, locked, addWallet]);
+  // The new wallet is listed before onboarding closes: a list still empty would open it again
+  // (review r1 #5).
+  const finishOnboarding = async (id: string | null) => {
+    await wallets.refetch();
+    ui.set({ onboarding: false, ...(id ? { walletId: id } : {}) });
+    navigate("home");
+  };
 
   let content;
   if (route === "home" || route === "activity" || route === "pay" || route === "receive") {
@@ -103,6 +150,7 @@ function Shell() {
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
   } else if (route === "contacts") content = <ContactsPage />;
   else if (route === "tools") content = <ToolsPage />;
+  else if (route === "settings") content = <SettingsPage />;
   else content = <Placeholder route={route} />;
 
   // A contested username still has its identity: Contacts, not Join DashPay (D11).
@@ -110,15 +158,15 @@ function Shell() {
   const sheet = !!(detail && wallet && !locked);
   const layered = useLayeredSheet();
   const [layer, setLayer] = useState<HTMLDivElement | null>(null);
-  // A dialog asked for while locked or behind a sheet is dropped, not kept for later.
-  const shown = locked || sheet || layered ? null : dialog;
+  // A dialog asked for while locked, onboarding, or behind a sheet is dropped, not kept for later.
+  const shown = locked || onboarding || sheet || layered ? null : dialog;
   useEffect(() => {
     if (dialog !== shown) ui.set({ dialog: null });
   }, [dialog, shown]);
   return (
     <>
       {/* Behind a sheet or the lock screen the shell takes no focus and is hidden from assistive tech. */}
-      <div className="app-chrome" inert={locked || sheet || layered || shown !== null}>
+      <div className="app-chrome" inert={locked || onboarding || forgot || sheet || layered || shown !== null}>
         <SheetLayer.Provider value={layer}>
         <Toolbar
           wallets={wallets.data ?? []}
@@ -132,15 +180,27 @@ function Shell() {
           <Sidebar joined={joined} requests={dashpay.requests} />
           {content}
         </div>
-        <StatusBar sync={sync.data} lock={lock.data} unitName={network.unitName} hd={wallet?.hd ?? false} />
+        <StatusBar
+          sync={sync.data}
+          lock={lock.data}
+          unitName={network.unitName}
+          hd={wallet?.hd ?? false}
+          onUnlock={() => ui.set({ dialog: "unlock" })}
+        />
         </SheetLayer.Provider>
       </div>
-      {/* Sheets opened inside the shell (Pay, Receive): above it, below the lock screen. */}
-      <div className="sheet-layer" ref={setLayer} inert={locked} />
+      {/* Sheets opened inside the shell (Pay, Receive): above it, below onboarding and the lock
+          screen, which cover it (U-02 D31). */}
+      <div className="sheet-layer" ref={setLayer} inert={locked || onboarding} />
       {sheet && <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />}
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
       {shown === "about" && <AboutSheet launch={launch} />}
-      {locked && <LockScreen network={network} />}
+      {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={wallet?.walletId ?? null} onClose={closeDialog} />}
+      {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
+      {onboarding && <Onboarding network={network} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
+      {locked && <LockScreen network={network} covered={forgot} onForgot={() => ui.set({ forgotPassphrase: true })} />}
+      {/* Over the lock screen, and still open once the recovery unlocked the vault (U-02 D11). */}
+      {forgot && !onboarding && <ForgotPassphraseSheet onClose={closeForgot} />}
     </>
   );
 }

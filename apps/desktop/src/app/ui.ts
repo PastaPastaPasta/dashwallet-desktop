@@ -2,7 +2,7 @@
 // detail sheet or dialog, discreet mode and the appearance. A tiny external store so the
 // self-test and the shell bridge can drive it.
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import type { Route } from "../api/generated/Route";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { ToolsTab } from "../api/generated/ToolsTab";
@@ -31,7 +31,12 @@ export interface ContactPrefill {
   username: string;
 }
 
-export type Dialog = "openUri" | "about";
+/** The window's content protection while a secret surface is open (U-02 D27): `pending` until
+ * the shell answered that it is in effect, `failed` when the platform could not apply it. */
+export type Protection = "off" | "pending" | "on" | "failed";
+
+/** `recoveryPhrase`: Show Recovery Phrase (U-02 D13); `unlock`: the full unlock from mixing only (D12). */
+export type Dialog = "openUri" | "about" | "recoveryPhrase" | "unlock";
 
 export interface UiState {
   route: Route;
@@ -48,6 +53,18 @@ export interface UiState {
   /** Txid whose detail sheet is open. */
   detail: string | null;
   dialog: Dialog | null;
+  /** Onboarding covers the shell: the first wallet, or Wallet ▸ Add Wallet… (U-02 D1). Only
+   * whether it is open; its state stays in its view model. */
+  onboarding: boolean;
+  /** Forgot passphrase is open (U-02 D11). Not a dialog: it starts on the lock screen and
+   * stays open after the recovery unlocks the vault, to say what happened. */
+  forgotPassphrase: boolean;
+  /** How many mounted views show a recovery phrase (`useSecretScreen`, U-02 D15). */
+  secrets: number;
+  /** Whether the content protection those views need is in effect (D27; set by the shell). */
+  protection: Protection;
+  /** Bumped by Try again after `failed`: the shell asks for the protection again. */
+  protectionTries: number;
   discreet: boolean;
   /** A forced appearance; `null` follows the system. */
   theme: ThemeChoice;
@@ -66,6 +83,11 @@ let state: UiState = {
   walletId: null,
   detail: null,
   dialog: null,
+  onboarding: false,
+  forgotPassphrase: false,
+  secrets: 0,
+  protection: "off",
+  protectionTries: 0,
   discreet: false,
   theme: null,
   system: "light",
@@ -91,4 +113,21 @@ export function navigate(route: Route, patch: Partial<UiState> = {}) {
 
 export function useUi<T>(select: (s: UiState) => T): T {
   return useSyncExternalStore(ui.subscribe, () => select(ui.get()));
+}
+
+/** Marks a view that shows or takes a recovery phrase as open: the window is then kept out of
+ * screen captures where the OS allows (U-02 D15). Returns whether that is in effect: the view
+ * renders its secret part only once it is `on` (D27). */
+export function useSecretScreen(): Protection {
+  useEffect(() => {
+    ui.set({ secrets: ui.get().secrets + 1 });
+    return () => ui.set({ secrets: ui.get().secrets - 1 });
+  }, []);
+  // Before the shell has heard of this view, whatever the store says is about the last one.
+  return useUi((s) => (s.secrets > 0 ? s.protection : "pending"));
+}
+
+/** Asks the shell for the content protection again after it failed. */
+export function retryProtection() {
+  ui.set({ protectionTries: ui.get().protectionTries + 1 });
 }

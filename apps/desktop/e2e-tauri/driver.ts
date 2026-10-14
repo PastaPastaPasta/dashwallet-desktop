@@ -1,4 +1,4 @@
-// What the tauri-driver runs share (smoke.ts, regtest-send.ts): settings from the environment,
+// What the tauri-driver runs share (smoke.ts, regtest-send.ts, onboarding.ts): settings from the environment,
 // polling, a W3C WebDriver client over fetch, tauri-driver itself and dwcli. Node 24 runs these
 // files as they are (type stripping); no other dependency.
 
@@ -78,6 +78,11 @@ export class WebDriver {
     });
   }
 
+  async findAll(css: string): Promise<string[]> {
+    const found = await this.call<Record<string, string>[]>("POST", this.s("/elements"), { using: "css selector", value: css });
+    return found.map((f) => f[ELEMENT]!);
+  }
+
   async waitGone(css: string, what = css) {
     await poll(TIMEOUT_MS, `${what} to go`, async () => ((await this.find(css)) ? undefined : true));
   }
@@ -85,9 +90,12 @@ export class WebDriver {
   text = (el: string) => this.call<string>("GET", this.s(`/element/${el}/text`));
   click = (el: string) => this.call<null>("POST", this.s(`/element/${el}/click`), {});
   type = (el: string, text: string) => this.call<null>("POST", this.s(`/element/${el}/value`), { text });
+  clear = (el: string) => this.call<null>("POST", this.s(`/element/${el}/clear`), {});
   press = async (css: string) => void (await this.click(await this.waitFor(css)));
   fill = async (css: string, text: string) => void (await this.type(await this.waitFor(css), text));
-  script = <T>(script: string) => this.call<T>("POST", this.s("/execute/sync"), { script, args: [] });
+  script = <T>(script: string, args: unknown[] = []) => this.call<T>("POST", this.s("/execute/sync"), { script, args });
+  /** `script` gets a callback as its last argument and answers through it. */
+  scriptAsync = <T>(script: string, args: unknown[] = []) => this.call<T>("POST", this.s("/execute/async"), { script, args });
 
   async screenshot(name: string) {
     const png = await this.call<string>("GET", this.s("/screenshot"));
@@ -124,6 +132,21 @@ export function stopDriver(driver: ChildProcess | undefined) {
   } catch {
     // ESRCH
   }
+}
+
+/** Settles once every process of the driver's group has exited, so the log they write is
+ * complete (or after `ms`): a leak scan of OUT must not race the app's last lines. */
+export async function driverGone(driver: ChildProcess | undefined, ms = 30_000) {
+  const pid = driver?.pid;
+  if (!pid) return;
+  await poll(ms, "the driver's processes to exit", async () => {
+    try {
+      process.kill(-pid, 0);
+      return undefined;
+    } catch {
+      return true;
+    }
+  }).catch(() => undefined);
 }
 
 export function dwcli(dataRoot: string, passFile: string, ...args: string[]): string {

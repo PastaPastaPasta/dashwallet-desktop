@@ -130,6 +130,18 @@ pub const ITEMS: &[Item] = &[
         Action::Shell(ShellCommand::ToggleDiscreet),
     ),
     item(
+        "wallet.add",
+        "Add Wallet…",
+        None,
+        Action::Shell(ShellCommand::AddWallet),
+    ),
+    item(
+        "wallet.recovery-phrase",
+        "Show Recovery Phrase…",
+        None,
+        Action::Shell(ShellCommand::RecoveryPhrase),
+    ),
+    item(
         "wallet.settings",
         "Settings…",
         Some("CmdOrCtrl+,"),
@@ -319,7 +331,13 @@ fn bar(mac: bool) -> Vec<(&'static str, Vec<Entry>)> {
         view.extend([Separator, N(Fullscreen)]);
     }
     menus.push(("View", view));
-    let mut wallet = vec![Item("wallet.lock"), Check("wallet.discreet")];
+    let mut wallet = vec![
+        Item("wallet.lock"),
+        Check("wallet.discreet"),
+        Separator,
+        Item("wallet.add"),
+        Item("wallet.recovery-phrase"),
+    ];
     if !mac {
         wallet.extend([Separator, Item("wallet.settings")]);
     }
@@ -527,12 +545,38 @@ mod tests {
     }
 
     #[test]
+    fn wallet_menu_has_add_and_recovery_phrase_in_both_layouts() {
+        for mac in [true, false] {
+            let (_, wallet) = bar(mac)
+                .into_iter()
+                .find(|(title, _)| *title == "Wallet")
+                .expect("a Wallet menu");
+            for id in ["wallet.lock", "wallet.add", "wallet.recovery-phrase"] {
+                assert!(
+                    wallet
+                        .iter()
+                        .any(|e| matches!(e, Entry::Item(i) if *i == id)),
+                    "mac={mac}: {id} is not in the Wallet menu"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn ids_map_to_their_actions() {
         assert_eq!(find("view.contacts").unwrap().action, nav(Route::Contacts));
         assert_eq!(find("tray.quit").unwrap().action, Action::Quit);
         assert_eq!(
             find("wallet.lock").unwrap().action,
             Action::Shell(ShellCommand::Lock)
+        );
+        assert_eq!(
+            find("wallet.add").unwrap().action,
+            Action::Shell(ShellCommand::AddWallet)
+        );
+        assert_eq!(
+            find("wallet.recovery-phrase").unwrap().action,
+            Action::Shell(ShellCommand::RecoveryPhrase)
         );
         assert!(find("nope").is_none());
     }

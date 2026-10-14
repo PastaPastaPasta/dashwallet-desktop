@@ -1192,15 +1192,54 @@ fn launch_links_wait_for_take_links() {
         .on_sync(Box::new(move |s| sink.lock().unwrap().push(s)));
     demo.ok(
         "shell_sync",
-        json!({ "sync": { "discreet": true, "canLock": false } }),
+        json!({ "sync": { "discreet": true, "canLock": false, "secretShown": true } }),
     );
     assert_eq!(
         *seen.lock().unwrap(),
         [crate::shell::ShellSync {
             discreet: true,
-            can_lock: false
+            can_lock: false,
+            secret_shown: true,
         }]
     );
+}
+
+/// U-02 D27: `shell_sync` answers only once the content protection is in
+/// effect, and refuses with `app.screen_protection` when it could not be
+/// applied: the renderer shows no secret before, or without, it.
+#[test]
+fn shell_sync_answers_once_the_protection_is_in_effect() {
+    use tauri::Manager;
+    let demo = Demo::new();
+    let shell = Arc::clone(&demo.app.state::<crate::state::AppState>().shell);
+    let applied = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&applied);
+    shell.on_protect(Box::new(move |on| {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let sink = Arc::clone(&sink);
+        // The platform takes its time: the answer still waits for it.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            sink.lock().unwrap().push(on);
+            let _ = tx.send(Ok(()));
+        });
+        rx
+    }));
+    let sync = |secret_shown: bool| json!({ "sync": { "discreet": false, "canLock": false, "secretShown": secret_shown } });
+    demo.ok("shell_sync", sync(true));
+    assert_eq!(*applied.lock().unwrap(), [true]);
+    demo.ok("shell_sync", sync(false));
+    assert_eq!(*applied.lock().unwrap(), [true, false]);
+
+    // The main thread never ran the change, or the platform refused it.
+    shell.on_protect(Box::new(|_| tokio::sync::oneshot::channel().1));
+    demo.err("shell_sync", sync(true), "app.screen_protection");
+    shell.on_protect(Box::new(|_| {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = tx.send(Err("refused".to_owned()));
+        rx
+    }));
+    demo.err("shell_sync", sync(true), "app.screen_protection");
 }
 
 /// `--selftest-link-trace`: the shell records each launch link's scheme

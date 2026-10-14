@@ -11,4 +11,10 @@ discreet: boolean,
 /**
  * An unlocked vault exists (Wallet ▸ Lock is enabled).
  */
-canLock: boolean, };
+canLock: boolean, 
+/**
+ * A recovery phrase or passphrase field is on screen: the main window's
+ * contents are kept out of screenshots and screen sharing where the OS
+ * allows (macOS, Windows; U-02 D15).
+ */
+secretShown: boolean, };

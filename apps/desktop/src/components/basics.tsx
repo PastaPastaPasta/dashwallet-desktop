@@ -81,7 +81,7 @@ export function Chip({ tone = "info", children }: { tone?: Tone; children: React
 }
 
 // The styles and sizes the gate screens use; the rest of DashUIKit's catalogue comes with the screens that need it.
-export type ButtonStyle = "plainBlue" | "plainRed" | "filledWhiteBlue" | "filledBlue" | "tintedBlue" | "tintedGray";
+export type ButtonStyle = "plainBlue" | "plainRed" | "plainWhite" | "filledWhiteBlue" | "filledBlue" | "tintedBlue" | "tintedGray";
 export type ButtonSize = "large" | "medium" | "small";
 
 export function DashButton({
