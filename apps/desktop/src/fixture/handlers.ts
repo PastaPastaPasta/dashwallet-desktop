@@ -26,9 +26,10 @@ import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
 import { isCheckable } from "../api/lockReport";
-import { sectionOf } from "./dashpay";
+import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
+import { eventOf, sectionOf, type DashPayWorld } from "./dashpay";
 import { MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
-import { FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
+import { BASE58, FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
 
 export interface Ctx {
   world: World;
@@ -51,12 +52,6 @@ function dashpay(w: World, walletId: string, identity?: string) {
   if (identity !== undefined && !w.dashpay.identities.some((i) => i.identity === identity))
     throw fail("identity.not_found", `identity not found: ${identity}`);
   return w.dashpay;
-}
-
-/** An engine stub: `platform.not_implemented` naming the engine call, after the wallet lookup. */
-function notYet(w: World, walletId: string, call: string): never {
-  dashpay(w, walletId);
-  throw fail("platform.not_implemented", `${call} is not implemented`, { kind: "call", call });
 }
 
 function contact(w: World, walletId: string, identity: string, id: string): ContactDetailInfo {
@@ -252,8 +247,67 @@ function writeLease(ctx: Ctx, walletId: string, grant: string, flows: FlowKindNa
   return () => void leasedCall(ctx, lease, quote);
 }
 
-/** A base58 identity id, as `Pair::parse` takes one. */
-const isIdentityId = (s: string) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s);
+/** A Base58 identity id, as `Identifier::from_string` takes one: 32 bytes once decoded (each
+ * leading `1` a zero byte), so 32 to 44 characters. */
+function isIdentityId(s: string): boolean {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s)) return false;
+  const zeros = s.length - s.replace(/^1+/, "").length;
+  const n = [...s.slice(zeros)].reduce((n, c) => n * 58n + BigInt(BASE58.indexOf(c)), 0n);
+  return zeros + (n === 0n ? 0 : Math.ceil(n.toString(16).length / 2)) === 32;
+}
+
+// The bell (platform/notifications.rs), as vectors/notifications.json records the engine's, which
+// notifications.test.ts replays: each call looks the wallet up, then refuses an id that is not
+// Base58 (`invalid_argument`). Only `events` asks whether the identity is the wallet's
+// (`identity.not_found`, from its contacts read); a count or a mark of another identity's rows is
+// no error. Not modelled: the count is 0 until the wallet's bring-up counted it (the fixture's
+// is always counted), and no write journals a row (the world's journal is the scenario's).
+
+/** Events one page holds at most (notifications.rs `MAX_PAGE`). */
+const MAX_PAGE = 200;
+
+/** The wallet's DashPay state for `identity`, an id that must be Base58. */
+function bell(w: World, walletId: string, identity: string): DashPayWorld {
+  const dp = dashpay(w, walletId);
+  if (!isIdentityId(identity)) throw fail("invalid_argument", `not an identity id: ${identity}`);
+  return dp;
+}
+
+/** The engine's `DateAdded` order of requests: the newest first, unknown times last, then by id. */
+const byDateAdded = (a: { since: number | null; contact: string }, b: { since: number | null; contact: string }) =>
+  (a.since === null ? 1 : 0) - (b.since === null ? 1 : 0) || (b.since ?? 0) - (a.since ?? 0) || (a.contact < b.contact ? -1 : a.contact > b.contact ? 1 : 0);
+
+/** `DashPay::events`: on the first page the requests waiting, then `limit` (1–200) rows below
+ * `cursor`, newest first, less an ignored sender's, split into unread and read. */
+function eventPage(dp: DashPayWorld, identity: string, cursor: number | null, limit: number): DashPayEventPage {
+  if (!dp.identities.some((i) => i.identity === identity)) throw fail("identity.not_found", `identity not found: ${identity}`);
+  const ignored = new Set(dp.contacts.filter((c) => c.summary.relation === "ignored").map((c) => c.summary.contact));
+  const below = cursor ?? Number.POSITIVE_INFINITY;
+  const rows = dp.journal
+    .filter((r) => r.identity === identity && r.id < below && !ignored.has(r.contact))
+    .sort((a, b) => b.id - a.id);
+  const page = rows.slice(0, Math.min(Math.max(limit, 1), MAX_PAGE));
+  const events = page.map(eventOf);
+  return {
+    pending: cursor === null ? dp.contacts.filter((c) => sectionOf(c) === "requests").map((c) => c.summary).sort(byDateAdded) : [],
+    new: events.filter((e) => e.readAt === null),
+    earlier: events.filter((e) => e.readAt !== null),
+    nextCursor: rows.length > page.length ? page[page.length - 1].id : null,
+  };
+}
+
+/** Marks `identity`'s unread rows up to `upTo` read (with `contact`, only that contact's), and
+ * signals its feed when one changed. */
+function markRead(ctx: Ctx, walletId: string, dp: DashPayWorld, identity: string, upTo: number, contact?: string) {
+  let changed = 0;
+  for (const r of dp.journal)
+    if (r.identity === identity && r.id <= upTo && r.readAt === null && (contact === undefined || r.contact === contact)) {
+      r.readAt = secs(FIXTURE_NOW);
+      changed++;
+    }
+  if (changed > 0)
+    ctx.emit({ kind: "platform", network: ctx.world.launch.network.dirName, walletId, change: { domain: "events", identity } });
+}
 
 export const HANDLERS: Handlers = {
   // App and network
@@ -430,12 +484,16 @@ export const HANDLERS: Handlers = {
     contactsChanged(ctx, walletId, identity);
     return { kind: "established", request: String(createdAt) };
   },
+  // An ignore drops the request and mutes the sender: their unread rows are marked read.
   dashpay_ignore_contact: ({ walletId, identity, contact: id }, ctx) => {
     const c = contact(ctx.world, walletId, identity, id);
     c.summary = { ...c.summary, relation: "ignored" };
     contactsChanged(ctx, walletId, identity);
+    markRead(ctx, walletId, ctx.world.dashpay, identity, Number.MAX_SAFE_INTEGER, id);
     return null;
   },
+  // The request is back at once: platform-wallet refetches it on its next sweep, which the
+  // fixture's world is always past. The sender's rows stay read.
   dashpay_unignore_contact: ({ walletId, identity, contact: id }, ctx) => {
     const c = contact(ctx.world, walletId, identity, id);
     c.summary = { ...c.summary, relation: "pendingIncoming" };
@@ -459,9 +517,12 @@ export const HANDLERS: Handlers = {
   dashpay_profile: ({ walletId, identity }, { world }) =>
     dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!.profile,
 
-  // DashPay: notifications. The engine's are stubs until DP2-05 (platform/notifications.rs):
-  // the wallet is looked up, then the call fails. DP2-05 replaces these with the engine's own.
-  dashpay_events: ({ walletId }, { world }) => notYet(world, walletId, "DashPay.events"),
-  dashpay_unread_count: ({ walletId }, { world }) => notYet(world, walletId, "DashPay.unread_count"),
-  dashpay_mark_read: ({ walletId }, { world }) => notYet(world, walletId, "DashPay.mark_read"),
+  // DashPay: notifications (the bell, above).
+  dashpay_events: ({ walletId, identity, cursor, limit }, { world }) => eventPage(bell(world, walletId, identity), identity, cursor, limit),
+  dashpay_unread_count: ({ walletId, identity }, { world }) =>
+    bell(world, walletId, identity).journal.filter((r) => r.identity === identity && r.readAt === null).length,
+  dashpay_mark_read: ({ walletId, identity, upTo }, ctx) => {
+    markRead(ctx, walletId, bell(ctx.world, walletId, identity), identity, upTo);
+    return null;
+  },
 };

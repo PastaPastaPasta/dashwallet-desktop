@@ -698,3 +698,501 @@ fn t2_a_testnet_restore_makes_no_news() {
     assert_eq!(news(), 0, "news after a restore");
     engine.block_on(engine.shutdown()).unwrap();
 }
+
+/// The bell's contract vector (U-07's engine-vector mechanism): each case
+/// drives a session whose journal holds the same seeded rows through
+/// `events`, `unread_count`, `mark_read`, `ignore` and `unignore`, and
+/// records every result as dw-app's IPC shape in
+/// `apps/desktop/src/fixture/vectors/notifications.json`. The renderer's
+/// fixture backend replays the cases (`fixture/notifications.test.ts`);
+/// dw-app checks the hand-written shapes (`notification_vector_is_dw_apps`).
+/// Fails when the committed file drifts.
+mod vectors {
+    use serde_json::{Map, Value, json};
+
+    use super::*;
+    use dw_appdb::JournalEntry;
+
+    const REGENERATE: &str = "DW_UPDATE_VECTORS=1 cargo test -p dw-engine notification_vectors";
+    /// The seeded rows' times (UNIX s).
+    const T0: u64 = 1_790_000_000;
+    /// An identity id the wallet lacks, and one that is not Base58.
+    const STRANGER: u8 = 9;
+    const NOT_BASE58: &str = "0OIl";
+    /// Base58 of 32 to 44 characters that is no identity id, which only
+    /// decoding shows: 33 bytes (no zero byte, one, all zero) and 23.
+    const WRONG_LENGTH: [&str; 4] = [
+        "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        "1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        "111111111111111111111111111111111",
+        "22222222222222222222222222222222",
+    ];
+    const OTHER_WALLET: WalletId = WalletId([0x5A; 32]);
+    /// Rows past one page's 200, so a larger limit shows the cap.
+    const PAYMENTS: u64 = 205;
+    /// The requests waiting besides Dave's, by sender and `$createdAt`
+    /// (ms): one newer than his and two of one time, which their ids
+    /// order.
+    const REQUESTERS: [(u8, u64); 3] = [
+        (5, NEW_MS + 3_000_000),
+        (6, NEW_MS + 1_000_000),
+        (7, NEW_MS + 1_000_000),
+    ];
+
+    fn path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../apps/desktop/src/fixture/vectors/notifications.json")
+    }
+
+    /// dw-app's `EventKindName` of the journal's kind name.
+    fn kind_name(kind: &str) -> &'static str {
+        match kind {
+            "username_registered" => "usernameRegistered",
+            "contest_won" => "contestWon",
+            "contest_lost" => "contestLost",
+            "contest_locked" => "contestLocked",
+            "request_received" => "requestReceived",
+            "request_accepted" => "requestAccepted",
+            "contact_established" => "contactEstablished",
+            "payment_received" => "paymentReceived",
+            other => panic!("no vector name for {other}: add one"),
+        }
+    }
+
+    fn kind_of(kind: EventKind) -> &'static str {
+        let snake = serde_json::to_value(kind).unwrap();
+        kind_name(snake.as_str().unwrap())
+    }
+
+    /// The vector's name for an identity id: `me`, `dave`, `stranger`, or
+    /// `c<n>` for the seeded senders.
+    fn label(id: &str) -> String {
+        if id == b58(ME) {
+            "me".into()
+        } else if id == b58(DAVE) {
+            "dave".into()
+        } else if id == b58(STRANGER) {
+            "stranger".into()
+        } else {
+            (1..=u8::MAX)
+                .find(|&n| b58(n) == id)
+                .map(|n| format!("c{n}"))
+                .unwrap_or_else(|| panic!("no label for {id}"))
+        }
+    }
+
+    fn id_of(label: &str) -> String {
+        match label {
+            "me" => b58(ME),
+            "dave" => b58(DAVE),
+            "stranger" => b58(STRANGER),
+            other => other
+                .strip_prefix('c')
+                .and_then(|n| n.parse().ok())
+                .map(b58)
+                .unwrap_or_else(|| other.to_owned()),
+        }
+    }
+
+    /// A time the run stamped (a `mark_read`, an `ignore`) is `"now"`: the
+    /// fixture's clock stands in for it.
+    fn time(t: u64) -> Value {
+        if t >= T0 + 1_000_000 {
+            json!("now")
+        } else {
+            json!(t)
+        }
+    }
+
+    /// dw-app's `DashPayEventInfo`, by hand.
+    fn event(e: &DashPayEvent) -> Value {
+        json!({
+            "id": e.id,
+            "kind": kind_of(e.kind),
+            "contact": e.contact.as_deref().map(label),
+            "reference": e.reference,
+            "at": e.at,
+            "readAt": e.read_at.map(time),
+        })
+    }
+
+    /// dw-app's `DashPayEventPage`, the pending requests by contact.
+    fn page(p: &EventPage) -> Value {
+        json!({
+            "pending": p.pending.iter().map(|c| label(&c.contact)).collect::<Vec<_>>(),
+            "new": p.new.iter().map(event).collect::<Vec<_>>(),
+            "earlier": p.earlier.iter().map(event).collect::<Vec<_>>(),
+            "nextCursor": p.next_cursor,
+        })
+    }
+
+    /// dw-app's error: these calls fail with no data.
+    fn result<T>(r: Result<T, impl Coded>, ok: impl FnOnce(T) -> Value) -> Value {
+        match r {
+            Ok(v) => json!({ "ok": ok(v) }),
+            Err(e) => json!({ "error": { "code": e.code(), "data": null } }),
+        }
+    }
+
+    trait Coded {
+        fn code(&self) -> &'static str;
+    }
+    impl Coded for PlatformError {
+        fn code(&self) -> &'static str {
+            PlatformError::code(self)
+        }
+    }
+    impl Coded for super::super::errors::ContactError {
+        fn code(&self) -> &'static str {
+            super::super::errors::ContactError::code(self)
+        }
+    }
+
+    /// One seeded row: identity, kind, contact, raw reference, read time.
+    type Seed = (u8, &'static str, String, String, Option<u64>);
+
+    /// The rows every case starts from, oldest first, after Dave's request
+    /// (row 1, which the tap journals): every kind, a name kind's
+    /// `@<stamp>`, an empty contact and an empty reference, read and
+    /// unread rows, and more payments than a page holds.
+    fn seeds() -> Vec<(u64, Vec<Seed>)> {
+        let none = String::new;
+        let s = |n: u8| b58(n);
+        let mut out = vec![
+            (
+                T0 + 100,
+                vec![
+                    (
+                        ME,
+                        "username_registered",
+                        none(),
+                        "alice@1789990000".into(),
+                        Some(T0 + 150),
+                    ),
+                    (ME, "contest_won", none(), "alicia@1789990001".into(), None),
+                ],
+            ),
+            (
+                T0 + 200,
+                vec![
+                    (ME, "request_accepted", s(20), "2100000".into(), None),
+                    (
+                        ME,
+                        "contact_established",
+                        s(21),
+                        "2200000".into(),
+                        Some(T0 + 250),
+                    ),
+                    (ME, "contest_lost", none(), "alfie@1789990002".into(), None),
+                    (ME, "contest_locked", none(), none(), None),
+                    // Another identity's row: never on ME's pages.
+                    (STRANGER, "request_received", s(22), "2300000".into(), None),
+                ],
+            ),
+        ];
+        for i in 0..PAYMENTS {
+            let read = (i % 3 == 0).then_some(T0 + 1_000 + i);
+            let txid = format!("{:064x}", 0xd00d_0000_u64 + i);
+            out.push((
+                T0 + 300 + i,
+                vec![(ME, "payment_received", s(30 + (i % 10) as u8), txid, read)],
+            ));
+        }
+        out
+    }
+
+    /// The requests waiting, in the order they come: Dave's, then
+    /// `REQUESTERS`' (the sender's name, id and `since`, UNIX s).
+    fn requests() -> Value {
+        let all = [(DAVE, NEW_MS)].into_iter().chain(REQUESTERS);
+        (all.map(|(n, ms)| json!({ "contact": label(&b58(n)), "id": b58(n), "since": ms / 1000 })))
+            .collect()
+    }
+
+    /// A session at the seeded state: Dave's request is pending (row 1),
+    /// then `REQUESTERS`' (rows 2–4).
+    fn seeded() -> Fixture {
+        let f = Fixture::new(true);
+        f.give_me();
+        f.dave_asks();
+        for (n, ms) in REQUESTERS {
+            let before = f.news().len();
+            f.with_me(move |m, p| {
+                m.add_incoming_contact_request(request(n, ME, ms), p)
+                    .unwrap();
+            });
+            wait_for("the request's news", || f.news().len() > before);
+        }
+        let live = f.s.live().unwrap();
+        let wallet = f.wallet.to_string();
+        // The tap stamped the requests' rows with the clock: a fixed time
+        // instead.
+        let sqlite =
+            rusqlite::Connection::open(f.s.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+        let stamped = sqlite.execute("UPDATE dp_events SET at = ?1", [(T0 + 10) as i64]);
+        assert_eq!(stamped.unwrap(), 1 + REQUESTERS.len());
+        for (now, rows) in seeds() {
+            let entries: Vec<JournalEntry> = (rows.into_iter())
+                .map(
+                    |(identity, kind, contact, reference, read_at)| JournalEntry {
+                        identity: b58(identity),
+                        kind,
+                        contact,
+                        reference,
+                        read_at,
+                        unless_any: &[],
+                    },
+                )
+                .collect();
+            let added = live.appdb.record_events(&wallet, &entries, now).unwrap();
+            assert_eq!(added.len(), entries.len());
+        }
+        live.tap.unread_moved(f.wallet);
+        settle_count(&f, &b58(ME));
+        f
+    }
+
+    /// Waits until `identity`'s count is its unread rows: the tap counts
+    /// what a write moved after it.
+    fn settle_count(f: &Fixture, identity: &str) {
+        let live = f.s.live().unwrap();
+        let unread = (live.appdb.journal(&f.wallet.to_string()).unwrap().iter())
+            .filter(|r| r.identity == identity && r.read_at.is_none())
+            .count() as u32;
+        wait_for("the count", || {
+            f.dp().unread_count(identity.to_owned()).unwrap() == unread
+        });
+    }
+
+    /// The seeded journal as the fixture world takes it: raw rows.
+    fn rows(f: &Fixture) -> Value {
+        let rows =
+            f.s.live()
+                .unwrap()
+                .appdb
+                .journal(&f.wallet.to_string())
+                .unwrap();
+        (rows.iter())
+            .map(|r| {
+                json!({
+                    "id": r.id,
+                    "identity": label(&r.identity),
+                    "kind": r.kind,
+                    "contact": (!r.contact.is_empty()).then(|| label(&r.contact)),
+                    "ref": r.reference,
+                    "at": r.at,
+                    "readAt": r.read_at.map(time),
+                })
+            })
+            .collect()
+    }
+
+    /// One step: what the fixture test calls, by the vector's names.
+    enum Step {
+        Events(&'static str, Option<u64>, u32),
+        Unread(&'static str),
+        MarkRead(&'static str, u64),
+        Ignore(&'static str),
+        Unignore(&'static str),
+        /// The next requests sweep: an unignored sender's request comes
+        /// back (platform-wallet rewinds its cursor; the fixture's world is
+        /// always past it).
+        Sweep,
+        OtherWallet(Box<Step>),
+    }
+
+    fn args(step: &Step) -> Value {
+        match step {
+            Step::Events(identity, cursor, limit) => {
+                json!({ "events": { "identity": identity, "cursor": cursor, "limit": limit } })
+            }
+            Step::Unread(identity) => json!({ "unreadCount": { "identity": identity } }),
+            Step::MarkRead(identity, up_to) => {
+                json!({ "markRead": { "identity": identity, "upTo": up_to } })
+            }
+            Step::Ignore(contact) => json!({ "ignore": { "contact": contact } }),
+            Step::Unignore(contact) => json!({ "unignore": { "contact": contact } }),
+            Step::Sweep => json!({ "sweep": null }),
+            Step::OtherWallet(step) => json!({ "otherWallet": args(step) }),
+        }
+    }
+
+    fn run(f: &Fixture, dp: &super::super::dashpay::DashPay, step: &Step) -> Value {
+        match step {
+            Step::Events(identity, cursor, limit) => result(
+                f.engine
+                    .block_on(dp.events(id_of(identity), *cursor, *limit)),
+                |p| page(&p),
+            ),
+            Step::Unread(identity) => result(dp.unread_count(id_of(identity)), |n| json!(n)),
+            Step::MarkRead(identity, up_to) => result(
+                f.engine.block_on(dp.mark_read(id_of(identity), *up_to)),
+                |()| Value::Null,
+            ),
+            Step::Ignore(contact) => result(
+                f.engine.block_on(dp.ignore(b58(ME), id_of(contact))),
+                |()| Value::Null,
+            ),
+            Step::Unignore(contact) => result(
+                f.engine.block_on(dp.unignore(b58(ME), id_of(contact))),
+                |()| Value::Null,
+            ),
+            Step::Sweep => {
+                f.with_me(|m, p| {
+                    m.add_incoming_contact_request(request(DAVE, ME, NEW_MS), p)
+                        .unwrap();
+                });
+                Value::Null
+            }
+            Step::OtherWallet(step) => run(f, &f.s.dashpay(OTHER_WALLET), step),
+        }
+    }
+
+    fn cases() -> Vec<(&'static str, Vec<Step>)> {
+        use Step::*;
+        let wrong_length = WRONG_LENGTH
+            .into_iter()
+            .flat_map(|id| [Events(id, None, 5), Unread(id), MarkRead(id, 1_000_000)]);
+        vec![
+            (
+                "pages",
+                vec![
+                    Events("me", None, 1_000),
+                    Events("me", Some(14), 200),
+                    Events("me", None, 0),
+                    Events("me", None, 7),
+                    Events("me", Some(207), 7),
+                    Events("me", Some(200), 7),
+                    Events("me", Some(1_000_000), 3),
+                    Events("me", Some(4), 5),
+                    Events("me", Some(1), 5),
+                    Events("me", Some(0), 5),
+                    Unread("me"),
+                ],
+            ),
+            (
+                "markRead",
+                vec![
+                    MarkRead("me", 0),
+                    Unread("me"),
+                    MarkRead("me", 50),
+                    Unread("me"),
+                    Events("me", Some(56), 12),
+                    MarkRead("me", 50),
+                    MarkRead("me", 1_000_000),
+                    Unread("me"),
+                    Events("me", None, 4),
+                ],
+            ),
+            (
+                "ignore",
+                vec![
+                    Unread("me"),
+                    Ignore("dave"),
+                    Unread("me"),
+                    Events("me", None, 3),
+                    Events("me", Some(3), 5),
+                    // Only Dave's row is below the last: no next page.
+                    Events("me", Some(3), 1),
+                    Events("me", Some(2), 5),
+                    Unignore("dave"),
+                    Sweep,
+                    Events("me", None, 3),
+                    Events("me", Some(3), 5),
+                    Unread("me"),
+                ],
+            ),
+            (
+                "refusals",
+                vec![
+                    Events(NOT_BASE58, None, 5),
+                    Events("stranger", None, 5),
+                    Unread(NOT_BASE58),
+                    Unread("stranger"),
+                    MarkRead(NOT_BASE58, 1),
+                    MarkRead("stranger", 1_000_000),
+                    Unread("stranger"),
+                    Unread("me"),
+                    OtherWallet(Box::new(Events("me", None, 5))),
+                    OtherWallet(Box::new(Unread("me"))),
+                    OtherWallet(Box::new(MarkRead("me", 1))),
+                ]
+                .into_iter()
+                .chain(wrong_length)
+                .collect(),
+            ),
+        ]
+    }
+
+    fn build() -> Value {
+        let mut out = Vec::new();
+        let mut seed_rows = None;
+        for (name, steps) in cases() {
+            let f = seeded();
+            let rows = rows(&f);
+            assert!(seed_rows.get_or_insert_with(|| rows.clone()) == &rows);
+            let dp = f.dp();
+            let mut recorded = Vec::new();
+            for step in &steps {
+                // Settle the count a write moved before the next read.
+                if let Step::Unread(identity) = step
+                    && *identity != NOT_BASE58
+                    && !WRONG_LENGTH.contains(identity)
+                {
+                    settle_count(&f, &id_of(identity));
+                }
+                let mut s = Map::new();
+                s.insert("call".into(), args(step));
+                s.insert("result".into(), run(&f, &dp, step));
+                recorded.push(Value::Object(s));
+            }
+            out.push(json!({ "name": name, "steps": recorded }));
+            f.engine.block_on(f.engine.shutdown()).unwrap();
+        }
+        let kinds: Map<String, Value> = [
+            EventKind::UsernameRegistered,
+            EventKind::ContestWon,
+            EventKind::ContestLost,
+            EventKind::ContestLocked,
+            EventKind::RequestReceived,
+            EventKind::RequestAccepted,
+            EventKind::ContactEstablished,
+            EventKind::PaymentReceived,
+        ]
+        .into_iter()
+        .map(|k| {
+            let snake = serde_json::to_value(k)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_owned();
+            (snake, json!(kind_of(k)))
+        })
+        .collect();
+        json!({
+            "comment": format!(
+                "Generated by dw-engine (rust/crates/dw-engine/src/platform/notifications_tests.rs, `vectors`) from the bell over a session; do not edit. Regenerate with {REGENERATE}."
+            ),
+            "notBase58": NOT_BASE58,
+            "wrongLength": WRONG_LENGTH,
+            "kinds": kinds,
+            "requests": requests(),
+            "rows": seed_rows.unwrap(),
+            "cases": out,
+        })
+    }
+
+    #[test]
+    fn notification_vectors() {
+        let text = serde_json::to_string_pretty(&build()).unwrap() + "\n";
+        let path = path();
+        if std::env::var_os("DW_UPDATE_VECTORS").is_some() {
+            std::fs::write(&path, &text).unwrap();
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == text,
+            "apps/desktop/src/fixture/vectors/notifications.json is stale; run {REGENERATE}"
+        );
+    }
+}

@@ -8,7 +8,9 @@ import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
 import type { ContactSectionName } from "../api/generated/ContactSectionName";
 import type { DashPayProfile } from "../api/generated/DashPayProfile";
 import type { DashPayStartupInfo } from "../api/generated/DashPayStartupInfo";
+import type { DashPayEventInfo } from "../api/generated/DashPayEventInfo";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
+import type { EventKindName } from "../api/generated/EventKindName";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { UserHit } from "../api/generated/UserHit";
@@ -27,6 +29,48 @@ export interface DashPayWorld {
   /** Each contact's requests by contact id: their Platform `$createdAt` in ms, theirs to the
    * main identity and its own to them (the engine's journal `ref` of a request, journal.rs). */
   requestTimes: Record<string, RequestTimes>;
+  /** The `dp_events` journal of the wallet's identities, oldest first: the bell's rows. */
+  journal: JournalRow[];
+}
+
+/** A journal row as dw-appdb stores it: the kind's journal name, `""` for no contact or reference,
+ * and a name kind's reference with its `@<stamp>`. */
+export interface JournalRow {
+  id: number;
+  identity: string;
+  kind: JournalKind;
+  contact: string;
+  ref: string;
+  at: number;
+  readAt: number | null;
+}
+
+/** The journal's kind names and dw-app's `EventKindName` for each (vectors/notifications.json `kinds`). */
+export const JOURNAL_KINDS = {
+  username_registered: "usernameRegistered",
+  contest_won: "contestWon",
+  contest_lost: "contestLost",
+  contest_locked: "contestLocked",
+  request_received: "requestReceived",
+  request_accepted: "requestAccepted",
+  contact_established: "contactEstablished",
+  payment_received: "paymentReceived",
+} as const satisfies Record<string, EventKindName>;
+export type JournalKind = keyof typeof JOURNAL_KINDS;
+
+/** The event a row shows (notifications.rs `DashPayEvent::journaled`): no empty contact or
+ * reference, and a name kind's label without its `@<stamp>`. */
+export function eventOf(row: JournalRow): DashPayEventInfo {
+  const named = row.kind === "username_registered" || row.kind.startsWith("contest_");
+  const reference = named ? row.ref.split("@")[0] : row.ref;
+  return {
+    id: row.id,
+    kind: JOURNAL_KINDS[row.kind],
+    contact: row.contact || null,
+    reference: reference || null,
+    at: row.at,
+    readAt: row.readAt,
+  };
 }
 
 export interface RequestTimes {
@@ -34,7 +78,7 @@ export interface RequestTimes {
   outgoing: number | null;
 }
 
-/** Base58 identity ids (44 characters, as Platform prints them). */
+/** Base58 identity ids: 32 bytes, 43 or 44 characters as Platform prints them. */
 export const IDENTITY = {
   alice: "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF",
   bob: "8GopLQQPjKr2gXjNEt9G8k2PzRZrdbBqQBNTCXV2DYiN",
@@ -44,9 +88,9 @@ export const IDENTITY = {
   frank: "FjhP3PdtkjBY9wzaLNVTmJD6fUjSHH8bFRxZVoSWkLrJ",
   grace: "GrAC3eQhZmKGwKu4R7PDuBkaxWDcXuspNwGM8RHm9ZsZ",
   heidi: "H31dSvQyJfALgo7SoD9w4uU2vYFXR3BpbYXr7FFTH2pa",
-  ivan: "1vANuoMbBJYGLx5tPxaa5LSXmVSA7oHzJJvWmrHMKtpH",
-  judy: "JudyGQjdXR1xmWvHFS3Kq8fQ5Jmpw3T6YVY6HAYtnBpW",
-  mallory: "MALLoRyCRFtBn7r9fqD4yZcVaxu3Rx1oEkJ38EN6Hbnm",
+  ivan: "1vANuoMbBJYGLx5tPxaaLSXmVSA7oHzJJvWmrHMKtpH",
+  judy: "JudyGQjdXR1xmWvHFS3K8fQ5Jmpw3T6YVY6HAYtnBpW",
+  mallory: "MALLoRyCRFtBn7r9fqD4ZcVaxu3Rx1oEkJ38EN6Hbnm",
 } as const;
 
 const at = (daysAgo: number, hours = 0) => secs(FIXTURE_NOW) - daysAgo * 86_400 - hours * 3_600;
@@ -182,6 +226,7 @@ export function noIdentity(): DashPayWorld {
     contacts: [],
     directory: [],
     requestTimes: {},
+    journal: [],
   };
 }
 
@@ -212,8 +257,45 @@ export function registering(): DashPayWorld {
   };
 }
 
+/** Alice's bell: her name, a lost contest, each contact's accept as the contacts show it, the
+ * requests waiting, and payments; what came before the last day is read. */
+function journal(contacts: ContactDetailInfo[], times: Record<string, RequestTimes>): JournalRow[] {
+  type Seed = Omit<JournalRow, "id" | "identity">;
+  const seeds: Seed[] = [
+    { kind: "username_registered", contact: "", ref: `alice@${at(120)}`, at: at(120), readAt: at(119) },
+    { kind: "contest_lost", contact: "", ref: `al@${at(118)}`, at: at(118), readAt: at(117) },
+  ];
+  for (const c of contacts) {
+    const id = c.summary.contact;
+    const { incoming, outgoing } = times[id];
+    const seen = (t: number) => (t < at(1) ? t + 600 : null);
+    const { relation } = c.summary;
+    if (relation === "contact" && c.requestReceivedAt !== null && incoming !== null) {
+      // Theirs came first: our accept made the contact. Ours first: theirs accepted it.
+      const ours = outgoing !== null && outgoing < incoming;
+      const t = c.requestReceivedAt;
+      seeds.push(
+        ours
+          ? { kind: "request_accepted", contact: id, ref: String(incoming), at: t, readAt: seen(t) }
+          : { kind: "contact_established", contact: id, ref: String(outgoing ?? incoming), at: t, readAt: seen(t) },
+      );
+    }
+    if (relation === "pendingIncoming" && incoming !== null) {
+      seeds.push({ kind: "request_received", contact: id, ref: String(incoming), at: Math.floor(incoming / 1000), readAt: null });
+    }
+  }
+  seeds.push(
+    { kind: "payment_received", contact: IDENTITY.bob, ref: "b0".repeat(32), at: at(1, 3), readAt: null },
+    { kind: "payment_received", contact: IDENTITY.dave, ref: "d4".repeat(32), at: at(12), readAt: at(11) },
+  );
+  return seeds
+    .sort((a, b) => a.at - b.at)
+    .map((s, i) => ({ id: i + 1, identity: IDENTITY.alice, ...s }));
+}
+
 export function registered(): DashPayWorld {
   const contacts = CONTACTS.map(contact);
+  const requestTimesById = Object.fromEntries(contacts.map((c, i) => [c.summary.contact, requestTimes(c, i)]));
   const hit = (c: ContactDetailInfo): UserHit => ({
     identity: c.summary.contact,
     username: c.summary.username!,
@@ -228,7 +310,8 @@ export function registered(): DashPayWorld {
     identities: [aliceIdentity()],
     registrations: [],
     contacts,
-    requestTimes: Object.fromEntries(contacts.map((c, i) => [c.summary.contact, requestTimes(c, i)])),
+    requestTimes: requestTimesById,
+    journal: journal(contacts, requestTimesById),
     directory: [
       ...contacts.map(hit),
       { identity: IDENTITY.mallory, username: "mallory", displayName: "Mallory", avatarUrl: null, relation: "stranger", unverified: false },
