@@ -97,12 +97,21 @@ export class WebDriver {
 }
 
 /** Starts tauri-driver on `port` (and `port + 1` for WebKitWebDriver) in its own process group,
- * so `stopDriver` ends the driver, WebKitWebDriver and the app; its output goes to `log`. */
-export async function startDriver(driverPath: string, port: number, log: string): Promise<{ driver: ChildProcess; base: string }> {
+ * so `stopDriver` ends the driver, WebKitWebDriver and the app; its output goes to `log`.
+ * `closed` settles once every process holding the output is gone and `log` is on disk (or after
+ * 30 s). */
+export async function startDriver(
+  driverPath: string,
+  port: number,
+  log: string,
+): Promise<{ driver: ChildProcess; base: string; closed: Promise<void> }> {
   const out = createWriteStream(log);
   const driver = spawn(driverPath, ["--port", String(port), "--native-port", String(port + 1)], { stdio: ["ignore", "pipe", "pipe"], detached: true });
-  driver.stdout!.pipe(out);
-  driver.stderr!.pipe(out);
+  // Two sources: neither may end the file before the other is done.
+  driver.stdout!.pipe(out, { end: false });
+  driver.stderr!.pipe(out, { end: false });
+  const flushed = new Promise<void>((resolve) => driver.on("close", () => out.end(() => resolve())));
+  const closed = Promise.race([flushed, new Promise<void>((resolve) => setTimeout(resolve, 30_000).unref())]);
   const base = `http://127.0.0.1:${port}`;
   await poll(30_000, "tauri-driver to listen", () =>
     fetch(`${base}/status`).then(
@@ -110,7 +119,7 @@ export async function startDriver(driverPath: string, port: number, log: string)
       () => undefined,
     ),
   );
-  return { driver, base };
+  return { driver, base, closed };
 }
 
 /** Ends the driver's process group: tauri-driver, WebKitWebDriver and the app. Gone already is fine. */

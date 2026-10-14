@@ -83,7 +83,8 @@ zeroed: dropping every reference is the most the renderer can do (G-01 H-01, E0-
 
 ## T1 and GL evidence (D20)
 
-2026-10-14, branch `dw/u-02-onboarding`, debug build of the current renderer, agentbox (Xvfb,
+2026-10-14, branch `dw/u-02-onboarding` (app and renderer built at `e2e1576d`, the harness at
+the head), agentbox (Xvfb,
 WebKitGTK 2.52.6 through tauri-driver), `dwd-regtest-dashd:24.0.0-rc.2` (compose project
 `dw-e2e-onboarding`). `scripts/e2e-tauri-onboarding.sh` → PASS, 13 steps:
 
@@ -94,7 +95,7 @@ WebKitGTK 2.52.6 through tauri-driver), `dwd-regtest-dashd:24.0.0-rc.2` (compose
 5. Show Recovery Phrase: passphrase, the created phrase
 6. Add Wallet ▸ Restore: unknown word flagged, suggestion completes, scan from genesis
 7. restored wallet: 1.50000000 tDASH through SPV from dashd (funding txid
-   `b8a5b5067eb06130af37ef0a1f9abb08bdc371783b958edc686dfa40c67ca0a1`, 2 blocks mined on top)
+   `6098e799ea58b6622d97182a47d242eeb1836eb53d61b5ded0a76f4482d8d1ce`, 2 blocks mined on top)
 8. lock: wrong passphrase (attempts remaining), mixing only, unlock sheet to full
 9. Forgot passphrase: Wallet 2 keeps its keys, Wallet 1 watch-only
 10. the old passphrase fails, the new one unlocks

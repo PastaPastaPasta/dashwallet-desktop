@@ -354,11 +354,12 @@ async function main() {
     await wd.end().catch(() => undefined);
   }
 
-  // Whatever the outcome (CI uploads OUT either way), once the app has exited (the session
-  // ended) and its data root and logs are complete. The screenshots are kept off phrase screens
-  // above: text drawn into a PNG is not found here.
+  // Whatever the outcome (CI uploads OUT either way), once the app and the driver have exited
+  // and their output is on disk. The screenshots are kept off phrase screens above: text drawn
+  // into a PNG is not found here.
   stopDriver(driver);
   driver = undefined;
+  await started.closed;
   const secrets = [funded.phrase, created.join(" "), PASSPHRASE, NEW_PASSPHRASE].filter((s) => s !== "");
   const found = [...leaks(appRoot, secrets), ...leaks(OUT, secrets)];
   if (found.length > 0) {

@@ -441,7 +441,8 @@ export class OnboardingModel extends Model {
     }
   }
 
-  /** The screen went away since the running call started: its replies are dropped. */
+  /** The screen went away since the running call started: its replies are dropped. Only
+   * meaningful inside `#exclusive`, which records the epoch a call starts in. */
   get #stale(): boolean {
     return this.#callEpoch !== this.#epoch;
   }
