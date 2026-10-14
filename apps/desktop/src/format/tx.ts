@@ -64,9 +64,95 @@ export function typeTitle(type: TxTypeName, category: TxCategoryName | null, amo
   }
 }
 
-/** Label first, then the type title. Never the raw address. */
+/** Label first, then the type title. Never the raw address. A row's title comes only from here
+ * (U-03 D14): counterparty attribution (DP3-02) adds the contact's name here. */
 export function txTitle(row: Pick<TxRow, "txType" | "category" | "amount" | "label">): string {
   return row.label ? row.label : typeTitle(row.txType, row.category, row.amount);
+}
+
+/** dash-qt `TransactionTableModel::formatTxType`: the Type column of table mode. */
+export function tableTypeTitle(type: TxTypeName): string {
+  switch (type) {
+    case "recvWithAddress":
+      return "Received with";
+    case "recvFromOther":
+      return "Received from";
+    case "recvWithCoinJoin":
+      return "Received via CoinJoin";
+    case "sendToAddress":
+    case "sendToOther":
+      return "Sent to";
+    case "sendToSelf":
+      return "Payment to yourself";
+    case "generated":
+      return "Mined";
+    case "coinJoinMixing":
+      return "CoinJoin Mixing";
+    case "coinJoinCollateralPayment":
+      return "CoinJoin Collateral Payment";
+    case "coinJoinMakeCollaterals":
+      return "CoinJoin Make Collateral Inputs";
+    case "coinJoinCreateDenominations":
+      return "CoinJoin Create Denominations";
+    case "coinJoinSend":
+      return "CoinJoin Send";
+    case "platformTransfer":
+      return "Platform Transfer";
+    case "dustReceive":
+      return "Dust Receive";
+    case "dataTransaction":
+      return "Data";
+    case "masternodeRegistration":
+      return "Masternode Registration";
+    case "masternodeUpdate":
+      return "Masternode Update";
+    case "assetLock":
+      return "Asset Lock";
+    case "other":
+      return "Other";
+  }
+}
+
+/** Table mode's Address / Label column (dash-qt): the label, else the address, else "(n/a)".
+ * Counterparty attribution (DP3-02) adds the contact here too (U-03 D14). */
+export function rowParty(row: Pick<TxRow, "address" | "label">): string {
+  return row.label || row.address || "(n/a)";
+}
+
+// ---------------------------------------------------------------- filters
+
+/** dash-qt's date filter, without Range (U-03 D12). */
+export type DateChoice = "all" | "today" | "thisWeek" | "thisMonth" | "lastMonth" | "thisYear";
+
+export const DATE_CHOICES: { id: DateChoice; title: string }[] = [
+  { id: "all", title: "All" },
+  { id: "today", title: "Today" },
+  { id: "thisWeek", title: "This week" },
+  { id: "thisMonth", title: "This month" },
+  { id: "lastMonth", title: "Last month" },
+  { id: "thisYear", title: "This year" },
+];
+
+/** The UNIX-second bounds of a date choice in local time (weeks start on Monday, as dash-qt's);
+ * `dateTo` is exclusive, as the engine's `date_to`. */
+export function dateRange(choice: DateChoice, now: Date): { dateFrom?: number; dateTo?: number } {
+  const s = (d: Date) => Math.floor(d.getTime() / 1000);
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  switch (choice) {
+    case "all":
+      return {};
+    case "today":
+      return { dateFrom: s(startOfDay(now)) };
+    case "thisWeek":
+      return { dateFrom: s(new Date(y, m, now.getDate() - ((now.getDay() + 6) % 7))) };
+    case "thisMonth":
+      return { dateFrom: s(new Date(y, m, 1)) };
+    case "lastMonth":
+      return { dateFrom: s(new Date(y, m - 1, 1)), dateTo: s(new Date(y, m, 1)) };
+    case "thisYear":
+      return { dateFrom: s(new Date(y, 0, 1)) };
+  }
 }
 
 export type TxIcon = "received" | "sent" | "internalTransfer" | "mixing" | "mining" | "error";

@@ -185,6 +185,19 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// Tests: held shared by an open's exclusive probe of the lock file, and
+/// exclusively by a test from starting a child process until the child runs.
+/// A child being started holds a copy of every descriptor of this process,
+/// close-on-exec ones included, until its exec closes them (glibc's
+/// `posix_spawn` child; XNU's copies the table the same way). The shared
+/// lock of an instance dropped meanwhile lives on in that copy, so a probe
+/// in the gap finds the file busy and keeps the removed wallets recorded:
+/// safe, but a test expecting them forgotten failed (macOS CI 38570533549,
+/// `a_removal_is_kept_while_another_instance_is_open`; 7 of 144 loaded runs
+/// of `migration_tests` on Linux).
+#[cfg(test)]
+pub(crate) static CHILD_STARTS: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
 /// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
 /// with an insert trigger that skips rows of a removed wallet (migration
 /// `V2026101302`, DEC-210). Settings are cleared by scope.
@@ -408,6 +421,10 @@ impl AppDb {
         // waited for; without it the removed wallets stay recorded.
         let sole = open_lock_file(&lock_path)?;
         let lock = lock_id(&lock_path, &sole)?;
+        #[cfg(test)]
+        let starts = CHILD_STARTS
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let alone = match sole.try_lock() {
             Ok(()) => true,
             Err(e) => {
@@ -415,6 +432,8 @@ impl AppDb {
                 false
             }
         };
+        #[cfg(test)]
+        drop(starts);
         #[cfg(test)]
         if let Some(hook) = BEFORE_SQLITE_OPEN.take() {
             hook();

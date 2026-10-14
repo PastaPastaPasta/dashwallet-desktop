@@ -1117,6 +1117,16 @@ fn the_lock_file_is_next_to_the_database() {
     }
 }
 
+/// Keeps every open in this process from probing the lock file until the
+/// guard is dropped, once the child started meanwhile runs (it has printed,
+/// say): until its exec it holds this process's descriptors
+/// ([`crate::CHILD_STARTS`]).
+fn child_starts() -> std::sync::RwLockWriteGuard<'static, ()> {
+    crate::CHILD_STARTS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Run by [`a_removal_is_kept_while_another_process_has_the_file_open`] as
 /// its child process (a test that does nothing otherwise): opens the file
 /// `DW_APPDB_CHILD` names, removes `W`, and writes a row of `W` when its
@@ -1155,6 +1165,7 @@ fn a_removal_is_kept_while_another_process_has_the_file_open() {
     use std::process::{Command, Stdio};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
+    let starting = child_starts();
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -1169,6 +1180,7 @@ fn a_removal_is_kept_while_another_process_has_the_file_open() {
         .unwrap();
     let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
     wait_for_line(&mut out, "removed");
+    drop(starting);
 
     let db = AppDb::open(&path).unwrap();
     assert_eq!(recorded(&db), [W]);
@@ -1319,6 +1331,7 @@ fn child_opening_a_name() {
 
 /// What [`child_opening_a_name`] printed opening `name` in `dir`.
 fn open_in_child(dir: &Path, name: &str) -> String {
+    let starting = child_starts();
     let out = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -1330,6 +1343,7 @@ fn open_in_child(dir: &Path, name: &str) -> String {
         .env("DW_APPDB_NAME", name)
         .output()
         .unwrap();
+    drop(starting);
     assert!(out.status.success());
     let out = String::from_utf8(out.stdout).unwrap();
     for line in out.lines() {
