@@ -17,24 +17,30 @@ export const ProtectionText = {
 };
 
 /** What a view that shows or takes a recovery phrase shows until the window is kept out of
- * screen captures (U-02 D27): "Preparing…", or why it is not, with Try again. Never the secret. */
-export function ProtectionPending({ protection, onCancel }: { protection: Protection; onCancel?: () => void }) {
+ * screen captures (U-02 D27): "Preparing…", or why it is not, with Try again; Cancel where the
+ * view has one. Never the secret. */
+export function ProtectionPending({ protection, onCancel }: { protection: Protection; onCancel?: (() => void) | null }) {
+  // Cancel either way: a protection that never answers must not trap Add Wallet.
+  const cancel = onCancel && (
+    <DashButton variant="plainBlue" data-testid="protection-cancel" onClick={onCancel}>
+      Cancel
+    </DashButton>
+  );
   if (protection !== "failed") {
     return (
-      <p className="sheet-text" role="status" data-testid="protection-pending">
-        {ProtectionText.preparing}
-      </p>
+      <>
+        <p className="sheet-text" role="status" data-testid="protection-pending">
+          {ProtectionText.preparing}
+        </p>
+        {cancel && <div className="sheet-actions">{cancel}</div>}
+      </>
     );
   }
   return (
     <div role="alert" data-testid="protection-failed">
       <p className="form-problem">{ProtectionText.failed}</p>
       <div className="sheet-actions">
-        {onCancel && (
-          <DashButton variant="plainBlue" data-testid="protection-cancel" onClick={onCancel}>
-            Cancel
-          </DashButton>
-        )}
+        {cancel}
         <DashButton variant="filledBlue" data-autofocus data-testid="protection-retry" onClick={retryProtection}>
           Try again
         </DashButton>

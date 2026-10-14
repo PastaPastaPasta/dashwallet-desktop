@@ -29,8 +29,8 @@ commands! {
     /// What the native menus and the tray mirror: Discreet Mode's check
     /// and whether Lock Wallet is enabled; and whether a secret is on
     /// screen (the window's content protection). Answers once the
-    /// protection is in effect (U-02 D27); `app.screen_protection` when the
-    /// platform could not apply it.
+    /// protection change has run on the window (U-02 D27);
+    /// `app.screen_protection` when it could not run.
     #[facade()]
     fn shell_sync(state, sync: ShellSync) -> () {
         state.shell.sync(sync);

@@ -172,7 +172,10 @@ impl Shell {
             .as_ref()
             .map(|f| f(on));
         match applied {
-            None => Ok(()),
+            // Only the IPC tests run without `protect_secrets`; anywhere else
+            // a missing hook must not read as protected.
+            None if cfg!(test) => Ok(()),
+            None => Err("no content protection is set up".to_owned()),
             Some(reply) => reply
                 .await
                 .unwrap_or_else(|_| Err("the main thread did not run the change".to_owned())),

@@ -121,8 +121,9 @@ codes! {
         UnknownHandle = "app.unknown_handle",
         /// More than `SendHandles::MAX` handles of a kind are open.
         TooManyHandles = "app.too_many_handles",
-        /// The window's content protection could not be turned on or off
-        /// (`shell_sync`, U-02 D27): the renderer keeps secrets hidden.
+        /// The window's content protection change could not run (no main
+        /// window, the event loop is gone; `shell_sync`, U-02 D27): the
+        /// renderer keeps secrets hidden.
         ScreenProtection = "app.screen_protection",
     }
 }

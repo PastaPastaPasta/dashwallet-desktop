@@ -369,6 +369,31 @@ test("secret surfaces wait until the window is protected, and stay closed when i
   expect(errors).toEqual([]);
 });
 
+test("only the latest protection request counts: an older answer opens nothing (D27)", async ({ page }) => {
+  await open(page, "funded");
+  const hold = () => page.evaluateHandle(() => window.__dwFixture!.hold("shell_sync"));
+  const syncs = () => calls(page).then((c) => c.filter((n) => n === "shell_sync").length);
+  // Open (held), close and open again: the close's "off" waits behind the first "on".
+  const before = await syncs();
+  const first = await hold();
+  await command(page, { kind: "recoveryPhrase" });
+  await expect(page.getByTestId("protection-pending")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("recovery-phrase")).toHaveCount(0);
+  await command(page, { kind: "recoveryPhrase" });
+  await expect(page.getByTestId("protection-pending")).toBeVisible();
+  // The first answer arrives while "off" is still on its way: the sheet keeps waiting.
+  const off = await hold();
+  await first.evaluate((r) => r());
+  await expect.poll(syncs).toBe(before + 2);
+  // Rendered after the first answer was handled.
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await expect(page.getByTestId("protection-pending")).toBeVisible();
+  await expect(page.getByTestId("recovery-passphrase-field")).toHaveCount(0);
+  await off.evaluate((r) => r());
+  await expect(page.getByTestId("recovery-passphrase-field")).toBeVisible();
+});
+
 test("Forgot passphrase waits until the window is protected (D27)", async ({ page }) => {
   await open(page, "locked-two-wallets");
   const release = await page.evaluateHandle(() => window.__dwFixture!.hold("shell_sync"));

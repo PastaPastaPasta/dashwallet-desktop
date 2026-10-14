@@ -75,11 +75,11 @@ export function Onboarding({
           </span>
           <span className="onboarding-header-side" />
         </header>
-        <main className="onboarding-body" ref={body} data-testid={`onboarding-${step}`}>
+        <main className="onboarding-body" ref={body} data-testid={ready ? `onboarding-${step}` : "onboarding-preparing"}>
           {ready ? (
             <Step model={model} onCancel={onCancel} onDone={onDone} restoreText={restoreText} setRestoreText={setRestoreText} />
           ) : (
-            <ProtectionPending protection={protection} onCancel={onCancel ?? undefined} />
+            <ProtectionPending protection={protection} onCancel={onCancel} />
           )}
         </main>
       </div>
