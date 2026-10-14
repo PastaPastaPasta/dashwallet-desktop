@@ -14,7 +14,9 @@ protocolVersion: number, contactRequest: string, profileUpdate: string, contactI
  */
 creditsPerDuff: number, 
 /**
- * The network's fee for a top-up (its minimum), in credits.
+ * What a top-up's lock must hold before Platform processes it, in
+ * credits. Not the fee charged, which is metered and has been far
+ * lower.
  */
 topUpFee: string, topUpMinDuffs: number, 
 /**

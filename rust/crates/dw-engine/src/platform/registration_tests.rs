@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::{Duration, Instant};
@@ -24,6 +24,7 @@ use super::flows::FlowKind;
 use super::lease::mode_b::{TrackedRow, TrackedStatus, index_trusted};
 use super::lease::{CallPermit, FundingKey, Lease, StoredLock};
 use super::names::NameOutcome;
+use super::recovery::{BoxedFuture, MockPlatform};
 use super::registration::{
     self, InitialProfile, RegistrationFunding, RegistrationPhase, RegistrationRequest,
     RegistrationWait,
@@ -32,8 +33,13 @@ use super::registration_flow::{
     self as flow, Driver, FundError, LockInfo, LockStatus, RegistrationLib, Spendable,
 };
 use super::registration_rows::{Funding, Phase, ProfileRecord};
+use super::runtime::guard;
+use super::{SpvState, StartupStatus};
 use crate::send::SpendOwner;
-use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
+use crate::session::Manager;
+use crate::{
+    DashNetwork, Engine, EngineConfig, EngineError, ImportOptions, NetworkSession, WalletId,
+};
 
 const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -497,6 +503,9 @@ struct Fake {
     /// For the tap's `on_funded`, as the session wires it.
     session: std::sync::Weak<NetworkSession>,
     ready: AtomicBool,
+    /// The hold is the session's real bring-up outcome's, SPV counted as
+    /// synced ([`flow::startup_hold`]).
+    startup_hold: AtomicBool,
     hung: AtomicBool,
     /// `funding_permit` waits while set, before P2b marks the step: the
     /// window between `enter_funding` and the marker (OD-05). Sets `hung`.
@@ -521,6 +530,7 @@ impl Fake {
             flows,
             session,
             ready: AtomicBool::new(true),
+            startup_hold: AtomicBool::new(false),
             hung: AtomicBool::new(false),
             permit_hold: AtomicBool::new(false),
             spendable_hold: AtomicBool::new(false),
@@ -627,6 +637,13 @@ impl RegistrationLib for Fake {
     }
 
     fn funding_hold(&self) -> Option<RegistrationWait> {
+        if self.startup_hold.load(Ordering::SeqCst) {
+            let session = self.session.upgrade().expect("the fixture's session");
+            return match session.dashpay_startup(&self.wallet) {
+                Ok(s) => flow::startup_hold(s.startup),
+                Err(_) => Some(RegistrationWait::Sync),
+            };
+        }
         (!self.ready.load(Ordering::SeqCst)).then_some(RegistrationWait::Sync)
     }
 
@@ -1941,6 +1958,106 @@ fn a_run_waits_for_the_sync_with_its_lease() {
     f.settle(draft);
     assert_eq!(phase(&f.row(draft)), Phase::Done);
     assert_eq!(lib.counts(), (1, 1));
+}
+
+/// The bring-up as a slow DAPI node or a loaded machine leaves it
+/// (dw-tdash B2): the first ends `PartialNoIdentity`; the next, once
+/// `rerun` lets it, proves the seed has no identity.
+#[derive(Default)]
+struct PartialBringUp {
+    calls: AtomicU32,
+    rerun: Arc<tokio::sync::Notify>,
+}
+
+impl MockPlatform for PartialBringUp {
+    fn bring_up(
+        &self,
+        _: Arc<Manager>,
+        _: WalletId,
+    ) -> BoxedFuture<Result<platform_wallet::manager::startup::WalletStartupOutcome, EngineError>>
+    {
+        use platform_wallet::manager::startup::{WalletStartupOutcome, WalletStartupStatus};
+        let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+        let rerun = (!first).then(|| Arc::clone(&self.rerun));
+        Box::pin(async move {
+            if let Some(rerun) = rerun {
+                rerun.notified().await;
+            }
+            Ok(WalletStartupOutcome {
+                status: if first {
+                    WalletStartupStatus::PartialNoIdentity
+                } else {
+                    WalletStartupStatus::NoIdentity
+                },
+                identity_id: None,
+                discovery_attempts: 1,
+                dashpay_sync_ran: !first,
+                seed_binding_unverified: false,
+                identity_scan_incomplete: false,
+                contact_accounts_drained: 0,
+                contact_accounts_pending: 0,
+                elapsed: Duration::ZERO,
+            })
+        })
+    }
+
+    fn names_pass(&self, _: Arc<Manager>, _: WalletId) -> BoxedFuture<()> {
+        Box::pin(async {})
+    }
+
+    fn discover(&self, _: Arc<Manager>, _: WalletId) -> BoxedFuture<Result<usize, PlatformError>> {
+        Box::pin(async { Ok(0) })
+    }
+}
+
+/// dw-tdash B2: a bring-up that left the seed's identity indexes unanswered
+/// holds the funding at `Startup`, not `Network`. The run waits with its
+/// lease instead of parking, has the bring-up run again, and registers
+/// once that answers, without a restart.
+#[test]
+fn a_run_held_on_a_partial_bring_up_has_it_run_again_and_registers() {
+    let f = fixture(false);
+    let platform = Arc::new(PartialBringUp::default());
+    *guard(&f.session.platform.recovery.mock) = Some(Arc::clone(&platform) as _);
+    f.engine.block_on(f.session.start_spv()).unwrap();
+    eventually("SPV", || {
+        f.session.spv_state().unwrap() == SpvState::Running
+    });
+    let startup = || f.session.dashpay_startup(&f.wallet).unwrap().startup;
+    eventually("the partial bring-up", || {
+        startup() == StartupStatus::PartialNoIdentity
+    });
+    let lib = f.fake();
+    lib.startup_hold.store(true, Ordering::SeqCst);
+    let draft: i64 = f
+        .engine
+        .block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            request(PLAIN),
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap()
+        .parse()
+        .unwrap();
+    eventually("the rerun the run asked for", || {
+        platform.calls.load(Ordering::SeqCst) == 2
+    });
+    assert_eq!(
+        f.status(&lib, draft).waiting,
+        Some(RegistrationWait::Startup)
+    );
+    assert!(f.running(draft), "it waits with its lease");
+    assert_eq!(lib.counts(), (0, 0));
+
+    platform.rerun.notify_one();
+    f.settle(draft);
+    assert_eq!(phase(&f.row(draft)), Phase::Done);
+    assert_eq!(startup(), StartupStatus::NoIdentity);
+    assert_eq!(lib.counts(), (1, 1));
+    assert_eq!(platform.calls.load(Ordering::SeqCst), 2);
+    f.engine.block_on(f.engine.shutdown()).unwrap();
 }
 
 /// A failed row behind reality whose index another flow funded (Finish

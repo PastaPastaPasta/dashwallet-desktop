@@ -1700,9 +1700,10 @@ fn t2_testnet_credits() {
 
 /// DP1-06's T3 on the public testnet: a real top-up of A's identity from
 /// A's Core balance (fund it first: `t2_testnet_credits` prints the
-/// address). Waits for SPV and the coins, tops up `top_up_min_duffs`, and
-/// checks the balance rose by the lock's credits less Platform's fee.
-/// Prints the measured fee against the table's.
+/// address). Waits for the coins, tops up `top_up_min_duffs` once SPV has
+/// caught up, and checks the balance rose by the lock's credits less
+/// Platform's fee, and by at least the quote's credits. Prints the measured
+/// fee against the table's `top_up_fee`.
 #[test]
 #[ignore = "public testnet, spends tDASH; set DW_DP106_TESTNET_FIXTURE"]
 fn t3_testnet_top_up() {
@@ -1735,9 +1736,26 @@ fn t3_testnet_top_up() {
         )
         .unwrap()
         .id;
-    let out = engine
-        .block_on(dp.top_up(identity.clone(), duffs, grant))
-        .unwrap();
+    // The quote has no SPV gate; the top-up is held back until SPV has
+    // caught up (`platform.context_unavailable`) and the bring-up has
+    // answered (`platform.unavailable`, which also runs it again; the quote
+    // ruled out the journal), the grant kept (m4 §2.8), so it is retried
+    // while held, for as long as the coins may take.
+    let held_since = Instant::now();
+    let out = loop {
+        match engine.block_on(dp.top_up(identity.clone(), duffs, grant.clone())) {
+            Err(CreditsError::Platform(
+                PlatformError::ContextUnavailable | PlatformError::Unavailable,
+            )) if held_since.elapsed() < Duration::from_secs(1800) => {
+                std::thread::sleep(Duration::from_secs(2))
+            }
+            other => break other.unwrap(),
+        }
+    };
+    eprintln!(
+        "T3 held back (SPV or the bring-up) for {:?}",
+        held_since.elapsed()
+    );
     eprintln!("T3 top-up {duffs} duffs: {out:?} (quote {quote:?})");
     let out = match out.state {
         TopUpState::Applied { .. } => out,
@@ -1768,7 +1786,7 @@ fn t3_testnet_top_up() {
     let added = after - before;
     let funded = duffs * table.credits_per_duff;
     eprintln!(
-        "T3 before {before} after {after}: added {added}, funded {funded}, fee {} (table's minimum {}, quoted credits {})",
+        "T3 before {before} after {after}: added {added}, funded {funded}, fee {} (table's top_up_fee {}, quoted credits {})",
         funded - added,
         table.top_up_fee,
         quote.credits
@@ -1777,6 +1795,13 @@ fn t3_testnet_top_up() {
     assert!(
         added > 0 && added <= funded,
         "the balance rose by less than the lock"
+    );
+    // The quote errs low (m4 §7 item 46): Platform's metered fee is below
+    // the table's `top_up_fee`.
+    assert!(
+        added >= quote.credits,
+        "the top-up added {added}, less than the quoted {}",
+        quote.credits
     );
     if let TopUpState::Applied {
         credits_added: Some(reported),

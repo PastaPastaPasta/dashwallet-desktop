@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dw_vault::{LockState, Vault};
 use tokio::sync::{mpsc, watch};
@@ -32,6 +32,12 @@ const MARKETPLACE_ENDING: Duration = Duration::from_secs(60);
 /// reports it instead of hanging.
 pub(super) const KEY_WORK_JOIN: Duration = Duration::from_secs(5);
 
+/// The pause after a flow's first request to run a wallet's bring-up again
+/// ([`PlatformRuntime::retry_startup`]), doubling with each request up to
+/// [`STARTUP_RETRY_MAX`]. The first request runs it at once.
+pub(super) const STARTUP_RETRY_MIN: Duration = Duration::from_secs(30);
+pub(super) const STARTUP_RETRY_MAX: Duration = Duration::from_secs(600);
+
 /// Work the supervisor takes after SPV has started.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum PlatformSignal {
@@ -42,6 +48,10 @@ pub(crate) enum PlatformSignal {
     /// A restore's last mark on a wallet cleared after an entry point was
     /// refused for it (review r3 M4-R3): bring it up if it is still there.
     Readmit(WalletId),
+    /// A flow waits on the wallet's bring-up, whose outcome only a run
+    /// again changes (`StartupStatus::awaits_rerun`): run it again, with
+    /// the library's budget and whatever Platform proved before.
+    RetryStartup(WalletId),
     /// A contest watch row was written (DP1-04): a pass now, and the
     /// schedule again.
     Contests,
@@ -93,6 +103,9 @@ pub(crate) struct PlatformRuntime {
     /// The clock that orders signals' events against bring-up admissions
     /// (review r4 M4-R4).
     events: AtomicU64,
+    /// Each wallet's requests to run its bring-up again since its outcome
+    /// last stopped holding flows ([`Self::retry_startup`]).
+    startup_retries: Mutex<HashMap<WalletId, StartupRetry>>,
     /// The identity read model and the names passes (DP1-05).
     pub(crate) recovery: super::recovery::Recovery,
     /// The contacts read model's snapshots and usernames (DP2-01).
@@ -216,6 +229,23 @@ struct RestoreMark {
     refused: bool,
 }
 
+/// A wallet's bring-up reruns ([`PlatformRuntime::retry_startup`]).
+#[derive(Debug, Clone, Copy)]
+struct StartupRetry {
+    /// Reruns requested so far.
+    runs: u32,
+    /// None is requested before this.
+    next: Instant,
+}
+
+/// The pause after the `runs`th rerun of a bring-up before the next:
+/// [`STARTUP_RETRY_MIN`] doubled per rerun after the first, at most
+/// [`STARTUP_RETRY_MAX`].
+pub(super) fn startup_retry_pause(runs: u32) -> Duration {
+    let doublings = runs.saturating_sub(1).min(16);
+    (STARTUP_RETRY_MIN * 2u32.pow(doublings)).min(STARTUP_RETRY_MAX)
+}
+
 /// Wallets of a restore in progress ([`PlatformRuntime::restoring`]).
 pub(crate) struct Restoring<'a> {
     runtime: &'a PlatformRuntime,
@@ -273,6 +303,7 @@ impl PlatformRuntime {
             key_work: Arc::default(),
             restoring: Mutex::new(HashMap::new()),
             events: AtomicU64::new(0),
+            startup_retries: Mutex::new(HashMap::new()),
             recovery: Default::default(),
             contacts: Default::default(),
             users: Default::default(),
@@ -382,6 +413,8 @@ impl PlatformRuntime {
                 entry.startup = StartupStatus::NotRun;
             }
         }
+        // The next start brings every wallet up anyway.
+        guard(&self.startup_retries).clear();
     }
 
     /// Waits for the bring-up's blocking key work, at most
@@ -405,7 +438,51 @@ impl PlatformRuntime {
     }
 
     pub(super) fn record(&self, id: WalletId, startup: DashPayStartup) {
+        if !startup.startup.awaits_rerun() {
+            guard(&self.startup_retries).remove(&id);
+        }
         self.write_startup().insert(id, startup);
+    }
+
+    /// A flow is held on wallet `id`'s bring-up (`StartupStatus::awaits_rerun`;
+    /// DP1-02 §3.4 Restore rule 1, a top-up): has the supervisor run it again,
+    /// at once the first time, then at most once per
+    /// [`startup_retry_pause`], from 30 s doubling to 10 minutes, for as long
+    /// as flows keep asking and the outcome keeps holding them. Nothing while
+    /// SPV is stopped (the next start runs it), for a wallet without keys,
+    /// or while a bring-up of it runs. `true` when it asked.
+    pub(crate) fn retry_startup(&self, id: WalletId) -> bool {
+        self.retry_startup_at(id, Instant::now())
+    }
+
+    /// Wallet `id`'s last bring-up outcome holds flows until it runs again:
+    /// one of [`StartupStatus::awaits_rerun`] for a wallet with keys, or none
+    /// on record (it never ran, or the library refused it), which reads as
+    /// `NotRun`.
+    pub(super) fn awaits_rerun(&self, id: &WalletId) -> bool {
+        self.startup_of(id)
+            .is_none_or(|s| s.startup.awaits_rerun() && !s.read_only)
+    }
+
+    /// [`Self::retry_startup`] at `now`.
+    pub(super) fn retry_startup_at(&self, id: WalletId, now: Instant) -> bool {
+        if !self.awaits_rerun(&id) || !self.is_running() {
+            return false;
+        }
+        {
+            let mut retries = guard(&self.startup_retries);
+            let retry = retries
+                .entry(id)
+                .or_insert(StartupRetry { runs: 0, next: now });
+            if now < retry.next {
+                return false;
+            }
+            retry.runs += 1;
+            retry.next = now + startup_retry_pause(retry.runs);
+        }
+        tracing::info!(wallet_id = %id, "a flow waits on the DashPay bring-up: running it again");
+        self.signal(PlatformSignal::RetryStartup(id));
+        true
     }
 
     /// Sets wallet `id`'s startup status; the one it replaced, if any.
@@ -453,6 +530,7 @@ impl PlatformRuntime {
             task.abort();
         }
         self.write_startup().remove(id);
+        guard(&self.startup_retries).remove(id);
         self.recovery.forget(id);
         self.contacts.forget(id);
         self.users.scans.forget(id);

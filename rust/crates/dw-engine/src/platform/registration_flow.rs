@@ -64,6 +64,7 @@ use super::registration_ledger::{
     IndexOwner, Ledger, NoIndex, Owner, Reconcile, Standing, StepClaim, Taker, index_after,
 };
 use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
+use super::startup::StartupStatus;
 use crate::coins::CoinFence;
 use crate::{NetworkSession, WalletId};
 
@@ -100,8 +101,8 @@ pub(crate) const CHAINLOCK_POLL: Duration = Duration::from_secs(120);
 /// "Finish transfers" waits for no proof, but a `Built` lock is resumed
 /// this long so the library broadcasts it again.
 pub(crate) const REBROADCAST_WAIT: Duration = Duration::from_secs(5);
-/// The pause before a run that waits for the sync, or for the network,
-/// steps again (the run keeps its lease, §2.6's one prompt).
+/// The pause before a run that waits for the sync or the bring-up, or for
+/// the network, steps again (the run keeps its lease, §2.6's one prompt).
 const SYNC_POLL: Duration = Duration::from_secs(5);
 const NETWORK_RETRY_MIN: Duration = Duration::from_secs(2);
 /// A lock's outpoint is written this many times before the run gives up
@@ -240,9 +241,9 @@ pub(crate) trait RegistrationLib: Send + Sync {
     /// `None` once SPV has synced and the wallet's DashPay bring-up (DP1-05's
     /// same-seed discovery; the library's asset-lock reconstruction runs
     /// with the sync) answered which identity indexes the seed uses. `Sync`
-    /// while that is under way; `Unlock` for a bring-up that runs again at
-    /// the first unlock; `Network` for one that runs again only at the next
-    /// start.
+    /// until SPV has synced; `Unlock` for a bring-up that runs again at the
+    /// first unlock; `Startup` while the bring-up runs or has not answered
+    /// (a run waiting on it has it run again: [`startup_hold`]).
     fn funding_hold(&self) -> Option<RegistrationWait>;
     /// P2b's funding call permit for `step` under `key`, charging
     /// `lock_duffs` and the worst-case fee (E0-04 §2a.6,
@@ -1369,8 +1370,12 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 Step::Rewait => {}
                 Step::Wait(wait) if self.waits => {
                     self.flows().with_held(self.claim, |s| s.wait = Some(wait));
+                    if wait == RegistrationWait::Startup {
+                        // Nothing else runs it again before the next start.
+                        self.session.platform.retry_startup(self.wallet);
+                    }
                     let pause = match wait {
-                        RegistrationWait::Sync => SYNC_POLL,
+                        RegistrationWait::Sync | RegistrationWait::Startup => SYNC_POLL,
                         RegistrationWait::ChainLock => CHAINLOCK_POLL,
                         _ => {
                             tracing::info!(draft, phase = %row.phase, "registration retries");
@@ -1584,11 +1589,11 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         }
     }
 
-    /// The funding hold as a step: the sync is waited for in the run, the
-    /// others park it.
+    /// The funding hold as a step: the sync and the bring-up are waited for
+    /// in the run, an authority parks it.
     fn funding_hold(&self) -> Option<Step> {
         Some(match self.lib.funding_hold()? {
-            RegistrationWait::Sync => Step::Wait(RegistrationWait::Sync),
+            wait @ (RegistrationWait::Sync | RegistrationWait::Startup) => Step::Wait(wait),
             other => Step::Park(other),
         })
     }
@@ -2437,6 +2442,26 @@ pub(crate) fn signal(session: &NetworkSession, wallet: WalletId, draft: i64) {
     );
 }
 
+/// What a wallet's bring-up outcome holds a funding for once SPV has synced
+/// (Restore rule 1: the same-seed discovery answered which identity indexes
+/// the seed uses). `Unlock` when it runs again at the first unlock (no
+/// signers); `Startup` while it runs, and when it never reached Platform,
+/// failed locally or left indexes unanswered, which only a run again
+/// changes: a run waiting on it asks for one
+/// ([`PlatformRuntime::retry_startup`](super::runtime::PlatformRuntime::retry_startup)).
+pub(crate) fn startup_hold(startup: StartupStatus) -> Option<RegistrationWait> {
+    use StartupStatus as S;
+    match startup {
+        S::Ready | S::NoIdentity | S::PartialAccountsPending | S::SeedBindingUnverified => None,
+        S::IdentityUnsettled => Some(RegistrationWait::Unlock),
+        S::NotRun
+        | S::Starting
+        | S::PartialNoIdentity
+        | S::DiscoveryFailed
+        | S::IdentityScanIncomplete => Some(RegistrationWait::Startup),
+    }
+}
+
 /// "Unlock to finish" on a vault without its full key, otherwise
 /// "Confirm to finish".
 pub(crate) fn authority_wait(session: &NetworkSession) -> RegistrationWait {
@@ -2719,7 +2744,6 @@ impl RegistrationLib for PwLib {
     }
 
     fn funding_hold(&self) -> Option<RegistrationWait> {
-        use super::startup::StartupStatus as S;
         let synced = self
             .session
             .hub
@@ -2730,24 +2754,9 @@ impl RegistrationLib for PwLib {
         if !synced {
             return Some(RegistrationWait::Sync);
         }
-        // Restore rule 1: the same-seed discovery answered which identity
-        // indexes the seed uses. One that did not holds the funding: it
-        // runs again at the first unlock (no signers), or at the next start
-        // (it never reached Platform, failed locally, or left indexes
-        // unanswered).
-        match self
-            .session
-            .dashpay_startup(&self.wallet_id)
-            .map(|s| s.startup)
-        {
-            Ok(S::Ready | S::NoIdentity | S::PartialAccountsPending | S::SeedBindingUnverified) => {
-                None
-            }
-            Ok(S::IdentityUnsettled) => Some(RegistrationWait::Unlock),
-            Ok(S::PartialNoIdentity | S::DiscoveryFailed | S::IdentityScanIncomplete) => {
-                Some(RegistrationWait::Network)
-            }
-            Ok(S::NotRun | S::Starting) | Err(_) => Some(RegistrationWait::Sync),
+        match self.session.dashpay_startup(&self.wallet_id) {
+            Ok(s) => startup_hold(s.startup),
+            Err(_) => Some(RegistrationWait::Sync),
         }
     }
 

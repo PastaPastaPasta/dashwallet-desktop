@@ -1577,7 +1577,8 @@ fn catch_up_contacts_stay_silent_and_reads_write_nothing() {
 
 /// The testnet DashPay fixture: A and B restored side by side, each sees the
 /// other as an established contact with a ready channel, the other's
-/// username and the fixture's request times. Read-only: no transactions.
+/// username and the fixture's request times. Contacts the fixture gained
+/// later (A's C) may be listed too. Read-only: no transactions.
 #[test]
 #[ignore = "public testnet; set DW_DP201_TESTNET_FIXTURE"]
 fn the_testnet_fixture_reads_its_established_contact() {
@@ -1628,7 +1629,9 @@ fn the_testnet_fixture_reads_its_established_contact() {
         let their_name = text(&meta[other]["expected_main_name"]);
         let dp = s.dashpay(wallet);
         // A live read: SPV, still syncing, holds the wallet's state at
-        // times, and a read then answers from the snapshot (`updating`).
+        // times, and a read then answers from the snapshot (`updating`);
+        // until it has the quorums, names come through the trusted fallback
+        // and stay `unverified` until a verified re-fetch (E0-10b).
         let read = || {
             let page = dp
                 .contacts(me.clone(), every(ContactSort::DisplayName))
@@ -1637,7 +1640,8 @@ fn the_testnet_fixture_reads_its_established_contact() {
             let done = !page.updating
                 && d.summary.relation == Relation::Contact
                 && d.summary.channel == ChannelState::Ready
-                && d.summary.username.as_deref() == Some(their_name.as_str());
+                && d.summary.username.as_deref() == Some(their_name.as_str())
+                && !d.summary.unverified;
             done.then_some((page, d))
         };
         let mut found = None;
@@ -1652,22 +1656,30 @@ fn the_testnet_fixture_reads_its_established_contact() {
             layout(&page),
             d.summary
         );
-        assert_eq!(
-            layout(&page),
-            vec![
-                (ContactSection::Requests, vec![]),
-                (ContactSection::Contacts, vec![them.clone()]),
-                (ContactSection::Pending, vec![]),
-                (ContactSection::Hidden, vec![]),
-            ]
-        );
+        // The fixture's own pair, whatever contacts later tasks added (A has
+        // had C too since DP2-02's T2, dw-tdash B4): the other is in Contacts
+        // and in no other section.
+        for (section, ids) in layout(&page) {
+            assert_eq!(
+                ids.contains(&them),
+                section == ContactSection::Contacts,
+                "{w}'s {section:?}: {ids:?}"
+            );
+        }
+        let contacts = ids_in(&page, ContactSection::Contacts).len();
         let (ours, theirs) = (request_ms(w), request_ms(other));
         assert_eq!(d.request_sent_at, Some(ours / 1000));
         assert_eq!(d.request_received_at, Some(theirs / 1000));
         assert_eq!(d.summary.since, Some(ours.max(theirs) / 1000));
         assert!(!d.summary.hidden);
         assert!(!d.summary.unverified);
-        assert_eq!(d.publish_state, PublishState::DeferredUntilTwoContacts);
+        // Deferred only while the identity has fewer than two contacts.
+        assert_eq!(
+            d.publish_state == PublishState::DeferredUntilTwoContacts,
+            contacts < 2,
+            "{w}: {:?} with {contacts} contacts",
+            d.publish_state
+        );
         assert_eq!(dp.pending_setup_count().unwrap(), 0);
     }
     engine.block_on(engine.shutdown()).unwrap();
