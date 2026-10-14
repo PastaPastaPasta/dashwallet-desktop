@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dateRange } from "../format/tx";
-import { dayKey, msToNextMidnight, watchLocalDay } from "./localDay";
+import { dayKey, localKey, msToNextMidnight, watchLocalDay } from "./localDay";
 
 // U-03 D25: Activity's date bounds follow the local day.
 
@@ -49,6 +49,35 @@ describe("the local day", () => {
     vi.advanceTimersByTime(10 * 60_000);
     expect(calls).toHaveBeenCalledTimes(1);
     stop();
+  });
+
+  it("a new timezone on the same date changes the key and the bounds", () => {
+    const tz = process.env.TZ;
+    try {
+      process.env.TZ = "Europe/Berlin";
+      vi.setSystemTime(new Date(2026, 9, 14, 12, 0, 0));
+      const clock = () => new Date();
+      const win = new EventTarget();
+      vi.stubGlobal("window", win);
+      const before = { key: localKey(clock()), range: dateRange("today", clock()) };
+      const calls = vi.fn();
+      const stop = watchLocalDay(calls, clock);
+      // Flown to New York while away: still 14 October there (06:00).
+      process.env.TZ = "America/New_York";
+      expect(dayKey(clock())).toBe("2026-10-14");
+      win.dispatchEvent(new Event("focus"));
+      expect(calls).toHaveBeenCalledTimes(1);
+      expect(localKey(clock())).not.toBe(before.key);
+      expect(dateRange("today", clock()).dateFrom! - before.range.dateFrom!).toBe(6 * 3600);
+      // Without the focus, the minute's check sees it too.
+      process.env.TZ = "Asia/Tokyo";
+      vi.advanceTimersByTime(60_000);
+      expect(calls).toHaveBeenCalledTimes(2);
+      stop();
+    } finally {
+      process.env.TZ = tz;
+      if (tz === undefined) delete process.env.TZ;
+    }
   });
 
   it("reads the day again when the window comes back", () => {
