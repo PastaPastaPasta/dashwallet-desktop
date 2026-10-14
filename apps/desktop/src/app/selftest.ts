@@ -1,11 +1,11 @@
 // `--selftest` (DASHPAY §2.1 G-01): render the four gate screens in light and dark, record the
 // box of every `data-testid` element and the U3(a) style checks, and hand the report to dw-app,
-// which writes it and exits. In a browser (Playwright) the same routine is `window.__dwSelftest`.
+// which writes it and exits. An encrypted vault is unlocked by dw-app itself
+// (`--selftest-passphrase-file`, `selftest_unlock`), so the renderer never holds its passphrase. In a fixture build (Playwright) the same routine is `window.__dwSelftest`.
 // Under Tauri the report also carries the U5 IPC timings and the U6 security probes.
 
 import type { QueryClient } from "@tanstack/react-query";
-import { errorMessage, type Backend } from "../api/backend";
-import { FIXTURE_PASSPHRASE } from "../api/fixture";
+import { errorMessage, isAppError, type Backend } from "../api/backend";
 import { tauriTools } from "../api/tauri";
 import { milestones, whenMarked } from "./startup";
 import { runStyleChecks, type CheckResult, type Screen } from "./styleChecks";
@@ -167,8 +167,13 @@ async function timeSplit(n: number, f: () => Promise<{ engineMicros: number }>) 
 /** Called after each screen is recorded (the Tauri harness screenshots it). */
 type OnScreen = (name: string) => Promise<void>;
 
-/** Renders the gate screens in both appearances and records them. */
-export async function collectReport(backend: Backend, client: QueryClient, onScreen?: OnScreen): Promise<Report> {
+/** Unlocks the vault again after the routine locked it to record the lock screen. */
+type Unlock = () => Promise<unknown>;
+
+/** Renders the gate screens in both appearances and records them. `unlock`: with it the routine
+ * locks and unlocks to record the lock screen; `null` when nothing can unlock the vault (a real
+ * vault launched without `--selftest-passphrase-file`). */
+export async function collectReport(backend: Backend, client: QueryClient, unlock: Unlock | null, onScreen?: OnScreen): Promise<Report> {
   const before = ui.get();
   const screens: Record<string, ScreenRecord> = {};
   let shown: Report["shown"];
@@ -202,12 +207,11 @@ export async function collectReport(backend: Backend, client: QueryClient, onScr
       await record(theme, "txDetail");
       ui.set({ detail: null });
     }
-    // Only the fixture can be locked and unlocked without the user's passphrase.
-    if (backend.kind === "fixture") {
+    if (unlock !== null) {
       await backend.lock();
       await settle(client);
       await record(theme, "unlock");
-      await backend.unlock(FIXTURE_PASSPHRASE);
+      await unlock();
       await settle(client);
     }
   }
@@ -236,8 +240,9 @@ declare global {
   }
 }
 
-export function exposeSelftest(backend: Backend, client: QueryClient) {
-  window.__dwSelftest = () => collectReport(backend, client);
+/** For Playwright, in fixture builds only. */
+export function exposeSelftest(backend: Backend, client: QueryClient, passphrase: string) {
+  window.__dwSelftest = () => collectReport(backend, client, () => backend.unlock(passphrase));
 }
 
 async function refused(f: () => Promise<unknown>): Promise<string> {
@@ -272,9 +277,25 @@ function windowOpenProbe(): string {
   return "NOT REFUSED: window.open returned a window";
 }
 
-/** Under Tauri: the report plus IPC timings and security probes, then dw-app writes it and exits. */
-export async function runTauriSelftest(backend: Backend, client: QueryClient, pauseMs: number) {
+/** Under Tauri: the report plus IPC timings and security probes, then dw-app writes it and exits.
+ * `canUnlock`: launched with `--selftest-passphrase-file`; a vault opened locked is unlocked
+ * first, so the screens show its wallet rather than the lock screen. A step that fails (a wrong
+ * passphrase, a network that does not open) ends the run at once with a final report that says
+ * why, rather than leaving the app open until the harness times out. */
+export async function runTauriSelftest(backend: Backend, client: QueryClient, pauseMs: number, canUnlock: boolean) {
+  try {
+    await selftestRun(backend, client, pauseMs, canUnlock);
+  } catch (e) {
+    // The code too, so the judge tells a refused passphrase file from a wrong passphrase.
+    const error = isAppError(e) ? `${e.code}: ${e.message}` : errorMessage(e);
+    await tauriTools.selftestReport({ final: true, error });
+  }
+}
+
+async function selftestRun(backend: Backend, client: QueryClient, pauseMs: number, canUnlock: boolean) {
   const shellPaintMs = await within(whenMarked("shell"), 60_000, null);
+  const unlock = canUnlock ? tauriTools.selftestUnlock : null;
+  if (unlock && (await backend.lockStatus()).state === "locked") await unlock();
   // Never marked without a wallet or when the network does not open; the report says so.
   const firstPaintMs = await within(whenMarked("first-paint"), 180_000, null);
   const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
@@ -282,7 +303,7 @@ export async function runTauriSelftest(backend: Backend, client: QueryClient, pa
     ? { responseEnd: round(nav.responseEnd), domInteractive: round(nav.domInteractive), domContentLoaded: round(nav.domContentLoadedEventEnd), load: round(nav.loadEventEnd) }
     : {};
   await sleep(300);
-  const report = await collectReport(backend, client, async (name) => {
+  const report = await collectReport(backend, client, unlock, async (name) => {
     if (pauseMs <= 0) return;
     await tauriTools.selftestCheckpoint(name);
     await sleep(pauseMs);

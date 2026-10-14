@@ -121,10 +121,13 @@ extension DashColor {
         public static let warning = DashColor(light: RGBA(hex: 0xB6542C), dark: DashColor.orange.dark)
         /// The non-mainnet network capsule under white text (4.9:1), opaque, in both appearances.
         public static let networkCapsule = DashColor(light: RGBA(hex: 0xB6542C), dark: RGBA(hex: 0xB6542C))
+        /// Red text (error states, danger chips) on canvas, card and `dangerTint`: iOS red is 4.06:1 on
+        /// white and 4.2:1 on the dark card (≥ 4.9:1 and ≥ 5.3:1 here).
+        public static let danger = DashColor(light: RGBA(hex: 0xC8202B), dark: RGBA(hex: 0xFF6961))
 
         public static let all: [(name: String, color: DashColor)] = [
             ("accent", accent), ("textLink", textLink), ("hero", hero), ("textTertiary", textTertiary),
-            ("warning", warning), ("networkCapsule", networkCapsule),
+            ("warning", warning), ("networkCapsule", networkCapsule), ("danger", danger),
         ]
     }
 }

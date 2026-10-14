@@ -7,9 +7,9 @@ export const THEMES: Theme[] = ["light", "dark"];
 export const SCREENS = ["overview", "transactions", "txDetail", "unlock"] as const;
 export type Screen = (typeof SCREENS)[number];
 
-/** Opens the fixture app and shows `screen`. */
-export async function show(page: Page, screen: Screen, theme: Theme, query = "") {
-  await page.goto(`/?theme=${theme}${query}`);
+/** Opens the fixture app's `funded` wallet and shows `screen`. */
+export async function show(page: Page, screen: Screen, theme: Theme) {
+  await page.goto(fixtureUrl("funded", theme));
   await page.getByTestId("hero").waitFor();
   if (screen === "transactions" || screen === "txDetail") {
     await page.getByTestId("sidebar-transactions").click();
@@ -23,6 +23,23 @@ export async function show(page: Page, screen: Screen, theme: Theme, query = "")
     await page.getByTestId("toolbar-lock").click();
     await page.getByTestId("lock-screen").waitFor();
   }
+  await fontsReady(page);
+}
+
+/** The fixture build's URL for a scenario (src/fixture/index.ts `fixtureOptionsFromUrl`). */
+export function fixtureUrl(scenario: string, theme: Theme, extra = ""): string {
+  return `/?scenario=${scenario}&theme=${theme}${extra}`;
+}
+
+/** Collects the page's uncaught errors; the returned list fills as they happen. */
+export function trackPageErrors(page: Page): string[] {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  return errors;
+}
+
+/** Waits for web fonts, so text metrics and screenshots are final. */
+export async function fontsReady(page: Page) {
   await page.evaluate(() => document.fonts.ready);
 }
 

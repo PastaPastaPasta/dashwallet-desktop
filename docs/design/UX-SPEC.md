@@ -143,12 +143,14 @@ only as far as AA needs; non-text uses (icons, focus rings, switch tracks: 3:1) 
 | `RoleAA.textTertiary` | #68737D | #FFFFFF @60% | `textTertiary` | on canvas 4.5:1 |
 | `RoleAA.warning` | #B6542C | #FA9169 | `warning` as text | on canvas 4.6:1 |
 | `RoleAA.networkCapsule` | #B6542C | #B6542C | the capsule's `warning` × 0.9 | white 4.9:1 |
+| `RoleAA.danger` | #C8202B | #FF6961 | `danger` as text (error states, danger chips) | on canvas 5.3:1, on `dangerTint` 4.9:1 (light); on canvas 6.5:1, on `dangerTint` 5.3:1 (dark) |
 | `DashOpacityAA.heroCard` | 0.08 | 0.08 | `DashOpacity.heroCard` (0.12) | — |
 | `DashOpacityAA.heroSecondaryText` | 0.9 | 0.9 | `heroSecondaryText` (0.7) and the lock prompt's `whiteAlpha80` | — |
 | `DashOpacityAA.networkCapsule` | 1 | 1 | `DashOpacity.networkCapsule` (0.9) | — |
 
-`danger` (#EB3842) is 4.06:1 on white: red text on light surfaces needs a variant too when a screen
-draws it at text size (none of the gate's four screens does).
+`danger` (#EB3842) is 4.06:1 on white and 4.2:1 on the dark card, so red text uses `RoleAA.danger`. The
+gate's four screens draw none; the splash's error state does (found by U-07's axe run of the fixture
+error states).
 
 ### 2.2 Typography
 

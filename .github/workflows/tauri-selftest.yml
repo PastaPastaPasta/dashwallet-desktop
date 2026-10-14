@@ -3,12 +3,21 @@
 #
 #   gh workflow run tauri-selftest.yml --ref <branch> -f os=both
 #
-# Per OS: `pnpm tauri build --no-bundle` (release binary), then
-#   1. `dash-wallet <selftest_args> --selftest selftest-<os>.json`: the app renders the four screens in
+# Per OS: `pnpm tauri build --no-bundle --features selftest` (a release-profile binary with the
+# self-test, which release and packaged builds lack: E0-13 D17) and dwcli, then
+#   1. `dash-wallet <app args> --selftest selftest-<os>.json`: the app renders the four screens in
 #      light and dark, writes the data-testid boxes, style checks, IPC timings and security probes,
 #      and exits (apps/desktop/README.md);
-#   2. `dash-wallet --fixture --theme <theme>` launched again, with a screenshot.
-# Both land in the artifact tauri-<os>. The ref must contain the Tauri app (G-01 or later).
+#   2. `dash-wallet <app args> --theme <theme>` launched again, with a screenshot.
+# <app args> default to a fresh regtest data root where dwcli made an encrypted vault and a wallet,
+# so the app opens on the real engine, locked (U-07 removed the in-app `--fixture` wallet; the
+# fixture backend runs in the browser only). A local regtest dashd (the verified Dash Core
+# release, regtest/scripts/fetch-dashcore.sh) pays the wallet and dwcli syncs the payment
+# (ci/github/regtest-fund.py), so the wallet has a transaction. The self-test gets the vault
+# passphrase file (--selftest-passphrase-file): it unlocks, records Overview, Transactions and the
+# transaction detail, then locks to record the lock screen. ci/github/selftest-judge.jq fails the
+# run unless all four screens were recorded in light and dark and every check passed. Both land
+# in the artifact tauri-<os>. The ref must contain the Tauri app (G-01 or later).
 name: Tauri selftest
 
 on:
@@ -20,9 +29,9 @@ on:
         options: [both, macos, windows]
         default: both
       selftest_args:
-        description: Arguments before --selftest (default the TypeScript fixture wallet)
+        description: App arguments (default a funded regtest wallet made by dwcli; the judge needs --selftest-passphrase-file)
         type: string
-        default: --fixture
+        default: ""
       theme:
         description: Theme of the screenshot launch
         type: choice
@@ -95,12 +104,57 @@ jobs:
       - name: pnpm install
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
-      - name: pnpm tauri build --no-bundle (renderer + release binary)
+      # The self-test's options, commands and grants exist only with dw-app's `selftest` feature
+      # (E0-13 D17): this is a dedicated self-test binary, release profile otherwise. Release and
+      # packaged builds leave the feature off.
+      - name: pnpm tauri build --no-bundle --features selftest (renderer + self-test binary)
         working-directory: apps/desktop
         run: |
-          pnpm tauri build --no-bundle
+          pnpm tauri build --no-bundle --features selftest
           exe=dash-wallet; [[ "$MATRIX_OS" != windows ]] || exe=dash-wallet.exe
           echo "APP=$GITHUB_WORKSPACE/rust/target/release/$exe" >> "$GITHUB_ENV"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: ${{ inputs.selftest_args == '' }}
+        with:
+          path: ~/.cache/dwd-dashcore
+          key: dashcore-${{ runner.os }}-${{ hashFiles('regtest/scripts/fetch-dashcore.sh') }}
+      # Without selftest_args: a fresh regtest data root with an encrypted vault and a wallet that
+      # dashd paid, whose arguments go to APP_ARGS; the self-test also gets SELFTEST_UNLOCK. The
+      # steps below read `${SELFTEST_ARGS:-$APP_ARGS}`, so the input itself never passes through
+      # $GITHUB_ENV.
+      - name: dwcli and a funded regtest wallet (Dash Core regtest node)
+        if: ${{ inputs.selftest_args == '' }}
+        working-directory: rust
+        run: |
+          cargo build --release -p dwcli --locked
+          sh ../regtest/scripts/fetch-dashcore.sh "$RUNNER_TEMP/dashcore"
+          # Relative and Windows-native paths: dwcli and Python are native programs on Windows.
+          dwcli=target/release/dwcli; py=python3
+          [[ "$MATRIX_OS" != windows ]] || { dwcli=target/release/dwcli.exe; py=python; }
+          data="$RUNNER_TEMP/dw-data"
+          pass="$RUNNER_TEMP/passphrase"
+          # Regtest needs a DAPI address; with --no-platform nothing connects to it.
+          chain=(--network regtest --no-platform --dapi https://127.0.0.1:1)
+          # The passphrase file is the job user's alone before it holds the passphrase: dw-app's
+          # selftest_unlock refuses one others can read on Unix (E0-13 D16). On Windows dw-app does
+          # not check; the file gets an ACL of one entry, full control for the job's user, with
+          # the inherited entries removed.
+          umask 077
+          : > "$pass"
+          if [[ "$MATRIX_OS" == windows ]]; then
+            icacls "$(cygpath -w "$pass")" //inheritance:r //grant:r "$USERNAME:F"
+            icacls "$(cygpath -w "$pass")"
+          else
+            chmod 600 "$pass"
+          fi
+          printf '%s\n' "selftest $GITHUB_RUN_ID" > "$pass"
+          for cmd in init-vault create; do
+            "$dwcli" --datadir "$data" "${chain[@]}" --passphrase-file "$pass" "$cmd"
+          done
+          txid=$("$py" ../ci/github/regtest-fund.py "$RUNNER_TEMP/dashcore" "$dwcli" "$data" "$pass")
+          echo "funded the wallet: $txid"
+          echo "APP_ARGS=--datadir $data ${chain[*]}" >> "$GITHUB_ENV"
+          echo "SELFTEST_UNLOCK=--selftest-passphrase-file $pass" >> "$GITHUB_ENV"
       - name: WebView2 runtime (Windows)
         if: ${{ matrix.os == 'windows' }}
         shell: pwsh
@@ -110,33 +164,42 @@ jobs:
           if ($pv) { Write-Host "WebView2 runtime $pv" } else { Write-Host "::warning::no WebView2 runtime registered; the app may not start" }
       - name: --selftest
         run: |
-          read -ra args <<<"$SELFTEST_ARGS"
+          read -ra args <<<"${SELFTEST_ARGS:-$APP_ARGS}"
           report="$OUT/selftest-$MATRIX_OS.json"
           # macOS runners have no coreutils `timeout`; perl's alarm survives the exec.
           run_limited() { if command -v timeout >/dev/null; then timeout 600 "$@"; else perl -e 'alarm shift; exec @ARGV' 600 "$@"; fi; }
           start=$(date +%s)
-          run_limited "$APP" ${args[@]+"${args[@]}"} --selftest "$report" >"$OUT/selftest.log" 2>&1 \
+          read -ra unlock <<<"${SELFTEST_UNLOCK:-}"
+          run_limited "$APP" ${args[@]+"${args[@]}"} ${unlock[@]+"${unlock[@]}"} --selftest "$report" >"$OUT/selftest.log" 2>&1 \
             || { tail -n 40 "$OUT/selftest.log"; echo "::error::--selftest failed or timed out"; exit 1; }
           [[ -s "$report" ]] || { echo "::error::--selftest wrote no report"; exit 1; }
-          # The app exits 0 whatever it found: judge the report (apps/desktop/src/app/selftest.ts).
           jq -r --arg os "$MATRIX_OS" --arg took "$(( $(date +%s) - start ))" '
             "### Tauri --selftest on \($os) (\($took) s)",
-            "- checks: \(.checksTotal) total, \(.checksFailed) failed, \(.checksNotApplicable) not applicable",
+            "- screens: \(.screens | keys | join(", "))",
+            "- checks: \(.checksTotal) total, \(.checksFailed) failed, \(.checksNotApplicable) not applicable; history rows shown: \(.shown.rows // [] | length)",
             "- first paint: \(.firstPaintMs // "n/a") ms; shell paint: \(.shellPaintMs // "n/a") ms",
             (.security // {} | to_entries[] | "- security \(.key): \(.value)")' "$report" | tee -a "$GITHUB_STEP_SUMMARY"
-          # The final report only: a checkpoint (final false) lacks the navigation probe.
-          jq -e '.final != false and .security.navigation != null and .checksFailed == 0
-                 and ([.security | .[] | select(startswith("NOT REFUSED"))] | length == 0)' \
-            "$report" >/dev/null || { echo "::error::--selftest reported failed checks or an unrefused security probe"; exit 1; }
-      - name: Launch (fixture, ${{ inputs.theme }}) and take a screenshot (macOS)
+          # The app exits 0 whatever it found: the judge is the verdict (its header says what it
+          # requires; ci/github/selftest-judge-test.sh tests it).
+          problems=$(jq -r -f ci/github/selftest-judge.jq "$report")
+          if [[ -n "$problems" ]]; then
+            sed 's/^/- FAIL: /' <<<"$problems" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "::error::--selftest report failed the judge (ci/github/selftest-judge.jq)"
+            exit 1
+          fi
+      - name: Launch (${{ inputs.theme }}) and take a screenshot (macOS)
         if: ${{ matrix.os == 'macos' }}
-        run: ci/github/macos-launch-screenshot.sh "tauri-macos-$THEME" "$OUT" 30 "$APP" --fixture --theme "$THEME"
-      - name: Launch (fixture, ${{ inputs.theme }}) and take a screenshot (Windows)
+        run: |
+          read -ra args <<<"${SELFTEST_ARGS:-$APP_ARGS}"
+          ci/github/macos-launch-screenshot.sh "tauri-macos-$THEME" "$OUT" 30 "$APP" ${args[@]+"${args[@]}"} --theme "$THEME"
+      - name: Launch (${{ inputs.theme }}) and take a screenshot (Windows)
         if: ${{ matrix.os == 'windows' }}
         shell: pwsh
         run: |
+          $given = if ($env:SELFTEST_ARGS) { $env:SELFTEST_ARGS } else { $env:APP_ARGS }
+          $appArgs = @(-split $given) + @('--theme', $env:THEME)
           ci/github/windows-launch-screenshot.ps1 -Name "tauri-windows-$env:THEME" -OutDir $env:OUT -Seconds 30 `
-            -Exe $env:APP -ArgumentList '--fixture', '--theme', $env:THEME
+            -Exe $env:APP -ArgumentList $appArgs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

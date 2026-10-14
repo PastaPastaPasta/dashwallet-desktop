@@ -524,4 +524,126 @@ mod tests {
             serde_json::json!({ "kind": "draftWait", "draft": "d", "waitSecs": 600 })
         );
     }
+
+    /// dw-engine writes the `data` of the errors in the accept contract vector by hand
+    /// (`requests_tests.rs`, `accept_vectors::data`): every error the vector records must be
+    /// this crate's conversion of one of these engine errors, and each of them is recorded.
+    #[test]
+    fn accept_vector_errors_are_dw_apps() {
+        use serde_json::{Value, json};
+        let quote = 150_000_000;
+        let engine: [AppError; 11] = [
+            PlatformError::GrantInvalid.into(),
+            PlatformError::LeaseExpired.into(),
+            PlatformError::SignerUnavailable.into(),
+            PlatformError::LeaseRevoked {
+                cause: RevokeCause::Lock,
+            }
+            .into(),
+            PlatformError::InvalidArgument { detail: "x".into() }.into(),
+            PlatformError::InsufficientCredits {
+                needed: quote,
+                available: quote - 1,
+            }
+            .into(),
+            PlatformError::GrantExceeded {
+                purpose: BudgetPurpose::Credits,
+                needed: quote,
+                remaining: quote - 1,
+            }
+            .into(),
+            PlatformError::NeedsGrant {
+                purpose: BudgetPurpose::Credits,
+            }
+            .into(),
+            ContactError::IsSelf.into(),
+            ContactError::AlreadyContact.into(),
+            ContactError::Ineligible {
+                reason: Eligibility::NoDashPayKeys,
+            }
+            .into(),
+        ];
+        let converted: Vec<Value> = (engine.iter())
+            .map(|e| {
+                let v = serde_json::to_value(e).unwrap();
+                json!({ "code": v["code"], "data": v["data"] })
+            })
+            .collect();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../apps/desktop/src/fixture/vectors/accept.json");
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let recorded: Vec<&Value> = (doc["cases"].as_array().unwrap().iter())
+            .flat_map(|c| c["results"].as_array().unwrap())
+            .filter_map(|r| r.get("error"))
+            .collect();
+        for e in &recorded {
+            assert!(
+                converted.contains(e),
+                "{e} in {} is not dw-app's conversion of any listed engine error: fix \
+                 `accept_vectors::data`, or list the new error here",
+                path.display()
+            );
+        }
+        for e in &converted {
+            assert!(
+                recorded.contains(&e),
+                "{e} is not in {}: drop it here",
+                path.display()
+            );
+        }
+    }
+
+    /// dw-engine writes the vector's leases by hand too (`accept_vectors::lease_json`): each
+    /// of these views, as dw-app's `Lease` less `id`, `walletId` and `keyExpiresInSecs`, is
+    /// recorded there.
+    #[test]
+    fn accept_vector_leases_are_dw_apps() {
+        use dw_engine::platform::{BudgetView, FlowKind, LeaseStateView, LeaseView};
+        use serde_json::Value;
+        let quote = 150_000_000;
+        let view = |state, own_key, spent| LeaseView {
+            id: "1ea50001".into(),
+            wallet_id: "a1".repeat(32),
+            flow: FlowKind::Accept,
+            state,
+            own_key,
+            key_expires_in_secs: None,
+            funds_committed: false,
+            budgets: vec![BudgetView {
+                purpose: BudgetPurpose::Credits,
+                ceiling: quote,
+                spent,
+            }],
+            in_flight: 0,
+            call_running: false,
+        };
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../apps/desktop/src/fixture/vectors/accept.json");
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let recorded: Vec<&Value> = (doc["cases"].as_array().unwrap().iter())
+            .flat_map(|c| c["results"].as_array().unwrap())
+            .filter_map(|r| r["ok"].as_array())
+            .flatten()
+            .collect();
+        let revoked = LeaseStateView::Revoked {
+            cause: RevokeCause::Lock,
+        };
+        for v in [
+            view(LeaseStateView::Ended, true, quote),
+            view(LeaseStateView::Active, false, 0),
+            view(LeaseStateView::NeedsGrant, true, 0),
+            view(revoked, false, 0),
+            view(revoked, true, 0),
+        ] {
+            let mut lease = serde_json::to_value(crate::dto::platform::Lease::from(v)).unwrap();
+            for k in ["id", "walletId", "keyExpiresInSecs"] {
+                lease.as_object_mut().unwrap().remove(k);
+            }
+            assert!(
+                recorded.contains(&&lease),
+                "{lease} is not in {}: fix `accept_vectors::lease_json`",
+                path.display()
+            );
+        }
+    }
 }

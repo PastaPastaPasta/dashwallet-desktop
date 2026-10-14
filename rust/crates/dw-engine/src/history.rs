@@ -987,7 +987,11 @@ pub(crate) fn validate_filter(filter: &HistoryFilter) -> Result<(), EngineError>
 /// transactions arriving between pages never invalidate them; a page simply
 /// continues after that record. A cursor from a different filter or sort is
 /// `StaleCursor`.
-pub(crate) fn page(records: Vec<TxRecord>, q: &HistoryQuery) -> Result<HistoryPage, EngineError> {
+///
+/// Pure: it pages `records` for `q` and touches no state.
+/// `NetworkSession::history_page` runs it over a wallet's records; dw-app's
+/// shared history vectors run it over a fixed set.
+pub fn page(records: Vec<TxRecord>, q: &HistoryQuery) -> Result<HistoryPage, EngineError> {
     validate_query(q)?;
     let tag = query_tag(&q.filter, q.sort);
     let after = q

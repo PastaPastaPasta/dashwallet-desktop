@@ -123,6 +123,59 @@ pub fn open_sole_file(path: &Path) -> io::Result<std::fs::File> {
     }
 }
 
+/// Opens the file at `path` for reading when it is the current user's
+/// alone: a regular file whose final component is not a symlink (it is
+/// not followed: `O_NOFOLLOW`), owned by the effective user, with no group
+/// or other permission bits (0600 or stricter). A symlink among the parent
+/// directories is followed: what protects the secret is the opened file's
+/// owner and mode, checked on the descriptor. For a secret another program
+/// wrote, such as the self-test's passphrase file. Refused files are
+/// `PermissionDenied` with the reason. Errors do not name the path; the
+/// caller does.
+///
+/// Windows: no check. The file's ACL is the caller's to restrict.
+pub fn open_owner_only(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use rustix::fs::OFlags;
+        use std::os::unix::fs::OpenOptionsExt;
+        // NONBLOCK: a FIFO is refused below instead of blocking the open.
+        options.custom_flags((OFlags::NOFOLLOW | OFlags::NOCTTY | OFlags::NONBLOCK).bits() as i32);
+    }
+    let refused = |what: String| io::Error::new(io::ErrorKind::PermissionDenied, what);
+    let file = options.open(path).map_err(|e| {
+        if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            refused("is a symbolic link".into())
+        } else {
+            e
+        }
+    })?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(refused("is not a regular file".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let euid = rustix::process::geteuid().as_raw();
+        if meta.uid() != euid {
+            return Err(refused(format!(
+                "belongs to uid {}, not to the current user ({euid})",
+                meta.uid()
+            )));
+        }
+        if meta.mode() & 0o077 != 0 {
+            return Err(refused(format!(
+                "has mode {:o}: group and others must have no access (chmod 600)",
+                meta.mode() & 0o7777
+            )));
+        }
+    }
+    Ok(file)
+}
+
 /// [`create_owned_dir`] for the parent of `owned`, then the file itself:
 /// created empty and 0600 when missing, otherwise its group and other
 /// permissions go and its contents stay. A symlink there is left alone.
@@ -835,6 +888,52 @@ mod tests {
         assert!(made.unwrap().success());
         let refused = open_sole_file(&fifo).unwrap_err().to_string();
         assert!(refused.contains("is not a regular file"), "{refused}");
+    }
+
+    #[test]
+    fn an_owner_only_file_has_no_group_or_other_access() {
+        let tmp = private_tempdir();
+        let file = tmp.path().join("passphrase");
+        std::fs::write(&file, b"secret\n").unwrap();
+        chmod(&file, 0o600);
+        open_owner_only(&file).unwrap();
+        chmod(&file, 0o400);
+        open_owner_only(&file).unwrap();
+
+        for open in [0o644, 0o640, 0o604, 0o620, 0o602] {
+            chmod(&file, open);
+            let e = open_owner_only(&file).unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::PermissionDenied, "{open:o}: {e}");
+            assert!(e.to_string().contains(&format!("mode {open:o}")), "{e}");
+        }
+        chmod(&file, 0o600);
+
+        let link = tmp.path().join("link");
+        symlink(&file, &link).unwrap();
+        let refused = open_owner_only(&link).unwrap_err().to_string();
+        assert!(refused.contains("symbolic link"), "{refused}");
+        // Only the final component: a parent directory symlink is followed,
+        // and the file it reaches is checked like any other.
+        symlink(tmp.path(), tmp.path().join("alias")).unwrap();
+        open_owner_only(&tmp.path().join("alias/passphrase")).unwrap();
+        chmod(&file, 0o640);
+        assert!(open_owner_only(&tmp.path().join("alias/passphrase")).is_err());
+        chmod(&file, 0o600);
+
+        mkdir(&tmp.path().join("dir"), 0o700);
+        let refused = open_owner_only(&tmp.path().join("dir"))
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("is not a regular file"), "{refused}");
+        let fifo = tmp.path().join("fifo");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        assert!(made.unwrap().success());
+        chmod(&fifo, 0o600);
+        let refused = open_owner_only(&fifo).unwrap_err().to_string();
+        assert!(refused.contains("is not a regular file"), "{refused}");
+
+        let missing = open_owner_only(&tmp.path().join("missing")).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]

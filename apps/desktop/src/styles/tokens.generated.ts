@@ -75,8 +75,8 @@ export const roles = {
     "dark": "rgb(61 181 138 / 0.1)"
   },
   "danger": {
-    "light": "#EB3842",
-    "dark": "#EB3842"
+    "light": "#C8202B",
+    "dark": "#FF6961"
   },
   "dangerTint": {
     "light": "rgb(235 56 66 / 0.1)",
