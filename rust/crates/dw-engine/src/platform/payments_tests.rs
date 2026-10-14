@@ -352,6 +352,58 @@ fn what_stays_unattributed() {
     }
 }
 
+/// A script two accounts share is nobody's (D22): a contact chooses the
+/// xpub it gives us, so it can derive another contact's addresses, or our
+/// receival addresses. Its outputs stay unattributed in history, activity
+/// and the strip, and it refuses the library's word too.
+#[test]
+fn a_shared_script_is_nobodys() {
+    let mut p = Pure::new();
+    // Carol's external xpub derives Bob's: both external accounts hold
+    // Bob's address. Erin's derives our receival address for Dave. An
+    // account that repeats its own script stays its own.
+    (p.payees).add_script(external(BOB), side(ME, CAROL, ActivityDirection::Sent));
+    (p.payees).add_script(receival(DAVE), side(ME, ERIN, ActivityDirection::Sent));
+    (p.payees).add_script(receival(BOB), side(ME, BOB, ActivityDirection::Received));
+    // And a script two contacts' receival accounts share.
+    let shared = addr(40).script_pubkey();
+    p.own(addr(40), AddressChain::Receiving);
+    (p.payees).add_script(shared.clone(), side(ME, BOB, ActivityDirection::Received));
+    (p.payees).add_script(shared.clone(), side(ME, CAROL, ActivityDirection::Received));
+
+    let to_bob = p.sent(1, BOB, 90_000, 1_000);
+    p.payees.add_sent(to_bob, id(ME), id(BOB));
+    let from_dave = p.received(2, DAVE, 90_000, 1_000);
+    let t = tx(
+        3,
+        vec![input(Txid::from_byte_array([0xF0; 32]), 3)],
+        vec![out(90_000, shared)],
+    );
+    let from_either = p.add(entry(t, mined(10, 1_000)));
+    let from_bob = p.received(4, BOB, 90_000, 1_000);
+
+    for txid in [to_bob, from_dave, from_either] {
+        let records = p.records(&txid);
+        assert!(!records.is_empty());
+        assert!(records.iter().all(|r| r.counterparty.is_none()), "{txid}");
+    }
+    assert_eq!(
+        counterparty(&p.records(&from_bob)[0]),
+        Some(b58(BOB).as_str())
+    );
+    let txids = |contact| {
+        let (items, _) = p.page(contact, ActivityFilter::All, None);
+        items.into_iter().map(|i| i.txid).collect::<Vec<_>>()
+    };
+    assert_eq!(txids(BOB), vec![from_bob.to_string()]);
+    for contact in [CAROL, DAVE, ERIN] {
+        assert!(txids(contact).is_empty(), "{contact}");
+    }
+    let s = scores(&p.view(), &id(ME), 2_000);
+    assert_eq!(s.keys().collect::<Vec<_>>(), vec![&id(BOB)]);
+    assert_eq!((s[&id(BOB)].sent, s[&id(BOB)].received), (0, 1));
+}
+
 /// Activity is the pair's payments, both ways, newest first by block time
 /// with unmined ones first; a sent amount is what the contact got (no
 /// fee); abandoned transactions are left out; filters and other pairs.
@@ -411,10 +463,11 @@ fn activity_is_the_pairs_payments_newest_first() {
     assert!(other_owner.unwrap().items.is_empty());
 }
 
-/// Pages of [`ACTIVITY_PAGE`] items; each cursor is 63 characters of
+/// Pages of [`ACTIVITY_PAGE`] items; each cursor is 64 characters of
 /// `[0-9a-f]` plus the direction; pages never repeat or skip an item, and a
 /// payment that lands between pages does not move later pages. A
-/// malformed cursor is `invalid_argument`.
+/// malformed cursor, or one another query issued (owner, contact or
+/// filter), is `invalid_argument`.
 #[test]
 fn activity_pages_by_cursor() {
     let mut p = Pure::new();
@@ -426,7 +479,7 @@ fn activity_pages_by_cursor() {
     let (first, cursor) = p.page(BOB, ActivityFilter::All, None);
     assert_eq!(first.len(), ACTIVITY_PAGE);
     let cursor = cursor.unwrap();
-    assert_eq!(cursor.len(), 63);
+    assert_eq!(cursor.len(), 64);
     assert!(
         cursor
             .bytes()
@@ -450,13 +503,30 @@ fn activity_pages_by_cursor() {
     for bad in [
         "",
         "x",
-        &cursor[..62],
-        &format!("{}q", &cursor[..62]),
+        &cursor[..63],
+        &format!("{}q", &cursor[..63]),
+        &cursor[8..],
         &cursor.to_uppercase(),
     ] {
         let e = activity(&p.view(), &id(ME), &id(BOB), ActivityFilter::All, Some(bad));
         assert_eq!(e.unwrap_err().code(), "invalid_argument", "{bad:?}");
     }
+
+    // Another query's cursor: the `All` one with `Received` (which pages
+    // the same items here), from another contact, for another owner.
+    for (owner, contact, filter) in [
+        (ME, BOB, ActivityFilter::Received),
+        (ME, CAROL, ActivityFilter::All),
+        (CAROL, BOB, ActivityFilter::All),
+    ] {
+        let e = activity(&p.view(), &id(owner), &id(contact), filter, Some(&cursor));
+        assert_eq!(e.unwrap_err().code(), "invalid_argument", "{filter:?}");
+    }
+    let (_, received) = p.page(BOB, ActivityFilter::Received, None);
+    let received = received.unwrap();
+    assert_ne!(received[..8], cursor[..8]);
+    let (_, end) = p.page(BOB, ActivityFilter::Received, Some(&received));
+    assert_eq!(end, None);
 }
 
 fn summary(n: u8) -> (Identifier, ContactSummary) {

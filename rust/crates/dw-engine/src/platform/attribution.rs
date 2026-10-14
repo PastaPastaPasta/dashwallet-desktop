@@ -9,6 +9,8 @@
 //!   external account's address, in a transaction the wallet funded, a
 //!   payment sent to its friend. Every address of the accounts' pools
 //!   counts, used or not.
+//!   A script two accounts hold is nobody's: a contact chooses the xpub
+//!   it gives us, so it can derive another contact's addresses.
 //! - **The library's word for the rest.** After a restore an external pool
 //!   holds only the gap past its last used index as key-wallet sees it, so
 //!   a payment sent further out matches no address. The library's DashPay
@@ -31,6 +33,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use dashcore::hashes::{Hash, sha256};
 use dashcore::{ScriptBuf, Transaction, Txid};
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::platform_value::string_encoding::Encoding;
@@ -72,8 +75,10 @@ pub(crate) struct Side {
 /// lock and read without it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Payees {
-    /// Every address script of the DashPay accounts.
-    scripts: HashMap<ScriptBuf, Side>,
+    /// Every address script of the DashPay accounts; `None` where two
+    /// accounts share it (D22): a contact chooses the xpub it gives us, so
+    /// it can derive another contact's addresses, or ours for it.
+    scripts: HashMap<ScriptBuf, Option<Side>>,
     /// The library's `Sent` payment entries (not failed), by transaction:
     /// `(owner, contact)`.
     sent: HashMap<Txid, BTreeSet<(Identifier, Identifier)>>,
@@ -172,7 +177,7 @@ impl Payees {
     /// DashPay account and `Sent` entry): the usernames a read may show.
     pub(crate) fn shown(&self) -> BTreeMap<Identifier, BTreeSet<Identifier>> {
         let mut shown: BTreeMap<Identifier, BTreeSet<Identifier>> = BTreeMap::new();
-        let pairs = (self.scripts.values()).map(|s| (s.owner, s.contact));
+        let pairs = (self.scripts.values().flatten()).map(|s| (s.owner, s.contact));
         for (owner, contact) in pairs.chain(self.sent.values().flatten().copied()) {
             shown.entry(owner).or_default().insert(contact);
         }
@@ -190,16 +195,14 @@ impl Payees {
                     _ => return None,
                 };
                 let script = &tx.output.get(p.vout? as usize)?.script_pubkey;
-                self.scripts
-                    .get(script)
-                    .filter(|s| s.direction == want)
-                    .copied()
+                (*self.scripts.get(script)?).filter(|s| s.direction == want)
             })
             .collect();
         // The library's word, for a send past the resident pool: only when
-        // no output pays a DashPay address the wallet knows. Otherwise its
-        // entry may name that output (one the wallet owns, as a payment to
-        // its own other identity), not the payee.
+        // no output pays a DashPay address the wallet knows, shared ones
+        // included. Otherwise its entry may name that output (one the
+        // wallet owns, as a payment to its own other identity, or one two
+        // accounts share), not the payee.
         let mut payees = (0..parts.len()).filter(|&i| is_payee(&parts[i]));
         if let (Some(only), None) = (payees.next(), payees.next())
             && sides[only].is_none()
@@ -217,9 +220,13 @@ impl Payees {
         sides
     }
 
-    /// `script` pays or is paid by `side`.
+    /// `script` pays or is paid by `side`; a script another side already
+    /// holds is nobody's.
     pub(crate) fn add_script(&mut self, script: ScriptBuf, side: Side) {
-        self.scripts.insert(script, side);
+        let held = self.scripts.entry(script).or_insert(Some(side));
+        if *held != Some(side) {
+            *held = None;
+        }
         self.party(side.contact);
     }
 
@@ -286,8 +293,10 @@ fn block_time(entry: &TxEntry) -> Option<u64> {
 
 /// Where an activity item sorts, newest first: mined ones by block time,
 /// unmined ones before them all; then the txid, then the direction (`r`
-/// before `s`; one transaction is never both for one pair). Its text is the page cursor: 16 hex digits of the time key,
-/// the txid's first 46 hex digits and `s` or `r` (63 characters).
+/// before `s`; one transaction is never both for one pair). The page
+/// cursor is its query's tag ([`query_tag`]), then 16 hex digits of the
+/// time key, the txid's first 39 hex digits and `s` or `r` (64
+/// characters, m4's id form).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ActivityKey {
     time: Reverse<u64>,
@@ -296,7 +305,7 @@ struct ActivityKey {
 }
 
 impl ActivityKey {
-    const TXID_DIGITS: usize = 46;
+    const TXID_DIGITS: usize = 39;
 
     fn new(entry: &TxEntry, txid: &Txid, direction: ActivityDirection) -> Self {
         let mut txid = txid.to_string();
@@ -311,12 +320,14 @@ impl ActivityKey {
         }
     }
 
-    fn cursor(&self) -> String {
-        format!("{:016x}{}{}", self.time.0, self.txid, self.direction)
+    fn cursor(&self, tag: &str) -> String {
+        format!("{tag}{:016x}{}{}", self.time.0, self.txid, self.direction)
     }
 
-    fn parse(cursor: &str) -> Option<Self> {
+    /// A cursor this query issued (`tag`), else `None`.
+    fn parse(cursor: &str, tag: &str) -> Option<Self> {
         let hex = |s: &str| s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        let cursor = cursor.strip_prefix(tag)?;
         if cursor.len() != 16 + Self::TXID_DIGITS + 1 || !cursor.is_ascii() {
             return None;
         }
@@ -337,6 +348,21 @@ impl ActivityKey {
     }
 }
 
+/// What a cursor is bound to: 8 hex digits of SHA-256 over the owner, the
+/// contact and the filter, so a cursor of another query is refused.
+fn query_tag(owner: &Identifier, contact: &Identifier, filter: ActivityFilter) -> String {
+    let mut bytes = Vec::with_capacity(65);
+    bytes.extend_from_slice(&owner.to_buffer());
+    bytes.extend_from_slice(&contact.to_buffer());
+    bytes.push(match filter {
+        ActivityFilter::All => 0,
+        ActivityFilter::Sent => 1,
+        ActivityFilter::Received => 2,
+    });
+    let digest = sha256::Hash::hash(&bytes);
+    hex::encode(&digest.as_byte_array()[..4])
+}
+
 /// `owner`'s payments with `contact` in the view, filtered, newest first,
 /// the page after `after`.
 pub(crate) fn activity(
@@ -346,8 +372,9 @@ pub(crate) fn activity(
     filter: ActivityFilter,
     after: Option<&str>,
 ) -> Result<ActivityPage, PlatformError> {
+    let tag = query_tag(owner, contact, filter);
     let after = (after.map(|c| {
-        ActivityKey::parse(c).ok_or_else(|| PlatformError::InvalidArgument {
+        ActivityKey::parse(c, &tag).ok_or_else(|| PlatformError::InvalidArgument {
             detail: "not an activity cursor".into(),
         })
     }))
@@ -383,7 +410,7 @@ pub(crate) fn activity(
     let more = items.len() > ACTIVITY_PAGE;
     let page: Vec<(ActivityKey, ActivityItem)> = items.into_iter().take(ACTIVITY_PAGE).collect();
     Ok(ActivityPage {
-        next_cursor: page.last().filter(|_| more).map(|(k, _)| k.cursor()),
+        next_cursor: page.last().filter(|_| more).map(|(k, _)| k.cursor(&tag)),
         items: page.into_iter().map(|(_, item)| item).collect(),
     })
 }
