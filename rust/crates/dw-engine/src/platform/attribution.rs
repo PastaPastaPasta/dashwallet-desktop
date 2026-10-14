@@ -82,6 +82,10 @@ pub(crate) struct Payees {
     /// The library's `Sent` payment entries (not failed), by transaction:
     /// `(owner, contact)`.
     sent: HashMap<Txid, BTreeSet<(Identifier, Identifier)>>,
+    /// `(owner, contact)` of each external account on an xpub another
+    /// side's account shares: the library's word never names them, even
+    /// for an address past both pools (D23).
+    shared_pairs: BTreeSet<(Identifier, Identifier)>,
     /// Who each contact is, as shown.
     parties: BTreeMap<Identifier, Counterparty>,
 }
@@ -129,6 +133,9 @@ impl Payees {
         }
         for (side, account) in accounts {
             let shared = root_of(account).is_some_and(|r| roots[&r].is_none());
+            if shared && side.direction == ActivityDirection::Sent {
+                payees.shared_pairs.insert((side.owner, side.contact));
+            }
             for pool in account.managed_account_type().address_pools() {
                 for info in pool.addresses.values() {
                     let script = info.script_pubkey.clone();
@@ -220,6 +227,7 @@ impl Payees {
             && let Some(pairs) = self.sent.get(txid)
             && pairs.len() == 1
             && let Some(&(owner, contact)) = pairs.first()
+            && !self.shared_pairs.contains(&(owner, contact))
         {
             sides[only] = Some(Side {
                 owner,
@@ -321,9 +329,9 @@ fn block_time(entry: &TxEntry) -> Option<u64> {
 /// Where an activity item sorts, newest first: mined ones by block time,
 /// unmined ones before them all; then the txid, then the direction (`r`
 /// before `s`; one transaction is never both for one pair). The page
-/// cursor is its query's tag ([`query_tag`]), then 16 hex digits of the
-/// time key, the txid's first 39 hex digits and `s` or `r` (64
-/// characters, m4's id form).
+/// cursor is its query's tag ([`query_tag`]), then 9 hex digits of the
+/// time key (a block time is a `u32`; unmined is 2^32), the txid's first
+/// 39 hex digits and `s` or `r` (64 characters, m4's id form).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ActivityKey {
     time: Reverse<u64>,
@@ -332,13 +340,16 @@ struct ActivityKey {
 }
 
 impl ActivityKey {
+    const TIME_DIGITS: usize = 9;
     const TXID_DIGITS: usize = 39;
+    /// After every block time.
+    const UNMINED: u64 = 1 << 32;
 
     fn new(entry: &TxEntry, txid: &Txid, direction: ActivityDirection) -> Self {
         let mut txid = txid.to_string();
         txid.truncate(Self::TXID_DIGITS);
         Self {
-            time: Reverse(block_time(entry).unwrap_or(u64::MAX)),
+            time: Reverse(block_time(entry).unwrap_or(Self::UNMINED)),
             txid,
             direction: match direction {
                 ActivityDirection::Sent => 's',
@@ -348,17 +359,17 @@ impl ActivityKey {
     }
 
     fn cursor(&self, tag: &str) -> String {
-        format!("{tag}{:016x}{}{}", self.time.0, self.txid, self.direction)
+        format!("{tag}{:09x}{}{}", self.time.0, self.txid, self.direction)
     }
 
     /// A cursor this query issued (`tag`), else `None`.
     fn parse(cursor: &str, tag: &str) -> Option<Self> {
         let hex = |s: &str| s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
         let cursor = cursor.strip_prefix(tag)?;
-        if cursor.len() != 16 + Self::TXID_DIGITS + 1 || !cursor.is_ascii() {
+        if cursor.len() != Self::TIME_DIGITS + Self::TXID_DIGITS + 1 || !cursor.is_ascii() {
             return None;
         }
-        let (time, rest) = cursor.split_at(16);
+        let (time, rest) = cursor.split_at(Self::TIME_DIGITS);
         let (txid, direction) = rest.split_at(Self::TXID_DIGITS);
         let direction = direction
             .chars()
@@ -367,17 +378,27 @@ impl ActivityKey {
         if !hex(time) || !hex(txid) {
             return None;
         }
+        let time = u64::from_str_radix(time, 16).ok()?;
         Some(Self {
-            time: Reverse(u64::from_str_radix(time, 16).ok()?),
+            time: Reverse((time <= Self::UNMINED).then_some(time)?),
             txid: txid.to_owned(),
             direction,
         })
     }
 }
 
-/// What a cursor is bound to: 8 hex digits of SHA-256 over the owner, the
-/// contact and the filter, so a cursor of another query is refused.
-fn query_tag(owner: &Identifier, contact: &Identifier, filter: ActivityFilter) -> String {
+/// Hex digits of [`query_tag`].
+const TAG_DIGITS: usize = 15;
+
+/// What a cursor is bound to: the first [`TAG_DIGITS`] hex digits of
+/// SHA-256 over the owner, the contact and the filter. A cursor of another
+/// query is refused except with probability 2^-60; one accepted only
+/// positions this query's own results (D9).
+pub(crate) fn query_tag(
+    owner: &Identifier,
+    contact: &Identifier,
+    filter: ActivityFilter,
+) -> String {
     let mut bytes = Vec::with_capacity(65);
     bytes.extend_from_slice(&owner.to_buffer());
     bytes.extend_from_slice(&contact.to_buffer());
@@ -387,7 +408,9 @@ fn query_tag(owner: &Identifier, contact: &Identifier, filter: ActivityFilter) -
         ActivityFilter::Received => 2,
     });
     let digest = sha256::Hash::hash(&bytes);
-    hex::encode(&digest.as_byte_array()[..4])
+    let mut tag = hex::encode(&digest.as_byte_array()[..TAG_DIGITS.div_ceil(2)]);
+    tag.truncate(TAG_DIGITS);
+    tag
 }
 
 /// `owner`'s payments with `contact` in the view, filtered, newest first,

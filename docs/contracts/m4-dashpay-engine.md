@@ -2565,18 +2565,23 @@ renames or reshapes them takes the next version bump:
     - **Shared addresses.** A script DashPay accounts of two sides hold (two contacts', or a receival and an
       external one) is nobody's, and so is every address of two sides' accounts on one xpub (the same first
       address), even past where one pool reaches: their outputs stay unattributed in history, activity and the
-      strip, and the library's word is refused for their transactions. A contact chooses the xpub it gives us, so it
-      can derive another contact's addresses or our receival ones.
+      strip, and the library's word is refused for their transactions. The library's word is also refused for the
+      pair of an external account on a shared xpub, for any output, so a payment past both pools stays unattributed
+      too. A contact chooses the xpub it gives us, so it can derive another contact's addresses or our receival
+      ones.
     - **Not attributed:** a payment between two identities of one wallet (a SendToSelf), mixed or foreign-funded
       debits (`Other`), coinbase, CoinJoin mixing, denominations and collateral, and Platform transfers. A CoinJoin
       Send (mixed coins paying a contact) is attributed like any send. The history text search does not match contact
       names.
     - **One source.** Activity and the strip read the same attribution as history, so the three agree. A sent
       activity amount sums the transaction's outputs to the contact (no fee, no change).
-    - **Cursor.** 64 characters, `[0-9a-f]` plus the direction: a tag of the query (8 hex digits of SHA-256 over
-      the identity, the contact and the filter), the block time (unmined: the end of time), the txid's first 39 hex
-      digits, `s` or `r`. A cursor of another query (identity, contact or filter) is `invalid_argument`, as a
-      malformed one is. For an unchanged set of payments pages never repeat or skip an item.
+    - **Cursor.** 64 characters, `[0-9a-f]` plus the direction: a tag of the query (15 hex digits of SHA-256 over
+      the identity, the contact and the filter), the block time (9 hex digits; unmined: after every block time), the
+      txid's first 39 hex digits, `s` or `r`. A cursor of another query (identity, contact or filter) is
+      `invalid_argument`, as a malformed one is, except with probability about 2^-60; an accepted one pages the
+      current query from that position, so it shows nothing of the other query. For an unchanged set of payments
+      pages never repeat or skip an item (unless two same-time, same-direction txids share their first 156 bits,
+      infeasible in chain data).
       A payment that lands meanwhile shows on a re-query; one mined between pages, a block whose time is earlier
       than the cursor's, or a reorg can move an item across the cursor (re-query from the first page on
       `HistoryChanged`). Unmined items sort by txid, not first-seen.

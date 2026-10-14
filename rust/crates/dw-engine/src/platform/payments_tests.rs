@@ -25,7 +25,9 @@ use platform_wallet::wallet::identity::{
     ContactProfileEntry, DashPayProfile, PaymentDirection, PaymentEntry, PaymentStatus,
 };
 
-use super::attribution::{ACTIVITY_PAGE, Payees, Score, Side, activity, frequent, scores};
+use super::attribution::{
+    ACTIVITY_PAGE, Payees, Score, Side, activity, frequent, query_tag, scores,
+};
 use super::contacts::{ChannelState, ContactSummary, Relation};
 use super::contacts_tests::{BOB, CAROL, DAVE, ERIN, Fixture, ME, b58, established_contact, id};
 use super::payments::{ActivityDirection, ActivityFilter, ActivityItem, Counterparty};
@@ -520,8 +522,10 @@ fn activity_pages_by_cursor() {
         "x",
         &cursor[..63],
         &format!("{}q", &cursor[..63]),
-        &cursor[8..],
-        &format!("{}{}", &cursor[..8], cursor[8..].to_uppercase()),
+        &cursor[15..],
+        &format!("{}{}", &cursor[..15], cursor[15..].to_uppercase()),
+        // A time past "unmined".
+        &format!("{}100000001{}", &cursor[..15], &cursor[24..]),
     ] {
         let e = activity(&p.view(), &id(ME), &id(BOB), ActivityFilter::All, Some(bad));
         assert_eq!(e.unwrap_err().code(), "invalid_argument", "{bad:?}");
@@ -539,9 +543,24 @@ fn activity_pages_by_cursor() {
     }
     let (_, received) = p.page(BOB, ActivityFilter::Received, None);
     let received = received.unwrap();
-    assert_ne!(received[..8], cursor[..8]);
+    assert_ne!(received[..15], cursor[..15]);
     let (_, end) = p.page(BOB, ActivityFilter::Received, Some(&received));
     assert_eq!(end, None);
+}
+
+/// Sol r2's pair: two contacts whose 32-bit tags collided (the tag's
+/// first 8 hex digits) differ in the 60-bit tag.
+#[test]
+fn the_query_tag_separates_an_8_digit_collision() {
+    let contact = |n: u32| {
+        let mut b = [0; 32];
+        b[28..].copy_from_slice(&n.to_be_bytes());
+        Identifier::from(b)
+    };
+    let tag = |n| query_tag(&id(1), &contact(n), ActivityFilter::All);
+    let (a, b) = (tag(56_710), tag(88_956));
+    assert_eq!((a.len(), &a[..8], &b[..8]), (15, "90414775", "90414775"));
+    assert_ne!(a, b);
 }
 
 fn summary(n: u8) -> (Identifier, ContactSummary) {
@@ -676,6 +695,31 @@ fn dashpay_account(account_type: AccountType, xpub: ExtendedPubKey) -> ManagedCo
     })
 }
 
+/// Our external account paying `contact` on the xpub of seed `seed`,
+/// grown by `extra`, and its address scripts by index.
+fn external_account(
+    contact: u8,
+    seed: u8,
+    extra: u32,
+) -> (ManagedCoreFundsAccount, Vec<ScriptBuf>) {
+    let xpub = account_xpub(seed);
+    let account_type = AccountType::DashpayExternalAccount {
+        index: 0,
+        user_identity_id: [ME; 32],
+        friend_identity_id: [contact; 32],
+    };
+    let mut pay = dashpay_account(account_type, xpub);
+    for pool in pay.managed_account_type_mut().address_pools_mut() {
+        pool.generate_addresses(extra, &KeySource::Public(xpub), true)
+            .unwrap();
+    }
+    let pool = pay.managed_account_type().address_pools()[0];
+    let scripts = (0..pool.addresses.len() as u32)
+        .map(|i| pool.addresses[&i].script_pubkey.clone())
+        .collect();
+    (pay, scripts)
+}
+
 /// What a session test needs of its wallet's DashPay accounts.
 struct Accounts {
     /// Receival address scripts of each contact, by index.
@@ -754,21 +798,7 @@ impl Fixture {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
             let info = wm.get_wallet_info_mut(&wallet.0).unwrap();
-            let xpub = account_xpub(seed);
-            let account_type = AccountType::DashpayExternalAccount {
-                index: 0,
-                user_identity_id: [ME; 32],
-                friend_identity_id: [contact; 32],
-            };
-            let mut pay = dashpay_account(account_type, xpub);
-            for pool in pay.managed_account_type_mut().address_pools_mut() {
-                pool.generate_addresses(extra, &KeySource::Public(xpub), true)
-                    .unwrap();
-            }
-            let pool = pay.managed_account_type().address_pools()[0];
-            let scripts = (0..pool.addresses.len() as u32)
-                .map(|i| pool.addresses[&i].script_pubkey.clone())
-                .collect();
+            let (pay, scripts) = external_account(contact, seed, extra);
             let collection = &mut info.core_wallet.accounts;
             collection.insert_funds_bearing_account(pay).unwrap();
             scripts
@@ -954,9 +984,9 @@ fn the_facade_attributes_payments_both_ways() {
 }
 
 /// An account on another contact's xpub (Carol gave us Bob's) shares
-/// every address of both, even past where Bob's pool reaches (D22): sends
-/// to either stay unattributed, the library's word is refused, and Bob's
-/// own receival account is untouched.
+/// every address of both, even past where Bob's pool reaches (D22) or past
+/// both pools (D23): sends to them stay unattributed, the library's word
+/// is refused, and Bob's own receival account is untouched.
 #[test]
 fn an_account_on_another_contacts_xpub_is_nobodys() {
     let f = with_contacts();
@@ -986,12 +1016,26 @@ fn an_account_on_another_contacts_xpub_is_nobodys() {
         PaymentStatus::Confirmed,
         40_000,
     );
+    // Past both pools (D23): only the library's entries could name a
+    // contact, and they name Bob and Carol, the shared xpub's sides.
+    let (_, xpub) = external_account(CAROL, 100 + BOB, 30);
+    let past = [
+        send(12, &xpub[carol.len() + 5]),
+        send(13, &xpub[carol.len() + 6]),
+    ];
+    for (txid, contact) in past.into_iter().zip([BOB, CAROL]) {
+        let status = PaymentStatus::Confirmed;
+        f.library_payment(txid, contact, PaymentDirection::Sent, status, 40_000);
+    }
     let (from_bob, _) = pay_both_ways(&f, &a, 0, None);
 
     let rows = f.history();
     let row = |txid: Txid| rows.iter().find(|r| r.txid == txid.to_string()).unwrap();
     assert_eq!(row(near).counterparty, None);
     assert_eq!(row(far).counterparty, None);
+    for txid in past {
+        assert_eq!(row(txid).counterparty, None, "{txid}");
+    }
     assert_eq!(row(from_bob).counterparty, Some(bob()));
     let dp = f.dp();
     let txids = |contact: u8| {
