@@ -5,6 +5,7 @@
 use std::fs::{File, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::error::{AppCode, AppError};
 
@@ -32,13 +33,13 @@ pub fn data_root(
     dunce::canonicalize(&dir)
 }
 
-/// The exclusive advisory lock on `<root>/instance.lock` (`flock` on Unix,
-/// `LockFileEx` on Windows), held while the value lives and released by the
-/// OS when the process ends, however it ends. The single-instance plugin
-/// hands a second launch's links to the first where it can; this lock is
-/// the backstop where it cannot (no D-Bus session bus, a direct macOS
-/// binary launch, another Windows session), so that two processes never
-/// open one wallet.
+/// The exclusive advisory lock (`flock` on Unix, `LockFileEx` on Windows)
+/// on `<root>/instance.lock`, held while the value lives and released by
+/// the OS when the process ends, however it ends. The single-instance
+/// plugin hands a second launch's links to the first where it can; this
+/// lock is the backstop where it cannot (no D-Bus session bus, a direct
+/// macOS binary launch, another Windows session), so that two processes
+/// never open one wallet.
 #[derive(Debug)]
 pub struct InstanceLock {
     _file: File,
@@ -48,33 +49,46 @@ impl InstanceLock {
     /// The lock file's name in the data root.
     pub const FILE: &str = "instance.lock";
 
-    /// Takes the lock of the existing data root `root`, or fails with
-    /// `app.already_running` while another process holds it.
-    pub fn acquire(root: &Path) -> Result<Self, AppError> {
+    /// How long `run` waits for the lock: a launch during the previous
+    /// instance's shutdown (its engine flush, after the plugin has given up
+    /// the D-Bus name) gets it once that process is gone.
+    pub const LAUNCH_WAIT: Duration = Duration::from_secs(3);
+
+    /// Takes the lock of the existing data root `root`, retrying for up to
+    /// `wait`, or fails with `app.already_running` while another process
+    /// holds it. The file is opened as the one name of a regular file
+    /// (`dw_fs::open_sole_file`: never through a symlink, 0600 when made).
+    pub fn acquire(root: &Path, wait: Duration) -> Result<Self, AppError> {
         let path = root.join(Self::FILE);
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let file = options.open(&path).map_err(|e| {
+        let file = dw_fs::open_sole_file(&path).map_err(|e| {
             AppError::app(
                 AppCode::DataDir,
                 format!("cannot open {}: {e}", path.display()),
             )
         })?;
-        match file.try_lock() {
-            Ok(()) => Ok(InstanceLock { _file: file }),
-            Err(TryLockError::WouldBlock) => Err(AppError::app(
-                AppCode::AlreadyRunning,
-                format!(
-                    "another Dash Wallet is already running on {}",
-                    root.display()
-                ),
-            )),
-            Err(TryLockError::Error(e)) => Err(AppError::app(
-                AppCode::DataDir,
-                format!("cannot lock {}: {e}", path.display()),
-            )),
+        let deadline = Instant::now() + wait;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(InstanceLock { _file: file }),
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(TryLockError::WouldBlock) => {
+                    return Err(AppError::app(
+                        AppCode::AlreadyRunning,
+                        format!(
+                            "another Dash Wallet is already running on {}",
+                            root.display()
+                        ),
+                    ));
+                }
+                Err(TryLockError::Error(e)) => {
+                    return Err(AppError::app(
+                        AppCode::DataDir,
+                        format!("cannot lock {}: {e}", path.display()),
+                    ));
+                }
+            }
         }
     }
 }
@@ -134,10 +148,10 @@ mod tests {
                 .unwrap()
                 .code()
         };
-        let held = InstanceLock::acquire(&root).unwrap();
+        let held = InstanceLock::acquire(&root, Duration::ZERO).unwrap();
         assert_eq!(probe(), Some(3), "a second process must not take the lock");
         // Within one process too: a second open of the file is refused.
-        let again = InstanceLock::acquire(&root).unwrap_err();
+        let again = InstanceLock::acquire(&root, Duration::ZERO).unwrap_err();
         assert_eq!(again.code_str(), AppCode::AlreadyRunning.as_str());
         drop(held);
         assert_eq!(probe(), Some(0), "the lock is free once its holder is gone");
@@ -149,13 +163,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_launch_waits_for_a_holder_that_is_shutting_down() {
+        let dir = dw_testutil::private_tempdir();
+        let root = data_root(Some(&dir.path().join("root")), || unreachable!()).unwrap();
+        let held = InstanceLock::acquire(&root, Duration::ZERO).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(held);
+        });
+        InstanceLock::acquire(&root, Duration::from_secs(30))
+            .expect("the lock, once its holder lets go");
+        release.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_lock_file_is_never_reached_through_a_symlink() {
+        let dir = dw_testutil::private_tempdir();
+        let root = data_root(Some(&dir.path().join("root")), || unreachable!()).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::os::unix::fs::symlink(&elsewhere, root.join(InstanceLock::FILE)).unwrap();
+        let e = InstanceLock::acquire(&root, Duration::ZERO).unwrap_err();
+        assert_eq!(e.code_str(), AppCode::DataDir.as_str());
+        assert!(!elsewhere.exists());
+    }
+
     /// The other process of `one_process_per_data_root`; a no-op otherwise.
     #[test]
     fn lock_probe() {
         let Some(root) = std::env::var_os(PROBE) else {
             return;
         };
-        let code = match InstanceLock::acquire(Path::new(&root)) {
+        let code = match InstanceLock::acquire(Path::new(&root), Duration::ZERO) {
             Ok(_) => 0,
             Err(e) if e.code_str() == AppCode::AlreadyRunning.as_str() => 3,
             Err(e) => {

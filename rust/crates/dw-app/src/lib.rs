@@ -177,11 +177,26 @@ pub fn run() {
         std::process::exit(1);
     });
     launch.data_dir = Some(root.clone());
-    // The single-instance plugin first: a second launch hands its links to
-    // the running app and exits before anything else starts. Where it
-    // cannot, the instance lock (taken before the engine opens) stops it.
+    // The instance lock ends a second launch on this root that cannot hand
+    // its links over; it is taken before any window, webview or tray icon
+    // exists (those, and the setup hook that opens the engine, come with
+    // `run`, where a setup error would panic). With the single-instance
+    // plugin it waits for the build, during which the plugin forwards and
+    // exits where it can. Without it (macOS, or Linux without a session
+    // bus) it comes first, so a refused launch ends before GTK starts and
+    // GLib autolaunches a session bus of its own.
+    let take_lock = || {
+        instance::InstanceLock::acquire(&root, instance::InstanceLock::LAUNCH_WAIT).unwrap_or_else(
+            |e| {
+                eprintln!("dash-wallet: {e}");
+                std::process::exit(1);
+            },
+        )
+    };
     let mut base = tauri::Builder::<tauri::Wry>::new();
-    if let Some(single_instance) = shell::native::single_instance(&root) {
+    let single_instance = shell::native::single_instance(&root);
+    let early_lock = single_instance.is_none().then(take_lock);
+    if let Some(single_instance) = single_instance {
         base = base.plugin(single_instance);
     }
     if let Some(window_state) = shell::native::window_state(&launch) {
@@ -195,6 +210,7 @@ pub fn run() {
             eprintln!("dash-wallet: could not start: {e}");
             std::process::exit(1);
         });
+    app.manage(early_lock.unwrap_or_else(take_lock));
     // The self-test's grant, outside `capabilities/` so that no other build
     // embeds it (build.rs, E0-13 D17). Tauri panics on one it cannot parse
     // or resolve (`api::selftest` tests it parses; every permission exists).
@@ -380,6 +396,29 @@ mod tests {
         assert_eq!(entries(), before);
         drop(first);
         open().expect("the root opens again once its holder is gone");
+    }
+
+    #[test]
+    fn the_lock_run_took_is_the_one_the_state_keeps() {
+        // `run` manages the lock before the setup hook builds the state,
+        // which must then not try for a second one (it would be refused).
+        let app = tauri::test::mock_app();
+        let dir = dw_testutil::private_tempdir();
+        let root = instance::data_root(Some(&dir.path().join("data")), || unreachable!()).unwrap();
+        let lock = instance::InstanceLock::acquire(&root, std::time::Duration::ZERO).unwrap();
+        app.manage(lock);
+        let opts = LaunchOptions {
+            data_dir: Some(root.clone()),
+            ..LaunchOptions::default()
+        };
+        AppState::new(
+            app.handle(),
+            opts,
+            Instant::now(),
+            Default::default(),
+            || unreachable!("--datadir given"),
+        )
+        .expect("the state opens under the lock run took");
     }
 
     #[test]

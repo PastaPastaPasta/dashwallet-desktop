@@ -5,12 +5,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dw_engine::platform::DashPay;
 use dw_engine::{Engine, EngineConfig, NetworkSession, PreparedTx, TxDraft, WalletId};
 use dw_vault::VaultConfig;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::Mutex;
 
 use crate::bridge::{EventMemory, TauriSink};
@@ -40,9 +40,11 @@ pub struct AppState {
     /// Deep links and the native menus' state (U-01). The same `Arc` is
     /// Tauri-managed, for the callbacks that run before this state exists.
     pub shell: Arc<Shell>,
-    /// The data root's instance lock, held while the app runs. Declared
-    /// after `engine`, so it is released after the engine is dropped.
-    _instance: InstanceLock,
+    /// The data root's instance lock, when `run` did not take it already
+    /// (it does, before any window exists, and keeps it Tauri-managed; the
+    /// mock-runtime builders do not). Declared after `engine`, so it is
+    /// released after the engine is dropped.
+    _instance: Option<InstanceLock>,
     /// Test seam: a payment `authorize` passes it between reading the
     /// setting and issuing the grant.
     #[cfg(test)]
@@ -166,13 +168,18 @@ impl AppState {
         };
         // The lock before the engine: a second process on this root stops
         // here, before it opens any wallet database.
-        dw_fs::create_private_dir(&data_root).map_err(|e| {
-            AppError::app(
-                AppCode::DataDir,
-                format!("cannot create {}: {e}", data_root.display()),
-            )
-        })?;
-        let instance = InstanceLock::acquire(&data_root)?;
+        let instance = match app.try_state::<InstanceLock>() {
+            Some(_) => None,
+            None => {
+                dw_fs::create_private_dir(&data_root).map_err(|e| {
+                    AppError::app(
+                        AppCode::DataDir,
+                        format!("cannot create {}: {e}", data_root.display()),
+                    )
+                })?;
+                Some(InstanceLock::acquire(&data_root, Duration::ZERO)?)
+            }
+        };
         let engine = Engine::new(
             EngineConfig {
                 data_root,

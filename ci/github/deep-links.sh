@@ -18,7 +18,8 @@
 # once with a link argument on regtest; the script waits for each step in the link trace:
 # `received <source> <scheme>` from the shell and `routed <route>` from the renderer
 # (dw-app shell/links.rs, apps/desktop/src/app/shellBridge.ts). The data root is the platform
-# default, as for a link the OS opens (a `--datadir` launch has an instance of its own on Linux).
+# default, as for a link the OS opens: the opened launch has no `--datadir`, and only a launch
+# on the same data root hands its link over (U-01 D2).
 #
 # CI only on macOS and Windows: there it replaces ~/Applications/Dash Wallet.app or installs into
 # %LOCALAPPDATA%, claims the schemes for the user and uses the default data root. Set

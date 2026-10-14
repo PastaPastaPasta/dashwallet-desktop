@@ -18,7 +18,7 @@
 // stripping); it uses W3C WebDriver over fetch and no other dependency.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createWriteStream, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createWriteStream, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -119,7 +119,12 @@ class WebDriver {
 /** A second launch of the app on the same data root with `link`: it must hand the link to the
  * running app (the single-instance plugin) and exit at once instead of opening a window. */
 function secondLaunch(dataRoot: string, link: string) {
-  const r = spawnSync(APP, ["--datadir", dataRoot, link], { encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
+  launchAndForward(["--datadir", dataRoot, link]);
+}
+
+function launchAndForward(args: string[], extraEnv: NodeJS.ProcessEnv = {}) {
+  const env = { ...process.env, ...extraEnv };
+  const r = spawnSync(APP, args, { encoding: "utf8", env, timeout: 60_000, killSignal: "SIGKILL" });
   if (r.error || r.status !== 0)
     throw new Error(`the second launch did not hand over its link and exit (status ${r.status}, ${r.error?.message ?? r.stderr.slice(-400)})`);
 }
@@ -160,7 +165,10 @@ const waitForDriver = (base: string) =>
 async function main() {
   mkdirSync(OUT, { recursive: true });
   work = mkdtempSync(join(tmpdir(), "dw-e2e-")); // mode 0700
-  const dataRoot = join(work, "data");
+  // The default root's place under XDG_DATA_HOME=<work>/xdg, so a launch without --datadir can
+  // meet this one (U-01 D2).
+  const xdgData = join(work, "xdg");
+  const dataRoot = join(xdgData, "org.dash.wallet.desktop");
   const passFile = join(work, "passphrase");
   writeFileSync(passFile, `${PASSPHRASE}\n`, { mode: 0o600 });
 
@@ -239,16 +247,24 @@ async function main() {
     // The same root through a symlinked parent: one instance name (the hash of the canonical root).
     const linked = join(work, "linked");
     symlinkSync(work, linked);
-    secondLaunch(join(linked, "data"), `pay:${address}?label=Symlinked`);
+    secondLaunch(join(linked, "xdg", "org.dash.wallet.desktop"), `pay:${address}?label=Symlinked`);
     await waitValue("pay-label", "Symlinked");
     step("second launch through a symlinked parent: forwarded to the same instance");
+
+    // The default root (no --datadir) is the same root as the --datadir the app runs on.
+    launchAndForward([`pay:${address}?label=Default`], { XDG_DATA_HOME: xdgData });
+    await waitValue("pay-label", "Default");
+    step("second launch on the default root: forwarded to the --datadir instance of that root");
 
     // No session bus (and no fallback socket in an empty runtime directory), then a malformed bus
     // address: no plugin, so the second launch stops at the lock; the running app keeps its page.
     const runtime = mkdtempSync(join(work, "runtime-"));
     refusedLaunch(dataRoot, `pay:${address}?label=Refused`, { XDG_RUNTIME_DIR: runtime });
     refusedLaunch(dataRoot, `pay:${address}?label=Refused`, { DBUS_SESSION_BUS_ADDRESS: "nonsense", XDG_RUNTIME_DIR: runtime });
-    await waitValue("pay-label", "Symlinked");
+    // Refused before GTK started: no session bus autolaunched, nothing written to the runtime dir.
+    const left = readdirSync(runtime);
+    if (left.length > 0) throw new Error(`the refused launches left ${left.join(", ")} in their runtime dir`);
+    await waitValue("pay-label", "Default");
     await wd.screenshot("7-after-refused-launches");
     step("second launch without a session bus: refused at the instance lock, no panic");
 

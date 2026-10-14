@@ -444,11 +444,11 @@ mod tests {
             // on macOS too, where the predefined item would send nothing.
             let about = found.iter().filter(|id| *id == "help.about").count();
             assert_eq!(about, 1, "mac={mac}: {found:?}");
-            assert_eq!(
-                find("help.about").unwrap().action,
-                Action::Shell(ShellCommand::About)
-            );
         }
+        assert_eq!(
+            find("help.about").unwrap().action,
+            Action::Shell(ShellCommand::About)
+        );
     }
 
     #[test]

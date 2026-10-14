@@ -154,6 +154,11 @@ export function shortcutFor(e: Pick<KeyboardEvent, "ctrlKey" | "metaKey" | "shif
   return SHORTCUTS[e.shiftKey ? `shift+${key}` : key] ?? null;
 }
 
+/** One chain of link drains for the page's life (not per effect run, which a network change or
+ * a remount restarts): each starts once the batch before it is applied, so batches apply in the
+ * order they were drained, and a slow reply cannot land after a later one. */
+let drains = Promise.resolve();
+
 /** Takes the queued links now and whenever the shell says more wait, one take at a time, and
  * runs the menus' commands. With `--selftest-link-trace` each route is reported, and `ready` once the first
  * take has run. */
@@ -175,9 +180,6 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
         showToast(`Could not open the link: ${errorMessage(e)}`);
       }
     };
-    // One chain of drains: each starts once the batch before it is applied, so batches apply
-    // in the order they were drained, and a slow reply cannot land after a later one.
-    let drains = Promise.resolve();
     const take = () => (drains = drains.then(drain));
     const unlisten = backend.onShellEvent((event) => {
       if (event.kind === "linksPending") void take();
