@@ -46,6 +46,15 @@ export class PhraseEntry {
     return this.check?.checksum === "coreOnly";
   }
 
+  /** The problem to show. While the last word is still being typed (`typing`), only an unknown
+   * word before it counts: the length and the checksum are not wrong yet. */
+  shownProblem(typing: boolean): string | null {
+    const check = this.check;
+    if (!typing || !check || !this.problem) return this.problem;
+    const earlier = check.unknownWordIndices.filter((i) => i < check.wordCount - 1);
+    return earlier.length > 0 ? PhraseText.unknownWords(earlier) : null;
+  }
+
   /** Checks `text`; `changed` runs once the answer for this edit is in. A later edit's answer
    * wins: earlier ones are dropped when they arrive. */
   async update(text: string, changed: () => void): Promise<void> {

@@ -217,6 +217,7 @@ pub fn run() {
     #[cfg(feature = "selftest")]
     app.add_capability(api::selftest::CAPABILITY)
         .expect("the self-test capability");
+    shell::protect_secrets(app.handle());
     if let Err(e) = shell::tray::install(app.handle()) {
         eprintln!("dw-app: tray icon: {e}");
     }

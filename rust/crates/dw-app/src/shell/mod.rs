@@ -64,6 +64,10 @@ pub enum ShellCommand {
     Lock,
     ToggleDiscreet,
     About,
+    /// Wallet ▸ Add Wallet… (create or restore another wallet, U-02 D14).
+    AddWallet,
+    /// Wallet ▸ Show Recovery Phrase… (IOS-003, U-02 D13).
+    RecoveryPhrase,
 }
 
 /// A top-level page of the window (DASHPAY §4 information architecture).
@@ -106,6 +110,10 @@ pub struct ShellSync {
     pub discreet: bool,
     /// An unlocked vault exists (Wallet ▸ Lock is enabled).
     pub can_lock: bool,
+    /// A recovery phrase or passphrase field is on screen: the main window's
+    /// contents are kept out of screenshots and screen sharing where the OS
+    /// allows (macOS, Windows; U-02 D15).
+    pub secret_shown: bool,
 }
 
 type SyncFn = Box<dyn Fn(ShellSync) + Send + Sync>;
@@ -183,6 +191,18 @@ pub fn emit<R: Runtime>(app: &AppHandle<R>, event: ShellEvent) {
     if let Err(e) = app.emit(EVENT, event) {
         eprintln!("dw-app: shell event: {e}");
     }
+}
+
+/// Keeps the main window's contents out of screen captures while the
+/// renderer shows a secret (`ShellSync::secret_shown`, U-02 D15).
+pub fn protect_secrets<R: Runtime>(app: &AppHandle<R>) {
+    let Some(shell) = shell(app) else { return };
+    let app = app.clone();
+    shell.on_sync(Box::new(move |s| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.set_content_protected(s.secret_shown);
+        }
+    }));
 }
 
 /// Shows, restores and focuses the main window.

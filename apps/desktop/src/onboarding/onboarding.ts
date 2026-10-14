@@ -71,6 +71,8 @@ export class OnboardingModel extends Model {
   verifyChallenge: number[] = [];
   verifyChips: VerifyChip[] = [];
   verifiedCount = 0;
+  /** The words picked so far, in the challenge's order. */
+  verifiedWords: string[] = [];
   verifyMistake = false;
 
   // The vault passphrase.
@@ -169,6 +171,7 @@ export class OnboardingModel extends Model {
     const chipWords = this.#shuffled([...this.verifyChallenge.map((i) => words[i]), ...decoys]);
     this.verifyChips = chipWords.map((word, id) => ({ id, word, used: false }));
     this.verifiedCount = 0;
+    this.verifiedWords = [];
     this.verifyMistake = false;
     this.phraseWords = [];
     this.#go("verifyPhrase");
@@ -188,6 +191,7 @@ export class OnboardingModel extends Model {
     if (!chip) return;
     if (this.verify(chip.word, this.verifyChallenge[this.verifiedCount])) {
       this.verifyChips = this.verifyChips.map((c) => (c === chip ? { ...c, used: true } : c));
+      this.verifiedWords = [...this.verifiedWords, chip.word];
       this.verifiedCount++;
       this.verifyMistake = false;
       this.changed();
@@ -290,7 +294,7 @@ export class OnboardingModel extends Model {
   /** Scan start from the wallet's creation date; `null` scans from genesis. */
   setBirthDate(date: Date | null) {
     this.birthDateError = null;
-    if (!date) {
+    if (!date || Number.isNaN(date.getTime())) {
       this.birthDate = null;
       this.options = { ...this.options, birthHeight: 0 };
     } else if (date > this.#now()) {
@@ -302,11 +306,13 @@ export class OnboardingModel extends Model {
     this.changed();
   }
 
-  /** Scan start as a block height; `null` scans from genesis. */
+  /** Scan start as a block height; `null` (or anything but a whole number) scans from genesis:
+   * NaN would cross IPC as `null`, which starts at the tip. */
   setBirthHeight(height: number | null) {
     this.birthDate = null;
     this.birthDateError = null;
-    this.options = { ...this.options, birthHeight: height ?? 0 };
+    const valid = height !== null && Number.isSafeInteger(height) && height >= 0;
+    this.options = { ...this.options, birthHeight: valid ? height : 0 };
     this.changed();
   }
 
@@ -415,6 +421,7 @@ export class OnboardingModel extends Model {
     this.verifyChips = [];
     this.verifyChallenge = [];
     this.verifiedCount = 0;
+    this.verifiedWords = [];
     this.verifyMistake = false;
     this.#go("showPhrase");
   }
@@ -466,6 +473,7 @@ export class OnboardingModel extends Model {
     this.verifyChips = [];
     this.verifyChallenge = [];
     this.verifiedCount = 0;
+    this.verifiedWords = [];
     this.verifyMistake = false;
     this.entry.clear();
     this.failure = null;

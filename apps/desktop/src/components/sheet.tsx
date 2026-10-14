@@ -1,31 +1,43 @@
 // SheetScaffold (UX-SPEC C23): a modal dialog with the 64 pt header (title, close), Escape to
 // close, focus kept inside while open and returned to the opener on close. Focus starts on the
-// element marked `data-autofocus`, else on the first focusable one (the close button).
+// element marked `data-autofocus`, else on the first focusable one (the close button), and again
+// whenever `focusKey` changes (a sheet with steps).
 
 import { useEffect, useRef, type ReactNode } from "react";
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select, textarea, summary, [tabindex]:not([tabindex="-1"])';
+
+function focusStart(panel: HTMLElement | null) {
+  (panel?.querySelector<HTMLElement>("[data-autofocus]") ?? panel?.querySelector<HTMLElement>(FOCUSABLE))?.focus();
+}
 
 export function Sheet({
   title,
   onClose,
   width,
   testId,
+  focusKey,
   children,
 }: {
   title: string;
   onClose: () => void;
   width: "small" | "medium" | "large";
   testId: string;
+  focusKey?: string;
   children: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
-    const start = panel.current?.querySelector<HTMLElement>("[data-autofocus]") ?? panel.current?.querySelector<HTMLElement>(FOCUSABLE);
-    start?.focus();
+    focusStart(panel.current);
     return () => opener?.focus?.();
   }, []);
+  const shownKey = useRef(focusKey);
+  useEffect(() => {
+    if (shownKey.current === focusKey) return;
+    shownKey.current = focusKey;
+    focusStart(panel.current);
+  }, [focusKey]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {

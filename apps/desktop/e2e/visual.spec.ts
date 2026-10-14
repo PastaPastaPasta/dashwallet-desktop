@@ -1,5 +1,5 @@
-import { expect, test } from "@playwright/test";
-import { SCREENS, show, THEMES } from "./helpers";
+import { expect, test, type Page } from "@playwright/test";
+import { fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
 
 // Visual baselines of the four screens in light and dark (Chromium). Opt-in with DW_VISUAL=1:
 // pixels are only comparable inside the pinned Playwright image (scripts/e2e-docker.sh and the
@@ -12,6 +12,84 @@ for (const theme of THEMES) {
     test(`visual ${screen} ${theme}`, async ({ page }) => {
       await show(page, screen, theme);
       await expect(page).toHaveScreenshot(`${theme}-${screen}.png`, { animations: "disabled", caret: "hide" });
+    });
+  }
+}
+
+// U-02: onboarding, the lock screen's wait, Forgot passphrase and Show Recovery Phrase, on fixture
+// phrases only. The verify step's positions and chips are drawn at random, so they are masked.
+const ONBOARDING: Record<string, (page: Page) => Promise<void>> = {
+  welcome: async (page) => {
+    await page.getByTestId("onboarding-welcome").waitFor();
+  },
+  passphrase: async (page) => {
+    await page.getByTestId("onboarding-create").click();
+    await page.getByTestId("onboarding-passphrase-new").fill("Fixture pass 42!");
+  },
+  phrase: async (page) => {
+    await page.getByTestId("onboarding-create").click();
+    await page.getByTestId("onboarding-passphrase-new").fill("Fixture pass 42!");
+    await page.getByTestId("onboarding-passphrase-repeat").fill("Fixture pass 42!");
+    await page.getByTestId("onboarding-passphrase-submit").click();
+    await page.getByTestId("onboarding-phrase-words").waitFor();
+  },
+  verify: async (page) => {
+    await ONBOARDING.phrase(page);
+    await page.getByTestId("onboarding-written-down").check();
+    await page.getByTestId("onboarding-phrase-continue").click();
+    await page.getByTestId("onboarding-verifyPhrase").waitFor();
+  },
+  restore: async (page) => {
+    await page.getByTestId("onboarding-restore").click();
+    await page.getByTestId("restore-input").fill("enjoy congxx lay");
+    await page.getByTestId("restore-problem").waitFor();
+  },
+};
+
+const LATER: Record<string, { scenario: string; go: (page: Page) => Promise<void> }> = {
+  "lock-wait": { scenario: "locked-throttled", go: (page) => page.getByTestId("lock-error").getByText("try again").waitFor() },
+  forgot: {
+    scenario: "locked-two-wallets",
+    go: async (page) => {
+      await page.getByTestId("lock-forgot").click();
+      await page.getByTestId("forgot-wallet").first().click();
+      await page.getByTestId("forgot-consequences").waitFor();
+    },
+  },
+  "recovery-phrase": {
+    scenario: "funded",
+    go: async (page) => {
+      await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "recoveryPhrase" }));
+      await page.getByTestId("recovery-passphrase-field").fill("demo");
+      await page.keyboard.press("Enter");
+      await page.getByTestId("recovery-words").waitFor();
+    },
+  },
+};
+
+async function shoot(page: Page, name: string, theme: Theme) {
+  await fontsReady(page);
+  await expect(page).toHaveScreenshot(`${theme}-${name}.png`, {
+    animations: "disabled",
+    caret: "hide",
+    mask: [page.locator(".verify-slots, .verify-chips")],
+  });
+}
+
+for (const theme of THEMES) {
+  for (const [name, go] of Object.entries(ONBOARDING)) {
+    test(`visual onboarding-${name} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl("no-wallet", theme));
+      await go(page);
+      await shoot(page, `onboarding-${name}`, theme);
+    });
+  }
+  for (const [name, { scenario, go }] of Object.entries(LATER)) {
+    test(`visual ${name} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(scenario, theme));
+      await page.locator("[data-testid=hero], [data-testid=lock-screen]").first().waitFor();
+      await go(page);
+      await shoot(page, name, theme);
     });
   }
 }

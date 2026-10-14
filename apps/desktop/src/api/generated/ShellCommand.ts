@@ -5,4 +5,4 @@ import type { ToolsTab } from "./ToolsTab";
 /**
  * A command from the native menus or the tray.
  */
-export type ShellCommand = { "kind": "navigate", route: Route, } | { "kind": "tools", tab: ToolsTab, } | { "kind": "openUri" } | { "kind": "lock" } | { "kind": "toggleDiscreet" } | { "kind": "about" };
+export type ShellCommand = { "kind": "navigate", route: Route, } | { "kind": "tools", tab: ToolsTab, } | { "kind": "openUri" } | { "kind": "lock" } | { "kind": "toggleDiscreet" } | { "kind": "about" } | { "kind": "addWallet" } | { "kind": "recoveryPhrase" };

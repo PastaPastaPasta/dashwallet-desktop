@@ -26,7 +26,8 @@ commands! {
     }
 
     /// What the native menus and the tray mirror: Discreet Mode's check
-    /// and whether Lock Wallet is enabled.
+    /// and whether Lock Wallet is enabled; and whether a secret is on
+    /// screen (the window's content protection).
     #[facade()]
     fn shell_sync(state, sync: ShellSync) -> () {
         state.shell.sync(sync);

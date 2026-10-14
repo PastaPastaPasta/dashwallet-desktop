@@ -7,16 +7,23 @@ import { DashButton, DashLogo } from "../components/basics";
 import { EmptyState, LoadingState } from "../components/history";
 import { chipState, Sidebar, StatusBar, Toolbar } from "../components/shell";
 import { showToast, ToastHost } from "../components/toast";
-import { LockScreen } from "../screens/LockScreen";
+import { ForgotPassphraseSheet } from "../screens/ForgotPassphrase";
+import { LockScreen, UnlockSheet } from "../screens/LockScreen";
+import { Onboarding } from "../screens/Onboarding";
 import { Overview } from "../screens/Overview";
+import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
 import { ContactsPage, PayPage, Placeholder, ToolsPage } from "../screens/Routes";
+import { SettingsPage } from "../screens/Settings";
 import { AboutSheet, OpenUriSheet } from "../screens/ShellDialogs";
 import { Transactions } from "../screens/Transactions";
 import { TxDetailSheet } from "../screens/TxDetailSheet";
 import { useShellBridge } from "./shellBridge";
 import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
-import { ui, useUi } from "./ui";
+import { navigate, ui, useUi } from "./ui";
+
+const closeDialog = () => ui.set({ dialog: null });
+const closeOnboarding = () => ui.set({ onboarding: false });
 
 export const LaunchContext = createContext<LaunchInfo | null>(null);
 export const useLaunch = () => useContext(LaunchContext)!;
@@ -56,6 +63,9 @@ function Shell() {
   const dialog = useUi((s) => s.dialog);
   const walletId = useUi((s) => s.walletId);
   const discreet = useUi((s) => s.discreet);
+  const addWallet = useUi((s) => s.onboarding);
+  const forgot = useUi((s) => s.forgotPassphrase);
+  const secretShown = useUi((s) => s.secrets > 0);
   const lock = useLockStatus();
   const sync = useSyncStatus();
   const wallets = useWallets();
@@ -69,10 +79,25 @@ function Shell() {
     if (canLock) backend.lock().catch((e) => showToast(`Could not lock: ${errorMessage(e)}`));
   };
   useShellBridge(backend, network.dirName, launch.selftestLinkTrace, lockNow);
-  // The native menus' Discreet Mode check and Lock Wallet follow the window.
+  // The native menus' Discreet Mode check and Lock Wallet follow the window, and so does its
+  // content protection while a recovery phrase shows (U-02 D15).
   useEffect(() => {
-    backend.shellSync({ discreet, canLock }).catch(() => {});
-  }, [backend, discreet, canLock]);
+    backend.shellSync({ discreet, canLock, secretShown }).catch(() => {});
+  }, [backend, discreet, canLock, secretShown]);
+
+  // Onboarding (U-02 D1): a network without a wallet opens it, and it stays open until its
+  // Done, once the wallet it added is listed too. Add Wallet… is dropped by the lock, which
+  // drops what it held; the first wallet's flow unlocks the vault itself.
+  const noWallet = wallets.isSuccess && wallets.data.length === 0;
+  const onboarding = addWallet || noWallet;
+  useEffect(() => {
+    if (noWallet) ui.set({ onboarding: true });
+    else if (locked && addWallet) ui.set({ onboarding: false });
+  }, [noWallet, locked, addWallet]);
+  const finishOnboarding = (id: string | null) => {
+    ui.set({ onboarding: false, ...(id ? { walletId: id } : {}) });
+    navigate("home");
+  };
 
   let content;
   if (route === "home" || route === "activity") {
@@ -98,20 +123,21 @@ function Shell() {
   } else if (route === "pay") content = <PayPage />;
   else if (route === "contacts") content = <ContactsPage />;
   else if (route === "tools") content = <ToolsPage />;
+  else if (route === "settings") content = <SettingsPage />;
   else content = <Placeholder route={route} />;
 
   // A contested username still has its identity: Contacts, not Join DashPay (D11).
   const joined = !(dashpay.status?.kind === "noIdentity" || dashpay.status?.kind === "registering");
   const sheet = !!(detail && wallet && !locked);
-  // A dialog asked for while locked or behind a sheet is dropped, not kept for later.
-  const shown = locked || sheet ? null : dialog;
+  // A dialog asked for while locked, onboarding, or behind a sheet is dropped, not kept for later.
+  const shown = locked || onboarding || sheet ? null : dialog;
   useEffect(() => {
     if (dialog !== shown) ui.set({ dialog: null });
   }, [dialog, shown]);
   return (
     <>
       {/* Behind a sheet or the lock screen the shell takes no focus and is hidden from assistive tech. */}
-      <div className="app-chrome" inert={locked || sheet || shown !== null}>
+      <div className="app-chrome" inert={locked || onboarding || forgot || sheet || shown !== null}>
         <Toolbar
           wallets={wallets.data ?? []}
           wallet={wallet}
@@ -124,12 +150,23 @@ function Shell() {
           <Sidebar joined={joined} requests={dashpay.requests} />
           {content}
         </div>
-        <StatusBar sync={sync.data} lock={lock.data} unitName={network.unitName} hd={wallet?.hd ?? false} />
+        <StatusBar
+          sync={sync.data}
+          lock={lock.data}
+          unitName={network.unitName}
+          hd={wallet?.hd ?? false}
+          onUnlock={() => ui.set({ dialog: "unlock" })}
+        />
       </div>
       {sheet && <TxDetailSheet walletId={wallet!.walletId} txid={detail!} network={network} />}
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
       {shown === "about" && <AboutSheet launch={launch} />}
-      {locked && <LockScreen network={network} />}
+      {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={wallet?.walletId ?? null} onClose={closeDialog} />}
+      {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
+      {onboarding && <Onboarding network={network} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
+      {locked && !onboarding && <LockScreen network={network} onForgot={() => ui.set({ forgotPassphrase: true })} />}
+      {/* Over the lock screen, and still open once the recovery unlocked the vault (U-02 D11). */}
+      {forgot && !onboarding && <ForgotPassphraseSheet onClose={() => ui.set({ forgotPassphrase: false })} />}
     </>
   );
 }

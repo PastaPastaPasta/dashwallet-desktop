@@ -2,7 +2,7 @@
 // detail sheet or dialog, discreet mode and the appearance. A tiny external store so the
 // self-test and the shell bridge can drive it.
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import type { Route } from "../api/generated/Route";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { ToolsTab } from "../api/generated/ToolsTab";
@@ -31,7 +31,8 @@ export interface ContactPrefill {
   username: string;
 }
 
-export type Dialog = "openUri" | "about";
+/** `recoveryPhrase`: Show Recovery Phrase (U-02 D13); `unlock`: the full unlock from mixing only (D12). */
+export type Dialog = "openUri" | "about" | "recoveryPhrase" | "unlock";
 
 export interface UiState {
   route: Route;
@@ -48,6 +49,14 @@ export interface UiState {
   /** Txid whose detail sheet is open. */
   detail: string | null;
   dialog: Dialog | null;
+  /** Onboarding covers the shell: the first wallet, or Wallet ▸ Add Wallet… (U-02 D1). Only
+   * whether it is open; its state stays in its view model. */
+  onboarding: boolean;
+  /** Forgot passphrase is open (U-02 D11). Not a dialog: it starts on the lock screen and
+   * stays open after the recovery unlocks the vault, to say what happened. */
+  forgotPassphrase: boolean;
+  /** How many mounted views show a recovery phrase (`useSecretScreen`, U-02 D15). */
+  secrets: number;
   discreet: boolean;
   /** A forced appearance; `null` follows the system. */
   theme: ThemeChoice;
@@ -66,6 +75,9 @@ let state: UiState = {
   walletId: null,
   detail: null,
   dialog: null,
+  onboarding: false,
+  forgotPassphrase: false,
+  secrets: 0,
   discreet: false,
   theme: null,
   system: "light",
@@ -91,4 +103,14 @@ export function navigate(route: Route, patch: Partial<UiState> = {}) {
 
 export function useUi<T>(select: (s: UiState) => T): T {
   return useSyncExternalStore(ui.subscribe, () => select(ui.get()));
+}
+
+/** Marks a recovery phrase as on screen while `shown`: the window is then kept out of screen
+ * captures where the OS allows (U-02 D15). */
+export function useSecretScreen(shown: boolean) {
+  useEffect(() => {
+    if (!shown) return;
+    ui.set({ secrets: ui.get().secrets + 1 });
+    return () => ui.set({ secrets: ui.get().secrets - 1 });
+  }, [shown]);
 }

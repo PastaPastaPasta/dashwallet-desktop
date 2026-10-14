@@ -1192,13 +1192,14 @@ fn launch_links_wait_for_take_links() {
         .on_sync(Box::new(move |s| sink.lock().unwrap().push(s)));
     demo.ok(
         "shell_sync",
-        json!({ "sync": { "discreet": true, "canLock": false } }),
+        json!({ "sync": { "discreet": true, "canLock": false, "secretShown": true } }),
     );
     assert_eq!(
         *seen.lock().unwrap(),
         [crate::shell::ShellSync {
             discreet: true,
-            can_lock: false
+            can_lock: false,
+            secret_shown: true,
         }]
     );
 }

@@ -130,6 +130,18 @@ pub const ITEMS: &[Item] = &[
         Action::Shell(ShellCommand::ToggleDiscreet),
     ),
     item(
+        "wallet.add",
+        "Add Wallet…",
+        None,
+        Action::Shell(ShellCommand::AddWallet),
+    ),
+    item(
+        "wallet.recovery-phrase",
+        "Show Recovery Phrase…",
+        None,
+        Action::Shell(ShellCommand::RecoveryPhrase),
+    ),
+    item(
         "wallet.settings",
         "Settings…",
         Some("CmdOrCtrl+,"),
@@ -273,7 +285,10 @@ fn layout<R: Runtime>(app: &AppHandle<R>, mac: bool) -> tauri::Result<Menu<R>> {
     }
     let mut wallet = SubmenuBuilder::new(app, "Wallet")
         .item(&lock)
-        .item(&discreet);
+        .item(&discreet)
+        .separator()
+        .item(&it("wallet.add")?)
+        .item(&it("wallet.recovery-phrase")?);
     if !mac {
         wallet = wallet.separator().item(&it("wallet.settings")?);
     }
@@ -458,6 +473,14 @@ mod tests {
         assert_eq!(
             find("wallet.lock").unwrap().action,
             Action::Shell(ShellCommand::Lock)
+        );
+        assert_eq!(
+            find("wallet.add").unwrap().action,
+            Action::Shell(ShellCommand::AddWallet)
+        );
+        assert_eq!(
+            find("wallet.recovery-phrase").unwrap().action,
+            Action::Shell(ShellCommand::RecoveryPhrase)
         );
         assert!(find("nope").is_none());
     }

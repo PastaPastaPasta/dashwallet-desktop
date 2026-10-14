@@ -24,7 +24,7 @@ function unlockedWorld(): FakeWorld {
 
 /** Picks the right chips for the whole challenge. */
 async function solve(model: OnboardingModel) {
-  for (const position of [...model.verifyChallenge]) {
+  for (const position of model.verifyChallenge.slice(model.verifiedCount)) {
     const chip = model.verifyChips.find((c) => c.word === WORDS[position] && !c.used)!;
     await model.select(chip.id);
   }
@@ -96,6 +96,10 @@ describe("onboarding view model: create", () => {
     await model.select(wrong.id);
     expect(model.verifyMistake).toBe(true);
     expect(model.verifiedCount).toBe(0);
+    const first = model.verifyChips.find((c) => c.word === WORDS[model.verifyChallenge[0]])!;
+    await model.select(first.id);
+    expect(model.verifiedWords).toEqual([first.word]);
+    expect(model.verifyMistake).toBe(false);
     await solve(model);
     expect(model.isVerified).toBe(false); // cleared with the phrase once the wallet is added
     expect(model.step).toBe("done");
@@ -320,8 +324,15 @@ describe("onboarding view model: restore", () => {
     await model.startRestore();
     await model.updateRestoreText(unknown);
     expect(model.restoreProblem).toBe("Word 2 is not in the word list.");
+    // While the last word is typed, only an earlier unknown word is worth saying.
+    expect(model.entry.shownProblem(true)).toBe("Word 2 is not in the word list.");
     await model.updateRestoreText(badSum);
     expect(model.restoreProblem).toBe(PhraseText.invalid);
+    expect(model.entry.shownProblem(true)).toBeNull();
+    expect(model.entry.shownProblem(false)).toBe(PhraseText.invalid);
+    world.checks.set("abandon abil", { wordCount: 2, unknownWordIndices: [1], language: null, checksum: "invalid" });
+    await model.updateRestoreText("abandon abil");
+    expect(model.entry.shownProblem(true)).toBeNull();
     expect(model.canContinueRestore).toBe(false);
   });
 
@@ -401,6 +412,14 @@ describe("onboarding view model: restore", () => {
     model.setBirthDate(null);
     expect(model.options.birthHeight).toBe(0);
     model.setBirthHeight(null);
+    expect(model.options.birthHeight).toBe(0);
+    // Never NaN (it would reach the engine as `null`: the tip, a scan that misses everything).
+    for (const bad of [Number.NaN, -5, 1.5, Infinity]) {
+      model.setBirthHeight(bad);
+      expect(model.options.birthHeight).toBe(0);
+    }
+    model.setBirthHeight(1_234);
+    model.setBirthDate(new Date(Number.NaN));
     expect(model.options.birthHeight).toBe(0);
   });
 

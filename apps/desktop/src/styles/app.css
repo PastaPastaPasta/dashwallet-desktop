@@ -589,6 +589,22 @@ button {
   color: var(--dw-c-button-filled-white-content-disabled);
 }
 
+.dash-button-filledBlue {
+  /* Not buttonFilledBlueBackground: white text takes the AA accent fill (UX-SPEC §2.1a). */
+  background: var(--dw-role-accent);
+  color: var(--dw-c-button-filled-blue-content);
+}
+
+.dash-button-filledBlue:disabled {
+  background: var(--dw-c-button-filled-blue-background-disabled);
+  color: var(--dw-c-button-filled-blue-content-disabled);
+}
+
+.dash-button-plainWhite {
+  background: transparent;
+  color: var(--dw-c-button-plain-white-content);
+}
+
 
 /* ------------------------------------------------------------------ hero (C4, C5) */
 
@@ -1361,6 +1377,411 @@ button {
     transition: none !important;
     animation: none !important;
   }
+}
+
+/* ------------------------------------------------------------------ onboarding (§4.3, U-02) */
+
+.onboarding {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--dw-space-xxxl) var(--dw-space-l);
+  overflow: auto;
+  background: var(--dw-role-canvas);
+}
+
+.onboarding-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 480px); /* UX-SPEC §4.3: one column, the sheet's medium width */
+  padding: var(--dw-space-l) var(--dw-layout-page-padding-h) var(--dw-layout-page-padding-h);
+  border: var(--dw-border-floating);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card);
+  box-shadow: var(--dw-shadow-floating);
+}
+
+.onboarding-header {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 72px;
+  align-items: center;
+  margin-bottom: var(--dw-space-l);
+}
+
+.onboarding-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.onboarding-logo {
+  display: block;
+  width: 112px; /* the lock screen's wordmark */
+  height: 30px;
+  background-color: var(--dw-role-accent);
+}
+
+.onboarding-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
+.onboarding-title {
+  font-size: var(--dw-type-title2-size);
+  font-weight: var(--dw-type-title2-weight);
+  line-height: var(--dw-type-title2-line);
+  text-align: center;
+}
+
+.onboarding-title:focus {
+  outline: none;
+}
+
+.onboarding-text,
+.sheet-text {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.onboarding-text {
+  text-align: center;
+}
+
+.onboarding-note,
+.form-hint,
+.form-ok {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.form-ok {
+  margin: 0;
+  color: var(--dw-role-success);
+}
+
+.onboarding-warning,
+.sheet-warning {
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.onboarding-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+}
+
+.onboarding-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.onboarding-advanced > summary {
+  color: var(--dw-role-text-link);
+  cursor: default;
+}
+
+.onboarding-advanced[open] > summary {
+  margin-bottom: var(--dw-space-s);
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.check-row input {
+  flex: none;
+  accent-color: var(--dw-role-accent);
+}
+
+.secret-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
+.secret-form .form-problem,
+.phrase-input .form-problem {
+  margin: 0;
+}
+
+.secret-form .form-problem:empty {
+  display: none;
+}
+
+.strength {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  min-height: var(--dw-type-footnote-line);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  color: var(--dw-role-text-secondary);
+}
+
+.strength-bars {
+  display: grid;
+  grid-template-columns: repeat(4, 32px);
+  gap: var(--dw-space-xxs);
+}
+
+.strength-bar {
+  height: 4px;
+  border-radius: var(--dw-radius-small);
+  background: var(--dw-role-progress-track);
+}
+
+.strength-bar-on {
+  background: var(--dw-role-caution);
+}
+
+[data-strength="good"] .strength-bar-on,
+[data-strength="strong"] .strength-bar-on {
+  background: var(--dw-role-success);
+}
+
+/* The phrase (IOS-003): numbered words in three columns. */
+.phrase-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--dw-space-xs) var(--dw-space-m);
+  margin: 0;
+  padding: var(--dw-space-m);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card-raised);
+  list-style: none;
+}
+
+.phrase-cell {
+  display: grid;
+  grid-template-columns: 2.5ch minmax(0, 1fr); /* numbers up to 24 keep the words aligned */
+  align-items: baseline;
+  gap: var(--dw-space-xs);
+  font-size: var(--dw-type-callout-size);
+  line-height: var(--dw-type-callout-line);
+}
+
+.phrase-index {
+  color: var(--dw-role-text-tertiary);
+  font-size: var(--dw-type-footnote-size);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.phrase-word {
+  font-weight: 600;
+}
+
+.phrase-input {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+}
+
+.phrase-textarea {
+  resize: vertical;
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-body-size);
+  line-height: var(--dw-type-body-line);
+}
+
+.phrase-suggestions,
+.verify-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
+}
+
+.phrase-suggestion,
+.verify-chip {
+  padding: var(--dw-space-xxs) var(--dw-space-sm);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-card);
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.phrase-suggestion:hover,
+.verify-chip:hover:not(:disabled) {
+  background: var(--dw-role-accent-tint);
+}
+
+.verify-chip:disabled {
+  opacity: var(--dw-opacity-disabled);
+}
+
+.verify-chips {
+  justify-content: center;
+}
+
+.verify-chips-mistake {
+  animation: verify-shake var(--dw-motion-standard) ease-in-out;
+}
+
+@keyframes verify-shake {
+  25% {
+    transform: translateX(-6px);
+  }
+  75% {
+    transform: translateX(6px);
+  }
+}
+
+.verify-slots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--dw-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.verify-slot {
+  display: flex;
+  justify-content: space-between;
+  min-height: 40px;
+  align-items: center;
+  padding: 0 var(--dw-space-m);
+  border: 1px dashed var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-standard);
+  font-size: var(--dw-type-subhead-size);
+}
+
+.verify-slot[data-filled="true"] {
+  border-style: solid;
+  background: var(--dw-role-accent-tint);
+}
+
+.verify-slot-label {
+  color: var(--dw-role-text-secondary);
+}
+
+.verify-slot-word {
+  font-weight: 600;
+}
+
+.scan-start {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.scan-start legend {
+  margin-bottom: var(--dw-space-s);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.scan-input {
+  margin-left: calc(13px + var(--dw-space-s)); /* under the radio's label */
+  padding: var(--dw-space-xs) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font: inherit;
+}
+
+.scan-start .form-hint,
+.scan-start .form-problem {
+  margin: 0;
+}
+
+/* Wallet choices in Forgot passphrase and Show Recovery Phrase. */
+.choice-list {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card-raised);
+}
+
+.choice-row {
+  min-height: var(--dw-layout-row-min-height);
+  padding: 0 var(--dw-layout-card-padding);
+  border: 0;
+  border-bottom: 1px solid var(--dw-role-separator);
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: left;
+}
+
+.choice-row:last-child {
+  border-bottom: 0;
+}
+
+.choice-row:hover {
+  background: var(--dw-role-accent-tint);
+}
+
+.sheet-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--dw-space-s);
+}
+
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xs);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.settings-card-title {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.lock-check {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.lock-check input {
+  accent-color: var(--dw-c-white);
+}
+
+.status-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dw-role-text-link);
+  font: inherit;
+  text-decoration: underline;
 }
 
 /* ------------------------------------------------------------------ splash (§4.2) */

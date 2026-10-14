@@ -1,30 +1,34 @@
-// Lock screen (UX-SPEC §4.4): full-window overlay on hero blue with the white wordmark and the
-// dash-qt passphrase prompt. The vault's own throttle (retryAfterSecs) gates the next attempt.
+// Lock screen (UX-SPEC §4.4, IOS-012, IOS-013, QT-111, QT-112; U-02 D8, D9): full-window overlay
+// on hero blue with the white wordmark and the passphrase prompt, the iOS lockout policy
+// (`LockModel`), For mixing only and Forgot passphrase. The unlock sheet (D12) asks for the full
+// unlock from mixing only with the same model and copy.
 
-import { useEffect, useState, type FormEvent } from "react";
-import { errorMessage, hasCode, retryAfterSecs } from "../api/backend";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import type { Backend } from "../api/backend";
 import type { LockOutcome } from "../api/generated/LockOutcome";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { FLOW_NAME, OUTCOME_LINE, reportsAnything, summarizeLockReport } from "../api/lockReport";
 import { useBackend, useLastLockReport, useLockDrain, useLockReconcile } from "../api/queries";
 import { SIGNED_BEFORE_LOCK } from "../api/send";
 import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
+import { PassphrasePrompt } from "../components/passphrase";
+import { Sheet } from "../components/sheet";
+import { LockModel, LockText } from "../onboarding/lock";
+import { useModel } from "../onboarding/model";
 
-const Lock = {
-  title: "Unlock wallet",
-  prompt: "This operation needs your wallet passphrase to unlock the wallet.",
-  /** dash-qt `AskPassphraseDialog`. */
-  incorrect: "The passphrase entered for the wallet decryption was incorrect.",
-  tryAgainIn: (wait: string) => `Wallet disabled, please try again in ${wait}`,
-};
-
-function waitText(secs: number): string {
-  if (secs >= 3600) {
-    const h = Math.ceil(secs / 3600);
-    return h === 1 ? "1 hour" : `${h} hours`;
-  }
-  const m = Math.max(1, Math.ceil(secs / 60));
-  return m === 1 ? "1 minute" : `${m} minutes`;
+/** A `LockModel` that reads the vault's count and wait when it appears, and clears a wait when
+ * it runs out. */
+function useLockModel(backend: Backend): LockModel {
+  const [model] = useState(() => new LockModel(backend));
+  useModel(model);
+  useEffect(() => void model.load(), [model]);
+  const { retryAt } = model;
+  useEffect(() => {
+    if (retryAt === null) return;
+    const t = window.setTimeout(() => model.refresh(), Math.max(0, retryAt - Date.now()) + 50);
+    return () => window.clearTimeout(t);
+  }, [model, retryAt]);
+  return model;
 }
 
 const more = (n: number, noun: string) => n > 0 && `${n} more ${noun}${n === 1 ? "" : "s"}`;
@@ -91,43 +95,24 @@ function LockReportBody({ report }: { report: LockOutcome }) {
   );
 }
 
-export function LockScreen({ network }: { network: NetworkInfo }) {
-  const backend = useBackend();
+export function LockScreen({ network, onForgot }: { network: NetworkInfo; onForgot: () => void }) {
+  const model = useLockModel(useBackend());
   const [passphrase, setPassphrase] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  /** When the vault accepts the next attempt (ms since epoch); null when not throttled. */
-  const [retryAt, setRetryAt] = useState<number | null>(null);
-
+  const [mixingOnly, setMixingOnly] = useState(false);
+  // No attempt is taken during a wait, nor after eight failures.
+  const blocked = model.disabled || model.retryAt !== null;
+  const field = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    if (retryAt === null) return;
-    const t = window.setTimeout(() => (setRetryAt(null), setError(null)), Math.max(0, retryAt - Date.now()));
-    return () => window.clearTimeout(t);
-  }, [retryAt]);
+    if (!blocked) field.current?.focus();
+  }, [blocked]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!passphrase || busy || retryAt !== null) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await backend.unlock(passphrase);
-    } catch (err) {
-      const wait = retryAfterSecs(err);
-      if (wait > 0) {
-        // Wrong passphrase with a wait, or throttled: the vault refuses attempts until then.
-        setRetryAt(Date.now() + wait * 1000);
-        setError(`${hasCode(err, "vault.wrong_passphrase") ? `${Lock.incorrect} ` : ""}${Lock.tryAgainIn(waitText(wait))}`);
-      } else if (hasCode(err, "vault.wrong_passphrase")) {
-        setError(Lock.incorrect);
-      } else {
-        setError(errorMessage(err));
-      }
-    } finally {
-      // The DOM copy of the passphrase is cleared after every attempt (H-01 note in the G-01 report).
-      setPassphrase("");
-      setBusy(false);
-    }
+    if (!passphrase || model.working || blocked) return;
+    // The DOM copy of the passphrase is cleared after every attempt (H-01 note in the G-01 report).
+    const typed = passphrase;
+    setPassphrase("");
+    await model.unlock(typed, mixingOnly);
   };
 
   return (
@@ -136,11 +121,12 @@ export function LockScreen({ network }: { network: NetworkInfo }) {
         <DashLogo className="lock-logo" />
         <NetworkCapsule network={network} />
         <h1 id="lock-title" className="lock-title">
-          {Lock.title}
+          {LockText.title}
         </h1>
-        <p className="lock-prompt">{Lock.prompt}</p>
+        <p className="lock-prompt">{LockText.prompt}</p>
         <form className="lock-form" onSubmit={submit} data-testid="lock-form">
           <input
+            ref={field}
             className="lock-field"
             data-testid="lock-field"
             type="password"
@@ -149,26 +135,56 @@ export function LockScreen({ network }: { network: NetworkInfo }) {
             autoComplete="current-password"
             autoFocus
             value={passphrase}
-            aria-invalid={error !== null}
-            aria-describedby={error ? "lock-error" : undefined}
+            disabled={blocked}
+            aria-invalid={model.message !== null}
+            aria-describedby={model.message ? "lock-error" : undefined}
             onChange={(e) => setPassphrase(e.target.value)}
           />
-          <p id="lock-error" className="lock-error" role="alert">
-            {error}
+          <label className="lock-check">
+            <input type="checkbox" data-testid="lock-mixing-only" checked={mixingOnly} disabled={blocked} onChange={(e) => setMixingOnly(e.target.checked)} />
+            For mixing only
+          </label>
+          <p id="lock-error" className="lock-error" role="alert" data-testid="lock-error">
+            {model.message}
           </p>
           <DashButton
             type="submit"
             variant="filledWhiteBlue"
             size="large"
             fill
-            disabled={busy || passphrase.length === 0 || retryAt !== null}
+            disabled={model.working || passphrase.length === 0 || blocked}
             data-testid="lock-submit"
           >
-            {busy ? "Unlocking…" : "Unlock"}
+            {model.working ? "Unlocking…" : "Unlock"}
           </DashButton>
         </form>
+        {model.canRecover && (
+          <DashButton variant="plainWhite" data-testid="lock-forgot" onClick={onForgot}>
+            Forgot passphrase?
+          </DashButton>
+        )}
         <LockReportNotice />
       </div>
     </div>
+  );
+}
+
+/** The full unlock from mixing only (UX-SPEC §4.4 `UnlockSheet`, U-02 D12). */
+export function UnlockSheet({ onClose }: { onClose: () => void }) {
+  const model = useLockModel(useBackend());
+  return (
+    <Sheet title={LockText.title} width="small" testId="unlock-sheet" onClose={onClose}>
+      <p className="sheet-text">{LockText.prompt}</p>
+      <PassphrasePrompt
+        testId="unlock-sheet"
+        error={model.message}
+        busy={model.working}
+        disabled={model.disabled || model.retryAt !== null}
+        submitLabel="Unlock"
+        onSubmit={async (p) => {
+          if (await model.unlock(p, false)) onClose();
+        }}
+      />
+    </Sheet>
   );
 }
