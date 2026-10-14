@@ -193,6 +193,62 @@ mod tests {
         assert_eq!(rejoin_split_args(flags.clone()), flags);
     }
 
+    /// CI's Windows deep-link leg (`ci/github/deep-links.sh`), as the
+    /// running app receives it. The OS starts `"dash-wallet.exe" "%1"` with
+    /// the link after the Windows shell gave it a `/`; that launch's plugin
+    /// sends `{cwd}|{argv joined with |}` (tauri-plugin-single-instance
+    /// 2.5.3, windows.rs), and the running app's plugin splits it at every
+    /// `|`, takes the first piece as the cwd and hands the rest over.
+    #[test]
+    fn windows_forwarded_links_route_as_ci_sends_them() {
+        use super::super::Shell;
+        use super::super::links::{LinkRoute, LinkSource};
+        const ADDRESS: &str = "yMsgnH1xKGa85n4bq2imrZbG2KgrmGttAV";
+        const IDENTITY: &str = "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx";
+        let exe = r"C:\Users\runneradmin\AppData\Local\Dash Wallet\dash-wallet.exe";
+        let forwarded = |link: &str| -> Vec<String> {
+            let data = format!(r"C:\Windows\system32|{exe}|{link}");
+            let mut pieces = data.split('|');
+            let _cwd = pieces.next().unwrap();
+            rejoin_split_args(pieces.map(String::from).collect())
+        };
+        let shell = Shell::new(None);
+        for link in [
+            format!("pay:{ADDRESS}?label=Second"),
+            format!("dashpay://user/?id={IDENTITY}&username=bob"),
+            "dashwallet://scanqr/".to_owned(),
+        ] {
+            assert_eq!(
+                shell.queue_from(forwarded(&link), LinkSource::Forwarded, true),
+                1
+            );
+        }
+        let routes = shell.inbox.take("regtest").unwrap();
+        assert!(
+            matches!(&routes[0], LinkRoute::Pay { uri, .. } if uri.address == ADDRESS),
+            "{routes:?}"
+        );
+        assert_eq!(
+            routes[1],
+            LinkRoute::AddContact {
+                identity: IDENTITY.into(),
+                username: "bob".into()
+            }
+        );
+        assert_eq!(routes[2], LinkRoute::ScanQr);
+        // Without the shell's slash undone, the dashpay: link is no link
+        // (CI run 38558102495: "routed rejected notALink").
+        let slashed = format!("dashpay://user/?id={IDENTITY}&username=bob");
+        assert_eq!(
+            shell.queue_from(forwarded(&slashed), LinkSource::Forwarded, false),
+            1
+        );
+        assert!(matches!(
+            shell.inbox.take("regtest").unwrap()[..],
+            [LinkRoute::Rejected { .. }]
+        ));
+    }
+
     #[test]
     fn a_fixed_geometry_skips_the_saved_one() {
         let fixed = LaunchOptions {
