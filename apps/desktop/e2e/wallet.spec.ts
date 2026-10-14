@@ -319,6 +319,32 @@ test.describe("Receive", () => {
     await expect(page.getByTestId("requests-empty")).toBeVisible();
   });
 
+  test("a wallet switch shows and copies the other wallet's address (D24)", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        value: { writeText: async (t: string) => void ((window as unknown as { __copied: string }).__copied = t) },
+      });
+    });
+    await open(page, "two-wallets");
+    const picker = page.getByTestId("toolbar-wallet-picker");
+    const address = page.getByTestId("receive-address");
+    // Wallet B's address, as Receive shows it fresh.
+    await picker.selectOption({ label: "Savings" });
+    await page.getByTestId("sidebar-receive").click();
+    await expect(address).toHaveText(/^y/);
+    const b = (await address.textContent())!;
+    // Wallet A: a new address, then back to B.
+    await picker.selectOption({ index: 0 });
+    await expect(address).not.toHaveText(b);
+    const a = (await address.textContent())!;
+    await page.getByTestId("receive-new-address").click();
+    await expect(address).not.toHaveText(a);
+    await picker.selectOption({ label: "Savings" });
+    await expect(address).toHaveText(b);
+    await page.getByTestId("receive-copy-address").click();
+    expect(await page.evaluate(() => (window as unknown as { __copied: string }).__copied)).toBe(b);
+  });
+
   test("a request too long for a QR code says so", async ({ page }) => {
     await open(page);
     await page.getByTestId("sidebar-receive").click();

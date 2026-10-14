@@ -95,10 +95,12 @@ function Shell() {
           </div>
         </main>
       );
-    else if (route === "home") content = <Overview walletId={wallet.walletId} network={network} onOpen={open} />;
+    // Wallet pages start over for another wallet: no address, filter or form state of the last one
+    // survives a switch (U-03 D24). Pay keys its form inside (Routes.tsx).
+    else if (route === "home") content = <Overview key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
     else if (route === "pay") content = <PayPage walletId={wallet.walletId} network={network} />;
-    else if (route === "receive") content = <ReceivePage walletId={wallet.walletId} network={network} />;
-    else content = <Transactions walletId={wallet.walletId} network={network} onOpen={open} />;
+    else if (route === "receive") content = <ReceivePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
+    else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
   } else if (route === "contacts") content = <ContactsPage />;
   else if (route === "tools") content = <ToolsPage />;
   else content = <Placeholder route={route} />;
@@ -135,7 +137,7 @@ function Shell() {
       </div>
       {/* Sheets opened inside the shell (Pay, Receive): above it, below the lock screen. */}
       <div className="sheet-layer" ref={setLayer} inert={locked} />
-      {sheet && <TxDetailSheet walletId={wallet!.walletId} txid={detail!} network={network} />}
+      {sheet && <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />}
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
       {shown === "about" && <AboutSheet launch={launch} />}
       {locked && <LockScreen network={network} />}
