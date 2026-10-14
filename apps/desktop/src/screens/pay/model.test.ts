@@ -129,8 +129,11 @@ describe("the payment policy (E0-13 D11, U-03 D3)", () => {
     expect(authRefusal(err("vault.credential_required"))).toEqual({ kind: "needsPassphrase" });
     expect(authRefusal(err("vault.wrong_passphrase", { kind: "wrongPassphrase", failedAttempts: 3, retryAfterSecs: 30 }))).toEqual({
       kind: "wrongPassphrase",
-      text: "The passphrase you entered was incorrect. 3 failed attempts. Try again in 30 s.",
+      text: "The passphrase you entered was incorrect. 3 failed attempts.",
+      waitSecs: 30,
     });
+    expect(authRefusal(err("vault.throttled", { kind: "retryAfter", secs: 90 }))).toEqual({ kind: "wrongPassphrase", text: "Too many attempts.", waitSecs: 90 });
+    expect(authRefusal(err("vault.wrong_passphrase", { kind: "wrongPassphrase", failedAttempts: 1, retryAfterSecs: null }))).toMatchObject({ waitSecs: 0 });
     expect(authRefusal(err("vault.no_vault")).kind).toBe("other");
   });
 });

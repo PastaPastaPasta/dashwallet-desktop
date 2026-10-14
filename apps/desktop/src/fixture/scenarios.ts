@@ -63,6 +63,8 @@ export interface World {
   shellSync: ShellSync | null;
   /** "Require authentication for every payment" (E0-13 D11; on by default). */
   paymentAuth: boolean;
+  /** The vault's wait after a wrong passphrase (`retryAfterSecs`); null: none. */
+  throttleSecs: number | null;
   /** Drafts, prepared transactions and what the next broadcast does (send.ts). */
   send: SendWorld;
 }
@@ -134,6 +136,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     links: [],
     shellSync: null,
     paymentAuth: true,
+    throttleSecs: null,
     send: newSendWorld(),
   };
 }

@@ -193,7 +193,11 @@ export function credentialPrompt(lock: LockStatus | undefined, paymentAuth: bool
 }
 
 /** What an `authorize` refusal means for the confirm sheet. */
-export type AuthRefusal = { kind: "needsPassphrase" } | { kind: "wrongPassphrase"; text: string } | { kind: "other" };
+export type AuthRefusal =
+  | { kind: "needsPassphrase" }
+  /** `waitSecs`: the vault refuses every attempt for that long (0: none). */
+  | { kind: "wrongPassphrase"; text: string; waitSecs: number }
+  | { kind: "other" };
 
 export function authRefusal(e: AppError): AuthRefusal {
   if (e.code === "vault.credential_required") return { kind: "needsPassphrase" };
@@ -202,7 +206,7 @@ export function authRefusal(e: AppError): AuthRefusal {
     const attempts = e.data?.kind === "wrongPassphrase" ? e.data.failedAttempts : null;
     const base = e.code === "vault.throttled" ? "Too many attempts." : "The passphrase you entered was incorrect.";
     const count = attempts !== null && attempts > 1 ? ` ${attempts} failed attempts.` : "";
-    return { kind: "wrongPassphrase", text: `${base}${count}${wait > 0 ? ` Try again in ${wait} s.` : ""}` };
+    return { kind: "wrongPassphrase", text: `${base}${count}`, waitSecs: wait };
   }
   return { kind: "other" };
 }

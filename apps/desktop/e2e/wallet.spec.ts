@@ -142,6 +142,25 @@ test.describe("Pay", () => {
     expect(errors).toEqual([]);
   });
 
+  test("Send waits out the vault's throttle after a wrong passphrase", async ({ page }) => {
+    await open(page);
+    await world(page, (w) => (w.throttleSecs = 3));
+    await fillPayment(page, PAYEE, "0.5");
+    await review(page);
+    await sendWithPassphrase(page, "wrong");
+    await expect(page.getByTestId("pay-confirm-error")).toContainText(/The passphrase you entered was incorrect\. Try again in [1-3] s\./);
+    await expect(page.getByTestId("pay-confirm-send")).toBeDisabled();
+    // Typing is fine meanwhile; Return does not send either.
+    await page.getByTestId("pay-confirm-passphrase").fill("demo");
+    await page.getByTestId("pay-confirm-passphrase").press("Enter");
+    expect(await world(page, (w) => w.grants.length)).toBe(0);
+    // Once the wait is over, Send works.
+    await expect(page.getByTestId("pay-confirm-send")).toBeEnabled({ timeout: 10_000 });
+    await expect(page.getByTestId("pay-confirm-error")).toHaveText("The passphrase you entered was incorrect.");
+    await page.getByTestId("pay-confirm-send").click();
+    await expect(page.getByTestId("pay-result-sent")).toBeVisible();
+  });
+
   test("with the payment setting off, the unlocked vault signs and Cancel has the focus", async ({ page }) => {
     await open(page);
     await world(page, (w) => (w.paymentAuth = false));

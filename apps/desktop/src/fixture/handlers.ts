@@ -117,7 +117,7 @@ function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPu
         throw fail("vault.wrong_passphrase", `wrong passphrase (${failedAttempts} failed)`, {
           kind: "wrongPassphrase",
           failedAttempts,
-          retryAfterSecs: null,
+          retryAfterSecs: w.throttleSecs,
         });
       }
       w.lock = { ...w.lock, failedAttempts: 0 };

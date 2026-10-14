@@ -57,6 +57,15 @@ export function ConfirmSheet({
   const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** When the vault takes the next attempt (ms since epoch), as on the lock screen; null: now. */
+  const [retryAt, setRetryAt] = useState<number | null>(null);
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (retryAt === null) return;
+    const t = window.setInterval(() => (Date.now() >= retryAt ? setRetryAt(null) : tick((n) => n + 1)), 250);
+    return () => window.clearInterval(t);
+  }, [retryAt]);
+  const waitSecs = retryAt === null ? 0 : Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));
   const fieldId = useId();
   const unit = network.unitName;
   const { recipient, estimate, changeAddress, total } = confirmed;
@@ -77,7 +86,7 @@ export function ConfirmSheet({
   }, [busy, error]);
 
   const send = async () => {
-    if (busy || !policyKnown) return;
+    if (busy || !policyKnown || retryAt !== null) return;
     if (prompt === "passphrase" && passphrase === "") {
       setError("Enter your passphrase to send this payment.");
       return;
@@ -95,7 +104,11 @@ export function ConfirmSheet({
       if (refusal.kind === "needsPassphrase") {
         setAskAnyway(true);
         setError("Enter your passphrase to send this payment.");
-      } else if (refusal.kind === "wrongPassphrase") setError(refusal.text);
+      } else if (refusal.kind === "wrongPassphrase") {
+        setError(refusal.text);
+        // The vault refuses every attempt until then: Send waits too (Sol r1).
+        if (refusal.waitSecs > 0) setRetryAt(Date.now() + refusal.waitSecs * 1000);
+      }
       else onOutcome({ kind: "failed", text: failureText(e, chain) });
       return;
     }
@@ -186,12 +199,13 @@ export function ConfirmSheet({
         )}
         <p id={`${fieldId}-error`} className="form-problem" role="alert" data-testid="pay-confirm-error">
           {error}
+          {waitSecs > 0 && ` Try again in ${waitSecs} s.`}
         </p>
         <div className="sheet-actions">
           <DashButton ref={cancel} variant="tintedGray" size="large" data-testid="pay-confirm-cancel" disabled={busy} onClick={onCancel}>
             Cancel
           </DashButton>
-          <DashButton type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown}>
+          <DashButton type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || retryAt !== null}>
             {busy ? "Sending…" : "Send"}
           </DashButton>
         </div>
