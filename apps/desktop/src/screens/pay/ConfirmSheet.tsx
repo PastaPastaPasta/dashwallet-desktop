@@ -35,6 +35,7 @@ export function ConfirmSheet({
   walletId,
   network,
   draft,
+  returnFocus,
   onCancel,
   onOutcome,
 }: {
@@ -44,6 +45,7 @@ export function ConfirmSheet({
   walletId: string;
   network: NetworkInfo;
   draft: DraftApi;
+  returnFocus: () => HTMLElement | null;
   onCancel: () => void;
   onOutcome: (o: Outcome) => void;
 }) {
@@ -123,7 +125,7 @@ export function ConfirmSheet({
   };
 
   return (
-    <Sheet title="Confirm payment" width="small" testId="pay-confirm" onClose={() => !busy && onCancel()}>
+    <Sheet title="Confirm payment" width="small" testId="pay-confirm" returnFocus={returnFocus} onClose={() => !busy && onCancel()}>
       <form
         className="confirm"
         onSubmit={(e) => {

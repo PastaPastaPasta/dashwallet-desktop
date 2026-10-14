@@ -2,7 +2,7 @@
 // fee, label and message; the live fee from the engine's draft; Advanced holds coin control;
 // Review opens the confirm sheet, which authenticates, signs and sends; the result follows.
 
-import { useId, useState, type ReactNode } from "react";
+import { useCallback, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -85,6 +85,10 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
   const [message, setMessage] = useState(prefill?.message ?? "");
   const [advanced, setAdvanced] = useState<Advanced>(DEFAULT_ADVANCED);
   const [phase, setPhase] = useState<Phase>({ kind: "editing" });
+  // Closing the confirm or result sheet returns to Review, or to the address of a cleared form.
+  const reviewButton = useRef<HTMLButtonElement>(null);
+  const addressField = useRef<HTMLInputElement>(null);
+  const backToForm = useCallback(() => (reviewButton.current?.disabled === false ? reviewButton.current : addressField.current), []);
   const [maxError, setMaxError] = useState<string | null>(null);
 
   const addr = address.trim();
@@ -190,6 +194,7 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
             {(p) => (
               <input
                 {...p}
+                ref={addressField}
                 data-testid="pay-address"
                 value={address}
                 autoComplete="off"
@@ -245,7 +250,7 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
               </span>
             ) : null}
           </div>
-          <DashButton type="submit" variant="filledBlue" size="large" data-testid="pay-continue" disabled={!ready}>
+          <DashButton ref={reviewButton} type="submit" variant="filledBlue" size="large" data-testid="pay-continue" disabled={!ready}>
             Review
           </DashButton>
         </div>
@@ -258,6 +263,7 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
           walletId={walletId}
           network={network}
           draft={draft}
+          returnFocus={backToForm}
           onCancel={() => setPhase({ kind: "editing" })}
           onOutcome={(outcome) => setPhase({ kind: "result", outcome })}
         />
@@ -267,6 +273,7 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
           outcome={phase.outcome}
           network={network}
           draft={draft}
+          returnFocus={backToForm}
           onOutcome={(outcome) => setPhase({ kind: "result", outcome })}
           onDone={(show) => finish(phase.outcome, show)}
         />

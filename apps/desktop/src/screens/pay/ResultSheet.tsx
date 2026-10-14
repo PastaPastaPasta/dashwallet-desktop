@@ -29,12 +29,14 @@ export function ResultSheet({
   outcome,
   network,
   draft,
+  returnFocus,
   onOutcome,
   onDone,
 }: {
   outcome: Outcome;
   network: NetworkInfo;
   draft: DraftApi;
+  returnFocus: () => HTMLElement | null;
   onOutcome: (o: Outcome) => void;
   /** `show`: open the transaction in Activity. */
   onDone: (show: boolean) => void;
@@ -63,7 +65,7 @@ export function ResultSheet({
   }, [busy, outcome]);
 
   return (
-    <Sheet title={TITLE[outcome.kind]} width="small" testId="pay-result" onClose={() => !busy && onDone(false)}>
+    <Sheet title={TITLE[outcome.kind]} width="small" testId="pay-result" returnFocus={returnFocus} onClose={() => !busy && onDone(false)}>
       <div className={`result result-${outcome.kind}`} data-testid={`pay-result-${outcome.kind}`}>
         <Icon id={ICON[outcome.kind]} size={50} />
         {outcome.kind === "failed" ? (

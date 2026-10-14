@@ -227,14 +227,13 @@ export function confirmedOf(recipient: Recipient, estimate: TxEstimate, change: 
   return { recipient, estimate, changeAddress, total };
 }
 
-/** The signed transaction keeps the sheet's promise (U-03 D2): it pays the address what the
- * sheet said, sends change only where the sheet said, and takes no more than the confirmed total
- * from the wallet. */
+/** The signed transaction keeps the sheet's promise (U-03 D2): every output is the payment to the
+ * address the sheet showed, in the amount it showed, or change where the sheet said (the wallet's
+ * own, or the custom address); and it takes no more than the confirmed total from the wallet. */
 export function keepsPromise(c: Confirmed, s: PreparedTxSummary): boolean {
-  const paid = s.outputs.filter((o) => !o.isChange && o.address === c.recipient.address).reduce((n, o) => n + o.amount, 0);
-  const change = s.outputs.filter((o) => o.isChange);
-  const changeKept = c.changeAddress === null ? change.every((o) => o.isMine) : change.every((o) => o.address === c.changeAddress);
-  return paid === c.estimate.totalSent && s.totalSent === c.estimate.totalSent && changeKept && s.totalDebit <= c.total;
+  const shown = s.outputs.every((o) => (o.isChange ? (c.changeAddress === null ? o.isMine : o.address === c.changeAddress) : o.address === c.recipient.address));
+  const paid = s.outputs.filter((o) => !o.isChange).reduce((n, o) => n + o.amount, 0);
+  return shown && paid === c.estimate.totalSent && s.totalSent === c.estimate.totalSent && s.totalDebit <= c.total;
 }
 
 // ---------------------------------------------------------------- the result

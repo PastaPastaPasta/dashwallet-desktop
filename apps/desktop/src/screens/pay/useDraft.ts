@@ -7,7 +7,8 @@
 // spec it was given, written again right before it.
 //
 // Closing ends every write queued before it: such a write makes no new draft (it would outlive
-// the page, wallet or unlock it was for) and fails with `send.cancelled`.
+// the page, wallet or unlock it was for) and fails with `send.cancelled`, as does a write while
+// the vault is locked.
 
 import { useCallback, useEffect, useRef } from "react";
 import { hasCode } from "../../api/backend";
@@ -52,6 +53,11 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
   const broadcasts = useRef(0);
   /** Bumped by `close`: a write queued under an older generation is cancelled. */
   const generation = useRef(0);
+  /** The hook's page is gone (between the unmount cleanup and a remount, as StrictMode does). */
+  const disposed = useRef(false);
+  /** A locked vault signs nothing: no draft is made for it either. */
+  const lockedNow = useRef(locked);
+  lockedNow.current = locked;
 
   /** Runs `job` after every write queued before it. */
   const serial = useCallback(<T,>(job: () => Promise<T>): Promise<T> => {
@@ -80,7 +86,7 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
   const write = useCallback(
     async <T,>(gen: number, spec: DraftSpec, then: (d: number) => Promise<T>, replace: boolean): Promise<T> => {
       for (let attempt = 0; ; attempt++) {
-        if (generation.current !== gen) throw CLOSED;
+        if (generation.current !== gen || lockedNow.current) throw CLOSED;
         if (!draft.current) draft.current = b.newTxDraft(walletId);
         const made = draft.current;
         let d: number;
@@ -108,10 +114,16 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
     [b, walletId],
   );
 
+  // An estimate cancelled by a close while the page lives on (a lock, a wallet change, StrictMode's
+  // remount) is asked again under the new generation; the query shows its answer.
   const estimate = useCallback(
     (spec: DraftSpec) => {
+      const run = (gen: number) => serial(() => write(gen, spec, (d) => b.draftEstimate(d), true));
       const gen = generation.current;
-      return serial(() => write(gen, spec, (d) => b.draftEstimate(d), true));
+      return run(gen).catch((e) => {
+        if (e === CLOSED && generation.current !== gen && !disposed.current && !lockedNow.current) return run(generation.current);
+        throw e;
+      });
     },
     [b, serial, write],
   );
@@ -140,7 +152,13 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
   const abandon = useCallback(async (d: number, prepared: number) => void (await b.draftAbandon(d, prepared).catch(() => null)), [b]);
 
   // The page goes or shows another wallet: its draft goes too.
-  useEffect(() => () => void close(), [close, walletId]);
+  useEffect(() => {
+    disposed.current = false;
+    return () => {
+      disposed.current = true;
+      void close();
+    };
+  }, [close, walletId]);
   // A lock stops new signatures; a new draft is made after the unlock.
   useEffect(() => {
     if (locked) void close();

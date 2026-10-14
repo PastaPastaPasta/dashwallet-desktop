@@ -149,9 +149,10 @@ test.describe("Pay", () => {
     await review(page);
     await expect(page.getByTestId("pay-confirm-cancel")).toBeFocused();
     await expect(page.getByTestId("pay-confirm-passphrase")).toHaveCount(0);
-    // Return on Cancel does not send.
+    // Return on Cancel does not send; focus goes back to Review.
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("pay-confirm")).toHaveCount(0);
+    await expect(page.getByTestId("pay-continue")).toBeFocused();
     await review(page);
     await page.getByTestId("pay-confirm-send").click();
     await expect(page.getByTestId("pay-result-sent")).toBeVisible();
@@ -206,6 +207,8 @@ test.describe("Pay", () => {
     await expect(page.getByTestId("pay-result-text")).toContainText("The network rejected the transaction: bad-txns-inputs-missingorspent.");
     await page.getByTestId("pay-result-back").click();
     await expect(page.getByTestId("pay-amount")).toHaveValue("0.5");
+    // The result replaced the confirm sheet; closing it still returns focus to the form.
+    await expect(page.getByTestId("pay-continue")).toBeFocused();
     expect(await world(page, (w) => w.wallets[0].coins.some((u) => u.reserved))).toBe(false);
   });
 
@@ -293,6 +296,8 @@ test.describe("Receive", () => {
     await row.getByRole("button", { name: "Show" }).click();
     await expect(page.getByTestId("request-sheet")).toBeVisible();
     await page.keyboard.press("Escape");
+    // Focus goes back to the button that opened it, out of the sheet layer (U-03 D22).
+    await expect(row.getByRole("button", { name: "Show" })).toBeFocused();
     await row.getByRole("button", { name: /Remove/ }).click();
     await expect(page.getByTestId("requests-empty")).toBeVisible();
   });

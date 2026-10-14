@@ -36,12 +36,16 @@ export function Sheet({
   onClose,
   width,
   testId,
+  returnFocus,
   children,
 }: {
   title: string;
   onClose: () => void;
   width: "small" | "medium" | "large";
   testId: string;
+  /** Where focus goes on close, instead of the element focused at open (gone, or `<body>`
+   * when one sheet replaced another). */
+  returnFocus?: () => HTMLElement | null;
   children: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement>(null);
@@ -55,7 +59,19 @@ export function Sheet({
     const opener = document.activeElement as HTMLElement | null;
     const start = panel.current?.querySelector<HTMLElement>("[data-autofocus]") ?? panel.current?.querySelector<HTMLElement>(FOCUSABLE);
     start?.focus();
-    return () => opener?.focus?.();
+    return () => {
+      const back = () => {
+        const to = returnFocus?.() ?? opener;
+        if (to?.isConnected) to.focus();
+      };
+      if (!layer) return back();
+      // In the layer the shell is still inert now, so focusing into it would do nothing: once it is
+      // not, return focus if it was lost (not if another sheet took it).
+      requestAnimationFrame(() => {
+        if (!document.activeElement || document.activeElement === document.body) back();
+      });
+    };
+    // The opener and the return target are read when the sheet opens and closes.
   }, []);
 
   const onKeyDown = (e: React.KeyboardEvent) => {

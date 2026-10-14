@@ -147,6 +147,9 @@ describe("the confirm sheet's promise (U-03 D2)", () => {
     const foreign = summary({ outputs: [outputs[0], { ...outputs[1], address: "yForeign", isMine: false }], totalDebit: 50_000_236 });
     expect(keepsPromise(custom, foreign)).toBe(true);
     expect(keepsPromise(confirmed, foreign)).toBe(false);
+    // An output the sheet never showed, paid for by smaller change, within the total.
+    const extra = { address: "yForeign2", amount: 5, isChange: false, label: null, isMine: false };
+    expect(keepsPromise(custom, summary({ outputs: [outputs[0], extra, { ...outputs[1], address: "yForeign", amount: 5, isMine: false }], totalDebit: 50_000_236 }))).toBe(false);
     // Change somewhere the sheet did not show.
     expect(keepsPromise(custom, summary({ outputs: [outputs[0], { ...outputs[1], address: "yElse", isMine: false }], totalDebit: 50_000_236 }))).toBe(false);
   });
