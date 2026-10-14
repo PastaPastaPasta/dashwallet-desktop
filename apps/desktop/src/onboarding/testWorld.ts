@@ -88,6 +88,11 @@ export class FakeWorld implements Api {
   createErrors: AppError[] = [];
   /** Holds `generateMnemonic` until it settles (a screen closing mid-call, a double click). */
   generateGate: Promise<void> | null = null;
+  generateErrors: AppError[] = [];
+  /** Hold `importWallet` and `lockStatus` until they settle; `lockStatus` answers with the state
+   * when it was called. */
+  importGate: Promise<void> | null = null;
+  statusGate: Promise<void> | null = null;
   unlockCalls: { passphrase: string; mixingOnly: boolean }[] = [];
   unlockErrors: AppError[] = [];
   recoveries: { walletId: string; mnemonic: string; bip39Passphrase: string; newPassphrase: string }[] = [];
@@ -101,7 +106,9 @@ export class FakeWorld implements Api {
 
   lockStatus = async () => {
     const wait = this.lastFailureAt === null ? 0 : this.lastFailureAt + throttleSecs(this.status.failedAttempts) * 1000 - this.clock;
-    return { ...this.status, retryAfterSecs: wait > 0 ? Math.ceil(wait / 1000) : null };
+    const answer = { ...this.status, retryAfterSecs: wait > 0 ? Math.ceil(wait / 1000) : null };
+    await this.statusGate;
+    return answer;
   };
 
   listWallets = async () => this.wallets;
@@ -142,6 +149,8 @@ export class FakeWorld implements Api {
   generateMnemonic = async (wordCount: number) => {
     this.generateCalls.push(wordCount);
     await this.generateGate;
+    const scripted = this.generateErrors.shift();
+    if (scripted) throw scripted;
     return this.generated;
   };
 
@@ -162,6 +171,7 @@ export class FakeWorld implements Api {
 
   importWallet = async (mnemonic: string, bip39Passphrase: string | null, options: ImportOptions) => {
     this.imports.push({ mnemonic, bip39Passphrase, options });
+    await this.importGate;
     const scripted = this.importErrors.shift();
     if (scripted) throw scripted;
     if (this.status.state === "locked" || this.status.state === "noVault") throw appError(this.status.state === "locked" ? "vault.locked" : "vault.no_vault");

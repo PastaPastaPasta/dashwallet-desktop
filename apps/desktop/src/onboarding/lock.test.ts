@@ -90,6 +90,23 @@ describe("lock view model", () => {
     expect(model.failedAttempts).toBe(0);
   });
 
+  it("aReadThatAnswersAfterAnAttemptIsDropped", async () => {
+    // Review r1-Sol minor 4: the screen's first read used to land after the first attempt and
+    // put back the count and wait from before it.
+    const world = lockedWorld(2);
+    let open!: () => void;
+    world.statusGate = new Promise((r) => (open = r));
+    const model = new LockModel(world, world.now);
+    const read = model.load();
+    await failOnce(model);
+    expect(model.failedAttempts).toBe(3);
+    open();
+    await read;
+    expect(model.failedAttempts).toBe(3);
+    expect(model.retryAfterSecs).toBe(60);
+    expect(model.message).toBe(`${WRONG_PASSPHRASE} ${tryAgainIn(60)}`);
+  });
+
   it("IOS012_fourthFailureWaitsSixMinutes", async () => {
     const world = lockedWorld();
     const model = await loaded(world);

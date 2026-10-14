@@ -2,7 +2,7 @@
 // `OnboardingViewModelTests`, ported by parity ID, in U-02's order (D2: create asks for the vault
 // passphrase first and adds the wallet at the last correct chip).
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { birthHeightFor } from "./birthHeight";
 import { OnboardingModel, OnboardingText } from "./onboarding";
 import { passphraseStrength, PassphraseText } from "./passphrase";
@@ -268,6 +268,62 @@ describe("onboarding view model: create", () => {
     await solve(model);
     expect(model.step).toBe("done");
     expect(world.creates).toEqual(["Correct horse 9!"]);
+  });
+
+  it("aFailedPhraseDropsTheChosenVaultPassphrase", async () => {
+    // Review r1-Sol minor 2: Failed kept the passphrase although nothing would use it.
+    const world = new FakeWorld();
+    world.generateErrors = [appError("storage")];
+    const model = make(world);
+    await model.startCreate();
+    expect(await model.submitPassphrase("Correct horse 9!", "Correct horse 9!")).toBe(true);
+    expect(model.step).toBe("failed");
+    expect(model.keepsVaultChoice).toBe(false);
+    model.back();
+    expect(model.step).toBe("welcome");
+    world.generateErrors = [appError("storage")];
+    await model.startCreate();
+    await model.skipEncryption();
+    expect(model.step).toBe("failed");
+    expect(model.keepsVaultChoice).toBe(false);
+    expect(world.creates).toEqual([]);
+  });
+
+  it("aVaultStateThatArrivesAfterTheScreenClosedIsDropped", async () => {
+    // Review r1-Sol minor 3.
+    const world = new FakeWorld();
+    let open!: () => void;
+    world.statusGate = new Promise((r) => (open = r));
+    const model = make(world);
+    const start = model.startCreate();
+    await Promise.resolve();
+    model.dispose();
+    open();
+    await start;
+    expect(model.vaultState).toBeNull();
+    expect(model.step).toBe("welcome");
+  });
+
+  it("anImportThatSettlesAfterTheScreenClosedIsDropped", async () => {
+    // Review r1-Sol minor 3: neither the wallet nor a failure lands on a closed screen.
+    for (const error of [null, appError("storage"), appError("vault.locked")]) {
+      const world = unlockedWorld();
+      if (error) world.importErrors = [error];
+      let open!: () => void;
+      world.importGate = new Promise((r) => (open = r));
+      const model = make(world);
+      await model.startCreate();
+      model.confirmWrittenDown();
+      const finish = solve(model);
+      await vi.waitFor(() => expect(world.imports).toHaveLength(1));
+      model.dispose();
+      open();
+      await finish;
+      expect(model.walletId).toBeNull();
+      expect(model.failure).toBeNull();
+      expect(model.step).toBe("working");
+      expect(world.unlockCalls).toEqual([]);
+    }
   });
 
   it("aModelMountedAgainStillWorks", async () => {
@@ -544,16 +600,19 @@ describe("onboarding view model: restore", () => {
     await model.updateRestoreText(PHRASE);
     model.continueRestore();
     model.setScanStart("height");
-    model.setScanHeight("1234.7");
+    model.setScanHeight("1234");
     model.setBip39Passphrase("25th word");
     model.back();
     model.continueRestore();
     expect(model.scanStart).toBe("height");
-    expect(model.scanHeight).toBe("1234.7");
+    expect(model.scanHeight).toBe("1234");
     expect(model.options.birthHeight).toBe(1234);
     expect(model.bip39Passphrase).toBe("25th word");
-    model.setScanHeight("abc");
-    expect(model.options.birthHeight).toBe(0);
+    // Anything but a whole, non-negative number scans from genesis (D7, Sol r1 minor 1).
+    for (const bad of ["abc", "1234.7", "-5", "Infinity", "1e400", " "]) {
+      model.setScanHeight(bad);
+      expect(model.options.birthHeight).toBe(0);
+    }
     model.setScanStart("genesis");
     expect(model.options.birthHeight).toBe(0);
   });

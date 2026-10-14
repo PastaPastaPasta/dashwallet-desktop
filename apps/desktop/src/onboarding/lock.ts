@@ -52,6 +52,8 @@ export class LockModel extends Model {
   working = false;
   /** The vault holds secrets of at least one wallet, so Forgot passphrase can recover it. */
   canRecover = false;
+  /** Bumped by every read and attempt: a read answered after a later one started is stale. */
+  #seq = 0;
 
   constructor(
     private readonly api: Api,
@@ -78,9 +80,12 @@ export class LockModel extends Model {
 
   /** Reads the vault's count and wait, so a restart keeps both. */
   async load() {
+    const seq = ++this.#seq;
     try {
-      this.#apply(await this.api.lockStatus());
+      const status = await this.api.lockStatus();
+      if (seq === this.#seq) this.#apply(status);
     } catch (e) {
+      if (seq !== this.#seq) return;
       this.message = failureText(e);
       this.changed();
     }
@@ -110,6 +115,7 @@ export class LockModel extends Model {
     if (wait !== null) return this.#say(tryAgainIn(wait));
     if (!passphrase) return this.#say(PASSPHRASE_REQUIRED);
     this.working = true;
+    this.#seq++;
     this.changed();
     try {
       const status = await check(passphrase);

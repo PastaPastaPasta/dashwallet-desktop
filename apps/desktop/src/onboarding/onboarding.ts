@@ -234,7 +234,7 @@ export class OnboardingModel extends Model {
   async unlockVault(passphrase: string) {
     if (this.step !== "unlockVault") return;
     await this.#exclusive(async () => {
-      if (!(await this.lock.unlock(passphrase, false))) return;
+      if (!(await this.lock.unlock(passphrase, false)) || this.#stale) return;
       this.vaultState = this.lock.lockState;
       if (this.#afterUnlock === "create") await this.#generate();
       else if (this.#afterUnlock === "restore") this.#go("restorePhrase");
@@ -304,11 +304,11 @@ export class OnboardingModel extends Model {
     this.setBirthDate(ymd ? new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])) : null);
   }
 
-  /** The height field's text; anything but a number scans from genesis. */
+  /** The height field's text; anything but a whole, non-negative number scans from genesis
+   * (D7): `1234.7` is not rounded to a height the user did not type (Sol r1 minor 1). */
   setScanHeight(text: string) {
     this.scanHeight = text;
-    const height = text.trim() === "" ? Number.NaN : Number(text);
-    this.setBirthHeight(Number.isFinite(height) ? Math.max(0, Math.floor(height)) : null);
+    this.setBirthHeight(text.trim() === "" ? null : Number(text));
   }
 
   /** Scan start from the wallet's creation date; `null` scans from genesis. */
@@ -377,6 +377,12 @@ export class OnboardingModel extends Model {
   }
 
   /** Drops every secret (the screen went away); replies still in flight are dropped too. */
+  /** Whether a vault passphrase (or the choice to go without one) is still kept: only between
+   * Choose passphrase and creating the vault. */
+  get keepsVaultChoice(): boolean {
+    return this.#vaultPassphrase !== null || this.#skipEncryption;
+  }
+
   dispose() {
     this.#epoch++;
     this.#clear();
@@ -409,8 +415,11 @@ export class OnboardingModel extends Model {
     this.#go("working");
     if (this.vaultState === "noVault") {
       try {
-        this.vaultState = (await this.api.createVault(this.#skipEncryption ? null : this.#vaultPassphrase)).state;
+        const status = await this.api.createVault(this.#skipEncryption ? null : this.#vaultPassphrase);
+        if (this.#stale) return;
+        this.vaultState = status.state;
       } catch (e) {
+        if (this.#stale) return;
         this.passphraseError = failureText(e);
         this.#go("choosePassphrase");
         return;
@@ -419,7 +428,6 @@ export class OnboardingModel extends Model {
         this.#skipEncryption = false;
       }
     }
-    if (this.#stale) return;
     try {
       const id = await this.api.importWallet(phrase, this.#bip39, {
         name: null,
@@ -427,10 +435,12 @@ export class OnboardingModel extends Model {
         coreCompat: this.options.coreCompat,
         lookahead: null,
       });
+      if (this.#stale) return;
       this.#clear();
       this.walletId = id;
       this.#go("done");
     } catch (e) {
+      if (this.#stale) return;
       if (hasCode(e, "vault.locked") || hasCode(e, "vault.mixing_only")) {
         this.vaultState = "locked";
         await this.#askUnlock("finish");
@@ -457,6 +467,10 @@ export class OnboardingModel extends Model {
       if (this.#stale) return;
       this.#phrase = phrase;
     } catch (e) {
+      if (this.#stale) return;
+      // Nothing will use the vault passphrase now (review r1-Sol minor 2).
+      this.#vaultPassphrase = null;
+      this.#skipEncryption = false;
       this.failure = failureText(e);
       this.#go("failed");
       return;
@@ -480,9 +494,12 @@ export class OnboardingModel extends Model {
 
   async #readVault(): Promise<boolean> {
     try {
-      this.vaultState = (await this.api.lockStatus()).state;
+      const status = await this.api.lockStatus();
+      if (this.#stale) return false;
+      this.vaultState = status.state;
       return true;
     } catch (e) {
+      if (this.#stale) return false;
       this.failure = failureText(e);
       this.#go("failed");
       return false;
