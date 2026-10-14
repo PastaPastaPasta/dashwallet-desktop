@@ -108,8 +108,7 @@ export function ConfirmSheet({
         setError(refusal.text);
         // The vault refuses every attempt until then: Send waits too (Sol r1).
         if (refusal.waitSecs > 0) setRetryAt(Date.now() + refusal.waitSecs * 1000);
-      }
-      else onOutcome({ kind: "failed", text: failureText(e, chain) });
+      } else onOutcome({ kind: "failed", text: failureText(e, chain) });
       return;
     }
 

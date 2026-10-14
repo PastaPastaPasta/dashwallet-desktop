@@ -4,7 +4,9 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 
-export const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+export function dayKey(d: Date): string {
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
 
 /** Milliseconds from `now` to the next local midnight. */
 export function msToNextMidnight(now: Date): number {
@@ -22,15 +24,18 @@ export function watchLocalDay(onChange: () => void, clock: () => Date): () => vo
     }, msToNextMidnight(clock()));
   };
   arm();
+  // Absent outside a browser (unit tests).
+  const win = typeof window === "undefined" ? undefined : window;
+  const doc = typeof document === "undefined" ? undefined : document;
   const back = () => {
-    if (typeof document === "undefined" || document.visibilityState !== "hidden") onChange();
+    if (doc?.visibilityState !== "hidden") onChange();
   };
-  if (typeof window !== "undefined") window.addEventListener("focus", back);
-  if (typeof document !== "undefined") document.addEventListener("visibilitychange", back);
+  win?.addEventListener("focus", back);
+  doc?.addEventListener("visibilitychange", back);
   return () => {
     clearTimeout(timer);
-    if (typeof window !== "undefined") window.removeEventListener("focus", back);
-    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", back);
+    win?.removeEventListener("focus", back);
+    doc?.removeEventListener("visibilitychange", back);
   };
 }
 
