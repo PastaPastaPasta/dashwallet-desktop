@@ -32,6 +32,7 @@ mod names;
 mod notifications;
 #[cfg(test)]
 mod notifications_tests;
+pub(crate) mod payment_locks;
 mod payments;
 mod private_details;
 #[cfg(test)]

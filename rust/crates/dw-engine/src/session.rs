@@ -502,6 +502,7 @@ impl NetworkSession {
         for id in manager.list_wallet_ids_blocking() {
             session.refresh_wallet_state(&manager, WalletId(id)).await;
             session.load_identity_choices(WalletId(id)).await;
+            session.load_payment_locks(WalletId(id)).await;
         }
         session.load_history().await?;
         session.start_pump(&manager, appdb);

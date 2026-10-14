@@ -34,6 +34,7 @@ import type { ContactActivityPage } from "./ContactActivityPage";
 import type { ContactDetailInfo } from "./ContactDetailInfo";
 import type { ContactList } from "./ContactList";
 import type { ContactQueryArgs } from "./ContactQueryArgs";
+import type { ContactRecipient } from "./ContactRecipient";
 import type { ContactRequestOutcome } from "./ContactRequestOutcome";
 import type { ContactSummaryInfo } from "./ContactSummaryInfo";
 import type { ContestStatus } from "./ContestStatus";
@@ -1026,6 +1027,17 @@ export function draftWalletId(draft: number): Promise<string> {
  */
 export function draftSetRecipients(draft: number, recipients: Array<Recipient>): Promise<null> {
   return invoke<null>("draft_set_recipients", { draft, recipients });
+}
+
+/**
+ * Makes a DashPay contact the draft's one recipient (DP3-01), checked
+ * offline: an established contact (or a pending incoming request, for
+ * "Accept and pay"), its channel not broken, no payment to it locked.
+ * `draftPrepare` reserves its address; refusals carry `contact.*`,
+ * `identity.*` or `platform.*` codes.
+ */
+export function draftSetContactRecipient(draft: number, recipient: ContactRecipient): Promise<null> {
+  return invoke<null>("draft_set_contact_recipient", { draft, recipient });
 }
 
 /**
@@ -2096,6 +2108,7 @@ export type CommandArgs = {
   max_spendable: { walletId: string; source: CoinSource; fee: FeeMode };
   draft_wallet_id: { draft: number };
   draft_set_recipients: { draft: number; recipients: Array<Recipient> };
+  draft_set_contact_recipient: { draft: number; recipient: ContactRecipient };
   draft_set_source: { draft: number; source: CoinSource };
   draft_set_fee: { draft: number; fee: FeeMode };
   draft_set_change: { draft: number; change: ChangePolicy };
@@ -2328,6 +2341,7 @@ export type CommandResults = {
   max_spendable: number;
   draft_wallet_id: string;
   draft_set_recipients: null;
+  draft_set_contact_recipient: null;
   draft_set_source: null;
   draft_set_fee: null;
   draft_set_change: null;
@@ -2562,6 +2576,7 @@ export const COMMANDS: Record<CommandName, string> = {
   max_spendable: "send",
   draft_wallet_id: "send",
   draft_set_recipients: "send",
+  draft_set_contact_recipient: "send",
   draft_set_source: "send",
   draft_set_fee: "send",
   draft_set_change: "send",

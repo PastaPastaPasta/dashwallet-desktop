@@ -338,6 +338,18 @@ impl LockReason {
     }
 }
 
+/// A `dp_payment_lock` row (DP3-01): payments from `identity` to `contact`
+/// wait for `txid`'s outcome, locked at `since`; `inputs` are its
+/// comma-separated `txid:vout` outpoints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DpPaymentLockRow {
+    pub identity: String,
+    pub contact: String,
+    pub txid: String,
+    pub since: u64,
+    pub inputs: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockRow {
     pub txid: String,
@@ -1092,6 +1104,64 @@ impl AppDb {
         Ok(())
     }
 
+    // ---- DashPay payment locks (DP3-01) ----
+
+    /// Every lock of the wallet, by identity and contact.
+    pub fn dp_payment_locks(&self, wallet_id: &str) -> Result<Vec<DpPaymentLockRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT identity, contact, txid, since, inputs FROM dp_payment_lock
+             WHERE wallet_id = ?1 ORDER BY identity, contact",
+        )?;
+        let rows = stmt.query_map([wallet_id], |r| {
+            Ok(DpPaymentLockRow {
+                identity: r.get(0)?,
+                contact: r.get(1)?,
+                txid: r.get(2)?,
+                since: r.get::<_, i64>(3)? as u64,
+                inputs: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Locks payments from `row.identity` to `row.contact` behind
+    /// `row.txid`, replacing any earlier lock of the pair.
+    pub fn set_dp_payment_lock(&self, wallet_id: &str, row: &DpPaymentLockRow) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO dp_payment_lock (wallet_id, identity, contact, txid, since, inputs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (wallet_id, identity, contact)
+             DO UPDATE SET txid = excluded.txid, since = excluded.since,
+                           inputs = excluded.inputs",
+            params![
+                wallet_id,
+                row.identity,
+                row.contact,
+                row.txid,
+                row.since as i64,
+                row.inputs
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Removes the pair's lock if it is still `txid`'s; whether one went.
+    pub fn clear_dp_payment_lock(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        contact: &str,
+        txid: &str,
+    ) -> Result<bool> {
+        let n = self.conn().execute(
+            "DELETE FROM dp_payment_lock
+             WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3 AND txid = ?4",
+            params![wallet_id, identity, contact, txid],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Every `(identity, key, value)` of the wallet's `dp_prefs` rows, by
     /// identity and key, from one statement: one snapshot of the rows, so a
     /// write between two reads cannot mix their generations.
@@ -1292,11 +1362,38 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026101303);
+        assert_eq!(db.schema_version().unwrap(), 2026101401);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();
         assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "Main".into())]);
+    }
+
+    #[test]
+    fn payment_locks_replace_and_clear_only_their_txid() {
+        let db = AppDb::open_in_memory().unwrap();
+        let row = |c: &str, t: &str, since| DpPaymentLockRow {
+            identity: "me".into(),
+            contact: c.into(),
+            txid: t.into(),
+            since,
+            inputs: format!("{t}:0"),
+        };
+        db.set_dp_payment_lock(W, &row("bob", "t1", 10)).unwrap();
+        db.set_dp_payment_lock(W, &row("bob", "t2", 20)).unwrap();
+        db.set_dp_payment_lock(W, &row("carol", "t3", 30)).unwrap();
+        db.set_dp_payment_lock(W2, &row("bob", "t4", 40)).unwrap();
+        assert_eq!(
+            db.dp_payment_locks(W).unwrap(),
+            vec![row("bob", "t2", 20), row("carol", "t3", 30)]
+        );
+        assert!(!db.clear_dp_payment_lock(W, "me", "bob", "t1").unwrap());
+        assert!(db.clear_dp_payment_lock(W, "me", "bob", "t2").unwrap());
+        assert_eq!(
+            db.dp_payment_locks(W).unwrap(),
+            vec![row("carol", "t3", 30)]
+        );
+        assert_eq!(db.dp_payment_locks(W2).unwrap(), vec![row("bob", "t4", 40)]);
     }
 
     #[test]

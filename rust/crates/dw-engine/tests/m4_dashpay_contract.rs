@@ -93,6 +93,9 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.resolve_top_up",
     // DP1-04: the contest watch.
     "DashPay.contest_status",
+    // DP3-01: the per-contact payment lock.
+    "DashPay.payment_lock",
+    "DashPay.resolve_payment_lock",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -125,8 +128,8 @@ const FACADE: &[&str] = &[
 /// network seam and tests, and the identity write locks (DP2-02), the
 /// private details' publish and settle with their tests (DP2-04), the
 /// bell's session tests (DP2-05), the credit costs, the balance refreshes
-/// and the top-up flow with its tests (DP1-06), and the contest watch with
-/// its tests (DP1-04).
+/// and the top-up flow with its tests (DP1-06), the contest watch with
+/// its tests (DP1-04), and the contact payment locks (DP3-01).
 const NOT_FACADE: &[&str] = &[
     "balances.rs",
     "bringup.rs",
@@ -144,6 +147,7 @@ const NOT_FACADE: &[&str] = &[
     "mod.rs",
     "names_net.rs",
     "notifications_tests.rs",
+    "payment_locks.rs",
     "private_details.rs",
     "private_details_tests.rs",
     "provenance.rs",
@@ -1258,8 +1262,15 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             "wallet_not_found"
         );
 
-        c.stub(dp.payment_lock(s(), s()));
-        c.stub(dp.resolve_payment_lock(s(), s()).await);
+        // DP3-01's: an unknown wallet is refused.
+        assert_eq!(
+            dp.payment_lock(s(), s()).unwrap_err().code(),
+            "wallet_not_found"
+        );
+        assert_eq!(
+            dp.resolve_payment_lock(s(), s()).await.unwrap_err().code(),
+            "wallet_not_found"
+        );
         c.stub(
             dp.contact_activity(s(), s(), None, ActivityFilter::All)
                 .await,

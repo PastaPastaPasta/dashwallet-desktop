@@ -94,12 +94,15 @@ impl From<dw_engine::EngineError> for EngineError {
             E::Internal(_) => Self::Internal { detail },
             E::Send(_) | E::Labels(_) => Self::Wallet { detail },
             E::OutpointNotFound(_) => Self::InvalidArgument { detail },
-            // Their domains (CompatError, BackupError, PsbtError and the M3
-            // CoinJoinError, MasternodeError) carry the
-            // codes; M0 calls never produce them.
-            E::Compat(_) | E::Backup(_) | E::Psbt(_) | E::CoinJoin(_) | E::Masternode(_) => {
-                Self::Wallet { detail }
-            }
+            // Their domains (CompatError, BackupError, PsbtError, the M3
+            // CoinJoinError, MasternodeError and DP3-01's contact payments)
+            // carry the codes; M0 calls never produce them.
+            E::Compat(_)
+            | E::Backup(_)
+            | E::Psbt(_)
+            | E::CoinJoin(_)
+            | E::Masternode(_)
+            | E::Contact(_) => Self::Wallet { detail },
             // DP1-02's Repair facade carries the refusal's own code; no M0
             // call produces it.
             E::StuckFunding(

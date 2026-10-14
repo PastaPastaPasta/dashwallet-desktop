@@ -18,6 +18,9 @@
 //! spending limit means the same in both. The fee alone is also bounded by
 //! [`MAX_TX_FEE`] (`send.absurd_fee`).
 
+mod contact;
+#[cfg(test)]
+mod contact_tests;
 #[cfg(test)]
 mod flow_tests;
 pub(crate) mod plan;
@@ -48,7 +51,10 @@ use crate::platform::lease::{
     AdmitRequest, ArtifactId, ArtifactKind, DispatchScope, Lease, LeaseError, Outcome, Settlement,
     Verdict,
 };
+use crate::platform::payment_locks::Pair;
 use crate::{EngineError, NetworkSession, WalletId};
+
+pub use self::contact::ContactRecipient;
 
 /// dash-qt `-maxtxfee` default: a fee above 0.1 DASH is absurd (QT-058).
 pub const MAX_TX_FEE: u64 = 10_000_000;
@@ -558,6 +564,9 @@ struct DraftState {
     source: CoinSource,
     fee: FeeRate,
     change: ChangeTarget,
+    /// Set by `set_contact_recipient`: the one recipient is this contact,
+    /// its address a placeholder until `prepare` (DP3-01).
+    contact: Option<Pair>,
 }
 
 static NEXT_DRAFT_ID: AtomicU64 = AtomicU64::new(1);
@@ -617,6 +626,8 @@ struct Resolved {
     /// Funded by fully mixed CoinJoin coins (no change; signed by the
     /// engine, not key-wallet's builder, which would add change).
     coinjoin: bool,
+    /// A contact payment's pair (DP3-01): `recipients[0]` pays it.
+    contact: Option<Pair>,
 }
 
 impl Resolved {
@@ -695,6 +706,7 @@ impl NetworkSession {
                 source: CoinSource::Any,
                 fee: FeeRate::new(MIN_FEE_PER_KB),
                 change: ChangeTarget::Auto,
+                contact: None,
             }),
             exempt,
             #[cfg(test)]
@@ -807,7 +819,9 @@ impl TxDraft {
     /// rejection), amounts (non-zero, ≤ 21M DASH, not dust) and duplicates.
     pub fn set_recipients(&self, recipients: Vec<Recipient>) -> Result<(), EngineError> {
         let valid = validate_recipients(recipients, self.network())?;
-        self.state().recipients = valid;
+        let mut state = self.state();
+        state.recipients = valid;
+        state.contact = None;
         Ok(())
     }
 
@@ -856,6 +870,10 @@ impl TxDraft {
         let state = self.state().clone();
         if state.recipients.is_empty() {
             return Err(SendFailure::NoRecipients.into());
+        }
+        if let Some(pair) = &state.contact {
+            self.session
+                .check_payment_lock(self.wallet_id, pair, None)?;
         }
         let coinjoin = state.source == CoinSource::FullyMixedOnly;
         if coinjoin && !matches!(state.change, ChangeTarget::Auto) {
@@ -914,6 +932,7 @@ impl TxDraft {
             fee_rate: state.fee,
             height,
             coinjoin,
+            contact: state.contact,
         };
         resolved.dry_run()?;
         Ok(resolved)
@@ -970,6 +989,10 @@ impl TxDraft {
         self: &Arc<Self>,
         grant_id: String,
     ) -> Result<Arc<PreparedTx>, EngineError> {
+        let contact = self.state().contact;
+        if let Some(pair) = contact {
+            return self.prepare_contact(grant_id, pair).await;
+        }
         let session = &self.session;
         let wallet_id = self.wallet_id;
         if !session.vault.has_wallet_secret(&wallet_id.0) {
@@ -1113,6 +1136,9 @@ impl TxDraft {
         let wallet_id = self.wallet_id;
         let network = self.network();
         let lease = charge.as_ref().map(|c| c.lease.clone());
+        let contact = r
+            .contact
+            .map(|pair| (pair, r.recipients[0].address.clone()));
 
         if r.coinjoin {
             let outputs: Vec<TxOut> = r
@@ -1161,6 +1187,7 @@ impl TxDraft {
                 mixed: Some(tx),
                 phase: Mutex::new(Phase::Pending),
                 lease: lease.map(|l| (l, artifact)),
+                contact,
             }));
         }
 
@@ -1225,6 +1252,7 @@ impl TxDraft {
             mixed: None,
             phase: Mutex::new(Phase::Pending),
             lease: lease.map(|l| (l, artifact)),
+            contact,
         }))
     }
 
@@ -1279,7 +1307,9 @@ impl TxDraft {
         &self,
         prepared: Arc<PreparedTx>,
     ) -> Result<BroadcastOutcome, EngineError> {
-        let first = {
+        // A contact payment's first broadcast is under way until its
+        // outcome settled the contact (`settle_contact`).
+        let (first, _in_flight) = {
             let mut phase = prepared.phase();
             let first = match *phase {
                 Phase::Pending => true,
@@ -1288,8 +1318,13 @@ impl TxDraft {
                     return Err(SendFailure::PreparedTxSpent.into());
                 }
             };
+            let in_flight = if first {
+                self.claim_contact(&prepared)?
+            } else {
+                None
+            };
             *phase = Phase::Broadcasting;
-            first
+            (first, in_flight)
         };
         let (outcome, next) = match &prepared.lease {
             Some((lease, artifact)) => self.fenced(&prepared, lease, *artifact, first).await,
@@ -1300,6 +1335,7 @@ impl TxDraft {
             }
         };
         *prepared.phase() = next;
+        self.settle_contact(&prepared, first, next).await;
         match next {
             Phase::Sent => self.session.spends.release(&self.wallet_id, prepared.owner),
             // Never sent: release key-wallet's reservation (owner-guarded, a
@@ -1772,6 +1808,8 @@ pub struct PreparedTx {
     /// Prepared under a lease: its hand-offs go through the dispatch
     /// fence, scoped to the lease, as this artifact (E0-04 §5.4).
     lease: Option<(Lease, ArtifactId)>,
+    /// A contact payment: its pair and the reserved address it pays.
+    contact: Option<(Pair, Address)>,
 }
 
 impl std::fmt::Debug for PreparedTx {
@@ -1873,11 +1911,16 @@ impl NetworkSession {
             .filter_map(|(_, _, m)| m.as_deref())
             .collect();
         let message = (!messages.is_empty()).then(|| messages.join("\n"));
+        // A contact payment's address changes with every payment: the
+        // contacts list names its payee, the address book does not (D10).
+        let records = match prepared.contact {
+            Some(_) => &[][..],
+            None => &prepared.records[..],
+        };
         let wallet = self.wallet(&wallet_id).await?;
         let owned: Vec<bool> = {
             let state = wallet.state().await;
-            prepared
-                .records
+            records
                 .iter()
                 .map(|(a, _, _)| {
                     Address::from_str(a)
@@ -1887,8 +1930,7 @@ impl NetworkSession {
                 })
                 .collect()
         };
-        let entries: Vec<(String, Option<String>, bool)> = prepared
-            .records
+        let entries: Vec<(String, Option<String>, bool)> = records
             .iter()
             .zip(owned)
             .map(|((a, l, _), mine)| (a.clone(), l.clone(), mine))

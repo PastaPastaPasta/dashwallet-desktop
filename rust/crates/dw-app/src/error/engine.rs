@@ -206,6 +206,7 @@ impl From<EngineError> for AppError {
             E::Psbt(f) => return f.into(),
             E::CoinJoin(f) => return f.into(),
             E::Masternode(f) => return f.into(),
+            E::Contact(e) => return e.into(),
             E::StuckFunding(r) => (
                 EngineCode::StuckFunding.into(),
                 Some(ErrorData::StuckFunding {
@@ -314,6 +315,19 @@ mod tests {
         }
         let e = VaultError::WalletSecretExists;
         assert_eq!(AppError::from(e.clone()).code_str(), e.code());
+        // A contact payment's refusal keeps its DashPay code (DP3-01 D16).
+        use dw_engine::platform::{ContactError, PlatformError};
+        assert_eq!(
+            AppError::from(E::Contact(ContactError::IsSelf)).code_str(),
+            AppError::from(ContactError::IsSelf).code_str()
+        );
+        assert_eq!(
+            AppError::from(E::Contact(ContactError::Platform(
+                PlatformError::Unavailable
+            )))
+            .code_str(),
+            "platform.unavailable"
+        );
     }
 
     #[test]

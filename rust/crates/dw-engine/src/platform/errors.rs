@@ -631,6 +631,7 @@ impl From<crate::EngineError> for PlatformError {
             E::Signer(dw_vault::SignerError::Locked) => Self::SignerUnavailable,
             E::Signer(dw_vault::SignerError::Vault(e)) => e.into(),
             E::NotImplemented(call) => Self::NotImplemented { call },
+            E::Contact(ContactError::Platform(e)) => e,
             other => internal(other),
         }
     }

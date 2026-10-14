@@ -539,6 +539,78 @@ impl ContactCryptoProvider for VaultContactCrypto {
     }
 }
 
+/// Contact crypto with no key: every call is `WalletLocked`. A contact
+/// payment without DashPay crypto reserves its address through it (DP3-01
+/// D6): the library's drain returns before asking a provider when nothing
+/// is queued, and refuses when something is.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LockedContactCrypto;
+
+#[async_trait]
+impl ContactCryptoProvider for LockedContactCrypto {
+    async fn receiving_xpub(
+        &self,
+        _: &DerivationPath,
+    ) -> Result<ExtendedPubKey, PlatformWalletError> {
+        Err(PlatformWalletError::WalletLocked)
+    }
+
+    async fn ecdh_shared_secret(
+        &self,
+        _: &DerivationPath,
+        _: &PublicKey,
+    ) -> Result<Zeroizing<[u8; 32]>, PlatformWalletError> {
+        Err(PlatformWalletError::WalletLocked)
+    }
+
+    async fn export_auto_accept_private_key(
+        &self,
+        _: &DerivationPath,
+    ) -> Result<SecretKey, PlatformWalletError> {
+        Err(PlatformWalletError::WalletLocked)
+    }
+
+    async fn account_reference(
+        &self,
+        _: &DerivationPath,
+        _: &[u8],
+        _: u32,
+        _: u32,
+    ) -> Result<u32, PlatformWalletError> {
+        Err(PlatformWalletError::WalletLocked)
+    }
+
+    async fn unmask_account_reference(
+        &self,
+        _: &DerivationPath,
+        _: &[u8],
+        _: u32,
+    ) -> Result<(u32, u32), PlatformWalletError> {
+        Err(PlatformWalletError::WalletLocked)
+    }
+
+    async fn contact_info_seal(
+        &self,
+        _: &DerivationPath,
+        _: u32,
+        _: &[u8; 32],
+        _: &[u8],
+        _: &[u8; 16],
+    ) -> Result<ContactInfoSealed, PlatformWalletError> {
+        Err(PlatformWalletError::WalletLocked)
+    }
+
+    async fn contact_info_open(
+        &self,
+        _: &DerivationPath,
+        _: u32,
+        _: &[u8; 32],
+        _: &[u8],
+    ) -> Result<ContactInfoOpened, PlatformWalletError> {
+        Err(PlatformWalletError::WalletLocked)
+    }
+}
+
 /// The identity-scan key (platform-wallet `ScanKeyResolver`,
 /// `manager/startup.rs:104`): resolved only when the bring-up takes the
 /// branch that scans, from a [`ScanKey`] the vault issues under an

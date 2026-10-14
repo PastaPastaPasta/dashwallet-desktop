@@ -1,11 +1,13 @@
 //! Contact payments: the per-contact lock, contact activity and the frequent
 //! strip (DP3-01, DP3-02). The `TxDraft` recipient lives in `send/`.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use super::contacts::ContactSummary;
 use super::dashpay::{DashPay, stub};
-use super::errors::ContactError;
+use super::errors::{ContactError, PlatformError};
 
 /// A per-contact send lock after an ambiguous broadcast (`dp_payment_lock`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,24 +71,35 @@ pub struct Counterparty {
     pub avatar_url: Option<String>,
 }
 
-#[expect(unused_variables, reason = "stubs until DP3-01 and DP3-02")]
 impl DashPay {
+    /// The lock an unknown-outcome payment to `contact` set, if any; from
+    /// memory (DP3-01, `payment_locks.rs`). Re-query on `Platform{Payments}`.
     pub fn payment_lock(
         &self,
         identity: String,
         contact: String,
     ) -> Result<Option<PaymentLock>, ContactError> {
-        stub("DashPay.payment_lock")
+        (self.session).payment_lock_of(self.wallet_id(), &identity, &contact)
     }
 
+    /// Settles the pair's lock on positive evidence only (m4 §2.5, item
+    /// 34): `Sent` or `NotSent` clears it, `Unknown` keeps it. A pair with
+    /// no lock is `invalid_argument`.
     pub async fn resolve_payment_lock(
         &self,
         identity: String,
         contact: String,
     ) -> Result<LockResolution, ContactError> {
-        stub("DashPay.resolve_payment_lock")
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id());
+        self.session
+            .on_runtime(
+                async move { Ok(session.resolve_payment_lock_of(id, identity, contact).await) },
+            )
+            .await
+            .map_err(PlatformError::from)?
     }
 
+    #[expect(unused_variables, reason = "stub until DP3-02")]
     pub async fn contact_activity(
         &self,
         identity: String,
@@ -97,6 +110,7 @@ impl DashPay {
         stub("DashPay.contact_activity")
     }
 
+    #[expect(unused_variables, reason = "stub until DP3-02")]
     pub fn frequent_contacts(
         &self,
         identity: String,

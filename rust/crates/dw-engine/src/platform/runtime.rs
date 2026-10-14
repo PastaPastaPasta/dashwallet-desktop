@@ -119,6 +119,8 @@ pub(crate) struct PlatformRuntime {
     /// The balances spent since their refresh, and the balance pass
     /// (DP1-06, `balances.rs`).
     pub(crate) balances: Arc<super::balances::Balances>,
+    /// The per-contact payment locks (DP3-01, `payment_locks.rs`).
+    pub(crate) payments: super::payment_locks::PaymentLocks,
     /// Tests: holds the next bring-up between building its keys and
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
@@ -310,6 +312,7 @@ impl PlatformRuntime {
             registrations: Default::default(),
             contests: Default::default(),
             balances: Default::default(),
+            payments: Default::default(),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
         }
@@ -537,6 +540,7 @@ impl PlatformRuntime {
         self.registrations.forget_wallet(*id);
         self.contests.forget(id);
         self.balances.forget(id);
+        self.payments.forget(id);
     }
 
     /// Takes wallet `id` out of `manager` (a removal, an unload, a restore's

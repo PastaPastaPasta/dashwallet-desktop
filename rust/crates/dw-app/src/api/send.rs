@@ -27,7 +27,7 @@ use dw_engine::{EngineError, PreparedTx, PsbtFailure, SendFailure, TxDraft};
 use self::coins::{CoinSelectionSummary, FeePolicy, OutPoint, Utxo, UtxoFilter};
 pub(crate) use self::draft::BroadcastOutcome;
 use self::draft::{
-    ChangePolicy, CoinSource, FeeMode, PreparedTxHandle, PreparedTxSummary, PsbtAnalysis,
+    ChangePolicy, CoinSource, ContactRecipient, FeeMode, PreparedTxHandle, PreparedTxSummary, PsbtAnalysis,
     Recipient, TxEstimate,
 };
 use self::uri::{AddressClass, QrMatrix, UriParse};
@@ -127,6 +127,16 @@ commands! {
     fn draft_set_recipients(state, draft: u64, recipients: Vec<Recipient>) -> () {
         let recipients = recipients.into_iter().map(Into::into).collect();
         Ok(draft_of(&state, draft)?.set_recipients(recipients)?)
+    }
+
+    /// Makes a DashPay contact the draft's one recipient (DP3-01), checked
+    /// offline: an established contact (or a pending incoming request, for
+    /// "Accept and pay"), its channel not broken, no payment to it locked.
+    /// `draftPrepare` reserves its address; refusals carry `contact.*`,
+    /// `identity.*` or `platform.*` codes.
+    #[facade("TxDraft::set_contact_recipient")]
+    fn draft_set_contact_recipient(state, draft: u64, recipient: ContactRecipient) -> () {
+        Ok(draft_of(&state, draft)?.set_contact_recipient(recipient.into())?)
     }
 
     /// Sets the coin source. Whether coin-control outpoints are spendable is

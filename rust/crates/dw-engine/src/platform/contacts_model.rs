@@ -62,6 +62,7 @@ use super::contacts::{
     ContactSummary, ContactsPage, PrivateDetails, PublishState, Relation,
 };
 use super::errors::{ContactError, IdentityError, PlatformError};
+use super::payment_locks::Pair;
 use super::private_details;
 use super::profile::Profile;
 use super::provenance::Entity;
@@ -154,6 +155,27 @@ impl OwnerContacts {
 pub(super) type WalletContacts = BTreeMap<Identifier, OwnerContacts>;
 
 /// The wallet's contacts from the library's state.
+/// How a contact payment's payee relates to the payer (`payee_state`).
+pub(crate) type Payee = Option<(Relation, ChannelState)>;
+
+/// `pair.1`'s relation and channel in `contacts`; `updating`: the read was
+/// stale, so a missing identity is `platform.unavailable`.
+fn payee_in(
+    contacts: Option<&WalletContacts>,
+    updating: bool,
+    pair: &Pair,
+) -> Result<Payee, ContactError> {
+    let Some(owned) = contacts.and_then(|c| c.get(&pair.0)) else {
+        return Err(if updating {
+            PlatformError::Unavailable
+        } else {
+            PlatformError::from(IdentityError::NotFound)
+        }
+        .into());
+    };
+    Ok(owned.get(&pair.1).map(|e| (e.relation, e.channel)))
+}
+
 pub(super) fn wallet_contacts(info: &PlatformWalletInfo, id: &WalletId) -> WalletContacts {
     let accounts = &info.core_wallet.accounts.dashpay_external_accounts;
     (info.identity_manager.wallet_managed_identities(&id.0))
@@ -447,7 +469,7 @@ pub(super) fn detail(
         publish_state,
         request_sent_at: at(e.outgoing),
         request_received_at: at(e.incoming),
-        // DP3-01's `dp_payment_lock`.
+        // `dp_payment_lock`, joined by `contact_detail` (DP3-01).
         payment_lock: None,
     })
 }
@@ -702,10 +724,37 @@ impl NetworkSession {
         contact: String,
     ) -> Result<Option<ContactDetail>, ContactError> {
         self.with_contacts(id, &identity, |owned, join, _| {
-            let contact = identifier(&contact)?;
+            let pair = (identifier(&identity)?, identifier(&contact)?);
             let owned = owned.ok_or(PlatformError::Unavailable)?;
-            Ok(detail(owned, &contact, join))
+            let payment_lock = self.platform.payments.get(&id, &pair);
+            Ok(detail(owned, &pair.1, join).map(|d| ContactDetail { payment_lock, ..d }))
         })
+    }
+
+    /// How `pair.1` relates to our `pair.0`, and its channel (DP3-01: a
+    /// contact payment's checks); `None` for a stranger. The caller is
+    /// admitted. A live read without the identity is `identity.not_found`;
+    /// a stale one, or none, `platform.unavailable`.
+    pub(crate) fn payee_state(&self, id: WalletId, pair: &Pair) -> Result<Payee, ContactError> {
+        self.require_wallet(&id).map_err(PlatformError::from)?;
+        let (contacts, updating) = self.read_contacts(id).map_err(PlatformError::from)?;
+        payee_in(contacts.as_deref(), updating, pair)
+    }
+
+    /// [`Self::payee_state`] read live, waiting for a writer of the wallet
+    /// (`prepare`: right after an accept, the snapshot may predate it).
+    pub(crate) async fn payee_state_live(
+        &self,
+        id: WalletId,
+        pair: &Pair,
+    ) -> Result<Payee, ContactError> {
+        self.require_wallet(&id).map_err(PlatformError::from)?;
+        let manager = self.manager().map_err(PlatformError::from)?;
+        let wm = manager.wallet_manager_arc();
+        let contacts = (wm.read().await)
+            .get_wallet_info(&id.0)
+            .map(|info| wallet_contacts(info, &id));
+        payee_in(contacts.as_ref(), false, pair)
     }
 
     /// `DashPay::pending_setup_count`: over every identity of the wallet.

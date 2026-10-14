@@ -212,6 +212,32 @@ Send rules (m1-engine.md §2.7.1, review M-5/M-7/M-8, H-4; final review H3, M1, 
   `send.invalid_amount{index}` (amounts) or `invalid_argument` (counts, digits); never a trapping `UInt64(x)`
   (review M-8).
 
+Contact branch (DP3-01; DASHPAY §2.3, m1-engine.md §2.7.1 "Contact payments"). Contract text only: dw-ffi binds
+`set_contact_recipient` with E0-13, and the Swift shells are frozen until then.
+
+```swift
+struct ContactPayee { let identity: String; let contact: String; let displayName: String }
+var contact: ContactPayee?                 // set: one entry, no address field, the contact's name shown instead
+var acceptRequest: Bool                    // "Accept and pay": the contact's request is still pending
+```
+
+- With `contact` set the form has one entry (amount, subtract-fee, a note as its message) and calls
+  `setContactRecipient` instead of `setRecipients`; duplicates, paste and the address book do not apply. Review
+  asks for `authorize(.spend(max: amount + estimate.fee))` (`amount` with subtract-fee) after Confirm, as for an
+  address. With `acceptRequest`, one `authorizeSet` (one passphrase) asks for that `Spend` and the `PlatformOp`
+  of `grantRequest(.acceptRequest)`; `beginFlow(.acceptAndPay)` makes one lease, `acceptRequest(lease)` runs first,
+  and only once it succeeded does `prepare(lease)`: the engine refuses the payment before it
+  (`contact.ineligible{pendingIncoming}`). An accept that succeeded with a payment that did not is E0-04's C8:
+  "Accepted — payment cancelled. Pay now?", a new Review with a new `Spend` grant.
+- `send.no_peers` and `send.cancelled` are definite: `dismiss()` keeps the form, and the next Review prepares again
+  with a new grant; the engine pays the same address. `send.cancelled` (a lock before the hand-off) says nothing
+  was sent.
+- `send.broadcast_unknown` is `.broadcastUnknown` as for an address, and it locks the contact: until it resolves,
+  every new payment to the contact fails with `contact.payment_locked{txid}`, which routes to that transaction
+  ("A payment to this contact may have been sent"), and the contact screen shows the lock (`ContactDetail
+  .payment_lock`; `resolvePaymentLock` re-checks).
+- `contact.channel_broken` and `contact.payment_locked` disable Send on the contact screen before the form opens.
+
 ### ReceiveViewModel (QT-081…085, IOS-053…055)
 
 ```swift

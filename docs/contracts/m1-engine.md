@@ -345,6 +345,7 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
 | `NetworkSession.new_tx_draft(id)` | sync | Empty draft: source `Any`, fee `Recommended{6}`, change `Auto`. Checks the wallet is registered (in-memory). | `wallet_not_found` | QT-052 | **works** |
 | `NetworkSession.max_spendable(id, source, fee)` | async | The spendable sum of `source` for dash-qt "Use available balance" (review M-4): the host puts `max_spendable − other recipients' amounts` into the entry **and sets `subtract_fee_from_amount`**, so the fee comes out of it at any rate and with any number of recipients. Excludes user-locked, reserved, immature and untrusted unconfirmed coins. `fee` is validated only. | `invalid_argument`, `send.outpoint_unavailable` | QT-053, IOS-044 | **works** |
 | `TxDraft.set_recipients([Recipient{address, amount, subtract_fee_from_amount, label, message}])` | sync | Offline validation; errors carry the recipient `index`. Address on the session network; Platform (DIP-18) addresses rejected; amount 1..=21M DASH and at least the output's dust threshold (546 duffs P2PKH, 540 P2SH); no address twice. | `send.no_recipients`, `send.invalid_address`, `send.platform_address`, `send.invalid_amount`, `send.dust_amount`, `send.duplicate_address` | QT-052…056, QT-060, QT-067 | **works** |
+| `TxDraft.set_contact_recipient(ContactRecipient{identity, contact, amount, subtract_fee, note})` | sync | DP3-01 (m4 §6, item 48): the DashPay `contact` of our `identity` (both Base58) becomes the draft's only recipient; `set_recipients` replaces it. Offline from the in-memory read models: an established contact, or a pending incoming request for "Accept and pay"; its channel not broken; no payment lock; the amount as `set_recipients` (index 0). `note` is the transaction's message. Its address is reserved at `prepare` (§2.7.1 "Contact payments"). | `contact.self`, `contact.channel_broken`, `contact.payment_locked{txid}`, `identity.not_found`, `platform.unavailable` (a writer holds the contacts with no snapshot), `invalid_argument` (an id, or not a contact), `send.invalid_amount`, `send.dust_amount` | DASHPAY §2.3 | **works** |
 | `TxDraft.set_source(Any\|FullyMixedOnly\|Outpoints)` | sync | `Any`: every coin of the BIP44, BIP32 and DashPay-receiving accounts that is mature, trusted (confirmed, InstantSend-locked or own change), not user-locked and not reserved; CoinJoin coins are never pooled with them. `Outpoints`: exactly these coins, **all of them** (Dash Core coin control); they may be unconfirmed but not locked, reserved, immature or CoinJoin-account coins (checked by `estimate`/`prepare`). `FullyMixedOnly`: `not_implemented` until CoinJoin rounds are tracked (WS-06). | `invalid_argument` (empty or repeated outpoints), `not_implemented` | QT-051, QT-068…071 | **works** (`FullyMixedOnly`: stub) |
 | `TxDraft.set_fee(Recommended{target_blocks}\|PerKb{duffs_per_kb})` | sync | `Recommended`: target 1..=1008; on SPV every target pays the minimum relay fee, 1000 duff/kB (DESIGN-opus §1.14). `PerKb`: 1000..=10,000,000 duff/kB. | `invalid_argument` | QT-057 | **works** |
 | `TxDraft.set_change(Auto\|Address{address})` | sync | `Auto`: a fresh BIP44 internal address, derived only when the payment has change. `Address`: any L1 address of the network; a foreign one counts against the spend cap. | `send.invalid_change_address` | QT-073 | **works** |
@@ -410,6 +411,26 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
   unlike dash-qt a label is never replaced: a listed entry without a label gets the recipient's label, a listed
   entry with a label (either purpose) is left as it is. The engine is the only writer of these entries; hosts do
   not add recipients themselves. The payment's `message`s are stored with the transaction at the same time.
+- **Contact payments (DP3-01; DASHPAY §2.3, m4 item 48).** A draft made by `set_contact_recipient` keeps these
+  rules, with these differences. `estimate` plans a P2PKH placeholder (the length of every DIP-15 address), so its
+  fee is the payment's, and the payment always counts as leaving the wallet: the host authorizes `amount +
+  estimate.fee` after Confirm (`amount` with subtract-fee). `prepare` checks the contact again (now established:
+  a pending request is `contact.ineligible{PendingIncoming}`), then the grant, plans, redeems the grant into a
+  lease and charges it (`send.grant_exceeded` for a fee grown since), and **only then** reserves the contact's
+  next address, swaps it into the planned output and signs: a refusal before the reservation takes no address.
+  The session keeps that address for the contact's later `prepare`s, of any draft (after `send.no_peers`,
+  `send.broadcast_rejected`, `send.cancelled`, `abandon`, a failure after the reservation) until a broadcast may
+  have handed it out; a second prepared payment whose address went out is `send.prepared_tx_spent`. One first
+  broadcast to a contact runs at a time: while one is under way, every other payment to the contact is
+  `contact.payment_locked{txid}`. The grant may be a plain
+  `Spend` grant (it becomes a one-payment lease) or an `AcceptAndPay` lease with a `Spend` grant; another lease is
+  `send.grant_invalid`. The hand-off goes through the dispatch fence: a vault lock before it is `send.cancelled`
+  (nothing sent; prepare again with a new grant). With contact crypto queued and the vault locked, `prepare` is
+  `send.vault_locked` before the grant is redeemed. `send.broadcast_unknown` locks the contact
+  (`contact.payment_locked{txid}` for `set_contact_recipient`, `estimate`, `prepare` and the first broadcast of any
+  other payment to it) until a repeat broadcast of the same transaction is accepted or m4's
+  `resolve_payment_lock` finds evidence. A contact payment adds no address-book entry. CoinJoin and coin control
+  apply as to any draft.
 - **Draft binding (Low).** A `TxDraft` keeps its session alive but works only while it is open
   (`network_not_open` after close) and while the wallet is registered (`wallet_not_found` after removal). A
   `PreparedTx` belongs to the draft that made it. `estimate` has no revision token: the host discards an estimate
@@ -498,7 +519,7 @@ and `not_implemented` of these. Domain codes:
 | `SyncError` | `sync.spv_not_running`, `sync.height_out_of_range`, `sync.spv` |
 | `HistoryError` | `history.invalid_query`, `history.stale_cursor`, `history.tx_not_found` |
 | `ReceiveError` | `receive.request_not_found`, `receive.gap_limit` |
-| `SendError` | `send.no_recipients`, `send.invalid_address`, `send.platform_address`, `send.invalid_amount`, `send.dust_amount`, `send.duplicate_address`, `send.amount_exceeds_balance`, `send.amount_with_fee_exceeds_balance`, `send.amount_too_small_after_fee`, `send.insufficient_mixed_funds`, `send.outpoint_unavailable`, `send.absurd_fee`, `send.tx_too_large`, `send.invalid_change_address`, `send.watch_only`, `send.vault_locked`, `send.grant_invalid`, `send.grant_exceeded`, `send.prepared_tx_spent`, `send.no_peers`, `send.broadcast_rejected`, `send.broadcast_unknown` |
+| `SendError` | `send.no_recipients`, `send.invalid_address`, `send.platform_address`, `send.invalid_amount`, `send.dust_amount`, `send.duplicate_address`, `send.amount_exceeds_balance`, `send.amount_with_fee_exceeds_balance`, `send.amount_too_small_after_fee`, `send.insufficient_mixed_funds`, `send.outpoint_unavailable`, `send.absurd_fee`, `send.tx_too_large`, `send.invalid_change_address`, `send.watch_only`, `send.vault_locked`, `send.grant_invalid`, `send.grant_exceeded`, `send.prepared_tx_spent`, `send.no_peers`, `send.broadcast_rejected`, `send.broadcast_unknown`, `send.cancelled` |
 | `CoinsError` | `coins.outpoint_not_found` |
 | `LabelsError` | `labels.invalid_address`, `labels.duplicate_address`, `labels.own_address`, `labels.entry_not_found`, `labels.receive_entry_not_deletable` |
 | `MessageError` | `message.invalid_address`, `message.address_no_key`, `message.malformed_signature`, `message.pubkey_not_recovered`, `message.not_signed`, `message.address_not_mine`, `message.watch_only`, `message.vault_locked`, `message.grant_invalid` |
@@ -512,9 +533,10 @@ Each FFI error enum exports `code()` returning these strings (a method on the ge
 variants. Swift chooses dash-qt / iOS copy by code (QT-062,
 IOS-051). The send codes cover dash-qt's `SendCoinsReturn` statuses.
 
-`send.cancelled` joins `SendError` with DP3-01, for a contact payment that Lock refused before its hand-off (E0-04
-design §4.6), and with E0-04 P5 for M1 sends. It is bound in the chosen stack in E0-13; the frozen Swift shells see
-it mapped onto an existing send code.
+`send.cancelled` joined `SendError` with DP3-01, for a contact payment that Lock refused before its hand-off (E0-04
+design §4.6), and joins with E0-04 P5 for M1 sends. dw-app binds it; the frozen Swift shells see it as
+`send.prepared_tx_spent`. A contact draft's other refusals keep their m4 codes (`contact.*`, `identity.*`,
+`platform.*`; `EngineError::Contact`).
 
 ## 5. Work routed to owners (M0 review findings)
 
