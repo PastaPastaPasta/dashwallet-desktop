@@ -29,7 +29,9 @@ import { isCheckable } from "../api/lockReport";
 import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
 import { eventOf, sectionOf, type DashPayWorld } from "./dashpay";
 import { routeLink } from "./links";
-import { MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
+import { normalizePhrase } from "../onboarding/words";
+import { emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
+import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
 import { BASE58, FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
 
 export interface Ctx {
@@ -310,6 +312,56 @@ function markRead(ctx: Ctx, walletId: string, dp: DashPayWorld, identity: string
     ctx.emit({ kind: "platform", network: ctx.world.launch.network.dirName, walletId, change: { domain: "events", identity } });
 }
 
+/** `Vault::unlock`: a wrong passphrase counts and reports dw-vault's wait (`retryAfterSecs`, also
+ * in `lock_status`). The fixture's clock stands still, so the wait is reported but never
+ * enforced: the screens enforce their own (U-02 D8). Installing the data key ends the epoch
+ * (dw-vault `install_key`): every grant goes, and every live lease needs a grant again, its key
+ * dropped (the lease table's `epoch_changed`). */
+function unlock(ctx: Ctx, passphrase: string, state: "unlocked" | "unlockedMixingOnly") {
+  const { world } = ctx;
+  if (world.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
+  if (!world.lock.encrypted) throw fail("vault.not_encrypted", "vault not encrypted");
+  if (passphrase !== world.passphrase) {
+    const failedAttempts = world.lock.failedAttempts + 1;
+    const retryAfterSecs = throttleWaitSecs(failedAttempts) || null;
+    world.lock = { ...world.lock, failedAttempts, retryAfterSecs };
+    throw fail("vault.wrong_passphrase", `wrong passphrase (${failedAttempts} failed)`, { kind: "wrongPassphrase", failedAttempts, retryAfterSecs });
+  }
+  if (world.lock.state !== "unlocked") {
+    revokeGrants(world);
+    for (const lease of world.leases.filter((l) => live(l) && l.state.kind !== "needsGrant"))
+      setLease(ctx, { ...lease, state: { kind: "needsGrant" }, keyExpiresInSecs: null });
+  }
+  world.lock = { ...world.lock, failedAttempts: 0, retryAfterSecs: null };
+  setLock(ctx, state);
+  return world.lock;
+}
+
+/** Adds the wallet of `phrase` (`NetworkSession::import_wallet`): a phrase of a watch-only wallet
+ * gives it its keys back; one of a wallet with keys is `wallet_already_exists`. */
+function importWallet(ctx: Ctx, phrase: string, name: string | null): string {
+  const { world } = ctx;
+  if (world.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
+  if (world.lock.state === "locked") throw fail("vault.locked", "vault locked");
+  if (world.lock.state === "unlockedMixingOnly") throw fail("vault.mixing_only", "vault unlocked for mixing only");
+  if (checkPhrase(phrase).checksum === "invalid") throw fail("invalid_mnemonic", "invalid mnemonic");
+  const normalized = normalizePhrase(phrase);
+  const known = Object.entries(world.phrases).find(([, p]) => p === normalized)?.[0];
+  const walletId = known ?? walletIdOf(normalized);
+  const existing = world.wallets.find((x) => x.summary.walletId === walletId);
+  if (existing && !existing.summary.watchOnly) throw fail("wallet_already_exists", "wallet already exists");
+  const network = world.launch.network.dirName;
+  if (existing) existing.summary = { ...existing.summary, watchOnly: false, hasMnemonic: true };
+  else {
+    const wallet = emptyWallet(walletId, name ?? `Wallet ${world.wallets.length + 1}`);
+    world.wallets.push(wallet);
+  }
+  world.phrases[walletId] = normalized;
+  world.lock = { ...world.lock, walletsWithSecrets: [...new Set([...world.lock.walletsWithSecrets, walletId])].sort() };
+  ctx.emit(existing ? { kind: "walletLoadChanged", network, walletId, loaded: true } : { kind: "walletCreated", network, walletId });
+  return walletId;
+}
+
 export const HANDLERS: Handlers = {
   // App and network
   launch_info: (_, { world }) => world.launch,
@@ -319,28 +371,8 @@ export const HANDLERS: Handlers = {
 
   // Vault, leases and the lock report (E0-04, E0-13 D3)
   lock_status: (_, { world }) => world.lock,
-  unlock: ({ passphrase }, ctx) => {
-    const { world } = ctx;
-    if (passphrase !== world.passphrase) {
-      const failedAttempts = world.lock.failedAttempts + 1;
-      world.lock = { ...world.lock, failedAttempts };
-      throw fail("vault.wrong_passphrase", `wrong passphrase (${failedAttempts} failed)`, {
-        kind: "wrongPassphrase",
-        failedAttempts,
-        retryAfterSecs: null,
-      });
-    }
-    // Installing the data key ends the epoch (dw-vault `install_key`): every grant goes, and
-    // every live lease needs a grant again, its key dropped (the lease table's `epoch_changed`).
-    if (world.lock.state !== "unlocked") {
-      revokeGrants(world);
-      for (const lease of world.leases.filter((l) => live(l) && l.state.kind !== "needsGrant"))
-        setLease(ctx, { ...lease, state: { kind: "needsGrant" }, keyExpiresInSecs: null });
-    }
-    world.lock = { ...world.lock, failedAttempts: 0 };
-    setLock(ctx, "unlocked");
-    return world.lock;
-  },
+  unlock: ({ passphrase }, ctx) => unlock(ctx, passphrase, "unlocked"),
+  unlock_mixing_only: ({ passphrase }, ctx) => unlock(ctx, passphrase, "unlockedMixingOnly"),
   lock: (_, ctx) => {
     const { world, emit } = ctx;
     const network = world.launch.network.dirName;
@@ -363,6 +395,43 @@ export const HANDLERS: Handlers = {
     return report;
   },
   last_lock_report: (_, { world }) => world.lastLockReport,
+  create_vault: ({ passphrase }, ctx) => {
+    const { world } = ctx;
+    if (world.lock.state !== "noVault") throw fail("vault.already_exists", "vault already exists");
+    if (passphrase !== null) world.passphrase = passphrase;
+    world.lock = { ...world.lock, encrypted: passphrase !== null, failedAttempts: 0, retryAfterSecs: null, walletsWithSecrets: [] };
+    setLock(ctx, passphrase === null ? "noKeys" : "unlocked");
+    return world.lock;
+  },
+  generate_mnemonic: ({ wordCount, language }) => {
+    if (language !== "english" || (wordCount !== 12 && wordCount !== 24)) throw fail("invalid_argument", "the fixture makes English phrases of 12 or 24 words");
+    return wordCount === 12 ? CREATED_12 : CREATED_24;
+  },
+  check_mnemonic: ({ phrase }) => checkPhrase(phrase),
+  reveal_mnemonic: ({ walletId, grantId }, { world }) => {
+    if (!checkGrant(world, grantId, walletId, ["revealSecret"])) throw fail("vault.grant_invalid", "grant invalid");
+    useGrant(world, grantId);
+    const phrase = world.phrases[walletId];
+    if (!phrase) throw fail("vault.no_secret", "no secret for this wallet");
+    return { phrase, bip39Passphrase: "" };
+  },
+  recover_with_mnemonic: ({ walletId, mnemonic, newPassphrase }, ctx) => {
+    const { world } = ctx;
+    if (world.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
+    if (world.phrases[walletId] !== normalizePhrase(mnemonic)) throw fail("vault.recovery_mismatch", "the phrase does not derive this wallet");
+    const walletsWithoutSecrets = world.lock.walletsWithSecrets.filter((w) => w !== walletId);
+    for (const w of world.wallets)
+      if (walletsWithoutSecrets.includes(w.summary.walletId)) w.summary = { ...w.summary, watchOnly: true, hasMnemonic: false };
+    world.phrases = { [walletId]: world.phrases[walletId] };
+    world.passphrase = newPassphrase;
+    // A new vault: no grant or lease of the old one survives (E0-13 D3: `recoverWithMnemonic` revokes every lease).
+    revokeGrants(world);
+    for (const lease of world.leases.filter(live)) setLease(ctx, { ...lease, state: { kind: "revoked", cause: "passphraseChange" }, keyExpiresInSecs: null });
+    world.lock = { ...world.lock, encrypted: true, failedAttempts: 0, retryAfterSecs: null, walletsWithSecrets: [walletId] };
+    setLock(ctx, "unlocked");
+    for (const id of walletsWithoutSecrets) ctx.emit({ kind: "walletLoadChanged", network: world.launch.network.dirName, walletId: id, loaded: true });
+    return { status: world.lock, walletsWithoutSecrets };
+  },
   leases: (_, { world }) => world.leases,
   authorize: ({ purpose, walletId, credential }, { world }) => authorizeSet(world, [purpose], walletId, credential)[0],
   authorize_set: ({ purposes, walletId, credential }, { world }) => authorizeSet(world, purposes, walletId, credential),
@@ -418,6 +487,7 @@ export const HANDLERS: Handlers = {
   list_wallets: (_, { world }) => world.wallets.map((x) => x.summary),
   wallet_info: ({ walletId }, { world }) => wallet(world, walletId).summary,
   balance: ({ walletId }, { world }) => wallet(world, walletId).summary.balances,
+  import_wallet: ({ mnemonic, options }, ctx) => importWallet(ctx, mnemonic, options.name),
   sync_status: (_, { world }) => world.sync,
   history_page: ({ walletId, request }, { world }) => historyPage(wallet(world, walletId).rows, request),
   tx_detail: ({ walletId, txid }, { world }) => {

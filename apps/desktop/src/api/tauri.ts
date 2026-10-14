@@ -27,9 +27,18 @@ export class IpcBackend implements Backend {
   listWallets = () => cmd.listWallets();
   lockStatus = () => cmd.lockStatus();
   unlock = (passphrase: string) => cmd.unlock(passphrase);
+  unlockMixingOnly = (passphrase: string) => cmd.unlockMixingOnly(passphrase);
   lock = () => cmd.lock();
   lastLockReport = () => cmd.lastLockReport();
   leases = () => cmd.leases();
+  createVault = cmd.createVault;
+  generateMnemonic = (wordCount: number) => cmd.generateMnemonic(wordCount, "english");
+  checkMnemonic = cmd.checkMnemonic;
+  importWallet = cmd.importWallet;
+  authorize = cmd.authorize;
+  revokeGrant = cmd.revokeGrant;
+  revealMnemonic = cmd.revealMnemonic;
+  recoverWithMnemonic = cmd.recoverWithMnemonic;
   dispatchStatus = cmd.dispatchStatus;
   balance = (walletId: string) => cmd.balance(walletId);
   syncStatus = () => cmd.syncStatus();
