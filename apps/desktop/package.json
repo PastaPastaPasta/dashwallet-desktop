@@ -16,6 +16,7 @@
     "test": "vitest run",
     "e2e": "pnpm build:fixture && playwright test",
     "e2e:tauri": "bash scripts/e2e-tauri.sh",
+    "e2e:tauri:onboarding": "bash scripts/e2e-tauri-onboarding.sh",
     "tauri": "node scripts/tauri.mjs"
   },
   "dependencies": {

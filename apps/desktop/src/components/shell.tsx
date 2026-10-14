@@ -262,11 +262,14 @@ export function StatusBar({
   lock,
   unitName,
   hd,
+  onUnlock,
 }: {
   sync: SyncStatus | undefined;
   lock: LockStatus | undefined;
   unitName: string;
   hd: boolean;
+  /** Opens the unlock sheet: the lock state is a button while unlocked for mixing only (U-02 D12). */
+  onUnlock: () => void;
 }) {
   const percent = sync && isSyncing(sync) ? syncPercent(sync) : null;
   return (
@@ -283,7 +286,13 @@ export function StatusBar({
       <span className="status-right">
         <span>{unitName}</span>
         {hd && <span>HD</span>}
-        {lock && <span>{LOCK_TEXT[lock.state]}</span>}
+        {lock?.state === "unlockedMixingOnly" ? (
+          <button type="button" className="status-button" data-testid="status-unlock" title="Unlock fully" onClick={onUnlock}>
+            {LOCK_TEXT[lock.state]}
+          </button>
+        ) : (
+          lock && <span>{LOCK_TEXT[lock.state]}</span>
+        )}
         {sync && <span>{sync.connectedPeers === 1 ? "1 peer" : `${sync.connectedPeers} peers`}</span>}
         {sync && <span>{!sync.running ? "Offline" : sync.caughtUp ? "Synced" : "Syncing"}</span>}
       </span>

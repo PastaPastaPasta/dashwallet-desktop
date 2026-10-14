@@ -21,6 +21,7 @@ import type { WalletSummary } from "../api/generated/WalletSummary";
 import { noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
 import type { Utxo } from "../api/generated/Utxo";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
+import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FUNDED_BALANCES, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
 export const FIXTURE_PASSPHRASE = "demo";
@@ -40,6 +41,8 @@ export interface World {
   launch: LaunchInfo;
   passphrase: string;
   lock: LockStatus;
+  /** The recovery phrase of each wallet whose secrets the vault holds (U-02). */
+  phrases: Record<string, string>;
   wallets: FixtureWallet[];
   sync: SyncStatus;
   /** The first wallet's DashPay state. */
@@ -109,6 +112,20 @@ function wallet(variant: HistoryVariant): FixtureWallet {
   };
 }
 
+/** A wallet `import_wallet` adds: no history yet, and its birth height the tip's. */
+export function emptyWallet(walletId: string, name: string): FixtureWallet {
+  const w = wallet("empty");
+  w.summary = { ...w.summary, walletId, name };
+  return w;
+}
+
+/** The funded wallet behind the lock screen after `failedAttempts` wrong passphrases, with the
+ * wait dw-vault reports for them (the fixture's clock stands still, so it never runs out). */
+function lockedAfter(w: World, failedAttempts: number): World {
+  w.lock = { ...w.lock, state: "locked", failedAttempts, retryAfterSecs: throttleWaitSecs(failedAttempts) || null };
+  return w;
+}
+
 function base(theme: ThemeName | null, variant: HistoryVariant = "default"): World {
   return {
     launch: {
@@ -124,6 +141,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     },
     passphrase: FIXTURE_PASSPHRASE,
     lock: unlocked([FIXTURE_WALLET_ID]),
+    phrases: { [FIXTURE_WALLET_ID]: MAIN_PHRASE },
     wallets: [wallet(variant)],
     sync: caughtUp(),
     dashpay: noIdentity(),
@@ -257,6 +275,13 @@ function resolvedFlows(w: World): World {
   return cutting(w, [flow("c0ffee01", "acceptAndPay", [[artifactId("c0ffee01"), "sent"]]), request(0, "cancelled")]);
 }
 
+function twoWallets(w: World): World {
+  w.wallets.push(emptyWallet(SECOND_WALLET_ID, "Savings"));
+  w.lock = unlocked([FIXTURE_WALLET_ID, SECOND_WALLET_ID]);
+  w.phrases[SECOND_WALLET_ID] = SECOND_PHRASE;
+  return w;
+}
+
 const SCENARIOS = {
   /** The reference wallet: balance, a month of history, caught up, unlocked. */
   funded: (t) => base(t),
@@ -266,7 +291,16 @@ const SCENARIOS = {
   "no-wallet": (t) => {
     const w = base(t);
     w.wallets = [];
+    w.phrases = {};
     w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+    return w;
+  },
+  /** A vault (passphrase `demo`) that holds no wallet yet: onboarding without a passphrase step. */
+  "no-wallet-vault": (t) => {
+    const w = base(t);
+    w.wallets = [];
+    w.phrases = {};
+    w.lock = unlocked([]);
     return w;
   },
   /** The funded wallet behind the lock screen (passphrase `demo`). */
@@ -275,15 +309,14 @@ const SCENARIOS = {
     w.lock = { ...w.lock, state: "locked" };
     return w;
   },
+  /** Three wrong passphrases: the lock screen waits a minute (IOS-012). */
+  "locked-throttled": (t) => lockedAfter(base(t), 3),
+  /** Eight wrong passphrases: only Forgot passphrase is left (IOS-012). */
+  "locked-disabled": (t) => lockedAfter(base(t), 8),
   /** Two wallets: the toolbar's wallet picker. */
-  "two-wallets": (t) => {
-    const w = base(t);
-    const savings = wallet("empty");
-    savings.summary = { ...savings.summary, walletId: SECOND_WALLET_ID, name: "Savings" };
-    w.wallets.push(savings);
-    w.lock = unlocked([FIXTURE_WALLET_ID, SECOND_WALLET_ID]);
-    return w;
-  },
+  "two-wallets": (t) => twoWallets(base(t)),
+  /** Two wallets behind the lock screen: Forgot passphrase asks which one (IOS-014). */
+  "locked-two-wallets": (t) => lockedAfter(twoWallets(base(t)), 0),
   /** 10,003 transactions: paging and render cost. */
   large: (t) => base(t, "large"),
   /** Hostile labels and names (U6): they must render as text. */

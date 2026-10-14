@@ -64,6 +64,10 @@ pub enum ShellCommand {
     Lock,
     ToggleDiscreet,
     About,
+    /// Wallet ▸ Add Wallet… (create or restore another wallet, U-02 D14).
+    AddWallet,
+    /// Wallet ▸ Show Recovery Phrase… (IOS-003, U-02 D13).
+    RecoveryPhrase,
 }
 
 /// A top-level page of the window (DASHPAY §4 information architecture).
@@ -106,9 +110,18 @@ pub struct ShellSync {
     pub discreet: bool,
     /// An unlocked vault exists (Wallet ▸ Lock is enabled).
     pub can_lock: bool,
+    /// A recovery phrase or passphrase field is on screen: the main window's
+    /// contents are kept out of screenshots and screen sharing where the OS
+    /// allows (macOS, Windows; U-02 D15).
+    pub secret_shown: bool,
 }
 
 type SyncFn = Box<dyn Fn(ShellSync) + Send + Sync>;
+
+/// Applies `secret_shown` to the main window's content protection and
+/// answers once the platform has it, or with why it could not (U-02 D27).
+type ProtectFn =
+    Box<dyn Fn(bool) -> tokio::sync::oneshot::Receiver<Result<(), String>> + Send + Sync>;
 
 /// The shell's state, shared by the commands (through `AppState`) and the
 /// native callbacks (through Tauri's managed state), which may run before
@@ -117,6 +130,9 @@ pub struct Shell {
     pub inbox: Inbox,
     /// Apply a [`ShellSync`] to the native menus and the tray, once they exist.
     sync: Mutex<Vec<SyncFn>>,
+    /// Applies the content protection ([`protect_secrets`]); none without a
+    /// window (the IPC tests).
+    protect: Mutex<Option<ProtectFn>>,
     /// The self-test's link trace (`--selftest-link-trace`).
     trace: Option<PathBuf>,
 }
@@ -126,6 +142,7 @@ impl Shell {
         Shell {
             inbox: Inbox::default(),
             sync: Mutex::default(),
+            protect: Mutex::default(),
             trace,
         }
     }
@@ -137,6 +154,31 @@ impl Shell {
     pub fn sync(&self, state: ShellSync) {
         for f in &*self.sync.lock().unwrap_or_else(|e| e.into_inner()) {
             f(state);
+        }
+    }
+
+    pub fn on_protect(&self, f: ProtectFn) {
+        *self.protect.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+    }
+
+    /// Turns the main window's content protection on or off and returns
+    /// once the platform applied it (U-02 D27): the renderer shows a secret
+    /// only after this answered `Ok` for `true`.
+    pub async fn protect(&self, on: bool) -> Result<(), String> {
+        let applied = self
+            .protect
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|f| f(on));
+        match applied {
+            // Only the IPC tests run without `protect_secrets`; anywhere else
+            // a missing hook must not read as protected.
+            None if cfg!(test) => Ok(()),
+            None => Err("no content protection is set up".to_owned()),
+            Some(reply) => reply
+                .await
+                .unwrap_or_else(|_| Err("the main thread did not run the change".to_owned())),
         }
     }
 
@@ -200,6 +242,36 @@ pub fn emit<R: Runtime>(app: &AppHandle<R>, event: ShellEvent) {
     if let Err(e) = app.emit(EVENT, event) {
         eprintln!("dw-app: shell event: {e}");
     }
+}
+
+/// Keeps the main window's contents out of screen captures while the
+/// renderer shows a secret (`ShellSync::secret_shown`, U-02 D15, D27).
+///
+/// From any other thread Tauri only queues the change; on the main thread
+/// it applies it at once and returns its result, so the change runs there
+/// and the answer comes back once it is in effect. Linux has no content
+/// protection (D15): nothing to apply, the answer is immediate.
+pub fn protect_secrets<R: Runtime>(app: &AppHandle<R>) {
+    let Some(shell) = shell(app) else { return };
+    let app = app.clone();
+    shell.on_protect(Box::new(move |on| {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if cfg!(target_os = "linux") {
+            let _ = tx.send(Ok(()));
+            return rx;
+        }
+        let handle = app.clone();
+        // Not run (the event loop is gone): `tx` is dropped with the closure
+        // and `Shell::protect` answers with an error.
+        let _ = app.run_on_main_thread(move || {
+            let applied = match handle.get_webview_window("main") {
+                Some(window) => window.set_content_protected(on).map_err(|e| e.to_string()),
+                None => Err("no main window".to_owned()),
+            };
+            let _ = tx.send(applied);
+        });
+        rx
+    }));
 }
 
 /// Shows, restores and focuses the main window.

@@ -57,6 +57,7 @@ describe("fixture backend", () => {
       "send.test.ts",
       "send.ts",
       "sentinels.test.ts",
+      "vault.ts",
       "vectors/accept.json",
       "vectors/history.json",
       "vectors/notifications.json",
@@ -64,7 +65,7 @@ describe("fixture backend", () => {
     ]);
     // Only `*.test.ts` is a test (vite.config.ts `test.include`): a `*.test.mts` is a module.
     const modules = files.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && !f.endsWith(".test.ts"));
-    expect(modules).toEqual(["dashpay.ts", "errors.ts", "handlers.ts", "index.ts", "links.ts", "scenarios.ts", "send.ts", "wallet.ts"]);
+    expect(modules).toEqual(["dashpay.ts", "errors.ts", "handlers.ts", "index.ts", "links.ts", "scenarios.ts", "send.ts", "vault.ts", "wallet.ts"]);
     const { bySource } = await fixtureSentinels(fileURLToPath(new URL("../..", import.meta.url)));
     for (const f of modules) {
       expect(readFileSync(join(dir, f), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);
@@ -110,7 +111,8 @@ describe("fixture backend", () => {
       expect(launch.engineVersion, scenario).toBe("fixture");
       expect((await b.openNetwork()).network.dirName, scenario).toBe("testnet");
       const wallets = await b.listWallets();
-      expect(wallets.length, scenario).toBe(scenario === "no-wallet" ? 0 : scenario === "two-wallets" ? 2 : 1);
+      const count = scenario.startsWith("no-wallet") ? 0 : scenario.endsWith("two-wallets") ? 2 : 1;
+      expect(wallets.length, scenario).toBe(count);
       await b.syncStatus();
       clearMocks();
     }
