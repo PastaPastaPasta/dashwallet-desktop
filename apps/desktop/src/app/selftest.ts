@@ -182,12 +182,12 @@ export async function collectReport(backend: Backend, client: QueryClient, unloc
     await onScreen?.(`${theme}/${screen}`);
   };
   for (const theme of ["light", "dark"] as const) {
-    ui.set({ theme, page: "overview", detail: null, discreet: false });
+    ui.set({ theme, route: "home", detail: null, dialog: null, discreet: false });
     await settle(client);
     await record(theme, "overview");
     const heroAmount = document.querySelector('[data-testid="hero-amount"] .amount-number')?.textContent ?? null;
     const heroFull = document.querySelector<HTMLElement>('[data-testid="hero-amount"] .amount')?.title || null;
-    ui.set({ page: "transactions" });
+    ui.set({ route: "activity" });
     await settle(client);
     shown ??= {
       heroAmount,

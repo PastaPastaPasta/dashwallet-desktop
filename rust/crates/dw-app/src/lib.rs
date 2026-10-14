@@ -13,12 +13,16 @@ pub mod dto;
 pub mod error;
 #[cfg(test)]
 mod history_vectors_tests;
+pub mod instance;
 mod ipc;
 #[cfg(test)]
 mod ipc_tests;
 pub mod launch;
+pub mod shell;
 pub mod state;
 
+use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 use tauri::plugin::TauriPlugin;
@@ -26,6 +30,8 @@ use tauri::{Manager, RunEvent, Runtime, Url};
 
 use crate::error::{AppCode, AppError};
 use crate::launch::{LaunchOptions, ParseOutcome};
+use crate::shell::Shell;
+use crate::shell::links::LinkSource;
 use crate::state::AppState;
 
 /// Origins the main webview may show: the bundled assets (`tauri://localhost`
@@ -144,7 +150,7 @@ pub fn run() {
     {
         eprintln!("dw-app: startup before-run {ms}");
     }
-    let launch = match launch::parse(std::env::args().skip(1)) {
+    let mut launch = match launch::parse(std::env::args().skip(1)) {
         Ok(ParseOutcome::Run(o)) => *o,
         Ok(ParseOutcome::Help) => {
             println!("{}", launch::usage());
@@ -155,19 +161,75 @@ pub fn run() {
             std::process::exit(2);
         }
     };
-    let app = builder::<tauri::Wry>(launch, started)
-        .build(tauri::generate_context!())
+    let context = tauri::generate_context!();
+    // The data root first, created and canonical: the instance name, its
+    // lock, the window-state file and the engine all take this one path.
+    let identifier = context.config().identifier.clone();
+    let root = instance::data_root(launch.data_dir.as_deref(), || {
+        dirs::data_dir().map(|dir| dir.join(identifier))
+    })
+    .unwrap_or_else(|e| {
+        let dir = launch
+            .data_dir
+            .as_deref()
+            .unwrap_or(Path::new("the app-data directory"));
+        eprintln!("dash-wallet: data directory {}: {e}", dir.display());
+        std::process::exit(1);
+    });
+    launch.data_dir = Some(root.clone());
+    // The instance lock ends a second launch on this root that cannot hand
+    // its links over; it is taken before the main window, webview or tray
+    // icon exists (those, and the setup hook that opens the engine, come with
+    // `run`, where a setup error would panic). With the single-instance
+    // plugin it waits for the build, during which the plugin forwards and
+    // exits where it can. Without it (macOS, or Linux without a session
+    // bus) it comes first, so a refused launch ends before GTK starts and
+    // GLib autolaunches a session bus of its own.
+    let take_lock = || {
+        instance::InstanceLock::acquire(&root, instance::InstanceLock::LAUNCH_WAIT).unwrap_or_else(
+            |e| {
+                eprintln!("dash-wallet: {e}");
+                std::process::exit(1);
+            },
+        )
+    };
+    let mut base = tauri::Builder::<tauri::Wry>::new();
+    let single_instance = shell::native::single_instance(&root);
+    let early_lock = single_instance.is_none().then(take_lock);
+    if let Some(single_instance) = single_instance {
+        base = base.plugin(single_instance);
+    }
+    if let Some(window_state) = shell::native::window_state(&launch) {
+        base = base.plugin(window_state);
+    }
+    let app = app_builder(base, launch, started, dw_vault::VaultConfig::default())
+        .menu(shell::menu::build)
+        .on_menu_event(shell::menu::handle)
+        .build(context)
         .unwrap_or_else(|e| {
             eprintln!("dash-wallet: could not start: {e}");
             std::process::exit(1);
         });
+    app.manage(early_lock.unwrap_or_else(take_lock));
     // The self-test's grant, outside `capabilities/` so that no other build
     // embeds it (build.rs, E0-13 D17). Tauri panics on one it cannot parse
     // or resolve (`api::selftest` tests it parses; every permission exists).
     #[cfg(feature = "selftest")]
     app.add_capability(api::selftest::CAPABILITY)
         .expect("the self-test capability");
+    if let Err(e) = shell::tray::install(app.handle()) {
+        eprintln!("dw-app: tray icon: {e}");
+    }
     app.run(|handle, event| {
+        // macOS hands a clicked link to the running app as an event.
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Opened { urls } = &event {
+            shell::deliver_links(
+                handle,
+                urls.iter().map(|u| u.to_string()),
+                LinkSource::Opened,
+            );
+        }
         if let RunEvent::Exit = event
             && let Some(state) = handle.try_state::<AppState>()
         {
@@ -190,7 +252,21 @@ pub fn builder_with_vault<R: Runtime>(
     started: Instant,
     vault: dw_vault::VaultConfig,
 ) -> tauri::Builder<R> {
-    tauri::Builder::<R>::new()
+    app_builder(tauri::Builder::<R>::new(), launch, started, vault)
+}
+
+/// The app on `base` (which `run` gives the native plugins).
+fn app_builder<R: Runtime>(
+    base: tauri::Builder<R>,
+    mut launch: LaunchOptions,
+    started: Instant,
+    vault: dw_vault::VaultConfig,
+) -> tauri::Builder<R> {
+    // Managed before any plugin runs, so a link forwarded during start-up
+    // waits in the queue. The launch's own links move into it.
+    let shell = Arc::new(Shell::new(launch.selftest_link_trace.clone()));
+    shell.queue(std::mem::take(&mut launch.links), LinkSource::Launch);
+    base.manage(shell)
         .plugin(navigation_guard())
         // Start-up breakdown for U5, next to the renderer's own marks (`startup_mark`).
         .on_page_load(move |_, payload| {
@@ -281,6 +357,68 @@ mod tests {
         .unwrap();
         assert_eq!(state.engine.config().data_root, root);
         assert!(root.is_dir());
+    }
+
+    #[test]
+    fn a_locked_data_root_is_not_opened_twice() {
+        let app = tauri::test::mock_app();
+        let dir = dw_testutil::private_tempdir();
+        let root = dir.path().join("data");
+        let opts = || LaunchOptions {
+            data_dir: Some(root.clone()),
+            ..LaunchOptions::default()
+        };
+        let open = || {
+            AppState::new(
+                app.handle(),
+                opts(),
+                Instant::now(),
+                Default::default(),
+                || unreachable!("--datadir given"),
+            )
+        };
+        let first = open().unwrap();
+        let entries = || {
+            let mut names: Vec<_> = std::fs::read_dir(&root)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = entries();
+        let Err(second) = open() else {
+            panic!("a second AppState opened a locked data root");
+        };
+        assert_eq!(second.code_str(), AppCode::AlreadyRunning.as_str());
+        assert!(second.to_string().contains("already running"), "{second}");
+        // The refused open wrote nothing into the root.
+        assert_eq!(entries(), before);
+        drop(first);
+        open().expect("the root opens again once its holder is gone");
+    }
+
+    #[test]
+    fn the_lock_run_took_is_the_one_the_state_keeps() {
+        // `run` manages the lock before the setup hook builds the state,
+        // which must then not try for a second one (it would be refused).
+        let app = tauri::test::mock_app();
+        let dir = dw_testutil::private_tempdir();
+        let root = instance::data_root(Some(&dir.path().join("data")), || unreachable!()).unwrap();
+        let lock = instance::InstanceLock::acquire(&root, std::time::Duration::ZERO).unwrap();
+        app.manage(lock);
+        let opts = LaunchOptions {
+            data_dir: Some(root.clone()),
+            ..LaunchOptions::default()
+        };
+        AppState::new(
+            app.handle(),
+            opts,
+            Instant::now(),
+            Default::default(),
+            || unreachable!("--datadir given"),
+        )
+        .expect("the state opens under the lock run took");
     }
 
     #[test]

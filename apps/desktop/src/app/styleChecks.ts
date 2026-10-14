@@ -93,8 +93,8 @@ const optional = (checks: Check | Check[]): Check[] => (Array.isArray(checks) ? 
 
 export const CHECKS: Check[] = [
   // Colour roles (§2.1)
-  color("canvas", "overview", '[data-testid="page-overview"]', "background-color", role("canvas")),
-  color("canvas.transactions", "transactions", '[data-testid="page-transactions"]', "background-color", role("canvas")),
+  color("canvas", "overview", '[data-testid="page-home"]', "background-color", role("canvas")),
+  color("canvas.transactions", "transactions", '[data-testid="page-activity"]', "background-color", role("canvas")),
   color("card", "overview", ".tx-group", "background-color", role("card")),
   color("hero", "overview", '[data-testid="hero-band"]', "background-color", role("hero")),
   color("heroCard", "overview", '[data-testid="hero-breakdown"]', "background-color", white(opacity.heroCard)),

@@ -7,6 +7,13 @@
 import type { AppError, AppEvent, ErrorCode } from "./generated/commands";
 import { ERROR_CODES } from "./generated/commands";
 import type { Balances } from "./generated/Balances";
+import type { ContactList } from "./generated/ContactList";
+import type { ContactQueryArgs } from "./generated/ContactQueryArgs";
+import type { DashPayStatus } from "./generated/DashPayStatus";
+import type { IdentitySummary } from "./generated/IdentitySummary";
+import type { LinkRoute } from "./generated/LinkRoute";
+import type { ShellEvent } from "./generated/ShellEvent";
+import type { ShellSync } from "./generated/ShellSync";
 import type { DispatchStateName } from "./generated/DispatchStateName";
 import type { HistoryRequest } from "./generated/HistoryRequest";
 import type { HistoryRows } from "./generated/HistoryRows";
@@ -35,8 +42,20 @@ export interface Backend {
   syncStatus(): Promise<SyncStatus>;
   historyPage(walletId: string, request: HistoryRequest): Promise<HistoryRows>;
   txDetail(walletId: string, txid: string): Promise<TxDetails>;
+  dashpayStatus(walletId: string): Promise<DashPayStatus>;
+  identities(walletId: string): Promise<IdentitySummary[]>;
+  dashpayUnreadCount(walletId: string, identity: string): Promise<number>;
+  dashpayContacts(walletId: string, identity: string, query: ContactQueryArgs): Promise<ContactList>;
+  /** The queued deep links, routed for `network` (U-01). */
+  takeLinks(network: string): Promise<LinkRoute[]>;
+  /** Where `text` leads (File ▸ Open URI…). */
+  routeLink(network: string, text: string): Promise<LinkRoute>;
+  /** What the native menus and the tray mirror. */
+  shellSync(sync: ShellSync): Promise<null>;
   /** Subscribes to engine events; returns the unsubscribe function. */
   onEvent(listener: (event: AppEvent) => void): Promise<() => void>;
+  /** Subscribes to the shell's events (menus, tray, deep links). */
+  onShellEvent(listener: (event: ShellEvent) => void): Promise<() => void>;
   /** The clock and locale the screens format dates with (fixed in fixtures). */
   now(): Date;
   readonly locale: string | undefined;

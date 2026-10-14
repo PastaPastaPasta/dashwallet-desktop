@@ -31,7 +31,7 @@ const STATES: State[] = [
     scenario: "funded",
     extra: "&fail=history_page:rpc",
     ready: async (p) => {
-      await p.getByTestId("sidebar-transactions").click();
+      await p.getByTestId("sidebar-activity").click();
       await p.getByTestId("tx-error").waitFor();
     },
   },

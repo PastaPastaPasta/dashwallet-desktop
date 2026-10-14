@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
 import * as cmd from "./generated/commands";
-import type { AppEvent } from "./generated/commands";
+import type { AppEvent, ShellEvent } from "./generated/commands";
 import type { JsonValue } from "./generated/serde_json/JsonValue";
 
 // Read once, when the module loads: the fixture backend's mock IPC installs its own
@@ -35,7 +35,15 @@ export class IpcBackend implements Backend {
   syncStatus = () => cmd.syncStatus();
   historyPage = cmd.historyPage;
   txDetail = cmd.txDetail;
+  dashpayStatus = cmd.dashpayStatus;
+  identities = cmd.identities;
+  dashpayUnreadCount = cmd.dashpayUnreadCount;
+  dashpayContacts = cmd.dashpayContacts;
+  takeLinks = cmd.takeLinks;
+  routeLink = cmd.routeLink;
+  shellSync = cmd.shellSync;
   onEvent = (listener: (e: AppEvent) => void) => listen<AppEvent>(cmd.ENGINE_EVENT, (e) => listener(e.payload));
+  onShellEvent = (listener: (e: ShellEvent) => void) => listen<ShellEvent>(cmd.SHELL_EVENT, (e) => listener(e.payload));
   now = () => this.clock();
 }
 
@@ -47,6 +55,7 @@ export const tauriTools = {
   selftestUnlock: () => cmd.selftestUnlock(),
   ipcBenchRows: cmd.ipcBenchRows,
   historyPageTimed: cmd.historyPageTimed,
+  selftestLinkRouted: cmd.selftestLinkRouted,
   probeUnlisted: cmd.probeUnlisted,
   /** A plugin command that is not installed (U6: the renderer cannot reach a shell). */
   invokeUnknownPlugin: () => invoke<unknown>("plugin:shell|execute", { program: "sh", args: ["-c", "id"] }),
