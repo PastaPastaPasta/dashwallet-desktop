@@ -36,6 +36,14 @@ describe("display settings", () => {
     expect(ui.get().prefs.decimalDigits).toBe(8);
   });
 
+  it("QT020_aChangeMadeBeforeTheLastSaveAnsweredIsKept", async () => {
+    // Three changes in a row, none waiting for dw-app (T1 lost the unit this way).
+    const saves = [savePrefs(b, launch(), { theme: "dark" }), savePrefs(b, launch(), { unit: "milliDash" }), savePrefs(b, launch(), { decimalDigits: 3 })];
+    await Promise.all(saves);
+    expect(fixture.world.settings.ui).toMatchObject({ theme: "dark", unit: "milliDash", decimalDigits: 3 });
+    expect(ui.get().prefs).toMatchObject({ theme: "dark", unit: "milliDash", decimalDigits: 3 });
+  });
+
   it("QT139_unitsAreDashQts", () => {
     expect(UNIT_CHOICES.map((u) => u.unit)).toEqual(["dash", "milliDash", "microDash", "duffs"]);
   });

@@ -27,7 +27,6 @@ import type { LockStatus } from "../src/api/generated/LockStatus";
 import type { UiSettings } from "../src/api/generated/UiSettings";
 import type { WalletLoadStatus } from "../src/api/generated/WalletLoadStatus";
 import type { WalletSummary } from "../src/api/generated/WalletSummary";
-import { SecurityText } from "../src/settings/security";
 import { APP, CHAIN, driverGone, DWCLI, env, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
 
 const REGTEST = resolve(env("DW_REGTEST_SH"));
@@ -295,7 +294,9 @@ async function main() {
     // ---- wipe with the typed sentence (IOS-009)
     await tab("security");
     await wd.press(tid("settings-wipe"));
-    await enter("settings-wipe-sentence", SecurityText.wipeAcceptPhrase);
+    // The sentence to type is the field's label ("Type: …"), as the user reads it.
+    const sentence = await wd.script<string>(`return document.querySelector(arguments[0]).labels[0].textContent.replace(/^Type: /, "")`, [tid("settings-wipe-sentence")]);
+    await enter("settings-wipe-sentence", sentence);
     await wd.press(tid("settings-wipe-continue"));
     await enter("settings-wipe-passphrase-field", NEW_PASSPHRASE);
     await wd.press(tid("settings-wipe-passphrase-submit"));

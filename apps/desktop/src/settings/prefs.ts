@@ -14,9 +14,30 @@ export async function loadPrefs(backend: Backend, launch: LaunchInfo) {
   ui.set({ prefs, theme: launch.theme ?? prefs.theme, discreet: prefs.autohideBalance });
 }
 
+/** The settings the latest save asked for, until dw-app has answered it: a change made meanwhile
+ * builds on it, not on the store, so it does not write the earlier change back. */
+let wanted: UiSettings | null = null;
+/** Saves are written one at a time, in the order they were made. */
+let writes: Promise<unknown> = Promise.resolve();
+
 /** Saves `patch` over the current settings; the store changes once dw-app has written them. */
-export async function savePrefs(backend: Backend, launch: LaunchInfo, patch: Partial<UiSettings>): Promise<UiSettings> {
-  const prefs = await backend.setUiSettings({ ...ui.get().prefs, ...patch });
-  ui.set({ prefs, theme: launch.theme ?? prefs.theme });
-  return prefs;
+export function savePrefs(backend: Backend, launch: LaunchInfo, patch: Partial<UiSettings>): Promise<UiSettings> {
+  const next = { ...(wanted ?? ui.get().prefs), ...patch };
+  wanted = next;
+  const write = writes.then(() => backend.setUiSettings(next));
+  writes = write.catch(() => undefined);
+  const settled = () => {
+    if (wanted === next) wanted = null;
+  };
+  return write.then(
+    (prefs) => {
+      settled();
+      ui.set({ prefs, theme: launch.theme ?? prefs.theme });
+      return prefs;
+    },
+    (e: unknown) => {
+      settled();
+      throw e;
+    },
+  );
 }
