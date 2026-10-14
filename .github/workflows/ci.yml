@@ -13,7 +13,10 @@
 #   axe, inside the pinned Playwright image and without Rust or the engine (U-07). Same commands
 #   locally: apps/desktop/scripts/e2e-docker.sh.
 # - e2e-tauri-linux: tauri-driver drives the real app on the real engine (a dwcli regtest wallet)
-#   under Xvfb: apps/desktop/scripts/e2e-tauri.sh.
+#   under Xvfb: apps/desktop/scripts/e2e-tauri.sh (launch link, second-launch forwarding, U-01).
+# - deep-links: on Linux, macOS and Windows, the packaged app (a debug bundle with the
+#   `selftest` feature) registers dash:, pay:, dashwallet: and dashpay:, and links the OS opens
+#   reach the running app and route (ci/github/deep-links.sh, U-01).
 # - swift-linux: the Linux Swift tests (the headless suites of scripts/linux-docker-test.sh
 #   plus DashUICrossTests: the UI T0 tier) with Swift 6.3.3, then the SwiftCrossUI app launched
 #   under Xvfb with a screenshot.
@@ -256,6 +259,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: apps/desktop/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      # The script runs itself under dbus-run-session: second launches find the app on that bus.
       - name: Smoke (debug app + dwcli, real engine, regtest wallet) under Xvfb
         env:
           DW_E2E_OUT: ${{ github.workspace }}/e2e-tauri-out
@@ -265,6 +269,83 @@ jobs:
         with:
           name: e2e-tauri-linux
           path: e2e-tauri-out/
+          if-no-files-found: warn
+
+  deep-links:
+    name: Deep links (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [linux, macos, windows]
+    runs-on: ${{ fromJSON('{"linux":"ubuntu-24.04","macos":"macos-latest","windows":"windows-latest"}')[matrix.os] }}
+    timeout-minutes: 150
+    env:
+      MATRIX_OS: ${{ matrix.os }}
+      # As in the windows job (ci/windows/unistd-shim/unistd.h); unused elsewhere.
+      CFLAGS_x86_64_pc_windows_msvc: -I${{ github.workspace }}/ci/windows/unistd-shim
+    steps:
+      - name: Git for Windows settings (long paths, LF checkouts)
+        if: ${{ matrix.os == 'windows' }}
+        run: |
+          git config --system core.longpaths true
+          git config --system core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        if: ${{ matrix.os == 'linux' }}
+        run: ci/github/linux-free-disk.sh
+      - name: Linux packages (WebKitGTK, Xvfb, D-Bus, xdg-utils)
+        if: ${{ matrix.os == 'linux' }}
+        run: ci/github/linux-host-deps.sh tauri
+      - name: protoc
+        run: ci/github/install-protoc.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+          key: deep-links
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: apps/desktop/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - name: pnpm install
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+      # A debug bundle (quick to build) with the self-test's `--selftest-link-trace`; release
+      # bundles register the same schemes from the same configuration.
+      - name: pnpm tauri build --debug --features selftest (one bundle)
+        working-directory: apps/desktop
+        run: |
+          case "$MATRIX_OS" in
+            linux) kind=deb; glob='deb/*.deb' ;;
+            macos) kind=app; glob='macos/*.app' ;;
+            windows) kind=nsis; glob='nsis/*-setup.exe' ;;
+          esac
+          pnpm tauri build --debug --features selftest --bundles "$kind"
+          bundle=$(compgen -G "$GITHUB_WORKSPACE/rust/target/debug/bundle/$glob" | head -n 1)
+          [[ -n "$bundle" ]] || { echo "::error::no $kind bundle"; exit 1; }
+          echo "BUNDLE=$bundle" >> "$GITHUB_ENV"
+      - name: Links through the OS
+        env:
+          DW_LINKS_OUT: ${{ github.workspace }}/deep-links-out
+        run: |
+          if [[ "$MATRIX_OS" == linux ]]; then
+            dbus-run-session -- xvfb-run -a -s "-screen 0 1280x800x24" ci/github/deep-links.sh linux "$BUNDLE"
+          else
+            ci/github/deep-links.sh "$MATRIX_OS" "$BUNDLE"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: deep-links-${{ matrix.os }}
+          path: deep-links-out/
           if-no-files-found: warn
 
   swift-linux:
