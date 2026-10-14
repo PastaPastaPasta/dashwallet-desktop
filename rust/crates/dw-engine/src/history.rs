@@ -22,6 +22,8 @@ use dashcore::{Address, Network, ScriptBuf, Transaction, Txid};
 use key_wallet::managed_account::transaction_record::TransactionRecord;
 use key_wallet::transaction_checking::TransactionContext;
 
+use crate::platform::Counterparty;
+use crate::platform::attribution::Payees;
 use crate::{EngineError, WalletId};
 
 /// Confirmations dash-qt recommends before a transaction counts as
@@ -146,6 +148,9 @@ pub struct TxRecord {
     pub label: Option<String>,
     pub counts_toward_balance: bool,
     pub involves_watch_only: bool,
+    /// The DashPay identity on the other side of a contact payment, sent
+    /// or received (DP3-02, `platform/attribution.rs`).
+    pub counterparty: Option<Counterparty>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -364,6 +369,16 @@ impl HistoryStore {
             .unwrap_or_default()
     }
 
+    /// Runs `f` over one wallet's entries under the store's read lock, with
+    /// no copy (empty when unknown).
+    pub fn read<R>(&self, wallet: &WalletId, f: impl FnOnce(&HashMap<Txid, TxEntry>) -> R) -> R {
+        let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+        match map.get(wallet) {
+            Some(h) => f(&h.txs),
+            None => f(&HashMap::new()),
+        }
+    }
+
     /// One transaction of a wallet.
     pub fn get(&self, wallet: &WalletId, txid: &Txid) -> Option<TxEntry> {
         self.wallets
@@ -434,6 +449,8 @@ pub(crate) struct ChainView<'a> {
     /// Height of the best ChainLock, if any.
     pub chainlock_height: Option<u32>,
     pub network: Network,
+    /// Who the wallet's DashPay payments are with.
+    pub payees: &'a Payees,
 }
 
 fn depth(context: &TransactionContext, tip: u32) -> u32 {
@@ -518,6 +535,8 @@ pub(crate) struct Part {
     pub tx_type: TxType,
     pub address: Option<String>,
     pub amount: i64,
+    /// The output the record is about: a received output or a payee.
+    pub vout: Option<u32>,
 }
 
 /// The transaction-level facts [`decompose`] derives.
@@ -591,6 +610,7 @@ pub(crate) fn decompose(entry: &TxEntry, view: &ChainView<'_>) -> Decomposed {
             tx_type,
             address: None,
             amount,
+            vout: None,
         }],
         fee,
         all_from_me,
@@ -629,6 +649,7 @@ pub(crate) fn decompose(entry: &TxEntry, view: &ChainView<'_>) -> Decomposed {
                 tx_type,
                 address: Some(owned.address.to_string()),
                 amount: to_i64(tx.output[vout].value),
+                vout: Some(vout as u32),
             });
         }
         return Decomposed {
@@ -654,6 +675,7 @@ pub(crate) fn decompose(entry: &TxEntry, view: &ChainView<'_>) -> Decomposed {
                 tx_type: TxType::CoinJoinMixing,
                 address: None,
                 amount: net,
+                vout: None,
             }],
             fee,
             all_from_me,
@@ -708,6 +730,7 @@ pub(crate) fn decompose(entry: &TxEntry, view: &ChainView<'_>) -> Decomposed {
                 tx_type,
                 address: None,
                 amount: credit_part + debit_part,
+                vout: None,
             }],
             fee,
             all_from_me,
@@ -760,6 +783,7 @@ pub(crate) fn decompose(entry: &TxEntry, view: &ChainView<'_>) -> Decomposed {
                 tx_type,
                 address,
                 amount: -value,
+                vout: Some(vout as u32),
             });
         }
         return Decomposed {
@@ -775,6 +799,7 @@ pub(crate) fn decompose(entry: &TxEntry, view: &ChainView<'_>) -> Decomposed {
             tx_type: TxType::Other,
             address: None,
             amount: net,
+            vout: None,
         }],
         fee,
         all_from_me,
@@ -800,11 +825,13 @@ pub(crate) fn records_of(
     let (status, counts) = status_of(entry, view, d.all_from_me);
     let txid_s = txid.to_string();
     let tx_label = labels.tx.get(&txid_s).cloned();
+    let sides = view.payees.sides(txid, &entry.tx, &d.parts);
     let records = d
         .parts
         .iter()
+        .zip(&sides)
         .enumerate()
-        .map(|(i, p)| TxRecord {
+        .map(|(i, (p, side))| TxRecord {
             txid: txid_s.clone(),
             record_index: i as u32,
             tx_type: p.tx_type,
@@ -822,6 +849,7 @@ pub(crate) fn records_of(
             }),
             counts_toward_balance: counts,
             involves_watch_only: false,
+            counterparty: side.and_then(|s| view.payees.counterparty(&s.contact)),
         })
         .collect();
     (records, d, status)
@@ -1206,6 +1234,7 @@ mod tests {
     struct Fixture {
         owned: HashMap<ScriptBuf, Owned>,
         history: HashMap<Txid, TxEntry>,
+        payees: Payees,
     }
 
     impl Fixture {
@@ -1229,6 +1258,7 @@ mod tests {
             Self {
                 owned,
                 history: HashMap::new(),
+                payees: Payees::default(),
             }
         }
 
@@ -1239,6 +1269,7 @@ mod tests {
                 tip,
                 chainlock_height: None,
                 network: NET,
+                payees: &self.payees,
             }
         }
 
@@ -1488,6 +1519,7 @@ mod tests {
             label: (txid == 3).then(|| "Rent".to_string()),
             counts_toward_balance: true,
             involves_watch_only: false,
+            counterparty: None,
         }
     }
 

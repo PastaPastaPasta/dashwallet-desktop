@@ -1,6 +1,7 @@
 //! History records (QT-092, IOS-028…031): the rows of `history_page` and
 //! the transaction detail sheet.
 
+use dw_engine::platform::Counterparty;
 use dw_engine::{
     HistoryFilter, HistoryPage, HistoryQuery, HistorySort, TxCategory, TxDetail, TxInputDetail,
     TxOutputDetail, TxRecord, TxStatus, TxStatusKind, TxType, WatchOnlyFilter,
@@ -122,6 +123,39 @@ pub struct TxRow {
     pub counts_toward_balance: bool,
     /// The record involves a watch-only address.
     pub involves_watch_only: bool,
+    /// The DashPay contact paid or paying (DP3-02); absent when the record
+    /// is not a contact payment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub counterparty: Option<TxCounterparty>,
+}
+
+/// The DashPay identity on the other side of a history record (DP3-02).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TxCounterparty {
+    /// Base58 identity id.
+    pub identity: String,
+    pub username: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+impl From<Counterparty> for TxCounterparty {
+    fn from(c: Counterparty) -> Self {
+        let Counterparty {
+            identity,
+            username,
+            display_name,
+            avatar_url,
+        } = c;
+        TxCounterparty {
+            identity,
+            username,
+            display_name,
+            avatar_url,
+        }
+    }
 }
 
 impl From<TxRecord> for TxRow {
@@ -140,6 +174,7 @@ impl From<TxRecord> for TxRow {
             label,
             counts_toward_balance,
             involves_watch_only,
+            counterparty,
         } = r;
         TxRow {
             txid,
@@ -155,6 +190,7 @@ impl From<TxRecord> for TxRow {
             label,
             counts_toward_balance,
             involves_watch_only,
+            counterparty: counterparty.map(Into::into),
         }
     }
 }

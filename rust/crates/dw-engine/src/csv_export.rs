@@ -213,6 +213,7 @@ mod tests {
             label: s("label"),
             counts_toward_balance: true,
             involves_watch_only: v["watch_only"].as_bool().unwrap_or(false),
+            counterparty: None,
         }
     }
 
