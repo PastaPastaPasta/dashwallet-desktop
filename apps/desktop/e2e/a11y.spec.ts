@@ -52,9 +52,9 @@ test("keyboard only: navigate, open a transaction, close it, lock and unlock", a
     seen.push(await focused());
   }
   expect(seen).toContain("toolbar-lock");
-  expect(seen).toContain("sidebar-transactions");
+  expect(seen).toContain("sidebar-activity");
 
-  await page.getByTestId("sidebar-transactions").focus();
+  await page.getByTestId("sidebar-activity").focus();
   await page.keyboard.press("Enter");
   await page.getByTestId("tx-list").waitFor();
 

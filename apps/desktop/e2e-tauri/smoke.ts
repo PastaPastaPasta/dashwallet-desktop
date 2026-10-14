@@ -2,8 +2,14 @@
 // production renderer in WebKitGTK through WebKitWebDriver. No fixture is involved: a fresh
 // regtest data root gets an encrypted vault and a wallet from dwcli, and the app opens it.
 //
-// Flow: lock screen → wrong passphrase refused → unlock → Overview (zero balance, empty history)
-// → Transactions → lock again. Screenshots and the app's log go to $DW_E2E_OUT.
+// Flow (U-07, U-01): launched with a `dash:` link to the wallet's address → lock screen → wrong
+// passphrase refused → unlock → Pay, prefilled from the link → Home (zero balance, empty
+// history) → Activity → a second launch with a `dashpay:` link hands it to the running app and
+// exits → Contacts ▸ Add contact → a second launch with a `pay:` link → Pay → lock again.
+// Screenshots and the app's log go to $DW_E2E_OUT.
+//
+// The second launches need the single-instance plugin's D-Bus session bus: run under
+// `dbus-run-session` (scripts/e2e-tauri.sh does), never on a desktop's shared bus.
 //
 // Run on Linux under a private X display (CI: xvfb-run; agentbox: `agent-gui start N`), never
 // a developer's display:
@@ -31,6 +37,8 @@ const PASSPHRASE = "e2e smoke passphrase";
 // Regtest needs a DAPI address; with --no-platform nothing connects to it.
 const CHAIN = ["--network", "regtest", "--no-platform", "--dapi", "https://127.0.0.1:1"];
 const TIMEOUT_MS = Number(env("DW_E2E_TIMEOUT_MS", "120000"));
+/** A Base58 identity id (32 bytes of 7) for the `dashpay://user` link. */
+const IDENTITY = "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx";
 
 /** Calls `probe` every 250 ms until it returns a value, for at most `ms`. */
 async function poll<T>(ms: number, what: string, probe: () => Promise<T | undefined>): Promise<T> {
@@ -108,6 +116,14 @@ class WebDriver {
 
 // ------------------------------------------------------------------ steps
 
+/** A second launch of the app on the same data root with `link`: it must hand the link to the
+ * running app (the single-instance plugin) and exit at once instead of opening a window. */
+function secondLaunch(dataRoot: string, link: string) {
+  const r = spawnSync(APP, ["--datadir", dataRoot, link], { encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
+  if (r.error || r.status !== 0)
+    throw new Error(`the second launch did not hand over its link and exit (status ${r.status}, ${r.error?.message ?? r.stderr.slice(-400)})`);
+}
+
 const tid = (id: string) => `[data-testid="${id}"]`;
 let driver: ChildProcess | undefined;
 /** Holds the vault and its passphrase file: out of OUT, which CI uploads; removed at the end. */
@@ -137,6 +153,8 @@ async function main() {
   dwcli(dataRoot, passFile, "init-vault");
   const walletId = /wallet_id (\S+)/.exec(dwcli(dataRoot, passFile, "create"))?.[1];
   if (!walletId) throw new Error("dwcli create printed no wallet id");
+  const address = /address (\S+)/.exec(dwcli(dataRoot, passFile, "receive"))?.[1];
+  if (!address) throw new Error("dwcli receive printed no address");
   console.log(`smoke: regtest data root ${dataRoot}, wallet ${walletId.slice(0, 16)}…`);
 
   const log = createWriteStream(join(OUT, "tauri-driver.log"));
@@ -148,7 +166,11 @@ async function main() {
   await waitForDriver(base);
 
   const wd = new WebDriver(base);
-  await wd.start({ alwaysMatch: { "tauri:options": { application: APP, args: ["--datadir", dataRoot, ...CHAIN, "--theme", "light"] } } });
+  const launchLink = `dash:${address}?amount=0.5&label=Launch%20link`;
+  await wd.start({ alwaysMatch: { "tauri:options": { application: APP, args: ["--datadir", dataRoot, ...CHAIN, "--theme", "light", launchLink] } } });
+  const value = (id: string) => wd.script<string>(`return document.querySelector('${tid(id)}')?.value ?? ""`);
+  const waitValue = (id: string, want: string) =>
+    poll(TIMEOUT_MS, `${id} to read ${want}`, async () => ((await value(id)) === want ? true : undefined));
   const steps: string[] = [];
   const step = (s: string) => {
     steps.push(s);
@@ -171,19 +193,38 @@ async function main() {
     await wd.press(tid("lock-submit"));
     // The shell is rendered under the lock screen, so wait for the lock screen to go first.
     await wd.waitGone(tid("lock-screen"), "the lock screen");
+    // The launch link was routed while locked: Pay is up, prefilled, once unlocked.
+    await wd.waitFor(tid("page-pay"), "Pay, opened by the launch link");
+    await waitValue("pay-address", address);
+    await waitValue("pay-label", "Launch link");
+    await wd.screenshot("2-pay-from-launch-link");
+    step("launch link: Pay ▸ To an address, prefilled, after unlock");
+
+    await wd.press(tid("sidebar-home"));
     await wd.waitFor(tid("hero"), "the Overview after unlock");
     await wd.waitFor(tid("history-empty"), "the empty history of a new wallet");
-    await wd.screenshot("2-overview");
+    await wd.screenshot("3-overview");
     step("unlocked: Overview of the new wallet, history empty");
 
-    await wd.press(tid("sidebar-transactions"));
+    await wd.press(tid("sidebar-activity"));
     await wd.waitFor(tid("tx-empty"), "the Transactions page");
-    await wd.screenshot("3-transactions");
-    step("Transactions page");
+    await wd.screenshot("4-activity");
+    step("Activity page");
+
+    secondLaunch(dataRoot, `dashpay://user?id=${IDENTITY}&username=bob`);
+    const username = await wd.waitFor(tid("add-contact-username"), "Add contact, from the forwarded dashpay: link");
+    if ((await wd.text(username)) !== "@bob") throw new Error(`unexpected contact: ${await wd.text(username)}`);
+    await wd.screenshot("5-add-contact-from-second-launch");
+    step("second launch: dashpay: link forwarded, Contacts ▸ Add contact");
+
+    secondLaunch(dataRoot, `pay:${address}?label=Forwarded`);
+    await waitValue("pay-label", "Forwarded");
+    await wd.screenshot("6-pay-from-second-launch");
+    step("second launch: pay: link forwarded, Pay prefilled");
 
     await wd.press(tid("toolbar-lock"));
     await wd.waitFor(tid("lock-field"), "the lock screen after locking");
-    await wd.screenshot("4-locked-again");
+    await wd.screenshot("7-locked-again");
     step("locked again");
   } catch (e) {
     await wd.screenshot("failure").catch(() => undefined);

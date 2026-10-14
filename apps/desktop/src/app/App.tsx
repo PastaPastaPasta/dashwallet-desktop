@@ -2,15 +2,18 @@ import { createContext, useContext, useEffect } from "react";
 import { errorMessage } from "../api/backend";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
-import { useBackend, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
+import { useBackend, useDashPayShell, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { EmptyState, LoadingState } from "../components/history";
-import { Sidebar, StatusBar, Toolbar } from "../components/shell";
+import { chipState, Sidebar, StatusBar, Toolbar } from "../components/shell";
 import { showToast, ToastHost } from "../components/toast";
 import { LockScreen } from "../screens/LockScreen";
 import { Overview } from "../screens/Overview";
+import { ContactsPage, PayPage, Placeholder, ToolsPage } from "../screens/Routes";
+import { AboutSheet, OpenUriSheet } from "../screens/ShellDialogs";
 import { Transactions } from "../screens/Transactions";
 import { TxDetailSheet } from "../screens/TxDetailSheet";
+import { useShellBridge } from "./shellBridge";
 import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
 import { ui, useUi } from "./ui";
@@ -46,52 +49,81 @@ function Splash({ error, onRetry }: { error: string | null; onRetry: () => void 
 
 function Shell() {
   const backend = useBackend();
-  const { network } = useLaunch();
-  const page = useUi((s) => s.page);
+  const launch = useLaunch();
+  const { network } = launch;
+  const route = useUi((s) => s.route);
   const detail = useUi((s) => s.detail);
+  const dialog = useUi((s) => s.dialog);
+  const walletId = useUi((s) => s.walletId);
+  const discreet = useUi((s) => s.discreet);
   const lock = useLockStatus();
   const sync = useSyncStatus();
   const wallets = useWallets();
-  const wallet = wallets.data?.[0];
+  const wallet = wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0];
+  const dashpay = useDashPayShell(wallet?.walletId);
   const locked = lock.data?.state === "locked";
   const open = (row: TxRow) => ui.set({ detail: row.txid });
 
-  let content;
-  if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
-  else if (wallets.isError)
-    content = (
-      <main className="page" data-testid="page-wallets-error">
-        <div className="page-column">
-          <EmptyState testId="wallets-error" title="Could not load the wallets" message={errorMessage(wallets.error)} />
-        </div>
-      </main>
-    );
-  else if (!wallet)
-    content = (
-      <main className="page" data-testid="page-no-wallet">
-        <div className="page-column">
-          <EmptyState testId="no-wallet" title="No wallet on this network yet" />
-        </div>
-      </main>
-    );
-  else if (page === "overview") content = <Overview walletId={wallet.walletId} network={network} onOpen={open} />;
-  else content = <Transactions walletId={wallet.walletId} network={network} onOpen={open} />;
-
   const canLock = lock.data?.encrypted === true && !locked;
-  const lockNow = () => backend.lock().catch((e) => showToast(`Could not lock: ${errorMessage(e)}`));
+  const lockNow = () => {
+    if (canLock) backend.lock().catch((e) => showToast(`Could not lock: ${errorMessage(e)}`));
+  };
+  useShellBridge(backend, network.dirName, launch.selftestLinkTrace, lockNow);
+  // The native menus' Discreet Mode check and Lock Wallet follow the window.
+  useEffect(() => {
+    backend.shellSync({ discreet, canLock }).catch(() => {});
+  }, [backend, discreet, canLock]);
+
+  let content;
+  if (route === "home" || route === "activity") {
+    if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
+    else if (wallets.isError)
+      content = (
+        <main className="page" data-testid="page-wallets-error">
+          <div className="page-column">
+            <EmptyState testId="wallets-error" title="Could not load the wallets" message={errorMessage(wallets.error)} />
+          </div>
+        </main>
+      );
+    else if (!wallet)
+      content = (
+        <main className="page" data-testid="page-no-wallet">
+          <div className="page-column">
+            <EmptyState testId="no-wallet" title="No wallet on this network yet" />
+          </div>
+        </main>
+      );
+    else if (route === "home") content = <Overview walletId={wallet.walletId} network={network} onOpen={open} />;
+    else content = <Transactions walletId={wallet.walletId} network={network} onOpen={open} />;
+  } else if (route === "pay") content = <PayPage />;
+  else if (route === "contacts") content = <ContactsPage />;
+  else if (route === "tools") content = <ToolsPage />;
+  else content = <Placeholder route={route} />;
+
+  const joined = !(dashpay.status?.kind === "noIdentity" || dashpay.status?.kind === "registering");
   const sheet = !!(detail && wallet && !locked);
+  const modal = !locked && (sheet || dialog !== null);
   return (
     <>
       {/* Behind a sheet or the lock screen the shell takes no focus and is hidden from assistive tech. */}
-      <div className="app-chrome" inert={locked || sheet}>
-        <Toolbar walletName={wallet?.name ?? null} canLock={canLock} onLock={() => void lockNow()} />
+      <div className="app-chrome" inert={locked || modal}>
+        <Toolbar
+          wallets={wallets.data ?? []}
+          wallet={wallet}
+          chip={chipState(dashpay.status, dashpay.mainName)}
+          unread={dashpay.unread}
+          canLock={canLock}
+          onLock={lockNow}
+        />
         <div className="app-body">
-          <Sidebar />
+          <Sidebar joined={joined} requests={dashpay.requests} />
           {content}
         </div>
         <StatusBar sync={sync.data} lock={lock.data} unitName={network.unitName} hd={wallet?.hd ?? false} />
       </div>
       {sheet && <TxDetailSheet walletId={wallet!.walletId} txid={detail!} network={network} />}
+      {!locked && !sheet && dialog === "openUri" && <OpenUriSheet network={network.dirName} />}
+      {!locked && !sheet && dialog === "about" && <AboutSheet launch={launch} />}
       {locked && <LockScreen network={network} />}
     </>
   );

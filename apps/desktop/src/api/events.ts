@@ -38,11 +38,13 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     case "leaseChanged":
     case "dispatchResolved":
       return [keys.lockReconcile];
-    // No screen reads these yet (the DashPay, CoinJoin and notice views come with their tasks).
-    case "newTransactions":
+    // The shell's chip, bell and Contacts badge (the DashPay screens come with their tasks).
     case "dashPayNews":
-    case "coinJoin":
     case "platform":
+      return [keys.dashpayAll];
+    // No screen reads these yet (the CoinJoin and notice views come with their tasks).
+    case "newTransactions":
+    case "coinJoin":
     case "notice":
       return [];
     default:

@@ -9,7 +9,9 @@
 
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
-import { COMMANDS, ENGINE_EVENT, type AppError, type AppEvent, type CommandName } from "../api/generated/commands";
+import { COMMANDS, ENGINE_EVENT, SHELL_EVENT, type AppError, type AppEvent, type CommandName, type ShellEvent } from "../api/generated/commands";
+import type { LinkRoute } from "../api/generated/LinkRoute";
+import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
 import { HANDLERS, type Ctx } from "./handlers";
@@ -35,6 +37,11 @@ export interface FixtureHandle {
   readonly world: World;
   /** Sends an engine event, as dw-app's bridge would. */
   emit(event: AppEvent): void;
+  /** Queues links as dw-app's shell routed them and says so (`linksPending`), as a clicked link
+   * or a second launch would. */
+  deliverLinks(routes: LinkRoute[]): void;
+  /** A native menu or tray command. */
+  shellCommand(command: ShellCommand): void;
   /** Makes `command` reject with a sample of `cls` from now on (`null` clears it). */
   fail(command: CommandName, cls: ErrorClass | null): void;
   /** Holds the next call of `command`: it answers from the world as it is when called, but only
@@ -83,6 +90,11 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
     scenario: opts.scenario,
     world,
     emit: ctx.emit,
+    deliverLinks: (routes) => {
+      world.links.push(...routes);
+      void emit(SHELL_EVENT, { kind: "linksPending" } satisfies ShellEvent);
+    },
+    shellCommand: (command) => void emit(SHELL_EVENT, { kind: "command", command } satisfies ShellEvent),
     fail: (command, cls) => (cls ? failures.set(command, cls) : failures.delete(command)),
     hold: (command) => {
       let release = () => {};

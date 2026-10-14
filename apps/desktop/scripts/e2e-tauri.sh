@@ -5,11 +5,19 @@
 # agentbox), WebKitWebDriver (Ubuntu: webkit2gtk-driver) and tauri-driver on PATH or in
 # $TAURI_DRIVER (`cargo install tauri-driver --version 2.1.0 --locked`).
 #
-#   DW_E2E_SKIP_BUILD=1   reuse rust/target/debug/{dash-wallet,dwcli}
+#   DW_E2E_SKIP_BUILD=1   reuse <target>/debug/{dash-wallet,dwcli} (<target>: $CARGO_TARGET_DIR,
+#                         else rust/target)
 #   DW_E2E_OUT=<dir>      screenshots, logs and result.json (default test-results/tauri-e2e)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 repo=$(cd ../.. && pwd)
+
+# The single-instance plugin (a second launch hands its links over) needs a session bus: a
+# private one, so the smoke never meets an app on the desktop's bus.
+if [[ -z "${DW_E2E_PRIVATE_BUS:-}" ]]; then
+  command -v dbus-run-session >/dev/null || { echo "e2e-tauri: dbus-run-session not found (apt install dbus)" >&2; exit 2; }
+  DW_E2E_PRIVATE_BUS=1 exec dbus-run-session -- "$PWD/scripts/e2e-tauri.sh" "$@"
+fi
 
 if [[ -z "${DISPLAY:-}" ]]; then
   echo "e2e-tauri: set DISPLAY to a private X display (xvfb-run, agent-gui)" >&2
@@ -26,5 +34,6 @@ if [[ "${DW_E2E_SKIP_BUILD:-}" != 1 ]]; then
   (cd "$repo/rust" && cargo build -p dwcli --locked)
 fi
 
-DW_APP="$repo/rust/target/debug/dash-wallet" DWCLI="$repo/rust/target/debug/dwcli" TAURI_DRIVER="$driver" \
+target=${CARGO_TARGET_DIR:-$repo/rust/target}
+DW_APP="$target/debug/dash-wallet" DWCLI="$target/debug/dwcli" TAURI_DRIVER="$driver" \
   node e2e-tauri/smoke.ts

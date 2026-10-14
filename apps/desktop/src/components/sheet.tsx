@@ -1,5 +1,6 @@
 // SheetScaffold (UX-SPEC C23): a modal dialog with the 64 pt header (title, close), Escape to
-// close, focus kept inside while open and returned to the opener on close.
+// close, focus kept inside while open and returned to the opener on close. Focus starts on the
+// element marked `data-autofocus`, else on the first focusable one (the close button).
 
 import { useEffect, useRef, type ReactNode } from "react";
 
@@ -21,7 +22,8 @@ export function Sheet({
   const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
-    panel.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+    const start = panel.current?.querySelector<HTMLElement>("[data-autofocus]") ?? panel.current?.querySelector<HTMLElement>(FOCUSABLE);
+    start?.focus();
     return () => opener?.focus?.();
   }, []);
 
