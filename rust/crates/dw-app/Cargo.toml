@@ -22,7 +22,7 @@ path = "src/main.rs"
 # and its commands and grants (src/api/selftest.rs, capabilities-selftest/).
 # Off in release and packaged builds; tauri-selftest.yml builds a binary with
 # it (E0-13 D17).
-selftest = ["dep:dw-fs"]
+selftest = []
 
 [build-dependencies]
 tauri-build = { version = "2.6", features = [] }
@@ -34,12 +34,17 @@ tauri = { version = "2.12", features = ["tray-icon"] }
 tauri-plugin-window-state = "2.5"
 # Byte payloads (avatars, raw transactions) cross IPC as base64 strings.
 base64 = "0.22"
+# The default data root, as Tauri's `app_data_dir` finds it, before the app is built.
+dirs = "7"
+# Canonical data roots without Windows' `\\?\` prefix.
+dunce = "1"
 dashcore = { workspace = true }
 dw-coinjoin = { workspace = true }
 dw-console = { workspace = true }
 dw-engine = { workspace = true }
+# create_private_dir: the data root, made before its instance lock (src/instance.rs);
 # open_owner_only: the self-test's passphrase file must be the user's alone.
-dw-fs = { workspace = true, optional = true }
+dw-fs = { workspace = true }
 dw-message = { workspace = true }
 dw-psbt = { workspace = true }
 dw-units = { workspace = true }
@@ -60,6 +65,9 @@ zeroize = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 # The tray's AppIndicator probe: libappindicator-sys aborts without one.
 libloading = "0.8"
+# The session-bus probe before the single-instance plugin, which panics on a
+# malformed bus address (shell/native.rs).
+zbus = "5"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 # U-01: a second launch hands its links to the running app and exits (not on

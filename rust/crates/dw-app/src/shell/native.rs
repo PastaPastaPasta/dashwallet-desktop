@@ -1,7 +1,7 @@
 //! The plugins `run` adds before the app's own: one instance per data root
 //! and the saved window geometry.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use tauri::Runtime;
 use tauri::plugin::TauriPlugin;
@@ -13,51 +13,78 @@ use crate::launch::LaunchOptions;
 /// forward and queues the links in it, and exits.
 ///
 /// The instance is the data root's, as in dash-qt (its IPC server name
-/// hashes the data directory): on Linux a `--datadir` launch takes a D-Bus
-/// name of its own, so wallets in two data roots (and parallel test runs)
+/// hashes the data directory): on Linux each canonical root (`root`, from
+/// [`crate::instance::data_root`]) takes a D-Bus name of its own, the
+/// default root too, so wallets in two data roots (and parallel test runs)
 /// do not meet. On Windows the plugin keys by the bundle identifier only:
-/// one instance per user session; it joins the forwarded arguments with
-/// `|`, so a link holding one arrives cut short. Without a D-Bus session
-/// bus the plugin cannot register and every launch runs on its own.
+/// one instance per user session. It joins the forwarded arguments with
+/// `|` and splits them there again, so [`rejoin_split_args`] puts a link
+/// back together (D22).
+///
+/// Linux without a D-Bus session bus: no plugin (`None`, logged), since the
+/// plugin panics on a malformed bus address and does nothing without a bus.
+/// A second launch then stops at the data root's instance lock
+/// ([`crate::instance::InstanceLock`]) without opening the wallet.
 ///
 /// Not on macOS (`None`): LaunchServices already keeps one app instance
 /// and hands links over as `RunEvent::Opened`, and the plugin's macOS
 /// socket has a fixed name in the shared `/tmp`, which another local user
-/// could take first and so swallow every launch and its arguments.
-pub fn single_instance<R: Runtime>(launch: &LaunchOptions) -> Option<TauriPlugin<R>> {
+/// could take first and so swallow every launch and its arguments. A direct
+/// launch of the binary, which LaunchServices does not see, stops at the
+/// instance lock.
+pub fn single_instance<R: Runtime>(root: &Path) -> Option<TauriPlugin<R>> {
     #[cfg(target_os = "macos")]
     {
-        let _ = launch;
+        let _ = root;
         None
     }
     #[cfg(not(target_os = "macos"))]
     {
+        #[cfg(target_os = "linux")]
+        if let Err(e) = zbus::blocking::Connection::session() {
+            eprintln!(
+                "dw-app: no D-Bus session bus ({e}): a second launch on this data root \
+                 stops at its instance lock instead of handing its links over"
+            );
+            return None;
+        }
         let builder = tauri_plugin_single_instance::Builder::new().callback(|app, args, _cwd| {
+            #[cfg(windows)]
+            let args = rejoin_split_args(args);
             super::reveal(app);
             super::deliver_links(app, args, super::links::LinkSource::Forwarded);
         });
         #[cfg(target_os = "linux")]
-        let builder = match &launch.data_dir {
-            Some(dir) => builder.dbus_id(dbus_id(dir)),
-            None => builder,
-        };
+        let builder = builder.dbus_id(dbus_id(root));
         #[cfg(not(target_os = "linux"))]
-        let _ = launch;
+        let _ = root;
         Some(builder.build())
     }
 }
 
-fn absolute(dir: &Path) -> PathBuf {
-    std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf())
+/// Puts back together the link that the Windows plugin's `|` split cut up
+/// (D22): every piece from the first one with a link scheme on is one link,
+/// joined again with `|`. So no piece of a split ever becomes a link of its
+/// own (`pay:…?label=a|dash:…` stays one payment link, its label holding
+/// the rest). A forwarded Windows launch thus carries at most one link,
+/// which is what the registered `"%1"` handler passes; arguments after a
+/// link are not supported there.
+pub fn rejoin_split_args(mut args: Vec<String>) -> Vec<String> {
+    if let Some(at) = args
+        .iter()
+        .position(|a| super::links::link_scheme(a).is_some())
+    {
+        let link = args.split_off(at).join("|");
+        args.push(link);
+    }
+    args
 }
 
-/// The D-Bus name prefix of the instance for data root `dir`: the bundle
-/// identifier and a 64-bit FNV-1a of the canonical path (the absolute one
-/// before the root exists), so a symlinked spelling meets the same
-/// instance. An element may not start with a digit, hence the `d`.
-pub fn dbus_id(dir: &Path) -> String {
-    let path = std::fs::canonicalize(dir).unwrap_or_else(|_| absolute(dir));
-    let hash = path
+/// The D-Bus name prefix of the instance for the canonical data root
+/// `root`: the bundle identifier and a 64-bit FNV-1a of the path. An
+/// element may not start with a digit, hence the `d`.
+pub fn dbus_id(root: &Path) -> String {
+    let hash = root
         .as_os_str()
         .as_encoded_bytes()
         .iter()
@@ -68,8 +95,9 @@ pub fn dbus_id(dir: &Path) -> String {
 }
 
 /// Saves the main window's size, position, maximised and full-screen state
-/// at exit and restores them at launch: in `<datadir>/window-state.json`
-/// with `--datadir`, else in the platform config directory. `--window-size`
+/// at exit and restores them at launch, in `<data root>/window-state.json`
+/// (`run` always sets `data_dir` to the resolved root; without one, the
+/// platform config directory). `--window-size`
 /// and the self-test, which need a known geometry, neither read nor write
 /// it.
 pub fn window_state<R: Runtime>(launch: &LaunchOptions) -> Option<TauriPlugin<R>> {
@@ -82,7 +110,8 @@ pub fn window_state<R: Runtime>(launch: &LaunchOptions) -> Option<TauriPlugin<R>
     if let Some(dir) = &launch.data_dir {
         // An absolute file name replaces the config directory it is joined to.
         builder = builder.with_filename(
-            absolute(dir)
+            std::path::absolute(dir)
+                .unwrap_or_else(|_| dir.clone())
                 .join("window-state.json")
                 .to_string_lossy()
                 .into_owned(),
@@ -109,13 +138,59 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_symlinked_data_root_meets_the_same_instance() {
+    fn one_root_has_one_bus_name_however_it_is_spelled() {
+        use crate::instance::data_root;
         let dir = dw_testutil::private_tempdir();
-        let root = dir.path().join("root");
-        std::fs::create_dir(&root).unwrap();
-        std::os::unix::fs::symlink(&root, dir.path().join("link")).unwrap();
-        assert_eq!(dbus_id(&root), dbus_id(&dir.path().join("link")));
-        assert_eq!(dbus_id(&root), dbus_id(&dir.path().join("link/../root")));
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("link")).unwrap();
+        let via_link = dir.path().join("link/wallet");
+        // The default root before it exists, then the same as `--datadir`
+        // through a symlinked parent, and directly.
+        let default = data_root(None, || Some(via_link.clone())).unwrap();
+        let name = dbus_id(&default);
+        for spelling in [
+            &via_link,
+            &real.join("wallet"),
+            &dir.path().join("link/../real/wallet"),
+        ] {
+            assert_eq!(
+                dbus_id(&data_root(Some(spelling), || unreachable!()).unwrap()),
+                name
+            );
+        }
+        assert_ne!(
+            name,
+            dbus_id(&data_root(Some(&real.join("other")), || unreachable!()).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_split_link_is_rejoined_and_never_becomes_two() {
+        const A: &str = "XwnLY9Tf7Zsef8gMGL2fhWA9ZmMjt4KPwg";
+        const B: &str = "Xr8vG1hSKgCjSD3zcEKGDzWmW5tVJsbQvr";
+        let exe = r"C:\Program Files\Dash Wallet\dash-wallet.exe".to_string();
+        // What the primary gets for `dash-wallet.exe "<link>"`: the plugin
+        // joined the arguments with `|` and split them there.
+        let split = |link: &str| -> Vec<String> {
+            std::iter::once(exe.clone())
+                .chain(link.split('|').map(String::from))
+                .collect()
+        };
+        let label = format!("pay:{A}?label=a|b");
+        assert_eq!(rejoin_split_args(split(&label)), [exe.clone(), label]);
+        let two = format!("pay:{A}?label=a|dash:{B}");
+        let rejoined = rejoin_split_args(split(&two));
+        assert_eq!(rejoined, [exe.clone(), two]);
+        // One link reaches the queue, not a `pay:` and a `dash:`.
+        let shell = super::super::Shell::new(None);
+        assert_eq!(
+            shell.queue(rejoined, super::super::links::LinkSource::Forwarded),
+            1
+        );
+        // No link: nothing changes.
+        let flags = vec![exe.clone(), "--datadir".into(), "C:\\w".into()];
+        assert_eq!(rejoin_split_args(flags.clone()), flags);
     }
 
     #[test]

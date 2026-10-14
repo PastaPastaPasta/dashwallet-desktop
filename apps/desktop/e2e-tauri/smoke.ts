@@ -18,7 +18,7 @@
 // stripping); it uses W3C WebDriver over fetch and no other dependency.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createWriteStream, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createWriteStream, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -124,6 +124,20 @@ function secondLaunch(dataRoot: string, link: string) {
     throw new Error(`the second launch did not hand over its link and exit (status ${r.status}, ${r.error?.message ?? r.stderr.slice(-400)})`);
 }
 
+/** A second launch on the same data root that cannot hand its link over (no session bus, or a
+ * malformed bus address): it must stop at the root's instance lock with a clear message, without
+ * a panic and without opening the wallet (U-01 D2). */
+function refusedLaunch(dataRoot: string, link: string, bus: Record<string, string>) {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...bus };
+  if (!("DBUS_SESSION_BUS_ADDRESS" in bus)) delete env.DBUS_SESSION_BUS_ADDRESS;
+  const r = spawnSync(APP, ["--datadir", dataRoot, link], { encoding: "utf8", env, timeout: 60_000, killSignal: "SIGKILL" });
+  const tail = r.error?.message ?? r.stderr.slice(-600);
+  if (r.status !== 1 || !r.stderr.includes("another Dash Wallet is already running"))
+    throw new Error(`the second launch was not refused at the instance lock (status ${r.status}): ${tail}`);
+  if (r.stderr.includes("panicked")) throw new Error(`the second launch panicked: ${tail}`);
+  if (!r.stderr.includes("no D-Bus session bus")) throw new Error(`the missing bus was not logged: ${tail}`);
+}
+
 const tid = (id: string) => `[data-testid="${id}"]`;
 let driver: ChildProcess | undefined;
 /** Holds the vault and its passphrase file: out of OUT, which CI uploads; removed at the end. */
@@ -222,9 +236,25 @@ async function main() {
     await wd.screenshot("6-pay-from-second-launch");
     step("second launch: pay: link forwarded, Pay prefilled");
 
+    // The same root through a symlinked parent: one instance name (the hash of the canonical root).
+    const linked = join(work, "linked");
+    symlinkSync(work, linked);
+    secondLaunch(join(linked, "data"), `pay:${address}?label=Symlinked`);
+    await waitValue("pay-label", "Symlinked");
+    step("second launch through a symlinked parent: forwarded to the same instance");
+
+    // No session bus (and no fallback socket in an empty runtime directory), then a malformed bus
+    // address: no plugin, so the second launch stops at the lock; the running app keeps its page.
+    const runtime = mkdtempSync(join(work, "runtime-"));
+    refusedLaunch(dataRoot, `pay:${address}?label=Refused`, { XDG_RUNTIME_DIR: runtime });
+    refusedLaunch(dataRoot, `pay:${address}?label=Refused`, { DBUS_SESSION_BUS_ADDRESS: "nonsense", XDG_RUNTIME_DIR: runtime });
+    await waitValue("pay-label", "Symlinked");
+    await wd.screenshot("7-after-refused-launches");
+    step("second launch without a session bus: refused at the instance lock, no panic");
+
     await wd.press(tid("toolbar-lock"));
     await wd.waitFor(tid("lock-field"), "the lock screen after locking");
-    await wd.screenshot("7-locked-again");
+    await wd.screenshot("8-locked-again");
     step("locked again");
   } catch (e) {
     await wd.screenshot("failure").catch(() => undefined);

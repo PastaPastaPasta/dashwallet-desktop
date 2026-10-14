@@ -2386,6 +2386,8 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "dashcore",
+ "dirs",
+ "dunce",
  "dw-coinjoin",
  "dw-console",
  "dw-engine",
@@ -2408,6 +2410,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "ts-rs",
+ "zbus",
  "zeroize",
 ]
 

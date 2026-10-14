@@ -13,6 +13,7 @@ pub mod dto;
 pub mod error;
 #[cfg(test)]
 mod history_vectors_tests;
+pub mod instance;
 mod ipc;
 #[cfg(test)]
 mod ipc_tests;
@@ -20,6 +21,7 @@ pub mod launch;
 pub mod shell;
 pub mod state;
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -148,7 +150,7 @@ pub fn run() {
     {
         eprintln!("dw-app: startup before-run {ms}");
     }
-    let launch = match launch::parse(std::env::args().skip(1)) {
+    let mut launch = match launch::parse(std::env::args().skip(1)) {
         Ok(ParseOutcome::Run(o)) => *o,
         Ok(ParseOutcome::Help) => {
             println!("{}", launch::usage());
@@ -159,10 +161,27 @@ pub fn run() {
             std::process::exit(2);
         }
     };
+    let context = tauri::generate_context!();
+    // The data root first, created and canonical: the instance name, its
+    // lock, the window-state file and the engine all take this one path.
+    let identifier = context.config().identifier.clone();
+    let root = instance::data_root(launch.data_dir.as_deref(), || {
+        dirs::data_dir().map(|dir| dir.join(identifier))
+    })
+    .unwrap_or_else(|e| {
+        let dir = launch
+            .data_dir
+            .as_deref()
+            .unwrap_or(Path::new("the app-data directory"));
+        eprintln!("dash-wallet: data directory {}: {e}", dir.display());
+        std::process::exit(1);
+    });
+    launch.data_dir = Some(root.clone());
     // The single-instance plugin first: a second launch hands its links to
-    // the running app and exits before anything else starts.
+    // the running app and exits before anything else starts. Where it
+    // cannot, the instance lock (taken before the engine opens) stops it.
     let mut base = tauri::Builder::<tauri::Wry>::new();
-    if let Some(single_instance) = shell::native::single_instance(&launch) {
+    if let Some(single_instance) = shell::native::single_instance(&root) {
         base = base.plugin(single_instance);
     }
     if let Some(window_state) = shell::native::window_state(&launch) {
@@ -171,7 +190,7 @@ pub fn run() {
     let app = app_builder(base, launch, started, dw_vault::VaultConfig::default())
         .menu(shell::menu::build)
         .on_menu_event(shell::menu::handle)
-        .build(tauri::generate_context!())
+        .build(context)
         .unwrap_or_else(|e| {
             eprintln!("dash-wallet: could not start: {e}");
             std::process::exit(1);
@@ -322,6 +341,45 @@ mod tests {
         .unwrap();
         assert_eq!(state.engine.config().data_root, root);
         assert!(root.is_dir());
+    }
+
+    #[test]
+    fn a_locked_data_root_is_not_opened_twice() {
+        let app = tauri::test::mock_app();
+        let dir = dw_testutil::private_tempdir();
+        let root = dir.path().join("data");
+        let opts = || LaunchOptions {
+            data_dir: Some(root.clone()),
+            ..LaunchOptions::default()
+        };
+        let open = || {
+            AppState::new(
+                app.handle(),
+                opts(),
+                Instant::now(),
+                Default::default(),
+                || unreachable!("--datadir given"),
+            )
+        };
+        let first = open().unwrap();
+        let entries = || {
+            let mut names: Vec<_> = std::fs::read_dir(&root)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = entries();
+        let Err(second) = open() else {
+            panic!("a second AppState opened a locked data root");
+        };
+        assert_eq!(second.code_str(), AppCode::AlreadyRunning.as_str());
+        assert!(second.to_string().contains("already running"), "{second}");
+        // The refused open wrote nothing into the root.
+        assert_eq!(entries(), before);
+        drop(first);
+        open().expect("the root opens again once its holder is gone");
     }
 
     #[test]

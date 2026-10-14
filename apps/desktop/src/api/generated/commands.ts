@@ -2693,6 +2693,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.selftest",
   "app.selftest_passphrase_file",
   "app.data_dir",
+  "app.already_running",
   "app.unknown_handle",
   "app.too_many_handles",
   "invalid_config",

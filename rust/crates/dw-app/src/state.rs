@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 
 use crate::bridge::{EventMemory, TauriSink};
 use crate::error::{AppCode, AppError, EngineCode};
+use crate::instance::InstanceLock;
 use crate::launch::LaunchOptions;
 use crate::shell::Shell;
 
@@ -39,6 +40,9 @@ pub struct AppState {
     /// Deep links and the native menus' state (U-01). The same `Arc` is
     /// Tauri-managed, for the callbacks that run before this state exists.
     pub shell: Arc<Shell>,
+    /// The data root's instance lock, held while the app runs. Declared
+    /// after `engine`, so it is released after the engine is dropped.
+    _instance: InstanceLock,
     /// Test seam: a payment `authorize` passes it between reading the
     /// setting and issuing the grant.
     #[cfg(test)]
@@ -160,6 +164,15 @@ impl AppState {
             Some(dir) => dir.clone(),
             None => default_data_dir()?,
         };
+        // The lock before the engine: a second process on this root stops
+        // here, before it opens any wallet database.
+        dw_fs::create_private_dir(&data_root).map_err(|e| {
+            AppError::app(
+                AppCode::DataDir,
+                format!("cannot create {}: {e}", data_root.display()),
+            )
+        })?;
+        let instance = InstanceLock::acquire(&data_root)?;
         let engine = Engine::new(
             EngineConfig {
                 data_root,
@@ -181,6 +194,7 @@ impl AppState {
             memory,
             payment_policy: Arc::default(),
             shell,
+            _instance: instance,
             #[cfg(test)]
             payment_seam: StdMutex::default(),
             #[cfg(test)]
