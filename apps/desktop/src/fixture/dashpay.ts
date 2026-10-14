@@ -78,6 +78,12 @@ export interface RequestTimes {
   outgoing: number | null;
 }
 
+/** The engine's `main_username`: the main identity's main name, none while its names update. */
+export function mainUsername(d: DashPayWorld): string | null {
+  const main = d.identities.find((i) => i.isMain);
+  return main && !main.namesUpdating ? main.mainName : null;
+}
+
 /** Base58 identity ids: 32 bytes, 43 or 44 characters as Platform prints them. */
 export const IDENTITY = {
   alice: "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF",

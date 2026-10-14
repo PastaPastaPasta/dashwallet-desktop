@@ -13,6 +13,10 @@ createdAt: number, address: string,
  */
 amount: number | null, label: string | null, message: string | null, 
 /**
+ * The wallet's DashPay username, as `uri` carries it (DP3-03).
+ */
+username: string | null, 
+/**
  * The `dash:` URI of the request.
  */
 uri: string, };

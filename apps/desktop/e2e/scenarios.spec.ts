@@ -16,7 +16,7 @@ interface State {
 
 const STATES: State[] = [
   { name: "empty-wallet", scenario: "empty", ready: (p) => p.getByTestId("history-empty").waitFor() },
-  { name: "no-wallet", scenario: "no-wallet", ready: (p) => p.getByTestId("no-wallet").waitFor() },
+  { name: "no-wallet", scenario: "no-wallet", ready: (p) => p.getByTestId("onboarding-welcome").waitFor() },
   { name: "locked-at-start", scenario: "locked", ready: (p) => p.getByTestId("lock-field").waitFor() },
   { name: "loading", scenario: "funded", extra: "&delay=600000", ready: (p) => p.getByTestId("splash").waitFor() },
   {
@@ -64,7 +64,7 @@ for (const scenario of SCENARIO_NAMES) {
   test(`${scenario} boots without an engine: all IPC is the fixture's`, async ({ page }) => {
     const errors = trackPageErrors(page);
     await page.goto(fixtureUrl(scenario, "light"));
-    await page.locator("[data-testid=hero], [data-testid=no-wallet], [data-testid=lock-screen]").first().waitFor();
+    await page.locator("[data-testid=hero], [data-testid=onboarding], [data-testid=lock-screen]").first().waitFor();
     const fixture = await page.evaluate(() => ({ sentinel: window.__dwFixture?.sentinel, scenario: window.__dwFixture?.scenario, calls: window.__dwFixture?.calls }));
     expect(fixture.sentinel).toBe("dw-fixture-backend:U-07");
     expect(fixture.scenario).toBe(scenario);

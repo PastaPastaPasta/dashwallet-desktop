@@ -190,7 +190,7 @@ test("menu commands: navigate, tools tabs, discreet, about, lock; the menus mirr
 
   await command(page, { kind: "toggleDiscreet" });
   await expect(page.getByTestId("toolbar-discreet")).toHaveAttribute("aria-pressed", "true");
-  await expect.poll(() => page.evaluate(() => window.__dwFixture!.world.shellSync)).toEqual({ discreet: true, canLock: true });
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.world.shellSync)).toEqual({ discreet: true, canLock: true, secretShown: false });
 
   await command(page, { kind: "about" });
   await expect(page.getByTestId("about-version")).toHaveText("0.1.0");

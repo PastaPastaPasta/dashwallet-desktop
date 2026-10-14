@@ -48,17 +48,17 @@ use crate::{
 
 const W: WalletId = WalletId([0xAA; 32]);
 /// Our identity and the people around it.
-const ME: u8 = 1;
-const BOB: u8 = 2;
-const CAROL: u8 = 3;
-const DAVE: u8 = 4;
-const ERIN: u8 = 5;
+pub(super) const ME: u8 = 1;
+pub(super) const BOB: u8 = 2;
+pub(super) const CAROL: u8 = 3;
+pub(super) const DAVE: u8 = 4;
+pub(super) const ERIN: u8 = 5;
 
-fn id(n: u8) -> Identifier {
+pub(super) fn id(n: u8) -> Identifier {
     Identifier::from([n; 32])
 }
 
-fn b58(n: u8) -> String {
+pub(super) fn b58(n: u8) -> String {
     id(n).to_string(Encoding::Base58)
 }
 
@@ -86,7 +86,7 @@ fn identity(n: u8) -> Identity {
 }
 
 /// The pair `me` and `n` as the library restores it.
-fn established_contact(n: u8, ours: u64, theirs: u64) -> EstablishedContact {
+pub(super) fn established_contact(n: u8, ours: u64, theirs: u64) -> EstablishedContact {
     EstablishedContact::new(id(n), request(ME, n, ours), request(n, ME, theirs))
 }
 

@@ -10,6 +10,7 @@ import type { AppEvent } from "../api/generated/commands";
 import type { Recipient } from "../api/generated/Recipient";
 import { installFixture, type FixtureHandle } from "./index";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W } from "./scenarios";
+import { registered } from "./dashpay";
 import { classifyAddress, paymentUri, parseAmount, qrMatrix } from "./send";
 
 const PAYEE = "yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd";
@@ -38,6 +39,26 @@ async function prepared(r: Recipient) {
   const grant = await cmd.authorize({ kind: "spend", maxDuffs: est.totalSent + est.fee }, W, PASS);
   return { d, est, p: await cmd.draftPrepare(d, grant.id) };
 }
+
+describe("fixture receive username (DP3-03)", () => {
+  it("is the main name, and a stored request follows it when read", async () => {
+    expect(await cmd.receiveUsername(W)).toBeNull();
+    const plain = await cmd.createReceiveRequest(W, null, "Rent", null);
+    expect(plain).toMatchObject({ username: null, uri: `dash:${plain.address}?label=Rent` });
+    fixture.world.dashpay = registered();
+    expect(await cmd.receiveUsername(W)).toBe("alice");
+    const [stored] = await cmd.receiveRequests(W);
+    expect(stored).toMatchObject({ id: plain.id, username: "alice", uri: `dash:${plain.address}?label=Rent&user=alice` });
+    fixture.world.dashpay.identities[0].namesUpdating = true;
+    expect(await cmd.receiveUsername(W)).toBeNull();
+    await expect(cmd.receiveUsername("ff".repeat(32))).rejects.toMatchObject({ code: "wallet_not_found" });
+  });
+
+  it("stores no request whose amount is out of range", async () => {
+    await expect(cmd.createReceiveRequest(W, -1, "Rent", null)).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(await cmd.receiveRequests(W)).toEqual([]);
+  });
+});
 
 describe("fixture send engine", () => {
   it("estimates with the largest coin first and a 1 000 duffs/kB fee", async () => {
@@ -207,6 +228,12 @@ describe("fixture text helpers", () => {
 
   it("writes dash: URIs and refuses a QR code over 255 characters", () => {
     expect(paymentUri(PAYEE, null, "A B", "x&y")).toBe(`dash:${PAYEE}?label=A%20B&message=x%26y`);
+    // dw-uri's format_request_uri: `user=` last, percent-encoded as QUrl does (DP3-03).
+    expect(paymentUri(PAYEE, null, "A B", null, "alice")).toBe(`dash:${PAYEE}?label=A%20B&user=alice`);
+    expect(paymentUri(PAYEE, null, null, null, "a(b)!")).toBe(`dash:${PAYEE}?user=a%28b%29%21`);
+    expect(paymentUri(PAYEE, null, null, null, "")).toBe(`dash:${PAYEE}`);
+    // As the engine (qurl::to_percent_encoding): only alphanumerics and `-._~` stay.
+    expect(paymentUri(PAYEE, null, "Rent (May)!", null)).toBe(`dash:${PAYEE}?label=Rent%20%28May%29%21`);
     const qr = qrMatrix(paymentUri(PAYEE, 100_000_000, null, null));
     expect(qr.modules).toHaveLength(qr.size * qr.size);
     expect(() => qrMatrix("x".repeat(256))).toThrow();

@@ -29,9 +29,18 @@ export class IpcBackend implements Backend {
   listWallets = () => cmd.listWallets();
   lockStatus = () => cmd.lockStatus();
   unlock = (passphrase: string) => cmd.unlock(passphrase);
+  unlockMixingOnly = (passphrase: string) => cmd.unlockMixingOnly(passphrase);
   lock = () => cmd.lock();
   lastLockReport = () => cmd.lastLockReport();
   leases = () => cmd.leases();
+  createVault = cmd.createVault;
+  generateMnemonic = (wordCount: number) => cmd.generateMnemonic(wordCount, "english");
+  checkMnemonic = cmd.checkMnemonic;
+  importWallet = cmd.importWallet;
+  authorize = cmd.authorize;
+  revokeGrant = cmd.revokeGrant;
+  revealMnemonic = cmd.revealMnemonic;
+  recoverWithMnemonic = cmd.recoverWithMnemonic;
   dispatchStatus = cmd.dispatchStatus;
   balance = (walletId: string) => cmd.balance(walletId);
   syncStatus = () => cmd.syncStatus();
@@ -46,6 +55,7 @@ export class IpcBackend implements Backend {
   createReceiveRequest = cmd.createReceiveRequest;
   receiveRequests = cmd.receiveRequests;
   deleteReceiveRequest = cmd.deleteReceiveRequest;
+  receiveUsername = cmd.receiveUsername;
   buildPaymentUri = cmd.buildPaymentUri;
   qrMatrix = cmd.qrMatrix;
   classifyAddress = cmd.classifyAddress;
@@ -66,8 +76,6 @@ export class IpcBackend implements Backend {
   coinSelectionSummary = (walletId: string, outpoints: OutPoint[], payAmounts: number[], fee: FeeMode) =>
     cmd.coinSelectionSummary(walletId, outpoints, payAmounts, fee, false);
   paymentAuthentication = () => cmd.paymentAuthentication();
-  authorize = cmd.authorize;
-  revokeGrant = cmd.revokeGrant;
   dashpayStatus = cmd.dashpayStatus;
   identities = cmd.identities;
   dashpayUnreadCount = cmd.dashpayUnreadCount;

@@ -597,6 +597,14 @@ export function receiveRequests(walletId: string): Promise<Array<ReceiveRequest>
   return invoke<Array<ReceiveRequest>>("receive_requests", { walletId });
 }
 
+/**
+ * The username the Receive QR carries as `user=` (IOS-055): the main
+ * name of the wallet's main DashPay identity, if any.
+ */
+export function receiveUsername(walletId: string): Promise<string | null> {
+  return invoke<string | null>("receive_username", { walletId });
+}
+
 export function deleteReceiveRequest(walletId: string, requestId: number): Promise<null> {
   return invoke<null>("delete_receive_request", { walletId, requestId });
 }
@@ -1211,12 +1219,13 @@ export function parsePaymentUri(network: string, text: string): Promise<UriParse
 }
 
 /**
- * Writes a `dash:` URI as dash-qt's `formatBitcoinURI` (QT-085). The
+ * Writes a `dash:` URI as dash-qt's `formatBitcoinURI` (QT-085), then
+ * the DashPay username as `user=` (IOS-055; `receive_username`). The
  * address is not validated; the amount, in duffs, is at most 21 million
  * DASH.
  */
-export function buildPaymentUri(address: string, amount: number | null, label: string | null, message: string | null): Promise<string> {
-  return invoke<string>("build_payment_uri", { address, amount, label, message });
+export function buildPaymentUri(address: string, amount: number | null, label: string | null, message: string | null, user: string | null): Promise<string> {
+  return invoke<string>("build_payment_uri", { address, amount, label, message, user });
 }
 
 /**
@@ -1940,7 +1949,10 @@ export function routeLink(network: string, text: string): Promise<LinkRoute> {
 
 /**
  * What the native menus and the tray mirror: Discreet Mode's check
- * and whether Lock Wallet is enabled.
+ * and whether Lock Wallet is enabled; and whether a secret is on
+ * screen (the window's content protection). Answers once the
+ * protection change has run on the window (U-02 D27);
+ * `app.screen_protection` when it could not run.
  */
 export function shellSync(sync: ShellSync): Promise<null> {
   return invoke<null>("shell_sync", { sync });
@@ -2055,6 +2067,7 @@ export type CommandArgs = {
   addresses: { walletId: string; filter: AddressFilter };
   create_receive_request: { walletId: string; amount: number | null; label: string | null; message: string | null };
   receive_requests: { walletId: string };
+  receive_username: { walletId: string };
   delete_receive_request: { walletId: string; requestId: number };
   address_book: { walletId: string; purpose: AddressPurposeName | null; search: string | null };
   save_address_book_entry: { walletId: string; address: string; label: string; purpose: AddressPurposeName; replace: boolean };
@@ -2130,7 +2143,7 @@ export type CommandArgs = {
   fee_policy: {  };
   coin_selection_summary: { walletId: string; outpoints: Array<OutPoint>; payAmounts: Array<number>; fee: FeeMode; allChangeToFee: boolean };
   parse_payment_uri: { network: string; text: string };
-  build_payment_uri: { address: string; amount: number | null; label: string | null; message: string | null };
+  build_payment_uri: { address: string; amount: number | null; label: string | null; message: string | null; user: string | null };
   classify_address: { network: string; text: string };
   qr_matrix: { text: string };
   coinjoin_limits: {  };
@@ -2288,6 +2301,7 @@ export type CommandResults = {
   addresses: Array<AddressInfo>;
   create_receive_request: ReceiveRequest;
   receive_requests: Array<ReceiveRequest>;
+  receive_username: string | null;
   delete_receive_request: null;
   address_book: Array<AddressBookEntry>;
   save_address_book_entry: AddressBookEntry;
@@ -2523,6 +2537,7 @@ export const COMMANDS: Record<CommandName, string> = {
   addresses: "wallets",
   create_receive_request: "wallets",
   receive_requests: "wallets",
+  receive_username: "wallets",
   delete_receive_request: "wallets",
   address_book: "wallets",
   save_address_book_entry: "wallets",
@@ -2711,6 +2726,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.already_running",
   "app.unknown_handle",
   "app.too_many_handles",
+  "app.screen_protection",
   "invalid_config",
   "invalid_argument",
   "network_not_open",

@@ -338,7 +338,8 @@ commands! {
         uri::parse_payment_uri(&network, &text)
     }
 
-    /// Writes a `dash:` URI as dash-qt's `formatBitcoinURI` (QT-085). The
+    /// Writes a `dash:` URI as dash-qt's `formatBitcoinURI` (QT-085), then
+    /// the DashPay username as `user=` (IOS-055; `receive_username`). The
     /// address is not validated; the amount, in duffs, is at most 21 million
     /// DASH.
     #[facade()]
@@ -348,8 +349,9 @@ commands! {
         amount: Option<u64>,
         label: Option<String>,
         message: Option<String>,
+        user: Option<String>,
     ) -> String {
-        uri::build_payment_uri(address, amount, label, message)
+        uri::build_payment_uri(address, amount, label, message, user)
     }
 
     /// What a pasted or scanned destination is on a network (IOS-042).

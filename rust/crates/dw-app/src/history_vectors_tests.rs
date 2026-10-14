@@ -413,6 +413,7 @@ fn records() -> Vec<TxRecord> {
                 label: s.label.map(str::to_string),
                 counts_toward_balance: s.kind != TxStatusKind::Abandoned,
                 involves_watch_only: s.watch,
+                counterparty: None,
             }
         })
         .collect();

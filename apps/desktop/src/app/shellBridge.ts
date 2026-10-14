@@ -127,6 +127,13 @@ export function runCommand(command: ShellCommand, lock: () => void) {
       return;
     case "toggleDiscreet":
       ui.set({ discreet: !ui.get().discreet });
+      return;
+    // Both dropped while locked (App), as the other dialogs are.
+    case "addWallet":
+      ui.set({ onboarding: true, dialog: null, detail: null });
+      return;
+    case "recoveryPhrase":
+      ui.set({ dialog: "recoveryPhrase" });
   }
 }
 
