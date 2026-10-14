@@ -1,12 +1,14 @@
-// The routes the shell opens that later tasks build (DASHPAY §4): each renders its page with a
-// placeholder, which U-02..U-06 and the DashPay tasks replace. What a link or a menu put on a
+// The routes the shell opens (DASHPAY §4). Those later tasks build render their page with a
+// placeholder, which U-02, U-04..U-06 and the DashPay tasks replace; Pay ▸ To an address is
+// U-03's (screens/pay). What a link or a menu put on a
 // route (Pay's prefill, Add contact's prefill, a Tools tab) is shown here already, so links
 // route end to end.
 
-import { useId, useState, type ReactNode } from "react";
+import { useId, type ReactNode } from "react";
+import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { DashButton } from "../components/basics";
-import { full } from "../format/amount";
-import { navigate, ui, useUi, type PayPrefill, type PayTab, type Route, type ToolsTab } from "../app/ui";
+import { navigate, ui, useUi, type PayTab, type Route, type ToolsTab } from "../app/ui";
+import { PayToAddress } from "./pay/PayToAddress";
 
 const TITLES: Record<Route, string> = {
   home: "Home",
@@ -24,8 +26,7 @@ const TITLES: Record<Route, string> = {
 };
 
 /** The placeholder text of each route that `Placeholder` renders. */
-const NOT_YET: Record<Exclude<Route, "home" | "pay" | "contacts" | "activity" | "tools">, string> = {
-  receive: "Receiving addresses and payment requests are not available yet.",
+const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "tools">, string> = {
   coinJoin: "CoinJoin mixing is not available yet.",
   explore: "Explore is not available yet.",
   notifications: "DashPay notifications are not available yet.",
@@ -34,7 +35,7 @@ const NOT_YET: Record<Exclude<Route, "home" | "pay" | "contacts" | "activity" | 
   joinDashPay: "Creating a DashPay username is not available yet.",
 };
 
-function Page({ route, children }: { route: Route; children?: ReactNode }) {
+export function Page({ route, children }: { route: Route; children?: ReactNode }) {
   return (
     <main className="page" data-testid={`page-${route}`}>
       <div className="page-column">
@@ -129,43 +130,12 @@ function Tabs<T extends string>({
   );
 }
 
-function Field({ label, value, testId, mono }: { label: string; value: string; testId: string; mono?: boolean }) {
-  const id = useId();
-  const [text, setText] = useState(value);
-  return (
-    <div className="form-field">
-      <label htmlFor={id}>{label}</label>
-      <input id={id} className={mono ? "mono" : undefined} data-testid={testId} value={text} onChange={(e) => setText(e.target.value)} />
-    </div>
-  );
-}
-
-function PayToAddress({ prefill }: { prefill: PayPrefill | null }) {
-  return (
-    <form className="pay-form" data-testid="pay-address-form" onSubmit={(e) => e.preventDefault()}>
-      {prefill?.username && (
-        <p className="placeholder-note" data-testid="pay-username">
-          The link names the payee @{prefill.username}. The name is not verified.
-        </p>
-      )}
-      <Field label="Address" value={prefill?.address ?? ""} testId="pay-address" mono />
-      <Field label="Amount (DASH)" value={prefill?.amount ? full(prefill.amount, false) : ""} testId="pay-amount" />
-      <Field label="Label" value={prefill?.label ?? ""} testId="pay-label" />
-      <Field label="Message" value={prefill?.message ?? ""} testId="pay-message" />
-      <NotYet testId="placeholder-pay">Sending is not available yet.</NotYet>
-      <DashButton variant="filledWhiteBlue" disabled data-testid="pay-continue">
-        Continue
-      </DashButton>
-    </form>
-  );
-}
-
 const PAY_TABS: Tab<PayTab>[] = [
   { id: "contact", title: "To a contact" },
   { id: "address", title: "To an address" },
 ];
 
-export function PayPage() {
+export function PayPage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const tab = useUi((s) => s.payTab);
   const prefill = useUi((s) => s.payPrefill);
   const links = useUi((s) => s.payLinks);
@@ -173,8 +143,8 @@ export function PayPage() {
     <Page route="pay">
       <Tabs label="Pay" tabs={PAY_TABS} current={tab} onSelect={(payTab) => ui.set({ payTab })} testId="pay-tabs">
         {tab === "address" ? (
-          // Keyed by the links that opened Pay, so each one resets what was typed.
-          <PayToAddress key={links} prefill={prefill} />
+          // Keyed by the links that opened Pay and the wallet, so each one starts a fresh form.
+          <PayToAddress key={`${links}:${walletId}`} prefill={prefill} walletId={walletId} network={network} />
         ) : (
           <NotYet testId="pay-contact">Paying a DashPay contact is not available yet.</NotYet>
         )}

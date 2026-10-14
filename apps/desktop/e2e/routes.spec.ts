@@ -90,7 +90,8 @@ test("a payment link opens Pay ▸ To an address, prefilled", async ({ page }) =
   await expect(page.getByTestId("pay-label")).toHaveValue("Coffee");
   await expect(page.getByTestId("pay-message")).toHaveValue("Thanks");
   await expect(page.getByTestId("pay-username")).toContainText("@bob");
-  await expect(page.getByTestId("pay-continue")).toBeDisabled();
+  // Review waits for the engine's estimate of the prefilled payment.
+  await expect(page.getByTestId("pay-continue")).toBeEnabled();
   // The page's title takes the focus.
   await expect(page.getByTestId("page-pay").locator("h1")).toBeFocused();
   // The same link again starts a fresh form.

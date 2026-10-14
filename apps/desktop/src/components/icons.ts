@@ -29,6 +29,7 @@ import shortcutScanQR from "@icons/shortcut-scan-qr@2x.png";
 import shortcutBackup from "@icons/shortcut-backup@2x.png";
 import dashLogo from "@icons/brand-dash-logo@2x.png";
 import copy from "@icons/action-copy@2x.png";
+import messageWarning from "@icons/message-warning@2x.png";
 import searchMagnifyingGlass from "@icons/form-search@2x.png";
 import searchMagnifyingGlassDark from "@icons/form-search-dark@2x.png";
 
@@ -55,6 +56,7 @@ export const iconFiles = {
   shortcutBackup: { light: shortcutBackup },
   dashLogo: { light: dashLogo },
   copy: { light: copy },
+  messageWarning: { light: messageWarning },
   searchMagnifyingGlass: { light: searchMagnifyingGlass, dark: searchMagnifyingGlassDark },
 } satisfies Partial<Record<IconId, IconFiles>>;
 

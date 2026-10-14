@@ -17,102 +17,17 @@
 // `scripts/e2e-tauri.sh` builds the binaries and runs it. Node 24 runs this file as is (type
 // stripping); it uses W3C WebDriver over fetch and no other dependency.
 
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createWriteStream, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync, type ChildProcess } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { APP, CHAIN, dwcli, env, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
 
-const env = (name: string, fallback?: string): string => {
-  const v = process.env[name] ?? fallback;
-  if (!v) throw new Error(`set ${name}`);
-  return v;
-};
-
-const APP = resolve(env("DW_APP"));
-const DWCLI = resolve(env("DWCLI"));
-const DRIVER = env("TAURI_DRIVER", "tauri-driver");
 const OUT = resolve(env("DW_E2E_OUT", "test-results/tauri-e2e"));
 const PORT = Number(env("DW_E2E_PORT", "4744"));
 const PASSPHRASE = "e2e smoke passphrase";
-// Regtest needs a DAPI address; with --no-platform nothing connects to it.
-const CHAIN = ["--network", "regtest", "--no-platform", "--dapi", "https://127.0.0.1:1"];
-const TIMEOUT_MS = Number(env("DW_E2E_TIMEOUT_MS", "120000"));
 /** A Base58 identity id (32 bytes of 7) for the `dashpay://user` link. */
 const IDENTITY = "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx";
-
-/** Calls `probe` every 250 ms until it returns a value, for at most `ms`. */
-async function poll<T>(ms: number, what: string, probe: () => Promise<T | undefined>): Promise<T> {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    const v = await probe();
-    if (v !== undefined) return v;
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  throw new Error(`timed out after ${ms} ms waiting for ${what}`);
-}
-
-// ------------------------------------------------------------------ W3C WebDriver client
-
-// The W3C web element identifier.
-const ELEMENT = "element-6066-11e4-a52e-4f735466cecf";
-
-class WebDriver {
-  base: string;
-  session = "";
-
-  constructor(base: string) {
-    this.base = base;
-  }
-
-  async call<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await fetch(`${this.base}${path}`, {
-      method,
-      headers: { "content-type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const json = (await res.json()) as { value: T & { error?: string; message?: string } };
-    if (!res.ok || (json.value && typeof json.value === "object" && "error" in json.value && json.value.error))
-      throw new Error(`${method} ${path}: ${json.value?.error}: ${json.value?.message}`);
-    return json.value;
-  }
-
-  async start(capabilities: unknown) {
-    const v = await this.call<{ sessionId: string }>("POST", "/session", { capabilities });
-    this.session = v.sessionId;
-  }
-
-  s = (path: string) => `/session/${this.session}${path}`;
-
-  async find(css: string): Promise<string | null> {
-    const found = await this.call<Record<string, string>[]>("POST", this.s("/elements"), { using: "css selector", value: css });
-    return found[0]?.[ELEMENT] ?? null;
-  }
-
-  waitFor(css: string, what = css): Promise<string> {
-    return poll(TIMEOUT_MS, what, async () => {
-      const el = await this.find(css);
-      return el && (await this.call<boolean>("GET", this.s(`/element/${el}/displayed`))) ? el : undefined;
-    });
-  }
-
-  async waitGone(css: string, what = css) {
-    await poll(TIMEOUT_MS, `${what} to go`, async () => ((await this.find(css)) ? undefined : true));
-  }
-
-  text = (el: string) => this.call<string>("GET", this.s(`/element/${el}/text`));
-  click = (el: string) => this.call<null>("POST", this.s(`/element/${el}/click`), {});
-  type = (el: string, text: string) => this.call<null>("POST", this.s(`/element/${el}/value`), { text });
-  press = async (css: string) => void (await this.click(await this.waitFor(css)));
-  fill = async (css: string, text: string) => void (await this.type(await this.waitFor(css), text));
-  script = <T>(script: string) => this.call<T>("POST", this.s("/execute/sync"), { script, args: [] });
-
-  async screenshot(name: string) {
-    const png = await this.call<string>("GET", this.s("/screenshot"));
-    writeFileSync(join(OUT, `${name}.png`), Buffer.from(png, "base64"));
-  }
-
-  end = () => this.call<null>("DELETE", this.s(""));
-}
 
 // ------------------------------------------------------------------ steps
 
@@ -143,24 +58,9 @@ function refusedLaunch(dataRoot: string, link: string, bus: Record<string, strin
   if (!r.stderr.includes("no D-Bus session bus")) throw new Error(`the missing bus was not logged: ${tail}`);
 }
 
-const tid = (id: string) => `[data-testid="${id}"]`;
 let driver: ChildProcess | undefined;
 /** Holds the vault and its passphrase file: out of OUT, which CI uploads; removed at the end. */
 let work: string | undefined;
-
-function dwcli(dataRoot: string, passFile: string, ...args: string[]): string {
-  const r = spawnSync(DWCLI, ["--datadir", dataRoot, ...CHAIN, "--passphrase-file", passFile, ...args], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`dwcli ${args.join(" ")} failed (${r.status}): ${r.stderr}`);
-  return r.stdout;
-}
-
-const waitForDriver = (base: string) =>
-  poll(30_000, "tauri-driver to listen", () =>
-    fetch(`${base}/status`).then(
-      (r) => (r.ok ? true : undefined),
-      () => undefined,
-    ),
-  );
 
 async function main() {
   mkdirSync(OUT, { recursive: true });
@@ -179,15 +79,9 @@ async function main() {
   if (!address) throw new Error("dwcli receive printed no address");
   console.log(`smoke: regtest data root ${dataRoot}, wallet ${walletId.slice(0, 16)}…`);
 
-  const log = createWriteStream(join(OUT, "tauri-driver.log"));
-  // Its own process group: the cleanup below ends the driver, WebKitWebDriver and the app.
-  driver = spawn(DRIVER, ["--port", String(PORT), "--native-port", String(PORT + 1)], { stdio: ["ignore", "pipe", "pipe"], detached: true });
-  driver.stdout!.pipe(log);
-  driver.stderr!.pipe(log);
-  const base = `http://127.0.0.1:${PORT}`;
-  await waitForDriver(base);
-
-  const wd = new WebDriver(base);
+  const started = await startDriver(PORT, OUT);
+  driver = started.driver;
+  const wd = new WebDriver(started.base, OUT);
   const launchLink = `dash:${address}?amount=0.5&label=Launch%20link`;
   await wd.start({ alwaysMatch: { "tauri:options": { application: APP, args: ["--datadir", dataRoot, ...CHAIN, "--theme", "light", launchLink] } } });
   const value = (id: string) => wd.script<string>(`return document.querySelector('${tid(id)}')?.value ?? ""`);
@@ -288,12 +182,7 @@ main()
     process.exitCode = 1;
   })
   .finally(() => {
-    // The driver's process group: tauri-driver, WebKitWebDriver and the app. Gone already is fine.
-    try {
-      if (driver?.pid) process.kill(-driver.pid, "SIGTERM");
-    } catch {
-      // ESRCH
-    }
+    stopDriver(driver);
     try {
       if (work) rmSync(work, { recursive: true, force: true, maxRetries: 3 });
     } catch (e) {

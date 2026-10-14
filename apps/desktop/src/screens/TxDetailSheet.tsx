@@ -1,18 +1,19 @@
 // Transaction detail sheet (UX-SPEC §4.9, C23 medium): iOS TxDetail header with the dash-qt
-// facts (research 02 §4.6). Abandon/Resend and the label editor are not part of the spike.
+// facts (research 02 §4.6), the label editor, and Abandon / Resend where they apply (U-03 D15).
 
-import type { ReactNode } from "react";
+import { useId, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../api/backend";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxDetails } from "../api/generated/TxDetails";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
-import { useBackend, useTxDetail } from "../api/queries";
+import { keys, useBackend, useTxDetail, useTxDetailExtras } from "../api/queries";
 import { ui } from "../app/ui";
-import { AmountText, Chip, Icon } from "../components/basics";
+import { AmountText, Chip, DashButton, Icon } from "../components/basics";
 import type { UsedIcon } from "../components/icons";
 import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
-import { copyWithToast } from "../components/toast";
+import { CopyValue, DetailRow } from "../components/detail";
 import { full } from "../format/amount";
 import { detailDate, isProblem, rowDate, shownAmount, txChip, txIcon, txTitle } from "../format/tx";
 
@@ -37,27 +38,123 @@ function statusText(s: TxStatusInfo): string {
   }
 }
 
-function DetailRow({ label, children, testId }: { label: string; children: ReactNode; testId?: string }) {
+/** The transaction's label (QT-093): saved on Save, cleared when empty. */
+function LabelEditor({ walletId, txid, label }: { walletId: string; txid: string; label: string | null }) {
+  const b = useBackend();
+  const client = useQueryClient();
+  const id = useId();
+  const [text, setText] = useState(label ?? "");
+  const [problem, setProblem] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const changed = text.trim() !== (label ?? "");
+  const save = async () => {
+    setBusy(true);
+    setProblem(null);
+    try {
+      await b.setTxLabel(walletId, txid, text.trim() || null);
+      await client.invalidateQueries({ queryKey: keys.historyAll(walletId) });
+      await client.invalidateQueries({ queryKey: keys.txDetail(walletId, txid) });
+    } catch (e) {
+      setProblem(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <div className="detail-row" data-testid={testId}>
-      <dt className="detail-label">{label}</dt>
-      <dd className="detail-value">{children}</dd>
-    </div>
+    <form
+      className="label-editor card-l1"
+      data-testid="tx-detail-label"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (changed && !busy) void save();
+      }}
+    >
+      <label htmlFor={id}>Label</label>
+      <span className="label-editor-row">
+        <input id={id} data-testid="tx-label-input" value={text} autoComplete="off" placeholder="Add a label" onChange={(e) => setText(e.target.value)} />
+        <DashButton type="submit" variant="tintedBlue" size="small" data-testid="tx-label-save" disabled={!changed || busy}>
+          Save
+        </DashButton>
+      </span>
+      {problem && (
+        <span className="field-error" role="alert">
+          {problem}
+        </span>
+      )}
+    </form>
   );
 }
 
-function CopyValue({ value, label, mono = false }: { value: string; label: string; mono?: boolean }) {
+/** Abandon and Resend (QT-091), shown only when the engine says they apply. */
+function Actions({ walletId, txid }: { walletId: string; txid: string }) {
+  const b = useBackend();
+  const client = useQueryClient();
+  const extras = useTxDetailExtras(walletId, txid);
+  const [confirming, setConfirming] = useState(false);
+  const [note, setNote] = useState<{ text: string; problem: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const x = extras.data;
+  const can = !!x && (x.canAbandon || x.canResend);
+  // After an abandon the actions go, but its note stays.
+  if (!x || (!can && !note)) return null;
+  const run = async (what: "abandon" | "resend") => {
+    setBusy(true);
+    setNote(null);
+    try {
+      if (what === "abandon") await b.abandonTransaction(walletId, txid);
+      else await b.resendTransaction(walletId, txid);
+      setNote({ text: what === "abandon" ? "The transaction was abandoned." : "The transaction was sent to the network again.", problem: false });
+      setConfirming(false);
+      await client.invalidateQueries({ queryKey: keys.txDetailAll(walletId) });
+      await client.invalidateQueries({ queryKey: keys.historyAll(walletId) });
+    } catch (e) {
+      setNote({ text: errorMessage(e), problem: true });
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <span className="copy-value">
-      <span className={mono ? "mono" : undefined}>{value}</span>
-      <button type="button" className="copy-button" aria-label={`Copy ${label}`} title={`Copy ${label}`} onClick={() => void copyWithToast(value)}>
-        <Icon id="copy" size={20} />
-      </button>
-    </span>
+    <section className="tx-actions card-l1" aria-label="Actions" data-testid="tx-detail-actions">
+      {confirming ? (
+        <>
+          <p className="tx-actions-question">
+            Abandon this transaction? Its coins come back to the balance; if it reaches the network anyway, it still counts.
+          </p>
+          <span className="tx-actions-row">
+            <DashButton variant="tintedGray" size="small" disabled={busy} onClick={() => setConfirming(false)}>
+              Keep it
+            </DashButton>
+            <DashButton variant="plainRed" size="small" data-testid="tx-abandon-confirm" disabled={busy} onClick={() => void run("abandon")}>
+              Abandon transaction
+            </DashButton>
+          </span>
+        </>
+      ) : (
+        can && (
+          <span className="tx-actions-row">
+            {x.canResend && (
+              <DashButton variant="tintedBlue" size="small" data-testid="tx-resend" disabled={busy} onClick={() => void run("resend")}>
+                Resend
+              </DashButton>
+            )}
+            {x.canAbandon && (
+              <DashButton variant="plainRed" size="small" data-testid="tx-abandon" disabled={busy} onClick={() => setConfirming(true)}>
+                Abandon transaction
+              </DashButton>
+            )}
+          </span>
+        )
+      )}
+      {note && (
+        <p className={note.problem ? "form-problem" : "placeholder-note"} role={note.problem ? "alert" : "status"} data-testid="tx-action-note">
+          {note.text}
+        </p>
+      )}
+    </section>
   );
 }
 
-function Body({ d, network }: { d: TxDetails; network: NetworkInfo }) {
+function Body({ d, network, walletId }: { d: TxDetails; network: NetworkInfo; walletId: string }) {
   const backend = useBackend();
   const row = d.rows[0];
   const amount = d.rows.reduce((sum, r) => sum + r.amount, 0);
@@ -100,9 +197,10 @@ function Body({ d, network }: { d: TxDetails; network: NetworkInfo }) {
           <CopyValue value={d.txid} label="transaction ID" mono />
         </DetailRow>
         <DetailRow label="Size">{`${d.sizeBytes} bytes`}</DetailRow>
-        {d.label && <DetailRow label="Label">{d.label}</DetailRow>}
         {d.message && <DetailRow label="Message">{d.message}</DetailRow>}
       </dl>
+      <LabelEditor key={`label-${d.txid}`} walletId={walletId} txid={d.txid} label={d.label} />
+      <Actions key={`actions-${d.txid}`} walletId={walletId} txid={d.txid} />
       <details className="disclosure card-l1" data-testid="tx-detail-inputs">
         <summary>Inputs ({d.inputs.length})</summary>
         <ul role="list" className="io-list">
@@ -139,7 +237,7 @@ export function TxDetailSheet({ walletId, txid, network }: { walletId: string; t
   return (
     <Sheet title="Transaction details" width="medium" testId="tx-detail" onClose={() => ui.set({ detail: null })}>
       {detail.data ? (
-        <Body d={detail.data} network={network} />
+        <Body d={detail.data} network={network} walletId={walletId} />
       ) : detail.isError ? (
         <p role="alert">{errorMessage(detail.error)}</p>
       ) : (

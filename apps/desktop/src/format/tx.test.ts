@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
-import { dayTitle, groupByDay, shortAddress, shownAmount, txChip, txIcon, txTitle, typeTitle } from "./tx";
+import { dateRange, dayTitle, groupByDay, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
 
 const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
   kind: "confirmed",
@@ -64,5 +64,39 @@ describe("days and addresses", () => {
   it("shortens long addresses in the middle", () => {
     expect(shortAddress("yNBLvUCmZq3K8v4eusVmKavEj2XrPoQe1x")).toBe("yNBLvUCmZq3K…vEj2XrPoQe1x");
     expect(shortAddress("short")).toBe("short");
+  });
+});
+
+describe("table mode", () => {
+  it("uses dash-qt's type strings and party column", () => {
+    expect(tableTypeTitle("recvWithAddress")).toBe("Received with");
+    expect(tableTypeTitle("sendToOther")).toBe("Sent to");
+    expect(tableTypeTitle("coinJoinMixing")).toBe("CoinJoin Mixing");
+    expect(rowParty({ label: "Rent", address: "yAddr" })).toBe("Rent");
+    expect(rowParty({ label: null, address: "yAddr" })).toBe("yAddr");
+    expect(rowParty({ label: "", address: null })).toBe("(n/a)");
+  });
+});
+
+describe("date filter", () => {
+  // Tuesday 6 October 2026, noon (FIXTURE_NOW).
+  const now = new Date(2026, 9, 6, 12, 0, 0);
+  const s = (d: Date) => Math.floor(d.getTime() / 1000);
+
+  it("bounds each choice in local time, weeks from Monday", () => {
+    expect(dateRange("all", now)).toEqual({});
+    expect(dateRange("today", now)).toEqual({ dateFrom: s(new Date(2026, 9, 6)) });
+    expect(dateRange("thisWeek", now)).toEqual({ dateFrom: s(new Date(2026, 9, 5)) });
+    expect(dateRange("thisMonth", now)).toEqual({ dateFrom: s(new Date(2026, 9, 1)) });
+    expect(dateRange("lastMonth", now)).toEqual({ dateFrom: s(new Date(2026, 8, 1)), dateTo: s(new Date(2026, 9, 1)) });
+    expect(dateRange("thisYear", now)).toEqual({ dateFrom: s(new Date(2026, 0, 1)) });
+  });
+
+  it("starts a Sunday's week on the Monday before", () => {
+    expect(dateRange("thisWeek", new Date(2026, 9, 11, 9))).toEqual({ dateFrom: s(new Date(2026, 9, 5)) });
+  });
+
+  it("takes last December in January", () => {
+    expect(dateRange("lastMonth", new Date(2027, 0, 15))).toEqual({ dateFrom: s(new Date(2026, 11, 1)), dateTo: s(new Date(2027, 0, 1)) });
   });
 });

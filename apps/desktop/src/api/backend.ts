@@ -24,6 +24,26 @@ import type { OpenedNetwork } from "./generated/OpenedNetwork";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { TxDetails } from "./generated/TxDetails";
 import type { WalletSummary } from "./generated/WalletSummary";
+import type { AddressClass } from "./generated/AddressClass";
+import type { AddressInfo } from "./generated/AddressInfo";
+import type { AuthGrant } from "./generated/AuthGrant";
+import type { BroadcastOutcome } from "./generated/BroadcastOutcome";
+import type { ChangePolicy } from "./generated/ChangePolicy";
+import type { CoinSelectionSummary } from "./generated/CoinSelectionSummary";
+import type { CoinSource } from "./generated/CoinSource";
+import type { CredentialSpec } from "./generated/CredentialSpec";
+import type { FeeMode } from "./generated/FeeMode";
+import type { FeePolicy } from "./generated/FeePolicy";
+import type { GrantPurposeSpec } from "./generated/GrantPurposeSpec";
+import type { OutPoint } from "./generated/OutPoint";
+import type { PreparedTxHandle } from "./generated/PreparedTxHandle";
+import type { QrMatrix } from "./generated/QrMatrix";
+import type { ReceiveRequest } from "./generated/ReceiveRequest";
+import type { Recipient } from "./generated/Recipient";
+import type { TxDetailExtrasInfo } from "./generated/TxDetailExtrasInfo";
+import type { TxEstimate } from "./generated/TxEstimate";
+import type { Utxo } from "./generated/Utxo";
+import type { UtxoFilter } from "./generated/UtxoFilter";
 
 export interface Backend {
   readonly kind: "tauri" | "fixture";
@@ -42,6 +62,43 @@ export interface Backend {
   syncStatus(): Promise<SyncStatus>;
   historyPage(walletId: string, request: HistoryRequest): Promise<HistoryRows>;
   txDetail(walletId: string, txid: string): Promise<TxDetails>;
+  /** Which actions the detail sheet offers (Abandon, Resend). */
+  txDetailExtras(walletId: string, txid: string): Promise<TxDetailExtrasInfo>;
+  /** Sets (or, with `null`, clears) a transaction's label. */
+  setTxLabel(walletId: string, txid: string, label: string | null): Promise<null>;
+  abandonTransaction(walletId: string, txid: string): Promise<null>;
+  resendTransaction(walletId: string, txid: string): Promise<null>;
+  // Receive (U-03 D11).
+  currentReceiveAddress(walletId: string): Promise<AddressInfo>;
+  nextReceiveAddress(walletId: string, label: string | null): Promise<AddressInfo>;
+  createReceiveRequest(walletId: string, amount: number | null, label: string | null, message: string | null): Promise<ReceiveRequest>;
+  receiveRequests(walletId: string): Promise<ReceiveRequest[]>;
+  deleteReceiveRequest(walletId: string, requestId: number): Promise<null>;
+  buildPaymentUri(address: string, amount: number | null, label: string | null, message: string | null): Promise<string>;
+  qrMatrix(text: string): Promise<QrMatrix>;
+  // Send (U-03 D2, E0-13 D8): a draft and its prepared transactions are handles.
+  classifyAddress(network: string, text: string): Promise<AddressClass>;
+  /** dw-units' parser for a DASH amount the user typed; `null` when it is not one. */
+  parseAmount(text: string): Promise<number | null>;
+  newTxDraft(walletId: string): Promise<number>;
+  closeDraft(draft: number): Promise<boolean>;
+  draftSetRecipients(draft: number, recipients: Recipient[]): Promise<null>;
+  draftSetSource(draft: number, source: CoinSource): Promise<null>;
+  draftSetFee(draft: number, fee: FeeMode): Promise<null>;
+  draftSetChange(draft: number, change: ChangePolicy): Promise<null>;
+  draftEstimate(draft: number): Promise<TxEstimate>;
+  draftPrepare(draft: number, grantId: string): Promise<PreparedTxHandle>;
+  draftBroadcast(draft: number, prepared: number): Promise<BroadcastOutcome>;
+  draftAbandon(draft: number, prepared: number): Promise<null>;
+  maxSpendable(walletId: string, source: CoinSource, fee: FeeMode): Promise<number>;
+  feePolicy(): Promise<FeePolicy>;
+  utxos(walletId: string, filter: UtxoFilter): Promise<Utxo[]>;
+  coinSelectionSummary(walletId: string, outpoints: OutPoint[], payAmounts: number[], fee: FeeMode): Promise<CoinSelectionSummary>;
+  /** "Require authentication for every payment" (E0-13 D11). */
+  paymentAuthentication(): Promise<boolean>;
+  authorize(purpose: GrantPurposeSpec, walletId: string, credential: CredentialSpec): Promise<AuthGrant>;
+  /** Drops a grant before it expires (unknown ids are ignored). */
+  revokeGrant(grantId: string): Promise<null>;
   dashpayStatus(walletId: string): Promise<DashPayStatus>;
   identities(walletId: string): Promise<IdentitySummary[]>;
   dashpayUnreadCount(walletId: string, identity: string): Promise<number>;

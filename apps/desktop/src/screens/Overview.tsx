@@ -81,18 +81,34 @@ function BalanceHero({ balances, network, syncing }: { balances: Balances | null
   );
 }
 
-const SHORTCUTS: { id: string; icon: UsedIcon; title: string; why: string }[] = [
-  { id: "receive", icon: "shortcutReceive", title: "Receive", why: "Receive is not part of the G-01 spike" },
-  { id: "send", icon: "shortcutSend", title: "Send", why: "Send is not part of the G-01 spike" },
-  { id: "scan", icon: "shortcutScanQR", title: "Scan QR", why: "Scanning is not part of the G-01 spike" },
-  { id: "backup", icon: "shortcutBackup", title: "Back up", why: "Backup is not part of the G-01 spike" },
+/** Pay ▸ To an address, a fresh form (as a link would open it). */
+function openPay(focusAddress: boolean) {
+  navigate("pay", { payTab: "address", payPrefill: null, payLinks: ui.get().payLinks + 1 });
+  if (focusAddress) requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid="pay-address"]')?.focus());
+}
+
+// U-03 D16: the mobile shortcut bar. The desktop has no camera, so Scan QR opens the address
+// field to paste into, as U-01 routes a scanQr link; Back up comes with the recovery phrase (U-02).
+const SHORTCUTS: { id: string; icon: UsedIcon; title: string; run: (() => void) | null; why?: string }[] = [
+  { id: "receive", icon: "shortcutReceive", title: "Receive", run: () => navigate("receive") },
+  { id: "send", icon: "shortcutSend", title: "Send", run: () => openPay(false) },
+  { id: "scan", icon: "shortcutScanQR", title: "Scan QR", run: () => openPay(true) },
+  { id: "backup", icon: "shortcutBackup", title: "Back up", run: null, why: "Backing up the recovery phrase is not available yet" },
 ];
 
 function ShortcutCard() {
   return (
     <nav className="shortcut-card" aria-label="Shortcuts" data-testid="shortcut-card">
       {SHORTCUTS.map((s) => (
-        <button key={s.id} type="button" className="shortcut-item" data-testid={`shortcut-${s.id}`} aria-disabled="true" title={s.why}>
+        <button
+          key={s.id}
+          type="button"
+          className="shortcut-item"
+          data-testid={`shortcut-${s.id}`}
+          aria-disabled={s.run ? undefined : "true"}
+          title={s.why}
+          onClick={() => s.run?.()}
+        >
           <Icon id={s.icon} size={46} className="shortcut-icon" />
           <span className="shortcut-title">{s.title}</span>
         </button>
@@ -137,7 +153,15 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         ) : recent.isPending ? (
           <LoadingState testId="history-loading" text="Loading transactions" />
         ) : rows.length === 0 ? (
-          <EmptyState testId="history-empty" title="There are no transactions to display" />
+          <EmptyState
+            testId="history-empty"
+            title="There are no transactions to display"
+            action={
+              <DashButton variant="filledBlue" data-testid="history-empty-receive" onClick={() => navigate("receive")}>
+                Receive Dash
+              </DashButton>
+            }
+          />
         ) : (
           <>
             <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="overview" />
