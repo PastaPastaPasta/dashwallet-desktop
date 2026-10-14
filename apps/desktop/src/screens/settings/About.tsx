@@ -5,14 +5,12 @@
 import { useBackupDirectory, useNodeInfo } from "../../api/queries";
 import { useLaunch } from "../../app/App";
 import { CopyValue, DetailRow } from "../../components/detail";
-import { failureText } from "../../onboarding/model";
-import { NotYetRow, SettingsCard } from "./parts";
+import { NotYetRow, pendingText, SettingsCard } from "./parts";
 
 export function AboutTab() {
   const launch = useLaunch();
   const node = useNodeInfo();
   const backups = useBackupDirectory();
-  const pending = (q: { isError: boolean; error: unknown }) => (q.isError ? failureText(q.error) : "…");
   return (
     <>
       <SettingsCard title="Dash Wallet" testId="settings-about">
@@ -27,13 +25,13 @@ export function AboutTab() {
             {launch.network.dirName}
           </DetailRow>
           <DetailRow label="User agent" testId="settings-about-agent">
-            {node.data ? node.data.userAgent : pending(node)}
+            {node.data ? node.data.userAgent : pendingText(node)}
           </DetailRow>
           <DetailRow label="Data directory" testId="settings-about-data-dir">
-            {node.data ? <CopyValue value={node.data.dataDir} label="data directory" mono /> : pending(node)}
+            {node.data ? <CopyValue value={node.data.dataDir} label="data directory" mono /> : pendingText(node)}
           </DetailRow>
           <DetailRow label="Backup folder" testId="settings-about-backups">
-            {backups.data ? <CopyValue value={backups.data} label="backup folder" mono /> : pending(backups)}
+            {backups.data ? <CopyValue value={backups.data} label="backup folder" mono /> : pendingText(backups)}
           </DetailRow>
         </dl>
       </SettingsCard>

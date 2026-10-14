@@ -8,14 +8,14 @@ import type { ThemeName } from "../../api/generated/ThemeName";
 import type { UiSettings } from "../../api/generated/UiSettings";
 import { keys, useBackend, useDustProtection, useNodeInfo } from "../../api/queries";
 import { useLaunch } from "../../app/App";
-import { useUi } from "../../app/ui";
+import { DEFAULT_PREFS, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { Sheet } from "../../components/sheet";
 import { failureText } from "../../onboarding/model";
-import { DIGIT_CHOICES, dustThreshold, OptionsText, RESET, UNIT_CHOICES } from "../../settings/options";
+import { DEFAULT_DUST, DIGIT_CHOICES, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
 import { savePrefs } from "../../settings/prefs";
-import { Done, Hint, NotYetRow, Problem, SettingsCard } from "./parts";
+import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
 
 const THEMES: { theme: ThemeName | null; label: string; id: string }[] = [
   { theme: null, label: "System", id: "system" },
@@ -147,8 +147,9 @@ export function GeneralTab() {
             <DashButton
               variant="filledBlue"
               data-testid="settings-reset-confirm"
+              // Reset Options (QT-141, D8): every display setting back to its default.
               onClick={() =>
-                void save(RESET).then(() => {
+                void save(DEFAULT_PREFS).then(() => {
                   setResetting(false);
                   setResetDone(true);
                 })
@@ -174,7 +175,7 @@ function DustCard() {
   if (dust.isPending) return null;
   const current = dust.data ?? null;
   const on = current !== null;
-  const shown = text ?? String(current ?? 1000);
+  const shown = text ?? String(current ?? DEFAULT_DUST);
   const apply = async (threshold: number | null) => {
     setProblem(null);
     try {
@@ -196,7 +197,7 @@ function DustCard() {
           onChange={(e) => {
             if (!e.target.checked) return void apply(null);
             const t = dustThreshold(shown);
-            void apply(typeof t === "number" ? t : 1000);
+            void apply(typeof t === "number" ? t : DEFAULT_DUST);
           }}
         />
         Hide received coins at or under a threshold
@@ -246,7 +247,7 @@ function NetworkCard() {
           {network.kind === "devnet" ? network.dirName : network.kind[0].toUpperCase() + network.kind.slice(1)}
         </DetailRow>
         <DetailRow label="Data directory" testId="settings-data-dir">
-          {node.data ? <CopyValue value={node.data.dataDir} label="data directory" mono /> : node.isError ? failureText(node.error) : "…"}
+          {node.data ? <CopyValue value={node.data.dataDir} label="data directory" mono /> : pendingText(node)}
         </DetailRow>
       </dl>
       <NotYetRow

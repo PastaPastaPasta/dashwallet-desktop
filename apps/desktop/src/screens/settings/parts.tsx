@@ -2,6 +2,7 @@
 // (with the task that brings it, D7), and a row's hint.
 
 import { useId, type ReactNode } from "react";
+import { failureText } from "../../onboarding/model";
 
 export function SettingsCard({ title, testId, children }: { title: string; testId: string; children: ReactNode }) {
   const id = useId();
@@ -25,6 +26,11 @@ export function NotYetRow({ title, why, testId, label = "Not available yet" }: {
       </span>
     </div>
   );
+}
+
+/** What a detail row shows while its query has no data: the failure, or an ellipsis. */
+export function pendingText(q: { isError: boolean; error: unknown }): string {
+  return q.isError ? failureText(q.error) : "…";
 }
 
 export function Hint({ children, id }: { children: ReactNode; id?: string }) {

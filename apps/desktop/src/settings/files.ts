@@ -15,7 +15,8 @@ import type { WalletFileInfo } from "../api/generated/WalletFileInfo";
 import { LockModel } from "../onboarding/lock";
 import { failureText, Model } from "../onboarding/model";
 import { passphraseProblem } from "../onboarding/passphrase";
-import { walletName, WalletsText } from "./wallets";
+import { vaultCredential } from "./security";
+import { optionalName, WalletsText } from "./wallets";
 
 export const FilesText = {
   backedUp: (path: string) => `The backup was written to ${path}.`,
@@ -232,8 +233,8 @@ export class ImportFileModel extends Model {
     const plan = this.plan;
     if (this.step !== "details" || !plan || plan.refusal) return;
     if (plan.passphrase && !passphrase) return this.#fail(`Enter the ${plan.passphrase.toLowerCase()}.`);
-    const name = nameText.trim() === "" ? null : walletName(nameText);
-    if (plan.named && nameText.trim() !== "" && name === null) return this.#fail(WalletsText.nameRule);
+    const name = plan.named ? optionalName(nameText) : null;
+    if (name === undefined) return this.#fail(WalletsText.nameRule);
     this.error = null;
     this.#go("working");
     try {
@@ -306,8 +307,8 @@ export class ImportKeysModel extends Model {
     if (this.working) return;
     const material = keyMaterial(kind, text);
     if (typeof material === "string") return this.#fail(material);
-    const name = nameText.trim() === "" ? null : walletName(nameText);
-    if (nameText.trim() !== "" && name === null) return this.#fail(WalletsText.nameRule);
+    const name = optionalName(nameText);
+    if (name === undefined) return this.#fail(WalletsText.nameRule);
     this.working = true;
     this.error = null;
     this.changed();
@@ -372,7 +373,7 @@ export class ExportModel extends Model {
     if (this.step !== "confirm" || this.lock.working) return;
     let grant: string | null = null;
     const authorize = async (p: string) => {
-      grant = (await this.api.authorize({ kind: "revealSecret" }, this.walletId, this.encrypted ? { kind: "passphrase", passphrase: p } : { kind: "unencrypted" })).id;
+      grant = (await this.api.authorize({ kind: "revealSecret" }, this.walletId, vaultCredential(this.encrypted, p))).id;
     };
     this.error = null;
     const ok = this.encrypted

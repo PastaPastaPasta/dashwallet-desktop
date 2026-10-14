@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IpcBackend } from "../api/tauri";
 import { DEFAULT_PREFS, ui } from "../app/ui";
 import { installFixture, type FixtureHandle } from "../fixture";
-import { DIGIT_CHOICES, dustThreshold, OptionsText, RESET, UNIT_CHOICES } from "./options";
+import { DIGIT_CHOICES, dustThreshold, OptionsText, UNIT_CHOICES } from "./options";
 import { loadPrefs, savePrefs } from "./prefs";
 
 let fixture: FixtureHandle;
@@ -69,7 +69,7 @@ describe("display settings", () => {
     // Ours applies live: no backup copy, no restart (D8); dust protection is the engine's.
     await savePrefs(b, launch(), { unit: "duffs", autoLockSecs: 60, subtractFeeByDefault: true });
     await b.setDustProtection(500);
-    await savePrefs(b, launch(), RESET);
+    await savePrefs(b, launch(), DEFAULT_PREFS);
     expect(fixture.world.settings.ui).toEqual(DEFAULT_PREFS);
     expect(await b.dustProtection()).toBe(500);
     expect(OptionsText.resetTitle).toBe("Confirm options reset");

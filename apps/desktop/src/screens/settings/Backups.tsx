@@ -16,7 +16,7 @@ import { detailDate } from "../../format/tx";
 import { failureText, useModel } from "../../onboarding/model";
 import { BackupModel, ExportModel, FilesText, ImportFileModel, ImportKeysModel, KEY_KINDS, type ImportDone, type KeyKind } from "../../settings/files";
 import { useLockTimer } from "../LockScreen";
-import { Done, Hint, NotYetRow, Problem, SettingsCard } from "./parts";
+import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
 
 type BackupsSheet = { kind: "backup" | "export"; wallet: WalletSummary } | { kind: "importFile" | "importKeys" } | null;
 
@@ -118,7 +118,7 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
       <Problem text={problem ?? (policy.isError ? failureText(policy.error) : null)} testId="settings-backup-policy-error" />
       <dl className="detail-list settings-details">
         <DetailRow label="Folder" testId="settings-backup-folder">
-          {directory.data ? <CopyValue value={directory.data} label="backup folder" mono /> : directory.isError ? failureText(directory.error) : "…"}
+          {directory.data ? <CopyValue value={directory.data} label="backup folder" mono /> : pendingText(directory)}
         </DetailRow>
       </dl>
       <NotYetRow testId="settings-show-folder" title="Show folder" why="the app cannot open folders yet (a native file chooser is a follow-up). Copy the path instead." />

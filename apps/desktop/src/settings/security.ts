@@ -50,6 +50,9 @@ export const AUTO_LOCK_CHOICES: { secs: number | null; label: string }[] = [
 type LockApi = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly">;
 const passphrase = (p: string): CredentialSpec => ({ kind: "passphrase", passphrase: p });
 
+/** The vault's own credential for `pass`: its passphrase, or none on an unencrypted vault. */
+export const vaultCredential = (encrypted: boolean, pass: string): CredentialSpec => (encrypted ? passphrase(pass) : { kind: "unencrypted" });
+
 /** Encrypt wallet (QT-111, D9): the new passphrase twice, a `changeCredential` grant with the
  * unencrypted vault's own credential, then `encryptVault`. The vault ends locked. */
 export class EncryptModel extends Model {
@@ -235,7 +238,6 @@ export class WipeModel extends Model {
    * passphrase under the lockout policy; the other wallets reuse it. */
   async wipe(p: string) {
     if (this.step !== "passphrase" || this.lock.working) return;
-    const credential = (pass: string): CredentialSpec => (this.encrypted ? passphrase(pass) : { kind: "unencrypted" });
     let wallets: WipeWallet[];
     try {
       wallets = await this.#wallets();
@@ -246,8 +248,8 @@ export class WipeModel extends Model {
     // No wallet left (an earlier wipe stopped after its last removal): only the vault goes.
     const check = (pass: string) =>
       wallets.length > 0
-        ? this.api.authorize({ kind: "wipe" }, wallets[0].walletId, credential(pass)).then((g) => void (first = g.id))
-        : this.api.destroyVault(credential(pass));
+        ? this.api.authorize({ kind: "wipe" }, wallets[0].walletId, vaultCredential(this.encrypted, pass)).then((g) => void (first = g.id))
+        : this.api.destroyVault(vaultCredential(this.encrypted, pass));
     if (this.encrypted) {
       if (!(await this.lock.attempt(p, check))) return this.changed();
     } else {
@@ -264,7 +266,7 @@ export class WipeModel extends Model {
     for (const [i, w] of wallets.entries()) {
       let grant: string | null = i === 0 ? first : null;
       try {
-        grant ??= (await this.api.authorize({ kind: "wipe" }, w.walletId, credential(p))).id;
+        grant ??= (await this.api.authorize({ kind: "wipe" }, w.walletId, vaultCredential(this.encrypted, p))).id;
         // The engine removes only loaded wallets: a closed one is opened first.
         if (!w.loaded) await this.api.loadWallet(w.walletId);
         await this.api.removeWallet(w.walletId, grant);
@@ -274,7 +276,7 @@ export class WipeModel extends Model {
       }
     }
     try {
-      await this.api.destroyVault(credential(p));
+      await this.api.destroyVault(vaultCredential(this.encrypted, p));
     } catch (e) {
       return this.#stop(failureText(e));
     }

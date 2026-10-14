@@ -4,7 +4,7 @@
 // wipe (D16).
 
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type ChangeEvent, type FormEvent } from "react";
 import { useBackend, useLockStatus } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
@@ -218,7 +218,7 @@ function ChangePassphraseSheet({ onClose }: { onClose: (done: boolean) => void }
     setConfirmation("");
     void model.change(c, t, r);
   };
-  const edit = (set: (v: string) => void) => (e: React.ChangeEvent<HTMLInputElement>) => {
+  const edit = (set: (v: string) => void) => (e: ChangeEvent<HTMLInputElement>) => {
     set(e.target.value);
     model.edited();
   };

@@ -11,7 +11,7 @@ use ts_rs::TS;
 
 use crate::api::units::DisplayUnit;
 use crate::dto::ThemeName;
-use crate::error::AppError;
+use crate::error::{AppError, EngineCode};
 
 /// The settings file's name in the data root.
 pub const FILE: &str = "settings.json";
@@ -21,6 +21,9 @@ pub const DIGITS: std::ops::RangeInclusive<u8> = 2..=8;
 
 /// The longest auto-lock wait: 24 hours (IOS-015).
 pub const MAX_AUTO_LOCK_SECS: u32 = 86_400;
+
+/// The auto-lock waits a file may hold, in seconds.
+const AUTO_LOCK_SECS: std::ops::RangeInclusive<u32> = 1..=MAX_AUTO_LOCK_SECS;
 
 /// What Settings ▸ General and Security keep for the renderer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -61,7 +64,7 @@ impl UiSettings {
             return Err(AppError::invalid_argument("decimal digits must be 2 to 8"));
         }
         if let Some(secs) = self.auto_lock_secs
-            && !(1..=MAX_AUTO_LOCK_SECS).contains(&secs)
+            && !AUTO_LOCK_SECS.contains(&secs)
         {
             return Err(AppError::invalid_argument(
                 "auto lock must be 1 s to 24 hours",
@@ -79,7 +82,7 @@ impl UiSettings {
         }
         if self
             .auto_lock_secs
-            .is_some_and(|s| !(1..=MAX_AUTO_LOCK_SECS).contains(&s))
+            .is_some_and(|s| !AUTO_LOCK_SECS.contains(&s))
         {
             self.auto_lock_secs = defaults.auto_lock_secs;
         }
@@ -108,14 +111,9 @@ pub fn read(root: &Path) -> UiSettings {
 /// Checks and writes `settings` into `root`, replacing the file atomically.
 pub fn write(root: &Path, settings: &UiSettings) -> Result<(), AppError> {
     settings.check()?;
-    let io = |e: std::io::Error| {
-        AppError::new(
-            crate::error::EngineCode::Io,
-            format!("cannot save {FILE}: {e}"),
-        )
-    };
+    let io = |e: std::io::Error| AppError::new(EngineCode::Io, format!("cannot save {FILE}: {e}"));
     let json = serde_json::to_string_pretty(settings)
-        .map_err(|e| AppError::new(crate::error::EngineCode::Internal, e.to_string()))?;
+        .map_err(|e| AppError::new(EngineCode::Internal, e.to_string()))?;
     let tmp = root.join(format!("{FILE}.tmp"));
     std::fs::write(&tmp, json).map_err(io)?;
     std::fs::rename(&tmp, path(root)).map_err(io)

@@ -4,12 +4,13 @@
 // menu does, and the last open wallet cannot be closed.
 
 import type { Backend } from "../api/backend";
-import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import { LockModel } from "../onboarding/lock";
 import { failureText, Model } from "../onboarding/model";
+import { vaultCredential } from "./security";
 
 export const WalletsText = {
   openAnotherFirst: "Open another wallet first.",
+  openAnotherToClose: "Open another wallet first to close this one.",
   noLoadStates: "Closed wallets are not shown: this engine does not list them yet.",
   nameRule: "A wallet name is 1 to 64 characters.",
   /** IOS-110. */
@@ -38,6 +39,11 @@ const MAX_NAME = 64;
 export function walletName(text: string): string | null {
   const t = text.trim();
   return t.length >= 1 && [...t].length <= MAX_NAME ? t : null;
+}
+
+/** An optional name field: `null` when blank, the trimmed name, `undefined` when it breaks the rule. */
+export function optionalName(text: string): string | null | undefined {
+  return text.trim() === "" ? null : (walletName(text) ?? undefined);
 }
 
 type ListApi = Pick<Backend, "walletLoadStates" | "listWallets" | "loadWallet" | "unloadWallet" | "setLoadOnStartup" | "renameWallet">;
@@ -173,8 +179,7 @@ export class RemoveWalletModel extends Model {
     if (this.step !== "confirm" || this.lock.working) return;
     let grant: string | null = null;
     const authorize = async (p: string) => {
-      const credential: CredentialSpec = this.encrypted ? { kind: "passphrase", passphrase: p } : { kind: "unencrypted" };
-      grant = (await this.api.authorize({ kind: "wipe" }, this.walletId, credential)).id;
+      grant = (await this.api.authorize({ kind: "wipe" }, this.walletId, vaultCredential(this.encrypted, p))).id;
     };
     this.error = null;
     const ok = this.encrypted
@@ -213,8 +218,8 @@ export class WatchOnlyModel extends Model {
 
   async add(xpub: string, nameText: string) {
     if (this.working) return;
-    const name = nameText.trim() === "" ? null : walletName(nameText);
-    if (nameText.trim() !== "" && name === null) return this.#fail(WalletsText.nameRule);
+    const name = optionalName(nameText);
+    if (name === undefined) return this.#fail(WalletsText.nameRule);
     if (xpub.trim() === "") return this.#fail("Paste an extended public key.");
     this.working = true;
     this.error = null;

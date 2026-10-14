@@ -4,7 +4,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
-import { keys, useBackend, useQrMatrix } from "../../api/queries";
+import { keys, useBackend, useQrMatrix, useWallets } from "../../api/queries";
 import { ui } from "../../app/ui";
 import { Chip, DashButton } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
@@ -24,7 +24,7 @@ export function WalletsTab() {
   const [model] = useState(() => new WalletsModel(backend));
   useModel(model);
   // Every wallet event refreshes the list too: the shell's list and this one move together.
-  const wallets = useQuery({ queryKey: keys.wallets, queryFn: () => backend.listWallets() });
+  const wallets = useWallets();
   useEffect(() => void model.load(), [model, wallets.dataUpdatedAt]);
   const [sheet, setSheet] = useState<WalletSheet>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -158,7 +158,7 @@ function WalletItem({
           Remove…
         </DashButton>
       </div>
-      {row.loaded && !closable && !model.fallback && <span className="field-hint">{WalletsText.openAnotherFirst.replace(".", " to close this one.")}</span>}
+      {row.loaded && !closable && !model.fallback && <span className="field-hint">{WalletsText.openAnotherToClose}</span>}
     </li>
   );
 }
