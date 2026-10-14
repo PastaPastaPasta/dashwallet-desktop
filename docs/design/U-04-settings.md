@@ -131,6 +131,7 @@ Help ▸ About keeps U-01's small About sheet.
 | D22 | Command-line options (QT-018) are not shown: dw-app prints them for `--help`, and no command returns them. A copy in the renderer would drift. Follow-up: a `launch_usage` command. | No second source of truth. |
 | D23 | Every amount field is typed in the display unit, not only Pay's: Receive's request amount and Activity's minimum amount too (dash-qt's `BitcoinAmountField` follows the unit everywhere). The refusal names the unit ("Enter an amount in mDASH, for example 0.25."). The status bar's unit name follows it as well. A form keeps its text when the unit changes; the text is parsed again in the new unit (Settings is another route, so an open form is gone by then). Coin control's custom fee rate stays DASH/kB (D4). | QT-139/152: one unit everywhere, typed and shown. |
 | D24 | Display settings are written one at a time, in the order they were made, and each builds on the value the previous save asked for, not on the store (which changes only when dw-app answers). A save that fails leaves the store at the last value dw-app wrote. | T1 lost a unit change: three quick changes each sent the whole file from a store that had not caught up, so the third wrote the first one back. `QT020_aChangeMadeBeforeTheLastSaveAnsweredIsKept`. |
+| D25 | Onboarding opens as soon as the last wallet is removed, so the wipe's final `destroyVault` runs behind it. If it fails (only an I/O error can fail it there, since the passphrase was already checked), its message is hidden. The empty vault stays, and onboarding creates the next wallet in it under the old passphrase. App does not hold onboarding back while a wipe runs. Follow-up (U-04): keep onboarding closed while a wipe is working, so a failed destroy shows on the sheet. | A rare error path; an App-level wipe gate is more than this slice needs. T1 waits for `lock_status` to read noVault rather than for onboarding. |
 
 ## Deviations from the slice plan
 
@@ -145,6 +146,31 @@ Help ▸ About keeps U-01's small About sheet.
 - Ending a wipe closes its sheet: the shell has nothing left to stand on, onboarding opens and a
   toast says "All wallet data was deleted." (found by `e2e/settings.spec.ts`: the sheet's own Done
   sat under onboarding and stayed open behind it).
+
+## T1 evidence
+
+2026-10-14, branch `dw/u-04-settings`: app and renderer built at `2c599647` (the D24 save queue),
+with the harness's D25 wait for the destroyed vault. Run on agentbox (Xvfb, WebKitGTK through
+tauri-driver) against `dwd-regtest-dashd:24.0.0-rc.2` (compose project `dw-e2e-settings`).
+`scripts/e2e-tauri-settings.sh` → PASS, 9 steps:
+
+1. unlock: Wallet 1 holds 1.5 DASH through SPV (funding txid `1c2bfee4e98cf15d…`, 2 blocks mined)
+2. General: Dark, mDASH with 3 digits (Home 1500.000 mtDASH), Pay starts with Subtract fee;
+   `ui_settings` agrees
+3. Security: a wrong current passphrase is counted, then the passphrase changes (the old one is
+   refused afterwards); payment authentication off and on; autohide on
+4. Wallets: Everyday renamed; the account tpub makes the watch-only Watcher; Close leaves it
+   unloaded and off the startup list
+5. Backups: `Everyday-<date>.dwbackup` written; the dumpwallet export is a `# Wallet dump` file
+6. relaunch: `settings.json` kept mDASH, 3 digits, Dark and autohide (Home `#.### mtDASH`);
+   Watcher stayed closed; the new passphrase unlocks
+7. Wallets: Watcher opened again, then removed with the passphrase
+8. Wipe: the typed sentence and the passphrase; onboarding opens; `list_wallets` is empty and
+   `lock_status` reads noVault
+9. no phrase or passphrase in the data root, the logs or the other output files
+
+Earlier runs failed twice. Step 2 caught the D24 race (a lost unit change). Step 8 read
+`lock_status` the moment onboarding opened, before the final `destroyVault` had answered (D25).
 
 ## Ported view-model tests
 
