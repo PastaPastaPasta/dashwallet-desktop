@@ -61,7 +61,7 @@ export const DATA_TYPES = { ".json": (text) => jsonLiterals(JSON.parse(text)) };
 
 /** Files in `src/fixture/` that are neither modules nor tests: test data no module imports (the
  * tests read it from disk), of a DATA_TYPES type. Sentinel sources all the same. */
-export const TEST_DATA = { "vectors/accept.json": "accept_grant_vectors for accept.test.ts", "vectors/history.json": "history_page vectors for history.test.ts" };
+export const TEST_DATA = { "vectors/accept.json": "accept_grant_vectors for accept.test.ts", "vectors/history.json": "history_page vectors for history.test.ts", "vectors/notifications.json": "notification_vectors for notifications.test.ts" };
 
 /** Fixture modules and test data with no sentinel of their own, and why that is safe. */
 export const NO_SENTINEL = {};

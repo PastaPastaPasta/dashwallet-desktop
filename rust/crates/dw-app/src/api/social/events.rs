@@ -103,3 +103,75 @@ impl From<EventPage> for DashPayEventPage {
         }
     }
 }
+
+/// dw-engine writes the bell's contract vector by hand in this crate's shapes
+/// (`notifications_tests.rs`, `vectors`; the renderer's fixture replays it):
+/// its kind names, events, pages and errors must be this crate's.
+#[cfg(test)]
+mod vector_tests {
+    use dw_engine::platform::{IdentityError, PlatformError};
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::error::AppError;
+
+    fn vector() -> Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../apps/desktop/src/fixture/vectors/notifications.json");
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// `v` through `T` and back: the same JSON when `v` has `T`'s shape.
+    fn round_trip<T: Serialize + for<'de> Deserialize<'de>>(v: &Value) -> Value {
+        serde_json::to_value(serde_json::from_value::<T>(v.clone()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn notification_vector_is_dw_apps() {
+        let doc = vector();
+        let kinds = doc["kinds"].as_object().unwrap();
+        assert_eq!(kinds.len(), 8);
+        for (snake, camel) in kinds {
+            let kind: EventKind = serde_json::from_value(json!(snake)).unwrap();
+            assert_eq!(&serde_json::to_value(EventKindName::from(kind)).unwrap(), camel);
+        }
+
+        let engine: [AppError; 3] = [
+            PlatformError::InvalidArgument { detail: "x".into() }.into(),
+            PlatformError::Identity(IdentityError::NotFound).into(),
+            PlatformError::WalletNotFound.into(),
+        ];
+        let converted: Vec<Value> = (engine.iter())
+            .map(|e| {
+                let v = serde_json::to_value(e).unwrap();
+                json!({ "code": v["code"], "data": v["data"] })
+            })
+            .collect();
+
+        let (mut pages, mut errors) = (0, 0);
+        for step in (doc["cases"].as_array().unwrap().iter())
+            .flat_map(|c| c["steps"].as_array().unwrap())
+        {
+            if let Some(e) = step["result"].get("error") {
+                assert!(converted.contains(e), "{e} is not dw-app's conversion");
+                errors += 1;
+                continue;
+            }
+            let Some(page) = step["result"].get("ok").filter(|_| step["call"].get("events").is_some())
+            else {
+                continue;
+            };
+            // The fixture's clock stands in for "now"; pending holds labels.
+            let page = serde_json::from_str::<Value>(&page.to_string().replace("\"now\"", "0"))
+                .unwrap();
+            let mut events_only = page.clone();
+            events_only["pending"] = json!([]);
+            assert_eq!(round_trip::<DashPayEventPage>(&events_only), events_only);
+            pages += 1;
+        }
+        assert!(pages >= 15 && errors >= 5, "{pages} pages, {errors} errors");
+        for e in &converted {
+            assert!(doc.to_string().contains(&e.to_string()), "{e} is not recorded: drop it");
+        }
+    }
+}

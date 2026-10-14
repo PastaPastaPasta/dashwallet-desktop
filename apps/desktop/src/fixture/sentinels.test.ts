@@ -66,7 +66,7 @@ describe("fixture sentinels", () => {
   // literals that no module holds are expected only in a production build that must not hold them.
   it("include the test data's, which a fixture build does not bundle", async () => {
     const { sentinels, bySource, bundled } = await fixtureSentinels(app);
-    for (const data of ["src/fixture/vectors/accept.json", "src/fixture/vectors/history.json"]) {
+    for (const data of ["src/fixture/vectors/accept.json", "src/fixture/vectors/history.json", "src/fixture/vectors/notifications.json"]) {
       expect(bundled.has(data), data).toBe(false);
       expect(bySource.get(data)?.length ?? 0, data).toBeGreaterThan(0);
     }
