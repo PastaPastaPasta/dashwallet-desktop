@@ -178,8 +178,8 @@ pub fn run() {
     });
     launch.data_dir = Some(root.clone());
     // The instance lock ends a second launch on this root that cannot hand
-    // its links over; it is taken before any window, webview or tray icon
-    // exists (those, and the setup hook that opens the engine, come with
+    // its links over; it is taken before the main window, webview or tray
+    // icon exists (those, and the setup hook that opens the engine, come with
     // `run`, where a setup error would panic). With the single-instance
     // plugin it waits for the build, during which the plugin forwards and
     // exits where it can. Without it (macOS, or Linux without a session
