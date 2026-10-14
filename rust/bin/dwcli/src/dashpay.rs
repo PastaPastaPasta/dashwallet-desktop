@@ -1889,6 +1889,9 @@ mod tests {
             NOT_BASE58,
         ),
         ("contact details --identity I C --publish", NOT_BASE58),
+        // DP3-02.
+        ("contact activity --identity I C --filter sent", NOT_BASE58),
+        ("contact frequent --identity I", NOT_BASE58),
         ("identity balance --identity I", NOT_IDENTIFIER),
         (
             "identity top-up --identity I --duffs 100000",
