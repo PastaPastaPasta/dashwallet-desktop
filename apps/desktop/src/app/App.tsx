@@ -82,15 +82,27 @@ function Shell() {
   useShellBridge(backend, network.dirName, launch.selftestLinkTrace, lockNow);
   // The native menus' Discreet Mode check and Lock Wallet follow the window, and so does its
   // content protection while a flow that shows or takes a recovery phrase is open (U-02 D15).
-  // One call at a time, in order: a stale `secretShown` never lands last (review r1 #2).
+  // One call at a time, in order: a stale `secretShown` never lands last (review r1 #2). The
+  // shell answers once the protection is in effect, and only then do those flows show their
+  // secret part (`protection: "on"`, D27); only the latest call's answer counts.
+  const protectionTries = useUi((s) => s.protectionTries);
   const shellSynced = useRef(Promise.resolve());
+  const syncs = useRef(0);
   useEffect(() => {
     const sync = { discreet, canLock, secretShown };
-    shellSynced.current = shellSynced.current.then(() => backend.shellSync(sync).then(
-      () => {},
-      () => {},
-    ));
-  }, [backend, discreet, canLock, secretShown]);
+    const call = ++syncs.current;
+    if (!secretShown) ui.set({ protection: "off" });
+    else if (ui.get().protection !== "on") ui.set({ protection: "pending" });
+    const settle = (protection: "on" | "failed") => {
+      if (secretShown && call === syncs.current) ui.set({ protection });
+    };
+    shellSynced.current = shellSynced.current.then(() =>
+      backend.shellSync(sync).then(
+        () => settle("on"),
+        () => settle("failed"),
+      ),
+    );
+  }, [backend, discreet, canLock, secretShown, protectionTries]);
 
   // Onboarding (U-02 D1): a network without a wallet opens it, and it stays open until its
   // Done. The lock screen replaces it, and drops what it held: Add Wallet… closes, the first

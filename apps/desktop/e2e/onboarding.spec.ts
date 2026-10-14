@@ -331,6 +331,55 @@ test("Forgot passphrase: which wallet, what happens, a mismatch, the new passphr
   await expect(page.getByTestId("lock-screen")).toHaveCount(0);
 });
 
+test("secret surfaces wait until the window is protected, and stay closed when it cannot be (D27)", async ({ page }) => {
+  const errors = await open(page, "funded");
+  const hold = () => page.evaluateHandle(() => window.__dwFixture!.hold("shell_sync"));
+  // Add Wallet: nothing to type or read until the native call has answered.
+  let release = await hold();
+  await command(page, { kind: "addWallet" });
+  await expect(page.getByTestId("protection-pending")).toBeVisible();
+  await expect(page.getByTestId("onboarding-create")).toHaveCount(0);
+  await expect(page.getByTestId("onboarding-restore")).toHaveCount(0);
+  await release.evaluate((r) => r());
+  await expect(page.getByTestId("onboarding-create")).toBeVisible();
+  await expect(page.getByTestId("protection-pending")).toHaveCount(0);
+  await page.getByTestId("onboarding-cancel").click();
+  await expect(page.getByTestId("onboarding")).toHaveCount(0);
+
+  // Show Recovery Phrase: no passphrase field until then.
+  release = await hold();
+  await command(page, { kind: "recoveryPhrase" });
+  await expect(page.getByTestId("protection-pending")).toBeVisible();
+  await expect(page.getByTestId("recovery-passphrase-field")).toHaveCount(0);
+  await release.evaluate((r) => r());
+  await expect(page.getByTestId("recovery-passphrase-field")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("recovery-phrase")).toHaveCount(0);
+
+  // A refusal keeps the sheet closed to secrets; Try again asks once more.
+  await page.evaluate(() => window.__dwFixture!.fail("shell_sync", "none"));
+  await command(page, { kind: "recoveryPhrase" });
+  await expect(page.getByTestId("protection-failed")).toBeVisible();
+  await expect(page.getByTestId("recovery-passphrase-field")).toHaveCount(0);
+  await axe(page);
+  await page.evaluate(() => window.__dwFixture!.fail("shell_sync", null));
+  await page.getByTestId("protection-retry").click();
+  await expect(page.getByTestId("recovery-passphrase-field")).toBeVisible();
+  await expect(page.getByTestId("protection-failed")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("Forgot passphrase waits until the window is protected (D27)", async ({ page }) => {
+  await open(page, "locked-two-wallets");
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("shell_sync"));
+  await page.getByTestId("lock-forgot").click();
+  await expect(page.getByTestId("protection-pending")).toBeVisible();
+  await expect(page.getByTestId("forgot-wallet")).toHaveCount(0);
+  await expect(page.getByTestId("forgot-phrase-input")).toHaveCount(0);
+  await release.evaluate((r) => r());
+  await expect(page.getByTestId("forgot-wallet")).toHaveCount(2);
+});
+
 test("Forgot passphrase is hidden when the vault holds no wallet's secrets", async ({ page }) => {
   await open(page, "funded");
   await page.evaluate(() => {

@@ -1929,7 +1929,9 @@ export function routeLink(network: string, text: string): Promise<LinkRoute> {
 /**
  * What the native menus and the tray mirror: Discreet Mode's check
  * and whether Lock Wallet is enabled; and whether a secret is on
- * screen (the window's content protection).
+ * screen (the window's content protection). Answers once the
+ * protection is in effect (U-02 D27); `app.screen_protection` when the
+ * platform could not apply it.
  */
 export function shellSync(sync: ShellSync): Promise<null> {
   return invoke<null>("shell_sync", { sync });
@@ -2697,6 +2699,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.already_running",
   "app.unknown_handle",
   "app.too_many_handles",
+  "app.screen_protection",
   "invalid_config",
   "invalid_argument",
   "network_not_open",

@@ -3,10 +3,45 @@
 // input is checked live and turns spell checking, autocorrect and autofill off.
 
 import { useId, useState } from "react";
+import { retryProtection, type Protection } from "../app/ui";
 import type { WalletChoice } from "../onboarding/model";
 import type { PhraseEntry } from "../onboarding/phraseEntry";
 import { PhraseText } from "../onboarding/phraseEntry";
 import { completeWord, partialWord } from "../onboarding/words";
+import { DashButton } from "./basics";
+
+export const ProtectionText = {
+  preparing: "Preparing…",
+  failed:
+    "Dash Wallet could not keep this window out of screenshots and screen sharing, so it will not show or take a recovery phrase.",
+};
+
+/** What a view that shows or takes a recovery phrase shows until the window is kept out of
+ * screen captures (U-02 D27): "Preparing…", or why it is not, with Try again. Never the secret. */
+export function ProtectionPending({ protection, onCancel }: { protection: Protection; onCancel?: () => void }) {
+  if (protection !== "failed") {
+    return (
+      <p className="sheet-text" role="status" data-testid="protection-pending">
+        {ProtectionText.preparing}
+      </p>
+    );
+  }
+  return (
+    <div role="alert" data-testid="protection-failed">
+      <p className="form-problem">{ProtectionText.failed}</p>
+      <div className="sheet-actions">
+        {onCancel && (
+          <DashButton variant="plainBlue" data-testid="protection-cancel" onClick={onCancel}>
+            Cancel
+          </DashButton>
+        )}
+        <DashButton variant="filledBlue" data-autofocus data-testid="protection-retry" onClick={retryProtection}>
+          Try again
+        </DashButton>
+      </div>
+    </div>
+  );
+}
 
 /** Copying a phrase puts it where clipboard managers keep it: the phrase's elements refuse it
  * (D18), and their text cannot be selected (`.phrase-grid`, `.verify-*` in app.css). */

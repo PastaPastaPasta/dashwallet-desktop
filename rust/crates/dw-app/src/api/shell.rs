@@ -2,6 +2,7 @@
 //! and the state the native menus mirror. The shell's own events are in
 //! `shell`.
 
+use crate::error::{AppCode, AppError};
 use crate::ipc::commands;
 use crate::shell::ShellSync;
 use crate::shell::links::{self, LinkRoute};
@@ -27,10 +28,16 @@ commands! {
 
     /// What the native menus and the tray mirror: Discreet Mode's check
     /// and whether Lock Wallet is enabled; and whether a secret is on
-    /// screen (the window's content protection).
+    /// screen (the window's content protection). Answers once the
+    /// protection is in effect (U-02 D27); `app.screen_protection` when the
+    /// platform could not apply it.
     #[facade()]
     fn shell_sync(state, sync: ShellSync) -> () {
         state.shell.sync(sync);
-        Ok(())
+        state
+            .shell
+            .protect(sync.secret_shown)
+            .await
+            .map_err(|e| AppError::new(AppCode::ScreenProtection, e))
     }
 }

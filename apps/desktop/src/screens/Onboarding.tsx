@@ -9,7 +9,7 @@ import { useBackend } from "../api/queries";
 import { useSecretScreen } from "../app/ui";
 import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
 import { NewPassphraseForm, PassphrasePrompt } from "../components/passphrase";
-import { Bip39Field, noCopy, PhraseGrid, PhraseInput } from "../components/phrase";
+import { Bip39Field, noCopy, PhraseGrid, PhraseInput, ProtectionPending } from "../components/phrase";
 import { useModel } from "../onboarding/model";
 import { OnboardingModel, type OnboardingStep } from "../onboarding/onboarding";
 import { PassphraseText } from "../onboarding/passphrase";
@@ -46,22 +46,24 @@ export function Onboarding({
   useEffect(() => {
     if (step === "done" || step === "welcome") setRestoreText("");
   }, [step]);
-  // The whole flow, so protection is on before any phrase shows or is typed (D15).
-  useSecretScreen(true);
+  // The whole flow, from Welcome: no step shows until the window is kept out of screen
+  // captures (D15, D27).
+  const protection = useSecretScreen();
+  const ready = protection === "on";
 
   // Each step starts on its first field, else its title, so screen readers hear the step.
   const body = useRef<HTMLElement>(null);
   useEffect(() => {
     const target = body.current?.querySelector<HTMLElement>("[data-autofocus]") ?? body.current?.querySelector<HTMLElement>("h1");
     target?.focus();
-  }, [step]);
+  }, [step, ready]);
 
   return (
     <div className="onboarding" data-testid="onboarding">
       <div className="onboarding-panel">
         <header className="onboarding-header">
           <span className="onboarding-header-side">
-            {BACK_STEPS.has(step) && (
+            {ready && BACK_STEPS.has(step) && (
               <DashButton variant="plainBlue" size="small" data-testid="onboarding-back" disabled={model.busy} onClick={() => model.back()}>
                 Back
               </DashButton>
@@ -74,7 +76,11 @@ export function Onboarding({
           <span className="onboarding-header-side" />
         </header>
         <main className="onboarding-body" ref={body} data-testid={`onboarding-${step}`}>
-          <Step model={model} onCancel={onCancel} onDone={onDone} restoreText={restoreText} setRestoreText={setRestoreText} />
+          {ready ? (
+            <Step model={model} onCancel={onCancel} onDone={onDone} restoreText={restoreText} setRestoreText={setRestoreText} />
+          ) : (
+            <ProtectionPending protection={protection} onCancel={onCancel ?? undefined} />
+          )}
         </main>
       </div>
     </div>

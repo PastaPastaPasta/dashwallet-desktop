@@ -6,7 +6,7 @@ import { useBackend } from "../api/queries";
 import { useSecretScreen } from "../app/ui";
 import { DashButton } from "../components/basics";
 import { NewPassphraseForm } from "../components/passphrase";
-import { Bip39Field, PhraseInput, WalletChoiceList } from "../components/phrase";
+import { Bip39Field, PhraseInput, ProtectionPending, WalletChoiceList } from "../components/phrase";
 import { Sheet } from "../components/sheet";
 import { ForgotPassphraseModel, ForgotText } from "../onboarding/forgot";
 import { useModel } from "../onboarding/model";
@@ -29,19 +29,23 @@ export function ForgotPassphraseSheet({ onClose }: { onClose: () => void }) {
     setPhrase("");
     setBip39("");
   }, [entering]);
-  // The whole sheet, so protection is on before a phrase is typed (D15).
-  useSecretScreen(true);
+  // The whole sheet: no step shows until the window is kept out of screen captures (D15, D27).
+  const protection = useSecretScreen();
   return (
     <Sheet
       title={ForgotText.title}
       width="medium"
       testId="forgot-passphrase"
-      focusKey={model.step}
+      focusKey={`${model.step} ${protection}`}
       // The reset unlocks the vault and may leave wallets watch-only: Done must say so.
       closable={model.step !== "working"}
       onClose={onClose}
     >
-      <ForgotStep model={model} phrase={phrase} setPhrase={setPhrase} bip39={bip39} setBip39={setBip39} onClose={onClose} />
+      {protection === "on" ? (
+        <ForgotStep model={model} phrase={phrase} setPhrase={setPhrase} bip39={bip39} setBip39={setBip39} onClose={onClose} />
+      ) : (
+        <ProtectionPending protection={protection} />
+      )}
     </Sheet>
   );
 }
