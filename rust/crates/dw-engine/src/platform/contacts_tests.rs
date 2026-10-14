@@ -1629,7 +1629,9 @@ fn the_testnet_fixture_reads_its_established_contact() {
         let their_name = text(&meta[other]["expected_main_name"]);
         let dp = s.dashpay(wallet);
         // A live read: SPV, still syncing, holds the wallet's state at
-        // times, and a read then answers from the snapshot (`updating`).
+        // times, and a read then answers from the snapshot (`updating`);
+        // until it has the quorums, names come through the trusted fallback
+        // and stay `unverified` until a verified re-fetch (E0-10b).
         let read = || {
             let page = dp
                 .contacts(me.clone(), every(ContactSort::DisplayName))
@@ -1638,7 +1640,8 @@ fn the_testnet_fixture_reads_its_established_contact() {
             let done = !page.updating
                 && d.summary.relation == Relation::Contact
                 && d.summary.channel == ChannelState::Ready
-                && d.summary.username.as_deref() == Some(their_name.as_str());
+                && d.summary.username.as_deref() == Some(their_name.as_str())
+                && !d.summary.unverified;
             done.then_some((page, d))
         };
         let mut found = None;
