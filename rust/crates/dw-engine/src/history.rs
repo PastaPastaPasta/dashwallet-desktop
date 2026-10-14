@@ -361,12 +361,7 @@ impl HistoryStore {
 
     /// A copy of one wallet's entries (empty when unknown).
     pub fn snapshot(&self, wallet: &WalletId) -> HashMap<Txid, TxEntry> {
-        self.wallets
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(wallet)
-            .map(|h| h.txs.clone())
-            .unwrap_or_default()
+        self.read(wallet, HashMap::clone)
     }
 
     /// Runs `f` over one wallet's entries under the store's read lock, with

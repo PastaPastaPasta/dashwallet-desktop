@@ -29,6 +29,7 @@ use super::attribution::{ACTIVITY_PAGE, Payees, Score, Side, activity, frequent,
 use super::contacts::{ChannelState, ContactSummary, Relation};
 use super::contacts_tests::{BOB, CAROL, DAVE, ERIN, Fixture, ME, b58, established_contact, id};
 use super::payments::{ActivityDirection, ActivityFilter, ActivityItem, Counterparty};
+use super::runtime::guard;
 use crate::history::{
     AddressChain, ChainView, Labels, Owned, TxEntry, TxRecord, TxType, records_of,
 };
@@ -279,12 +280,24 @@ fn a_send_past_the_pool_takes_the_librarys_word() {
     let one = p.add(far(1, &[70]));
     let two = p.add(far(2, &[71, 72]));
     let split = p.add(far(3, &[73]));
-    let failed = p.add(far(4, &[74]));
-    p.payees.add_sent(one, id(ME), id(BOB));
-    p.payees.add_sent(two, id(ME), id(BOB));
-    p.payees.add_sent(split, id(ME), id(BOB));
+    let no_entry = p.add(far(4, &[74]));
+    // The wallet pays its own other identity (Bob's receival address is
+    // ours, so change) and a stranger; the library's entry names Bob for
+    // the output it matched, which is not the payee.
+    let own = tx(
+        5,
+        vec![input(Txid::from_byte_array([7; 32]), 5)],
+        vec![
+            out(10_000, receival(BOB)),
+            out(10_000, addr(75).script_pubkey()),
+            out(5_000, addr(9).script_pubkey()),
+        ],
+    );
+    let own = p.add(ours(entry(own, mined(10, 1_000)), 100_000));
+    for txid in [one, two, split, own] {
+        p.payees.add_sent(txid, id(ME), id(BOB));
+    }
     p.payees.add_sent(split, id(ME), id(CAROL));
-    let _ = failed;
 
     let names = |txid: &Txid| {
         p.records(txid)
@@ -295,7 +308,8 @@ fn a_send_past_the_pool_takes_the_librarys_word() {
     assert_eq!(names(&one), vec![Some(b58(BOB))]);
     assert_eq!(names(&two), vec![None, None], "two payees");
     assert_eq!(names(&split), vec![None], "two contacts");
-    assert_eq!(names(&failed), vec![None], "no entry");
+    assert_eq!(names(&no_entry), vec![None], "no entry");
+    assert_eq!(names(&own), vec![None], "a known DashPay output");
 }
 
 /// Not contact payments: an internal transfer to the wallet's own
@@ -680,7 +694,14 @@ impl Fixture {
             .records
     }
 
-    fn library_payment(&self, txid: Txid, contact: u8, direction: PaymentDirection, amount: u64) {
+    fn library_payment(
+        &self,
+        txid: Txid,
+        contact: u8,
+        direction: PaymentDirection,
+        status: PaymentStatus,
+        amount: u64,
+    ) {
         self.with_me(move |m, _| {
             (m.dashpay_payments_mut()).insert(
                 txid.to_string(),
@@ -689,7 +710,7 @@ impl Fixture {
                     amount_duffs: amount,
                     memo: None,
                     direction,
-                    status: PaymentStatus::Confirmed,
+                    status,
                 },
             );
         });
@@ -824,13 +845,16 @@ fn the_facade_attributes_payments_both_ways() {
 /// coin). Attribution, activity and the strip read the same as before.
 #[test]
 fn a_replayed_restore_attributes_the_same() {
+    use PaymentDirection::{Received, Sent};
+    use PaymentStatus::{Confirmed, Failed};
+
     // Live: the external pool grew to the paid address as we paid it.
     let live = with_contacts();
     let la = live.accounts(&[BOB, CAROL], 30);
     let fresh = la.external[&BOB].len() - 30;
     let (l_from, l_to) = pay_both_ways(&live, &la, fresh + 20, Some(500));
-    live.library_payment(l_to, BOB, PaymentDirection::Sent, 40_000);
-    live.library_payment(l_from, BOB, PaymentDirection::Received, 70_000);
+    live.library_payment(l_to, BOB, Sent, Confirmed, 40_000);
+    live.library_payment(l_from, BOB, Received, Confirmed, 70_000);
 
     let restored = with_contacts();
     let ra = restored.accounts(&[BOB, CAROL], 0);
@@ -848,7 +872,16 @@ fn a_replayed_restore_attributes_the_same() {
     };
     assert_eq!(row(&restored, r_to).counterparty, None);
     assert_eq!(row(&restored, r_from).counterparty, Some(bob()));
-    restored.library_payment(r_to, BOB, PaymentDirection::Sent, 40_000);
+    // Only a `Sent` entry that did not fail counts.
+    for (direction, status) in [(Sent, Failed), (Received, Confirmed)] {
+        restored.library_payment(r_to, BOB, direction, status, 40_000);
+        assert_eq!(
+            row(&restored, r_to).counterparty,
+            None,
+            "{direction:?} {status:?}"
+        );
+    }
+    restored.library_payment(r_to, BOB, Sent, Confirmed, 40_000);
 
     let strip_of = |f: &Fixture| {
         (f.history().into_iter())
@@ -936,7 +969,8 @@ fn a_busy_wallet_strips_from_its_last_view() {
     let wm = manager.wallet_manager_arc();
     let held = f.engine.block_on(wm.write());
     assert_eq!(dp.frequent_contacts(b58(ME), 4).unwrap(), live);
-    f.s.platform.contacts.forget(&f.wallet);
+    // The contacts snapshot stays; the view is gone.
+    guard(&f.s.platform.contacts.views).remove(&f.wallet);
     assert!(dp.frequent_contacts(b58(ME), 4).unwrap().is_empty());
     drop(held);
     assert_eq!(dp.frequent_contacts(b58(ME), 4).unwrap(), live);
@@ -954,6 +988,10 @@ fn a_busy_wallet_strips_from_its_last_view() {
 ///   (100,000 duffs) and records the txid in `DP3-02.json`; A sees it sent
 ///   to B and B received from A. Later runs send nothing and check the
 ///   recorded payment after the restore, both ways.
+///
+/// Address 0 is inside the pool a restore rebuilds, so the sent side is
+/// attributed by its address; the library-entry fallback for sends past
+/// the pool is T0 only (`a_replayed_restore_attributes_the_same`).
 #[test]
 #[ignore = "public testnet; set DW_DP302_TESTNET_FIXTURE"]
 fn t2_testnet_contact_payments_after_a_restore() {
@@ -963,7 +1001,7 @@ fn t2_testnet_contact_payments_after_a_restore() {
     use zeroize::Zeroizing;
 
     use super::recovery_tests::engine as testnet_engine;
-    use crate::{DashNetwork, ImportOptions, Recipient, SessionOptions};
+    use crate::{DashNetwork, EngineError, ImportOptions, Recipient, SendFailure, SessionOptions};
 
     const PAY: u64 = 100_000;
     let fixture = std::path::PathBuf::from(
@@ -1062,7 +1100,14 @@ fn t2_testnet_contact_payments_after_a_restore() {
     let sent = match std::fs::read(&record) {
         Ok(bytes) => {
             let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            json["sent_txid"].as_str().unwrap().to_owned()
+            let txid = json["sent_txid"].as_str().unwrap().to_owned();
+            let broadcast = json["broadcast"].as_str().unwrap_or_default();
+            assert!(
+                !broadcast.starts_with("failed"),
+                "{txid} was refused ({broadcast}); delete {} to pay again",
+                record.display()
+            );
+            txid
         }
         Err(_) => {
             let manager = s.manager().unwrap();
@@ -1103,14 +1148,31 @@ fn t2_testnet_contact_payments_after_a_restore() {
             let raw = prepared.raw().unwrap();
             let tx: dashcore::Transaction = dashcore::consensus::deserialize(&raw).unwrap();
             let txid = tx.txid().to_string();
-            // Recorded first: a rerun after an unknown outcome never pays twice.
-            let json =
-                serde_json::json!({ "sent_txid": txid, "duffs": PAY, "from": "A", "to": "B" });
-            std::fs::write(&record, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
-            eprintln!(
-                "broadcast {txid}: {:?}",
-                engine.block_on(draft.broadcast(prepared))
-            );
+            // Recorded first, and only by one run: a rerun after an unknown
+            // outcome never pays twice.
+            let write = |broadcast: &str, new: bool| {
+                let json = serde_json::json!({
+                    "sent_txid": txid, "duffs": PAY, "from": "A", "to": "B", "broadcast": broadcast,
+                });
+                let mut file = (std::fs::OpenOptions::new().write(true).truncate(true))
+                    .create_new(new)
+                    .open(&record)
+                    .unwrap();
+                std::io::Write::write_all(&mut file, &serde_json::to_vec_pretty(&json).unwrap())
+                    .unwrap();
+            };
+            write("pending", true);
+            match engine.block_on(draft.broadcast(prepared)) {
+                Ok(_) => write("accepted", false),
+                Err(EngineError::Send(SendFailure::BroadcastUnknown { reason })) => {
+                    write(&format!("unknown: {reason}"), false)
+                }
+                Err(e) => {
+                    write(&format!("failed: {e}"), false);
+                    panic!("the payment was refused: {e}");
+                }
+            }
+            eprintln!("broadcast {txid}");
             txid
         }
     };

@@ -628,7 +628,7 @@ impl NetworkSession {
     /// [`Self::with_contacts`] for a caller the gate already admitted (`_op`
     /// proves it): admitting it again would fail once a close has started,
     /// though the close waits for that caller.
-    fn with_contacts_entered<R>(
+    pub(super) fn with_contacts_entered<R>(
         &self,
         _op: &OpGuard<'_>,
         id: WalletId,

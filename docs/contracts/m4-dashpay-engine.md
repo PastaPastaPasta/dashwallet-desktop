@@ -2559,17 +2559,23 @@ renames or reshapes them takes the next version bump:
       what it detected, so a received payment is attributed after a restore even when its coin was spent. A send to
       an external address past the resident pool (a restore regrows external pools only to the gap) takes the
       library's word: its `Sent` payment entries for the txid, when they name exactly one (identity, contact) pair
-      and the transaction has exactly one unattributed payee record. Anything else stays unattributed.
+      and the transaction has exactly one unattributed payee record and no output to any DashPay address the wallet
+      holds (else the entry may name that output, such as one paying the wallet's own other identity, not the
+      payee). Anything else stays unattributed.
     - **Not attributed:** a payment between two identities of one wallet (a SendToSelf), mixed or foreign-funded
-      debits (`Other`), coinbase, CoinJoin and Platform transfers. The history text search does not match contact
+      debits (`Other`), coinbase, CoinJoin mixing, denominations and collateral, and Platform transfers. A CoinJoin
+      Send (mixed coins paying a contact) is attributed like any send. The history text search does not match contact
       names.
     - **One source.** Activity and the strip read the same attribution as history, so the three agree. A sent
       activity amount sums the transaction's outputs to the contact (no fee, no change).
     - **Cursor.** 63 characters, `[0-9a-f]` plus the direction: the block time (unmined: the end of time), the
-      txid's first 46 hex digits, `s` or `r`. Pages never repeat or skip an item; a payment that lands meanwhile
-      shows on a re-query, not inside later pages.
+      txid's first 46 hex digits, `s` or `r`. For an unchanged set of payments pages never repeat or skip an item.
+      A payment that lands meanwhile shows on a re-query; one mined between pages, a block whose time is earlier
+      than the cursor's, or a reorg can move an item across the cursor (re-query from the first page on
+      `HistoryChanged`). Unmined items sort by txid, not first-seen.
     - **The strip** counts one per transaction and direction; an unmined payment counts as now. Its contacts are
       `contacts`' established and not hidden ones.
     - **Residual (accepted):** a restored send whose address is past the pool and whose library entry is not yet
       rebuilt (the DashPay pass after a restore) shows no counterparty until the pass; the host re-queries on
-      `Platform{Payments}`. The OS notification for a payment is unchanged (M2's `NewTransactions`).
+      `Platform{Payments}`. The OS notification for a payment is unchanged (M2's `NewTransactions`). The strip
+      rebuilds the view (pools, payees) and walks the window's history on each call: O(wallet), in memory.

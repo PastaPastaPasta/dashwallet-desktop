@@ -114,12 +114,12 @@ impl Payees {
                     && p.status != PaymentStatus::Failed
                     && let Ok(txid) = Txid::from_str(txid)
                 {
-                    let pair = (owner, p.counterparty_id);
-                    payees.sent.entry(txid).or_default().insert(pair);
-                    payees.party(p.counterparty_id);
+                    payees.add_sent(txid, owner, p.counterparty_id);
                 }
             }
         }
+        // After every party exists: a profile may be cached on another
+        // identity than the one whose entry named the contact.
         for m in identities() {
             for (contact, cached) in &m.dashpay().contact_profiles {
                 if let (Some(party), Some(profile)) =
@@ -146,10 +146,9 @@ impl Payees {
         };
         for pool in account.managed_account_type().address_pools() {
             for info in pool.addresses.values() {
-                self.scripts.insert(info.script_pubkey.clone(), side);
+                self.add_script(info.script_pubkey.clone(), side);
             }
         }
-        self.party(side.contact);
     }
 
     fn party(&mut self, contact: Identifier) {
@@ -169,8 +168,8 @@ impl Payees {
         self
     }
 
-    /// Each contact with an attributed payment, by owner: the ones whose
-    /// usernames a read shows.
+    /// Each contact a payment could be attributed to, by owner (every
+    /// DashPay account and `Sent` entry): the usernames a read may show.
     pub(crate) fn shown(&self) -> BTreeMap<Identifier, BTreeSet<Identifier>> {
         let mut shown: BTreeMap<Identifier, BTreeSet<Identifier>> = BTreeMap::new();
         let pairs = (self.scripts.values()).map(|s| (s.owner, s.contact));
@@ -197,30 +196,34 @@ impl Payees {
                     .copied()
             })
             .collect();
-        let payees: Vec<usize> = (0..parts.len()).filter(|&i| is_payee(&parts[i])).collect();
-        if let [only] = payees[..]
+        // The library's word, for a send past the resident pool: only when
+        // no output pays a DashPay address the wallet knows. Otherwise its
+        // entry may name that output (one the wallet owns, as a payment to
+        // its own other identity), not the payee.
+        let mut payees = (0..parts.len()).filter(|&i| is_payee(&parts[i]));
+        if let (Some(only), None) = (payees.next(), payees.next())
             && sides[only].is_none()
+            && !(tx.output.iter()).any(|o| self.scripts.contains_key(&o.script_pubkey))
             && let Some(pairs) = self.sent.get(txid)
-            && let [(owner, contact)] = pairs.iter().collect::<Vec<_>>()[..]
+            && pairs.len() == 1
+            && let Some(&(owner, contact)) = pairs.first()
         {
             sides[only] = Some(Side {
-                owner: *owner,
-                contact: *contact,
+                owner,
+                contact,
                 direction: ActivityDirection::Sent,
             });
         }
         sides
     }
 
-    /// Tests: `script` pays or is paid by `side`.
-    #[cfg(test)]
+    /// `script` pays or is paid by `side`.
     pub(crate) fn add_script(&mut self, script: ScriptBuf, side: Side) {
         self.scripts.insert(script, side);
         self.party(side.contact);
     }
 
-    /// Tests: the library holds a `Sent` entry of `txid` for the pair.
-    #[cfg(test)]
+    /// The library holds a `Sent` entry of `txid` for the pair.
     pub(crate) fn add_sent(&mut self, txid: Txid, owner: Identifier, contact: Identifier) {
         self.sent.entry(txid).or_default().insert((owner, contact));
         self.party(contact);
@@ -282,8 +285,8 @@ fn block_time(entry: &TxEntry) -> Option<u64> {
 }
 
 /// Where an activity item sorts, newest first: mined ones by block time,
-/// unmined ones before them all; then the txid, then Sent before
-/// Received. Its text is the page cursor: 16 hex digits of the time key,
+/// unmined ones before them all; then the txid, then the direction (`r`
+/// before `s`; one transaction is never both for one pair). Its text is the page cursor: 16 hex digits of the time key,
 /// the txid's first 46 hex digits and `s` or `r` (63 characters).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ActivityKey {
@@ -343,14 +346,12 @@ pub(crate) fn activity(
     filter: ActivityFilter,
     after: Option<&str>,
 ) -> Result<ActivityPage, PlatformError> {
-    let after = match after {
-        Some(c) => Some(
-            ActivityKey::parse(c).ok_or_else(|| PlatformError::InvalidArgument {
-                detail: "not an activity cursor".into(),
-            })?,
-        ),
-        None => None,
-    };
+    let after = (after.map(|c| {
+        ActivityKey::parse(c).ok_or_else(|| PlatformError::InvalidArgument {
+            detail: "not an activity cursor".into(),
+        })
+    }))
+    .transpose()?;
     let wanted = |d: ActivityDirection| match filter {
         ActivityFilter::All => true,
         ActivityFilter::Sent => d == ActivityDirection::Sent,
@@ -382,7 +383,7 @@ pub(crate) fn activity(
     let more = items.len() > ACTIVITY_PAGE;
     let page: Vec<(ActivityKey, ActivityItem)> = items.into_iter().take(ACTIVITY_PAGE).collect();
     Ok(ActivityPage {
-        next_cursor: more.then(|| page.last().map(|(k, _)| k.cursor())).flatten(),
+        next_cursor: page.last().filter(|_| more).map(|(k, _)| k.cursor()),
         items: page.into_iter().map(|(_, item)| item).collect(),
     })
 }
@@ -527,8 +528,9 @@ impl NetworkSession {
         identity: String,
         limit: u32,
     ) -> Result<Vec<ContactSummary>, ContactError> {
+        let op = self.try_enter().map_err(PlatformError::from)?;
         let owner = identifier(&identity)?;
-        let contacts = self.with_contacts(wallet, &identity, |owned, join, _| {
+        let contacts = self.with_contacts_entered(&op, wallet, &identity, |owned, join, _| {
             Ok((owned.into_iter().flat_map(|o| &o.entries))
                 .filter(|e| e.relation == Relation::Contact && !e.private.hidden)
                 .map(|e| (e.contact, e.summary(join)))

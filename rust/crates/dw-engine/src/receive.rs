@@ -343,7 +343,7 @@ impl NetworkSession {
             })
             .await?
             .map_err(|e| EngineError::Storage(e.to_string()))?;
-            let username = this.username_of(wallet).await?;
+            let username = this.username_of(wallet).await;
             Ok(ReceiveRequest {
                 id: u64::try_from(id)
                     .map_err(|_| EngineError::Internal(format!("request id {id}")))?,
@@ -379,7 +379,7 @@ impl NetworkSession {
                 tokio::task::spawn_blocking(move || appdb.receive_requests(&wallet.to_string()))
                     .await?
                     .map_err(|e| EngineError::Storage(e.to_string()))?;
-            let username = this.username_of(wallet).await?;
+            let username = this.username_of(wallet).await;
             Ok(rows
                 .into_iter()
                 .filter_map(|r| {
@@ -417,19 +417,17 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             this.require_wallet(&wallet)?;
-            this.username_of(wallet).await
+            Ok(this.username_of(wallet).await)
         })
         .await
     }
 
     /// [`Self::receive_username`] inside an operation: the identity read
-    /// touches the database, so it runs off the runtime's threads.
-    async fn username_of(
-        self: &Arc<Self>,
-        wallet: WalletId,
-    ) -> Result<Option<String>, EngineError> {
+    /// touches the database, so it runs off the runtime's threads. Never an
+    /// error: without the name the URI is a plain Core one.
+    async fn username_of(self: &Arc<Self>, wallet: WalletId) -> Option<String> {
         let this = Arc::clone(self);
-        Ok(tokio::task::spawn_blocking(move || this.main_username(wallet)).await?)
+        (tokio::task::spawn_blocking(move || this.main_username(wallet)).await).ok()?
     }
 
     pub async fn delete_receive_request(
