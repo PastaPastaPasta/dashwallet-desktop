@@ -308,7 +308,7 @@ export class OnboardingModel extends Model {
    * (D7): `1234.7` is not rounded to a height the user did not type (Sol r1 minor 1). */
   setScanHeight(text: string) {
     this.scanHeight = text;
-    this.setBirthHeight(text.trim() === "" ? null : Number(text));
+    this.setBirthHeight(Number(text));
   }
 
   /** Scan start from the wallet's creation date; `null` scans from genesis. */
@@ -376,13 +376,13 @@ export class OnboardingModel extends Model {
     this.#go("welcome");
   }
 
-  /** Drops every secret (the screen went away); replies still in flight are dropped too. */
   /** Whether a vault passphrase (or the choice to go without one) is still kept: only between
-   * Choose passphrase and creating the vault. */
+   * Choose passphrase and creating the vault (for tests). */
   get keepsVaultChoice(): boolean {
     return this.#vaultPassphrase !== null || this.#skipEncryption;
   }
 
+  /** Drops every secret (the screen went away); replies still in flight are dropped too. */
   dispose() {
     this.#epoch++;
     this.#clear();
@@ -424,8 +424,7 @@ export class OnboardingModel extends Model {
         this.#go("choosePassphrase");
         return;
       } finally {
-        this.#vaultPassphrase = null;
-        this.#skipEncryption = false;
+        this.#dropVaultChoice();
       }
     }
     try {
@@ -469,8 +468,7 @@ export class OnboardingModel extends Model {
     } catch (e) {
       if (this.#stale) return;
       // Nothing will use the vault passphrase now (review r1-Sol minor 2).
-      this.#vaultPassphrase = null;
-      this.#skipEncryption = false;
+      this.#dropVaultChoice();
       this.failure = failureText(e);
       this.#go("failed");
       return;
@@ -539,11 +537,15 @@ export class OnboardingModel extends Model {
     this.changed();
   }
 
+  #dropVaultChoice() {
+    this.#vaultPassphrase = null;
+    this.#skipEncryption = false;
+  }
+
   #clear() {
     this.#phrase = null;
     this.#bip39 = null;
-    this.#vaultPassphrase = null;
-    this.#skipEncryption = false;
+    this.#dropVaultChoice();
     this.phraseWords = [];
     this.#resetVerify();
     this.entry.clear();
