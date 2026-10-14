@@ -20,8 +20,8 @@ export const SecurityText = {
   /** dash-qt `AskPassphraseDialog` after `changePassphrase`. */
   passphraseChanged: "Wallet passphrase was successfully changed.",
   sameAsOld: "The new passphrase is the same as the current one.",
-  quickUnlockUnavailable:
-    "Not available on this computer. Touch ID comes with a signed macOS build (U-08), Windows Hello with the Windows release (W-02).",
+  quickUnlockUnavailable: "Not available on this computer",
+  quickUnlockWhy: "Touch ID comes with a signed macOS build (U-08), Windows Hello with the Windows release (W-02).",
   requireAuthentication: "Require authentication for every payment",
   requireAuthenticationHint: "Ask for the passphrase before each payment, even while the wallet is unlocked.",
   encryptFirst: "Encrypt the wallet first.",

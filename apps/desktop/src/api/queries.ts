@@ -45,6 +45,13 @@ export const keys = {
   coinsAll: (walletId: string) => ["coins", walletId] as const,
   utxos: (walletId: string) => ["coins", walletId, "utxos"] as const,
   feePolicy: ["feePolicy"] as const,
+  // Settings (U-04). Automatic backups and the policy share a prefix: a policy change trims them.
+  backupsAll: ["backups"] as const,
+  automaticBackups: ["backups", "automatic"] as const,
+  backupPolicy: ["backups", "policy"] as const,
+  backupDirectory: ["backups", "directory"] as const,
+  dust: ["dust"] as const,
+  nodeInfo: ["nodeInfo"] as const,
   paymentAuth: ["paymentAuth"] as const,
   /** Every DashPay read below: a `platform` or `dashPayNews` signal makes them all stale. */
   dashpayAll: ["dashpay"] as const,
@@ -204,4 +211,31 @@ export function useDashPayShell(walletId: string | undefined) {
     unread: unread.data ?? null,
     requests: requests.data ?? 0,
   };
+}
+
+// Settings (U-04): read when the tab shows, kept until the change that moves them.
+export function useAutomaticBackups() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.automaticBackups, queryFn: () => b.automaticBackups(null) });
+}
+
+export function useBackupPolicy() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.backupPolicy, queryFn: () => b.backupPolicy() });
+}
+
+export function useBackupDirectory() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.backupDirectory, queryFn: () => b.backupDirectory() });
+}
+
+export function useDustProtection() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.dust, queryFn: () => b.dustProtection() });
+}
+
+/** Node facts (the data directory); read again each time a tab that shows them opens. */
+export function useNodeInfo() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.nodeInfo, queryFn: () => b.nodeInfo(), staleTime: 0 });
 }

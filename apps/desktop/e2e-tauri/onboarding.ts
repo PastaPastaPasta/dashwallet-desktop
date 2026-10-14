@@ -235,6 +235,8 @@ async function main() {
 
     // ---- Show Recovery Phrase (IOS-003): the passphrase, then the same words
     shortcut("ctrl+comma");
+    // U-04 D1: the Wallet card is Settings ▸ Wallets.
+    await wd.press(tid("settings-tabs-wallets"));
     await wd.press(tid("settings-recovery-phrase"));
     await enter("recovery-passphrase-field", PASSPHRASE);
     await wd.press(tid("recovery-passphrase-submit"));
