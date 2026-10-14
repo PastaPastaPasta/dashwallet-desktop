@@ -90,7 +90,11 @@
     ],
     "linux": {
       "deb": {
-        "depends": []
+        "depends": [],
+        "desktopTemplate": "linux/dash-wallet.desktop"
+      },
+      "rpm": {
+        "desktopTemplate": "linux/dash-wallet.desktop"
       }
     }
   }

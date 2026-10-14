@@ -82,13 +82,16 @@ case "$os" in
     [[ -n "$desktop" ]] || fail "no .desktop file in $bundle"
     cp "$desktop" "$out/"
     for scheme in dash pay dashwallet dashpay; do
-      grep -q "x-scheme-handler/$scheme;" "$desktop" || fail "$desktop does not claim x-scheme-handler/$scheme"
+      grep -qE "^MimeType=(.*;)?x-scheme-handler/$scheme(;|$)" "$desktop" || fail "$desktop does not claim x-scheme-handler/$scheme"
     done
     grep -q '^Exec=.* %u$' "$desktop" || fail "$desktop does not pass the link (%u): $(grep '^Exec=' "$desktop")"
     export XDG_DATA_HOME="$work/share" XDG_CONFIG_HOME="$work/config" HOME="$work/home"
     mkdir -p "$XDG_DATA_HOME/applications" "$XDG_CONFIG_HOME" "$HOME"
-    cp "$desktop" "$XDG_DATA_HOME/applications/"
-    name=$(basename "$desktop")
+    # Registered as `dash-wallet.desktop`: the bundle names the file after productName
+    # ("Dash Wallet.desktop"), and xdg-utils' generic path (no desktop environment, as here)
+    # splits a desktop-file id at the space (U-01 D21; GNOME and KDE resolve it through gio/kio).
+    name=dash-wallet.desktop
+    cp "$desktop" "$XDG_DATA_HOME/applications/$name"
     for scheme in dash pay dashwallet dashpay; do
       xdg-mime default "$name" "x-scheme-handler/$scheme"
       [[ $(xdg-mime query default "x-scheme-handler/$scheme") == "$name" ]] || fail "xdg-mime did not take $name for $scheme"
