@@ -3,7 +3,7 @@
 // files as they are (type stripping); no other dependency.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createWriteStream, writeFileSync } from "node:fs";
+import { closeSync, openSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 export const env = (name: string, fallback?: string): string => {
@@ -102,10 +102,11 @@ export class WebDriver {
 /** Starts tauri-driver on `port` (and `port + 1` for WebKitWebDriver), logging to `out`, in its
  * own process group so `stopDriver` ends the driver, WebKitWebDriver and the app. */
 export async function startDriver(port: number, out: string): Promise<{ driver: ChildProcess; base: string }> {
-  const log = createWriteStream(join(out, "tauri-driver.log"));
-  const driver = spawn(DRIVER, ["--port", String(port), "--native-port", String(port + 1)], { stdio: ["ignore", "pipe", "pipe"], detached: true });
-  driver.stdout!.pipe(log);
-  driver.stderr!.pipe(log);
+  // A file, not a pipe: the app logs through the driver, and `spawnSync` (dwcli) blocks the event
+  // loop that would drain a pipe, so a full one would stop the app.
+  const log = openSync(join(out, "tauri-driver.log"), "w");
+  const driver = spawn(DRIVER, ["--port", String(port), "--native-port", String(port + 1)], { stdio: ["ignore", log, log], detached: true });
+  closeSync(log);
   const base = `http://127.0.0.1:${port}`;
   await poll(30_000, "tauri-driver to listen", () =>
     fetch(`${base}/status`).then(

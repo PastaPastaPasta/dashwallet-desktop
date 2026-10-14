@@ -17,7 +17,7 @@
 // session bus. Like smoke.ts it needs a private X display. Not in CI: it needs dashd.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createWriteStream, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -57,7 +57,9 @@ class Dashd {
     this.datadir = datadir;
     this.p2pPort = p2pPort;
     this.rpcPort = rpcPort;
-    const log = createWriteStream(join(OUT, "dashd.log"));
+    // Straight into the file: a pipe is read by this process's event loop, which `spawnSync`
+    // (dash-cli, dwcli) blocks, and dashd stops at a full pipe (mining froze at block 25).
+    const log = openSync(join(OUT, "dashd.log"), "w");
     // As regtest/README.md's node, on private ports.
     this.child = spawn(
       DASHD,
@@ -81,10 +83,9 @@ class Dashd {
         "-rpcpassword=dw",
         "-fallbackfee=0.00001",
       ],
-      { stdio: ["ignore", "pipe", "pipe"] },
+      { stdio: ["ignore", log, log] },
     );
-    this.child.stdout!.pipe(log);
-    this.child.stderr!.pipe(log);
+    closeSync(log);
   }
 
   tryCli(...args: string[]): { ok: boolean; out: string } {
