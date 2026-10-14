@@ -9,8 +9,9 @@
 //!   external account's address, in a transaction the wallet funded, a
 //!   payment sent to its friend. Every address of the accounts' pools
 //!   counts, used or not.
-//!   A script two accounts hold is nobody's: a contact chooses the xpub
-//!   it gives us, so it can derive another contact's addresses.
+//!   A script two accounts hold is nobody's, and so is every address of
+//!   two accounts with one xpub: a contact chooses the xpub it gives us,
+//!   so it can derive another contact's addresses, or ours.
 //! - **The library's word for the rest.** After a restore an external pool
 //!   holds only the gap past its last used index as key-wallet sees it, so
 //!   a payment sent further out matches no address. The library's DashPay
@@ -38,7 +39,6 @@ use dashcore::{ScriptBuf, Transaction, Txid};
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
-use key_wallet::account::account_collection::DashpayAccountKey;
 use key_wallet::managed_account::ManagedCoreFundsAccount;
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use platform_wallet::PlatformWalletInfo;
@@ -100,15 +100,43 @@ impl Payees {
     pub(crate) fn of(info: &PlatformWalletInfo, wallet: &WalletId) -> Self {
         let mut payees = Self::default();
         let accounts = &info.core_wallet.accounts;
-        for (direction, map) in [
+        let accounts: Vec<(Side, &ManagedCoreFundsAccount)> = [
             (
                 ActivityDirection::Received,
                 &accounts.dashpay_receival_accounts,
             ),
             (ActivityDirection::Sent, &accounts.dashpay_external_accounts),
-        ] {
-            for (key, account) in map {
-                payees.add_account(key, account, direction);
+        ]
+        .into_iter()
+        .flat_map(|(direction, map)| {
+            map.iter().map(move |(key, account)| {
+                let side = Side {
+                    owner: Identifier::from(key.user_identity_id),
+                    contact: Identifier::from(key.friend_identity_id),
+                    direction,
+                };
+                (side, account)
+            })
+        })
+        .collect();
+        // Two sides' accounts with one first address derive from one xpub:
+        // all their addresses are shared, past where the other pool reaches.
+        let mut roots = HashMap::new();
+        for (side, account) in &accounts {
+            if let Some(root) = root_of(account) {
+                hold(&mut roots, root, *side);
+            }
+        }
+        for (side, account) in accounts {
+            let shared = root_of(account).is_some_and(|r| roots[&r].is_none());
+            for pool in account.managed_account_type().address_pools() {
+                for info in pool.addresses.values() {
+                    let script = info.script_pubkey.clone();
+                    match shared {
+                        true => payees.add_shared(script, side.contact),
+                        false => payees.add_script(script, side),
+                    }
+                }
             }
         }
         let identities = || info.identity_manager.wallet_managed_identities(&wallet.0);
@@ -136,24 +164,6 @@ impl Payees {
             }
         }
         payees
-    }
-
-    fn add_account(
-        &mut self,
-        key: &DashpayAccountKey,
-        account: &ManagedCoreFundsAccount,
-        direction: ActivityDirection,
-    ) {
-        let side = Side {
-            owner: Identifier::from(key.user_identity_id),
-            contact: Identifier::from(key.friend_identity_id),
-            direction,
-        };
-        for pool in account.managed_account_type().address_pools() {
-            for info in pool.addresses.values() {
-                self.add_script(info.script_pubkey.clone(), side);
-            }
-        }
     }
 
     fn party(&mut self, contact: Identifier) {
@@ -223,11 +233,14 @@ impl Payees {
     /// `script` pays or is paid by `side`; a script another side already
     /// holds is nobody's.
     pub(crate) fn add_script(&mut self, script: ScriptBuf, side: Side) {
-        let held = self.scripts.entry(script).or_insert(Some(side));
-        if *held != Some(side) {
-            *held = None;
-        }
+        hold(&mut self.scripts, script, side);
         self.party(side.contact);
+    }
+
+    /// `script` belongs to an account another side's shares.
+    fn add_shared(&mut self, script: ScriptBuf, contact: Identifier) {
+        self.scripts.insert(script, None);
+        self.party(contact);
     }
 
     /// The library holds a `Sent` entry of `txid` for the pair.
@@ -258,6 +271,20 @@ impl NetworkSession {
             self.fetch_contact_names(wallet, &owner, contacts);
         }
     }
+}
+
+/// Records that `side` holds `key`: a key two sides hold is nobody's.
+fn hold<K: Eq + std::hash::Hash>(held: &mut HashMap<K, Option<Side>>, key: K, side: Side) {
+    let held = held.entry(key).or_insert(Some(side));
+    if *held != Some(side) {
+        *held = None;
+    }
+}
+
+/// An account's first address, which its xpub alone decides.
+fn root_of(account: &ManagedCoreFundsAccount) -> Option<ScriptBuf> {
+    let pools = account.managed_account_type().address_pools();
+    Some(pools.first()?.addresses.get(&0)?.script_pubkey.clone())
 }
 
 /// A transaction's attributed payments: per side, the duffs of its outputs.

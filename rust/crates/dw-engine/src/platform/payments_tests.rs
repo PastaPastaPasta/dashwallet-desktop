@@ -360,10 +360,14 @@ fn what_stays_unattributed() {
 fn a_shared_script_is_nobodys() {
     let mut p = Pure::new();
     // Carol's external xpub derives Bob's: both external accounts hold
-    // Bob's address. Erin's derives our receival address for Dave. An
-    // account that repeats its own script stays its own.
+    // Bob's address. Erin's derives our receival address for Dave, and
+    // holds it first (so the receipt's own side came last). An account
+    // that repeats its own script stays its own.
     (p.payees).add_script(external(BOB), side(ME, CAROL, ActivityDirection::Sent));
-    (p.payees).add_script(receival(DAVE), side(ME, ERIN, ActivityDirection::Sent));
+    let dave = addr(41).script_pubkey();
+    p.own(addr(41), AddressChain::Receiving);
+    (p.payees).add_script(dave.clone(), side(ME, ERIN, ActivityDirection::Sent));
+    (p.payees).add_script(dave.clone(), side(ME, DAVE, ActivityDirection::Received));
     (p.payees).add_script(receival(BOB), side(ME, BOB, ActivityDirection::Received));
     // And a script two contacts' receival accounts share.
     let shared = addr(40).script_pubkey();
@@ -373,7 +377,12 @@ fn a_shared_script_is_nobodys() {
 
     let to_bob = p.sent(1, BOB, 90_000, 1_000);
     p.payees.add_sent(to_bob, id(ME), id(BOB));
-    let from_dave = p.received(2, DAVE, 90_000, 1_000);
+    let t = tx(
+        2,
+        vec![input(Txid::from_byte_array([0xF0; 32]), 2)],
+        vec![out(90_000, dave.clone())],
+    );
+    let from_dave = p.add(entry(t, mined(10, 1_000)));
     let t = tx(
         3,
         vec![input(Txid::from_byte_array([0xF0; 32]), 3)],
@@ -402,6 +411,12 @@ fn a_shared_script_is_nobodys() {
     let s = scores(&p.view(), &id(ME), 2_000);
     assert_eq!(s.keys().collect::<Vec<_>>(), vec![&id(BOB)]);
     assert_eq!((s[&id(BOB)].sent, s[&id(BOB)].received), (0, 1));
+
+    // A shared script names nobody a read would show.
+    let mut only = Payees::default();
+    only.add_script(dave.clone(), side(ME, ERIN, ActivityDirection::Sent));
+    only.add_script(dave, side(ME, DAVE, ActivityDirection::Received));
+    assert!(only.shown().is_empty());
 }
 
 /// Activity is the pair's payments, both ways, newest first by block time
@@ -506,7 +521,7 @@ fn activity_pages_by_cursor() {
         &cursor[..63],
         &format!("{}q", &cursor[..63]),
         &cursor[8..],
-        &cursor.to_uppercase(),
+        &format!("{}{}", &cursor[..8], cursor[8..].to_uppercase()),
     ] {
         let e = activity(&p.view(), &id(ME), &id(BOB), ActivityFilter::All, Some(bad));
         assert_eq!(e.unwrap_err().code(), "invalid_argument", "{bad:?}");
@@ -730,6 +745,36 @@ impl Fixture {
         })
     }
 
+    /// Adds our external account paying `contact` on the xpub of seed
+    /// `seed`, grown by `extra`: its address scripts, by index.
+    fn external_on(&self, contact: u8, seed: u8, extra: u32) -> Vec<ScriptBuf> {
+        let manager = self.s.manager().unwrap();
+        let wallet = self.wallet;
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let info = wm.get_wallet_info_mut(&wallet.0).unwrap();
+            let xpub = account_xpub(seed);
+            let account_type = AccountType::DashpayExternalAccount {
+                index: 0,
+                user_identity_id: [ME; 32],
+                friend_identity_id: [contact; 32],
+            };
+            let mut pay = dashpay_account(account_type, xpub);
+            for pool in pay.managed_account_type_mut().address_pools_mut() {
+                pool.generate_addresses(extra, &KeySource::Public(xpub), true)
+                    .unwrap();
+            }
+            let pool = pay.managed_account_type().address_pools()[0];
+            let scripts = (0..pool.addresses.len() as u32)
+                .map(|i| pool.addresses[&i].script_pubkey.clone())
+                .collect();
+            let collection = &mut info.core_wallet.accounts;
+            collection.insert_funds_bearing_account(pay).unwrap();
+            scripts
+        })
+    }
+
     /// Our own BIP44 receiving address `n`.
     fn own_script(&self, n: u32) -> ScriptBuf {
         let manager = self.s.manager().unwrap();
@@ -906,6 +951,62 @@ fn the_facade_attributes_payments_both_ways() {
         vec![b58(CAROL)]
     );
     assert_eq!(strip[0].relation, Relation::Contact);
+}
+
+/// An account on another contact's xpub (Carol gave us Bob's) shares
+/// every address of both, even past where Bob's pool reaches (D22): sends
+/// to either stay unattributed, the library's word is refused, and Bob's
+/// own receival account is untouched.
+#[test]
+fn an_account_on_another_contacts_xpub_is_nobodys() {
+    let f = with_contacts();
+    let a = f.accounts(&[BOB], 0);
+    let fresh = a.external[&BOB].len();
+    let carol = f.external_on(CAROL, 100 + BOB, 10);
+    assert_eq!(carol[..fresh], a.external[&BOB][..]);
+    let send = |n: u32, script: &ScriptBuf| {
+        let t = tx(
+            n,
+            vec![input(Txid::from_byte_array([0xA0; 32]), n)],
+            vec![out(40_000, script.clone()), out(5_000, f.own_script(1))],
+        );
+        let mut e = entry(t, mined(6, 2_000));
+        e.own_inputs.insert(
+            0,
+            (46_000, Address::from_script(&f.own_script(0), NET).unwrap()),
+        );
+        f.put(e)
+    };
+    let near = send(10, &a.external[&BOB][3]);
+    let far = send(11, &carol[fresh + 5]);
+    f.library_payment(
+        far,
+        BOB,
+        PaymentDirection::Sent,
+        PaymentStatus::Confirmed,
+        40_000,
+    );
+    let (from_bob, _) = pay_both_ways(&f, &a, 0, None);
+
+    let rows = f.history();
+    let row = |txid: Txid| rows.iter().find(|r| r.txid == txid.to_string()).unwrap();
+    assert_eq!(row(near).counterparty, None);
+    assert_eq!(row(far).counterparty, None);
+    assert_eq!(row(from_bob).counterparty, Some(bob()));
+    let dp = f.dp();
+    let txids = |contact: u8| {
+        let page = f.engine.block_on(dp.contact_activity(
+            b58(ME),
+            b58(contact),
+            None,
+            ActivityFilter::All,
+        ));
+        (page.unwrap().items.into_iter())
+            .map(|i| i.txid)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(txids(BOB), vec![from_bob.to_string()]);
+    assert!(txids(CAROL).is_empty());
 }
 
 /// A restore replays the same payments: history only from the chain (no

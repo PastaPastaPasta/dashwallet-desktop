@@ -470,7 +470,7 @@ bodies decided where the rows leave room:
 |---|---|---|---|
 | `payment_lock(identity, contact)` | sync | The lock an ambiguous broadcast set (`dp_payment_lock`), if any. | `ContactError` |
 | `resolve_payment_lock(identity, contact)` | async | Reconciles the lock with E0-04 §16.6's evidence (§4.1) for the locked payment's txid. `Sent` (an attempt or a Resend finished `Sent`, or the wallet has seen the transaction) clears the lock. `NotSent` clears it only on **positive evidence**: in this process, `dispatch_status(txid)` is `Some(NotSent)` (the send's tombstone), or a ChainLocked conflicting spend of one of its inputs exists. Never "not found on chain or in the wallet": a peer may be withholding it. Anything else is `Unknown`, which reads like `MaybeSent` and `None`: the lock stays. | `ContactError` |
-| `contact_activity(identity, contact, cursor, f)` | async | Payments to and from the contact, newest first, filtered All / Sent / Received; 50 per page, `cursor` the previous page's `next_cursor`. Attributed as history records are (item 47): one item per transaction and direction, `amount` what the contact got or sent (no fee), mined ones by block time with unmined ones first (`timestamp` the block time, else first-seen), abandoned, not-accepted and conflicted ones left out. A contact never paid is an empty page, not an error. Re-query on `Platform{Payments}`, `Platform{Contacts}` and the wallet's `HistoryChanged`. **Implemented (DP3-02).** | `ContactError`: unknown wallet; `invalid_argument` (an id, or a cursor this call did not issue); `contact.self`; `identity.not_found` (not this wallet's) |
+| `contact_activity(identity, contact, cursor, f)` | async | Payments to and from the contact, newest first, filtered All / Sent / Received; 50 per page, `cursor` the previous page's `next_cursor`. Attributed as history records are (item 47): one item per transaction and direction, `amount` what the contact got or sent (no fee), mined ones by block time with unmined ones first (`timestamp` the block time, else first-seen), abandoned, not-accepted and conflicted ones left out. A contact never paid is an empty page, not an error. Re-query on `Platform{Payments}`, `Platform{Contacts}` and the wallet's `HistoryChanged`. **Implemented (DP3-02).** | `ContactError`: unknown wallet; `invalid_argument` (an id, or a cursor this call did not issue, including one another query issued); `contact.self`; `identity.not_found` (not this wallet's) |
 | `frequent_contacts(identity, limit)` | sync | The Pay screen's frequent strip (Android's rule): at most `limit` (clamped to 1–20) established contacts that are not hidden, the ones `identity` paid most often in the last 90 days first, then the ones that paid it most often; ties by the latest payment, then the id; none without a payment. In memory (the contacts read model and the history); while a writer holds the library's state it answers from the last view it read, empty before one. **Implemented (DP3-02).** | `ContactError`: as `contacts` |
 
 ### 2.6 Notifications
@@ -2562,10 +2562,11 @@ renames or reshapes them takes the next version bump:
       and the transaction has exactly one unattributed payee record and no output to any DashPay address the wallet
       holds (else the entry may name that output, such as one paying the wallet's own other identity, not the
       payee). Anything else stays unattributed.
-    - **Shared addresses.** A script two DashPay accounts hold (two contacts', or a receival and an external one)
-      is nobody's: its outputs stay unattributed in history, activity and the strip, and the library's word is
-      refused for its transaction. A contact chooses the xpub it gives us, so it can derive another contact's
-      addresses or our receival ones.
+    - **Shared addresses.** A script DashPay accounts of two sides hold (two contacts', or a receival and an
+      external one) is nobody's, and so is every address of two sides' accounts on one xpub (the same first
+      address), even past where one pool reaches: their outputs stay unattributed in history, activity and the
+      strip, and the library's word is refused for their transactions. A contact chooses the xpub it gives us, so it
+      can derive another contact's addresses or our receival ones.
     - **Not attributed:** a payment between two identities of one wallet (a SendToSelf), mixed or foreign-funded
       debits (`Other`), coinbase, CoinJoin mixing, denominations and collateral, and Platform transfers. A CoinJoin
       Send (mixed coins paying a contact) is attributed like any send. The history text search does not match contact
