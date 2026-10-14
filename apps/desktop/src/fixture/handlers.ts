@@ -114,6 +114,7 @@ function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPu
         // As `unlock` counts a wrong passphrase.
         const failedAttempts = w.lock.failedAttempts + 1;
         w.lock = { ...w.lock, failedAttempts };
+        if (w.throttleSecs) w.throttledUntil = Date.now() + w.throttleSecs * 1000;
         throw fail("vault.wrong_passphrase", `wrong passphrase (${failedAttempts} failed)`, {
           kind: "wrongPassphrase",
           failedAttempts,
@@ -330,7 +331,11 @@ export const HANDLERS: Handlers = {
   active_network: (_, { world }) => world.launch.network,
 
   // Vault, leases and the lock report (E0-04, E0-13 D3)
-  lock_status: (_, { world }) => world.lock,
+  // The vault's status counts its wait down (dw-vault `retry_after`).
+  lock_status: (_, { world }) => {
+    const left = (world.throttledUntil ?? 0) - Date.now();
+    return left > 0 ? { ...world.lock, retryAfterSecs: Math.ceil(left / 1000) } : world.lock;
+  },
   unlock: ({ passphrase }, ctx) => {
     const { world } = ctx;
     if (passphrase !== world.passphrase) {

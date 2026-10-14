@@ -65,6 +65,19 @@ export function ConfirmSheet({
     const t = window.setInterval(() => (Date.now() >= retryAt ? setRetryAt(null) : tick((n) => n + 1)), 250);
     return () => window.clearInterval(t);
   }, [retryAt]);
+  // A wait left by earlier attempts (a cancelled sheet, the lock screen) holds Send from the start.
+  useEffect(() => {
+    let live = true;
+    b.lockStatus().then(
+      ({ retryAfterSecs: secs }) => {
+        if (live && secs) setRetryAt((at) => at ?? Date.now() + secs * 1000);
+      },
+      () => null,
+    );
+    return () => {
+      live = false;
+    };
+  }, [b]);
   const waitSecs = retryAt === null ? 0 : Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));
   const fieldId = useId();
   const unit = network.unitName;
@@ -187,7 +200,7 @@ export function ConfirmSheet({
                 autoComplete="current-password"
                 value={passphrase}
                 aria-invalid={!!error}
-                aria-describedby={error ? `${fieldId}-error` : undefined}
+                aria-describedby={[error && `${fieldId}-error`, waitSecs > 0 && `${fieldId}-wait`].filter(Boolean).join(" ") || undefined}
                 // Mounted once the policy is known, or when the engine asks for it: focus it then.
                 autoFocus
                 disabled={busy}
@@ -198,8 +211,13 @@ export function ConfirmSheet({
         )}
         <p id={`${fieldId}-error`} className="form-problem" role="alert" data-testid="pay-confirm-error">
           {error}
-          {waitSecs > 0 && ` Try again in ${waitSecs} s.`}
         </p>
+        {/* Outside the alert: a screen reader announces the refusal once, not every second. */}
+        {waitSecs > 0 && (
+          <p id={`${fieldId}-wait`} className="form-problem" data-testid="pay-confirm-wait">
+            {error ? "" : "Too many attempts. "}Try again in {waitSecs} s.
+          </p>
+        )}
         <div className="sheet-actions">
           <DashButton ref={cancel} variant="tintedGray" size="large" data-testid="pay-confirm-cancel" disabled={busy} onClick={onCancel}>
             Cancel

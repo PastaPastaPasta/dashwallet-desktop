@@ -148,7 +148,8 @@ test.describe("Pay", () => {
     await fillPayment(page, PAYEE, "0.5");
     await review(page);
     await sendWithPassphrase(page, "wrong");
-    await expect(page.getByTestId("pay-confirm-error")).toContainText(/The passphrase you entered was incorrect\. Try again in [1-3] s\./);
+    await expect(page.getByTestId("pay-confirm-error")).toHaveText("The passphrase you entered was incorrect.");
+    await expect(page.getByTestId("pay-confirm-wait")).toHaveText(/^Try again in [1-3] s\.$/);
     await expect(page.getByTestId("pay-confirm-send")).toBeDisabled();
     // Typing is fine meanwhile; Return does not send either.
     await page.getByTestId("pay-confirm-passphrase").fill("demo");
@@ -156,8 +157,24 @@ test.describe("Pay", () => {
     expect(await world(page, (w) => w.grants.length)).toBe(0);
     // Once the wait is over, Send works.
     await expect(page.getByTestId("pay-confirm-send")).toBeEnabled({ timeout: 10_000 });
-    await expect(page.getByTestId("pay-confirm-error")).toHaveText("The passphrase you entered was incorrect.");
+    await expect(page.getByTestId("pay-confirm-wait")).toHaveCount(0);
     await page.getByTestId("pay-confirm-send").click();
+    await expect(page.getByTestId("pay-result-sent")).toBeVisible();
+  });
+
+  test("a confirm sheet opened during the vault's wait holds Send too", async ({ page }) => {
+    await open(page);
+    await world(page, (w) => (w.throttleSecs = 4));
+    await fillPayment(page, PAYEE, "0.5");
+    await review(page);
+    await sendWithPassphrase(page, "wrong");
+    await expect(page.getByTestId("pay-confirm-wait")).toBeVisible();
+    await page.getByTestId("pay-confirm-cancel").click();
+    await review(page);
+    await expect(page.getByTestId("pay-confirm-wait")).toHaveText(/^Too many attempts\. Try again in [1-4] s\.$/);
+    await expect(page.getByTestId("pay-confirm-send")).toBeDisabled();
+    await expect(page.getByTestId("pay-confirm-send")).toBeEnabled({ timeout: 10_000 });
+    await sendWithPassphrase(page, "demo");
     await expect(page.getByTestId("pay-result-sent")).toBeVisible();
   });
 

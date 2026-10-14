@@ -65,6 +65,8 @@ export interface World {
   paymentAuth: boolean;
   /** The vault's wait after a wrong passphrase (`retryAfterSecs`); null: none. */
   throttleSecs: number | null;
+  /** When that wait ends (ms since epoch), for `lock_status`; null: no wait. */
+  throttledUntil: number | null;
   /** Drafts, prepared transactions and what the next broadcast does (send.ts). */
   send: SendWorld;
 }
@@ -137,6 +139,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     shellSync: null,
     paymentAuth: true,
     throttleSecs: null,
+    throttledUntil: null,
     send: newSendWorld(),
   };
 }
