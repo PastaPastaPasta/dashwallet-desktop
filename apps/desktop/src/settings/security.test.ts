@@ -144,9 +144,15 @@ describe("wipe", () => {
     model.accept(SecurityText.wipeAcceptPhrase);
     await model.wipe(PASS);
     expect(model.step).toBe("stopped");
-    expect(model.error).toMatch(/^Main could not be removed: .* Nothing else was deleted\.$/);
+    expect(model.error).toMatch(/^Main could not be removed: .* Nothing was deleted\.$/);
     expect(fixture.calls).not.toContain("destroy_vault");
     expect(fixture.world.lock.state).toBe("unlocked");
+  });
+
+  it("IOS109_aStoppedWipeSaysWhatItAlreadyRemoved", () => {
+    expect(SecurityText.wipeStopped("Main", "Busy.", 0)).toBe("Main could not be removed: Busy. Nothing was deleted.");
+    expect(SecurityText.wipeStopped("C", "Busy.", 1)).toBe("C could not be removed: Busy. The wallet before it was removed; the others and the vault were kept.");
+    expect(SecurityText.wipeStopped("D", "Busy.", 2)).toMatch(/The 2 wallets before it were removed;/);
   });
 
   it("IOS109_anUnencryptedVaultNeedsNoPassphrase", async () => {

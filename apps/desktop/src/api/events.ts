@@ -17,8 +17,10 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // The app's queue overflowed and dropped events: whatever they said, the queries know.
     case "eventsOverflowed":
       return "all";
+    // The engine writes an automatic backup after an import or a restore (U-04).
     case "walletCreated":
     case "walletRemoved":
+      return [keys.wallets, keys.automaticBackups];
     case "walletLoadChanged":
       return [keys.wallets];
     case "spvStateChanged":

@@ -27,6 +27,7 @@ export const SecurityText = {
   encryptFirst: "Encrypt the wallet first.",
   autohideBalance: "Hide balances when the app starts",
   lockedAutomatically: "Locked automatically.",
+  autoLockSeconds: (secs: number) => `${secs} seconds`,
   /** IOS-009 "Delete All Wallets?". */
   wipeTitle: "Delete all wallet data?",
   wipeMessage:
@@ -35,7 +36,11 @@ export const SecurityText = {
   wipeAcceptPhrase: "I accept that I will lose my coins if I no longer possess the recovery phrase",
   acceptPhraseMismatch: "Type the sentence exactly as shown.",
   wiped: "All wallet data was deleted.",
-  wipeStopped: (name: string, why: string) => `${name} could not be removed: ${why} Nothing else was deleted.`,
+  /** Backups and exports are files the user chose to keep: the wipe leaves them (D27). */
+  wipeKeeps: (dir: string) =>
+    `Backups and exports in ${dir} are not deleted. An export for Dash Core holds private keys in plain text: delete it yourself if you no longer need it.`,
+  wipeStopped: (name: string, why: string, removed: number) =>
+    `${name} could not be removed: ${why} ${removed === 0 ? "Nothing was deleted." : `${removed === 1 ? "The wallet" : `The ${removed} wallets`} before it ${removed === 1 ? "was" : "were"} removed; the others and the vault were kept.`}`,
 };
 
 /** The auto-lock choices (IOS-015 without "Immediately", D12): seconds, `null` = Never. */
@@ -272,7 +277,7 @@ export class WipeModel extends Model {
         await this.api.removeWallet(w.walletId, grant);
       } catch (e) {
         if (grant) this.api.revokeGrant(grant).catch(() => {});
-        return this.#stop(SecurityText.wipeStopped(w.name, failureText(e)));
+        return this.#stop(SecurityText.wipeStopped(w.name, failureText(e), i));
       }
     }
     try {

@@ -133,7 +133,7 @@ export function runCommand(command: ShellCommand, lock: () => void) {
       ui.set({ onboarding: true, dialog: null, detail: null });
       return;
     case "recoveryPhrase":
-      ui.set({ dialog: "recoveryPhrase" });
+      ui.set({ dialog: "recoveryPhrase", recoveryWallet: null });
   }
 }
 

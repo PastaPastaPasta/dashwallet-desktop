@@ -67,9 +67,9 @@ export function fileStem(name: string): string {
 
 export const SUFFIX = { backup: ".dwbackup", dumpWallet: "-dumpwallet.txt", importDescriptorsJson: "-descriptors.json" } as const;
 
-/** `<name>-YYYY-MM-DD-HH-MM<suffix>` in local time. */
+/** `<name>-YYYY-MM-DD-HH-MM-SS<suffix>` in local time. */
 export function fileName(walletName: string, at: Date, kind: keyof typeof SUFFIX): string {
-  const time = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}-${pad(at.getHours())}-${pad(at.getMinutes())}`;
+  const time = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}-${pad(at.getHours())}-${pad(at.getMinutes())}-${pad(at.getSeconds())}`;
   return `${fileStem(walletName)}-${time}${SUFFIX[kind]}`;
 }
 

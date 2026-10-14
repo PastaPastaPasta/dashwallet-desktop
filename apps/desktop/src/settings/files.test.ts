@@ -31,9 +31,9 @@ afterEach(() => {
 
 describe("file names (D19)", () => {
   it("names a file after its wallet and the minute, in the folder's own separator", () => {
-    expect(fileName("Main", AT, "backup")).toBe("Main-2026-10-06-09-05.dwbackup");
-    expect(fileName("Mon portefeuille é/../x", AT, "dumpWallet")).toBe("Mon-portefeuille-e-x-2026-10-06-09-05-dumpwallet.txt");
-    expect(fileName("💰", AT, "importDescriptorsJson")).toBe("wallet-2026-10-06-09-05-descriptors.json");
+    expect(fileName("Main", AT, "backup")).toBe("Main-2026-10-06-09-05-00.dwbackup");
+    expect(fileName("Mon portefeuille é/../x", AT, "dumpWallet")).toBe("Mon-portefeuille-e-x-2026-10-06-09-05-00-dumpwallet.txt");
+    expect(fileName("💰", AT, "importDescriptorsJson")).toBe("wallet-2026-10-06-09-05-00-descriptors.json");
     expect(fileStem("<script>")).toBe("script");
     expect(inDirectory("/home/u/backups", "a.dwbackup")).toBe("/home/u/backups/a.dwbackup");
     expect(inDirectory("C:\\Users\\u\\backups\\", "a.dwbackup")).toBe("C:\\Users\\u\\backups\\a.dwbackup");
@@ -44,7 +44,7 @@ describe("back up", () => {
   it("QT110_backupOfAnEncryptedVaultUsesItsPassphrase", async () => {
     const model = new BackupModel(b, () => AT);
     await model.backup(A, "Main", null, null);
-    expect(model.done).toMatchObject({ path: `${FIXTURE_BACKUP_DIR}/Main-2026-10-06-09-05.dwbackup`, walletId: A, automatic: false });
+    expect(model.done).toMatchObject({ path: `${FIXTURE_BACKUP_DIR}/Main-2026-10-06-09-05-00.dwbackup`, walletId: A, automatic: false });
     // The same minute again: the engine never writes over a file.
     await model.backup(A, "Main", null, null);
     expect(model.error).toMatch(/a file with that name exists/);
@@ -57,7 +57,7 @@ describe("back up", () => {
     expect(model.error).toBe(PassphraseText.mismatch);
     expect(fixture.calls).not.toContain("backup_wallet");
     await model.backup(A, "Main", "secret", "secret");
-    expect(model.done?.path).toBe(`${FIXTURE_BACKUP_DIR}/Main-2026-10-06-09-05.dwbackup`);
+    expect(model.done?.path).toBe(`${FIXTURE_BACKUP_DIR}/Main-2026-10-06-09-05-00.dwbackup`);
     expect(fixture.world.settings.files[model.done!.path].passphrase).toBe("secret");
   });
 
@@ -183,7 +183,7 @@ describe("export for Dash Core", () => {
     expect(fixture.calls).not.toContain("export_for_core");
     await model.export("dumpWallet", PASS);
     expect(model.step).toBe("done");
-    expect(model.done).toMatchObject({ path: `${FIXTURE_BACKUP_DIR}/Main-2026-10-06-09-05-dumpwallet.txt`, keyCount: 62, warnings: ["mnemonicNotCoreCompatible"] });
+    expect(model.done).toMatchObject({ path: `${FIXTURE_BACKUP_DIR}/Main-2026-10-06-09-05-00-dumpwallet.txt`, keyCount: 62, warnings: ["mnemonicNotCoreCompatible"] });
   });
 
   it("QT109_aLockedVaultStillOffersTheExport", async () => {
@@ -194,6 +194,6 @@ describe("export for Dash Core", () => {
     expect(model.warnings).toEqual([]);
     // A passphrase grant carries its own key, so a locked vault exports too.
     await model.export("importDescriptorsJson", PASS);
-    expect(model.done?.path).toBe(`${FIXTURE_BACKUP_DIR}/Main-2026-10-06-09-05-descriptors.json`);
+    expect(model.done?.path).toBe(`${FIXTURE_BACKUP_DIR}/Main-2026-10-06-09-05-00-descriptors.json`);
   });
 });

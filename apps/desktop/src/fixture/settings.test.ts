@@ -71,11 +71,21 @@ describe("fixture settings engine", () => {
     await expect(cmd.removeWallet(W2, wipe.id)).rejects.toMatchObject({ code: "wallet_not_found" });
   });
 
+  it("removes only a loaded wallet, as the engine's require_wallet", async () => {
+    install("two-wallets");
+    await cmd.unloadWallet(W2);
+    const wipe = await cmd.authorize({ kind: "wipe" }, W2, PASS);
+    await expect(cmd.removeWallet(W2, wipe.id)).rejects.toMatchObject({ code: "wallet_not_found" });
+    await cmd.loadWallet(W2);
+    await cmd.removeWallet(W2, wipe.id);
+  });
+
   it("renames within 1 to 64 characters", async () => {
     await cmd.renameWallet(W, "  Everyday  ");
     expect((await cmd.walletInfo(W)).name).toBe("Everyday");
     await expect(cmd.renameWallet(W, "   ")).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(cmd.renameWallet(W, "x".repeat(65))).rejects.toMatchObject({ code: "invalid_argument" });
+    await cmd.renameWallet(W, "💰".repeat(64)); // code points, not UTF-16 units
   });
 
   it("adds a watch-only wallet from an account xpub", async () => {

@@ -50,6 +50,18 @@ describe("wallets list", () => {
     expect(fixture.calls.filter((c) => c === "unload_wallet")).toHaveLength(1);
   });
 
+  it("QT101_theLastOpenWalletCannotBeRemovedWhileAnotherIsClosed", async () => {
+    const model = new WalletsModel(b);
+    await model.load();
+    expect(model.canRemove(model.rows[0])).toBe(true);
+    await model.close(B);
+    // Removing A would leave only a closed wallet: onboarding, with no way back to B (D26).
+    expect(model.canRemove(model.rows[0])).toBe(false);
+    expect(model.canRemove(model.rows[1])).toBe(false);
+    await model.open(B);
+    expect(model.canRemove(model.rows[0])).toBe(true);
+  });
+
   it("QT101_theStartupListIsSetAlone", async () => {
     const model = new WalletsModel(b);
     await model.load();

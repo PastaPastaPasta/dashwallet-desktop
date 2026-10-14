@@ -5,7 +5,7 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState, type ChangeEvent, type FormEvent } from "react";
-import { useBackend, useLockStatus } from "../../api/queries";
+import { useBackend, useBackupDirectory, useLockStatus } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { NewPassphraseForm, PassphrasePrompt } from "../../components/passphrase";
@@ -51,7 +51,7 @@ export function SecurityTab() {
             Change passphrase…
           </DashButton>
         )}
-        <DashButton variant="plainBlue" data-testid="settings-security-recovery-phrase" onClick={() => ui.set({ dialog: "recoveryPhrase" })}>
+        <DashButton variant="plainBlue" data-testid="settings-security-recovery-phrase" onClick={() => ui.set({ dialog: "recoveryPhrase", recoveryWallet: null })}>
           Show recovery phrase…
         </DashButton>
         {canForget && (
@@ -79,6 +79,10 @@ export function SecurityTab() {
             disabled={!encrypted}
             onChange={(e) => void save({ autoLockSecs: e.target.value === "null" ? null : Number(e.target.value) })}
           >
+            {/* settings.json can hold a time that is not a choice: shown as it is, not as "Never". */}
+            {!AUTO_LOCK_CHOICES.some((c) => c.secs === prefs.autoLockSecs) && (
+              <option value={String(prefs.autoLockSecs)}>{SecurityText.autoLockSeconds(prefs.autoLockSecs!)}</option>
+            )}
             {AUTO_LOCK_CHOICES.map((c) => (
               <option key={c.label} value={String(c.secs)}>
                 {c.label}
@@ -282,6 +286,7 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
   const [sentence, setSentence] = useState("");
   const id = useId();
   const working = model.step === "working" || model.lock.working;
+  const backupDir = useBackupDirectory();
   return (
     <Sheet title={SecurityText.wipeTitle} width="medium" testId="settings-wipe-sheet" focusKey={model.step} closable={!working} onClose={onClose}>
       {model.step === "sentence" && (
@@ -294,6 +299,9 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
         >
           <p className="sheet-warning" role="note">
             {SecurityText.wipeMessage}
+          </p>
+          <p className="field-hint" data-testid="settings-wipe-keeps">
+            {SecurityText.wipeKeeps(backupDir.data ?? "the backup folder")}
           </p>
           <div className="form-field">
             <label htmlFor={`${id}-sentence`}>Type: {SecurityText.wipeAcceptPhrase}</label>

@@ -43,7 +43,7 @@ export function WalletsTab() {
         <DashButton variant="plainBlue" data-testid="settings-add-watch-only" onClick={() => setSheet({ kind: "watchOnly" })}>
           Add watch-only wallet…
         </DashButton>
-        <DashButton variant="plainBlue" data-testid="settings-recovery-phrase" onClick={() => ui.set({ dialog: "recoveryPhrase" })}>
+        <DashButton variant="plainBlue" data-testid="settings-recovery-phrase" onClick={() => ui.set({ dialog: "recoveryPhrase", recoveryWallet: null })}>
           Show recovery phrase…
         </DashButton>
       </SettingsCard>
@@ -95,6 +95,7 @@ function WalletItem({
   const testId = `settings-wallet-${row.walletId.slice(0, 8)}`;
   const busy = model.busy !== null;
   const closable = model.canClose(row);
+  const removable = model.canRemove(row);
   return (
     <li className="settings-wallet" data-testid={testId} aria-labelledby={`${id}-name`}>
       <div className="settings-wallet-head">
@@ -119,7 +120,8 @@ function WalletItem({
           Open when Dash Wallet starts
         </label>
       )}
-      <div className="settings-wallet-actions">
+      {/* The group names the wallet the buttons act on ("Remove…" of which wallet). */}
+      <div className="settings-wallet-actions" role="group" aria-labelledby={`${id}-name`}>
         {!model.fallback &&
           (row.loaded ? (
             <DashButton
@@ -154,11 +156,12 @@ function WalletItem({
         <DashButton variant="tintedGray" size="small" data-testid={`${testId}-xpub`} disabled={busy || !row.loaded} onClick={() => onSheet("xpub")}>
           Extended public key…
         </DashButton>
-        <DashButton variant="plainRed" size="small" data-testid={`${testId}-remove`} disabled={busy || !row.loaded} onClick={() => onSheet("remove")}>
+        <DashButton variant="plainRed" size="small" data-testid={`${testId}-remove`} disabled={busy || !removable} onClick={() => onSheet("remove")}>
           Remove…
         </DashButton>
       </div>
       {row.loaded && !closable && !model.fallback && <span className="field-hint">{WalletsText.openAnotherToClose}</span>}
+      {row.loaded && !removable && <span className="field-hint">{WalletsText.openAnotherToRemove}</span>}
     </li>
   );
 }

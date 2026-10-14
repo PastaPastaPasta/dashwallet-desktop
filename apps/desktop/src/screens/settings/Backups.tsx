@@ -417,6 +417,11 @@ function ExportSheet({ wallet, onClose }: { wallet: WalletSummary; onClose: () =
       {model.step === "done" && model.done && (
         <>
           <Done text={FilesText.exported(model.done.keyCount, model.done.path)} testId="settings-export-done" />
+          {model.done.warnings.map((w) => (
+            <p key={w} className="sheet-warning" data-testid={`settings-export-done-warning-${w}`}>
+              {FilesText.warnings[w]}
+            </p>
+          ))}
           <dl className="detail-list card-l1">
             <DetailRow label="File" testId="settings-export-path">
               <CopyValue value={model.done.path} label="export path" mono />

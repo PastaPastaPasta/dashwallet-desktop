@@ -11,6 +11,7 @@ import { vaultCredential } from "./security";
 export const WalletsText = {
   openAnotherFirst: "Open another wallet first.",
   openAnotherToClose: "Open another wallet first to close this one.",
+  openAnotherToRemove: "Open another wallet first to remove this one: closed wallets cannot be reached with no wallet open.",
   noLoadStates: "Closed wallets are not shown: this engine does not list them yet.",
   nameRule: "A wallet name is 1 to 64 characters.",
   /** IOS-110. */
@@ -88,6 +89,12 @@ export class WalletsModel extends Model {
   /** Close is refused for the last open wallet (D17). */
   canClose(row: WalletRow): boolean {
     return !this.fallback && row.loaded && this.openCount > 1;
+  }
+
+  /** Remove is refused for the last open wallet while closed ones exist: onboarding would open
+   * with no way back to them (D26). */
+  canRemove(row: WalletRow): boolean {
+    return row.loaded && !(this.openCount === 1 && this.rows.some((r) => !r.loaded));
   }
 
   open(walletId: string) {

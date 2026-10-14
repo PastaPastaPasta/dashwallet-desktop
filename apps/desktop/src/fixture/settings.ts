@@ -138,7 +138,8 @@ function backupFile(wallets: NonNullable<FixtureFile["wallets"]>, passphrase: st
 function checkName(name: string | null): string | null {
   if (name === null) return null;
   const t = name.trim();
-  if (t.length < 1 || t.length > 64) throw fail("invalid_argument", "a wallet name is 1 to 64 characters");
+  const chars = [...t].length; // code points, as dw-app counts them
+  if (chars < 1 || chars > 64) throw fail("invalid_argument", "a wallet name is 1 to 64 characters");
   return t;
 }
 
@@ -247,7 +248,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     },
     remove_wallet: ({ walletId, grantId }, ctx) => {
       const { world } = ctx;
-      if (!world.wallets.some((x) => x.summary.walletId === walletId)) throw fail("wallet_not_found", `wallet not found: ${walletId}`);
+      wallet(world, walletId);
       if (!grant(world, grantId, walletId, ["wipe"])) throw fail("vault.grant_invalid", "grant invalid");
       useGrant(world, grantId);
       world.wallets = world.wallets.filter((x) => x.summary.walletId !== walletId);

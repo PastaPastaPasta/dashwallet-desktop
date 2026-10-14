@@ -28,10 +28,17 @@ export function useSavePrefs() {
   const backend = useBackend();
   const launch = useLaunch();
   const [problem, setProblem] = useState<string | null>(null);
+  /** Resolves to whether dw-app wrote the change; a failure shows `problem`. */
   const save = (patch: Partial<UiSettings>) =>
     savePrefs(backend, launch, patch).then(
-      () => setProblem(null),
-      () => setProblem(OptionsText.settingsNotSaved),
+      () => {
+        setProblem(null);
+        return true;
+      },
+      () => {
+        setProblem(OptionsText.settingsNotSaved);
+        return false;
+      },
     );
   return { save, problem };
 }
@@ -149,9 +156,9 @@ export function GeneralTab() {
               data-testid="settings-reset-confirm"
               // Reset Options (QT-141, D8): every display setting back to its default.
               onClick={() =>
-                void save(DEFAULT_PREFS).then(() => {
+                void save(DEFAULT_PREFS).then((saved) => {
                   setResetting(false);
-                  setResetDone(true);
+                  setResetDone(saved);
                 })
               }
             >

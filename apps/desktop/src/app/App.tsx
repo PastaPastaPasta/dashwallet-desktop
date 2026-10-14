@@ -190,7 +190,7 @@ function Shell() {
   // A dialog asked for while locked, onboarding, or behind a sheet is dropped, not kept for later.
   const shown = locked || onboarding || sheet || layered ? null : dialog;
   useEffect(() => {
-    if (dialog !== shown) ui.set({ dialog: null });
+    if (dialog !== shown) closeDialog();
   }, [dialog, shown]);
   return (
     <>
