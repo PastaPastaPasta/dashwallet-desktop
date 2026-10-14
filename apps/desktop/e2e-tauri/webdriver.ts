@@ -87,6 +87,8 @@ export class WebDriver {
   press = async (css: string) => void (await this.click(await this.waitFor(css)));
   fill = async (css: string, text: string) => void (await this.type(await this.waitFor(css), text));
   script = <T>(script: string, args: unknown[] = []) => this.call<T>("POST", this.s("/execute/sync"), { script, args });
+  /** `script` gets a callback as its last argument and answers through it. */
+  scriptAsync = <T>(script: string, args: unknown[] = []) => this.call<T>("POST", this.s("/execute/async"), { script, args });
 
   async screenshot(name: string) {
     const png = await this.call<string>("GET", this.s("/screenshot"));

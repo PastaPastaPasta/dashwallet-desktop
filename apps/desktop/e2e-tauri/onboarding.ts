@@ -6,8 +6,9 @@
 // phrase, verify (a wrong chip first) ▸ Show Recovery Phrase equals the created phrase ▸ Add
 // Wallet ▸ Restore a phrase dashd funded (an unknown word flagged, the last word completed
 // from a suggestion), scan from genesis ▸ its balance arrives through SPV ▸ lock: a wrong
-// passphrase (attempts remaining), unlock for mixing only, then fully from the status bar ▸
-// lock ▸ Forgot passphrase with the restored phrase: the created wallet becomes watch-only ▸ the
+// passphrase (attempts remaining), unlock for mixing only (the engine refuses a spend without a
+// credential), then fully from the status bar ▸ lock ▸ Forgot passphrase with the restored
+// phrase: the engine lists the created wallet as watch-only and the restored one not ▸ the
 // old passphrase fails, the new one unlocks ▸ three failures make the lock screen wait, and a
 // relaunch keeps the wait ▸ after it, the new passphrase unlocks. At the end, pass or fail, no
 // file of the data root or of OUT (logs included) holds the phrases or the passphrases in plain
@@ -23,6 +24,7 @@ import { spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { WalletSummary } from "../src/api/generated/WalletSummary";
 import { env, poll, startDriver, stopDriver, tid, WebDriver } from "./webdriver.ts";
 
 const APP = resolve(env("DW_APP"));
@@ -167,6 +169,19 @@ async function main() {
     await enter("lock-field", passphrase);
     await wd.press(tid("lock-submit"));
   };
+  /** Calls the real engine through the app's own IPC, past the UI: its answer, or its error's
+   * code. */
+  const invoke = <T>(command: string, args: Record<string, unknown> = {}) =>
+    wd.scriptAsync<{ ok?: T; err?: string }>(
+      `const done = arguments[arguments.length - 1];
+       window.__TAURI_INTERNALS__.invoke(arguments[0], arguments[1]).then((ok) => done({ ok }), (e) => done({ err: e?.code ?? String(e) }));`,
+      [command, args],
+    );
+  const wallets = async () => {
+    const listed = await invoke<WalletSummary[]>("list_wallets");
+    if (!listed.ok) throw new Error(`list_wallets: ${listed.err}`);
+    return listed.ok;
+  };
   const lock = async () => {
     await wd.press(tid("toolbar-lock"));
     await wd.waitFor(tid("lock-field"), "the lock screen");
@@ -278,13 +293,22 @@ async function main() {
     await wd.press(tid("lock-mixing-only"));
     await unlock(PASSPHRASE);
     await wd.waitGone(tid("lock-screen"), "the lock screen");
+    // The engine itself, not only the UI, refuses to spend for mixing only (review r1-Sol).
+    const restoredId = (await wallets()).find((w) => w.name === restoredName)?.walletId;
+    if (!restoredId) throw new Error("list_wallets has no restored wallet");
+    const spend = await invoke("authorize", {
+      purpose: { kind: "spend", maxDuffs: 100_000 },
+      walletId: restoredId,
+      credential: { kind: "unencrypted" },
+    });
+    if (spend.err !== "vault.mixing_only") throw new Error(`a spend grant for mixing only: ${spend.err ?? "issued"}`);
     await wd.press(tid("status-unlock"));
     await wd.screenshot("08-unlock-sheet");
     await enter("unlock-sheet-field", PASSPHRASE);
     await wd.press(tid("unlock-sheet-submit"));
     await wd.waitGone(tid("unlock-sheet"), "the unlock sheet");
     await wd.waitGone(tid("status-unlock"), "the mixing-only status");
-    step("lock: wrong passphrase (attempts remaining), mixing only, unlock sheet to full");
+    step("lock: wrong passphrase (attempts remaining), mixing only (a spend refused: vault.mixing_only), unlock sheet to full");
 
     // ---- Forgot passphrase with the restored phrase (IOS-014)
     await lock();
@@ -306,7 +330,12 @@ async function main() {
     await wd.screenshot("10-forgot-done");
     await wd.press(tid("forgot-close"));
     await wd.waitFor(tid("hero"), "the shell after the reset");
-    step(`Forgot passphrase: ${restoredName} keeps its keys, ${createdName} watch-only`);
+    // What the engine lists, not only what the sheet said (review r1-Sol).
+    const after = await wallets();
+    const watchOnly = (name: string) => after.find((w) => w.name === name)?.watchOnly;
+    if (watchOnly(createdName) !== true || watchOnly(restoredName) !== false)
+      throw new Error(`list_wallets after the reset: ${createdName} watchOnly ${watchOnly(createdName)}, ${restoredName} ${watchOnly(restoredName)}`);
+    step(`Forgot passphrase: ${restoredName} keeps its keys, ${createdName} watch-only (list_wallets agrees)`);
 
     await lock();
     await unlock(PASSPHRASE);
