@@ -40,6 +40,11 @@ describe("display settings", () => {
     expect(UNIT_CHOICES.map((u) => u.unit)).toEqual(["dash", "milliDash", "microDash", "duffs"]);
   });
 
+  it("QT137_walletDefaultsAreDashQts", () => {
+    // dash-qt's defaults: DASH, two digits, the fee added to the amount; auto lock off (IOS-015).
+    expect(DEFAULT_PREFS).toEqual({ theme: null, unit: "dash", decimalDigits: 2, autohideBalance: false, autoLockSecs: null, subtractFeeByDefault: false });
+  });
+
   it("themeAndLanguage", async () => {
     // The saved theme applies unless --theme was given (D3).
     fixture.world.settings.ui = { ...DEFAULT_PREFS, theme: "dark", autohideBalance: true };

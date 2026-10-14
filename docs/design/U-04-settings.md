@@ -130,3 +130,78 @@ Help ▸ About keeps U-01's small About sheet.
 | D21 | Import a wallet file reads what the file is (`inspectWalletFile`, from its content) and goes on by kind: a `.dwbackup` asks for its passphrase and restores (`restoreBackup`); a `dumpwallet` file imports (`importDumpWallet`), with the labels imported and the loose keys left out reported; a SQLite `wallet.dat` asks for its passphrase when encrypted (`importWalletDat`); a Berkeley DB `wallet.dat` says to use `dumpwallet` instead; a PSBT says to open it in Tools ▸ PSBT (U-05); anything else is unknown. A file of another network is refused before any import. Errors show copy by code (U-02 D16). | Swift `WalletManagementViewModel.importFile`; dash-qt's import dialogs. |
 | D22 | Command-line options (QT-018) are not shown: dw-app prints them for `--help`, and no command returns them. A copy in the renderer would drift. Follow-up: a `launch_usage` command. | No second source of truth. |
 | D23 | Every amount field is typed in the display unit, not only Pay's: Receive's request amount and Activity's minimum amount too (dash-qt's `BitcoinAmountField` follows the unit everywhere). The refusal names the unit ("Enter an amount in mDASH, for example 0.25."). The status bar's unit name follows it as well. A form keeps its text when the unit changes; the text is parsed again in the new unit (Settings is another route, so an open form is gone by then). Coin control's custom fee rate stays DASH/kB (D4). | QT-139/152: one unit everywhere, typed and shown. |
+
+## Deviations from the slice plan
+
+- Slices 3–6 landed as two commits: the view models of Security, Wallets and Backups with their
+  tests (`f5b8d393`), then the screens of all five tabs (`3cd4ce8a`). The screens share one
+  `SettingsPage`, the `parts.tsx` rows and one CSS section, so one commit per tab would have
+  carried half-built shared parts.
+- The fixture models the engine's rules that the screens meet (grants, closed wallets, file kinds
+  by content, the network of a file, Berkeley DB, an existing destination), not its file formats:
+  a "file" is an entry of `World.settings.files` (`src/fixture/settings.ts`). The real formats are
+  T1's (a `.dwbackup` and a dumpwallet export written to disk and read back).
+- Ending a wipe closes its sheet: the shell has nothing left to stand on, onboarding opens and a
+  toast says "All wallet data was deleted." (found by `e2e/settings.spec.ts`: the sheet's own Done
+  sat under onboarding and stayed open behind it).
+
+## Ported view-model tests
+
+The Swift `WalletFeatures` and `WalletRuntime` tests of these screens, ported by parity ID
+(`apps/desktop/src/settings/*.test.ts`, `src/format/display.test.ts`, vitest; the settings file in
+dw-app's `settings.rs`). The screens' flows by the same IDs are `e2e/settings.spec.ts`.
+
+| Swift test | TypeScript (or Rust) test |
+|---|---|
+| `OptionsViewModelTests.QT135_okAppliesChangedValuesAndCancelReverts` | not ported: each setting saves when it changes (D2), there is no OK or Cancel; e2e `QT135_theAppearanceFollowsTheSettingWithoutALaunchTheme` |
+| `OptionsViewModelTests.QT136_mainTabIsHiddenOnMacOSAndAutostartUsesMinAndNetwork` | not ported: start on login is not yet (W-02, PK; D7), e2e `rows without an engine say who brings them` |
+| `OptionsViewModelTests.QT137_walletDefaultsAreDashQts` | `options.test.ts` same name; e2e `QT137_subtractFeeByDefaultStartsEachPayForm` |
+| `OptionsViewModelTests.QT075_dustProtectionRangeAndEngineCall` | `QT075_dustThresholdIsBetweenOneAndAMillionDuffs`, `QT075_protectionIsSentToTheEngine` |
+| `OptionsViewModelTests.QT075_dustProtectionNotImplementedIsShownUnavailable` | not ported: the engine implements dust protection; a failed read shows its error (`settings-dust-error`) |
+| `OptionsViewModelTests.QT116_automaticBackupsKeepIsSentToTheEngine` | `files.test.ts` `QT116_automaticBackupsAndFolder`; e2e `QT116_automaticBackupsListAndKeep` |
+| `OptionsViewModelTests.QT138_proxyAcceptsNumericAddressesOnly` | not ported: no proxy setting in the engine (D7) |
+| `OptionsViewModelTests.QT139_displayTabOptionsAndLanguageRestart` | `QT139_unitsAreDashQts`; `display.test.ts` `QT139_QT152_everyAmountIsInTheDisplayUnit`; language is not yet (MP-14, D7) |
+| `OptionsViewModelTests.IOS104_localCurrencyListIsSearchable` | not ported: local currency is not yet (MP-01, D7) |
+| `OptionsViewModelTests.IOS105_enablingNotificationsAsksTheOSOnce` | not ported: notifications are not yet (DP2-09, W-02; D7) |
+| `OptionsViewModelTests.QT033_coinJoinPopupsOptionIsKeptInShellSettings` | not ported: CoinJoin's options come with its screen |
+| `OptionsViewModelTests.QT141_resetOptionsConfirmsBacksUpAndQuits` | same name (no backup copy, no quit: D8); e2e `QT141_resetOptionsAsksFirst` |
+| `SettingsViewModelTests.IOS106_switchNetworkGoesThroughTheLifecycleQueue`, `IOS018_followsLifecycleTransitions`, `switchFailureIsShown` | not ported: switching networks is U-04b (D6) |
+| `SettingsViewModelTests.QT020_QT036_QT039_displaySettingsPersistAndClamp` | same name; `display.test.ts` `QT020_QT036_heroAndBreakdownFloorToTheDecimalDigits` |
+| `SettingsViewModelTests.themeAndLanguage` | same name |
+| `SettingsViewModelTests.QT111_encryptWallet` | `security.test.ts` same name, `QT111_alreadyEncryptedIsRefused`; e2e `QT111_encryptWalletLocksIt` |
+| `SettingsViewModelTests.QT111_changePassphrase` | same name, `QT111_aWrongCurrentPassphraseCountsAsAnAttempt`; e2e `QT111_changePassphrase` |
+| `SettingsViewModelTests.QT113_revealNeedsAuthorizationFirst` | U-02's `recovery.test.ts` (`IOS108_…`): Settings reuses its sheet |
+| `WalletManagementViewModelTests.QT101_closeKeepsDataAndLeavesLoadOnStartup` | `wallets.test.ts` same name, `QT101_theLastOpenWalletCannotBeClosed`, `QT101_theStartupListIsSetAlone` |
+| `WalletManagementViewModelTests.IOS110_listFallsBackToLoadedWalletsWhileLoadStatesAreNotImplemented` | same name |
+| `WalletManagementViewModelTests.IOS110_removeNeedsAWipeGrant` | same name, `IOS110_anUnencryptedVaultRemovesWithoutAPassphrase`, `IOS110_renameKeepsTheEnginesRule` |
+| `WalletManagementViewModelTests.QT107_dumpwalletImportReportsKeysNotImported` | `files.test.ts` same name, `QT107_aFileOfAnotherNetworkIsRefusedBeforeAnyImport` |
+| `WalletManagementViewModelTests.QT106_encryptedWalletDatAsksForItsPassphrase` | same name |
+| `WalletManagementViewModelTests.QT106_berkeleyDBSaysWhatToDoInstead` | same name |
+| `WalletManagementViewModelTests.QT078_psbtFileIsHandedToThePSBTDialog` | same name (the dialog is U-05's: the import refuses the file and says so) |
+| `WalletManagementViewModelTests.QT108_hdSeedHexGoesIntoAZeroingBuffer` | same name, `QT108_theEnginesRefusalIsShownByCode` |
+| `WalletManagementViewModelTests.QT114_watchOnlyWalletFromAnXpub` | `wallets.test.ts` same name |
+| `WalletManagementViewModelTests.QT110_backupOfAnUnencryptedVaultNeedsAPassphrase` | `files.test.ts` same name, `QT110_backupOfAnEncryptedVaultUsesItsPassphrase` |
+| `WalletManagementViewModelTests.QT110_restoringABackupAsksForItsPassphrase` | same name |
+| `WalletManagementViewModelTests.QT116_automaticBackupsAndFolder` | same name |
+| `WalletManagementViewModelTests.QT109_exportForCoreNeedsARevealGrantAndReportsWarnings` | same name, `QT109_aLockedVaultStillOffersTheExport` |
+| `WalletManagementViewModelTests.IOS111_xpubWithQRCode` | `wallets.test.ts` same name |
+| `WalletManagementViewModelTests.IOS009_existingDataPromptAndDeleteAllWithTypedSentence` | `security.test.ts` same name |
+| `SecurityViewModelTests.IOS011_quickUnlockEnrollsWithAChangeCredentialGrantAndDefaultLimit`, `IOS011_quickUnlockIsHiddenWithoutBiometricsOrEncryption`, `IOS016_spendLimitOptionsAreTheIOSOnes` | not ported: quick unlock and its spending limit are not yet (U-08 after B4, W-02; D7); e2e `quick unlock is not yet, and says who brings it` |
+| `SecurityViewModelTests.IOS015_autoLockDefaultsToNeverAndIsSet` | same name |
+| `SecurityViewModelTests.IOS016_requireAuthenticationAndAutohideBalance` | same name; e2e `IOS016_paymentAuthenticationAsksForThePassphrase`, `IOS020_autohideBalanceIsSavedForTheNextStart` |
+| `SecurityViewModelTests.IOS108_revealPhraseOfAChosenWalletRecordsTheBackup` | U-02's `recovery.test.ts` `IOS108_revealPhraseOfAChosenWalletNeedsThePassphrase` (each wallet row opens it for its wallet) |
+| `SecurityViewModelTests.IOS014_forgotPassphraseChecksThePhraseThenReplacesTheVault`, `IOS014_aPhraseOfAnotherWalletIsAMismatch` | U-02's `forgot.test.ts` same names (Settings reuses the flow) |
+| `SecurityViewModelTests.IOS109_wipeNeedsTheSentenceThenRemovesEveryWalletAndDestroysTheVault` | `IOS009_existingDataPromptAndDeleteAllWithTypedSentence`, `IOS109_wipeRemovesClosedWalletsToo`, `IOS109_anUnencryptedVaultNeedsNoPassphrase`; e2e `IOS009_deleteAllWithTypedSentence` |
+| `SecurityViewModelTests.IOS109_aFailedRemovalStopsBeforeTheVaultIsDestroyed` | same name |
+| `QuickUnlockServiceTests.IOS011_*`, `IOS016_spendLimitOptionsOnly`, `IOS014_IOS109_recoveryAndDestroyDropTheStoredKey` | not ported: no stored key without quick unlock (D7) |
+| `AutoLockTests.IOS015_defaultIsNeverAndTheIntervalPersists` | `IOS015_autoLockDefaultsToNeverAndIsSet`; dw-app `settings.rs` `a_written_file_reads_back` |
+| `AutoLockTests.IOS015_inactivityLocksOnceUntilActivity` | `autoLock.test.ts` `IOS015_locksAfterTheWaitWithoutInput`, `IOS015_inputRestartsTheWait`, `IOS015_disarmingStopsIt`, `IOS015_armedOnlyWhileAnEncryptedVaultHoldsItsKey`; e2e `IOS015_autoLockLocksAfterTheChosenIdleTime` |
+| `AutoLockTests.IOS015_sleepScreenLockAndIdleEvents` | not ported: the OS's sleep and screen-lock events are W-02's; this window's own input is the idle signal (D12) |
+| `SettingsStoreTests.defaultsWithoutFiles` | dw-app `settings.rs` `a_missing_file_reads_as_the_defaults` |
+| `SettingsStoreTests.updatesPersistAndNotify` | `a_written_file_reads_back`; T1 step 6 (the file after a relaunch) |
+| `SettingsStoreTests.decimalDigitsOutsideTwoToEightAreRejected` | `out_of_range_values_are_refused`; `options.test.ts` `QT020_QT036_QT039_…` |
+| `SettingsStoreTests.corruptFilesMoveToBackupAndDefaultsApply`, `olderFilesWithMissingKeysStillLoad` | `an_unreadable_or_hand_edited_file_falls_back` (no backup copy: the file holds display settings only, D8) |
+| `SettingsStoreTests.unwritableLocationReportsSettingsWriteFailed` | not ported as such: dw-app's write error reaches General as "The settings could not be saved." (`useSavePrefs`); refusals in `QT020_QT036_QT039_…` |
+
+QT and IOS parity rows keep their status (D20): the rows above that are not yet stay open with
+their owning task.

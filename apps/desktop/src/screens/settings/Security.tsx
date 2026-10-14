@@ -3,12 +3,14 @@
 // unlock (not yet, D11), auto lock (D12), payment authentication (D13), autohide (D14) and the
 // wipe (D16).
 
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { useBackend, useLockStatus } from "../../api/queries";
-import { ui, useUi } from "../../app/ui";
+import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { NewPassphraseForm, PassphrasePrompt } from "../../components/passphrase";
 import { Sheet } from "../../components/sheet";
+import { showToast } from "../../components/toast";
 import { useModel } from "../../onboarding/model";
 import { PassphraseText } from "../../onboarding/passphrase";
 import { AUTO_LOCK_CHOICES, ChangePassphraseModel, EncryptModel, PaymentAuthModel, SecurityText, WipeModel } from "../../settings/security";
@@ -263,10 +265,20 @@ function ChangePassphraseSheet({ onClose }: { onClose: (done: boolean) => void }
 
 function WipeSheet({ onClose }: { onClose: () => void }) {
   const backend = useBackend();
+  const client = useQueryClient();
   const [model] = useState(() => new WipeModel(backend));
   useModel(model);
   useLockTimer(model.lock);
   useEffect(() => void model.load(), [model]);
+  // Nothing is left for the sheet to stand on: onboarding opens over a fresh shell, and the toast
+  // says what happened.
+  useEffect(() => {
+    if (model.step !== "done") return;
+    showToast(SecurityText.wiped);
+    navigate("home");
+    void client.invalidateQueries();
+    onClose();
+  }, [model.step, client, onClose]);
   const [sentence, setSentence] = useState("");
   const id = useId();
   const working = model.step === "working" || model.lock.working;
@@ -321,14 +333,6 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
         </p>
       )}
       {model.step === "stopped" && <Problem text={model.error} testId="settings-wipe-error" />}
-      {model.step === "done" && (
-        <>
-          <Done text={SecurityText.wiped} testId="settings-wiped" />
-          <DashButton variant="filledBlue" size="large" fill data-autofocus data-testid="settings-wipe-done" onClick={onClose}>
-            Done
-          </DashButton>
-        </>
-      )}
     </Sheet>
   );
 }

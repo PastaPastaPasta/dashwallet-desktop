@@ -185,7 +185,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
   };
   const file = (w: World, path: string, code: AppError["code"]) => {
     const f = w.settings.files[path];
-    if (!f) throw fail(code, `cannot read ${path}`);
+    if (!f) throw fail(code, `${path}: no such file`);
     return f;
   };
   /** A Dash Core import of `path`: the wallet it registers, with a phrase only the fixture knows. */
