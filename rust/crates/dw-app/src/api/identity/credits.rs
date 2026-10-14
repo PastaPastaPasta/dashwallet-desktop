@@ -28,7 +28,9 @@ pub struct CostTable {
     pub enable_dashpay_keys: u64,
     /// Credits one duff buys.
     pub credits_per_duff: u64,
-    /// The network's fee for a top-up (its minimum), in credits.
+    /// What a top-up's lock must hold before Platform processes it, in
+    /// credits. Not the fee charged, which is metered and has been far
+    /// lower.
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub top_up_fee: u64,

@@ -1702,7 +1702,8 @@ fn t2_testnet_credits() {
 /// A's Core balance (fund it first: `t2_testnet_credits` prints the
 /// address). Waits for the coins, tops up `top_up_min_duffs` once SPV has
 /// caught up, and checks the balance rose by the lock's credits less
-/// Platform's fee. Prints the measured fee against the table's.
+/// Platform's fee, and by at least the quote's credits. Prints the measured
+/// fee against the table's `top_up_fee`.
 #[test]
 #[ignore = "public testnet, spends tDASH; set DW_DP106_TESTNET_FIXTURE"]
 fn t3_testnet_top_up() {
@@ -1783,7 +1784,7 @@ fn t3_testnet_top_up() {
     let added = after - before;
     let funded = duffs * table.credits_per_duff;
     eprintln!(
-        "T3 before {before} after {after}: added {added}, funded {funded}, fee {} (table's minimum {}, quoted credits {})",
+        "T3 before {before} after {after}: added {added}, funded {funded}, fee {} (table's top_up_fee {}, quoted credits {})",
         funded - added,
         table.top_up_fee,
         quote.credits
@@ -1792,6 +1793,13 @@ fn t3_testnet_top_up() {
     assert!(
         added > 0 && added <= funded,
         "the balance rose by less than the lock"
+    );
+    // The quote errs low (m4 §7 item 46): Platform's metered fee is below
+    // the table's `top_up_fee`.
+    assert!(
+        added >= quote.credits,
+        "the top-up added {added}, less than the quoted {}",
+        quote.credits
     );
     if let TopUpState::Applied {
         credits_added: Some(reported),

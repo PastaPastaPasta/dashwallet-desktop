@@ -22,9 +22,12 @@ pub struct CostTable {
     pub contact_info: u64,
     pub enable_dashpay_keys: u64,
     pub credits_per_duff: u64,
-    /// The network's minimum fee for a top-up, in credits: a lock of
-    /// `duffs` adds at most `duffs × credits_per_duff` less this. Platform
-    /// charges the metered fee, which can be higher.
+    /// What Drive requires a top-up's lock to hold before it processes the
+    /// top-up, in credits (`calculate_min_required_fee`: its 50,000-duff
+    /// processing floor plus the top-up's base cost). Not the fee charged:
+    /// Platform meters that at execution, and it has been far lower, so a
+    /// lock of `duffs` adds at least `duffs × credits_per_duff` less this
+    /// as far as measured (m4 §7 item 46).
     pub top_up_fee: u64,
     pub top_up_min_duffs: u64,
     /// At or below this balance the credits are low.
@@ -53,8 +56,9 @@ pub struct TopUpQuote {
     pub fee_duffs: u64,
     /// `duffs + fee_duffs`: what the grant must cover.
     pub total_duffs: u64,
-    /// `duffs × credits_per_duff` less the table's `top_up_fee`: at most
-    /// what the top-up adds.
+    /// `duffs × credits_per_duff` less the table's `top_up_fee`: an
+    /// estimate that errs low. The top-up adds the lock's credits less
+    /// Platform's metered fee, which has stayed below `top_up_fee`.
     pub credits: u64,
     pub grant: GrantRequest,
 }

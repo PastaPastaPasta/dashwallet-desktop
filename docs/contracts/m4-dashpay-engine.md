@@ -498,7 +498,7 @@ bodies decided where the rows leave room:
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
 | `cost_table()` | sync | The credit costs of the DashPay actions at the network's protocol version, for "≈ N contact requests" and the low-credit warnings (§5 `CostTable`, §7 item 44). The table is the network's: it reads no wallet. Refused only when the SDK's protocol version is one this build does not know (`internal`). **Implemented (DP1-06).** | `CreditsError` |
-| `top_up_quote(identity, duffs)` | async | The fee bound and total in duffs, the credits a top-up of `duffs` buys at most (`duffs × credits_per_duff` less the table's minimum `top_up_fee`; Platform meters the charge), and the `grant` to ask for (`max_duffs` = the total, no credits). Refuses an identity that is not the wallet's (`identity.not_found`), below `top_up_min_duffs` (`credits.below_minimum{min}`), an identity with a top-up not applied yet (`credits.top_up_pending{txid}`), above the spendable balance (`credits.funding_insufficient{needed, available}`), and a held-back coin the asset-lock builder would select (`credits.coins_locked`). Until the dispatch journal is read it is `platform.unavailable` (retry). **Implemented (DP1-06).** | `CreditsError` |
+| `top_up_quote(identity, duffs)` | async | The fee bound and total in duffs, the credits a top-up of `duffs` buys, an estimate that errs low (`duffs × credits_per_duff` less the table's `top_up_fee`, which Platform's metered charge has stayed far below: §7 item 46), and the `grant` to ask for (`max_duffs` = the total, no credits). Refuses an identity that is not the wallet's (`identity.not_found`), below `top_up_min_duffs` (`credits.below_minimum{min}`), an identity with a top-up not applied yet (`credits.top_up_pending{txid}`), above the spendable balance (`credits.funding_insufficient{needed, available}`), and a held-back coin the asset-lock builder would select (`credits.coins_locked`). Until the dispatch journal is read it is `platform.unavailable` (retry). **Implemented (DP1-06).** | `CreditsError` |
 | `top_up(identity, duffs, grant)` | async | Funds the identity from the Core balance: an asset lock of `duffs`, then Platform's IdentityTopUp from it (§7 item 44). The quote's refusals and the funding step's (below), checked under the identity's write lock before the grant is redeemed, so a refusal keeps the grant. Held back as a registration is: SPV not caught up is `platform.context_unavailable`; the bring-up running, not run, or its identity discovery incomplete or failed is `platform.unavailable`, and the call has it run again (§7 item 46); identities waiting for an unlock is `platform.signer_unavailable`. A grant whose funding cap is below the quote's total is `platform.grant_exceeded` before it is redeemed, so a smaller top-up can still use it. Until the dispatch journal is read the call is `platform.unavailable` (retry). Once the lock is funded the call returns `TopUpOutcome{txid, state}`: `Applied{credits_added, balance}`, `ConsumptionUnknown{balance}` (Platform answered "already consumed", which nothing proves: nothing added now, and the lock stays pending), `ProofWaiting` (no InstantSend lock in its window), or `NotApplied{error}` (the apply failed); nothing is lost in the last three (`pending_top_ups`, `resume_top_up`). A funding whose outcome is unknown is `platform.broadcast_unknown{artifact}` with the funding step `topup/<index>-<k>/funding` (`dispatch_status`), and every later top-up of the identity is refused the same until that step settles. `grant` may be a `TopUp` lease id. **Implemented (DP1-06).** | `CreditsError` |
 | `pending_top_ups()` | async | The wallet's top-up locks Platform has not taken as far as the wallet can prove (in flight, proved and not applied, or funded by a top-up of this wallet and final with its consumption unknown), by identity index: txid, identity, duffs, whether the lock has its proof, and `consumption_unknown` (§7 item 44). Until the dispatch journal is read it is `platform.unavailable` (retry), never a list that cannot tell the wallet's own locks apart. **Implemented (DP1-06).** | `CreditsError` |
 | `resume_top_up(txid, grant)` | async | Applies the tracked top-up lock `txid`, waiting up to 30 s for its proof first (a lock not yet sent is sent again; one a funding call of this process is still recording is `platform.will_be_sent`); the outcome as `top_up`'s. A lock the library holds applied (Platform's proved apply) reads `AlreadyApplied` with the balance read again; any other, a resolved or historical one too, is applied again (Platform takes a lock once). The grant is redeemed only for the apply, so `AlreadyApplied`, `ProofWaiting` and `platform.will_be_sent` keep it. The apply signs with the lock's one-time funding key, which only a grant with a funding budget unlocks: the grant needs `max_duffs` ≥ 1, none of which is spent. Tools ▸ Repair "Finish transfers" (`finish_asset_locks`) also applies every proved top-up lock, under its grant. **Implemented (DP1-06).** | `CreditsError` |
@@ -1900,8 +1900,9 @@ The shapes are in §3. What they mean, where the name does not say:
 - **`CostTable`** (DP1-06). The protocol version priced; credits per action (`contact_request`, `profile_update`,
   `contact_info`: an upper bound, the document at its largest priced with every tree it writes at 2^48 entries and
   Drive's estimated processing doubled, §7 item 44; `enable_dashpay_keys`: the
-  IdentityUpdate fee plus the two keys' storage); `credits_per_duff` (1000); `top_up_fee`, the network's minimum fee
-  of a top-up, which the quote subtracts (Platform meters the charge, so the quote's credits are a bound); `top_up_min_duffs` (0.01 DASH, or the fee if larger); and the thresholds,
+  IdentityUpdate fee plus the two keys' storage); `credits_per_duff` (1000); `top_up_fee`, what Drive requires a
+  top-up's lock to hold before it processes it (`calculate_min_required_fee`), which the quote subtracts: not the fee
+  charged, which Platform meters and which has stayed far below it, so the quote's credits err low (§7 item 46); `top_up_min_duffs` (0.01 DASH, or the fee if larger); and the thresholds,
   Android's: `empty_credits` is the dearer of a contact request and a profile update, `low_credits` ten of them.
   **`CreditLevel`**: `Empty` below `empty_credits`, `Low` at or below `low_credits`, else `Ok`.
   **`TopUpQuote`**: `total_duffs = duffs + fee_duffs` is what the grant must cover.
@@ -2451,8 +2452,8 @@ renames or reshapes them takes the next version bump:
       each mark and refresh sends `Platform{Identities}`, so the host reads the flag again. A background refresh
       holds neither the session nor its gate; `close` aborts and awaits them before the wallets unload, and none
       starts after.
-    - **Residual (accepted):** the quote's credits subtract the top-up's minimum fee; Platform's charge is metered at
-      execution and may be higher (T3 measures it). `credits_added` reports what was added. A lock Platform took
+    - **Residual (accepted):** the quote's credits subtract `top_up_fee`; Platform's charge is metered at execution
+      (T3 measures it; item 46 corrects what this said about it). `credits_added` reports what was added. A lock Platform took
       whose "already consumed" the library cannot prove final stays pending until its ChainLock lets the library
       mark it and the user resolves it. A machine clock behind Platform's by more than a write's round trip can
       clear a spend with the balance before it; the next refresh past ten minutes corrects it. A user's resolution of a lock Platform had not taken hides it from the
@@ -2512,7 +2513,7 @@ renames or reshapes them takes the next version bump:
 
 **From the live testnet run** (version 20):
 
-46. **A held funding runs the bring-up again (dw-tdash B2, version 20).**
+46. **A held funding runs the bring-up again; the top-up quote errs low (dw-tdash B2, B5, version 20).**
     `RegistrationWait::Startup` is new; no other surface change.
     - **The wedge.** On testnet a registration waited at `Network` for over 10 minutes with SPV caught up and DAPI
       answering: the session's bring-up had ended `PartialNoIdentity` (the created-here budget of 3 s overran, or
@@ -2533,3 +2534,9 @@ renames or reshapes them takes the next version bump:
       library's 20 s budget even for a wallet created here (nothing waits for SPV then), and it runs the
       discovery whatever Platform proved before: the funding needs this session's answer (Restore rule 1). Its
       outcome is recorded as any bring-up's, `Notice{DashPayStartupIncomplete}` included.
+    - **The quote errs low.** `top_up_fee` is Drive's `calculate_min_required_fee` for IdentityTopUp: what a lock
+      must hold before Drive processes the top-up (50,000 duffs plus the top-up's base cost: 50,500,000 credits at
+      protocol version 13), not the fee charged. T3 on testnet (protocol version 13) funded a 1,000,000-duff lock:
+      Platform charged 7,897,240 credits and added 992,102,760, against a quote of 949,500,000. So
+      `TopUpQuote.credits` is an estimate below what a top-up adds as far as measured (T3 now asserts it), not "at
+      most"; nothing proves the metered charge stays below `top_up_fee`. `credits_added` reports what was added.
