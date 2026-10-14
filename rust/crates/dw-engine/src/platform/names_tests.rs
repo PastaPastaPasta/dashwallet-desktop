@@ -1251,6 +1251,13 @@ fn a_contest_is_recorded_on_every_path() {
         assert_eq!(f.prefs().contested.as_deref(), Some("alice"));
         assert!(f.prefs().pending.is_empty());
         assert_eq!(f.main_name().as_deref(), Some("carol"));
+        // DP1-04: watched, with the end Platform gave.
+        let w = f.wallet.to_string();
+        let rows = (f.engine)
+            .block_on(f.session.appdb_op(move |db| db.wallet_contest_watches(&w)))
+            .unwrap();
+        let rows: Vec<_> = rows.iter().map(|r| (r.label.as_str(), r.ends_at)).collect();
+        assert_eq!(rows, [("alice", 5)]);
     };
     // Platform lists the identity as a contender: no second join.
     let dir = dw_testutil::private_tempdir();

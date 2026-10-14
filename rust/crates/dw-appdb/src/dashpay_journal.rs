@@ -35,6 +35,19 @@ pub struct JournalRow {
     pub read_at: Option<u64>,
 }
 
+/// One `dp_contest_watch` row: an own contested label being watched until
+/// its vote resolves (DP1-04).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContestWatch {
+    pub identity: String,
+    pub label: String,
+    /// When the vote ends, UNIX seconds; 0 while not known.
+    pub ends_at: u64,
+    /// What the watch last saw (the engine's text); `None` before its first
+    /// look.
+    pub last_state: Option<String>,
+}
+
 /// [`AppDb::journal_page`]'s query: it walks `dp_events_page` from the
 /// cursor down, so a page reads only the rows it returns and the ignored
 /// ones it skips.
@@ -253,6 +266,7 @@ impl AppDb {
     }
 
     /// Starts or updates the watch of one of the identity's contested labels.
+    /// `ends_at` 0 is "not known yet": it never replaces a known end.
     pub fn watch_contest(
         &self,
         wallet_id: &str,
@@ -263,10 +277,96 @@ impl AppDb {
         self.conn().execute(
             "INSERT INTO dp_contest_watch (wallet_id, identity, label, ends_at)
              VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (wallet_id, identity, label) DO UPDATE SET ends_at = excluded.ends_at",
+             ON CONFLICT (wallet_id, identity, label) DO UPDATE SET ends_at =
+                 CASE WHEN excluded.ends_at > 0 THEN excluded.ends_at ELSE ends_at END",
             params![wallet_id, identity, label, ends_at as i64],
         )?;
         Ok(())
+    }
+
+    /// [`Self::watch_contest`] unless the identity already watches the same
+    /// contest under another spelling (`same` true for that row's label,
+    /// DPNS's homograph folding being the caller's): that row keeps its
+    /// label, takes a known `ends_at`, and with `fresh` (Platform has just
+    /// shown the identity contending) loses an `unplaced:` state. One
+    /// transaction, so two writers cannot both insert. The label watched.
+    pub fn watch_contest_once(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        label: &str,
+        ends_at: u64,
+        fresh: bool,
+        same: impl Fn(&str) -> bool,
+    ) -> Result<String> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let existing: Option<String> = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT label FROM dp_contest_watch WHERE wallet_id = ?1 AND identity = ?2",
+            )?;
+            let labels = stmt.query_map([wallet_id, identity], |r| r.get::<_, String>(0))?;
+            let labels = labels.collect::<rusqlite::Result<Vec<_>>>()?;
+            labels.into_iter().find(|l| same(l))
+        };
+        let watched = existing.unwrap_or_else(|| label.to_string());
+        tx.execute(
+            "INSERT INTO dp_contest_watch (wallet_id, identity, label, ends_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (wallet_id, identity, label) DO UPDATE SET
+                 ends_at = CASE WHEN excluded.ends_at > 0 THEN excluded.ends_at ELSE ends_at END,
+                 last_state = CASE WHEN ?5 AND last_state LIKE 'unplaced:%' THEN NULL
+                                   ELSE last_state END",
+            params![wallet_id, identity, watched, ends_at as i64, fresh],
+        )?;
+        tx.commit()?;
+        Ok(watched)
+    }
+
+    /// Every watched contest of the wallet, by identity and label.
+    pub fn wallet_contest_watches(&self, wallet_id: &str) -> Result<Vec<ContestWatch>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare_cached(
+            "SELECT identity, label, ends_at, last_state FROM dp_contest_watch
+             WHERE wallet_id = ?1 ORDER BY identity, label",
+        )?;
+        let rows = stmt.query_map([wallet_id], |r| {
+            Ok(ContestWatch {
+                identity: r.get(0)?,
+                label: r.get(1)?,
+                ends_at: r.get::<_, i64>(2)? as u64,
+                last_state: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Records what the watch last saw of a contest still watched: its end
+    /// (0 keeps the one on file) and its state. Whether the row exists.
+    pub fn set_contest_watch_state(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        label: &str,
+        ends_at: u64,
+        last_state: &str,
+    ) -> Result<bool> {
+        let changed = self.conn().execute(
+            "UPDATE dp_contest_watch
+             SET ends_at = CASE WHEN ?4 > 0 THEN ?4 ELSE ends_at END, last_state = ?5
+             WHERE wallet_id = ?1 AND identity = ?2 AND label = ?3",
+            params![wallet_id, identity, label, ends_at as i64, last_state],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Stops watching a contest. Whether a row went.
+    pub fn end_contest_watch(&self, wallet_id: &str, identity: &str, label: &str) -> Result<bool> {
+        let changed = self.conn().execute(
+            "DELETE FROM dp_contest_watch WHERE wallet_id = ?1 AND identity = ?2 AND label = ?3",
+            params![wallet_id, identity, label],
+        )?;
+        Ok(changed == 1)
     }
 
     /// The identity's watched contests: `(label, ends_at)`.
@@ -519,10 +619,104 @@ mod tests {
 
         db.watch_contest(W, "me", "alice", 100).unwrap();
         db.watch_contest(W, "me", "alice", 200).unwrap();
+        // An unknown end never replaces a known one.
+        db.watch_contest(W, "me", "alice", 0).unwrap();
         assert_eq!(
             db.contest_watches(W, "me").unwrap(),
             vec![("alice".to_string(), 200)]
         );
         assert!(db.contest_watches(W, "other").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_contest_is_watched_once_whatever_its_spelling() {
+        let db = AppDb::open_in_memory().unwrap();
+        fn fold(l: &str) -> String {
+            l.to_lowercase().replace(['i', 'l'], "1")
+        }
+        fn same(label: &str) -> impl Fn(&str) -> bool + use<> {
+            let label = fold(label);
+            move |l| fold(l) == label
+        }
+        let watched = db
+            .watch_contest_once("w", "me", "a11ce", 0, false, same("a11ce"))
+            .unwrap();
+        assert_eq!(watched, "a11ce");
+        db.set_contest_watch_state("w", "me", "a11ce", 0, "unplaced:5")
+            .unwrap();
+        // Another spelling of the same contest: the row stays, takes the end,
+        // and a fresh registration clears its unplaced state.
+        let watched = db
+            .watch_contest_once("w", "me", "Alice", 9, true, same("Alice"))
+            .unwrap();
+        assert_eq!(watched, "a11ce");
+        let rows = db.wallet_contest_watches("w").unwrap();
+        assert_eq!(
+            rows,
+            [ContestWatch {
+                identity: "me".into(),
+                label: "a11ce".into(),
+                ends_at: 9,
+                last_state: None,
+            }]
+        );
+        // A state other than unplaced stays.
+        db.set_contest_watch_state("w", "me", "a11ce", 0, "won:7")
+            .unwrap();
+        db.watch_contest_once("w", "me", "alice", 0, true, same("alice"))
+            .unwrap();
+        let rows = db.wallet_contest_watches("w").unwrap();
+        assert_eq!(rows[0].last_state.as_deref(), Some("won:7"));
+        // Another identity's or another label's is a row of its own.
+        db.watch_contest_once("w", "you", "alice", 0, false, same("alice"))
+            .unwrap();
+        db.watch_contest_once("w", "me", "bob", 0, false, same("bob"))
+            .unwrap();
+        assert_eq!(db.wallet_contest_watches("w").unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_contest_watch_records_its_state_and_ends() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.watch_contest(W, "me", "bob", 0).unwrap();
+        db.watch_contest(W, "me", "alice", 0).unwrap();
+        db.watch_contest("bb", "me", "carol", 5).unwrap();
+        let watch = |label: &str, ends_at, state: Option<&str>| ContestWatch {
+            identity: "me".into(),
+            label: label.into(),
+            ends_at,
+            last_state: state.map(str::to_string),
+        };
+        assert_eq!(
+            db.wallet_contest_watches(W).unwrap(),
+            [watch("alice", 0, None), watch("bob", 0, None)]
+        );
+
+        // The end is learned once; 0 keeps it.
+        assert!(
+            db.set_contest_watch_state(W, "me", "alice", 90, "open")
+                .unwrap()
+        );
+        assert!(
+            db.set_contest_watch_state(W, "me", "alice", 0, "won")
+                .unwrap()
+        );
+        // No row, nothing written.
+        assert!(
+            !db.set_contest_watch_state(W, "me", "dave", 9, "open")
+                .unwrap()
+        );
+        assert_eq!(
+            db.wallet_contest_watches(W).unwrap(),
+            [watch("alice", 90, Some("won")), watch("bob", 0, None)]
+        );
+
+        assert!(db.end_contest_watch(W, "me", "alice").unwrap());
+        assert!(!db.end_contest_watch(W, "me", "alice").unwrap());
+        assert_eq!(
+            db.wallet_contest_watches(W).unwrap(),
+            [watch("bob", 0, None)]
+        );
+        assert_eq!(db.wallet_contest_watches("bb").unwrap().len(), 1);
     }
 }

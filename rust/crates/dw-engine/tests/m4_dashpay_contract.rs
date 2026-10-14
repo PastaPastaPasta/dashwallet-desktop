@@ -91,6 +91,8 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.pending_top_ups",
     "DashPay.resume_top_up",
     "DashPay.resolve_top_up",
+    // DP1-04: the contest watch.
+    "DashPay.contest_status",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -122,14 +124,17 @@ const FACADE: &[&str] = &[
 /// encodings and tests (DP1-02), and the contact-request writes, their
 /// network seam and tests, and the identity write locks (DP2-02), the
 /// private details' publish and settle with their tests (DP2-04), the
-/// bell's session tests (DP2-05), and the credit costs, the balance
-/// refreshes and the top-up flow with its tests (DP1-06).
+/// bell's session tests (DP2-05), the credit costs, the balance refreshes
+/// and the top-up flow with its tests (DP1-06), and the contest watch with
+/// its tests (DP1-04).
 const NOT_FACADE: &[&str] = &[
     "balances.rs",
     "bringup.rs",
     "contact_names.rs",
     "contacts_model.rs",
     "contacts_tests.rs",
+    "contest_watch.rs",
+    "contest_watch_tests.rs",
     "credit_costs.rs",
     "identity_writes.rs",
     "journal.rs",
@@ -1215,7 +1220,11 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             "wallet_not_found"
         );
 
-        c.stub(dp.contest_status(s(), s()).await);
+        // DP1-04's: a malformed identity is refused before anything else.
+        assert_eq!(
+            dp.contest_status(s(), s()).await.unwrap_err().code(),
+            "invalid_argument"
+        );
         // DP2-03's calls are implemented: an unknown wallet is refused.
         for found in [
             dp.search_users(s(), 10).await.map(drop),

@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
-use dw_appdb::{NewRegistration, RegistrationChange, RegistrationRow};
+use dw_appdb::{ContestWatch, NewRegistration, RegistrationChange, RegistrationRow};
 use dw_vault::{GrantKind, GrantPurpose};
 use serde::{Deserialize, Serialize};
 
+use super::contest_watch::watch_of;
 use super::dashpay::DashPay;
 use super::errors::{IdentityError, PlatformError, RegistrationError};
 use super::flows::{BudgetPurpose, FlowKind, GrantRequest, LeaseStateView};
@@ -676,6 +677,7 @@ pub(crate) async fn statuses<L: RegistrationLib>(
 ) -> Result<Vec<RegistrationStatus>, RegistrationError> {
     let ledger = ledger(session, wallet, lib).await?;
     let mut spendable = None;
+    let mut watches = None;
     let mut out = Vec::new();
     for row in ledger.rows() {
         let state = session.platform.registrations.get((wallet, row.id));
@@ -736,8 +738,17 @@ pub(crate) async fn statuses<L: RegistrationLib>(
                 .as_ref()
                 .is_some_and(|held| flow::holds_own_key(&held.0)),
             funds_committed: ledger.funds_committed(row),
-            // DP1-04 seam: the contest's end from the vote poll.
-            contest_ends_at: None,
+            contest_ends_at: match (&failure, phase, &row.identity) {
+                (None, Some(Phase::Contested), Some(identity)) => {
+                    if watches.is_none() {
+                        watches = Some(contest_watches(session, wallet).await);
+                    }
+                    watch_of(watches.as_deref().unwrap_or_default(), identity, &row.label)
+                        .map(|w| w.ends_at)
+                        .filter(|&end| end > 0)
+                }
+                _ => None,
+            },
             failure,
             name_failure: row.name_error.clone(),
             profile_failure: row.profile_error.clone(),
@@ -771,6 +782,19 @@ pub(crate) async fn statuses<L: RegistrationLib>(
         });
     }
     Ok(out)
+}
+
+/// The wallet's contest watch rows (DP1-04), which know each contest's
+/// end; none when they cannot be read.
+async fn contest_watches(session: &NetworkSession, wallet: WalletId) -> Vec<ContestWatch> {
+    let w = wallet.to_string();
+    (session
+        .appdb_op(move |db| db.wallet_contest_watches(&w))
+        .await)
+        .unwrap_or_else(|e| {
+            tracing::warn!(wallet_id = %wallet, error = %e, "could not read the contest watches");
+            Vec::new()
+        })
 }
 
 /// What a flow no task drives waits for: the funding hold before funding,

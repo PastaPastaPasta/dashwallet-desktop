@@ -33,6 +33,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 
 use super::balances::BALANCE_PASS_EVERY;
+use super::contest_watch;
 use super::runtime::{PlatformSignal, Stamped, Supervisor, guard, prompt_free};
 use super::startup::StartupStatus;
 use super::startup_status::{DashPayStartup, SpvState};
@@ -88,6 +89,8 @@ enum Job {
     /// The names pass after a bring-up that discovered identities
     /// (`recovery.rs`).
     Names,
+    /// A contest watch pass (`contest_watch.rs`).
+    Contests,
 }
 
 impl NetworkSession {
@@ -240,6 +243,10 @@ impl NetworkSession {
         if !self.names_passes(&manager, &mut cancel).await {
             return;
         }
+        // A contest that ended while the app was closed shows at once.
+        let mut contests_at = Some(Instant::now());
+        // No pass before this, whatever asks for one: one a second at most.
+        let mut contests_floor = Instant::now();
 
         // The session must not be kept open by a task only close ends.
         let session: Weak<Self> = Arc::downgrade(&self);
@@ -251,6 +258,12 @@ impl NetworkSession {
                     tokio::time::sleep(LOOP_RETRY).await;
                 } else {
                     std::future::pending::<()>().await;
+                }
+            };
+            let contests = async {
+                match contests_at {
+                    Some(at) => tokio::time::sleep_until(at.into()).await,
+                    None => std::future::pending::<()>().await,
                 }
             };
             let signal = tokio::select! {
@@ -273,12 +286,30 @@ impl NetworkSession {
                     Some(signal) => signal,
                     None => return,
                 },
+                () = contests => {
+                    let Some(this) = session.upgrade() else { return };
+                    let ids = manager.wallet_ids().await.into_iter().map(WalletId).collect();
+                    if !this
+                        .for_wallets(&manager, ids, Job::Contests, Instant::now(), &mut cancel)
+                        .await
+                    {
+                        return;
+                    }
+                    contests_floor = Instant::now() + Duration::from_secs(1);
+                    let next = this.next_contest_pass(&manager).await;
+                    contests_at = next.map(|at| at.max(contests_floor));
+                    continue;
+                }
             };
             let (at, signal) = signal;
             let Some(this) = session.upgrade() else {
                 return;
             };
             let (wallets, job) = match signal {
+                PlatformSignal::Contests => {
+                    contests_at = Some(contests_floor.max(Instant::now()));
+                    continue;
+                }
                 PlatformSignal::Unlocked => {
                     let ids = manager.wallet_ids().await.into_iter().map(WalletId);
                     (ids.collect(), Job::Unlock)
@@ -294,6 +325,8 @@ impl NetworkSession {
                 }
                 PlatformSignal::WalletAdded(id) | PlatformSignal::Readmit(id) => {
                     admitted.insert(id, this.platform.stamp());
+                    // Its open contests are adopted at once.
+                    contests_at = Some(contests_floor.max(Instant::now()));
                     (vec![id], Job::BringUp)
                 }
             };
@@ -386,6 +419,15 @@ impl NetworkSession {
                     Job::BringUp => this.bring_up_wallet(&manager, id, since).await,
                     Job::Unlock => this.after_unlock(&manager, id).await,
                     Job::Names => this.names_pass(&manager, id).await,
+                    Job::Contests => {
+                        let pass = this.contest_pass(&manager, id);
+                        if tokio::time::timeout(contest_watch::PASS_BUDGET, pass)
+                            .await
+                            .is_err()
+                        {
+                            tracing::info!(wallet_id = %id, "contest watch pass over its budget");
+                        }
+                    }
                 }
             });
             owners.insert(task.id(), id);
@@ -410,8 +452,9 @@ impl NetworkSession {
                         && e.is_panic()
                     {
                         tracing::warn!(wallet_id = %id, error = %e, "a wallet's Platform task panicked");
-                        // A names pass leaves the bring-up's answer standing.
-                        if !matches!(job, Job::Names)
+                        // A names or contest pass leaves the bring-up's
+                        // answer standing.
+                        if matches!(job, Job::BringUp | Job::Unlock)
                             && let Some(entry) = self.platform.write_startup().get_mut(&id)
                         {
                             entry.startup = StartupStatus::NotRun;

@@ -20,9 +20,11 @@ use crate::{EngineError, NetworkSession, WalletId};
 /// `dashpay_sync` while a window is visible, and while hidden (§3.2).
 const DASHPAY_VISIBLE: Duration = Duration::from_secs(15);
 const DASHPAY_HIDDEN: Duration = Duration::from_secs(60);
-/// The contest watch (`dpns_sync`), and in a contest's last hour.
-const CONTEST_WATCH: Duration = Duration::from_secs(600);
-const CONTEST_WATCH_ENDING: Duration = Duration::from_secs(60);
+/// The DPNS marketplace loop (`dpns_sync`), and while the host follows a
+/// contest's last hour (`PlatformCadence::contest_ending_soon`). The own
+/// contests have their watch (`contest_watch.rs`).
+const MARKETPLACE: Duration = Duration::from_secs(600);
+const MARKETPLACE_ENDING: Duration = Duration::from_secs(60);
 
 /// How long a stop or close waits for the bring-up's blocking vault work (a
 /// keyring read) after cancelling it. A read that takes longer is stuck, for
@@ -40,6 +42,9 @@ pub(crate) enum PlatformSignal {
     /// A restore's last mark on a wallet cleared after an entry point was
     /// refused for it (review r3 M4-R3): bring it up if it is still there.
     Readmit(WalletId),
+    /// A contest watch row was written (DP1-04): a pass now, and the
+    /// schedule again.
+    Contests,
 }
 
 /// A signal and when its event happened, on [`PlatformRuntime::stamp`]'s
@@ -96,6 +101,8 @@ pub(crate) struct PlatformRuntime {
     pub(crate) users: super::users::UsersRuntime,
     /// The registration flows running in this process (DP1-02).
     pub(crate) registrations: Arc<super::registration_flow::Flows>,
+    /// When the contest watch last checked each row (DP1-04).
+    pub(crate) contests: super::contest_watch::ContestsRuntime,
     /// The balances spent since their refresh, and the balance pass
     /// (DP1-06, `balances.rs`).
     pub(crate) balances: Arc<super::balances::Balances>,
@@ -270,6 +277,7 @@ impl PlatformRuntime {
             contacts: Default::default(),
             users: Default::default(),
             registrations: Default::default(),
+            contests: Default::default(),
             balances: Default::default(),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
@@ -449,6 +457,7 @@ impl PlatformRuntime {
         self.contacts.forget(id);
         self.users.scans.forget(id);
         self.registrations.forget_wallet(*id);
+        self.contests.forget(id);
         self.balances.forget(id);
     }
 
@@ -591,9 +600,9 @@ impl NetworkSession {
             DASHPAY_HIDDEN
         });
         manager.dpns_sync().set_interval(if c.contest_ending_soon {
-            CONTEST_WATCH_ENDING
+            MARKETPLACE_ENDING
         } else {
-            CONTEST_WATCH
+            MARKETPLACE
         });
     }
 }
