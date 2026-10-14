@@ -244,10 +244,15 @@ impl TxDraft {
     /// After a broadcast of a contact payment left it in `next`: a first
     /// one never sent returns its address to the contact; unknown, the
     /// contact is locked behind it; accepted, its own lock clears (D7, D8).
+    /// A wallet removed meanwhile is left alone: its address and lock went
+    /// with it, and a re-added wallet starts afresh.
     pub(super) async fn settle_contact(&self, prepared: &PreparedTx, first: bool, next: Phase) {
         let Some((pair, address)) = &prepared.contact else {
             return;
         };
+        if self.session.wallet(&self.wallet_id).await.is_err() {
+            return;
+        }
         let txid = &prepared.summary.txid;
         match next {
             Phase::Pending | Phase::Released if first => {

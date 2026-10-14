@@ -205,8 +205,9 @@ impl NetworkSession {
 
     /// Locks `pair` behind `txid`, whose broadcast outcome is unknown
     /// (D8): memory first, then the row. A failed write is logged; the lock
-    /// holds for the session. A lock of another payment is kept (the
-    /// oldest unknown outcome; D20 lets no second one start).
+    /// holds for the session, and a repeat broadcast's unknown outcome
+    /// writes the row again. A lock of another payment is kept (the oldest
+    /// unknown outcome; D20 lets no second one start).
     pub(crate) async fn lock_payment(
         &self,
         id: WalletId,
@@ -214,22 +215,27 @@ impl NetworkSession {
         txid: Txid,
         inputs: Vec<OutPoint>,
     ) {
-        let lock = PaymentLock {
+        let mut lock = PaymentLock {
             txid: txid.to_string(),
             since: crate::events::unix_now(),
         };
         {
             let mut locks = guard(&self.platform.payments.locks);
             let wallet = locks.entry(id).or_default();
-            if let Some(held) = wallet.get(&pair) {
-                // A repeat broadcast's unknown outcome: locked already.
-                if held.txid != lock.txid {
+            match wallet.get(&pair) {
+                None => {
+                    wallet.insert(pair, lock.clone());
+                }
+                // A repeat broadcast's unknown outcome: locked already, the
+                // row written again (idempotent) should the first write
+                // have failed.
+                Some(held) if held.txid == lock.txid => lock.since = held.since,
+                Some(held) => {
                     tracing::warn!(wallet_id = %id, %txid, held = %held.txid,
                         "a second unknown payment to a locked contact");
+                    return;
                 }
-                return;
             }
-            wallet.insert(pair, lock.clone());
         }
         let row = DpPaymentLockRow {
             identity: b58(&pair.0),
