@@ -30,6 +30,7 @@ import { eventOf, sectionOf, type DashPayWorld } from "./dashpay";
 import { routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers } from "./send";
+import { isClosed, settingsHandlers } from "./settings";
 import { emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
 import { BASE58, FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
@@ -45,7 +46,7 @@ const fail = (code: AppError["code"], message: string, data: AppError["data"] = 
 
 function wallet(w: World, walletId: string) {
   const found = w.wallets.find((x) => x.summary.walletId === walletId);
-  if (!found) throw fail("wallet_not_found", `wallet not found: ${walletId}`);
+  if (!found || isClosed(w, walletId)) throw fail("wallet_not_found", `wallet not found: ${walletId}`);
   return found;
 }
 
@@ -167,6 +168,18 @@ function checkGrant(w: World, id: string, walletId: string, kinds: GrantPurposeS
 
 function useGrant(w: World, id: string) {
   for (const g of w.grants) if (g.grant.id === id) g.used = true;
+}
+
+/** An unused `changeCredential` grant whose key is usable (it is bound to no wallet). */
+function credentialGrant(w: World, id: string): FixtureGrant | null {
+  const g = w.grants.find((x) => x.grant.id === id && !x.used);
+  return g && g.grant.purpose.kind === "changeCredential" && (g.ownKey || !keyless(w)) ? g : null;
+}
+
+/** A new credential (encrypt, change, destroy): every grant goes and every live lease is revoked. */
+function endVaultEpoch(ctx: Ctx, cause: "passphraseChange") {
+  revokeGrants(ctx.world);
+  for (const lease of ctx.world.leases.filter(live)) setLease(ctx, { ...lease, state: { kind: "revoked", cause }, keyExpiresInSecs: null });
 }
 
 function leaseChanged({ world, emit }: Ctx, lease: Lease) {
@@ -375,6 +388,8 @@ export const HANDLERS: Handlers = {
     spendGrant: (w, id, walletId) => checkGrant(w, id, walletId, ["spend"]),
     useGrant,
   }),
+  // Settings (U-04): settings.ts.
+  ...settingsHandlers({ wallet, grant: checkGrant, useGrant }),
 
   // App and network
   launch_info: (_, { world }) => world.launch,
@@ -450,6 +465,52 @@ export const HANDLERS: Handlers = {
     for (const id of walletsWithoutSecrets) ctx.emit({ kind: "walletLoadChanged", network: world.launch.network.dirName, walletId: id, loaded: true });
     return { status: world.lock, walletsWithoutSecrets };
   },
+  // Settings ▸ Security (U-04): the vault's credential.
+  encrypt_vault: ({ newPassphrase, grantId }, ctx) => {
+    const { world } = ctx;
+    if (world.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
+    if (world.lock.encrypted) throw fail("vault.already_encrypted", "vault already encrypted");
+    if (!credentialGrant(world, grantId)) throw fail("vault.grant_invalid", "grant invalid");
+    if (newPassphrase === "") throw fail("vault.passphrase_rejected", "the passphrase is empty");
+    useGrant(world, grantId);
+    world.passphrase = newPassphrase;
+    endVaultEpoch(ctx, "passphraseChange");
+    world.lock = { ...world.lock, encrypted: true, failedAttempts: 0, retryAfterSecs: null };
+    setLock(ctx, "locked");
+    return world.lock;
+  },
+  change_passphrase: ({ oldPassphrase, newPassphrase }, ctx) => {
+    const { world } = ctx;
+    if (world.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
+    if (!world.lock.encrypted) throw fail("vault.not_encrypted", "vault not encrypted");
+    // DEC-134: a wrong old passphrase counts like a wrong unlock and revokes nothing.
+    checkCredential(world, { kind: "passphrase", passphrase: oldPassphrase }, []);
+    if (newPassphrase === "") throw fail("vault.passphrase_rejected", "the passphrase is empty");
+    world.passphrase = newPassphrase;
+    endVaultEpoch(ctx, "passphraseChange");
+    return world.lock;
+  },
+  set_payment_authentication: ({ on, grantId }, { world }) => {
+    if (world.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
+    if (!world.lock.encrypted) throw fail("vault.not_encrypted", "vault not encrypted");
+    if (!credentialGrant(world, grantId)) throw fail("vault.grant_invalid", "grant invalid");
+    useGrant(world, grantId);
+    world.paymentAuth = on;
+    return null;
+  },
+  destroy_vault: ({ credential }, ctx) => {
+    const { world } = ctx;
+    if (world.lock.state === "noVault") return world.lock;
+    if (world.lock.walletsWithSecrets.length > 0) throw fail("vault.not_empty", "the vault still holds wallet secrets");
+    if (world.lock.encrypted && credential.kind !== "passphrase") throw fail("vault.credential_required", "the passphrase is required");
+    checkCredential(world, credential, []);
+    endVaultEpoch(ctx, "passphraseChange");
+    world.passphrase = "";
+    world.paymentAuth = true;
+    world.lock = { ...world.lock, encrypted: false, quickUnlockEnrolled: false, failedAttempts: 0, retryAfterSecs: null, walletsWithSecrets: [] };
+    setLock(ctx, "noVault");
+    return world.lock;
+  },
   leases: (_, { world }) => world.leases,
   authorize: ({ purpose, walletId, credential }, { world }) => authorizeSet(world, [purpose], walletId, credential)[0],
   authorize_set: ({ purposes, walletId, credential }, { world }) => authorizeSet(world, purposes, walletId, credential),
@@ -502,7 +563,7 @@ export const HANDLERS: Handlers = {
   },
 
   // Wallets and chain
-  list_wallets: (_, { world }) => world.wallets.map((x) => x.summary),
+  list_wallets: (_, { world }) => world.wallets.filter((x) => !isClosed(world, x.summary.walletId)).map((x) => x.summary),
   wallet_info: ({ walletId }, { world }) => wallet(world, walletId).summary,
   balance: ({ walletId }, { world }) => wallet(world, walletId).summary.balances,
   import_wallet: ({ mnemonic, options }, ctx) => importWallet(ctx, mnemonic, options.name),

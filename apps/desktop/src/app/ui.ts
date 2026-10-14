@@ -6,9 +6,13 @@ import { useEffect, useSyncExternalStore } from "react";
 import type { Route } from "../api/generated/Route";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { ToolsTab } from "../api/generated/ToolsTab";
+import type { UiSettings } from "../api/generated/UiSettings";
 
 export type { Route, ToolsTab };
 export type ThemeChoice = ThemeName | null;
+
+/** Settings' tabs (U-04 D1). */
+export type SettingsTab = "general" | "security" | "wallets" | "backups" | "about";
 
 /** Pay's two ways (DASHPAY §4): to a contact, or to an address. */
 export type PayTab = "contact" | "address";
@@ -46,6 +50,7 @@ export interface UiState {
   payLinks: number;
   contactPrefill: ContactPrefill | null;
   toolsTab: ToolsTab;
+  settingsTab: SettingsTab;
   /** An invitation link arrived (DP5-01 adds its intake; Join DashPay says so meanwhile). */
   invitation: boolean;
   /** The wallet the window shows; `null` = the first. */
@@ -53,6 +58,9 @@ export interface UiState {
   /** Txid whose detail sheet is open. */
   detail: string | null;
   dialog: Dialog | null;
+  /** The wallet Show Recovery Phrase opens on when Settings ▸ Wallets picked one; `null`: the
+   * window's wallet. */
+  recoveryWallet: string | null;
   /** Onboarding covers the shell: the first wallet, or Wallet ▸ Add Wallet… (U-02 D1). Only
    * whether it is open; its state stays in its view model. */
   onboarding: boolean;
@@ -66,11 +74,23 @@ export interface UiState {
   /** Bumped by Try again after `failed`: the shell asks for the protection again. */
   protectionTries: number;
   discreet: boolean;
-  /** A forced appearance; `null` follows the system. */
+  /** A forced appearance; `null` follows the system. `--theme`, else the saved one (U-04 D3). */
   theme: ThemeChoice;
+  /** The saved display settings (settings/prefs.ts, U-04 D2). */
+  prefs: UiSettings;
   /** The system appearance (one `matchMedia` listener for the whole app, in theme.ts). */
   system: ThemeName;
 }
+
+/** dw-app's `UiSettings::default()`: what a missing settings file reads as. */
+export const DEFAULT_PREFS: UiSettings = {
+  theme: null,
+  unit: "dash",
+  decimalDigits: 2,
+  autohideBalance: false,
+  autoLockSecs: null,
+  subtractFeeByDefault: false,
+};
 
 let state: UiState = {
   route: "home",
@@ -79,10 +99,12 @@ let state: UiState = {
   payLinks: 0,
   contactPrefill: null,
   toolsTab: "information",
+  settingsTab: "general",
   invitation: false,
   walletId: null,
   detail: null,
   dialog: null,
+  recoveryWallet: null,
   onboarding: false,
   forgotPassphrase: false,
   secrets: 0,
@@ -90,6 +112,7 @@ let state: UiState = {
   protectionTries: 0,
   discreet: false,
   theme: null,
+  prefs: DEFAULT_PREFS,
   system: "light",
 };
 const listeners = new Set<() => void>();

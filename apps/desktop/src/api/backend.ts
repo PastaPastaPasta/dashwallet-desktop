@@ -48,6 +48,20 @@ import type { TxDetailExtrasInfo } from "./generated/TxDetailExtrasInfo";
 import type { TxEstimate } from "./generated/TxEstimate";
 import type { Utxo } from "./generated/Utxo";
 import type { UtxoFilter } from "./generated/UtxoFilter";
+import type { AccountXpub } from "./generated/AccountXpub";
+import type { BackupFileHeader } from "./generated/BackupFileHeader";
+import type { BackupPolicyInfo } from "./generated/BackupPolicyInfo";
+import type { BackupSummary } from "./generated/BackupSummary";
+import type { CoreExportFormatName } from "./generated/CoreExportFormatName";
+import type { CoreExportReport } from "./generated/CoreExportReport";
+import type { CoreImportReport } from "./generated/CoreImportReport";
+import type { CoreMnemonicCheck } from "./generated/CoreMnemonicCheck";
+import type { KeyMaterialInput } from "./generated/KeyMaterialInput";
+import type { NodeSummary } from "./generated/NodeSummary";
+import type { UiSettings } from "./generated/UiSettings";
+import type { WalletFileInfo } from "./generated/WalletFileInfo";
+import type { WalletLoadStatus } from "./generated/WalletLoadStatus";
+import type { WatchOnlyOptions } from "./generated/WatchOnlyOptions";
 
 export interface Backend {
   readonly kind: "tauri" | "fixture";
@@ -118,6 +132,47 @@ export interface Backend {
   coinSelectionSummary(walletId: string, outpoints: OutPoint[], payAmounts: number[], fee: FeeMode): Promise<CoinSelectionSummary>;
   /** "Require authentication for every payment" (E0-13 D11). */
   paymentAuthentication(): Promise<boolean>;
+  // Settings (U-04). Passphrases and key material are secret, as in onboarding.
+  /** The display settings in the data root (U-04 D2); the defaults when there is no file. */
+  uiSettings(): Promise<UiSettings>;
+  /** Saves them; dw-app also sets the window's theme unless `--theme` was given (D3). */
+  setUiSettings(settings: UiSettings): Promise<UiSettings>;
+  /** Encrypts an unencrypted vault with a `changeCredential` grant; the vault ends locked. */
+  encryptVault(newPassphrase: string, grantId: string): Promise<LockStatus>;
+  changePassphrase(oldPassphrase: string, newPassphrase: string): Promise<LockStatus>;
+  setPaymentAuthentication(on: boolean, grantId: string): Promise<null>;
+  /** Deletes the vault and every secret in it (IOS-109); the wallets must be removed first. */
+  destroyVault(credential: CredentialSpec): Promise<LockStatus>;
+  /** Every registered wallet, open or closed (QT-101). */
+  walletLoadStates(): Promise<WalletLoadStatus[]>;
+  loadWallet(walletId: string): Promise<null>;
+  unloadWallet(walletId: string): Promise<null>;
+  setLoadOnStartup(walletId: string, loadOnStartup: boolean): Promise<null>;
+  renameWallet(walletId: string, name: string): Promise<null>;
+  /** Deletes a wallet and its data with a `wipe` grant (IOS-110). */
+  removeWallet(walletId: string, grantId: string): Promise<null>;
+  importWatchOnly(xpub: string, options: WatchOnlyOptions): Promise<string>;
+  accountXpub(walletId: string, account: number): Promise<AccountXpub>;
+  backupWallet(walletId: string, destPath: string, backupPassphrase: string | null): Promise<BackupSummary>;
+  /** Restores the wallets of a `.dwbackup`; returns their ids. */
+  restoreBackup(path: string, passphrase: string | null): Promise<string[]>;
+  automaticBackups(walletId: string | null): Promise<BackupSummary[]>;
+  backupDirectory(): Promise<string>;
+  backupPolicy(): Promise<BackupPolicyInfo>;
+  setBackupPolicy(keep: number): Promise<BackupPolicyInfo>;
+  readBackupHeader(path: string): Promise<BackupFileHeader>;
+  /** What a file is, from its content (QT-106, QT-107). */
+  inspectWalletFile(path: string): Promise<WalletFileInfo>;
+  importDumpWallet(path: string, options: ImportOptions): Promise<CoreImportReport>;
+  importWalletDat(path: string, walletPassphrase: string | null, options: ImportOptions): Promise<CoreImportReport>;
+  importKeyMaterial(material: KeyMaterialInput, options: ImportOptions): Promise<CoreImportReport>;
+  coreMnemonicCompatibility(walletId: string): Promise<CoreMnemonicCheck>;
+  /** Writes the wallet's keys for Dash Core with a `revealSecret` grant (QT-109). */
+  exportForCore(walletId: string, format: CoreExportFormatName, destPath: string, grantId: string): Promise<CoreExportReport>;
+  /** Hides received coins at or under this many duffs; `null`: off (QT-138). */
+  dustProtection(): Promise<number | null>;
+  setDustProtection(threshold: number | null): Promise<null>;
+  nodeInfo(): Promise<NodeSummary>;
   dashpayStatus(walletId: string): Promise<DashPayStatus>;
   identities(walletId: string): Promise<IdentitySummary[]>;
   dashpayUnreadCount(walletId: string, identity: string): Promise<number>;
