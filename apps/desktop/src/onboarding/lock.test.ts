@@ -105,6 +105,9 @@ describe("lock view model", () => {
     expect(model.failedAttempts).toBe(3);
     expect(model.retryAfterSecs).toBe(60);
     expect(model.message).toBe(`${WRONG_PASSPHRASE} ${tryAgainIn(60)}`);
+    // What the vault holds still comes from the read: Forgot passphrase stays offered.
+    expect(model.lockState).toBe("locked");
+    expect(model.canRecover).toBe(true);
   });
 
   it("IOS012_fourthFailureWaitsSixMinutes", async () => {
