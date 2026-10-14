@@ -360,11 +360,12 @@ async fn authority(
 }
 
 /// What holds a funding back, as the code the host sees: SPV behind,
-/// the identities not unlocked yet, or not known.
+/// the identities not unlocked yet, or not known (the bring-up running or
+/// not answered; the call has it run again).
 fn held(wait: RegistrationWait) -> PlatformError {
     match wait {
         RegistrationWait::Unlock => PlatformError::SignerUnavailable,
-        RegistrationWait::Network => PlatformError::Unavailable,
+        RegistrationWait::Network | RegistrationWait::Startup => PlatformError::Unavailable,
         _ => PlatformError::ContextUnavailable,
     }
 }
@@ -412,6 +413,10 @@ pub(crate) async fn top_up<L: TopUpLib>(
     grant: &str,
 ) -> Result<TopUpOutcome, CreditsError> {
     if let Some(wait) = lib.funding_hold() {
+        if wait == RegistrationWait::Startup {
+            // Nothing else runs it again before the next start.
+            session.platform.retry_startup(wallet);
+        }
         return Err(held(wait).into());
     }
     // Until the dispatch journal is read, every step would read `MaybeSent`

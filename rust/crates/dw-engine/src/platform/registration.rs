@@ -165,6 +165,11 @@ pub enum RegistrationWait {
     /// contest (DEC-198 am.1): "Finish transfers" recovers it, and the flow
     /// then funds at its own index.
     NeedsFinish,
+    /// SPV has synced, but the wallet's DashPay bring-up has not answered
+    /// which identity indexes the seed uses (§3.4 Restore rule 1): "Waiting
+    /// for DashPay to start". A run waiting here has the bring-up run again,
+    /// on a backoff.
+    Startup,
 }
 
 /// Why a flow is `Failed`, with the parameters its code carries.

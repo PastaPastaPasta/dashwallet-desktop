@@ -191,10 +191,14 @@ pub enum RegistrationWaitName {
     /// A lock only wedged funding steps contest holds the flow's index:
     /// "Finish transfers" recovers it.
     NeedsFinish,
+    /// SPV has synced, but the wallet's DashPay startup has not answered
+    /// which identity indexes the seed uses: "Waiting for DashPay to
+    /// start". The engine runs it again meanwhile.
+    Startup,
 }
 
 mirror_enum!(engine::RegistrationWait => RegistrationWaitName {
-    Unlock, Authorize, Sync, InstantSend, ChainLock, Network, FundingUnknown, NeedsFinish
+    Unlock, Authorize, Sync, InstantSend, ChainLock, Network, FundingUnknown, NeedsFinish, Startup
 });
 
 /// Why a registration is `failed`.

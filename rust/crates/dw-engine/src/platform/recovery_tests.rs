@@ -326,6 +326,9 @@ struct Platform {
     replayed_names: Vec<([u8; 32], &'static str)>,
     /// (identity, contact) pairs the bring-up's DashPay pass establishes.
     contacts: Vec<([u8; 32], [u8; 32])>,
+    /// The first this many bring-ups end `PartialNoIdentity` and find
+    /// nothing: their discovery did not answer in the budget.
+    partial_bring_ups: u32,
     bring_ups: Arc<AtomicU32>,
     hold_bring_up: Option<Arc<Notify>>,
     hold_names: Option<Arc<Notify>>,
@@ -362,12 +365,26 @@ impl MockPlatform for Platform {
             self.hold_bring_up.clone(),
             self.replayed_names.clone(),
         );
-        let contacts = self.contacts.clone();
+        let (contacts, partial) = (self.contacts.clone(), self.partial_bring_ups);
         Box::pin(async move {
             if let Some(hold) = hold {
                 hold.notified().await;
             }
-            if calls.fetch_add(1, Ordering::SeqCst) > 0 {
+            let call = calls.fetch_add(1, Ordering::SeqCst);
+            if call < partial {
+                return Ok(WalletStartupOutcome {
+                    status: WalletStartupStatus::PartialNoIdentity,
+                    identity_id: None,
+                    discovery_attempts: 1,
+                    dashpay_sync_ran: false,
+                    seed_binding_unverified: false,
+                    identity_scan_incomplete: false,
+                    contact_accounts_drained: 0,
+                    contact_accounts_pending: 0,
+                    elapsed: Duration::ZERO,
+                });
+            }
+            if call > 0 {
                 set_names(&manager, id, &replayed).await;
             }
             // As the library: the identities on file, an earlier explicit
@@ -1790,6 +1807,139 @@ fn a_restored_wallet_gets_its_private_details_back() {
         });
         engine.block_on(engine.shutdown()).unwrap();
     }
+}
+
+// ---- a flow held on the bring-up (dw-tdash B2) ----
+
+fn startup(s: &NetworkSession, id: WalletId) -> StartupStatus {
+    s.dashpay_startup(&id).unwrap().startup
+}
+
+/// dw-tdash B2: a bring-up that left the seed's identity indexes unanswered
+/// holds a funding at `Startup` (not `Network`), and nothing in the session
+/// ran it again. A held flow's request now does, at once, which lifts the
+/// hold without a restart; once it has answered, no flow asks again.
+#[test]
+fn a_held_flow_has_a_partial_bring_up_run_again() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        partial_bring_ups: 1,
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the partial bring-up", || {
+        startup(&s, id) == StartupStatus::PartialNoIdentity
+    });
+    let hold = |s: &NetworkSession| super::registration_flow::startup_hold(startup(s, id));
+    assert_eq!(hold(&s), Some(super::RegistrationWait::Startup));
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1);
+
+    assert!(s.platform.retry_startup(id));
+    wait_until("the bring-up again", || {
+        startup(&s, id) == StartupStatus::Ready
+    });
+    assert_eq!(hold(&s), None);
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        s.dashpay_startup(&id).unwrap().identity,
+        Some(base58(ALICE))
+    );
+    assert!(!s.platform.retry_startup(id), "answered: nothing to run");
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// dw-tdash B2: reruns a held flow asks for back off. The first runs at
+/// once; then 30 s, doubling, never more than 10 minutes apart, for as long
+/// as the outcome holds; and none while SPV is stopped.
+#[test]
+fn bring_up_reruns_back_off_to_ten_minutes() {
+    use super::runtime::{STARTUP_RETRY_MAX, STARTUP_RETRY_MIN, startup_retry_pause};
+
+    let pauses: Vec<u64> = (1..=8).map(|n| startup_retry_pause(n).as_secs()).collect();
+    assert_eq!(pauses, [30, 60, 120, 240, 480, 600, 600, 600]);
+    assert_eq!(startup_retry_pause(1), STARTUP_RETRY_MIN);
+    assert_eq!(startup_retry_pause(u32::MAX), STARTUP_RETRY_MAX);
+
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        partial_bring_ups: u32::MAX,
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    let runs = || platform.bring_ups.load(Ordering::SeqCst);
+    wait_until("the partial bring-up", || {
+        startup(&s, id) == StartupStatus::PartialNoIdentity
+    });
+    let t0 = Instant::now();
+    let mut at = Duration::ZERO;
+    for (n, pause) in [0u64, 30, 60, 120, 240, 480, 600, 600]
+        .into_iter()
+        .enumerate()
+    {
+        at += Duration::from_secs(pause);
+        let ran = runs();
+        if n > 0 {
+            let early = t0 + at - Duration::from_millis(1);
+            assert!(
+                !s.platform.retry_startup_at(id, early),
+                "rerun {n}: before its pause"
+            );
+        }
+        assert!(s.platform.retry_startup_at(id, t0 + at), "rerun {n}");
+        wait_until("the rerun", || {
+            runs() == ran + 1 && startup(&s, id) == StartupStatus::PartialNoIdentity
+        });
+    }
+    // Stopped, nothing runs it; the next start does, and the schedule
+    // starts over.
+    engine.block_on(s.stop_spv()).unwrap();
+    assert!(!s.platform.retry_startup_at(id, t0 + at + STARTUP_RETRY_MAX));
+    start(&engine, &s);
+    wait_until("the start's bring-up", || {
+        startup(&s, id) == StartupStatus::PartialNoIdentity
+    });
+    let ran = runs();
+    assert!(s.platform.retry_startup(id));
+    wait_until("the rerun", || runs() == ran + 1);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// dw-tdash B2: a wallet whose bring-up Platform's recent proof of no
+/// identity skipped (`NotRun`) answers no funding (§3.4 Restore rule 1):
+/// it held a registration at `Sync` until the proof was 7 days old. A held
+/// flow's rerun runs the discovery anyway, and Platform proves it again.
+#[test]
+fn a_rerun_runs_the_discovery_a_proven_absence_skipped() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform::default());
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the bring-up", || {
+        startup(&s, id) == StartupStatus::NoIdentity
+    });
+    engine.block_on(s.stop_spv()).unwrap();
+    start(&engine, &s);
+    wait_until("the skipped bring-up", || {
+        startup(&s, id) == StartupStatus::NotRun
+    });
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        super::registration_flow::startup_hold(StartupStatus::NotRun),
+        Some(super::RegistrationWait::Startup)
+    );
+
+    assert!(s.platform.retry_startup(id));
+    wait_until("the discovery", || {
+        startup(&s, id) == StartupStatus::NoIdentity
+    });
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
+    engine.block_on(engine.shutdown()).unwrap();
 }
 
 /// ROADMAP DP1-05 on public testnet. `DW_DP105_TESTNET_FIXTURE` names the

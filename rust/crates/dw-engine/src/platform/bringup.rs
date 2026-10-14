@@ -12,7 +12,10 @@
 //! 2. starts SPV whatever the outcome, then the sync loops;
 //! 3. until SPV stops, serves the vault's unlocks (the bring-up again where
 //!    it left the identity unsettled, the contact-crypto drain,
-//!    `reconcile_dashpay_rescan`) and the wallets added while SPV runs.
+//!    `reconcile_dashpay_rescan`), the wallets added while SPV runs, and the
+//!    flows held on a bring-up that left the seed's identity indexes
+//!    unanswered (the bring-up again, on a backoff:
+//!    `PlatformRuntime::retry_startup`).
 //!
 //! `stop_spv` and close cancel the supervisor and wait for it. A lock drops a
 //! running bring-up: the scan key it may have resolved is beyond the vault's
@@ -85,6 +88,9 @@ enum Ended {
 #[derive(Debug, Clone, Copy)]
 enum Job {
     BringUp,
+    /// The bring-up again, which a flow held on its outcome asked for
+    /// ([`PlatformSignal::RetryStartup`]).
+    Retry,
     Unlock,
     /// The names pass after a bring-up that discovered identities
     /// (`recovery.rs`).
@@ -314,7 +320,9 @@ impl NetworkSession {
                     let ids = manager.wallet_ids().await.into_iter().map(WalletId);
                     (ids.collect(), Job::Unlock)
                 }
-                PlatformSignal::WalletAdded(id) | PlatformSignal::Readmit(id)
+                PlatformSignal::WalletAdded(id)
+                | PlatformSignal::Readmit(id)
+                | PlatformSignal::RetryStartup(id)
                     if admitted.get(&id).is_some_and(|&pass| at < pass) =>
                 {
                     continue;
@@ -322,6 +330,17 @@ impl NetworkSession {
                 // Not after a rollback removed it.
                 PlatformSignal::Readmit(id) if manager.get_wallet(&id.0).await.is_none() => {
                     continue;
+                }
+                // Not once a bring-up since (an unlock's) has answered.
+                PlatformSignal::RetryStartup(id)
+                    if !this.platform.awaits_rerun(&id)
+                        || manager.get_wallet(&id.0).await.is_none() =>
+                {
+                    continue;
+                }
+                PlatformSignal::RetryStartup(id) => {
+                    admitted.insert(id, this.platform.stamp());
+                    (vec![id], Job::Retry)
                 }
                 PlatformSignal::WalletAdded(id) | PlatformSignal::Readmit(id) => {
                     admitted.insert(id, this.platform.stamp());
@@ -416,7 +435,8 @@ impl NetworkSession {
             let (this, manager) = (Arc::clone(self), Arc::clone(manager));
             let task = set.spawn(async move {
                 match job {
-                    Job::BringUp => this.bring_up_wallet(&manager, id, since).await,
+                    Job::BringUp => this.bring_up_wallet(&manager, id, since, false).await,
+                    Job::Retry => this.bring_up_wallet(&manager, id, since, true).await,
                     Job::Unlock => this.after_unlock(&manager, id).await,
                     Job::Names => this.names_pass(&manager, id).await,
                     Job::Contests => {
@@ -454,7 +474,7 @@ impl NetworkSession {
                         tracing::warn!(wallet_id = %id, error = %e, "a wallet's Platform task panicked");
                         // A names or contest pass leaves the bring-up's
                         // answer standing.
-                        if matches!(job, Job::BringUp | Job::Unlock)
+                        if matches!(job, Job::BringUp | Job::Retry | Job::Unlock)
                             && let Some(entry) = self.platform.write_startup().get_mut(&id)
                         {
                             entry.startup = StartupStatus::NotRun;
@@ -473,7 +493,18 @@ impl NetworkSession {
     /// one that Platform proved recently has no identity and has none on
     /// file. Its budget, counted from `since`, bounds all of it, the reads
     /// and the key acquisition included (review r1 M3).
-    async fn bring_up_wallet(self: &Arc<Self>, manager: &Manager, id: WalletId, since: Instant) {
+    ///
+    /// `rerun`: a flow held on the last outcome asked for it. Nothing waits
+    /// for SPV then, so it gets the library's budget even for a wallet
+    /// created here, and it runs whatever Platform proved before: the flow
+    /// needs this session's answer.
+    async fn bring_up_wallet(
+        self: &Arc<Self>,
+        manager: &Manager,
+        id: WalletId,
+        since: Instant,
+        rerun: bool,
+    ) {
         match self
             .platform
             .admit(&id, || self.vault.has_wallet_secret(&id.0))
@@ -489,23 +520,27 @@ impl NetworkSession {
             Some(true) => {}
         }
         self.note_first_bring_up(id).await;
-        // The budget is known once the markers are read; the shorter one
-        // bounds reading them.
+        // The budget is known once the markers are read (a rerun's at
+        // once); until then the shorter one bounds reading them.
         let prelude = async {
             (
                 local_identity(manager, id).await,
                 self.bring_up_markers(id).await,
             )
         };
+        let first_budget = if rerun {
+            DEFAULT_STARTUP_BUDGET
+        } else {
+            CREATED_HERE_BUDGET
+        };
         let Ok((identity, (created_here, no_identity))) =
-            tokio::time::timeout_at((since + CREATED_HERE_BUDGET).into(), prelude).await
+            tokio::time::timeout_at((since + first_budget).into(), prelude).await
         else {
             let startup = DashPayStartup::new(StartupStatus::PartialNoIdentity, false);
-            self.finish_bring_up(id, startup, since, CREATED_HERE_BUDGET)
-                .await;
+            self.finish_bring_up(id, startup, since, first_budget).await;
             return;
         };
-        if identity.is_none() && no_identity {
+        if identity.is_none() && no_identity && !rerun {
             self.platform
                 .record(id, DashPayStartup::new(StartupStatus::NotRun, false));
             return;
@@ -514,7 +549,7 @@ impl NetworkSession {
         // whose first pass finds what happened before.
         let restore = identity.is_none() && !created_here;
         self.platform.set_status(id, StartupStatus::Starting);
-        let budget = if created_here {
+        let budget = if created_here && !rerun {
             CREATED_HERE_BUDGET
         } else {
             DEFAULT_STARTUP_BUDGET
@@ -746,7 +781,8 @@ impl NetworkSession {
             .startup_of(&id)
             .is_some_and(|s| s.startup == StartupStatus::IdentityUnsettled);
         if unsettled {
-            self.bring_up_wallet(manager, id, Instant::now()).await;
+            self.bring_up_wallet(manager, id, Instant::now(), false)
+                .await;
         } else {
             self.drain_contact_crypto(manager, id).await;
         }

@@ -61,6 +61,22 @@ impl StartupStatus {
                 | Self::IdentityScanIncomplete
         )
     }
+
+    /// An outcome that left the seed's identity indexes unanswered and that
+    /// nothing in the session runs again by itself (an unlock settles
+    /// `IdentityUnsettled`): a flow held on it asks for the bring-up again
+    /// (`PlatformRuntime::retry_startup`). `NotRun` is one too: a bring-up
+    /// skipped on Platform's earlier proof of no identity answers nothing
+    /// for a funding (§3.4 Restore rule 1).
+    pub(crate) fn awaits_rerun(self) -> bool {
+        matches!(
+            self,
+            Self::NotRun
+                | Self::PartialNoIdentity
+                | Self::DiscoveryFailed
+                | Self::IdentityScanIncomplete
+        )
+    }
 }
 
 /// One wallet's last bring-up (`NetworkSession::dashpay_startup`).
