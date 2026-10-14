@@ -65,19 +65,25 @@ export function ConfirmSheet({
     const t = window.setInterval(() => (Date.now() >= retryAt ? setRetryAt(null) : tick((n) => n + 1)), 250);
     return () => window.clearInterval(t);
   }, [retryAt]);
-  // A wait left by earlier attempts (a cancelled sheet, the lock screen) holds Send from the start.
+  // A wait left by earlier attempts (a cancelled sheet, the lock screen) holds Send from the start:
+  // Send waits for this read, and stays off if it fails (Sol r2).
+  const [waitKnown, setWaitKnown] = useState(false);
   useEffect(() => {
     let live = true;
     b.lockStatus().then(
       ({ retryAfterSecs: secs }) => {
-        if (live && secs) setRetryAt((at) => at ?? Date.now() + secs * 1000);
+        if (!live) return;
+        if (secs) setRetryAt((at) => at ?? Date.now() + secs * 1000);
+        setWaitKnown(true);
       },
-      () => null,
+      (e) => {
+        if (live) setError(failureText(e, chain));
+      },
     );
     return () => {
       live = false;
     };
-  }, [b]);
+  }, [b, chain]);
   const waitSecs = retryAt === null ? 0 : Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));
   const fieldId = useId();
   const unit = network.unitName;
@@ -99,7 +105,7 @@ export function ConfirmSheet({
   }, [busy, error]);
 
   const send = async () => {
-    if (busy || !policyKnown || retryAt !== null) return;
+    if (busy || !policyKnown || !waitKnown || retryAt !== null) return;
     if (prompt === "passphrase" && passphrase === "") {
       setError("Enter your passphrase to send this payment.");
       return;
@@ -222,7 +228,7 @@ export function ConfirmSheet({
           <DashButton ref={cancel} variant="tintedGray" size="large" data-testid="pay-confirm-cancel" disabled={busy} onClick={onCancel}>
             Cancel
           </DashButton>
-          <DashButton type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || retryAt !== null}>
+          <DashButton type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null}>
             {busy ? "Sending…" : "Send"}
           </DashButton>
         </div>

@@ -178,6 +178,38 @@ test.describe("Pay", () => {
     await expect(page.getByTestId("pay-result-sent")).toBeVisible();
   });
 
+  test("Send waits for the sheet's own read of the vault's wait (Sol r2)", async ({ page }) => {
+    await open(page);
+    await fillPayment(page, PAYEE, "0.5");
+    // A wait the vault reports, and its answer late.
+    await world(page, (w) => (w.throttledUntil = Date.now() + 4_000));
+    await page.evaluate(() => {
+      (window as unknown as { release: () => void }).release = window.__dwFixture!.hold("lock_status");
+    });
+    await review(page);
+    await page.getByTestId("pay-confirm-passphrase").fill("demo");
+    await expect(page.getByTestId("pay-confirm-send")).toBeDisabled();
+    await expect(page.getByTestId("pay-confirm-wait")).toHaveCount(0);
+    await page.getByTestId("pay-confirm-passphrase").press("Enter");
+    expect(await world(page, (w) => w.grants.length)).toBe(0);
+    await page.evaluate(() => (window as unknown as { release: () => void }).release());
+    await expect(page.getByTestId("pay-confirm-wait")).toHaveText(/^Too many attempts\. Try again in [1-4] s\.$/);
+    await expect(page.getByTestId("pay-confirm-send")).toBeDisabled();
+    await expect(page.getByTestId("pay-confirm-send")).toBeEnabled({ timeout: 10_000 });
+  });
+
+  test("a failed read of the vault's wait keeps Send off and says so", async ({ page }) => {
+    await open(page);
+    await fillPayment(page, PAYEE, "0.5");
+    await page.evaluate(() => window.__dwFixture!.fail("lock_status", "none"));
+    await review(page);
+    await expect(page.getByTestId("pay-confirm-error")).not.toBeEmpty();
+    await page.getByTestId("pay-confirm-passphrase").fill("demo");
+    await expect(page.getByTestId("pay-confirm-send")).toBeDisabled();
+    await page.getByTestId("pay-confirm-passphrase").press("Enter");
+    expect(await world(page, (w) => w.grants.length)).toBe(0);
+  });
+
   test("with the payment setting off, the unlocked vault signs and Cancel has the focus", async ({ page }) => {
     await open(page);
     await world(page, (w) => (w.paymentAuth = false));
