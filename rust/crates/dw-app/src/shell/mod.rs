@@ -199,10 +199,27 @@ impl Shell {
     /// Queues the arguments that are links (`args` may hold others: a
     /// forwarded command line does) and returns how many were queued.
     pub fn queue(&self, args: impl IntoIterator<Item = String>, source: LinkSource) -> usize {
+        self.queue_from(args, source, cfg!(windows))
+    }
+
+    /// [`Shell::queue`]. `windows_shell`: a launch's links came through the
+    /// Windows shell, which adds a `/` to some ([`links::without_shell_slash`]).
+    fn queue_from(
+        &self,
+        args: impl IntoIterator<Item = String>,
+        source: LinkSource,
+        windows_shell: bool,
+    ) -> usize {
         let mut queued = 0;
         for arg in args {
             let Some(scheme) = link_scheme(&arg) else {
                 continue;
+            };
+            let arg = match source {
+                LinkSource::Launch | LinkSource::Forwarded if windows_shell => {
+                    links::without_shell_slash(arg)
+                }
+                _ => arg,
             };
             if self.inbox.deliver(arg) {
                 queued += 1;

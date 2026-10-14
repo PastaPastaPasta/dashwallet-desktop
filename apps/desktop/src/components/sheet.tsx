@@ -3,8 +3,33 @@
 // element marked `data-autofocus`, else on the first focusable one (the close button), and again
 // whenever `focusKey` changes (a sheet with steps). `closable={false}` holds the sheet open while
 // something it must report back is running.
+//
+// A sheet opened from inside the shell (Pay, Receive) renders into App's sheet layer, above the
+// shell and below the lock screen, and the shell goes inert while it is open (U-03 D22).
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+
+/** App's layer for sheets opened inside the shell; `null` renders a sheet in place. */
+export const SheetLayer = createContext<HTMLElement | null>(null);
+
+let layered = 0;
+const watchers = new Set<() => void>();
+function hold(by: number) {
+  layered += by;
+  for (const w of watchers) w();
+}
+
+/** Whether a sheet is open in the layer: the shell behind it takes no focus. */
+export function useLayeredSheet(): boolean {
+  return useSyncExternalStore(
+    (w) => {
+      watchers.add(w);
+      return () => void watchers.delete(w);
+    },
+    () => layered > 0,
+  );
+}
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select, textarea, summary, [tabindex]:not([tabindex="-1"])';
 
@@ -19,6 +44,7 @@ export function Sheet({
   testId,
   focusKey,
   closable = true,
+  returnFocus,
   children,
 }: {
   title: string;
@@ -27,13 +53,34 @@ export function Sheet({
   testId: string;
   focusKey?: string;
   closable?: boolean;
+  /** Where focus goes on close, instead of the element focused at open (gone, or `<body>`
+   * when one sheet replaced another). */
+  returnFocus?: () => HTMLElement | null;
   children: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement>(null);
-  // The opener first: the effect below moves focus away from it.
+  const layer = useContext(SheetLayer);
   useEffect(() => {
+    if (!layer) return;
+    hold(1);
+    return () => hold(-1);
+  }, [layer]);
+  useEffect(() => {
+    // The opener first: the effect below moves focus away from it.
     const opener = document.activeElement as HTMLElement | null;
-    return () => opener?.focus?.();
+    return () => {
+      const back = () => {
+        const to = returnFocus?.() ?? opener;
+        if (to?.isConnected) to.focus();
+      };
+      if (!layer) return back();
+      // In the layer the shell is still inert now, so focusing into it would do nothing: once it is
+      // not, return focus if it was lost (not if another sheet took it).
+      requestAnimationFrame(() => {
+        if (!document.activeElement || document.activeElement === document.body) back();
+      });
+    };
+    // The opener and the return target are read when the sheet opens and closes.
   }, []);
   useEffect(() => focusStart(panel.current), [focusKey]);
 
@@ -57,7 +104,7 @@ export function Sheet({
     }
   };
 
-  return (
+  const sheet = (
     <div className="sheet-scrim" onMouseDown={(e) => closable && e.target === e.currentTarget && onClose()}>
       <div
         ref={panel}
@@ -85,4 +132,5 @@ export function Sheet({
       </div>
     </div>
   );
+  return layer ? createPortal(sheet, layer) : sheet;
 }

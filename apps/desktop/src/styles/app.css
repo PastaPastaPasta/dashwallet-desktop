@@ -569,9 +569,48 @@ button {
   font-weight: var(--dw-type-footnote-medium-weight);
 }
 
+.dash-button-filledBlue {
+  /* Not buttonFilledBlueBackground: white text takes the AA accent (UX-SPEC §2.1a), as the
+   * sidebar's selection does. */
+  background: var(--dw-role-accent);
+  color: var(--dw-role-text-on-hero);
+}
 
+.dash-button-filledBlue:disabled {
+  background: var(--dw-c-button-filled-blue-background-disabled);
+  color: var(--dw-c-button-filled-blue-content-disabled);
+}
 
+.dash-button-tintedBlue {
+  background: var(--dw-c-button-tinted-blue-background);
+  /* As plainBlue: blue text takes the AA link colour (UX-SPEC §2.1a). */
+  color: var(--dw-role-text-link);
+}
 
+.dash-button-tintedBlue:disabled {
+  background: var(--dw-c-button-tinted-blue-background-disabled);
+  color: var(--dw-c-button-tinted-blue-content-disabled);
+}
+
+.dash-button-tintedGray {
+  background: var(--dw-c-button-tinted-gray-background);
+  color: var(--dw-c-button-tinted-gray-content);
+}
+
+.dash-button-tintedGray:disabled {
+  background: var(--dw-c-button-tinted-gray-background-disabled);
+  color: var(--dw-c-button-tinted-gray-content-disabled);
+}
+
+.dash-button-plainRed {
+  background: transparent;
+  color: var(--dw-role-danger);
+}
+
+.dash-button-plainBlue:disabled,
+.dash-button-plainRed:disabled {
+  color: var(--dw-role-plain-content-disabled);
+}
 
 .dash-button-plainBlue {
   background: transparent;
@@ -587,17 +626,6 @@ button {
 .dash-button-filledWhiteBlue:disabled {
   background: var(--dw-c-button-filled-white-background-disabled);
   color: var(--dw-c-button-filled-white-content-disabled);
-}
-
-.dash-button-filledBlue {
-  /* Not buttonFilledBlueBackground: white text takes the AA accent fill (UX-SPEC §2.1a). */
-  background: var(--dw-role-accent);
-  color: var(--dw-c-button-filled-blue-content);
-}
-
-.dash-button-filledBlue:disabled {
-  background: var(--dw-c-button-filled-blue-background-disabled);
-  color: var(--dw-c-button-filled-blue-content-disabled);
 }
 
 .dash-button-plainWhite {
@@ -763,8 +791,16 @@ button {
   transition: background-color var(--dw-motion-hover);
 }
 
-.shortcut-item:hover {
+.shortcut-item:hover:not([aria-disabled="true"]) {
   background: var(--dw-role-accent-tint);
+}
+
+.shortcut-item[aria-disabled="true"] {
+  color: var(--dw-role-text-secondary);
+}
+
+.shortcut-item[aria-disabled="true"] .shortcut-icon {
+  opacity: 0.5;
 }
 
 .shortcut-icon {
@@ -1256,6 +1292,532 @@ button {
   overflow-wrap: anywhere;
 }
 
+/* ------------------------------------------------------------------ forms and tables (U-03) */
+
+.form-field input[aria-invalid="true"] {
+  border-color: var(--dw-role-danger);
+}
+
+.form-field select,
+.filter-select select,
+.inline-field select,
+.inline-field-column input,
+.filter-amount,
+.label-editor input {
+  padding: var(--dw-space-xs) var(--dw-space-sm);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.field-error,
+.field-hint {
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.field-error {
+  color: var(--dw-role-danger);
+}
+
+.field-hint,
+.text-secondary {
+  color: var(--dw-role-text-secondary);
+}
+
+.checkbox-row,
+.radio-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.checkbox-row input,
+.radio-row input {
+  margin: 0;
+  accent-color: var(--dw-role-accent);
+}
+
+.radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.radio-group legend {
+  margin-bottom: var(--dw-space-xs);
+  padding: 0;
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.inline-field,
+.inline-field-column {
+  display: flex;
+  gap: var(--dw-space-s);
+  margin-left: calc(13px + var(--dw-space-s)); /* under the radio's label */
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.inline-field {
+  align-items: center;
+}
+
+.inline-field-column {
+  flex-direction: column;
+  max-width: 320px;
+}
+
+.inline-field-column .inline-field {
+  margin-left: 0;
+}
+
+.table-card {
+  overflow-x: auto;
+  border-radius: var(--dw-radius-card);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.data-table th {
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-bottom: 1px solid var(--dw-role-separator);
+  color: var(--dw-role-text-secondary);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: var(--dw-space-s) var(--dw-space-m);
+  vertical-align: middle;
+}
+
+.data-table tbody tr + tr td {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.data-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.row-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.card-title {
+  margin: 0;
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.card-actions,
+.sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+}
+
+.sheet-actions {
+  justify-content: flex-end;
+}
+
+.sheet-actions .dash-button {
+  flex: 1 1 0;
+}
+
+.address-full {
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* ------------------------------------------------------------------ pay (§4.7) */
+
+.pay-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.amount-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.amount-entry input {
+  flex: 1;
+  min-width: 0;
+}
+
+.coin-control-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-l);
+  padding: 0 var(--dw-layout-card-padding) var(--dw-layout-card-padding);
+}
+
+.coin-table {
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.coin-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--dw-space-xs) var(--dw-space-m);
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.coin-summary dt {
+  color: var(--dw-role-text-secondary);
+}
+
+.coin-summary dd {
+  margin: 0;
+}
+
+.change-choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+.pay-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+}
+
+.pay-footer-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.pay-footer-text .form-problem {
+  margin: 0;
+}
+
+.pay-fee-line {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.confirm,
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-l);
+}
+
+.confirm-summary,
+.result {
+  align-items: center;
+  text-align: center;
+}
+
+.confirm-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+}
+
+.confirm-amount,
+.result-amount {
+  font-size: var(--dw-type-title1-size);
+  font-weight: var(--dw-type-title1-weight);
+  line-height: var(--dw-type-title1-line);
+}
+
+.confirm-question,
+.result-text {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.confirm-label {
+  display: block;
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.confirm .form-problem {
+  margin: 0;
+}
+
+.result {
+  gap: var(--dw-space-s);
+}
+
+.result-sent svg {
+  color: var(--dw-role-success);
+}
+
+.result-unknown svg {
+  color: var(--dw-role-warning);
+}
+
+.result-failed svg {
+  color: var(--dw-role-danger);
+}
+
+.result-failed .result-text {
+  color: var(--dw-role-text-primary);
+}
+
+/* ------------------------------------------------------------------ receive (§4.8) */
+
+.receive-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--dw-space-l);
+  margin-bottom: var(--dw-layout-section-gap);
+}
+
+.receive-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.receive-card .qr,
+.receive-card .qr-placeholder,
+.receive-card .qr-problem {
+  align-self: center;
+}
+
+.request-form .placeholder-note,
+.receive-card .form-problem {
+  margin: 0;
+}
+
+.request-form .card-actions {
+  justify-content: flex-end;
+}
+
+/* Scanners need dark modules on a light ground: the code keeps it in dark appearance too. */
+.qr {
+  display: block;
+  border-radius: var(--dw-radius-small);
+}
+
+.qr-light {
+  fill: var(--dw-c-white);
+}
+
+.qr-dark {
+  fill: var(--dw-c-black);
+}
+
+.qr-placeholder {
+  border-radius: var(--dw-radius-small);
+  background: var(--dw-role-field-fill);
+}
+
+.qr-problem {
+  max-width: 280px;
+  margin: 0;
+  color: var(--dw-role-danger);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  text-align: center;
+}
+
+.request-qr {
+  display: flex;
+  justify-content: center;
+}
+
+.requests .history-title {
+  margin-bottom: var(--dw-space-m);
+}
+
+/* ------------------------------------------------------------------ activity table (§4.9, U-03 D13) */
+
+.top-intro-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+}
+
+.segmented {
+  display: flex;
+  gap: var(--dw-space-xxxs);
+  padding: var(--dw-space-xxxs);
+  border-radius: var(--dw-radius-switcher);
+  background: var(--dw-role-neutral-tint);
+}
+
+.segment {
+  padding: var(--dw-space-xxs) var(--dw-space-m);
+  border: 0;
+  border-radius: var(--dw-radius-switcher);
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+  cursor: default;
+}
+
+.segment[aria-pressed="true"] {
+  background: var(--dw-role-card);
+  box-shadow: var(--dw-shadow-card);
+}
+
+.tx-filter-row {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-m);
+}
+
+.filter-select {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.filter-amount {
+  width: 110px;
+}
+
+.filter-amount[aria-invalid="true"] {
+  border-color: var(--dw-role-danger);
+}
+
+.page-transactions.is-table .page-column {
+  max-width: none;
+}
+
+.tx-table-status {
+  width: 1px;
+}
+
+.tx-table td.is-problem {
+  color: var(--dw-role-danger);
+}
+
+.tx-table-party {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sort-button,
+.table-open {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: default;
+}
+
+.sort-button {
+  display: inline-flex;
+  gap: var(--dw-space-xxs);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.num .sort-button {
+  flex-direction: row-reverse;
+}
+
+.sort-mark {
+  color: var(--dw-role-text-link);
+}
+
+.table-open {
+  color: var(--dw-role-text-link);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.table-open:hover {
+  text-decoration: underline;
+}
+
+/* ------------------------------------------------------------------ detail actions (QT-105) */
+
+.label-editor,
+.tx-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  padding: var(--dw-space-m) var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.label-editor label {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.label-editor-row,
+.tx-actions-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.label-editor-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.tx-actions-question {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.tx-actions .form-problem,
+.tx-actions .placeholder-note {
+  margin: 0;
+}
+
 /* ------------------------------------------------------------------ lock screen (§4.4) */
 
 .lock-screen {
@@ -1742,12 +2304,6 @@ button {
 
 .choice-row:hover {
   background: var(--dw-role-accent-tint);
-}
-
-.sheet-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--dw-space-s);
 }
 
 .settings-card {

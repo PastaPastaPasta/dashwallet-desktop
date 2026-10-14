@@ -1,16 +1,18 @@
-import { createContext, useContext, useEffect, useRef } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { errorMessage } from "../api/backend";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { useBackend, useDashPayShell, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { EmptyState, LoadingState } from "../components/history";
+import { SheetLayer, useLayeredSheet } from "../components/sheet";
 import { chipState, Sidebar, StatusBar, Toolbar } from "../components/shell";
 import { showToast, ToastHost } from "../components/toast";
 import { ForgotPassphraseSheet } from "../screens/ForgotPassphrase";
 import { LockScreen, UnlockSheet } from "../screens/LockScreen";
 import { Onboarding } from "../screens/Onboarding";
 import { Overview } from "../screens/Overview";
+import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
 import { ContactsPage, PayPage, Placeholder, ToolsPage } from "../screens/Routes";
 import { SettingsPage } from "../screens/Settings";
@@ -122,7 +124,7 @@ function Shell() {
   };
 
   let content;
-  if (route === "home" || route === "activity") {
+  if (route === "home" || route === "activity" || route === "pay" || route === "receive") {
     if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
     else if (wallets.isError)
       content = (
@@ -140,10 +142,13 @@ function Shell() {
           </div>
         </main>
       );
-    else if (route === "home") content = <Overview walletId={wallet.walletId} network={network} onOpen={open} />;
-    else content = <Transactions walletId={wallet.walletId} network={network} onOpen={open} />;
-  } else if (route === "pay") content = <PayPage />;
-  else if (route === "contacts") content = <ContactsPage />;
+    // Wallet pages start over for another wallet: no address, filter or form state of the last one
+    // survives a switch (U-03 D24). Pay keys its form inside (Routes.tsx).
+    else if (route === "home") content = <Overview key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
+    else if (route === "pay") content = <PayPage walletId={wallet.walletId} network={network} />;
+    else if (route === "receive") content = <ReceivePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
+    else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
+  } else if (route === "contacts") content = <ContactsPage />;
   else if (route === "tools") content = <ToolsPage />;
   else if (route === "settings") content = <SettingsPage />;
   else content = <Placeholder route={route} />;
@@ -151,15 +156,18 @@ function Shell() {
   // A contested username still has its identity: Contacts, not Join DashPay (D11).
   const joined = !(dashpay.status?.kind === "noIdentity" || dashpay.status?.kind === "registering");
   const sheet = !!(detail && wallet && !locked);
+  const layered = useLayeredSheet();
+  const [layer, setLayer] = useState<HTMLDivElement | null>(null);
   // A dialog asked for while locked, onboarding, or behind a sheet is dropped, not kept for later.
-  const shown = locked || onboarding || sheet ? null : dialog;
+  const shown = locked || onboarding || sheet || layered ? null : dialog;
   useEffect(() => {
     if (dialog !== shown) ui.set({ dialog: null });
   }, [dialog, shown]);
   return (
     <>
       {/* Behind a sheet or the lock screen the shell takes no focus and is hidden from assistive tech. */}
-      <div className="app-chrome" inert={locked || onboarding || forgot || sheet || shown !== null}>
+      <div className="app-chrome" inert={locked || onboarding || forgot || sheet || layered || shown !== null}>
+        <SheetLayer.Provider value={layer}>
         <Toolbar
           wallets={wallets.data ?? []}
           wallet={wallet}
@@ -179,8 +187,12 @@ function Shell() {
           hd={wallet?.hd ?? false}
           onUnlock={() => ui.set({ dialog: "unlock" })}
         />
+        </SheetLayer.Provider>
       </div>
-      {sheet && <TxDetailSheet walletId={wallet!.walletId} txid={detail!} network={network} />}
+      {/* Sheets opened inside the shell (Pay, Receive): above it, below onboarding and the lock
+          screen, which cover it (U-02 D31). */}
+      <div className="sheet-layer" ref={setLayer} inert={locked || onboarding} />
+      {sheet && <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />}
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
       {shown === "about" && <AboutSheet launch={launch} />}
       {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={wallet?.walletId ?? null} onClose={closeDialog} />}

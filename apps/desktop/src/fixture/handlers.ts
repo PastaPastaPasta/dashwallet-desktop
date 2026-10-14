@@ -12,8 +12,7 @@
 // installs the key ends the vault's epoch, so every live lease needs a grant again, its key
 // dropped; a vault-grant write runs under a one-shot lease that `leases` lists, ended. Not
 // modelled: grant expiry and lease idle reaping (the clock is FIXTURE_NOW), quick unlock's
-// spending limit and passphrase age, "authenticate every payment" (`vault.credential_required`),
-// held identity keys (`identity.keys_missing`), and the lock report, which is the scenario's
+// spending limit and passphrase age, held identity keys (`identity.keys_missing`), and the lock report, which is the scenario's
 // (`World.cut`), not derived from the leases.
 
 import type { AppError, AppEvent, CommandArgs, CommandName, CommandResults } from "../api/generated/commands";
@@ -30,6 +29,7 @@ import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
 import { eventOf, sectionOf, type DashPayWorld } from "./dashpay";
 import { routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
+import { sendHandlers } from "./send";
 import { emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
 import { BASE58, FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
@@ -39,7 +39,7 @@ export interface Ctx {
   emit(event: AppEvent): void;
 }
 
-type Handlers = { [K in CommandName]?: (args: CommandArgs[K], ctx: Ctx) => CommandResults[K] };
+export type Handlers = { [K in CommandName]?: (args: CommandArgs[K], ctx: Ctx) => CommandResults[K] };
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
 
@@ -101,20 +101,26 @@ function leaseKey(id: string): string | null {
   return /^lease-[0-9a-f]{32}$/i.test(id) ? id.toLowerCase() : null;
 }
 
-/** dw-vault's credential check of `authorize` (the "every payment needs authentication"
- * setting is not modelled: no credential is ever required beyond these). */
-function checkCredential(w: World, credential: CredentialSpec) {
+/** dw-vault's credential check of `authorize`. While "Require authentication for every payment"
+ * is on (E0-13 D11), a `spend` grant of an encrypted vault needs a real credential: the
+ * unlocked vault's own (`unencrypted`) is `vault.credential_required`. */
+function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
   if (w.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
+  // E0-13 D11 (`check_payment_auth`): a locked vault answers `vault.locked` below instead.
+  const pays = purposes.some((p) => p.kind === "spend" || p.kind === "platformOp");
+  if (credential.kind === "unencrypted" && w.lock.encrypted && w.lock.state !== "locked" && w.paymentAuth && pays)
+    throw fail("vault.credential_required", "every payment needs authentication");
   switch (credential.kind) {
     case "passphrase": {
       if (credential.passphrase !== w.passphrase) {
         // As `unlock` counts a wrong passphrase.
         const failedAttempts = w.lock.failedAttempts + 1;
         w.lock = { ...w.lock, failedAttempts };
+        if (w.throttleSecs) w.throttledUntil = Date.now() + w.throttleSecs * 1000;
         throw fail("vault.wrong_passphrase", `wrong passphrase (${failedAttempts} failed)`, {
           kind: "wrongPassphrase",
           failedAttempts,
-          retryAfterSecs: null,
+          retryAfterSecs: w.throttleSecs,
         });
       }
       w.lock = { ...w.lock, failedAttempts: 0 };
@@ -137,7 +143,7 @@ function authorizeSet(w: World, purposes: GrantPurposeSpec[], walletId: string |
   if (purposes.length === 0) throw fail("invalid_argument", "no grant purpose");
   const unbound = purposes.find((p) => (p.kind !== "changeCredential") !== (walletId !== null));
   if (unbound) throw fail("invalid_argument", `a ${unbound.kind} grant ${walletId === null ? "needs a wallet id" : "is not bound to a wallet"}`);
-  checkCredential(w, credential);
+  checkCredential(w, credential, purposes);
   const expiresAt = secs(FIXTURE_NOW) + GRANT_TTL_SECS;
   const ownKey = keyless(w);
   return purposes.map((purpose) => {
@@ -363,6 +369,13 @@ function importWallet(ctx: Ctx, phrase: string, name: string | null): string {
 }
 
 export const HANDLERS: Handlers = {
+  // Pay and Receive (U-03): send.ts.
+  ...sendHandlers({
+    wallet,
+    spendGrant: (w, id, walletId) => checkGrant(w, id, walletId, ["spend"]),
+    useGrant,
+  }),
+
   // App and network
   launch_info: (_, { world }) => world.launch,
   recent_notices: (_, { world }) => world.notices,
@@ -370,7 +383,12 @@ export const HANDLERS: Handlers = {
   active_network: (_, { world }) => world.launch.network,
 
   // Vault, leases and the lock report (E0-04, E0-13 D3)
-  lock_status: (_, { world }) => world.lock,
+  // The vault's status counts its wait down (dw-vault `retry_after`) when a scenario sets one
+  // (U-03); a wrong passphrase reports its own wait (U-02).
+  lock_status: (_, { world }) => {
+    const left = (world.throttledUntil ?? 0) - Date.now();
+    return left > 0 ? { ...world.lock, retryAfterSecs: Math.ceil(left / 1000) } : world.lock;
+  },
   unlock: ({ passphrase }, ctx) => unlock(ctx, passphrase, "unlocked"),
   unlock_mixing_only: ({ passphrase }, ctx) => unlock(ctx, passphrase, "unlockedMixingOnly"),
   lock: (_, ctx) => {

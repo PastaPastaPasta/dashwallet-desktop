@@ -31,9 +31,9 @@ export const XSS_PAYLOADS = {
   contact: `"><svg onload="window.__xss='contact'">`,
 };
 
-const TIP = 1_352_000;
+export const TIP = 1_352_000;
 
-function prng(seed: number) {
+export function prng(seed: number) {
   let s = seed >>> 0;
   return () => {
     s = (s + 0x6d2b79f5) >>> 0;
@@ -46,7 +46,7 @@ function prng(seed: number) {
 
 export const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-function makeIds(rand: () => number) {
+export function makeIds(rand: () => number) {
   const hex = (n: number) => Array.from({ length: n }, () => "0123456789abcdef"[Math.floor(rand() * 16)]).join("");
   const address = () => "y" + Array.from({ length: 33 }, () => BASE58[Math.floor(rand() * 58)]).join("");
   return { hex, address };

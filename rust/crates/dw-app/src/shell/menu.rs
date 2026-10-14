@@ -231,120 +231,200 @@ pub(super) fn menu_item<R: Runtime, M: Manager<R>>(
     b.build(manager)
 }
 
+/// One entry of a menu in the bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entry {
+    /// A row of [`ITEMS`], by id.
+    Item(&'static str),
+    /// A row of [`ITEMS`] shown as a check item (Discreet Mode).
+    Check(&'static str),
+    Separator,
+    /// One of the platform's predefined items.
+    Native(Native),
+}
+
+/// The predefined items the bar uses. There is no About: ours is the
+/// `help.about` row on every OS, since the predefined one opens the native
+/// panel without a menu event, bypassing the renderer's dialog and its
+/// rules (D20: none while locked or behind a sheet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Native {
+    Services,
+    Hide,
+    HideOthers,
+    ShowAll,
+    Quit,
+    Fullscreen,
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+    Minimize,
+    Maximize,
+    BringAllToFront,
+}
+
+/// The menu bar as data, in the macOS layout when `mac`: each menu's title
+/// and entries. Tests read it; [`layout`] makes the native menus from it
+/// (native menus can be made on the main thread only, which a test is not
+/// on macOS).
+fn bar(mac: bool) -> Vec<(&'static str, Vec<Entry>)> {
+    use Entry::{Check, Item, Native as N, Separator};
+    use Native::*;
+    let mut menus = Vec::new();
+    if mac {
+        menus.push((
+            "Dash Wallet",
+            vec![
+                Item("help.about"),
+                Separator,
+                Item("wallet.settings"),
+                Separator,
+                N(Services),
+                Separator,
+                N(Hide),
+                N(HideOthers),
+                N(ShowAll),
+                Separator,
+                N(Quit),
+            ],
+        ));
+    }
+    let mut file = vec![
+        Item("file.open-uri"),
+        Separator,
+        Item("file.sign-verify"),
+        Item("file.psbt"),
+    ];
+    if !mac {
+        file.extend([Separator, Item("file.exit")]);
+    }
+    menus.push(("File", file));
+    if mac {
+        menus.push((
+            "Edit",
+            vec![
+                N(Undo),
+                N(Redo),
+                Separator,
+                N(Cut),
+                N(Copy),
+                N(Paste),
+                N(SelectAll),
+            ],
+        ));
+    }
+    let mut view = vec![
+        Item("view.home"),
+        Item("view.pay"),
+        Item("view.receive"),
+        Item("view.contacts"),
+        Item("view.activity"),
+        Item("view.coinjoin"),
+        Separator,
+        Item("view.notifications"),
+        Item("view.profile"),
+    ];
+    if mac {
+        view.extend([Separator, N(Fullscreen)]);
+    }
+    menus.push(("View", view));
+    let mut wallet = vec![
+        Item("wallet.lock"),
+        Check("wallet.discreet"),
+        Separator,
+        Item("wallet.add"),
+        Item("wallet.recovery-phrase"),
+    ];
+    if !mac {
+        wallet.extend([Separator, Item("wallet.settings")]);
+    }
+    menus.push(("Wallet", wallet));
+    menus.push((
+        "Tools",
+        vec![
+            Item("tools.information"),
+            Item("tools.console"),
+            Item("tools.peers"),
+            Item("tools.repair"),
+            Separator,
+            Item("tools.address-book"),
+            Item("tools.coin-selection"),
+        ],
+    ));
+    if mac {
+        menus.push((
+            "Window",
+            vec![N(Minimize), N(Maximize), Separator, N(BringAllToFront)],
+        ));
+    } else {
+        menus.push(("Help", vec![Item("help.about")]));
+    }
+    menus
+}
+
 /// The menu bar. Wallet ▸ Lock and Discreet Mode follow the renderer
 /// (`shell_sync`).
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     layout(app, cfg!(target_os = "macos"))
 }
 
-/// The menu bar of [`build`], in the macOS layout when `mac`.
+/// The native menus of [`bar`].
 fn layout<R: Runtime>(app: &AppHandle<R>, mac: bool) -> tauri::Result<Menu<R>> {
-    let it = |id| menu_item(app, id);
-
-    let lock = it("wallet.lock")?;
-    lock.set_enabled(false)?;
-    let discreet_row = row("wallet.discreet");
-    let discreet: CheckMenuItem<R> =
-        CheckMenuItemBuilder::with_id(discreet_row.id, discreet_row.label)
-            .checked(false)
-            .accelerator(discreet_row.accelerator.unwrap_or_default())
-            .build(app)?;
-    if let Some(shell) = super::shell(app) {
-        let (lock, discreet) = (lock.clone(), discreet.clone());
+    let menu = Menu::new(app)?;
+    let (mut lock, mut discreet) = (None, None);
+    for (title, entries) in bar(mac) {
+        let mut sub = SubmenuBuilder::new(app, title);
+        for entry in entries {
+            sub = match entry {
+                Entry::Item(id) => {
+                    let item = menu_item(app, id)?;
+                    if id == "wallet.lock" {
+                        // Enabled once the renderer says it can lock.
+                        item.set_enabled(false)?;
+                        lock = Some(item.clone());
+                    }
+                    sub.item(&item)
+                }
+                Entry::Check(id) => {
+                    let r = row(id);
+                    let item: CheckMenuItem<R> = CheckMenuItemBuilder::with_id(r.id, r.label)
+                        .checked(false)
+                        .accelerator(r.accelerator.unwrap_or_default())
+                        .build(app)?;
+                    discreet = Some(item.clone());
+                    sub.item(&item)
+                }
+                Entry::Separator => sub.separator(),
+                Entry::Native(n) => match n {
+                    Native::Services => sub.services(),
+                    Native::Hide => sub.hide(),
+                    Native::HideOthers => sub.hide_others(),
+                    Native::ShowAll => sub.show_all(),
+                    Native::Quit => sub.quit(),
+                    Native::Fullscreen => sub.fullscreen(),
+                    Native::Undo => sub.undo(),
+                    Native::Redo => sub.redo(),
+                    Native::Cut => sub.cut(),
+                    Native::Copy => sub.copy(),
+                    Native::Paste => sub.paste(),
+                    Native::SelectAll => sub.select_all(),
+                    Native::Minimize => sub.minimize(),
+                    Native::Maximize => sub.maximize(),
+                    Native::BringAllToFront => sub.bring_all_to_front(),
+                },
+            };
+        }
+        menu.append(&sub.build()?)?;
+    }
+    if let (Some(shell), Some(lock), Some(discreet)) = (super::shell(app), lock, discreet) {
         shell.on_sync(Box::new(move |s| {
             let _ = lock.set_enabled(s.can_lock);
             let _ = discreet.set_checked(s.discreet);
         }));
     }
-
-    let mut file = SubmenuBuilder::new(app, "File")
-        .item(&it("file.open-uri")?)
-        .separator()
-        .item(&it("file.sign-verify")?)
-        .item(&it("file.psbt")?);
-    if !mac {
-        file = file.separator().item(&it("file.exit")?);
-    }
-    let mut view = SubmenuBuilder::new(app, "View");
-    for id in [
-        "view.home",
-        "view.pay",
-        "view.receive",
-        "view.contacts",
-        "view.activity",
-        "view.coinjoin",
-    ] {
-        view = view.item(&it(id)?);
-    }
-    view = view
-        .separator()
-        .item(&it("view.notifications")?)
-        .item(&it("view.profile")?);
-    if mac {
-        view = view.separator().fullscreen();
-    }
-    let mut wallet = SubmenuBuilder::new(app, "Wallet")
-        .item(&lock)
-        .item(&discreet)
-        .separator()
-        .item(&it("wallet.add")?)
-        .item(&it("wallet.recovery-phrase")?);
-    if !mac {
-        wallet = wallet.separator().item(&it("wallet.settings")?);
-    }
-    let tools = SubmenuBuilder::new(app, "Tools")
-        .item(&it("tools.information")?)
-        .item(&it("tools.console")?)
-        .item(&it("tools.peers")?)
-        .item(&it("tools.repair")?)
-        .separator()
-        .item(&it("tools.address-book")?)
-        .item(&it("tools.coin-selection")?);
-
-    let menu = Menu::new(app)?;
-    if mac {
-        // Our About item, not the predefined one: that opens the native
-        // panel without a menu event, so it would bypass the renderer's
-        // dialog and its rules (D20: none while locked or behind a sheet).
-        let app_menu = SubmenuBuilder::new(app, "Dash Wallet")
-            .item(&it("help.about")?)
-            .separator()
-            .item(&it("wallet.settings")?)
-            .separator()
-            .services()
-            .separator()
-            .hide()
-            .hide_others()
-            .show_all()
-            .separator()
-            .quit();
-        menu.append(&app_menu.build()?)?;
-    }
-    menu.append(&file.build()?)?;
-    if mac {
-        let edit = SubmenuBuilder::new(app, "Edit")
-            .undo()
-            .redo()
-            .separator()
-            .cut()
-            .copy()
-            .paste()
-            .select_all();
-        menu.append(&edit.build()?)?;
-    }
-    menu.append(&view.build()?)?;
-    menu.append(&wallet.build()?)?;
-    menu.append(&tools.build()?)?;
-    let last = if mac {
-        SubmenuBuilder::new(app, "Window")
-            .minimize()
-            .maximize()
-            .separator()
-            .bring_all_to_front()
-    } else {
-        SubmenuBuilder::new(app, "Help").item(&it("help.about")?)
-    };
-    menu.append(&last.build()?)?;
     Ok(menu)
 }
 
@@ -438,32 +518,48 @@ mod tests {
 
     #[test]
     fn about_is_our_item_in_both_layouts() {
-        use tauri::menu::MenuItemKind;
-        fn ids<R: Runtime>(items: Vec<MenuItemKind<R>>, out: &mut Vec<String>) {
-            for item in items {
-                if let Some(sub) = item.as_submenu() {
-                    ids(sub.items().unwrap(), out);
-                } else {
-                    out.push(item.id().0.clone());
-                }
-            }
-        }
-        let app = tauri::test::mock_app();
+        // The bar as data: native menus need the main thread, which a test
+        // is not on (macOS).
         for mac in [true, false] {
-            let mut found = Vec::new();
-            ids(
-                layout(app.handle(), mac).unwrap().items().unwrap(),
-                &mut found,
-            );
+            let ids: Vec<&str> = bar(mac)
+                .into_iter()
+                .flat_map(|(_, entries)| entries)
+                .filter_map(|e| match e {
+                    Entry::Item(id) | Entry::Check(id) => Some(id),
+                    _ => None,
+                })
+                .collect();
+            // Every entry is a row, so `layout` cannot panic on a missing one.
+            for id in &ids {
+                assert!(find(id).is_some(), "mac={mac}: {id} is not in ITEMS");
+            }
             // About sends ShellCommand::About (the renderer's dialog, D20):
             // on macOS too, where the predefined item would send nothing.
-            let about = found.iter().filter(|id| *id == "help.about").count();
-            assert_eq!(about, 1, "mac={mac}: {found:?}");
+            let about = ids.iter().filter(|id| **id == "help.about").count();
+            assert_eq!(about, 1, "mac={mac}: {ids:?}");
         }
         assert_eq!(
             find("help.about").unwrap().action,
             Action::Shell(ShellCommand::About)
         );
+    }
+
+    #[test]
+    fn wallet_menu_has_add_and_recovery_phrase_in_both_layouts() {
+        for mac in [true, false] {
+            let (_, wallet) = bar(mac)
+                .into_iter()
+                .find(|(title, _)| *title == "Wallet")
+                .expect("a Wallet menu");
+            for id in ["wallet.lock", "wallet.add", "wallet.recovery-phrase"] {
+                assert!(
+                    wallet
+                        .iter()
+                        .any(|e| matches!(e, Entry::Item(i) if *i == id)),
+                    "mac={mac}: {id} is not in the Wallet menu"
+                );
+            }
+        }
     }
 
     #[test]

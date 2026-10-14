@@ -1,16 +1,23 @@
-// The W3C WebDriver client and the tauri-driver plumbing that the T1 scripts share (smoke.ts,
-// U-07; onboarding.ts, U-02). WebDriver over fetch, no other dependency: Node 24 runs the
-// scripts as they are (type stripping).
+// What the tauri-driver runs share (smoke.ts, regtest-send.ts, onboarding.ts): settings from the environment,
+// polling, a W3C WebDriver client over fetch, tauri-driver itself and dwcli. Node 24 runs these
+// files as they are (type stripping); no other dependency.
 
-import { spawn, type ChildProcess } from "node:child_process";
-import { createWriteStream, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { closeSync, openSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 export const env = (name: string, fallback?: string): string => {
   const v = process.env[name] ?? fallback;
   if (!v) throw new Error(`set ${name}`);
   return v;
 };
+
+export const APP = resolve(env("DW_APP"));
+export const DWCLI = resolve(env("DWCLI"));
+export const DRIVER = env("TAURI_DRIVER", "tauri-driver");
+export const TIMEOUT_MS = Number(env("DW_E2E_TIMEOUT_MS", "120000"));
+/** Regtest needs a DAPI address; with --no-platform nothing connects to it. */
+export const CHAIN = ["--network", "regtest", "--no-platform", "--dapi", "https://127.0.0.1:1"];
 
 /** Calls `probe` every 250 ms until it returns a value, for at most `ms`. */
 export async function poll<T>(ms: number, what: string, probe: () => Promise<T | undefined>): Promise<T> {
@@ -25,19 +32,19 @@ export async function poll<T>(ms: number, what: string, probe: () => Promise<T |
 
 export const tid = (id: string) => `[data-testid="${id}"]`;
 
+// ------------------------------------------------------------------ W3C WebDriver client
+
 // The W3C web element identifier.
 const ELEMENT = "element-6066-11e4-a52e-4f735466cecf";
 
 export class WebDriver {
   base: string;
   out: string;
-  timeoutMs: number;
   session = "";
 
-  constructor(base: string, out: string, timeoutMs: number) {
+  constructor(base: string, out: string) {
     this.base = base;
     this.out = out;
-    this.timeoutMs = timeoutMs;
   }
 
   async call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -64,8 +71,8 @@ export class WebDriver {
     return found[0]?.[ELEMENT] ?? null;
   }
 
-  waitFor(css: string, what = css): Promise<string> {
-    return poll(this.timeoutMs, what, async () => {
+  waitFor(css: string, what = css, ms = TIMEOUT_MS): Promise<string> {
+    return poll(ms, what, async () => {
       const el = await this.find(css);
       return el && (await this.call<boolean>("GET", this.s(`/element/${el}/displayed`))) ? el : undefined;
     });
@@ -77,7 +84,7 @@ export class WebDriver {
   }
 
   async waitGone(css: string, what = css) {
-    await poll(this.timeoutMs, `${what} to go`, async () => ((await this.find(css)) ? undefined : true));
+    await poll(TIMEOUT_MS, `${what} to go`, async () => ((await this.find(css)) ? undefined : true));
   }
 
   text = (el: string) => this.call<string>("GET", this.s(`/element/${el}/text`));
@@ -98,22 +105,16 @@ export class WebDriver {
   end = () => this.call<null>("DELETE", this.s(""));
 }
 
-/** Starts tauri-driver on `port` (and `port + 1` for WebKitWebDriver) in its own process group,
- * so `stopDriver` ends the driver, WebKitWebDriver and the app; its output goes to `log`.
- * `closed` settles once every process holding the output is gone and `log` is on disk (or after
- * 30 s). */
-export async function startDriver(
-  driverPath: string,
-  port: number,
-  log: string,
-): Promise<{ driver: ChildProcess; base: string; closed: Promise<void> }> {
-  const out = createWriteStream(log);
-  const driver = spawn(driverPath, ["--port", String(port), "--native-port", String(port + 1)], { stdio: ["ignore", "pipe", "pipe"], detached: true });
-  // Two sources: neither may end the file before the other is done.
-  driver.stdout!.pipe(out, { end: false });
-  driver.stderr!.pipe(out, { end: false });
-  const flushed = new Promise<void>((resolve) => driver.on("close", () => out.end(() => resolve())));
-  const closed = Promise.race([flushed, new Promise<void>((resolve) => setTimeout(resolve, 30_000).unref())]);
+// ------------------------------------------------------------------ tauri-driver and dwcli
+
+/** Starts tauri-driver on `port` (and `port + 1` for WebKitWebDriver), logging to `out`, in its
+ * own process group so `stopDriver` ends the driver, WebKitWebDriver and the app. */
+export async function startDriver(port: number, out: string): Promise<{ driver: ChildProcess; base: string }> {
+  // A file, not a pipe: the app logs through the driver, and `spawnSync` (dwcli) blocks the event
+  // loop that would drain a pipe, so a full one would stop the app.
+  const log = openSync(join(out, "tauri-driver.log"), "w");
+  const driver = spawn(DRIVER, ["--port", String(port), "--native-port", String(port + 1)], { stdio: ["ignore", log, log], detached: true });
+  closeSync(log);
   const base = `http://127.0.0.1:${port}`;
   await poll(30_000, "tauri-driver to listen", () =>
     fetch(`${base}/status`).then(
@@ -121,7 +122,7 @@ export async function startDriver(
       () => undefined,
     ),
   );
-  return { driver, base, closed };
+  return { driver, base };
 }
 
 /** Ends the driver's process group: tauri-driver, WebKitWebDriver and the app. Gone already is fine. */
@@ -131,4 +132,25 @@ export function stopDriver(driver: ChildProcess | undefined) {
   } catch {
     // ESRCH
   }
+}
+
+/** Settles once every process of the driver's group has exited, so the log they write is
+ * complete (or after `ms`): a leak scan of OUT must not race the app's last lines. */
+export async function driverGone(driver: ChildProcess | undefined, ms = 30_000) {
+  const pid = driver?.pid;
+  if (!pid) return;
+  await poll(ms, "the driver's processes to exit", async () => {
+    try {
+      process.kill(-pid, 0);
+      return undefined;
+    } catch {
+      return true;
+    }
+  }).catch(() => undefined);
+}
+
+export function dwcli(dataRoot: string, passFile: string, ...args: string[]): string {
+  const r = spawnSync(DWCLI, ["--datadir", dataRoot, ...CHAIN, "--passphrase-file", passFile, ...args], { encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`dwcli ${args.join(" ")} failed (${r.status}): ${r.stderr}`);
+  return r.stdout;
 }

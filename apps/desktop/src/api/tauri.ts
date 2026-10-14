@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
+import type { FeeMode } from "./generated/FeeMode";
+import type { OutPoint } from "./generated/OutPoint";
 import type { JsonValue } from "./generated/serde_json/JsonValue";
 
 // Read once, when the module loads: the fixture backend's mock IPC installs its own
@@ -44,6 +46,35 @@ export class IpcBackend implements Backend {
   syncStatus = () => cmd.syncStatus();
   historyPage = cmd.historyPage;
   txDetail = cmd.txDetail;
+  txDetailExtras = cmd.txDetailExtras;
+  setTxLabel = cmd.setTxLabel;
+  abandonTransaction = cmd.abandonTransaction;
+  resendTransaction = cmd.resendTransaction;
+  currentReceiveAddress = cmd.currentReceiveAddress;
+  nextReceiveAddress = cmd.nextReceiveAddress;
+  createReceiveRequest = cmd.createReceiveRequest;
+  receiveRequests = cmd.receiveRequests;
+  deleteReceiveRequest = cmd.deleteReceiveRequest;
+  buildPaymentUri = cmd.buildPaymentUri;
+  qrMatrix = cmd.qrMatrix;
+  classifyAddress = cmd.classifyAddress;
+  parseAmount = (text: string) => cmd.parseAmount(text, "dash");
+  newTxDraft = cmd.newTxDraft;
+  closeDraft = cmd.closeDraft;
+  draftSetRecipients = cmd.draftSetRecipients;
+  draftSetSource = cmd.draftSetSource;
+  draftSetFee = cmd.draftSetFee;
+  draftSetChange = cmd.draftSetChange;
+  draftEstimate = cmd.draftEstimate;
+  draftPrepare = cmd.draftPrepare;
+  draftBroadcast = cmd.draftBroadcast;
+  draftAbandon = cmd.draftAbandon;
+  maxSpendable = cmd.maxSpendable;
+  feePolicy = () => cmd.feePolicy();
+  utxos = cmd.utxos;
+  coinSelectionSummary = (walletId: string, outpoints: OutPoint[], payAmounts: number[], fee: FeeMode) =>
+    cmd.coinSelectionSummary(walletId, outpoints, payAmounts, fee, false);
+  paymentAuthentication = () => cmd.paymentAuthentication();
   dashpayStatus = cmd.dashpayStatus;
   identities = cmd.identities;
   dashpayUnreadCount = cmd.dashpayUnreadCount;

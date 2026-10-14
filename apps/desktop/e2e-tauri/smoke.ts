@@ -15,23 +15,17 @@
 // a developer's display:
 //   DW_APP=…/dash-wallet DWCLI=…/dwcli TAURI_DRIVER=…/tauri-driver node e2e-tauri/smoke.ts
 // `scripts/e2e-tauri.sh` builds the binaries and runs it. Node 24 runs this file as is (type
-// stripping); the WebDriver client is in webdriver.ts.
+// stripping); it uses W3C WebDriver over fetch and no other dependency.
 
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { env, poll, startDriver, stopDriver, tid, WebDriver } from "./webdriver.ts";
+import { APP, CHAIN, dwcli, env, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
 
-const APP = resolve(env("DW_APP"));
-const DWCLI = resolve(env("DWCLI"));
-const DRIVER = env("TAURI_DRIVER", "tauri-driver");
 const OUT = resolve(env("DW_E2E_OUT", "test-results/tauri-e2e"));
 const PORT = Number(env("DW_E2E_PORT", "4744"));
 const PASSPHRASE = "e2e smoke passphrase";
-// Regtest needs a DAPI address; with --no-platform nothing connects to it.
-const CHAIN = ["--network", "regtest", "--no-platform", "--dapi", "https://127.0.0.1:1"];
-const TIMEOUT_MS = Number(env("DW_E2E_TIMEOUT_MS", "120000"));
 /** A Base58 identity id (32 bytes of 7) for the `dashpay://user` link. */
 const IDENTITY = "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx";
 
@@ -68,12 +62,6 @@ let driver: ChildProcess | undefined;
 /** Holds the vault and its passphrase file: out of OUT, which CI uploads; removed at the end. */
 let work: string | undefined;
 
-function dwcli(dataRoot: string, passFile: string, ...args: string[]): string {
-  const r = spawnSync(DWCLI, ["--datadir", dataRoot, ...CHAIN, "--passphrase-file", passFile, ...args], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`dwcli ${args.join(" ")} failed (${r.status}): ${r.stderr}`);
-  return r.stdout;
-}
-
 async function main() {
   mkdirSync(OUT, { recursive: true });
   work = mkdtempSync(join(tmpdir(), "dw-e2e-")); // mode 0700
@@ -91,10 +79,9 @@ async function main() {
   if (!address) throw new Error("dwcli receive printed no address");
   console.log(`smoke: regtest data root ${dataRoot}, wallet ${walletId.slice(0, 16)}…`);
 
-  const started = await startDriver(DRIVER, PORT, join(OUT, "tauri-driver.log"));
+  const started = await startDriver(PORT, OUT);
   driver = started.driver;
-
-  const wd = new WebDriver(started.base, OUT, TIMEOUT_MS);
+  const wd = new WebDriver(started.base, OUT);
   const launchLink = `dash:${address}?amount=0.5&label=Launch%20link`;
   await wd.start({ alwaysMatch: { "tauri:options": { application: APP, args: ["--datadir", dataRoot, ...CHAIN, "--theme", "light", launchLink] } } });
   const value = (id: string) => wd.script<string>(`return document.querySelector('${tid(id)}')?.value ?? ""`);

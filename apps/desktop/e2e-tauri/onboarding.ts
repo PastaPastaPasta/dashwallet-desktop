@@ -26,19 +26,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AuthGrant } from "../src/api/generated/AuthGrant";
 import type { WalletSummary } from "../src/api/generated/WalletSummary";
-import { env, poll, startDriver, stopDriver, tid, WebDriver } from "./webdriver.ts";
+import { APP, CHAIN, driverGone, DWCLI, env, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
 
-const APP = resolve(env("DW_APP"));
-const DWCLI = resolve(env("DWCLI"));
-const DRIVER = env("TAURI_DRIVER", "tauri-driver");
 const REGTEST = resolve(env("DW_REGTEST_SH"));
 const P2P = env("DW_REGTEST_P2P");
 const OUT = resolve(env("DW_E2E_OUT", "test-results/tauri-onboarding"));
 const PORT = Number(env("DW_E2E_PORT", "4754"));
-const TIMEOUT_MS = Number(env("DW_E2E_TIMEOUT_MS", "120000"));
 /** SPV from genesis on a fresh regtest chain: headers, filters and the wallet's blocks. */
 const SYNC_TIMEOUT_MS = Number(env("DW_E2E_SYNC_TIMEOUT_MS", "300000"));
-const CHAIN = ["--network", "regtest", "--no-platform", "--dapi", "https://127.0.0.1:1"];
 const PASSPHRASE = "U-02 first passphrase 7!";
 const NEW_PASSPHRASE = "U-02 reset passphrase 9?";
 const FUNDER_PASSPHRASE = "U-02 funder passphrase";
@@ -117,9 +112,9 @@ async function main() {
   const funded = fundedPhrase(funderRoot, funderPass);
   console.log(`onboarding: dashd funded ${funded.address} with ${AMOUNT} DASH (${funded.txid.slice(0, 16)}…)`);
 
-  const started = await startDriver(DRIVER, PORT, join(OUT, "tauri-driver.log"));
+  const started = await startDriver(PORT, OUT);
   driver = started.driver;
-  const wd = new WebDriver(started.base, OUT, TIMEOUT_MS);
+  const wd = new WebDriver(started.base, OUT);
   const launch = () =>
     wd.start({
       alwaysMatch: {
@@ -403,7 +398,7 @@ async function main() {
   // into a PNG is not found here.
   stopDriver(driver);
   driver = undefined;
-  await started.closed;
+  await driverGone(started.driver);
   const secrets = [funded.phrase, created.join(" "), PASSPHRASE, NEW_PASSPHRASE].filter((s) => s !== "");
   const found = [...leaks(appRoot, secrets), ...leaks(OUT, secrets)];
   if (found.length > 0) {
