@@ -197,6 +197,23 @@ test.describe("Pay", () => {
     expect(await world(page, (w) => w.wallets[0].rows.filter((r) => r.amount === -50_000_226).length)).toBe(2);
   });
 
+  test("a signed transaction that differs from the sheet is abandoned, never sent (D23)", async ({ page }) => {
+    await open(page);
+    await fillPayment(page, PAYEE, "0.5");
+    await review(page);
+    // The coins change after Review: the same fee and total, from another coin, with other change.
+    await world(page, (w) => (w.wallets[0].coins = w.wallets[0].coins.filter((u) => u.amount !== 2_000_000_000)));
+    const rows = await world(page, (w) => w.wallets[0].rows.length);
+    await sendWithPassphrase(page);
+    await expect(page.getByTestId("pay-result-failed")).toBeVisible();
+    await expect(page.getByTestId("pay-result-text")).toHaveText("The payment changed. Review it again.");
+    expect(await world(page, (w) => [w.wallets[0].rows.length, Object.keys(w.send.prepared).length, w.wallets[0].coins.some((u) => u.reserved)])).toEqual([
+      rows,
+      0,
+      false,
+    ]);
+  });
+
   test("a rejected broadcast releases the coins and keeps the form", async ({ page }) => {
     await open(page);
     await world(page, (w) => (w.send.broadcast = "rejected"));

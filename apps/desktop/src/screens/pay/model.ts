@@ -227,13 +227,28 @@ export function confirmedOf(recipient: Recipient, estimate: TxEstimate, change: 
   return { recipient, estimate, changeAddress, total };
 }
 
-/** The signed transaction keeps the sheet's promise (U-03 D2): every output is the payment to the
- * address the sheet showed, in the amount it showed, or change where the sheet said (the wallet's
- * own, or the custom address); and it takes no more than the confirmed total from the wallet. */
+/** The signed transaction keeps the sheet's promise (U-03 D2, D23): every number the sheet showed
+ * is the signed transaction's. Every output is the payment to the address the sheet showed or
+ * change where it said (the wallet's own, or the custom address); the payment, the fee and the
+ * change are exactly the confirmed ones; and the wallet's debit is exactly the confirmed total,
+ * less what of it comes back to the wallet (a payment to its own address, a custom change address
+ * it owns). Anything else, even within the grant's cap, is a different payment. */
 export function keepsPromise(c: Confirmed, s: PreparedTxSummary): boolean {
+  const { estimate } = c;
   const shown = s.outputs.every((o) => (o.isChange ? (c.changeAddress === null ? o.isMine : o.address === c.changeAddress) : o.address === c.recipient.address));
-  const paid = s.outputs.filter((o) => !o.isChange).reduce((n, o) => n + o.amount, 0);
-  return shown && paid === c.estimate.totalSent && s.totalSent === c.estimate.totalSent && s.totalDebit <= c.total;
+  const sum = (outputs: PreparedTxSummary["outputs"]) => outputs.reduce((n, o) => n + o.amount, 0);
+  const paid = sum(s.outputs.filter((o) => !o.isChange));
+  const change = sum(s.outputs.filter((o) => o.isChange));
+  // The total counts the payment and a custom change output; those the wallet owns stay in it.
+  const back = sum(s.outputs.filter((o) => o.isMine && (!o.isChange || c.changeAddress !== null)));
+  return (
+    shown &&
+    paid === estimate.totalSent &&
+    s.totalSent === estimate.totalSent &&
+    s.fee === estimate.fee &&
+    change === (estimate.change ?? 0) &&
+    s.totalDebit === c.total - back
+  );
 }
 
 // ---------------------------------------------------------------- the result

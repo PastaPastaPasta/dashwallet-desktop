@@ -158,11 +158,37 @@ describe("the confirm sheet's promise (U-03 D2)", () => {
     expect(keepsPromise(confirmed, summary())).toBe(true);
   });
 
+  it("refuses a fee/change trade that stays within the D21 cap (D23)", () => {
+    const custom = confirmedOf(recipient, estimate, { kind: "address", address: "yForeign" });
+    const outputs = summary().outputs;
+    // 4 duffs moved from the custom change to the fee: same debit, same cap, a different payment.
+    const traded = summary({ fee: 230, outputs: [outputs[0], { ...outputs[1], address: "yForeign", amount: 6, isMine: false }], totalDebit: 50_000_236 });
+    expect(traded.totalDebit).toBeLessThanOrEqual(custom.total);
+    expect(keepsPromise(custom, traded)).toBe(false);
+  });
+
+  it("refuses a different fee even with the total unchanged (D23)", () => {
+    expect(keepsPromise(confirmed, summary({ fee: 230 }))).toBe(false);
+    // And different wallet-owned change, as when the coins changed.
+    const outputs = summary().outputs;
+    expect(keepsPromise(confirmed, summary({ outputs: [outputs[0], { ...outputs[1], amount: 11 }] }))).toBe(false);
+  });
+
+  it("passes an exact match, also when the payment or the custom change stays in the wallet", () => {
+    const outputs = summary().outputs;
+    const custom = confirmedOf(recipient, estimate, { kind: "address", address: "yOwn" });
+    expect(keepsPromise(custom, summary({ outputs: [outputs[0], { ...outputs[1], address: "yOwn", isMine: true }], totalDebit: 50_000_226 }))).toBe(true);
+    // Paying one of the wallet's own addresses: only the fee leaves it.
+    expect(keepsPromise(confirmed, summary({ outputs: [{ ...outputs[0], isMine: true }, outputs[1]], totalDebit: 226, externalSent: 0 }))).toBe(true);
+    expect(keepsPromise(confirmed, summary({ outputs: [{ ...outputs[0], isMine: true }, outputs[1]], totalDebit: 50_000_226 }))).toBe(false);
+  });
+
   it("fails when the payee, the amount or the debit differ", () => {
     const outputs = summary().outputs;
     expect(keepsPromise(confirmed, summary({ outputs: [{ ...outputs[0], address: "yOther" }, outputs[1]] }))).toBe(false);
     expect(keepsPromise(confirmed, summary({ outputs: [{ ...outputs[0], amount: 49_000_000 }, outputs[1]], totalSent: 49_000_000 }))).toBe(false);
     expect(keepsPromise(confirmed, summary({ totalDebit: 50_000_227 }))).toBe(false);
+    expect(keepsPromise(confirmed, summary({ totalDebit: 50_000_225 }))).toBe(false);
     // A change output to the payee's address does not count as paying it.
     expect(keepsPromise(confirmed, summary({ outputs: [{ ...outputs[0], amount: 25_000_000 }, { ...outputs[1], address: PAYEE, amount: 25_000_000 }] }))).toBe(false);
   });
