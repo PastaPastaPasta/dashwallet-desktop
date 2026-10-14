@@ -53,6 +53,12 @@
 //!   now means: a flagged marker with no `funding_release` row has nothing
 //!   signed under it, and one with a row but no `signed_lock` row may have
 //!   a lock out. Schema 6 wrote no releases, so 6 → 7 clears every flag.
+//! - Schema 8 adds `top_up_settled` (DP1-06, review Sol r1): a top-up's
+//!   asset lock settled for good, by Platform's proved apply or by the
+//!   user. It is keyed by the lock, not by an artifact: no sweep and no
+//!   removal deletes it, so it outlives the wallet's own store (whose
+//!   `Consumed` mark a removal erases) as long as the `signed_lock` row of
+//!   the top-up's `Sent` step does.
 //! - `meta` holds the schema version, the creation time and the per-wallet
 //!   `seeded:<wallet hex>` marks.
 //!
@@ -84,7 +90,7 @@ pub const DISPATCH_DB_FILE: &str = "dispatch.sqlite";
 /// self-spend provenance), 5 (no `durable_record` flag) and 6 (no
 /// `funding_release`); every migration only adds, except that 6 → 7 clears
 /// the flags schema 6 set.
-pub const DISPATCH_SCHEMA: u32 = 7;
+pub const DISPATCH_SCHEMA: u32 = 8;
 
 const SCHEMA_BASE: &str = "
 CREATE TABLE meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
@@ -264,6 +270,31 @@ const MIGRATE_V6: &str = "
 UPDATE funding_marker SET durable_record = 0;
 UPDATE meta SET v = 7 WHERE k = 'schema';
 ";
+
+/// Version 8 (DP1-06, review Sol r1): the top-up locks settled for good,
+/// one row per lock (the first write's). `how`: 0 Platform's proved apply,
+/// 1 the user's word. `txid` in internal byte order, like `signed_lock`'s.
+const TOP_UP_SETTLED: &str = "
+CREATE TABLE top_up_settled (
+  wallet BLOB NOT NULL CHECK (length(wallet) = 32),
+  txid   BLOB NOT NULL CHECK (length(txid) = 32),
+  how    INTEGER NOT NULL CHECK (how IN (0, 1)),
+  at     INTEGER NOT NULL,
+  PRIMARY KEY (wallet, txid)
+) WITHOUT ROWID;
+";
+
+/// Version 7 → 8: `top_up_settled` is new and empty.
+const MIGRATE_V7: &str = "UPDATE meta SET v = 8 WHERE k = 'schema';";
+
+/// How a top-up's lock was settled ([`DispatchJournal::settle_top_up`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopUpSettled {
+    /// Platform's proved apply.
+    Applied,
+    /// The user said its credits arrived.
+    Resolved,
+}
 
 /// The Mode B side tables, whose rows go with their artifact's `step_log`
 /// rows ([`compact`]).
@@ -880,7 +911,7 @@ impl DispatchJournal {
                 .optional()?;
             match schema {
                 Some(v) if v == i64::from(DISPATCH_SCHEMA) => {}
-                Some(v @ 1..=6) => {
+                Some(v @ 1..=7) => {
                     if v == 1 {
                         tx.execute_batch(STEP_LOG)?;
                         tx.execute_batch(MIGRATE_V1)?;
@@ -902,8 +933,12 @@ impl DispatchJournal {
                         tx.execute_batch(TOMBSTONE)?;
                         tx.execute_batch(MIGRATE_V5)?;
                     }
-                    tx.execute_batch(RELEASE)?;
-                    tx.execute_batch(MIGRATE_V6)?;
+                    if v <= 6 {
+                        tx.execute_batch(RELEASE)?;
+                        tx.execute_batch(MIGRATE_V6)?;
+                    }
+                    tx.execute_batch(TOP_UP_SETTLED)?;
+                    tx.execute_batch(MIGRATE_V7)?;
                 }
                 Some(v) if v > i64::from(DISPATCH_SCHEMA) => {
                     return Ok(JournalOpen::NewerSchema(
@@ -925,6 +960,7 @@ impl DispatchJournal {
             tx.execute_batch(DURABLE_RECORD)?;
             tx.execute_batch(TOMBSTONE)?;
             tx.execute_batch(RELEASE)?;
+            tx.execute_batch(TOP_UP_SETTLED)?;
             tx.execute(
                 "INSERT INTO meta (k, v) VALUES ('schema', ?1), ('created_at', ?2)",
                 params![i64::from(DISPATCH_SCHEMA), now as i64],
@@ -1200,6 +1236,47 @@ impl DispatchJournal {
         )?;
         tx.commit()?;
         Ok(Some(at as u64))
+    }
+
+    /// Records the top-up lock `txid` of `wallet` settled (schema 8,
+    /// DP1-06): the first record stands, a later one adds nothing.
+    pub fn settle_top_up(
+        &self,
+        wallet: &[u8; 32],
+        txid: &[u8; 32],
+        how: TopUpSettled,
+        now: u64,
+    ) -> Result<()> {
+        let how = match how {
+            TopUpSettled::Applied => 0,
+            TopUpSettled::Resolved => 1,
+        };
+        self.conn().execute(
+            "INSERT OR IGNORE INTO top_up_settled (wallet, txid, how, at) VALUES (?1, ?2, ?3, ?4)",
+            params![&wallet[..], &txid[..], how, now as i64],
+        )?;
+        Ok(())
+    }
+
+    /// The top-up locks of `wallet` recorded settled, with how.
+    pub fn top_ups_settled(&self, wallet: &[u8; 32]) -> Result<Vec<([u8; 32], TopUpSettled)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT txid, how FROM top_up_settled WHERE wallet = ?1")?;
+        let rows = stmt
+            .query_map(params![&wallet[..]], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .map(|row| {
+                let (txid, how) = row?;
+                let how = match how {
+                    0 => TopUpSettled::Applied,
+                    1 => TopUpSettled::Resolved,
+                    h => return Err(AppDbError::Corrupt(format!("top_up_settled.how {h}"))),
+                };
+                Ok((fixed(txid, "top_up_settled.txid")?, how))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Appends `artifact`'s resolution (DEC-154). `NotSent` supersedes its
@@ -1966,7 +2043,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 7, "through versions 2, 3, 4, 5 and 6 to 7");
+        assert_eq!(schema, 8, "through versions 2, 3, 4, 5, 6 and 7 to 8");
         let old: bool = j
             .conn()
             .query_row(
@@ -2046,7 +2123,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 7);
+        assert_eq!(schema, 8);
         assert_mode_b_tables(&j);
         assert_eq!(j.load_calls().unwrap(), CallRows::default());
         // The new tables take writes; a reopen keeps them.
@@ -2096,7 +2173,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 7);
+        assert_eq!(schema, 8);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert_eq!((rows.funding.len(), rows.self_spends.len()), (1, 1));
@@ -2167,7 +2244,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 7);
+        assert_eq!(schema, 8);
         let rows = j.load_calls().unwrap();
         assert_eq!(
             (rows.funding.len(), rows.signed_locks.len()),
@@ -2208,7 +2285,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 7);
+        assert_eq!(schema, 8);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert_eq!(rows.funding.len(), 1);
@@ -2241,6 +2318,7 @@ mod tests {
             j.conn()
                 .execute_batch(
                     "DROP TABLE funding_release;
+                     DROP TABLE top_up_settled;
                      UPDATE meta SET v = 6 WHERE k = 'schema'",
                 )
                 .unwrap();
@@ -2252,7 +2330,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 7);
+        assert_eq!(schema, 8);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert!(
@@ -2284,6 +2362,68 @@ mod tests {
         let rows = j.load_calls().unwrap();
         assert_eq!(rows.releases.len(), 1);
         assert_eq!((rows.releases[0].marker, rows.releases[0].at), (second, 5));
+    }
+
+    /// A settled top-up lock (schema 8, DP1-06): the first record stands,
+    /// per wallet, and neither the sweep nor a wallet's removal deletes it.
+    #[test]
+    fn a_settled_top_up_outlives_the_wallet_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 1).unwrap() else {
+            panic!("newer schema");
+        };
+        assert!(j.top_ups_settled(&W).unwrap().is_empty());
+        j.settle_top_up(&W, &[7; 32], TopUpSettled::Resolved, 2)
+            .unwrap();
+        j.settle_top_up(&W, &[7; 32], TopUpSettled::Applied, 3)
+            .unwrap();
+        j.settle_top_up(&W, &[8; 32], TopUpSettled::Applied, 3)
+            .unwrap();
+        j.erase_wallet(&W, true).unwrap();
+        drop(j);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 4).unwrap() else {
+            panic!("newer schema");
+        };
+        let mut settled = j.top_ups_settled(&W).unwrap();
+        settled.sort_by_key(|(txid, _)| *txid);
+        assert_eq!(
+            settled,
+            vec![
+                ([7; 32], TopUpSettled::Resolved),
+                ([8; 32], TopUpSettled::Applied)
+            ]
+        );
+        assert!(j.top_ups_settled(&[9; 32]).unwrap().is_empty());
+    }
+
+    /// Version 7 → 8 adds `top_up_settled`, empty, and keeps every row.
+    #[test]
+    fn a_version_7_journal_gains_the_settled_top_ups() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 1).unwrap() else {
+            panic!("newer schema");
+        };
+        let step = "topup/0-0/funding";
+        let marker = j.insert_funding_step(&W, step, &T, &KEY, 2).unwrap();
+        j.conn()
+            .execute_batch("DROP TABLE top_up_settled; UPDATE meta SET v = 7 WHERE k = 'schema';")
+            .unwrap();
+        drop(j);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 3).unwrap() else {
+            panic!("newer schema");
+        };
+        let schema: i64 = j
+            .conn()
+            .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schema, 8);
+        assert_eq!(j.load_calls().unwrap().funding[0].seq, marker);
+        assert!(j.top_ups_settled(&W).unwrap().is_empty());
+        j.settle_top_up(&W, &[7; 32], TopUpSettled::Applied, 4)
+            .unwrap();
+        assert_eq!(j.top_ups_settled(&W).unwrap().len(), 1);
     }
 
     /// A release (schema 7, review R6-01) is written only against a

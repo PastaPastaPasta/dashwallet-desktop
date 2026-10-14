@@ -32,6 +32,7 @@ use platform_wallet::manager::startup::{
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 
+use super::balances::BALANCE_PASS_EVERY;
 use super::runtime::{PlatformSignal, Stamped, Supervisor, guard, prompt_free};
 use super::startup::StartupStatus;
 use super::startup_status::{DashPayStartup, SpvState};
@@ -243,6 +244,7 @@ impl NetworkSession {
         // The session must not be kept open by a task only close ends.
         let session: Weak<Self> = Arc::downgrade(&self);
         drop(self);
+        let mut balances_due = tokio::time::Instant::now() + BALANCE_PASS_EVERY;
         loop {
             let retry = async {
                 if loops_pending {
@@ -257,6 +259,14 @@ impl NetworkSession {
                 () = retry => {
                     let Some(this) = session.upgrade() else { return };
                     loops_pending = !this.start_loops(&manager).await;
+                    continue;
+                }
+                // The balance pass (DP1-06, `balances.rs`), in the
+                // background.
+                () = tokio::time::sleep_until(balances_due) => {
+                    let Some(this) = session.upgrade() else { return };
+                    this.kick_balance_pass();
+                    balances_due = tokio::time::Instant::now() + BALANCE_PASS_EVERY;
                     continue;
                 }
                 signal = signals.recv() => match signal {

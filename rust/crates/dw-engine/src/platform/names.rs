@@ -1014,6 +1014,8 @@ impl DashPay {
         mut ask: Registration,
         authority: NameAuthority,
     ) -> Result<NameOutcome, NameError> {
+        // Refreshes the spent balance once the write lock is released.
+        let _refresh = session.after_spend(ask.wallet_id, ask.identity);
         let locks = identity_locks(ask.wallet_id, ask.identity);
         let _write = locks.write.lock().await;
         Self::conclude_others(net, session, wallet, &locks, &ask).await?;

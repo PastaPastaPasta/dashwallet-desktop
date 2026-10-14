@@ -1433,8 +1433,8 @@ fn mode_b_a_funding_permit_refuses_a_step_or_key_it_cannot_vouch_for() {
     refused("registration/1/2/funding", own, "is not a funding step");
     refused(
         "topup/i/funding",
-        key(T::IdentityTopUp, 4, 0),
-        "a top-up step has no own funding key yet",
+        key(T::IdentityRegistration, 4, 0),
+        "is no top-up's funding key",
     );
     refused("registration/999/funding", own, "has no funding key");
     for wrong in [

@@ -289,6 +289,13 @@ pub enum IdentityCmd {
         #[arg(long)]
         quote_only: bool,
     },
+    /// Top-up asset locks Platform has not taken yet.
+    TopUpPending,
+    /// Apply a pending top-up lock (`identity top-up-pending`).
+    TopUpResume { txid: String },
+    /// Resolve a pending top-up lock whose consumption is unknown (its
+    /// credits arrived): it no longer blocks the identity's top-ups.
+    TopUpResolve { txid: String },
     /// Withdraw credits to a Core address.
     Withdraw {
         #[command(flatten)]
@@ -718,6 +725,8 @@ fn credits_params(e: &CreditsError) -> Value {
             json!({"needed": needed, "available": available})
         }
         CreditsError::BelowMinimum { min } => json!({"min": min}),
+        CreditsError::CoinsLocked => json!({}),
+        CreditsError::TopUpPending { txid } => json!({"txid": txid}),
         CreditsError::Platform(p) => platform_params(p),
     }
 }
@@ -1497,6 +1506,20 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
             let outcome = ctx.block_on(dp.top_up(identity, duffs, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
+        IdentityCmd::TopUpPending => out(ctx.block_on(dp.pending_top_ups())?),
+        IdentityCmd::TopUpResume { txid } => {
+            // The apply signs with the lock's funding key, which a grant
+            // with a funding budget unlocks; it spends none of it.
+            let grant = ctx.platform_op(
+                &dp,
+                GrantRequest {
+                    max_duffs: 1,
+                    max_credits: 0,
+                },
+            )?;
+            out(ctx.block_on(dp.resume_top_up(txid, grant))?)
+        }
+        IdentityCmd::TopUpResolve { txid } => out(ctx.block_on(dp.resolve_top_up(txid))?),
         IdentityCmd::Withdraw {
             who,
             to,
@@ -1796,7 +1819,7 @@ mod tests {
     ];
 
     /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01,
-    /// DP2-03, DP1-02, DP2-02), with the
+    /// DP2-03, DP1-02, DP2-02, DP1-06), with the
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
@@ -1862,7 +1885,29 @@ mod tests {
             NOT_BASE58,
         ),
         ("contact details --identity I C --publish", NOT_BASE58),
+        ("identity balance --identity I", NOT_IDENTIFIER),
+        (
+            "identity top-up --identity I --duffs 100000",
+            NOT_IDENTIFIER,
+        ),
+        ("identity top-up-pending", r#"{"ok":true,"result":[]}"#),
+        (
+            "identity top-up-resume abababababababababababababababababababababababababababababababab",
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: no top-up lock has that txid","params":{"detail":"no top-up lock has that txid"}}}"#,
+        ),
+        (
+            "identity top-up-resolve abababababababababababababababababababababababababababababababab",
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: no pending top-up of that txid is proved","params":{"detail":"no pending top-up of that txid is proved"}}}"#,
+        ),
+        ("identity costs", COSTS),
     ];
+
+    /// `I` is not an identity id, as the credits calls word it.
+    const NOT_IDENTIFIER: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: identity is not a base58 identifier","params":{"detail":"identity is not a base58 identifier"}}}"#;
+
+    /// The cost table at the SDK's seed protocol version (13), priced at
+    /// its fee version.
+    const COSTS: &str = r#"{"ok":true,"result":{"protocol_version":13,"contact_request":139638280,"profile_update":222187240,"contact_info":230453000,"enable_dashpay_keys":98301600,"credits_per_duff":1000,"top_up_fee":50500000,"top_up_min_duffs":1000000,"low_credits":2221872400,"empty_credits":222187240}}"#;
 
     /// `SECRET`'s `dapk` is not Base58; the error does not quote it.
     const NOT_A_CODE: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a DashPay contact code","params":{"detail":"not a DashPay contact code"}}}"#;
@@ -1945,6 +1990,15 @@ mod tests {
             "DashPay.withdraw_quote",
         ),
         ("identity costs", "DashPay.cost_table"),
+        ("identity top-up-pending", "DashPay.pending_top_ups"),
+        (
+            "identity top-up-resume abababababababababababababababababababababababababababababababab",
+            "DashPay.resume_top_up",
+        ),
+        (
+            "identity top-up-resolve abababababababababababababababababababababababababababababababab",
+            "DashPay.resolve_top_up",
+        ),
         ("name check alice", "check_username"),
         ("name availability alice", "DashPay.name_availability"),
         ("name register --identity I bob", "DashPay.grant_request"),
