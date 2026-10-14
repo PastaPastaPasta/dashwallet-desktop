@@ -47,7 +47,7 @@ use platform_wallet::{DpnsNameInfo, ManagedIdentity, PlatformWallet, WalletPersi
 use serde::{Deserialize, Serialize};
 
 use super::contacts::Relation;
-use super::dashpay::{DashPay, stub};
+use super::dashpay::DashPay;
 use super::errors::{IdentityError, NameError, PlatformError};
 use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::identity::KeyPurpose;
@@ -1014,6 +1014,8 @@ impl DashPay {
         mut ask: Registration,
         authority: NameAuthority,
     ) -> Result<NameOutcome, NameError> {
+        // Refreshes the spent balance once the write lock is released.
+        let _refresh = session.after_spend(ask.wallet_id, ask.identity);
         let locks = identity_locks(ask.wallet_id, ask.identity);
         let _write = locks.write.lock().await;
         Self::conclude_others(net, session, wallet, &locks, &ask).await?;
@@ -1227,7 +1229,8 @@ impl DashPay {
     /// non-contested one asked for while the identity contends for another
     /// is its temporary name and a contested one its won contest.
     /// `ContestStarted`: it is in the open contests ([`record_contest`]) and
-    /// is the contested name.
+    /// is the contested name, and the contest watch watches it (after the
+    /// state lock: the watch takes the wallet's write fence, then that lock).
     /// The user's pick is never written.
     async fn settle(
         session: &NetworkSession,
@@ -1238,7 +1241,7 @@ impl DashPay {
         outcome: NameOutcome,
     ) -> Result<NameOutcome, NameError> {
         let label = ask.label.as_str();
-        let _state = locks.state.lock().await;
+        let state = locks.state.lock().await;
         Self::edit_names(wallet, ask, |managed, persister| match outcome {
             NameOutcome::Registered => {
                 if !managed
@@ -1271,6 +1274,10 @@ impl DashPay {
         }
         Self::update_pending(session, ask, false).await?;
         Self::update_refused(session, ask, false).await?;
+        drop(state);
+        if let NameOutcome::ContestStarted { ends_at } = outcome {
+            (session.start_watching(wallet, ask.wallet_id, &ask.identity, label, ends_at)).await;
+        }
         Ok(outcome)
     }
 
@@ -1332,7 +1339,11 @@ impl DashPay {
         Ok(())
     }
 
-    fn drop_contest(managed: &mut ManagedIdentity, label: &str, persister: &WalletPersister) {
+    pub(super) fn drop_contest(
+        managed: &mut ManagedIdentity,
+        label: &str,
+        persister: &WalletPersister,
+    ) {
         if managed
             .contested_dpns_names
             .iter()
@@ -1517,13 +1528,30 @@ impl DashPay {
         .await
     }
 
-    #[expect(unused_variables, reason = "stub until DP1-04")]
+    /// The identity's contest for `label` as Platform's vote state shows it
+    /// now (DP1-04, `contest_watch.rs`): its state, end, contenders with
+    /// their votes, and the temporary name. An outcome found for a watched
+    /// contest is applied as the watch applies it. A label the identity
+    /// does not contend for, and does not watch, is `invalid_argument`.
     pub async fn contest_status(
         &self,
         identity: String,
         label: String,
     ) -> Result<ContestStatus, NameError> {
-        stub("DashPay.contest_status")
+        let identity_id = parse_identity(&identity)?;
+        let check = valid_label(&label)?;
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = session.contest_net(&manager);
+            let at = (wallet_id, identity_id);
+            let mut status =
+                (session.contest_status_of(&net, &wallet, at, &label, &check.normalized)).await?;
+            status.temporary_name = Self::main_name_prefs(&session, wallet_id, &identity_id)
+                .await?
+                .temporary;
+            Ok(status)
+        })
+        .await
     }
 
     /// Users whose DPNS name starts with `prefix` (homograph-folded, as

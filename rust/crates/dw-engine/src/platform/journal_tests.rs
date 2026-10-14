@@ -432,9 +432,11 @@ fn row_identities_signal_and_journal_usernames() {
 }
 
 /// §3.5 row `identities`, contest outcome: a watched label that becomes an
-/// owned name is `ContestWon`, with its `UsernameRegistered` stored read.
+/// owned name is DP1-04's watch's to journal (`ContestWon`, by the block
+/// that resolved the poll); the tap stores its `UsernameRegistered` read
+/// and journals no win of its own.
 #[test]
-fn row_identities_journal_a_won_contest_once() {
+fn row_identities_leave_a_watched_win_to_the_watch() {
     let h = Harness::new();
     h.appdb
         .watch_contest(&W.to_string(), &b58(ME), "Alice", 7_000)
@@ -450,15 +452,12 @@ fn row_identities_journal_a_won_contest_once() {
     h.feed(won());
     assert_eq!(
         h.rows(),
-        vec![
-            row(EventKind::ContestWon, "", "a1ice@7000", false),
-            row(
-                EventKind::UsernameRegistered,
-                "",
-                &format!("a1ice@{NEW_MS}"),
-                true
-            ),
-        ]
+        vec![row(
+            EventKind::UsernameRegistered,
+            "",
+            &format!("a1ice@{NEW_MS}"),
+            true
+        )]
     );
 }
 
@@ -1471,11 +1470,11 @@ fn a_restore_with_many_historic_requests_makes_no_news() {
     assert_eq!(h.unread(), Some(1));
 }
 
-/// Name events: a won contest is one news event with its label (no
-/// `@stamp`), its username stored read; a name we registered counts unread
-/// but is no news (our own act).
+/// Name events: a watched contest's name is history (its win is the
+/// watch's news); a name we registered counts unread but is no news (our
+/// own act).
 #[test]
-fn a_won_contest_is_news_a_registered_name_is_not() {
+fn a_watched_name_is_history_a_registered_name_is_not_news() {
     let h = Harness::new();
     (h.appdb)
         .watch_contest(&W.to_string(), &b58(ME), "won", 77)
@@ -1485,11 +1484,8 @@ fn a_won_contest_is_news_a_registered_name_is_not() {
         Some(0),
         &[("alice", Some(NEW_MS)), ("won", Some(NEW_MS))],
     )]));
-    assert_eq!(
-        h.news(),
-        [(b58(ME), EventKind::ContestWon, None, Some("won".into()))]
-    );
-    assert_eq!(h.unread(), Some(2));
+    assert!(h.news().is_empty());
+    assert_eq!(h.unread(), Some(1));
 }
 
 /// A hidden contact's events are news like any other (DASHPAY §3.5: hiding

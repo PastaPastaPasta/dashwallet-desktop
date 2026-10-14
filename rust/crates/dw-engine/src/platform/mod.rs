@@ -5,12 +5,17 @@
 //! live in the domain files and are re-exported here one by one, so a `pub`
 //! helper never becomes API by accident.
 
+mod balances;
 mod bringup;
 mod contact_names;
 mod contacts;
 pub(crate) mod contacts_model;
 #[cfg(test)]
 mod contacts_tests;
+mod contest_watch;
+#[cfg(test)]
+mod contest_watch_tests;
+mod credit_costs;
 mod credits;
 mod dashpay;
 mod errors;
@@ -51,6 +56,9 @@ pub mod signers;
 mod startup;
 mod startup_status;
 mod status;
+mod topup;
+#[cfg(test)]
+mod topup_tests;
 pub(crate) mod trust;
 #[cfg(test)]
 mod trust_tests;
@@ -65,7 +73,8 @@ pub use contacts::{
     RequestOutcome, ScannedCode, ScannedContact,
 };
 pub use credits::{
-    CostTable, TopUpOutcome, TopUpQuote, WithdrawAmount, WithdrawOutcome, WithdrawQuote,
+    CostTable, CreditLevel, PendingTopUp, TopUpOutcome, TopUpQuote, TopUpState, WithdrawAmount,
+    WithdrawOutcome, WithdrawQuote,
 };
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{

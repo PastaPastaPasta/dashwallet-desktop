@@ -530,6 +530,8 @@ pub(super) async fn send(
         identity: intent.sender,
         contact: intent.recipient,
     };
+    // Refreshes the spent balance once the write lock is released.
+    let _refresh = session.after_spend(pair.wallet, pair.identity);
     let locks = identity_locks(pair.wallet, pair.identity);
     let _write = locks.write.lock().await;
     let own = Own::of(wallet, &pair).await?;
@@ -594,6 +596,8 @@ pub(super) async fn accept(
     if pair.identity == pair.contact {
         return Err(ContactError::IsSelf);
     }
+    // Refreshes the spent balance once the write lock is released.
+    let _refresh = session.after_spend(pair.wallet, pair.identity);
     let locks = identity_locks(pair.wallet, pair.identity);
     let _write = locks.write.lock().await;
     let mut own = Own::of(wallet, &pair).await?;
@@ -700,6 +704,8 @@ pub(super) async fn enable_keys(
         identity,
         contact: identity,
     };
+    // Refreshes the spent balance once the write lock is released.
+    let _refresh = session.after_spend(wallet_id, identity);
     let locks = identity_locks(wallet_id, identity);
     let _write = locks.write.lock().await;
     let own = Own::of(wallet, &pair).await?;

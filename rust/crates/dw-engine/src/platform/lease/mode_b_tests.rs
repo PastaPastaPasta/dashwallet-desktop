@@ -950,6 +950,67 @@ async fn a_later_funding_under_the_same_key_does_not_read_an_earlier_ones_row() 
     assert_eq!(t2.funding_status(W, C), Some(Sent));
 }
 
+/// DP1-06: a top-up's step (its marker under an `IdentityTopUp` key) reads
+/// only the locks its calls signed, across a restart too: an earlier
+/// top-up's `Consumed` row under the same key never answers for it (a
+/// step under another key reads it `Sent` after a restart, above).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_top_up_step_reads_only_its_own_signed_locks_across_a_restart() {
+    const A: &str = "topup/5-0/funding";
+    const B: &str = "topup/5-1/funding";
+    let key = FundingKey {
+        funding_type: AssetLockFundingType::IdentityTopUp,
+        identity_index: 5,
+        account: 0,
+    };
+    let step = |step: &str| CallStep::Funding {
+        step: step.into(),
+        key,
+    };
+    let lock = |txid: Txid, status| TrackedRow {
+        txid,
+        key,
+        status,
+        trusted: index_trusted(&key, status),
+        ..row(0, 5, status)
+    };
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+
+    // The first top-up's lock went out and was consumed.
+    let p = l
+        .call_permit_step("funding", quote(10, 0), step(A))
+        .await
+        .unwrap();
+    let a = sign_lost_lock(&t, &p, W);
+    assert_eq!(p.finish(true), FlowOutcome::Sent);
+    src.set_rows(W, vec![lock(a, R::Consumed)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, A), Some(Sent));
+
+    // The second signed a lock no row shows, and failed.
+    let p = l
+        .call_permit_step("funding", quote(10, 0), step(B))
+        .await
+        .unwrap();
+    let b = sign_lost_lock(&t, &p, W);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, B), Some(MaybeSent));
+
+    // A restart: the first's row is still not the second's lock.
+    let (t2, _) = reload(&j, &src).await;
+    assert_eq!(t2.funding_status(W, A), Some(Sent));
+    assert_eq!(t2.funding_status(W, B), Some(MaybeSent));
+    // Its own lock, once tracked, is.
+    src.set_rows(W, vec![lock(a, R::Consumed), lock(b, R::Broadcast)]);
+    t2.refresh_funding(W).await;
+    assert_eq!(t2.funding_status(W, B), Some(WillBeSent));
+    src.set_rows(W, vec![lock(a, R::Consumed), lock(b, R::InstantSendLocked)]);
+    t2.refresh_funding(W).await;
+    assert_eq!(t2.funding_status(W, B), Some(Sent));
+}
+
 /// A funding call's coin fence (E0-04 §2a.6) is released by the first
 /// tracked row the changeset tap reports under the call's key in its
 /// wallet that is not foreign to its step, once the call released a
@@ -2595,6 +2656,7 @@ async fn review_r3_schema3_heuristic_repair_must_not_survive_as_negative_evidenc
              ALTER TABLE funding_marker DROP COLUMN durable_record;
              DROP TABLE funding_tombstone;
              DROP TABLE funding_release;
+             DROP TABLE top_up_settled;
              DROP TABLE signed_lock;
              UPDATE meta SET v = 3 WHERE k = 'schema'",
         )
@@ -2881,6 +2943,7 @@ async fn review_r4_legacy_self_spend_and_complete_chain_scan_do_not_kill_a_withh
              ALTER TABLE funding_marker DROP COLUMN durable_record;
              DROP TABLE funding_tombstone;
              DROP TABLE funding_release;
+             DROP TABLE top_up_settled;
              DROP TABLE signed_lock;
              UPDATE meta SET v = 3 WHERE k = 'schema'",
         )
@@ -2951,6 +3014,7 @@ async fn a_legacy_step_resolves_only_by_a_fresh_recorded_self_spend() {
              ALTER TABLE funding_marker DROP COLUMN durable_record;
              DROP TABLE funding_tombstone;
              DROP TABLE funding_release;
+             DROP TABLE top_up_settled;
              UPDATE meta SET v = 4 WHERE k = 'schema'",
         )
         .unwrap();

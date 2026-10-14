@@ -4,6 +4,7 @@ use dw_engine::platform as engine;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::credits::CreditLevelName;
 use crate::dto::mirror_enum;
 use crate::dto::platform::{DashPayProfile, KeyPurposeName};
 
@@ -25,10 +26,17 @@ pub struct IdentitySummary {
     #[ts(type = "string | null")]
     #[serde(with = "crate::dto::credits::option")]
     pub balance: Option<u64>,
+    /// The Platform block time (ms) of `balance`, once refreshed.
+    pub balance_as_of: Option<u64>,
+    /// `balance` may be behind (never refreshed, older than ten minutes, or
+    /// spent since); the engine refreshes it in the background.
+    pub balance_stale: bool,
     pub has_dashpay_keys: bool,
     pub profile: Option<DashPayProfile>,
     /// Verified only through the trusted fallback.
     pub unverified: bool,
+    /// The balance against the cost table; `null` while either is unknown.
+    pub credit_level: Option<CreditLevelName>,
 }
 
 impl From<engine::IdentitySummary> for IdentitySummary {
@@ -41,9 +49,12 @@ impl From<engine::IdentitySummary> for IdentitySummary {
             names_updating,
             is_main,
             balance,
+            balance_as_of,
+            balance_stale,
             has_dashpay_keys,
             profile,
             unverified,
+            credit_level,
         } = s;
         IdentitySummary {
             identity,
@@ -53,9 +64,12 @@ impl From<engine::IdentitySummary> for IdentitySummary {
             names_updating,
             is_main,
             balance,
+            balance_as_of,
+            balance_stale,
             has_dashpay_keys,
             profile: profile.map(Into::into),
             unverified,
+            credit_level: credit_level.map(Into::into),
         }
     }
 }

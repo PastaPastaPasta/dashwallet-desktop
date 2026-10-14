@@ -150,6 +150,7 @@ fn owned(identity: &str, index: u32, list: &[(&str, Option<u64>)]) -> OwnedIdent
         open_contests: Vec::new(),
         row_owned: Vec::new(),
         balance: Some(1),
+        balance_as_of: None,
         has_dashpay_keys: true,
         profile: None,
         entities: Vec::new(),

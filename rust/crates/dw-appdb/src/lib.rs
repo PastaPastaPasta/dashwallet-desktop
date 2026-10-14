@@ -26,7 +26,7 @@ pub mod dispatch;
 mod provenance;
 mod registration;
 mod rows;
-pub use dashpay_journal::{JournalEntry, JournalPage, JournalRow};
+pub use dashpay_journal::{ContestWatch, JournalEntry, JournalPage, JournalRow};
 pub use registration::{
     Adoption, LockOutpoint, NewRegistration, RegistrationChange, RegistrationRow,
     RegistrationUpdate,

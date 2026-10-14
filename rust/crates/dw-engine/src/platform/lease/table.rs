@@ -323,6 +323,10 @@ pub struct LeaseTable {
     pub(crate) resumer: OnceLock<Arc<dyn super::resume::Resumer>>,
     /// The table itself, for work a J step's effects start.
     pub(super) me: Weak<LeaseTable>,
+    /// Rows a test's scripted library tracks, which the session's evidence
+    /// source reads with the real wallet's.
+    #[cfg(test)]
+    pub(crate) test_rows: Mutex<HashMap<WalletId, Vec<super::mode_b::TrackedRow>>>,
 }
 
 impl std::fmt::Debug for LeaseTable {
@@ -368,6 +372,8 @@ impl LeaseTable {
             refresh: tokio::sync::Mutex::new(()),
             resumer: OnceLock::new(),
             me: me.clone(),
+            #[cfg(test)]
+            test_rows: Default::default(),
         })
     }
 

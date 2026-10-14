@@ -1017,3 +1017,74 @@ fn overlapping_restores_keep_a_committed_wallets_bring_up() {
     engine.block_on(engine.shutdown()).unwrap();
     src_engine.block_on(src_engine.shutdown()).unwrap();
 }
+
+/// DP1-04 through the supervisor: right after the loops start, a pass
+/// finds the outcome of a contest that resolved while the app was closed;
+/// a watch `register_name` starts later re-arms it at once.
+#[test]
+fn the_supervisor_runs_the_contest_watch() {
+    use super::contest_watch::PollWinner;
+    use super::contest_watch_tests::{FakePolls, poll};
+    let _serial = serial();
+    let dir = dw_testutil::private_tempdir();
+    let hole = blackhole();
+    let (engine, s) = session_on(dir.path(), &hole, false);
+    let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+    give_identity(&engine, &s, id);
+    let me: dpp::prelude::Identifier = [7u8; 32].into();
+    let (w, i) = (
+        id.to_string(),
+        me.to_string(dpp::platform_value::string_encoding::Encoding::Base58),
+    );
+    let (w2, i2) = (w.clone(), i.clone());
+    engine
+        .block_on(s.appdb_op(move |db| db.watch_contest(&w2, &i2, "alice", 0)))
+        .unwrap();
+    // Resolved after this installation's first bring-up: news.
+    let later_ms = (crate::events::unix_now() + 3_600) * 1000;
+    let net = Arc::new(FakePolls::default());
+    net.set(
+        "a11ce",
+        poll(
+            Some(PollWinner::Identity([9u8; 32].into())),
+            later_ms,
+            &[7, 9],
+        ),
+    );
+    net.set("b0b", poll(Some(PollWinner::Locked), later_ms, &[7]));
+    *s.platform.contests.net.lock().unwrap() = Some(Arc::clone(&net));
+
+    engine.block_on(s.start_spv()).unwrap();
+    let kinds = || {
+        let w = w.clone();
+        let rows = engine
+            .block_on(s.appdb_op(move |db| db.journal(&w)))
+            .unwrap();
+        (rows.into_iter())
+            .filter(|r| r.kind.starts_with("contest_"))
+            .map(|r| (r.kind, r.reference))
+            .collect::<Vec<_>>()
+    };
+    wait_until("the first pass's outcome", Duration::from_secs(60), || {
+        !kinds().is_empty()
+    });
+    assert_eq!(
+        kinds(),
+        [("contest_lost".to_string(), "alice@0".to_string())]
+    );
+
+    let manager = s.manager().unwrap();
+    let s2 = Arc::clone(&s);
+    engine.block_on(async move {
+        let wallet = manager.get_wallet(&id.0).await.unwrap();
+        s2.start_watching(&wallet, id, &me, "bob", Some(5)).await;
+    });
+    wait_until("the re-armed pass", Duration::from_secs(30), || {
+        kinds().len() == 2
+    });
+    assert_eq!(
+        kinds()[1],
+        ("contest_locked".to_string(), "bob@5".to_string())
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
