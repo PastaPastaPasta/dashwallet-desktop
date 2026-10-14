@@ -169,7 +169,7 @@ pub fn run() {
         base = base.plugin(window_state);
     }
     let app = app_builder(base, launch, started, dw_vault::VaultConfig::default())
-        .menu(|handle| shell::menu::build(handle))
+        .menu(shell::menu::build)
         .on_menu_event(shell::menu::handle)
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {
