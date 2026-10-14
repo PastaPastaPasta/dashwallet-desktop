@@ -244,6 +244,8 @@ impl NetworkSession {
         }
         // A contest that ended while the app was closed shows at once.
         let mut contests_at = Some(Instant::now());
+        // No pass before this, whatever asks for one: one a second at most.
+        let mut contests_floor = Instant::now();
 
         // The session must not be kept open by a task only close ends.
         let session: Weak<Self> = Arc::downgrade(&self);
@@ -283,9 +285,9 @@ impl NetworkSession {
                     {
                         return;
                     }
-                    // At most one pass a second, whatever a row's due time.
-                    let floor = Instant::now() + Duration::from_secs(1);
-                    contests_at = (this.next_contest_pass(&manager).await).map(|at| at.max(floor));
+                    contests_floor = Instant::now() + Duration::from_secs(1);
+                    let next = this.next_contest_pass(&manager).await;
+                    contests_at = next.map(|at| at.max(contests_floor));
                     continue;
                 }
             };
@@ -295,7 +297,7 @@ impl NetworkSession {
             };
             let (wallets, job) = match signal {
                 PlatformSignal::Contests => {
-                    contests_at = Some(Instant::now());
+                    contests_at = Some(contests_floor.max(Instant::now()));
                     continue;
                 }
                 PlatformSignal::Unlocked => {
@@ -314,7 +316,7 @@ impl NetworkSession {
                 PlatformSignal::WalletAdded(id) | PlatformSignal::Readmit(id) => {
                     admitted.insert(id, this.platform.stamp());
                     // Its open contests are adopted at once.
-                    contests_at = Some(Instant::now());
+                    contests_at = Some(contests_floor.max(Instant::now()));
                     (vec![id], Job::BringUp)
                 }
             };

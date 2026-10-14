@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use dpp::prelude::Identifier;
+
 use dw_appdb::ContestWatch;
 use zeroize::Zeroizing;
 
@@ -25,13 +27,16 @@ const ME: u8 = 1;
 const BOB: u8 = 2;
 const CAROL: u8 = 3;
 
-/// Platform's vote states and end-date index, scripted.
+/// Platform's vote states and end-date index, scripted, cut to a page as
+/// Drive cuts them; every request counted.
 #[derive(Default)]
 pub(crate) struct FakePolls {
     polls: Mutex<BTreeMap<String, Poll>>,
     ends: Mutex<BTreeMap<String, u64>>,
     poll_calls: AtomicU32,
     ends_calls: AtomicU32,
+    /// The `limit` of each end-date request.
+    end_limits: Mutex<Vec<u16>>,
     /// Holds the next vote-state query until released.
     hold: Mutex<Option<Arc<Held>>>,
 }
@@ -61,23 +66,63 @@ impl FakePolls {
 }
 
 impl ContestNet for FakePolls {
-    async fn poll(&self, normalized: &str) -> Result<Poll, PlatformError> {
+    async fn page(&self, normalized: &str, limit: u16) -> Result<Poll, PlatformError> {
         self.poll_calls.fetch_add(1, Ordering::SeqCst);
         let held = guard(&self.hold).take();
         if let Some(held) = held {
             held.reached.store(true, Ordering::SeqCst);
             held.release.notified().await;
         }
-        Ok(guard(&self.polls)
-            .get(normalized)
-            .cloned()
-            .unwrap_or_default())
+        let mut poll = (guard(&self.polls).get(normalized).cloned()).unwrap_or_default();
+        // Drive keys an open poll's contenders by identity and pages them;
+        // a resolved poll answers its stored result, every contender.
+        poll.contenders.sort_by_key(|(id, _)| id.to_buffer());
+        if poll.winner.is_none() {
+            poll.contenders.truncate(usize::from(limit));
+        }
+        Ok(poll)
     }
 
-    async fn ends(&self) -> Result<BTreeMap<String, u64>, PlatformError> {
+    async fn end_page(
+        &self,
+        from: u64,
+        limit: u16,
+    ) -> Result<BTreeMap<String, u64>, PlatformError> {
         self.ends_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(guard(&self.ends).clone())
+        guard(&self.end_limits).push(limit);
+        let mut ends: Vec<(u64, String)> = (guard(&self.ends).iter())
+            .filter(|&(_, &end)| end >= from)
+            .map(|(label, &end)| (end, label.clone()))
+            .collect();
+        ends.sort();
+        ends.truncate(usize::from(limit));
+        Ok(ends.into_iter().map(|(end, label)| (label, end)).collect())
     }
+}
+
+/// `n` contenders who all sort before [`ME`] (identity order), with `ME`
+/// after them when `with_me`.
+fn crowd(winner: Option<PollWinner>, at_ms: u64, n: u8, with_me: bool) -> Poll {
+    let early = |k: u8| {
+        let mut bytes = [0u8; 32];
+        bytes[1] = k;
+        Identifier::from(bytes)
+    };
+    let mut contenders: Vec<(Identifier, Option<u32>)> =
+        (0..n).map(|k| (early(k), Some(1))).collect();
+    if with_me {
+        contenders.push((id(ME), Some(0)));
+    }
+    Poll {
+        winner: winner.map(|w| (w, at_ms)),
+        contenders,
+        lock_votes: Some(0),
+        abstain_votes: Some(0),
+    }
+}
+
+fn first_of_crowd() -> Identifier {
+    Identifier::from([0u8; 32])
 }
 
 /// A poll with `contenders` (each `n` with `n` votes), resolved as `winner`.
@@ -291,17 +336,32 @@ fn every_vote_state_has_one_verdict() {
     for (poll, expected) in cases {
         assert_eq!(verdict(&poll, &me), expected, "{poll:?}");
     }
-    // A full page may not list us: never Unplaced.
+    // An open poll's full page may not list us: open, never unplaced; one
+    // short of full that lacks us is complete. A resolved poll lists every
+    // contender, so however many, lacking us is unplaced.
     let full = Poll {
         contenders: (0..100u8).map(|n| (id(n + 10), None)).collect(),
         ..Poll::default()
     };
     assert_eq!(verdict(&full, &me), Verdict::Open);
-    let lost = Poll {
+    let mut short = full.clone();
+    short.contenders.pop();
+    assert_eq!(verdict(&short, &me), Verdict::Unplaced);
+    let resolved = Poll {
         winner: Some((PollWinner::Identity(id(BOB)), at)),
+        ..full.clone()
+    };
+    assert_eq!(verdict(&resolved, &me), Verdict::Unplaced);
+    let locked = Poll {
+        winner: Some((PollWinner::Locked, at)),
+        ..full.clone()
+    };
+    assert_eq!(verdict(&locked, &me), Verdict::Unplaced);
+    let won = Poll {
+        winner: Some((PollWinner::Identity(me), at)),
         ..full
     };
-    assert!(matches!(verdict(&lost, &me), Verdict::Lost { .. }));
+    assert_eq!(verdict(&won, &me), Verdict::Won { at });
 }
 
 #[test]
@@ -600,11 +660,139 @@ fn a_pass_asks_about_sixteen_rows_at_most() {
     }
     let net = FakePolls::default();
     f.pass(&net).unwrap();
-    assert_eq!(net.calls(), (u32::try_from(PASS_CAP).unwrap(), 1));
+    assert_eq!(net.calls(), (16, 1), "sixteen rows, one end-date page");
+    // The other four next pass; then nothing is due.
+    f.pass(&net).unwrap();
+    assert_eq!(net.calls(), (16 + 4, 2));
     f.pass(&net).unwrap();
     assert_eq!(net.calls(), (20, 2));
+}
+
+/// D1's budget, end dates: one end-date request a pass, of one page of
+/// [`ENDS_PAGE`] polls, however many end later; a row whose end is beyond
+/// it stays unknown (and on the 10-minute cadence).
+#[test]
+fn a_pass_reads_one_end_date_page() {
+    let f = Fixture::new(true);
+    f.contending("alice");
+    f.watch("alice", 0);
+    f.watch("bob", 0);
+    let net = FakePolls::default();
+    let soon = unix_now() + 600;
+    for n in 0..150u64 {
+        net.set_end(&format!("p{n:03}"), soon + n);
+    }
+    net.set_end("b0b", soon);
+    net.set_end("a11ce", soon + 1_000);
+    net.set("a11ce", poll(None, 0, &[ME]));
+    net.set("b0b", poll(None, 0, &[ME]));
     f.pass(&net).unwrap();
-    assert_eq!(net.calls(), (20, 2));
+    assert_eq!(net.calls(), (2, 1));
+    assert_eq!(*guard(&net.end_limits), [100]);
+    let ends: Vec<(String, u64)> = (f.watches().into_iter())
+        .map(|r| (r.label, r.ends_at))
+        .collect();
+    assert_eq!(ends, [("alice".into(), 0), ("bob".into(), soon)]);
+}
+
+/// D2/D7 (Sol r1 #2): an open poll's full first page without us proves
+/// nothing, so the row stays open (no unplaced streak, no outcome) and
+/// asks again, one request a time. Resolved, Drive answers every
+/// contender: listed, the outcome is ours; not listed, unplaced.
+#[test]
+fn a_full_open_page_without_us_keeps_the_watch_open() {
+    let f = Fixture::new(true);
+    f.contending("alice");
+    f.watch("alice", 9_000);
+    let net = FakePolls::default();
+    let at = now_ms();
+    // We sort after a hundred others: off the open poll's page.
+    net.set("a11ce", crowd(None, 0, 100, true));
+    f.pass(&net).unwrap();
+    assert_eq!(net.calls(), (1, 0));
+    assert_eq!(f.watches(), [watch("alice", 9_000, Some("open"))]);
+    f.later();
+    f.pass(&net).unwrap();
+    assert_eq!(net.calls(), (2, 0));
+    assert_eq!(f.watches(), [watch("alice", 9_000, Some("open"))]);
+
+    // Resolved: all 101 listed, us among them.
+    let lost = Some(PollWinner::Identity(first_of_crowd()));
+    net.set("a11ce", crowd(lost, at, 100, true));
+    f.later();
+    f.pass(&net).unwrap();
+    assert_eq!(net.calls(), (3, 0));
+    assert_eq!(f.outcomes(), [row("contest_lost", "alice@9000", false)]);
+
+    // Resolved without us: unplaced, no outcome.
+    f.watch("bob", 9_000);
+    net.set("b0b", crowd(lost, at, 100, false));
+    f.later();
+    f.pass(&net).unwrap();
+    assert_eq!(net.calls(), (4, 0));
+    assert_eq!(f.outcomes().len(), 1);
+    let seen = Seen::parse(f.watches()[0].last_state.as_deref());
+    assert!(matches!(seen, Seen::Unplaced { .. }), "{seen:?}");
+}
+
+/// Sol r1 #1: on a restore, the marketplace lists a won name before its
+/// name-state row and before the watch asks. The win is still the watch's
+/// alone, aged by the resolving block, so an old win is stored read; the
+/// username is history.
+#[test]
+fn an_old_win_listed_before_the_watch_asks_is_stored_read() {
+    let f = Fixture::new(true);
+    f.contending("alice");
+    f.watch("alice", 9_000);
+    let tap = f.s.live().unwrap().tap;
+    assert!(tap.move_boundary_to(f.wallet, unix_now() + 60, false));
+    f.list("alice");
+    assert_eq!(f.outcomes(), [row("username_registered", "alice@7", true)]);
+
+    let net = FakePolls::default();
+    let at = now_ms();
+    net.set(
+        "a11ce",
+        poll(Some(PollWinner::Identity(id(ME))), at, &[ME, BOB]),
+    );
+    f.pass(&net).unwrap();
+    assert_eq!(
+        f.outcomes(),
+        [
+            row("username_registered", "alice@7", true),
+            row("contest_won", "alice@9000", true),
+        ]
+    );
+    assert!(f.no_news());
+    assert!(f.watches().is_empty());
+    assert!(f.open_contests().is_empty());
+}
+
+/// The same order live (no restore): the name is history and the watch's
+/// win is the one news event.
+#[test]
+fn a_win_listed_before_the_watch_asks_is_one_news_event() {
+    let f = Fixture::new(true);
+    f.contending("alice");
+    f.watch("alice", 9_000);
+    f.list("alice");
+    let net = FakePolls::default();
+    net.set(
+        "a11ce",
+        poll(Some(PollWinner::Identity(id(ME))), now_ms(), &[ME]),
+    );
+    f.pass(&net).unwrap();
+    assert_eq!(
+        f.outcomes(),
+        [
+            row("username_registered", "alice@7", true),
+            row("contest_won", "alice@9000", false),
+        ]
+    );
+    assert_eq!(f.news_after(1), [EventKind::ContestWon]);
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(f.news_kinds(), [EventKind::ContestWon]);
+    assert!(f.watches().is_empty());
 }
 
 /// D4 (DP2-05's rule): a pass that read the wallet before its removal and
@@ -678,22 +866,24 @@ fn contest_status_reads_the_poll_and_applies_an_outcome() {
     };
 
     net.set("a11ce", poll(None, 0, &[BOB, ME]));
-    net.set_end("a11ce", 77_000);
+    let end = unix_now() + 3_600;
+    net.set_end("a11ce", end);
     let open = status("alice").unwrap();
     assert_eq!(open.state, ContestState::Open);
-    assert_eq!(open.ends_at, Some(77_000));
+    assert_eq!(open.ends_at, Some(end));
+    // In identity order, as Drive pages them.
     assert_eq!(
         open.contenders,
         [
             ContestContender {
-                identity: b58(BOB),
-                votes: Some(2),
-                is_self: false,
-            },
-            ContestContender {
                 identity: b58(ME),
                 votes: Some(1),
                 is_self: true,
+            },
+            ContestContender {
+                identity: b58(BOB),
+                votes: Some(2),
+                is_self: false,
             },
         ]
     );
@@ -794,13 +984,13 @@ fn t2_testnet_polls_give_won_lost_and_locked() {
         .block_on(engine.open_network(DashNetwork::Testnet, SessionOptions::default()))
         .unwrap();
     let net = SdkContests(s.manager().unwrap().sdk_arc());
-    let ends = engine.block_on(net.ends()).unwrap();
+    let ends = engine.block_on(ends_page(&net)).unwrap();
     eprintln!("end-date index: {ends:?}");
     let mut labels: Vec<String> = TESTNET_LABELS.iter().map(|l| l.to_string()).collect();
     labels.extend(ends.keys().cloned());
     let mut seen = BTreeMap::<&str, Vec<String>>::new();
     for label in &labels {
-        let poll = engine.block_on(net.poll(label)).unwrap();
+        let poll = engine.block_on(net.page(label, POLL_PAGE)).unwrap();
         eprintln!(
             "{label}: winner {:?}, {} contenders, lock {:?}, abstain {:?}",
             poll.winner,

@@ -1823,10 +1823,10 @@ The shapes are in §3. What they mean, where the name does not say:
     signals follow the persister's acceptance and stay best-effort display data. The `dp_trust_unverified` table
     of the `dashpay` migration is dormant: nothing writes it, and it stays only because the schema is append-only
     and the `.dwbackup` wallet rows (E0-07) list it.
-  - **contest watches:** a label in `dp_contest_watch` that becomes an owned name is journaled `ContestWon` (ref the
-    row's label and `ends_at`), with its `UsernameRegistered` stored read. DP1-04's watch deletes the row once the
-    contest resolved and, for a win, the library lists the name; a row left behind would call a later purchase of
-    the label a win.
+  - **contest watches:** a label in `dp_contest_watch` that becomes an owned name journals only its
+    `UsernameRegistered`, stored read; its `ContestWon` (ref the row's label and `ends_at`) is DP1-04's watch's to
+    journal, aged by the block that resolved the poll (item 44). The watch deletes the row once the contest
+    resolved and, for a win, the library lists the name; a row left behind would hide a later purchase of the label.
   - **the feed (DP2-05):** `DashPayEvent` is a journal row as stored, with `reference` as above (`@…` dropped, `None`
     when empty) and `contact` `None` when empty; `at` is when the row was journaled (UNIX s, local), `read_at` when it
     was read (stored read: the journal time). A row of a kind this build does not know is left out. Read state is
@@ -2282,9 +2282,9 @@ renames or reshapes them takes the next version bump:
     - **Residual (accepted): a restore's names may count unread.** DEC-114 (4): a name journaled before its
       marketplace time is known is stored unread, so a restored identity's names can show in the bell's `new` and
       count once. They are never OS news (`UsernameRegistered` does not notify); the public-testnet T2 run saw two.
-    - **Residual (accepted): a restored contest watch.** `dp_contest_watch` travels in `.dwbackup`, so a bundle
-      restored while its contest was open can journal `ContestWon` unread, and notify it, if the name's
-      marketplace time is not yet known (DEC-114 (4)). It is the outcome of a contest the user watched.
+    - **A restored contest watch** (closed by DP1-04). `dp_contest_watch` travels in `.dwbackup`; the watch, not
+      the name snapshot, journals its `ContestWon`, aged by the resolving block, so an old win a restore finds is
+      stored read like any history (item 44).
     - **Residual (accepted): an ignored sender's late row.** The library stops ingesting an ignored sender's
       requests, so no new row comes from them; one that did (a journal write that had failed before the ignore)
       would count unread while `events` leaves it out, until a `mark_read(u64::MAX)` or the next `ignore`.
@@ -2306,26 +2306,32 @@ renames or reshapes them takes the next version bump:
       identity → `ContestWon`, another identity → `ContestLost`, `Locked` → `ContestLocked` (nobody gets the name,
       now or later at this pin; no outcome returns the contest fund; another name can be requested), `NoWinner`
       (Drive stores it only for a poll with no contender) → `ContestLost`. No winner while the identity is among
-      the contenders is still voting. A poll that does not list the identity on a complete page (resolved or
-      not), or no poll at all, is no outcome (`contest_status` refuses it with `invalid_argument` unless the label
-      is watched); such a row stops being watched after a day, with no event. The event's age is the time of the
+      the contenders is still voting, and so is an open poll's full page of 100 contenders (a contest allows
+      1,000) that does not list the identity: it may be on a later page, so the row is asked again each time it is
+      due. A resolved poll lists every contender (Drive answers its stored result, whatever the limit). A poll whose
+      complete list lacks the identity (resolved, or open and short of a full page), or no poll at all, is no
+      outcome (`contest_status` refuses it with `invalid_argument` unless the label is watched); such a row stops
+      being watched after a day, with no event. The event's age is the time of the
       block that resolved the poll (authoritative), so catch-up silence applies: a restore that finds an old outcome
       stores it read.
     - **After an outcome.** A loss or lock is journaled, then the label leaves the library's open contests and the
-      row goes. A win is journaled at once; the row stays (`won:<ms>:<since>`, no further query) until the library
-      lists the name, so the tap's own `ContestWon` for that snapshot is the same row and the name's
-      `UsernameRegistered` is stored read; the watch asks the marketplace loop for a pass at most every 10 minutes
-      meanwhile, and stops waiting after a day (a later listing is a plain `UsernameRegistered`). The event's ref is
+      row goes. Only the watch journals `ContestWon`: the tap's name path stores a watched label's
+      `UsernameRegistered` read and journals no win of its own, whichever comes first (the marketplace may list a
+      name before its name-state row and before the watch asks), so a win's age is always its resolving block. A
+      win is journaled at once; the row stays (`won:<ms>:<since>`, no further query) until the library lists the
+      name; the watch asks the marketplace loop for a pass at most every 10 minutes meanwhile, and stops waiting
+      after a day (a later listing is a plain `UsernameRegistered`). The event's ref is
       `label@ends_at` with the row's stored end, so a retry names the same event; the journal write comes first, and
       a failed write is retried at the next pass (the dedup key makes it one row).
     - **Cadence and budget.** The supervisor (E0-05) runs a pass for every wallet right after the loops start (a
       contest that ended while the app was closed shows at once), after a wallet is brought up while SPV runs, and
       when `register_name` writes a row; then when the next row is due: every 10 minutes while its end is unknown
       or more than an hour away, every minute from an hour before the end to an hour after it, every 10 minutes
-      after that, a won row every minute (no query); at most one pass a second. No rows, no timer. A pass asks one
-      vote state per due row, in turn, at most 16 rows per wallet (the longest unchecked first, the rest next pass),
-      and the end-date index once while a due row's end is unknown (its first page: polls ending from an hour ago
-      on, which an end inside a long backlog can miss; the row then stays at 10 minutes); it has 20 s.
+      after that, a won row every minute (no query); at most one pass a second, however it is asked for. No rows, no
+      timer. A pass makes one vote-state request per due row (one page), in turn, at most 16 rows per wallet (the
+      longest unchecked first, the rest next pass), and one end-date request (one page of 100 polls, the
+      soonest-ending from an hour ago on) while a due row's end is unknown; a row whose end is past that page keeps
+      the 10-minute cadence. It has 20 s.
       `PlatformCadence.contest_ending_soon` now only speeds the marketplace loop (m1-engine item 8).
     - **Not before a bring-up.** A wallet with no catch-up boundary yet (a restore whose pass would come before its
       first bring-up here) is not watched and arms no timer; its bring-up re-arms the watch, so an old outcome a

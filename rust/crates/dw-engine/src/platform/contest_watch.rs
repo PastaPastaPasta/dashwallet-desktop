@@ -13,23 +13,25 @@
 //!   end), every 10 minutes again after that. The supervisor runs one pass
 //!   right after the loops start, so a contest that ended while the app was
 //!   closed shows at once, and re-arms when a row is written. No rows, no
-//!   timer and no request. A pass asks one vote state per due row, at most
-//!   [`PASS_CAP`] rows, and the end-date index once while a due row's end is
-//!   unknown.
+//!   timer and no request. A pass asks one vote-state page per due row, at
+//!   most [`PASS_CAP`] rows, and one end-date page ([`ends_page`]) while a
+//!   due row's end is unknown.
 //! - **Outcomes** ([`verdict`]). The vote state's winner decides: this
 //!   identity won, another identity won (lost), or masternodes locked the
 //!   name (nobody gets it, now or later at this pin, and no outcome returns
 //!   the contest fund). No winner while the identity contends is still
-//!   voting. A row whose identity is not among the contenders, or whose
-//!   label has no poll, is `Unplaced`: no outcome, and the row goes once
-//!   that has lasted [`UNPLACED_FOR`].
+//!   voting, and so is an open poll's full page that does not list the
+//!   identity (it may be on a later one). A resolved poll lists every
+//!   contender. A row whose identity a complete list lacks, or whose label
+//!   has no poll, is `Unplaced`: no outcome, and the row goes once that has
+//!   lasted [`UNPLACED_FOR`].
 //! - **Journal.** Outcomes go through the changeset tap's one news writer
 //!   (`ChangesetTap::journal`): a feed row, the unread count and
 //!   `DashPayNews`, with catch-up silence by the time of the block that
-//!   resolved the poll. A win is journaled at once and its row stays until
-//!   the library lists the name, so the tap's own `ContestWon` for that
-//!   snapshot is the same row and the name's `UsernameRegistered` is stored
-//!   read. A loss or lock leaves the open contests with its row.
+//!   resolved the poll. The watch alone journals `ContestWon`: the tap
+//!   stores a watched label's `UsernameRegistered` read and journals no win
+//!   of its own, whichever comes first. A win's row stays until the library
+//!   lists the name. A loss or lock leaves the open contests with its row.
 //! - **Fencing** (DP2-05's rule for a removal and a reimport). The network
 //!   reads run unfenced; every write of a pass holds the wallet's
 //!   [`super::private_details::WriteFences`] fence for the `PlatformWallet`
@@ -41,12 +43,21 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dash_sdk::drive::config::DEFAULT_QUERY_LIMIT;
-use dash_sdk::query_types::Contenders;
+use dash_sdk::drive::query::VotePollsByEndDateDriveQuery;
+use dash_sdk::drive::query::vote_poll_vote_state_query::{
+    ContestedDocumentVotePollDriveQuery, ContestedDocumentVotePollDriveQueryResultType,
+};
+use dash_sdk::platform::FetchMany;
+use dash_sdk::query_types::{Contenders, VotePollsGroupedByTimestamp};
+use dpp::platform_value::Value;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
+use dpp::system_data_contracts::SystemDataContract;
 use dpp::util::strings::convert_to_homograph_safe_chars;
+use dpp::voting::contender_structs::ContenderWithSerializedDocument;
 use dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
+use dpp::voting::vote_polls::VotePoll;
+use dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
 use dw_appdb::ContestWatch;
 use platform_wallet::PlatformWallet;
 
@@ -82,6 +93,13 @@ const MARKETPLACE_EVERY: u64 = 600;
 /// How long a won row waits for the library to list the name, seconds; a
 /// later listing is then a plain `UsernameRegistered`.
 const WON_FOR: u64 = 24 * 3600;
+/// Contenders on the one vote-state page a row's check reads while the
+/// poll is open (Drive's default; a contest may have 1,000). A resolved
+/// poll's answer is its stored result, every contender whatever the limit.
+pub(super) const POLL_PAGE: u16 = 100;
+/// Polls on the one end-date page a pass reads: the soonest-ending from an
+/// hour ago on, which are the ones the 1-minute cadence needs.
+pub(super) const ENDS_PAGE: u16 = 100;
 
 /// A vote poll as the watch reads it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -89,7 +107,8 @@ pub(crate) struct Poll {
     /// Set once the poll resolved, with the time (ms) of the block that
     /// resolved it.
     pub(crate) winner: Option<(PollWinner, u64)>,
-    /// As far as one vote-state page lists them, with their tallies.
+    /// With their tallies: every contender once the poll resolved (Drive
+    /// stores them all), else the first [`POLL_PAGE`] in identity order.
     pub(crate) contenders: Vec<(Identifier, Option<u32>)>,
     pub(crate) lock_votes: Option<u32>,
     pub(crate) abstain_votes: Option<u32>,
@@ -123,16 +142,22 @@ impl Poll {
         }
     }
 
-    /// Whether `contenders` may miss some: the page is full.
+    fn lists(&self, me: &Identifier) -> bool {
+        self.contenders.iter().any(|(id, _)| id == me)
+    }
+
+    /// Whether a contender `contenders` lacks may be on a later page: an
+    /// open poll's full page.
     fn truncated(&self) -> bool {
-        self.contenders.len() >= usize::from(DEFAULT_QUERY_LIMIT)
+        self.winner.is_none() && self.contenders.len() >= usize::from(POLL_PAGE)
     }
 }
 
 /// What a poll means for one of its contenders (DP1-04 D2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Verdict {
-    /// Voting, or ended and waiting for the block that resolves it.
+    /// Voting, or ended and waiting for the block that resolves it (its
+    /// full page need not list the identity).
     Open,
     Won {
         at: u64,
@@ -152,10 +177,13 @@ pub(crate) enum Verdict {
 
 /// The verdict of `poll` for `me`; `at` is the resolving block's time (ms).
 pub(crate) fn verdict(poll: &Poll, me: &Identifier) -> Verdict {
-    let placed = poll.contenders.iter().any(|(id, _)| id == me) || poll.truncated();
     match poll.winner {
+        // The winner contended.
         Some((PollWinner::Identity(id), at)) if id == *me => Verdict::Won { at },
-        _ if !placed => Verdict::Unplaced,
+        // An open poll's full page proves nothing about a contender it
+        // lacks; a resolved poll lists them all.
+        _ if !poll.lists(me) && poll.truncated() => Verdict::Open,
+        _ if !poll.lists(me) => Verdict::Unplaced,
         Some((PollWinner::Identity(id), at)) => Verdict::Lost {
             winner: Some(id),
             at,
@@ -240,34 +268,85 @@ pub(crate) fn due_at(row: &ContestWatch, checked: Option<u64>) -> u64 {
 /// What a pass asks of Platform, behind a seam: [`SdkContests`] asks the
 /// SDK; the tests script it.
 pub(crate) trait ContestNet: Send + Sync {
-    /// The vote state of the poll for `normalized`, contenders with their
-    /// tallies.
-    fn poll(&self, normalized: &str) -> impl Future<Output = Result<Poll, PlatformError>> + Send;
-    /// The end (UNIX s) of every poll still in the end-date index, by
-    /// normalized label.
-    fn ends(&self) -> impl Future<Output = Result<BTreeMap<String, u64>, PlatformError>> + Send;
+    /// One vote-state request for the poll for `normalized`: the winner,
+    /// the tallies, and the first `limit` contenders in identity order.
+    fn page(
+        &self,
+        normalized: &str,
+        limit: u16,
+    ) -> impl Future<Output = Result<Poll, PlatformError>> + Send;
+    /// One end-date request: the end (UNIX s) of at most `limit` polls,
+    /// the soonest ending from `from` (UNIX s) on, by normalized label.
+    fn end_page(
+        &self,
+        from: u64,
+        limit: u16,
+    ) -> impl Future<Output = Result<BTreeMap<String, u64>, PlatformError>> + Send;
+}
+
+/// The one end-date page a pass reads ([`ENDS_PAGE`]): a poll stays in the
+/// index until the block that resolves it, so from an hour ago on.
+pub(crate) async fn ends_page(
+    net: &impl ContestNet,
+) -> Result<BTreeMap<String, u64>, PlatformError> {
+    let from = unix_now().saturating_sub(ENDING_WINDOW);
+    net.end_page(from, ENDS_PAGE).await
 }
 
 pub(crate) struct SdkContests(pub(crate) Arc<dash_sdk::Sdk>);
 
+/// DPNS's `domain` poll for `normalized`, as the SDK's own DPNS queries
+/// name it.
+fn dpns_poll(normalized: &str) -> ContestedDocumentResourceVotePoll {
+    ContestedDocumentResourceVotePoll {
+        contract_id: SystemDataContract::DPNS.id(),
+        document_type_name: "domain".into(),
+        index_name: "parentNameAndLabel".into(),
+        index_values: vec![Value::Text("dash".into()), Value::Text(normalized.into())],
+    }
+}
+
+// One request each: the SDK's `get_current_dpns_contests` pages on its own.
 impl ContestNet for SdkContests {
-    async fn poll(&self, normalized: &str) -> Result<Poll, PlatformError> {
-        let state = self
-            .0
-            .get_contested_dpns_vote_state(normalized, None)
-            .await?;
+    async fn page(&self, normalized: &str, limit: u16) -> Result<Poll, PlatformError> {
+        let query = ContestedDocumentVotePollDriveQuery {
+            vote_poll: dpns_poll(normalized),
+            result_type: ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
+            allow_include_locked_and_abstaining_vote_tally: true,
+            start_at: None,
+            limit: Some(limit),
+            offset: None,
+        };
+        let state = ContenderWithSerializedDocument::fetch_many(&self.0, query).await?;
         Ok(Poll::of(state))
     }
 
-    async fn ends(&self) -> Result<BTreeMap<String, u64>, PlatformError> {
-        // A poll stays in the index until the block that resolves it.
-        let from = unix_now()
-            .saturating_sub(ENDING_WINDOW)
-            .saturating_mul(1000);
-        let ends = (self.0)
-            .get_current_dpns_contests(Some(from), None, None)
-            .await?;
-        Ok(ends.into_iter().map(|(l, ms)| (l, ms / 1000)).collect())
+    async fn end_page(
+        &self,
+        from: u64,
+        limit: u16,
+    ) -> Result<BTreeMap<String, u64>, PlatformError> {
+        let query = VotePollsByEndDateDriveQuery {
+            start_time: Some((from.saturating_mul(1000), true)),
+            end_time: None,
+            limit: Some(limit),
+            offset: None,
+            order_ascending: true,
+        };
+        let groups: VotePollsGroupedByTimestamp = VotePoll::fetch_many(&self.0, query).await?;
+        let dpns = SystemDataContract::DPNS.id();
+        let mut ends = BTreeMap::new();
+        for (ms, polls) in groups.0 {
+            for VotePoll::ContestedDocumentResourceVotePoll(poll) in polls {
+                if poll.contract_id == dpns
+                    && poll.document_type_name == "domain"
+                    && let Some(Value::Text(label)) = poll.index_values.get(1)
+                {
+                    ends.insert(label.clone(), ms / 1000);
+                }
+            }
+        }
+        Ok(ends)
     }
 }
 
@@ -455,7 +534,7 @@ impl NetworkSession {
             row.ends_at == 0 && !matches!(Seen::parse(row.last_state.as_deref()), Seen::Won { .. })
         });
         let ends = if unknown_end {
-            net.ends().await.unwrap_or_else(|e| {
+            ends_page(net).await.unwrap_or_else(|e| {
                 tracing::info!(wallet_id = %id, "contest ends unavailable: {e}");
                 BTreeMap::new()
             })
@@ -474,7 +553,7 @@ impl NetworkSession {
                     .await?;
                 continue;
             }
-            let poll = match net.poll(&normalized).await {
+            let poll = match net.page(&normalized, POLL_PAGE).await {
                 Ok(poll) => poll,
                 Err(e) => {
                     tracing::info!(wallet_id = %id, label = %normalized, "vote state unavailable: {e}");
@@ -596,8 +675,8 @@ impl NetworkSession {
                 return Ok(());
             }
             Verdict::Won { at } => {
-                // Before the event: the tap's own `ContestWon` for the
-                // name's snapshot reads the same row.
+                // Before the event: a won row waits for the listing with no
+                // query.
                 if !matches!(seen, Seen::Won { at: seen_at, .. } if seen_at == at) {
                     let won = Seen::Won { at, since: now };
                     self.fenced_op(&fence, "watch", set_state(won)).await?;
@@ -679,7 +758,7 @@ impl NetworkSession {
         let mine = identities_of(wallet).await;
         let me =
             (mine.get(&b58(&identity))).ok_or(PlatformError::Identity(IdentityError::NotFound))?;
-        let poll = net.poll(normalized).await?;
+        let poll = net.page(normalized, POLL_PAGE).await?;
         let w = id.to_string();
         let rows = self
             .appdb_op(move |db| db.wallet_contest_watches(&w))
@@ -703,11 +782,7 @@ impl NetworkSession {
         };
         let mut ends_at = row.as_ref().map(|r| r.ends_at).filter(|&end| end > 0);
         if ends_at.is_none() && state == ContestState::Open {
-            ends_at = net
-                .ends()
-                .await
-                .ok()
-                .and_then(|e| e.get(normalized).copied());
+            ends_at = (ends_page(net).await.ok()).and_then(|e| e.get(normalized).copied());
         }
         if let Some(row) = &row
             && state != ContestState::Open
@@ -795,19 +870,23 @@ pub(crate) enum SdkOrFake {
 }
 
 impl ContestNet for SdkOrFake {
-    async fn poll(&self, normalized: &str) -> Result<Poll, PlatformError> {
+    async fn page(&self, normalized: &str, limit: u16) -> Result<Poll, PlatformError> {
         match self {
-            Self::Sdk(net) => net.poll(normalized).await,
+            Self::Sdk(net) => net.page(normalized, limit).await,
             #[cfg(test)]
-            Self::Fake(net) => net.poll(normalized).await,
+            Self::Fake(net) => net.page(normalized, limit).await,
         }
     }
 
-    async fn ends(&self) -> Result<BTreeMap<String, u64>, PlatformError> {
+    async fn end_page(
+        &self,
+        from: u64,
+        limit: u16,
+    ) -> Result<BTreeMap<String, u64>, PlatformError> {
         match self {
-            Self::Sdk(net) => net.ends().await,
+            Self::Sdk(net) => net.end_page(from, limit).await,
             #[cfg(test)]
-            Self::Fake(net) => net.ends().await,
+            Self::Fake(net) => net.end_page(from, limit).await,
         }
     }
 }

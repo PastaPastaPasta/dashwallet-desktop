@@ -975,12 +975,14 @@ impl ChangesetTap {
         (news, unread)
     }
 
-    /// The name events. A name won in a watched contest is `ContestWon`,
-    /// and its `UsernameRegistered` is history, so the win is one
-    /// notification and a later snapshot of the name adds none. Lost and
-    /// locked outcomes need Platform's answer: DP1-04's contest watch
-    /// writes them, and removes the watch row when the contest resolves (a
-    /// row left behind would call a later purchase of the label a win).
+    /// The name events: `UsernameRegistered` for each listed name. A name
+    /// in a watched contest is history (stored read): every outcome of a
+    /// contest, the win too, is DP1-04's contest watch's to journal, aged
+    /// by the block that resolved its poll, so a restore's old win is
+    /// stored read even when the name is listed before the watch asks (the
+    /// marketplace persists the label before its name-state row). The
+    /// watch removes its row once the contest resolves and the name is
+    /// listed (a row left behind would hide a later purchase of the label).
     /// A name's age is its marketplace row time, never its `acquired_at`
     /// (a fetch's wall clock on some library paths).
     fn name_events(
@@ -994,9 +996,10 @@ impl ChangesetTap {
         let mut out = Vec::new();
         for (identity_id, names) in names {
             let identity = b58(&identity_id);
-            // The row's own label: DP1-04 journals a win before the name
-            // is listed, perhaps in another spelling, under the same ref.
-            let watches: Vec<(String, String, u64)> = self
+            // A watched label's win is the contest watch's to journal, at
+            // the time of the block that resolved its poll (DP1-04): here
+            // the name is no news, whichever comes first.
+            let watched: Vec<String> = self
                 .appdb
                 .contest_watches(wallet, &identity)
                 .unwrap_or_else(|e| {
@@ -1004,34 +1007,22 @@ impl ChangesetTap {
                     Vec::new()
                 })
                 .into_iter()
-                .map(|(label, ends_at)| (convert_to_homograph_safe_chars(&label), label, ends_at))
+                .map(|(label, _)| convert_to_homograph_safe_chars(&label))
                 .collect();
-            let event = |kind, reference, age| Event {
-                identity: identity.clone(),
-                kind,
-                contact: String::new(),
-                reference,
-                age,
-            };
             for name in names {
                 let safe = convert_to_homograph_safe_chars(&name.label);
-                let won = watches.iter().find(|(watched, _, _)| *watched == safe);
-                let mut age = times
-                    .name_time(id, &identity_id, &safe)
-                    .map_or(Age::Unknown, Age::At);
-                if let Some((_, label, ends_at)) = won {
-                    out.push(event(
-                        EventKind::ContestWon,
-                        name_ref(label, Some(*ends_at)),
-                        age,
-                    ));
-                    age = Age::Shadowed;
-                }
-                out.push(event(
-                    EventKind::UsernameRegistered,
-                    name_ref(&name.label, name.acquired_at),
+                let age = if watched.contains(&safe) {
+                    Age::Shadowed
+                } else {
+                    (times.name_time(id, &identity_id, &safe)).map_or(Age::Unknown, Age::At)
+                };
+                out.push(Event {
+                    identity: identity.clone(),
+                    kind: EventKind::UsernameRegistered,
+                    contact: String::new(),
+                    reference: name_ref(&name.label, name.acquired_at),
                     age,
-                ));
+                });
             }
         }
         out
