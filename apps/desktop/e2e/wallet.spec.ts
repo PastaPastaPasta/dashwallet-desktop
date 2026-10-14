@@ -471,6 +471,20 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-footer")).toHaveText("45 transactions");
   });
 
+  test("Today moves with the local day once the window comes back (D25)", async ({ page }) => {
+    await open(page);
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-date").selectOption("today");
+    await expect(page.getByTestId("tx-footer")).toHaveText("2 transactions");
+    // The renderer's clock moves on to the next day while the window is away; nothing is dated then.
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      f.now = new Date(f.now.getFullYear(), f.now.getMonth(), f.now.getDate() + 1, 12);
+      window.dispatchEvent(new Event("focus"));
+    });
+    await expect(page.getByTestId("tx-footer")).toHaveText("0 transactions");
+  });
+
   test("labels a transaction and abandons an unconfirmed send", async ({ page }) => {
     await open(page);
     await fillPayment(page, PAYEE, "0.5");
