@@ -2654,7 +2654,7 @@ renames or reshapes them takes the next version bump:
       contest (a watch row not won, or a `Contested` flow; the flow's label first, else the watch ending first;
       `ends_at` `None` until the watch read it); else `Ready{main}`. The bring-up's outcome does not matter then.
     - **Without one:** `NoIdentity{WatchOnly}` for a wallet without keys; `Registering{draft}` for the newest flow
-      short of `Done` not failed for good (a failure that is not retryable, or a row this build cannot read, is);
+      that creates its identity (not `ExistingIdentity`-funded, no name error), short of `Done`, not failed for good (a failure that is not retryable, or a row this build cannot read, is);
       `NoIdentity` when, on a live read, the bring-up said `NoIdentity` or a marker establishes the absence, with
       `WaitingForSync` while SPV is not caught up; else `StartupIncomplete{startup}` (a snapshot proves no absence).
     - **`Platform{Startup}`.** Sent when a wallet's outcome or named identity changes (the startup map's writes), so

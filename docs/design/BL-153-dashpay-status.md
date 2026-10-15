@@ -56,8 +56,8 @@ No field needs the network. Fields that a live read could refine are listed in F
    3. else `Ready{main}`.
 2. **No identity is known:**
    1. watch-only → `NoIdentity{WatchOnly}`;
-   2. a registration in progress (any phase short of `Done`, not failed or failed retryably; the newest one) →
-      `Registering{draft}`;
+   2. a registration in progress that creates its identity (any phase short of `Done`, not failed or failed
+      retryably, not `ExistingIdentity`-funded, no `name_error`; the newest one) → `Registering{draft}` (D15);
    3. on a live read, the absence is established: the bring-up said `NoIdentity`, or Platform proved it within 7
       days (the marker), or the wallet was created here (D3) → `NoIdentity{reason}` with `WaitingForSync` while SPV
       is not caught up, else `None`;
@@ -83,11 +83,11 @@ guessed state.
 | D11 | The shell's main identity is `ready.main` or `contestPending.identity` (was `ready` only): a contested identity gets its bell count and Contacts badge. | U-01 D11: a contested username keeps Contacts; its requests still arrive. |
 | D12 | The chip of an identity with no username says "No username" on a live read, "Updating…" only while the names are updating (`names_updating`) or the identities read has not answered. | With the real status a nameless identity (a name step that failed, `name_error`) is `Ready`; "Updating…" for ever would be wrong. |
 | D13 | Sidebar gating is unchanged: Join DashPay for `noIdentity` and `registering`, Contacts otherwise (also while the status is unknown or `startupIncomplete`, where the page says "Starting DashPay…"). | U-01 D11. Unknown → Contacts avoids a Join flash for the common, registered case; `startupIncomplete` may still find an identity, so Join would invite a second registration. |
-| D15 | A registration row funded by an existing identity (`Funding::ExistingIdentity`, a name added to an identity that already exists) or whose name step failed (`name_error`) never makes a known identity `Registering`. | Review: the identity existed before the flow, or its flow ended without a name; either way it is the user's identity now (the chip says "No username", D12). |
+| D14 | dw-app's IPC smoke test used `dashpay_status` as its example of an engine refusal crossing the bridge; it now uses `dashpay_sync_now` (still a stub) and asserts `dashpay_status` answers `noIdentity` with `waitingForSync` for its new, offline wallet. | The refusal path stays covered. |
+| D15 | A registration row funded by an existing identity (`Funding::ExistingIdentity`, a name added to an identity that already exists) or whose name step failed (`name_error`) is never `Registering`, with or without an identity known (on a snapshot read without one, such a row means an identity exists, so the status waits: D16). | Review: the identity existed before the flow, or its flow ended without a name; either way it is the user's identity now (the chip says "No username", D12). |
 | D16 | A snapshot read proves no absence: without a live read, neither the markers nor the bring-up's `NoIdentity` give `NoIdentity`; the status is `StartupIncomplete{startup}` (the bring-up's outcome as is, `NoIdentity` included) until the pass ends and `Platform{Identities}` re-reads it. Markers are read only on a live, empty read. | Review: the pass holding the lock may be the one finding the identity; `NoIdentity` would offer Join (a second registration) for that moment. "Starting DashPay…" is the safe transient. |
 | D17 | `status` takes the identity list, the live flag and the main-name rows from one read (`identity_read`, which `identity_summaries` now wraps), not a second `dp_prefs` read. | Review: one consistent read; one SQLite read fewer. |
 | D18 | The contest watch sends `Platform{Names}` when a pass learns a contest's end (`ends_at` changes on an open or unplaced verdict) and when it drops a watch unplaced for a day. | `ContestPending.ends_at` and the pending label come from these rows; nothing else signalled their change. |
-| D14 | dw-app's IPC smoke test used `dashpay_status` as its example of an engine refusal crossing the bridge; it now uses `dashpay_sync_now` (still a stub) and asserts `dashpay_status` answers `noIdentity` with `waitingForSync` for its new, offline wallet. | The refusal path stays covered. |
 
 ## Follow-ups
 
@@ -111,7 +111,7 @@ guessed state.
 | dw-app: `dashpay_status` over IPC | `ipc_tests` | D14 |
 | Renderer: chip per state, invalidations, sync re-reading only `noIdentity` statuses | `src/components/shell.test.ts`, `src/api/events.test.ts` | D8, D9, D12 |
 | Contacts: owner per status (no `null` case) | `contacts/model.test.ts` | D10 |
-| Playwright: chip and sidebar per scenario (contest pending added), Contacts | `e2e/routes.spec.ts`, `e2e/contacts.spec.ts` | D11–D13 |
+| Playwright: chip and sidebar per scenario (contest pending added); the D19 stub case removed from Contacts | `e2e/routes.spec.ts`, `e2e/contacts.spec.ts` | D10–D13 |
 
 Mutation check (`/work/scratch/dw-bl153/mutants.py`, 35 hand-written mutants of `banner.rs`, `runtime.rs`,
 `startup.rs` and `contest_watch.rs`, each run against `banner_tests` and `contest_watch_tests`): 34 killed. The one

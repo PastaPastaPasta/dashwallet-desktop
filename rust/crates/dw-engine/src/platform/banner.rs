@@ -63,7 +63,9 @@ pub(super) fn derive_status(i: &StatusInputs) -> DashPayStatus {
                 reason: Some(NoIdentityReason::WatchOnly),
             };
         }
-        if let Some(row) = newest(i.registrations.iter().filter(|r| in_progress(r).is_some())) {
+        let registering_one =
+            |r: &&RegistrationRow| creates_identity(r) && in_progress(r).is_some();
+        if let Some(row) = newest(i.registrations.iter().filter(registering_one)) {
             return registering(row);
         }
         // An empty snapshot proves nothing: the identity may be on file.
@@ -74,15 +76,10 @@ pub(super) fn derive_status(i: &StatusInputs) -> DashPayStatus {
         }
         return DashPayStatus::StartupIncomplete { startup: i.startup };
     };
-    // The flow that creates `main`, before its name step ended: not one
-    // adding a name to an identity that existed before it (D5).
+    // The flow that creates `main`, before its name step ended (D5).
     let creating_main = i.registrations.iter().filter(|r| {
         r.identity.as_deref() == Some(main)
-            && r.name_error.is_none()
-            && !matches!(
-                Funding::decode(&r.funding),
-                Decoded::Known(Funding::ExistingIdentity)
-            )
+            && creates_identity(r)
             && in_progress(r).is_some_and(before_name)
     });
     if let Some(row) = newest(creating_main) {
@@ -100,6 +97,16 @@ pub(super) fn derive_status(i: &StatusInputs) -> DashPayStatus {
     DashPayStatus::Ready {
         main: main.to_owned(),
     }
+}
+
+/// A flow that creates its identity and has not ended without a name: not
+/// one adding a name to an identity that existed before it (D15).
+fn creates_identity(r: &RegistrationRow) -> bool {
+    r.name_error.is_none()
+        && !matches!(
+            Funding::decode(&r.funding),
+            Decoded::Known(Funding::ExistingIdentity)
+        )
 }
 
 /// While the list is a snapshot with no identity (D4): the identity the

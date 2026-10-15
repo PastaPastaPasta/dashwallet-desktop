@@ -332,6 +332,20 @@ fn rules_a_snapshot_read_falls_back_to_identities_on_file() {
         snapshot(&|i| i.registrations = vec![not_done[1].clone()]),
         registering(4)
     );
+    // A name added to an existing identity, or a flow whose name step
+    // failed, means an identity exists: not a registration.
+    let mut existing = row(5, "name_requested", Some(ALICE));
+    existing.funding = Funding::ExistingIdentity.encode();
+    let mut nameless = row(6, "profile_created", Some(ALICE));
+    nameless.name_error = Some("names.taken".into());
+    for r in [existing, nameless] {
+        assert_eq!(
+            snapshot(&|i| i.registrations = vec![r.clone()]),
+            DashPayStatus::StartupIncomplete {
+                startup: StartupStatus::NotRun
+            }
+        );
+    }
     // A live empty list does not take the bring-up's identity.
     assert_eq!(
         derive_status(&StatusInputs {
