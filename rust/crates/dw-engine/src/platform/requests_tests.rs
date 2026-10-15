@@ -1091,6 +1091,7 @@ fn each_flow_signs_with_its_own_keys_only() {
         FlowKind::Accept,
         FlowKind::AcceptAndPay,
         FlowKind::PrivateDetails,
+        FlowKind::ProfileEdit,
     ] {
         let keys = flow_keys(flow, &me, &[], |_| true).unwrap();
         assert_eq!(keys, document_key, "{flow:?}");
@@ -1102,7 +1103,7 @@ fn each_flow_signs_with_its_own_keys_only() {
     sign(&upgrade, 4).unwrap();
     assert!(sign(&upgrade, 1).is_err() && sign(&upgrade, 2).is_err());
 
-    let other = lease_of(FlowKind::ProfileEdit);
+    let other = lease_of(FlowKind::NameRegistration);
     assert_eq!(
         flow_signer(&permit(&other), 0, &me, &[])
             .unwrap_err()
