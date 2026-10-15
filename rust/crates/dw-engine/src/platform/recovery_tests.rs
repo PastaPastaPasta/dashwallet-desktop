@@ -19,9 +19,7 @@ use dpp::util::strings::convert_to_homograph_safe_chars;
 use dw_vault::{
     Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, UnlockScope, VaultConfig,
 };
-use platform_wallet::PlatformEventHandler;
 use platform_wallet::changeset::{DpnsNameSaleStatus, DpnsNameStateEntry};
-use platform_wallet::manager::dpns_sync::{DpnsSyncPassSummary, WalletDpnsSyncOutcome};
 use platform_wallet::manager::startup::{WalletStartupOutcome, WalletStartupStatus};
 use platform_wallet::wallet::identity::{ContactProfileEntry, DashPayProfile};
 use platform_wallet::{ContactRequest, DpnsNameInfo, EstablishedContact};
@@ -35,7 +33,8 @@ use super::names::{MainNamePrefs, resolve_main_name};
 use super::private_details::InfoSource;
 use super::private_details_tests::FakeInfos;
 use super::recovery::{
-    BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, Pause, owned_names, summaries,
+    BoxedFuture, IdentityChoices, MockPlatform, NamesChecks, OwnedIdentity, Pause, owned_names,
+    summaries,
 };
 use super::reverify::{Held, Recorded, ShownProfile, confirmed, held_unverified, record_step};
 use super::runtime::{TestPause, guard};
@@ -334,8 +333,14 @@ struct Platform {
     bring_ups: Arc<AtomicU32>,
     hold_bring_up: Option<Arc<Notify>>,
     hold_names: Option<Arc<Notify>>,
-    /// The names pass fails (Platform does not answer) and fetches nothing.
-    fail_names: bool,
+    /// While set, Platform answers nothing: the names pass fetches nothing
+    /// and no question about an identity's names is answered.
+    fail_names: AtomicBool,
+    /// The names pass skips every identity (the library logs a page that
+    /// failed and goes on), while Platform still answers questions.
+    skip_names: bool,
+    /// Holds each question about an identity's names.
+    hold_check: Option<Arc<Notify>>,
     hold_discovery: Option<Arc<Notify>>,
     /// Holds the discovery before it stores anything (a network response
     /// still awaited).
@@ -415,14 +420,15 @@ impl MockPlatform for Platform {
         })
     }
 
-    fn names_pass(&self, manager: Arc<Manager>, id: WalletId) -> BoxedFuture<bool> {
-        let (names, hold, fail) = (self.names.clone(), self.hold_names.clone(), self.fail_names);
+    fn names_pass(&self, manager: Arc<Manager>, id: WalletId) -> BoxedFuture<()> {
+        let (names, hold) = (self.names.clone(), self.hold_names.clone());
+        let fetches = !self.skip_names && !self.fail_names.load(Ordering::SeqCst);
         Box::pin(async move {
             if let Some(hold) = hold {
                 hold.notified().await;
             }
-            if fail {
-                return false;
+            if !fetches {
+                return;
             }
             let wallet = manager.get_wallet(&id.0).await.expect("wallet");
             let wm = manager.wallet_manager_arc();
@@ -466,7 +472,19 @@ impl MockPlatform for Platform {
                     .collect();
                 managed.set_dpns_names(list, wallet.persister());
             }
-            true
+        })
+    }
+
+    fn owns_a_name(&self, _: WalletId, identity: String) -> BoxedFuture<Option<bool>> {
+        let answer = (!self.fail_names.load(Ordering::SeqCst)).then(|| {
+            (self.names.iter()).any(|(raw, list)| base58(*raw) == identity && !list.is_empty())
+        });
+        let hold = self.hold_check.clone();
+        Box::pin(async move {
+            if let Some(hold) = hold {
+                hold.notified().await;
+            }
+            answer
         })
     }
 
@@ -1372,13 +1390,18 @@ fn a_start_with_the_identity_on_file_runs_no_names_pass() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1);
     assert_eq!(s.platform.recovery.names_passes.load(Ordering::SeqCst), 0);
-    // Its stored names may be stale (a pass cut off before the restart, a
-    // name registered elsewhere): unknown until a loop pass fetches them
-    // (DP1-08 D23).
-    assert!(names_check(&s, id).is_some());
-    loop_pass(&s, id, true);
-    assert_eq!(names_check(&s, id), None);
+    // It shows no name: nameless once Platform says it owns none, with no
+    // names pass (DP1-08 D23).
+    wait_until("the answer", || names_check(&s, id).is_none());
     engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Each identity's `names_check` on a live read.
+fn names_checks(s: &Arc<NetworkSession>, id: WalletId) -> Vec<(String, Option<NamesCheck>)> {
+    live_identities(&s.dashpay(id))
+        .into_iter()
+        .map(|i| (i.identity, i.names_check))
+        .collect()
 }
 
 /// The main identity's `names_check` on a live read.
@@ -1390,24 +1413,10 @@ fn names_check(s: &Arc<NetworkSession>, id: WalletId) -> Option<NamesCheck> {
         .names_check
 }
 
-/// A pass of the library's DPNS loop, as it reports one for `id`.
-fn loop_pass(s: &NetworkSession, id: WalletId, ok: bool) {
-    let outcome = if ok {
-        WalletDpnsSyncOutcome::Ok(Default::default())
-    } else {
-        WalletDpnsSyncOutcome::Err("DAPI did not answer".into())
-    };
-    s.hub
-        .on_dpns_marketplace_sync_completed(&DpnsSyncPassSummary {
-            wallet_results: BTreeMap::from([(id.0, outcome)]),
-            sync_unix_seconds: 1,
-        });
-}
-
 /// DP1-08 D23 (Sol r1 finding 1): a restored identity that owns no name
 /// reads `Pending`, never nameless, for as long as the names pass that
-/// fetches its names is held: no clock settles it, nor a loop pass that
-/// succeeds meanwhile. Once the pass ends, it is known to own none.
+/// fetches its names is held: no clock settles it. Once the pass ends and
+/// Platform says it owns none, it is nameless.
 #[test]
 fn a_nameless_identity_reads_pending_until_its_delayed_names_pass_ends() {
     let dir = dw_testutil::private_tempdir();
@@ -1424,11 +1433,10 @@ fn a_nameless_identity_reads_pending_until_its_delayed_names_pass_ends() {
     wait_until("pass 1", || {
         !shown(&s, id).is_empty() && s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
     });
-    assert_eq!(names_check(&s, id), Some(NamesCheck::Pending));
-    // A loop pass may have begun before the identity was stored.
-    loop_pass(&s, id, true);
-    std::thread::sleep(Duration::from_millis(500));
-    assert_eq!(names_check(&s, id), Some(NamesCheck::Pending));
+    for _ in 0..10 {
+        assert_eq!(names_check(&s, id), Some(NamesCheck::Pending));
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     hold_names.notify_one();
     wait_until("pass 2", || names_check(&s, id).is_none());
@@ -1436,30 +1444,119 @@ fn a_nameless_identity_reads_pending_until_its_delayed_names_pass_ends() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
-/// DP1-08 D23: a names pass that fails leaves the identity's names
-/// unknown (`Failed`), not absent, until a pass succeeds; a failed loop
-/// pass changes nothing.
+/// DP1-08 D23: while Platform answers nothing, an identity's names are
+/// unknown (`Failed`), not absent, whether it owns a name or not; once it
+/// answers, the nameless one is nameless, and the one that owns a name the
+/// session has not loaded stays unknown.
 #[test]
-fn a_failed_names_pass_leaves_the_names_unknown_until_a_pass_succeeds() {
+fn a_failed_names_pass_leaves_the_names_unknown_until_platform_answers() {
     let dir = dw_testutil::private_tempdir();
     let platform = Arc::new(Platform {
-        identities: vec![(ALICE, 0)],
-        names: vec![(ALICE, vec![("alice", Some(100))])],
-        fail_names: true,
+        identities: vec![(ALICE, 0), (SECOND, 1)],
+        names: vec![(ALICE, vec![("alice", Some(100))]), (SECOND, vec![])],
+        fail_names: AtomicBool::new(true),
         ..Platform::default()
     });
     let (engine, s) = session(dir.path(), Arc::clone(&platform));
     let id = restore(&engine, &s);
     start(&engine, &s);
-    wait_until("the failed names pass", || {
-        !shown(&s, id).is_empty() && names_check(&s, id) == Some(NamesCheck::Failed)
+    let unknown = vec![
+        (base58(ALICE), Some(NamesCheck::Failed)),
+        (base58(SECOND), Some(NamesCheck::Failed)),
+    ];
+    wait_until("the failed names pass", || names_checks(&s, id) == unknown);
+    assert!(
+        shown(&s, id)
+            .iter()
+            .all(|(_, names, _, _)| names.is_empty())
+    );
+
+    platform.fail_names.store(false, Ordering::SeqCst);
+    // The minute's check, now.
+    engine.block_on(s.check_names(&s.manager().unwrap(), id));
+    assert_eq!(
+        names_checks(&s, id),
+        vec![
+            (base58(ALICE), Some(NamesCheck::Failed)),
+            (base58(SECOND), None),
+        ]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP1-08 D23 (Opus delta M1): the library's names pass succeeds while it
+/// skips an identity whose names it could not fetch. Platform's answer
+/// that the identity owns a name keeps it unknown, never nameless.
+#[test]
+fn an_identity_the_names_pass_skipped_is_not_nameless() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        names: vec![(ALICE, vec![("alice", Some(100))])],
+        skip_names: true,
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the names pass", || {
+        s.platform.recovery.names_passes.load(Ordering::SeqCst) == 1
+            && names_check(&s, id) == Some(NamesCheck::Failed)
     });
     assert_eq!(shown(&s, id), vec![(base58(ALICE), vec![], None, true)]);
-    loop_pass(&s, id, false);
-    assert_eq!(names_check(&s, id), Some(NamesCheck::Failed));
-    loop_pass(&s, id, true);
-    assert_eq!(names_check(&s, id), None);
     engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP1-08 D23 (Opus delta M2): an identity a bring-up stores without a
+/// names pass (it was on file) is pending, not nameless, until Platform
+/// answers for it; nothing else settles it.
+#[test]
+fn an_identity_on_file_reads_pending_until_platform_answers() {
+    let dir = dw_testutil::private_tempdir();
+    let hold_check = Arc::new(Notify::new());
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        hold_check: Some(Arc::clone(&hold_check)),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    let manager = s.manager().unwrap();
+    engine.block_on(platform.bring_up(manager, id)).unwrap();
+
+    start(&engine, &s);
+    wait_until("the bring-up", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
+    });
+    for _ in 0..5 {
+        assert_eq!(names_check(&s, id), Some(NamesCheck::Pending));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    hold_check.notify_one();
+    wait_until("the answer", || names_check(&s, id).is_none());
+    assert_eq!(s.platform.recovery.names_passes.load(Ordering::SeqCst), 0);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP1-08 D23: a pass owed again (a discovery, or a pass cut off before a
+/// restart) keeps an identity Platform said is nameless nameless, and an
+/// unknown one reads pending until that pass ends.
+#[test]
+fn owing_a_names_pass_again_keeps_the_answers() {
+    let checks = NamesChecks::default();
+    let (id, a, b) = (WalletId([1; 32]), base58(ALICE), base58(SECOND));
+    assert_eq!(checks.of(&id, &a), Some(NamesCheck::Pending));
+    checks.owe(id);
+    assert!(checks.answered(id, vec![(a.clone(), true), (b.clone(), false)], false));
+    assert_eq!(checks.of(&id, &a), None);
+    assert_eq!(checks.of(&id, &b), Some(NamesCheck::Pending));
+    assert!(checks.answered(id, vec![], true));
+    assert_eq!(checks.of(&id, &b), Some(NamesCheck::Failed));
+
+    checks.owe(id);
+    assert_eq!(checks.of(&id, &a), None);
+    assert_eq!(checks.of(&id, &b), Some(NamesCheck::Pending));
+    assert!(!checks.answered(id, vec![(a.clone(), true)], false));
 }
 
 /// A grant of `purpose` for the wallet, as the UI's prompt gets it.

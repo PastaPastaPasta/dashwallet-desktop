@@ -97,6 +97,9 @@ enum Job {
     Names,
     /// A contest watch pass (`contest_watch.rs`).
     Contests,
+    /// Asks Platform whether the identities showing no name own one
+    /// (`recovery.rs`, DP1-08 D23).
+    CheckNames,
 }
 
 impl NetworkSession {
@@ -226,7 +229,7 @@ impl NetworkSession {
         // while a pass runs make one follow-up pass (review r4 M4-R4).
         let mut admitted: HashMap<WalletId, u64> = wallets.iter().map(|id| (*id, listed)).collect();
         if !self
-            .for_wallets(&manager, wallets, Job::BringUp, since, &mut cancel)
+            .for_wallets(&manager, wallets.clone(), Job::BringUp, since, &mut cancel)
             .await
             || *cancel.borrow()
         {
@@ -246,7 +249,7 @@ impl NetworkSession {
         }
         self.apply_cadence(&manager);
         let mut loops_pending = !self.start_loops(&manager).await;
-        if !self.names_passes(&manager, &mut cancel).await {
+        if !self.names_passes(&manager, wallets, &mut cancel).await {
             return;
         }
         // A contest that ended while the app was closed shows at once.
@@ -282,10 +285,19 @@ impl NetworkSession {
                 }
                 // The balance pass (DP1-06, `balances.rs`), in the
                 // background.
+                // With it, the names of the identities Platform has not
+                // said are nameless (D23).
                 () = tokio::time::sleep_until(balances_due) => {
                     let Some(this) = session.upgrade() else { return };
                     this.kick_balance_pass();
                     balances_due = tokio::time::Instant::now() + BALANCE_PASS_EVERY;
+                    let ids = manager.wallet_ids().await.into_iter().map(WalletId).collect();
+                    if !this
+                        .for_wallets(&manager, ids, Job::CheckNames, Instant::now(), &mut cancel)
+                        .await
+                    {
+                        return;
+                    }
                     continue;
                 }
                 signal = signals.recv() => match signal {
@@ -349,39 +361,41 @@ impl NetworkSession {
                 }
             };
             let done = this
-                .for_wallets(&manager, wallets, job, Instant::now(), &mut cancel)
+                .for_wallets(&manager, wallets.clone(), job, Instant::now(), &mut cancel)
                 .await;
             if matches!(job, Job::Unlock) {
                 this.kick_dashpay_sync(&manager);
             }
-            if !done || !this.names_passes(&manager, &mut cancel).await {
+            if !done || !this.names_passes(&manager, wallets, &mut cancel).await {
                 return;
             }
         }
     }
 
     /// Runs the names pass (recovery pass 2) of every wallet whose identities
-    /// a bring-up or `discover_identities` has just discovered. `false` when
-    /// cancelled.
+    /// a bring-up or `discover_identities` has just discovered, then asks
+    /// Platform about the names of `checked`'s identities that show none
+    /// (D23; a wallet still owing a pass is skipped). `false` when cancelled.
     async fn names_passes(
         self: &Arc<Self>,
         manager: &Arc<Manager>,
+        checked: Vec<WalletId>,
         cancel: &mut watch::Receiver<bool>,
     ) -> bool {
         let due = self.platform.recovery.take_names_due();
-        if due.is_empty() {
-            return true;
-        }
-        let done = self
-            .for_wallets(manager, due.clone(), Job::Names, Instant::now(), cancel)
-            .await;
-        if !done {
+        if !due.is_empty()
+            && !self
+                .for_wallets(manager, due.clone(), Job::Names, Instant::now(), cancel)
+                .await
+        {
             // Cut off: the next start runs them, the identities on file then.
             for id in due {
                 self.platform.recovery.names_due(id);
             }
+            return false;
         }
-        done
+        self.for_wallets(manager, checked, Job::CheckNames, Instant::now(), cancel)
+            .await
     }
 
     /// Starts the loops once no pass of an earlier start is in flight: a pass
@@ -438,6 +452,7 @@ impl NetworkSession {
                     Job::Retry => this.bring_up_wallet(&manager, id, since, true).await,
                     Job::Unlock => this.after_unlock(&manager, id).await,
                     Job::Names => this.names_pass(&manager, id).await,
+                    Job::CheckNames => this.check_names(&manager, id).await,
                     Job::Contests => {
                         let pass = this.contest_pass(&manager, id);
                         if tokio::time::timeout(contest_watch::PASS_BUDGET, pass)

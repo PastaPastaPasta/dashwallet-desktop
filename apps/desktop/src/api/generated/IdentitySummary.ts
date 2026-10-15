@@ -19,8 +19,8 @@ index: number, names: Array<string>, mainName: string | null,
  */
 namesUpdating: boolean,
 /**
- * Set while `mainName` is `null` but the wallet's names have not been
- * fetched this session: the identity may still own a name, so say
+ * Set while `mainName` is `null` but Platform has not said this session
+ * that the identity owns no name: it may still own one, so say
  * "updating" or "unknown", never "no username" (DP1-08 D23).
  */
 namesCheck: NamesCheckName | null, isMain: boolean,

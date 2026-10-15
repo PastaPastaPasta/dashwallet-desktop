@@ -478,9 +478,6 @@ impl NetworkSession {
         session.leases.install_tracked(tracked.clone());
         session.leases.install_resumer(tracked);
         session.hub.attach_leases(&session.leases);
-        session
-            .hub
-            .attach_names_checks(&session.platform.recovery.names_checks);
         if let Ok(live) = session.live() {
             live.tap.watch_locks(&session.leases);
         }

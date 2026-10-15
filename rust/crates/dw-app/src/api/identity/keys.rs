@@ -21,8 +21,8 @@ pub struct IdentitySummary {
     /// wallet's identity state): both are empty until a later read, and the
     /// UI shows "updating" rather than "no name".
     pub names_updating: bool,
-    /// Set while `mainName` is `null` but the wallet's names have not been
-    /// fetched this session: the identity may still own a name, so say
+    /// Set while `mainName` is `null` but Platform has not said this session
+    /// that the identity owns no name: it may still own one, so say
     /// "updating" or "unknown", never "no username" (DP1-08 D23).
     pub names_check: Option<NamesCheckName>,
     pub is_main: bool,
@@ -84,9 +84,10 @@ impl From<engine::IdentitySummary> for IdentitySummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum NamesCheckName {
-    /// The names pass has not ended: "updating".
+    /// Platform has not answered yet: "updating".
     Pending,
-    /// It failed, and none has succeeded since: unknown.
+    /// The question failed, or the identity owns a name not loaded yet:
+    /// unknown. The engine asks again every minute.
     Failed,
 }
 

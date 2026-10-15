@@ -46,7 +46,6 @@ mod private_details_tests;
 mod profile;
 pub(crate) mod provenance;
 mod recovery;
-pub(crate) use recovery::NamesChecks;
 #[cfg(test)]
 mod recovery_tests;
 mod registration;

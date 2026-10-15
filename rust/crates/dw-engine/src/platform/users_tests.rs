@@ -498,6 +498,11 @@ fn my_user_link_uses_the_main_name() {
         "invalid_argument"
     );
     let nameless = Fixture::named(FakeNet::default(), &[]);
+    // Until Platform says it owns no name, it may own one (DP1-08 D23).
+    let link = nameless.dp().my_user_link(b58(ME));
+    assert_eq!(link.unwrap_err().code(), "platform.unavailable");
+    let checks = &nameless.s.platform.recovery.names_checks;
+    checks.answered(nameless.wallet, vec![(b58(ME), true)], false);
     let link = nameless.dp().my_user_link(b58(ME));
     assert_eq!(link.unwrap_err().code(), "contact.no_username");
 

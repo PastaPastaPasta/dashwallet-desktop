@@ -22,11 +22,10 @@ pub struct IdentitySummary {
     /// the wallet's identity state): both are empty until a later read, and
     /// the UI shows "updating" rather than "no name" (DEC-138).
     pub names_updating: bool,
-    /// Set while `main_name` is `None` and the wallet's names have not been
-    /// fetched since a restore or a discovery found its identities: the
-    /// identity may still own a name, so the UI says "updating" or
-    /// "unknown", never "no name" (DP1-08 D23). `None` once a names pass
-    /// has succeeded, and for an identity with a name.
+    /// Set while `main_name` is `None` and Platform has not said this
+    /// session that the identity owns no name: it may still own one, so the
+    /// UI says "updating" or "unknown", never "no name" (DP1-08 D23). `None`
+    /// for an identity with a name, and for one Platform said owns none.
     pub names_check: Option<NamesCheck>,
     pub is_main: bool,
     /// Credits.
@@ -51,10 +50,11 @@ pub struct IdentitySummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NamesCheck {
-    /// The names pass the wallet owes has not ended.
+    /// Platform has not answered yet, or the names pass the wallet owes has
+    /// not ended.
     Pending,
-    /// That pass failed or ran out of time, and no pass has succeeded
-    /// since: whether it owns a name is unknown.
+    /// The question failed, or Platform said it owns a name not loaded yet:
+    /// the engine asks again every minute.
     Failed,
 }
 

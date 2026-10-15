@@ -21,7 +21,6 @@ use key_wallet::transaction_checking::TransactionContext;
 use key_wallet::wallet::balance::WalletCoreBalance;
 use platform_wallet::PlatformEventHandler;
 use platform_wallet::events::WalletEvent;
-use platform_wallet::manager::dpns_sync::DpnsSyncPassSummary;
 
 use crate::history::HistoryStore;
 use crate::pump::{EventPump, PumpTarget, TxidSet};
@@ -337,8 +336,6 @@ pub(crate) struct SessionHub {
     /// transition (E0-04 H6 part 2), and its dispatch fence hears the
     /// wallet's positive network evidence (BL-76, [`Self::note_seen`]).
     leases: std::sync::OnceLock<std::sync::Weak<crate::platform::lease::LeaseTable>>,
-    /// Told of the DPNS loop's passes (DP1-08 D23).
-    names_checks: OnceLock<std::sync::Weak<crate::platform::NamesChecks>>,
     /// Tests: holds the next first-seen write before it runs.
     #[cfg(test)]
     pub(crate) pause_seen: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -359,7 +356,6 @@ impl SessionHub {
             announced: Mutex::new(HashMap::new()),
             trust: OnceLock::new(),
             leases: std::sync::OnceLock::new(),
-            names_checks: OnceLock::new(),
             #[cfg(test)]
             pause_seen: Mutex::new(None),
         }
@@ -369,11 +365,6 @@ impl SessionHub {
     /// feeds its fence the wallet's sightings ([`Self::note_seen`]).
     pub(crate) fn attach_leases(&self, leases: &Arc<crate::platform::lease::LeaseTable>) {
         let _ = self.leases.set(Arc::downgrade(leases));
-    }
-
-    /// Tells `checks` which wallets each DPNS loop pass fetched the names of.
-    pub(crate) fn attach_names_checks(&self, checks: &Arc<crate::platform::NamesChecks>) {
-        let _ = self.names_checks.set(Arc::downgrade(checks));
     }
 
     fn lease_table(&self) -> Option<Arc<crate::platform::lease::LeaseTable>> {
@@ -736,21 +727,7 @@ impl EventHandler for SessionHub {
     }
 }
 
-impl PlatformEventHandler for SessionHub {
-    /// A wallet's names are known once a pass fetched them (DP1-08 D23). A
-    /// pass that found nothing new writes nothing, so no changeset says so.
-    fn on_dpns_marketplace_sync_completed(&self, summary: &DpnsSyncPassSummary) {
-        let Some(checks) = self.names_checks.get().and_then(std::sync::Weak::upgrade) else {
-            return;
-        };
-        for (wallet, outcome) in &summary.wallet_results {
-            let id = WalletId(*wallet);
-            if checks.loop_pass(id, outcome.is_ok()) {
-                self.pump.mark_platform(id, [PlatformChange::Names]);
-            }
-        }
-    }
-}
+impl PlatformEventHandler for SessionHub {}
 
 /// Delivers the hub's merged changes. Runs on the pump task, which the
 /// session stops before it shuts the manager down.
