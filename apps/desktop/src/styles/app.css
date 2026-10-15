@@ -721,8 +721,9 @@ button {
   color: var(--dw-role-danger);
 }
 
+/* On the card's own colour, so a selected row's tint under it keeps the text at AA. */
 .chip-warning {
-  background: var(--dw-role-warning-tint);
+  background: linear-gradient(var(--dw-role-warning-tint), var(--dw-role-warning-tint)), var(--dw-role-card);
   color: var(--dw-role-warning);
 }
 
