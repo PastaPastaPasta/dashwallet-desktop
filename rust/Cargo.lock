@@ -2571,6 +2571,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dw-governance"
+version = "0.1.0"
+dependencies = [
+ "dashcore",
+ "dw-message",
+ "dw-p2p",
+ "hex",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "dw-message"
 version = "0.1.0"
 dependencies = [

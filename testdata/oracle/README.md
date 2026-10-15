@@ -9,6 +9,7 @@ not written by hand. Each comes from running Core's own code. Rust tests in
 | `uri_cases.json`, `amount_format.json` | `qt/run.sh` | dash-qt's `parseBitcoinURI`, `formatBitcoinURI`, `BitcoinUnits`, `GUIUtil::formatAmount`, copied into `qt/qt_oracle.cpp` and linked against Qt 5.15 (`brew install qt@5`). Inputs: `qt/make_inputs.py`. |
 | `bip39_core_quirks.json` | `bip39/make_vectors.py --core-src <dash>/src` | Dash Core's `src/wallet/bip39.cpp` compiled into `bip39/bip39_oracle.cpp`; the `dashd` section is copied from `dashd/dashd_bip39.json`. |
 | `message_cases.json`, `dumpwallet/*`, `dashd/dashd_bip39.json` | `dashd/gen_vectors.py` | A regtest `dashd` (committed vectors: v24.0.0-rc.2) started with `-keypool=4`: `signmessagewithprivkey`, `verifymessage`, `upgradetohd`, `dumphdinfo`, `listdescriptors`, `dumpwallet`. |
+| `governance_objects.json` | `dashd/gen_governance_objects.py` | A regtest `dashd`: `gobject check` and `gobject prepare` of proposal data in dash-qt's key order; the object hash is read from the collateral's `OP_RETURN`. |
 | `address_cases.json` | `dashd/gen_address_cases.py` | `validateaddress` on a mainnet dashd (`-connect=0`, never syncs) and a regtest dashd. |
 | `core/*.json` | copied | Dash Core `src/test/data/{key_io_valid,key_io_invalid,bip39_vectors}.json`. |
 | `qr_cases.json` | `gen_qr_cases.py` | libqrencode 4.1.1 through the `qrencode` CLI with `-l L -8 -m 0`, the same `QRcode_encodeString(…, QR_ECLEVEL_L, QR_MODE_8, 1)` call dash-qt makes (`brew install qrencode`). |
