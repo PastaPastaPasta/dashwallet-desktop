@@ -111,4 +111,33 @@ the page neither offers "Sync now" nor shows pictures (D9, D10).
 
 ## Evidence
 
-(filled in as the slices land)
+**Gate (copy of the desktop CI gate on a `git archive` of 190b03b0):** `GATE EXIT 0`: fmt; clippy (workspace and
+`dw-app --features selftest`); Rust tests 1836 passed, 0 failed; tokens, typecheck, vitest 402 passed (23 files),
+production and fixture builds, the fixture guard and its negative control, the selftest judge; Playwright + axe 446
+passed, 106 skipped (the visual project without `DW_VISUAL`).
+
+**T0 (fixture backend, Playwright in the pinned image, `scripts/e2e-docker.sh`):** `e2e/contacts.spec.ts` with
+`routes.spec.ts` and `screens.spec.ts`, Chromium and WebKit, 160 passed; visual baselines (Chromium) 36 passed with
+`light-contacts` / `dark-contacts` regenerated after the review round; vitest 23 files, 402 tests. axe (serious and
+critical) runs in light and dark, in both engines, on STATES: the list (Hidden open, Erin selected: a warning chip), a selected row with an info chip and with a
+danger chip, refreshing, the network results, the setup hint (mixing only), the network failure, the empty and Join
+states.
+
+**GL (real app, real engine, public testnet; 2026-10-15 01:53–02:03 UTC):** `scripts/e2e-tauri-contacts.sh` with
+`DW_TESTNET_FIXTURE` = the testnet DashPay fixture, wallet A restored by `dwcli import --birth-height 1568806`
+(phrase on stdin), the app launched with `--datadir <tmp> --network testnet --sync --theme light` under tauri-driver
+on a private X display. Reads only: nothing sent, accepted or registered. Steps and results (`result.json`):
+
+| Step | Result |
+|---|---|
+| Unlock, open Contacts | the real renderer (no `__dwFixture`); `dashpay_status` answered the engine stub, so D19's fallback picked the main identity |
+| My Contacts lists `dwrecoverb2`, verified | after 10 min of SPV and DashPay bring-up: 2 rows, `44ZjKS…WyPc` (a contact without a name) and `dwrecoverb2`; no setup hint |
+| Select `dwrecoverb2` | the slot shows identity `HjfQJmEbqM8bbwtoGMVbouiWVC9Wmk6187VLx3XjN4J6` (wallet B's, from `fixture.json`), relation Contact, Payments Ready, Contact since Oct 8, 2026 |
+| Sort by Date added, Home, back to Contacts | the menu still reads Date added (the shell store kept it) |
+| Search `dwrec` | the list keeps only `dwrecoverb2`; "On the Dash network" answers "No usernames found" (DPNS read, strangers only) |
+| Secret scan | no file of OUT holds the phrase or the passphrase; the data root is deleted |
+
+Screenshots `1-contacts-opened` … `5-search.png` and `result.json` are kept outside the repo at
+`/work/scratch/dw-dp2-07/gl-out/` on agentbox. Earlier attempts: without `--sync` the engine never started (D17); with
+`--sync` before D19 the page showed "Could not read DashPay's state" (the status stub); a run before the last script
+fix passed the list, select and sort steps and stopped on a script bug in the search step (WebDriver's `null`).
