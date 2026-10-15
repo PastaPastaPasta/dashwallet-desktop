@@ -163,8 +163,12 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
     (contact) => requests.some((c) => c.contact === contact),
     (i) => document.querySelectorAll<HTMLElement>(".contact-row-item.has-actions > .contact-row")[i] ?? pageHeading(),
   );
+  // The contact whose pane shows now (a link's card or Add contact take the slot), read when an
+  // action ends.
+  const paneShows = useRef<string | null>(null);
+  paneShows.current = prefill || add ? null : (selected?.contact ?? null);
   const rowDone = (c: ContactSummaryInfo) => (o: ActionOutcome | null) => {
-    toast(o, ui.get().contact === c.contact);
+    toast(o, paneShows.current === c.contact);
     if (o?.ok) arm(c.contact, requests.indexOf(c));
   };
   // Enable: success removes the banner, so a toast says it and focus goes to the heading.

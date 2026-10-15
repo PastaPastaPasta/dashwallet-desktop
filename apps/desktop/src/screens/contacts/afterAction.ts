@@ -37,11 +37,21 @@ export function useActionToast(walletId: string): (outcome: ActionOutcome | null
   );
 }
 
+/** How long an armed refocus waits for its row to leave (the re-read after the action). */
+const REFOCUS_WAIT_MS = 10_000;
+
 /** Focus after an action whose control leaves with its row (D28). `arm(key, index)` once the
- * action succeeded; when `present(key)` turns false and focus fell to the body with the control,
- * `target(index)` takes it. Focus the user moved meanwhile stays where it is. */
+ * action succeeded; when `present(key)` turns false within REFOCUS_WAIT_MS and focus fell to the
+ * body with the control, `target(index)` takes it. Focus the user moved meanwhile stays where it
+ * is. */
 export function useRefocus(present: (key: string) => boolean, target: (index: number) => HTMLElement | null | undefined) {
   const [armed, setArmed] = useState<{ key: string; index: number } | null>(null);
+  // A row that stays (its re-read failed) disarms: a later change must not move focus.
+  useEffect(() => {
+    if (!armed) return;
+    const t = window.setTimeout(() => setArmed((a) => (a === armed ? null : a)), REFOCUS_WAIT_MS);
+    return () => window.clearTimeout(t);
+  }, [armed]);
   useEffect(() => {
     if (!armed || present(armed.key)) return;
     setArmed(null);
