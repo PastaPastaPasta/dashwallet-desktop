@@ -1159,18 +1159,28 @@ impl AppDb {
     /// [`Self::set_dp_payment_lock`], durable against power loss when it
     /// returns `Ok`: the write commits under `synchronous=FULL`, which syncs
     /// the WAL at the commit (the connection otherwise runs `NORMAL`, under
-    /// which a commit is not synced), and a failed sync is an error. One
-    /// WAL fsync, not a checkpoint: no other connection can make it busy.
-    /// The connection is back to `NORMAL` afterwards (DP3-01 D27).
+    /// which a commit is not synced), and a failed sync is an error. On
+    /// Apple platforms also `fullfsync`, as the dispatch journal's: their
+    /// fsync does not flush the disk cache. One WAL sync, not a checkpoint:
+    /// no other connection can make it busy. The connection is back to
+    /// `NORMAL` afterwards (DP3-01 D27).
     pub fn set_dp_payment_lock_durable(
         &self,
         wallet_id: &str,
         row: &DpPaymentLockRow,
     ) -> Result<Option<String>> {
         let conn = self.conn();
-        conn.pragma_update(None, "synchronous", "FULL")?;
-        let written = Self::upsert_payment_lock(&conn, wallet_id, row);
-        let normal = conn.pragma_update(None, "synchronous", "NORMAL");
+        let synced = |on: bool| -> rusqlite::Result<()> {
+            conn.pragma_update(None, "synchronous", if on { "FULL" } else { "NORMAL" })?;
+            if cfg!(target_vendor = "apple") {
+                conn.pragma_update(None, "fullfsync", on)?;
+            }
+            Ok(())
+        };
+        let written = synced(true)
+            .map_err(Into::into)
+            .and_then(|()| Self::upsert_payment_lock(&conn, wallet_id, row));
+        let normal = synced(false);
         let held = written?;
         normal?;
         Ok(held)
@@ -1485,17 +1495,30 @@ mod tests {
             since: 1,
             inputs: String::new(),
         };
+        // Apple platforms also need `fullfsync` for a sync that survives
+        // power loss.
         let synchronous = |db: &AppDb| -> i64 {
-            db.conn()
+            let conn = db.conn();
+            let level: i64 = conn
                 .query_row("PRAGMA synchronous", [], |r| r.get(0))
-                .unwrap()
+                .unwrap();
+            let full: i64 = conn
+                .query_row("PRAGMA fullfsync", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(full, 0, "fullfsync is back off");
+            level
+        };
+        let apple = if cfg!(target_vendor = "apple") {
+            " OR (SELECT fullfsync FROM pragma_fullfsync) = 0"
+        } else {
+            ""
         };
         db.conn()
-            .execute_batch(
+            .execute_batch(&format!(
                 "CREATE TRIGGER need_full BEFORE INSERT ON dp_payment_lock BEGIN
                  SELECT RAISE(FAIL, 'not synced')
-                 WHERE (SELECT synchronous FROM pragma_synchronous) < 2; END;",
-            )
+                 WHERE (SELECT synchronous FROM pragma_synchronous) < 2{apple}; END;"
+            ))
             .unwrap();
         assert!(db.set_dp_payment_lock(W, &row).is_err());
         assert_eq!(synchronous(&db), 1);
