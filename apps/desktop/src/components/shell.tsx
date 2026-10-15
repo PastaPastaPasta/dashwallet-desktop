@@ -1,6 +1,6 @@
 // The window shell (UX-SPEC §4.1, DASHPAY §4 R11): toolbar, sidebar and status bar.
 
-import type { ReactNode } from "react";
+import { useCallback, useId, useRef, useState, type ReactNode } from "react";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { LockStatus } from "../api/generated/LockStatus";
@@ -195,6 +195,8 @@ export function Toolbar({
   unread,
   canLock,
   onLock,
+  bellPanel,
+  bellOwner,
 }: {
   wallets: WalletSummary[];
   wallet: WalletSummary | undefined;
@@ -203,9 +205,25 @@ export function Toolbar({
   unread: number | null;
   canLock: boolean;
   onLock: () => void;
+  /** The bell's popover (DP2-09 D11), given its id and `close`; without it the bell opens the
+   * Notifications page. */
+  bellPanel?: (id: string, close: () => void) => ReactNode;
+  /** Whose bell `bellPanel` is (wallet and identity): another owner closes it (DP2-09 D27). */
+  bellOwner?: string;
 }) {
   const discreet = useUi((s) => s.discreet);
   const bellLabel = unread ? `Notifications, ${unread} unread` : "Notifications";
+  // The owner whose bell is open: a switch of wallet (or main identity) while it is open, with the
+  // keyboard, closes it rather than opening, and marking read, the next owner's (D27).
+  const [openFor, setOpenFor] = useState<string | null>(null);
+  if (openFor !== null && openFor !== bellOwner) setOpenFor(null);
+  const bell = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
+  const closeBell = useCallback(() => {
+    setOpenFor(null);
+    bell.current?.focus();
+  }, []);
+  const open = openFor !== null && openFor === bellOwner && !!bellPanel;
   return (
     <header className="toolbar" data-testid="toolbar">
       <span className="toolbar-start">
@@ -213,21 +231,28 @@ export function Toolbar({
         <WalletPicker wallets={wallets} current={wallet} />
       </span>
       <span className="toolbar-actions">
-        <button
-          type="button"
-          className="toolbar-button"
-          data-testid="toolbar-bell"
-          aria-label={bellLabel}
-          title={bellLabel}
-          onClick={() => navigate("notifications")}
-        >
-          <BellIcon />
-          {!!unread && (
-            <span className="toolbar-badge" data-testid="toolbar-bell-badge" aria-hidden="true">
-              {badgeText(unread)}
-            </span>
-          )}
-        </button>
+        <span className="toolbar-bell" data-bell>
+          <button
+            type="button"
+            className="toolbar-button"
+            data-testid="toolbar-bell"
+            aria-label={bellLabel}
+            title={bellLabel}
+            ref={bell}
+            aria-haspopup={bellPanel ? "dialog" : undefined}
+            aria-expanded={bellPanel ? open : undefined}
+            aria-controls={open ? panelId : undefined}
+            onClick={() => (bellPanel ? setOpenFor(open ? null : (bellOwner ?? null)) : navigate("notifications"))}
+          >
+            <BellIcon />
+            {!!unread && (
+              <span className="toolbar-badge" data-testid="toolbar-bell-badge" aria-hidden="true">
+                {badgeText(unread)}
+              </span>
+            )}
+          </button>
+          {open && bellPanel(panelId, closeBell)}
+        </span>
         <button
           type="button"
           className="toolbar-button"
