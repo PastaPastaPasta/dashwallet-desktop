@@ -15,7 +15,7 @@
    <span class="mg-muted mg-small">Masternode list at block 1,214,880</span>
   </div>
   <div class="mg-summary card-l1">
-   <div><span class="mg-summary-label">Masternodes</span><span class="mg-summary-value">3 <span class="mg-muted mg-small">· 2 active</span></span><span class="mg-summary-note">and 1 you track</span></div>
+   <div><span class="mg-summary-label">Masternodes</span><span class="mg-summary-value">3 <span class="mg-muted mg-small">yours</span></span><span class="mg-summary-note">2 active · 1 tracked</span></div>
    <div><span class="mg-summary-label">Payouts, last 30 days</span><span class="mg-summary-value"><span class="amount">7.83<dash/></span></span><span class="mg-summary-note">to payout addresses in this wallet</span></div>
    <div><span class="mg-summary-label">Evonode credits</span><span class="mg-summary-value"><span class="amount">0.42<dash/></span></span><span class="mg-summary-note">ready to withdraw</span></div>
   </div>
@@ -28,11 +28,16 @@
      </ul>
     </section>
     <section class="tx-group card-l1">
+     <h2 class="contacts-group-title">In progress</h2>
+     <ul class="tx-group-rows" style="list-style:none;margin:0;padding:0 var(--dw-space-xs) var(--dw-space-xs)">
+      <li><button class="mg-row"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">New masternode</span><span class="mg-row-sub">Masternode · registration sent</span></span><span class="mg-row-trailing"><span class="chip chip-info">Registering</span><span class="mg-row-meta">0 of 1 confirmations</span></span></button></li>
+     </ul>
+    </section>
+    <section class="tx-group card-l1">
      <h2 class="contacts-group-title">My masternodes</h2>
      <ul class="tx-group-rows" style="list-style:none;margin:0;padding:0 var(--dw-space-xs) var(--dw-space-xs)">
       <li><button class="mg-row" aria-current="true"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">Home node</span><span class="mg-row-sub">Masternode · 203.0.113.7:19999</span></span><span class="mg-row-trailing"><span class="chip chip-success">Active</span><span class="mg-row-meta">Paid Oct 13</span></span></button></li>
       <li><button class="mg-row"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">Hosted evonode</span><span class="mg-row-sub">Evonode · 198.51.100.4:19999</span></span><span class="mg-row-trailing"><span class="chip chip-success">Active</span><span class="mg-row-meta">0.42 credits to claim</span></span></button></li>
-      <li><button class="mg-row"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">New masternode</span><span class="mg-row-sub">Masternode · registration sent</span></span><span class="mg-row-trailing"><span class="chip chip-info">Registering</span><span class="mg-row-meta">0 of 1 confirmations</span></span></button></li>
      </ul>
     </section>
     <section class="tx-group card-l1">
@@ -152,24 +157,25 @@
        <div class="chip-row" style="margin-top:2px"><span class="chip chip-danger">PoSe banned</span><span class="chip chip-neutral">Masternode</span></div>
       </div>
      </header>
-     <p class="mg-notice mg-notice-danger"><strong>This masternode is banned and earns nothing.</strong> This wallet first saw it banned on Oct 12: the server stopped doing its work. Your operator fixes the server, then sends a service update from the node. The wallet can't do that: it needs the operator key.</p>
+     <p class="mg-notice mg-notice-danger"><strong>This masternode is banned and earns nothing.</strong> This wallet first saw it banned on Oct 12: the server stopped doing its work. Your operator fixes the server, then sends a service update from the node. The wallet can't do that: it needs the operator key. To move to another operator, use Change keys or payout.</p>
      <dl class="mg-facts">
       <dt>Service</dt><dd>192.0.2.44:19999</dd>
-      <dt>Operator</dt><dd>Paid 5% of each payout</dd>
+      <dt>Operator's share</dt><dd>5% of each payout</dd>
       <dt>Last payout</dt><dd>— <span class="mg-muted">(the payout address is not in this wallet)</span></dd>
       <dt>ProTx hash</dt><dd><span class="copy-value"><span class="mono">2b91…06de</span><button type="button" class="copy-button" aria-label="Copy ProTx hash"><img width="20" height="20" alt="" src="icon:action-copy"></button></span></dd>
      </dl>
      <div>
       <h3 class="mg-section-title">In this wallet</h3>
       <ul class="mg-roles">
-       <li class="mg-elsewhere">Owner key</li>
+       <li class="mg-held">Owner key</li>
        <li class="mg-held">Voting key</li>
-       <li class="mg-elsewhere">Payout address</li>
-       <li class="mg-elsewhere">Collateral</li>
+       <li class="mg-elsewhere">Payout address: a cold wallet</li>
+       <li class="mg-held">Collateral, 1,000 Dash</li>
       </ul>
      </div>
      <div class="mg-actions">
-      <button class="dash-button dash-button-tintedBlue dash-button-small">Vote on proposals</button>
+      <button class="dash-button dash-button-tintedBlue dash-button-small" disabled title="A banned masternode can't vote">Vote on proposals</button>
+      <button class="dash-button dash-button-tintedBlue dash-button-small">Change keys or payout</button>
       <button class="dash-button dash-button-tintedGray dash-button-small">More</button>
      </div>
     </section>
@@ -179,7 +185,7 @@
      <li>Rename…</li>
      <li class="sep"></li>
      <li class="is-hover">Service update or revoke…<span class="mg-menu-note" style="color:inherit">Done by the operator on the node</span></li>
-     <li style="color:var(--dw-role-text-tertiary)">Change keys or payout…<span class="mg-menu-note">Needs the owner key</span></li>
+     <li>Release collateral…<span class="mg-menu-note">Spending it ends the masternode</span></li>
     </ul>
    </aside>
   </div>
@@ -216,7 +222,7 @@
   </label>
   <section class="card-l1" style="border-radius:var(--dw-radius-group);padding:var(--dw-space-m) var(--dw-space-l)">
    <div class="mg-spread"><strong>Evonode · 192.0.2.80:19999</strong><span class="chip chip-success">Active</span></div>
-   <div class="mg-muted mg-small" style="margin-top:2px">ProTx <span class="mono">a4f0…9e21</span> · registered Jan 9, 2026</div>
+   <div class="mg-muted mg-small" style="margin-top:2px">ProTx <span class="mono">a4f0…9e21</span> · voting address <span class="mono">yVt5…3kPa</span></div>
   </section>
   <label class="mg-field">Label (optional)<input value="Friend's evonode"></label>
   <div>
@@ -224,7 +230,7 @@
    <p class="mg-muted mg-small" style="margin:0 0 var(--dw-space-s)">Add a key to act for this masternode from here. Keys are kept encrypted in this wallet and used only to sign what you approve.</p>
    <div class="mg-form">
     <label class="mg-field">Voting key<input class="mono" type="password" value="••••••••••••••••••••••••••••••••••••"><span class="mg-field-ok">Matches this masternode's voting key</span></label>
-    <label class="mg-field">Owner key<input class="mono" placeholder="Private key (WIF)"><span class="mg-field-help">Lets you withdraw evonode credits to its payout address.</span></label>
+    <label class="mg-field">Owner key<input class="mono" placeholder="Private key (WIF)"><span class="mg-field-help">Lets you withdraw evonode credits to its payout address. Checked the first time you use it.</span></label>
    </div>
   </div>
  </div>
@@ -265,8 +271,10 @@
   <dl class="detail-list card-l1">
    <div class="detail-row"><dt class="detail-label">To</dt><dd class="detail-value"><span class="mono mg-small">yPay8vK2…Wm4c</span><div class="mg-field-help">The evonode's payout address, in this wallet</div></dd></div>
    <div class="detail-row"><dt class="detail-label">Signed with</dt><dd class="detail-value">Owner key</dd></div>
+   <div class="detail-row"><dt class="detail-label">Platform fee</dt><dd class="detail-value">Taken from the credits</dd></div>
   </dl>
-  <p class="mg-notice mg-notice-info">With the owner key, credits can only go to the registered payout address. Dash Platform pays them out on the Dash chain, usually within a few minutes.</p>
+  <p class="mg-notice mg-notice-info">With the owner key, credits can only go to the registered payout address. Dash Platform pays them out on the Dash chain; they show in Activity when they arrive.</p>
+  <label class="form-field" style="max-width:320px">Passphrase<input type="password" value="••••••••••••"></label>
  </div>
  <footer class="mg-sheet-footer"><span></span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Cancel</button><button class="dash-button dash-button-filledBlue dash-button-medium">Withdraw</button></span></footer>
 </div>

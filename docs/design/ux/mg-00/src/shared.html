@@ -39,6 +39,89 @@
 </div>
 <!-- /frame -->
 
+<!-- frame id="sh-setup" title="Coordinator setup, step 1: shares (§4.25.8)" route="masternodes" behind="sh-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-large" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Start a shared masternode</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <div class="mg-wizard">
+   <ol class="mg-steps">
+    <li data-n="1" aria-current="step">Shares</li><li data-n="2">Masternode</li><li data-n="3">Exit terms</li><li data-n="4">Your coins</li><li data-n="5">Invite</li>
+   </ol>
+   <div class="mg-step">
+    <h3 class="mg-step-title">Who takes part, and with how much?</h3>
+    <div class="mg-choices mg-choices-2">
+     <label class="mg-choice is-selected"><input type="radio" name="st" checked><span class="mg-choice-title">Masternode</span><span class="mg-choice-help">Shares add up to 1,000 Dash.</span></label>
+     <label class="mg-choice"><input type="radio" name="st"><span class="mg-choice-title">Evonode</span><span class="mg-choice-help">Shares add up to 4,000 Dash. Also runs Dash Platform.</span></label>
+    </div>
+    <ul class="mg-nodes card-l1">
+     <li class="mg-node mg-node-head" style="grid-template-columns:minmax(0,1fr) 160px 72px"><span>Participant</span><span class="mg-node-weight">Share</span><span></span></li>
+     <li class="mg-node" style="grid-template-columns:minmax(0,1fr) 160px 72px"><span><span class="mg-node-name">Alice (you)</span><div class="mg-node-sub">Coordinator</div></span><span class="mg-node-weight"><input class="mg-input" value="400" style="width:96px;text-align:right"> Dash</span><span></span></li>
+     <li class="mg-node" style="grid-template-columns:minmax(0,1fr) 160px 72px"><span><input class="mg-input" value="Bob" style="width:200px"></span><span class="mg-node-weight"><input class="mg-input" value="300" style="width:96px;text-align:right"> Dash</span><span class="mg-node-result"><button class="dash-button dash-button-plainRed dash-button-small">Remove</button></span></li>
+     <li class="mg-node" style="grid-template-columns:minmax(0,1fr) 160px 72px"><span><input class="mg-input" value="Carol" style="width:200px"></span><span class="mg-node-weight"><input class="mg-input" value="300" style="width:96px;text-align:right"> Dash</span><span class="mg-node-result"><button class="dash-button dash-button-plainRed dash-button-small">Remove</button></span></li>
+    </ul>
+    <div class="mg-spread"><button class="dash-button dash-button-plainBlue dash-button-small">Add a participant</button><span class="mg-field-ok">1,000 of 1,000 Dash · 3 shares</span></div>
+    <p class="mg-muted mg-small" style="margin:0">2 to 8 people. Each share is at least 100 Dash and earns the same part of every payout. Names are labels: they go into the invitation so everyone sees the same list, and nothing else uses them.</p>
+   </div>
+  </div>
+ </div>
+ <footer class="mg-sheet-footer"><span class="mg-sheet-footer-note">Step 1 of 5</span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Cancel</button><button class="dash-button dash-button-filledBlue dash-button-medium">Continue</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="sh-terms" title="Coordinator setup, step 3: exit terms (§4.25.8)" route="masternodes" behind="sh-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-large" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Start a shared masternode</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <div class="mg-wizard">
+   <ol class="mg-steps">
+    <li data-n="1" class="is-done">Shares</li><li data-n="2" class="is-done">Masternode</li><li data-n="3" aria-current="step">Exit terms</li><li data-n="4">Your coins</li><li data-n="5">Invite</li>
+   </ol>
+   <div class="mg-step">
+    <h3 class="mg-step-title">How can people leave?</h3>
+    <p class="mg-step-intro">Anyone can always dissolve the masternode alone, and every share goes back to its owner. An early period protects the group: whoever leaves alone during it pays a penalty to the others.</p>
+    <div class="mg-form">
+     <label class="mg-field">Early period<select><option>6 months (105,120 blocks)</option><option>None</option><option>3 months</option><option>1 year</option><option>2 years (the longest)</option></select><span class="mg-field-help">Counted from the registration.</span></label>
+     <label class="mg-field">Early-exit penalty
+      <span class="mg-field-row"><input value="20"><span>Dash</span></span>
+      <span class="mg-field-help">Less than the smallest share (300 Dash). Split among the others by share.</span>
+     </label>
+    </div>
+    <dl class="detail-list card-l1">
+     <div class="detail-row"><dt class="detail-label">Leaving alone</dt><dd class="detail-value">Costs 20 Dash until about Apr 2027, then nothing</dd></div>
+     <div class="detail-row"><dt class="detail-label">Leaving together</dt><dd class="detail-value">Always free when everyone agrees</dd></div>
+     <div class="detail-row"><dt class="detail-label">Network fee to leave</dt><dd class="detail-value">Paid from the share of whoever leaves</dd></div>
+    </dl>
+    <p class="mg-muted mg-small" style="margin:0">With an early period and no penalty, anyone can leave early for just the network fee.</p>
+   </div>
+  </div>
+ </div>
+ <footer class="mg-sheet-footer"><span class="mg-sheet-footer-note">Step 3 of 5</span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Back</button><button class="dash-button dash-button-filledBlue dash-button-medium">Continue</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="sh-join" title="Participant: an invitation pasted (§4.25.8)" route="masternodes" behind="sh-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-large" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Join a shared masternode</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <div class="mg-spread"><h3 class="mg-step-title">Alice invites you to share a masternode</h3><span class="mg-muted mg-small">Check code <span class="mono">7D3B-E519</span> · session 3F9A2C</span></div>
+  <p class="mg-notice mg-notice-info">Before joining, ask Alice to read you the check code, by phone or in person. If it differs, the invitation changed on the way: don't join.</p>
+  <div class="mg-shares"><span class="mg-share-1" style="width:40%"></span><span class="mg-share-2" style="width:30%"></span><span class="mg-share-3" style="width:30%"></span></div>
+  <dl class="detail-list card-l1">
+   <div class="detail-row"><dt class="detail-label">Your share</dt><dd class="detail-value"><span class="amount">300<dash/></span>, 30% of every payout · Alice 400 · Carol 300</dd></div>
+   <div class="detail-row"><dt class="detail-label">Masternode</dt><dd class="detail-value">203.0.113.30:19999 · run by Alice · operator's share 0%</dd></div>
+   <div class="detail-row"><dt class="detail-label">Votes</dt><dd class="detail-value">From Alice's wallet</dd></div>
+   <div class="detail-row"><dt class="detail-label">Leaving</dt><dd class="detail-value">Alone: 20 Dash penalty during a 6-month early period, then free. Together: free.</dd></div>
+   <div class="detail-row"><dt class="detail-label">Network fee</dt><dd class="detail-value">Split by share; the exact amount is in the locked terms</dd></div>
+   <div class="detail-row"><dt class="detail-label">Your coins</dt><dd class="detail-value">300 Dash of your 412.80 are reserved until the registration is sent or you leave the session. Refunds and payouts go to new addresses in this wallet.</dd></div>
+  </dl>
+ </div>
+ <footer class="mg-sheet-footer"><span class="mg-sheet-footer-note">Nothing is sent to the network now</span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Decline</button><button class="dash-button dash-button-filledBlue dash-button-medium">Join with 300 Dash</button></span></footer>
+</div>
+<!-- /frame -->
+
 <!-- frame id="sh-session" title="A running session, coordinator view: approvals (§4.25.8)" route="masternodes" behind="sh-behind" -->
 <!-- sheet -->
 <div class="sheet sheet-large" role="dialog" aria-modal="true">

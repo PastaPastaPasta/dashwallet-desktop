@@ -18,7 +18,7 @@
  <p>Mocks for UX-SPEC §4.25, drawn with the renderer's tokens and styles. Sample data.</p>
  <button type="button" onclick="const r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark'">Light / dark</button>
 </header>
-<section class="mock-frame" id="gov-list" aria-label="Governance: clock, budget, proposals and a proposal&#x27;s detail (§4.25.3)"><h2 class="mock-caption">gov-list — Governance: clock, budget, proposals and a proposal&#x27;s detail (§4.25.3)</h2><div class="mock-window">
+<section class="mock-frame" id="gov-list" aria-label="Governance: clock, budget, proposals and a proposal&#x27;s detail; the status-bar voting item (§4.25.3, §4.25.1)"><h2 class="mock-caption">gov-list — Governance: clock, budget, proposals and a proposal&#x27;s detail; the status-bar voting item (§4.25.3, §4.25.1)</h2><div class="mock-window">
 <div class="app" data-mock-shell>
  <div class="app-chrome">
   <header class="toolbar">
@@ -110,7 +110,7 @@
 </main>
 
   </div>
-  <footer class="status-bar"><span class="status-left"><span role="status">Up to date</span></span><span class="status-right"><span>DASH</span><span>HD</span><span>Unlocked</span><span>8 peers</span><span>Synced</span></span></footer>
+  <footer class="status-bar"><span class="status-left"><span role="status">Up to date</span></span><span class="status-right"><span>DASH</span><span>HD</span><span>Unlocked</span><span>8 peers</span><span>Voting closes in about 1 d 6 h</span><span>Synced</span></span></footer>
  </div>
  
 </div></div></section><section class="mock-frame" id="gov-syncing" aria-label="Governance while proposals sync; a wallet without voting keys (§4.25.3)"><h2 class="mock-caption">gov-syncing — Governance while proposals sync; a wallet without voting keys (§4.25.3)</h2><div class="mock-window">
@@ -394,7 +394,7 @@
    <li class="mg-node" style="grid-template-columns:minmax(0,1fr) auto"><span><span class="mg-node-name">Hosted evonode</span><div class="mg-node-sub">weight 4</div></span><span class="chip chip-success">Sent</span></li>
    <li class="mg-node" style="grid-template-columns:minmax(0,1fr) auto"><span><span class="mg-node-name">Friend's evonode</span><div class="mg-node-sub">Its voting key changed, so the key you added no longer matches. Update it in the masternode's details.</div></span><span class="chip chip-warning">Not sent</span></li>
   </ul>
-  <p class="mg-muted mg-small" style="margin:0">The counts update as other nodes relay the votes, usually within a minute.</p>
+  <p class="mg-muted mg-small" style="margin:0">The counts update as peers relay the votes.</p>
  </div>
  <footer class="mg-sheet-footer"><span></span><span class="mg-actions"><button class="dash-button dash-button-filledBlue dash-button-medium">Done</button></span></footer>
 </div>
@@ -681,7 +681,7 @@
   </div>
   <section class="tx-group card-l1">
    <ul style="list-style:none;margin:0;padding:var(--dw-space-xs)">
-    <li><div class="mg-row mg-row-wide"><span class="mg-row-text"><span class="mg-row-title">desktop-wallet-i18n</span><span class="mg-row-sub">Fee paid Oct 15 at 2:02 PM · waiting for its first confirmation, then the wallet submits it</span></span><span class="mg-row-trailing"><span class="chip chip-neutral">Fee paid</span><span class="mg-row-meta">0 of 1</span></span></div></li>
+    <li><div class="mg-row mg-row-wide"><span class="mg-row-text"><span class="mg-row-title">desktop-wallet-i18n</span><span class="mg-row-sub">Fee paid Oct 31 at 2:02 PM · waiting for its first confirmation, then the wallet submits it</span></span><span class="mg-row-trailing"><span class="chip chip-neutral">Fee paid</span><span class="mg-row-meta">0 of 1</span></span></div></li>
     <li><div class="mg-row mg-row-wide"><span class="mg-row-text"><span class="mg-row-title">dash-docs-refresh</span><span class="mg-row-sub">Submitted · the network shows it after 6 confirmations</span></span><span class="mg-row-trailing"><span class="chip chip-neutral">Confirming</span><span class="mg-row-meta">4 of 6</span></span></div></li>
    </ul>
   </section>
@@ -693,6 +693,123 @@
   <footer class="status-bar"><span class="status-left"><span role="status">Up to date</span></span><span class="status-right"><span>DASH</span><span>HD</span><span>Unlocked</span><span>8 peers</span><span>Synced</span></span></footer>
  </div>
  
+</div></div></section><section class="mock-frame" id="gov-numbers" aria-label="Governance numbers, from Governance ▸ More (QT-134, §4.25.3)"><h2 class="mock-caption">gov-numbers — Governance numbers, from Governance ▸ More (QT-134, §4.25.3)</h2><div class="mock-window">
+<div class="app" data-mock-shell>
+ <div class="app-chrome">
+  <header class="toolbar">
+   <span class="toolbar-start">
+    <button type="button" class="identity-chip" aria-label="My profile, @alice"><span class="identity-chip-avatar" aria-hidden="true">A</span><span>@alice</span></button>
+    <span class="toolbar-wallet">Main</span>
+   </span>
+   <span class="toolbar-actions">
+    <button type="button" class="toolbar-button" aria-label="Notifications"><svg class="toolbar-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 14V9a5 5 0 0 1 10 0v5l1.5 1.5h-13L5 14Z" /><path d="M8.5 17.5h3" /></svg></button>
+    <button type="button" class="toolbar-button" aria-label="Hide balance"><svg class="toolbar-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M2 10s3-5.5 8-5.5S18 10 18 10s-3 5.5-8 5.5S2 10 2 10Z" /><circle cx="10" cy="10" r="2.5" /></svg></button>
+    <button type="button" class="toolbar-button" aria-label="Lock wallet"><svg class="toolbar-icon" viewBox="0 0 20 20" aria-hidden="true"><rect x="4.5" y="9" width="11" height="8" rx="1.5" /><path d="M7 9V6.5a3 3 0 0 1 6 0V9" /></svg></button>
+   </span>
+  </header>
+  <div class="app-body">
+   <nav class="sidebar" aria-label="Main"><ul role="list" class="sidebar-list"><li><button type="button" class="sidebar-item"><svg class="sidebar-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 9.5 10 3.5l7 6V17a1 1 0 0 1-1 1h-4v-5H8v5H4a1 1 0 0 1-1-1V9.5Z" /></svg><span class="sidebar-title">Home</span></button></li><li><button type="button" class="sidebar-item"><svg class="sidebar-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 15 15 5M8 5h7v7" /></svg><span class="sidebar-title">Pay</span></button></li><li><button type="button" class="sidebar-item"><svg class="sidebar-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M15 5 5 15m7 0H5V8" /></svg><span class="sidebar-title">Receive</span></button></li><li><button type="button" class="sidebar-item"><svg class="sidebar-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="7" r="3" /><path d="M4 17c.6-3 3-4.5 6-4.5s5.4 1.5 6 4.5" /></svg><span class="sidebar-title">Contacts</span><span class="sidebar-badge" aria-label="1 waiting">1</span></button></li><li><button type="button" class="sidebar-item"><svg class="sidebar-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h2m3 0h9M3 10h2m3 0h9M3 15h2m3 0h9" /></svg><span class="sidebar-title">Activity</span></button></li><li><button type="button" class="sidebar-item"><svg class="sidebar-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="7.5" cy="10" r="4.5" /><circle cx="12.5" cy="10" r="4.5" /></svg><span class="sidebar-title">CoinJoin</span></button></li><li><button type="button" class="sidebar-item is-current" aria-current="page"><svg class="sidebar-icon" viewBox="0 0 20 20" aria-hidden="true"><rect x="3.5" y="3.5" width="13" height="5.5" rx="1.5" /><rect x="3.5" y="11" width="13" height="5.5" rx="1.5" /><path d="M6.5 6.25h.01M6.5 13.75h.01M10 6.25h3.5M10 13.75h3.5" /></svg><span class="sidebar-title">Masternodes</span></button></li></ul></nav>
+   
+<main class="page page-masternodes">
+ <div class="page-column">
+  <header class="top-intro mg-header">
+   <h1 class="top-intro-title">Masternodes</h1>
+   <span class="mg-header-actions">
+    <button type="button" class="dash-button dash-button-tintedGray dash-button-small">More</button>
+    <button type="button" class="dash-button dash-button-filledBlue dash-button-small">Create proposal</button>
+   </span>
+  </header>
+  <div class="tabs" role="tablist"><button class="tab" role="tab">My masternodes</button><button class="tab" role="tab" aria-selected="true">Governance</button></div>
+  <section class="mg-clock card-l1">
+   <div>
+    <h2 class="mg-clock-title">Voting closes in about 1 day 6 hours</h2>
+    <p class="mg-clock-sub">Next payout to proposals: Nov 4, around 3 PM · block 2,375,048</p>
+    <div class="mg-cycle"><div class="mg-cycle-done" style="width:86%"></div><span class="mg-cycle-mark" style="left:90%"></span></div>
+    <div class="mg-cycle-labels"><span>Oct 6 · last payout</span><span>voting closes Nov 1</span><span>Nov 4</span></div>
+   </div>
+   <div>
+    <div class="mg-spread mg-small"><strong>Budget for Nov 4</strong><span class="mg-muted">from peers, may lag</span></div>
+    <div class="mg-budget-bar"><span class="mg-budget-passing" style="width:79%"></span><span class="mg-budget-over" style="width:11%"></span></div>
+    <div class="mg-small"><span class="amount">4,760<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span> of <span class="amount">6,018<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span> goes to 9 passing proposals</div>
+    <div class="mg-muted mg-small">2 more pass the vote but don't fit (<span class="amount">690<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span>)</div>
+   </div>
+  </section>
+  <div class="tx-filter-bar" style="display:flex;gap:var(--dw-space-m);align-items:center;margin-bottom:var(--dw-space-l)">
+   <label class="search-field" style="flex:1"><img class="search-icon" width="16" height="16" alt="" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB0AAAAeCAYAAADQBxWhAAAACXBIWXMAABYlAAAWJQFJUiTwAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAOdEVYdFNvZnR3YXJlAEZpZ21hnrGWYwAAAuNJREFUeAHFVrFym0AQ3b0DBIZxyIw9o2RcULhIqdKlS5cu8oEpU6ZI4VKlixQqXKhIQZFChQusUTQnAbe5IwadMCBQxvHrOJZ9u9zu20XoQBRF7uPj4xUhRlJiiAihPiciwRgskHhsWTBLFGAAsOkwVNhk2Q0C+wS9vNDM4Xzal/wFqR+GE5nmN4jowkBYDO6Wy+X9ITtuPrhBeI1SakLLPEckwZE/AOMxIvvFSK6AgQUEe4FJgsuRY8N2u427SKtMvdPTK5RwY75kHBcZ4p1IkkYnbhhGXMpbkn/vusShjItM9R3mmfxsZogM7n8vl18zIVrvSb9LN5t77ngqeorKc52x8+50nq7Xq1ZSZtuqaPCiRngHPZFtRVwnxjw7S7fbWZM901kC4cQgTIYQlhCrZKruOy6fiTBSrqNG0o2U+23B2BSORM5haj6ndd8VBe16scgySWZwJHTBEUFVAyRl1Eiq4htXpAAL+EdYbPeLlftxkw1T/77qNQIYJGdNMDMtoKS0bsPgDcDMyNT9Dpa+Oojkvo84FnUbplCRSqB+At9FqibS7kk21gjLCeLqAyK3rbf6wD8/V4VDu8LcKyqDlHv23DxI8/wajoUQe9ptM9aov1zrozPyIhXhs2hj6NiWm6bpTxiAYkIBVMqmhvx8+fT0o8m2qF6bwzc9vspDQn4VBME1DCBkIPfsvdFo2mZfCL5QsNwgQ5KXFTFgZNmjSeB7C9EyafT9c9u+NTMskWbyIv344QGSJKu/w0MRFwGotuJcqZVkRTXqXSlTElfuTO3Axfrs/Zd627xYV9qIj8dLYl430bPRP/FmknC8K64DbtVIk4Azc54aCOy1uDR/NXY5831/DHw0IZlHZv+VGaDamXIm5+U6o5c6yuRtS2hVxp2kdUTP4h03SFsVaA/iQaR90UWs+5fDKyAVYuGceIna0Bq0HINXIe0iVtvJ6tVIm4i16jHH+Q7/A7oA9WJeFuIfxslT4SdY6zEAAAAASUVORK5CYII="><input placeholder="Search proposals" type="search"></label>
+   <div class="segmented"><button class="segment" style="background:var(--dw-role-card);box-shadow:var(--dw-shadow-card)">All 37</button><button class="segment">Needs my vote 12</button><button class="segment">Mine 1</button></div>
+   <label class="filter-select"><span>Sort by</span><select><option>Closest to passing</option></select></label>
+  </div>
+  <div class="contacts-split">
+   <div class="contacts-list">
+    <section class="tx-group card-l1">
+     <ul style="list-style:none;margin:0;padding:var(--dw-space-xs)">
+      <li><button class="mg-row mg-row-wide" aria-current="true"><span class="mg-row-text"><span class="mg-row-title">dash-incubator-nov</span><span class="mg-row-sub"><span class="amount">1,500<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span> × 3 payments · You: 1 of 3 voted</span><span class="mg-votebar"><span class="mg-vote-yes" style="width:70%"></span><span class="mg-vote-no" style="width:4%"></span><span class="mg-vote-abstain" style="width:1%"></span><span class="mg-threshold" style="left:31%"></span></span></span><span class="mg-row-trailing"><span class="chip chip-success">Passing</span><span class="mg-row-meta">+414 over</span></span></button></li>
+      <li><button class="mg-row mg-row-wide"><span class="mg-row-text"><span class="mg-row-title">translations-2027</span><span class="mg-row-sub"><span class="amount">220<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span> once · You voted Yes</span><span class="mg-votebar"><span class="mg-vote-yes" style="width:44%"></span><span class="mg-vote-no" style="width:9%"></span><span class="mg-vote-abstain" style="width:2%"></span><span class="mg-threshold" style="left:31%"></span></span></span><span class="mg-row-trailing"><span class="chip chip-warning">Over budget</span><span class="mg-row-meta">+94 over</span></span></button></li>
+      <li><button class="mg-row mg-row-wide"><span class="mg-row-text"><span class="mg-row-title">alt-wallet-hardening</span><span class="mg-row-sub"><span class="amount">800<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span> × 6 payments · You: not voted</span><span class="mg-votebar"><span class="mg-vote-yes" style="width:28%"></span><span class="mg-vote-no" style="width:6%"></span><span class="mg-vote-abstain" style="width:1%"></span><span class="mg-threshold" style="left:31%"></span></span></span><span class="mg-row-trailing"><span class="chip chip-info">Needs votes</span><span class="mg-row-meta">105 short</span></span></button></li>
+      <li><button class="mg-row mg-row-wide"><span class="mg-row-text"><span class="mg-row-title">dashcon-2027-venue</span><span class="mg-row-sub"><span class="amount">3,000<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span> once · You voted No</span><span class="mg-votebar"><span class="mg-vote-yes" style="width:12%"></span><span class="mg-vote-no" style="width:22%"></span><span class="mg-vote-abstain" style="width:3%"></span><span class="mg-threshold" style="left:31%"></span></span></span><span class="mg-row-trailing"><span class="chip chip-info">Needs votes</span><span class="mg-row-meta">692 short</span></span></button></li>
+     </ul>
+    </section>
+   </div>
+   <aside class="contacts-pane" aria-label="Proposal">
+    <section class="mg-pane card-l1">
+     <div>
+      <h2 class="mg-pane-title">dash-incubator-nov</h2>
+      <div class="chip-row" style="margin-top:4px"><span class="chip chip-success">Passing</span><span class="mg-muted mg-small">paid Nov 4 if it stays above the line</span></div>
+     </div>
+     <dl class="mg-facts">
+      <dt>Asks for</dt><dd><span class="amount">1,500<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span> per payment, 3 payments (Nov 4 to Jan 3)</dd>
+      <dt>Paid to</dt><dd><span class="mono">XqP2…7mVd</span></dd>
+      <dt>Link</dt><dd><a style="color:var(--dw-role-text-link)">dashcentral.org/p/dash-incubator-nov</a></dd>
+     </dl>
+     <div class="mg-stack" style="gap:var(--dw-space-xs)">
+      <div class="mg-spread mg-small"><strong>Votes, weighted</strong><span class="mg-muted">771 net yes · needs 357</span></div>
+      <span class="mg-votebar"><span class="mg-vote-yes" style="width:70%"></span><span class="mg-vote-no" style="width:4%"></span><span class="mg-vote-abstain" style="width:1%"></span><span class="mg-threshold" style="left:31%"></span></span>
+      <div class="mg-vote-legend"><span class="l-yes">Yes 812</span><span class="l-no">No 41</span><span class="l-abstain">Abstain 9</span><span class="l-threshold">Funding line</span></div>
+     </div>
+     <div>
+      <h3 class="mg-section-title">Your masternodes</h3>
+      <ul class="mg-roles" style="grid-template-columns:1fr auto">
+       <li>Home node</li><li class="mg-muted">Yes, 40 min ago</li>
+       <li>Hosted evonode <span class="mg-muted">· weight 4</span></li><li class="mg-muted">Not voted</li>
+       <li>Friend's evonode <span class="mg-muted">· weight 4</span></li><li class="mg-muted">Not voted</li>
+      </ul>
+     </div>
+     <div class="mg-actions">
+      <button class="dash-button dash-button-filledBlue dash-button-small">Vote</button>
+      <button class="dash-button dash-button-tintedGray dash-button-small">More</button>
+     </div>
+    </section>
+   </aside>
+  </div>
+ </div>
+</main>
+
+  </div>
+  <footer class="status-bar"><span class="status-left"><span role="status">Up to date</span></span><span class="status-right"><span>DASH</span><span>HD</span><span>Unlocked</span><span>8 peers</span><span>Synced</span></span></footer>
+ </div>
+ <div class="sheet-scrim">
+<div class="sheet sheet-medium" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Governance numbers</h2><span><button type="button" class="sheet-close" aria-label="Close"><svg class="" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5 5 15" /></svg></button></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <h3 class="mg-section-title" style="margin:0">This cycle</h3>
+  <dl class="detail-list card-l1">
+   <div class="detail-row"><dt class="detail-label">Last superblock</dt><dd class="detail-value">Block 2,358,432 · Oct 6</dd></div>
+   <div class="detail-row"><dt class="detail-label">Voting closes</dt><dd class="detail-value">Block 2,373,386 · about Nov 1</dd></div>
+   <div class="detail-row"><dt class="detail-label">Next superblock</dt><dd class="detail-value">Block 2,375,048 · about Nov 4</dd></div>
+   <div class="detail-row"><dt class="detail-label">Cycle</dt><dd class="detail-value">16,616 blocks; voting closes 1,662 blocks before the superblock</dd></div>
+  </dl>
+  <h3 class="mg-section-title" style="margin:0">Votes and budget</h3>
+  <dl class="detail-list card-l1">
+   <div class="detail-row"><dt class="detail-label">Voting weight</dt><dd class="detail-value">3,570: 2,850 masternodes and 180 evonodes, which count 4 each</dd></div>
+   <div class="detail-row"><dt class="detail-label">Funding line</dt><dd class="detail-value">357 net yes votes: a tenth of the weight, and at least 10</dd></div>
+   <div class="detail-row"><dt class="detail-label">Budget</dt><dd class="detail-value"><span class="amount">6,018<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span> per superblock · <span class="amount">4,760<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span> to 9 passing proposals</dd></div>
+   <div class="detail-row"><dt class="detail-label">Proposals</dt><dd class="detail-value">37 open · 9 passing · 2 over budget</dd></div>
+   <div class="detail-row"><dt class="detail-label">Data</dt><dd class="detail-value">Up to date at block 2,372,666 · from 8 peers</dd></div>
+  </dl>
+ </div>
+ <footer class="mg-sheet-footer"><span></span><span class="mg-actions"><button class="dash-button dash-button-filledBlue dash-button-medium">Done</button></span></footer>
+</div>
+</div>
 </div></div></section>
 </body>
 </html>

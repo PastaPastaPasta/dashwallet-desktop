@@ -31,7 +31,7 @@
      <label class="mg-choice is-selected"><input type="radio" name="t" checked><span class="mg-choice-title">Masternode</span><span class="mg-choice-help">1,000 Dash collateral. Runs Dash Core.</span></label>
      <label class="mg-choice"><input type="radio" name="t"><span class="mg-choice-title">Evonode</span><span class="mg-choice-help">4,000 Dash collateral. Also runs Dash Platform and earns Platform credits.</span></label>
     </div>
-    <label class="mg-choice"><input type="radio" name="t"><span class="mg-choice-title">Shared masternode</span><span class="mg-choice-help">2 to 8 people each put in a share of the collateral and split the payouts. Opens the shared-masternode setup.</span><span class="mg-choice-note">Masternodes only; shared evonodes come with a later network upgrade.</span></label>
+    <label class="mg-choice"><input type="radio" name="t"><span class="mg-choice-title">Shared masternode</span><span class="mg-choice-help">2 to 8 people each put in a share of the collateral and split the payouts. Opens the shared-masternode setup.</span><span class="mg-choice-note">Masternode or evonode: you choose in the shared setup.</span></label>
     <h3 class="mg-step-title" style="margin-top:var(--dw-space-s)">Who runs the server?</h3>
     <div class="mg-choices">
      <label class="mg-choice is-selected"><input type="radio" name="w" checked><span class="mg-choice-title">A hosting provider, or someone else</span><span class="mg-choice-help">They give you an operator key (a public key), the server's address and their fee. You keep the collateral and the owner key.</span></label>
@@ -164,7 +164,7 @@
     </div>
     <div class="mg-field">Payouts go to
      <div class="mg-choices">
-      <label class="mg-choice is-selected"><input type="radio" name="p" checked><span class="mg-choice-title">A new address in this wallet</span><span class="mg-choice-help">Payouts appear in Activity as "Masternode payout".</span></label>
+      <label class="mg-choice is-selected"><input type="radio" name="p" checked><span class="mg-choice-title">A new address in this wallet</span><span class="mg-choice-help">Payouts appear in Activity as "Masternode reward".</span></label>
       <label class="mg-choice"><input type="radio" name="p"><span class="mg-choice-title">Another address</span><span class="mg-choice-help">For example a cold wallet. This wallet then can't show the payouts.</span></label>
      </div>
     </div>
@@ -250,7 +250,7 @@
   <ol class="mg-small" style="margin:0;padding-left:var(--dw-space-xl);display:flex;flex-direction:column;gap:var(--dw-space-xs)">
    <li>Send your operator the ProTx hash. They start the server with it.</li>
    <li>The masternode shows <strong>Active</strong> once the network sees the server.</li>
-   <li>Payouts then arrive in this wallet and show in Activity as "Masternode payout".</li>
+   <li>Payouts then arrive in this wallet and show in Activity as "Masternode reward".</li>
   </ol>
  </div>
  <footer class="mg-sheet-footer"><span></span><span class="mg-actions"><button class="dash-button dash-button-tintedBlue dash-button-medium">Copy ProTx hash</button><button class="dash-button dash-button-filledBlue dash-button-medium">Done</button></span></footer>

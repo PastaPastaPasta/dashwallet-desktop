@@ -1,6 +1,6 @@
 <!-- board title="Governance and voting" -->
 
-<!-- frame id="gov-list" title="Governance: clock, budget, proposals and a proposal's detail (§4.25.3)" route="masternodes" net="DASH" -->
+<!-- frame id="gov-list" title="Governance: clock, budget, proposals and a proposal's detail; the status-bar voting item (§4.25.3, §4.25.1)" route="masternodes" net="DASH" right="DASH|HD|Unlocked|8 peers|Voting closes in about 1 d 6 h|Synced" -->
 <main class="page page-masternodes">
  <div class="page-column">
   <header class="top-intro mg-header">
@@ -153,7 +153,7 @@
    <li class="mg-node" style="grid-template-columns:minmax(0,1fr) auto"><span><span class="mg-node-name">Hosted evonode</span><div class="mg-node-sub">weight 4</div></span><span class="chip chip-success">Sent</span></li>
    <li class="mg-node" style="grid-template-columns:minmax(0,1fr) auto"><span><span class="mg-node-name">Friend's evonode</span><div class="mg-node-sub">Its voting key changed, so the key you added no longer matches. Update it in the masternode's details.</div></span><span class="chip chip-warning">Not sent</span></li>
   </ul>
-  <p class="mg-muted mg-small" style="margin:0">The counts update as other nodes relay the votes, usually within a minute.</p>
+  <p class="mg-muted mg-small" style="margin:0">The counts update as peers relay the votes.</p>
  </div>
  <footer class="mg-sheet-footer"><span></span><span class="mg-actions"><button class="dash-button dash-button-filledBlue dash-button-medium">Done</button></span></footer>
 </div>
@@ -241,11 +241,36 @@
   </div>
   <section class="tx-group card-l1">
    <ul style="list-style:none;margin:0;padding:var(--dw-space-xs)">
-    <li><div class="mg-row mg-row-wide"><span class="mg-row-text"><span class="mg-row-title">desktop-wallet-i18n</span><span class="mg-row-sub">Fee paid Oct 15 at 2:02 PM · waiting for its first confirmation, then the wallet submits it</span></span><span class="mg-row-trailing"><span class="chip chip-neutral">Fee paid</span><span class="mg-row-meta">0 of 1</span></span></div></li>
+    <li><div class="mg-row mg-row-wide"><span class="mg-row-text"><span class="mg-row-title">desktop-wallet-i18n</span><span class="mg-row-sub">Fee paid Oct 31 at 2:02 PM · waiting for its first confirmation, then the wallet submits it</span></span><span class="mg-row-trailing"><span class="chip chip-neutral">Fee paid</span><span class="mg-row-meta">0 of 1</span></span></div></li>
     <li><div class="mg-row mg-row-wide"><span class="mg-row-text"><span class="mg-row-title">dash-docs-refresh</span><span class="mg-row-sub">Submitted · the network shows it after 6 confirmations</span></span><span class="mg-row-trailing"><span class="chip chip-neutral">Confirming</span><span class="mg-row-meta">4 of 6</span></span></div></li>
    </ul>
   </section>
   <p class="mg-muted mg-small">Proposals you create are kept with this wallet, so you can finish them after a restart; they travel in wallet backups.</p>
  </div>
 </main>
+<!-- /frame -->
+
+<!-- frame id="gov-numbers" title="Governance numbers, from Governance ▸ More (QT-134, §4.25.3)" route="masternodes" net="DASH" behind="gov-list" -->
+<!-- sheet -->
+<div class="sheet sheet-medium" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Governance numbers</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <h3 class="mg-section-title" style="margin:0">This cycle</h3>
+  <dl class="detail-list card-l1">
+   <div class="detail-row"><dt class="detail-label">Last superblock</dt><dd class="detail-value">Block 2,358,432 · Oct 6</dd></div>
+   <div class="detail-row"><dt class="detail-label">Voting closes</dt><dd class="detail-value">Block 2,373,386 · about Nov 1</dd></div>
+   <div class="detail-row"><dt class="detail-label">Next superblock</dt><dd class="detail-value">Block 2,375,048 · about Nov 4</dd></div>
+   <div class="detail-row"><dt class="detail-label">Cycle</dt><dd class="detail-value">16,616 blocks; voting closes 1,662 blocks before the superblock</dd></div>
+  </dl>
+  <h3 class="mg-section-title" style="margin:0">Votes and budget</h3>
+  <dl class="detail-list card-l1">
+   <div class="detail-row"><dt class="detail-label">Voting weight</dt><dd class="detail-value">3,570: 2,850 masternodes and 180 evonodes, which count 4 each</dd></div>
+   <div class="detail-row"><dt class="detail-label">Funding line</dt><dd class="detail-value">357 net yes votes: a tenth of the weight, and at least 10</dd></div>
+   <div class="detail-row"><dt class="detail-label">Budget</dt><dd class="detail-value"><span class="amount">6,018<dash/></span> per superblock · <span class="amount">4,760<dash/></span> to 9 passing proposals</dd></div>
+   <div class="detail-row"><dt class="detail-label">Proposals</dt><dd class="detail-value">37 open · 9 passing · 2 over budget</dd></div>
+   <div class="detail-row"><dt class="detail-label">Data</dt><dd class="detail-value">Up to date at block 2,372,666 · from 8 peers</dd></div>
+  </dl>
+ </div>
+ <footer class="mg-sheet-footer"><span></span><span class="mg-actions"><button class="dash-button dash-button-filledBlue dash-button-medium">Done</button></span></footer>
+</div>
 <!-- /frame -->
