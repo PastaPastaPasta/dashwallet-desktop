@@ -16,6 +16,12 @@ const command = (page: Page, c: ShellCommand) => page.evaluate((c) => window.__d
 const world = <T,>(page: Page, fn: (w: NonNullable<Window["__dwFixture"]>["world"]) => T) =>
   page.evaluate(`(${fn.toString()})(window.__dwFixture.world)`) as Promise<T>;
 
+/** Holds the next call of `cmd` until the returned function is called (a late reply). */
+async function hold(page: Page, cmd: "authorize") {
+  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), cmd);
+  return () => release.evaluate((r) => r());
+}
+
 const A = `settings-wallet-${FIXTURE_WALLET_ID.slice(0, 8)}`;
 const B = `settings-wallet-${SECOND_WALLET_ID.slice(0, 8)}`;
 
@@ -143,6 +149,20 @@ test.describe("Security", () => {
     await expect(page.getByTestId("settings-payment-auth")).not.toBeChecked();
   });
 
+  test("IOS016_theQuestionCannotCloseWhileThePassphraseIsChecked", async ({ page }) => {
+    await settings(page, "security");
+    await page.getByTestId("settings-payment-auth").click();
+    const release = await hold(page, "authorize");
+    await page.getByTestId("settings-payment-auth-passphrase-field").fill(PASS);
+    await page.getByTestId("settings-payment-auth-passphrase-submit").click();
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("authorize"))).toBe(true);
+    // D31: it cannot close; the change it started is seen through.
+    await expect(page.getByTestId("settings-payment-auth-sheet").getByRole("button", { name: "Close" })).toBeDisabled();
+    await release();
+    await expect(page.getByTestId("settings-payment-auth-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("settings-payment-auth")).not.toBeChecked();
+  });
+
   test("IOS015_autoLockLocksAfterTheChosenIdleTime", async ({ page }) => {
     await page.clock.install();
     await settings(page, "security");
@@ -181,6 +201,41 @@ test.describe("Security", () => {
     expect(errors).toEqual([]);
   });
 
+  test("IOS009_aVaultThatCannotBeDeletedIsSaidNotCoveredByOnboarding", async ({ page }) => {
+    await settings(page, "security");
+    await page.evaluate(() => window.__dwFixture!.fail("destroy_vault", "call"));
+    await page.getByTestId("settings-wipe").click();
+    await page.getByTestId("settings-wipe-sentence").fill(SecurityText.wipeAcceptPhrase);
+    await page.getByTestId("settings-wipe-continue").click();
+    await page.getByTestId("settings-wipe-passphrase-field").fill(PASS);
+    await page.getByTestId("settings-wipe-passphrase-submit").click();
+    // D33: the wallet list is empty, but onboarding waits while the sheet says what failed.
+    await expect(page.getByTestId("settings-wipe-error")).toContainText("the vault could not be deleted");
+    await expect(page.getByTestId("onboarding")).toHaveCount(0);
+    expect(await world(page, (w) => [w.wallets.length, w.lock.state === "noVault"])).toEqual([0, false]);
+    await page.evaluate(() => window.__dwFixture!.fail("destroy_vault", null));
+    await page.getByTestId("settings-wipe-retry").click();
+    await page.getByTestId("settings-wipe-passphrase-field").fill(PASS);
+    await page.getByTestId("settings-wipe-passphrase-submit").click();
+    await expect(page.getByTestId("onboarding")).toBeVisible();
+    expect(await world(page, (w) => w.lock.state)).toBe("noVault");
+  });
+
+  test("IOS009_IOS110_destructiveConfirmationsTakeNoFocus", async ({ page }) => {
+    await settings(page, "security", "unencrypted");
+    await page.getByTestId("settings-wipe").click();
+    await page.getByTestId("settings-wipe-sentence").fill(SecurityText.wipeAcceptPhrase);
+    await page.getByTestId("settings-wipe-continue").click();
+    // D35: Enter right after the step opens does not delete everything.
+    await expect(page.getByTestId("settings-wipe-confirm")).toBeVisible();
+    await expect(page.getByTestId("settings-wipe-confirm")).not.toBeFocused();
+    await page.keyboard.press("Escape");
+    await page.getByTestId("settings-tabs-wallets").click();
+    await page.getByTestId(`${A}-remove`).click();
+    await expect(page.getByTestId("settings-remove-confirm")).toBeVisible();
+    await expect(page.getByTestId("settings-remove-confirm")).not.toBeFocused();
+  });
+
   test("quick unlock is not yet, and says who brings it (D7)", async ({ page }) => {
     await settings(page, "security");
     await expect(page.getByTestId("settings-quick-unlock")).toContainText("Not available on this computer");
@@ -217,6 +272,20 @@ test.describe("Wallets", () => {
     await page.getByTestId("settings-remove-passphrase-field").fill(PASS);
     await page.getByTestId("settings-remove-passphrase-submit").click();
     await expect(page.getByTestId("settings-wallets-notice")).toContainText("Rainy day");
+    await expect(page.getByTestId(B)).toHaveCount(0);
+  });
+
+  test("IOS110_removeCannotCloseWhileThePassphraseIsChecked", async ({ page }) => {
+    await settings(page, "wallets", "two-wallets");
+    await page.getByTestId(`${B}-remove`).click();
+    const release = await hold(page, "authorize");
+    await page.getByTestId("settings-remove-passphrase-field").fill(PASS);
+    await page.getByTestId("settings-remove-passphrase-submit").click();
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("authorize"))).toBe(true);
+    // D31: the sheet cannot close until the removal it started is done, and says so.
+    await expect(page.getByTestId("settings-remove-sheet").getByRole("button", { name: "Close" })).toBeDisabled();
+    await release();
+    await expect(page.getByTestId("settings-wallets-notice")).toBeVisible();
     await expect(page.getByTestId(B)).toHaveCount(0);
   });
 
@@ -262,7 +331,17 @@ test.describe("Backups", () => {
     await settings(page, "backups");
     await expect(page.getByTestId("settings-backup-list").locator("li")).toHaveCount(2);
     await expect(page.getByTestId("settings-backup-folder")).toContainText(FIXTURE_BACKUP_DIR);
+    const keep = await world(page, (w) => w.settings.keep);
+    // D30: a count that deletes files asks first, and says how many and where.
     await page.getByTestId("settings-backup-keep").selectOption("0");
+    await expect(page.getByTestId("settings-backup-keep-sheet")).toContainText(`deletes 2 automatic backups in ${FIXTURE_BACKUP_DIR} now`);
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByTestId("settings-backup-keep-sheet")).toHaveCount(0);
+    expect(await world(page, (w) => w.settings.keep)).toBe(keep);
+    await expect(page.getByTestId("settings-backup-list").locator("li")).toHaveCount(2);
+    await expect(page.getByTestId("settings-backup-keep")).toHaveValue(String(keep));
+    await page.getByTestId("settings-backup-keep").selectOption("0");
+    await page.getByTestId("settings-backup-keep-confirm").click();
     await expect.poll(() => world(page, (w) => w.settings.keep)).toBe(0);
     await expect(page.getByTestId("settings-backup-list").locator("li")).toHaveCount(0);
   });

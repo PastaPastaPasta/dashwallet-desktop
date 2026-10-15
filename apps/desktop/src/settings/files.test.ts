@@ -10,7 +10,7 @@ import { FIXTURE_PASSPHRASE as PASS, FIXTURE_WALLET_ID as A, type ScenarioName }
 import { CORE_WALLET_PASSPHRASE, FIXTURE_BACKUP_DIR, FIXTURE_FILES } from "../fixture/settings";
 import { WRONG_PASSPHRASE } from "../onboarding/model";
 import { PassphraseText } from "../onboarding/passphrase";
-import { BackupModel, ExportModel, fileName, fileStem, FilesText, ImportFileModel, ImportKeysModel, importPlan, inDirectory, keyMaterial } from "./files";
+import { BackupModel, deletedByKeep, ExportModel, fileName, fileStem, FilesText, ImportFileModel, ImportKeysModel, importPlan, inDirectory, keyMaterial } from "./files";
 
 const AT = new Date(2026, 9, 6, 9, 5);
 
@@ -172,6 +172,33 @@ describe("import keys", () => {
   });
 });
 
+describe("backups to keep (D30)", () => {
+  const backup = (walletId: string, n: number) => ({ path: `/b/${walletId}-${n}.dwbackup`, walletId, createdAt: 100 - n, automatic: true, sizeBytes: 1 });
+  // Newest first, as automaticBackups lists them: A has 3, B has 1.
+  const list = [backup("A", 1), backup("B", 1), backup("A", 2), backup("A", 3)];
+
+  it("QT110_aLowerCountSaysHowManyBackupsItDeletes", () => {
+    expect(deletedByKeep(list, 5, 0)).toBe(4);
+    expect(deletedByKeep(list, 5, 1)).toBe(2);
+    expect(deletedByKeep(list, 5, 2)).toBe(1);
+    expect(deletedByKeep(list, 5, 3)).toBe(0);
+    expect(deletedByKeep([], 5, 0)).toBe(0);
+  });
+
+  it("QT110_anUnknownListAsksBeforeAnyLowerCount", () => {
+    expect(deletedByKeep(undefined, 5, 4)).toBeNull();
+    expect(deletedByKeep(undefined, 5, 0)).toBeNull();
+    expect(deletedByKeep(undefined, 5, 5)).toBe(0);
+    expect(deletedByKeep(undefined, 5, 8)).toBe(0);
+  });
+
+  it("QT110_theQuestionNamesWhatGoes", () => {
+    expect(FilesText.keepDeletes(0, 4, "/b")).toBe("Turning automatic backups off deletes 4 automatic backups in /b now, and no new ones are made.");
+    expect(FilesText.keepDeletes(1, 1, "/b")).toBe("Keeping 1 for each wallet deletes 1 automatic backup in /b now: each wallet keeps its newest 1.");
+    expect(FilesText.keepConfirm(4)).toBe("Delete 4 backups");
+  });
+});
+
 describe("export for Dash Core", () => {
   it("QT109_exportForCoreNeedsARevealGrantAndReportsWarnings", async () => {
     fixture.world.settings.coreIncompatible = [A];
@@ -184,6 +211,20 @@ describe("export for Dash Core", () => {
     await model.export("dumpWallet", PASS);
     expect(model.step).toBe("done");
     expect(model.done).toMatchObject({ path: `${FIXTURE_BACKUP_DIR}/Main-2026-10-06-09-05-00-dumpwallet.txt`, keyCount: 62, warnings: ["mnemonicNotCoreCompatible"] });
+  });
+
+  it("QT109_aClosedSheetWritesNoKeys", async () => {
+    const model = new ExportModel(b, () => AT, A, "Main");
+    await model.load();
+    const release = fixture.hold("authorize");
+    const exporting = model.export("dumpWallet", PASS);
+    await vi.waitFor(() => expect(fixture.calls).toContain("authorize"));
+    expect(model.busy).toBe(true);
+    model.cancel();
+    release();
+    await exporting;
+    expect(fixture.calls).not.toContain("export_for_core");
+    expect(fixture.calls).toContain("revoke_grant");
   });
 
   it("QT109_aLockedVaultStillOffersTheExport", async () => {

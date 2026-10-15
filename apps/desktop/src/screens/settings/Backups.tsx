@@ -14,7 +14,7 @@ import { NewPassphraseForm, PassphrasePrompt } from "../../components/passphrase
 import { Sheet } from "../../components/sheet";
 import { detailDate } from "../../format/tx";
 import { failureText, useModel } from "../../onboarding/model";
-import { BackupModel, ExportModel, FilesText, ImportFileModel, ImportKeysModel, KEY_KINDS, type ImportDone, type KeyKind } from "../../settings/files";
+import { BackupModel, deletedByKeep, ExportModel, FilesText, ImportFileModel, ImportKeysModel, KEY_KINDS, type ImportDone, type KeyKind } from "../../settings/files";
 import { useLockTimer } from "../LockScreen";
 import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
 
@@ -84,15 +84,26 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
   const directory = useBackupDirectory();
   const backups = useAutomaticBackups();
   const [problem, setProblem] = useState<string | null>(null);
+  /** A lower count waiting for its confirmation: it deletes files at once (D30). */
+  const [asking, setAsking] = useState<{ keep: number; deleted: number | null } | null>(null);
+  const [saving, setSaving] = useState(false);
   const id = useId();
   const setKeep = async (keep: number) => {
     setProblem(null);
+    setSaving(true);
     try {
       await backend.setBackupPolicy(keep);
     } catch (e) {
       setProblem(failureText(e));
     }
     await client.invalidateQueries({ queryKey: keys.backupsAll });
+    setSaving(false);
+    setAsking(null);
+  };
+  const choose = (keep: number) => {
+    const deleted = deletedByKeep(backups.data, policy.data?.keep ?? 0, keep);
+    if (deleted === 0) void setKeep(keep);
+    else setAsking({ keep, deleted });
   };
   return (
     <SettingsCard title="Automatic backups" testId="settings-automatic-backups">
@@ -105,8 +116,8 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
           className="settings-select"
           data-testid="settings-backup-keep"
           value={policy.data?.keep ?? ""}
-          disabled={!policy.data}
-          onChange={(e) => void setKeep(Number(e.target.value))}
+          disabled={!policy.data || saving}
+          onChange={(e) => choose(Number(e.target.value))}
         >
           {KEEP_CHOICES.map((n) => (
             <option key={n} value={n}>
@@ -116,6 +127,21 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
         </select>
       </div>
       <Problem text={problem ?? (policy.isError ? failureText(policy.error) : null)} testId="settings-backup-policy-error" />
+      {asking && (
+        <Sheet title={FilesText.keepTitle} width="small" testId="settings-backup-keep-sheet" closable={!saving} onClose={() => setAsking(null)}>
+          <p className="sheet-warning" role="note">
+            {FilesText.keepDeletes(asking.keep, asking.deleted, directory.data ?? "the backup folder")}
+          </p>
+          <div className="sheet-actions">
+            <DashButton variant="tintedGray" data-autofocus disabled={saving} onClick={() => setAsking(null)}>
+              Cancel
+            </DashButton>
+            <DashButton variant="plainRed" data-testid="settings-backup-keep-confirm" disabled={saving} onClick={() => void setKeep(asking.keep)}>
+              {FilesText.keepConfirm(asking.deleted)}
+            </DashButton>
+          </div>
+        </Sheet>
+      )}
       <dl className="detail-list settings-details">
         <DetailRow label="Folder" testId="settings-backup-folder">
           {directory.data ? <CopyValue value={directory.data} label="backup folder" mono /> : pendingText(directory)}
@@ -362,10 +388,13 @@ function ExportSheet({ wallet, onClose }: { wallet: WalletSummary; onClose: () =
   const [model] = useState(() => new ExportModel(backend, () => backend.now(), wallet.walletId, wallet.name));
   useModel(model);
   useLockTimer(model.lock);
-  useEffect(() => void model.load(), [model]);
+  useEffect(() => {
+    void model.load();
+    return () => model.cancel();
+  }, [model]);
   const [format, setFormat] = useState<CoreExportFormatName>("dumpWallet");
   return (
-    <Sheet title={`Export ${wallet.name} for Dash Core`} width="medium" testId="settings-export-sheet" focusKey={model.step} closable={model.step !== "working"} onClose={onClose}>
+    <Sheet title={`Export ${wallet.name} for Dash Core`} width="medium" testId="settings-export-sheet" focusKey={model.step} closable={!model.busy} onClose={onClose}>
       {model.step === "loading" && (
         <p className="sheet-text" role="status">
           Checking…
@@ -399,7 +428,7 @@ function ExportSheet({ wallet, onClose }: { wallet: WalletSummary; onClose: () =
             <PassphrasePrompt
               testId="settings-export-passphrase"
               error={model.message}
-              busy={model.lock.working || model.step === "working"}
+              busy={model.busy}
               disabled={model.lock.blocked}
               submitLabel="Export"
               onSubmit={(p) => model.export(format, p)}
@@ -407,7 +436,8 @@ function ExportSheet({ wallet, onClose }: { wallet: WalletSummary; onClose: () =
           ) : (
             <>
               <Problem text={model.error} testId="settings-export-error" />
-              <DashButton variant="filledBlue" size="large" fill data-autofocus data-testid="settings-export-confirm" onClick={() => void model.export(format, "")}>
+              {/* No autofocus: Enter on opening must not write the keys out (D35). */}
+              <DashButton variant="filledBlue" size="large" fill data-testid="settings-export-confirm" disabled={model.busy} onClick={() => void model.export(format, "")}>
                 Export
               </DashButton>
             </>

@@ -96,6 +96,26 @@ describe("payment authentication", () => {
     model.ask(false);
     expect(model.pending).toBeNull();
   });
+
+  it("IOS016_theQuestionStaysWhileThePassphraseIsChecked", async () => {
+    const model = new PaymentAuthModel(b);
+    await model.load();
+    model.ask(false);
+    const release = fixture.hold("authorize");
+    const confirming = model.confirm(PASS);
+    await vi.waitFor(() => expect(fixture.calls).toContain("authorize"));
+    // The sheet's close is refused while busy (D31).
+    expect(model.busy).toBe(true);
+    model.cancel();
+    expect(model.pending).toBe(false);
+    // The card unmounted anyway: the late grant changes nothing and is revoked.
+    model.dispose();
+    release();
+    await confirming;
+    expect(fixture.calls).not.toContain("set_payment_authentication");
+    expect(fixture.calls).toContain("revoke_grant");
+    expect(await b.paymentAuthentication()).toBe(true);
+  });
 });
 
 describe("auto lock", () => {
@@ -105,6 +125,14 @@ describe("auto lock", () => {
     expect(AUTO_LOCK_CHOICES.map((c) => c.secs)).toEqual([null, 60, 300, 3600, 86_400]);
   });
 });
+
+/** A wipe at its passphrase step. */
+async function wipeReady() {
+  const model = new WipeModel(b);
+  await model.load();
+  model.accept(SecurityText.wipeAcceptPhrase);
+  return model;
+}
 
 describe("wipe", () => {
   it("IOS009_existingDataPromptAndDeleteAllWithTypedSentence", async () => {
@@ -161,6 +189,68 @@ describe("wipe", () => {
     expect(model.error).toMatch(/Nothing was deleted\.$/);
     expect(fixture.calls).not.toContain("remove_wallet");
     expect(fixture.world.wallets).toHaveLength(2);
+  });
+
+  it("IOS109_aWipeNeedsTheListOfEveryWallet", async () => {
+    install("two-wallets");
+    await b.unloadWallet(SECOND_WALLET_ID);
+    fixture.fail("wallet_load_states", "call");
+    const model = await wipeReady();
+    await model.wipe(PASS);
+    // listWallets holds only the open wallet: a wipe built on it would delete Main, keep the
+    // closed one and fail at the vault (D32).
+    expect(model.step).toBe("stopped");
+    expect(model.error).toMatch(/^The list of every wallet could not be read: .* Nothing was deleted\.$/);
+    expect(fixture.calls).not.toContain("remove_wallet");
+    expect(fixture.world.wallets).toHaveLength(2);
+  });
+
+  it("IOS109_aVaultThatCannotBeDeletedStopsTheWipeAndATryAgainFinishesIt", async () => {
+    const model = await wipeReady();
+    fixture.fail("destroy_vault", "call");
+    await model.wipe(PASS);
+    expect(model.step).toBe("stopped");
+    expect(model.error).toMatch(/^Every wallet was removed, but the vault could not be deleted: .* Try again;/);
+    expect(fixture.world.wallets).toEqual([]);
+    expect(fixture.world.lock.state).not.toBe("noVault");
+    fixture.fail("destroy_vault", null);
+    model.retry();
+    expect(model.step).toBe("passphrase");
+    await model.wipe(PASS);
+    expect(model.step).toBe("done");
+    expect(fixture.world.lock.state).toBe("noVault");
+  });
+
+  it("IOS109_theWipeIsDoneOnlyOnceTheEngineSaysThereIsNoVault", async () => {
+    const model = await wipeReady();
+    const release = fixture.hold("destroy_vault");
+    const wiping = model.wipe(PASS);
+    await vi.waitFor(() => expect(fixture.calls).toContain("destroy_vault"));
+    // The vault's answer arrives; the check after it cannot read the vault's state.
+    fixture.fail("lock_status", "call");
+    release();
+    await wiping;
+    expect(model.step).toBe("stopped");
+    expect(model.error).toMatch(/^Every wallet was removed, but the vault could not be deleted: /);
+  });
+
+  it("IOS109_aClosedSheetDuringThePassphraseDeletesNothing", async () => {
+    const model = await wipeReady();
+    const release = fixture.hold("authorize");
+    const wiping = model.wipe(PASS);
+    await vi.waitFor(() => expect(fixture.calls).toContain("authorize"));
+    model.cancel();
+    release();
+    await wiping;
+    expect(fixture.calls).not.toContain("remove_wallet");
+    expect(fixture.calls).toContain("revoke_grant");
+    expect(fixture.world.wallets).toHaveLength(1);
+  });
+
+  it("IOS109_theWarningSaysHowEachKindOfWalletComesBack", () => {
+    expect(SecurityText.wipeMessage).toMatch(/recovery phrase, or from a backup or export you kept/);
+    expect(SecurityText.wipeMessage).toMatch(/watch-only wallet comes back with its extended public key/);
+    expect(SecurityText.wipeMessage).not.toMatch(/only your recovery phrase/);
   });
 
   it("IOS109_aStoppedWipeSaysWhatItAlreadyRemoved", () => {

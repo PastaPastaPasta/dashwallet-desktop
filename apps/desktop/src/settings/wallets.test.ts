@@ -104,6 +104,28 @@ describe("remove wallet", () => {
     expect(fixture.world.lock.walletsWithSecrets).toEqual([A]);
   });
 
+  it("IOS110_aClosedSheetRemovesNothing", async () => {
+    const model = new RemoveWalletModel(b, B);
+    await model.load();
+    const release = fixture.hold("authorize");
+    const removing = model.remove(PASS);
+    await vi.waitFor(() => expect(fixture.calls).toContain("authorize"));
+    // The sheet holds itself open meanwhile (D31); a sheet unmounted anyway cancels.
+    expect(model.busy).toBe(true);
+    model.cancel();
+    release();
+    await removing;
+    expect(fixture.calls).not.toContain("remove_wallet");
+    expect(fixture.calls).toContain("revoke_grant");
+    expect(fixture.world.wallets).toHaveLength(2);
+  });
+
+  it("IOS110_theQuestionSaysHowTheWalletComesBack", () => {
+    expect(WalletsText.removeQuestion("Main", false)).toMatch(/recovery phrase, or a backup or export you kept/);
+    expect(WalletsText.removeQuestion("Watcher", true)).toMatch(/extended public key adds it again/);
+    expect(WalletsText.removeQuestion("Watcher", true)).not.toMatch(/recovery phrase/);
+  });
+
   it("IOS110_anUnencryptedVaultRemovesWithoutAPassphrase", async () => {
     install("unencrypted");
     const model = new RemoveWalletModel(b, A);

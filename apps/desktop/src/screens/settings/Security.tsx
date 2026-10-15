@@ -137,7 +137,10 @@ function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: bool
   const [model] = useState(() => new PaymentAuthModel(backend));
   useModel(model);
   useLockTimer(model.lock);
-  useEffect(() => void model.load(), [model]);
+  useEffect(() => {
+    void model.load();
+    return () => model.dispose();
+  }, [model]);
   return (
     <SettingsCard title="Payments" testId="settings-payments">
       <label className="checkbox-row">
@@ -153,14 +156,20 @@ function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: bool
       <Hint>{encrypted ? SecurityText.requireAuthenticationHint : SecurityText.encryptFirst}</Hint>
       {model.pending === null && <Problem text={model.error} testId="settings-payment-auth-error" />}
       {model.pending !== null && (
-        <Sheet title={SecurityText.requireAuthentication} width="small" testId="settings-payment-auth-sheet" onClose={() => model.cancel()}>
+        <Sheet
+          title={SecurityText.requireAuthentication}
+          width="small"
+          testId="settings-payment-auth-sheet"
+          closable={!model.busy}
+          onClose={() => model.cancel()}
+        >
           <p className="sheet-text">
             {model.pending ? "Turn on: every payment asks for the passphrase." : "Turn off: payments go through without the passphrase while the wallet is unlocked."}
           </p>
           <PassphrasePrompt
             testId="settings-payment-auth-passphrase"
             error={model.lock.message ?? model.error}
-            busy={model.lock.working}
+            busy={model.busy}
             disabled={model.lock.blocked}
             submitLabel={model.pending ? "Turn on" : "Turn off"}
             onSubmit={(p) => model.confirm(p)}
@@ -274,6 +283,15 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
   useModel(model);
   useLockTimer(model.lock);
   useEffect(() => void model.load(), [model]);
+  // While the sheet is open onboarding stays closed: the last removal empties the wallet list
+  // before the vault is deleted, and a failure there must show here (D33).
+  useEffect(() => {
+    ui.set({ wiping: true });
+    return () => {
+      model.cancel();
+      ui.set({ wiping: false });
+    };
+  }, [model]);
   // Nothing is left for the sheet to stand on: onboarding opens over a fresh shell, and the toast
   // says what happened.
   useEffect(() => {
@@ -331,7 +349,8 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
             onSubmit={(p) => model.wipe(p)}
           />
         ) : (
-          <DashButton variant="filledBlue" size="large" fill data-autofocus data-testid="settings-wipe-confirm" onClick={() => void model.wipe("")}>
+          // No autofocus: Enter on opening this step must not delete everything (D35).
+          <DashButton variant="filledBlue" size="large" fill data-testid="settings-wipe-confirm" onClick={() => void model.wipe("")}>
             Delete everything
           </DashButton>
         ))}
@@ -340,7 +359,14 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
           Deleting…
         </p>
       )}
-      {model.step === "stopped" && <Problem text={model.error} testId="settings-wipe-error" />}
+      {model.step === "stopped" && (
+        <>
+          <Problem text={model.error} testId="settings-wipe-error" />
+          <DashButton variant="tintedBlue" size="large" fill data-testid="settings-wipe-retry" onClick={() => model.retry()}>
+            Try again
+          </DashButton>
+        </>
+      )}
     </Sheet>
   );
 }

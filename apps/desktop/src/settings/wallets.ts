@@ -16,8 +16,10 @@ export const WalletsText = {
   noLoadStates: "Closed wallets are not shown: this engine does not list them yet.",
   nameRule: "A wallet name is 1 to 64 characters.",
   /** IOS-110. */
-  removeQuestion: (name: string) =>
-    `Remove the wallet ${name} from this computer? Its keys, history and settings are deleted. Only its recovery phrase can bring it back.`,
+  removeQuestion: (name: string, watchOnly: boolean) =>
+    watchOnly
+      ? `Remove the watch-only wallet ${name} from this computer? Its history and settings are deleted. Its extended public key adds it again.`
+      : `Remove the wallet ${name} from this computer? Its keys, history and settings are deleted. Its recovery phrase, or a backup or export you kept, brings it back.`,
   removed: (name: string) => `${name} was removed.`,
   watchOnlyHint: "Paste the account's extended public key (tpub or xpub). The wallet shows its balance and history; it cannot spend.",
   watchOnlyAdded: (name: string) => `${name} was added as a watch-only wallet.`,
@@ -183,13 +185,28 @@ export class RemoveWalletModel extends Model {
     return this.error ?? this.lock.message;
   }
 
+  /** The passphrase is being checked or the wallet removed: the sheet stays open (D31). */
+  get busy(): boolean {
+    return this.#authorizing || this.lock.working || this.step === "working";
+  }
+
+  #authorizing = false;
+  #cancelled = false;
+
+  /** The sheet is gone: an authorization still running removes nothing. */
+  cancel() {
+    this.#cancelled = true;
+  }
+
   async remove(passphrase: string) {
-    if (this.step !== "confirm" || this.lock.working) return;
+    if (this.step !== "confirm" || this.busy) return;
     let grant: string | null = null;
     const authorize = async (p: string) => {
       grant = (await this.api.authorize({ kind: "wipe" }, this.walletId, vaultCredential(this.encrypted, p))).id;
     };
     this.error = null;
+    this.#authorizing = true;
+    this.changed();
     const ok = this.encrypted
       ? await this.lock.attempt(passphrase, authorize)
       : await authorize("").then(
@@ -199,7 +216,10 @@ export class RemoveWalletModel extends Model {
             return false;
           },
         );
+    this.#authorizing = false;
     if (!ok || !grant) return this.changed();
+    // The sheet went away while the passphrase was checked: the wallet stays (D31).
+    if (this.#cancelled) return void this.api.revokeGrant(grant).catch(() => {});
     this.step = "working";
     this.changed();
     try {

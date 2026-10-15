@@ -204,7 +204,10 @@ function RemoveSheet({ row, onClose }: { row: WalletRow; onClose: (message?: str
   const [model] = useState(() => new RemoveWalletModel(backend, row.walletId));
   useModel(model);
   useLockTimer(model.lock);
-  useEffect(() => void model.load(), [model]);
+  useEffect(() => {
+    void model.load();
+    return () => model.cancel();
+  }, [model]);
   useEffect(() => {
     if (model.step === "done") {
       if (ui.get().walletId === row.walletId) ui.set({ walletId: null });
@@ -212,15 +215,15 @@ function RemoveSheet({ row, onClose }: { row: WalletRow; onClose: (message?: str
     }
   }, [model.step, onClose, row]);
   return (
-    <Sheet title="Remove wallet" width="medium" testId="settings-remove-sheet" closable={model.step !== "working"} onClose={() => onClose()}>
+    <Sheet title="Remove wallet" width="medium" testId="settings-remove-sheet" focusKey={String(model.encrypted)} closable={!model.busy} onClose={() => onClose()}>
       <p className="sheet-warning" role="note">
-        {WalletsText.removeQuestion(row.name)}
+        {WalletsText.removeQuestion(row.name, row.watchOnly)}
       </p>
       {model.encrypted ? (
         <PassphrasePrompt
           testId="settings-remove-passphrase"
           error={model.message}
-          busy={model.lock.working || model.step === "working"}
+          busy={model.busy}
           disabled={model.lock.blocked}
           submitLabel="Remove wallet"
           onSubmit={(p) => model.remove(p)}
@@ -228,7 +231,8 @@ function RemoveSheet({ row, onClose }: { row: WalletRow; onClose: (message?: str
       ) : (
         <>
           <Problem text={model.error} testId="settings-remove-error" />
-          <DashButton variant="filledBlue" size="large" fill data-autofocus data-testid="settings-remove-confirm" onClick={() => void model.remove("")}>
+          {/* No autofocus: Enter on opening must not remove the wallet (D35). */}
+          <DashButton variant="filledBlue" size="large" fill data-testid="settings-remove-confirm" disabled={model.busy} onClick={() => void model.remove("")}>
             Remove wallet
           </DashButton>
         </>

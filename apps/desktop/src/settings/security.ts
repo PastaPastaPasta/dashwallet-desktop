@@ -32,7 +32,7 @@ export const SecurityText = {
   /** IOS-009 "Delete All Wallets?". */
   wipeTitle: "Delete all wallet data?",
   wipeMessage:
-    "Every wallet on this network is removed from this computer: its keys, its recovery phrase, its history and its settings. Your coins stay on the network: only your recovery phrase can bring them back.",
+    "Every wallet on this network is removed from this computer: its keys, its recovery phrase, its history and its settings. Your coins stay on the network. A wallet that spends comes back from its recovery phrase, or from a backup or export you kept; a watch-only wallet comes back with its extended public key.",
   /** iOS's sentence, typed exactly. */
   wipeAcceptPhrase: "I accept that I will lose my coins if I no longer possess the recovery phrase",
   acceptPhraseMismatch: "Type the sentence exactly as shown.",
@@ -40,6 +40,10 @@ export const SecurityText = {
   /** Backups and exports are files the user chose to keep: the wipe leaves them (D27). */
   wipeKeeps: (dir: string) =>
     `Backups and exports in ${dir} are not deleted. An export for Dash Core holds private keys in plain text: delete it yourself if you no longer need it.`,
+  wipeNoList: (why: string) => `The list of every wallet could not be read: ${why} Nothing was deleted.`,
+  /** The wallets are gone but the vault is not (D33). */
+  vaultKept: (why: string) =>
+    `Every wallet was removed, but the vault could not be deleted${why ? `: ${why}` : "."} Try again; onboarding opens once it is gone.`,
   wipeStopped: (name: string, why: string, removed: number) =>
     `${name} could not be removed: ${why} ${removed === 0 ? "Nothing was deleted." : `${removed === 1 ? "The wallet" : `The ${removed} wallets`} before it ${removed === 1 ? "was" : "were"} removed; the others and the vault were kept.`}`,
 };
@@ -163,26 +167,49 @@ export class PaymentAuthModel extends Model {
   }
 
   ask(on: boolean) {
-    if (on === this.on) return;
+    if (on === this.on || this.busy) return;
+    this.#round++;
     this.pending = on;
     this.error = null;
     this.changed();
     void this.lock.load();
   }
 
+  /** Closes the sheet. Refused while the passphrase is checked or the change written (D31). */
   cancel() {
+    if (this.busy) return;
+    this.#round++;
     this.pending = null;
     this.changed();
   }
 
+  /** The card is gone: a passphrase still being checked changes nothing. */
+  dispose() {
+    this.#round++;
+  }
+
+  /** Writing the change, after the passphrase was accepted. */
+  saving = false;
+  /** Each question is a round; closing it ends the round, and a late grant is revoked. */
+  #round = 0;
+
+  get busy(): boolean {
+    return this.lock.working || this.saving;
+  }
+
   async confirm(p: string) {
     const on = this.pending;
-    if (on === null) return;
+    if (on === null || this.busy) return;
+    const round = this.#round;
     let grant: string | null = null;
     const authorized = await this.lock.attempt(p, async (pass) => {
       grant = (await this.api.authorize({ kind: "changeCredential" }, null, passphrase(pass))).id;
     });
     if (!authorized || !grant) return;
+    // The question was closed meanwhile: nothing changes (D31).
+    if (round !== this.#round) return void this.api.revokeGrant(grant).catch(() => {});
+    this.saving = true;
+    this.changed();
     try {
       await this.api.setPaymentAuthentication(on, grant);
       this.on = on;
@@ -191,6 +218,7 @@ export class PaymentAuthModel extends Model {
       this.api.revokeGrant(grant).catch(() => {});
       this.error = failureText(e);
     }
+    this.saving = false;
     this.changed();
   }
 }
@@ -202,7 +230,7 @@ export interface WipeWallet {
 }
 
 type WipeApi = LockApi &
-  Pick<Backend, "walletLoadStates" | "listWallets" | "loadWallet" | "authorize" | "removeWallet" | "destroyVault" | "revokeGrant">;
+  Pick<Backend, "walletLoadStates" | "loadWallet" | "authorize" | "removeWallet" | "destroyVault" | "revokeGrant">;
 
 /** Wipe wallet (IOS-009, IOS-109, D16): the typed sentence, the passphrase, then every wallet
  * removed with its `wipe` grant and the vault destroyed. A failed removal stops before the vault
@@ -244,11 +272,14 @@ export class WipeModel extends Model {
    * passphrase under the lockout policy; the other wallets reuse it. */
   async wipe(p: string) {
     if (this.step !== "passphrase" || this.lock.working) return;
+    this.error = null;
     let wallets: WipeWallet[];
     try {
-      wallets = await this.#wallets();
+      // Every registered wallet, closed ones too. `listWallets` holds only the open ones, so a
+      // wipe built on it would delete some wallets and keep the rest (D32).
+      wallets = (await this.api.walletLoadStates()).map((s) => ({ walletId: s.walletId, name: s.name, loaded: s.loaded }));
     } catch (e) {
-      return this.#stop(failureText(e));
+      return this.#stop(SecurityText.wipeNoList(failureText(e)));
     }
     let first = null as string | null;
     // No wallet left (an earlier wipe stopped after its last removal): only the vault goes.
@@ -267,42 +298,63 @@ export class WipeModel extends Model {
       );
       if (failed) return this.#stop(failureText(failed));
     }
-    if (wallets.length === 0) return this.#go("done");
-    this.#go("working");
-    // The engine removes only loaded wallets. Every closed one is opened before the first removal:
-    // once the open ones are gone onboarding covers the sheet, and a closed wallet that then failed
-    // to open would be out of reach (D26).
-    for (const w of wallets.filter((w) => !w.loaded)) {
+    // The sheet went away while the passphrase was checked: nothing is deleted (D31).
+    if (this.#cancelled) {
+      if (first) this.api.revokeGrant(first).catch(() => {});
+      return;
+    }
+    if (wallets.length > 0) {
+      this.#go("working");
+      // The engine removes only loaded wallets. Every closed one is opened before the first
+      // removal, so a wallet that cannot open stops the wipe with nothing deleted (D26).
+      for (const w of wallets.filter((w) => !w.loaded)) {
+        try {
+          await this.api.loadWallet(w.walletId);
+        } catch (e) {
+          if (first) this.api.revokeGrant(first).catch(() => {});
+          return this.#stop(SecurityText.wipeStopped(w.name, failureText(e), 0));
+        }
+      }
+      // From here the wipe runs to its end or its first failure, whoever watches.
+      for (const [i, w] of wallets.entries()) {
+        let grant: string | null = i === 0 ? first : null;
+        try {
+          grant ??= (await this.api.authorize({ kind: "wipe" }, w.walletId, vaultCredential(this.encrypted, p))).id;
+          await this.api.removeWallet(w.walletId, grant);
+        } catch (e) {
+          if (grant) this.api.revokeGrant(grant).catch(() => {});
+          return this.#stop(SecurityText.wipeStopped(w.name, failureText(e), i));
+        }
+      }
       try {
-        await this.api.loadWallet(w.walletId);
+        await this.api.destroyVault(vaultCredential(this.encrypted, p));
       } catch (e) {
-        if (first) this.api.revokeGrant(first).catch(() => {});
-        return this.#stop(SecurityText.wipeStopped(w.name, failureText(e), 0));
+        return this.#stop(SecurityText.vaultKept(failureText(e)));
       }
     }
-    for (const [i, w] of wallets.entries()) {
-      let grant: string | null = i === 0 ? first : null;
-      try {
-        grant ??= (await this.api.authorize({ kind: "wipe" }, w.walletId, vaultCredential(this.encrypted, p))).id;
-        await this.api.removeWallet(w.walletId, grant);
-      } catch (e) {
-        if (grant) this.api.revokeGrant(grant).catch(() => {});
-        return this.#stop(SecurityText.wipeStopped(w.name, failureText(e), i));
-      }
-    }
+    // Done only once the engine says there is no vault (D33).
     try {
-      await this.api.destroyVault(vaultCredential(this.encrypted, p));
+      const status = await this.api.lockStatus();
+      if (status.state !== "noVault") return this.#stop(SecurityText.vaultKept(""));
     } catch (e) {
-      return this.#stop(failureText(e));
+      return this.#stop(SecurityText.vaultKept(failureText(e)));
     }
     this.#go("done");
   }
 
-  /** Every registered wallet, closed ones too; the open ones when load states are unknown. */
-  async #wallets(): Promise<WipeWallet[]> {
-    const states = await this.api.walletLoadStates().catch(() => null);
-    if (states) return states.map((s) => ({ walletId: s.walletId, name: s.name, loaded: s.loaded }));
-    return (await this.api.listWallets()).map((s) => ({ walletId: s.walletId, name: s.name, loaded: true }));
+  /** After a stop: the passphrase again, then the wipe goes on with what is left. */
+  retry() {
+    if (this.step !== "stopped") return;
+    this.error = null;
+    this.#go("passphrase");
+    if (this.encrypted) void this.lock.load();
+  }
+
+  #cancelled = false;
+
+  /** The sheet is gone: a wipe still checking the passphrase deletes nothing. */
+  cancel() {
+    this.#cancelled = true;
   }
 
   #go(step: WipeModel["step"]) {

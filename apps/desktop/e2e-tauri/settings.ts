@@ -10,7 +10,9 @@
 // Backups: a backup and a dumpwallet export are files on disk (QT-110, QT-109) ▸ relaunch:
 // settings.json kept the unit, digits, theme and autohide (D2, D14), the closed wallet stayed
 // closed, the new passphrase unlocks ▸ the watch-only wallet opens and is removed ▸ Wipe with
-// the typed sentence (IOS-009): onboarding, no wallet, no vault. At the end, pass or fail, no
+// the typed sentence (IOS-009): every wallet goes, the vault's deletion fails (a blocker in its
+// directory) and the sheet says so with onboarding held back; Try again deletes it, then
+// onboarding, no wallet, no vault. At the end, pass or fail, no
 // file of the data root (the plain-text export, which says so, is deleted once checked) or of
 // OUT holds the phrase or a passphrase in plain text.
 //
@@ -293,6 +295,12 @@ async function main() {
 
     // ---- wipe with the typed sentence (IOS-009)
     await tab("security");
+    // The engine's own deletion fails first (D33): a directory where dw-vault's remove_all expects
+    // a "replaced" copy of the vault file cannot be unlinked. Wallet removals never touch it.
+    const vaultDir = join(appRoot, "regtest", "vault");
+    if (!existsSync(join(vaultDir, "vault.dwv"))) throw new Error(`no vault file in ${vaultDir}`);
+    const blocker = join(vaultDir, "vault.dwv.replaced-t1-blocker");
+    mkdirSync(blocker);
     await wd.press(tid("settings-wipe"));
     // The sentence to type is the field's label ("Type: …"), as the user reads it.
     const sentence = await wd.script<string>(`return document.querySelector(arguments[0]).labels[0].textContent.replace(/^Type: /, "")`, [tid("settings-wipe-sentence")]);
@@ -300,13 +308,25 @@ async function main() {
     await wd.press(tid("settings-wipe-continue"));
     await enter("settings-wipe-passphrase-field", NEW_PASSPHRASE);
     await wd.press(tid("settings-wipe-passphrase-submit"));
+    const kept = await waitText(tid("settings-wipe-error"), /the vault could not be deleted/, "the vault's failed deletion on the sheet");
+    if ((await invoke<WalletSummary[]>("list_wallets")).length !== 0) throw new Error("the wallets were not removed before the vault");
+    // The wallet list is empty, yet onboarding waits: the failure is on screen, not under it.
+    if (await wd.find(tid("onboarding"))) throw new Error("onboarding covers the failed vault deletion");
+    await wd.screenshot("08-vault-kept");
+    step(`Wipe: the typed sentence and the passphrase; every wallet removed, the vault's deletion fails and the sheet says so ("${kept.trim()}"), no onboarding`);
+
+    rmSync(blocker, { recursive: true });
+    await wd.press(tid("settings-wipe-retry"));
+    await enter("settings-wipe-passphrase-field", NEW_PASSPHRASE);
+    await wd.press(tid("settings-wipe-passphrase-submit"));
     await wd.waitFor(tid("onboarding-welcome"), "onboarding after the wipe");
-    // Onboarding opens once the last wallet is gone; the vault is destroyed right after.
-    await poll(TIMEOUT_MS, "the destroyed vault", async () => ((await invoke<LockStatus>("lock_status")).state === "noVault" ? true : undefined));
-    await wd.screenshot("08-wiped");
+    // Onboarding opens only once the wipe has seen lock_status read noVault (D33).
+    const vault = await invoke<LockStatus>("lock_status");
+    if (vault.state !== "noVault") throw new Error(`onboarding opened with the vault ${vault.state}`);
+    await wd.screenshot("09-wiped");
     const left = await invoke<WalletSummary[]>("list_wallets");
     if (left.length !== 0) throw new Error(`after the wipe: ${left.length} wallets`);
-    step("Wipe: the typed sentence and the passphrase; onboarding opens, no wallet, no vault");
+    step("Wipe: Try again deletes the vault; onboarding opens with no wallet and no vault");
   } catch (e) {
     failure = e;
     await wd.screenshot("failure").catch(() => undefined);

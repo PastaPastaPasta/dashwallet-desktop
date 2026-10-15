@@ -44,6 +44,16 @@ export const FilesText = {
   /** QT-109. */
   exported: (keys: number, path: string) => `${keys} keys were written to ${path}. Keep this file safe: it holds your private keys.`,
   exportWarning: "This file holds your private keys. Anyone who gets it can take your Dash.",
+  /** D30: a lower count deletes files at once. */
+  keepTitle: "Delete automatic backups?",
+  keepDeletes: (keep: number, deleted: number | null, dir: string) => {
+    const what =
+      deleted === null ? "the older automatic backups" : deleted === 1 ? "1 automatic backup" : `${deleted} automatic backups`;
+    return keep === 0
+      ? `Turning automatic backups off deletes ${deleted === null ? "every automatic backup" : what} in ${dir} now, and no new ones are made.`
+      : `Keeping ${keep} for each wallet deletes ${what} in ${dir} now: each wallet keeps its newest ${keep}.`;
+  },
+  keepConfirm: (deleted: number | null) => (deleted === null ? "Delete backups" : `Delete ${deleted === 1 ? "1 backup" : `${deleted} backups`}`),
   warnings: {
     mnemonicNotCoreCompatible:
       "Dash Core cannot rebuild this wallet from its recovery phrase. The exported keys still work, but keep this wallet's phrase for Dash Wallet.",
@@ -328,6 +338,23 @@ export class ImportKeysModel extends Model {
   }
 }
 
+// ------------------------------------------------------------- backups to keep (QT-110, D30)
+
+/** The automatic backups `keep` deletes at once: the engine keeps each wallet's newest `keep`
+ * (`set_backup_policy` prunes), `backups` being newest first as `automaticBackups` lists them.
+ * `null`: the list is not known, and a lower count than `current` may delete some. */
+export function deletedByKeep(backups: BackupSummary[] | undefined, current: number, keep: number): number | null {
+  if (!backups) return keep < current ? null : 0;
+  const seen = new Map<string, number>();
+  let deleted = 0;
+  for (const b of backups) {
+    const n = (seen.get(b.walletId) ?? 0) + 1;
+    seen.set(b.walletId, n);
+    if (n > keep) deleted++;
+  }
+  return deleted;
+}
+
 // ------------------------------------------------------------------- export for Dash Core (QT-109)
 
 type ExportApi = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly" | "coreMnemonicCompatibility" | "authorize" | "exportForCore" | "backupDirectory" | "revokeGrant">;
@@ -369,13 +396,28 @@ export class ExportModel extends Model {
     this.changed();
   }
 
+  /** The passphrase is being checked or the file written: the sheet stays open (D31). */
+  get busy(): boolean {
+    return this.#authorizing || this.lock.working || this.step === "working";
+  }
+
+  #authorizing = false;
+  #cancelled = false;
+
+  /** The sheet is gone: an authorization still running writes nothing. */
+  cancel() {
+    this.#cancelled = true;
+  }
+
   async export(format: CoreExportFormatName, passphrase: string) {
-    if (this.step !== "confirm" || this.lock.working) return;
+    if (this.step !== "confirm" || this.busy) return;
     let grant: string | null = null;
     const authorize = async (p: string) => {
       grant = (await this.api.authorize({ kind: "revealSecret" }, this.walletId, vaultCredential(this.encrypted, p))).id;
     };
     this.error = null;
+    this.#authorizing = true;
+    this.changed();
     const ok = this.encrypted
       ? await this.lock.attempt(passphrase, authorize)
       : await authorize("").then(
@@ -385,7 +427,10 @@ export class ExportModel extends Model {
             return false;
           },
         );
+    this.#authorizing = false;
     if (!ok || !grant) return this.changed();
+    // The sheet went away while the passphrase was checked: no key is written (D31).
+    if (this.#cancelled) return void this.api.revokeGrant(grant).catch(() => {});
     this.step = "working";
     this.changed();
     try {

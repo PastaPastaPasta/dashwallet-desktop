@@ -95,6 +95,7 @@ function Shell() {
   const walletId = useUi((s) => s.walletId);
   const discreet = useUi((s) => s.discreet);
   const addWallet = useUi((s) => s.onboarding);
+  const wiping = useUi((s) => s.wiping);
   const forgot = useUi((s) => s.forgotPassphrase);
   const secretShown = useUi((s) => s.secrets > 0);
   const lock = useLockStatus();
@@ -139,7 +140,8 @@ function Shell() {
   // Done. The lock screen replaces it, and drops what it held: Add Wallet… closes, the first
   // wallet's flow starts again at Welcome once unlocked.
   const noWallet = wallets.isSuccess && wallets.data.length === 0;
-  const onboarding = !locked && (addWallet || noWallet);
+  // A wipe in progress holds it back until the vault is gone or its failure was seen (U-04 D33).
+  const onboarding = !locked && !wiping && (addWallet || noWallet);
   useEffect(() => {
     if (noWallet) ui.set({ onboarding: true });
     else if (locked && addWallet) ui.set({ onboarding: false });

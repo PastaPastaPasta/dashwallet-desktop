@@ -67,6 +67,9 @@ export interface UiState {
   /** Forgot passphrase is open (U-02 D11). Not a dialog: it starts on the lock screen and
    * stays open after the recovery unlocks the vault, to say what happened. */
   forgotPassphrase: boolean;
+  /** Settings ▸ Wipe is open: onboarding stays closed while the wipe runs and while its sheet
+   * reports a stop, so a vault that could not be deleted is said, not covered (U-04 D33). */
+  wiping: boolean;
   /** How many mounted views show a recovery phrase (`useSecretScreen`, U-02 D15). */
   secrets: number;
   /** Whether the content protection those views need is in effect (D27; set by the shell). */
@@ -107,6 +110,7 @@ let state: UiState = {
   recoveryWallet: null,
   onboarding: false,
   forgotPassphrase: false,
+  wiping: false,
   secrets: 0,
   protection: "off",
   protectionTries: 0,
