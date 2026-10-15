@@ -147,5 +147,3 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
 
 // Contacts is DP2-07's (screens/contacts); the link card moved into its detail slot.
 export { ContactsPage } from "./contacts/ContactsPage";
-// Join DashPay is DP1-08's (screens/dashpay), with the invitation note.
-export { JoinDashPayPage } from "./dashpay/JoinDashPay";

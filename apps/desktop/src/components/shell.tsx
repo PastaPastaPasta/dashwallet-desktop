@@ -150,20 +150,23 @@ function chipLabel(name: string | null, updating: boolean): string {
   return updating ? "Updating…" : "No username";
 }
 
+function chipText(chip: Exclude<ChipState, { kind: "identity" } | null>): string {
+  switch (chip.kind) {
+    case "join":
+      return "Join DashPay";
+    case "contest":
+      return `@${chip.label} · Pending`;
+    case "registering":
+      return chip.label ? `@${chip.label} · Registering` : "Registering…";
+  }
+}
+
 function IdentityChip({ chip }: { chip: ChipState }) {
   if (chip === null) return null;
   if (chip.kind !== "identity") {
-    const text =
-      chip.kind === "join"
-        ? "Join DashPay"
-        : chip.kind === "contest"
-          ? `@${chip.label} · Pending`
-          : chip.label
-            ? `@${chip.label} · Registering`
-            : "Registering…";
     return (
       <button type="button" className="identity-chip" data-testid="toolbar-chip" onClick={() => navigate("joinDashPay")}>
-        {text}
+        {chipText(chip)}
       </button>
     );
   }

@@ -200,8 +200,7 @@ for (const theme of THEMES) {
       const chip = page.getByTestId("toolbar-chip");
       await chip.waitFor();
       // The registration's username or the main name, once read.
-      if (kind === "registeringLabel") await expect(chip).toContainText("@alice");
-      if (kind === "identity") await expect(chip).toContainText("@alice");
+      if (kind === "registeringLabel" || kind === "identity") await expect(chip).toContainText("@alice");
       await fontsReady(page);
       await expect(chip).toHaveScreenshot(`${theme}-dashpay-chip-${kind}.png`, SHOT);
     });

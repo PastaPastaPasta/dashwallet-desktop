@@ -1,6 +1,7 @@
 // Join DashPay (DASHPAY §4 `JoinDashPayViewModel`, F1; DP1-08): the intro (iOS
 // `JoinDashPayScreen`), the readiness under it by status (J1–J7), the voting info and the FAQ.
 // Create username leads to the registration wizard, DP1-09's: a placeholder until then (D7).
+// Routes.tsx re-exports the other pages; this one is imported directly, as it uses Routes' `Page`.
 
 import { useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -36,7 +37,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
   const joining = inputs.status?.kind === "noIdentity" && inputs.status.reason !== "watchOnly";
   const cost = useUsernameCost(walletId, joining);
   const balance = useBalance(walletId);
-  const model = joinModel(inputs, cost, balance.data?.confirmed ?? null);
+  const model = joinModel(inputs, cost, balance.data?.total ?? null);
   const [wizard, setWizard] = useState(false);
   const [sheet, setSheet] = useState<"voting" | "faq" | null>(null);
 
@@ -72,9 +73,6 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
                 {model.shortfall}
               </p>
             )}
-            <p className="join-line join-tip" data-testid="join-coinjoin-tip">
-              {JOIN_COPY.coinJoinTip}
-            </p>
             <div className="join-actions">
               <DashButton variant="filledBlue" data-testid="join-create" disabled={model.waiting} onClick={() => setWizard(true)}>
                 {JOIN_COPY.create}

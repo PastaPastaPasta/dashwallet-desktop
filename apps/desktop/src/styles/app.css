@@ -679,7 +679,6 @@ button {
   color: var(--dw-role-warning);
 }
 
-
 .network-capsule {
   display: inline-block;
   padding: 3px var(--dw-space-sm);
@@ -803,7 +802,6 @@ button {
   background: transparent;
   color: var(--dw-c-button-plain-white-content);
 }
-
 
 /* ------------------------------------------------------------------ hero (C4, C5) */
 
@@ -3145,10 +3143,6 @@ button {
 
 .join-shortfall {
   color: var(--dw-role-danger);
-}
-
-.join-tip {
-  color: var(--dw-role-text-secondary);
 }
 
 .join-actions {

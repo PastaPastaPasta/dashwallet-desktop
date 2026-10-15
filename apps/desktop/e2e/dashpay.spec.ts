@@ -125,7 +125,7 @@ test("AND-069–071 / IOS-134 What is username voting? opens the voting info and
   await expect(sheet).toHaveCount(0);
 });
 
-test("IOS-065 J1: the intro, the cost, the CoinJoin tip; Create username leads to the wizard placeholder and back", async ({ page }) => {
+test("IOS-065 J1: the intro and the cost; Create username leads to the wizard placeholder and back", async ({ page }) => {
   const errors = await openJoin(page, "dashpay-no-identity");
   await expect(page.getByTestId("join-intro").locator("h2")).toHaveText("Create username");
   await expect(page.getByTestId("join-readiness")).toHaveAttribute("data-kind", "join");
@@ -133,7 +133,6 @@ test("IOS-065 J1: the intro, the cost, the CoinJoin tip; Create username leads t
     "A username costs about 0.031 tDASH. Usernames the network votes on cost more; the exact cost is shown before you pay.",
   );
   await expect(page.getByTestId("join-shortfall")).toHaveCount(0);
-  await expect(page.getByTestId("join-coinjoin-tip")).toBeVisible();
   await page.getByTestId("join-create").click();
   await expect(page.getByTestId("placeholder-registration")).toHaveText("Choosing and registering a username is not available yet.");
   await page.getByTestId("join-wizard-back").click();

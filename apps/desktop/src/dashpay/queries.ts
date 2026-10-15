@@ -5,12 +5,14 @@
 import { useQuery } from "@tanstack/react-query";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { keys, useBackend, useLockStatus, useSyncStatus } from "../api/queries";
+import { keys, mainIdentityOf, useBackend, useLockStatus, useSyncStatus } from "../api/queries";
+import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
 import { isSyncing, syncPercent } from "../format/sync";
 import { QUOTE_REQUEST, type StatusInputs } from "./status";
 
 export const dashpayKeys = {
+  registrationsAll: ["dashpay", "registrations"] as const,
   registrations: (walletId: string) => ["dashpay", "registrations", walletId] as const,
   quote: (walletId: string) => ["dashpay", "quote", walletId] as const,
 };
@@ -41,24 +43,18 @@ export function useUsernameCost(walletId: string, enabled: boolean): number | nu
   return quote.data?.totalDuffs ?? null;
 }
 
-/** The identity a status names as the main one (a contested username's too, BL-153 D11). */
-function mainOf(status: DashPayStatus | undefined): string | null {
-  if (status?.kind === "ready") return status.main;
-  if (status?.kind === "contestPending") return status.identity;
-  return null;
-}
-
 /** Everything the Home card and the Join page derive from (`homeCard`, `joinModel`), under the
  * shell's keys, so these reads share its cache. `retry` reads the status again (S2). */
 export function useStatusInputs(walletId: string, network: NetworkInfo): { inputs: StatusInputs; retry: () => void } {
   const b = useBackend();
   const status = useQuery({ queryKey: keys.dashpayStatus(walletId), queryFn: () => b.dashpayStatus(walletId) });
-  const main = mainOf(status.data);
+  const main = mainIdentityOf(status.data);
   const identities = useQuery({ queryKey: keys.identities(walletId), queryFn: () => b.identities(walletId), enabled: main !== null });
   const registration = useStatusRegistration(walletId, status.data);
   const lock = useLockStatus().data?.state;
   const sync = useSyncStatus().data;
   const display = useDisplay(network);
+  const discreet = useUi((s) => s.discreet);
   return {
     inputs: {
       // A failed read with an older answer cached keeps that answer (a refetch that failed).
@@ -70,6 +66,7 @@ export function useStatusInputs(walletId: string, network: NetworkInfo): { input
       syncPercent: sync && isSyncing(sync) ? syncPercent(sync) : null,
       date: (secs) => new Date(secs * 1000).toLocaleDateString(b.locale, { year: "numeric", month: "short", day: "numeric" }),
       amount: (duffs) => `${display.compact(duffs)} ${display.name}`,
+      discreet,
     },
     retry: () => void status.refetch(),
   };

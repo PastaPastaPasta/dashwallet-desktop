@@ -189,7 +189,7 @@ export function useLockDrain() {
 }
 
 /** The main identity a status names: a contested username's too (BL-153 D11). */
-function mainIdentityOf(status: DashPayStatus | undefined): string | null {
+export function mainIdentityOf(status: DashPayStatus | undefined): string | null {
   switch (status?.kind) {
     case "ready":
       return status.main;

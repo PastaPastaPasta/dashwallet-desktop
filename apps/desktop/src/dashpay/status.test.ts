@@ -20,6 +20,7 @@ const inputs = (status: DashPayStatus | undefined, rest: Partial<StatusInputs> =
   syncPercent: null,
   date: (secs) => `day ${secs}`,
   amount,
+  discreet: false,
   ...rest,
 });
 
@@ -87,6 +88,8 @@ describe("IOS-065 / AND-024 Home card: one per banner state", () => {
     for (const [s, state] of Object.entries(states)) expect(homeCard(inputs(startup(s as StartupStatus)))!.state, s).toBe(state);
     expect(homeCard(inputs(startup("starting")))!.busy).toBe(true);
     expect(homeCard(inputs(startup("discoveryFailed")))!.tone).toBe("problem");
+    // A seed that does not match the identity's keys is not fixed by a restart.
+    expect(homeCard(inputs(startup("seedBindingUnverified")))).toMatchObject({ title: COPY.unverified.title, lines: [COPY.unverified.message] });
   });
 
   it("S5: Unlock only while mixing-only (fully locked, the lock screen covers the shell)", () => {
@@ -148,6 +151,10 @@ describe("IOS-065 / AND-024 Home card: one per banner state", () => {
       lines: [COPY.paused, "Not enough Dash to pay for the username: 0.0300226 tDASH needed, 0.01 tDASH available."],
       action: { kind: "continue" },
     });
+    // Discreet mode leaves out what the wallet holds.
+    expect(homeCard(inputs(REGISTERING, { registration: failed, discreet: true }))!.lines[1]).toBe(
+      "Not enough Dash to pay for the username: 0.0300226 tDASH needed.",
+    );
     expect(homeCard(inputs(REGISTERING, { registration: row({ waiting: "authorize" }) }))).toMatchObject({
       state: "creatingPaused",
       lines: [COPY.paused, "Waiting for your approval to continue."],
@@ -155,10 +162,14 @@ describe("IOS-065 / AND-024 Home card: one per banner state", () => {
   });
 
   it("S14: funds of unknown state, or a flow that needs finishing, send the user to Tools ▸ Repair", () => {
-    for (const waiting of ["fundingUnknown", "needsFinish"] as const)
+    for (const [waiting, what] of [
+      ["fundingUnknown", COPY.repair.unknown],
+      ["needsFinish", COPY.repair.finish],
+    ] as const)
       expect(homeCard(inputs(REGISTERING, { registration: row({ waiting }) })), waiting).toMatchObject({
         state: "creatingRepair",
         tone: "problem",
+        lines: [what, COPY.repair.message],
         action: { kind: "repair" },
       });
   });
@@ -202,6 +213,8 @@ describe("D4 steps and D5 failure copy", () => {
     expect(failureText(failure("platform.timeout"), amount)).toBe("The Dash network did not answer.");
     // Credits are not Dash: no amounts for them.
     expect(failureText(failure("platform.insufficient_credits", { needed: "5", available: "1" }), amount)).toBe("The identity's credits do not cover the username.");
+    expect(failureText(failure("platform.lease_revoked"), amount)).toBe("The wallet was locked before the step finished.");
+    expect(failureText(failure("platform.grant_exceeded"), amount)).toBe("The cost went above what you approved.");
     expect(failureText(failure("name.taken"), amount)).toBe("It stopped with name.taken.");
   });
 });
@@ -216,7 +229,7 @@ describe("IOS-065 Join page readiness (J1–J7)", () => {
     expect(roundedCost(3_100_000)).toBe(3_100_000);
   });
 
-  it("J1: the cost, rounded up, and a shortfall against the spendable balance", () => {
+  it("J1: the cost, rounded up, and a shortfall only when the whole wallet cannot cover it (D18)", () => {
     expect(joinModel(inputs(noIdentity()), 3_002_260, 10e8)).toEqual({
       kind: "join",
       cost: JOIN_COPY.cost("0.031 tDASH"),
@@ -228,8 +241,9 @@ describe("IOS-065 Join page readiness (J1–J7)", () => {
     expect(joinModel(inputs(noIdentity()), 3_002_260, 3_002_260)).toMatchObject({ shortfall: null });
   });
 
-  it("J2: Create username waits for sync; J7: an unread or failed quote says only that votes cost more", () => {
+  it("J2: Create username waits for sync, with no shortfall from a partial balance; J7: an unread or failed quote says only that votes cost more", () => {
     expect(joinModel(inputs(noIdentity("waitingForSync")), 3_002_260, 10e8)).toMatchObject({ waiting: true });
+    expect(joinModel(inputs(noIdentity("waitingForSync")), 3_002_260, 0)).toMatchObject({ waiting: true, shortfall: null });
     expect(joinModel(inputs(noIdentity()), null, 10e8)).toEqual({ kind: "join", cost: JOIN_COPY.costUnknown, shortfall: null, waiting: false });
     // The status unread: the intro, its button held.
     expect(joinModel(inputs(undefined), null, null)).toEqual({ kind: "join", cost: JOIN_COPY.costUnknown, shortfall: null, waiting: true });

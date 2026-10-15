@@ -11,11 +11,11 @@ import { useBalance, useHistory, useSyncStatus, type HistoryFilter } from "../ap
 import { AmountText, DashButton, Icon, NetworkCapsule } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
-import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
 import { useStatusInputs } from "../dashpay/queries";
 import { homeCard } from "../dashpay/status";
 import { useDisplay } from "../format/display";
 import { isSyncing, syncPercent } from "../format/sync";
+import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
 
 /** dash-qt's overview shows this many recent transactions. */
 const RECENT_COUNT = 5;

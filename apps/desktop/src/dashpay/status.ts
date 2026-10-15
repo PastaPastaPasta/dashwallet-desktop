@@ -79,8 +79,10 @@ export interface StatusInputs {
   syncPercent: number | null;
   /** A contest's end (UNIX s) as the screen shows a date. */
   date: (secs: number) => string;
-  /** Duffs (decimal string, as `RegistrationFailure` carries them) with the unit. */
+  /** Duffs with the unit. */
   amount: (duffs: number) => string;
+  /** Discreet mode: the card leaves out the wallet's balance. */
+  discreet: boolean;
 }
 
 export const COPY = {
@@ -89,13 +91,19 @@ export const COPY = {
   notStarted: { title: "DashPay has not started", message: "It starts when the wallet connects to the Dash network." },
   unlockToLook: { title: "Unlock to look for your DashPay identity", message: "DashPay looks for your identity once the wallet is fully unlocked." },
   lookFailed: { title: "Could not finish looking for your DashPay identity", message: "Dash Wallet looks again the next time it starts." },
+  unverified: { title: "Could not confirm your DashPay identity", message: "Its keys could not be checked against this wallet's recovery phrase." },
   join: { title: "Join DashPay", message: "Request your username", action: "Join DashPay" },
   joinWaiting: { message: "Create a username, find your friends and add them to your contacts", note: "Available after sync finishes" },
   watchOnly: { title: "DashPay needs this wallet's keys", message: "A watch-only wallet cannot join DashPay." },
   registering: { title: "Creating your username", message: "Your username is being created on the Dash network. It may take some time." },
   creating: (label: string) => `Creating – @${label}`,
   paused: "Registration paused",
-  repair: { title: "Funds locked — finishing", message: "Open Tools ▸ Repair to finish the transfer.", action: "Open Repair" },
+  repair: {
+    unknown: "The payment may have been sent",
+    finish: "Funds locked — finishing",
+    message: "Open Tools ▸ Repair to finish the transfer.",
+    action: "Open Repair",
+  },
   voting: {
     title: (label: string) => `Voting – @${label}`,
     deciding: "Masternode owners are deciding whether you get this username.",
@@ -125,7 +133,7 @@ export function stepOf(phase: RegistrationPhaseName, failure: RegistrationFailur
 }
 
 /** What a running registration waits for, as a line under its step. */
-const WAITS: Record<RegistrationWaitName, string | null> = {
+const WAITS = {
   instantSend: "Waiting for the network to confirm the payment.",
   chainLock: "Waiting for the network to confirm the payment.",
   network: "Waiting for the Dash network. It tries again on its own.",
@@ -136,21 +144,32 @@ const WAITS: Record<RegistrationWaitName, string | null> = {
   // These two have their own card (S14).
   fundingUnknown: null,
   needsFinish: null,
-};
+} as const satisfies Record<RegistrationWaitName, string | null>;
 
 /** D5: why a registration stopped, by its failure's code. */
-export function failureText(failure: RegistrationFailure, amount: (duffs: number) => string): string {
+export function failureText(failure: RegistrationFailure, amount: (duffs: number) => string, discreet = false): string {
   switch (failure.code) {
     case "registration.funding_insufficient":
-      return failure.needed !== null && failure.available !== null
-        ? `Not enough Dash to pay for the username: ${amount(Number(failure.needed))} needed, ${amount(Number(failure.available))} available.`
-        : "Not enough Dash to pay for the username.";
+      if (failure.needed === null) return "Not enough Dash to pay for the username.";
+      // What the wallet holds stays hidden in discreet mode.
+      return failure.available === null || discreet
+        ? `Not enough Dash to pay for the username: ${amount(Number(failure.needed))} needed.`
+        : `Not enough Dash to pay for the username: ${amount(Number(failure.needed))} needed, ${amount(Number(failure.available))} available.`;
     case "registration.coins_locked":
       return "The coins to pay with are held by another payment.";
     case "registration.islock_timeout":
       return "The network did not confirm the payment in time.";
     case "registration.not_synced":
       return "The wallet had not finished syncing.";
+    case "registration.funding_cancelled":
+      return "The payment was cancelled before it was sent.";
+    case "platform.lease_revoked":
+    case "platform.lease_expired":
+      return "The wallet was locked before the step finished.";
+    case "platform.grant_exceeded":
+      return "The cost went above what you approved.";
+    case "platform.signer_unavailable":
+      return "The wallet could not sign. Unlock it to continue.";
     case "platform.insufficient_credits":
       return "The identity's credits do not cover the username.";
     case "platform.unavailable":
@@ -175,21 +194,24 @@ const card = (state: CardState, tone: CardTone, title: string, lines: string[] =
 
 const action = (kind: CardActionKind, label: string, disabled = false): CardAction => ({ kind, label, disabled });
 
+/** Unlock, only while unlocked for mixing only: fully locked, the lock screen covers the shell. */
+const unlockAction = (lock: LockStateName | undefined): CardAction | null => (lock === "unlockedMixingOnly" ? action("unlock", COPY.unlock) : null);
+
 /** S3–S6: DashPay has not said whether the wallet has an identity (BL-153 D2, D16). */
 function startupCard(startup: StartupStatus, lock: LockStateName | undefined): CardModel {
   switch (startup) {
     case "notRun":
       return card("notStarted", "quiet", COPY.notStarted.title, [COPY.notStarted.message]);
     case "identityUnsettled":
-      // Locked, the lock screen covers the shell; unlocked, the bring-up runs again at once.
-      return card("unlockToLook", "quiet", COPY.unlockToLook.title, [COPY.unlockToLook.message], {
-        action: lock === "unlockedMixingOnly" ? action("unlock", COPY.unlock) : null,
-      });
+      // Fully unlocked, the bring-up runs again at once.
+      return card("unlockToLook", "quiet", COPY.unlockToLook.title, [COPY.unlockToLook.message], { action: unlockAction(lock) });
+    // The identity's keys do not check against the seed: a restart does not change that.
+    case "seedBindingUnverified":
+      return card("lookFailed", "problem", COPY.unverified.title, [COPY.unverified.message]);
     case "discoveryFailed":
     case "identityScanIncomplete":
     case "partialNoIdentity":
     case "partialAccountsPending":
-    case "seedBindingUnverified":
       return card("lookFailed", "problem", COPY.lookFailed.title, [COPY.lookFailed.message]);
     // Running, or an outcome read from a snapshot (D16): the pass will say.
     case "starting":
@@ -200,21 +222,20 @@ function startupCard(startup: StartupStatus, lock: LockStateName | undefined): C
 }
 
 /** S10–S14: the registration the status names, by its row. */
-function registeringCard(r: RegistrationStatus | undefined, lock: LockStateName | undefined, amount: (duffs: number) => string): CardModel {
+function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): CardModel {
   if (!r) return card("registering", "pending", COPY.registering.title, [COPY.registering.message], { busy: true });
   const step = stepOf(r.phase, r.failure);
   const title = COPY.creating(r.label);
-  if (r.waiting === "fundingUnknown" || r.waiting === "needsFinish")
-    return card("creatingRepair", "problem", title, [COPY.repair.title, COPY.repair.message], { step, action: action("repair", COPY.repair.action) });
+  if (r.waiting === "fundingUnknown" || r.waiting === "needsFinish") {
+    // Unknown: the lock may or may not have gone out; needsFinish: it did.
+    const what = r.waiting === "fundingUnknown" ? COPY.repair.unknown : COPY.repair.finish;
+    return card("creatingRepair", "problem", title, [what, COPY.repair.message], { step, action: action("repair", COPY.repair.action) });
+  }
   if (r.failure || r.waiting === "authorize") {
-    const why = r.failure ? failureText(r.failure, amount) : WAITS.authorize!;
+    const why = r.failure ? failureText(r.failure, i.amount, i.discreet) : WAITS.authorize;
     return card("creatingPaused", "problem", title, [COPY.paused, why], { step, action: action("continue", COPY.continue) });
   }
-  if (r.waiting === "unlock")
-    return card("creatingUnlock", "problem", title, [WAITS.unlock!], {
-      step,
-      action: lock === "unlockedMixingOnly" ? action("unlock", COPY.unlock) : null,
-    });
+  if (r.waiting === "unlock") return card("creatingUnlock", "problem", title, [WAITS.unlock], { step, action: unlockAction(i.lock) });
   const wait = r.waiting ? WAITS[r.waiting] : null;
   return card("creating", "pending", title, wait ? [wait] : [], { step, busy: true });
 }
@@ -242,7 +263,7 @@ export function homeCard(i: StatusInputs): CardModel | null {
       }
       return card("join", "quiet", COPY.join.title, [COPY.join.message], { action: action("join", COPY.join.action) });
     case "registering":
-      return registeringCard(i.registration?.draft === s.draft ? i.registration : undefined, i.lock, i.amount);
+      return registeringCard(i.registration?.draft === s.draft ? i.registration : undefined, i);
     case "contestPending": {
       const lines: string[] = [COPY.voting.deciding, s.endsAt === null ? COPY.voting.notify : COPY.voting.endsOn(i.date(s.endsAt))];
       // The temporary name shows on a live read only (DASHPAY F5).
@@ -284,7 +305,6 @@ export const JOIN_COPY = {
   cost: (amount: string) => `A username costs about ${amount}. Usernames the network votes on cost more; the exact cost is shown before you pay.`,
   costUnknown: "Usernames the network votes on cost more than others. The exact cost is shown before you pay.",
   shortfall: (amount: string) => `You need at least ${amount} to create a username.`,
-  coinJoinTip: "To help prevent other people from seeing who you make payments to, it is recommended to mix your balance before you create your username.",
   create: "Create username",
   waiting: COPY.joinWaiting.note,
   watchOnly: "A watch-only wallet cannot join DashPay. Restore the wallet from its recovery phrase to join.",
@@ -297,7 +317,7 @@ export const JOIN_COPY = {
 
 /** What the Join page shows under its intro (J1–J7). */
 export type JoinModel =
-  /** J1, J2, J7: the costs, a shortfall, the CoinJoin tip, Create username (disabled until synced). */
+  /** J1, J2, J7: the costs, a shortfall, Create username (disabled until synced). */
   | { kind: "join"; cost: string; shortfall: string | null; waiting: boolean }
   /** J3 */
   | { kind: "watchOnly" }
@@ -310,18 +330,22 @@ export function joinModel(
   i: StatusInputs,
   /** The quote's total (duffs), `null` while unread or when it failed. */
   costDuffs: number | null,
-  /** The spendable balance (duffs), `null` while unread. */
-  spendable: number | null,
+  /** Everything the wallet holds (duffs, `Balances.total`), `null` while unread (D18). */
+  total: number | null,
 ): JoinModel {
   const s = i.status;
   if (!i.statusError && s?.kind === "noIdentity") {
     if (s.reason === "watchOnly") return { kind: "watchOnly" };
-    const cost = costDuffs === null ? null : roundedCost(costDuffs);
+    const waiting = s.reason === "waitingForSync";
+    if (costDuffs === null) return { kind: "join", cost: JOIN_COPY.costUnknown, shortfall: null, waiting };
+    const price = i.amount(roundedCost(costDuffs));
     return {
       kind: "join",
-      cost: cost === null ? JOIN_COPY.costUnknown : JOIN_COPY.cost(i.amount(cost)),
-      shortfall: cost !== null && spendable !== null && spendable < costDuffs! ? JOIN_COPY.shortfall(i.amount(cost)) : null,
-      waiting: s.reason === "waitingForSync",
+      cost: JOIN_COPY.cost(price),
+      // D18: only a shortfall no coin of the wallet could cover, and none while the balance is
+      // still syncing in.
+      shortfall: !waiting && total !== null && total < costDuffs ? JOIN_COPY.shortfall(price) : null,
+      waiting,
     };
   }
   const c = homeCard(i);

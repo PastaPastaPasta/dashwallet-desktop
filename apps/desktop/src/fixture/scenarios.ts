@@ -346,13 +346,11 @@ function syncing(): SyncStatus {
   const s = caughtUp();
   return {
     ...s,
-    phases: s.phases.map((p) =>
-      p.phase === "filters"
-        ? { ...p, currentHeight: Math.round(p.targetHeight! * 0.6), done: false }
-        : p.phase === "masternodes"
-          ? { ...p, currentHeight: 0, done: false }
-          : p,
-    ),
+    phases: s.phases.map((p) => {
+      if (p.phase === "filters") return { ...p, currentHeight: Math.round(p.targetHeight! * 0.6), done: false };
+      if (p.phase === "masternodes") return { ...p, currentHeight: 0, done: false };
+      return p;
+    }),
     activePhase: "filters",
     caughtUp: false,
   };
