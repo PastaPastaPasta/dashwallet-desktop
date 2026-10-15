@@ -10,21 +10,26 @@ import { hasCode } from "../api/backend";
 import { keys, useBackend } from "../api/queries";
 import { contactsOwner, NETWORK_LIMIT, type ContactsOwner } from "./model";
 
-/** Whose contacts show (D2): the DashPay status (the shell's query) and, while DashPay's start is
- * incomplete, the identity list; `retry` reads the failed ones again, `retrying` while it runs. */
-export function useContactsOwner(walletId: string): { owner: ContactsOwner; retry: () => void; retrying: boolean } {
+/** Whose contacts show (D2): the DashPay status and, while DashPay's start is incomplete or the
+ * engine has no status (D19), the identity list; `retry` reads the failed ones again (the page
+ * shows "starting" while they run). */
+export function useContactsOwner(walletId: string): { owner: ContactsOwner; retry: () => void } {
   const b = useBackend();
-  const status = useQuery({ queryKey: keys.dashpayStatus(walletId), queryFn: () => b.dashpayStatus(walletId) });
-  // The engine's `DashPay.status` stub (D19): the identity list stands in for it.
-  const noStatus = !status.data && hasCode(status.error, "platform.not_implemented");
-  const byIdentities = noStatus || status.data?.kind === "startupIncomplete";
+  // The engine's `DashPay.status` stub answers `null` here, as data, so a refetch (every DashPay
+  // event) keeps the fallback instead of passing through "pending". Under the shell's key, so the
+  // same events re-read it, but not its query: the shell's keeps the facade's shape.
+  const status = useQuery({
+    queryKey: [...keys.dashpayStatus(walletId), "orStub"] as const,
+    queryFn: () => b.dashpayStatus(walletId).catch((e: unknown) => (hasCode(e, "platform.not_implemented") ? null : Promise.reject(e))),
+  });
+  const byIdentities = status.data === null || status.data?.kind === "startupIncomplete";
   const identities = useQuery({ queryKey: keys.identities(walletId), queryFn: () => b.identities(walletId), enabled: byIdentities });
-  const failed = (status.isError && !status.data && !noStatus) || (byIdentities && identities.isError && !identities.data);
+  const failed = (status.isError && status.data === undefined) || (byIdentities && identities.isError && !identities.data);
   const retry = () => {
     if (status.isError) void status.refetch();
     if (identities.isError) void identities.refetch();
   };
-  return { owner: failed ? { kind: "error" } : contactsOwner(noStatus ? null : status.data, identities.data), retry, retrying: status.isFetching || identities.isFetching };
+  return { owner: failed ? { kind: "error" } : contactsOwner(status.data, identities.data), retry };
 }
 
 /** Every section of `identity`'s contacts, sorted and filtered by the engine. The last answer
