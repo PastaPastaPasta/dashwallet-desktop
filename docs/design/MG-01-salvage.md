@@ -128,11 +128,12 @@ Two checks, both in the gate:
 - **`rust/clippy.toml`** disallows the BLS secret types (`dash_pkc::bls::{BlsSecretKey, BlsSkShare, BlsSkBytes}`,
   `dashcore::bls_sig_utils::{BlsSecretKey, BlsSkBytes}` (separate types in `dashcore-crypto`), `dpp::bls::SecretKey`,
   `key_wallet::derivation_bls_bip32::ExtendedBLSPrivKey`) and methods (`dpp::bls::BlsModule::sign`, which signs with
-  raw secret bytes, `key_wallet::account::BLSAccount::operator_private_key_at`, and platform-wallet's
+  raw secret bytes, `key_wallet::account::BLSAccount::operator_private_key_at`,
+  `RootExtendedPrivKey::to_bls_extended_priv_key`, and platform-wallet's
   `update_service::{prepare,execute}_masternode_update_service`). Clippy resolves them by definition, so a
   `use … as` alias or a re-export does not hide a use (D16). Clippy reads only the nearest `clippy.toml`, so
   `rust/crates/dw-ffi/clippy.toml` repeats every entry, and a test checks that each `clippy.toml` under `rust/`
-  carries them all. The one allowed use is `dw-coinjoin::bls::testing` (D9), under
+  carries them all, per section (commented-out lines do not count; `.clippy.toml` is checked too). The one allowed use is `dw-coinjoin::bls::testing` (D9), under
   `#[expect(clippy::disallowed_types)]`, which fails if a pin bump moves the path and the rule stops matching.
   Negative controls (log `/work/scratch/dw-mg-01/clippy-negative-controls.log`): without that `expect`,
   `cargo clippy -p dw-coinjoin` fails on `dash_pkc::bls::BlsSecretKey`; a planted `dpp::bls::SecretKey` and
@@ -141,21 +142,25 @@ Two checks, both in the gate:
   (IPC and console commands), the desktop UI and Swift. It scans `rust/crates`, `rust/bin`, `tools`, `probes`
   (Rust, Swift), `apps/desktop/src` (TS) and `Sources`, `Tests`, `Apps` (Swift). Rust is read with comments removed
   and string contents kept (a small lexer: nested block comments, escapes, raw strings `r#"…"#`/`br"…"`/`cr"…"`,
-  char literals vs lifetimes). TS and Swift are read as they are, comments included: lexing JSX text (an
-  apostrophe in "wallet's") would flip quote parity, and they have no hit today. It looks for:
-  - a ProUpServTx or ProUpRevTx payload being built or aliased (`::new(…)`, `as …`, `type … =`, or a struct
-    literal: no `..`, or `..base` struct update). Reading one off the chain stays allowed for MG-00 D46: a pattern
-    ending in `..`, a return type, an `impl`. A pattern that lists every field without `..` is flagged;
+  char literals, `'\''` included, vs lifetimes). TS and Swift are read as they are, comments included: lexing
+  JSX text (an apostrophe in "wallet's") would flip quote parity, and they have no hit today. CRLF is normalised.
+  It looks for:
+  - the ProUpServTx and ProUpRevTx payload types, `ProviderUpdateServicePayload` and
+    `ProviderUpdateRevocationPayload`, named anywhere as whole identifiers (D20). Reading one off the chain
+    (MG-00 D46) matches the `TransactionPayload::ProviderUpdate…PayloadType(p)` variant and reads `p`'s fields,
+    which names neither type;
   - the r3 and platform-wallet builder names and their IPC/console forms (`finalize_update_service`,
     `prepare_revoke`, `protx_update_service`, `prepareUpdateService`, `revokeMasternode`, …);
   - BLS secret material and signers (`BlsSecretKey`, `BlsSkBytes`, `BlsSkShare`, `blsful`, `from_ikm`,
-    `bls_signatures`, `bls::SecretKey`, `BlsModule`, `ExtendedBLSPrivKey`, `operator_private_key_at`) and the
+    `bls_signatures`, `bls::SecretKey`, `BlsModule`, `ExtendedBLSPrivKey`, `operator_private_key_at`,
+    `to_bls_extended_priv_key`) and the
     CoinJoin test operator key (`OperatorKey`, `bls::testing`).
 
   Allowed regions, each checked to still exist with its marker exactly once (so an earlier copy cannot widen it):
   `dw-coinjoin/src/bls.rs` from `pub mod testing`, `dw-coinjoin/src/queue.rs` from `#[cfg(test)] mod tests`, and
-  `dw-coinjoin/tests/` (D9). A self-test checks the scanner on each shape, on strings that hold `/*`, `'"'`, URLs
-  and raw strings ending in `\`, on a TSX apostrophe, and on chain reads that must pass.
+  `dw-coinjoin/tests/` (D9). A self-test checks the scanner on each shape (an `impl … for` a payload building
+  `Self { … }` included), on strings that hold `/*`, `'"'`, `'\''`, URLs and raw strings ending in `\`, on a TSX
+  apostrophe, on CRLF, and on variant reads that must pass.
 
   Mutation check (log `/work/scratch/dw-mg-01/guard-mutants.log`, round 2): twelve planted changes, each caught, the
   clean tree passing: a struct-update literal in dw-protx; a `use … as` and a `type … =` alias, `"/*"` before
@@ -163,6 +168,12 @@ Two checks, both in the gate:
   dw-engine; `bls::testing::OperatorKey` in dw-coinjoin's `src/`; `invoke('masternode_update_service')` after a URL
   string in a new UI file and `invoke('prepareRevoke')` appended to `SignVerify.tsx` (apostrophes in its JSX);
   `prepareRevoke` in `Apps/` Swift; `BlsSecretKey` under `tools/`; a second `#[cfg(test)]` above `queue.rs`'s tests.
+  Round 3 adds `impl Unsigned for ProviderUpdateServicePayload { fn u() -> Self { Self { … } } }`, a `'\''` before
+  a `"/*"` string, and `to_bls_extended_priv_key` (log, round 3).
+
+  What neither check can prove: a payload decoded from bytes and mutated through its enum variant, with a signature
+  pasted from outside, names no type and no secret. The wallet would still need a ProUpServTx/ProUpRevTx builder,
+  IPC command and UI flow, whose names the scan forbids; the code review of MG-02…MG-05 is the backstop.
 
 Rerun:
 
@@ -214,19 +225,22 @@ Each commit builds and passes `cargo test` for the crates it touches.
     string.
 16. `test(dw-protx)`: round-2 review: dw-ffi's `clippy.toml`, dpp and key-wallet BLS signers, raw TS/Swift scan.
 17. `docs(design)`: round-2 review update.
+18. `test(dw-protx)`: round-3 review: payload types forbidden by name (D20), `'\''`, `to_bls_extended_priv_key`,
+    a parsed clippy.toml check.
+19. `docs(design)`: round-3 review update.
 
 ## 7. What MG-02…MG-05 must change
 
 | Row | Change |
 |---|---|
 | MG-02 | Move govsync onto `dw_p2p::Session` and delete `dw-governance/src/net.rs` (the row says "govsync over dw-p2p"); re-run G7 since the transport changes. Write a tally keyed by the D43-derived collateral outpoint with the D45 range (unverifiable type → weight 0, 1 or 4) instead of r2's voting-key `MasternodeIndex`. Name the cutoff the estimated cutoff (`Clock::voting_cutoff`, MG-00 D19). Core v24 reads a non-zero `govsync` with an **empty** filter as an object fetch (`object_fetch_filter`) and rate-limits each object's vote sync per peer: `sync.rs` already sends a non-empty filter, keep it so. Pass each vote's masternode-type weight to `current_vote_string` (D10). Once govsync runs on `Session`, record raw testnet votes (one per-object `govsync`) and add their signatures to the vectors (D12). Define `GovernanceFailure`, its codes and the `Governance` event in `mg-engine.md`. Feed `GovernanceStore::set_voting_keys` from the whole tip list, PoSe-banned masternodes included, on every list change (D13: without keys, every vote is `UnknownMasternode`; leaving banned ones out drops their votes, which Core counts). Validate objects before `add_object` stores them (collateral, signature, data rules): today any peer object is stored and `funded_height` trusts any stored trigger, so the D13 vote checks are half of the job. Fix the inherited `sync.rs`/`net.rs` issues the MG-01 review found (D17): bound inventory and unsolicited objects/votes per peer; do not report `Synced` after a failed phase; clear a pending hash on a decode failure or `notfound`; detect a dead peer in follow mode (no message for about 5 minutes, or own pings). Estimate proposal payment dates at Core's 157.2 s per block (`2.62*60`, trigger builder) instead of 150 s (D18). |
-| MG-03 | Resolve collateral with `dw_protx::payloads::resolve_collateral`, not `MasternodeRecord.collateral`, and add D43's checks of the internal collateral output (amount 1,000/4,000 Dash, single-address or shared template script). Persist attached keys with `Vault::store_masternode_key` (owner, voting, payout only) and delete them on Stop tracking (D22). Define the `Masternodes` event and the masternode failure codes. Listing a masternode's attached roles needs the full-scope data key (D15), so a locked vault shows none. Chain reads of ProUpServTx/ProUpRevTx payloads must end their patterns in `..` (the §4 scan flags a pattern that lists every field). |
+| MG-03 | Resolve collateral with `dw_protx::payloads::resolve_collateral`, not `MasternodeRecord.collateral`, and add D43's checks of the internal collateral output (amount 1,000/4,000 Dash, single-address or shared template script). Persist attached keys with `Vault::store_masternode_key` (owner, voting, payout only) and delete them on Stop tracking (D22). Define the `Masternodes` event and the masternode failure codes. Listing a masternode's attached roles needs the full-scope data key (D15), so a locked vault shows none. Read ProUpServTx/ProUpRevTx payloads through their `TransactionPayload` variants and field access: the §4 scan forbids naming the struct types (D20); naming one needs an allow-list entry and a review against this rule. |
 | MG-04 | Add the version-3 payload where the network needs it (D39; `service.rs` is version 2, IPv4 only). Refuse a pasted BLS secret where a public key is expected (`bls::parse_public_hex` refuses non-points; detect 64-hex input with the library's `parse_locator_input`). Self-operator keys come from the keychain only (D27): no operator secret is generated. Decide how the finalizer gets the owner or collateral secret (r3's `VaultSigner::secp_secret` is on the branch). MG-04b: add dashd vectors for `shared.rs` (v24 `shared_*` RPCs) and update its rc.2 line citations to the pinned Core (D19); point `golden.rs`'s `OP_RETURN` check at the real proposal-fee builder (today it rebuilds the script it compares). |
 | MG-05 | Restore `GrantPurpose::{Governance, MasternodeOp{max_duffs}}` and the scopes; give `MasternodeVoting` a read of vault-held voting keys (`Vault::masternode_key` takes a `RevealSecret` grant bound to the acting wallet today, D11) and decide whether attaching a key needs a grant beyond the full-scope data key. The `mnkey/` ids are keyed from the data key (D15): a data-key rotation must re-key them. |
 
 ## D-rows
 
-D1–D19 below are MG-01's. Other D-numbers in this file (D20 and up, or marked MG-00) are rows of
+D1–D20 below are MG-01's. Other D-numbers in this file (D21 and up, or marked MG-00) are rows of
 `MG-00-masternodes-ux.md`.
 
 | # | Decision | Why |
@@ -250,3 +264,4 @@ D1–D19 below are MG-01's. Other D-numbers in this file (D20 and up, or marked 
 | D17 | Leave the inherited govsync/transport issues (unbounded items, `Synced` after failure, stuck pending hashes, follow-mode liveness) to MG-02. | D4 keeps `net.rs`/`sync.rs` verbatim and MG-02 rewrites both onto `dw_p2p::Session`; fixing them here would be thrown away and could not be validated without MG-02's suite. Nothing calls them in MG-01. |
 | D18 | Leave proposal date estimation at 150 s per block; MG-02 changes it. | It is salvaged verbatim and only the create-proposal facade (MG-02) uses it; the right constant is Core's trigger estimate (157.2 s), which needs its own vector. |
 | D19 | No dashd vectors for `shared.rs` in MG-01. | MG-04b owns shared masternodes and the v24 `shared_*` RPC flows; the row's oracle list for MG-01 is object/vote hashes, signatures and collateral scripts. |
+| D20 | The scan forbids the two operator-signed payload struct names outright (whole identifiers), instead of telling a construction from a read. | Rounds 1–3 of review each found a way past the construction heuristics (struct update, aliases, `type … =`, then `Self { … }` inside an `impl … for` the payload), and each fix opened a false positive elsewhere. No file names either type today, and MG-03's reads need only the enum variant and field access. A future need to name a type is an allow-list entry, reviewed. |
