@@ -101,6 +101,10 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.frequent_contacts",
     // BL-153: the banner state.
     "DashPay.status",
+    // DP4-01: profiles.
+    "DashPay.profile",
+    "DashPay.profile_limits",
+    "DashPay.update_profile",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -136,7 +140,8 @@ const FACADE: &[&str] = &[
 /// and the top-up flow with its tests (DP1-06), the contest watch with
 /// its tests (DP1-04), the contact payment locks (DP3-01), contact
 /// payment attribution with its tests (DP3-02), and the DashPay status's
-/// rules with their tests (BL-153).
+/// rules with their tests (BL-153), and the profile reads and writes with
+/// their tests (DP4-01).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "balances.rs",
@@ -161,6 +166,8 @@ const NOT_FACADE: &[&str] = &[
     "payments_tests.rs",
     "private_details.rs",
     "private_details_tests.rs",
+    "profile_tests.rs",
+    "profiles.rs",
     "provenance.rs",
     "recovery.rs",
     "recovery_tests.rs",
@@ -871,6 +878,21 @@ fn error_codes_match_the_contract() {
     );
     check_domain(
         &enums,
+        "ProfileError",
+        &[
+            ProfileError::TooLong {
+                field: ProfileField::DisplayName,
+                length: 26,
+                max: 25,
+            },
+            ProfileError::Empty,
+            ProfileError::Conflict { current: None },
+            ProfileError::UnsupportedContract,
+        ],
+        ProfileError::code,
+    );
+    check_domain(
+        &enums,
         "RegistrationError",
         &[
             RegistrationError::InProgress { draft: s() },
@@ -972,6 +994,7 @@ fn error_codes_match_the_contract() {
         "InvitationError",
         "NameError",
         "PlatformError",
+        "ProfileError",
         "RegistrationError",
     ]
     .to_vec();
@@ -990,6 +1013,8 @@ fn wrapped_codes_pass_through() {
     });
     assert_eq!(identity.code(), "identity.keys_missing");
     assert_eq!(ContactError::from(identity).code(), "identity.keys_missing");
+    let profile = PlatformError::from(ProfileError::Empty);
+    assert_eq!(profile.code(), "profile.empty");
 
     let name = RegistrationError::from(NameError::UnavailableForInvite);
     assert_eq!(name.code(), "name.unavailable_for_invite");
@@ -1169,6 +1194,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         display_name: None,
         public_message: None,
         avatar: AvatarChange::Keep,
+        baseline: None,
     };
     let mut c = Calls::default();
     engine.block_on(async {
@@ -1296,12 +1322,18 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             "invalid_argument"
         );
 
-        c.stub(dp.profile(s()));
-        c.stub(dp.profile_limits());
+        // DP4-01's: the limits are the contract's, so they read no wallet;
+        // a malformed identity is refused before the wallet is read; an
+        // update refuses an unknown wallet.
+        assert_eq!(dp.profile(s()).unwrap_err().code(), "invalid_argument");
+        assert!(dp.profile_limits().is_ok());
+        assert_eq!(
+            dp.update_profile(s(), edit, s()).await.unwrap_err().code(),
+            "wallet_not_found"
+        );
         c.stub(dp.prepare_avatar(AvatarSource::Url { url: s() }).await);
         c.stub(dp.avatar_upload_available());
         c.stub(dp.upload_avatar(s()).await);
-        c.stub(dp.update_profile(s(), edit, s()).await);
         c.stub(dp.avatar(s(), AvatarSize::Small).await);
 
         // DP1-06: the cost table is the network's, so it reads no wallet;

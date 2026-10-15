@@ -4,7 +4,7 @@
 //! No `Display` or `detail` ever quotes a `BearerSecret` input.
 //!
 //! `PlatformError` holds the codes every call can return: `platform.*`, the
-//! `identity.*` codes and the m1 common codes. Each other domain wraps it, so
+//! `identity.*` and `profile.*` codes and the m1 common codes. Each other domain wraps it, so
 //! a `platform.*` code reaches the host whichever domain the call belongs to;
 //! `platform()` finds it again.
 
@@ -12,6 +12,7 @@ use super::contacts::Eligibility;
 use super::flows::{BudgetPurpose, RevokeCause};
 use super::identity::KeyPurpose;
 use super::names::UsernameRule;
+use super::profile::{Profile, ProfileField};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlatformError {
@@ -74,6 +75,8 @@ pub enum PlatformError {
     NotImplemented { call: String },
     #[error("identity: {0}")]
     Identity(IdentityError),
+    #[error("profile: {0}")]
+    Profile(ProfileError),
     #[error("invalid argument: {detail}")]
     InvalidArgument { detail: String },
     #[error("network session is not open")]
@@ -108,6 +111,7 @@ impl PlatformError {
             Self::FeatureOff { .. } => "platform.feature_off",
             Self::NotImplemented { .. } => "platform.not_implemented",
             Self::Identity(e) => e.code(),
+            Self::Profile(e) => e.code(),
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::NetworkNotOpen => "network_not_open",
             Self::WalletNotFound => "wallet_not_found",
@@ -137,6 +141,47 @@ impl IdentityError {
 impl From<IdentityError> for PlatformError {
     fn from(e: IdentityError) -> Self {
         Self::Identity(e)
+    }
+}
+
+/// An edit `update_profile` refuses against the DashPay contract (DP4-01).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ProfileError {
+    /// `field` holds `length` characters (Unicode scalar values, trimmed);
+    /// the contract allows `max`.
+    #[error("{field:?} is {length} characters; at most {max}")]
+    TooLong {
+        field: ProfileField,
+        length: u32,
+        max: u32,
+    },
+    /// The profile would hold no field: the contract needs one.
+    #[error("a profile needs at least one field")]
+    Empty,
+    /// The profile on Platform is not the one the edit was made against
+    /// (its `baseline`, D23): `current` is Platform's, as `profile` shows it.
+    #[error("the profile changed since it was read")]
+    Conflict { current: Option<Box<Profile>> },
+    /// Platform's DashPay contract has a profile field this version would
+    /// not carry over, so it writes no profile (D21).
+    #[error("the DashPay contract on Platform has profile fields this version does not know")]
+    UnsupportedContract,
+}
+
+impl ProfileError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::TooLong { .. } => "profile.too_long",
+            Self::Empty => "profile.empty",
+            Self::Conflict { .. } => "profile.conflict",
+            Self::UnsupportedContract => "profile.unsupported_contract",
+        }
+    }
+}
+
+impl From<ProfileError> for PlatformError {
+    fn from(e: ProfileError) -> Self {
+        Self::Profile(e)
     }
 }
 

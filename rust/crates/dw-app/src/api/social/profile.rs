@@ -1,8 +1,8 @@
 //! Profiles and avatars.
 
 use dw_engine::platform::{
-    AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect, ProfileEdit,
-    ProfileLimits,
+    AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect,
+    ProfileBaseline, ProfileEdit, ProfileLimits,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -62,6 +62,19 @@ pub struct ProfileEditArgs {
     pub display_name: Option<String>,
     pub public_message: Option<String>,
     pub avatar: AvatarChangeArgs,
+    /// What the edit was made against; without one it replaces whatever
+    /// Platform holds. A profile changed since is `profile.conflict`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub baseline: Option<ProfileBaselineArgs>,
+}
+
+/// The profile an edit was made against: what `dashpayProfile` showed
+/// (`null`: no profile).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileBaselineArgs {
+    pub profile: Option<DashPayProfile>,
 }
 
 impl From<ProfileEditArgs> for ProfileEdit {
@@ -70,11 +83,15 @@ impl From<ProfileEditArgs> for ProfileEdit {
             display_name,
             public_message,
             avatar,
+            baseline,
         } = e;
         ProfileEdit {
             display_name,
             public_message,
             avatar: avatar.into(),
+            baseline: baseline.map(|b| ProfileBaseline {
+                profile: b.profile.map(Into::into),
+            }),
         }
     }
 }

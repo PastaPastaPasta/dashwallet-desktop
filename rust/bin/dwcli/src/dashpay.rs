@@ -42,8 +42,9 @@ use dw_engine::platform::{
     ActivityFilter, AvatarChange, AvatarError, AvatarSize, AvatarSource, BearerSecret,
     ContactError, ContactQuery, ContactSection, ContactSort, CreditsError, DashPay, FlowKind,
     GrantAction, GrantRequest, IdentityError, InitialProfile, InvitationError, NameError,
-    PlatformError, PrivateDetails, ProfileEdit, RegistrationError, RegistrationFunding,
-    RegistrationRequest, RegistrationWait, ScannedCode, WithdrawAmount, check_username,
+    PlatformError, PrivateDetails, ProfileBaseline, ProfileEdit, ProfileError, RegistrationError,
+    RegistrationFunding, RegistrationRequest, RegistrationWait, ScannedCode, WithdrawAmount,
+    check_username,
 };
 use dw_engine::{
     ContactRecipient, Engine, EngineError, NetworkSession, PreparedTx, SendFailure, TASK_PANICKED,
@@ -498,7 +499,8 @@ pub enum ContactCmd {
 
 #[derive(Subcommand)]
 pub enum ProfileCmd {
-    /// The stored profile (`null` if none).
+    /// An identity's profile, own or another user's (`null` if none).
+    #[command(visible_alias = "get")]
     Show {
         #[command(flatten)]
         who: Who,
@@ -509,7 +511,9 @@ pub enum ProfileCmd {
     UploadAvailable,
     /// Publish the whole profile: an omitted `--display-name` or
     /// `--public-message` is cleared, and the avatar is kept unless an
-    /// avatar option is given.
+    /// avatar option is given. The edit is made against the profile `show`
+    /// shows now (or `--baseline`): one changed on Platform since is
+    /// `profile.conflict`, with Platform's.
     Set {
         #[command(flatten)]
         who: Who,
@@ -524,6 +528,13 @@ pub enum ProfileCmd {
         avatar_file: Option<PathBuf>,
         #[arg(long, group = "avatar")]
         remove_avatar: bool,
+        /// The profile the edit is made against, as `show` printed it
+        /// (JSON; `null`: none).
+        #[arg(long, conflicts_with = "force")]
+        baseline: Option<String>,
+        /// Replace whatever profile Platform holds.
+        #[arg(long)]
+        force: bool,
     },
     /// Any identity's avatar thumbnail (PNG, base64; `null` if none).
     Avatar {
@@ -629,7 +640,8 @@ fn platform_params(e: &PlatformError) -> Value {
         | P::LeaseExpired
         | P::NetworkNotOpen
         | P::WalletNotFound
-        | P::Identity(IdentityError::NotFound) => json!({}),
+        | P::Identity(IdentityError::NotFound)
+        | P::Profile(ProfileError::Empty | ProfileError::UnsupportedContract) => json!({}),
         P::InsufficientCredits { needed, available } => {
             json!({"needed": needed, "available": available})
         }
@@ -643,6 +655,10 @@ fn platform_params(e: &PlatformError) -> Value {
         }
         P::NeedsGrant { purpose } => json!({"purpose": purpose}),
         P::Identity(IdentityError::KeysMissing { purpose }) => json!({"purpose": purpose}),
+        P::Profile(ProfileError::TooLong { field, length, max }) => {
+            json!({"field": field, "length": length, "max": max})
+        }
+        P::Profile(ProfileError::Conflict { current }) => json!({"current": current}),
         P::LeaseRevoked { cause } => json!({"cause": cause}),
         P::FeatureOff { feature } => json!({"feature": feature}),
         P::NotImplemented { call } => json!({"call": call}),
@@ -1866,6 +1882,8 @@ fn profile_cmd(ctx: &Ctx, cmd: ProfileCmd) -> Result<Value, CliError> {
             avatar_url,
             avatar_file,
             remove_avatar,
+            baseline,
+            force,
         } => {
             let identity = who.or_main(&dp)?;
             let source = match (avatar_url, avatar_file) {
@@ -1889,10 +1907,20 @@ fn profile_cmd(ctx: &Ctx, cmd: ProfileCmd) -> Result<Value, CliError> {
                 None if remove_avatar => AvatarChange::Remove,
                 None => AvatarChange::Keep,
             };
+            // What the edit is made against, read just before it.
+            let baseline =
+                match (baseline, force) {
+                    (_, true) => None,
+                    (Some(json), false) => Some(serde_json::from_str(&json).map_err(|e| {
+                        CliError::invalid(format!("--baseline is not a profile: {e}"))
+                    })?),
+                    (None, false) => Some(dp.profile(identity.clone())?),
+                };
             let edit = ProfileEdit {
                 display_name,
                 public_message,
                 avatar,
+                baseline: baseline.map(|profile| ProfileBaseline { profile }),
             };
             let (request, grant) = action_grant(ctx, &dp, &identity, GrantAction::UpdateProfile)?;
             granted(
@@ -2006,7 +2034,7 @@ mod tests {
     ];
 
     /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01,
-    /// DP2-03, DP1-02, DP2-02, DP1-06, DP3-01), with the
+    /// DP2-03, DP1-02, DP2-02, DP1-06, DP3-01, DP4-01), with the
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
@@ -2095,6 +2123,13 @@ mod tests {
         // DP3-02.
         ("contact activity --identity I C --filter sent", NOT_BASE58),
         ("contact frequent --identity I", NOT_BASE58),
+        // DP4-01.
+        ("profile show --identity I", NOT_BASE58),
+        (
+            "profile limits",
+            r#"{"ok":true,"result":{"display_name_max":25,"public_message_max":140}}"#,
+        ),
+        ("profile set --identity I --display-name Al", NOT_BASE58),
         ("identity balance --identity I", NOT_IDENTIFIER),
         (
             "identity top-up --identity I --duffs 100000",
@@ -2409,6 +2444,7 @@ mod tests {
             "contact list --section everyone",
             "contact activity C --filter both",
             "profile set --avatar-url u --remove-avatar",
+            "profile set --baseline null --force",
             "profile avatar I --size huge",
             "pay-contact C",
             "pay-contact C --amount -1",
@@ -2416,6 +2452,18 @@ mod tests {
         ] {
             assert!(parse(args).is_err(), "{args:?} parsed");
         }
+    }
+
+    #[test]
+    fn profile_get_is_profile_show() {
+        let Ok(DashPayCommand::Profile {
+            cmd: ProfileCmd::Show { who },
+            ..
+        }) = parse("profile get --identity I")
+        else {
+            panic!();
+        };
+        assert_eq!(who.identity.as_deref(), Some("I"));
     }
 
     #[test]

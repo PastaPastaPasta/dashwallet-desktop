@@ -42,6 +42,21 @@ const SAMPLES: Samples = {
   usernameRules: { code: "name.invalid", data: { kind: "usernameRules", rules: ["minLength", "noEdgeHyphen"] } },
   ineligible: { code: "contact.ineligible", data: { kind: "ineligible", reason: "noDashPayKeys" } },
   keysMissing: { code: "identity.keys_missing", data: { kind: "keysMissing", purpose: "encryption" } },
+  profileTooLong: { code: "profile.too_long", data: { kind: "profileTooLong", field: "displayName", length: 26, max: 25 } },
+  profileConflict: {
+    code: "profile.conflict",
+    data: {
+      kind: "profileConflict",
+      current: {
+        displayName: "Alice",
+        publicMessage: "Edited on another device",
+        avatarUrl: null,
+        avatarHash: null,
+        avatarFingerprint: null,
+        updatedAt: null,
+      },
+    },
+  },
   feature: { code: "platform.feature_off", data: { kind: "feature", feature: "platform" } },
   call: { code: "platform.not_implemented", data: { kind: "call", call: "create_invitation" } },
   reason: { code: "send.broadcast_rejected", data: { kind: "reason", reason: "bad-txns-inputs-missingorspent" } },
