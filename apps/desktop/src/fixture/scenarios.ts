@@ -350,6 +350,31 @@ const SCENARIOS = {
     attributePayments(w);
     return w;
   },
+  /** "alice" before her first contact: the Contacts empty state (DP2-07). */
+  "dashpay-contacts-empty": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registered(), contacts: [], requestTimes: {}, journal: [] };
+    return w;
+  },
+  /** A sync pass holds the wallet's state before any contacts snapshot: "Updating contacts…". */
+  "dashpay-contacts-updating": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registered(), contactsUpdating: true };
+    return w;
+  },
+  /** Unlocked for mixing only, Carol's channel still setting up: "Unlock to finish setting up". */
+  "dashpay-contacts-mixing-only": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    return w;
+  },
+  /** DAPI does not answer user searches: the network section fails with Try again. */
+  "dashpay-search-offline": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registered(), searchOffline: true };
+    return w;
+  },
   /** Locking cuts more flows than the report lists, some pending (E0-13 D3): unresolved for good. */
   "lock-report-omitted": (t) => omittedPending(base(t)),
   /** The report omits flows, artifacts and wallets that its order shows are not pending. */

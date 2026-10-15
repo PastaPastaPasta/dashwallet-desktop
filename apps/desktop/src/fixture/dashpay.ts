@@ -5,7 +5,11 @@
 
 import type { ChannelStateName } from "../api/generated/ChannelStateName";
 import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
+import type { ContactList } from "../api/generated/ContactList";
+import type { ContactQueryArgs } from "../api/generated/ContactQueryArgs";
 import type { ContactSectionName } from "../api/generated/ContactSectionName";
+import type { ContactSortName } from "../api/generated/ContactSortName";
+import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { DashPayProfile } from "../api/generated/DashPayProfile";
 import type { DashPayStartupInfo } from "../api/generated/DashPayStartupInfo";
 import type { DashPayEventInfo } from "../api/generated/DashPayEventInfo";
@@ -31,6 +35,11 @@ export interface DashPayWorld {
   requestTimes: Record<string, RequestTimes>;
   /** The `dp_events` journal of the wallet's identities, oldest first: the bell's rows. */
   journal: JournalRow[];
+  /** A sync pass holds the wallet's state and no snapshot was read yet: `dashpay_contacts`
+   * answers empty sections with `updating` (m4 §2.4 item 37). */
+  contactsUpdating: boolean;
+  /** `search_users` fails as with DAPI unreachable (`platform.unavailable`). */
+  searchOffline: boolean;
 }
 
 /** A journal row as dw-appdb stores it: the kind's journal name, `""` for no contact or reference,
@@ -97,7 +106,19 @@ export const IDENTITY = {
   ivan: "1vANuoMbBJYGLx5tPxaaLSXmVSA7oHzJJvWmrHMKtpH",
   judy: "JudyGQjdXR1xmWvHFS3K8fQ5Jmpw3T6YVY6HAYtnBpW",
   mallory: "MALLoRyCRFtBn7r9fqD4ZcVaxu3Rx1oEkJ38EN6Hbnm",
+  marta: "MarTAqWv7S2SaNpCGs4oQ9tHUUMbSh8nVyYLLmwfE3W",
+  mateo: "MaTEo9hZ4xT1QpfR8d6yNKzVWbg5sJ3CcL2nYmUaHr7",
+  maxine: "MaXiNe4bF6tR2eWq8zH1nJd9kL3mP5sV7xC2yG4uA6B",
+  mayumi: "MaYuMi8pK2wE5rT7yU9iQ1pA3sD6fG8hJ2kL4zX6cVb",
 } as const;
+
+/** Users on the network with no relation to the wallet (`search_users`' strangers besides Mallory). */
+const STRANGERS: Pick<UserHit, "identity" | "username" | "displayName" | "unverified">[] = [
+  { identity: IDENTITY.marta, username: "marta", displayName: "Marta", unverified: false },
+  { identity: IDENTITY.mateo, username: "mateo", displayName: null, unverified: true },
+  { identity: IDENTITY.maxine, username: "maxine", displayName: "Maxine", unverified: false },
+  { identity: IDENTITY.mayumi, username: "mayumi", displayName: "Mayumi", unverified: false },
+];
 
 const at = (daysAgo: number, hours = 0) => secs(FIXTURE_NOW) - daysAgo * 86_400 - hours * 3_600;
 
@@ -166,7 +187,8 @@ function contact(spec: ContactSpec): ContactDetailInfo {
       relation: spec.relation,
       hidden: spec.hidden ?? false,
       channel: spec.channel,
-      since: spec.since,
+      // A request rests on its own time (m4 §2.4 `since`).
+      since: spec.since ?? (pending ? (spec.relation === "pendingIncoming" ? at(0, 2) : at(1)) : null),
       lastActivityAt: spec.lastActivityAt ?? null,
       unverified: spec.unverified ?? false,
     },
@@ -192,6 +214,57 @@ export function sectionOf(c: ContactDetailInfo): ContactSectionName {
   if (relation === "pendingIncoming") return "requests";
   if (relation === "pendingOutgoing") return "pending";
   return hidden || relation === "ignored" ? "hidden" : "contacts";
+}
+
+const SECTIONS: ContactSectionName[] = ["requests", "contacts", "pending", "hidden"];
+
+const fold = (s: string | null) => (s?.trim() ? s.trim().toLowerCase() : null);
+const byId = (a: ContactSummaryInfo, b: ContactSummaryInfo) => (a.contact < b.contact ? -1 : a.contact > b.contact ? 1 : 0);
+/** Newest first, unknown times last, ties by id. */
+const newest = (t: (c: ContactSummaryInfo) => number | null) => (a: ContactSummaryInfo, b: ContactSummaryInfo) =>
+  (t(b) ?? -Infinity) - (t(a) ?? -Infinity) || byId(a, b);
+/** Ascending by a case-folded key, `null` keys last, ties by id. */
+const ascending = (k: (c: ContactSummaryInfo) => string | null) => (a: ContactSummaryInfo, b: ContactSummaryInfo) => {
+  const x = k(a);
+  const y = k(b);
+  if (x === y) return byId(a, b);
+  if (x === null || y === null) return x === null ? 1 : -1;
+  return x < y ? -1 : 1;
+};
+
+/** The engine's orders (m4 §2.4 `contacts`): Contacts and Hidden follow `sort`, Requests and
+ * Pending are newest first whatever it is. */
+const ORDERS: Record<ContactSortName, (a: ContactSummaryInfo, b: ContactSummaryInfo) => number> = {
+  displayName: ascending((c) => fold(c.alias) ?? fold(c.displayName) ?? fold(c.username) ?? c.contact.toLowerCase()),
+  username: ascending((c) => fold(c.username)),
+  dateAdded: newest((c) => c.since),
+  lastActivity: newest((c) => c.lastActivityAt),
+};
+
+/** `text` as the engine matches it: username, display name or alias, case-insensitively, or from
+ * four characters the start of the identity id. */
+function matches(c: ContactSummaryInfo, text: string): boolean {
+  const t = text.toLowerCase();
+  return [c.username, c.displayName, c.alias].some((v) => v?.toLowerCase().includes(t)) || (text.length >= 4 && c.contact.startsWith(text));
+}
+
+/** What `dashpay_contacts` answers: the sections asked for (empty = all; each once, in the query's
+ * order), filtered and sorted as the engine does. While a sync pass holds the state and no
+ * snapshot was read yet, empty sections with `updating`. */
+export function contactList(d: DashPayWorld, query: ContactQueryArgs): ContactList {
+  const asked = query.sections.length ? query.sections.filter((s, i) => query.sections.indexOf(s) === i) : SECTIONS;
+  const text = query.text?.trim() ?? "";
+  const rows = d.contactsUpdating ? [] : d.contacts.filter((c) => !text || matches(c.summary, text));
+  return {
+    sections: asked.map((section) => ({
+      section,
+      contacts: rows
+        .filter((c) => sectionOf(c) === section)
+        .map((c) => c.summary)
+        .sort(section === "contacts" || section === "hidden" ? ORDERS[query.sort] : newest((c) => c.since)),
+    })),
+    updating: d.contactsUpdating,
+  };
 }
 
 function aliceIdentity(): IdentitySummary {
@@ -233,6 +306,8 @@ export function noIdentity(): DashPayWorld {
     directory: [],
     requestTimes: {},
     journal: [],
+    contactsUpdating: false,
+    searchOffline: false,
   };
 }
 
@@ -318,9 +393,13 @@ export function registered(): DashPayWorld {
     contacts,
     requestTimes: requestTimesById,
     journal: journal(contacts, requestTimesById),
+    contactsUpdating: false,
+    searchOffline: false,
     directory: [
       ...contacts.map(hit),
       { identity: IDENTITY.mallory, username: "mallory", displayName: "Mallory", avatarUrl: null, relation: "stranger", unverified: false },
+      // More strangers whose names start with "ma", for the network search's "Show more" (DP2-07).
+      ...STRANGERS.map((s) => ({ ...s, avatarUrl: null, relation: "stranger" as const })),
       { identity: IDENTITY.alice, username: "alice", displayName: "Alice Liddell", avatarUrl: null, relation: "isSelf", unverified: false },
     ],
   };
