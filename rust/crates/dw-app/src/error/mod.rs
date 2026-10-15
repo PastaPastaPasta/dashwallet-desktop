@@ -240,7 +240,9 @@ pub enum ErrorData {
         max: u32,
     },
     /// `profile.conflict`: the profile on Platform now, as `dashpayProfile` shows it.
-    ProfileConflict { current: Option<DashPayProfile> },
+    ProfileConflict {
+        current: Option<Box<DashPayProfile>>,
+    },
     /// `platform.feature_off`.
     Feature { feature: String },
     /// `platform.not_implemented`, `not_implemented`: the call that is not.

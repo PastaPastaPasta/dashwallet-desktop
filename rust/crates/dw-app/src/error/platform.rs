@@ -194,7 +194,7 @@ impl From<PlatformError> for AppError {
             P::Profile(ProfileError::Conflict { current }) => (
                 ProfileCode::Conflict.into(),
                 Some(ErrorData::ProfileConflict {
-                    current: current.map(|p| (*p).into()),
+                    current: current.map(|p| Box::new((*p).into())),
                 }),
             ),
             P::Profile(ProfileError::UnsupportedContract) => {
