@@ -3,11 +3,11 @@
 /**
  * A file the user opened.
  */
-export type OpenedFile = { 
+export type OpenedFile = {
 /**
  * The file's name, without its directory.
  */
-name: string, 
+name: string,
 /**
  * Its bytes, base64.
  */

@@ -3,15 +3,15 @@
 /**
  * Fee and size preview of a draft; nothing is signed or reserved.
  */
-export type TxEstimate = { fee: number, 
+export type TxEstimate = { fee: number,
 /**
  * Estimated serialized size in bytes (QT-072).
  */
-sizeBytes: number, inputCount: number, 
+sizeBytes: number, inputCount: number,
 /**
  * The change output's value; `null` when the change goes to the fee.
  */
-change: number | null, 
+change: number | null,
 /**
  * What the recipients receive, after any subtract-fee share.
  */

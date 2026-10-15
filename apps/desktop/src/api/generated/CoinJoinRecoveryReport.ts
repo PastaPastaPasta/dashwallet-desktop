@@ -3,19 +3,19 @@
 /**
  * The recovery scan's result (IOS-057).
  */
-export type CoinJoinRecoveryReport = { 
+export type CoinJoinRecoveryReport = {
 /**
  * Addresses checked on the DIP9 CoinJoin account.
  */
-coinjoinAddressesScanned: number, 
+coinjoinAddressesScanned: number,
 /**
  * BIP44 addresses checked (gap 1000, Core-mixed funds).
  */
-bip44AddressesScanned: number, 
+bip44AddressesScanned: number,
 /**
  * The CoinJoin account's balance after the scan.
  */
-coinjoinBalance: number, 
+coinjoinBalance: number,
 /**
  * Transactions the scan found that the wallet did not know.
  */

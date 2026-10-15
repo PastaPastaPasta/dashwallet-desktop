@@ -72,7 +72,7 @@ pub struct Exports {
     /// types of one name would overwrite each other silently. (Distinct
     /// types may share a file when they declare the same thing, as ts-rs's
     /// `serde_json::Value` shadow does.)
-    files: HashMap<PathBuf, (String, &'static str)>,
+    pub files: HashMap<PathBuf, (String, &'static str)>,
 }
 
 impl TypeSpec {

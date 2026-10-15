@@ -4,23 +4,23 @@ import type { OutPoint } from "./OutPoint";
 /**
  * dash-qt's coin-control panel values (QT-072); the renderer prefixes "≈".
  */
-export type CoinSelectionSummary = { 
+export type CoinSelectionSummary = {
 /**
  * Selected coins that are still unspent and selectable.
  */
-quantity: number, amount: number, bytes: number, fee: number, 
+quantity: number, amount: number, bytes: number, fee: number,
 /**
  * `amount - fee` ("After Fee").
  */
-afterFee: number, 
+afterFee: number,
 /**
  * Change, or 0 when dust change went to the fee.
  */
-change: number, changeToFee: boolean, 
+change: number, changeToFee: boolean,
 /**
  * "Insufficient funds!".
  */
-insufficientFunds: boolean, feeTolerancePerInput: number, 
+insufficientFunds: boolean, feeTolerancePerInput: number,
 /**
  * Selected coins that are spent or gone (QT-074).
  */

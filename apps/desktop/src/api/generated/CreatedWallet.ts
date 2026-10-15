@@ -4,7 +4,7 @@
  * A wallet made by `createWallet`. The phrase is secret: the UI shows it
  * once and checks the user wrote it down (QT-103, IOS-004).
  */
-export type CreatedWallet = { walletId: string, 
+export type CreatedWallet = { walletId: string,
 /**
  * The recovery phrase. The vault already holds it.
  */

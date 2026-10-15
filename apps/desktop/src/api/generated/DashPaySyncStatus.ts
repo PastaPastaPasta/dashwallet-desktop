@@ -7,7 +7,7 @@ import type { SyncPassReport } from "./SyncPassReport";
 /**
  * Tools ▸ Information's DashPay card.
  */
-export type DashPaySyncStatus = { startup: StartupStatus, lastPass: SyncPassReport | null, 
+export type DashPaySyncStatus = { startup: StartupStatus, lastPass: SyncPassReport | null,
 /**
  * Contacts waiting for an unlock to finish setting up.
  */

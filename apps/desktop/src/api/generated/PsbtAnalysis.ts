@@ -6,20 +6,20 @@ import type { PsbtStatus } from "./PsbtStatus";
 /**
  * The PSBT Operations dialog content (QT-079).
  */
-export type PsbtAnalysis = { outputs: Array<PsbtOutput>, 
+export type PsbtAnalysis = { outputs: Array<PsbtOutput>,
 /**
  * `null` while an input's value is missing or unverified.
  */
-fee: number | null, 
+fee: number | null,
 /**
  * What leaves the wallet; `null` like `fee`. A signing `Spend` grant
  * must cover it.
  */
-total: number | null, unsignedInputs: number, status: PsbtStatus, signability: PsbtSignability, 
+total: number | null, unsignedInputs: number, status: PsbtStatus, signability: PsbtSignability,
 /**
  * Value paid to scripts the wallet does not own, fee excluded.
  */
-externalSent: number | null, 
+externalSent: number | null,
 /**
  * The unsigned transaction's txid: the same for every copy of the
  * payment whatever its signatures or other PSBT fields (U-05 D40).

@@ -3,11 +3,11 @@
 /**
  * How the window paces the Platform loops.
  */
-export type PlatformPacing = { 
+export type PlatformPacing = {
 /**
  * A window is visible: `dashpay_sync` every 15 s; hidden, every 60 s.
  */
-windowVisible: boolean, 
+windowVisible: boolean,
 /**
  * A watched DPNS contest ends within the hour: its watch polls every
  * minute instead of every 10.

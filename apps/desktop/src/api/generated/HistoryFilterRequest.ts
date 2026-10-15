@@ -8,31 +8,31 @@ import type { WatchOnlyFilterName } from "./WatchOnlyFilterName";
  * The engine's `HistoryFilter`. Every field but `categories` and `text`
  * may be left out: no restriction.
  */
-export type HistoryFilterRequest = { 
+export type HistoryFilterRequest = {
 /**
  * Record types to show; empty: all.
  */
-types?: Array<TxTypeName>, 
+types?: Array<TxTypeName>,
 /**
  * Categories to show; empty: all.
  */
-categories: Array<TxCategoryName>, 
+categories: Array<TxCategoryName>,
 /**
  * Statuses to show; empty: all.
  */
-statuses?: Array<TxStatusKindName>, 
+statuses?: Array<TxStatusKindName>,
 /**
  * Earliest record time, UNIX seconds.
  */
-dateFrom?: number, 
+dateFrom?: number,
 /**
  * Latest record time, UNIX seconds.
  */
-dateTo?: number, 
+dateTo?: number,
 /**
  * Matches address, label and txid; blank is no filter.
  */
-text: string | null, 
+text: string | null,
 /**
  * Smallest absolute amount, duffs.
  */

@@ -4,11 +4,11 @@
  * A connected SPV peer. dash-spv reports only addresses: the other fields
  * are `null`.
  */
-export type PeerSummary = { 
+export type PeerSummary = {
 /**
  * `ip:port`.
  */
-address: string, userAgent: string | null, protocolVersion: number | null, bestHeight: number | null, pingMs: number | null, 
+address: string, userAgent: string | null, protocolVersion: number | null, bestHeight: number | null, pingMs: number | null,
 /**
  * UNIX seconds.
  */

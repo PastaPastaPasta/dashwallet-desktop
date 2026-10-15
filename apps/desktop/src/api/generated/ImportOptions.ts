@@ -6,22 +6,22 @@
  * with Core's rules, whatever `coreCompat` says, and default the lookahead
  * to 1000 or the wallet's used addresses plus 100, whichever is more.
  */
-export type ImportOptions = { 
+export type ImportOptions = {
 /**
  * Display name, 1-64 characters after trimming; `null`: "Wallet N".
  */
-name: string | null, 
+name: string | null,
 /**
  * First block to scan. `0` is genesis; `null`: the importer's default,
  * the SPV tip or the latest checkpoint for a phrase (right for a new
  * one) and genesis for a Dash Core wallet, which may have funds anywhere.
  */
-birthHeight: number | null, 
+birthHeight: number | null,
 /**
  * Derive the seed with Dash Core's BIP39 quirks (weak checksum, no
  * NFKD, salt cut at 256 bytes; QT-104).
  */
-coreCompat: boolean, 
+coreCompat: boolean,
 /**
  * Address lookahead (gap limit) of the BIP44 chains, 1..=1000; `null`:
  * 30, or 1000 with `coreCompat` (QT-105).

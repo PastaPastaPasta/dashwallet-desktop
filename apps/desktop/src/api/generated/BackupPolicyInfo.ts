@@ -3,7 +3,7 @@
 /**
  * How many automatic backups to keep per wallet, and where they go.
  */
-export type BackupPolicyInfo = { 
+export type BackupPolicyInfo = {
 /**
  * 0..=10; 0 turns automatic backups off.
  */

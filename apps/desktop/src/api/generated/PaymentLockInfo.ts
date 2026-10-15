@@ -3,7 +3,7 @@
 /**
  * A per-contact send lock after an ambiguous broadcast.
  */
-export type PaymentLockInfo = { txid: string, 
+export type PaymentLockInfo = { txid: string,
 /**
  * UNIX time the lock was set.
  */

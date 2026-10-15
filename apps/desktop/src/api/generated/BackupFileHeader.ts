@@ -3,15 +3,15 @@
 /**
  * The readable header of a `.dwbackup`: no secrets, nothing decrypted.
  */
-export type BackupFileHeader = { format: string, formatVersion: number, 
+export type BackupFileHeader = { format: string, formatVersion: number,
 /**
  * The network's directory name (`mainnet`, `devnet-<name>`, …).
  */
-network: string, 
+network: string,
 /**
  * UNIX seconds.
  */
-createdAt: number, 
+createdAt: number,
 /**
  * Lower-case hex wallet ids.
  */

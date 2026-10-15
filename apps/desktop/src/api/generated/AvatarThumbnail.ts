@@ -4,7 +4,7 @@ import type { AvatarSizeName } from "./AvatarSizeName";
 /**
  * An engine-re-encoded PNG thumbnail.
  */
-export type AvatarThumbnail = { 
+export type AvatarThumbnail = {
 /**
  * PNG bytes (base64).
  */

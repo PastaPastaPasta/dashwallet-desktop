@@ -4,11 +4,11 @@ import type { LockStatus } from "./LockStatus";
 /**
  * Outcome of `recoverWithMnemonic`.
  */
-export type VaultRecovery = { 
+export type VaultRecovery = {
 /**
  * The new vault, unlocked.
  */
-status: LockStatus, 
+status: LockStatus,
 /**
  * Wallets whose secrets were in the old vault and are now watch-only:
  * import their phrases again to restore their keys.

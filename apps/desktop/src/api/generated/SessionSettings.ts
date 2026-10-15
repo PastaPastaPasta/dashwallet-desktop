@@ -6,30 +6,30 @@
  * renderer leaves out. On mainnet and testnet the endpoint, quorum and CA
  * fields must be left out (launch flags only).
  */
-export type SessionSettings = { 
+export type SessionSettings = {
 /**
  * DAPI endpoints (`https://host:port`). Empty: the SDK's defaults
  * (mainnet and testnet only).
  */
-dapiAddresses: Array<string>, 
+dapiAddresses: Array<string>,
 /**
  * The trusted quorum service; https on mainnet and testnet.
  */
-quorumUrl: string | null, 
+quorumUrl: string | null,
 /**
  * SPV peers (`ip:port`). Non-empty: SPV connects to these only.
  */
-spvPeers: Array<string>, 
+spvPeers: Array<string>,
 /**
  * A PEM CA certificate the SDK trusts for DAPI TLS besides the system
  * roots (a dashmate devnet gateway's self-signed certificate).
  */
-caCertPath: string | null, 
+caCertPath: string | null,
 /**
  * The protocol version the SDK starts at; auto-detection ratchets it
  * up. `null`: the network's floor.
  */
-initialProtocolVersion: number | null, 
+initialProtocolVersion: number | null,
 /**
  * The chain has no Platform (a plain dashd regtest).
  */

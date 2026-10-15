@@ -5,23 +5,23 @@ import type { FeeTarget } from "./FeeTarget";
 /**
  * The fee rules the send page and the Options dialog show (QT-057/058).
  */
-export type FeePolicy = { source: FeeSource, 
+export type FeePolicy = { source: FeeSource,
 /**
  * Minimum relay fee, duffs per kB; the floor of a custom rate.
  */
-minRelayPerKb: number, 
+minRelayPerKb: number,
 /**
  * Highest custom rate, duffs per kB.
  */
-maxCustomPerKb: number, 
+maxCustomPerKb: number,
 /**
  * Highest absolute fee, duffs (0.1 DASH).
  */
-maxTxFee: number, 
+maxTxFee: number,
 /**
  * Highest fee rate `broadcast_psbt` accepts, duffs per kB.
  */
-maxBroadcastRatePerKb: number, 
+maxBroadcastRatePerKb: number,
 /**
  * One row per dash-qt target, ascending.
  */

@@ -5,11 +5,11 @@ import type { MnemonicLanguageName } from "./MnemonicLanguageName";
 /**
  * Word-by-word validation for the restore screen.
  */
-export type MnemonicCheck = { wordCount: number, 
+export type MnemonicCheck = { wordCount: number,
 /**
  * Zero-based positions of words not in the detected wordlist.
  */
-unknownWordIndices: Array<number>, 
+unknownWordIndices: Array<number>,
 /**
  * `null` when no wordlist contains every word.
  */

@@ -5,11 +5,11 @@ import type { NetworkKind } from "./NetworkKind";
  * A network as the renderer names it: `mainnet`, `testnet`, `regtest` or
  * `devnet-<name>` (the engine's directory name).
  */
-export type NetworkInfo = { kind: NetworkKind, 
+export type NetworkInfo = { kind: NetworkKind,
 /**
  * `devnet-<name>` for devnets, else the kind.
  */
-dirName: string, 
+dirName: string,
 /**
  * dash-qt's unit name on this network: `DASH` on mainnet, `tDASH` elsewhere (QT-003).
  */

@@ -4,11 +4,11 @@ import type { RegistrationPhaseName } from "./RegistrationPhaseName";
 /**
  * Why a registration is `failed`.
  */
-export type RegistrationFailure = { 
+export type RegistrationFailure = {
 /**
  * The phase the flow stopped in.
  */
-phase: RegistrationPhaseName, code: string, retryable: boolean, 
+phase: RegistrationPhaseName, code: string, retryable: boolean,
 /**
  * `needed` and `available` of a `*_insufficient*` code, as decimal
  * strings in that code's unit: duffs for `registration.funding_insufficient`,
