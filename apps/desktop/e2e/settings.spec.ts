@@ -423,9 +423,11 @@ test.describe("Backups", () => {
     const release = await hold(page, "automatic_backups");
     await page.getByTestId("settings-tabs-backups").click();
     await expect(page.getByTestId("settings-backup-list").locator("li")).toHaveCount(2);
-    // D30: by the old list keeping 3 deletes nothing; it is unknown, so the count asks.
+    // D30: by the old list keeping 3 deletes nothing; a list still being read is not counted, so
+    // the question gives no number (every lower count asks, D42).
     await page.getByTestId("settings-backup-keep").selectOption("3");
-    await expect(page.getByTestId("settings-backup-keep-sheet")).toBeVisible();
+    await expect(page.getByTestId("settings-backup-keep-sheet")).toContainText("each wallet keeps its newest 3.");
+    await expect(page.getByTestId("settings-backup-keep-sheet")).not.toContainText("listed here");
     expect(await world(page, (w) => [w.settings.keep, w.settings.backups.length])).toEqual([5, 6]);
     await release();
   });

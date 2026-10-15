@@ -309,6 +309,8 @@ export class WipeModel extends Model {
             (s) => void (status = s),
             (e: unknown) => {
               if (hasCode(e, "vault.wrong_passphrase") || hasCode(e, "vault.throttled")) throw e;
+              // The lock then counts the passphrase as good, which the engine may not have
+              // checked; harmless, as the step stops and Try again reads the count again.
               kept = e;
             },
           );
