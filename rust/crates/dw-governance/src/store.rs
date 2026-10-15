@@ -158,10 +158,10 @@ impl GovernanceStore {
 
     /// Sets the voting key id of every masternode in the tip list, by
     /// collateral outpoint (MG-00 D43), PoSe-banned ones included (Core
-    /// `GetMNByCollateral` finds them too), and drops the current votes it no longer
-    /// backs: a masternode that left the list or changed its voting key
-    /// (Core `CGovernanceManager::RemoveInvalidVotes`). Dropped votes are
-    /// no longer seen, so a newer one can be fetched again.
+    /// `GetMNByCollateral` finds them too), and drops the current votes it
+    /// no longer backs: a masternode that left the list or changed its
+    /// voting key (Core `CGovernanceManager::RemoveInvalidVotes`). Dropped
+    /// votes are no longer seen, so a newer one can be fetched again.
     pub fn set_voting_keys(&mut self, keys: HashMap<OutPoint, [u8; 20]>) {
         let mut dropped = 0u64;
         for per_object in self.votes.values_mut() {
