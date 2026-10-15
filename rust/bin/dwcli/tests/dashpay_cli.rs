@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 #[path = "../src/test_stub.rs"]
 mod test_stub;
-use test_stub::{STUB_CALL, stub_request};
+use test_stub::{STUB_ARGS, STUB_CALL, stub_request};
 
 fn dwcli(dir: &Path, args: &[&str], stdin: &[u8]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_dwcli"))
@@ -45,7 +45,17 @@ fn dashpay_commands_print_one_json_line() {
         assert!(out.status.success(), "{args:?}: {out:?}");
     }
 
+    // A new wallet, offline: no identity while SPV has not caught up.
     let out = dwcli(dir.path(), &["dashpay", "status"], b"");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        line(&out),
+        json!({"ok": true, "result": {"kind": "no_identity", "reason": "waiting_for_sync"}})
+    );
+
+    // A refused call is a JSON error on stdout and a message on stderr.
+    let args: Vec<&str> = STUB_ARGS.to_vec();
+    let out = dwcli(dir.path(), &args, b"");
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(
         line(&out),
@@ -53,14 +63,14 @@ fn dashpay_commands_print_one_json_line() {
             "ok": false,
             "error": {
                 "code": "platform.not_implemented",
-                "message": "not implemented: DashPay.status",
-                "params": {"call": "DashPay.status"},
+                "message": format!("not implemented: {STUB_CALL}"),
+                "params": {"call": STUB_CALL},
             },
         })
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("not implemented: DashPay.status"),
+        stderr.contains(&format!("not implemented: {STUB_CALL}")),
         "{stderr}"
     );
 

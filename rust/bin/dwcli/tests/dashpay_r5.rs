@@ -58,16 +58,9 @@ fn vault(dir: &Path) {
     }
 }
 
-/// The one-shot line `dashpay status` prints while its body is a stub.
-fn stub_line() -> Value {
-    json!({
-        "ok": false,
-        "error": {
-            "code": "platform.not_implemented",
-            "message": "not implemented: DashPay.status",
-            "params": {"call": "DashPay.status"},
-        },
-    })
+/// The one-shot line `dashpay status` prints for the new, offline wallet.
+fn status_line() -> Value {
+    json!({"ok": true, "result": {"kind": "no_identity", "reason": "waiting_for_sync"}})
 }
 
 /// A stalled engine misses the shutdown deadline (`--shutdown-timeout`, or
@@ -93,7 +86,7 @@ fn a_stalled_engine_misses_the_shutdown_deadline() {
     ];
     let (out, elapsed) = dwcli(dir.path(), &args, &[stall], b"");
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert_eq!(lines(&out), [stub_line()]);
+    assert_eq!(lines(&out), [status_line()]);
     let err = stderr(&out);
     assert!(
         err.contains("the engine's shutdown missed its 2s deadline"),
@@ -129,8 +122,8 @@ fn a_healthy_engine_shuts_down_within_the_deadline() {
 
     let args = ["--verbose-events", "dashpay", "status"];
     let (out, elapsed) = dwcli(dir.path(), &args, &[], b"");
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert_eq!(lines(&out), [stub_line()]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(lines(&out), [status_line()]);
     let err = stderr(&out);
     assert!(err.contains("SessionClosed"), "{err}");
     assert!(!err.contains("deadline"), "{err}");

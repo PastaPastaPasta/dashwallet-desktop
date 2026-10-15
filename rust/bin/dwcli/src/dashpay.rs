@@ -2010,6 +2010,11 @@ mod tests {
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
+        // A new wallet, offline: SPV has not caught up (BL-153).
+        (
+            "dashpay status",
+            r#"{"ok":true,"result":{"kind":"no_identity","reason":"waiting_for_sync"}}"#,
+        ),
         ("dashpay events", NO_IDENTITY),
         ("dashpay events --identity I --cursor 3", NOT_BASE58),
         ("dashpay unread --identity I", NOT_BASE58),
@@ -2777,10 +2782,10 @@ mod tests {
         let w = "ab".repeat(32);
         let err = run(&engine, &session, "dashpay status --wallet nothex").unwrap_err();
         assert_eq!(err.code, "invalid_argument");
-        // An unknown id still gets a handle; the call checks the wallet once
-        // implemented (m4 §0), and the stub answers first.
+        // An unknown id still gets a handle; the call checks the wallet
+        // (m4 §0).
         let err = run(&engine, &session, &format!("dashpay status --wallet {w}")).unwrap_err();
-        assert_eq!(err.code, "platform.not_implemented");
+        assert_eq!(err.code, "wallet_not_found");
         engine.block_on(engine.shutdown()).unwrap();
     }
 
@@ -2952,8 +2957,8 @@ mod tests {
         assert_eq!(lines.len(), 11);
         let call = |i: usize| lines[i]["error"]["params"]["call"].clone();
         assert_eq!(
-            (lines[0]["id"].clone(), call(0)),
-            (json!(1), json!("DashPay.status"))
+            (lines[0]["id"].clone(), lines[0]["result"]["kind"].clone()),
+            (json!(1), json!("no_identity"))
         );
         assert_eq!(
             (lines[1]["id"].clone(), call(1)),
