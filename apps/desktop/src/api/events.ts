@@ -19,10 +19,13 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // The app's queue overflowed and dropped events: whatever they said, the queries know.
     case "eventsOverflowed":
       return "all";
+    // A seed attached to a loaded watch-only wallet is a `walletCreated` of the same id: its
+    // DashPay status stops being watch-only, and no Platform signal says so while SPV is stopped
+    // (BL-153 D19).
     case "walletCreated":
     case "walletRemoved":
     case "walletLoadChanged":
-      return [keys.wallets];
+      return [keys.wallets, keys.dashpayStatus(event.walletId)];
     // Sync ends `noIdentity`'s `waitingForSync` and sends no Platform signal (BL-153 D9); only
     // statuses without an identity are re-read (bridgeEvents).
     case "spvStateChanged":

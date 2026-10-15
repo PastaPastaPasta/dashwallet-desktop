@@ -159,6 +159,18 @@ describe("event bridge", () => {
     expect(client.getQueryState(key)?.isInvalidated).toBe(true);
   });
 
+  it("a seed attached to a watch-only wallet re-reads its DashPay status (BL-153 D19)", async () => {
+    const client = new QueryClient();
+    client.setQueryData(keys.dashpayStatus("a"), { kind: "noIdentity", reason: "watchOnly" });
+    client.setQueryData(keys.dashpayStatus("b"), { kind: "noIdentity", reason: "watchOnly" });
+    let emit: (e: AppEvent) => void = () => undefined;
+    const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
+    await bridgeEvents(fake, client);
+    emit({ kind: "walletCreated", network: "testnet", walletId: "a" });
+    expect(client.getQueryState(keys.dashpayStatus("a"))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
+  });
+
   it("sync re-reads only the DashPay statuses without an identity (BL-153 D9)", async () => {
     const client = new QueryClient();
     client.setQueryData(keys.dashpayStatus("a"), { kind: "noIdentity", reason: "waitingForSync" });
