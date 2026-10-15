@@ -2161,8 +2161,9 @@ returns, too late to record a hand-off. So:
 - **Definite resolution** (review P2a r1 F2; DEC-154 after r2 R2-F1). The journal is append-only (§6.2). A
   definite not-sent outcome (refunded, or definitely unsent) appends a `NotSent` row of the artifact, before the
   refund and the `NotSent` tombstone. It supersedes the artifact's earlier markers: a later Lock, reload or resume
-  finds none standing, so the step needs a fresh, charged First, whose marker is a new row. The row is begun in the
-  J step that decides the resolution and written outside J. While it is written, and after the journal refuses it,
+  finds none standing, so the step needs a fresh, charged First, whose marker is a new row. The resolution is
+  decided in one J step; the next J step begins the row unless the artifact was seen sent meanwhile, and the row is
+  written outside J. While it is written, and after the journal refuses it,
   the artifact is `Resolving`: it stays charged and possibly out (`MaybeOut`), and no copy resends on its old
   marker. **A write that fails or panics counts as possibly committed** (it may have landed and then errored):
   each later admit retries it first and defers meanwhile; once it lands, the artifact is refunded and `NotSent`,
@@ -2173,7 +2174,9 @@ returns, too late to record a hand-off. So:
   evidence `Committing` until it lands. The row is the bundle of §6.2 (DEC-163): the J step gathers the artifact's
   whole marker set, and one transaction outside J appends those markers and the `Sent` row. Every copy owes it like a marker: it defers while the row is `Committing`,
   and writes it first when an earlier write failed. A sighting during a `NotSent` write does not undo the write; the
-  `Sent` row that follows wins over it, so no marker is deleted or restored. On disk the `Sent` row makes every
+  `Sent` row that follows wins over it, so no marker is deleted or restored. A sighting after the J step that
+  decides the resolution, but before the J step that begins its write, skips the write: no further `NotSent` row
+  is appended (BL-159). On disk the `Sent` row makes every
   marker of the artifact that was written stand again; in memory the markers the `NotSent` row superseded come back
   at the sighting, each as its own write left it (review r2 H1): one whose write returned ok is durable, any other
   is `Ambiguous`. The sighting's bundle writes each of them with the `Sent` row (a no-op for one that had landed),
