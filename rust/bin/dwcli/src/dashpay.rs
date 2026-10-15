@@ -40,12 +40,14 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 use dw_engine::platform::{
     ActivityFilter, AvatarChange, AvatarError, AvatarSize, AvatarSource, BearerSecret,
-    ContactError, ContactQuery, ContactSection, ContactSort, CreditsError, DashPay, GrantAction,
-    GrantRequest, IdentityError, InitialProfile, InvitationError, NameError, PlatformError,
-    PrivateDetails, ProfileEdit, RegistrationError, RegistrationFunding, RegistrationRequest,
-    RegistrationWait, ScannedCode, WithdrawAmount, check_username,
+    ContactError, ContactQuery, ContactSection, ContactSort, CreditsError, DashPay, FlowKind,
+    GrantAction, GrantRequest, IdentityError, InitialProfile, InvitationError, NameError,
+    PlatformError, PrivateDetails, ProfileEdit, RegistrationError, RegistrationFunding,
+    RegistrationRequest, RegistrationWait, ScannedCode, WithdrawAmount, check_username,
 };
-use dw_engine::{Engine, EngineError, NetworkSession, TASK_PANICKED};
+use dw_engine::{
+    ContactRecipient, Engine, EngineError, NetworkSession, PreparedTx, SendFailure, TASK_PANICKED,
+};
 use dw_vault::{GrantPurpose, VaultError};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -88,8 +90,10 @@ pub enum DashPayCommand {
         #[command(subcommand)]
         cmd: ContactCmd,
     },
-    /// Pay a contact (DP3-01: `TxDraft` with `Recipient::Contact`; until
-    /// then `not_implemented{call: "Recipient::Contact"}`).
+    /// Pay a contact (DP3-01): a `TxDraft` whose recipient is the
+    /// contact, prepared under a `Spend` grant of the amount and fee, and
+    /// broadcast. `--accept`: "Accept and pay" a pending request, both
+    /// under one credential and one `AcceptAndPay` lease.
     PayContact {
         #[command(flatten)]
         common: Common,
@@ -103,6 +107,8 @@ pub enum DashPayCommand {
         subtract_fee: bool,
         #[arg(long)]
         note: Option<String>,
+        #[arg(long)]
+        accept: bool,
     },
     /// The DashPay profile.
     Profile {
@@ -765,6 +771,7 @@ impl From<EngineError> for CliError {
     fn from(e: EngineError) -> Self {
         match e {
             EngineError::Vault(v) => v.into(),
+            EngineError::Contact(c) => c.into(),
             e if e.is_task_panic() => panic_error("an engine task", "the call"),
             e => Self::new(e.code(), &e, json!({})),
         }
@@ -1338,18 +1345,24 @@ fn dispatch(ctx: &Ctx, cmd: DashPayCommand, stdin: &mut dyn Read) -> Result<Valu
         DashPayCommand::Identity { cmd, .. } => identity_cmd(ctx, cmd),
         DashPayCommand::Name { cmd, .. } => name_cmd(ctx, cmd),
         DashPayCommand::Contact { cmd, .. } => contact_cmd(ctx, cmd, stdin),
-        DashPayCommand::PayContact { who, .. } => {
+        DashPayCommand::PayContact {
+            who,
+            contact,
+            amount,
+            subtract_fee,
+            note,
+            accept,
+            ..
+        } => {
             let dp = ctx.dashpay()?;
-            let _identity = who.or_main(&dp)?;
-            // DP3-01 adds `Recipient::Contact{identity, contact, amount,
-            // subtract_fee, note}` to `TxDraft` (m4 §6): this then prepares
-            // it under a `Spend` grant and broadcasts. The engine refuses a
-            // locked contact itself (`contact.payment_locked`), so dwcli
-            // does not check `payment_lock` first.
-            Err(PlatformError::NotImplemented {
-                call: "Recipient::Contact".into(),
-            }
-            .into())
+            let recipient = ContactRecipient {
+                identity: who.or_main(&dp)?,
+                contact,
+                amount,
+                subtract_fee,
+                note,
+            };
+            pay_contact(ctx, &dp, recipient, accept)
         }
         DashPayCommand::Profile { cmd, .. } => profile_cmd(ctx, cmd),
         DashPayCommand::Invite { cmd, .. } => invite_cmd(ctx, cmd, stdin),
@@ -1591,6 +1604,134 @@ fn action_grant(
     Ok((json!(request), ctx.platform_op(dp, request)?))
 }
 
+/// `pay-contact`. The engine refuses a locked contact itself
+/// (`contact.payment_locked`), so this does not read `payment_lock` first.
+/// The grant caps the amount and the estimated fee (only the amount with
+/// `--subtract-fee`); a fee grown since is `send.grant_exceeded`.
+fn pay_contact(
+    ctx: &Ctx,
+    dp: &DashPay,
+    recipient: ContactRecipient,
+    accept: bool,
+) -> Result<Value, CliError> {
+    let (identity, contact) = (recipient.identity.clone(), recipient.contact.clone());
+    let (amount, subtract_fee) = (recipient.amount, recipient.subtract_fee);
+    let draft = ctx.session.new_tx_draft(dp.wallet_id())?;
+    draft.set_contact_recipient(recipient)?;
+    let estimate = ctx.block_on(draft.estimate())?;
+    let spend = GrantPurpose::Spend {
+        max_duffs: if subtract_fee {
+            amount
+        } else {
+            amount + estimate.fee
+        },
+    };
+    if !accept {
+        let grant = ctx.grant(dp, spend)?;
+        let prepared = ctx.block_on(draft.prepare(grant))?;
+        let outcome = ctx.block_on(draft.broadcast(Arc::clone(&prepared)))?;
+        return Ok(paid(Value::Null, &prepared, &outcome.txid));
+    }
+    // "Accept and pay" (DP3-01 D14): one credential for both grants, one
+    // lease; the payment's `prepare` refuses until the accept established
+    // the contact.
+    let request = ctx.block_on(dp.grant_request(identity.clone(), GrantAction::AcceptRequest))?;
+    let platform = GrantPurpose::PlatformOp {
+        max_duffs: request.max_duffs,
+        max_credits: request.max_credits,
+    };
+    let grants = ctx.session.vault().authorize_set(
+        &[platform, spend],
+        Some(&dp.wallet_id().0),
+        credential(ctx.session, ctx.passphrase),
+    )?;
+    let grants = grants.into_iter().map(|g| g.id).collect();
+    let lease = ctx.block_on(ctx.session.begin_flow(
+        dp.wallet_id(),
+        FlowKind::AcceptAndPay,
+        grants,
+    ))?;
+    let result = ctx
+        .block_on(dp.accept_request(identity, contact, lease.clone()))
+        .map_err(CliError::from)
+        .map(|_| {
+            let payment = (|| {
+                let prepared =
+                    (ctx.block_on(draft.prepare(lease.clone()))).map_err(PaymentFailed::Prepare)?;
+                let outcome = (ctx.block_on(draft.broadcast(Arc::clone(&prepared))))
+                    .map_err(PaymentFailed::Broadcast)?;
+                Ok(paid(json!(request), &prepared, &outcome.txid))
+            })();
+            after_accept(json!(request), payment)
+        });
+    // The lease's last owner: it ends with the payment's hand-off done.
+    let _ = ctx.session.end_flow(lease);
+    result
+}
+
+/// The step of "Accept and pay"'s payment that failed.
+enum PaymentFailed {
+    Prepare(EngineError),
+    Broadcast(EngineError),
+}
+
+/// "Accept and pay"'s result once the accept went through (D15): the
+/// payment's with `accepted`, or, when the payment failed, a partial
+/// success: the contact accepted, the payment's error and what to do next.
+/// Not an error: the accept stands, and `--accept` again would be refused.
+fn after_accept(grant: Value, payment: Result<Value, PaymentFailed>) -> Value {
+    let (e, broadcasting) = match payment {
+        Ok(mut paid) => {
+            paid["accepted"] = json!(true);
+            return paid;
+        }
+        // Nothing was recorded or sent before the broadcast.
+        Err(PaymentFailed::Prepare(e)) => (e, false),
+        Err(PaymentFailed::Broadcast(e)) => (e, true),
+    };
+    let next = if matches!(e, EngineError::Contact(ContactError::PaymentLocked { .. })) {
+        // Another payment to the contact, from either step: paying again
+        // now would be refused the same way.
+        "another payment to the contact (`payment_error.params.txid`) is under way \
+         or locked: wait for it, or settle its lock (`contact lock`, \
+         `contact resolve-lock`), then pay with `pay-contact` without --accept"
+    } else if broadcasting
+        && (e.is_task_panic()
+            || matches!(e, EngineError::Send(SendFailure::BroadcastUnknown { .. })))
+    {
+        "the payment may have gone out: the contact is locked until \
+         `contact resolve-lock` settles it"
+    } else {
+        "accepted, payment cancelled: pay now with `pay-contact` without \
+         --accept (a new Spend grant)"
+    };
+    let e = CliError::from(e);
+    json!({
+        "grant": grant,
+        "accepted": true,
+        "paid": false,
+        "payment_error": {"code": e.code, "message": e.message, "params": e.params},
+        "next": next,
+    })
+}
+
+/// `pay-contact`'s result: the Platform grant it asked for (or null) and
+/// the payment.
+fn paid(grant: Value, prepared: &PreparedTx, txid: &str) -> Value {
+    let s = prepared.summary();
+    let address = (s.outputs.iter())
+        .find(|o| !o.is_change)
+        .and_then(|o| o.address.clone());
+    json!({
+        "grant": grant,
+        "txid": txid,
+        "address": address,
+        "sent": s.total_sent,
+        "fee": s.fee,
+        "debit": s.total_debit,
+    })
+}
+
 /// A write's result: the grant it asked for and the call's outcome.
 fn granted<T: Serialize>(grant: Value, outcome: T) -> Result<Value, CliError> {
     Ok(json!({"grant": grant, "outcome": outcome}))
@@ -1808,6 +1949,52 @@ mod tests {
     use super::*;
     use crate::{Cli, Command};
 
+    /// D15 (Sol r1): an accept that went through and a payment that did
+    /// not is a partial success, never a plain error.
+    #[test]
+    fn accept_and_pay_reports_an_accepted_contact_whose_payment_failed() {
+        let grant = json!({"max_duffs": 1});
+        let cancelled = EngineError::Send(SendFailure::Cancelled);
+        let message = cancelled.to_string();
+        let r = after_accept(grant.clone(), Err(PaymentFailed::Broadcast(cancelled)));
+        assert_eq!(r["accepted"], json!(true));
+        assert_eq!(r["paid"], json!(false));
+        assert_eq!(r["grant"], grant);
+        assert_eq!(r["payment_error"]["code"], json!("send"));
+        assert_eq!(r["payment_error"]["message"], json!(message));
+        assert!(r["next"].as_str().unwrap().contains("without --accept"));
+
+        let unknown = EngineError::Send(SendFailure::BroadcastUnknown {
+            reason: "no verdict".into(),
+        });
+        let r = after_accept(grant.clone(), Err(PaymentFailed::Broadcast(unknown)));
+        assert_eq!(r["paid"], json!(false));
+        assert!(r["next"].as_str().unwrap().contains("resolve-lock"));
+
+        // A panic in `prepare` sent nothing: pay again.
+        let panicked = EngineError::Internal(dw_engine::TASK_PANICKED.into());
+        let r = after_accept(grant.clone(), Err(PaymentFailed::Prepare(panicked)));
+        assert!(r["next"].as_str().unwrap().contains("without --accept"));
+        let panicked = EngineError::Internal(dw_engine::TASK_PANICKED.into());
+        let r = after_accept(grant.clone(), Err(PaymentFailed::Broadcast(panicked)));
+        assert!(r["next"].as_str().unwrap().contains("resolve-lock"));
+
+        // Sol r2: another payment locks the contact, found at either step.
+        for failed in [PaymentFailed::Prepare, PaymentFailed::Broadcast] {
+            let locked = EngineError::Contact(ContactError::PaymentLocked { txid: "t0".into() });
+            let r = after_accept(grant.clone(), Err(failed(locked)));
+            assert_eq!(r["paid"], json!(false));
+            assert_eq!(r["payment_error"]["code"], json!("contact.payment_locked"));
+            assert_eq!(r["payment_error"]["params"]["txid"], json!("t0"));
+            let next = r["next"].as_str().unwrap();
+            assert!(next.contains("resolve-lock"), "{next}");
+            assert!(!next.contains("pay now"), "{next}");
+        }
+
+        let r = after_accept(grant, Ok(json!({"txid": "t"})));
+        assert_eq!(r, json!({"txid": "t", "accepted": true}));
+    }
+
     const GROUPS: &[&str] = &[
         "dashpay",
         "identity",
@@ -1819,7 +2006,7 @@ mod tests {
     ];
 
     /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01,
-    /// DP2-03, DP1-02, DP2-02, DP1-06), with the
+    /// DP2-03, DP1-02, DP2-02, DP1-06, DP3-01), with the
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
@@ -1832,6 +2019,14 @@ mod tests {
         ("identity set-main I", NO_IDENTITY),
         ("identity discover", NO_PLATFORM),
         ("pay-contact C --amount 1", NO_IDENTITY),
+        (
+            "pay-contact --identity I C --amount 1000 --note hi",
+            NOT_BASE58,
+        ),
+        (
+            "pay-contact --identity I C --amount 1000 --accept",
+            NOT_BASE58,
+        ),
         ("name check alice", ALICE),
         ("name availability alice", NO_PLATFORM),
         ("name register --identity I bob", NO_PLATFORM),
@@ -1889,6 +2084,9 @@ mod tests {
             NOT_BASE58,
         ),
         ("contact details --identity I C --publish", NOT_BASE58),
+        // DP3-01.
+        ("contact lock --identity I C", NOT_BASE58),
+        ("contact resolve-lock --identity I C", NOT_BASE58),
         // DP3-02.
         ("contact activity --identity I C --filter sent", NOT_BASE58),
         ("contact frequent --identity I", NOT_BASE58),
@@ -2053,7 +2251,11 @@ mod tests {
         ("contact frequent --identity I", "DashPay.frequent_contacts"),
         (
             "pay-contact --identity I C --amount 1000 --note hi",
-            "Recipient::Contact",
+            "TxDraft.set_contact_recipient",
+        ),
+        (
+            "pay-contact --identity I C --amount 1000 --accept",
+            "TxDraft.set_contact_recipient",
         ),
         ("pay-contact C --amount 1", "DashPay.identities"),
         ("profile show --identity I", "DashPay.profile"),

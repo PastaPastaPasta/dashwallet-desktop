@@ -599,6 +599,7 @@ mod tests {
             ],
             &["contact", "details", ID1, "--note=-1", "--hidden"],
             &["pay-contact", ID1, "--amount", "5", "--subtract-fee"],
+            &["pay-contact", ID1, "--amount", "5", "--accept"],
             &["invite", "stash", "--input-file", "/dev/shm/x"],
             &["dashpay", "session"],
             &["identity"],

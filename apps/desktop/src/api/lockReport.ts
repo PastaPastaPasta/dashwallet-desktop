@@ -41,6 +41,7 @@ export const FLOW_NAME: Record<FlowKindName, string> = {
   acceptAndPay: "Accept and pay",
   privateDetails: "Private contact details",
   enableDashPayKeys: "Enabling DashPay keys",
+  contactPayment: "Contact payment",
 };
 
 const PENDING: ReadonlySet<FlowOutcomeName> = new Set(["maybeSent", "willBeSent"]);

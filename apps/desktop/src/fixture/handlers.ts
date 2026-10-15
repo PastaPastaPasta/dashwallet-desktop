@@ -517,11 +517,12 @@ export const HANDLERS: Handlers = {
   },
   // NetworkSession::begin_flow: every grant checked before any is redeemed (lease/session.rs
   // `issue`): unused, the wallet's, usable by a key, one per kind, of a kind the flow allows (a
-  // `platformOp`, and for "Accept and pay" a `spend` too).
+  // `platformOp`, and for "Accept and pay" a `spend` too; a contact payment's only a `spend`).
   begin_flow: ({ walletId, flow, grants }, ctx) => {
     const { world } = ctx;
     wallet(world, walletId);
-    const kinds: GrantPurposeSpec["kind"][] = flow === "acceptAndPay" ? ["platformOp", "spend"] : ["platformOp"];
+    const kinds: GrantPurposeSpec["kind"][] =
+      flow === "acceptAndPay" ? ["platformOp", "spend"] : flow === "contactPayment" ? ["spend"] : ["platformOp"];
     const found = grants.map((id) => checkGrant(world, id, walletId, kinds));
     const purposes = new Set(found.map((g) => g?.grant.purpose.kind));
     if (!found.length || found.some((g) => !g) || purposes.size !== found.length) throw grantInvalid();

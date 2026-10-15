@@ -31,6 +31,10 @@ pub enum FlowKind {
     AcceptAndPay,
     PrivateDetails,
     EnableDashPayKeys,
+    /// A contact payment's `TxDraft.prepare` with a `Spend` grant alone
+    /// (DP3-01): `prepare` makes one from a plain grant, so the payment
+    /// goes through the dispatch fence.
+    ContactPayment,
 }
 
 /// A lease's budgets (E0-04 §4.2).

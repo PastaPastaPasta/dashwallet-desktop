@@ -28,15 +28,17 @@ pub enum FlowKindName {
     AcceptAndPay,
     PrivateDetails,
     EnableDashPayKeys,
+    /// One payment to a contact, under a `Spend` grant only (DP3-01).
+    ContactPayment,
 }
 
 mirror_enum!(FlowKind => FlowKindName {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
-    AcceptAndPay, PrivateDetails, EnableDashPayKeys
+    AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment
 });
 mirror_enum!(FlowKindName => FlowKind {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
-    AcceptAndPay, PrivateDetails, EnableDashPayKeys
+    AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment
 });
 
 /// A lease budget: `funding` and `spend` are duffs, `credits` credits;

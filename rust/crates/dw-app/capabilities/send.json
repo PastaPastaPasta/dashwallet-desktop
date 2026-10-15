@@ -12,6 +12,7 @@
     "allow-max-spendable",
     "allow-draft-wallet-id",
     "allow-draft-set-recipients",
+    "allow-draft-set-contact-recipient",
     "allow-draft-set-source",
     "allow-draft-set-fee",
     "allow-draft-set-change",

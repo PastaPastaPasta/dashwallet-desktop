@@ -22,10 +22,12 @@ use crate::platform::signers::VaultContactCrypto;
 use crate::{EngineError, NetworkSession, WalletId};
 
 /// Which vault grant kinds a flow's lease may carry: a `PlatformOp`, plus a
-/// `Spend` for "Accept and pay"'s payment (§16.1).
+/// `Spend` for "Accept and pay"'s payment (§16.1); a contact payment's own
+/// lease only the `Spend` (DP3-01).
 fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
     match flow {
         FlowKind::AcceptAndPay => &[GrantKind::PlatformOp, GrantKind::Spend],
+        FlowKind::ContactPayment => &[GrantKind::Spend],
         _ => &[GrantKind::PlatformOp],
     }
 }
@@ -372,10 +374,6 @@ impl NetworkSession {
 
     /// The background `DashPayCrypto` of `wallet` (§4.5), created on
     /// demand under H8's rule. `None` while the vault is not prompt-free.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "DashPay contact sync (DP2-01) is its consumer")
-    )]
     pub(crate) async fn background_crypto(
         self: &Arc<Self>,
         wallet: WalletId,

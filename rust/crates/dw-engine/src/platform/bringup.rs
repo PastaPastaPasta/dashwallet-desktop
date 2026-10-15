@@ -639,6 +639,7 @@ impl NetworkSession {
         let has_identity = startup.identity.is_some();
         self.finish_bring_up(id, startup, since, budget, last).await;
         self.load_identity_choices(id).await;
+        self.load_payment_locks(id).await;
         self.refresh_identities(manager, id).await;
         // A restore's private details, and their state, come back here
         // (DP2-04), after the bring-up; the settle checks the seed binding.
