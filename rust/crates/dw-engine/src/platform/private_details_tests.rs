@@ -160,7 +160,7 @@ fn details(alias: &str) -> PrivateDetails {
 /// and identity, whose identity locks are process-wide, so one test holding
 /// them (a slow open, a paused settle) would hold up another's waits. Held
 /// until the test's thread ends.
-fn one_test_at_a_time() {
+pub(crate) fn one_test_at_a_time() {
     static ONE: Mutex<()> = Mutex::new(());
     thread_local! {
         static HELD: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) };
