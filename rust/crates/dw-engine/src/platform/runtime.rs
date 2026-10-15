@@ -124,6 +124,9 @@ pub(crate) struct PlatformRuntime {
     pub(crate) balances: Arc<super::balances::Balances>,
     /// The per-contact payment locks (DP3-01, `payment_locks.rs`).
     pub(crate) payments: super::payment_locks::PaymentLocks,
+    /// The proofs of no identity whose expiry `DashPay::status` signals
+    /// (wallet, until; BL-153 D21).
+    pub(super) absence_expiries: Mutex<std::collections::HashSet<(WalletId, u64)>>,
     /// Tests: holds the next bring-up between building its keys and
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
@@ -359,6 +362,7 @@ impl PlatformRuntime {
             contests: Default::default(),
             balances: Default::default(),
             payments: Default::default(),
+            absence_expiries: Default::default(),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
         }

@@ -45,6 +45,8 @@ fn main_identity(identity: &str, names: &[&str], temporary: Option<&str>) -> Opt
         identity: identity.into(),
         names: names.iter().map(|n| (*n).into()).collect(),
         temporary: temporary.map(Into::into),
+        // The library still lists the contest of `row`'s label.
+        open_contests: vec!["Alice".into()],
     })
 }
 
@@ -457,6 +459,14 @@ fn rules_a_contest_is_pending_until_the_identity_shows_a_name() {
         ),
         contest("alice", None)
     );
+    // D20: its contest ended (the library no longer lists it) while its
+    // profile step is parked: no longer pending.
+    let mut ended = main_identity(ALICE, &[], None);
+    ended.as_mut().unwrap().open_contests.clear();
+    assert_eq!(
+        with(ended, vec![], vec![row(6, "contested", Some(ALICE))]),
+        ready(ALICE)
+    );
 }
 
 // ---- a real session ----
@@ -656,4 +666,51 @@ fn startup_changes_are_signalled_once() {
     s.platform.write_startup().remove(&id);
     assert_eq!(marks(), vec![(id, startup)], "removed");
     engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// D21 (Sol r1 finding 3): a status that relied on Platform's proof of no
+/// identity is signalled again when the proof expires, so a host showing
+/// `NoIdentity` re-reads it, offline too.
+#[test]
+fn the_expiry_of_a_proven_absence_is_signalled() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let s = open_offline(&engine);
+    let db = s.live().unwrap().appdb;
+    let restored = engine
+        .block_on(s.import_wallet(
+            Zeroizing::new(ABANDON_12.to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions::default(),
+        ))
+        .unwrap();
+    // A proof that holds two more seconds.
+    let ttl = super::bringup::NO_IDENTITY_TTL.as_secs();
+    let at = (crate::events::unix_now() + 2 - ttl).to_string();
+    let scope = dw_appdb::local_scope(&restored.to_string());
+    db.set_setting(&scope, NO_IDENTITY_KEY, Some(&at)).unwrap();
+    *s.hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+    assert_eq!(
+        status(&s, restored),
+        no_identity(Some(NoIdentityReason::WaitingForSync))
+    );
+    status(&s, restored);
+
+    let signalled = || {
+        let marks = s.hub.pump.platform_marks.lock().unwrap();
+        (marks.as_ref().unwrap().iter())
+            .filter(|(id, c)| *id == restored && c.contains(&PlatformChange::Startup))
+            .count()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while signalled() == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(signalled(), 1, "one signal for the two reads");
+    assert_eq!(
+        status(&s, restored),
+        DashPayStatus::StartupIncomplete {
+            startup: StartupStatus::NotRun
+        }
+    );
 }

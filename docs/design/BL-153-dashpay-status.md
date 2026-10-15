@@ -88,6 +88,10 @@ guessed state.
 | D16 | A snapshot read proves no absence: without a live read, neither the markers nor the bring-up's `NoIdentity` give `NoIdentity`; the status is `StartupIncomplete{startup}` (the bring-up's outcome as is, `NoIdentity` included) until the pass ends and `Platform{Identities}` re-reads it. Markers are read only on a live, empty read. | Review: the pass holding the lock may be the one finding the identity; `NoIdentity` would offer Join (a second registration) for that moment. "Starting DashPay…" is the safe transient. |
 | D17 | `status` takes the identity list, the live flag and the main-name rows from one read (`identity_read`, which `identity_summaries` now wraps), not a second `dp_prefs` read. | Review: one consistent read; one SQLite read fewer. |
 | D18 | The contest watch sends `Platform{Names}` when a pass learns a contest's end (`ends_at` changes on an open or unplaced verdict) and when it drops a watch unplaced for a day. | `ContestPending.ends_at` and the pending label come from these rows; nothing else signalled their change. |
+| D19 | The renderer re-reads a wallet's DashPay status on `walletCreated`, `walletRemoved` and `walletLoadChanged` (`["dashpay", "status", walletId]`). | Sol r1 finding 1: attaching a seed to a loaded watch-only wallet emits `walletCreated` with the same id, and `read_only` comes from the vault; with SPV stopped no `Platform` signal follows, so the cached `NoIdentity{WatchOnly}` kept Join and Contacts wrongly gated. The status changes with the wallet's lifecycle, so its events re-read it. |
+| D20 | A `Contested` registration row counts as an open contest only while the library still lists that label among the identity's open contests (`contested_dpns_names`, read with the identity list). | Sol r1 finding 2: a flow whose profile step is parked stays `Contested` after the watch ends the contest (lost, locked, or unplaced for a day); `end_watch` drops the label from the library, so the row no longer makes the status `ContestPending`. Before the watch row exists the library already lists the contest (`register_name` records it first), so D6's pre-watch case still holds. |
+| D21 | When a status relied on Platform's proof of no identity (`dashpay.no_identity`, live read, no identity), the engine schedules one `Platform{Startup}` at the proof's expiry (once per wallet and proof, a task on the session's runtime). | Sol r1 finding 3 (was F4): the status turns `StartupIncomplete` at the expiry with no other signal, offline included; hosts never poll (§3.5). The bring-up's own rule reads the same deadline. |
+| D22 | The surviving mutant (the gatherer's marker read without `read.live`) is equivalent only on a successful settings read: on a snapshot whose marker read fails, the mutant fails the call where the code answers `StartupIncomplete`. Not tested: it needs an app.sqlite read fault while a writer holds the library lock, and no such seam exists; the guard's comment says why it is there. | Sol r1 finding 4 (nit). |
 
 ## Follow-ups
 
@@ -96,7 +100,7 @@ guessed state.
 | F1 | A live check of a `StartupIncomplete` wallet (a restore before its bring-up) could ask Platform once; `status` stays local by design, `discover_identities` and the bring-up cover it. | none (by design) |
 | F2 | DP1-08's banner states, Home card and Join intro render every variant, `WaitingForSync` disabled Join included. | DP1-08 |
 | F3 | `StartupIncomplete{NotRun}` on a `--sync`-less launch of a restored wallet with no identity on file: say sync is off (DP2-07 F10). | E0-05 / launch-flag owner |
-| F4 | The `dashpay.no_identity` marker expires after 7 days with no signal: a restored wallet without an identity, whose bring-up has not run since, turns from `NoIdentity` into `StartupIncomplete` silently until the next DashPay event re-reads it. A timer signal at the expiry would close it. | E0-05 owner (backlog) |
+| F4 | ~~The `dashpay.no_identity` marker expires with no signal.~~ Done in r1 (D21). | — |
 
 ## Tests
 
@@ -107,6 +111,9 @@ guessed state.
 | The contest watch's `Names` signal on a learned end and a dropped unplaced watch, none on an unchanged end | `contest_watch_tests::a_contest_still_voting_is_adopted_and_learns_its_end`, `an_unplaced_watch_ends_after_a_day_without_news` | D18 |
 | Real session: a new wallet is `NoIdentity{WaitingForSync}` offline; a restore is `StartupIncomplete{NotRun}` until the proven-absence marker (within its TTL); a registration row makes it `Registering`; an identity on file is `Ready`; a contest row with only the temporary name is `ContestPending`; a watch-only wallet; an unknown wallet | `banner_tests::a_session_reads_the_status_from_what_is_on_file` | D1, D3, D5, D6 |
 | `Platform{Startup}` on a changed outcome or identity, none on an unchanged write, one on a removal | `banner_tests::startup_changes_are_signalled_once` | D8 |
+| `Platform{Startup}` once at a relied-on proof's expiry, then `StartupIncomplete` | `banner_tests::the_expiry_of_a_proven_absence_is_signalled` | D21 |
+| A parked `Contested` flow after a lost contest is `Ready` | `contest_watch_tests::a_lost_contest_ends_the_pending_status_of_a_parked_flow`, `banner_tests::rules_a_contest_is_pending_until_the_identity_shows_a_name` | D20 |
+| A seed attached (`walletCreated`) re-reads that wallet's status only | `src/api/events.test.ts` | D19 |
 | Contract: `DashPay.status` in `IMPLEMENTED`, `wallet_not_found` for an unknown wallet | `tests/m4_dashpay_contract.rs` | — |
 | dw-app: `dashpay_status` over IPC | `ipc_tests` | D14 |
 | dwcli: `dashpay status` one-shot, in a session, with an unknown wallet | `dwcli` `dashpay::tests`, `tests/dashpay_cli.rs`, `dashpay_r5.rs`, `dashpay_r6.rs` | D14 |
@@ -116,5 +123,6 @@ guessed state.
 
 Mutation check (`/work/scratch/dw-bl153/mutants.py`, 35 hand-written mutants of `banner.rs`, `runtime.rs`,
 `startup.rs` and `contest_watch.rs`, each run against `banner_tests` and `contest_watch_tests`): 34 killed. The one
-survivor is equivalent: dropping `read.live` from the gatherer's marker read changes nothing observable, because
-`derive_status` ignores the markers on a snapshot anyway; the guard only saves a SQLite read.
+survivor is equivalent on a successful settings read (D22): `derive_status` ignores the markers on a snapshot anyway,
+so dropping `read.live` from the gatherer's marker read only adds that read. Round r1 added 4 mutants (the expiry
+signal, its once-per-proof guard, the open-contest check of a `Contested` row and its input): all killed.

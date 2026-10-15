@@ -454,6 +454,9 @@ pub(super) struct IdentityRead {
     pub(super) live: bool,
     /// The main-name rows the read used, identity → rows.
     pub(super) names: HashMap<String, MainNamePrefs>,
+    /// The labels each identity still contends for, as the library lists
+    /// them (`contested_dpns_names`), identity → labels.
+    pub(super) open_contests: HashMap<String, Vec<String>>,
 }
 
 /// The facade's form of a stored DashPay profile (an identity's own, or a
@@ -513,6 +516,9 @@ impl NetworkSession {
             ..recovery.choices_of(&id)
         };
         let provenance = self.live()?.provenance;
+        let open_contests = (owned.iter())
+            .map(|o| (o.identity.clone(), o.open_contests.clone()))
+            .collect();
         let mut summaries = summaries(owned, &choices, current, |e| provenance.is_unverified(e));
         // The levels are display data: a table the version cannot price
         // leaves them unknown, never the identities.
@@ -533,6 +539,7 @@ impl NetworkSession {
             summaries,
             live: current,
             names,
+            open_contests,
         })
     }
 

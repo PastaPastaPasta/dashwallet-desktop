@@ -2647,16 +2647,19 @@ renames or reshapes them takes the next version bump:
       main entry (the same read, live or snapshot), the main identity's temporary-name row, the wallet's
       `dp_registration` and `dp_contest_watch` rows, the bring-up markers (`dashpay.created_here`,
       `dashpay.no_identity` within its 7 days) and the sync tracker's caught-up state. A failed read fails the call.
-    - **With an identity on file** (the list's main one; while the list is a snapshot showing none, the bring-up's,
-      else the newest finished flow's): `Registering{draft}` while a flow that creates that identity (not one funded
-      by an existing identity) is short of its name step's end (`Draft` … `NameRequested`), its name step has not
-      failed, and it has not failed for good; else `ContestPending` while, on a live read, the identity shows no name but its temporary one and has an open
-      contest (a watch row not won, or a `Contested` flow; the flow's label first, else the watch ending first;
-      `ends_at` `None` until the watch read it); else `Ready{main}`. The bring-up's outcome does not matter then.
-    - **Without one:** `NoIdentity{WatchOnly}` for a wallet without keys; `Registering{draft}` for the newest flow
-      that creates its identity (not `ExistingIdentity`-funded, no name error), short of `Done`, not failed for good (a failure that is not retryable, or a row this build cannot read, is);
-      `NoIdentity` when, on a live read, the bring-up said `NoIdentity` or a marker establishes the absence, with
-      `WaitingForSync` while SPV is not caught up; else `StartupIncomplete{startup}` (a snapshot proves no absence).
+    - **With an identity on file** (the list's main one; while the list is a snapshot showing none, the bring-up's, else
+      the newest finished flow's): `Registering{draft}` while a flow that creates that identity (not one funded by an
+      existing identity) is short of its name step's end (`Draft` … `NameRequested`), its name step has not failed,
+      and it has not failed for good; else `ContestPending` while, on a live read, the identity shows no name but its
+      temporary one and has an open contest (a watch row not won, or a `Contested` flow whose label the library still
+      lists as an open contest; the flow's label first, else the watch ending first; `ends_at` `None` until the watch
+      read it); else `Ready{main}`. The bring-up's outcome does not matter then.
+    - **Without one:** `NoIdentity{WatchOnly}` for a wallet without keys; `Registering{draft}` for the newest flow that
+      creates its identity (not `ExistingIdentity`-funded, no name error), short of `Done`, not failed for good (a
+      failure that is not retryable, or a row this build cannot read, is); `NoIdentity` when, on a live read, the
+      bring-up said `NoIdentity` or a marker establishes the absence, with `WaitingForSync` while SPV is not caught
+      up; else `StartupIncomplete{startup}` (a snapshot proves no absence).
     - **`Platform{Startup}`.** Sent when a wallet's outcome or named identity changes (the startup map's writes), so
-      hosts re-read `status` and `sync_status`; a write that changes neither sends nothing. The contest watch sends
+      hosts re-read `status` and `sync_status`; a write that changes neither sends nothing. A status that relied on
+      Platform's proof of no identity also sends one at the proof's expiry. The contest watch sends
       `Platform{Names}` when it learns a contest's end or drops a watch that stayed unplaced for a day.

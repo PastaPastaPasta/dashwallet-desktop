@@ -8,6 +8,9 @@
 //! (`docs/design/BL-153-dashpay-status.md`); [`NetworkSession::dashpay_status_of`]
 //! gathers what they read.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use dw_appdb::{ContestWatch, RegistrationRow};
 
 use super::bringup::read_bring_up_markers;
@@ -15,8 +18,10 @@ use super::contest_watch::{Seen, watch_of};
 use super::names::same_name;
 use super::registration_flow::failure_of;
 use super::registration_rows::{Decoded, Funding, Phase};
+use super::runtime::guard;
 use super::startup::{DashPayStatus, NoIdentityReason, StartupStatus};
-use crate::{EngineError, NetworkSession, WalletId};
+use crate::events::unix_now;
+use crate::{EngineError, NetworkSession, PlatformChange, WalletId};
 
 /// The main identity as the identity list shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +31,9 @@ pub(super) struct MainIdentity {
     pub(super) names: Vec<String>,
     /// Its temporary name, a contested registration's second name.
     pub(super) temporary: Option<String>,
+    /// The labels it still contends for, as the library lists them: the
+    /// watch's end of a contest drops its label (D20).
+    pub(super) open_contests: Vec<String>,
 }
 
 /// Everything [`derive_status`] reads.
@@ -152,9 +160,12 @@ fn open_contest(i: &StatusInputs, m: &MainIdentity) -> Option<(String, Option<u6
         w.identity == m.identity
             && !matches!(Seen::parse(w.last_state.as_deref()), Seen::Won { .. })
     };
+    // A `Contested` flow whose contest the watch ended stays `Contested`
+    // while its profile step is parked: only a contest still open counts.
     let registered = newest(i.registrations.iter().filter(|r| {
         r.identity.as_deref() == Some(m.identity.as_str())
             && in_progress(r) == Some(Phase::Contested)
+            && m.open_contests.iter().any(|c| same_name(c, &r.label))
     }));
     let label = match registered {
         Some(row) => row.label.clone(),
@@ -200,6 +211,7 @@ impl NetworkSession {
             let prefs = read.names.remove(&s.identity);
             MainIdentity {
                 temporary: prefs.and_then(|p| p.temporary),
+                open_contests: read.open_contests.remove(&s.identity).unwrap_or_default(),
                 identity: s.identity,
                 names: s.names,
             }
@@ -207,8 +219,11 @@ impl NetworkSession {
         let db = self.live()?.appdb;
         let wallet = id.to_string();
         let absence_on_file = if main.is_none() && read.live {
-            let (created_here, proven) = read_bring_up_markers(&db, id)?;
-            created_here || proven
+            let (created_here, proven_until) = read_bring_up_markers(&db, id)?;
+            if let Some(until) = proven_until {
+                self.signal_expiry(id, until);
+            }
+            created_here || proven_until.is_some()
         } else {
             false
         };
@@ -223,5 +238,20 @@ impl NetworkSession {
             absence_on_file,
             caught_up: self.hub.tracker().caught_up(),
         }))
+    }
+
+    /// `Platform{Startup}` when the proof of no identity a status relied on
+    /// expires (D21): the status turns `StartupIncomplete` then, and no
+    /// other signal says so. Once per proof.
+    fn signal_expiry(&self, id: WalletId, until: u64) {
+        if !guard(&self.platform.absence_expiries).insert((id, until)) {
+            return;
+        }
+        let hub = Arc::clone(&self.hub);
+        let wait = Duration::from_secs(until.saturating_sub(unix_now()));
+        self.rt.spawn(async move {
+            tokio::time::sleep(wait).await;
+            hub.pump.mark_platform(id, [PlatformChange::Startup]);
+        });
     }
 }
