@@ -102,6 +102,8 @@ fn value_type(cmd: &str, arg: &str) -> Option<Ty> {
         (_, "input_file" | "faucet_proof_file" | "avatar_file") => Ty::Path,
         (_, "display_name" | "alias" | "text") => Ty::Text(256),
         (_, "public_message" | "note") => Ty::Text(1024),
+        // `profile show`'s JSON: texts, an avatar URL (2048) and its hashes.
+        ("set", "baseline") => Ty::Text(4096),
         _ => return None,
     })
 }
@@ -315,7 +317,8 @@ pub(super) fn check(args: &[Zeroizing<String>]) -> Result<(), String> {
         } else if cmd.has_subcommands() {
             let sub = cmd
                 .get_subcommands()
-                .find(|s| s.get_name() == tok && s.get_name() != "help")
+                .filter(|s| s.get_name() != "help")
+                .find(|s| s.get_name() == tok || s.get_all_aliases().any(|a| a == tok))
                 .ok_or_else(|| {
                     if path.is_empty() {
                         format!("argument {at} is not a DashPay command")
@@ -627,6 +630,16 @@ mod tests {
                 "--faucet-proof-file",
                 "/dev/shm/p.hex",
             ],
+            &["profile", "get", "--identity", ID1],
+            &[
+                "profile",
+                "set",
+                "--display-name",
+                "Al",
+                "--baseline",
+                r#"{"display_name":"Al","public_message":null,"avatar_url":null,"avatar_hash":null,"avatar_fingerprint":null,"updated_at":null}"#,
+            ],
+            &["profile", "set", "--display-name", "Al", "--force"],
             &[
                 "profile",
                 "set",

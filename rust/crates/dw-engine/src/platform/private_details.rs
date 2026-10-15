@@ -58,6 +58,9 @@ use crate::events::unix_now;
 use crate::session::Manager;
 use crate::{NetworkSession, PlatformChange, WalletId};
 
+/// The DashPay contract's private-details document type.
+pub(super) const CONTACT_INFO: &str = "contactInfo";
+
 /// `contactInfo` documents per page of a read.
 const PAGE: u32 = 100;
 /// The most documents one identity's read takes, counted as Platform
@@ -120,7 +123,7 @@ impl InfoSource for SdkInfos {
             let (mut out, mut raw) = (Vec::new(), 0);
             let mut start = None;
             loop {
-                let mut query = DocumentQuery::new(Arc::clone(&contract), "contactInfo")
+                let mut query = DocumentQuery::new(Arc::clone(&contract), CONTACT_INFO)
                     .map_err(|e| PlatformError::from(dash_sdk::Error::from(e)))?
                     .with_where(WhereClause {
                         field: "$ownerId".into(),

@@ -22,8 +22,8 @@ use serde::Serialize;
 use ts_rs::TS;
 
 use crate::dto::platform::{
-    BudgetPurposeName, DispatchStateName, EligibilityName, KeyPurposeName, RevokeCauseName,
-    UsernameRuleName,
+    BudgetPurposeName, DashPayProfile, DispatchStateName, EligibilityName, KeyPurposeName,
+    ProfileFieldName, RevokeCauseName, UsernameRuleName,
 };
 
 pub use engine::{EngineCode, VaultCode};
@@ -33,7 +33,7 @@ pub use nested::{
 };
 pub use platform::{
     AvatarCode, ContactCode, CreditsCode, IdentityCode, InvitationCode, NameCode, PlatformCode,
-    RegistrationCode,
+    ProfileCode, RegistrationCode,
 };
 
 /// Error returned by every command.
@@ -67,6 +67,7 @@ pub enum ErrorCode {
     Console(ConsoleCode),
     Platform(PlatformCode),
     Identity(IdentityCode),
+    Profile(ProfileCode),
     Registration(RegistrationCode),
     Name(NameCode),
     Contact(ContactCode),
@@ -232,6 +233,16 @@ pub enum ErrorData {
     Ineligible { reason: EligibilityName },
     /// `identity.keys_missing`.
     KeysMissing { purpose: KeyPurposeName },
+    /// `profile.too_long`: the text, its length and the contract's limit, in characters.
+    ProfileTooLong {
+        field: ProfileFieldName,
+        length: u32,
+        max: u32,
+    },
+    /// `profile.conflict`: the profile on Platform now, as `dashpayProfile` shows it.
+    ProfileConflict {
+        current: Option<Box<DashPayProfile>>,
+    },
     /// `platform.feature_off`.
     Feature { feature: String },
     /// `platform.not_implemented`, `not_implemented`: the call that is not.
@@ -413,6 +424,7 @@ into_code!(
     Console(ConsoleCode),
     Platform(PlatformCode),
     Identity(IdentityCode),
+    Profile(ProfileCode),
     Registration(RegistrationCode),
     Name(NameCode),
     Contact(ContactCode),

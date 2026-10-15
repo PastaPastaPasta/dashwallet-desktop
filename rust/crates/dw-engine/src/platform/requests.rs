@@ -23,12 +23,16 @@ use std::sync::Arc;
 
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+use dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dpp::identity::signer::Signer;
 use dpp::identity::{Identity, IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
+use dpp::system_data_contracts::dashpay_contract;
 use platform_wallet::{AutoAcceptProofSource, ContactRequest, PlatformWallet};
 
+use super::balances::now_ms;
 use super::contacts::{Eligibility, RequestOutcome};
 use super::contacts_model::identifier;
 use super::errors::{ContactError, IdentityError, PlatformError};
@@ -36,10 +40,14 @@ use super::flows::{BudgetPurpose, CONTACT_REQUEST_CREDITS, FlowKind, KEY_UPDATE_
 use super::identity::KeyPurpose;
 use super::identity_writes::identity_locks;
 use super::journal::request_ref;
-use super::keys_policy::{is_dashpay_recipient, key_path, missing_dashpay_purposes, upgrade_specs};
+use super::keys_policy::{
+    CONTACT_REQUEST, is_dashpay_recipient, key_path, missing_dashpay_purposes, upgrade_specs,
+};
 use super::lease::session::HeldKey;
 use super::lease::{CallPermit, CallQuote, Lease};
 use super::names::{NameAuthority, check_credit_cap};
+use super::private_details::CONTACT_INFO;
+use super::profiles::PROFILE;
 use super::signers::{VaultContactCrypto, VaultIdentitySigner};
 use super::trust::TrustProvider;
 use super::users::send_seam::ScanClaim;
@@ -298,28 +306,50 @@ pub(super) async fn leased<F: Future>(lease: &Lease, call: F) -> F::Output {
     lease.scope(call).await
 }
 
-/// The enabled ECDSA AUTHENTICATION keys at one of `levels`, in key-id
-/// order, among which platform-wallet picks its signing key (the first its
-/// signer's `can_sign_with` accepts).
-fn auth_keys<'a>(
-    identity: &'a Identity,
-    levels: &'a [SecurityLevel],
-) -> impl Iterator<Item = &'a IdentityPublicKey> {
-    (identity.public_keys().values()).filter(|k| {
+/// The ECDSA AUTHENTICATION keys at one of `flow`'s levels that can sign
+/// its transition now, in the order platform-wallet prefers them
+/// (`usable_authentication_key`, D22): enabled, not expired, and for a
+/// document write ([`flow_document`]) unbound or bound to that DashPay
+/// document type; first the keys with no budget or expiry, then the
+/// others, each in key-id order. The library picks the first its signer's
+/// `can_sign_with` accepts.
+fn auth_keys(identity: &Identity, flow: FlowKind) -> impl Iterator<Item = &IdentityPublicKey> {
+    let (levels, document, now) = (flow_levels(flow), flow_document(flow), now_ms());
+    let eligible = move |k: &&IdentityPublicKey| {
         k.purpose() == Purpose::AUTHENTICATION
             && levels.contains(&k.security_level())
             && k.key_type() == KeyType::ECDSA_SECP256K1
             && !k.is_disabled()
-    })
+            && !k.is_expired_at(now)
+            && document.is_none_or(|d| bounds_cover(k.contract_bounds(), d))
+    };
+    let keys = identity.public_keys().values();
+    (keys.clone().filter(move |k| eligible(k) && !k.has_limits()))
+        .chain(keys.filter(move |k| eligible(k) && k.has_limits()))
+}
+
+/// Whether a key carrying `bounds` may sign a DashPay `document` (the
+/// library's `bounds_cover`): a group bound needs membership the wallet
+/// does not hold, so it never may.
+fn bounds_cover(bounds: Option<&ContractBounds>, document: &str) -> bool {
+    match bounds {
+        None => true,
+        Some(ContractBounds::SingleContract { id }) => *id == dashpay_contract::ID,
+        Some(ContractBounds::SingleContractDocumentType {
+            id,
+            document_type_name,
+        }) => *id == dashpay_contract::ID && document_type_name == document,
+        Some(ContractBounds::ContractGroup { .. }) => false,
+    }
 }
 
 /// The first of [`auth_keys`] that is `usable`.
 fn first_auth_key(
     identity: &Identity,
-    levels: &[SecurityLevel],
+    flow: FlowKind,
     usable: impl Fn(&IdentityPublicKey) -> bool,
 ) -> Option<KeyID> {
-    auth_keys(identity, levels)
+    auth_keys(identity, flow)
         .find(|k| usable(k))
         .map(|k| k.id())
 }
@@ -330,9 +360,23 @@ fn flow_levels(flow: FlowKind) -> &'static [SecurityLevel] {
         FlowKind::ContactRequest
         | FlowKind::Accept
         | FlowKind::AcceptAndPay
-        | FlowKind::PrivateDetails => &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+        | FlowKind::PrivateDetails
+        | FlowKind::ProfileEdit => &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
         FlowKind::EnableDashPayKeys => &[SecurityLevel::MASTER],
         _ => &[],
+    }
+}
+
+/// The DashPay document type `flow`'s transition writes; `None` for the key
+/// upgrade's IdentityUpdate, which no contract bound limits.
+fn flow_document(flow: FlowKind) -> Option<&'static str> {
+    match flow {
+        FlowKind::ContactRequest | FlowKind::Accept | FlowKind::AcceptAndPay => {
+            Some(CONTACT_REQUEST)
+        }
+        FlowKind::PrivateDetails => Some(CONTACT_INFO),
+        FlowKind::ProfileEdit => Some(PROFILE),
+        _ => None,
     }
 }
 
@@ -344,17 +388,18 @@ fn candidate_keys(
     (index, identity): (u32, &Identity),
 ) -> Vec<HeldKey> {
     let network = session.vault.network();
-    (auth_keys(identity, flow_levels(flow)))
+    (auth_keys(identity, flow))
         .filter_map(|k| Some((key_path(network, index, k.id()).ok()?, k.data().to_vec())))
         .collect()
 }
 
 /// The keys `flow`'s transition signs with, and no others:
-/// - a contact request, an accept or a `contactInfo` (DP2-04): the document
-///   key, the identity's first HIGH or CRITICAL authentication key that is
-///   `usable` (the vault holds it; DPP refuses the master on document
-///   writes; the DashPay keys only do ECDH and the `contactInfo` AES keys,
-///   in the crypto signer);
+/// - a contact request, an accept, a `contactInfo` (DP2-04) or a `profile`
+///   (DP4-01): the document key, the first of the identity's HIGH or
+///   CRITICAL authentication keys that may sign that document
+///   ([`auth_keys`]) and is `usable` (the vault holds it; DPP refuses the
+///   master on document writes; the DashPay keys only do ECDH and the
+///   `contactInfo` AES keys, in the crypto signer);
 /// - a key upgrade: the master key, which signs the IdentityUpdate, and the
 ///   `added` keys, each of which signs its own proof of possession (dpp
 ///   `IdentityUpdateTransition::try_from_identity_with_signer`).
@@ -377,12 +422,13 @@ fn flow_keys(
         FlowKind::ContactRequest
         | FlowKind::Accept
         | FlowKind::AcceptAndPay
-        | FlowKind::PrivateDetails => {
-            let key = first_auth_key(identity, flow_levels(flow), usable);
+        | FlowKind::PrivateDetails
+        | FlowKind::ProfileEdit => {
+            let key = first_auth_key(identity, flow, usable);
             Ok(vec![key.ok_or_else(missing)?])
         }
         FlowKind::EnableDashPayKeys => {
-            let master = first_auth_key(identity, flow_levels(flow), usable);
+            let master = first_auth_key(identity, flow, usable);
             let master = master.ok_or_else(missing)?;
             Ok(std::iter::once(master)
                 .chain(added.iter().copied())
@@ -425,28 +471,42 @@ fn flow_signer(
 }
 
 /// What a document write (a contact request or accept, a `contactInfo`)
-/// needs once its own checks pass, refused before anything is redeemed
-/// where it can be: the credits of `identity` (index `index`) against
-/// `quote`, then the lease of one of `flows` (which checks the vault holds
-/// the document key, then `ready`, a scan's expiry), the call permit
-/// `label` charged the quote, its signer (the document key alone) and the
-/// lease's contact crypto.
+/// needs once its own checks pass: [`prepare_signer`]'s, then the lease's
+/// contact crypto.
 pub(super) async fn prepare(
+    net: &impl RequestNet,
+    session: &Arc<NetworkSession>,
+    signs: (u32, &Identity),
+    by: (WalletId, &str),
+    write: (&[FlowKind], u64, &str),
+    ready: impl FnOnce() -> Result<(), ContactError>,
+) -> Result<(Lease, CallPermit, VaultIdentitySigner, VaultContactCrypto), ContactError> {
+    let (lease, permit, signer) = prepare_signer(net, session, signs, by, write, ready).await?;
+    let crypto = lease.contact_crypto().map_err(PlatformError::from)?;
+    Ok((lease, permit, signer, crypto))
+}
+
+/// What a document write needs once its own checks pass, refused before
+/// anything is redeemed where it can be: the credits of `identity` (index
+/// `index`) against `quote`, then the lease of one of `flows` (which checks
+/// the vault holds the document key, then `ready`, a scan's expiry), the
+/// call permit `label` charged the quote and its signer (the document key
+/// alone).
+pub(super) async fn prepare_signer(
     net: &impl RequestNet,
     session: &Arc<NetworkSession>,
     (index, identity): (u32, &Identity),
     (wallet, grant): (WalletId, &str),
     (flows, quote, label): (&[FlowKind], u64, &str),
     ready: impl FnOnce() -> Result<(), ContactError>,
-) -> Result<(Lease, CallPermit, VaultIdentitySigner, VaultContactCrypto), ContactError> {
+) -> Result<(Lease, CallPermit, VaultIdentitySigner), ContactError> {
     let balance = net.balance(identity.id()).await?.ok_or_else(not_found)?;
     cover(balance, quote)?;
     let signs = (index, identity);
     let lease = write_lease(session, wallet, grant, (flows, quote), signs, ready).await?;
     let permit = write_permit(&lease, label, quote)?;
     let signer = flow_signer(&permit, index, identity, &[])?;
-    let crypto = lease.contact_crypto().map_err(PlatformError::from)?;
-    Ok((lease, permit, signer, crypto))
+    Ok((lease, permit, signer))
 }
 
 /// A request write's outcome; after a failure, whether `pair.identity`'s

@@ -419,6 +419,16 @@ mod tests {
         assert_eq!(e.display_name.as_deref(), Some("Ann"));
         assert_eq!(e.public_message, None);
         assert_eq!(e.avatar, AvatarChange::Set { candidate: "c1".into() });
+        assert_eq!(e.baseline, None);
+        let e: ProfileEditArgs = serde_json::from_value(json!({
+            "displayName": "Ann",
+            "publicMessage": null,
+            "avatar": { "kind": "keep" },
+            "baseline": { "profile": null },
+        }))
+        .unwrap();
+        let e = dw_engine::platform::ProfileEdit::from(e);
+        assert_eq!(e.baseline.map(|b| b.profile), Some(None));
     }
 
     #[test]
