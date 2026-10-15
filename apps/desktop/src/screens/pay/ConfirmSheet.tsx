@@ -10,7 +10,6 @@ import { isAppError } from "../../api/backend";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import type { PsbtAnalysis } from "../../api/generated/PsbtAnalysis";
 import { useBackend, useLockStatus, usePaymentAuthentication, useWallets } from "../../api/queries";
 import { navigate } from "../../app/ui";
 import { AmountText, DashButton } from "../../components/basics";
@@ -171,17 +170,17 @@ export function ConfirmSheet({
     setBusy(true);
     setError(null);
     let psbt: string;
-    let analysis: PsbtAnalysis;
     try {
       psbt = await draft.createUnsigned(spec);
-      // The engine planned again: the PSBT leaves the sheet only if it is the payment shown (D37).
-      analysis = await b.analyzePsbt(walletId, psbt);
     } catch (e) {
       setBusy(false);
       setError(failureText(e, chain));
       return;
     }
-    if (!unsignedKeepsPromise(confirmed, analysis)) {
+    // The engine planned again: the PSBT leaves the sheet only if it is the payment shown, and one
+    // that cannot be checked is not shown to be (D37).
+    const analysis = await b.analyzePsbt(walletId, psbt).catch(() => null);
+    if (analysis === null || !unsignedKeepsPromise(confirmed, analysis)) {
       onOutcome({ kind: "failed", text: "The payment changed. Review it again." });
       return;
     }

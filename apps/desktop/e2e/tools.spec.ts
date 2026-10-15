@@ -459,9 +459,8 @@ test.describe("PSBT", () => {
     await expect(page.getByTestId("pay-confirm-unsigned")).toBeEnabled();
     await page.evaluate(() => window.__dwFixture!.fail("analyze_psbt", "call"));
     await page.getByTestId("pay-confirm-unsigned").click();
-    // Said on the sheet, as a failed create_unsigned is.
-    await expect(page.getByTestId("pay-confirm-error")).not.toBeEmpty();
-    await expect(page.getByTestId("pay-confirm-unsigned")).toBeEnabled();
+    await expect(page.getByTestId("pay-result-failed")).toBeVisible();
+    await expect(page.getByTestId("pay-result-text")).toHaveText("The payment changed. Review it again.");
     expect(await copied(page)).toBeUndefined();
     await expect(page.getByTestId("tools-tabs")).toHaveCount(0);
   });
