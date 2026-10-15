@@ -161,15 +161,9 @@ export function failureText(failure: RegistrationFailure, amount: (duffs: number
       return "The network did not confirm the payment in time.";
     case "registration.not_synced":
       return "The wallet had not finished syncing.";
-    case "registration.funding_cancelled":
-      return "The payment was cancelled before it was sent.";
-    case "platform.lease_revoked":
-    case "platform.lease_expired":
-      return "The wallet was locked before the step finished.";
+    // A funding budget below the lock and its fee; Continue asks for a new approval.
     case "platform.grant_exceeded":
       return "The cost went above what you approved.";
-    case "platform.signer_unavailable":
-      return "The wallet could not sign. Unlock it to continue.";
     case "platform.insufficient_credits":
       return "The identity's credits do not cover the username.";
     case "platform.unavailable":

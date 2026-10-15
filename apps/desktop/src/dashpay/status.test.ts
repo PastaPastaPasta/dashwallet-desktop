@@ -213,7 +213,6 @@ describe("D4 steps and D5 failure copy", () => {
     expect(failureText(failure("platform.timeout"), amount)).toBe("The Dash network did not answer.");
     // Credits are not Dash: no amounts for them.
     expect(failureText(failure("platform.insufficient_credits", { needed: "5", available: "1" }), amount)).toBe("The identity's credits do not cover the username.");
-    expect(failureText(failure("platform.lease_revoked"), amount)).toBe("The wallet was locked before the step finished.");
     expect(failureText(failure("platform.grant_exceeded"), amount)).toBe("The cost went above what you approved.");
     expect(failureText(failure("name.taken"), amount)).toBe("It stopped with name.taken.");
   });

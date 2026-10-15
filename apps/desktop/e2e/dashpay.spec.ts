@@ -55,13 +55,13 @@ test("D2: Home has no card for an identity with a username, or one whose names a
   await expect(card(page)).toHaveCount(0);
 });
 
-test("D21: a nameless identity asks for a username only once it has stayed nameless, and not again after a revisit", async ({ page }) => {
+test("D21: a nameless identity reads as updating, then asks for a username, and not again after a revisit", async ({ page }) => {
   test.setTimeout(60_000);
   await open(page, "dashpay-no-username");
-  await expect(chip(page)).toContainText("No username");
-  await page.waitForTimeout(1_000);
+  await expect(chip(page)).toContainText("Updating…");
   await expect(card(page)).toHaveCount(0);
   await expect(card(page)).toHaveAttribute("data-state", "noUsername", HELD);
+  await expect(chip(page)).toContainText("No username");
   // Away and back: the hold does not start again.
   await page.getByTestId("sidebar-activity").click();
   await page.getByTestId("sidebar-home").click();

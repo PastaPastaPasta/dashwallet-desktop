@@ -202,6 +202,8 @@ for (const theme of THEMES) {
       await chip.waitFor();
       // The registration's username or the main name, once read.
       if (kind === "registeringLabel" || kind === "identity") await expect(chip).toContainText("@alice");
+      // D21's hold first reads "Updating…".
+      if (kind === "noUsername") await expect(chip).toContainText("No username", { timeout: 20_000 });
       await fontsReady(page);
       await expect(chip).toHaveScreenshot(`${theme}-dashpay-chip-${kind}.png`, SHOT);
     });

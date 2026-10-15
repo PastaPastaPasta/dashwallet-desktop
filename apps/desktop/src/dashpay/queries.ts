@@ -3,15 +3,13 @@
 // (`useDashPayShell`).
 
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
-import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { keys, mainIdentityOf, useBackend, useLockStatus, useSyncStatus } from "../api/queries";
+import { keys, mainIdentityOf, useBackend, useHeldNames, useLockStatus, useSyncStatus } from "../api/queries";
 import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
 import { isSyncing, syncPercent } from "../format/sync";
-import { NAMELESS_HOLD_MS, QUOTE_REQUEST, type StatusInputs } from "./status";
+import { QUOTE_REQUEST, type StatusInputs } from "./status";
 
 export const dashpayKeys = {
   registrationsAll: ["dashpay", "registrations"] as const,
@@ -43,30 +41,6 @@ export function useUsernameCost(walletId: string, enabled: boolean): number | nu
     retry: false,
   });
   return quote.data?.totalDuffs ?? null;
-}
-
-/** When each identity was first read nameless this session; a remount does not restart it. */
-const namelessSince = new Map<string, number>();
-
-/** `main`, read as still updating while it has been nameless for less than `NAMELESS_HOLD_MS`. */
-function useHeldNames(main: IdentitySummary | undefined): IdentitySummary | undefined {
-  const id = main?.identity;
-  const nameless = !!main && !main.namesUpdating && main.mainName === null;
-  const since = id && nameless ? (namelessSince.get(id) ?? Date.now()) : null;
-  const [, rerender] = useState(0);
-  useEffect(() => {
-    if (!id) return;
-    if (since === null) {
-      namelessSince.delete(id);
-      return;
-    }
-    namelessSince.set(id, since);
-    const left = since + NAMELESS_HOLD_MS - Date.now();
-    if (left <= 0) return;
-    const timer = setTimeout(() => rerender((n) => n + 1), left);
-    return () => clearTimeout(timer);
-  }, [id, since]);
-  return since !== null && Date.now() - since < NAMELESS_HOLD_MS ? { ...main!, namesUpdating: true } : main;
 }
 
 /** Everything the Home card and the Join page derive from (`homeCard`, `joinModel`), under the
