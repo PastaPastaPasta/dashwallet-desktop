@@ -21,12 +21,8 @@ pub enum BlsError {
 /// that decode to a G1 point in the basic serialization (dash-qt refuses
 /// legacy keys for new registrations).
 pub fn parse_public_hex(text: &str) -> Result<[u8; 48], BlsError> {
-    let text = text.trim();
-    if text.len() != 96 {
-        return Err(BlsError::PublicHex);
-    }
     let mut out = [0u8; 48];
-    hex::decode_to_slice(text, &mut out).map_err(|_| BlsError::PublicHex)?;
+    hex::decode_to_slice(text.trim(), &mut out).map_err(|_| BlsError::PublicHex)?;
     BlsPkBytes::from_bytes(out)
         .as_scheme(BlsScheme::Modern)
         .canonicalize()
@@ -60,17 +56,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_QT_124_public_key_round_trips_and_has_a_legacy_form() {
-        let basic = TEST_OPERATOR_KEY;
-        assert_eq!(parse_public_hex(&hex::encode(basic)).unwrap(), basic);
-        let legacy = legacy_of(&basic).unwrap();
-        assert_ne!(
-            basic, legacy,
-            "the two serializations differ in the flag bits"
-        );
-    }
-
-    #[test]
     fn test_QT_123_operator_key_input_is_checked() {
         assert_eq!(parse_public_hex("00"), Err(BlsError::PublicHex));
         assert_eq!(parse_public_hex(&"zz".repeat(48)), Err(BlsError::PublicHex));
@@ -79,5 +64,16 @@ mod tests {
             Err(BlsError::PublicPoint)
         );
         assert_eq!(legacy_of(&[0x11; 48]), None);
+    }
+
+    #[test]
+    fn test_QT_124_public_key_round_trips_and_has_a_legacy_form() {
+        let basic = TEST_OPERATOR_KEY;
+        assert_eq!(parse_public_hex(&hex::encode(basic)).unwrap(), basic);
+        let legacy = legacy_of(&basic).unwrap();
+        assert_ne!(
+            basic, legacy,
+            "the two serializations differ in the flag bits"
+        );
     }
 }

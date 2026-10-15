@@ -61,8 +61,7 @@ fn vote_from_current(parent: [u8; 32], text: &str) -> (GovernanceVote, u32) {
 
 /// Every `getcurrentvotes` entry: the key is the vote hash of the value's
 /// fields, and the value prints back the same.
-fn check_current_votes(parent_display: &str, current: &Value) -> usize {
-    let parent = dw_governance::object::parse_display_hex(parent_display).unwrap();
+fn check_current_votes(parent: [u8; 32], current: &Value) -> usize {
     let current = current.as_object().unwrap();
     for (hash, text) in current {
         let (vote, weight) = vote_from_current(parent, text.as_str().unwrap());
@@ -132,12 +131,9 @@ fn test_QT_131_regtest_votes_equal_dashd() {
         let listed = &doc["current_votes"][display_hex(&vote.hash())];
         assert_eq!(listed.as_str().unwrap(), current_vote_string(&vote, 1));
         // The `govobjvote` payload round-trips.
-        assert_eq!(
-            GovernanceVote::decode(&vote.encode()).unwrap(),
-            vote.clone()
-        );
+        assert_eq!(GovernanceVote::decode(&vote.encode()).unwrap(), vote);
     }
-    assert_eq!(check_current_votes(object_hash, &doc["current_votes"]), 2);
+    assert_eq!(check_current_votes(parent, &doc["current_votes"]), 2);
 }
 
 #[test]
@@ -156,7 +152,7 @@ fn test_QT_131_testnet_current_votes_equal_dashd() {
             hex::decode(p["data_hex"].as_str().unwrap()).unwrap(),
         );
         assert_eq!(display_hex(&object.hash()), object_hash);
-        votes += check_current_votes(object_hash, &p["current_votes"]);
+        votes += check_current_votes(object.hash(), &p["current_votes"]);
     }
     assert!(votes > 0, "no testnet vote to compare");
 }

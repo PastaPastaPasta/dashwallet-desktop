@@ -38,7 +38,7 @@ use dashcore::hash_types::InputsHash;
 use dashcore::hashes::Hash;
 use dashcore::platform_node_id::PlatformNodeId;
 use dashcore::secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
-use dashcore::{Address, Network, OutPoint, PubkeyHash, ScriptBuf, Transaction, Txid};
+use dashcore::{Network, OutPoint, PubkeyHash, ScriptBuf, Transaction, Txid};
 use zeroize::Zeroizing;
 
 /// What the collateral of a registration is.
@@ -88,18 +88,12 @@ pub enum PayloadError {
     PayoutNotAddress,
 }
 
-/// A zero 32-byte hash (`uint256()`), the txid of a collateral the
-/// registration itself creates.
-fn null_txid() -> Txid {
-    Txid::all_zeros()
-}
-
 /// The ProRegTx placeholder: final except `inputsHash`, the signature and,
 /// for a fund-new collateral, the output index.
 pub fn registration_placeholder(terms: &RegistrationTerms) -> ProviderRegistrationPayload {
     let collateral_outpoint = match &terms.collateral {
         CollateralSource::FundNew { .. } => OutPoint {
-            txid: null_txid(),
+            txid: Txid::all_zeros(),
             vout: 0,
         },
         CollateralSource::Existing(outpoint) => *outpoint,
@@ -171,7 +165,7 @@ pub fn finalize_registration(
                 .position(|o| &o.script_pubkey == script && o.value == *amount)
                 .ok_or(PayloadError::CollateralOutputMissing { amount: *amount })?;
             payload.collateral_outpoint = OutPoint {
-                txid: null_txid(),
+                txid: Txid::all_zeros(),
                 vout: index as u32,
             };
             payload.signature = Vec::new();
@@ -253,16 +247,10 @@ pub fn finalize_update_registrar(
     ))
 }
 
-/// The payout script of an address the payout field accepts: P2PKH or P2SH
-/// (`IsValidPayoutScript`).
-pub fn payout_script(address: &Address) -> ScriptBuf {
-    address.script_pubkey()
-}
-
-/// The ProTx hash of a fund-new registration's collateral: the
-/// registration's own txid (`COutPoint(tx.GetHash(), n)`).
+/// The collateral outpoint of a registration: a null payload txid names an
+/// output of the ProRegTx itself (`COutPoint(tx.GetHash(), n)`).
 pub fn resolve_collateral(pro_tx_hash: Txid, payload_outpoint: OutPoint) -> OutPoint {
-    if payload_outpoint.txid == null_txid() {
+    if payload_outpoint.txid == Txid::all_zeros() {
         OutPoint {
             txid: pro_tx_hash,
             vout: payload_outpoint.vout,
@@ -279,7 +267,7 @@ mod tests {
     use dashcore::blockdata::transaction::special_transaction::TransactionType;
     use dashcore::secp256k1::PublicKey;
     use dashcore::sign_message::MessageSignature;
-    use dashcore::{TxIn, TxOut};
+    use dashcore::{Address, TxIn, TxOut};
 
     fn addr(seed: u8) -> Address {
         Address::new(
