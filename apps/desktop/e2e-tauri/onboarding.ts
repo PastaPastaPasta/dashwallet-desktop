@@ -21,12 +21,12 @@
 //     node e2e-tauri/onboarding.ts
 
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AuthGrant } from "../src/api/generated/AuthGrant";
 import type { WalletSummary } from "../src/api/generated/WalletSummary";
-import { APP, CHAIN, driverGone, DWCLI, env, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
+import { APP, CHAIN, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
 
 const REGTEST = resolve(env("DW_REGTEST_SH"));
 const P2P = env("DW_REGTEST_P2P");
@@ -82,24 +82,6 @@ function fundedPhrase(root: string, passFile: string): { phrase: string; address
   return { phrase, address, txid };
 }
 
-/** Every file under `dir` (the data root, OUT) that holds one of `secrets` as plain text. */
-function leaks(dir: string, secrets: string[]): string[] {
-  const found: string[] = [];
-  const walk = (d: string) => {
-    for (const name of readdirSync(d)) {
-      const p = join(d, name);
-      const st = statSync(p, { throwIfNoEntry: false });
-      if (!st) continue;
-      if (st.isDirectory()) walk(p);
-      else if (st.isFile()) {
-        const text = readFileSync(p).toString("latin1");
-        for (const s of secrets) if (text.includes(Buffer.from(s, "utf8").toString("latin1"))) found.push(`${p} (${secrets.indexOf(s)})`);
-      }
-    }
-  };
-  walk(dir);
-  return found;
-}
 
 async function main() {
   mkdirSync(OUT, { recursive: true });

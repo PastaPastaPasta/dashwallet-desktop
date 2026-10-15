@@ -3,7 +3,7 @@
 // files as they are (type stripping); no other dependency.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { closeSync, openSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 export const env = (name: string, fallback?: string): string => {
@@ -153,4 +153,23 @@ export function dwcli(dataRoot: string, passFile: string, ...args: string[]): st
   const r = spawnSync(DWCLI, ["--datadir", dataRoot, ...CHAIN, "--passphrase-file", passFile, ...args], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`dwcli ${args.join(" ")} failed (${r.status}): ${r.stderr}`);
   return r.stdout;
+}
+
+/** Every file under `dir` (the data root, OUT) that holds one of `secrets` as plain text. */
+export function leaks(dir: string, secrets: string[]): string[] {
+  const found: string[] = [];
+  const walk = (d: string) => {
+    for (const name of readdirSync(d)) {
+      const p = join(d, name);
+      const st = statSync(p, { throwIfNoEntry: false });
+      if (!st) continue;
+      if (st.isDirectory()) walk(p);
+      else if (st.isFile()) {
+        const text = readFileSync(p).toString("latin1");
+        for (const s of secrets) if (text.includes(Buffer.from(s, "utf8").toString("latin1"))) found.push(`${p} (${secrets.indexOf(s)})`);
+      }
+    }
+  };
+  walk(dir);
+  return found;
 }
