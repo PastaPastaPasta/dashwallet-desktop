@@ -6,9 +6,23 @@
 mod common;
 
 use common::*;
-use dw_vault::{Credential, GrantPurpose, MASTERNODE_KEY_ROLES, UnlockScope, VaultError};
+use dw_vault::{
+    Credential, GrantPurpose, MASTERNODE_KEY_ROLES, MAX_MASTERNODE_KEY_BYTES, UnlockScope, Vault,
+    VaultError,
+};
 
 const HASH: [u8; 32] = [0x5a; 32];
+
+/// A passphrase `RevealSecret` grant for wallet 1.
+fn reveal(v: &Vault) -> String {
+    v.authorize(
+        GrantPurpose::RevealSecret,
+        Some(&wallet(1)),
+        Credential::Passphrase(PASS),
+    )
+    .unwrap()
+    .id
+}
 
 #[test]
 fn test_IOS_083_revealed_seed_needs_a_reveal_grant() {
@@ -51,12 +65,6 @@ fn test_IOS_083_a_grant_of_another_purpose_reveals_nothing() {
     assert!(v.with_revealed_seed(&wallet(1), &grant.id, |_| ()).is_err());
 }
 
-fn reveal(v: &dw_vault::Vault, credential: Credential<'_>) -> String {
-    v.authorize(GrantPurpose::RevealSecret, Some(&wallet(1)), credential)
-        .unwrap()
-        .id
-}
-
 #[test]
 fn test_IOS_082_attached_key_round_trips_and_survives_reopen() {
     let fx = Fixture::new();
@@ -70,45 +78,73 @@ fn test_IOS_082_attached_key_round_trips_and_survives_reopen() {
         .unwrap();
     v.store_masternode_key(&HASH, "voting", b"voting-wif-2")
         .unwrap();
-    assert_eq!(v.masternode_key_roles(&HASH), vec!["owner", "voting"]);
-    assert!(v.masternode_key_roles(&[0; 32]).is_empty());
+    assert_eq!(v.masternode_key_roles(&HASH).unwrap(), ["owner", "voting"]);
+    assert!(v.masternode_key_roles(&[0; 32]).unwrap().is_empty());
     let read = v
-        .masternode_key(
-            &wallet(1),
-            &reveal(&v, Credential::Passphrase(PASS)),
-            &HASH,
-            "voting",
-        )
+        .masternode_key(&wallet(1), &reveal(&v), &HASH, "voting")
         .unwrap()
         .unwrap();
     assert_eq!(&read[..], b"voting-wif-2");
     assert!(
-        v.masternode_key(
-            &wallet(1),
-            &reveal(&v, Credential::Passphrase(PASS)),
-            &HASH,
-            "payout"
-        )
-        .unwrap()
-        .is_none()
+        v.masternode_key(&wallet(1), &reveal(&v), &HASH, "payout")
+            .unwrap()
+            .is_none()
     );
 
     drop(v);
     let v = fx.open();
-    assert_eq!(v.masternode_key_roles(&HASH), vec!["owner", "voting"]);
-    // Deleting needs the full-scope key.
+    // Listing and deleting need the full-scope key.
+    assert_eq!(
+        v.masternode_key_roles(&HASH).unwrap_err(),
+        VaultError::Locked
+    );
     assert_eq!(
         v.delete_masternode_keys(&HASH, None).unwrap_err(),
         VaultError::Locked
     );
+    // A passphrase grant reads on a locked vault.
+    let read = v
+        .masternode_key(&wallet(1), &reveal(&v), &HASH, "owner")
+        .unwrap()
+        .unwrap();
+    assert_eq!(&read[..], b"owner-wif");
     v.unlock(PASS, UnlockScope::Full).unwrap();
+    assert_eq!(v.masternode_key_roles(&HASH).unwrap(), ["owner", "voting"]);
     assert_eq!(v.delete_masternode_keys(&HASH, Some("payout")).unwrap(), 0);
     assert_eq!(v.delete_masternode_keys(&HASH, Some("owner")).unwrap(), 1);
-    assert_eq!(v.masternode_key_roles(&HASH), vec!["voting"]);
+    assert_eq!(v.masternode_key_roles(&HASH).unwrap(), ["voting"]);
     assert_eq!(v.delete_masternode_keys(&HASH, None).unwrap(), 1);
-    assert!(v.masternode_key_roles(&HASH).is_empty());
+    assert!(v.masternode_key_roles(&HASH).unwrap().is_empty());
     // The wallet's own records are untouched.
     assert_eq!(v.status().wallets_with_secrets, vec![wallet(1)]);
+}
+
+#[test]
+fn test_IOS_082_the_vault_file_does_not_name_the_masternode() {
+    let fx = Fixture::new();
+    let v = fx.open();
+    v.create(Some(PASS)).unwrap();
+    v.store_masternode_key(&HASH, "owner", b"owner-wif")
+        .unwrap();
+    let file = String::from_utf8_lossy(&fx.raw()).into_owned();
+    assert!(file.contains("mnkey/"));
+    let mut display = HASH;
+    display.reverse();
+    for form in [hex::encode(HASH), hex::encode(display)] {
+        assert!(!file.contains(&form), "the file names the proTxHash");
+    }
+    // Another vault keys its ids differently.
+    let other = Fixture::new();
+    let w = other.open();
+    w.create(Some(PASS)).unwrap();
+    w.store_masternode_key(&HASH, "owner", b"owner-wif")
+        .unwrap();
+    let id = |raw: Vec<u8>| {
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let at = text.find("mnkey/").unwrap();
+        text[at..at + 6 + 64].to_string()
+    };
+    assert_ne!(id(fx.raw()), id(other.raw()));
 }
 
 #[test]
@@ -130,15 +166,13 @@ fn test_IOS_082_operator_and_platform_secrets_are_refused() {
             Err(VaultError::InvalidArgument(_))
         ));
     }
-    assert!(matches!(
-        v.store_masternode_key(&HASH, "owner", b""),
-        Err(VaultError::InvalidArgument(_))
-    ));
-    assert!(matches!(
-        v.store_masternode_key(&HASH, "owner", &[1; dw_vault::MAX_MASTERNODE_KEY_BYTES + 1]),
-        Err(VaultError::InvalidArgument(_))
-    ));
-    assert!(v.masternode_key_roles(&HASH).is_empty());
+    for key in [&b""[..], &[1; MAX_MASTERNODE_KEY_BYTES + 1][..]] {
+        assert!(matches!(
+            v.store_masternode_key(&HASH, "owner", key),
+            Err(VaultError::InvalidArgument(_))
+        ));
+    }
+    assert!(v.masternode_key_roles(&HASH).unwrap().is_empty());
 }
 
 #[test]
@@ -163,7 +197,7 @@ fn test_IOS_082_reading_an_attached_key_needs_a_reveal_grant() {
         VaultError::GrantPurposeMismatch
     );
     // A grant bound to another wallet is refused too.
-    let grant = reveal(&v, Credential::Passphrase(PASS));
+    let grant = reveal(&v);
     assert_eq!(
         v.masternode_key(&wallet(2), &grant, &HASH, "owner")
             .unwrap_err(),
@@ -181,7 +215,7 @@ fn test_IOS_082_reading_an_attached_key_needs_a_reveal_grant() {
         VaultError::GrantInvalid
     );
     // A lock ends an unused grant.
-    let grant = reveal(&v, Credential::Passphrase(PASS));
+    let grant = reveal(&v);
     v.lock();
     assert!(
         v.masternode_key(&wallet(1), &grant, &HASH, "owner")

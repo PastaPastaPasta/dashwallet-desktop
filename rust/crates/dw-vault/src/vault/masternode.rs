@@ -4,21 +4,30 @@
 //! - a wallet's seed for one closure under a `RevealSecret` grant, so the
 //!   engine can derive one provider private key to reveal (IOS-083) without
 //!   the seed leaving this crate's zeroing buffers;
-//! - keys attached to tracked masternodes (IOS-082), stored as records
-//!   `mnkey/<proTxHash hex>/<role>` sealed under the data key like the wallet
-//!   seeds. Roles are the wallet-side ones only ([`MASTERNODE_KEY_ROLES`]):
-//!   the wallet never holds an operator or platform-node secret. Writing and
-//!   deleting need the full-scope data key, as `store_wallet_secret` does;
-//!   reading needs a redeemed `RevealSecret` grant.
+//! - keys attached to tracked masternodes (IOS-082), sealed under the data
+//!   key like the wallet seeds. Roles are the wallet-side ones only
+//!   ([`MASTERNODE_KEY_ROLES`]): the wallet never holds an operator or
+//!   platform-node secret. Writing, deleting and listing need the
+//!   full-scope data key, as `store_wallet_secret` does; reading needs a
+//!   redeemed `RevealSecret` grant.
+//!
+//! A record id is `mnkey/<HMAC-SHA256 of the proTxHash>/<role>`, keyed from
+//! the data key, so the vault file (and every backup of it) does not show
+//! which masternodes the user controls, while the AEAD's associated data
+//! still binds each record to its id. Replacing or deleting a key drains
+//! the gate first ([`Vault::drain_ops`]), as a seed deletion does: a read
+//! that started before has returned, one after sees the change.
 //!
 //! The records are vault-wide (a tracked masternode belongs to no wallet):
 //! removing a wallet leaves them, and `recover_with_mnemonic` drops them
 //! with every other record of the old vault (its backup copy keeps them).
 
+use dashcore::hashes::{Hash, HashEngine, Hmac, HmacEngine, sha256};
 use zeroize::Zeroizing;
 
 use super::{REC_SEED, Vault, decode_seed, record_id};
 use crate::VaultError;
+use crate::crypto::Key32;
 use crate::types::{GrantKind, WalletId};
 
 /// Record id prefix of attached masternode keys.
@@ -29,12 +38,25 @@ pub const MASTERNODE_KEY_ROLES: [&str; 3] = ["owner", "voting", "payout"];
 /// Longest key a caller may attach (a WIF is 52 characters).
 pub const MAX_MASTERNODE_KEY_BYTES: usize = 256;
 
-fn mn_record_prefix(pro_tx_hash: &[u8; 32]) -> String {
-    format!("{MN_KEY_PREFIX}{}/", hex::encode(pro_tx_hash))
+/// Label of the record-id key derived from the data key.
+const MN_ID_KEY_LABEL: &[u8] = b"dw-vault masternode record id v1";
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    let mut engine = HmacEngine::<sha256::Hash>::new(key);
+    engine.input(data);
+    Hmac::<sha256::Hash>::from_engine(engine).to_byte_array()
 }
 
-fn mn_record_id(pro_tx_hash: &[u8; 32], role: &str) -> String {
-    format!("{}{role}", mn_record_prefix(pro_tx_hash))
+/// `mnkey/<HMAC(HMAC(dek, label), proTxHash)>/`: the record-id prefix of
+/// one masternode's keys.
+fn mn_record_prefix(dek: &Key32, pro_tx_hash: &[u8; 32]) -> String {
+    let id_key = Zeroizing::new(hmac_sha256(&dek[..], MN_ID_KEY_LABEL));
+    let id = hmac_sha256(&id_key[..], pro_tx_hash);
+    format!("{MN_KEY_PREFIX}{}/", hex::encode(id))
+}
+
+fn mn_record_id(dek: &Key32, pro_tx_hash: &[u8; 32], role: &str) -> String {
+    format!("{}{role}", mn_record_prefix(dek, pro_tx_hash))
 }
 
 fn valid_role(role: &str) -> Result<(), VaultError> {
@@ -74,7 +96,7 @@ impl Vault {
     /// Stores `key` for `role` of the tracked masternode `pro_tx_hash`,
     /// replacing an earlier one, then checks the write by reading the file
     /// back. Needs the data key with full scope (an unlocked or unencrypted
-    /// vault).
+    /// vault); drains the gate before the write.
     pub fn store_masternode_key(
         &self,
         pro_tx_hash: &[u8; 32],
@@ -89,10 +111,11 @@ impl Vault {
         }
         let dek = self.full_dek()?;
         let writer = self.writer();
+        let _drained = self.drain_ops(&writer);
         self.commit_records_under(
             &writer,
             &dek,
-            &[(mn_record_id(pro_tx_hash, role), Some(key))],
+            &[(mn_record_id(&dek, pro_tx_hash, role), Some(key))],
         )
     }
 
@@ -111,14 +134,20 @@ impl Vault {
         let token = self.redeem_grant(grant_id, GrantKind::RevealSecret, Some(wallet))?;
         self.gated(VaultError::Locked, |op| {
             let dek = self.key_for(op, &token)?;
-            self.read_record(&dek, &mn_record_id(pro_tx_hash, role))
+            self.read_record(&dek, &mn_record_id(&dek, pro_tx_hash, role))
         })
     }
 
-    /// Roles with a key attached to `pro_tx_hash`. In-memory read of the
-    /// record ids; nothing is decrypted.
-    pub fn masternode_key_roles(&self, pro_tx_hash: &[u8; 32]) -> Vec<String> {
-        let prefix = mn_record_prefix(pro_tx_hash);
+    /// Roles with a key attached to `pro_tx_hash`, in name order. Needs
+    /// the data key with full scope (`Locked` otherwise): the record ids
+    /// are keyed from it. Nothing is decrypted.
+    pub fn masternode_key_roles(&self, pro_tx_hash: &[u8; 32]) -> Result<Vec<String>, VaultError> {
+        let dek = self.full_dek()?;
+        Ok(self.roles_under(&dek, pro_tx_hash))
+    }
+
+    fn roles_under(&self, dek: &Key32, pro_tx_hash: &[u8; 32]) -> Vec<String> {
+        let prefix = mn_record_prefix(dek, pro_tx_hash);
         let inner = self.inner();
         let Some(f) = inner.file.as_ref() else {
             return Vec::new();
@@ -130,8 +159,9 @@ impl Vault {
     }
 
     /// Deletes the attached key of `role`, or every key of `pro_tx_hash`
-    /// when `role` is `None`. Needs the data key with full scope. Returns
-    /// how many were deleted.
+    /// when `role` is `None`. Needs the data key with full scope; the ids
+    /// are listed and deleted under `writer`, after draining the gate.
+    /// Returns how many were deleted.
     pub fn delete_masternode_keys(
         &self,
         pro_tx_hash: &[u8; 32],
@@ -140,20 +170,19 @@ impl Vault {
         if let Some(r) = role {
             valid_role(r)?;
         }
-        let ids: Vec<String> = self
-            .masternode_key_roles(pro_tx_hash)
-            .into_iter()
-            .filter(|have| role.is_none_or(|r| r == have))
-            .map(|r| mn_record_id(pro_tx_hash, &r))
-            .collect();
-        if ids.is_empty() {
-            return Ok(0);
-        }
         let dek = self.full_dek()?;
         let writer = self.writer();
-        let changes: Vec<(String, Option<&[u8]>)> =
-            ids.iter().map(|id| (id.clone(), None)).collect();
+        let changes: Vec<(String, Option<&[u8]>)> = self
+            .roles_under(&dek, pro_tx_hash)
+            .into_iter()
+            .filter(|have| role.is_none_or(|r| r == have))
+            .map(|r| (mn_record_id(&dek, pro_tx_hash, &r), None))
+            .collect();
+        if changes.is_empty() {
+            return Ok(0);
+        }
+        let _drained = self.drain_ops(&writer);
         self.commit_records_under(&writer, &dek, &changes)?;
-        Ok(ids.len())
+        Ok(changes.len())
     }
 }
