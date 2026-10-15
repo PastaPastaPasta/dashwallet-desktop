@@ -184,3 +184,17 @@ cache. Then:
 
 A's credits went from 46 435 126 689 to 46 430 461 521 (4 665 168 for the write). In every run the session logs and
 outputs held no phrase or passphrase (0 matches for the words and for the passphrase files' contents).
+
+Fix round f1, on 5c513b2a's dwcli (A only; f1 changes the write, not what a contact reads). Testnet Platform had
+halted at block time 1792088758 (18:25:58Z): every DAPI node answered `StaleNode` until about 20:05Z, so the run
+waited for it. Then, in one session:
+
+| Step on A | Returned (UNIX s) | Result |
+|---|---|---|
+| `profile get` → baseline | — | "DP4-01 Alice v4" / "final-binary rerun" |
+| `profile set` "DP4-01 Alice f1 e1" (default baseline: dwcli reads first) | 1792096094 | ok; the guard passed the live contract |
+| `profile set --baseline <v4 read>` "DP4-01 Alice f1 stale" | 1792096096 | `profile.conflict`, `current` = "DP4-01 Alice f1 e1"; a re-read still showed e1 |
+| `profile set --baseline <re-read>` "DP4-01 Alice f1 e2" | 1792096112 | ok; `profile get` shows e2 |
+
+A's credits went from 46 430 461 521 to 46 422 117 862 over the two writes. The logs and outputs held no phrase
+(0 matches).
