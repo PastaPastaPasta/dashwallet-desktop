@@ -6,7 +6,6 @@
 
 import { useId, type ReactNode } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { DashButton } from "../components/basics";
 import { navigate, ui, useUi, type PayTab, type Route, type ToolsTab } from "../app/ui";
 import { PayToAddress } from "./pay/PayToAddress";
 
@@ -26,12 +25,11 @@ const TITLES: Record<Route, string> = {
 };
 
 /** The placeholder text of each route that `Placeholder` renders. */
-const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "tools">, string> = {
+const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "tools" | "settings">, string> = {
   coinJoin: "CoinJoin mixing is not available yet.",
   explore: "Explore is not available yet.",
   notifications: "DashPay notifications are not available yet.",
   profile: "Your DashPay profile is not available yet.",
-  settings: "Settings are not available yet.",
   joinDashPay: "Creating a DashPay username is not available yet.",
 };
 
@@ -48,7 +46,7 @@ export function Page({ route, children }: { route: Route; children?: ReactNode }
   );
 }
 
-function NotYet({ testId, children }: { testId: string; children: ReactNode }) {
+export function NotYet({ testId, children }: { testId: string; children: ReactNode }) {
   return (
     <p className="placeholder card-l1" data-testid={testId}>
       {children}
@@ -72,13 +70,13 @@ export function Placeholder({ route }: { route: keyof typeof NOT_YET }) {
   );
 }
 
-interface Tab<T extends string> {
+export interface Tab<T extends string> {
   id: T;
   title: string;
 }
 
 /** Tabs (WAI-ARIA tabs pattern): arrow keys move between them. */
-function Tabs<T extends string>({
+export function Tabs<T extends string>({
   label,
   tabs,
   current,
@@ -153,34 +151,8 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
   );
 }
 
-export function ContactsPage() {
-  const prefill = useUi((s) => s.contactPrefill);
-  return (
-    <Page route="contacts">
-      {prefill && (
-        <section className="add-contact card-l1" aria-labelledby="add-contact-title" data-testid="add-contact">
-          <h2 id="add-contact-title" className="add-contact-title">
-            Add contact
-          </h2>
-          <p data-testid="add-contact-username">@{prefill.username}</p>
-          <p className="mono" data-testid="add-contact-identity">
-            {prefill.identity}
-          </p>
-          <p className="placeholder-note">The username comes from the link and is not verified yet.</p>
-          <span className="add-contact-actions">
-            <DashButton variant="filledWhiteBlue" disabled>
-              Send contact request
-            </DashButton>
-            <DashButton variant="plainBlue" onClick={() => ui.set({ contactPrefill: null })}>
-              Dismiss
-            </DashButton>
-          </span>
-        </section>
-      )}
-      <NotYet testId="placeholder-contacts">Your DashPay contacts are not available yet.</NotYet>
-    </Page>
-  );
-}
+// Contacts is DP2-07's (screens/contacts); the link card moved into its detail slot.
+export { ContactsPage } from "./contacts/ContactsPage";
 
 const TOOLS_TABS: Tab<ToolsTab>[] = [
   { id: "information", title: "Information" },

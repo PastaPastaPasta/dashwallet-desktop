@@ -16,7 +16,7 @@ import { LoadingState } from "../components/history";
 import { QrCode } from "../components/qr";
 import { Sheet } from "../components/sheet";
 import { copyWithToast } from "../components/toast";
-import { full } from "../format/amount";
+import { useDisplay } from "../format/display";
 import { shortAddress } from "../format/tx";
 import { Page } from "./Routes";
 
@@ -119,9 +119,15 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
   const [problem, setProblem] = useState<string | null>(null);
   const amt = amountText.trim();
   const checked = useDebounced(amt, 300);
-  const parsed = useQuery({ queryKey: ["parseAmount", checked], queryFn: () => b.parseAmount(checked), enabled: checked !== "", staleTime: Infinity });
+  const shown = useDisplay(network);
+  const parsed = useQuery({
+    queryKey: ["parseAmount", shown.unit, checked],
+    queryFn: () => b.parseAmount(checked, shown.unit),
+    enabled: checked !== "",
+    staleTime: Infinity,
+  });
   const amountError =
-    checked === "" ? null : parsed.data === null ? "Enter an amount in DASH, for example 0.25." : parsed.data === 0 ? "The amount must be larger than 0, or empty." : null;
+    checked === "" ? null : parsed.data === null ? shown.invalidAmount : parsed.data === 0 ? "The amount must be larger than 0, or empty." : null;
   const ready = !busy && checked === amt && (amt === "" || (typeof parsed.data === "number" && parsed.data > 0));
 
   const clear = () => {
@@ -165,7 +171,7 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
         <input id={`${id}-label`} data-testid="request-label" value={label} autoComplete="off" onChange={(e) => setLabel(e.target.value)} />
       </div>
       <div className="form-field">
-        <label htmlFor={`${id}-amount`}>Amount ({network.unitName})</label>
+        <label htmlFor={`${id}-amount`}>Amount ({shown.name})</label>
         <input
           id={`${id}-amount`}
           data-testid="request-amount"
@@ -205,6 +211,7 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
 }
 
 function RequestSheet({ request, network, onClose }: { request: ReceiveRequest; network: NetworkInfo; onClose: () => void }) {
+  const shown = useDisplay(network);
   const title = `Request payment to ${request.label || shortAddress(request.address)}`;
   return (
     <Sheet title={title} width="medium" testId="request-sheet" onClose={onClose}>
@@ -220,7 +227,7 @@ function RequestSheet({ request, network, onClose }: { request: ReceiveRequest; 
         </DetailRow>
         {request.amount !== null && (
           <DetailRow label="Amount" testId="request-amount-value">
-            <AmountText text={full(request.amount, false)} unitName={network.unitName} glyph={false} />
+            <AmountText text={shown.full(request.amount)} unitName={shown.name} glyph={false} />
           </DetailRow>
         )}
         {request.label && <DetailRow label="Label">{request.label}</DetailRow>}
@@ -239,6 +246,7 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
   const b = useBackend();
   const client = useQueryClient();
   const requests = useReceiveRequests(walletId);
+  const shown = useDisplay(network);
   const [problem, setProblem] = useState<string | null>(null);
   const remove = async (r: ReceiveRequest) => {
     setProblem(null);
@@ -270,7 +278,7 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
                 <th scope="col">Label</th>
                 <th scope="col">Message</th>
                 <th scope="col" className="num">
-                  Requested ({network.unitName})
+                  Requested ({shown.name})
                 </th>
                 <th scope="col">
                   <span className="sr-only">Actions</span>
@@ -283,7 +291,7 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
                   <td>{new Date(r.createdAt * 1000).toLocaleDateString(b.locale, { year: "numeric", month: "short", day: "numeric" })}</td>
                   <td>{r.label || <span className="text-secondary">(no label)</span>}</td>
                   <td>{r.message || <span className="text-secondary">(no message)</span>}</td>
-                  <td className="num">{r.amount === null ? <span className="text-secondary">(no amount requested)</span> : full(r.amount, false)}</td>
+                  <td className="num">{r.amount === null ? <span className="text-secondary">(no amount requested)</span> : shown.full(r.amount)}</td>
                   <td className="row-actions">
                     <DashButton variant="plainBlue" size="small" data-testid={`request-show-${r.id}`} onClick={() => onShow(r)}>
                       Show

@@ -21,6 +21,7 @@ import type { WalletSummary } from "../api/generated/WalletSummary";
 import { IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
 import type { Utxo } from "../api/generated/Utxo";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
+import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FUNDED_BALANCES, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
@@ -72,6 +73,8 @@ export interface World {
   throttledUntil: number | null;
   /** Drafts, prepared transactions and what the next broadcast does (send.ts). */
   send: SendWorld;
+  /** The settings file, load states, backups and files (settings.ts, U-04). */
+  settings: SettingsWorld;
 }
 
 /** A vault grant: single use (`used` once redeemed or revoked); `ownKey` when it was issued
@@ -159,6 +162,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     throttleSecs: null,
     throttledUntil: null,
     send: newSendWorld(),
+    settings: withAutomaticBackups(newSettingsWorld(), FIXTURE_WALLET_ID, MAIN_PHRASE, FIXTURE_PASSPHRASE),
   };
 }
 
@@ -316,6 +320,12 @@ const SCENARIOS = {
     w.lock = unlocked([]);
     return w;
   },
+  /** The funded wallet in a vault without a passphrase: Settings ▸ Security offers Encrypt (QT-111). */
+  unencrypted: (t) => {
+    const w = base(t);
+    w.lock = { ...w.lock, state: "unencrypted", encrypted: false };
+    return w;
+  },
   /** The funded wallet behind the lock screen (passphrase `demo`). */
   locked: (t) => {
     const w = base(t);
@@ -348,6 +358,37 @@ const SCENARIOS = {
     const w = base(t);
     w.dashpay = registered();
     attributePayments(w);
+    return w;
+  },
+  /** "alice" before her first contact: the Contacts empty state (DP2-07). */
+  "dashpay-contacts-empty": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registered(), contacts: [], requestTimes: {}, journal: [] };
+    return w;
+  },
+  /** A sync pass holds the wallet's state before any contacts snapshot: "Updating contacts…". */
+  "dashpay-contacts-updating": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registered(), contactsUpdating: "noSnapshot" };
+    return w;
+  },
+  /** A sync pass holds the wallet's state after a snapshot: the rows, under "Updating contacts…". */
+  "dashpay-contacts-refreshing": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registered(), contactsUpdating: "snapshot" };
+    return w;
+  },
+  /** Unlocked for mixing only, Carol's channel still setting up: "Unlock to finish setting up". */
+  "dashpay-contacts-mixing-only": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    return w;
+  },
+  /** DAPI does not answer user searches: the network section fails with Try again. */
+  "dashpay-search-offline": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registered(), searchOffline: true };
     return w;
   },
   /** Locking cuts more flows than the report lists, some pending (E0-13 D3): unresolved for good. */

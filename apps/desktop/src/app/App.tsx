@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { errorMessage } from "../api/backend";
+import { errorMessage, type Backend } from "../api/backend";
+import type { LockStatus } from "../api/generated/LockStatus";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { useBackend, useDashPayShell, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
@@ -15,16 +16,19 @@ import { Overview } from "../screens/Overview";
 import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
 import { ContactsPage, PayPage, Placeholder, ToolsPage } from "../screens/Routes";
-import { SettingsPage } from "../screens/Settings";
+import { SettingsPage } from "../screens/settings/SettingsPage";
 import { AboutSheet, OpenUriSheet } from "../screens/ShellDialogs";
 import { Transactions } from "../screens/Transactions";
 import { TxDetailSheet } from "../screens/TxDetailSheet";
+import { ACTIVITY_EVENTS, armedFor, AutoLockTimer } from "../settings/autoLock";
+import { useDisplay } from "../format/display";
+import { SecurityText } from "../settings/security";
 import { useShellBridge } from "./shellBridge";
 import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
 import { navigate, ui, useUi } from "./ui";
 
-const closeDialog = () => ui.set({ dialog: null });
+const closeDialog = () => ui.set({ dialog: null, recoveryWallet: null });
 const closeOnboarding = () => ui.set({ onboarding: false });
 const closeForgot = () => ui.set({ forgotPassphrase: false });
 
@@ -57,16 +61,41 @@ function Splash({ error, onRetry }: { error: string | null; onRetry: () => void 
   );
 }
 
+/** Auto lock (U-04 D12): armed while an encrypted vault holds its key and a wait is chosen;
+ * input in the window restarts it, and on expiry the vault locks as the Lock button locks it. */
+function useAutoLock(backend: Backend, status: LockStatus | undefined, secs: number | null) {
+  const armed = secs !== null && armedFor(status?.state, status?.encrypted);
+  useEffect(() => {
+    if (!armed || secs === null) return;
+    const timer = new AutoLockTimer();
+    timer.arm(secs, () =>
+      backend.lock().then(
+        () => showToast(SecurityText.lockedAutomatically),
+        (e) => showToast(`Could not lock: ${errorMessage(e)}`),
+      ),
+    );
+    const onActivity = () => timer.activity();
+    for (const e of ACTIVITY_EVENTS) window.addEventListener(e, onActivity, { capture: true, passive: true });
+    return () => {
+      timer.disarm();
+      for (const e of ACTIVITY_EVENTS) window.removeEventListener(e, onActivity, { capture: true });
+    };
+  }, [backend, armed, secs]);
+}
+
 function Shell() {
   const backend = useBackend();
   const launch = useLaunch();
   const { network } = launch;
+  const unitName = useDisplay(network).name;
   const route = useUi((s) => s.route);
   const detail = useUi((s) => s.detail);
   const dialog = useUi((s) => s.dialog);
+  const recoveryWallet = useUi((s) => s.recoveryWallet);
   const walletId = useUi((s) => s.walletId);
   const discreet = useUi((s) => s.discreet);
   const addWallet = useUi((s) => s.onboarding);
+  const wiping = useUi((s) => s.wiping);
   const forgot = useUi((s) => s.forgotPassphrase);
   const secretShown = useUi((s) => s.secrets > 0);
   const lock = useLockStatus();
@@ -82,6 +111,7 @@ function Shell() {
     if (canLock) backend.lock().catch((e) => showToast(`Could not lock: ${errorMessage(e)}`));
   };
   useShellBridge(backend, network.dirName, launch.selftestLinkTrace, lockNow);
+  useAutoLock(backend, lock.data, useUi((s) => s.prefs.autoLockSecs));
   // The native menus' Discreet Mode check and Lock Wallet follow the window, and so does its
   // content protection while a flow that shows or takes a recovery phrase is open (U-02 D15).
   // One call at a time, in order: a stale `secretShown` never lands last (review r1 #2). The
@@ -110,7 +140,8 @@ function Shell() {
   // Done. The lock screen replaces it, and drops what it held: Add Wallet… closes, the first
   // wallet's flow starts again at Welcome once unlocked.
   const noWallet = wallets.isSuccess && wallets.data.length === 0;
-  const onboarding = !locked && (addWallet || noWallet);
+  // A wipe in progress holds it back until the vault is gone or its failure was seen (U-04 D33).
+  const onboarding = !locked && !wiping && (addWallet || noWallet);
   useEffect(() => {
     if (noWallet) ui.set({ onboarding: true });
     else if (locked && addWallet) ui.set({ onboarding: false });
@@ -124,7 +155,7 @@ function Shell() {
   };
 
   let content;
-  if (route === "home" || route === "activity" || route === "pay" || route === "receive") {
+  if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts") {
     if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
     else if (wallets.isError)
       content = (
@@ -147,9 +178,9 @@ function Shell() {
     else if (route === "home") content = <Overview key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
     else if (route === "pay") content = <PayPage walletId={wallet.walletId} network={network} />;
     else if (route === "receive") content = <ReceivePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
+    else if (route === "contacts") content = <ContactsPage key={wallet.walletId} walletId={wallet.walletId} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
-  } else if (route === "contacts") content = <ContactsPage />;
-  else if (route === "tools") content = <ToolsPage />;
+  } else if (route === "tools") content = <ToolsPage />;
   else if (route === "settings") content = <SettingsPage />;
   else content = <Placeholder route={route} />;
 
@@ -161,7 +192,7 @@ function Shell() {
   // A dialog asked for while locked, onboarding, or behind a sheet is dropped, not kept for later.
   const shown = locked || onboarding || sheet || layered ? null : dialog;
   useEffect(() => {
-    if (dialog !== shown) ui.set({ dialog: null });
+    if (dialog !== shown) closeDialog();
   }, [dialog, shown]);
   return (
     <>
@@ -183,7 +214,7 @@ function Shell() {
         <StatusBar
           sync={sync.data}
           lock={lock.data}
-          unitName={network.unitName}
+          unitName={unitName}
           hd={wallet?.hd ?? false}
           onUnlock={() => ui.set({ dialog: "unlock" })}
         />
@@ -195,7 +226,7 @@ function Shell() {
       {sheet && <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />}
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
       {shown === "about" && <AboutSheet launch={launch} />}
-      {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={wallet?.walletId ?? null} onClose={closeDialog} />}
+      {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={recoveryWallet ?? wallet?.walletId ?? null} onClose={closeDialog} />}
       {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
       {onboarding && <Onboarding network={network} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
       {locked && <LockScreen network={network} covered={forgot} onForgot={() => ui.set({ forgotPassphrase: true })} />}

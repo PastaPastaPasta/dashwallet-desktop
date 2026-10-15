@@ -132,6 +132,7 @@ import type { TxDetails } from "./TxDetails";
 import type { TxEstimate } from "./TxEstimate";
 import type { TxNoticeRow } from "./TxNoticeRow";
 import type { TxTypeName } from "./TxTypeName";
+import type { UiSettings } from "./UiSettings";
 import type { UriParse } from "./UriParse";
 import type { UserHit } from "./UserHit";
 import type { UsernameCheck } from "./UsernameCheck";
@@ -181,6 +182,23 @@ export function recentNotices(): Promise<Array<RecentNotice>> {
  */
 export function startupMark(mark: string): Promise<number> {
   return invoke<number>("startup_mark", { mark });
+}
+
+/**
+ * The display settings in `<data root>/settings.json` (U-04 D2); the
+ * defaults when there is no readable file.
+ */
+export function uiSettings(): Promise<UiSettings> {
+  return invoke<UiSettings>("ui_settings");
+}
+
+/**
+ * Checks and saves the display settings (decimal digits 2-8, auto lock
+ * 1 s to 24 hours; `invalid_argument` otherwise), and gives the main
+ * window the chosen appearance unless `--theme` forced one (U-04 D3).
+ */
+export function setUiSettings(settings: UiSettings): Promise<UiSettings> {
+  return invoke<UiSettings>("set_ui_settings", { settings });
 }
 
 /**
@@ -2017,6 +2035,8 @@ export type CommandArgs = {
   launch_info: {  };
   recent_notices: {  };
   startup_mark: { mark: string };
+  ui_settings: {  };
+  set_ui_settings: { settings: UiSettings };
   probe_unlisted: {  };
   open_network: { network: string | null; settings: SessionSettings | null };
   close_network: {  };
@@ -2251,6 +2271,8 @@ export type CommandResults = {
   launch_info: LaunchInfo;
   recent_notices: Array<RecentNotice>;
   startup_mark: number;
+  ui_settings: UiSettings;
+  set_ui_settings: UiSettings;
   probe_unlisted: string;
   open_network: OpenedNetwork;
   close_network: boolean;
@@ -2487,6 +2509,8 @@ export const COMMANDS: Record<CommandName, string> = {
   launch_info: "app",
   recent_notices: "app",
   startup_mark: "app",
+  ui_settings: "app",
+  set_ui_settings: "app",
   probe_unlisted: "app",
   open_network: "network",
   close_network: "network",

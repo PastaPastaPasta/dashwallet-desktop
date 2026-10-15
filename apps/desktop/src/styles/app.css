@@ -423,6 +423,172 @@ button {
   margin-top: var(--dw-space-s);
 }
 
+/* ------------------------------------------------------------------ contacts (DP2-07, screens/contacts) */
+
+/* The list and the detail slot side by side; stacked once both no longer fit 300 px. Groups and
+   rows are Activity's (.tx-group, .tx-row). */
+.page-contacts .page-column {
+  max-width: calc(var(--dw-layout-content-max-width) + var(--dw-layout-sheet-width-small));
+}
+
+.contacts-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-space-s) var(--dw-space-l);
+  border-radius: var(--dw-radius-group);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.contacts-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  align-items: start;
+  gap: var(--dw-space-l);
+}
+
+.contacts-list {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--dw-space-stack);
+  min-width: 0;
+}
+
+.contacts-pane {
+  position: sticky;
+  top: var(--dw-space-l);
+  min-width: 0;
+}
+
+.contacts-group-title {
+  margin: 0;
+  padding: var(--dw-space-s) var(--dw-space-l) var(--dw-space-xxs);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.contacts-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.contacts-disclosure::before {
+  content: "";
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  transition: transform var(--dw-motion-hover);
+}
+
+.contacts-disclosure[aria-expanded="true"]::before {
+  transform: rotate(90deg);
+}
+
+.contact-row[aria-current="true"] {
+  background: var(--dw-role-accent-tint);
+}
+
+/* On a row the chips sit on the card's own colour, so a selected row's tint under them keeps
+   their text at AA (axe). */
+.contact-row .chip-info {
+  background: linear-gradient(var(--dw-role-accent-tint), var(--dw-role-accent-tint)), var(--dw-role-card);
+}
+
+.contact-row .chip-danger {
+  background: linear-gradient(var(--dw-role-danger-tint), var(--dw-role-danger-tint)), var(--dw-role-card);
+}
+
+.contact-row .chip-warning {
+  background: linear-gradient(var(--dw-role-warning-tint), var(--dw-role-warning-tint)), var(--dw-role-card);
+}
+
+.contact-row-username,
+.contact-row-note,
+.contacts-network-note,
+.contacts-updating {
+  margin: 0;
+  overflow: hidden;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  text-overflow: ellipsis;
+}
+
+.contact-row-trailing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--dw-space-xs);
+}
+
+.contacts-network-note {
+  padding: var(--dw-space-xs) var(--dw-space-l) var(--dw-space-s);
+}
+
+.contacts-more {
+  margin: 0 var(--dw-space-l) var(--dw-space-s);
+}
+
+.contact-avatar {
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-link);
+  font-weight: var(--dw-type-caption1-medium-weight);
+}
+
+.contact-avatar-row {
+  width: var(--dw-layout-row-icon-size);
+  height: var(--dw-layout-row-icon-size);
+  font-size: var(--dw-type-caption1-medium-size);
+}
+
+.contact-avatar-pane {
+  flex: none;
+  width: 56px;
+  height: 56px;
+  font-size: var(--dw-type-title3-size);
+}
+
+.contact-detail {
+  gap: var(--dw-space-m);
+  margin-bottom: 0;
+}
+
+.contact-detail-header {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+  min-width: 0;
+}
+
+.contact-detail-names {
+  min-width: 0;
+}
+
+/* Over .add-contact p's margin. */
+.contact-detail .contact-detail-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
+  margin-top: var(--dw-space-xs);
+}
+
+.contact-detail-facts dd {
+  overflow-wrap: anywhere;
+}
+
 .about-list {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -506,6 +672,11 @@ button {
 .chip-danger {
   background: var(--dw-role-danger-tint);
   color: var(--dw-role-danger);
+}
+
+.chip-warning {
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-warning);
 }
 
 
@@ -2320,6 +2491,141 @@ button {
   font-size: var(--dw-type-headline-size);
   font-weight: var(--dw-type-headline-weight);
   line-height: var(--dw-type-headline-line);
+}
+
+/* ------------------------------------------------------------------ settings (U-04) */
+
+.settings-card > .dash-button-plainBlue,
+.settings-card > .dash-button-plainRed {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-s) var(--dw-space-m);
+  width: 100%;
+  margin: 0;
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.settings-row-title {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.settings-not-yet {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xxxs);
+}
+
+.settings-not-yet + .settings-not-yet {
+  padding-top: var(--dw-space-s);
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.settings-select {
+  padding: var(--dw-space-xs) var(--dw-space-sm);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.settings-hint {
+  margin: 0;
+}
+
+.settings-done {
+  margin: 0;
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.settings-list {
+  margin: 0;
+  padding-left: var(--dw-space-xl);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.settings-details {
+  width: 100%;
+  padding: 0;
+}
+
+.settings-inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--dw-space-m);
+}
+
+.settings-textarea {
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-footnote-size);
+  resize: vertical;
+}
+
+.settings-wallet-list,
+.settings-backup-list {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-wallet,
+.settings-backup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  padding: var(--dw-space-m) 0;
+  min-width: 0;
+}
+
+.settings-wallet + .settings-wallet,
+.settings-backup + .settings-backup {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.settings-wallet .mono,
+.settings-backup .mono {
+  overflow-wrap: anywhere;
+}
+
+.settings-wallet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.settings-wallet-name {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.settings-wallet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
 }
 
 /* After `.check-row input`, which it overrides on hero blue. */

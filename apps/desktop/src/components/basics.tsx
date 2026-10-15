@@ -74,7 +74,7 @@ export function AmountText({
   );
 }
 
-export type Tone = "info" | "danger";
+export type Tone = "info" | "warning" | "danger";
 
 export function Chip({ tone = "info", children }: { tone?: Tone; children: ReactNode }) {
   return <span className={`chip chip-${tone}`}>{children}</span>;

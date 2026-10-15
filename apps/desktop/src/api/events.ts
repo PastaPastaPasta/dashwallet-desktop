@@ -28,7 +28,13 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     case "balances":
       return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId)];
     case "historyChanged":
-      return [keys.historyAll(event.walletId), keys.txDetailAll(event.walletId), keys.receiveAll(event.walletId), keys.coinsAll(event.walletId)];
+      return [
+        keys.historyAll(event.walletId),
+        keys.txDetailAll(event.walletId),
+        keys.receiveAll(event.walletId),
+        keys.coinsAll(event.walletId),
+        keys.contactsAll(event.walletId),
+      ];
     case "vaultLockState":
       return [keys.lockStatus, keys.wallets, keys.lockReconcile];
     case "lockProgress":

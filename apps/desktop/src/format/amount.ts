@@ -109,6 +109,6 @@ export function full(amount: number, signed: boolean, unit: Unit = "DASH"): stri
 }
 
 /** Discreet mode (QT-039): every digit of the floored zero replaced by `#`. */
-export function masked(digits = 2): string {
-  return floored(0, digits).replace(/0/g, "#");
+export function masked(digits = 2, unit: Unit = "DASH"): string {
+  return floored(0, digits, unit).replace(/0/g, "#");
 }

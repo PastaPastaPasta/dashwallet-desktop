@@ -14,6 +14,7 @@ import { useLocalDay } from "../app/localDay";
 import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, TxTable, useRowContext } from "../components/history";
+import { UNIT_LABEL, useDisplay } from "../format/display";
 import { DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
 
 const PAGE_SIZE = 200;
@@ -39,7 +40,13 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   const [sort, setSort] = useState<HistorySortName>("newestFirst");
   const text = useDebounced(search.trim(), SEARCH_DEBOUNCE_MS);
   const min = useDebounced(minText.trim(), SEARCH_DEBOUNCE_MS);
-  const parsedMin = useQuery({ queryKey: ["parseAmount", min], queryFn: () => backend.parseAmount(min), enabled: min !== "", staleTime: Infinity });
+  const shown = useDisplay(network);
+  const parsedMin = useQuery({
+    queryKey: ["parseAmount", shown.unit, min],
+    queryFn: () => backend.parseAmount(min, shown.unit),
+    enabled: min !== "",
+    staleTime: Infinity,
+  });
   const minAmount = min !== "" && typeof parsedMin.data === "number" && parsedMin.data > 0 ? parsedMin.data : undefined;
   const minError = min !== "" && parsedMin.data === null;
   // The date bounds come from the backend's clock (fixed in fixtures), taken again when the choice
@@ -111,14 +118,14 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
                 className="filter-amount"
                 value={minText}
                 inputMode="decimal"
-                placeholder="0.00"
+                placeholder={shown.placeholder}
                 aria-invalid={minError}
                 aria-describedby={minError ? "tx-min-amount-error" : undefined}
                 onChange={(e) => setMinText(e.target.value)}
               />
               {minError && (
                 <span id="tx-min-amount-error" className="field-error" data-testid="tx-min-amount-error">
-                  Not an amount in DASH: ignored
+                  Not an amount in {UNIT_LABEL[shown.unit]}: ignored
                 </span>
               )}
             </label>

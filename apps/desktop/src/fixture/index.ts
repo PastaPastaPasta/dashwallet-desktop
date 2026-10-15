@@ -67,10 +67,12 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   const held = new Map<string, Promise<void>>();
   const ctx: Ctx = { world, emit: (event) => void emit(ENGINE_EVENT, event) };
 
+  const UNDELAYED = new Set(["launch_info", "ui_settings"]);
   mockIPC(
     async (cmd, payload) => {
       calls.push(cmd);
-      if (opts.delayMs && cmd !== "launch_info") await new Promise((r) => setTimeout(r, opts.delayMs));
+      // `delay` is a slow engine; the launch reads are dw-app's own, before any engine (U-04 D29).
+      if (opts.delayMs && !UNDELAYED.has(cmd)) await new Promise((r) => setTimeout(r, opts.delayMs));
       const cls = failures.get(cmd as CommandName);
       if (cls) throw sampleError(cls);
       const handler = HANDLERS[cmd as CommandName] as ((args: unknown, ctx: Ctx) => unknown) | undefined;

@@ -190,6 +190,7 @@ test("Add Wallet: the menu and Settings open it over the shell, Cancel closes it
   await expect(page.getByTestId("onboarding")).toHaveCount(0);
 
   await command(page, { kind: "navigate", route: "settings" });
+  await page.getByTestId("settings-tabs-wallets").click();
   await page.getByTestId("settings-add-wallet").click();
   await page.getByTestId("onboarding-restore").click();
   await page.getByTestId("restore-input").fill(SECOND_PHRASE);
@@ -439,6 +440,7 @@ test("Show Recovery Phrase: the passphrase, then the words; closing drops them (
   // The other wallet's, from Settings.
   await page.getByTestId("toolbar-wallet-picker").selectOption(SECOND_WALLET_ID);
   await command(page, { kind: "navigate", route: "settings" });
+  await page.getByTestId("settings-tabs-wallets").click();
   await page.getByTestId("settings-recovery-phrase").click();
   await page.getByTestId("recovery-passphrase-field").fill(FIXTURE_PASSPHRASE);
   await page.keyboard.press("Enter");
