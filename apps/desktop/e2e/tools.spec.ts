@@ -67,6 +67,20 @@ async function authorize(page: Page, passphrase = "demo") {
   await expect(sheet).toHaveCount(0);
 }
 
+/** Sign's Choose…, the book's `label` row chosen, and its address once the field shows it. The choice
+ * reaches the field an effect later than the click, so a read right after the click could see the old
+ * value: on CI's Chromium it read "" (U-05 D44). */
+async function chooseToSign(page: Page, label: string) {
+  await page.getByTestId("sign-choose").click();
+  const picker = page.getByTestId("address-book-picker");
+  const choose = picker.locator("tr", { hasText: label }).getByRole("button", { name: /Choose/ });
+  const address = (await choose.getAttribute("data-testid"))!.replace("address-book-choose-", "");
+  await choose.click();
+  await expect(picker).toHaveCount(0);
+  await expect(page.getByTestId("sign-address")).toHaveValue(address);
+  return address;
+}
+
 test.describe("Information", () => {
   test("QT143_QT040: node facts, the most severe warning, and what is not built yet", async ({ page }) => {
     const errors = await open(page, "tools-warnings");
@@ -282,9 +296,7 @@ test.describe("Sign/Verify", () => {
     await page.getByTestId("sign-sign").click();
     await expect(page.getByTestId("sign-result")).toContainText("The entered address is invalid.");
 
-    await page.getByTestId("sign-choose").click();
-    await page.getByTestId("address-book-picker").locator("tr", { hasText: "Payroll" }).getByRole("button", { name: /Choose/ }).click();
-    const address = await page.getByTestId("sign-address").inputValue();
+    const address = await chooseToSign(page, "Payroll");
     await page.getByTestId("sign-message").fill("hello dash");
     await page.getByTestId("sign-sign").click();
     await expect(page.getByTestId("sign-result")).toHaveText("Message signed.");
@@ -306,9 +318,7 @@ test.describe("Sign/Verify", () => {
   test("D38: an edit clears the signature or outcome it no longer describes", async ({ page }) => {
     await open(page);
     await tools(page, "signVerify");
-    await page.getByTestId("sign-choose").click();
-    await page.getByTestId("address-book-picker").locator("tr", { hasText: "Payroll" }).getByRole("button", { name: /Choose/ }).click();
-    const address = await page.getByTestId("sign-address").inputValue();
+    const address = await chooseToSign(page, "Payroll");
     await page.getByTestId("sign-message").fill("hello dash");
     await page.getByTestId("sign-sign").click();
     await expect(page.getByTestId("sign-result")).toHaveText("Message signed.");
@@ -323,8 +333,7 @@ test.describe("Sign/Verify", () => {
     await expect(page.getByTestId("sign-result")).toHaveCount(0);
     await page.getByTestId("sign-sign").click();
     await expect(page.getByTestId("sign-result")).toHaveText("Message signed.");
-    await page.getByTestId("sign-choose").click();
-    await page.getByTestId("address-book-picker").locator("tr", { hasText: "Payroll" }).getByRole("button", { name: /Choose/ }).click();
+    await chooseToSign(page, "Payroll");
     await expect(page.getByTestId("sign-result")).toHaveCount(0);
 
     await page.getByTestId("verify-address").fill(address);
