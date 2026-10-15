@@ -162,3 +162,14 @@ Between the edits B fetched A's profile on every pass (the cached entry was minu
 which is D12 at work. The same edit again sent nothing; a 26-character name was `profile.too_long{field:
 "display_name", length: 26, max: 25}` and a message-only edit of blanks `profile.empty` (it would have left no field).
 A's credits went from 46 487 960 420 to 46 435 126 689 over the three writes.
+
+Those three edits ran on the binary before the review fixes (cache parse, `load_wallet` expiry). A rerun on the final
+head (22bbbeb9), with both sessions reopened about two hours later: at open, A and B both read "DP4-01 Alice v3" from the
+cache. Then:
+
+| Edit on A (`profile set`) | Write returned (UNIX s) | B shows it at | Pass on B that showed it |
+|---|---|---|---|
+| replace: "DP4-01 Alice v4" / "final-binary rerun" | 1792082890 | 1792082903 (13 s) | the first pass begun after the write (901); the one begun at the send (886) did not |
+
+A's credits went from 46 435 126 689 to 46 430 461 521 (4 665 168 for the write). In every run the session logs and
+outputs held no phrase or passphrase (0 matches for the words and for the passphrase files' contents).
