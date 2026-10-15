@@ -25,8 +25,18 @@ async function open(page: Page, scenario = "funded", theme: Theme = "light") {
 }
 
 async function tools(page: Page, tab: ToolsTab) {
-  await page.evaluate((t) => window.__dwFixture!.shellCommand({ kind: "tools", tab: t }), tab);
+  // The command focuses the page's heading on the next frame; under load that frame came after the
+  // tab showed and took the focus from a fill in progress, which then typed nowhere (U-05 D25). So
+  // the focus is let go first and the heading's is waited for.
+  await page.evaluate((t) => {
+    (document.activeElement as HTMLElement | null)?.blur();
+    window.__dwFixture!.shellCommand({ kind: "tools", tab: t });
+  }, tab);
   await expect(page.getByTestId(`tools-tabs-${tab}`)).toHaveAttribute("aria-selected", "true");
+  await page.waitForFunction(() => {
+    const main = document.querySelector<HTMLElement>(".app-body > main");
+    return document.activeElement !== null && document.activeElement === (main?.querySelector("h1") ?? main);
+  });
 }
 
 const world = <T>(page: Page, fn: (w: NonNullable<Window["__dwFixture"]>["world"]) => T) =>
@@ -372,12 +382,7 @@ test.describe("PSBT", () => {
     // Away to another tab and back while the network has not answered: a new PSBT tab.
     await tools(page, "signVerify");
     await tools(page, "psbt");
-    // Once under load (WebKit, load 170) the fill right after the remount was lost: fill until Load
-    // takes it (U-05 D25).
-    await expect(async () => {
-      await page.getByTestId("psbt-paste").fill(annotated);
-      await expect(page.getByTestId("psbt-load-text")).toBeEnabled({ timeout: 1_000 });
-    }).toPass();
+    await page.getByTestId("psbt-paste").fill(annotated);
     await page.getByTestId("psbt-load-text").click();
     await expect(page.getByTestId("psbt-notice")).toHaveText("This transaction is being broadcast already.");
     await expect(page.getByTestId("psbt-broadcast")).toBeDisabled();
