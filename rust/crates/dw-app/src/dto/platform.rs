@@ -566,6 +566,27 @@ impl From<engine::Profile> for DashPayProfile {
     }
 }
 
+impl From<DashPayProfile> for engine::Profile {
+    fn from(p: DashPayProfile) -> Self {
+        let DashPayProfile {
+            display_name,
+            public_message,
+            avatar_url,
+            avatar_hash,
+            avatar_fingerprint,
+            updated_at,
+        } = p;
+        engine::Profile {
+            display_name,
+            public_message,
+            avatar_url,
+            avatar_hash,
+            avatar_fingerprint,
+            updated_at,
+        }
+    }
+}
+
 /// How a user relates to one of the wallet's identities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

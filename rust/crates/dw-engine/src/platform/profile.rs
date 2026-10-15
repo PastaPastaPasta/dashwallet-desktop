@@ -41,6 +41,17 @@ pub struct ProfileEdit {
     pub display_name: Option<String>,
     pub public_message: Option<String>,
     pub avatar: AvatarChange,
+    /// What the edit was made against (D23): with one, an edit of a profile
+    /// that has changed on Platform since is `profile.conflict`; without
+    /// one it replaces whatever Platform holds. Absent in JSON is `None`.
+    pub baseline: Option<ProfileBaseline>,
+}
+
+/// The profile an edit was made against: what `profile` showed (`None`:
+/// no profile).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileBaseline {
+    pub profile: Option<Profile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -22,8 +22,8 @@ use serde::Serialize;
 use ts_rs::TS;
 
 use crate::dto::platform::{
-    BudgetPurposeName, DispatchStateName, EligibilityName, KeyPurposeName, ProfileFieldName,
-    RevokeCauseName, UsernameRuleName,
+    BudgetPurposeName, DashPayProfile, DispatchStateName, EligibilityName, KeyPurposeName,
+    ProfileFieldName, RevokeCauseName, UsernameRuleName,
 };
 
 pub use engine::{EngineCode, VaultCode};
@@ -239,6 +239,8 @@ pub enum ErrorData {
         length: u32,
         max: u32,
     },
+    /// `profile.conflict`: the profile on Platform now, as `dashpayProfile` shows it.
+    ProfileConflict { current: Option<DashPayProfile> },
     /// `platform.feature_off`.
     Feature { feature: String },
     /// `platform.not_implemented`, `not_implemented`: the call that is not.

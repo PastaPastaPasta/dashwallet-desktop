@@ -8,17 +8,22 @@ use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::transition::put_document::PutDocument;
 use dash_sdk::platform::{DocumentQuery, Fetch, FetchMany};
 use dash_sdk::query_types::IdentityBalance;
+use dpp::data_contract::DataContract;
 use dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dpp::document::{Document, DocumentV0, DocumentV0Getters, INITIAL_REVISION};
 use dpp::identity::{Identity, IdentityPublicKey};
 use dpp::platform_value::platform_value;
 use dpp::prelude::Identifier;
+use dpp::system_data_contracts::dashpay_contract;
 use platform_wallet::{
     AutoAcceptProofSource, ContactInfoPublishOutcome, ContactRequest, PlatformWallet,
 };
 
 use super::super::contacts::PrivateDetails;
-use super::super::profiles::{PROFILE, ProfileDocument, ProfileProperties};
+use super::super::profiles::{
+    PROFILE, ProfileDocument, ProfileProperties, ProfileSchema, schema_of,
+};
 use super::super::registration_flow::dashpay_contract;
 use super::{Arc, Future, PlatformError, VaultContactCrypto, VaultIdentitySigner};
 
@@ -97,6 +102,11 @@ pub(crate) trait RequestNet: Send + Sync {
         &self,
         owner: Identifier,
     ) -> impl Future<Output = Result<Option<ProfileDocument>, PlatformError>> + Send;
+    /// The `profile` document type of the DashPay contract Platform runs,
+    /// proved; `None` when it has none (D21).
+    fn profile_schema(
+        &self,
+    ) -> impl Future<Output = Result<Option<ProfileSchema>, PlatformError>> + Send;
     /// Puts `owner`'s profile with exactly `properties`, signed with `key`:
     /// a replacement of `current` (its id and revision) at the next
     /// revision, else a creation.
@@ -237,6 +247,14 @@ impl RequestNet for SdkRequests {
                 revision: d.revision().unwrap_or(INITIAL_REVISION),
                 properties: d.properties().clone(),
             }))
+    }
+
+    async fn profile_schema(&self) -> Result<Option<ProfileSchema>, PlatformError> {
+        let contract = DataContract::fetch(&self.0, dashpay_contract::ID).await?;
+        Ok(contract.and_then(|c| {
+            let profile = c.document_type_for_name(PROFILE).ok()?;
+            Some(schema_of(profile.properties()))
+        }))
     }
 
     async fn put_profile(

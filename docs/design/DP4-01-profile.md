@@ -67,19 +67,24 @@ grant is redeemed where it can:
    not own stays as it is: the avatar on `Keep`, and v2's `corePaymentAddress`, `platformPaymentAddress` and
    `shieldedAddress` (D2).
 5. **Nothing to do**: the same as Platform's (or no document and nothing to set) is `Ok`, nothing sent, the grant
-   unused. The library's cached profile is brought in line with Platform's on the way.
-6. **Empty**: a document that would hold no field is `profile.empty` (the contract's `minProperties: 1`, and profiles
+   unused, whatever the edit's baseline. The library's cached profile is brought in line with Platform's on the way.
+6. **Changed since it was read** (D23): an edit with a `baseline` whose profile is not what `profile` shows of
+   Platform's document now (`updated_at` aside) is `profile.conflict{current}` with that profile, and the cache is
+   brought in line with Platform's. Without a baseline the edit replaces whatever Platform holds.
+7. **Empty**: a document that would hold no field is `profile.empty` (the contract's `minProperties: 1`, and profiles
    cannot be deleted from here).
-7. **Credits and grant**, as every DashPay document write (`requests::prepare_signer`): the identity's proved balance
+8. **The contract** (D21): Platform's DashPay contract is fetched (proved), and a `profile` type with a property the
+   bundled contract lacks or types otherwise (or none) is `profile.unsupported_contract`.
+9. **Credits and grant**, as every DashPay document write (`requests::prepare_signer`): the identity's proved balance
    below the quote (`DOCUMENT_10K_CREDITS`, `grant_request(UpdateProfile)`'s bound) is
    `platform.insufficient_credits`; a `PlatformOp` grant whose `max_credits` is below it `platform.grant_exceeded`;
    a lease of another flow than `ProfileEdit` `platform.grant_invalid`; no HIGH or CRITICAL authentication key the
-   vault holds `identity.keys_missing`, the grant unused. The write runs under a call permit charged the quote,
-   signed by that one key.
-8. **Put**: a replacement at the next revision when Platform has the document, else a creation (the SDK draws the
+   vault holds that may sign a profile now (D22) `identity.keys_missing`, the grant unused. The write runs under a
+   call permit charged the quote, signed by that one key.
+10. **Put**: a replacement at the next revision when Platform has the document, else a creation (the SDK draws the
    entropy and the id), with `put_to_platform_and_wait_for_response`, the call the library's own profile write
    makes (D1).
-9. **Outcome.** Success: the library's cached profile is set to the new one (`set_dashpay_profile`, which persists
+11. **Outcome.** Success: the library's cached profile is set to the new one (`set_dashpay_profile`, which persists
    and so signals `Platform{Identities}`). A failure before anything was signed is that error (the permit ends
    `Cancelled`, the quote goes back). A failure after signing is read back: if Platform now holds the new
    properties, the call succeeds as above; otherwise the error, the quote kept (fail closed), as DP2-04.
@@ -134,15 +139,21 @@ dropped), stores them and signals.
 | D17 | The per-pass cost of D12 (a proved query per 100 contacts per own identity, a store of each such identity's entry, an `Identities` signal; about four a minute while visible) is accepted, not throttled. | The acceptance is two passes; a throttle (say, every few minutes while hidden) would break it for a hidden window. F1 removes the cost at its source. |
 | D18 | Expiry also runs when a wallet is opened mid-session (`load_wallet`), after its state is refreshed. A restore or a bring-up starts with an empty cache, which the library fetches anyway. | Review finding: a reopened wallet's cache comes back with its check times, and nothing else stores an entry that would fire the hook. |
 | D19 | Identities the wallet only watches keep their check times: the expiry covers `wallet_managed_identities`. | The contacts read model shows none of their contacts; their snapshot stores fire a no-op expiry. |
-| D20 | The document key is DP2's choice (`requests::flow_keys`: the first HIGH or CRITICAL `ECDSA_SECP256K1` authentication key the vault holds), not the library's `profile_signing_key`, which also takes `ECDSA_HASH160` and skips keys bound to another contract. | One key policy for every DashPay document write (E0-04 leases check the vault holds it). An identity whose only such key is HASH160 gets `identity.keys_missing`, as for a contact request. |
-| D21 | A document field the bundled contract does not know (a later contract version) may be lost: Platform's document is parsed with the bundled contract before the replace carries it. | Residual risk for a future contract upgrade, as for every document read here; a pin bump brings the new contract. |
+| D20 | The document key is DP2's choice (`requests::flow_keys`), with the library's eligibility rule (D22), but `ECDSA_SECP256K1` only: the library's `profile_signing_key` also takes `ECDSA_HASH160`. | One key policy for every DashPay document write (E0-04 leases check the vault holds it). An identity whose only such key is HASH160 gets `identity.keys_missing`, as for a contact request. |
+| D21 | Amended in fix round f1 (Sol r1 finding 2). Before any write the engine fetches Platform's DashPay contract (`DataContract::fetch`, proved) and compares its `profile` type with the bundled one: a property the bundled type lacks, one it types otherwise, or no `profile` type at all is `profile.unsupported_contract`, before the grant is redeemed. A property only the bundled type has is no loss and passes. | Platform's document is parsed with the bundled type and the replace carries only what that parse kept, so a newer contract's field would be dropped, or reshaped. Refusing is safe; the fix is an app update (a pin bump with the new contract). The live contract's other document types are not compared. One proved contract query per write (not per no-op or refused edit) is accepted: profile edits are rare. |
+| D22 | Fix round f1 (Sol r1 finding 1). Every DashPay document flow (contact request, accept, accept-and-pay, `contactInfo`, profile) chooses its key with the library's `usable_authentication_key` rule, in both the pre-redemption check (`check_held_keys`, `candidate_keys`) and the signer's narrowing (`flow_signer`). The key must be unbound, bound to DashPay, or bound to the flow's document type (`contactRequest`, `contactInfo`, `profile`); not group-bound; not expired at the wall clock; not disabled. Keys with no budget and no expiry come first, then the others, each in key-id order. The key upgrade's master signs an IdentityUpdate, which no document bound limits; the expiry rule applies to it as well. | The DP2 flows had the same gap: `flow_keys` took the first held key, and a lower-id key bound elsewhere or expired was narrowed to. The library's contact-request picker then signs with it, so Platform refuses after the grant is redeemed; its `contactInfo` picker finds no key it may use. "Unbounded first" in the finding reads as the library's order, unlimited before limited, so the narrowed signer and the library always agree. Regressions: `requests::tests::a_document_key_may_sign_its_document` (per document type), plus `profile_tests::a_profile_signs_with_a_key_that_may_sign_it` and `no_key_that_may_sign_keeps_the_grant`. |
+| D23 | Fix round f1 (manager's decision on Sol r1's full-edit note). `ProfileEdit.baseline: Option<ProfileBaseline{profile: Option<Profile>}>` is what the user saw. It is compared with what `profile` shows of Platform's document now (the library's parse of it, `updated_at` aside), and a mismatch is `profile.conflict{current}`, carrying Platform's profile (or `None`) for the UI to show and re-apply against. No baseline replaces whatever Platform holds (dwcli `--force`). An edit that already matches Platform is `Ok` whatever its baseline. A conflict brings the cache in line with Platform's. | Deviation from the brief, which asked for a baseline *revision*: the library caches no revision with the profile (`DashPayProfile`), so `profile()` has none to give. A revision the engine tracked itself would be stale after another device's edit until the engine fetched the document again, which means an extra query per pass; until then every edit made after a re-read would conflict. The profile itself works from any read. A change that is made and then undone ("ABA") passes, which is harmless: the user saw that content. Hidden fields (v2 payment addresses, an untrusted avatar URL) are not compared; the edit does not own them and carries Platform's. |
+| D24 | dwcli `profile set` makes its edit against the profile `profile show` shows just before it. `--baseline JSON` passes one `show` printed earlier (`null`: none), and `--force` sends none; the two conflict in clap. `profile.conflict`'s params are `{"current": profile}`. | "Passes the revision it just read" (the brief), in D23's form. `--baseline` lets a script (and T2) reproduce the UI's read-edit-submit gap. |
+| D26 | f1's surface is folded into Contract-Version 24 (item 50), not 25: the §3 marker was set back to main's recorded 23 and re-blessed at 24. | The manager kept 24 for DP4-01 (DP1-08 takes 25), and 24 has not merged, so no host has seen the earlier v24 listing. The bless refuses an unchanged version, hence the marker step. |
+| D25 | Swift T0 is not rerun for f1. | The brief's rule is "only if a file Swift parses changed". Swift's tests parse `docs/contracts/m1`–`m3` (`SettingsAndCodesTests`, the contract-surface tests) and its own sources; f1 changes m4, Rust and the renderer only. `dw-ffi` is unchanged. |
 
 ## Follow-ups
 
 - F1 (D12): upstream, a configurable contact-profile refresh window (or an `$updatedAt`-incremental fetch) in
   `rs-platform-wallet`, then drop the expiry.
 - F2: DP4-02 fills `AvatarChange::Set` (step 4) and `avatar`.
-- F3 (D21): carry unknown fields across a contract upgrade, if Platform's DashPay contract gains profile fields.
+- F3 (D21): carry unknown fields across a contract upgrade instead of refusing, if Platform's DashPay contract gains
+  profile fields (parse with the live contract).
 
 ## T2 evidence (testnet, 2026-10-15)
 

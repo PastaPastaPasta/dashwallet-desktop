@@ -2953,6 +2953,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "identity.keys_missing",
   "profile.too_long",
   "profile.empty",
+  "profile.conflict",
+  "profile.unsupported_contract",
   "registration.in_progress",
   "registration.funding_insufficient",
   "registration.coins_locked",

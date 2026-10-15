@@ -42,6 +42,8 @@ codes! {
     ProfileCode {
         TooLong = "profile.too_long",
         Empty = "profile.empty",
+        Conflict = "profile.conflict",
+        UnsupportedContract = "profile.unsupported_contract",
     }
 }
 
@@ -189,6 +191,15 @@ impl From<PlatformError> for AppError {
                 }),
             ),
             P::Profile(ProfileError::Empty) => (ProfileCode::Empty.into(), None),
+            P::Profile(ProfileError::Conflict { current }) => (
+                ProfileCode::Conflict.into(),
+                Some(ErrorData::ProfileConflict {
+                    current: current.map(|p| (*p).into()),
+                }),
+            ),
+            P::Profile(ProfileError::UnsupportedContract) => {
+                (ProfileCode::UnsupportedContract.into(), None)
+            }
             P::InvalidArgument { .. } => (EngineCode::InvalidArgument.into(), None),
             P::NetworkNotOpen => (EngineCode::NetworkNotOpen.into(), None),
             P::WalletNotFound => (EngineCode::WalletNotFound.into(), None),
@@ -418,6 +429,8 @@ mod tests {
                 max: 140,
             }),
             PlatformError::Profile(ProfileError::Empty),
+            PlatformError::Profile(ProfileError::Conflict { current: None }),
+            PlatformError::Profile(ProfileError::UnsupportedContract),
             PlatformError::InvalidArgument { detail: s() },
             PlatformError::NetworkNotOpen,
             PlatformError::WalletNotFound,
@@ -557,6 +570,31 @@ mod tests {
                 "field": "displayName",
                 "length": 26,
                 "max": 25
+            })
+        );
+        let current = dw_engine::platform::Profile {
+            display_name: Some("Al".into()),
+            public_message: None,
+            avatar_url: None,
+            avatar_hash: None,
+            avatar_fingerprint: None,
+            updated_at: None,
+        };
+        let e = AppError::from(PlatformError::Profile(ProfileError::Conflict {
+            current: Some(Box::new(current)),
+        }));
+        assert_eq!(
+            serde_json::to_value(&e).unwrap()["data"],
+            serde_json::json!({
+                "kind": "profileConflict",
+                "current": {
+                    "displayName": "Al",
+                    "publicMessage": null,
+                    "avatarUrl": null,
+                    "avatarHash": null,
+                    "avatarFingerprint": null,
+                    "updatedAt": null
+                }
             })
         );
         let e = AppError::from(RegistrationError::InProgress {

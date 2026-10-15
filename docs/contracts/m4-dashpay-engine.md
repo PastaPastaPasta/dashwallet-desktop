@@ -494,7 +494,7 @@ bodies decided where the rows leave room:
 | `prepare_avatar(src)` | async | Fetches or decodes `File{bytes, crop}`, `Url{url}` or `Gravatar{email}`, re-encodes to PNG and returns a candidate with a preview (DASHPAY §3.8). | `AvatarError` |
 | `avatar_upload_available()` | sync | An Imgur client id is configured. | `AvatarError` |
 | `upload_avatar(candidate)` | async | Uploads a `File` candidate to Imgur; returns its URL and sets the candidate's `url`. | `AvatarError` |
-| `update_profile(identity, edit, grant)` | async | Publishes the whole new profile (`None` clears a field) as the identity's `profile` document: a replacement at the next revision when Platform holds one, else a creation. Each text is trimmed and an empty one clears its field; a text longer than its limit (`profile_limits`, counted in Unicode scalar values) is `profile.too_long{field, length, max}`. The avatar fields are kept (`Keep`) or removed together (`Remove`); `Set` is `invalid_argument` until DP4-02. Every field of Platform's document the edit does not own (the avatar on `Keep`, the v2 contract's payment-address fields) is carried over. An edit that leaves Platform's document as it is (or sets nothing where there is none) is `Ok` with nothing sent and the grant unused; one that would leave the document no field is `profile.empty`. Then, before the grant is redeemed, as `send_request`: the identity's proved balance below the quote (`DOCUMENT_10K_CREDITS`, `grant_request(UpdateProfile)`'s bound) is `platform.insufficient_credits`, a grant capped below it `platform.grant_exceeded`, a lease of another flow than `ProfileEdit` `platform.grant_invalid`, no `HIGH` or `CRITICAL` authentication key the vault holds `identity.keys_missing`. A watched identity (no index) is `invalid_argument`. The document is signed by that one key under a call permit charged the quote; a write that failed after signing is read back, and succeeds if Platform holds the new document. On success the library's cached profile is the new one, signalled `Platform{Identities}`. The write runs under the identity's write lock (§2.4). Contacts see the change on their next DashPay pass: the engine expires the library's contact-profile cache at session open and after every pass that fetched it, so every pass fetches the contacts' profiles (item 50). **Implemented (DP4-01).** | `PlatformError` |
+| `update_profile(identity, edit, grant)` | async | Publishes the whole new profile (`None` clears a field) as the identity's `profile` document: a replacement at the next revision when Platform holds one, else a creation. Each text is trimmed and an empty one clears its field; a text longer than its limit (`profile_limits`, counted in Unicode scalar values) is `profile.too_long{field, length, max}`. The avatar fields are kept (`Keep`) or removed together (`Remove`); `Set` is `invalid_argument` until DP4-02. Every field of Platform's document the edit does not own (the avatar on `Keep`, the v2 contract's payment-address fields) is carried over. An edit that leaves Platform's document as it is (or sets nothing where there is none) is `Ok` with nothing sent and the grant unused. An edit with a `baseline` (what `profile` showed when the user began it) whose profile is not what `profile` shows of Platform's document now (`updated_at` aside) is `profile.conflict{current}`, with that profile (`None`: Platform holds none), and the cache follows Platform; without a baseline the edit replaces whatever Platform holds. One that would leave the document no field is `profile.empty`. When the `profile` type of the DashPay contract Platform runs (fetched, proved) has a property the bundled contract lacks or types otherwise, or Platform has no such type, the write would drop or reshape a field it parsed with the bundled type: `profile.unsupported_contract`. Then, before the grant is redeemed, as `send_request`: the identity's proved balance below the quote (`DOCUMENT_10K_CREDITS`, `grant_request(UpdateProfile)`'s bound) is `platform.insufficient_credits`, a grant capped below it `platform.grant_exceeded`, a lease of another flow than `ProfileEdit` `platform.grant_invalid`, no `HIGH` or `CRITICAL` authentication key the vault holds that may sign a profile now `identity.keys_missing` (one bound to another contract or another DashPay document type, a group-bound one, an expired or a disabled one may not; one with no budget or expiry is chosen before one with them, as the library's `usable_authentication_key`, item 50). A watched identity (no index) is `invalid_argument`. The document is signed by that one key under a call permit charged the quote; a write that failed after signing is read back, and succeeds if Platform holds the new document. On success the library's cached profile is the new one, signalled `Platform{Identities}`. The write runs under the identity's write lock (§2.4). Contacts see the change on their next DashPay pass: the engine expires the library's contact-profile cache at session open and after every pass that fetched it, so every pass fetches the contacts' profiles (item 50). **Implemented (DP4-01).** | `PlatformError` |
 | `avatar(identity, size)` | async | The cached or fetched thumbnail of any identity (a contact, a search hit, the inviter, an own identity); `None` if there is no avatar or "Load contact pictures" is off. The contact and user records carry no image, so this call serves them. | `AvatarError` |
 
 ### 2.8 Credits
@@ -548,7 +548,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 8fb8cef10c41f80ae3d51fd70e2f03e6b26969372f35bac7e440446b84ddcbba version: 24 -->
+<!-- surface-sha256: b8984524af6f6559eb23b77be4b185850f2cd792b6e4b1d06b1dc26d4b0519ff version: 24 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -831,6 +831,8 @@ impl From<IdentityError> for PlatformError;
 pub enum ProfileError {
     TooLong { field: ProfileField, length: u32, max: u32 },
     Empty,
+    Conflict { current: Option<Box<Profile>> },
+    UnsupportedContract,
 }
 impl ProfileError {
     pub fn code(&self) -> &'static str;
@@ -1328,6 +1330,11 @@ pub struct ProfileEdit {
     pub display_name: Option<String>,
     pub public_message: Option<String>,
     pub avatar: AvatarChange,
+    pub baseline: Option<ProfileBaseline>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileBaseline {
+    pub profile: Option<Profile>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1573,7 +1580,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 |---|---|
 | `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`, `internal` |
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
-| `ProfileError` | `profile.empty`, `profile.too_long` |
+| `ProfileError` | `profile.conflict`, `profile.empty`, `profile.too_long`, `profile.unsupported_contract` |
 | `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled`, `registration.not_synced`, `registration.funding_unknown_recent` |
 | `NameError` | `name.invalid`, `name.taken`, `name.contest_open`, `name.locked`, `name.unavailable_for_invite` |
 | `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired`, `contact.scan_unverified`, `contact.no_username`, `contact.details_too_long` |
@@ -1587,7 +1594,10 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 - `IdentityError` is reached through `PlatformError::Identity`, so every domain can return `identity.*`.
 - `ProfileError` is reached through `PlatformError::Profile` (DP4-01): `profile.too_long{field, length, max}` is a
   text past the contract's `maxLength` (`field` is `display_name` or `public_message`, `length` and `max` in
-  characters); `profile.empty` an edit that would leave the profile document no field (the contract requires one).
+  characters); `profile.empty` an edit that would leave the profile document no field (the contract requires one);
+  `profile.conflict{current}` an edit whose baseline is not the profile on Platform now (`current`, as `profile`
+  shows it, `None` for none); `profile.unsupported_contract` a write the DashPay contract Platform runs has profile
+  fields for that this version would not carry over (update the app).
 - Every other enum wraps `PlatformError` in its `Platform` variant; `code()` passes the inner code through and
   `platform()` returns it.
 - **`RegistrationError` also wraps `NameError` and `InvitationError`**: a registration refuses its label with `name.*`
@@ -1922,7 +1932,9 @@ The shapes are in §3. What they mean, where the name does not say:
     which a restore's rollback moves too).
 - **`ProfileEdit`** is the whole new profile. `AvatarChange`: `Keep`, `Remove`, or `Set{candidate}` with a
   `prepare_avatar` candidate (after `upload_avatar` when `needs_upload`). Texts are trimmed and an empty one is
-  `None` (DP4-01). **`ProfileField`** (`display_name`, `public_message`) names the text a `profile.too_long` refers to.
+  `None` (DP4-01). `baseline` is what the edit was made against: `Some(ProfileBaseline{profile})` with the profile
+  `profile` showed (`None` for none), or `None` to replace whatever Platform holds; serde's default is `None`.
+  **`ProfileField`** (`display_name`, `public_message`) names the text a `profile.too_long` refers to.
 - **`AvatarSize`.** `Small` is 128 px, `Large` 256 px. `AvatarImage.png` is the engine-re-encoded thumbnail, never
   the original bytes, as base64 in JSON.
 - **`CostTable`** (DP1-06). The protocol version priced; credits per action (`contact_request`, `profile_update`,
@@ -2687,8 +2699,21 @@ renames or reshapes them takes the next version bump:
       Platform's proof of no identity also sends one at the proof's expiry. The contest watch sends
       `Platform{Names}` when it learns a contest's end or drops a watch that stayed unplaced for a day.
 50. **Profiles (DP4-01, version 24).** `profile`, `profile_limits` and `update_profile` are implemented (§2.7);
-    `PlatformError` gains `Profile(ProfileError)` with `profile.too_long{field, length, max}` and `profile.empty`
-    (§4), and the facade gains `ProfileField`. Decisions in `docs/design/DP4-01-profile.md`.
+    `PlatformError` gains `Profile(ProfileError)` with `profile.too_long{field, length, max}`, `profile.empty`,
+    `profile.conflict{current}` and `profile.unsupported_contract` (§4), `ProfileEdit` gains `baseline`, and the
+    facade gains `ProfileField` and `ProfileBaseline`. Decisions in `docs/design/DP4-01-profile.md`.
+    - **Edits against a baseline (D23).** An edit carries what the user saw; a profile changed on Platform since is
+      `profile.conflict` with Platform's, so another device's edit is never overwritten unseen. The baseline is the
+      profile itself, not a revision: the library caches no revision, so `profile` has none to give. An edit that
+      matches Platform already is `Ok`, whatever its baseline.
+    - **The contract guard (D21).** Before a write the engine fetches Platform's DashPay contract (one proved
+      query per write) and writes nothing when its `profile` type has a property the bundled one lacks or types
+      otherwise.
+    - **Document keys (D22, all DashPay document writes).** A contact request, an accept, a `contactInfo` and a
+      profile are signed with a key that may sign that document now, as the library picks one: unbound or bound to
+      DashPay or that document type, not group-bound, not expired, not disabled, a key with no budget or expiry
+      first. The pre-redemption check uses the same rule, so a key that may not sign is `identity.keys_missing`
+      with the grant unused, not a signed transition Platform refuses.
     - **The limits** are the bundled DashPay contract's (`load_system_data_contract`, latest), with the built-in
       25 / 140 only if a property lacked a `maxLength`; no fetch, so §1's "until the contract is fetched" never
       applies.

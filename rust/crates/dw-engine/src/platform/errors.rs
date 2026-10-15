@@ -12,7 +12,7 @@ use super::contacts::Eligibility;
 use super::flows::{BudgetPurpose, RevokeCause};
 use super::identity::KeyPurpose;
 use super::names::UsernameRule;
-use super::profile::ProfileField;
+use super::profile::{Profile, ProfileField};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlatformError {
@@ -158,6 +158,14 @@ pub enum ProfileError {
     /// The profile would hold no field: the contract needs one.
     #[error("a profile needs at least one field")]
     Empty,
+    /// The profile on Platform is not the one the edit was made against
+    /// (its `baseline`, D23): `current` is Platform's, as `profile` shows it.
+    #[error("the profile changed since it was read")]
+    Conflict { current: Option<Box<Profile>> },
+    /// Platform's DashPay contract has a profile field this version would
+    /// not carry over, so it writes no profile (D21).
+    #[error("the DashPay contract on Platform has profile fields this version does not know")]
+    UnsupportedContract,
 }
 
 impl ProfileError {
@@ -165,6 +173,8 @@ impl ProfileError {
         match self {
             Self::TooLong { .. } => "profile.too_long",
             Self::Empty => "profile.empty",
+            Self::Conflict { .. } => "profile.conflict",
+            Self::UnsupportedContract => "profile.unsupported_contract",
         }
     }
 }

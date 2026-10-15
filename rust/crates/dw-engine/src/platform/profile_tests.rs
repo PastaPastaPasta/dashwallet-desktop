@@ -10,17 +10,25 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use dpp::data_contract::document_type::DocumentPropertyType;
+use dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+use dpp::identity::identity_public_key::v1::IdentityPublicKeyV1;
+use dpp::identity::{IdentityPublicKey, KeyID};
 use dpp::platform_value::Value;
+use dpp::prelude::Identifier;
+use dpp::system_data_contracts::dashpay_contract;
 use platform_wallet::{ContactProfileEntry, DashPayProfile, ManagedIdentity};
 
 use super::errors::{PlatformError, ProfileError};
 use super::flows::{DOCUMENT_10K_CREDITS, FlowKind};
 use super::journal_tests::id;
 use super::private_details_tests::one_test_at_a_time;
-use super::profile::{AvatarChange, Profile, ProfileEdit, ProfileField, ProfileLimits};
+use super::profile::{
+    AvatarChange, Profile, ProfileBaseline, ProfileEdit, ProfileField, ProfileLimits,
+};
 use super::profiles::{
-    BUILT_IN_LIMITS, ProfileDocument, ProfileProperties, contract_limits, limits, merged,
-    normalized, update,
+    BUILT_IN_LIMITS, ProfileDocument, ProfileProperties, bundled_schema, contract_limits, limits,
+    merged, normalized, update,
 };
 use super::registration_flow::b58;
 use super::requests::tests::{Fixture, keys, wait_until};
@@ -37,6 +45,7 @@ fn edit(display_name: Option<&str>, public_message: Option<&str>) -> ProfileEdit
         display_name: display_name.map(str::to_owned),
         public_message: public_message.map(str::to_owned),
         avatar: AvatarChange::Keep,
+        baseline: None,
     }
 }
 
@@ -68,6 +77,52 @@ fn fixture() -> Fixture {
     one_test_at_a_time();
     Fixture::new(u64::MAX / 2)
 }
+
+/// `edit` made against `seen`, what `profile` showed.
+fn against(edit: ProfileEdit, seen: Option<Profile>) -> ProfileEdit {
+    ProfileEdit {
+        baseline: Some(ProfileBaseline { profile: seen }),
+        ..edit
+    }
+}
+
+/// The V0 key under `key`.
+fn v0(key: &IdentityPublicKey) -> dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
+    match key {
+        IdentityPublicKey::V0(k) => k.clone(),
+        IdentityPublicKey::V1(_) => unreachable!("the vault derives V0 keys"),
+    }
+}
+
+fn bound(key: &IdentityPublicKey, bounds: ContractBounds) -> IdentityPublicKey {
+    let mut k = v0(key);
+    k.contract_bounds = Some(bounds);
+    IdentityPublicKey::V0(k)
+}
+
+/// `key` with a budget or an expiry (ms).
+fn limited(
+    key: &IdentityPublicKey,
+    budget: Option<u64>,
+    expires_at: Option<u64>,
+) -> IdentityPublicKey {
+    IdentityPublicKey::V1(IdentityPublicKeyV1::from_v0_with_limits(
+        v0(key),
+        budget,
+        expires_at,
+    ))
+}
+
+fn to_dashpay(document: &str) -> ContractBounds {
+    ContractBounds::SingleContractDocumentType {
+        id: dashpay_contract::ID,
+        document_type_name: document.into(),
+    }
+}
+
+/// Far past and far future, in ms.
+const EXPIRED: Option<u64> = Some(1);
+const LATER: Option<u64> = Some(u64::MAX);
 
 impl Fixture {
     fn update(&self, edit: ProfileEdit, grant: &str) -> Result<(), PlatformError> {
@@ -445,4 +500,178 @@ fn a_pass_that_checked_contact_profiles_expires_them() {
     wait_until("the expiry", Duration::from_secs(10), || {
         f.checked_at(ERIN) == 0
     });
+}
+
+/// The profile is signed with a key that may sign it now, as the library
+/// picks one (D22): a lower-id key bound to another contract or to another
+/// DashPay document type, or expired, is passed over; a key with no limits
+/// comes before one with a budget or an expiry; a key bound to DashPay or
+/// to its profiles may sign.
+#[test]
+fn a_profile_signs_with_a_key_that_may_sign_it() {
+    let elsewhere = ContractBounds::SingleContract {
+        id: Identifier::from([0x0E; 32]),
+    };
+    type Adjust = fn(&IdentityPublicKey, &ContractBounds) -> IdentityPublicKey;
+    let cases: [(&str, Adjust, KeyID); 7] = [
+        ("bound elsewhere", |k, e| bound(k, e.clone()), 2),
+        (
+            "bound to contact requests",
+            |k, _| bound(k, to_dashpay("contactRequest")),
+            2,
+        ),
+        ("expired", |k, _| limited(k, None, EXPIRED), 2),
+        ("expiring later", |k, _| limited(k, None, LATER), 2),
+        ("with a budget", |k, _| limited(k, Some(1_000), None), 2),
+        (
+            "bound to profiles",
+            |k, _| bound(k, to_dashpay("profile")),
+            1,
+        ),
+        (
+            "bound to DashPay",
+            |k, _| {
+                bound(
+                    k,
+                    ContractBounds::SingleContract {
+                        id: dashpay_contract::ID,
+                    },
+                )
+            },
+            1,
+        ),
+    ];
+    one_test_at_a_time();
+    for (case, adjust, signs) in cases {
+        let f = Fixture::with_adjusted_keys(u64::MAX / 2, |keys| {
+            let first = adjust(&keys[&1], &elsewhere);
+            keys.insert(1, first);
+        });
+        f.update(edit(Some("Al"), None), &f.profile_lease())
+            .unwrap_or_else(|e| panic!("{case}: {e}"));
+        assert_eq!(*f.net.profile_keys.lock().unwrap(), [signs], "{case}");
+    }
+    // Only a limited key: it signs.
+    let f = Fixture::with_adjusted_keys(u64::MAX / 2, |keys| {
+        let (first, second) = (limited(&keys[&1], None, LATER), bound(&keys[&2], elsewhere));
+        keys.extend([(1, first), (2, second)]);
+    });
+    f.update(edit(Some("Al"), None), &f.profile_lease())
+        .unwrap();
+    assert_eq!(*f.net.profile_keys.lock().unwrap(), [1]);
+}
+
+/// With no key that may sign the profile the edit is
+/// `identity.keys_missing` before the grant is redeemed.
+#[test]
+fn no_key_that_may_sign_keeps_the_grant() {
+    one_test_at_a_time();
+    let f = Fixture::with_adjusted_keys(u64::MAX / 2, |keys| {
+        let first = bound(&keys[&1], to_dashpay("contactInfo"));
+        let second = limited(&keys[&2], None, EXPIRED);
+        keys.extend([(1, first), (2, second)]);
+    });
+    let grant = f.grant(DOCUMENT_10K_CREDITS);
+    let refused = f.update(edit(Some("Al"), None), &grant);
+    assert_eq!(refused.unwrap_err().code(), "identity.keys_missing");
+    assert!(f.unused(&grant));
+    assert_eq!(f.net.writes(), 0);
+}
+
+/// An edit made against a profile that has changed on Platform since is
+/// `profile.conflict` with what `profile` now shows, before the grant is
+/// redeemed, and the cache follows Platform (D23); made against the
+/// current one, or with no baseline, it is written.
+#[test]
+fn an_edit_of_a_changed_profile_is_a_conflict() {
+    let f = fixture();
+    let grant = f.grant(DOCUMENT_10K_CREDITS);
+    // Nothing shown, but one published since.
+    f.publish(full(), 3);
+    let conflict = f.update(against(edit(Some("Al"), None), None), &grant);
+    let shown = f.profile(ME).unwrap().unwrap();
+    assert_eq!(
+        texts(&shown),
+        (Some("Me"), Some("hello")),
+        "the cache follows"
+    );
+    assert_eq!(
+        conflict,
+        Err(ProfileError::Conflict {
+            current: Some(Box::new(shown.clone())),
+        }
+        .into())
+    );
+    assert_eq!(conflict.unwrap_err().code(), "profile.conflict");
+    // A stale one.
+    let stale = Profile {
+        display_name: Some("Old".into()),
+        ..shown.clone()
+    };
+    let conflict = f.update(against(edit(Some("Al"), None), Some(stale)), &grant);
+    assert_eq!(conflict.unwrap_err().code(), "profile.conflict");
+    assert!(f.unused(&grant));
+    assert_eq!(f.net.writes(), 0);
+
+    // Against what is shown: written (`updated_at` is never compared).
+    let seen = Profile {
+        updated_at: Some(5),
+        ..shown
+    };
+    f.update(against(edit(Some("Al"), None), Some(seen)), &grant)
+        .unwrap();
+    assert_eq!(f.document().unwrap().revision, 4);
+    // Removed since: the conflict shows none.
+    f.net.profiles.lock().unwrap().clear();
+    let seen = f.profile(ME).unwrap();
+    let conflict = f.update(
+        against(edit(Some("Bo"), None), seen),
+        &f.grant(DOCUMENT_10K_CREDITS),
+    );
+    assert_eq!(
+        conflict,
+        Err(ProfileError::Conflict { current: None }.into())
+    );
+    assert_eq!(f.profile(ME), Ok(None));
+    // Without a baseline (dwcli's --force): written over whatever is there.
+    f.publish(full(), 7);
+    f.update(edit(Some("Cy"), None), &f.grant(DOCUMENT_10K_CREDITS))
+        .unwrap();
+    assert_eq!(f.document().unwrap().revision, 8);
+    // An edit that matches Platform already sends nothing, whatever it was
+    // made against.
+    let grant = f.grant(DOCUMENT_10K_CREDITS);
+    f.update(against(edit(Some("Cy"), None), None), &grant)
+        .unwrap();
+    assert!(f.unused(&grant));
+}
+
+/// When Platform's contract has a profile property the bundled one lacks
+/// or types otherwise, no profile is written (D21):
+/// `profile.unsupported_contract` before the grant is redeemed. A property
+/// only the bundled contract has is no loss.
+#[test]
+fn a_profile_platform_would_shape_otherwise_is_not_written() {
+    let f = fixture();
+    f.publish(full(), 3);
+    let grant = f.grant(DOCUMENT_10K_CREDITS);
+    let bundled = bundled_schema().clone();
+    assert!(bundled.contains_key("displayName") && bundled.contains_key("avatarUrl"));
+    let mut added = bundled.clone();
+    added.insert("pronouns".into(), DocumentPropertyType::Boolean);
+    let mut retyped = bundled.clone();
+    retyped.insert("publicMessage".into(), DocumentPropertyType::Boolean);
+    for live in [Some(added), Some(retyped), None] {
+        *f.net.profile_schema.lock().unwrap() = Some(live);
+        let refused = f.update(edit(Some("Al"), None), &grant);
+        assert_eq!(refused.unwrap_err().code(), "profile.unsupported_contract");
+    }
+    assert!(f.unused(&grant));
+    assert_eq!(f.net.writes(), 0);
+
+    let mut fewer = bundled.clone();
+    fewer.remove("avatarFingerprint");
+    *f.net.profile_schema.lock().unwrap() = Some(Some(fewer));
+    f.update(edit(Some("Al"), None), &grant).unwrap();
+    assert_eq!(f.document().unwrap().revision, 4);
 }

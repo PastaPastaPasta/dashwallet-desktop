@@ -111,7 +111,7 @@ pub use payments::{
 };
 pub use profile::{
     AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect, Profile,
-    ProfileEdit, ProfileField, ProfileLimits,
+    ProfileBaseline, ProfileEdit, ProfileField, ProfileLimits,
 };
 pub use registration::{
     FaucetLockKey, FinishReport, InitialProfile, RegistrationFailure, RegistrationFunding,

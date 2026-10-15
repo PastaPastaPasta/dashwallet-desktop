@@ -33,7 +33,7 @@ use super::super::journal_tests::{
 };
 use super::super::keys_policy::registration_specs;
 use super::super::private_details_tests::FakeInfos;
-use super::super::profiles::{ProfileDocument, ProfileProperties};
+use super::super::profiles::{ProfileDocument, ProfileProperties, ProfileSchema, bundled_schema};
 use super::super::signers::{VaultContactCrypto, VaultIdentitySigner};
 use super::super::startup::SyncLoop;
 use super::*;
@@ -135,6 +135,8 @@ pub(crate) struct FakeRequests {
     pub(crate) profiles: Mutex<HashMap<Identifier, ProfileDocument>>,
     /// The key each profile write was signed with.
     pub(crate) profile_keys: Mutex<Vec<KeyID>>,
+    /// Platform's `profile` type, when not the bundled contract's.
+    pub(crate) profile_schema: Mutex<Option<Option<ProfileSchema>>>,
 }
 
 impl FakeRequests {
@@ -350,6 +352,12 @@ impl RequestNet for FakeRequests {
         Ok(self.profiles.lock().unwrap().get(&owner).cloned())
     }
 
+    async fn profile_schema(&self) -> Result<Option<ProfileSchema>, PlatformError> {
+        self.up()?;
+        let live = self.profile_schema.lock().unwrap().clone();
+        Ok(live.unwrap_or_else(|| Some(bundled_schema().clone())))
+    }
+
     /// As Platform: a creation draws an id, a replacement must name the
     /// document's revision; either costs the fee.
     async fn put_profile(
@@ -405,24 +413,39 @@ impl Fixture {
     }
 
     pub(crate) fn with_keys(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
-        Self::build(mine, balance, true)
+        Self::build(mine, balance, true, |_| {})
     }
 
     /// Our identity with `mine` as they are: keys the vault does not hold.
     pub(crate) fn foreign(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
-        Self::build(mine, balance, false)
+        Self::build(mine, balance, false, |_| {})
     }
 
-    fn build(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64, held: bool) -> Self {
+    /// Our identity with the keys the vault holds, then `adjust`ed (a
+    /// bound, an expiry): keys it still signs with.
+    pub(crate) fn with_adjusted_keys(
+        balance: u64,
+        adjust: impl FnOnce(&mut BTreeMap<KeyID, IdentityPublicKey>),
+    ) -> Self {
+        Self::build(keys(true), balance, true, adjust)
+    }
+
+    fn build(
+        mine: BTreeMap<KeyID, IdentityPublicKey>,
+        balance: u64,
+        held: bool,
+        adjust: impl FnOnce(&mut BTreeMap<KeyID, IdentityPublicKey>),
+    ) -> Self {
         let dir = dw_testutil::private_tempdir();
         let events = Arc::new(Recorder::default());
         let engine = engine(dir.path(), Arc::clone(&events) as Arc<dyn EventSink>);
         let (s, wallet) = session(&engine, true);
-        let mine = if held {
+        let mut mine = if held {
             vault_keys(&engine, &s, wallet, mine)
         } else {
             mine
         };
+        adjust(&mut mine);
         let me = identity(ME, mine, balance);
         let net = Arc::new(FakeRequests::with([
             me.clone(),
@@ -1046,6 +1069,81 @@ fn accept_and_pay_keeps_its_spend_part_across_the_accept() {
     let lease = f.s.lease_for(&f.wallet, &lease_id).unwrap().unwrap();
     assert!(lease.has_spend());
     lease.spend_signer().unwrap();
+}
+
+/// A document flow's key is one that may sign its DashPay document now, as
+/// platform-wallet picks one (D22): a key bound to another document type,
+/// or expired, is passed over, and a key with no limits comes first. The
+/// key upgrade's master is bound by no document.
+#[test]
+fn a_document_key_may_sign_its_document() {
+    use dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+    use dpp::identity::identity_public_key::v1::IdentityPublicKeyV1;
+    use dpp::system_data_contracts::dashpay_contract;
+    let to = |document: &str| ContractBounds::SingleContractDocumentType {
+        id: dashpay_contract::ID,
+        document_type_name: document.into(),
+    };
+    let v0 = |k: &IdentityPublicKey| match k {
+        IdentityPublicKey::V0(k) => k.clone(),
+        IdentityPublicKey::V1(_) => unreachable!(),
+    };
+    let bound = |k: &IdentityPublicKey, b: ContractBounds| {
+        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            contract_bounds: Some(b),
+            ..v0(k)
+        })
+    };
+    let expiring = |k: &IdentityPublicKey, at: u64| {
+        IdentityPublicKey::V1(IdentityPublicKeyV1::from_v0_with_limits(
+            v0(k),
+            None,
+            Some(at),
+        ))
+    };
+    let first = |keys: &BTreeMap<KeyID, IdentityPublicKey>, flow| {
+        let me = identity(ME, keys.clone(), 0);
+        flow_keys(flow, &me, &[], |_| true).map_err(|e| e.code())
+    };
+    let document_flows = [
+        FlowKind::ContactRequest,
+        FlowKind::Accept,
+        FlowKind::AcceptAndPay,
+        FlowKind::PrivateDetails,
+        FlowKind::ProfileEdit,
+    ];
+    for (document, takes) in [
+        ("contactRequest", &document_flows[..3]),
+        ("contactInfo", &document_flows[3..4]),
+        ("profile", &document_flows[4..]),
+    ] {
+        let mut set = keys(true);
+        set.insert(1, bound(&set[&1], to(document)));
+        for flow in document_flows {
+            let want = if takes.contains(&flow) { 1 } else { 2 };
+            assert_eq!(first(&set, flow), Ok(vec![want]), "{document} {flow:?}");
+        }
+    }
+    let mut set = keys(true);
+    set.insert(1, expiring(&set[&1], 1));
+    for flow in document_flows {
+        assert_eq!(first(&set, flow), Ok(vec![2]), "expired {flow:?}");
+    }
+    set.insert(1, expiring(&keys(true)[&1], u64::MAX));
+    for flow in document_flows {
+        assert_eq!(first(&set, flow), Ok(vec![2]), "limited {flow:?}");
+    }
+    set.insert(2, bound(&set[&2], to("contactInfo")));
+    assert_eq!(first(&set, FlowKind::ContactRequest), Ok(vec![1]));
+    set.insert(1, expiring(&keys(true)[&1], 1));
+    assert_eq!(
+        first(&set, FlowKind::ContactRequest),
+        Err("identity.keys_missing")
+    );
+    // The master signs an IdentityUpdate; no document bounds it.
+    let mut set = keys(true);
+    set.insert(0, bound(&set[&0], to("contactInfo")));
+    assert_eq!(first(&set, FlowKind::EnableDashPayKeys), Ok(vec![0]));
 }
 
 /// Each flow's signer signs with its transition's keys only: a contact

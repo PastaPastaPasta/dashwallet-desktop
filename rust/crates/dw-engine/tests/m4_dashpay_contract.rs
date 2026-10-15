@@ -886,6 +886,8 @@ fn error_codes_match_the_contract() {
                 max: 25,
             },
             ProfileError::Empty,
+            ProfileError::Conflict { current: None },
+            ProfileError::UnsupportedContract,
         ],
         ProfileError::code,
     );
@@ -1192,6 +1194,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         display_name: None,
         public_message: None,
         avatar: AvatarChange::Keep,
+        baseline: None,
     };
     let mut c = Calls::default();
     engine.block_on(async {

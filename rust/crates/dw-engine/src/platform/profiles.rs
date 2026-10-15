@@ -8,7 +8,9 @@
 //! - `update_profile` replaces Platform's document with the whole profile
 //!   the edit describes ([`update`]): the library's own update merges and
 //!   cannot clear a field (D1). It refuses what it can before it redeems a
-//!   grant, as every DashPay write (`requests.rs`).
+//!   grant, as every DashPay write (`requests.rs`): an edit made against a
+//!   profile that has changed since (D23), and a write Platform's contract
+//!   has fields for that this version would drop (D21).
 //! - The library refreshes a contact's profile at most once an hour; the
 //!   engine expires that cache at session open and after every pass that
 //!   fetched, so each pass fetches the contacts' profiles again (D12,
@@ -18,8 +20,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
 use dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dpp::data_contract::document_type::DocumentPropertyType;
 use dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+use dpp::data_contract::document_type::{DocumentProperty, DocumentPropertyType};
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::signer::Signer;
 use dpp::identity::{Identity, IdentityPublicKey};
@@ -35,7 +37,10 @@ use super::flows::{DOCUMENT_10K_CREDITS, FlowKind};
 use super::identity::KeyPurpose;
 use super::identity_writes::identity_locks;
 use super::lease::FlowOutcome;
-use super::profile::{AvatarChange, Profile, ProfileEdit, ProfileField, ProfileLimits};
+use super::profile::{
+    AvatarChange, Profile, ProfileBaseline, ProfileEdit, ProfileField, ProfileLimits,
+};
+use super::recovery::profile_of;
 use super::registration_flow::dashpay_contract;
 use super::requests::{RequestNet, leased, not_found, prepare_signer};
 use crate::session::Manager;
@@ -43,6 +48,9 @@ use crate::{NetworkSession, WalletId};
 
 /// A profile document's properties, as Platform holds them.
 pub(crate) type ProfileProperties = BTreeMap<String, Value>;
+
+/// The type of each property of a contract's `profile` document type.
+pub(crate) type ProfileSchema = BTreeMap<String, DocumentPropertyType>;
 
 /// An identity's `profile` document on Platform.
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +90,50 @@ pub(super) fn limits() -> ProfileLimits {
     })
 }
 
+/// The bundled contract's [`ProfileSchema`], read once; empty if it has
+/// none (then every write is `profile.unsupported_contract`).
+pub(crate) fn bundled_schema() -> &'static ProfileSchema {
+    static SCHEMA: OnceLock<ProfileSchema> = OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        let contract = dashpay_contract().ok();
+        let profile = contract
+            .as_ref()
+            .and_then(|c| c.document_type_for_name(PROFILE).ok());
+        profile.map_or_else(ProfileSchema::new, |t| schema_of(t.properties()))
+    })
+}
+
+/// The [`ProfileSchema`] of a `profile` document type's `properties`.
+pub(crate) fn schema_of<'a>(
+    properties: impl IntoIterator<Item = (&'a String, &'a DocumentProperty)>,
+) -> ProfileSchema {
+    (properties.into_iter())
+        .map(|(name, p)| (name.clone(), p.property_type.clone()))
+        .collect()
+}
+
+/// Refuses a write when Platform's `profile` type (`live`; `None`: the
+/// network has none) has a property the bundled contract lacks or types
+/// otherwise: the document the edit read was parsed with the bundled type,
+/// so the replacement would drop or reshape that field (D21). A property
+/// only the bundled contract has is no loss.
+fn check_contract(live: Option<&ProfileSchema>) -> Result<(), ProfileError> {
+    let bundled = bundled_schema();
+    let unknown = match live {
+        None => Some("the profile document type"),
+        Some(live) => (live.iter())
+            .find(|(name, ty)| bundled.get(*name) != Some(*ty))
+            .map(|(name, _)| name.as_str()),
+    };
+    match unknown {
+        None => Ok(()),
+        Some(field) => {
+            tracing::warn!("Platform's DashPay contract differs at {field}; no profile write");
+            Err(ProfileError::UnsupportedContract)
+        }
+    }
+}
+
 pub(super) fn contract_limits() -> Result<ProfileLimits, String> {
     let contract = dashpay_contract().map_err(|e| e.to_string())?;
     let profile = (contract.document_type_for_name(PROFILE)).map_err(|e| e.to_string())?;
@@ -108,6 +160,7 @@ pub(super) fn normalized(
         display_name,
         public_message,
         avatar,
+        baseline,
     } = edit;
     let text = |(value, field, max): (Option<String>, ProfileField, u32)| {
         let Some(value) = value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()) else {
@@ -124,6 +177,7 @@ pub(super) fn normalized(
         display_name: text((display_name, DisplayName, limits.display_name_max))?,
         public_message: text((public_message, PublicMessage, limits.public_message_max))?,
         avatar,
+        baseline,
     })
 }
 
@@ -170,6 +224,23 @@ fn library_profile(properties: &ProfileProperties) -> Option<DashPayProfile> {
         public_message,
     };
     (profile != DashPayProfile::default()).then_some(profile)
+}
+
+/// What `profile` shows of a document of `properties`: the profile the
+/// library caches for it.
+fn shown(properties: &ProfileProperties) -> Option<Profile> {
+    library_profile(properties).as_ref().map(profile_of)
+}
+
+/// Whether `baseline` is what `profile` shows of Platform's document now
+/// (`shown`); no baseline, no check. `updated_at` is never shown, so it is
+/// not compared.
+fn matches(baseline: Option<&ProfileBaseline>, shown: Option<&Profile>) -> bool {
+    let without_time = |p: &Profile| Profile {
+        updated_at: None,
+        ..p.clone()
+    };
+    baseline.is_none_or(|b| b.profile.as_ref().map(without_time).as_ref() == shown)
 }
 
 /// Sets the library's cached own profile to `properties` (D10): its store
@@ -232,12 +303,27 @@ pub(super) async fn update(
         remember(wallet, identity, &wanted).await;
         return Ok(());
     }
+    // Changed since it was read (D23): the cache follows Platform, and the
+    // caller gets what it now shows.
+    let held = current
+        .as_ref()
+        .map(|d| d.properties.clone())
+        .unwrap_or_default();
+    let now = shown(&held);
+    if !matches(edit.baseline.as_ref(), now.as_ref()) {
+        remember(wallet, identity, &held).await;
+        return Err(ProfileError::Conflict {
+            current: now.map(Box::new),
+        }
+        .into());
+    }
     if wanted.is_empty() {
         return match current {
             None => Ok(()),
             Some(_) => Err(ProfileError::Empty.into()),
         };
     }
+    check_contract(net.profile_schema().await?.as_ref())?;
     let (lease, permit, signer) = prepare_signer(
         net,
         session,

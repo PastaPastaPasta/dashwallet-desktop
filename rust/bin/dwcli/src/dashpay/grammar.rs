@@ -102,6 +102,8 @@ fn value_type(cmd: &str, arg: &str) -> Option<Ty> {
         (_, "input_file" | "faucet_proof_file" | "avatar_file") => Ty::Path,
         (_, "display_name" | "alias" | "text") => Ty::Text(256),
         (_, "public_message" | "note") => Ty::Text(1024),
+        // `profile show`'s JSON: texts, an avatar URL (2048) and its hashes.
+        ("set", "baseline") => Ty::Text(4096),
         _ => return None,
     })
 }
@@ -629,6 +631,15 @@ mod tests {
                 "/dev/shm/p.hex",
             ],
             &["profile", "get", "--identity", ID1],
+            &[
+                "profile",
+                "set",
+                "--display-name",
+                "Al",
+                "--baseline",
+                r#"{"display_name":"Al","public_message":null,"avatar_url":null,"avatar_hash":null,"avatar_fingerprint":null,"updated_at":null}"#,
+            ],
+            &["profile", "set", "--display-name", "Al", "--force"],
             &[
                 "profile",
                 "set",
