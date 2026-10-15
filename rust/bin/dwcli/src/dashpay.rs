@@ -1655,9 +1655,11 @@ fn pay_contact(
         .block_on(dp.accept_request(identity, contact, lease.clone()))
         .map_err(CliError::from)
         .map(|_| {
-            let payment = (|| -> Result<Value, EngineError> {
-                let prepared = ctx.block_on(draft.prepare(lease.clone()))?;
-                let outcome = ctx.block_on(draft.broadcast(Arc::clone(&prepared)))?;
+            let payment = (|| {
+                let prepared =
+                    (ctx.block_on(draft.prepare(lease.clone()))).map_err(PaymentFailed::Prepare)?;
+                let outcome = (ctx.block_on(draft.broadcast(Arc::clone(&prepared))))
+                    .map_err(PaymentFailed::Broadcast)?;
                 Ok(paid(json!(request), &prepared, &outcome.txid))
             })();
             after_accept(json!(request), payment)
@@ -1667,20 +1669,30 @@ fn pay_contact(
     result
 }
 
+/// The step of "Accept and pay"'s payment that failed.
+enum PaymentFailed {
+    Prepare(EngineError),
+    Broadcast(EngineError),
+}
+
 /// "Accept and pay"'s result once the accept went through (D15): the
 /// payment's with `accepted`, or, when the payment failed, a partial
 /// success: the contact accepted, the payment's error and what to do next.
 /// Not an error: the accept stands, and `--accept` again would be refused.
-fn after_accept(grant: Value, payment: Result<Value, EngineError>) -> Value {
-    let e = match payment {
+fn after_accept(grant: Value, payment: Result<Value, PaymentFailed>) -> Value {
+    let (e, unknown) = match payment {
         Ok(mut paid) => {
             paid["accepted"] = json!(true);
             return paid;
         }
-        Err(e) => e,
+        // Nothing was recorded or sent before the broadcast.
+        Err(PaymentFailed::Prepare(e)) => (e, false),
+        Err(PaymentFailed::Broadcast(e)) => {
+            let unknown = e.is_task_panic()
+                || matches!(e, EngineError::Send(SendFailure::BroadcastUnknown { .. }));
+            (e, unknown)
+        }
     };
-    let unknown =
-        e.is_task_panic() || matches!(e, EngineError::Send(SendFailure::BroadcastUnknown { .. }));
     let e = CliError::from(e);
     let next = if unknown {
         "the payment may have gone out: the contact is locked until \
@@ -1939,7 +1951,7 @@ mod tests {
         let grant = json!({"max_duffs": 1});
         let cancelled = EngineError::Send(SendFailure::Cancelled);
         let message = cancelled.to_string();
-        let r = after_accept(grant.clone(), Err(cancelled));
+        let r = after_accept(grant.clone(), Err(PaymentFailed::Broadcast(cancelled)));
         assert_eq!(r["accepted"], json!(true));
         assert_eq!(r["paid"], json!(false));
         assert_eq!(r["grant"], grant);
@@ -1950,8 +1962,16 @@ mod tests {
         let unknown = EngineError::Send(SendFailure::BroadcastUnknown {
             reason: "no verdict".into(),
         });
-        let r = after_accept(grant.clone(), Err(unknown));
+        let r = after_accept(grant.clone(), Err(PaymentFailed::Broadcast(unknown)));
         assert_eq!(r["paid"], json!(false));
+        assert!(r["next"].as_str().unwrap().contains("resolve-lock"));
+
+        // A panic in `prepare` sent nothing: pay again.
+        let panicked = EngineError::Internal(dw_engine::TASK_PANICKED.into());
+        let r = after_accept(grant.clone(), Err(PaymentFailed::Prepare(panicked)));
+        assert!(r["next"].as_str().unwrap().contains("without --accept"));
+        let panicked = EngineError::Internal(dw_engine::TASK_PANICKED.into());
+        let r = after_accept(grant.clone(), Err(PaymentFailed::Broadcast(panicked)));
         assert!(r["next"].as_str().unwrap().contains("resolve-lock"));
 
         let r = after_accept(grant, Ok(json!({"txid": "t"})));

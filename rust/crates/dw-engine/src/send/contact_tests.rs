@@ -902,15 +902,50 @@ fn a_row_on_disk_holds_the_contact_at_the_hand_off() {
     assert_eq!(seam.entered.load(Ordering::SeqCst), 0);
     assert_eq!(
         f.rows(),
-        vec![(b58(BOB), held)],
+        vec![(b58(BOB), held.clone())],
         "the other payment's row stays"
     );
     assert_eq!(f.reserved(BOB).map(|a| a.to_string()), Some(paid(&p)));
+    // The row is the contact's lock in memory again, so it can be settled.
+    assert_eq!(f.lock(BOB).unwrap().txid, held);
+    assert_eq!(f.resolve(BOB), LockResolution::Unknown);
 }
 
-/// D9/D23: a load settles a loaded lock on positive evidence: here the
-/// fence's `Sent`, for a payment whose settlement never ran (its wallet
-/// was unloaded meanwhile).
+/// D23: the hand-off waits for the payment's row: while its write is
+/// held, nothing reaches a peer.
+#[test]
+fn a_held_record_holds_the_hand_off() {
+    let f = fixture(false);
+    let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Accept);
+    let p = (f.engine)
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    let broadcast = f
+        .session
+        .rt
+        .spawn(crate::coins::HOLD_APPDB_JOB.scope(Arc::clone(&pause), {
+            let (d, p) = (Arc::clone(&d), Arc::clone(&p));
+            async move { d.broadcast_inner(p).await }
+        }));
+    wait_until(|| pause.reached.load(Ordering::SeqCst));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(
+        seam.entered.load(Ordering::SeqCst),
+        0,
+        "no hand-off before the row"
+    );
+    assert!(f.rows().is_empty());
+    pause.release.notify_one();
+    f.engine.block_on(broadcast).unwrap().unwrap();
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 1);
+    assert!(f.rows().is_empty(), "accepted: the row went");
+}
+
+/// D9/D23: a load settles a loaded lock on positive evidence, here the
+/// fence's `Sent` (as for a payment whose own settlement was skipped, its
+/// wallet unloaded meanwhile), and keeps one with none.
 #[test]
 fn a_load_settles_a_lock_on_the_evidence() {
     let f = fixture(false);

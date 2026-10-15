@@ -138,9 +138,10 @@ impl NetworkSession {
     /// Loads the wallet's locks from app.sqlite into memory, where a lock
     /// held already stays, then settles each loaded one that has positive
     /// evidence (D9, D23): a payment that may have gone out before a restart
-    /// or an unload is locked until it is `Sent` or provably `NotSent`. A
-    /// pair whose first broadcast is under way here is left to it. A read
-    /// error keeps memory as it was; a row that does not parse is skipped.
+    /// or an unload is locked until it is `Sent` or provably `NotSent`. The
+    /// row of a payment whose first broadcast is under way here is left to
+    /// that broadcast's settlement. A read error keeps memory as it was; a
+    /// row that does not parse is skipped.
     pub(crate) async fn load_payment_locks(&self, id: WalletId) {
         let _rows = self.platform.payments.rows.lock().await;
         let wallet = id.to_string();
@@ -164,14 +165,15 @@ impl NetworkSession {
                 ) else {
                     continue;
                 };
+                if in_flight.get(&(id, pair)) == Some(&row.txid) {
+                    continue;
+                }
                 (guard(&payments.inputs).entry(txid)).or_insert_with(|| decode_inputs(&row.inputs));
                 wallet.entry(pair).or_insert(PaymentLock {
                     txid: row.txid,
                     since: row.since,
                 });
-                if !in_flight.contains_key(&(id, pair)) {
-                    loaded.push((pair, txid));
-                }
+                loaded.push((pair, txid));
             }
         }
         for (pair, txid) in loaded {
@@ -244,8 +246,10 @@ impl NetworkSession {
     /// what a restart or a reload reads back as the pair's lock, so no
     /// payment that may have gone out lives in memory only. Refused, and
     /// nothing written, while another payment's row holds the pair
-    /// (`contact.payment_locked`) or when the write fails: the hand-off
-    /// must not happen. Memory is left to the outcome (`lock_payment`).
+    /// (`contact.payment_locked`; that row becomes the pair's lock in memory,
+    /// for `payment_lock` and `resolve_payment_lock`, should memory have
+    /// lost it) or when the write fails: the hand-off must not happen.
+    /// Memory is otherwise left to the outcome (`lock_payment`).
     pub(crate) async fn record_payment(
         &self,
         id: WalletId,
@@ -262,13 +266,33 @@ impl NetworkSession {
             inputs: encode_inputs(inputs),
         };
         let wallet = id.to_string();
-        match self
-            .appdb_op(move |db| db.set_dp_payment_lock(&wallet, &row))
-            .await?
-        {
-            None => Ok(()),
-            Some(txid) => Err(ContactError::PaymentLocked { txid }.into()),
+        let held = self
+            .appdb_op(move |db| {
+                if db.set_dp_payment_lock(&wallet, &row)?.is_none() {
+                    return Ok(None);
+                }
+                let rows = db.dp_payment_locks(&wallet)?;
+                Ok((rows.into_iter())
+                    .find(|r| r.identity == row.identity && r.contact == row.contact))
+            })
+            .await?;
+        let Some(held) = held else {
+            return Ok(());
+        };
+        if let Ok(parsed) = held.txid.parse::<Txid>() {
+            (guard(&self.platform.payments.inputs).entry(parsed))
+                .or_insert_with(|| decode_inputs(&held.inputs));
         }
+        guard(&self.platform.payments.locks)
+            .entry(id)
+            .or_default()
+            .entry(pair)
+            .or_insert(PaymentLock {
+                txid: held.txid.clone(),
+                since: held.since,
+            });
+        self.signal_payments(id, &pair.0);
+        Err(ContactError::PaymentLocked { txid: held.txid }.into())
     }
 
     /// Locks `pair` behind `txid`, whose broadcast outcome is unknown

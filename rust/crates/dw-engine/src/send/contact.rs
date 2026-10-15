@@ -243,8 +243,9 @@ impl TxDraft {
 
     /// Before a contact payment's first hand-off: its lock row (D23). If it
     /// cannot be written, or another payment's holds the contact, nothing
-    /// is handed off: the payment is `Pending` again and its address back
-    /// with the contact.
+    /// is handed off: the payment is `Pending` again, its own row (should
+    /// the write have landed after all) dropped, and its address back with
+    /// the contact.
     pub(super) async fn record_contact(&self, prepared: &PreparedTx) -> Result<(), EngineError> {
         let Some((pair, address)) = &prepared.contact else {
             return Ok(());
@@ -254,6 +255,11 @@ impl TxDraft {
             .record_payment(self.wallet_id, *pair, &prepared.summary.txid, &inputs)
             .await;
         if recorded.is_err() {
+            // A write that committed yet reported an error must not leave
+            // a row behind for a payment never handed off.
+            (self.session)
+                .clear_payment_lock(self.wallet_id, *pair, &prepared.summary.txid)
+                .await;
             (self.session.platform.payments).keep(self.wallet_id, *pair, address.clone());
             *prepared.phase() = Phase::Pending;
         }

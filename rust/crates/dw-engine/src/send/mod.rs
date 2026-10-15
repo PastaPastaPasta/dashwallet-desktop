@@ -1309,7 +1309,12 @@ impl TxDraft {
         &self,
         prepared: Arc<PreparedTx>,
     ) -> Result<BroadcastOutcome, EngineError> {
-        let _attempt = prepared.attempts.lock().await;
+        // A contact payment's repeat waits for the attempt before it to
+        // settle the contact; any other overlap is refused below.
+        let _attempt = match prepared.contact {
+            Some(_) => Some(prepared.attempts.lock().await),
+            None => None,
+        };
         // A contact payment's first broadcast is under way until its
         // outcome settled the contact (`settle_contact`).
         let (first, _in_flight) = {
@@ -1812,8 +1817,8 @@ pub struct PreparedTx {
     /// key-wallet reservation, only the engine's pending spends.
     mixed: Option<Transaction>,
     phase: Mutex<Phase>,
-    /// One broadcast at a time, through its contact settlement: a repeat
-    /// waits for the attempt before it (DP3-01 D24).
+    /// A contact payment's broadcasts, one at a time through the contact's
+    /// settlement: a repeat waits for the attempt before it (DP3-01 D24).
     attempts: tokio::sync::Mutex<()>,
     /// Prepared under a lease: its hand-offs go through the dispatch
     /// fence, scoped to the lease, as this artifact (E0-04 §5.4).

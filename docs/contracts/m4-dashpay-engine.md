@@ -2623,11 +2623,11 @@ renames or reshapes them takes the next version bump:
       payment whose address went out is `send.prepared_tx_spent`.
     - **One at a time.** While a first broadcast to a contact is under way, every other payment to it is
       `contact.payment_locked{txid}` (`payment_lock` stays `None` until an unknown outcome locks it). Broadcasts of
-      one prepared payment run one at a time, each through its settlement of the lock (D24).
+      one prepared contact payment run one at a time, each through its settlement of the lock (D24).
     - **The record.** A first broadcast writes the payment's `dp_payment_lock` row (pair, txid, inputs) before the
       dispatch fence can hand it off; a failed write refuses the hand-off (`storage`, the payment still prepared,
-      its address with the contact), and another payment's row refuses it as `contact.payment_locked{txid}`: a
-      row is never replaced by another payment's. A definitely unsent first broadcast and an accepted one drop
+      its address with the contact), and another payment's row refuses it as `contact.payment_locked{txid}` and
+      becomes the contact's lock in memory: a row is never replaced by another payment's. A definitely unsent first broadcast and an accepted one drop
       the row (D23).
     - **The lock.** An unknown outcome sets the lock in memory (the row is there already, written again with the
       payment's inputs for `resolve_payment_lock`'s conflict evidence after a restart) and signals
