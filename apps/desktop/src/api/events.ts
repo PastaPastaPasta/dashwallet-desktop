@@ -6,6 +6,7 @@
 import type { InfiniteData, QueryClient, QueryKey } from "@tanstack/react-query";
 import type { Backend } from "./backend";
 import type { AppEvent } from "./generated/commands";
+import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRows } from "./generated/HistoryRows";
 import type { PlatformChangeName } from "./generated/PlatformChangeName";
 import { keys } from "./queries";
@@ -22,9 +23,11 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     case "walletRemoved":
     case "walletLoadChanged":
       return [keys.wallets];
+    // Sync ends `noIdentity`'s `waitingForSync` and sends no Platform signal (BL-153 D9); only
+    // statuses without an identity are re-read (bridgeEvents).
     case "spvStateChanged":
     case "sync":
-      return [keys.sync];
+      return [keys.sync, keys.dashpayStatusAll];
     case "balances":
       return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId)];
     case "historyChanged":
@@ -122,7 +125,9 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
       void client.invalidateQueries({ predicate: (q) => q.queryKey[0] !== keys.network[0] });
     } else
       for (const queryKey of stale) {
-        if (queryKey !== keys.lockReconcile) void client.invalidateQueries({ queryKey });
+        if (queryKey === keys.dashpayStatusAll)
+          void client.invalidateQueries({ queryKey, predicate: (q) => (q.state.data as DashPayStatus | undefined)?.kind === "noIdentity" });
+        else if (queryKey !== keys.lockReconcile) void client.invalidateQueries({ queryKey });
         else {
           const now = Date.now();
           if (reconcile === undefined) reconcileBy = now + RECONCILE_MAX_WAIT_MS;

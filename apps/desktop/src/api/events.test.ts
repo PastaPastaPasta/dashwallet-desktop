@@ -50,6 +50,10 @@ describe("event bridge", () => {
     for (const change of [{ domain: "contacts", identity: "i" }, { domain: "payments", identity: "i" }] as const)
       expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change })).toEqual([keys.dashpayAll, keys.historyAll("w"), keys.txDetailAll("w")]);
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "events", identity: "i" } })).toEqual([keys.dashpayAll]);
+    // The bring-up's outcome, and sync, move the DashPay status (BL-153 D8, D9).
+    expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "startup" } })).toEqual([keys.dashpayAll]);
+    expect(invalidationsFor({ kind: "spvStateChanged", network: "testnet", running: true })).toEqual([keys.sync, keys.dashpayStatusAll]);
+    expect(invalidationsFor({ kind: "sync", network: "testnet", status: {} as never })).toEqual([keys.sync, keys.dashpayStatusAll]);
     expect(invalidationsFor({ kind: "coinJoin", network: "testnet", walletId: "w" })).toEqual([]);
     const report = REPORT;
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "done", report } })).toEqual([keys.lockStatus, keys.lockReconcile]);
@@ -153,5 +157,19 @@ describe("event bridge", () => {
     emit({ kind: "historyChanged", network: "testnet", walletId: FIXTURE_WALLET_ID, txids: [] });
     expect(client.getQueryData<InfiniteData<HistoryRows, string | null>>(key)?.pages).toHaveLength(1);
     expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+  });
+
+  it("sync re-reads only the DashPay statuses without an identity (BL-153 D9)", async () => {
+    const client = new QueryClient();
+    client.setQueryData(keys.dashpayStatus("a"), { kind: "noIdentity", reason: "waitingForSync" });
+    client.setQueryData(keys.dashpayStatus("b"), { kind: "ready", main: "x" });
+    client.setQueryData(keys.identities("a"), []);
+    let emit: (e: AppEvent) => void = () => undefined;
+    const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
+    await bridgeEvents(fake, client);
+    emit({ kind: "spvStateChanged", network: "testnet", running: true });
+    expect(client.getQueryState(keys.dashpayStatus("a"))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
+    expect(client.getQueryState(keys.identities("a"))?.isInvalidated).toBe(false);
   });
 });

@@ -2,8 +2,8 @@
 // drives the production renderer in WebKitGTK. A fresh data root restores a wallet of the
 // testnet DashPay fixture (an identity with established contacts), the app syncs (`--sync`: SPV
 // and DashPay's bring-up), and the Contacts page must list them: the contact rows, the detail
-// slot, a sort, the local and the network search. Reads only: nothing is sent, accepted or
-// registered.
+// slot, a sort, the local and the network search, and (BL-153) the identity chip naming the
+// wallet's main username. Reads only: nothing is sent, accepted or registered.
 //
 //   DW_APP=… DWCLI=… TAURI_DRIVER=… DW_TESTNET_FIXTURE=<dir> node e2e-tauri/contacts.ts
 //
@@ -98,6 +98,16 @@ async function run(passphrase: string, wd: WebDriver, step: (s: string) => void)
     return EXPECT.every((u) => mine.some((r) => isRow(r, u) && !r.chips.includes("Unverified"))) ? rows : undefined;
   });
   result.rows = rows;
+  // The identity chip names the main identity once DashPay's status has it (BL-153), with the
+  // username `fixture.json` expects for the wallet.
+  const fixture = JSON.parse(readFileSync(join(FIXTURE, "fixture.json"), "utf8")) as Record<string, { expected_main_name?: string }>;
+  const expected = fixture[WALLET]?.expected_main_name;
+  if (!expected) throw new Error(`fixture.json names no expected_main_name for wallet ${WALLET}`);
+  result.chip = await poll(DASHPAY_TIMEOUT_MS, `the identity chip to read @${expected}`, async () => {
+    const text = (await wd.script<string | null>(`return document.querySelector('${tid("toolbar-chip")}')?.textContent ?? null`)) ?? undefined;
+    return text?.includes(`@${expected}`) ? text : undefined;
+  });
+  step(`identity chip: ${String(result.chip)}`);
   result.hint = await wd.script<string | null>(`return document.querySelector('${tid("contacts-setup-hint")}')?.textContent ?? null`);
   await wd.screenshot("2-contacts-list");
   step(`listed ${rows.length} row(s): ${rows.map((r) => `${r.group}: ${r.name}${r.username ? ` ${r.username}` : ""}`).join("; ")}`);

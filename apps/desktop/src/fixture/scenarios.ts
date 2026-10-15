@@ -360,6 +360,18 @@ const SCENARIOS = {
     attributePayments(w);
     return w;
   },
+  /** "alice" contested: her identity holds the temporary "alice007" while masternodes vote. The
+   * chip says "@alice · Pending"; Contacts, the bell and the badge stay (BL-153 D11). */
+  "dashpay-contest-pending": (t) => {
+    const w = base(t);
+    const world = registered();
+    w.dashpay = {
+      ...world,
+      status: { kind: "contestPending", identity: IDENTITY.alice, label: "alice", endsAt: 1_900_000_000 },
+      identities: world.identities.map((i) => ({ ...i, names: ["alice007"], mainName: "alice007" })),
+    };
+    return w;
+  },
   /** "alice" before her first contact: the Contacts empty state (DP2-07). */
   "dashpay-contacts-empty": (t) => {
     const w = base(t);

@@ -4,7 +4,6 @@
 import { describe, expect, it } from "vitest";
 import type { ContactList } from "../api/generated/ContactList";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
-import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { UserHit } from "../api/generated/UserHit";
 import {
   avatarLetters,
@@ -58,19 +57,14 @@ const hit = (n: number, relation: UserHit["relation"] = "stranger"): UserHit => 
 
 describe("Contacts view model", () => {
   it("IOS-072 shows the main identity's contacts, a contested identity's, and the Join prompt without one", () => {
-    expect(contactsOwner({ kind: "ready", main: "M" }, undefined)).toEqual({ kind: "identity", identity: "M" });
-    expect(contactsOwner({ kind: "contestPending", identity: "C", label: "al", endsAt: null }, undefined)).toEqual({ kind: "identity", identity: "C" });
-    expect(contactsOwner({ kind: "noIdentity", reason: "watchOnly" }, undefined)).toEqual({ kind: "join", reason: "watchOnly" });
-    expect(contactsOwner({ kind: "registering", draft: "1" }, undefined)).toEqual({ kind: "registering" });
-    expect(contactsOwner(undefined, undefined)).toEqual({ kind: "starting" });
-    // (A status that cannot be read is the hook's `error`.)
-    const main = { identity: "S", isMain: true } as IdentitySummary;
-    expect(contactsOwner({ kind: "startupIncomplete", startup: "partialAccountsPending" }, [main])).toEqual({ kind: "identity", identity: "S" });
-    expect(contactsOwner({ kind: "startupIncomplete", startup: "starting" }, [])).toEqual({ kind: "starting" });
-    // No status from the engine (its stub, D19): the identity list decides.
-    expect(contactsOwner(null, [main])).toEqual({ kind: "identity", identity: "S" });
-    expect(contactsOwner(null, [])).toEqual({ kind: "join", reason: null });
-    expect(contactsOwner(null, undefined)).toEqual({ kind: "starting" });
+    expect(contactsOwner({ kind: "ready", main: "M" })).toEqual({ kind: "identity", identity: "M" });
+    expect(contactsOwner({ kind: "contestPending", identity: "C", label: "al", endsAt: null })).toEqual({ kind: "identity", identity: "C" });
+    expect(contactsOwner({ kind: "noIdentity", reason: "watchOnly" })).toEqual({ kind: "join", reason: "watchOnly" });
+    expect(contactsOwner({ kind: "registering", draft: "1" })).toEqual({ kind: "registering" });
+    expect(contactsOwner(undefined)).toEqual({ kind: "starting" });
+    // (A status that cannot be read is the hook's `error`.) The engine says `startupIncomplete`
+    // only while no identity is on file (BL-153 D2).
+    expect(contactsOwner({ kind: "startupIncomplete", startup: "partialAccountsPending" })).toEqual({ kind: "starting" });
   });
 
   it("IOS-072 groups requests, contacts, pending and hidden in that order, with iOS's titles, empty ones dropped", () => {

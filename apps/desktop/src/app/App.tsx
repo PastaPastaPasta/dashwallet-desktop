@@ -202,7 +202,7 @@ function Shell() {
         <Toolbar
           wallets={wallets.data ?? []}
           wallet={wallet}
-          chip={chipState(dashpay.status, dashpay.mainName)}
+          chip={chipState(dashpay.status, dashpay.main)}
           unread={dashpay.unread}
           canLock={canLock}
           onLock={lockNow}
