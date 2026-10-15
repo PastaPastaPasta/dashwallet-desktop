@@ -761,6 +761,22 @@ impl NetworkSession {
         payee_in(contacts.as_ref(), false, pair)
     }
 
+    /// The profile the contacts read shows for `user` under the first of
+    /// `owners` that holds one (DP4-01, `DashPay::profile`): `Some(None)`
+    /// when none does, `None` when the read is stale with no snapshot yet.
+    /// The caller is admitted.
+    pub(super) fn shown_profile(
+        &self,
+        id: WalletId,
+        user: &Identifier,
+        owners: &[Identifier],
+    ) -> Result<Option<Option<Profile>>, EngineError> {
+        let (contacts, _) = self.read_contacts(id)?;
+        Ok(contacts.map(|contacts| {
+            (owners.iter()).find_map(|owner| contacts.get(owner)?.get(user)?.profile.clone())
+        }))
+    }
+
     /// `DashPay::pending_setup_count`: over every identity of the wallet.
     /// Stale with no snapshot: `platform.unavailable`.
     pub(super) fn pending_setup(&self, id: WalletId) -> Result<u32, ContactError> {

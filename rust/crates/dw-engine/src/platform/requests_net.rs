@@ -1,17 +1,30 @@
-//! What the contact-request writes ask of Platform, behind a seam (DP2-02,
-//! as `names_net.rs`): [`SdkRequests`] asks the SDK and platform-wallet;
-//! `requests_tests.rs` scripts it, to reach every refusal and write
-//! boundary without a network. Not part of the facade.
+//! What the contact-request writes (and DP4-01's profile write) ask of
+//! Platform, behind a seam (DP2-02, as `names_net.rs`): [`SdkRequests`] asks
+//! the SDK and platform-wallet; `requests_tests.rs` scripts it, to reach
+//! every refusal and write boundary without a network. Not part of the
+//! facade.
 
-use dash_sdk::platform::Fetch;
+use dash_sdk::drive::query::{WhereClause, WhereOperator};
+use dash_sdk::platform::transition::put_document::PutDocument;
+use dash_sdk::platform::{DocumentQuery, Fetch, FetchMany};
 use dash_sdk::query_types::IdentityBalance;
+use dpp::data_contract::DataContract;
+use dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+use dpp::document::{Document, DocumentV0, DocumentV0Getters, INITIAL_REVISION};
 use dpp::identity::{Identity, IdentityPublicKey};
+use dpp::platform_value::platform_value;
 use dpp::prelude::Identifier;
+use dpp::system_data_contracts::dashpay_contract::ID as DASHPAY_ID;
 use platform_wallet::{
     AutoAcceptProofSource, ContactInfoPublishOutcome, ContactRequest, PlatformWallet,
 };
 
 use super::super::contacts::PrivateDetails;
+use super::super::profiles::{
+    PROFILE, ProfileDocument, ProfileProperties, ProfileSchema, schema_of,
+};
+use super::super::registration_flow::dashpay_contract;
 use super::{Arc, Future, PlatformError, VaultContactCrypto, VaultIdentitySigner};
 
 /// What a contact-request write asks of Platform.
@@ -83,6 +96,28 @@ pub(crate) trait RequestNet: Send + Sync {
         signer: &VaultIdentitySigner,
         crypto: &VaultContactCrypto,
     ) -> impl Future<Output = Result<ContactInfoPublishOutcome, PlatformError>> + Send;
+    /// `owner`'s DashPay `profile` document on Platform, if any (DP4-01;
+    /// one per owner, the contract's unique `$ownerId` index).
+    fn profile_document(
+        &self,
+        owner: Identifier,
+    ) -> impl Future<Output = Result<Option<ProfileDocument>, PlatformError>> + Send;
+    /// The `profile` document type of the DashPay contract Platform runs,
+    /// proved; `None` when it has none (D21).
+    fn profile_schema(
+        &self,
+    ) -> impl Future<Output = Result<Option<ProfileSchema>, PlatformError>> + Send;
+    /// Puts `owner`'s profile with exactly `properties`, signed with `key`:
+    /// a replacement of `current` (its id and revision) at the next
+    /// revision, else a creation.
+    fn put_profile(
+        &self,
+        owner: Identifier,
+        current: Option<(Identifier, u64)>,
+        properties: ProfileProperties,
+        key: &IdentityPublicKey,
+        signer: &VaultIdentitySigner,
+    ) -> impl Future<Output = Result<(), PlatformError>> + Send;
 }
 
 pub(crate) struct SdkRequests(pub(crate) Arc<dash_sdk::Sdk>);
@@ -186,5 +221,77 @@ impl RequestNet for SdkRequests {
                 crypto,
             )
             .await?)
+    }
+
+    async fn profile_document(
+        &self,
+        owner: Identifier,
+    ) -> Result<Option<ProfileDocument>, PlatformError> {
+        let query = DocumentQuery::new(dashpay_contract()?, PROFILE)
+            .map_err(|e| PlatformError::Internal {
+                detail: format!("the profile query: {e}"),
+            })?
+            .with_where(WhereClause {
+                field: "$ownerId".into(),
+                operator: WhereOperator::Equal,
+                value: platform_value!(owner),
+            })
+            .with_limit(1);
+        let documents = Document::fetch_many(&self.0, query).await?;
+        Ok(documents
+            .into_values()
+            .flatten()
+            .next()
+            .map(|d| ProfileDocument {
+                id: d.id(),
+                revision: d.revision().unwrap_or(INITIAL_REVISION),
+                properties: d.properties().clone(),
+            }))
+    }
+
+    async fn profile_schema(&self) -> Result<Option<ProfileSchema>, PlatformError> {
+        let contract = DataContract::fetch(&self.0, DASHPAY_ID).await?;
+        Ok(contract.and_then(|c| {
+            let profile = c.document_type_for_name(PROFILE).ok()?;
+            Some(schema_of(profile.properties()))
+        }))
+    }
+
+    async fn put_profile(
+        &self,
+        owner: Identifier,
+        current: Option<(Identifier, u64)>,
+        properties: ProfileProperties,
+        key: &IdentityPublicKey,
+        signer: &VaultIdentitySigner,
+    ) -> Result<(), PlatformError> {
+        let contract = dashpay_contract()?;
+        let document_type = (contract.document_type_for_name(PROFILE))
+            .map_err(|e| PlatformError::Internal {
+                detail: format!("the profile document type: {e}"),
+            })?
+            .to_owned_document_type();
+        // A creation's id is drawn by the SDK with its entropy.
+        let (id, revision) =
+            current.map_or((Identifier::default(), None), |(id, r)| (id, Some(r + 1)));
+        let document = Document::V0(DocumentV0 {
+            id,
+            owner_id: owner,
+            properties,
+            revision,
+            ..DocumentV0::default()
+        });
+        document
+            .put_to_platform_and_wait_for_response(
+                &self.0,
+                document_type,
+                None,
+                key.clone(),
+                None,
+                signer,
+                None,
+            )
+            .await?;
+        Ok(())
     }
 }

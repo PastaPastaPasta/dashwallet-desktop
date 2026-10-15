@@ -319,6 +319,8 @@ impl NetworkSession {
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;
             this.load_payment_locks(id).await;
+            // Its contacts' profiles are fetched on its next pass (DP4-01 D12).
+            this.expire_contact_profiles(&live.manager, id).await;
             this.load_history_for(vec![id]).await?;
             this.hub.pump.mark_history(id, None);
             this.hub.pump.mark_balances(id);
