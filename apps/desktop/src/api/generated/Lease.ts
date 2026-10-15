@@ -7,27 +7,27 @@ import type { LeaseState } from "./LeaseState";
  * A lease as the UI sees it (E0-04 §4.6, §16.5): the copy C1–C7 is chosen
  * from it.
  */
-export type Lease = { 
+export type Lease = {
 /**
  * The first 8 hex digits of the id; for logs and the UI only.
  */
-id: string, walletId: string, flow: FlowKindName, state: LeaseState, ownKey: boolean, 
+id: string, walletId: string, flow: FlowKindName, state: LeaseState, ownKey: boolean,
 /**
  * While an own key is held: seconds until it is dropped.
  */
-keyExpiresInSecs: number | null, 
+keyExpiresInSecs: number | null,
 /**
  * E0-04 §16.5's single definition.
  */
-fundsCommitted: boolean, 
+fundsCommitted: boolean,
 /**
  * At most [`MAX_LEASE_BUDGETS`], one per purpose.
  */
-budgets: Array<Budget>, 
+budgets: Array<Budget>,
 /**
  * Permits held now.
  */
-inFlight: number, 
+inFlight: number,
 /**
  * A library call of the flow is running; selects the copy.
  */

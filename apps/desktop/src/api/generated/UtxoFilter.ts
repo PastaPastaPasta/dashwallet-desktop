@@ -3,7 +3,7 @@
 /**
  * Which coins `utxos` lists.
  */
-export type UtxoFilter = { includeLocked: boolean, 
+export type UtxoFilter = { includeLocked: boolean,
 /**
  * Only fully mixed coins (QT-071).
  */

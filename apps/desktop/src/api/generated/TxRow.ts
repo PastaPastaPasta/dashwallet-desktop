@@ -7,19 +7,19 @@ import type { TxTypeName } from "./TxTypeName";
 /**
  * One dash-qt history record.
  */
-export type TxRow = { txid: string, recordIndex: number, txType: TxTypeName, category: TxCategoryName, status: TxStatusInfo, 
+export type TxRow = { txid: string, recordIndex: number, txType: TxTypeName, category: TxCategoryName, status: TxStatusInfo,
 /**
  * UNIX seconds.
  */
-timestamp: number | null, blockHeight: number | null, 
+timestamp: number | null, blockHeight: number | null,
 /**
  * Signed duffs.
  */
-amount: number, fee: number | null, address: string | null, label: string | null, countsTowardBalance: boolean, 
+amount: number, fee: number | null, address: string | null, label: string | null, countsTowardBalance: boolean,
 /**
  * The record involves a watch-only address.
  */
-involvesWatchOnly: boolean, 
+involvesWatchOnly: boolean,
 /**
  * The DashPay contact paid or paying (DP3-02); absent when the record
  * is not a contact payment.

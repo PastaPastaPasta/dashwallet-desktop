@@ -5,32 +5,32 @@ import type { OutPoint } from "./OutPoint";
  * The dash-qt details-dialog fields `TxDetails` lacks, and which actions
  * the sheet enables.
  */
-export type TxDetailExtrasInfo = { txid: string, isCoinbase: boolean, 
+export type TxDetailExtrasInfo = { txid: string, isCoinbase: boolean,
 /**
  * Sum of the outputs paying this wallet, duffs.
  */
-totalCredit: number, 
+totalCredit: number,
 /**
  * Sum of this wallet's inputs; `null` when an input value is unknown.
  */
-totalDebit: number | null, 
+totalDebit: number | null,
 /**
  * Signed duffs.
  */
-net: number, 
+net: number,
 /**
  * Immature coinbase: blocks until it matures.
  */
-maturesIn: number | null, 
+maturesIn: number | null,
 /**
  * Whether a peer announced it; `null` unless the engine saw an
  * announcement since start (SPV sees no mempool).
  */
-inMempool: boolean | null, abandoned: boolean, canAbandon: boolean, canResend: boolean, 
+inMempool: boolean | null, abandoned: boolean, canAbandon: boolean, canResend: boolean,
 /**
  * Dust-locked outputs of this transaction.
  */
-dustLockedOutputs: Array<OutPoint>, 
+dustLockedOutputs: Array<OutPoint>,
 /**
  * UNIX seconds the engine last announced it (send or resend).
  */

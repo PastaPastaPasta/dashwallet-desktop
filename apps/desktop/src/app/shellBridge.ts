@@ -11,7 +11,7 @@ import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { UriRejected } from "../api/generated/UriRejected";
 import { inTauri, tauriTools } from "../api/tauri";
 import { showToast } from "../components/toast";
-import { navigate, ui } from "./ui";
+import { navigate, openPayForm, ui } from "./ui";
 
 const PAYMENT_REJECTED: Record<UriRejected["kind"], string> = {
   doubleSlash: "This payment link starts with dash:// — Dash links start with dash: alone",
@@ -86,15 +86,11 @@ export function applyLink(route: LinkRoute) {
   switch (route.kind) {
     case "pay": {
       const { uri, username } = route;
-      navigate("pay", {
-        payTab: "address",
-        payPrefill: { address: uri.address, amount: uri.amount, label: uri.label, message: uri.message, username },
-        payLinks: ui.get().payLinks + 1,
-      });
+      openPayForm({ payPrefill: { address: uri.address, amount: uri.amount, label: uri.label, message: uri.message, username } });
       break;
     }
     case "scanQr":
-      navigate("pay", { payTab: "address", payPrefill: null, payLinks: ui.get().payLinks + 1 });
+      openPayForm();
       break;
     case "addContact":
       navigate("contacts", { contactPrefill: { identity: route.identity, username: route.username } });

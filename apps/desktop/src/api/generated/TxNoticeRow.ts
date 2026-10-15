@@ -4,11 +4,11 @@ import type { TxTypeName } from "./TxTypeName";
 /**
  * One notification row (one per dash-qt record).
  */
-export type TxNoticeRow = { txid: string, recordIndex: number, 
+export type TxNoticeRow = { txid: string, recordIndex: number,
 /**
  * Signed duffs; positive is "Incoming transaction".
  */
-amount: number, timestamp: number | null, txType: TxTypeName, address: string | null, label: string | null, 
+amount: number, timestamp: number | null, txType: TxTypeName, address: string | null, label: string | null,
 /**
  * A CoinJoin mixing, denomination or collateral transaction; hidden
  * unless "show CoinJoin popups" is on.

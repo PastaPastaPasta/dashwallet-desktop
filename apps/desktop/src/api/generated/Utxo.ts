@@ -4,27 +4,27 @@ import type { OutPoint } from "./OutPoint";
 /**
  * One row of the coin control list.
  */
-export type Utxo = { outpoint: OutPoint, address: string, amount: number, confirmations: number, blockHeight: number | null, 
+export type Utxo = { outpoint: OutPoint, address: string, amount: number, confirmations: number, blockHeight: number | null,
 /**
  * Block or first-seen time, UNIX seconds.
  */
-timestamp: number | null, instantLocked: boolean, chainLocked: boolean, 
+timestamp: number | null, instantLocked: boolean, chainLocked: boolean,
 /**
  * Locked by the user (dash-qt "Lock unspent").
  */
-userLocked: boolean, 
+userLocked: boolean,
 /**
  * Reserved by a prepared, not yet broadcast transaction.
  */
-reserved: boolean, label: string | null, isChange: boolean, isCoinbase: boolean, 
+reserved: boolean, label: string | null, isChange: boolean, isCoinbase: boolean,
 /**
  * A CoinJoin denomination output.
  */
-coinjoinDenominated: boolean, 
+coinjoinDenominated: boolean,
 /**
  * Completed mixing rounds; `null` when not denominated or unknown.
  */
-coinjoinRounds: number | null, 
+coinjoinRounds: number | null,
 /**
  * Spendable now: mature, not locked or reserved, keys available.
  */

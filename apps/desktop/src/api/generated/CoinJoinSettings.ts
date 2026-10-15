@@ -4,31 +4,31 @@
  * The CoinJoin options (Options, CoinJoin, QT-046). Global for the
  * network; mixing state is per wallet (QT-049).
  */
-export type CoinJoinSettings = { 
+export type CoinJoinSettings = {
 /**
  * `enablecoinjoin`, default on.
  */
-enabled: boolean, 
+enabled: boolean,
 /**
  * `coinjoinmultisession`, default off.
  */
-multiSession: boolean, 
+multiSession: boolean,
 /**
  * `coinjoinsessions`, 1..=10, default 4.
  */
-maxSessions: number, 
+maxSessions: number,
 /**
  * `coinjoinrounds`, 2..=16, default 4.
  */
-rounds: number, 
+rounds: number,
 /**
  * `coinjoinamount`, whole DASH, 2..=21,000,000, default 1000.
  */
-targetAmountDash: number, 
+targetAmountDash: number,
 /**
  * `coinjoindenomsgoal`, 10..=`denomsHardCap`, default 50.
  */
-denomsGoal: number, 
+denomsGoal: number,
 /**
  * `coinjoindenomshardcap`, 10..=100,000, default 300.
  */

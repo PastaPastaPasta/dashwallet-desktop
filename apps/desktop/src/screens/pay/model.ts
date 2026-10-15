@@ -10,9 +10,11 @@ import type { CoinSource } from "../../api/generated/CoinSource";
 import type { FeeMode } from "../../api/generated/FeeMode";
 import type { LockStatus } from "../../api/generated/LockStatus";
 import type { PreparedTxSummary } from "../../api/generated/PreparedTxSummary";
+import type { PsbtAnalysis } from "../../api/generated/PsbtAnalysis";
 import type { Recipient } from "../../api/generated/Recipient";
 import type { TxEstimate } from "../../api/generated/TxEstimate";
 import type { OutPoint } from "../../api/generated/OutPoint";
+import type { Utxo } from "../../api/generated/Utxo";
 import { formatWithUnit, type Chain, type Unit } from "../../format/amount";
 
 /** The coins a payment may use (coin control, U-03 D7). */
@@ -43,6 +45,16 @@ export const outpointKey = (o: OutPoint) => `${o.txid}:${o.vout}`;
 export function outpointOf(key: string): OutPoint {
   const i = key.lastIndexOf(":");
   return { txid: key.slice(0, i), vout: Number(key.slice(i + 1)) };
+}
+
+/** Why a coin cannot be chosen, or `null` when it can (Pay's coin control and Tools ▸ Coin
+ * Selection, U-05 D19). */
+export function notSelectable(u: Utxo): string | null {
+  if (u.spendable) return null;
+  if (u.reserved) return "Reserved by a payment in progress";
+  if (u.userLocked) return "Locked";
+  if (u.isCoinbase) return "Immature";
+  return "Not spendable";
 }
 
 export function coinSource(a: Advanced): CoinSource {
@@ -253,6 +265,26 @@ export function keepsPromise(c: Confirmed, s: PreparedTxSummary): boolean {
     change === (estimate.change ?? 0) &&
     s.totalDebit === c.total - back
   );
+}
+
+/** Create Unsigned's PSBT keeps the sheet's promise (U-05 D37): `create_unsigned` plans again, so
+ * the PSBT is checked before it is copied or saved. Every output is the payment to the address
+ * the sheet showed, of the amount it showed, or change of the amount it showed where it said (the
+ * wallet's own, or the custom address); the fee is the confirmed one; and it spends as many coins
+ * as the estimate (an unsigned PSBT's inputs are all unsigned). With the fee and every output
+ * fixed, the coins' total is too; chosen coins are spent exactly by the engine (U-03 D7). */
+export function unsignedKeepsPromise(c: Confirmed, a: PsbtAnalysis): boolean {
+  const { estimate } = c;
+  // The payment is taken out first, so a custom change address equal to the recipient's still
+  // leaves the change to check.
+  const paid = a.outputs.findIndex((o) => o.address === c.recipient.address && o.amount === estimate.totalSent);
+  if (paid < 0) return false;
+  const rest = a.outputs.filter((_, i) => i !== paid);
+  const change =
+    estimate.change === null
+      ? rest.length === 0
+      : rest.length === 1 && rest[0].amount === estimate.change && (c.changeAddress === null ? rest[0].isMine : rest[0].address === c.changeAddress);
+  return change && a.fee === estimate.fee && a.unsignedInputs === estimate.inputCount;
 }
 
 // ---------------------------------------------------------------- the result

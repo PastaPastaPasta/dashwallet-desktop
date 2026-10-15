@@ -3,7 +3,7 @@
 /**
  * Balance buckets in duffs.
  */
-export type Balances = { confirmed: number, unconfirmed: number, immature: number, locked: number, total: number, 
+export type Balances = { confirmed: number, unconfirmed: number, immature: number, locked: number, total: number,
 /**
  * The fully mixed CoinJoin balance once computed; before that, the
  * spendable balance of the CoinJoin accounts.

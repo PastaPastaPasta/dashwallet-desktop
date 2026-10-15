@@ -125,6 +125,15 @@ codes! {
         /// window, the event loop is gone; `shell_sync`, U-02 D27): the
         /// renderer keeps secrets hidden.
         ScreenProtection = "app.screen_protection",
+        /// No file dialog could be shown, or the chosen path is not UTF-8
+        /// (U-05 D2).
+        FileDialog = "app.file_dialog",
+        /// The chosen file is at or above its purpose's limit (a PSBT: 100 MiB).
+        FileTooLarge = "app.file_too_large",
+        /// The chosen file could not be read, or is not a regular file.
+        FileRead = "app.file_read",
+        /// The file could not be written where the user chose.
+        FileWrite = "app.file_write",
     }
 }
 

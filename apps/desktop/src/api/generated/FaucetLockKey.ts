@@ -4,7 +4,7 @@
  * An asset-lock key the engine derived for the faucet's
  * `POST /api/asset-lock-proof`.
  */
-export type FaucetLockKey = { key: string, 
+export type FaucetLockKey = { key: string,
 /**
  * The compressed secp256k1 public key, 66 hex characters.
  */

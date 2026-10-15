@@ -3,7 +3,7 @@
 /**
  * The wallet an import registered.
  */
-export type CoreImportReport = { walletId: string, labelsImported: number, keysNotImported: number, scriptsNotImported: number, 
+export type CoreImportReport = { walletId: string, labelsImported: number, keysNotImported: number, scriptsNotImported: number,
 /**
  * The seed was derived with Dash Core's BIP39 rules.
  */

@@ -4,19 +4,19 @@ import type { GrantPurposeSpec } from "./GrantPurposeSpec";
 /**
  * A single authorization. Grants live in engine memory only.
  */
-export type AuthGrant = { 
+export type AuthGrant = {
 /**
  * Opaque id passed to the call the grant authorizes.
  */
-id: string, purpose: GrantPurposeSpec, 
+id: string, purpose: GrantPurposeSpec,
 /**
  * The wallet the grant is bound to; `null` for vault-wide purposes.
  */
-walletId: string | null, 
+walletId: string | null,
 /**
  * UNIX seconds after which the grant is refused.
  */
-expiresAt: number, 
+expiresAt: number,
 /**
  * The grant is consumed by its first successful use.
  */

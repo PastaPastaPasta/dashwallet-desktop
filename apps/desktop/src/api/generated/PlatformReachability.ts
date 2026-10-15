@@ -3,15 +3,15 @@
 /**
  * What a proof-verified fetch of the DPNS system contract showed.
  */
-export type PlatformReachability = { 
+export type PlatformReachability = {
 /**
  * Base58 id of the DPNS contract.
  */
-dpnsContractId: string, dpnsContractVersion: number, 
+dpnsContractId: string, dpnsContractVersion: number,
 /**
  * Base58 owner identity of the contract.
  */
-dpnsContractOwner: string, 
+dpnsContractOwner: string,
 /**
  * The protocol version the SDK settled on.
  */

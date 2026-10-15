@@ -4,7 +4,7 @@ import type { DispatchResolutionName } from "./DispatchResolutionName";
 /**
  * A provisional outcome settled (E0-04 §16.7).
  */
-export type DispatchSettled = { walletId: string, 
+export type DispatchSettled = { walletId: string,
 /**
  * A txid, a state-transition hash, or a funding step id
  * (`registration/<draft>/funding`, `topup/<id>/funding`).

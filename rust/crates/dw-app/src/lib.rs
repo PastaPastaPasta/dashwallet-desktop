@@ -203,6 +203,7 @@ pub fn run() {
     if let Some(window_state) = shell::native::window_state(&launch) {
         base = base.plugin(window_state);
     }
+    base = base.plugin(tauri_plugin_dialog::init());
     let app = app_builder(base, launch, started, dw_vault::VaultConfig::default())
         .menu(shell::menu::build)
         .on_menu_event(shell::menu::handle)
@@ -219,6 +220,7 @@ pub fn run() {
     app.add_capability(api::selftest::CAPABILITY)
         .expect("the self-test capability");
     shell::protect_secrets(app.handle());
+    shell::files::install(app.handle());
     if let Err(e) = shell::tray::install(app.handle()) {
         eprintln!("dw-app: tray icon: {e}");
     }

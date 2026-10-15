@@ -2,7 +2,7 @@
 import type { MixedCoinsChunk } from "./MixedCoinsChunk";
 import type { MixedCoinsDestination } from "./MixedCoinsDestination";
 
-export type MixedCoinsSweepPlan = { destination: MixedCoinsDestination, 
+export type MixedCoinsSweepPlan = { destination: MixedCoinsDestination,
 /**
  * The CoinJoin account balance the plan moves (coins above the
  * 1000-duff threshold, mixed or not).

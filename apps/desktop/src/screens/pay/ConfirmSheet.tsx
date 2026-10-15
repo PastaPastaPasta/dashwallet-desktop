@@ -1,20 +1,23 @@
 // The confirm sheet (UX-SPEC §4.7 C23, iOS ConfirmPaymentSheet): what leaves the wallet, to
 // whom, the fee and the coins used; the passphrase when the payment policy asks (U-03 D3).
 // Send: a `spend` grant capped at the confirmed total, the signature, the check that the signed
-// transaction keeps the sheet's promise, then the broadcast (U-03 D2).
+// transaction keeps the sheet's promise, then the broadcast (U-03 D2). Create Unsigned makes the
+// draft a PSBT instead, copies it and opens Tools ▸ PSBT with it; a watch-only wallet can only do
+// that (U-05 D18).
 
 import { useEffect, useId, useRef, useState } from "react";
 import { isAppError } from "../../api/backend";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useBackend, useLockStatus, usePaymentAuthentication } from "../../api/queries";
+import { useBackend, useLockStatus, usePaymentAuthentication, useWallets } from "../../api/queries";
+import { navigate } from "../../app/ui";
 import { AmountText, DashButton } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
 import { LoadingState } from "../../components/history";
 import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
-import { authRefusal, broadcastFailure, credentialPrompt, failureText, keepsPromise, type Advanced, type Confirmed, type Outcome } from "./model";
+import { authRefusal, broadcastFailure, credentialPrompt, failureText, keepsPromise, unsignedKeepsPromise, type Advanced, type Confirmed, type Outcome } from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 const USING: Record<Advanced["coins"], string> = {
@@ -53,6 +56,13 @@ export function ConfirmSheet({
   const { chain, amountUnit } = shown;
   const lock = useLockStatus();
   const policy = usePaymentAuthentication();
+  // `undefined` until the wallet list is read: neither the prompt nor Send shows before it is
+  // known whether the wallet can sign.
+  const wallets = useWallets();
+  const watchOnlyKnown = wallets.data?.find((w) => w.walletId === walletId)?.watchOnly;
+  // Read and not there, or not readable: Send stays hidden, and the sheet says why.
+  const walletUnknown = watchOnlyKnown === undefined && (wallets.isError || wallets.isSuccess);
+  const watchOnly = watchOnlyKnown ?? false;
   const [askAnyway, setAskAnyway] = useState(false);
   const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -91,7 +101,7 @@ export function ConfirmSheet({
 
   // A failed read of the policy counts as "on" (U-03 D3): the prompt waits only while it loads.
   const policyKnown = !policy.isPending;
-  const prompt = askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined);
+  const prompt = watchOnlyKnown !== false ? "none" : askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined);
   // The policy loads after the sheet opened: once it asks for nothing, Cancel takes the focus,
   // so Return does not send (U-03 D4). The passphrase field focuses itself when it appears.
   const cancel = useRef<HTMLButtonElement>(null);
@@ -155,18 +165,48 @@ export function ConfirmSheet({
     }
   };
 
+  const createUnsigned = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    let psbt: string;
+    try {
+      psbt = await draft.createUnsigned(spec);
+    } catch (e) {
+      setBusy(false);
+      setError(failureText(e, chain));
+      return;
+    }
+    // The engine planned again: the PSBT leaves the sheet only if it is the payment shown, and one
+    // that cannot be checked is not shown to be (D37).
+    const analysis = await b.analyzePsbt(walletId, psbt).catch(() => null);
+    if (analysis === null || !unsignedKeepsPromise(confirmed, analysis)) {
+      onOutcome({ kind: "failed", text: "The payment changed. Review it again." });
+      return;
+    }
+    const copied = await navigator.clipboard.writeText(psbt).then(
+      () => true,
+      () => false,
+    );
+    navigate("tools", { toolsTab: "psbt", psbtPrefill: { psbt, copied } });
+  };
+
   return (
     <Sheet title="Confirm payment" width="small" testId="pay-confirm" returnFocus={returnFocus} onClose={() => !busy && onCancel()}>
       <form
         className="confirm"
         onSubmit={(e) => {
           e.preventDefault();
-          void send();
+          if (watchOnlyKnown === false) void send();
         }}
       >
         <div className="confirm-summary">
           <AmountText className="confirm-amount" text={shown.full(total)} unitName={unit} glyphFactor={0.8} />
-          <p className="confirm-question">Do you want to send this payment?</p>
+          <p className="confirm-question">
+            {watchOnly
+              ? "Please, review your transaction proposal. This will produce a Partially Signed Transaction (PSBT) which you can save or copy and then sign with e.g. an offline Dash Core wallet."
+              : "Do you want to send this payment?"}
+          </p>
         </div>
         <dl className="detail-list card-l1" data-testid="pay-confirm-facts">
           <DetailRow label="Pay to" testId="pay-confirm-address">
@@ -224,13 +264,29 @@ export function ConfirmSheet({
             {error ? "" : "Too many attempts. "}Try again in {waitSecs} s.
           </p>
         )}
-        <div className="sheet-actions">
+        {walletUnknown && (
+          <p className="placeholder-note" role="status" data-testid="pay-confirm-wallet-unknown">
+            This wallet could not be read, so it cannot send now. Create Unsigned still works.
+          </p>
+        )}
+        <div className="sheet-actions sheet-actions-fit">
           <DashButton ref={cancel} variant="tintedGray" size="large" data-testid="pay-confirm-cancel" disabled={busy} onClick={onCancel}>
             Cancel
           </DashButton>
-          <DashButton type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null}>
-            {busy ? "Sending…" : "Send"}
+          <DashButton
+            variant={watchOnly ? "filledBlue" : "tintedBlue"}
+            size="large"
+            data-testid="pay-confirm-unsigned"
+            disabled={busy}
+            onClick={() => void createUnsigned()}
+          >
+            Create Unsigned
           </DashButton>
+          {watchOnlyKnown === false && (
+            <DashButton type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null}>
+              {busy ? "Sending…" : "Send"}
+            </DashButton>
+          )}
         </div>
       </form>
     </Sheet>

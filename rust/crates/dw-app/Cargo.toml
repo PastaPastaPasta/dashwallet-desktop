@@ -32,6 +32,9 @@ tauri-build = { version = "2.6", features = [] }
 tauri = { version = "2.12", features = ["tray-icon"] }
 # U-01: the main window's size and position, saved and restored.
 tauri-plugin-window-state = "2.5"
+# U-05 D2: the OS's open and save dialogs, through the Rust API only (no
+# capability grants the plugin's commands: shell/files.rs).
+tauri-plugin-dialog = "2.8"
 # Byte payloads (avatars, raw transactions) cross IPC as base64 strings.
 base64 = "0.22"
 # The default data root, as Tauri's `app_data_dir` finds it, before the app is built.

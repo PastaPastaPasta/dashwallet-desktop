@@ -182,7 +182,7 @@ test("menu commands: navigate, tools tabs, discreet, about, lock; the menus mirr
   await page.getByTestId("tools-tabs-console").focus();
   await page.keyboard.press("ArrowRight");
   await expect(page.getByTestId("tools-tabs-peers")).toBeFocused();
-  await expect(page.getByTestId("placeholder-tools-peers")).toBeVisible();
+  await expect(page.getByTestId("tools-peers")).toBeVisible();
   await page.keyboard.press("End");
   await expect(page.getByTestId("tools-tabs-coinSelection")).toBeFocused();
   await page.keyboard.press("Home");
