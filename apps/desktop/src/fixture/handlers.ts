@@ -377,7 +377,7 @@ export const HANDLERS: Handlers = {
     useGrant,
   }),
   // Tools (U-05): tools.ts.
-  ...toolsHandlers,
+  ...toolsHandlers({ wallet, grant: checkGrant, useGrant }),
 
   // App and network
   launch_info: (_, { world }) => world.launch,

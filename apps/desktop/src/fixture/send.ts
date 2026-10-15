@@ -363,7 +363,7 @@ function receiveAddress(wallet: FixtureWallet, index: number, label: string | nu
 }
 
 /** Whether the wallet owns `address`: a coin's, or a receiving address it issued. */
-function owns(wallet: FixtureWallet, address: string): boolean {
+export function owns(wallet: FixtureWallet, address: string): boolean {
   if (wallet.coins.some((u) => u.address === address)) return true;
   for (let i = 0; i <= wallet.receive.issued; i++) if (receiveAddress(wallet, i, null).address === address) return true;
   return false;
@@ -527,6 +527,26 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
       const d = draftOf(world, draft);
       const { inputs: _, ...estimate } = build(world, wallet(world, d.walletId), d);
       return estimate;
+    },
+    // dash-qt "Create Unsigned" (QT-077): the draft's plan as a PSBT the PSBT tab can analyze,
+    // sign and broadcast (tools.ts); nothing is signed or reserved.
+    draft_create_unsigned: ({ draft }, { world }) => {
+      const d = draftOf(world, draft);
+      const w = wallet(world, d.walletId);
+      const built = build(world, w, d);
+      const change = d.change.kind === "address" ? d.change.address : receiveAddress(w, 2000 + draft, null).address;
+      const psbt = btoa(`psbt\xffdraft-${draft}`);
+      world.tools.psbts[psbt] = {
+        outputs: [
+          ...d.recipients.map((r, i) => ({ address: r.address, amount: i === 0 ? built.totalSent : r.amount, isMine: owns(w, r.address) })),
+          ...(built.change === null ? [] : [{ address: change, amount: built.change, isMine: d.change.kind === "auto" || owns(w, change) }]),
+        ],
+        fee: built.fee,
+        inputs: built.inputs.length,
+        signedInputs: 0,
+        signer: d.walletId,
+      };
+      return psbt;
     },
 
     // The `spend` grant caps what leaves the wallet: the outputs it does not own (recipients, a

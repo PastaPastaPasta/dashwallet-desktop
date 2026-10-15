@@ -57,6 +57,8 @@ describe("fixture backend", () => {
       "send.test.ts",
       "send.ts",
       "sentinels.test.ts",
+      "tools.test.ts",
+      "tools.ts",
       "vault.ts",
       "vectors/accept.json",
       "vectors/history.json",
@@ -65,7 +67,7 @@ describe("fixture backend", () => {
     ]);
     // Only `*.test.ts` is a test (vite.config.ts `test.include`): a `*.test.mts` is a module.
     const modules = files.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && !f.endsWith(".test.ts"));
-    expect(modules).toEqual(["dashpay.ts", "errors.ts", "handlers.ts", "index.ts", "links.ts", "scenarios.ts", "send.ts", "vault.ts", "wallet.ts"]);
+    expect(modules).toEqual(["dashpay.ts", "errors.ts", "handlers.ts", "index.ts", "links.ts", "scenarios.ts", "send.ts", "tools.ts", "vault.ts", "wallet.ts"]);
     const { bySource } = await fixtureSentinels(fileURLToPath(new URL("../..", import.meta.url)));
     for (const f of modules) {
       expect(readFileSync(join(dir, f), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);
@@ -166,9 +168,9 @@ describe("fixture backend", () => {
 
   it("rejects a command it does not implement with a typed AppError", async () => {
     backend({ scenario: "funded" });
-    const e = await cmd.rotatePeers().catch((x: unknown) => x);
+    const e = await cmd.coinjoinStatus(FIXTURE_WALLET_ID).catch((x: unknown) => x);
     expect(isAppError(e)).toBe(true);
-    expect(e).toMatchObject({ code: "platform.not_implemented", data: { kind: "call", call: "rotate_peers" } });
+    expect(e).toMatchObject({ code: "platform.not_implemented", data: { kind: "call", call: "coinjoin_status" } });
   });
 
   it("injects a sample of every ErrorData class", async () => {
