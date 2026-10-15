@@ -543,7 +543,9 @@ button {
   display: inline-grid;
   place-items: center;
   border-radius: 50%;
-  background: var(--dw-role-accent-tint);
+  /* The accent tint on a card, opaque: on a selected row or the bell's raised panel a translucent
+     tint would darken under the link-coloured initials (DP2-09 axe). */
+  background: color-mix(in srgb, var(--dw-role-accent) 10%, var(--dw-role-card));
   color: var(--dw-role-text-link);
   font-weight: var(--dw-type-caption1-medium-weight);
 }
@@ -2998,10 +3000,6 @@ button {
   flex: none;
   gap: var(--dw-space-xs);
   padding-right: var(--dw-space-s);
-}
-
-.contacts-enable {
-  background: var(--dw-role-accent-tint);
 }
 
 .contacts-enable-text {

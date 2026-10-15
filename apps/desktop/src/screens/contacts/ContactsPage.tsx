@@ -309,10 +309,10 @@ function RequestButtons({ contact: c, actions: model, hasKeys }: { contact: Cont
 }
 
 /** "Enable DashPay" (DP2-09 D10): the main identity lacks its DashPay keys, so it cannot accept
- * requests nor pay contacts until it adds them. */
+ * requests nor pay contacts until it adds them. Success removes the banner, so a toast says it. */
 function EnableDashPay({ banner, actions: model }: { banner: Banner; actions: ContactActions }) {
   const actions = useModel(model);
-  const outcome = actions.outcome?.kind === "enable" ? actions.outcome : null;
+  const outcome = actions.outcome?.kind === "enable" && !actions.outcome.ok ? actions.outcome : null;
   return (
     <div className="contacts-hint contacts-enable card-l1" data-testid="contacts-enable-banner">
       <span className="contacts-enable-text">
@@ -329,7 +329,7 @@ function EnableDashPay({ banner, actions: model }: { banner: Banner; actions: Co
         </span>
         <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contacts-enable-outcome" />
       </span>
-      <DashButton variant="tintedBlue" size="small" data-testid="contacts-enable" disabled={actions.running !== null} onClick={() => void actions.enable()}>
+      <DashButton variant="tintedBlue" size="small" data-testid="contacts-enable" disabled={actions.running !== null} onClick={() => void actions.enable().then((o) => o?.ok && showToast(o.text))}>
         {actions.isRunning("enable", null) ? "Enabling…" : "Enable"}
       </DashButton>
     </div>
