@@ -1,6 +1,6 @@
 // Add Contact's view model (DP2-08 D4, D6–D10, D12–D14, D16).
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import {
@@ -9,20 +9,25 @@ import {
   candidateName,
   candidateOfHit,
   cardLine,
+  CLAIM_TICK_MS,
+  claimLine,
   claimNote,
   currentRelation,
   listedNow,
   eligibilityLine,
+  MAX_IMAGE_BYTES,
   imageError,
   myQr,
   NO_CODE_IN_IMAGE,
   NOT_A_CODE,
   ownerLine,
+  SCAN_EXPIRED,
   SCAN_UNVERIFIED,
   scanStatus,
   SCREEN_UNAVAILABLE,
   userLinkText,
   verifyError,
+  watchClaim,
   type ScanApi,
 } from "./add";
 
@@ -77,22 +82,40 @@ describe("eligibility (D4, D13)", () => {
   });
 
   it("D14 goes by the contact list once it is read", () => {
-    const c = candidateOfHit({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false });
+    const c = candidateOfHit({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false }, 100);
     expect(currentRelation(c, undefined)).toBe("stranger");
-    expect(currentRelation(c, [{ contact: GRACE, relation: "pendingOutgoing" }])).toBe("pendingOutgoing");
-    expect(currentRelation({ ...c, relation: "ignored" }, [])).toBe("stranger");
-    expect(currentRelation({ ...c, relation: "isSelf" }, [])).toBe("isSelf");
+    expect(currentRelation(c, { rows: [{ contact: GRACE, relation: "pendingOutgoing" }], at: 50 })).toBe("pendingOutgoing");
+    expect(currentRelation(c, { rows: [{ contact: GRACE, relation: "ignored" }], at: 50 })).toBe("ignored");
+    expect(currentRelation({ ...c, relation: "isSelf" }, { rows: [], at: 200 })).toBe("isSelf");
+  });
+
+  it("D34 an ignore sticks until a list read after it says otherwise", () => {
+    const ignored = candidateOfHit({ identity: GRACE, username: "grace", displayName: null, relation: "ignored", unverified: false }, 100);
+    const stale = (rows: { contact: string; relation: "pendingIncoming" }[], at: number) => ({ rows, at });
+    const incoming = [{ contact: GRACE, relation: "pendingIncoming" as const }];
+    // A list read before (or with) the hit: still ignored, so the card answers at once, no Send.
+    for (const at of [0, 99, 100]) {
+      for (const rows of [[], incoming]) {
+        const relation = currentRelation(ignored, stale(rows, at));
+        expect(relation).toBe("ignored");
+        expect(answersAtOnce(relation)).toBe(true);
+        expect(cardLine(relation, { data: "ok", failed: false })?.next).toBe("showHidden");
+      }
+    }
+    // A list read after it: unignored (their request shows again) or gone.
+    expect(currentRelation(ignored, stale(incoming, 101))).toBe("pendingIncoming");
+    expect(currentRelation(ignored, stale([], 101))).toBe("stranger");
   });
 
   it("D14 an empty list a pass still holds says nothing: the candidate's relation stands", () => {
     const rows = [{ contact: GRACE, relation: "ignored" as const }];
     const list = (contacts: typeof rows, updating: boolean) => ({ sections: [{ contacts }], updating });
-    expect(listedNow(undefined)).toBeUndefined();
-    expect(listedNow(list([], true))).toBeUndefined();
-    expect(listedNow(list([], false))).toEqual([]);
-    expect(listedNow(list(rows, true))).toEqual(rows);
-    const c = candidateOfHit({ identity: GRACE, username: "grace", displayName: null, relation: "ignored", unverified: false });
-    expect(currentRelation(c, listedNow(list([], true)))).toBe("ignored");
+    expect(listedNow(undefined, 5)).toBeUndefined();
+    expect(listedNow(list([], true), 5)).toBeUndefined();
+    expect(listedNow(list([], false), 5)).toEqual({ rows: [], at: 5 });
+    expect(listedNow(list(rows, true), 5)).toEqual({ rows, at: 5 });
+    const c = candidateOfHit({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false }, 1);
+    expect(currentRelation(c, listedNow(list([], true), 5))).toBe("stranger");
   });
 
   it("names the candidate by display name, username, then id", () => {
@@ -118,16 +141,25 @@ describe("copy (D6, D7, D9, D12)", () => {
     expect(imageError(appError("app.file_too_large"))).toBe("The file is too large.");
   });
 
-  it("D7 notes an auto-accept claim and its expiry", () => {
+  it("D7 D36 notes an auto-accept claim and its expiry; an expired one replaces Send", () => {
     const now = 1_000_000_000_000;
     const at = (secs: number) => ({ scan: "scan-1", expiresAt: now / 1000 + secs });
+    const send = { text: null, next: "send" as const };
     expect(claimNote(null, now)).toBeNull();
     expect(claimNote(at(1800), now)).toMatch(/accept you automatically.*expires in 30 min\.$/);
     expect(claimNote(at(7200), now)).toMatch(/expires in 2 h\.$/);
-    expect(claimNote(at(-1), now)).toMatch(/This code has expired\.$/);
-    // The engine refuses a claim with a minute or less left.
-    expect(claimNote(at(60), now)).toMatch(/This code has expired\.$/);
     expect(claimNote(at(61), now)).toMatch(/expires in 1 min\.$/);
+    expect(claimLine(send, at(61), now)).toEqual(send);
+    // The engine refuses a claim with a minute or less left.
+    for (const secs of [60, -1]) {
+      expect(claimNote(at(secs), now)).toBeNull();
+      expect(claimLine(send, at(secs), now)).toEqual({ text: SCAN_EXPIRED, next: null });
+    }
+    // Only Send needs the claim; a plain card and other next steps stand.
+    expect(claimLine(send, null, now)).toEqual(send);
+    const contact = { text: "Already in your contacts.", next: "showContact" as const };
+    expect(claimLine(contact, at(-1), now)).toBe(contact);
+    expect(claimLine(undefined, at(-1), now)).toBeUndefined();
   });
 
   it("D9 D10 the Scan tab's progress line; a link's check shows on the card", () => {
@@ -157,10 +189,53 @@ describe("copy (D6, D7, D9, D12)", () => {
   });
 });
 
+describe("an open claim (D36)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("ages its note on a timer and replaces Send the moment it expires", () => {
+    vi.useFakeTimers();
+    const start = 1_000_000_000_000;
+    vi.setSystemTime(start);
+    const claim = { scan: "scan-1", expiresAt: start / 1000 + 30 * 60 };
+    const send = { text: null, next: "send" as const };
+    // What the card renders on each tick.
+    const shown: (string | null)[] = [];
+    const render = () => shown.push(claimLine(send, claim, Date.now())?.next === "send" ? claimNote(claim, Date.now()) : SCAN_EXPIRED);
+    const stop = watchClaim(claim, Date.now, render);
+    vi.advanceTimersByTime(CLAIM_TICK_MS);
+    expect(shown).toEqual(["This code asks them to accept you automatically. They confirm it when your request arrives. It expires in 30 min."]);
+    vi.advanceTimersByTime(15 * 60_000 - CLAIM_TICK_MS);
+    expect(shown.at(-1)).toMatch(/expires in 15 min\.$/);
+    // The margin (29 min in) falls between ticks: the 28.5 min tick still offers Send, and the card
+    // hears the expiry at once, not at the next tick.
+    vi.advanceTimersByTime(14 * 60_000 - 1);
+    expect(shown.at(-1)).toMatch(/expires in 2 min\.$/);
+    vi.advanceTimersByTime(1);
+    expect(shown.at(-1)).toBe(SCAN_EXPIRED);
+    // Nothing changes after that: the timer is done.
+    const ticks = shown.length;
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(10 * 60_000);
+    expect(shown.length).toBe(ticks);
+    stop();
+  });
+
+  it("stops when the card goes, and never starts for an expired claim", () => {
+    vi.useFakeTimers();
+    const tick = vi.fn();
+    const stop = watchClaim({ scan: "s", expiresAt: Date.now() / 1000 + 600 }, Date.now, tick);
+    stop();
+    vi.advanceTimersByTime(600_000);
+    expect(tick).not.toHaveBeenCalled();
+    watchClaim({ scan: "s", expiresAt: Date.now() / 1000 + 60 }, Date.now, tick);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
 describe("AddContactModel", () => {
   it("IOS-073 a search hit is a candidate without verification", () => {
     const { api, model } = setup();
-    model.pick({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false });
+    model.pick({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false }, 1);
     expect(model.candidate).toMatchObject({ identity: GRACE, source: "search", claim: null });
     expect(api.dashpayVerifyScanned).not.toHaveBeenCalled();
   });
@@ -209,6 +284,24 @@ describe("AddContactModel", () => {
     expect(model.candidate?.source).toBe("scan");
   });
 
+  it("D35 refuses a file too large before reading it, and a read that turns out too large", async () => {
+    const { api, model } = setup();
+    const arrayBuffer = vi.fn(() => Promise.reject(new Error("read a huge file")));
+    await model.imageFile({ size: MAX_IMAGE_BYTES + 1, arrayBuffer });
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(model.scan).toEqual({ kind: "failed", source: "scan", text: "The image is too large.", retry: false });
+    // Its size said less than it holds: the bytes are checked too, nothing crosses IPC.
+    await model.imageFile({ size: 3, arrayBuffer: async () => new ArrayBuffer(MAX_IMAGE_BYTES + 1) });
+    expect(model.scan).toEqual({ kind: "failed", source: "scan", text: "The image is too large.", retry: false });
+    await model.imageBytes(new Uint8Array(MAX_IMAGE_BYTES + 1));
+    expect(model.scan).toMatchObject({ kind: "failed", text: "The image is too large." });
+    expect(api.scanQrImage).not.toHaveBeenCalled();
+    // At the limit the file is read and decoded.
+    await model.imageFile({ size: 3, arrayBuffer: async () => new TextEncoder().encode("img").buffer as ArrayBuffer });
+    expect(api.scanQrImage).toHaveBeenCalledWith("aW1n");
+    expect(model.candidate?.source).toBe("scan");
+  });
+
   it("IOS-043 D8 an image with no contact code says so", async () => {
     const { model } = setup({
       scanQrFile: vi.fn(async () => ["dash:Xpay"]),
@@ -227,7 +320,7 @@ describe("AddContactModel", () => {
         throw appError("app.no_qr_code");
       }),
     });
-    model.pick({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false });
+    model.pick({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false }, 1);
     await model.openImage();
     expect(model.scan).toEqual({ kind: "idle" });
     expect(model.candidate?.identity).toBe(GRACE);

@@ -19,6 +19,7 @@ import {
   answersAtOnce,
   candidateName,
   cardLine,
+  claimLine,
   claimNote,
   currentRelation,
   myQr,
@@ -28,6 +29,8 @@ import {
   type AddTab,
   type Candidate,
   type CardLine,
+  type Listed,
+  watchClaim,
 } from "../../contacts/add";
 import { initials, NETWORK_DEBOUNCE_MS, networkPrefix, relationTitle, type ContactsOwner } from "../../contacts/model";
 import { useEligibility, useMyUserLink, useNetworkSearch, useScreenScanMode } from "../../contacts/queries";
@@ -44,7 +47,7 @@ export interface AddContext {
   walletId: string;
   owner: ContactsOwner;
   actions: ContactActions | null;
-  listed: ContactSummaryInfo[] | undefined;
+  listed: Listed<ContactSummaryInfo> | undefined;
 }
 
 /** Selects `contact` in the list, closing Add Contact (D4's Show). */
@@ -76,8 +79,9 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
     setTab("search");
     const h = intent?.hit;
     if (!h) return model.clear();
-    model.pick(searchHits.data?.find((x) => x.identity === h.identity) ?? { ...h, displayName: null, relation: "stranger", unverified: true });
-  }, [model, link, intent, searchHits.data]);
+    const full = searchHits.data?.find((x) => x.identity === h.identity);
+    model.pick(full ?? { ...h, displayName: null, relation: "stranger", unverified: true }, full ? searchHits.dataUpdatedAt : 0);
+  }, [model, link, intent, searchHits.data, searchHits.dataUpdatedAt]);
   // Leaving stops a screen capture still waiting.
   useEffect(() => () => model.cancelScreen(), [model]);
 
@@ -111,7 +115,7 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
       )}
       {identity !== null && (
         <Tabs label="Add a contact by" tabs={ADD_TABS} current={tab} onSelect={setTab} testId="add-contact-tabs">
-          {tab === "search" && <SearchTab ctx={ctx} identity={identity} query={intent?.query ?? ""} onPick={(h) => model.pick(h)} />}
+          {tab === "search" && <SearchTab ctx={ctx} identity={identity} query={intent?.query ?? ""} onPick={(h, readAt) => model.pick(h, readAt)} />}
           {tab === "scan" && <ScanTab model={model} />}
           {tab === "myQr" && <MyQrTab walletId={ctx.walletId} identity={identity} />}
         </Tabs>
@@ -151,15 +155,15 @@ const SOURCES: Record<Candidate["source"], string> = {
   link: "From a link",
 };
 
-/** The candidate (D4–D7, D13, D14): who, whether Platform vouched for them, and the one next step. */
+/** The candidate (D4–D7, D13, D14, D34, D36): who, whether Platform vouched for them, and the one next step. */
 function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Candidate }) {
-  const backend = useBackend();
   const identity = ctx.owner.kind === "identity" ? ctx.owner.identity : null;
   const relation = currentRelation(c, ctx.listed);
   const asks = identity !== null && !answersAtOnce(relation);
   const eligibility = useEligibility(ctx.walletId, identity, asks ? c.identity : null);
+  const now = useClaimClock(c.claim);
   const line: CardLine | undefined =
-    ctx.owner.kind !== "identity" ? ownerLine(ctx.owner) : cardLine(relation, { data: eligibility.data, failed: eligibility.isError && !eligibility.isFetching });
+    ctx.owner.kind !== "identity" ? ownerLine(ctx.owner) : claimLine(cardLine(relation, { data: eligibility.data, failed: eligibility.isError && !eligibility.isFetching }), c.claim, now);
   const actions = useOptionalModel(ctx.actions);
   const name = candidateName(c);
   const outcome = actions?.outcome?.kind === "send" && actions.outcome.contact === c.identity ? actions.outcome : null;
@@ -223,7 +227,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
       break;
   }
   const enableOutcome = actions?.outcome?.kind === "enable" ? actions.outcome : null;
-  const note = claimNote(c.claim, backend.now().getTime());
+  const note = claimNote(c.claim, now);
   return (
     <div className="add-contact-candidate" data-testid="add-contact-candidate">
       <header className="contact-detail-header">
@@ -269,6 +273,19 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
   );
 }
 
+/** The renderer's clock (ms) for `claim`'s note and line, re-read while it ages (D36). */
+function useClaimClock(claim: Candidate["claim"]): number {
+  const backend = useBackend();
+  const [now, setNow] = useState(() => backend.now().getTime());
+  useEffect(() => {
+    if (!claim) return;
+    const read = () => setNow(backend.now().getTime());
+    read();
+    return watchClaim(claim, () => backend.now().getTime(), read);
+  }, [backend, claim]);
+  return now;
+}
+
 const NONE = { subscribe: () => () => undefined, version: () => 0 };
 
 /** `useModel` for a model that may be absent. */
@@ -278,7 +295,7 @@ function useOptionalModel<M extends ContactActions>(model: M | null): M | null {
 }
 
 /** Search (D3): every hit of the prefix, with how it relates to the identity. */
-function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity: string; query: string; onPick: (hit: UserHit) => void }) {
+function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity: string; query: string; onPick: (hit: UserHit, readAt: number) => void }) {
   const [text, setText] = useState(query);
   // Another intent's search text (Show more on another search).
   useEffect(() => setText(query), [query]);
@@ -319,7 +336,7 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
       <ul className="tx-group-rows" aria-label="Usernames">
         {search.data.map((h) => {
           const displayName = h.displayName?.trim();
-          const relation = currentRelation({ identity: h.identity, relation: h.relation }, ctx.listed);
+          const relation = currentRelation({ ...h, readAt: search.dataUpdatedAt }, ctx.listed);
           return (
             <Row
               key={h.identity}
@@ -333,7 +350,7 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
                 </>
               }
               data-testid="add-contact-hit"
-              onClick={() => onPick({ ...h, relation })}
+              onClick={() => onPick(h, search.dataUpdatedAt)}
             />
           );
         })}
@@ -366,8 +383,7 @@ function ScanTab({ model }: { model: AddContactModel }) {
   const scan = model.scan;
   const busy = scan.kind === "reading" || scan.kind === "capturing" || scan.kind === "verifying";
   const take = async ({ file, text }: { file: File | null; text: string }) => {
-    if (file) await model.imageBytes(new Uint8Array(await file.arrayBuffer()));
-    else await model.verifyText(text);
+    await (file ? model.imageFile(file) : model.verifyText(text));
   };
   const onDrop = (e: DragEvent) => {
     // The document's guard (D11) leaves a drop the area took alone.

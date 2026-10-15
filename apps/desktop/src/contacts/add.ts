@@ -36,18 +36,21 @@ export interface Candidate {
   /** The auto-accept claim the request answers (D7); its id is no secret. */
   claim: { scan: string; expiresAt: number } | null;
   source: CandidateSource;
+  /** When `relation` was read, on the renderer's `Date.now()` clock (TanStack's `dataUpdatedAt`'s),
+   * for `currentRelation`. */
+  readAt: number;
 }
 
 /** A search hit's fields the card reads. */
 export type HitFields = Pick<UserHit, "identity" | "username" | "displayName" | "relation" | "unverified">;
 
-export function candidateOfHit(hit: HitFields): Candidate {
-  return { ...hitFields(hit), claim: null, source: "search" };
+export function candidateOfHit(hit: HitFields, readAt: number): Candidate {
+  return { ...hitFields(hit), claim: null, source: "search", readAt };
 }
 
-export function candidateOfScan(info: ScannedContactInfo, source: CandidateSource): Candidate {
+export function candidateOfScan(info: ScannedContactInfo, source: CandidateSource, readAt: number): Candidate {
   const claim = info.code.kind === "autoAcceptClaim" ? { scan: info.code.scan, expiresAt: info.code.expiresAt } : null;
-  return { ...hitFields(info), claim, source };
+  return { ...hitFields(info), claim, source, readAt };
 }
 
 const hitFields = (h: Pick<UserHit, "identity" | "displayName" | "relation" | "unverified"> & { username: string | null }) => ({
@@ -63,19 +66,28 @@ export function candidateName(c: Pick<Candidate, "displayName" | "username" | "i
   return c.displayName || (c.username ? `@${c.username}` : c.identity);
 }
 
-/** The relation the card goes by (D14): the one the identity's unfiltered contact list holds once
- * it is read (a request may have come or gone since the hit or the scan), else the candidate's.
- * `listed` is `undefined` until read (`listedNow`). */
-export function currentRelation(c: Pick<Candidate, "identity" | "relation">, listed: { contact: string; relation: UserRelation }[] | undefined): UserRelation {
-  if (listed === undefined || c.relation === "isSelf") return c.relation;
-  return listed.find((l) => l.contact === c.identity)?.relation ?? "stranger";
+/** The identity's unfiltered contact list (D14): its rows and when they were read (`dataUpdatedAt`). */
+export interface Listed<R = { contact: string; relation: UserRelation }> {
+  rows: R[];
+  at: number;
 }
 
-/** The contact list's rows for `currentRelation`; `undefined` while a pass holds a list with no
- * rows yet (an empty snapshot says nothing about who relates how). */
-export function listedNow<R>(list: { sections: { contacts: R[] }[]; updating: boolean } | undefined): R[] | undefined {
+/** The relation the card goes by (D14): the one the identity's unfiltered contact list holds once
+ * it is read (a request may have come or gone since the hit or the scan), else the candidate's.
+ * An ignore sticks (D34): the engine's eligibility takes an ignored sender for a stranger, so
+ * only a list read after the candidate's relation may say they are no longer ignored. `listed` is
+ * `undefined` until read (`listedNow`). */
+export function currentRelation(c: Pick<Candidate, "identity" | "relation" | "readAt">, listed: Listed | undefined): UserRelation {
+  if (listed === undefined || c.relation === "isSelf") return c.relation;
+  if (c.relation === "ignored" && listed.at <= c.readAt) return "ignored";
+  return listed.rows.find((l) => l.contact === c.identity)?.relation ?? "stranger";
+}
+
+/** The contact list for `currentRelation`, read at `at`; `undefined` while a pass holds a list with
+ * no rows yet (an empty snapshot says nothing about who relates how). */
+export function listedNow<R>(list: { sections: { contacts: R[] }[]; updating: boolean } | undefined, at: number): Listed<R> | undefined {
   const rows = list?.sections.flatMap((s) => s.contacts);
-  return list?.updating && !rows?.length ? undefined : rows;
+  return !rows || (list?.updating && !rows.length) ? undefined : { rows, at };
 }
 
 /** What the card offers next (D4, D13). */
@@ -132,15 +144,45 @@ export function cardLine(relation: UserRelation, eligibility: { data: Eligibilit
   return undefined;
 }
 
-/** The engine's `SCAN_MARGIN_SECS`: a claim with less left is refused as expired. */
+/** The engine's `SCAN_MARGIN_SECS`: a claim with this long or less left is refused as expired. */
 const SCAN_MARGIN_SECS = 60;
 
-/** The auto-accept note (D7). */
+/** When (ms) the engine starts refusing `claim` as expired. */
+const claimEnds = (claim: NonNullable<Candidate["claim"]>) => (claim.expiresAt - SCAN_MARGIN_SECS) * 1000;
+
+/** Whether a send can no longer carry `claim` at `now` (ms). */
+export const claimExpired = (claim: Candidate["claim"], now: number) => claim !== null && now >= claimEnds(claim);
+
+/** The auto-accept note (D7); none once the claim has expired (the card's line says so, D36). */
 export function claimNote(claim: Candidate["claim"], now: number): string | null {
-  if (!claim) return null;
+  if (!claim || claimExpired(claim, now)) return null;
   const left = claim.expiresAt - Math.floor(now / 1000);
-  const when = left <= SCAN_MARGIN_SECS ? "This code has expired." : left < 3600 ? `It expires in ${Math.max(1, Math.round(left / 60))} min.` : `It expires in ${Math.round(left / 3600)} h.`;
+  const when = left < 3600 ? `It expires in ${Math.max(1, Math.round(left / 60))} min.` : `It expires in ${Math.round(left / 3600)} h.`;
   return `This code asks them to accept you automatically. They confirm it when your request arrives. ${when}`;
+}
+
+/** The note's re-read interval (ms) while a claim is open (D36). */
+export const CLAIM_TICK_MS = 30_000;
+
+/** Calls `tick` while `claim` is open so its note ages (D36): every `CLAIM_TICK_MS`, and at the
+ * moment it expires, then no more. Returns the stop. */
+export function watchClaim(claim: NonNullable<Candidate["claim"]>, now: () => number, tick: () => void): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const arm = () => {
+    const due = claimEnds(claim) - now();
+    if (due <= 0) return;
+    timer = setTimeout(() => {
+      tick();
+      arm();
+    }, Math.min(due, CLAIM_TICK_MS));
+  };
+  arm();
+  return () => clearTimeout(timer);
+}
+
+/** The card's line with a claim (D36): an expired one replaces Send, which could no longer carry it. */
+export function claimLine(line: CardLine | undefined, claim: Candidate["claim"], now: number): CardLine | undefined {
+  return line?.next === "send" && claimExpired(claim, now) ? { text: SCAN_EXPIRED, next: null } : line;
 }
 
 /** The text of a `dashpay://user` link (D13), in `DashPayUserLink::to_uri`'s form. */
@@ -166,8 +208,14 @@ export function verifyError(e: unknown): { text: string; retry: boolean } {
   return { text: message(e), retry: false };
 }
 
+const IMAGE_TOO_LARGE = "The image is too large.";
+
+/** A file read larger than `MAX_IMAGE_BYTES` (its size said less). */
+class TooLarge extends Error {}
+
 /** An image refusal (D9): the decoder's, the screen capture's, the file's (U-05). */
 export function imageError(e: unknown): string {
+  if (e instanceof TooLarge) return IMAGE_TOO_LARGE;
   if (hasCode(e, "app.image_unreadable")) return "This image could not be read. Use a PNG, JPEG or BMP file.";
   if (hasCode(e, "app.no_qr_code")) return "No QR code was found in this image.";
   if (hasCode(e, "app.screen_capture_unavailable")) return SCREEN_UNAVAILABLE;
@@ -231,10 +279,10 @@ export class AddContactModel extends Model {
     super();
   }
 
-  /** A search hit: Platform's answer already, nothing to verify. */
-  pick(hit: HitFields) {
+  /** A search hit read at `readAt`: Platform's answer already, nothing to verify. */
+  pick(hit: HitFields, readAt: number) {
     this.#begin();
-    this.candidate = candidateOfHit(hit);
+    this.candidate = candidateOfHit(hit, readAt);
     this.changed();
   }
 
@@ -261,11 +309,25 @@ export class AddContactModel extends Model {
     return this.#image("reading", () => this.api.scanQrFile());
   }
 
+  /** A dropped or pasted image file (D9): one too large is refused unread (D35). */
+  imageFile(file: Pick<Blob, "size" | "arrayBuffer">): Promise<void> {
+    if (file.size > MAX_IMAGE_BYTES) return this.#tooLarge();
+    return this.#image("reading", async () => {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (bytes.length > MAX_IMAGE_BYTES) throw new TooLarge();
+      return this.api.scanQrImage(bytesToBase64(bytes));
+    });
+  }
+
   /** A dropped or pasted image's bytes (D9). */
   imageBytes(bytes: Uint8Array): Promise<void> {
-    if (bytes.length <= MAX_IMAGE_BYTES) return this.#image("reading", () => this.api.scanQrImage(bytesToBase64(bytes)));
+    if (bytes.length > MAX_IMAGE_BYTES) return this.#tooLarge();
+    return this.#image("reading", () => this.api.scanQrImage(bytesToBase64(bytes)));
+  }
+
+  #tooLarge(): Promise<void> {
     this.#begin();
-    this.#refuse("scan", "The image is too large.");
+    this.#refuse("scan", IMAGE_TOO_LARGE);
     return Promise.resolve();
   }
 
@@ -344,7 +406,7 @@ export class AddContactModel extends Model {
       try {
         const info = await this.api.dashpayVerifyScanned(this.walletId, texts[i]);
         if (seq !== this.#seq) return;
-        this.candidate = candidateOfScan(info, source);
+        this.candidate = candidateOfScan(info, source, Date.now());
         this.scan = { kind: "idle" };
         this.changed();
         return;
