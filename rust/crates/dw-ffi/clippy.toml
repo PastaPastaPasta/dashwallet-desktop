@@ -30,5 +30,6 @@ disallowed-methods = [
     { path = "platform_wallet::masternode::update_service::prepare_masternode_update_service", reason = "ProUpServTx is operator-signed and out of scope (MG-01 §4)", allow-invalid = true },
     { path = "platform_wallet::masternode::update_service::execute_masternode_update_service", reason = "ProUpServTx is operator-signed and out of scope (MG-01 §4)", allow-invalid = true },
     { path = "dpp::bls::BlsModule::sign", reason = "BLS signing with raw secret bytes: the wallet never signs with an operator key (MG-01 §4)", allow-invalid = true },
-    { path = "key_wallet::account::BLSAccount::operator_private_key_at", reason = "operator private key: the wallet holds no operator secret outside the keychain reveal (MG-01 D6)", allow-invalid = true },
+    { path = "key_wallet::account::BLSAccount::operator_private_key_at", reason = "operator private key: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "key_wallet::wallet::root_extended_keys::RootExtendedPrivKey::to_bls_extended_priv_key", reason = "BLS extended private key: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
 ]

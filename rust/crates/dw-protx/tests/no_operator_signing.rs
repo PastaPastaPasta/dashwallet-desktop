@@ -9,25 +9,28 @@
 //!   must repeat the entries; [`every_clippy_toml_carries_the_mg01_rules`]
 //!   checks that;
 //! - this test scans the sources clippy does not see or cannot judge by
-//!   type (Rust, the desktop UI, Swift) for building an operator-signed
-//!   payload and for the names of the builders, their IPC and console
-//!   commands, and BLS secret material and signers, and fails on any hit
-//!   outside the allow-list. Rust is read with comments removed; the UI and
-//!   Swift are read as they are (comments included), so no lexing can hide
-//!   a name there.
+//!   type (Rust, the desktop UI, Swift) for the operator-signed payload
+//!   types, the names of their builders, IPC and console commands, and BLS
+//!   secret material and signers, and fails on any hit outside the
+//!   allow-list. Rust is read with comments removed; the UI and Swift are
+//!   read as they are (comments included), so no lexing can hide a name
+//!   there.
 //!
 //! Rerun: `cd rust && cargo test -p dw-protx --test no_operator_signing`.
 //!
-//! Reading those payloads off the chain stays allowed (MG-03 tracks
-//! operator-key changes, MG-00 D46): a match pattern `{ .., }`, an enum
-//! variant, a return type or an `impl` is not a construction. A pattern
-//! that lists every field without `..` is flagged; add the `..`.
+//! Reading those payloads off the chain stays possible without naming
+//! their types (MG-03 tracks operator-key changes, MG-00 D46): match the
+//! `TransactionPayload::ProviderUpdate…PayloadType(p)` variant and read
+//! `p`'s fields. Naming the struct needs an allow-list entry reviewed
+//! against this rule (MG-01 D20): telling a read from a build by text took
+//! three review rounds and still had holes.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Payloads only the operator key can sign.
-const CONSTRUCTED: &[&str] = &[
+/// Payloads only the operator key can sign, matched as whole identifiers
+/// (the `…PayloadType` enum variants stay allowed).
+const PAYLOAD_TYPES: &[&str] = &[
     "ProviderUpdateServicePayload",
     "ProviderUpdateRevocationPayload",
 ];
@@ -61,6 +64,7 @@ const FORBIDDEN: &[&str] = &[
     "BlsModule",
     "ExtendedBLSPrivKey",
     "operator_private_key_at",
+    "to_bls_extended_priv_key",
     "OperatorKey",
     "bls::testing",
 ];
@@ -199,8 +203,11 @@ fn strip_comments(src: &str) -> String {
             }
         } else if c == b'\'' {
             // `'x'`, `'\n'`, `'\u{…}'`: a char literal; otherwise a lifetime.
+            // The escaped char sits at `i + 2` and may be a quote: `'\''`.
             let len = if next == Some(b'\\') {
-                b[i + 2..].iter().position(|&q| q == b'\'').map(|p| p + 3)
+                b.get(i + 3..)
+                    .and_then(|rest| rest.iter().position(|&q| q == b'\''))
+                    .map(|p| p + 4)
             } else {
                 let ch = src[i + 1..].chars().next().map_or(1, char::len_utf8);
                 (b.get(i + 1 + ch) == Some(&b'\'')).then_some(ch + 2)
@@ -216,57 +223,13 @@ fn strip_comments(src: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Whether `code` builds or aliases one of [`CONSTRUCTED`]: `Name::new(…)`,
-/// `Name as Other`, `type Other = Name`, or a struct literal `Name { … }`.
-/// A brace after `->`, `impl` or `for` is a body, and one whose fields end
-/// in `..` is a pattern; a literal has no `..` or a base expression after
-/// it (`..decoded`).
-fn constructs(code: &str, name: &str) -> bool {
-    let mut from = 0;
-    while let Some(at) = code[from..].find(name) {
-        let begin = from + at;
-        let start = begin + name.len();
-        from = start;
-        let after = &code[start..];
-        if after.bytes().next().is_some_and(is_ident) {
-            // `…PayloadType`: another identifier.
-            continue;
-        }
-        let before = code[..begin].trim_end();
-        let next = after.trim_start();
-        if next.starts_with("::new") || next.starts_with("as ") || before.ends_with('=') {
-            return true;
-        }
-        // `-> Name {`, `impl Name {`, `for Name {`, also after `&'a `.
-        let body_follows =
-            |s: &str| s.ends_with("->") || s.ends_with("impl") || s.ends_with(" for");
-        let last_word = |s: &str| !s.is_empty() && !s.ends_with(char::is_whitespace);
-        let without_ref = before
-            .trim_end_matches(|c: char| !c.is_whitespace() && c != '>')
-            .trim_end();
-        if body_follows(before) || (last_word(before) && body_follows(without_ref)) {
-            continue;
-        }
-        if let Some(body) = next.strip_prefix('{') {
-            let mut depth = 1;
-            let end = body
-                .char_indices()
-                .find(|&(_, c)| {
-                    match c {
-                        '{' => depth += 1,
-                        '}' => depth -= 1,
-                        _ => {}
-                    }
-                    depth == 0
-                })
-                .map_or(body.len(), |(i, _)| i);
-            let body = body[..end].trim_end().trim_end_matches(',');
-            if !body.ends_with("..") {
-                return true;
-            }
-        }
-    }
-    false
+/// Whether `line` names `ident` as a whole identifier.
+fn names(line: &str, ident: &str) -> bool {
+    line.match_indices(ident).any(|(at, _)| {
+        let b = line.as_bytes();
+        let end = at + ident.len();
+        (at == 0 || !is_ident(b[at - 1])) && b.get(end).is_none_or(|&c| !is_ident(c))
+    })
 }
 
 /// Every hit in one file's source, as `token: line n`.
@@ -278,21 +241,23 @@ fn hits(code: &str) -> Vec<String> {
                 found.push(format!("{token}: line {}", n + 1));
             }
         }
-    }
-    for name in CONSTRUCTED {
-        if constructs(code, name) {
-            found.push(format!("{name} constructed or aliased"));
+        for name in PAYLOAD_TYPES {
+            if names(line, name) {
+                found.push(format!("{name}: line {}", n + 1));
+            }
         }
     }
     found
 }
 
-/// What the scan reads of one file: Rust without comments, the rest as is.
+/// What the scan reads of one file: Rust without comments, the rest as is,
+/// with CRLF line ends normalised (the allow-list markers span lines).
 fn scanned(src: &str, ext: &str) -> String {
+    let src = src.replace("\r\n", "\n");
     if ext == "rs" {
-        strip_comments(src)
+        strip_comments(&src)
     } else {
-        src.to_string()
+        src
     }
 }
 
@@ -351,33 +316,63 @@ fn no_operator_key_signing_path_remains() {
     );
 }
 
-/// Clippy uses the nearest `clippy.toml` only (no merging), so every one
-/// under `rust/` must carry each disallowed path of `rust/clippy.toml`.
+/// The `disallowed-types` and `disallowed-methods` paths of a clippy.toml,
+/// ignoring commented-out lines.
+fn clippy_rules(text: &str) -> [Vec<String>; 2] {
+    let mut rules = [Vec::new(), Vec::new()];
+    let mut section = None;
+    for line in text.lines().map(str::trim).filter(|l| !l.starts_with('#')) {
+        if line.starts_with("disallowed-types") {
+            section = Some(0);
+        } else if line.starts_with("disallowed-methods") {
+            section = Some(1);
+        } else if line.starts_with(']') {
+            section = None;
+        }
+        if let (Some(k), Some((_, rest))) = (section, line.split_once("path = \"")) {
+            rules[k].push(rest[..rest.find('"').unwrap()].to_string());
+        }
+    }
+    rules
+}
+
+/// Clippy uses the nearest `clippy.toml` (or `.clippy.toml`) only, with no
+/// merging, so every one under `rust/` must carry each disallowed type and
+/// method of `rust/clippy.toml`, in the same section.
 #[test]
 fn every_clippy_toml_carries_the_mg01_rules() {
     let rust = repo_root().join("rust");
-    let root_toml = fs::read_to_string(rust.join("clippy.toml")).unwrap();
-    let rules: Vec<&str> = root_toml
-        .split("path = \"")
-        .skip(1)
-        .map(|s| &s[..s.find('"').unwrap()])
-        .collect();
-    assert!(rules.len() >= 10, "rust/clippy.toml lost its rules");
+    let root = clippy_rules(&fs::read_to_string(rust.join("clippy.toml")).unwrap());
+    assert!(
+        root[0].len() >= 7 && root[1].len() >= 5,
+        "rust/clippy.toml lost its rules"
+    );
     let mut tomls = Vec::new();
     files(&rust.join("crates"), &["toml"], &mut tomls);
     files(&rust.join("bin"), &["toml"], &mut tomls);
-    tomls.retain(|p| p.file_name().is_some_and(|n| n == "clippy.toml"));
+    tomls.retain(|p| {
+        p.file_name()
+            .is_some_and(|n| n == "clippy.toml" || n == ".clippy.toml")
+    });
     assert!(!tomls.is_empty(), "dw-ffi's clippy.toml is expected");
     for toml in tomls {
-        let text = fs::read_to_string(&toml).unwrap();
-        for rule in &rules {
-            assert!(
-                text.contains(&format!("path = \"{rule}\"")),
-                "{} lacks the MG-01 rule {rule}",
-                toml.display()
-            );
+        let have = clippy_rules(&fs::read_to_string(&toml).unwrap());
+        for (k, section) in ["disallowed-types", "disallowed-methods"]
+            .iter()
+            .enumerate()
+        {
+            for rule in &root[k] {
+                assert!(
+                    have[k].contains(rule),
+                    "{} lacks the MG-01 rule {rule} in {section}",
+                    toml.display()
+                );
+            }
         }
     }
+    // The parser skips comments and keeps sections apart.
+    let fake = "disallowed-types = [\n# { path = \"a::A\" },\n]\ndisallowed-methods = [\n{ path = \"b::b\" },\n]";
+    assert_eq!(clippy_rules(fake), [vec![], vec!["b::b".to_string()]]);
 }
 
 #[test]
@@ -391,6 +386,12 @@ fn the_scanner_finds_what_it_must() {
         "let p = ProviderUpdateServicePayload { payload_sig: s, ..decoded };",
         "use x::ProviderUpdateServicePayload as P;",
         "type P = ProviderUpdateRevocationPayload;",
+        // Any naming of the struct, even where it is not built here.
+        "impl Unsigned for ProviderUpdateServicePayload {\n    fn u() -> Self { Self { version: 2 } }\n}",
+        "impl From<Draft> for ProviderUpdateRevocationPayload { fn from(d: Draft) -> Self { todo!() } }",
+        "fn read(r: &mut R) -> ProviderUpdateServicePayload {\n    decode(r)\n}",
+        "if let ProviderUpdateRevocationPayload { pro_tx_hash, .. } = p {}",
+        "let k = x.to_bls_extended_priv_key(net)?;",
         "pub fn finalize_revoke(tx: &Transaction) {}",
         "let sk = BlsSecretKey::<BlsScIetf>::from_ikm(&ikm);",
         "use dashcore::blsful::SecretKey;",
@@ -406,6 +407,8 @@ fn the_scanner_finds_what_it_must() {
         "let r = r\"\\\"; let s = \"/*\"; finalize_revoke(); let t = \"*/\";",
         "let r = br#\"\\\"#; let s = \"/*\"; finalize_revoke(); let t = \"*/\";",
         "fn f<'a>(x: &'a str) { finalize_revoke() }",
+        // `'\''` is one char literal, so the quotes after it pair up.
+        "let q = ['\\'','\"']; let s = \"/*\"; finalize_revoke(); let t = \"*/\";",
         // A name inside a string (an IPC command) is read.
         "invoke(\"protx_update_service\")",
     ] {
@@ -415,14 +418,15 @@ fn the_scanner_finds_what_it_must() {
     // a later line.
     let ui = "<p>the wallet's key</p>\nconst u = 'https://x'; invoke('prepareRevoke')";
     assert!(!hits(&scanned(ui, "tsx")).is_empty());
+    // A CRLF checkout still finds a two-line marker.
+    assert_eq!(
+        scanned("#[cfg(test)]\r\nmod tests", "rs"),
+        "#[cfg(test)]\nmod tests"
+    );
     // …and these are not.
     for ok in [
-        "TransactionPayload::ProviderUpdateServicePayloadType(p) => track(p),",
-        "if let ProviderUpdateRevocationPayload { pro_tx_hash, .. } = p {}",
-        "let ProviderUpdateRevocationPayload {\n    pro_tx_hash,\n    ..,\n} = p;",
-        "fn read(r: &mut R) -> ProviderUpdateServicePayload {\n    decode(r)\n}",
-        "impl Track for ProviderUpdateServicePayload {\n    fn t(&self) {}\n}",
-        "impl<'a> Track for &'a ProviderUpdateServicePayload {}",
+        "TransactionPayload::ProviderUpdateServicePayloadType(p) => track(&p.pro_tx_hash),",
+        "Some(TransactionPayload::ProviderUpdateRevocationPayloadType(p)) => p.reason,",
         "SpecialType::ProviderUpdateService => \"service update\",",
         "// finalize_revoke is gone (MG-01 D6)",
         "/* BlsSecretKey\n /* nested */ never */ let x = 1;",
