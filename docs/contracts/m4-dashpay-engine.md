@@ -55,7 +55,7 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
 DP1-01's `keys_policy.rs`, E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, DP2-04's private details `private_details.rs` with `private_details_tests.rs`, DP2-05's bell session tests `notifications_tests.rs`, DP1-06's cost table `credit_costs.rs`, balance refreshes `balances.rs` and top-up flow `topup.rs` with `topup_tests.rs`, DP1-04's contest watch `contest_watch.rs` with `contest_watch_tests.rs`, and DP3-02's contact payment attribution `attribution.rs` with `payments_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, DP2-04's private details `private_details.rs` with `private_details_tests.rs`, DP2-05's bell session tests `notifications_tests.rs`, DP1-06's cost table `credit_costs.rs`, balance refreshes `balances.rs` and top-up flow `topup.rs` with `topup_tests.rs`, DP1-04's contest watch `contest_watch.rs` with `contest_watch_tests.rs`, and DP3-02's contact payment attribution `attribution.rs` with `payments_tests.rs`, and DP1-08's names checks `names_check.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -2746,7 +2746,7 @@ renames or reshapes them takes the next version bump:
     which the protocol rewrites on a purchase or transfer; at most one document, a 10-second budget).
     - **In the background** (DP1-08 D27): a wallet's check is a task of its own, never awaited by the Platform
       supervisor, so a slow Platform delays no bring-up, unlock or readmission. One check per wallet runs at a time;
-      triggers while it runs make exactly one more follow. It asks four identities at a time, the whole check within
+      triggers while it runs make exactly one more follow. It asks four identities at a time, all its questions within
       20 seconds; an identity unanswered by then is `Failed`, never nameless.
     - **An answer for a removed or unloaded wallet is dropped** (D28): each check asks for the wallet's generation,
       which a removal or an unload raises, so a wallet imported again starts `Pending`.
