@@ -70,10 +70,10 @@ a readiness block by status, then the links. Wizard and invitation entries end a
 | J1 | `noIdentity{null}` | cost "A username costs about N Dash. Usernames the network votes on cost more; the exact cost is shown before you pay." (quote, D6); "You need at least N Dash to create a username." when the spendable balance is below it; the CoinJoin tip (Android `mix_dash_message`, D9) | Create username → wizard placeholder | `dashpay-no-identity` |
 | J2 | `noIdentity{waitingForSync}` | as J1 + "Available after sync finishes" | disabled | `dashpay-waiting-for-sync` |
 | J3 | `noIdentity{watchOnly}` | "A watch-only wallet cannot join DashPay. Restore the wallet from its recovery phrase to join." | none | `dashpay-watch-only` |
-| J4 | `startupIncomplete{…}` | S3–S6's line | disabled (BL-153 D13: Join could start a second registration) | `dashpay-starting` |
+| J4 | `startupIncomplete{…}` | S3–S6's card | no Create username (BL-153 D13: Join could start a second registration); the card's own button | `dashpay-starting` |
 | J5 | `registering`, `contestPending`, `ready` | the Home card for that state (S10–S17) | the card's | as S10–S17 |
-| J6 | read failed | S2 | Try again | `dashpay-status-error` |
-| J7 | quote failed or unread | the cost sentence without the figure: "The exact cost is shown before you pay." | as J1 | `dashpay-quote-error` |
+| J6 | read failed | S2 | Try again | `dashpay-no-identity` + `fail=dashpay_status:none` |
+| J7 | quote failed or unread | the cost sentence without the figure: "Usernames the network votes on cost more than others. The exact cost is shown before you pay." | as J1 | `dashpay-no-identity` + `fail=registration_quote:none` |
 
 Links on every Join page state: "What is username voting?" (voting info sheet) and "About DashPay" (FAQ sheet).
 
@@ -86,9 +86,9 @@ Keep your recovery phrase safe (D10); Masternode owners vote (voting from this w
 contact requests become private? · How does this compare to Bitcoin? · … to Ethereum accounts? · … to Unstoppable
 Domains? · What if I lose my recovery phrase? (D10, D11).
 
-**Light and dark**: every card state, the chip states, the Join page (J1, J2, J3, J5 voting), the voting info and the
+**Light and dark**: every card state, the chip states, the Join page (J1 with and without a shortfall, J2, J3, J5 voting), the voting info and the
 FAQ sheet are baselined in both themes (Chromium, the pinned image); axe runs on each in both themes on Chromium and
-WebKit (`e2e/dashpay.spec.ts`). Colours are the existing tokens only (`card-l1`, `accent`, `caution`, `danger`
+WebKit (`e2e/dashpay.spec.ts`). Colours are the existing tokens only (`card-l1`, `accent` and `danger`
 tints); no new token.
 
 ## Slice plan
@@ -119,6 +119,8 @@ tints); no new token.
 | D13 | The Home card sits between the shortcut card and History (UX-SPEC §4.5's `SystemMessage` slot), full column width, `card-l1`. It is not dismissible yet (F1). | iOS lets the Home call to action be dismissed; that needs a persisted UI setting (`UiSettings` is engine-owned). |
 | D14 | Contest outcomes (won, lost, blocked) are not a banner state: the status has no such variant (a lost contest is `ready`, S17 or S16), and the outcome is in the notification journal (DP2-05). | Not derivable from `status` (BL-153 item 49); the bell owns events. iOS's "Rejected – / Blocked –" rows are F2. |
 | D15 | The `funded` scenario (no identity) now shows the Join card on Home: its overview baselines are re-blessed. | It is S7, the state every new wallet starts in. |
+| D16 | The `recovery-phrase` (a sheet over the funded Home) and `forgot` baselines are re-blessed too. The lock screen covers a rendered shell, whose Home now holds the Join card; `forgot` moves 189 pixels of the sheet's text rasterisation (the same in every run), not its layout. | Both follow from D15; `txDetail` and the other baselines are unchanged. |
+| D17 | The card's "Available after sync finishes · N%" uses the status bar's `syncPercent` and its one-decimal format, so the two agree. A sync a few blocks from the end reads "100.0%" in both; the fixture shows a mid-sync point (65%). | One percentage in the window; the rounding is the status bar's concern (a follow-up), not a banner state. |
 
 ## Deferred
 
