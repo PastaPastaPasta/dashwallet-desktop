@@ -92,6 +92,7 @@ guessed state.
 | D20 | A `Contested` registration row counts as an open contest only while the library still lists that label among the identity's open contests (`contested_dpns_names`, read with the identity list). | Sol r1 finding 2: a flow whose profile step is parked stays `Contested` after the watch ends the contest (lost, locked, or unplaced for a day); `end_watch` drops the label from the library, so the row no longer makes the status `ContestPending`. Before the watch row exists the library already lists the contest (`register_name` records it first), so D6's pre-watch case still holds. |
 | D21 | When a status relied on Platform's proof of no identity (`dashpay.no_identity`, live read, no identity), the engine schedules one `Platform{Startup}` at the proof's expiry (once per wallet and proof, a task on the session's runtime). | Sol r1 finding 3 (was F4): the status turns `StartupIncomplete` at the expiry with no other signal, offline included; hosts never poll (§3.5). The bring-up's own rule reads the same deadline. |
 | D22 | The surviving mutant (the gatherer's marker read without `read.live`) is equivalent only on a successful settings read: on a snapshot whose marker read fails, the mutant fails the call where the code answers `StartupIncomplete`. Not tested: it needs an app.sqlite read fault while a writer holds the library lock, and no such seam exists; the guard's comment says why it is there. | Sol r1 finding 4 (nit). |
+| D23 | D21's timers have an owner (`AbsenceExpiries`): one abortable timer per wallet, for its newest proof (a renewed proof replaces it); removing the wallet (`PlatformRuntime::forget`) and closing the session (`close`, which engine shutdown runs) abort it and drop its entry; a timer that fires drops its own entry; it holds the hub weakly. A timer is scheduled only when the answer rests on the proof alone: `NoIdentity` (not watch-only), not created here, the bring-up not `NoIdentity`. The status call is admitted by the op gate, so none is scheduled after close cancelled them. | Sol r2: a spawned task held a strong `Arc<SessionHub>` up to 7 days past a removal or close, marked removed wallets, and renewed proofs piled up entries. |
 
 ## Follow-ups
 
@@ -111,7 +112,9 @@ guessed state.
 | The contest watch's `Names` signal on a learned end and a dropped unplaced watch, none on an unchanged end | `contest_watch_tests::a_contest_still_voting_is_adopted_and_learns_its_end`, `an_unplaced_watch_ends_after_a_day_without_news` | D18 |
 | Real session: a new wallet is `NoIdentity{WaitingForSync}` offline; a restore is `StartupIncomplete{NotRun}` until the proven-absence marker (within its TTL); a registration row makes it `Registering`; an identity on file is `Ready`; a contest row with only the temporary name is `ContestPending`; a watch-only wallet; an unknown wallet | `banner_tests::a_session_reads_the_status_from_what_is_on_file` | D1, D3, D5, D6 |
 | `Platform{Startup}` on a changed outcome or identity, none on an unchanged write, one on a removal | `banner_tests::startup_changes_are_signalled_once` | D8 |
-| `Platform{Startup}` once at a relied-on proof's expiry, then `StartupIncomplete` | `banner_tests::the_expiry_of_a_proven_absence_is_signalled` | D21 |
+| `Platform{Startup}` once at a relied-on proof's expiry, then `StartupIncomplete`; the fired timer leaves its slot, a renewed proof is timed again and a newer one replaces it | `banner_tests::the_expiry_of_a_proven_absence_is_signalled` | D21, D23 |
+| No timer for a wallet created here; removing the wallet aborts its timer (no mark after the deadline) | `banner_tests::a_removed_wallet_keeps_no_expiry_timer` | D23 |
+| The timer holds the hub weakly; closing the session aborts it (no mark after the deadline) | `banner_tests::a_closed_session_keeps_no_expiry_timer` | D23 |
 | A parked `Contested` flow after a lost contest is `Ready` | `contest_watch_tests::a_lost_contest_ends_the_pending_status_of_a_parked_flow`, `banner_tests::rules_a_contest_is_pending_until_the_identity_shows_a_name` | D20 |
 | A seed attached (`walletCreated`) re-reads that wallet's status only | `src/api/events.test.ts` | D19 |
 | Contract: `DashPay.status` in `IMPLEMENTED`, `wallet_not_found` for an unknown wallet | `tests/m4_dashpay_contract.rs` | — |
@@ -125,4 +128,6 @@ Mutation check (`/work/scratch/dw-bl153/mutants.py`, 35 hand-written mutants of 
 `startup.rs` and `contest_watch.rs`, each run against `banner_tests` and `contest_watch_tests`): 34 killed. The one
 survivor is equivalent on a successful settings read (D22): `derive_status` ignores the markers on a snapshot anyway,
 so dropping `read.live` from the gatherer's marker read only adds that read. Round r1 added 4 mutants (the expiry
-signal, its once-per-proof guard, the open-contest check of a `Contested` row and its input): all killed.
+signal, its once-per-proof guard, the open-contest check of a `Contested` row and its input): all killed. Round r2 added 5
+(removal and close keep the timer, a fired timer keeps its slot, a wallet created here is timed, a strong hub held
+by the timer): all killed.

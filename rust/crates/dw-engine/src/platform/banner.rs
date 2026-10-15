@@ -8,10 +8,13 @@
 //! (`docs/design/BL-153-dashpay-status.md`); [`NetworkSession::dashpay_status_of`]
 //! gathers what they read.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dw_appdb::{ContestWatch, RegistrationRow};
+use tokio::runtime::Handle;
+use tokio::task::AbortHandle;
 
 use super::bringup::read_bring_up_markers;
 use super::contest_watch::{Seen, watch_of};
@@ -20,7 +23,7 @@ use super::registration_flow::failure_of;
 use super::registration_rows::{Decoded, Funding, Phase};
 use super::runtime::guard;
 use super::startup::{DashPayStatus, NoIdentityReason, StartupStatus};
-use crate::events::unix_now;
+use crate::events::{SessionHub, unix_now};
 use crate::{EngineError, NetworkSession, PlatformChange, WalletId};
 
 /// The main identity as the identity list shows it.
@@ -205,6 +208,9 @@ impl NetworkSession {
     /// `DashPay::status`: the inputs of [`derive_status`], from memory and
     /// app.sqlite. A read that fails fails the call.
     pub(super) fn dashpay_status_of(&self, id: WalletId) -> Result<DashPayStatus, EngineError> {
+        // Admitted like the reads below, so no timer is scheduled after the
+        // session's close cancelled them (D23).
+        let _op = self.try_enter()?;
         let startup = self.dashpay_startup(&id)?;
         let mut read = self.identity_read(id)?;
         let main = read.summaries.into_iter().find(|s| s.is_main).map(|s| {
@@ -218,16 +224,13 @@ impl NetworkSession {
         });
         let db = self.live()?.appdb;
         let wallet = id.to_string();
-        let absence_on_file = if main.is_none() && read.live {
-            let (created_here, proven_until) = read_bring_up_markers(&db, id)?;
-            if let Some(until) = proven_until {
-                self.signal_expiry(id, until);
-            }
-            created_here || proven_until.is_some()
+        let (created_here, proven_until) = if main.is_none() && read.live {
+            read_bring_up_markers(&db, id)?
         } else {
-            false
+            (false, None)
         };
-        Ok(derive_status(&StatusInputs {
+        let bring_up_said_none = startup.startup == StartupStatus::NoIdentity;
+        let status = derive_status(&StatusInputs {
             read_only: startup.read_only,
             startup: startup.startup,
             startup_identity: startup.identity,
@@ -235,23 +238,81 @@ impl NetworkSession {
             live: read.live,
             registrations: db.registration_rows(&wallet)?,
             contests: db.wallet_contest_watches(&wallet)?,
-            absence_on_file,
+            absence_on_file: created_here || proven_until.is_some(),
             caught_up: self.hub.tracker().caught_up(),
-        }))
+        });
+        // Only an answer the proof alone gives turns at its expiry (D23).
+        let relies_on_proof = !created_here
+            && !bring_up_said_none
+            && matches!(
+                status,
+                DashPayStatus::NoIdentity {
+                    reason: None | Some(NoIdentityReason::WaitingForSync)
+                }
+            );
+        if let Some(until) = proven_until.filter(|_| relies_on_proof) {
+            self.platform
+                .absence_expiries
+                .schedule(&self.rt, &self.hub, id, until);
+        }
+        Ok(status)
     }
+}
 
-    /// `Platform{Startup}` when the proof of no identity a status relied on
-    /// expires (D21): the status turns `StartupIncomplete` then, and no
-    /// other signal says so. Once per proof.
-    fn signal_expiry(&self, id: WalletId, until: u64) {
-        if !guard(&self.platform.absence_expiries).insert((id, until)) {
+/// The timers that signal `Platform{Startup}` when a proof of no identity a
+/// status relied on expires (D21): the status turns `StartupIncomplete`
+/// then, and no other signal says so. One per wallet, for its newest proof
+/// (D23); removing the wallet or closing the session aborts it, and it
+/// holds the session's hub weakly.
+#[derive(Default)]
+pub(crate) struct AbsenceExpiries(Arc<Mutex<HashMap<WalletId, (u64, AbortHandle)>>>);
+
+impl AbsenceExpiries {
+    fn schedule(&self, rt: &Handle, hub: &Arc<SessionHub>, id: WalletId, until: u64) {
+        let mut timers = guard(&self.0);
+        if timers.get(&id).is_some_and(|(at, _)| *at == until) {
             return;
         }
-        let hub = Arc::clone(&self.hub);
+        let (hub, own) = (Arc::downgrade(hub), Arc::downgrade(&self.0));
         let wait = Duration::from_secs(until.saturating_sub(unix_now()));
-        self.rt.spawn(async move {
+        // Spawned under the lock: the task's own removal waits for its entry.
+        let task = rt.spawn(async move {
             tokio::time::sleep(wait).await;
-            hub.pump.mark_platform(id, [PlatformChange::Startup]);
+            if let Some(own) = own.upgrade() {
+                let mut timers = guard(&own);
+                if timers.get(&id).is_some_and(|(at, _)| *at == until) {
+                    timers.remove(&id);
+                }
+            }
+            if let Some(hub) = hub.upgrade() {
+                hub.pump.mark_platform(id, [PlatformChange::Startup]);
+            }
         });
+        if let Some((_, older)) = timers.insert(id, (until, task.abort_handle())) {
+            older.abort();
+        }
+    }
+
+    /// The wallet left the session.
+    pub(crate) fn forget(&self, id: &WalletId) {
+        if let Some((_, task)) = guard(&self.0).remove(id) {
+            task.abort();
+        }
+    }
+
+    /// The session closes.
+    pub(crate) fn abort_all(&self) {
+        for (_, (_, task)) in guard(&self.0).drain() {
+            task.abort();
+        }
+    }
+
+    /// Tests: the proof each wallet's timer waits for.
+    #[cfg(test)]
+    pub(crate) fn pending(&self) -> HashMap<WalletId, u64> {
+        guard(&self.0)
+            .iter()
+            .map(|(id, (at, _))| (*id, *at))
+            .collect()
     }
 }

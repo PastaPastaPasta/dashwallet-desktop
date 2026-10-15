@@ -668,15 +668,9 @@ fn startup_changes_are_signalled_once() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
-/// D21 (Sol r1 finding 3): a status that relied on Platform's proof of no
-/// identity is signalled again when the proof expires, so a host showing
-/// `NoIdentity` re-reads it, offline too.
-#[test]
-fn the_expiry_of_a_proven_absence_is_signalled() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine = engine(dir.path());
-    let s = open_offline(&engine);
-    let db = s.live().unwrap().appdb;
+/// A restored wallet (no identity, not created here) whose status rests
+/// on a proof of no identity that holds `secs` more seconds.
+fn restored_with_a_proof(engine: &Engine, s: &Arc<NetworkSession>, secs: u64) -> WalletId {
     let restored = engine
         .block_on(s.import_wallet(
             Zeroizing::new(ABANDON_12.to_vec()),
@@ -684,33 +678,143 @@ fn the_expiry_of_a_proven_absence_is_signalled() {
             ImportOptions::default(),
         ))
         .unwrap();
-    // A proof that holds two more seconds.
-    let ttl = super::bringup::NO_IDENTITY_TTL.as_secs();
-    let at = (crate::events::unix_now() + 2 - ttl).to_string();
-    let scope = dw_appdb::local_scope(&restored.to_string());
-    db.set_setting(&scope, NO_IDENTITY_KEY, Some(&at)).unwrap();
-    *s.hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
-    assert_eq!(
-        status(&s, restored),
-        no_identity(Some(NoIdentityReason::WaitingForSync))
-    );
-    status(&s, restored);
+    prove_absence(s, restored, secs);
+    restored
+}
 
-    let signalled = || {
-        let marks = s.hub.pump.platform_marks.lock().unwrap();
-        (marks.as_ref().unwrap().iter())
-            .filter(|(id, c)| *id == restored && c.contains(&PlatformChange::Startup))
-            .count()
-    };
+/// Platform's proof that `id` owns no identity, holding `secs` more seconds.
+fn prove_absence(s: &NetworkSession, id: WalletId, secs: u64) -> u64 {
+    let ttl = super::bringup::NO_IDENTITY_TTL.as_secs();
+    let at = crate::events::unix_now() + secs - ttl;
+    let scope = dw_appdb::local_scope(&id.to_string());
+    let db = s.live().unwrap().appdb;
+    db.set_setting(&scope, NO_IDENTITY_KEY, Some(&at.to_string()))
+        .unwrap();
+    at + ttl
+}
+
+/// The `Platform{Startup}` marks for `id` so far.
+fn startup_marks(s: &NetworkSession, id: WalletId) -> usize {
+    let marks = s.hub.pump.platform_marks.lock().unwrap();
+    (marks.as_ref().unwrap().iter())
+        .filter(|(w, c)| *w == id && c.contains(&PlatformChange::Startup))
+        .count()
+}
+
+/// Waits up to 30 s for `n` marks for `id`.
+fn wait_for_marks(s: &NetworkSession, id: WalletId, n: usize) -> usize {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while signalled() == 0 && std::time::Instant::now() < deadline {
+    while startup_marks(s, id) < n && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    assert_eq!(signalled(), 1, "one signal for the two reads");
+    startup_marks(s, id)
+}
+
+/// D21 (Sol r1 finding 3), D23: a status that relied on Platform's proof of
+/// no identity is signalled again when the proof expires, so a host showing
+/// `NoIdentity` re-reads it, offline too: once per proof, and a fired timer
+/// leaves its slot, so a renewed proof is timed again.
+#[test]
+fn the_expiry_of_a_proven_absence_is_signalled() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let s = open_offline(&engine);
+    *s.hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+    let restored = restored_with_a_proof(&engine, &s, 2);
+    let waiting = no_identity(Some(NoIdentityReason::WaitingForSync));
+    assert_eq!(status(&s, restored), waiting);
+    status(&s, restored);
+    assert_eq!(
+        wait_for_marks(&s, restored, 1),
+        1,
+        "one signal for the two reads"
+    );
     assert_eq!(
         status(&s, restored),
         DashPayStatus::StartupIncomplete {
             startup: StartupStatus::NotRun
         }
     );
+    assert!(s.platform.absence_expiries.pending().is_empty());
+
+    // A renewed proof: timed again; a newer one replaces it.
+    prove_absence(&s, restored, 30);
+    assert_eq!(status(&s, restored), waiting);
+    let until = prove_absence(&s, restored, 2);
+    assert_eq!(status(&s, restored), waiting);
+    assert_eq!(
+        s.platform.absence_expiries.pending(),
+        [(restored, until)].into()
+    );
+    assert_eq!(wait_for_marks(&s, restored, 2), 2);
+    assert!(s.platform.absence_expiries.pending().is_empty());
+}
+
+/// D23: only an answer the proof alone gives is timed (not a wallet created
+/// here), and removing the wallet aborts its timer: no mark after the
+/// deadline.
+#[test]
+fn a_removed_wallet_keeps_no_expiry_timer() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let s = open_offline(&engine);
+    let created = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+    prove_absence(&s, created, 60);
+    assert_eq!(
+        status(&s, created),
+        no_identity(Some(NoIdentityReason::WaitingForSync))
+    );
+    assert!(
+        s.platform.absence_expiries.pending().is_empty(),
+        "created here"
+    );
+
+    let restored = restored_with_a_proof(&engine, &s, 2);
+    status(&s, restored);
+    assert!(
+        s.platform
+            .absence_expiries
+            .pending()
+            .contains_key(&restored)
+    );
+    let wipe = engine
+        .block_on(s.vault_op(move |v| {
+            v.authorize(
+                dw_vault::GrantPurpose::Wipe,
+                Some(&restored.0),
+                dw_vault::Credential::None,
+            )
+        }))
+        .unwrap()
+        .id;
+    engine.block_on(s.remove_wallet(restored, wipe)).unwrap();
+    assert!(s.platform.absence_expiries.pending().is_empty());
+    *s.hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    assert_eq!(startup_marks(&s, restored), 0);
+}
+
+/// D23: a timer holds the session's hub weakly, and closing the session
+/// aborts it.
+#[test]
+fn a_closed_session_keeps_no_expiry_timer() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let s = open_offline(&engine);
+    let restored = restored_with_a_proof(&engine, &s, 2);
+    let hubs = Arc::strong_count(&s.hub);
+    status(&s, restored);
+    assert_eq!(s.platform.absence_expiries.pending().len(), 1);
+    // Once the timer runs, waiting for its deadline.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(
+        Arc::strong_count(&s.hub),
+        hubs,
+        "no strong hub in the timer"
+    );
+    engine.block_on(s.close());
+    assert!(s.platform.absence_expiries.pending().is_empty());
+    *s.hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    assert_eq!(startup_marks(&s, restored), 0);
 }

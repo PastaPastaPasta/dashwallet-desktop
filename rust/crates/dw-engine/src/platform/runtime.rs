@@ -124,9 +124,9 @@ pub(crate) struct PlatformRuntime {
     pub(crate) balances: Arc<super::balances::Balances>,
     /// The per-contact payment locks (DP3-01, `payment_locks.rs`).
     pub(crate) payments: super::payment_locks::PaymentLocks,
-    /// The proofs of no identity whose expiry `DashPay::status` signals
-    /// (wallet, until; BL-153 D21).
-    pub(super) absence_expiries: Mutex<std::collections::HashSet<(WalletId, u64)>>,
+    /// The timers that signal a relied-on proof of no identity's expiry
+    /// (BL-153 D21, D23).
+    pub(crate) absence_expiries: super::banner::AbsenceExpiries,
     /// Tests: holds the next bring-up between building its keys and
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
@@ -597,6 +597,7 @@ impl PlatformRuntime {
         self.contests.forget(id);
         self.balances.forget(id);
         self.payments.forget(id);
+        self.absence_expiries.forget(id);
     }
 
     /// Takes wallet `id` out of `manager` (a removal, an unload, a restore's
