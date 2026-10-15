@@ -383,6 +383,8 @@ impl NetworkSession {
         cancel: &mut watch::Receiver<bool>,
     ) -> bool {
         let due = self.platform.recovery.take_names_due();
+        // A names pass asks when it ends.
+        let checked = checked.into_iter().filter(|id| !due.contains(id)).collect();
         if !due.is_empty()
             && !self
                 .for_wallets(manager, due.clone(), Job::Names, Instant::now(), cancel)

@@ -169,11 +169,12 @@ pub(crate) struct Recovery {
 }
 
 /// Per wallet, what Platform answered for each of its identities that show
-/// no name (DP1-08 D23): only an identity Platform said owns no DPNS name is
-/// nameless. Until it has answered, a name may be on its way: a restore or
-/// a discovery found the identity and the names pass that fetches its names
-/// has not ended, a pass was cut off, or another device registered one.
-/// Answers live for the session; an identity with none is pending.
+/// no main name (DP1-08 D23): only an identity Platform said owns no DPNS
+/// name is nameless. Until it has answered, a name may be on its way: a
+/// restore or a discovery found the identity and the names pass that
+/// fetches its names has not ended, or a pass was cut off. Answers live for
+/// the session; an identity with none is pending. A name registered
+/// elsewhere after a "nameless" answer shows once the DPNS loop loads it.
 #[derive(Default)]
 pub(super) struct NamesChecks(Mutex<Checks>);
 
@@ -418,6 +419,15 @@ pub(super) type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Outpu
 /// unverified if the identity, its shown profile or any of the names it
 /// shows is, as the snapshot holds them. A name it hides (a contest, a
 /// pending or refused copy) does not count (Opus-high M2).
+/// The names `o` owns by Platform's evidence on a live read: the rule of
+/// `summaries`, whose main name `resolve_main_name` picks from them.
+fn evident(o: &OwnedIdentity, prefs: &MainNamePrefs) -> Vec<(String, Option<u64>)> {
+    evident_names(o.names.clone(), prefs, |label| {
+        o.row_owned
+            .contains(&convert_to_homograph_safe_chars(label))
+    })
+}
+
 pub(super) fn summaries(
     mut owned: Vec<OwnedIdentity>,
     choices: &IdentityChoices,
@@ -436,10 +446,7 @@ pub(super) fn summaries(
         .map(|(i, o)| {
             let prefs = choices.names.get(&o.identity).cloned().unwrap_or_default();
             let names = if current {
-                evident_names(o.names, &prefs, |label| {
-                    o.row_owned
-                        .contains(&convert_to_homograph_safe_chars(label))
-                })
+                evident(&o, &prefs)
             } else {
                 Vec::new()
             };
@@ -809,10 +816,19 @@ impl NetworkSession {
         }
     }
 
-    /// Platform's answer for each identity of `id` that shows no name and
+    /// Platform's answer for each identity of `id` that shows no main name
+    /// (as `identities()` would: a refused or contested label is none) and
     /// that it has not said is nameless: `true` when it owns no DPNS name.
+    /// Nothing when the main-name rows cannot be read: the next check asks.
     async fn ask_names(&self, manager: &Manager, id: WalletId) -> Vec<(String, bool)> {
         let checks = &self.platform.recovery.names_checks;
+        let prefs = match self.appdb_op(move |db| read_name_prefs(db, id)).await {
+            Ok(prefs) => prefs,
+            Err(e) => {
+                tracing::warn!(wallet_id = %id, error = %e, "could not read the main-name rows");
+                return Vec::new();
+            }
+        };
         let asked: Vec<(String, Identifier)> = {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
@@ -820,7 +836,11 @@ impl NetworkSession {
                 return Vec::new();
             };
             (owned_identities(info, &id).into_iter())
-                .filter(|o| o.names.is_empty() && !checks.is_nameless(&id, &o.identity))
+                .filter(|o| {
+                    let prefs = prefs.get(&o.identity).cloned().unwrap_or_default();
+                    resolve_main_name(&evident(o, &prefs), &o.open_contests, &prefs).is_none()
+                        && !checks.is_nameless(&id, &o.identity)
+                })
                 .map(|o| (o.identity, o.owner))
                 .collect()
         };

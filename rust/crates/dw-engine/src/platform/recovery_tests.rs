@@ -341,6 +341,10 @@ struct Platform {
     skip_names: bool,
     /// Holds each question about an identity's names.
     hold_check: Option<Arc<Notify>>,
+    /// Identities whose listed labels have no domain document on Platform
+    /// (a refused registration, a contest still open): Platform says they
+    /// own no name.
+    no_documents: Vec<[u8; 32]>,
     hold_discovery: Option<Arc<Notify>>,
     /// Holds the discovery before it stores anything (a network response
     /// still awaited).
@@ -477,7 +481,9 @@ impl MockPlatform for Platform {
 
     fn owns_a_name(&self, _: WalletId, identity: String) -> BoxedFuture<Option<bool>> {
         let answer = (!self.fail_names.load(Ordering::SeqCst)).then(|| {
-            (self.names.iter()).any(|(raw, list)| base58(*raw) == identity && !list.is_empty())
+            (self.names.iter()).any(|(raw, list)| {
+                base58(*raw) == identity && !list.is_empty() && !self.no_documents.contains(raw)
+            })
         });
         let hold = self.hold_check.clone();
         Box::pin(async move {
@@ -1502,6 +1508,31 @@ fn an_identity_the_names_pass_skipped_is_not_nameless() {
     wait_until("the names pass", || {
         s.platform.recovery.names_passes.load(Ordering::SeqCst) == 1
             && names_check(&s, id) == Some(NamesCheck::Failed)
+    });
+    assert_eq!(shown(&s, id), vec![(base58(ALICE), vec![], None, true)]);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP1-08 D23 (Opus delta r2 M1): an identity whose only listed label was
+/// refused shows no main name though the library lists one: it is asked
+/// about too, and is nameless once Platform says it owns no name.
+#[test]
+fn an_identity_whose_only_label_was_refused_is_asked_and_nameless() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        names: vec![(ALICE, vec![("taken", None)])],
+        no_documents: vec![ALICE],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    let refused = s.set_name_pref(id, base58(ALICE), "refused_name", Some("taken".into()));
+    engine.block_on(refused).unwrap();
+    start(&engine, &s);
+    wait_until("the answer", || {
+        s.platform.recovery.names_passes.load(Ordering::SeqCst) == 1
+            && names_check(&s, id).is_none()
     });
     assert_eq!(shown(&s, id), vec![(base58(ALICE), vec![], None, true)]);
     engine.block_on(engine.shutdown()).unwrap();

@@ -2677,14 +2677,17 @@ renames or reshapes them takes the next version bump:
     `names_check: Option<NamesCheck>` (`Pending`, `Failed`), so a host never says "no username" for an identity whose
     names the library has not fetched. The library holds no names for the identities a restore or a discovery found
     until a DPNS pass fetches them; a pass skips an identity whose names it could not fetch and still succeeds; and
-    stored names may be stale after a pass was cut off before a restart or a name was registered elsewhere. So no
-    pass outcome settles it: the engine asks Platform, per identity that shows no name, whether it owns any DPNS
-    name (`dpns_domain_states_for_identity`, at most one document, a 10-second budget).
+    stored names may be stale after a pass was cut off before a restart. So no pass outcome settles it: the engine
+    asks Platform, per identity whose `main_name` is `None` (by this row's rule: a refused or still-contested label
+    is no name), whether it owns any DPNS name (`dpns_domain_states_for_identity`, the `records.identity` index,
+    which the protocol rewrites on a purchase or transfer; at most one document, a 10-second budget).
     - **Nameless** (`None`) once Platform answered that it owns none. The answer lasts for the session; a wallet
-      closed and opened again asks again.
+      closed and opened again asks again. A name registered elsewhere after that answer shows when the DPNS loop
+      loads it (its 600-second interval); until then the identity reads nameless.
     - **`Pending`** until Platform has answered, and while the wallet owes the recovery's names pass (DP1-05, queued
       by a restore's bring-up or a discovery; one cut off before a restart is owed again): that pass asks when it
-      ends. An identity a bring-up stores without one is asked when that bring-up ends.
+      ends (and is not asked again right after). An identity a bring-up stores without one is asked when that
+      bring-up ends.
     - **`Failed`** when the question failed or ran out of its budget, or Platform said the identity owns a name the
       library has not loaded (the DPNS loop fetches it, and then `main_name` is set). The engine asks again every
       minute, with the balance pass, until Platform says it owns none or a name shows.
