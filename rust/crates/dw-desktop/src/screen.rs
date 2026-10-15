@@ -156,6 +156,7 @@ fn wait<T>(
 #[cfg(target_os = "linux")]
 mod portal {
     use std::collections::HashMap;
+    use std::sync::atomic::Ordering;
     use std::sync::mpsc;
     use std::time::Instant;
 
@@ -170,6 +171,9 @@ mod portal {
     const PATH: &str = "/org/freedesktop/portal/desktop";
     const SCREENSHOT: &str = "org.freedesktop.portal.Screenshot";
     const REQUEST: &str = "org.freedesktop.portal.Request";
+
+    /// Portal workers still running (the tests check a cancel ends its own).
+    static WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     /// What the portal's `Response` said.
     enum Answer {
@@ -191,7 +195,9 @@ mod portal {
         std::thread::Builder::new()
             .name("dw-desktop-portal".into())
             .spawn(move || {
+                WORKERS.fetch_add(1, Ordering::SeqCst);
                 let _ = tx.send(screenshot(&worker, &handle_tx));
+                WORKERS.fetch_sub(1, Ordering::SeqCst);
             })
             .map_err(|e| DesktopError::OsError(e.to_string()))?;
         let Some(answer) = wait(&rx, deadline, cancelled) else {
@@ -199,6 +205,9 @@ mod portal {
             if let Ok(handle) = handle_rx.try_recv() {
                 close(conn, &handle);
             }
+            // The portal sends no `Response` after `Close`: closing the
+            // connection ends the worker (and its bus socket) instead.
+            let _ = conn.clone().close();
             return Ok(None);
         };
         match answer? {
@@ -271,9 +280,15 @@ mod portal {
             })?;
         let handle: OwnedObjectPath = reply.body().deserialize().map_err(dbus)?;
         let _ = handle_tx.send(handle.clone());
+        // On a bus any client may signal on the handle's path: only the
+        // portal that answered counts (a peer connection has no senders).
+        let portal = reply.header().sender().map(|s| s.as_str().to_owned());
         for msg in signals {
             let msg = msg.map_err(dbus)?;
-            if msg.header().path().map(|p| p.as_str()) != Some(handle.as_str()) {
+            let header = msg.header();
+            if header.path().map(|p| p.as_str()) != Some(handle.as_str())
+                || header.sender().map(|s| s.as_str()) != portal.as_deref()
+            {
                 continue;
             }
             let (response, results): (u32, HashMap<String, OwnedValue>) =
@@ -413,6 +428,16 @@ mod portal {
             let conn = fake_portal(None, None);
             let deadline = Instant::now() + Duration::from_millis(300);
             assert_eq!(capture(&conn, deadline, &|| false).unwrap(), None);
+            // Neither left its worker waiting for a `Response` (the other
+            // tests' workers end at once).
+            let until = Instant::now() + Duration::from_secs(20);
+            while WORKERS.load(Ordering::SeqCst) > 0 {
+                assert!(
+                    Instant::now() < until,
+                    "a portal worker outlived its cancel"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
     }
 }
@@ -422,6 +447,9 @@ mod snip {
     use std::time::Instant;
 
     use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
+    };
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
         OpenClipboard,
@@ -445,6 +473,17 @@ mod snip {
         let before = unsafe { GetClipboardSequenceNumber() };
         let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
         let (verb, target) = (wide("open"), wide("ms-screenclip:"));
+        // ShellExecuteW may hand the protocol to a COM handler: the thread
+        // (a blocking-pool one) joins an apartment for the call, as its
+        // documentation asks, unless it is in one already.
+        // SAFETY: the reserved pointer is null; a successful init (S_OK or
+        // S_FALSE) is balanced below, a failed one (another mode) is not.
+        let com = unsafe {
+            CoInitializeEx(
+                std::ptr::null(),
+                (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+            )
+        } >= 0;
         // SAFETY: both strings are NUL-terminated and outlive the call.
         let started = unsafe {
             ShellExecuteW(
@@ -456,6 +495,10 @@ mod snip {
                 SW_SHOWNORMAL,
             )
         };
+        if com {
+            // SAFETY: balances the successful CoInitializeEx above.
+            unsafe { CoUninitialize() };
+        }
         // Values above 32 mean success (ShellExecuteW's contract).
         if started as usize <= 32 {
             return Err(DesktopError::Unsupported(

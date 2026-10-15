@@ -90,10 +90,10 @@ commands! {
         .await
         .map_err(|e| AppError::app(AppCode::ScreenCapture, e.to_string()))?
         .map_err(desktop_error)?;
-        match image {
-            Some(image) => decode(image).await.map(Some),
-            None => Ok(None),
-        }
+        let Some(image) = image else {
+            return Ok(None);
+        };
+        decode(image).await.map(Some)
     }
 
     /// Stops a running `scan_qr_screen` (it answers `null`).
