@@ -79,6 +79,16 @@ import type { WalletFileInfo } from "./generated/WalletFileInfo";
 import type { WalletLoadStatus } from "./generated/WalletLoadStatus";
 import type { WatchOnlyOptions } from "./generated/WatchOnlyOptions";
 import type { UserHit } from "./generated/UserHit";
+import type { ActivityFilterName } from "./generated/ActivityFilterName";
+import type { ContactActivityPage } from "./generated/ContactActivityPage";
+import type { ContactDetailInfo } from "./generated/ContactDetailInfo";
+import type { ContactRequestOutcome } from "./generated/ContactRequestOutcome";
+import type { CostTable } from "./generated/CostTable";
+import type { DashPayEventPage } from "./generated/DashPayEventPage";
+import type { GrantAction } from "./generated/GrantAction";
+import type { GrantRequest } from "./generated/GrantRequest";
+import type { PrivateContactDetails } from "./generated/PrivateContactDetails";
+import type { PublishStateName } from "./generated/PublishStateName";
 
 export interface Backend {
   readonly kind: "tauri" | "fixture";
@@ -203,6 +213,19 @@ export interface Backend {
   dashpaySyncSoon(): Promise<null>;
   /** DPNS usernames starting with `prefix` (DP2-03). */
   searchUsers(walletId: string, prefix: string, limit: number): Promise<UserHit[]>;
+  // The contact pane and the bell (DP2-09).
+  dashpayContact(walletId: string, identity: string, contact: string): Promise<ContactDetailInfo | null>;
+  contactActivity(walletId: string, identity: string, contact: string, cursor: string | null, filter: ActivityFilterName): Promise<ContactActivityPage>;
+  /** The caps of the `platformOp` grant a DashPay write needs. */
+  grantRequest(walletId: string, identity: string, action: GrantAction): Promise<GrantRequest>;
+  creditsCostTable(walletId: string): Promise<CostTable>;
+  dashpayAcceptRequest(walletId: string, identity: string, from: string, grant: string): Promise<ContactRequestOutcome>;
+  dashpayIgnoreContact(walletId: string, identity: string, contact: string): Promise<null>;
+  dashpayUnignoreContact(walletId: string, identity: string, contact: string): Promise<null>;
+  dashpaySetPrivateDetails(walletId: string, identity: string, contact: string, details: PrivateContactDetails, grant: string | null): Promise<PublishStateName>;
+  dashpayEnableKeys(walletId: string, identity: string, grant: string): Promise<null>;
+  dashpayEvents(walletId: string, identity: string, cursor: number | null, limit: number): Promise<DashPayEventPage>;
+  dashpayMarkRead(walletId: string, identity: string, upTo: number): Promise<null>;
   /** The queued deep links, routed for `network` (U-01). */
   takeLinks(network: string): Promise<LinkRoute[]>;
   /** Where `text` leads (File ▸ Open URI…). */

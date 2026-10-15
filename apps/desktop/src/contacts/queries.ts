@@ -4,10 +4,15 @@
 // search is keyed by its prefix (latest wins) outside that prefix: a contact event need not
 // repeat a DAPI query.
 
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo } from "react";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ActivityFilterName } from "../api/generated/ActivityFilterName";
 import type { ContactSortName } from "../api/generated/ContactSortName";
 import { keys, useBackend } from "../api/queries";
+import { GrantModel } from "../tools/grant";
+import { ContactActions, type Refresh } from "./actions";
 import { contactsOwner, NETWORK_LIMIT, type ContactsOwner } from "./model";
+import { enableBanner, type EnableBanner } from "./pane";
 
 /** Whose contacts show (D2): the DashPay status, the shell's query; `retry` reads it again (the
  * page shows "starting" while it runs). */
@@ -35,16 +40,82 @@ export function usePendingSetup(walletId: string) {
   return useQuery({ queryKey: ["dashpay", "pendingSetup", walletId] as const, queryFn: () => b.dashpayPendingSetupCount(walletId) });
 }
 
+/** The network search's queries of `identity`: Unignore drops them (DP2-09 D6). */
+const searchKey = (walletId: string, identity: string) => ["userSearch", walletId, identity] as const;
+
 /** DPNS usernames starting with `prefix` (D6); idle while `prefix` is `null`. A failure is shown
  * with Try again, not retried behind the user's back. The hits' relations are the main identity's,
  * so it is part of the key (D21). */
 export function useNetworkSearch(walletId: string, identity: string, prefix: string | null) {
   const b = useBackend();
   return useQuery({
-    queryKey: ["userSearch", walletId, identity, prefix] as const,
+    queryKey: [...searchKey(walletId, identity), prefix] as const,
     queryFn: () => b.searchUsers(walletId, prefix!, NETWORK_LIMIT),
     enabled: prefix !== null,
     retry: false,
     staleTime: 60_000,
   });
+}
+
+/** One contact's detail: private details, publish state, request times (DP2-09 D1). Under
+ * `contactsAll`, so every re-read of the list re-reads it. */
+export function useContactDetail(walletId: string, identity: string, contact: string | null) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: [...keys.contactsAll(walletId), "detail", identity, contact] as const,
+    queryFn: () => b.dashpayContact(walletId, identity, contact!),
+    enabled: contact !== null,
+  });
+}
+
+/** A contact's payments, a page at a time (DP2-09 D8); under `contactsAll`, so `historyChanged`
+ * and the contact and payment signals re-read it. */
+export function useContactActivity(walletId: string, identity: string, contact: string, filter: ActivityFilterName) {
+  const b = useBackend();
+  return useInfiniteQuery({
+    queryKey: [...keys.contactsAll(walletId), "activity", identity, contact, filter] as const,
+    queryFn: ({ pageParam }) => b.contactActivity(walletId, identity, contact, pageParam, filter),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor,
+  });
+}
+
+/** The actions one surface runs for `identity` (DP2-09 D16): one model and grant prompt per
+ * mount, cancelled when the surface goes or names another identity. */
+export function useContactActions(walletId: string, identity: string): ContactActions {
+  const b = useBackend();
+  const client = useQueryClient();
+  const actions = useMemo(() => {
+    const refresh = (what: Refresh[]) => {
+      for (const w of what)
+        void client.invalidateQueries({
+          queryKey: w === "contacts" ? keys.dashpayAll : w === "identities" ? keys.identities(walletId) : searchKey(walletId, identity),
+        });
+    };
+    return new ContactActions(b, new GrantModel(b), walletId, identity, refresh);
+  }, [b, client, walletId, identity]);
+  useEffect(() => () => actions.cancel(), [actions]);
+  return actions;
+}
+
+/** Whether `identity` has its DashPay keys, from the shell's identities query; `undefined`
+ * while unknown (DP2-09 D2, D10). */
+export function useHasKeys(walletId: string, identity: string): boolean | undefined {
+  const b = useBackend();
+  const identities = useQuery({ queryKey: keys.identities(walletId), queryFn: () => b.identities(walletId) });
+  return identities.data?.find((i) => i.identity === identity)?.hasDashpayKeys;
+}
+
+/** The Enable DashPay banner (DP2-09 D10) for the main `identity`, with the fee read only while
+ * the banner shows. */
+export function useEnableBanner(walletId: string, identity: string): { banner: EnableBanner | null; hasKeys: boolean | undefined } {
+  const b = useBackend();
+  const hasKeys = useHasKeys(walletId, identity);
+  const costs = useQuery({
+    queryKey: keys.costTable(walletId),
+    queryFn: () => b.creditsCostTable(walletId),
+    staleTime: 600_000,
+    enabled: hasKeys === false,
+  });
+  return { banner: enableBanner(identity, hasKeys, costs.data), hasKeys };
 }

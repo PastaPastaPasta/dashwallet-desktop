@@ -178,7 +178,9 @@ test("selecting a row shows it in the detail slot; a search that filters it out 
   await expect(page.getByTestId("contact-detail-identity")).toHaveText(IDENTITY.carol);
   await expect(page.getByTestId("contact-detail-relation")).toHaveText("Contact");
   await expect(page.getByTestId("contact-detail-channel")).toHaveText("Setting up");
-  await expect(page.getByTestId("placeholder-contact-pane")).toHaveText("Contact actions, activity and private details are not available yet.");
+  // DP2-09 fills the rest of the slot: Carol's payments are still being set up.
+  await expect(page.getByTestId("contact-pay")).toBeDisabled();
+  await expect(page.getByTestId("contact-pane-note")).toHaveText("Payments with this contact are still being set up.");
 
   await search(page).fill("grace");
   await expect(names(page, "requests")).toHaveText(["Grace Hopper"]);
@@ -346,6 +348,16 @@ const STATES: Record<string, { scenario: string; go: (page: Page) => Promise<voi
   },
   // Each chip tone on a selected row's tint.
   "selected-info": { scenario: "dashpay-registered", go: (page) => row(page, "Carol").click() },
+  // DP2-09: a request's pane with its row actions, a contact's details and activity, the banner.
+  "pane-request": { scenario: "dashpay-registered", go: (page) => row(page, "heidi").click() },
+  "pane-contact": {
+    scenario: "dashpay-registered",
+    go: async (page) => {
+      await row(page, "Bob Builder").click();
+      await page.getByTestId("contact-activity-row").first().waitFor();
+    },
+  },
+  "enable-banner": { scenario: "dashpay-no-keys", go: (page) => page.getByTestId("contacts-enable-fee").waitFor() },
   "selected-danger": { scenario: "dashpay-registered", go: (page) => row(page, "dave").click() },
   refreshing: { scenario: "dashpay-contacts-refreshing", go: (page) => page.getByTestId("contacts-updating-line").waitFor() },
   network: {

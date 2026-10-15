@@ -245,7 +245,9 @@ test("toolbar: identity chip, bell and Contacts badge follow DashPay", async ({ 
   await expect(page.getByTestId("sidebar-contacts-badge")).toBeVisible();
   await chip.click();
   await expect(page.getByTestId("page-profile")).toBeVisible();
+  // The bell opens its popover (DP2-09 D11), and the popover the page.
   await page.getByTestId("toolbar-bell").click();
+  await page.getByTestId("bell-see-all").click();
   await expect(page.getByTestId("page-notifications")).toBeVisible();
 });
 

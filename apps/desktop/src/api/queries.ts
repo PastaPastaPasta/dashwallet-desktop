@@ -66,6 +66,10 @@ export const keys = {
   requests: (walletId: string, identity: string) => ["dashpay", "requests", walletId, identity] as const,
   /** Every Contacts list of a wallet (DP2-07): a mined payment moves `lastActivityAt` too. */
   contactsAll: (walletId: string) => ["dashpay", "contacts", walletId] as const,
+  /** The credit costs (DP2-09 D10): slow to change, read again with every DashPay signal. */
+  costTable: (walletId: string) => ["dashpay", "costTable", walletId] as const,
+  /** An identity's event feed (DP2-09 D11). */
+  events: (walletId: string, identity: string) => ["dashpay", "events", walletId, identity] as const,
 };
 
 /** Opens the network; its lock status seeds `lockStatus`, so the shell never renders

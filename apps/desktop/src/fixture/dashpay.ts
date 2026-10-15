@@ -3,7 +3,10 @@
 // registered identity with contacts in every relation and channel state, pending requests in
 // both directions, and a notification journal.
 
+import type { ActivityFilterName } from "../api/generated/ActivityFilterName";
 import type { ChannelStateName } from "../api/generated/ChannelStateName";
+import type { ContactActivityItem } from "../api/generated/ContactActivityItem";
+import type { ContactActivityPage } from "../api/generated/ContactActivityPage";
 import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
 import type { ContactList } from "../api/generated/ContactList";
 import type { ContactQueryArgs } from "../api/generated/ContactQueryArgs";
@@ -40,6 +43,31 @@ export interface DashPayWorld {
   contactsUpdating: false | "snapshot" | "noSnapshot";
   /** `search_users` fails as with DAPI unreachable (`platform.unavailable`). */
   searchOffline: boolean;
+  /** `contact_activity`'s payments by contact id, in any order (DP2-09). */
+  activity: Record<string, ContactActivityItem[]>;
+}
+
+/** Items one `contact_activity` page holds (DP3-02 D8). */
+export const ACTIVITY_PAGE = 50;
+
+/** `DashPay::contact_activity` over `items`: filtered, unmined first, then newest first, ties by
+ * txid (DP3-02 D9), 50 per page. The fixture's cursor is `a:<filter>:<offset>`; one of another
+ * filter, or one it did not issue, is `invalid_argument` as the engine's tagged cursor is. */
+export function activityPage(items: ContactActivityItem[], cursor: string | null, filter: ActivityFilterName, contact: string): ContactActivityPage {
+  let offset = 0;
+  // Bound to its contact and filter, as the engine's cursor is to its query.
+  if (cursor !== null) {
+    const m = /^a:(\w+):(all|sent|received):(\d+)$/.exec(cursor);
+    if (!m || m[1] !== contact || m[2] !== filter) throw new Error("cursor");
+    offset = Number(m[3]);
+  }
+  const unmined = (i: ContactActivityItem) => (i.height === null ? 1 : 0);
+  const rows = items
+    .filter((i) => filter === "all" || i.direction === filter)
+    .sort((a, b) => unmined(b) - unmined(a) || (b.timestamp ?? 0) - (a.timestamp ?? 0) || (a.txid < b.txid ? -1 : a.txid > b.txid ? 1 : 0));
+  const page = rows.slice(offset, offset + ACTIVITY_PAGE);
+  const next = offset + page.length;
+  return { items: page, nextCursor: next < rows.length ? `a:${contact}:${filter}:${next}` : null };
 }
 
 /** A journal row as dw-appdb stores it: the kind's journal name, `""` for no contact or reference,
@@ -315,6 +343,7 @@ export function noIdentity(): DashPayWorld {
     journal: [],
     contactsUpdating: false,
     searchOffline: false,
+    activity: {},
   };
 }
 
@@ -381,6 +410,24 @@ function journal(contacts: ContactDetailInfo[], times: Record<string, RequestTim
     .map((s, i) => ({ id: i + 1, identity: IDENTITY.alice, ...s }));
 }
 
+/** Bob's payments: the one the journal shows (`b0…`, received at(1, 3)), then 52 older ones,
+ * received and sent in turn, so a page of 50 leaves more; Dave's: the payment the journal shows. */
+function activity(): Record<string, ContactActivityItem[]> {
+  const bob: ContactActivityItem[] = [{ txid: "b0".repeat(32), direction: "received", amount: 50_000_000, height: 1_000_200, timestamp: at(1, 3) }];
+  for (let i = 0; i < 52; i++)
+    bob.push({
+      txid: (i + 1).toString(16).padStart(2, "0").repeat(32),
+      direction: i % 2 ? "sent" : "received",
+      amount: 1_000_000 * (i + 1),
+      height: 1_000_100 - i,
+      timestamp: at(2) - i * 60_480,
+    });
+  return {
+    [IDENTITY.bob]: bob,
+    [IDENTITY.dave]: [{ txid: "d4".repeat(32), direction: "received", amount: 125_000_000, height: 999_000, timestamp: at(12) }],
+  };
+}
+
 export function registered(): DashPayWorld {
   const contacts = CONTACTS.map(contact);
   const requestTimesById = Object.fromEntries(contacts.map((c, i) => [c.summary.contact, requestTimes(c, i)]));
@@ -402,6 +449,7 @@ export function registered(): DashPayWorld {
     journal: journal(contacts, requestTimesById),
     contactsUpdating: false,
     searchOffline: false,
+    activity: activity(),
     directory: [
       ...contacts.map(hit),
       { identity: IDENTITY.mallory, username: "mallory", displayName: "Mallory", avatarUrl: null, relation: "stranger", unverified: false },

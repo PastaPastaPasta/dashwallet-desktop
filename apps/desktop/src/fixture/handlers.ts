@@ -26,7 +26,10 @@ import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
 import { isCheckable } from "../api/lockReport";
 import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
-import { contactList, eventOf, type DashPayWorld } from "./dashpay";
+import type { CostTable } from "../api/generated/CostTable";
+import type { GrantAction } from "../api/generated/GrantAction";
+import type { PrivateContactDetails } from "../api/generated/PrivateContactDetails";
+import { activityPage, contactList, eventOf, type DashPayWorld } from "./dashpay";
 import { routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers } from "./send";
@@ -54,9 +57,10 @@ function wallet(w: World, walletId: string) {
 /** The wallet's DashPay state, for one of its identities. */
 function dashpay(w: World, walletId: string, identity?: string) {
   wallet(w, walletId);
-  if (identity !== undefined && !w.dashpay.identities.some((i) => i.identity === identity))
+  const dp = w.dashpayOf?.[walletId] ?? w.dashpay;
+  if (identity !== undefined && !dp.identities.some((i) => i.identity === identity))
     throw fail("identity.not_found", `identity not found: ${identity}`);
-  return w.dashpay;
+  return dp;
 }
 
 function contact(w: World, walletId: string, identity: string, id: string): ContactDetailInfo {
@@ -78,6 +82,36 @@ function setLock({ world, emit }: Ctx, state: World["lock"]["state"]) {
 
 /** The quote of a contact request or its acceptance (dw-engine flows.rs `CONTACT_REQUEST_CREDITS`). */
 const CONTACT_REQUEST_CREDITS = 150_000_000n;
+/** flows.rs `DOCUMENT_10K_CREDITS` (a profile or `contactInfo`) and `KEY_UPDATE_CREDITS`. */
+const DOCUMENT_10K_CREDITS = 300_000_000n;
+const KEY_UPDATE_CREDITS = 100_000_000n;
+
+/** `grant_request`'s bounds (flows.rs): no duffs, the action's credits. */
+const GRANT_CREDITS: Record<Exclude<GrantAction["kind"], "registerName">, bigint> = {
+  sendRequest: CONTACT_REQUEST_CREDITS,
+  acceptRequest: CONTACT_REQUEST_CREDITS,
+  updateProfile: DOCUMENT_10K_CREDITS,
+  publishPrivateDetails: DOCUMENT_10K_CREDITS,
+  enableDashPayKeys: KEY_UPDATE_CREDITS,
+};
+
+/** A testnet cost table (DP1-06's shape): the T2 charges measured on 2026-10-11 (m4 item 41). */
+const COST_TABLE: CostTable = {
+  protocolVersion: 10,
+  contactRequest: "94048500",
+  profileUpdate: "120000000",
+  contactInfo: "110000000",
+  enableDashpayKeys: "61330100",
+  creditsPerDuff: 1000,
+  topUpFee: "50000000",
+  topUpMinDuffs: 50_000,
+  lowCredits: "1200000000",
+  emptyCredits: "61330100",
+};
+
+/** DIP-15's `contactInfo` bound on the encrypted alias and note (m4 §5 `details_too_long`). The
+ * fixture measures the two as JSON, not DIP-15's exact encoding. */
+const DETAILS_MAX_BYTES = 2031;
 const GRANT_TTL_SECS = 120;
 /** How long a lease holds an own key (the engine's `key_ttl`, as the scenarios' leases show it). */
 const KEY_TTL_SECS = 240;
@@ -667,7 +701,7 @@ export const HANDLERS: Handlers = {
     const c = contact(ctx.world, walletId, identity, id);
     c.summary = { ...c.summary, relation: "ignored" };
     contactsChanged(ctx, walletId, identity);
-    markRead(ctx, walletId, ctx.world.dashpay, identity, Number.MAX_SAFE_INTEGER, id);
+    markRead(ctx, walletId, dashpay(ctx.world, walletId), identity, Number.MAX_SAFE_INTEGER, id);
     return null;
   },
   // The request is back at once: platform-wallet refetches it on its next sweep, which the
@@ -678,12 +712,40 @@ export const HANDLERS: Handlers = {
     contactsChanged(ctx, walletId, identity);
     return null;
   },
-  dashpay_set_private_details: ({ walletId, identity, contact: id, details }, ctx) => {
+  // DashPay::set_private_details (DP2-04, m4 §2.4): established contacts only; trimmed, blank is
+  // none; fewer than two contacts defer the publish; without a grant an edit of published details
+  // needs one and is not saved; with one, unchanged published details send nothing.
+  dashpay_set_private_details: ({ walletId, identity, contact: id, details, grant }, ctx) => {
+    if (id === identity) throw fail("contact.self", "contact is the identity itself");
+    // The size first, then the relation, as the engine checks them.
+    const clean = (v: string | null) => v?.trim() || null;
+    const d: PrivateContactDetails = { alias: clean(details.alias), note: clean(details.note), hidden: details.hidden };
+    const bytes = new TextEncoder().encode(JSON.stringify({ alias: d.alias, note: d.note })).length;
+    if (bytes > DETAILS_MAX_BYTES)
+      throw fail("contact.details_too_long", "contact details too long", { kind: "size", bytes, max: DETAILS_MAX_BYTES });
     const c = contact(ctx.world, walletId, identity, id);
-    c.privateDetails = details;
-    c.summary = { ...c.summary, alias: details.alias, hidden: details.hidden };
-    contactsChanged(ctx, walletId, identity);
-    return c.publishState;
+    if (c.summary.relation !== "contact") throw fail("invalid_argument", "not a contact of this identity");
+    const dp = dashpay(ctx.world, walletId, identity);
+    const same = JSON.stringify(d) === JSON.stringify(c.privateDetails);
+    const save = (state: ContactDetailInfo["publishState"]) => {
+      c.privateDetails = d;
+      c.publishState = state;
+      c.summary = { ...c.summary, alias: d.alias, hidden: d.hidden };
+      contactsChanged(ctx, walletId, identity);
+      return state;
+    };
+    if (dp.contacts.filter((x) => x.summary.relation === "contact").length < 2) return save("deferredUntilTwoContacts");
+    if (grant === null) {
+      if (c.publishState === "published" && !same) throw fail("platform.needs_grant", "needs a grant", { kind: "needsGrant", purpose: "credits" });
+      return save(c.publishState === "published" ? "published" : "local");
+    }
+    if (same && c.publishState === "published") return "published";
+    const me = dp.identities.find((i) => i.identity === identity)!;
+    if (!me.hasDashpayKeys) throw fail("contact.ineligible", "contact ineligible: NoDashPayKeys", { kind: "ineligible", reason: "noDashPayKeys" });
+    if (BigInt(me.balance ?? "0") < DOCUMENT_10K_CREDITS)
+      throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(DOCUMENT_10K_CREDITS), available: me.balance ?? "0" });
+    writeLease(ctx, walletId, grant, ["privateDetails"], DOCUMENT_10K_CREDITS)();
+    return save("published");
   },
   contact_payment_lock: ({ walletId, identity, contact: id }, { world }) => contact(world, walletId, identity, id).paymentLock,
   frequent_contacts: ({ walletId, identity, limit }, { world }) =>
@@ -692,6 +754,43 @@ export const HANDLERS: Handlers = {
       .sort((a, b) => b.summary.lastActivityAt! - a.summary.lastActivityAt!)
       .slice(0, limit)
       .map((c) => c.summary),
+  // DashPay::contact_activity (DP3-02): the ids, itself, the identity's wallet, then the page; a
+  // contact never paid is an empty page.
+  contact_activity: ({ walletId, identity, contact: id, cursor, filter }, { world }) => {
+    wallet(world, walletId);
+    if (!isIdentityId(identity) || !isIdentityId(id)) throw fail("invalid_argument", "not an identity id");
+    if (id === identity) throw fail("contact.self", "contact is the identity itself");
+    const dp = dashpay(world, walletId, identity);
+    try {
+      return activityPage(dp.activity[id] ?? [], cursor, filter, id);
+    } catch {
+      throw fail("invalid_argument", "not a cursor of this query");
+    }
+  },
+  // DashPay::enable_dashpay_keys (DP2-02): nothing missing sends nothing and leaves the grant;
+  // else the balance against the quote, the grant, then the identity has its keys.
+  dashpay_enable_keys: ({ walletId, identity, grant }, ctx) => {
+    const dp = dashpay(ctx.world, walletId, identity);
+    const me = dp.identities.find((i) => i.identity === identity)!;
+    if (me.hasDashpayKeys) return null;
+    if (BigInt(me.balance ?? "0") < KEY_UPDATE_CREDITS)
+      throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(KEY_UPDATE_CREDITS), available: me.balance ?? "0" });
+    writeLease(ctx, walletId, grant, ["enableDashPayKeys"], KEY_UPDATE_CREDITS)();
+    dp.identities = dp.identities.map((i) => (i.identity === identity ? { ...i, hasDashpayKeys: true } : i));
+    ctx.emit({ kind: "platform", network: ctx.world.launch.network.dirName, walletId, change: { domain: "identities" } });
+    return null;
+  },
+  // DashPay::grant_request (flows.rs): only an empty identity is refused; `registerName` is
+  // DP1-03's quote, which the fixture does not model.
+  grant_request: ({ identity, action }) => {
+    if (!identity.trim()) throw fail("invalid_argument", "identity is empty");
+    if (action.kind === "registerName") throw fail("platform.not_implemented", "the fixture does not quote names", { kind: "call", call: "grant_request(registerName)" });
+    return { maxDuffs: 0, maxCredits: String(GRANT_CREDITS[action.kind]) };
+  },
+  credits_cost_table: ({ walletId }, { world }) => {
+    wallet(world, walletId);
+    return COST_TABLE;
+  },
   dashpay_profile: ({ walletId, identity }, { world }) =>
     dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!.profile,
 
