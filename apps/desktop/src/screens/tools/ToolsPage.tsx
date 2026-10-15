@@ -9,11 +9,15 @@ import { useBackend } from "../../api/queries";
 import { navigate, useUi, type ToolsTab } from "../../app/ui";
 import { GrantModel } from "../../tools/grant";
 import { Page, Tabs, type Tab } from "../Routes";
+import { AddressBookTab } from "./AddressBook";
+import { CoinSelectionTab } from "./CoinSelection";
 import { GrantSheet, NeedsWallet } from "./common";
 import { ConsoleTab } from "./Console";
 import { InformationTab } from "./Information";
 import { PeersTab } from "./Peers";
+import { PsbtTab } from "./Psbt";
 import { RepairTab } from "./Repair";
+import { SignVerifyTab } from "./SignVerify";
 
 const TOOLS_TABS: Tab<ToolsTab>[] = [
   { id: "information", title: "Information" },
@@ -26,7 +30,7 @@ const TOOLS_TABS: Tab<ToolsTab>[] = [
   { id: "coinSelection", title: "Coin Selection" },
 ];
 
-export function ToolsPage({ wallet, wallets }: { wallet: WalletSummary | null; wallets: WalletSummary[]; network: NetworkInfo }) {
+export function ToolsPage({ wallet, wallets, network }: { wallet: WalletSummary | null; wallets: WalletSummary[]; network: NetworkInfo }) {
   const b = useBackend();
   const tab = useUi((s) => s.toolsTab);
   const [grants] = useState(() => new GrantModel(b));
@@ -35,18 +39,16 @@ export function ToolsPage({ wallet, wallets }: { wallet: WalletSummary | null; w
   if (tab === "information") content = <InformationTab key={key} />;
   else if (tab === "console") content = <ConsoleTab key={key} grants={grants} wallets={wallets} />;
   else if (tab === "peers") content = <PeersTab key={key} />;
+  // Without a wallet a PSBT still reads: "(But no wallet is loaded.)".
+  else if (tab === "psbt") content = <PsbtTab key={key} grants={grants} walletId={wallet?.walletId ?? null} network={network} />;
   else if (!wallet) content = <NeedsWallet testId={`tools-${tab}-no-wallet`} />;
   else if (tab === "repair") content = <RepairTab key={key} grants={grants} wallet={wallet} />;
-  else {
-    const title = TOOLS_TABS.find((t) => t.id === tab)!.title;
-    content = (
-      <p className="placeholder card-l1" data-testid={`placeholder-tools-${tab}`}>
-        {title} is not available yet.
-      </p>
-    );
-  }
+  else if (tab === "addressBook") content = <AddressBookTab key={key} walletId={wallet.walletId} network={network} />;
+  else if (tab === "signVerify") content = <SignVerifyTab key={key} grants={grants} walletId={wallet.walletId} network={network} />;
+  else content = <CoinSelectionTab key={key} walletId={wallet.walletId} network={network} />;
   return (
-    <Page route="tools">
+    // Coin Selection's and Peers' tables have dash-qt's columns (D22).
+    <Page route="tools" wide={tab === "coinSelection" || tab === "peers"}>
       <Tabs label="Tools" tabs={TOOLS_TABS} current={tab} onSelect={(toolsTab) => navigate("tools", { toolsTab })} testId="tools-tabs">
         {content}
       </Tabs>

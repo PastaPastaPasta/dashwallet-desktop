@@ -1728,6 +1728,7 @@ button {
   border-color: var(--dw-role-danger);
 }
 
+.page-wide .page-column,
 .page-transactions.is-table .page-column {
   max-width: none;
 }
@@ -2548,4 +2549,119 @@ button {
 .peers-table .table-open {
   cursor: pointer;
   text-align: left;
+}
+
+.tool-row-actions {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--dw-space-xxs);
+}
+
+.address-cell {
+  white-space: nowrap;
+}
+
+.tool-message {
+  min-height: 5em;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.tool-message.mono {
+  font-family: var(--dw-font-mono);
+}
+
+.tool-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-m);
+}
+
+.psbt-lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Coin Selection's view of the shared coin table (D19). */
+.sort-header {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: default;
+}
+
+.coin-table-detail th,
+.coin-table-detail td {
+  white-space: nowrap;
+}
+
+.coin-group td {
+  background: var(--dw-role-neutral-tint);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.coin-child td:nth-child(2) {
+  padding-left: var(--dw-space-l);
+}
+
+.coin-actions {
+  text-align: right;
+}
+
+.row-menu {
+  position: relative;
+  display: inline-block;
+}
+
+.row-menu > summary {
+  padding: var(--dw-space-xxs) var(--dw-space-xs);
+  color: var(--dw-role-accent);
+  font-size: var(--dw-button-small-font);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  list-style: none;
+  cursor: default;
+}
+
+.row-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.row-menu-items {
+  position: absolute;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 18em;
+  padding: var(--dw-space-xxs);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-card-raised);
+  box-shadow: var(--dw-shadow-floating);
+}
+
+.row-menu-items button {
+  padding: var(--dw-space-xs) var(--dw-space-s);
+  border: 0;
+  border-radius: var(--dw-radius-small);
+  background: none;
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: left;
+}
+
+.row-menu-items button:hover:not(:disabled),
+.row-menu-items button:focus-visible {
+  background: var(--dw-role-accent-tint);
+}
+
+.row-menu-items button:disabled {
+  color: var(--dw-role-text-tertiary);
 }

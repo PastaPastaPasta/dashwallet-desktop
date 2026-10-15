@@ -35,9 +35,10 @@ const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "
   joinDashPay: "Creating a DashPay username is not available yet.",
 };
 
-export function Page({ route, children }: { route: Route; children?: ReactNode }) {
+/** `wide`: the page's tables take the window's width, as Activity's table mode does. */
+export function Page({ route, wide = false, children }: { route: Route; wide?: boolean; children?: ReactNode }) {
   return (
-    <main className="page" data-testid={`page-${route}`}>
+    <main className={wide ? "page page-wide" : "page"} data-testid={`page-${route}`}>
       <div className="page-column">
         <header className="top-intro">
           <h1 className="top-intro-title">{TITLES[route]}</h1>
@@ -139,12 +140,13 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
   const tab = useUi((s) => s.payTab);
   const prefill = useUi((s) => s.payPrefill);
   const links = useUi((s) => s.payLinks);
+  const coins = useUi((s) => s.payCoins);
   return (
     <Page route="pay">
       <Tabs label="Pay" tabs={PAY_TABS} current={tab} onSelect={(payTab) => ui.set({ payTab })} testId="pay-tabs">
         {tab === "address" ? (
           // Keyed by the links that opened Pay and the wallet, so each one starts a fresh form.
-          <PayToAddress key={`${links}:${walletId}`} prefill={prefill} walletId={walletId} network={network} />
+          <PayToAddress key={`${links}:${walletId}`} prefill={prefill} coins={coins} walletId={walletId} network={network} />
         ) : (
           <NotYet testId="pay-contact">Paying a DashPay contact is not available yet.</NotYet>
         )}

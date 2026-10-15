@@ -6,8 +6,8 @@ import type { CoinSelectionSummary } from "../api/generated/CoinSelectionSummary
 import type { OutPoint } from "../api/generated/OutPoint";
 import type { Utxo } from "../api/generated/Utxo";
 import { appError, settle, WALLET_A } from "../onboarding/testWorld";
-import { outpointKey } from "../screens/pay/model";
-import { COLUMN_TITLE, CoinSelectionModel, CoinText, coinLabel, copyText, notSelectable, summaryText } from "./coins";
+import { notSelectable, outpointKey } from "../screens/pay/model";
+import { COLUMN_TITLE, CoinSelectionModel, CoinText, coinLabel, copyText } from "./coins";
 
 const txid = (n: number) => n.toString(16).padStart(64, "0");
 const key = (n: number) => `${txid(n)}:0`;
@@ -91,7 +91,7 @@ describe("Coin Selection (QT-069…074)", () => {
     expect(m.sort).toEqual({ column: "confirmations", ascending: true });
     m.setMode("tree");
     expect(m.mode).toBe("tree");
-    expect(COLUMN_TITLE.label).toBe("Received with label");
+    expect(COLUMN_TITLE.label).toBe("Label");
   });
 
   it("QT069_treeModeGroupsByAddressAndLabelsChange", () => {
@@ -157,18 +157,14 @@ describe("Coin Selection (QT-069…074)", () => {
     expect(m.coinJoinToggleTitle).toBe(CoinText.hideCoinJoin);
   });
 
-  it("QT072_summaryUsesTheEngineFormulaWithApproximatelyPrefix", async () => {
+  it("QT072_summaryUsesTheEngineFormula", async () => {
     const { m, api } = selection([utxo(1, 10_000_000), utxo(2, 5_000_000)]);
     m.toggleAll();
     await vi.waitFor(() => expect(m.summary).not.toBeNull());
     expect(api.coinSelectionSummary).toHaveBeenLastCalledWith(WALLET_A, expect.any(Array), [], { kind: "recommended", targetBlocks: 6 });
     expect(api.coinSelectionSummary.mock.lastCall?.[1]).toHaveLength(2);
-    const text = summaryText(m.summary!);
-    expect(text.bytes).toBe("≈340");
-    expect(text.fee).toBe("≈0.00000340");
-    expect(text.afterFee).toBe("≈0.14999660");
-    expect(text.amount).toBe("0.15000000");
-    expect(text.tolerance).toBe("Can vary +/- 2 duffs per input.");
+    expect(m.summary).toMatchObject({ quantity: 2, amount: 15_000_000, bytes: 340, fee: 340, afterFee: 14_999_660 });
+    expect(CoinText.tolerance(m.summary!.feeTolerancePerInput)).toBe("Can vary +/- 2 duffs per input.");
     m.toggleAll();
     await settle();
     expect(m.summary).toBeNull();
@@ -213,5 +209,15 @@ describe("Coin Selection (QT-069…074)", () => {
     expect(m.selected).toEqual([key(1)]);
     m.toggleAll();
     expect(m.selected).toEqual([]);
+  });
+
+  it("QT069_aTreeAddressRowTogglesOnlyItsCoins", () => {
+    const { m } = selection([utxo(1, 1000), utxo(2, 2000, { address: A2 }), utxo(3, 3000)]);
+    m.toggle(key(2));
+    const one = m.groups.find((g) => g.address === A1)!;
+    m.toggleCoins(one.coins);
+    expect(m.selected.toSorted()).toEqual([key(1), key(2), key(3)].toSorted());
+    m.toggleCoins(one.coins);
+    expect(m.selected).toEqual([key(2)]);
   });
 });

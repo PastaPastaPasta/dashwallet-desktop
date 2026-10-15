@@ -13,6 +13,7 @@ import type { PreparedTxSummary } from "../../api/generated/PreparedTxSummary";
 import type { Recipient } from "../../api/generated/Recipient";
 import type { TxEstimate } from "../../api/generated/TxEstimate";
 import type { OutPoint } from "../../api/generated/OutPoint";
+import type { Utxo } from "../../api/generated/Utxo";
 import { formatWithUnit, type Chain } from "../../format/amount";
 
 /** The coins a payment may use (coin control, U-03 D7). */
@@ -43,6 +44,16 @@ export const outpointKey = (o: OutPoint) => `${o.txid}:${o.vout}`;
 export function outpointOf(key: string): OutPoint {
   const i = key.lastIndexOf(":");
   return { txid: key.slice(0, i), vout: Number(key.slice(i + 1)) };
+}
+
+/** Why a coin cannot be chosen, or `null` when it can (Pay's coin control and Tools ▸ Coin
+ * Selection, U-05 D19). */
+export function notSelectable(u: Utxo): string | null {
+  if (u.spendable) return null;
+  if (u.reserved) return "Reserved by a payment in progress";
+  if (u.userLocked) return "Locked";
+  if (u.isCoinbase) return "Immature";
+  return "Not spendable";
 }
 
 export function coinSource(a: Advanced): CoinSource {

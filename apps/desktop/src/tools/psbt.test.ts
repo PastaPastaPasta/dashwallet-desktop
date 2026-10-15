@@ -58,10 +58,17 @@ function psbt(lock: Partial<LockStatus> = { encrypted: false }, walletId: string
 describe("PSBT (QT-076…079)", () => {
   it("QT077_createUnsignedCopiesBase64AndOffersSave", async () => {
     const { m } = psbt();
-    await m.loadUnsigned(UNSIGNED);
+    await m.loadUnsigned(UNSIGNED, true);
     expect(m.step).toBe("ready");
     expect(m.psbt).toBe(UNSIGNED);
     expect(m.message).toBe(PsbtText.unsignedCopied);
+  });
+
+  it("QT077_aFailedCopyDoesNotSayCopied", async () => {
+    const { m } = psbt();
+    await m.loadUnsigned(UNSIGNED, false);
+    expect(m.step).toBe("ready");
+    expect(m.message).toBeNull();
   });
 
   it("QT078_loadFromClipboardNeedsBase64", async () => {

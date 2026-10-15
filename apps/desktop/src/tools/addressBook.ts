@@ -150,6 +150,12 @@ export class AddressBookModel extends Model {
     return addressBookCsv(this.entries);
   }
 
+  /** The editor opens or closes: a message of the last attempt goes. */
+  clearError() {
+    this.error = null;
+    this.changed();
+  }
+
   showQr(e: AddressBookEntry | null) {
     this.qrEntry = e;
     this.changed();

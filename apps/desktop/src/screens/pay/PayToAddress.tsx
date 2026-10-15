@@ -11,6 +11,7 @@ import { navigate, type PayPrefill } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton } from "../../components/basics";
 import { full, type Chain } from "../../format/amount";
+import { AddressBookPicker } from "../tools/AddressBook";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
 import {
@@ -70,7 +71,18 @@ function FormField({
   );
 }
 
-export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefill | null; walletId: string; network: NetworkInfo }) {
+export function PayToAddress({
+  prefill,
+  coins,
+  walletId,
+  network,
+}: {
+  prefill: PayPrefill | null;
+  /** Coin Selection's coins (U-05 D19): Advanced starts on "Selected coins" with them. */
+  coins: string[] | null;
+  walletId: string;
+  network: NetworkInfo;
+}) {
   const b = useBackend();
   const client = useQueryClient();
   const chain = chainOf(network);
@@ -83,13 +95,21 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
   const [subtractFee, setSubtractFee] = useState(false);
   const [label, setLabel] = useState(prefill?.label ?? "");
   const [message, setMessage] = useState(prefill?.message ?? "");
-  const [advanced, setAdvanced] = useState<Advanced>(DEFAULT_ADVANCED);
+  const [advanced, setAdvanced] = useState<Advanced>(coins?.length ? { ...DEFAULT_ADVANCED, coins: "selected", selected: coins } : DEFAULT_ADVANCED);
   const [phase, setPhase] = useState<Phase>({ kind: "editing" });
   // Closing the confirm or result sheet returns to Review, or to the address of a cleared form.
   const reviewButton = useRef<HTMLButtonElement>(null);
   const addressField = useRef<HTMLInputElement>(null);
   const backToForm = useCallback(() => (reviewButton.current?.disabled === false ? reviewButton.current : addressField.current), []);
   const [maxError, setMaxError] = useState<string | null>(null);
+  // The sending address book (QT-097): choosing fills the address, and its label if none was typed.
+  const [picking, setPicking] = useState(false);
+  const chosen = useCallback((a: string, l: string) => {
+    setAddress(a);
+    setLabel((old) => old || l);
+    setPicking(false);
+    addressField.current?.focus();
+  }, []);
 
   const addr = address.trim();
   const amt = amountText.trim();
@@ -192,16 +212,21 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
         <section className="pay-card card-l1">
           <FormField label="Pay to" error={addrError ?? fieldError("address")}>
             {(p) => (
-              <input
-                {...p}
-                ref={addressField}
-                data-testid="pay-address"
-                value={address}
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="Dash address"
-                onChange={(e) => setAddress(e.target.value)}
-              />
+              <span className="amount-entry">
+                <input
+                  {...p}
+                  ref={addressField}
+                  data-testid="pay-address"
+                  value={address}
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder="Dash address"
+                  onChange={(e) => setAddress(e.target.value)}
+                />
+                <DashButton variant="tintedBlue" size="small" data-testid="pay-address-book" onClick={() => setPicking(true)}>
+                  Address Book…
+                </DashButton>
+              </span>
             )}
           </FormField>
           <FormField
@@ -255,6 +280,7 @@ export function PayToAddress({ prefill, walletId, network }: { prefill: PayPrefi
           </DashButton>
         </div>
       </form>
+      {picking && <AddressBookPicker walletId={walletId} network={network} purpose="send" onChoose={chosen} onClose={() => setPicking(false)} />}
       {phase.kind === "confirm" && (
         <ConfirmSheet
           confirmed={phase.confirmed}

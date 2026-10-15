@@ -181,9 +181,9 @@ export class PsbtModel extends Model {
     await this.#open(t);
   }
 
-  /** Pay's Create Unsigned (QT-077): the PSBT is on the clipboard already. */
-  async loadUnsigned(psbt: string) {
-    if (await this.#open(psbt)) this.#say(PsbtText.unsignedCopied);
+  /** Pay's Create Unsigned (QT-077): the PSBT, and whether it is on the clipboard already. */
+  async loadUnsigned(psbt: string, copied: boolean) {
+    if ((await this.#open(psbt)) && copied) this.#say(PsbtText.unsignedCopied);
   }
 
   async sign() {

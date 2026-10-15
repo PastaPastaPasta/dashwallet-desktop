@@ -8,15 +8,16 @@ import type { CoinSelectionSummary } from "../api/generated/CoinSelectionSummary
 import type { Utxo } from "../api/generated/Utxo";
 import { format } from "../format/amount";
 import { Model } from "../onboarding/model";
-import { DEFAULT_TARGET_BLOCKS, outpointKey, outpointOf } from "../screens/pay/model";
+import { DEFAULT_TARGET_BLOCKS, notSelectable, outpointKey, outpointOf } from "../screens/pay/model";
 
 export type CoinColumn = "amount" | "label" | "address" | "rounds" | "date" | "confirmations";
 
-/** dash-qt's column titles. */
+/** dash-qt's column titles; "Received with label" and "Received with address" are shortened to
+ * fit the window (D22). */
 export const COLUMN_TITLE: Record<CoinColumn, string> = {
   amount: "Amount",
-  label: "Received with label",
-  address: "Received with address",
+  label: "Label",
+  address: "Address",
   rounds: "Mixing Rounds",
   date: "Date",
   confirmations: "Confirmations",
@@ -37,15 +38,6 @@ export const coinLabel = (u: Utxo) => (u.isChange ? CoinText.change : u.label ||
 
 /** A coin's amount as dash-qt copies it: plain DASH, no separators. */
 export const plainAmount = (duffs: number) => format("DASH", duffs, false, "never", false);
-
-/** Why a coin cannot be chosen, or `null` when it can (U-03's rule). */
-export function notSelectable(u: Utxo): string | null {
-  if (u.spendable) return null;
-  if (u.reserved) return "Reserved by a payment in progress";
-  if (u.userLocked) return "Locked";
-  if (u.isCoinbase) return "Immature";
-  return "Not spendable";
-}
 
 const VALUE: Record<CoinColumn, (u: Utxo) => number | string> = {
   amount: (u) => u.amount,
@@ -199,9 +191,14 @@ export class CoinSelectionModel extends Model {
 
   /** dash-qt "(un)select all": every selectable shown coin, or none when all are selected. */
   toggleAll() {
-    const selectable = this.visible.filter((u) => notSelectable(u) === null).map((u) => outpointKey(u.outpoint));
+    this.toggleCoins(this.visible);
+  }
+
+  /** A tree's address row: its selectable coins, or none of them when all are selected. */
+  toggleCoins(coins: Utxo[]) {
+    const selectable = coins.filter((u) => notSelectable(u) === null).map((u) => outpointKey(u.outpoint));
     const all = selectable.length > 0 && selectable.every((k) => this.selected.includes(k));
-    this.selected = all ? [] : [...new Set([...this.selected, ...selectable])];
+    this.selected = all ? this.selected.filter((k) => !selectable.includes(k)) : [...new Set([...this.selected, ...selectable])];
     this.unselectedNotice = false;
     void this.#summarize();
     this.changed();
@@ -266,17 +263,4 @@ export class CoinSelectionModel extends Model {
     }
     this.changed();
   }
-}
-
-/** The summary's numbers as dash-qt shows them: estimates carry "≈". */
-export function summaryText(s: CoinSelectionSummary) {
-  return {
-    quantity: String(s.quantity),
-    amount: plainAmount(s.amount),
-    fee: `≈${plainAmount(s.fee)}`,
-    afterFee: `≈${plainAmount(s.afterFee)}`,
-    bytes: `≈${s.bytes}`,
-    change: `≈${plainAmount(s.change)}`,
-    tolerance: CoinText.tolerance(s.feeTolerancePerInput),
-  };
 }

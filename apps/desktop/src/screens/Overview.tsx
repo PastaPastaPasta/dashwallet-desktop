@@ -6,7 +6,7 @@ import type { Balances } from "../api/generated/Balances";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
-import { navigate, ui, useUi } from "../app/ui";
+import { navigate, openPayForm, ui, useUi } from "../app/ui";
 import { useBalance, useHistory, useSyncStatus, type HistoryFilter } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
@@ -83,7 +83,7 @@ function BalanceHero({ balances, network, syncing }: { balances: Balances | null
 
 /** Pay ▸ To an address, a fresh form (as a link would open it). */
 function openPay(focusAddress: boolean) {
-  navigate("pay", { payTab: "address", payPrefill: null, payLinks: ui.get().payLinks + 1 });
+  openPayForm();
   if (focusAddress) requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid="pay-address"]')?.focus());
 }
 
