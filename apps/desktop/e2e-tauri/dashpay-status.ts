@@ -98,6 +98,7 @@ async function run(passphrase: string, wd: WebDriver, step: (s: string) => void)
   step(`ready: chip ${done.chip}, no card`);
   // D21: a wallet with a username is never asked to choose one, not even while its names load.
   if (shot.has("noUsername")) throw new Error("Home asked for a username on a wallet that has one");
+  if (timeline.some((s) => s.chip?.includes("No username"))) throw new Error("the chip said No username on a wallet that has one");
   // The chip opens My Profile for an identity; the Join page is not offered.
   if (await wd.find(tid("sidebar-joinDashPay"))) throw new Error("the sidebar still offers Join DashPay");
   return { expectedMainName: expected, timeline, cardStatesSeen: [...shot] };
