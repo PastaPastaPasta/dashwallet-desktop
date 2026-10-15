@@ -251,7 +251,7 @@ export function ConfirmSheet({
             {error ? "" : "Too many attempts. "}Try again in {waitSecs} s.
           </p>
         )}
-        <div className="sheet-actions">
+        <div className="sheet-actions sheet-actions-fit">
           <DashButton ref={cancel} variant="tintedGray" size="large" data-testid="pay-confirm-cancel" disabled={busy} onClick={onCancel}>
             Cancel
           </DashButton>

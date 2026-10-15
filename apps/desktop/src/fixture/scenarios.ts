@@ -391,6 +391,12 @@ const SCENARIOS = {
     ];
     return w;
   },
+  /** The funded wallet watch-only: Pay's confirm sheet offers Create Unsigned only (U-05 D18). */
+  "watch-only": (t) => {
+    const w = base(t);
+    w.wallets[0].summary = { ...w.wallets[0].summary, watchOnly: true };
+    return w;
+  },
   /** Coin Selection: CoinJoin denominations beside the plain coins, hidden by default (QT-071). */
   "tools-coinjoin": (t) => withCoinJoinCoins(base(t)),
   /** Locking cuts more flows than the report lists, some pending (E0-13 D3): unresolved for good. */

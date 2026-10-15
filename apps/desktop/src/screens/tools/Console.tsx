@@ -27,7 +27,12 @@ export function ConsoleTab({ grants, wallets }: { grants: GrantModel; wallets: W
   }, [model.entries.length]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    if (e.key === "Enter") {
+      // WebKit (the app's WebKitGTK too) takes Enter in an input with a datalist for the
+      // suggestions and never submits the form.
+      e.preventDefault();
+      e.currentTarget.form?.requestSubmit();
+    } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
       const next = e.key === "ArrowUp" ? model.historyUp() : model.historyDown();
       if (next !== null) {
         e.preventDefault();

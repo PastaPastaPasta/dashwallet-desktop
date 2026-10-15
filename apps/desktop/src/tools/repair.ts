@@ -25,6 +25,9 @@ export const RepairText = {
   birthHeightInvalid: "Enter a block height.",
   birthHeightSaved: (h: number) => `The wallet's birth height is now ${h}.`,
   resetDone: "The chain data was deleted; syncing again.",
+  resolveStuck: "Resolve stuck funding",
+  resolveStuckQuestion:
+    "Send every coin of this wallet to yourself? Whether the registration's funding reached the network is settled either way; the payment costs only its fee.",
   resolved: (txid: string) => `All coins were sent to yourself (transaction ${txid}). The registration can go on once it is confirmed.`,
 };
 
@@ -80,23 +83,23 @@ export function stuckFundingText(r: StuckFundingRefusalName, retryLater: boolean
   return retryLater ? `${text} Try again later.` : text;
 }
 
-/** A registration whose funding may or may not have gone out: Repair can settle it. */
 /** A block height as typed: a whole number that fits a `u32`, else `null`. */
 export function parseHeight(text: string): number | null {
   const t = text.trim();
   return /^\d+$/.test(t) && Number(t) <= 0xffff_ffff ? Number(t) : null;
 }
 
+/** A registration whose funding may or may not have gone out: Repair can settle it. */
 export const isStuck = (r: RegistrationStatus) => r.waiting === "fundingUnknown";
 
 /** The funding step a registration's Repair names (`dispatchStatus`'s id). */
 export const fundingStep = (r: RegistrationStatus) => `registration/${r.draft}/funding`;
 
-export type Confirmation = "resetChainData" | "dropUnconfirmed";
+export type Confirmation = "resetChainData" | "dropUnconfirmed" | "resolveStuck";
 
 export type RepairState =
   | { kind: "idle" }
-  | { kind: "confirming"; what: Confirmation }
+  | { kind: "confirming"; what: Confirmation; registration?: RegistrationStatus }
   | { kind: "working" }
   | { kind: "done"; text: string }
   | { kind: "failed"; text: string };
@@ -178,8 +181,9 @@ export class RepairModel extends Model {
     await this.refresh();
   }
 
-  ask(what: Confirmation) {
-    if (!this.busy) this.#set({ kind: "confirming", what });
+  /** Each of these asks first (D11, D12); `registration` is the stuck one to resolve. */
+  ask(what: Confirmation, registration?: RegistrationStatus) {
+    if (!this.busy) this.#set({ kind: "confirming", what, registration });
   }
 
   dismiss() {
@@ -188,7 +192,11 @@ export class RepairModel extends Model {
 
   async confirm() {
     if (this.state.kind !== "confirming") return;
-    const what = this.state.what;
+    const { what, registration } = this.state;
+    if (what === "resolveStuck") {
+      this.#set({ kind: "idle" });
+      return this.resolveStuck(registration!);
+    }
     await this.#run(async () => {
       if (what === "dropUnconfirmed") return { kind: "done", text: RepairText.dropped(await this.api.dropUnconfirmed(this.walletId)) };
       // The engine resets only a stopped client; sync starts again whatever the reset did.

@@ -241,8 +241,8 @@ function signature(address: string, message: string): string {
 
 function verify(world: World, address: string, sig: string, message: string): VerifyMessageResult {
   const kind = classifyAddress(world.launch.network.dirName, address);
-  if (kind.kind !== "core") return { outcome: "invalidAddress", text: "The entered address is invalid. Please check the address and try again." };
-  if (kind.scriptHash) return { outcome: "addressNoKey", text: "The entered address does not refer to a key. Please check the address and try again." };
+  if (kind.kind !== "core") return { outcome: "invalidAddress", text: "Invalid address: check it and try again." };
+  if (kind.scriptHash) return { outcome: "addressNoKey", text: "That address is a script, not a key: check it and try again." };
   if (!/^[A-Za-z0-9+/]{86,88}={0,2}$/.test(sig))
     return { outcome: "malformedSignature", text: "The signature could not be decoded. Please check the signature and try again." };
   if (sig !== signature(address, message)) return { outcome: "notSigned", text: "Message verification failed." };
@@ -253,7 +253,7 @@ function verify(world: World, address: string, sig: string, message: string): Ve
 
 function psbtOf(world: World, psbt: string): FixturePsbt {
   const p = world.tools.psbts[psbt];
-  if (!p) throw fail("psbt.invalid", "Unable to decode PSBT");
+  if (!p) throw fail("psbt.invalid", "PSBT decode failed");
   return p;
 }
 
@@ -372,7 +372,7 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
   function signMessage(world: World, w: FixtureWallet, address: string, message: string): string {
     const kind = classifyAddress(world.launch.network.dirName, address);
     if (kind.kind !== "core") throw fail("invalid_address", "invalid address");
-    if (kind.scriptHash) throw fail("address_no_key", "address does not refer to a key");
+    if (kind.scriptHash) throw fail("address_no_key", "a P2SH address has no key");
     if (!owns(w, address)) throw fail("address_not_mine", "address not mine");
     return signature(address, message);
   }
@@ -455,7 +455,7 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
       wallet(world, walletId);
       const draft = /^registration\/(.+)\/funding$/.exec(step)?.[1];
       const r = world.dashpay.registrations.find((x) => x.draft === draft);
-      if (!r || r.waiting !== "fundingUnknown") throw fail("stuck_funding", "not stuck", { kind: "stuckFunding", refusal: { kind: "notStuck", status: null }, retryLater: false });
+      if (!r || r.waiting !== "fundingUnknown") throw fail("stuck_funding", "funding state is known", { kind: "stuckFunding", refusal: { kind: "notStuck", status: null }, retryLater: false });
       if (!grant(world, grantId, walletId, ["spend"])) throw fail("vault.grant_invalid", "grant invalid");
       useGrant(world, grantId);
       r.waiting = null;
@@ -478,7 +478,7 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
         return edited;
       }
       if (classifyAddress(world.launch.network.dirName, address).kind !== "core") throw fail("labels.invalid_address", "invalid address");
-      if (known) throw fail("labels.duplicate_address", "already in the address book");
+      if (known) throw fail("labels.duplicate_address", "duplicate entry");
       if (purpose === "send" && owns(w, address)) throw fail("labels.own_address", "the address is one of the wallet's own");
       const entry: AddressBookEntry = { address, label, purpose, createdAt: secs(FIXTURE_NOW) };
       entries.push(entry);
@@ -523,7 +523,7 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
     },
     broadcast_psbt: ({ psbt }, { world }) => {
       const p = psbtOf(world, psbt);
-      if (p.signedInputs < p.inputs) throw fail("psbt.not_complete", "not fully signed");
+      if (p.signedInputs < p.inputs) throw fail("psbt.not_complete", "inputs left unsigned");
       if (!world.sync.running) throw fail("psbt.no_peers", "no peers");
       world.tools.broadcasts.push(psbt);
       return txidOf(psbt);

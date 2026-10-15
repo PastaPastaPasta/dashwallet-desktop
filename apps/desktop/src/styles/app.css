@@ -1450,6 +1450,12 @@ button {
   flex: 1 1 0;
 }
 
+/* Pay's confirm sheet: three actions, one of them "Create Unsigned", each on one line. */
+.sheet-actions-fit .dash-button {
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+
 .address-full {
   font-family: var(--dw-font-mono);
   font-size: var(--dw-type-footnote-size);
@@ -2533,7 +2539,8 @@ button {
 }
 
 .console-warning {
-  color: var(--dw-role-caution);
+  padding-left: var(--dw-space-xs);
+  border-left: 3px solid var(--dw-role-caution);
 }
 
 .console-input {
@@ -2623,7 +2630,7 @@ button {
 
 .row-menu > summary {
   padding: var(--dw-space-xxs) var(--dw-space-xs);
-  color: var(--dw-role-accent);
+  color: var(--dw-role-text-link);
   font-size: var(--dw-button-small-font);
   font-weight: var(--dw-type-footnote-medium-weight);
   list-style: none;

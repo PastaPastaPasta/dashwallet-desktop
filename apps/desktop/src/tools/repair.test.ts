@@ -160,6 +160,19 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     expect(stuckFundingText({ kind: "lockInputsSpent", txid: "cd" }, false)).toBe("The funding's coins were already spent by transaction cd.");
   });
 
+  it("IOS113_C9: Resolve asks first; Cancel sends nothing, OK sends", async () => {
+    const { model, calls } = setup({ encrypted: false });
+    await model.refresh();
+    model.ask("resolveStuck", model.stuck[0]);
+    expect(model.state).toMatchObject({ kind: "confirming", what: "resolveStuck" });
+    model.dismiss();
+    expect(calls).toEqual([]);
+    model.ask("resolveStuck", model.stuck[0]);
+    await model.confirm();
+    expect(calls).toEqual([`resolve a1 registration/r1/funding grant-1`]);
+    expect(model.state).toMatchObject({ kind: "done" });
+  });
+
   it("a cancelled passphrase sends nothing", async () => {
     const { model, grants, calls } = setup({ encrypted: true });
     const running = model.resolveStuck(reg("r1", "fundingUnknown"));

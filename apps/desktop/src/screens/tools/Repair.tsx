@@ -20,6 +20,7 @@ const POLL_MS = 1000;
 const QUESTION: Record<Confirmation, { title: string; text: string; action: string }> = {
   resetChainData: { title: RepairText.resetChainData, text: RepairText.resetChainDataQuestion, action: "Reset and resync" },
   dropUnconfirmed: { title: RepairText.dropUnconfirmed, text: RepairText.dropUnconfirmedQuestion, action: "Remove" },
+  resolveStuck: { title: RepairText.resolveStuck, text: RepairText.resolveStuckQuestion, action: "Send to yourself" },
 };
 
 export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: WalletSummary }) {
@@ -119,7 +120,7 @@ export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: Wall
             {model.stuck.map((r) => (
               <li key={r.draft} data-testid={`repair-stuck-${r.draft}`}>
                 <span>{r.label}</span>
-                <DashButton variant="tintedBlue" size="small" data-testid={`repair-resolve-${r.draft}`} disabled={model.busy} onClick={() => void model.resolveStuck(r)}>
+                <DashButton variant="tintedBlue" size="small" data-testid={`repair-resolve-${r.draft}`} disabled={model.busy} onClick={() => model.ask("resolveStuck", r)}>
                   Resolve stuck funding: send all coins to yourself
                 </DashButton>
               </li>

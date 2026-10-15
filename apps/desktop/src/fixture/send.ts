@@ -258,7 +258,6 @@ interface Built extends TxEstimate {
 
 /** The draft's transaction: its checks in dw-engine's order, then the inputs, fee and change. */
 function build(world: World, wallet: FixtureWallet, d: Draft): Built {
-  if (wallet.summary.watchOnly) throw fail("send.watch_only", "the wallet has no keys");
   if (d.recipients.length === 0) throw fail("send.no_recipients", "no recipients");
   const network = world.launch.network.dirName;
   d.recipients.forEach((r, index) => {
@@ -554,6 +553,9 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
     draft_prepare: ({ draft, grantId }, { world }) => {
       const d = draftOf(world, draft);
       const w = wallet(world, d.walletId);
+      // The engine refuses a wallet without keys when signing, not before: its estimate and
+      // Create Unsigned work (dw-engine `prepare_inner`).
+      if (w.summary.watchOnly) throw fail("send.watch_only", "the wallet has no keys");
       const built = build(world, w, d);
       const grant = spendGrant(world, grantId, d.walletId);
       if (!grant) throw fail("send.grant_invalid", "grant invalid");
