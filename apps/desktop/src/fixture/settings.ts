@@ -372,7 +372,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
                   return false;
                 }
               })();
-      if (!ok) throw fail("compat.invalid_key_material", `not a valid ${material.kind}`);
+      if (!ok) throw fail("compat.invalid_key_material", `the ${material.kind} does not parse`);
       const seed = material.kind === "hdSeed" ? material.seedHex : material.kind === "xprv" ? material.xprv : material.json;
       return coreImport(ctx, `${material.kind} ${seed.trim().toLowerCase()}`, options, null);
     },
