@@ -192,14 +192,17 @@ mod portal {
         let worker = conn.clone();
         // The portal waits for the user; the worker waits for the portal,
         // so a cancel or the deadline never waits for either.
+        WORKERS.fetch_add(1, Ordering::SeqCst);
         std::thread::Builder::new()
             .name("dw-desktop-portal".into())
             .spawn(move || {
-                WORKERS.fetch_add(1, Ordering::SeqCst);
                 let _ = tx.send(screenshot(&worker, &handle_tx));
                 WORKERS.fetch_sub(1, Ordering::SeqCst);
             })
-            .map_err(|e| DesktopError::OsError(e.to_string()))?;
+            .map_err(|e| {
+                WORKERS.fetch_sub(1, Ordering::SeqCst);
+                DesktopError::OsError(e.to_string())
+            })?;
         let Some(answer) = wait(&rx, deadline, cancelled) else {
             // Dismiss the portal's picker; it may already be gone.
             if let Ok(handle) = handle_rx.try_recv() {

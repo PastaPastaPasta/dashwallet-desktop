@@ -27,8 +27,11 @@ describe("installDropGuard", () => {
     expect(send("drop", { target: field }).defaultPrevented).toBe(false);
     expect(send("drop", { target: { tagName: "TEXTAREA" }, types: ["text/plain"] }).defaultPrevented).toBe(false);
     expect(send("drop", { target: { isContentEditable: true } }).defaultPrevented).toBe(false);
-    // A file never does, nor anything into a file input.
+    // A file never does, nor anything into a field no one types in (a link dropped there loads).
     expect(send("drop", { target: field, types: ["Files"] }).defaultPrevented).toBe(true);
-    expect(send("dragover", { target: { tagName: "INPUT", type: "file" } }).defaultPrevented).toBe(true);
+    for (const type of ["file", "checkbox", "radio", "submit", "range"])
+      expect(send("dragover", { target: { tagName: "INPUT", type } }).defaultPrevented, type).toBe(true);
+    expect(send("drop", { target: { ...field, readOnly: true } }).defaultPrevented).toBe(true);
+    expect(send("drop", { target: { tagName: "TEXTAREA", disabled: true } }).defaultPrevented).toBe(true);
   });
 });
