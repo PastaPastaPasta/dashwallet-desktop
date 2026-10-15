@@ -119,6 +119,7 @@ import type { RescanStart } from "./RescanStart";
 import type { RescanStatus } from "./RescanStatus";
 import type { RevealedMnemonic } from "./RevealedMnemonic";
 import type { ScannedContactInfo } from "./ScannedContactInfo";
+import type { ScreenScanMode } from "./ScreenScanMode";
 import type { SessionSettings } from "./SessionSettings";
 import type { ShellEvent } from "./ShellEvent";
 import type { ShellSync } from "./ShellSync";
@@ -2009,6 +2010,52 @@ export function chooseFilePath(purpose: FilePurpose, save: boolean, suggestedNam
 }
 
 /**
+ * How this OS lets the user scan a region of the screen.
+ */
+export function screenScanMode(): Promise<ScreenScanMode> {
+  return invoke<ScreenScanMode>("screen_scan_mode");
+}
+
+/**
+ * Shows the open dialog for a PNG, JPEG or BMP image and returns the
+ * texts of its QR codes in reading order; `null` when the user
+ * cancelled. `app.no_qr_code` when none decodes,
+ * `app.image_unreadable` for another format or an image over 40 MP;
+ * the file codes as `open_file`'s.
+ */
+export function scanQrFile(): Promise<Array<string> | null> {
+  return invoke<Array<string> | null>("scan_qr_file");
+}
+
+/**
+ * The texts of the QR codes in `data` (a PNG, JPEG or BMP image,
+ * base64): a dropped or pasted image. Codes as `scan_qr_file`'s.
+ */
+export function scanQrImage(data: string): Promise<Array<string>> {
+  return invoke<Array<string>>("scan_qr_image", { data });
+}
+
+/**
+ * Lets the user pick a region of the screen (`screen_scan_mode`
+ * `picker`) and returns the texts of its QR codes; `null` when the user
+ * cancelled, `cancel_screen_scan` ran, or two minutes passed.
+ * `app.screen_capture_unavailable` where the OS or the session offers
+ * no picker (macOS; Linux without the desktop portal),
+ * `app.screen_capture` when the capture failed; then the image codes
+ * as `scan_qr_image`'s.
+ */
+export function scanQrScreen(): Promise<Array<string> | null> {
+  return invoke<Array<string> | null>("scan_qr_screen");
+}
+
+/**
+ * Stops a running `scan_qr_screen` (it answers `null`).
+ */
+export function cancelScreenScan(): Promise<null> {
+  return invoke<null>("cancel_screen_scan");
+}
+
+/**
  * `--selftest`: writes the renderer's report, and exits once the report
  * is final (`"final": false` is a checkpoint before a probe that could
  * end the page).
@@ -2293,6 +2340,11 @@ export type CommandArgs = {
   open_file: { purpose: FilePurpose };
   save_file_as: { purpose: FilePurpose; suggestedName: string; data: string };
   choose_file_path: { purpose: FilePurpose; save: boolean; suggestedName: string | null };
+  screen_scan_mode: {  };
+  scan_qr_file: {  };
+  scan_qr_image: { data: string };
+  scan_qr_screen: {  };
+  cancel_screen_scan: {  };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -2532,6 +2584,11 @@ export type CommandResults = {
   open_file: OpenedFile | null;
   save_file_as: string | null;
   choose_file_path: string | null;
+  screen_scan_mode: ScreenScanMode;
+  scan_qr_file: Array<string> | null;
+  scan_qr_image: Array<string>;
+  scan_qr_screen: Array<string> | null;
+  cancel_screen_scan: null;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -2773,6 +2830,11 @@ export const COMMANDS: Record<CommandName, string> = {
   open_file: "files",
   save_file_as: "files",
   choose_file_path: "files",
+  screen_scan_mode: "scan",
+  scan_qr_file: "scan",
+  scan_qr_image: "scan",
+  scan_qr_screen: "scan",
+  cancel_screen_scan: "scan",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",
@@ -2796,6 +2858,10 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.file_too_large",
   "app.file_read",
   "app.file_write",
+  "app.image_unreadable",
+  "app.no_qr_code",
+  "app.screen_capture_unavailable",
+  "app.screen_capture",
   "invalid_config",
   "invalid_argument",
   "network_not_open",

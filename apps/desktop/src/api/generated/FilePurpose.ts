@@ -4,4 +4,4 @@
  * What a file is for: the dialog's title and filter, and the largest file
  * `open_file` reads.
  */
-export type FilePurpose = "psbt" | "csv" | "walletBackup" | "walletFile" | "coreExport";
+export type FilePurpose = "psbt" | "csv" | "walletBackup" | "walletFile" | "coreExport" | "qrImage";

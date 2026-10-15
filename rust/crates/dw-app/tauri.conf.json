@@ -19,7 +19,8 @@
         "height": 820,
         "minWidth": 920,
         "minHeight": 600,
-        "center": true
+        "center": true,
+        "dragDropEnabled": false
       }
     ],
     "security": {
@@ -51,7 +52,8 @@
         "console",
         "units",
         "shell",
-        "files"
+        "files",
+        "scan"
       ]
     },
     "withGlobalTauri": false

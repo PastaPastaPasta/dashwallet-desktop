@@ -25,6 +25,8 @@ pub enum FilePurpose {
     WalletFile,
     /// A Dash Core export: `dumpwallet` text or `importdescriptors` JSON (U-04).
     CoreExport,
+    /// An image holding a QR code (DP2-08 D9): what dw-desktop's decoder reads.
+    QrImage,
 }
 
 /// A dialog's words and filter.
@@ -78,6 +80,13 @@ impl FilePurpose {
                 filter: "Dash Core export",
                 extensions: &["txt", "json"],
                 max_bytes: MAX_OTHER_BYTES,
+            },
+            FilePurpose::QrImage => PurposeSpec {
+                open_title: "Open QR Code Image",
+                save_title: "Save Image",
+                filter: "Images",
+                extensions: &["png", "jpg", "jpeg", "bmp"],
+                max_bytes: dw_desktop::qr::MAX_IMAGE_BYTES as u64 + 1,
             },
         }
     }
