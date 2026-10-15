@@ -315,7 +315,8 @@ pub(super) fn check(args: &[Zeroizing<String>]) -> Result<(), String> {
         } else if cmd.has_subcommands() {
             let sub = cmd
                 .get_subcommands()
-                .find(|s| s.get_name() == tok && s.get_name() != "help")
+                .filter(|s| s.get_name() != "help")
+                .find(|s| s.get_name() == tok || s.get_all_aliases().any(|a| a == tok))
                 .ok_or_else(|| {
                     if path.is_empty() {
                         format!("argument {at} is not a DashPay command")
@@ -627,6 +628,7 @@ mod tests {
                 "--faucet-proof-file",
                 "/dev/shm/p.hex",
             ],
+            &["profile", "get", "--identity", ID1],
             &[
                 "profile",
                 "set",
