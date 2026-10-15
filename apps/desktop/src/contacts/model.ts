@@ -27,7 +27,13 @@ export type ContactsOwner =
   /** The status (or the identities it needs) could not be read. */
   | { kind: "error" };
 
-export function contactsOwner(status: DashPayStatus | undefined, identities: IdentitySummary[] | undefined): ContactsOwner {
+export function contactsOwner(status: DashPayStatus | null | undefined, identities: IdentitySummary[] | undefined): ContactsOwner {
+  // `null`: the engine has no status yet (`DashPay.status` is a stub at this base, D19); the
+  // identity list alone says whose contacts show, and an empty one asks to join.
+  if (status === null) {
+    const main = identities?.find((i) => i.isMain);
+    return main ? { kind: "identity", identity: main.identity } : identities ? { kind: "join", reason: null } : { kind: "starting" };
+  }
   switch (status?.kind) {
     case "ready":
       return { kind: "identity", identity: status.main };

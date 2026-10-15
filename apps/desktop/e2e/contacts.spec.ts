@@ -14,7 +14,9 @@ async function openContacts(page: Page, scenario = "dashpay-registered", theme: 
   await page.goto(fixtureUrl(scenario, theme));
   await page.getByTestId("toolbar").waitFor();
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "contacts" }));
-  await page.getByTestId("page-contacts").waitFor();
+  // A menu or link focuses the page's title in the next frame (shellBridge `focusPage`); a test
+  // that focuses a row first can lose it to that frame.
+  await expect(page.getByTestId("page-contacts").locator("h1")).toBeFocused();
   return errors;
 }
 
@@ -251,6 +253,22 @@ test("a DashPay state that cannot be read says so and offers Try again", async (
   await page.evaluate(() => window.__dwFixture!.fail("dashpay_status", null));
   await failed.getByRole("button", { name: "Try again" }).click();
   await expect(page.getByTestId("contact-row")).toHaveCount(7);
+  expect(errors).toEqual([]);
+});
+
+test("an engine without DashPay's status (its stub) lists the main identity's contacts, or offers Join", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  for (const [scenario, shown] of [
+    ["dashpay-registered", "contact-row"],
+    ["dashpay-no-identity", "contacts-join"],
+  ] as const) {
+    await page.goto(fixtureUrl(scenario, "light", "&fail=dashpay_status:call"));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "contacts" }));
+    await expect(page.getByTestId(shown).first()).toBeVisible();
+    await expect(page.getByTestId("contacts-status-error")).toHaveCount(0);
+  }
+  await expect(page.getByTestId("contacts-join")).toContainText("Create a username");
   expect(errors).toEqual([]);
 });
 

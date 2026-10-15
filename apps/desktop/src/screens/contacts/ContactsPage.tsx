@@ -30,7 +30,7 @@ const openAdd = (addContact: AddContactIntent) => ui.set({ addContact, contact: 
 
 export function ContactsPage({ walletId }: { walletId: string }) {
   const backend = useBackend();
-  const { owner, retry } = useContactsOwner(walletId);
+  const { owner, retry, retrying } = useContactsOwner(walletId);
   // Opening Contacts asks for a DashPay pass soon (D9); a refused ask leaves the engine's schedule.
   useEffect(() => {
     backend.dashpaySyncSoon().catch(() => undefined);
@@ -46,7 +46,7 @@ export function ContactsPage({ walletId }: { walletId: string }) {
             </DashButton>
           )}
         </header>
-        {owner.kind === "identity" ? <ContactsView walletId={walletId} identity={owner.identity} /> : <NoContacts owner={owner} retry={retry} />}
+        {owner.kind === "identity" ? <ContactsView walletId={walletId} identity={owner.identity} /> : <NoContacts owner={owner} retry={retry} retrying={retrying} />}
       </div>
     </main>
   );
@@ -60,7 +60,7 @@ const JOIN_MESSAGES = {
 
 /** Why the page lists no one (D2): no identity yet, one being registered, DashPay starting, or
  * its status unreadable. */
-function NoContacts({ owner, retry }: { owner: Exclude<ContactsOwner, { kind: "identity" }>; retry: () => void }) {
+function NoContacts({ owner, retry, retrying }: { owner: Exclude<ContactsOwner, { kind: "identity" }>; retry: () => void; retrying: boolean }) {
   const prefill = useUi((s) => s.contactPrefill);
   let body;
   switch (owner.kind) {
@@ -68,7 +68,10 @@ function NoContacts({ owner, retry }: { owner: Exclude<ContactsOwner, { kind: "i
       body = <LoadingState testId="contacts-starting" text="Starting DashPay…" />;
       break;
     case "error":
-      body = (
+      // Try again shows the read running, not the old failure.
+      body = retrying ? (
+        <LoadingState testId="contacts-status-retrying" text="Reading DashPay's state…" />
+      ) : (
         <EmptyState
           testId="contacts-status-error"
           title="Could not read DashPay's state"
@@ -127,7 +130,11 @@ function ContactsView({ walletId, identity }: { walletId: string; identity: stri
 
   // Another wallet's Add intent is not this one's (D12).
   const add = intent?.walletId === walletId ? intent : null;
-  const groups = toGroups(list.data, { hiddenOpen, searching: text !== "" && !list.isPlaceholderData });
+  // Searching is what the shown rows were read for: a new sort or search loading over them keeps
+  // the earlier answer's layout (D5).
+  const shownText = useRef(text);
+  if (!list.isPlaceholderData) shownText.current = text;
+  const groups = toGroups(list.data, { hiddenOpen, searching: shownText.current !== "" });
   // A search that filters the selected contact out keeps it in the detail slot (D11).
   const found = findContact(list.data, selectedId);
   const lastFound = useRef(found);

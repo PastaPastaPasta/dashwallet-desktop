@@ -67,6 +67,10 @@ describe("Contacts view model", () => {
     const main = { identity: "S", isMain: true } as IdentitySummary;
     expect(contactsOwner({ kind: "startupIncomplete", startup: "partialAccountsPending" }, [main])).toEqual({ kind: "identity", identity: "S" });
     expect(contactsOwner({ kind: "startupIncomplete", startup: "starting" }, [])).toEqual({ kind: "starting" });
+    // No status from the engine (its stub, D19): the identity list decides.
+    expect(contactsOwner(null, [main])).toEqual({ kind: "identity", identity: "S" });
+    expect(contactsOwner(null, [])).toEqual({ kind: "join", reason: null });
+    expect(contactsOwner(null, undefined)).toEqual({ kind: "starting" });
   });
 
   it("IOS-072 groups requests, contacts, pending and hidden in that order, with iOS's titles, empty ones dropped", () => {
