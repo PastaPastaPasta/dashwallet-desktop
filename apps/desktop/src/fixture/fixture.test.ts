@@ -45,6 +45,7 @@ describe("fixture backend", () => {
       .filter((f) => !IGNORED.test(f));
     expect(files.sort()).toEqual([
       "accept.test.ts",
+      "contacts.test.ts",
       "dashpay.ts",
       "errors.ts",
       "fixture.test.ts",

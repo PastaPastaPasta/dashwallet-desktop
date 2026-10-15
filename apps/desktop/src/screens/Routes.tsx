@@ -6,7 +6,6 @@
 
 import { useId, type ReactNode } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { DashButton } from "../components/basics";
 import { navigate, ui, useUi, type PayTab, type Route, type ToolsTab } from "../app/ui";
 import { PayToAddress } from "./pay/PayToAddress";
 
@@ -152,34 +151,8 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
   );
 }
 
-export function ContactsPage() {
-  const prefill = useUi((s) => s.contactPrefill);
-  return (
-    <Page route="contacts">
-      {prefill && (
-        <section className="add-contact card-l1" aria-labelledby="add-contact-title" data-testid="add-contact">
-          <h2 id="add-contact-title" className="add-contact-title">
-            Add contact
-          </h2>
-          <p data-testid="add-contact-username">@{prefill.username}</p>
-          <p className="mono" data-testid="add-contact-identity">
-            {prefill.identity}
-          </p>
-          <p className="placeholder-note">The username comes from the link and is not verified yet.</p>
-          <span className="add-contact-actions">
-            <DashButton variant="filledWhiteBlue" disabled>
-              Send contact request
-            </DashButton>
-            <DashButton variant="plainBlue" onClick={() => ui.set({ contactPrefill: null })}>
-              Dismiss
-            </DashButton>
-          </span>
-        </section>
-      )}
-      <NotYet testId="placeholder-contacts">Your DashPay contacts are not available yet.</NotYet>
-    </Page>
-  );
-}
+// Contacts is DP2-07's (screens/contacts); the link card moved into its detail slot.
+export { ContactsPage } from "./contacts/ContactsPage";
 
 const TOOLS_TABS: Tab<ToolsTab>[] = [
   { id: "information", title: "Information" },

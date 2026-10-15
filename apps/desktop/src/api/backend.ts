@@ -63,6 +63,7 @@ import type { UiSettings } from "./generated/UiSettings";
 import type { WalletFileInfo } from "./generated/WalletFileInfo";
 import type { WalletLoadStatus } from "./generated/WalletLoadStatus";
 import type { WatchOnlyOptions } from "./generated/WatchOnlyOptions";
+import type { UserHit } from "./generated/UserHit";
 
 export interface Backend {
   readonly kind: "tauri" | "fixture";
@@ -181,6 +182,12 @@ export interface Backend {
   identities(walletId: string): Promise<IdentitySummary[]>;
   dashpayUnreadCount(walletId: string, identity: string): Promise<number>;
   dashpayContacts(walletId: string, identity: string, query: ContactQueryArgs): Promise<ContactList>;
+  /** Contacts waiting for an unlock to finish their crypto (DP2-07 D8). */
+  dashpayPendingSetupCount(walletId: string): Promise<number>;
+  /** Asks for a DashPay pass now, in the background (Contacts opened). */
+  dashpaySyncSoon(): Promise<null>;
+  /** DPNS usernames starting with `prefix` (DP2-03). */
+  searchUsers(walletId: string, prefix: string, limit: number): Promise<UserHit[]>;
   /** The queued deep links, routed for `network` (U-01). */
   takeLinks(network: string): Promise<LinkRoute[]>;
   /** Where `text` leads (File ▸ Open URI…). */
