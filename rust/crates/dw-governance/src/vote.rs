@@ -254,9 +254,12 @@ pub fn to_recoverable_compact(
     None
 }
 
-/// The vote's object signal and outcome as Core's
-/// `gobject getcurrentvotes` prints them (`outpoint:time:outcome:signal`).
-pub fn current_vote_string(vote: &GovernanceVote) -> String {
+/// The vote as Core v24's `gobject getcurrentvotes` prints it
+/// (`CGovernanceVote::ToString(tip_mn_list)`:
+/// `outpoint:time:outcome:signal:weight`). `weight` is the voting weight of
+/// the masternode type whose collateral is `masternode_outpoint` in the tip
+/// list, 0 when no masternode has that collateral.
+pub fn current_vote_string(vote: &GovernanceVote, weight: u32) -> String {
     let outcome = vote
         .vote_outcome()
         .map(VoteOutcome::as_str)
@@ -269,11 +272,12 @@ pub fn current_vote_string(vote: &GovernanceVote) -> String {
         _ => "none",
     };
     format!(
-        "{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}",
         outpoint_short(&vote.masternode_outpoint),
         vote.time,
         outcome,
-        signal
+        signal,
+        weight
     )
 }
 
