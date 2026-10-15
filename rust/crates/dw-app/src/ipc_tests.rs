@@ -417,9 +417,14 @@ fn a_command_of_every_facade_over_ipc() {
         demo.ok("identities", json!({ "walletId": wallet })),
         json!([])
     );
+    // A wallet created here has no identity; Join waits for sync (BL-153).
+    assert_eq!(
+        demo.ok("dashpay_status", json!({ "walletId": wallet })),
+        json!({ "kind": "noIdentity", "reason": "waitingForSync" })
+    );
     // The engine's own refusal crosses with its code and typed data.
     let e = demo.err(
-        "dashpay_status",
+        "dashpay_sync_now",
         json!({ "walletId": wallet }),
         "platform.not_implemented",
     );

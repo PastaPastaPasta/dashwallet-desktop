@@ -6,30 +6,16 @@
 
 import { useQuery } from "@tanstack/react-query";
 import type { ContactSortName } from "../api/generated/ContactSortName";
-import { hasCode } from "../api/backend";
 import { keys, useBackend } from "../api/queries";
 import { contactsOwner, NETWORK_LIMIT, type ContactsOwner } from "./model";
 
-/** Whose contacts show (D2): the DashPay status and, while DashPay's start is incomplete or the
- * engine has no status (D19), the identity list; `retry` reads the failed ones again (the page
- * shows "starting" while they run). */
+/** Whose contacts show (D2): the DashPay status, the shell's query; `retry` reads it again (the
+ * page shows "starting" while it runs). */
 export function useContactsOwner(walletId: string): { owner: ContactsOwner; retry: () => void } {
   const b = useBackend();
-  // The engine's `DashPay.status` stub answers `null` here, as data, so a refetch (every DashPay
-  // event) keeps the fallback instead of passing through "pending". Under the shell's key, so the
-  // same events re-read it, but not its query: the shell's keeps the facade's shape.
-  const status = useQuery({
-    queryKey: [...keys.dashpayStatus(walletId), "orStub"] as const,
-    queryFn: () => b.dashpayStatus(walletId).catch((e: unknown) => (hasCode(e, "platform.not_implemented") ? null : Promise.reject(e))),
-  });
-  const byIdentities = status.data === null || status.data?.kind === "startupIncomplete";
-  const identities = useQuery({ queryKey: keys.identities(walletId), queryFn: () => b.identities(walletId), enabled: byIdentities });
-  const failed = (status.isError && status.data === undefined) || (byIdentities && identities.isError && !identities.data);
-  const retry = () => {
-    if (status.isError) void status.refetch();
-    if (identities.isError) void identities.refetch();
-  };
-  return { owner: failed ? { kind: "error" } : contactsOwner(status.data, identities.data), retry };
+  const status = useQuery({ queryKey: keys.dashpayStatus(walletId), queryFn: () => b.dashpayStatus(walletId) });
+  const owner: ContactsOwner = status.isError && status.data === undefined ? { kind: "error" } : contactsOwner(status.data);
+  return { owner, retry: () => void status.refetch() };
 }
 
 /** Every section of `identity`'s contacts, sorted and filtered by the engine. The last answer

@@ -428,7 +428,7 @@ impl NetworkSession {
             trust,
             vault,
             spv_peers,
-            hub,
+            hub: Arc::clone(&hub),
             gate: OpGate::default(),
             wallet_lifecycle: WalletLifecycle::default(),
             live: RwLock::new(Some(Live {
@@ -447,7 +447,11 @@ impl NetworkSession {
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
-            platform: crate::platform::runtime::PlatformRuntime::new(lock_state, !opts.no_platform),
+            platform: crate::platform::runtime::PlatformRuntime::new(
+                lock_state,
+                !opts.no_platform,
+                Arc::clone(&hub),
+            ),
             leases,
             flow_leases: Mutex::default(),
         });
@@ -730,6 +734,8 @@ impl NetworkSession {
         self.platform.contacts.close().await;
         // A retained session handle keeps no scanned key (DP2-03).
         self.platform.users.scans.close();
+        // No proof-expiry timer outlives the session (BL-153 D23).
+        self.platform.absence_expiries.abort_all();
         let keys_idle = self.platform.key_work_idle().await;
         self.cancel_relock();
         self.coinjoin.shutdown();

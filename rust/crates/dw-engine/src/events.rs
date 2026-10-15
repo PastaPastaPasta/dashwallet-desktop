@@ -181,6 +181,9 @@ pub enum PlatformChange {
     Names,
     /// The identity's notifications feed or unread count (DP2-05).
     Events { identity: String },
+    /// The wallet's DashPay bring-up outcome, or the identity it named
+    /// (`dashpay_startup`, and with it `DashPay::status`; BL-153).
+    Startup,
 }
 
 /// Non-fatal conditions the UI may surface.

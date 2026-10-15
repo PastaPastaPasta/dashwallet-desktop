@@ -127,16 +127,9 @@ fn assert_abandoned(run: &Run, step: &str) {
     assert!(run.elapsed < BOUND, "{:?}", run.elapsed);
 }
 
-/// The one-shot line `dashpay status` prints while its body is a stub.
-fn stub_line() -> Value {
-    json!({
-        "ok": false,
-        "error": {
-            "code": "platform.not_implemented",
-            "message": "not implemented: DashPay.status",
-            "params": {"call": "DashPay.status"},
-        },
-    })
+/// The one-shot line `dashpay status` prints for the new, offline wallet.
+fn status_line() -> Value {
+    json!({"ok": true, "result": {"kind": "no_identity", "reason": "waiting_for_sync"}})
 }
 
 /// Sol r6 finding 1: a stalled, unpoisoned engine whose shutdown thread
@@ -157,7 +150,7 @@ fn a_refused_shutdown_thread_abandons_the_engine_at_once() {
     ];
     let run = dwcli(dir.path(), &args, fault, b"");
     assert_abandoned(&run, "the engine's shutdown");
-    assert_eq!(lines(&run), [stub_line()]);
+    assert_eq!(lines(&run), [status_line()]);
 
     let args = [
         "--verbose-events",
@@ -194,7 +187,7 @@ fn a_refused_spv_stop_thread_abandons_the_engine_at_once() {
     ];
     let run = dwcli(dir.path(), &args, fault, b"");
     assert_abandoned(&run, "stopping SPV");
-    assert_eq!(lines(&run), [stub_line()]);
+    assert_eq!(lines(&run), [status_line()]);
 
     let args = [
         "--verbose-events",
@@ -207,7 +200,7 @@ fn a_refused_spv_stop_thread_abandons_the_engine_at_once() {
     let request = concat!(r#"{"args":["dashpay","status"],"id":"r7-spv-stall"}"#, "\n");
     let run = dwcli(dir.path(), &args, fault, request.as_bytes());
     assert_abandoned(&run, "stopping SPV");
-    let mut answer = stub_line();
+    let mut answer = status_line();
     answer["id"] = json!("r7-spv-stall");
     assert_eq!(
         lines(&run),

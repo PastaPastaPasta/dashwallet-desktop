@@ -19,9 +19,11 @@ use super::errors::PlatformError;
 use super::journal_tests::{b58, id};
 use super::names::{ContestContender, ContestState, record_contest};
 use super::notifications::EventKind;
+use super::registration_rows::Funding;
 use super::runtime::guard;
+use super::startup::DashPayStatus;
 use crate::events::unix_now;
-use crate::{DashNetwork, EngineEvent, SessionOptions};
+use crate::{DashNetwork, EngineEvent, PlatformChange, SessionOptions};
 
 const ME: u8 = 1;
 const BOB: u8 = 2;
@@ -212,6 +214,14 @@ impl Fixture {
     /// Every row due again: what the time to the next check does.
     fn later(&self) {
         self.s.platform.contests.forget(&self.wallet);
+    }
+
+    /// Whether a `Platform{Names}` went out since the last call (BL-153:
+    /// `DashPay::status` shows the end and drops an unplaced contest).
+    fn names_signalled(&self) -> bool {
+        let mut marks = self.s.hub.pump.platform_marks.lock().unwrap();
+        let seen = marks.replace(Vec::new()).unwrap_or_default();
+        seen.iter().any(|(_, c)| c.contains(&PlatformChange::Names))
     }
 
     fn open_contests(&self) -> Vec<String> {
@@ -428,6 +438,51 @@ fn a_lost_contest_is_one_news_event_and_ends_the_watch() {
     assert_eq!(f.news_kinds().len(), 1);
 }
 
+/// Sol BL-153 r1 finding 2: a flow whose profile step is parked keeps its
+/// `Contested` row; once the watch ends the contest, `DashPay::status` no
+/// longer says it is pending (D20).
+#[test]
+fn a_lost_contest_ends_the_pending_status_of_a_parked_flow() {
+    let f = Fixture::new(true);
+    f.contending("alice");
+    let (w, me) = (f.wallet.to_string(), b58(ME));
+    (f.engine)
+        .block_on(f.s.appdb_op(move |db| {
+            db.insert_registration(
+                &w,
+                &dw_appdb::NewRegistration {
+                    identity_index: Some(0),
+                    identity: Some(me),
+                    label: "alice".into(),
+                    temp_label: None,
+                    funding: Funding::CoreBalance { lock_duffs: 1_000 }.encode(),
+                    initial_profile: None,
+                    phase: "contested".into(),
+                },
+                1,
+            )
+        }))
+        .unwrap();
+    let status = || f.s.dashpay_status_of(f.wallet).unwrap();
+    let pending = |ends_at| DashPayStatus::ContestPending {
+        identity: b58(ME),
+        label: "alice".into(),
+        ends_at,
+    };
+    // Before its watch row: the library lists the contest.
+    assert_eq!(status(), pending(None));
+    f.watch("alice", 9_000);
+    assert_eq!(status(), pending(Some(9_000)));
+    let net = FakePolls::default();
+    net.set(
+        "a11ce",
+        poll(Some(PollWinner::Identity(id(BOB))), now_ms(), &[ME, BOB]),
+    );
+    f.pass(&net).unwrap();
+    assert!(f.watches().is_empty());
+    assert_eq!(status(), DashPayStatus::Ready { main: b58(ME) });
+}
+
 /// Locked: `ContestLocked`; nobody gets the name, the watch stops.
 #[test]
 fn a_locked_contest_is_news_and_ends_the_watch() {
@@ -522,10 +577,12 @@ fn a_contest_still_voting_is_adopted_and_learns_its_end() {
     net.set("b0b", poll(None, 0, &[ME, CAROL]));
     let end = unix_now() + 3 * 3600;
     net.set_end("b0b", end);
+    f.names_signalled();
     f.pass(&net).unwrap();
     assert_eq!(f.watches(), [watch("b0b", end, Some("open"))]);
     assert_eq!(net.calls(), (1, 1));
     assert!(f.outcomes().is_empty());
+    assert!(f.names_signalled(), "the end learned");
 
     // Not due yet; then due, with the end known.
     f.pass(&net).unwrap();
@@ -533,6 +590,7 @@ fn a_contest_still_voting_is_adopted_and_learns_its_end() {
     f.later();
     f.pass(&net).unwrap();
     assert_eq!(net.calls(), (2, 1));
+    assert!(!f.names_signalled(), "the end unchanged");
     assert_eq!(f.open_contests(), ["b0b"]);
 }
 
@@ -639,8 +697,10 @@ fn an_unplaced_watch_ends_after_a_day_without_news() {
 
     f.set_state("alice", &format!("unplaced:{}", unix_now() - 24 * 3600));
     f.later();
+    f.names_signalled();
     f.pass(&net).unwrap();
     assert!(f.watches().is_empty());
+    assert!(f.names_signalled(), "the watch ended");
     assert!(f.outcomes().is_empty());
     assert!(f.open_contests().is_empty());
     f.later();

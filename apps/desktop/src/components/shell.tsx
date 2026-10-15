@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
+import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { LockStatus } from "../api/generated/LockStatus";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { WalletSummary } from "../api/generated/WalletSummary";
@@ -113,14 +114,15 @@ function BellIcon() {
 }
 
 /** What the identity chip shows (DASHPAY §4): the way into DashPay, its progress, or the main
- * identity, which opens My Profile. `null` hides it (DashPay still starting, or unavailable). */
+ * identity, which opens My Profile. `null` hides it (DashPay still starting, or unavailable).
+ * `updating`: the main identity's names are not known yet (unread, or a sync pass holds them). */
 export type ChipState =
   | { kind: "join" }
   | { kind: "registering"; label: string | null }
-  | { kind: "identity"; username: string | null }
+  | { kind: "identity"; username: string | null; updating: boolean }
   | null;
 
-export function chipState(status: DashPayStatus | undefined, mainName: string | null | undefined): ChipState {
+export function chipState(status: DashPayStatus | undefined, main: IdentitySummary | undefined): ChipState {
   switch (status?.kind) {
     case "noIdentity":
       return { kind: "join" };
@@ -129,10 +131,15 @@ export function chipState(status: DashPayStatus | undefined, mainName: string | 
     case "contestPending":
       return { kind: "registering", label: status.label };
     case "ready":
-      return { kind: "identity", username: mainName ?? null };
+      return { kind: "identity", username: main?.mainName ?? null, updating: !main || main.namesUpdating };
     default:
       return null;
   }
+}
+
+function chipLabel(name: string | null, updating: boolean): string {
+  if (name) return `@${name}`;
+  return updating ? "Updating…" : "No username";
 }
 
 function IdentityChip({ chip }: { chip: ChipState }) {
@@ -157,7 +164,7 @@ function IdentityChip({ chip }: { chip: ChipState }) {
       <span className="identity-chip-avatar" aria-hidden="true">
         {(name ?? "?").slice(0, 1).toUpperCase()}
       </span>
-      <span>{name ? `@${name}` : "Updating…"}</span>
+      <span>{chipLabel(name, chip.updating)}</span>
     </button>
   );
 }

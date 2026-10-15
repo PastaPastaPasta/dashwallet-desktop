@@ -384,6 +384,18 @@ const SCENARIOS = {
     attributePayments(w);
     return w;
   },
+  /** "alice" contested: her identity holds the temporary "alice007" while masternodes vote. The
+   * chip says "@alice · Pending"; Contacts, the bell and the badge stay (BL-153 D11). */
+  "dashpay-contest-pending": (t) => {
+    const w = base(t);
+    const world = registered();
+    w.dashpay = {
+      ...world,
+      status: { kind: "contestPending", identity: IDENTITY.alice, label: "alice", endsAt: 1_900_000_000 },
+      identities: world.identities.map((i) => ({ ...i, names: ["alice007"], mainName: "alice007" })),
+    };
+    return w;
+  },
   /** Tools ▸ Repair: the registration's funding broadcast's outcome is unknown (E0-04.P2b). */
   "tools-stuck-funding": (t) => {
     const w = base(t);

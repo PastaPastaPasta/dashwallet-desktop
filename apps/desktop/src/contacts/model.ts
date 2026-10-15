@@ -10,7 +10,6 @@ import type { ContactSectionName } from "../api/generated/ContactSectionName";
 import type { ContactSortName } from "../api/generated/ContactSortName";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
-import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { LockStateName } from "../api/generated/LockStateName";
 import type { UserHit } from "../api/generated/UserHit";
 import type { UserRelation } from "../api/generated/UserRelation";
@@ -27,13 +26,7 @@ export type ContactsOwner =
   /** The status (or the identities it needs) could not be read. */
   | { kind: "error" };
 
-export function contactsOwner(status: DashPayStatus | null | undefined, identities: IdentitySummary[] | undefined): ContactsOwner {
-  // `null`: the engine has no status yet (`DashPay.status` is a stub at this base, D19); the
-  // identity list alone says whose contacts show, and an empty one asks to join.
-  if (status === null) {
-    const main = identities?.find((i) => i.isMain);
-    return main ? { kind: "identity", identity: main.identity } : identities ? { kind: "join", reason: null } : { kind: "starting" };
-  }
+export function contactsOwner(status: DashPayStatus | undefined): ContactsOwner {
   switch (status?.kind) {
     case "ready":
       return { kind: "identity", identity: status.main };
@@ -44,10 +37,8 @@ export function contactsOwner(status: DashPayStatus | null | undefined, identiti
       return { kind: "join", reason: status.reason };
     case "registering":
       return { kind: "registering" };
-    case "startupIncomplete": {
-      const main = identities?.find((i) => i.isMain);
-      return main ? { kind: "identity", identity: main.identity } : { kind: "starting" };
-    }
+    // The engine reports it only while no identity is on file (BL-153 D2).
+    case "startupIncomplete":
     default:
       return { kind: "starting" };
   }

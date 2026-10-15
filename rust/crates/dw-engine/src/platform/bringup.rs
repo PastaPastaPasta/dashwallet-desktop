@@ -60,7 +60,7 @@ const BUDGET_SLACK: Duration = Duration::from_millis(500);
 const LOOP_RETRY: Duration = Duration::from_secs(30);
 /// How long Platform's proof that a seed owns no identity is trusted
 /// (E0-05 r1 ruling): after that, discovery runs again.
-const NO_IDENTITY_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+pub(super) const NO_IDENTITY_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// `settings_kv` keys in the wallet's local scope (`dw_appdb::local_scope`):
 /// they describe this installation, so a `.dwbackup` does not carry them.
@@ -869,23 +869,12 @@ impl NetworkSession {
     /// [`NO_IDENTITY_TTL`]) from the wallet's local settings. A read error
     /// counts as neither: the longer budget, and a bring-up that runs.
     async fn bring_up_markers(&self, id: WalletId) -> (bool, bool) {
-        let scope = dw_appdb::local_scope(&id.to_string());
-        let now = unix_now();
-        let read = self
-            .appdb_op(move |db| {
-                let proven_at = db.setting(&scope, NO_IDENTITY_KEY)?;
-                Ok((
-                    db.setting(&scope, CREATED_HERE_KEY)?.is_some(),
-                    proven_at
-                        .and_then(|at| at.parse::<u64>().ok())
-                        .is_some_and(|at| now.saturating_sub(at) < NO_IDENTITY_TTL.as_secs()),
-                ))
+        let read = self.appdb_op(move |db| read_bring_up_markers(db, id)).await;
+        read.map(|(created_here, until)| (created_here, until.is_some()))
+            .unwrap_or_else(|e| {
+                tracing::warn!(wallet_id = %id, error = %e, "could not read the bring-up markers");
+                (false, false)
             })
-            .await;
-        read.unwrap_or_else(|e| {
-            tracing::warn!(wallet_id = %id, error = %e, "could not read the bring-up markers");
-            (false, false)
-        })
     }
 
     async fn set_bring_up_marker(&self, id: WalletId, key: &'static str) {
@@ -914,6 +903,24 @@ impl NetworkSession {
         self.appdb_op(move |db| db.set_setting(&scope, NO_IDENTITY_KEY, None))
             .await
     }
+}
+
+/// (created here, until when Platform's proof of no identity holds: `None`
+/// without one or past [`NO_IDENTITY_TTL`], unix seconds), as the bring-up
+/// and `DashPay::status` read them.
+pub(super) fn read_bring_up_markers(
+    db: &dw_appdb::AppDb,
+    id: WalletId,
+) -> Result<(bool, Option<u64>), dw_appdb::AppDbError> {
+    let scope = dw_appdb::local_scope(&id.to_string());
+    let proven_at = db.setting(&scope, NO_IDENTITY_KEY)?;
+    Ok((
+        db.setting(&scope, CREATED_HERE_KEY)?.is_some(),
+        proven_at
+            .and_then(|at| at.parse::<u64>().ok())
+            .map(|at| at.saturating_add(NO_IDENTITY_TTL.as_secs()))
+            .filter(|&until| unix_now() < until),
+    ))
 }
 
 /// Quiesces the three loops; the names of those whose pass did not drain

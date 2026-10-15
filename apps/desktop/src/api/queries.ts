@@ -4,6 +4,7 @@
 import { createContext, useContext } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
+import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRequest } from "./generated/HistoryRequest";
 import type { LockOutcome } from "./generated/LockOutcome";
 import type { LockProgress } from "./generated/LockProgress";
@@ -56,6 +57,8 @@ export const keys = {
   paymentAuth: ["paymentAuth"] as const,
   /** Every DashPay read below: a `platform` or `dashPayNews` signal makes them all stale. */
   dashpayAll: ["dashpay"] as const,
+  /** Every wallet's DashPay status: sync moves `noIdentity`'s `waitingForSync` (BL-153 D9). */
+  dashpayStatusAll: ["dashpay", "status"] as const,
   dashpayStatus: (walletId: string) => ["dashpay", "status", walletId] as const,
   identities: (walletId: string) => ["dashpay", "identities", walletId] as const,
   unread: (walletId: string, identity: string) => ["dashpay", "unread", walletId, identity] as const,
@@ -185,9 +188,22 @@ export function useLockDrain() {
   return useQuery<LockDrain | null>({ queryKey: keys.lockDrain, queryFn: () => null, initialData: null });
 }
 
+/** The main identity a status names: a contested username's too (BL-153 D11). */
+function mainIdentityOf(status: DashPayStatus | undefined): string | null {
+  switch (status?.kind) {
+    case "ready":
+      return status.main;
+    case "contestPending":
+      return status.identity;
+    default:
+      return null;
+  }
+}
+
 /** The identity chip's, the sidebar's and the bell's DashPay state (DASHPAY §4
- * `DashPayStatusModel`): the status, the main identity's name, its unread events and the contact
- * requests waiting. Each read is `undefined` while unknown or when it fails (no Platform). */
+ * `DashPayStatusModel`): the status, the main identity's summary, its unread events and the
+ * contact requests waiting. Each read is `undefined` while unknown or when it fails. A contested
+ * username's identity is the main one too (BL-153 D11). */
 export function useDashPayShell(walletId: string | undefined) {
   const b = useBackend();
   const status = useQuery({
@@ -195,7 +211,7 @@ export function useDashPayShell(walletId: string | undefined) {
     queryFn: () => b.dashpayStatus(walletId!),
     enabled: !!walletId,
   });
-  const main = status.data?.kind === "ready" ? status.data.main : null;
+  const main = mainIdentityOf(status.data);
   const identities = useQuery({
     queryKey: keys.identities(walletId ?? ""),
     queryFn: () => b.identities(walletId!),
@@ -216,7 +232,7 @@ export function useDashPayShell(walletId: string | undefined) {
   });
   return {
     status: status.data,
-    mainName: identities.data?.find((i) => i.identity === main)?.mainName,
+    main: identities.data?.find((i) => i.identity === main),
     unread: unread.data ?? null,
     requests: requests.data ?? 0,
   };

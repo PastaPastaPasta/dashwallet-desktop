@@ -6,6 +6,7 @@
 import type { InfiniteData, QueryClient, QueryKey } from "@tanstack/react-query";
 import type { Backend } from "./backend";
 import type { AppEvent } from "./generated/commands";
+import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRows } from "./generated/HistoryRows";
 import type { PlatformChangeName } from "./generated/PlatformChangeName";
 import { keys } from "./queries";
@@ -18,13 +19,18 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // The app's queue overflowed and dropped events: whatever they said, the queries know.
     case "eventsOverflowed":
       return "all";
+    // A seed attached to a loaded watch-only wallet is a `walletCreated` of the same id: its
+    // DashPay status stops being watch-only, and no Platform signal says so while SPV is stopped
+    // (BL-153 D19).
     case "walletCreated":
     case "walletRemoved":
     case "walletLoadChanged":
-      return [keys.wallets];
+      return [keys.wallets, keys.dashpayStatus(event.walletId)];
+    // Sync ends `noIdentity`'s `waitingForSync` and sends no Platform signal (BL-153 D9); only
+    // statuses without an identity are re-read (bridgeEvents).
     case "spvStateChanged":
     case "sync":
-      return [keys.sync];
+      return [keys.sync, keys.dashpayStatusAll];
     case "balances":
       return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId)];
     case "historyChanged":
@@ -122,7 +128,9 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
       void client.invalidateQueries({ predicate: (q) => q.queryKey[0] !== keys.network[0] });
     } else
       for (const queryKey of stale) {
-        if (queryKey !== keys.lockReconcile) void client.invalidateQueries({ queryKey });
+        if (queryKey === keys.dashpayStatusAll)
+          void client.invalidateQueries({ queryKey, predicate: (q) => (q.state.data as DashPayStatus | undefined)?.kind === "noIdentity" });
+        else if (queryKey !== keys.lockReconcile) void client.invalidateQueries({ queryKey });
         else {
           const now = Date.now();
           if (reconcile === undefined) reconcileBy = now + RECONCILE_MAX_WAIT_MS;

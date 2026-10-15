@@ -72,7 +72,7 @@ use super::registration_flow::b58;
 use super::runtime::{PlatformSignal, guard};
 use crate::events::unix_now;
 use crate::session::Manager;
-use crate::{NetworkSession, WalletId};
+use crate::{NetworkSession, PlatformChange, WalletId};
 
 /// The watch's pace while a contest's end is unknown or far, seconds.
 const WATCH_IDLE: u64 = 600;
@@ -650,11 +650,17 @@ impl NetworkSession {
             let text = state.text().unwrap_or_default();
             move |db: &dw_appdb::AppDb| db.set_contest_watch_state(&w, &i, &label, end, &text)
         };
+        // `DashPay::status` shows the end and drops a watch that ends
+        // unplaced (BL-153): hosts re-read it on `Names`.
+        let moved = |s: &Self| s.hub.pump.mark_platform(id, [PlatformChange::Names]);
         let (kind, at) = match verdict {
             Verdict::Open => {
                 if seen != Seen::Open || end != row.ends_at {
                     self.fenced_op(&fence, "watch", set_state(Seen::Open))
                         .await?;
+                }
+                if end != row.ends_at {
+                    moved(self);
                 }
                 return Ok(());
             }
@@ -668,9 +674,13 @@ impl NetworkSession {
                     // contest is stale too (as DP1-03 forgets a refusal).
                     tracing::info!(wallet_id = %id, label = %label, "no contest found for a day; no longer watched");
                     self.end_watch(wallet, id, &fence, row).await?;
+                    moved(self);
                 } else if seen != (Seen::Unplaced { since }) || end != row.ends_at {
                     self.fenced_op(&fence, "watch", set_state(Seen::Unplaced { since }))
                         .await?;
+                    if end != row.ends_at {
+                        moved(self);
+                    }
                 }
                 return Ok(());
             }

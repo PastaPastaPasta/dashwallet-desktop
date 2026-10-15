@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 22
+Contract-Version: 23
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -185,7 +185,7 @@ status 1.
 
 ## 2. Calls
 
-Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_main_identity` and
+Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), DP1-05's `identities`, `set_main_identity` and
 `discover_identities` (§2.1), DP1-03's names calls in §2.3 (`check_username`, `name_availability`,
 `register_name`, `set_main_name`, `main_name`), DP2-01's contacts read model in §2.4 (`contacts`, `contact`,
 `pending_setup_count`), and DP2-03's user search, links and scans (`search_users` and `resolve_user` in §2.3,
@@ -195,7 +195,7 @@ Every call's status today: **stub**, except §2.10, DP1-05's `identities`, `set_
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `status()` | sync | The banner state (F1) shared by the Home card, the chip and the Contacts empty state: `NoIdentity{reason}`, `Registering{draft}`, `ContestPending{identity, label, ends_at}`, `Ready{main}`, `StartupIncomplete{startup}`. | `PlatformError` |
+| `status()` | sync | The banner state (F1) shared by the Home card, the chip and the Contacts empty state: `NoIdentity{reason}`, `Registering{draft}`, `ContestPending{identity, label, ends_at}`, `Ready{main}`, `StartupIncomplete{startup}`. Reads memory and app.sqlite only, never Platform, so it answers offline; the rules are item 49. `StartupIncomplete` only while no identity is on file. Changes are signalled as `Platform{Startup}` (bring-up), `Platform{Registration}`, `Platform{Identities}`, `Platform{Names}`; `WaitingForSync` ends with sync, which has its own events. **Implemented (BL-153).** | `PlatformError` |
 | `sync_status()` | sync | Tools ▸ Information's DashPay card (F23): startup status, last pass, pending contact crypto, loops, quorum source. **works** (E0-10b): `last_pass` is `None` until sync passes report one. | `PlatformError` |
 | `sync_now()` | async | Runs one DashPay pass now and reports it. | `PlatformError` |
 | `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown) with `balance_as_of` (the Platform block time, ms, of the balance shown, once a refresh read it) and `balance_stale` (it may be behind: spent by a write since its refresh, or neither refreshed by this process nor stored by Platform in the last ten minutes; the engine refreshes it in the background and sends `Platform{Identities}` when the flag may have changed, §7 item 44), and its `credit_level` against the cost table (`None` while the balance is unknown; DP1-06), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `names` and `main_name` are as `main_name(identity)` (§2.3) has them: names the identity owns by Platform's evidence (not a label in a contest or one whose write may be in flight), and its pick while owned, else the temporary or won contested name, else the name acquired first; `None` while it owns none. Read from the library's memory, or the last snapshot while a sync pass writes it; which names show comes from the app database's main-name rows, read in one statement on each call (a failed read fails the call), never from a cache. From the live list, a label whose write may be in flight or that Platform refused is hidden. From the older snapshot, `names` is empty, `main_name` is `None` and `names_updating` is `true` (show "updating", not "no name"); the other fields still come from it. `names_updating` is `false` on a live read. **Implemented (DP1-05).** | `PlatformError` |
@@ -548,7 +548,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: b483b7fa954bdbfbf1869f72d095577582ceec1b692c01a5325cff84ea69afdb version: 22 -->
+<!-- surface-sha256: b483b7fa954bdbfbf1869f72d095577582ceec1b692c01a5325cff84ea69afdb version: 23 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1934,7 +1934,7 @@ changes code paths or bindings that would otherwise need behaviour now:
 | History and transaction records gain `counterparty: Option<Counterparty>`. **Done (DP3-02, item 47):** on m1's `TxRecord` (so `history_page` and `tx_detail`'s records); `dw-app`'s `TxRow` binds it (optional), `dw-ffi` withholds it until E0-13 | DP3-02 |
 | `NoticeCode` gains `PlatformTrustMismatch` (E0-10b) and `DashPayStartupIncomplete` (E0-05). `dw-ffi` maps `NoticeCode` one to one, and the Swift bindings are frozen until E0-13. **Done (E0-05, E0-10b):** both are engine-side, and `dw-ffi` withholds them until E0-13 binds them. `PlatformTrustMismatch` goes out once per quorum and session; its detail names the LLMQ type and quorum hash | E0-05, E0-10b, E0-13 |
 | `NetworkSession` gains `quorum_source()` (sync) and the developer toggle `trusted_quorums_only()` / `set_trusted_quorums_only(on)` (the global setting `trust.trusted_only`): quorum keys from the trusted service only, SPV not consulted. **Done (E0-10b).** Not a user setting; the binding exposes it in developer builds | E0-10b, E0-13 |
-| `EngineEvent::Platform{network, wallet_id, change: PlatformChange}` (§3.5). **Done (E0-06):** `PlatformChange` is `Identities` (identities, their keys and profiles), `Contacts{identity}`, `Registration{draft}` (`draft` is the `dp_registration` id as decimal text; `None` for a lock no row names, a top-up), `Payments{identity}`, `Names`, and (DP2-05) `Events{identity}`: the identity's feed or unread count changed (rows journaled, read or recounted). The tap sends no `Startup` change: the startup status has its own snapshot (E0-05). `dw-ffi` withholds the variant until E0-13 binds it | E0-06, E0-13 |
+| `EngineEvent::Platform{network, wallet_id, change: PlatformChange}` (§3.5). **Done (E0-06):** `PlatformChange` is `Identities` (identities, their keys and profiles), `Contacts{identity}`, `Registration{draft}` (`draft` is the `dp_registration` id as decimal text; `None` for a lock no row names, a top-up), `Payments{identity}`, `Names`, and (DP2-05) `Events{identity}`: the identity's feed or unread count changed (rows journaled, read or recounted). The tap sends no `Startup` change; the bring-up does (BL-153, version 23): `Startup` when a wallet's `dashpay_startup` outcome or named identity changes. `dw-ffi` withholds the variant until E0-13 binds it | E0-06, E0-13 |
 | `EngineEvent::DispatchResolved{network, resolved: DispatchResolved}`, sent when a provisional outcome settles. Its sources are E0-04 §4.6's: a Resend is accepted, or the wallet sees the transaction (`Sent`); a reload refuses and cleans up an `Unsent` row (`NotSent`); a row-less artifact settles definitely unsent (`NotSent`); Mode B's derived status moves (E0-04 §2a.5); H16's evidence settles a row-less transition. Its `artifact` is a txid, a state-transition hash or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`). DP1-02 then moves a registration row back to retryable, and the payment and top-up UIs clear their "may have been sent" or "will be sent" state. With E0-04's `LeaseChanged` and `LockProgress`. The payload record exists now (§3); the variant waits because `dw-ffi` maps `EngineEvent` one to one | E0-04 (P2), E0-13 |
 | `NoticeCode` gains `DispatchRecordMissing`, `UnscopedDispatch` and `DispatchJournalUnavailable` | E0-04 (P2), E0-13 |
 | `EngineEvent::DashPayNews{network, wallet_id, identity, events: Vec<DashPayEvent>, more}`: the OS-notification signal (§5 "news"). **Done (DP2-05):** on the `Platform` clock (≤ 4 Hz per session, trailing edge kept), after the flush's `Platform` changes; one per identity with news, at most `MAX_NEWS` (32) events in arrival order and `more` counting the rest. Hosts show one notification per event for up to 3, else one summary ("N new DashPay notifications"), skip it while the window is frontmost (the bell updates), honour the notifications toggle, and open the bell on a click; the bell (`events`) is the state behind it. Engine-side for `dw-ffi`; `dw-app` forwards it as `dashPayNews` | DP2-05, E0-13 |
@@ -2641,3 +2641,25 @@ renames or reshapes them takes the next version bump:
       library `PaymentEntry` (the library's own pass rebuilds those from history; DP3-02 attributes the payment).
     - "Accept and pay" needs no new call: one `authorize_set`, one `begin_flow(AcceptAndPay)`, `accept_request`,
       then `prepare` and `broadcast` with the lease; `prepare` refuses until the accept established the contact.
+49. **The DashPay status (BL-153, version 23).** `status` is implemented (§2.1); `PlatformChange` gains `Startup`.
+    Decisions in `docs/design/BL-153-dashpay-status.md`.
+    - **Inputs.** The bring-up's outcome and named identity, the vault's seed index (watch-only), `identities()`'s
+      main entry (the same read, live or snapshot), the main identity's temporary-name row, the wallet's
+      `dp_registration` and `dp_contest_watch` rows, the bring-up markers (`dashpay.created_here`,
+      `dashpay.no_identity` within its 7 days) and the sync tracker's caught-up state. A failed read fails the call.
+    - **With an identity on file** (the list's main one; while the list is a snapshot showing none, the bring-up's, else
+      the newest finished flow's): `Registering{draft}` while a flow that creates that identity (not one funded by an
+      existing identity) is short of its name step's end (`Draft` … `NameRequested`), its name step has not failed,
+      and it has not failed for good; else `ContestPending` while, on a live read, the identity shows no name but its
+      temporary one and has an open contest (a watch row not won, or a `Contested` flow whose label the library still
+      lists as an open contest; the flow's label first, else the watch ending first; `ends_at` `None` until the watch
+      read it); else `Ready{main}`. The bring-up's outcome does not matter then.
+    - **Without one:** `NoIdentity{WatchOnly}` for a wallet without keys; `Registering{draft}` for the newest flow that
+      creates its identity (not `ExistingIdentity`-funded, no name error), short of `Done`, not failed for good (a
+      failure that is not retryable, or a row this build cannot read, is); `NoIdentity` when, on a live read, the
+      bring-up said `NoIdentity` or a marker establishes the absence, with `WaitingForSync` while SPV is not caught
+      up; else `StartupIncomplete{startup}` (a snapshot proves no absence).
+    - **`Platform{Startup}`.** Sent when a wallet's outcome or named identity changes (the startup map's writes), so
+      hosts re-read `status` and `sync_status`; a write that changes neither sends nothing. A status that relied on
+      Platform's proof of no identity also sends one at the proof's expiry. The contest watch sends
+      `Platform{Names}` when it learns a contest's end or drops a watch that stayed unplaced for a day.

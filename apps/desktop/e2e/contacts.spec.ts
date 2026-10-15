@@ -323,22 +323,6 @@ test("a DashPay state that cannot be read says so and offers Try again", async (
   expect(errors).toEqual([]);
 });
 
-test("an engine without DashPay's status (its stub) lists the main identity's contacts, or offers Join", async ({ page }) => {
-  const errors = trackPageErrors(page);
-  for (const [scenario, shown] of [
-    ["dashpay-registered", "contact-row"],
-    ["dashpay-no-identity", "contacts-join"],
-  ] as const) {
-    await page.goto(fixtureUrl(scenario, "light", "&fail=dashpay_status:call"));
-    await page.getByTestId("toolbar").waitFor();
-    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "contacts" }));
-    await expect(page.getByTestId(shown).first()).toBeVisible();
-    await expect(page.getByTestId("contacts-status-error")).toHaveCount(0);
-  }
-  await expect(page.getByTestId("contacts-join")).toContainText("Create a username");
-  expect(errors).toEqual([]);
-});
-
 test("without an identity Contacts offers Join DashPay; while registering it says so", async ({ page }) => {
   await openContacts(page, "dashpay-no-identity");
   await expect(page.getByTestId("contacts-join")).toContainText("Join DashPay");

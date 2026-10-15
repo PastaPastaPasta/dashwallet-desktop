@@ -7,6 +7,9 @@
 
 pub(crate) mod attribution;
 mod balances;
+mod banner;
+#[cfg(test)]
+mod banner_tests;
 mod bringup;
 mod contact_names;
 mod contacts;

@@ -261,6 +261,18 @@ test("toolbar: without an identity the chip and the sidebar lead to Join DashPay
 test("toolbar: a registration in progress shows on the chip", async ({ page }) => {
   await open(page, "dashpay-registering");
   await expect(page.getByTestId("toolbar-chip")).toHaveText("Registering…");
+  await expect(page.getByTestId("sidebar-contacts")).toHaveCount(0);
+  await expect(page.getByTestId("sidebar-joinDashPay")).toBeVisible();
+});
+
+test("toolbar: a contested username shows Pending and keeps Contacts, its bell and badge", async ({ page }) => {
+  await open(page, "dashpay-contest-pending");
+  await expect(page.getByTestId("toolbar-chip")).toHaveText("@alice · Pending");
+  await expect(page.getByTestId("sidebar-joinDashPay")).toHaveCount(0);
+  await expect(page.getByTestId("sidebar-contacts-badge")).toBeVisible();
+  await expect(page.getByTestId("toolbar-bell-badge")).toBeVisible();
+  await page.getByTestId("sidebar-contacts").click();
+  await expect(page.getByTestId("contact-row").first()).toBeVisible();
 });
 
 test("toolbar: the wallet picker switches the wallet the window shows", async ({ page }) => {

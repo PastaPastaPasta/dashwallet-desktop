@@ -112,8 +112,10 @@ pub enum QuorumSource {
 }
 
 impl DashPay {
+    /// The banner state, from memory and app.sqlite only (BL-153): no
+    /// Platform read, so it answers offline.
     pub fn status(&self) -> Result<DashPayStatus, PlatformError> {
-        stub("DashPay.status")
+        Ok(self.session.dashpay_status_of(self.wallet_id)?)
     }
 
     /// In-memory read. `last_pass` is `None` until sync passes report.

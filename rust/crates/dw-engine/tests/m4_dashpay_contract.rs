@@ -99,6 +99,8 @@ const IMPLEMENTED: &[&str] = &[
     // DP3-02: contact payments.
     "DashPay.contact_activity",
     "DashPay.frequent_contacts",
+    // BL-153: the banner state.
+    "DashPay.status",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -132,11 +134,14 @@ const FACADE: &[&str] = &[
 /// private details' publish and settle with their tests (DP2-04), the
 /// bell's session tests (DP2-05), the credit costs, the balance refreshes
 /// and the top-up flow with its tests (DP1-06), the contest watch with
-/// its tests (DP1-04), the contact payment locks (DP3-01), and contact
-/// payment attribution with its tests (DP3-02).
+/// its tests (DP1-04), the contact payment locks (DP3-01), contact
+/// payment attribution with its tests (DP3-02), and the DashPay status's
+/// rules with their tests (BL-153).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "balances.rs",
+    "banner.rs",
+    "banner_tests.rs",
     "bringup.rs",
     "contact_names.rs",
     "contacts_model.rs",
@@ -1221,7 +1226,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             "platform.feature_off"
         );
 
-        c.stub(dp.status());
+        assert_eq!(dp.status().unwrap_err().code(), "wallet_not_found");
         assert_eq!(dp.sync_status().unwrap_err().code(), "wallet_not_found");
         c.stub(dp.sync_now().await);
         c.stub(dp.identity_detail(s()).await);
