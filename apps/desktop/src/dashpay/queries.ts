@@ -5,7 +5,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { keys, mainIdentityOf, useBackend, useLockStatus, useSyncStatus } from "../api/queries";
+import { keys, mainIdentityOf, mainSummaryOf, useBackend, useLockStatus, useSyncStatus } from "../api/queries";
 import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
 import { isSyncing, syncPercent } from "../format/sync";
@@ -50,8 +50,6 @@ export function useStatusInputs(walletId: string, network: NetworkInfo): { input
   const status = useQuery({ queryKey: keys.dashpayStatus(walletId), queryFn: () => b.dashpayStatus(walletId) });
   const main = mainIdentityOf(status.data);
   const identities = useQuery({ queryKey: keys.identities(walletId), queryFn: () => b.identities(walletId), enabled: main !== null });
-  // A refetch that failed: the answer cached before it may be wrong now (D24).
-  const mainSummary = identities.isError ? undefined : identities.data?.find((i) => i.identity === main);
   const registration = useStatusRegistration(walletId, status.data);
   const lock = useLockStatus().data?.state;
   const sync = useSyncStatus().data;
@@ -62,7 +60,7 @@ export function useStatusInputs(walletId: string, network: NetworkInfo): { input
       status: status.data,
       // A refetch that failed is an error too: the answer cached before it may be wrong now (D24).
       statusError: status.isError,
-      main: mainSummary,
+      main: mainSummaryOf(identities, main),
       registration,
       lock,
       syncPercent: sync && isSyncing(sync) ? syncPercent(sync) : null,

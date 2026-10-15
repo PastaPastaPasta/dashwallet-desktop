@@ -6,6 +6,7 @@ import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-quer
 import type { Backend } from "./backend";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRequest } from "./generated/HistoryRequest";
+import type { IdentitySummary } from "./generated/IdentitySummary";
 import type { LockOutcome } from "./generated/LockOutcome";
 import type { LockProgress } from "./generated/LockProgress";
 import { reconcileLockReport } from "./lockReport";
@@ -200,6 +201,15 @@ export function mainIdentityOf(status: DashPayStatus | undefined): string | null
   }
 }
 
+/** `main`'s summary in a read of the identities; `undefined` while unknown or when the read
+ * failed, a refetch included: the answer cached before it may be wrong now (DP1-08 D24). */
+export function mainSummaryOf(
+  identities: { data?: IdentitySummary[]; isError: boolean },
+  main: string | null,
+): IdentitySummary | undefined {
+  return identities.isError ? undefined : identities.data?.find((i) => i.identity === main);
+}
+
 /** The identity chip's, the sidebar's and the bell's DashPay state (DASHPAY §4
  * `DashPayStatusModel`): the status, the main identity's summary, its unread events and the
  * contact requests waiting. Each read is `undefined` while unknown or when it fails, a refetch
@@ -233,7 +243,7 @@ export function useDashPayShell(walletId: string | undefined) {
   });
   return {
     status: status.isError ? undefined : status.data,
-    main: identities.isError ? undefined : identities.data?.find((i) => i.identity === main),
+    main: mainSummaryOf(identities, main),
     unread: unread.data ?? null,
     requests: requests.data ?? 0,
   };

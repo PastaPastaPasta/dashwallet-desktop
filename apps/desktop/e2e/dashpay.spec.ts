@@ -58,10 +58,13 @@ test("D2: Home has no card for an identity with a username, or one whose names a
   }
 });
 
+/** A page `recordDashPay` records. */
+type Recorded = typeof window & { __seen: string[] };
+
 /** Records every card state and chip text the page shows, in order, as `window.__seen`. */
 function recordDashPay() {
   const seen: string[] = [];
-  (window as unknown as { __seen: string[] }).__seen = seen;
+  (window as Recorded).__seen = seen;
   const note = () => {
     const state = document.querySelector('[data-testid="dashpay-card"]')?.getAttribute("data-state") ?? "none";
     const entry = `${state}|${document.querySelector('[data-testid="toolbar-chip"]')?.textContent ?? ""}`;
@@ -93,7 +96,7 @@ test("D23 (Sol r1 #1): names that take more than 10 s to load never read as miss
   await expect(card(page)).toHaveCount(0);
   await namesPassEnds(page, ["alice"]);
   await expect(chip(page)).toContainText("@alice");
-  const seen = await page.evaluate(() => (window as unknown as { __seen: string[] }).__seen);
+  const seen = await page.evaluate(() => (window as Recorded).__seen);
   expect(seen.length).toBeGreaterThan(1);
   expect(seen.filter((s) => s.startsWith("noUsername|") || s.includes("No username"))).toEqual([]);
 });
