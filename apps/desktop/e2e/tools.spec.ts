@@ -372,7 +372,12 @@ test.describe("PSBT", () => {
     // Away to another tab and back while the network has not answered: a new PSBT tab.
     await tools(page, "signVerify");
     await tools(page, "psbt");
-    await page.getByTestId("psbt-paste").fill(annotated);
+    // Once under load (WebKit, load 170) the fill right after the remount was lost: fill until Load
+    // takes it (U-05 D25).
+    await expect(async () => {
+      await page.getByTestId("psbt-paste").fill(annotated);
+      await expect(page.getByTestId("psbt-load-text")).toBeEnabled({ timeout: 1_000 });
+    }).toPass();
     await page.getByTestId("psbt-load-text").click();
     await expect(page.getByTestId("psbt-notice")).toHaveText("This transaction is being broadcast already.");
     await expect(page.getByTestId("psbt-broadcast")).toBeDisabled();
