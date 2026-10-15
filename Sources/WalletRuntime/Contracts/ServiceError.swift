@@ -96,6 +96,8 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let sendAmountTooSmallAfterFee = Self(rawValue: "send.amount_too_small_after_fee")
     /// Handed to the network without an acceptance verdict: never abandon (m1-engine.md §2.7).
     public static let sendBroadcastUnknown = Self(rawValue: "send.broadcast_unknown")
+    /// A lock before the hand-off: nothing was sent; prepare again (m1-engine.md §2.7.1, E0-04 §4.6).
+    public static let sendCancelled = Self(rawValue: "send.cancelled")
 
     // Coins.
     public static let coinsOutpointNotFound = Self(rawValue: "coins.outpoint_not_found")
@@ -260,7 +262,7 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
         .sendDuplicateAddress, .sendAmountExceedsBalance, .sendAmountWithFeeExceedsBalance,
         .sendAmountTooSmallAfterFee, .sendInsufficientMixedFunds, .sendOutpointUnavailable, .sendAbsurdFee, .sendTxTooLarge,
         .sendInvalidChangeAddress, .sendWatchOnly, .sendVaultLocked, .sendGrantInvalid, .sendGrantExceeded,
-        .sendPreparedTxSpent, .sendNoPeers, .sendBroadcastRejected, .sendBroadcastUnknown,
+        .sendPreparedTxSpent, .sendNoPeers, .sendBroadcastRejected, .sendBroadcastUnknown, .sendCancelled,
         .coinsOutpointNotFound,
         .labelsInvalidAddress, .labelsDuplicateAddress, .labelsOwnAddress, .labelsEntryNotFound,
         .labelsReceiveEntryNotDeletable,

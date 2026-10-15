@@ -678,6 +678,30 @@ struct SendViewModelTests {
         #expect(world.sender.lastDraft?.state.current.prepareGrants.map(\.id) == ["grant-2"])
     }
 
+    /// `send.cancelled` (a lock before the hand-off) is definite like
+    /// `send.no_peers`: nothing was sent, dismiss keeps the form and Review
+    /// prepares again with a new grant (m1-swift.md, E0-04 §4.6).
+    @Test func cancelledKeepsTheFormAndReviewsAgain() async {
+        let model = makeModel()
+        fillValid(model)
+        await reviewToConfirm(model)
+        world.sender.lastDraft?.state.withLock { $0.broadcastErrors = [ServiceError(code: .sendCancelled)] }
+        await model.confirm()
+        #expect(model.phase == .failed(SendFailure(code: .sendCancelled, message: L10n.Send.cancelled)))
+        let first = world.sender.lastDraft!
+        #expect(first.state.current.released.count == 1)
+        await model.dismiss()
+        #expect(model.phase == .editing)
+        #expect(model.entries[0].address == testnetAddress1)
+        #expect(first.state.current.abandoned.isEmpty)
+
+        await reviewToConfirm(model)
+        await model.confirm()
+        #expect(model.phase == .done(txid: String(repeating: "f", count: 64)))
+        #expect(world.auth.authorizeCalls.count == 2)
+        #expect(world.sender.lastDraft?.state.current.prepareGrants.map(\.id) == ["grant-2"])
+    }
+
     // MARK: Engine errors (QT-062)
 
     @Test func QT062_recipientErrorsGoBackToTheEntry() async {
