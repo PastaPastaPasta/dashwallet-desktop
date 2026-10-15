@@ -359,7 +359,13 @@ const SCENARIOS = {
   /** A sync pass holds the wallet's state before any contacts snapshot: "Updating contacts…". */
   "dashpay-contacts-updating": (t) => {
     const w = base(t);
-    w.dashpay = { ...registered(), contactsUpdating: true };
+    w.dashpay = { ...registered(), contactsUpdating: "noSnapshot" };
+    return w;
+  },
+  /** A sync pass holds the wallet's state after a snapshot: the rows, under "Updating contacts…". */
+  "dashpay-contacts-refreshing": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registered(), contactsUpdating: "snapshot" };
     return w;
   },
   /** Unlocked for mixing only, Carol's channel still setting up: "Unlock to finish setting up". */

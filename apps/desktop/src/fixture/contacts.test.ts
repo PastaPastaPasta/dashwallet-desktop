@@ -42,8 +42,9 @@ describe("dashpay_contacts (fixture, as the engine)", () => {
     username: ["bob", "carol", "dave", "erin"],
     // Carol 2 days ago, Erin 5, Bob 40, Dave 90.
     dateAdded: ["carol", "erin", "bob", "dave"],
-    // Bob a day ago, Dave 12 days; Carol and Erin never, last, by id.
-    lastActivity: ["bob", "dave", "carol", "erin"],
+    // The last payment, else the contact's own time (the engine's `paid.max(since)`): Bob a day
+    // ago, Carol 2 days, Erin 5, Dave 12.
+    lastActivity: ["bob", "carol", "erin", "dave"],
   };
   for (const [sort, order] of Object.entries(ORDERS) as [ContactSortName, string[]][]) {
     it(`AND-090 sorts My Contacts by ${sort}`, async () => {
@@ -52,6 +53,8 @@ describe("dashpay_contacts (fixture, as the engine)", () => {
       // Requests and Pending ignore the sort: Grace and Heidi arrived together, so by id.
       expect(sections.requests).toEqual(["grace", "heidi"]);
       expect(sections.pending).toEqual(["frank"]);
+      // Hidden follows the sort too; Ivan has no time at all, so he is last by time.
+      expect(sections.hidden).toEqual(sort === "dateAdded" || sort === "lastActivity" ? ["judy", "ivan"] : ["ivan", "judy"]);
     });
   }
 
@@ -73,11 +76,15 @@ describe("dashpay_contacts (fixture, as the engine)", () => {
     expect(Object.values(await usernames("dashpay-registered", { text: "   " })).flat()).toHaveLength(9);
   });
 
-  it("answers empty sections with `updating` while a pass holds the wallet before any snapshot", async () => {
+  it("answers `updating` while a pass holds the wallet: empty sections before any snapshot, else the last one", async () => {
     installFixture({ scenario: "dashpay-contacts-updating" });
     const list = await cmd.dashpayContacts(FIXTURE_WALLET_ID, IDENTITY.alice, query({}));
     expect(list.updating).toBe(true);
     expect(list.sections.flatMap((s) => s.contacts)).toEqual([]);
+    installFixture({ scenario: "dashpay-contacts-refreshing" });
+    const last = await cmd.dashpayContacts(FIXTURE_WALLET_ID, IDENTITY.alice, query({}));
+    expect(last.updating).toBe(true);
+    expect(last.sections.flatMap((s) => s.contacts)).toHaveLength(9);
   });
 
   it("refuses a user search with platform.unavailable when DAPI does not answer", async () => {

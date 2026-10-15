@@ -2,7 +2,7 @@
 // local and network search, the pending-setup hint, and a detail slot beside the list that
 // DP2-08 (Add contact) and DP2-09 (the contact's actions) fill. Copy follows the mobile wallets.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ContactSortName } from "../../api/generated/ContactSortName";
 import { errorMessage } from "../../api/backend";
 import { useBackend, useLockStatus } from "../../api/queries";
@@ -13,7 +13,6 @@ import { EmptyState, LoadingState } from "../../components/history";
 import {
   findContact,
   groups as toGroups,
-  listedIds,
   NETWORK_DEBOUNCE_MS,
   networkHits,
   networkPrefix,
@@ -26,11 +25,12 @@ import { useContactList, useContactsOwner, useNetworkSearch, usePendingSetup } f
 import { ContactGroups, NetworkResults } from "./ContactList";
 import { ContactPane } from "./ContactPane";
 
-const openAdd = (addContact: AddContactIntent) => ui.set({ addContact, contact: null });
+/** Opens Add contact's slot (D12), in place of a selection or a link's card. */
+const openAdd = (addContact: AddContactIntent) => ui.set({ addContact, contact: null, contactPrefill: null });
 
 export function ContactsPage({ walletId }: { walletId: string }) {
   const backend = useBackend();
-  const { owner } = useContactsOwner(walletId);
+  const { owner, retry } = useContactsOwner(walletId);
   // Opening Contacts asks for a DashPay pass soon (D9); a refused ask leaves the engine's schedule.
   useEffect(() => {
     backend.dashpaySyncSoon().catch(() => undefined);
@@ -41,45 +41,64 @@ export function ContactsPage({ walletId }: { walletId: string }) {
         <header className="top-intro top-intro-row">
           <h1 className="top-intro-title">Contacts</h1>
           {owner.kind === "identity" && (
-            <DashButton variant="filledBlue" size="small" data-testid="contacts-add" onClick={() => openAdd({ query: "", hit: null })}>
+            <DashButton variant="filledBlue" size="small" data-testid="contacts-add" onClick={() => openAdd({ walletId, query: "", hit: null })}>
               Add contact
             </DashButton>
           )}
         </header>
-        {owner.kind === "identity" ? <ContactsView walletId={walletId} identity={owner.identity} /> : <NoContacts owner={owner} />}
+        {owner.kind === "identity" ? <ContactsView walletId={walletId} identity={owner.identity} /> : <NoContacts owner={owner} retry={retry} />}
       </div>
     </main>
   );
 }
 
-/** Why the page lists no one (D2): no identity yet, one being registered, or DashPay starting. */
-function NoContacts({ owner }: { owner: Exclude<ContactsOwner, { kind: "identity" }> }) {
+const JOIN_MESSAGES = {
+  watchOnly: "A watch-only wallet cannot join DashPay.",
+  waitingForSync: "You can join DashPay once the wallet has synced.",
+  none: "Create a username to add contacts and pay them by name.",
+};
+
+/** Why the page lists no one (D2): no identity yet, one being registered, DashPay starting, or
+ * its status unreadable. */
+function NoContacts({ owner, retry }: { owner: Exclude<ContactsOwner, { kind: "identity" }>; retry: () => void }) {
   const prefill = useUi((s) => s.contactPrefill);
-  const body =
-    owner.kind === "starting" ? (
-      <LoadingState testId="contacts-starting" text="Starting DashPay…" />
-    ) : owner.kind === "registering" ? (
-      <EmptyState testId="contacts-registering" title="Your username is being registered" message="Your contacts show here once Dash Platform confirms it." />
-    ) : (
-      <EmptyState
-        testId="contacts-join"
-        title="Join DashPay"
-        message={
-          owner.reason === "watchOnly"
-            ? "A watch-only wallet cannot join DashPay."
-            : owner.reason === "waitingForSync"
-              ? "You can join DashPay once the wallet has synced."
-              : "Create a username to add contacts and pay them by name."
-        }
-        action={
-          owner.reason === null && (
-            <DashButton variant="filledBlue" data-testid="contacts-join-button" onClick={() => navigate("joinDashPay")}>
-              Join DashPay
+  let body;
+  switch (owner.kind) {
+    case "starting":
+      body = <LoadingState testId="contacts-starting" text="Starting DashPay…" />;
+      break;
+    case "error":
+      body = (
+        <EmptyState
+          testId="contacts-status-error"
+          title="Could not read DashPay's state"
+          action={
+            <DashButton variant="plainBlue" onClick={retry}>
+              Try again
             </DashButton>
-          )
-        }
-      />
-    );
+          }
+        />
+      );
+      break;
+    case "registering":
+      body = <EmptyState testId="contacts-registering" title="Your username is being registered" message="Your contacts show here once Dash Platform confirms it." />;
+      break;
+    case "join":
+      body = (
+        <EmptyState
+          testId="contacts-join"
+          title="Join DashPay"
+          message={JOIN_MESSAGES[owner.reason ?? "none"]}
+          action={
+            owner.reason === null && (
+              <DashButton variant="filledBlue" data-testid="contacts-join-button" onClick={() => navigate("joinDashPay")}>
+                Join DashPay
+              </DashButton>
+            )
+          }
+        />
+      );
+  }
   // A `dashpay://user` link still shows what it carried (U-01 D12).
   return (
     <>
@@ -94,7 +113,7 @@ function ContactsView({ walletId, identity }: { walletId: string; identity: stri
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const sort = useUi((s) => s.contactSort);
   const selectedId = useUi((s) => s.contact);
-  const add = useUi((s) => s.addContact);
+  const intent = useUi((s) => s.addContact);
   const prefill = useUi((s) => s.contactPrefill);
   const text = useDebounced(search.trim(), SEARCH_DEBOUNCE_MS);
   // The network prefix waits longer; clearing the field hides its rows at once (D6).
@@ -106,15 +125,16 @@ function ContactsView({ walletId, identity }: { walletId: string; identity: stri
   const lock = useLockStatus();
   const net = useNetworkSearch(walletId, prefix);
 
-  const groups = toGroups(list.data, { hiddenOpen, searching: text !== "" });
+  // Another wallet's Add intent is not this one's (D12).
+  const add = intent?.walletId === walletId ? intent : null;
+  const groups = toGroups(list.data, { hiddenOpen, searching: text !== "" && !list.isPlaceholderData });
   // A search that filters the selected contact out keeps it in the detail slot (D11).
   const found = findContact(list.data, selectedId);
   const lastFound = useRef(found);
   if (found) lastFound.current = found;
-  const selected = found ?? (text !== "" && lastFound.current?.contact.contact === selectedId ? lastFound.current : null);
+  const selected = found ?? (text !== "" && lastFound.current?.contact === selectedId ? lastFound.current : null);
   const hint = setupHint(pending.data, lock.data?.state);
-  const listed = useMemo(() => listedIds(list.data), [list.data]);
-  const hits = net.data ? networkHits(net.data, listed) : { shown: [], more: false };
+  const hits = networkHits(net.data);
   const updating = list.data?.updating === true;
   const select = (contact: string) => ui.set({ contact, addContact: null, contactPrefill: null });
 
@@ -142,7 +162,7 @@ function ContactsView({ walletId, identity }: { walletId: string; identity: stri
         title="No contacts yet"
         message="Search for a user by their username to send them a contact request."
         action={
-          <DashButton variant="filledBlue" data-testid="contacts-empty-search" onClick={() => openAdd({ query: "", hit: null })}>
+          <DashButton variant="filledBlue" data-testid="contacts-empty-search" onClick={() => openAdd({ walletId, query: "", hit: null })}>
             Search for a User
           </DashButton>
         }
@@ -156,13 +176,13 @@ function ContactsView({ walletId, identity }: { walletId: string; identity: stri
             Updating contacts…
           </p>
         )}
-        <ContactGroups groups={groups} selected={selected?.contact.contact ?? null} onSelect={select} onToggleHidden={() => setHiddenOpen((o) => !o)} />
+        <ContactGroups groups={groups} selected={selected?.contact ?? null} onSelect={select} onToggleHidden={() => setHiddenOpen((o) => !o)} />
       </>
     );
 
   return (
     <>
-      <div className="contacts-toolbar">
+      <div className="tx-filter-bar">
         <label className="search-field" data-testid="contacts-search">
           <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
           <input
@@ -205,12 +225,13 @@ function ContactsView({ walletId, identity }: { walletId: string; identity: stri
           {body}
           {prefix !== null && typedPrefix !== null && (
             <NetworkResults
-              state={net.isPending ? "loading" : net.isError ? "error" : "done"}
+              // Try again shows the search running, not the old error.
+              state={net.isPending || (net.isError && net.isFetching) ? "loading" : net.isError ? "error" : "done"}
               shown={hits.shown}
               more={hits.more}
               onRetry={() => void net.refetch()}
-              onPick={(h) => openAdd({ query: prefix, hit: { identity: h.identity, username: h.username } })}
-              onMore={() => openAdd({ query: prefix, hit: null })}
+              onPick={(h) => openAdd({ walletId, query: prefix, hit: { identity: h.identity, username: h.username } })}
+              onMore={() => openAdd({ walletId, query: prefix, hit: null })}
             />
           )}
         </div>

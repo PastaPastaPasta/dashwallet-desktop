@@ -35,9 +35,9 @@ export interface DashPayWorld {
   requestTimes: Record<string, RequestTimes>;
   /** The `dp_events` journal of the wallet's identities, oldest first: the bell's rows. */
   journal: JournalRow[];
-  /** A sync pass holds the wallet's state and no snapshot was read yet: `dashpay_contacts`
-   * answers empty sections with `updating` (m4 §2.4 item 37). */
-  contactsUpdating: boolean;
+  /** A sync pass holds the wallet's state: `dashpay_contacts` answers the last snapshot with
+   * `updating`, or empty sections if none was read yet (m4 §2.4 item 37). */
+  contactsUpdating: false | "snapshot" | "noSnapshot";
   /** `search_users` fails as with DAPI unreachable (`platform.unavailable`). */
   searchOffline: boolean;
 }
@@ -177,7 +177,13 @@ const CONTACTS: ContactSpec[] = [
 ];
 
 function contact(spec: ContactSpec): ContactDetailInfo {
-  const pending = spec.relation === "pendingIncoming" || spec.relation === "pendingOutgoing";
+  const incoming = spec.relation === "pendingIncoming";
+  const outgoing = spec.relation === "pendingOutgoing";
+  // A request rests on its own time (m4 §2.4 `since`).
+  const since = spec.since ?? (incoming ? at(0, 2) : outgoing ? at(1) : null);
+  // The engine's `paid.max(since)`: the last payment, else the contact's own time.
+  const paid = spec.lastActivityAt ?? null;
+  const lastActivityAt = paid === null || (since !== null && since > paid) ? since : paid;
   return {
     summary: {
       contact: IDENTITY[spec.name],
@@ -187,16 +193,15 @@ function contact(spec: ContactSpec): ContactDetailInfo {
       relation: spec.relation,
       hidden: spec.hidden ?? false,
       channel: spec.channel,
-      // A request rests on its own time (m4 §2.4 `since`).
-      since: spec.since ?? (pending ? (spec.relation === "pendingIncoming" ? at(0, 2) : at(1)) : null),
-      lastActivityAt: spec.lastActivityAt ?? null,
+      since,
+      lastActivityAt,
       unverified: spec.unverified ?? false,
     },
     profile: spec.displayName ? profile(spec.displayName) : null,
     privateDetails: { alias: spec.alias ?? null, note: spec.note ?? null, hidden: spec.hidden ?? false },
     publishState: spec.alias || spec.note ? "published" : "local",
-    requestSentAt: spec.relation === "pendingIncoming" ? null : (spec.since ?? (pending ? at(1) : null)),
-    requestReceivedAt: spec.relation === "pendingOutgoing" ? null : (spec.since ?? (pending ? at(0, 2) : null)),
+    requestSentAt: incoming ? null : since,
+    requestReceivedAt: outgoing ? null : since,
     paymentLock: spec.paymentLockTxid ? { txid: spec.paymentLockTxid, since: at(0, 5) } : null,
   };
 }
@@ -254,7 +259,7 @@ function matches(c: ContactSummaryInfo, text: string): boolean {
 export function contactList(d: DashPayWorld, query: ContactQueryArgs): ContactList {
   const asked = query.sections.length ? query.sections.filter((s, i) => query.sections.indexOf(s) === i) : SECTIONS;
   const text = query.text?.trim() ?? "";
-  const rows = d.contactsUpdating ? [] : d.contacts.filter((c) => !text || matches(c.summary, text));
+  const rows = d.contactsUpdating === "noSnapshot" ? [] : d.contacts.filter((c) => !text || matches(c.summary, text));
   return {
     sections: asked.map((section) => ({
       section,
@@ -263,7 +268,7 @@ export function contactList(d: DashPayWorld, query: ContactQueryArgs): ContactLi
         .map((c) => c.summary)
         .sort(section === "contacts" || section === "hidden" ? ORDERS[query.sort] : newest((c) => c.since)),
     })),
-    updating: d.contactsUpdating,
+    updating: d.contactsUpdating !== false,
   };
 }
 

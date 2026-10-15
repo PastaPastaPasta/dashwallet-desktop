@@ -61,14 +61,15 @@ test("AND-090 sorts My Contacts and Hidden by the chosen order, for the session;
   await expect(sort.locator("option")).toHaveText(["Name", "Username", "Date added", "Last activity"]);
   await sort.selectOption("dateAdded");
   await expect(names(page, "contacts")).toHaveText(["Carol", "Erin", "Bob Builder", "dave"]);
+  // The last payment, else the contact's own time.
   await sort.selectOption("lastActivity");
-  await expect(names(page, "contacts")).toHaveText(["Bob Builder", "dave", "Carol", "Erin"]);
+  await expect(names(page, "contacts")).toHaveText(["Bob Builder", "Carol", "Erin", "dave"]);
   await expect(names(page, "requests")).toHaveText(["Grace Hopper", "heidi"]);
   // The choice outlives the page.
   await page.getByTestId("sidebar-home").click();
   await page.getByTestId("sidebar-contacts").click();
   await expect(page.getByTestId("contacts-sort")).toHaveValue("lastActivity");
-  await expect(names(page, "contacts")).toHaveText(["Bob Builder", "dave", "Carol", "Erin"]);
+  await expect(names(page, "contacts")).toHaveText(["Bob Builder", "Carol", "Erin", "dave"]);
 });
 
 test("IOS-072 filters the list as the user types, opens Hidden for matches, says when nothing matches, and Escape clears", async ({ page }) => {
@@ -77,9 +78,10 @@ test("IOS-072 filters the list as the user types, opens Hidden for matches, says
   await expect(page.getByTestId("contact-row")).toHaveCount(1);
   await expect(names(page, "contacts")).toHaveText(["Bob Builder"]);
 
-  // An alias match in Hidden shows it, open.
+  // An alias match in Hidden shows it, open, with no disclosure to close it meanwhile.
   await search(page).fill("work");
   await expect(names(page, "hidden")).toHaveText(["Judy (work)"]);
+  await expect(group(page, "hidden").getByRole("button", { name: /Hidden/ })).toHaveCount(0);
 
   // The first four characters of an identity id match it.
   await search(page).fill(IDENTITY.dave.slice(0, 4));
@@ -91,6 +93,8 @@ test("IOS-072 filters the list as the user types, opens Hidden for matches, says
   await search(page).press("Escape");
   await expect(search(page)).toHaveValue("");
   await expect(page.getByTestId("contact-row")).toHaveCount(7);
+  // Hidden is closed again: the search opened it, not the user.
+  await expect(group(page, "hidden").getByRole("button", { name: "Hidden (2)" })).toHaveAttribute("aria-expanded", "false");
 });
 
 test("IOS-072 searches the network from two characters: three new usernames, Show more and a pick open Add contact", async ({ page }) => {
@@ -118,7 +122,7 @@ test("IOS-072 searches the network from two characters: three new usernames, Sho
   await expect(network).toHaveCount(0);
 });
 
-test("IOS-072 network search leaves out the identity itself and anyone listed already", async ({ page }) => {
+test("IOS-072 network search shows strangers only: the identity itself and its contacts are listed above", async ({ page }) => {
   await openContacts(page);
   // "bo" finds @bob, who is a contact: the network section has nobody new to show.
   await search(page).fill("bo");
@@ -136,6 +140,13 @@ test("IOS-072 a failed network search says so and offers Try again", async ({ pa
   await expect(error.getByRole("button", { name: "Try again" })).toBeVisible();
   // The local list still answers.
   await expect(page.getByTestId("contacts-no-match")).toBeVisible();
+  // DAPI answers again: Try again shows the search running, then the hits.
+  await page.evaluate(() => {
+    window.__dwFixture!.world.dashpay.searchOffline = false;
+  });
+  await error.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByTestId("network-row")).toHaveCount(3);
+  await expect(error).toHaveCount(0);
 });
 
 test("IOS-072 the setup hint: finishing while unlocked, Unlock when unlocked for mixing only", async ({ page }) => {
@@ -191,9 +202,12 @@ test("the keyboard moves between rows across groups and Enter selects", async ({
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await expect(row(page, "heidi")).toHaveAttribute("aria-current", "true");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press(" ");
+  await expect(row(page, "Bob Builder")).toHaveAttribute("aria-current", "true");
 });
 
-test("Add contact opens its placeholder; a dashpay: link's card wins over it until dismissed", async ({ page }) => {
+test("Add contact opens its placeholder in the slot, in place of a dashpay: link's card; a row replaces either", async ({ page }) => {
   await openContacts(page);
   await page.getByTestId("contacts-add").click();
   const add = page.getByTestId("placeholder-add-contact");
@@ -204,12 +218,11 @@ test("Add contact opens its placeholder; a dashpay: link's card wins over it unt
   await deliver(page, [{ kind: "addContact", identity: IDENTITY.bob, username: "bob" }]);
   await expect(page.getByTestId("add-contact-username")).toHaveText("@bob");
   await page.getByTestId("contacts-add").click();
-  await expect(page.getByTestId("add-contact")).toBeVisible();
-  await page.getByTestId("add-contact").getByRole("button", { name: "Dismiss" }).click();
   await expect(add).toBeVisible();
-  // Selecting a row clears both.
+  await expect(page.getByTestId("add-contact")).toHaveCount(0);
   await row(page, "Bob Builder").click();
   await expect(page.getByTestId("contact-detail")).toBeVisible();
+  await expect(add).toHaveCount(0);
 });
 
 test("IOS-072 no contacts: the empty state offers Search for a User; a pass before any snapshot says updating", async ({ page }) => {
@@ -221,6 +234,24 @@ test("IOS-072 no contacts: the empty state offers Search for a User; a pass befo
   await openContacts(page, "dashpay-contacts-updating");
   await expect(page.getByTestId("contacts-updating")).toHaveText("Updating contacts…");
   await expect(page.getByTestId("contacts-empty")).toHaveCount(0);
+
+  // After a snapshot, the rows stay, under the line.
+  await openContacts(page, "dashpay-contacts-refreshing");
+  await expect(page.getByTestId("contacts-updating-line")).toHaveText("Updating contacts…");
+  await expect(page.getByTestId("contact-row")).toHaveCount(7);
+});
+
+test("a DashPay state that cannot be read says so and offers Try again", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("dashpay-registered", "light", "&fail=dashpay_status:rpc"));
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "contacts" }));
+  const failed = page.getByTestId("contacts-status-error");
+  await expect(failed).toContainText("Could not read DashPay's state");
+  await page.evaluate(() => window.__dwFixture!.fail("dashpay_status", null));
+  await failed.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByTestId("contact-row")).toHaveCount(7);
+  expect(errors).toEqual([]);
 });
 
 test("without an identity Contacts offers Join DashPay; while registering it says so", async ({ page }) => {
@@ -244,6 +275,10 @@ const STATES: Record<string, { scenario: string; go: (page: Page) => Promise<voi
       await page.getByTestId("contact-detail").waitFor();
     },
   },
+  // Each chip tone on a selected row's tint.
+  "selected-info": { scenario: "dashpay-registered", go: (page) => row(page, "Carol").click() },
+  "selected-danger": { scenario: "dashpay-registered", go: (page) => row(page, "dave").click() },
+  refreshing: { scenario: "dashpay-contacts-refreshing", go: (page) => page.getByTestId("contacts-updating-line").waitFor() },
   network: {
     scenario: "dashpay-registered",
     go: async (page) => {

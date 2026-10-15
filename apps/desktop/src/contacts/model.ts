@@ -14,6 +14,7 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { LockStateName } from "../api/generated/LockStateName";
 import type { UserHit } from "../api/generated/UserHit";
 import type { UserRelation } from "../api/generated/UserRelation";
+import type { Tone } from "../components/basics";
 
 /** Whose contacts the page shows (D2), or why it shows none. */
 export type ContactsOwner =
@@ -22,7 +23,9 @@ export type ContactsOwner =
   | { kind: "join"; reason: "watchOnly" | "waitingForSync" | null }
   | { kind: "registering" }
   /** DashPay has not said yet, or started without a main identity it could name. */
-  | { kind: "starting" };
+  | { kind: "starting" }
+  /** The status (or the identities it needs) could not be read. */
+  | { kind: "error" };
 
 export function contactsOwner(status: DashPayStatus | undefined, identities: IdentitySummary[] | undefined): ContactsOwner {
   switch (status?.kind) {
@@ -51,12 +54,13 @@ export const SORTS: { id: ContactSortName; title: string }[] = [
   { id: "dateAdded", title: "Date added" },
   { id: "lastActivity", title: "Last activity" },
 ];
-export const DEFAULT_SORT: ContactSortName = "displayName";
+
+const nameOf = (c: Pick<ContactSummaryInfo, "alias" | "displayName" | "username">) => c.alias?.trim() || c.displayName?.trim() || c.username?.trim();
 
 /** The name a row shows: the alias, the display name, the username, else the shortened id (the
  * engine's `DisplayName` key, so the list reads in the order it sorts). */
 export function shownName(c: Pick<ContactSummaryInfo, "alias" | "displayName" | "username" | "contact">): string {
-  return c.alias?.trim() || c.displayName?.trim() || c.username?.trim() || shortId(c.contact);
+  return nameOf(c) || shortId(c.contact);
 }
 
 /** `@username` under the name, when the name is not the username itself. */
@@ -72,8 +76,7 @@ export function shortId(id: string): string {
 
 /** The avatar's letters (D10): the initials of the name shown, `?` for a row known only by its id. */
 export function avatarLetters(c: Pick<ContactSummaryInfo, "alias" | "displayName" | "username">): string {
-  const name = c.alias?.trim() || c.displayName?.trim() || c.username?.trim();
-  return name ? initials(name) : "?";
+  return initials(nameOf(c) ?? "");
 }
 
 /** Up to two letters of a name; `?` when it has none. */
@@ -84,12 +87,11 @@ export function initials(name: string): string {
   return out || "?";
 }
 
-export type ChipTone = "info" | "warning" | "danger";
 export interface RowChip {
   id: "settingUp" | "unavailable" | "unverified";
   text: string;
-  tone: ChipTone;
-  /** What the chip means, for a tooltip and assistive technology. */
+  tone: Tone;
+  /** What the chip means, for its tooltip. */
   detail: string;
 }
 
@@ -105,12 +107,18 @@ export function rowChips(c: Pick<ContactSummaryInfo, "relation" | "channel" | "u
   return chips;
 }
 
-/** A row's trailing note (D7). */
-export function rowNote(section: ContactSectionName, c: Pick<ContactSummaryInfo, "relation">): string | null {
-  if (section === "requests") return "Request received";
-  if (section === "pending") return "Request sent";
-  if (section === "hidden" && c.relation === "ignored") return "Ignored";
-  return null;
+const RELATIONS: Record<UserRelation, string> = {
+  contact: "Contact",
+  pendingOutgoing: "Request sent",
+  pendingIncoming: "Request received",
+  ignored: "Ignored",
+  stranger: "Not a contact",
+  isSelf: "You",
+};
+
+/** A row's trailing note (D7): which way a request goes, or an ignored sender. */
+export function rowNote(c: Pick<ContactSummaryInfo, "relation">): string | null {
+  return c.relation === "pendingIncoming" || c.relation === "pendingOutgoing" || c.relation === "ignored" ? RELATIONS[c.relation] : null;
 }
 
 /** One group of the list, as the screen draws it. */
@@ -118,7 +126,7 @@ export interface Group {
   section: ContactSectionName;
   title: string;
   contacts: ContactSummaryInfo[];
-  /** Only Hidden collapses (D5). */
+  /** Only Hidden collapses (D5), and not while a search shows it. */
   collapsible: boolean;
   open: boolean;
 }
@@ -131,35 +139,26 @@ const TITLES: Record<ContactSectionName, (n: number) => string> = {
 };
 
 /** The engine's sections as groups, in its order, empty ones dropped (D1). Hidden is open when
- * the user opened it or a search shows matches in it (D5). */
+ * the user opened it; a search shows its matches, open and not collapsible (D5). */
 export function groups(list: ContactList | undefined, opts: { hiddenOpen: boolean; searching: boolean }): Group[] {
   return (list?.sections ?? [])
     .filter((s) => s.contacts.length > 0)
     .map((s) => {
-      const collapsible = s.section === "hidden";
+      const collapsible = s.section === "hidden" && !opts.searching;
       return {
         section: s.section,
         title: TITLES[s.section](s.contacts.length),
         contacts: s.contacts,
         collapsible,
-        open: !collapsible || opts.hiddenOpen || opts.searching,
+        open: !collapsible || opts.hiddenOpen,
       };
     });
 }
 
-/** Every contact the list holds, in any group. */
-export function listedIds(list: ContactList | undefined): Set<string> {
-  return new Set((list?.sections ?? []).flatMap((s) => s.contacts.map((c) => c.contact)));
-}
-
-/** The contact `id` and the section that lists it; `null` when the list does not hold it. */
-export function findContact(list: ContactList | undefined, id: string | null): { contact: ContactSummaryInfo; section: ContactSectionName } | null {
+/** The row of contact `id` in any group; `null` when the list does not hold it. */
+export function findContact(list: ContactList | undefined, id: string | null): ContactSummaryInfo | null {
   if (id === null) return null;
-  for (const s of list?.sections ?? []) {
-    const contact = s.contacts.find((c) => c.contact === id);
-    if (contact) return { contact, section: s.section };
-  }
-  return null;
+  return list?.sections.flatMap((s) => s.contacts).find((c) => c.contact === id) ?? null;
 }
 
 /** Local search debounce (Activity's), network search debounce and limit (iOS), and how many
@@ -167,8 +166,8 @@ export function findContact(list: ContactList | undefined, id: string | null): {
 export const SEARCH_DEBOUNCE_MS = 250;
 export const NETWORK_DEBOUNCE_MS = 350;
 export const NETWORK_LIMIT = 12;
-export const NETWORK_SHOWN = 3;
-export const NETWORK_MIN_CHARS = 2;
+const NETWORK_SHOWN = 3;
+const NETWORK_MIN_CHARS = 2;
 
 /** The prefix the network search asks for (D6); `null` below two characters. */
 export function networkPrefix(text: string): string | null {
@@ -176,30 +175,17 @@ export function networkPrefix(text: string): string | null {
   return [...t].length >= NETWORK_MIN_CHARS ? t : null;
 }
 
-/** The network rows under the local groups: no self, nobody the list already shows, at most three;
- * `more` when others remain (iOS `networkResultsSection`). */
-export function networkHits(hits: UserHit[], listed: Set<string>): { shown: UserHit[]; more: boolean } {
-  const fresh = hits.filter((h) => h.relation !== "isSelf" && !listed.has(h.identity));
+/** The network rows under the local groups: strangers only (the identity itself and everyone it
+ * relates to are in the groups already, whatever the local filter matched), at most three; `more`
+ * when others remain (iOS `networkResultsSection`). */
+export function networkHits(hits: UserHit[] | undefined): { shown: UserHit[]; more: boolean } {
+  const fresh = (hits ?? []).filter((h) => h.relation === "stranger");
   return { shown: fresh.slice(0, NETWORK_SHOWN), more: fresh.length > NETWORK_SHOWN };
 }
-
-const RELATIONS: Record<UserRelation, string> = {
-  contact: "Contact",
-  pendingOutgoing: "Request sent",
-  pendingIncoming: "Request received",
-  ignored: "Ignored",
-  stranger: "Not a contact",
-  isSelf: "You",
-};
 
 /** A relation as the detail slot names it. */
 export function relationTitle(r: UserRelation): string {
   return RELATIONS[r];
-}
-
-/** How a network hit relates to the identity, when it is not a stranger (Android's search rows). */
-export function relationNote(h: Pick<UserHit, "relation">): string | null {
-  return h.relation === "stranger" || h.relation === "isSelf" ? null : RELATIONS[h.relation];
 }
 
 const CHANNELS: Record<ChannelStateName, string> = {
@@ -215,14 +201,17 @@ export function channelTitle(c: ChannelStateName): string {
 }
 
 /** The pending-setup hint (D8). */
-export type SetupHint = { kind: "unlock"; count: number; text: string } | { kind: "finishing"; count: number; text: string };
+export interface SetupHint {
+  kind: "unlock" | "finishing";
+  text: string;
+}
 
 const contactsWord = (n: number) => (n === 1 ? "1 contact" : `${n} contacts`);
 
 export function setupHint(count: number | undefined, lock: LockStateName | undefined): SetupHint | null {
   if (!count || count <= 0 || lock === undefined) return null;
-  if (lock === "unlockedMixingOnly") return { kind: "unlock", count, text: `Unlock to finish setting up ${contactsWord(count)}` };
-  if (lock === "unlocked" || lock === "unencrypted") return { kind: "finishing", count, text: `Finishing the setup of ${contactsWord(count)}…` };
+  if (lock === "unlockedMixingOnly") return { kind: "unlock", text: `Unlock to finish setting up ${contactsWord(count)}` };
+  if (lock === "unlocked" || lock === "unencrypted") return { kind: "finishing", text: `Finishing the setup of ${contactsWord(count)}…` };
   return null;
 }
 

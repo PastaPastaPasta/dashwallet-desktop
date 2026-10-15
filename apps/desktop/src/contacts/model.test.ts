@@ -10,15 +10,12 @@ import {
   avatarLetters,
   channelTitle,
   contactsOwner,
-  DEFAULT_SORT,
   findContact,
   groups,
   initials,
-  listedIds,
   moveFocus,
   networkHits,
   networkPrefix,
-  relationNote,
   relationTitle,
   rowChips,
   rowNote,
@@ -66,6 +63,7 @@ describe("Contacts view model", () => {
     expect(contactsOwner({ kind: "noIdentity", reason: "watchOnly" }, undefined)).toEqual({ kind: "join", reason: "watchOnly" });
     expect(contactsOwner({ kind: "registering", draft: "1" }, undefined)).toEqual({ kind: "registering" });
     expect(contactsOwner(undefined, undefined)).toEqual({ kind: "starting" });
+    // (A status that cannot be read is the hook's `error`.)
     const main = { identity: "S", isMain: true } as IdentitySummary;
     expect(contactsOwner({ kind: "startupIncomplete", startup: "partialAccountsPending" }, [main])).toEqual({ kind: "identity", identity: "S" });
     expect(contactsOwner({ kind: "startupIncomplete", startup: "starting" }, [])).toEqual({ kind: "starting" });
@@ -76,9 +74,10 @@ describe("Contacts view model", () => {
     const g = groups(l, { hiddenOpen: false, searching: false });
     expect(g.map((x) => x.title)).toEqual(["Contact Requests (2)", "My Contacts", "Hidden (1)"]);
     expect(g.map((x) => x.open)).toEqual([true, true, false]);
+    expect(g.map((x) => x.collapsible)).toEqual([false, false, true]);
     expect(groups(l, { hiddenOpen: true, searching: false }).at(-1)!.open).toBe(true);
-    // A search that matches hidden contacts shows them.
-    expect(groups(l, { hiddenOpen: false, searching: true }).at(-1)!.open).toBe(true);
+    // A search that matches hidden contacts shows them, and Hidden does not collapse meanwhile.
+    expect(groups(l, { hiddenOpen: false, searching: true }).at(-1)).toMatchObject({ open: true, collapsible: false });
     expect(groups(undefined, { hiddenOpen: false, searching: false })).toEqual([]);
   });
 
@@ -110,17 +109,15 @@ describe("Contacts view model", () => {
     expect(rowChips(summary(1, { channel: "broken", unverified: true })).map((c) => c.text)).toEqual(["Payments unavailable", "Unverified"]);
     // A request has no channel yet.
     expect(rowChips(summary(1, { relation: "pendingIncoming", channel: "notEstablished" }))).toEqual([]);
-    expect(rowNote("requests", { relation: "pendingIncoming" })).toBe("Request received");
-    expect(rowNote("pending", { relation: "pendingOutgoing" })).toBe("Request sent");
-    expect(rowNote("hidden", { relation: "ignored" })).toBe("Ignored");
-    expect(rowNote("hidden", { relation: "contact" })).toBeNull();
-    expect(rowNote("contacts", { relation: "contact" })).toBeNull();
+    expect(rowNote({ relation: "pendingIncoming" })).toBe("Request received");
+    expect(rowNote({ relation: "pendingOutgoing" })).toBe("Request sent");
+    expect(rowNote({ relation: "ignored" })).toBe("Ignored");
+    expect(rowNote({ relation: "contact" })).toBeNull();
   });
 
   it("AND-090 offers Android's four orders, by name first", () => {
     expect(SORTS.map((s) => s.id)).toEqual(["displayName", "username", "dateAdded", "lastActivity"]);
     expect(SORTS.map((s) => s.title)).toEqual(["Name", "Username", "Date added", "Last activity"]);
-    expect(DEFAULT_SORT).toBe("displayName");
   });
 
   it("IOS-072 searches the network from two characters, latest prefix trimmed", () => {
@@ -131,16 +128,12 @@ describe("Contacts view model", () => {
     expect(networkPrefix("𝒜")).toBeNull();
   });
 
-  it("IOS-072 shows at most three network hits not already listed and not the identity itself", () => {
-    const listed = listedIds(list({ contacts: [summary(1)], hidden: [summary(2)] }));
-    const hits = [hit(0, "isSelf"), hit(1, "contact"), hit(2, "ignored"), hit(3), hit(4), hit(5), hit(6, "pendingIncoming")];
-    expect(networkHits(hits, listed)).toEqual({ shown: [hit(3), hit(4), hit(5)], more: true });
-    expect(networkHits(hits.slice(0, 5), listed)).toEqual({ shown: [hit(3), hit(4)], more: false });
-    expect(networkHits([], listed)).toEqual({ shown: [], more: false });
-    expect(relationNote(hit(1, "contact"))).toBe("Contact");
-    expect(relationNote(hit(1, "pendingIncoming"))).toBe("Request received");
-    expect(relationNote(hit(1))).toBeNull();
-    expect(relationNote(hit(1, "isSelf"))).toBeNull();
+  it("IOS-072 shows at most three network hits, strangers only: the identity and its relations are listed above", () => {
+    const hits = [hit(0, "isSelf"), hit(1, "contact"), hit(2, "ignored"), hit(3), hit(4), hit(5), hit(6, "pendingIncoming"), hit(7)];
+    expect(networkHits(hits)).toEqual({ shown: [hit(3), hit(4), hit(5)], more: true });
+    expect(networkHits(hits.slice(0, 5))).toEqual({ shown: [hit(3), hit(4)], more: false });
+    expect(networkHits([])).toEqual({ shown: [], more: false });
+    expect(networkHits(undefined)).toEqual({ shown: [], more: false });
   });
 
   it("IOS-072 names the relation and the payment channel in the detail slot", () => {
@@ -152,15 +145,15 @@ describe("Contacts view model", () => {
 
   it("finds the selected contact in any group, and nothing for an id the list does not hold", () => {
     const l = list({ requests: [summary(1)], hidden: [summary(2)] });
-    expect(findContact(l, ID(2))).toEqual({ contact: summary(2), section: "hidden" });
+    expect(findContact(l, ID(2))).toEqual(summary(2));
     expect(findContact(l, ID(3))).toBeNull();
     expect(findContact(l, null)).toBeNull();
     expect(findContact(undefined, ID(1))).toBeNull();
   });
 
   it("IOS-072 says why contacts still set up: unlock when unlocked for mixing only, finishing when unlocked", () => {
-    expect(setupHint(1, "unlockedMixingOnly")).toEqual({ kind: "unlock", count: 1, text: "Unlock to finish setting up 1 contact" });
-    expect(setupHint(3, "unlocked")).toEqual({ kind: "finishing", count: 3, text: "Finishing the setup of 3 contacts…" });
+    expect(setupHint(1, "unlockedMixingOnly")).toEqual({ kind: "unlock", text: "Unlock to finish setting up 1 contact" });
+    expect(setupHint(3, "unlocked")).toEqual({ kind: "finishing", text: "Finishing the setup of 3 contacts…" });
     expect(setupHint(2, "unencrypted")?.kind).toBe("finishing");
     expect(setupHint(0, "unlockedMixingOnly")).toBeNull();
     expect(setupHint(undefined, "unlocked")).toBeNull();

@@ -2,27 +2,28 @@
 // contact's placeholder (DP2-08), else the selected contact as the list knows it (the actions
 // are DP2-09's), else a prompt to pick one.
 
-import type { ContactSectionName } from "../../api/generated/ContactSectionName";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import { DashButton } from "../../components/basics";
 import { ui, type AddContactIntent, type ContactPrefill } from "../../app/ui";
 import { avatarLetters, channelTitle, relationTitle, rowChips, shownName, subtitle } from "../../contacts/model";
 import { detailDate } from "../../format/tx";
-import { Chip } from "../../components/basics";
+import { RowChips } from "./ContactList";
 import { Avatar } from "./Avatar";
 
-export function ContactPane({
-  prefill,
-  add,
-  selected,
-}: {
-  prefill: ContactPrefill | null;
-  add: AddContactIntent | null;
-  selected: { contact: ContactSummaryInfo; section: ContactSectionName } | null;
-}) {
+export function ContactPane({ prefill, add, selected }: { prefill: ContactPrefill | null; add: AddContactIntent | null; selected: ContactSummaryInfo | null }) {
+  let slot;
+  if (prefill) slot = <LinkCard prefill={prefill} />;
+  else if (add) slot = <AddContact add={add} />;
+  else if (selected) slot = <Selected contact={selected} />;
+  else
+    slot = (
+      <p className="placeholder card-l1" data-testid="contact-pane-empty">
+        Select a contact to see the details.
+      </p>
+    );
   return (
     <aside className="contacts-pane" aria-label="Contact" data-testid="contacts-pane">
-      {prefill ? <LinkCard prefill={prefill} /> : add ? <AddContact add={add} /> : selected ? <Selected contact={selected.contact} /> : <Nothing />}
+      {slot}
     </aside>
   );
 }
@@ -76,12 +77,22 @@ function AddContact({ add }: { add: AddContactIntent }) {
   );
 }
 
+/** When the row's time was: a contact's start, else its request's. */
+const SINCE: Record<ContactSummaryInfo["relation"], string> = {
+  contact: "Contact since",
+  pendingOutgoing: "Request sent",
+  pendingIncoming: "Request received",
+  ignored: "Request received",
+  stranger: "Since",
+  isSelf: "Since",
+};
+
 /** The selected contact, from its row (D11). */
 function Selected({ contact: c }: { contact: ContactSummaryInfo }) {
   const sub = subtitle(c);
   const chips = rowChips(c);
   return (
-    <section className="contact-detail card-l1" aria-labelledby="contact-detail-name" data-testid="contact-detail">
+    <section className="add-contact contact-detail card-l1" aria-labelledby="contact-detail-name" data-testid="contact-detail">
       <header className="contact-detail-header">
         <Avatar letters={avatarLetters(c)} size="pane" />
         <div className="contact-detail-names">
@@ -91,11 +102,7 @@ function Selected({ contact: c }: { contact: ContactSummaryInfo }) {
           {sub && <p className="contact-row-username">{sub}</p>}
           {chips.length > 0 && (
             <p className="contact-detail-chips">
-              {chips.map((chip) => (
-                <span key={chip.id} title={chip.detail}>
-                  <Chip tone={chip.tone}>{chip.text}</Chip>
-                </span>
-              ))}
+              <RowChips chips={chips} />
             </p>
           )}
         </div>
@@ -115,7 +122,7 @@ function Selected({ contact: c }: { contact: ContactSummaryInfo }) {
         )}
         {c.since !== null && (
           <>
-            <dt>{c.relation === "contact" ? "Contact since" : "Requested"}</dt>
+            <dt>{SINCE[c.relation]}</dt>
             <dd>{detailDate(new Date(c.since * 1000))}</dd>
           </>
         )}
@@ -124,13 +131,5 @@ function Selected({ contact: c }: { contact: ContactSummaryInfo }) {
         Contact actions, activity and private details are not available yet.
       </p>
     </section>
-  );
-}
-
-function Nothing() {
-  return (
-    <p className="placeholder card-l1" data-testid="contact-pane-empty">
-      Select a contact to see the details.
-    </p>
   );
 }

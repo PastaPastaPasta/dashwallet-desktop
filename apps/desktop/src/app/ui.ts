@@ -32,9 +32,10 @@ export interface ContactPrefill {
   username: string;
 }
 
-/** What opened Contacts' Add contact slot (DP2-07 D12): the search text, and the network hit
- * picked, if any. */
+/** What opened Contacts' Add contact slot (DP2-07 D12): the wallet it was opened in, the search
+ * text, and the network hit picked, if any. */
 export interface AddContactIntent {
+  walletId: string;
   query: string;
   hit: { identity: string; username: string } | null;
 }

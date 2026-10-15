@@ -4,14 +4,14 @@
 // search is keyed by its prefix (latest wins) outside that prefix: a contact event need not
 // repeat a DAPI query.
 
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { ContactSortName } from "../api/generated/ContactSortName";
 import { keys, useBackend } from "../api/queries";
-import { contactsOwner, NETWORK_LIMIT } from "./model";
+import { contactsOwner, NETWORK_LIMIT, type ContactsOwner } from "./model";
 
 /** Whose contacts show (D2): the DashPay status (the shell's query) and, while DashPay's start is
- * incomplete, the identity list. */
-export function useContactsOwner(walletId: string) {
+ * incomplete, the identity list; `retry` reads a failed one again. */
+export function useContactsOwner(walletId: string): { owner: ContactsOwner; retry: () => void } {
   const b = useBackend();
   const status = useQuery({ queryKey: keys.dashpayStatus(walletId), queryFn: () => b.dashpayStatus(walletId) });
   const identities = useQuery({
@@ -19,17 +19,19 @@ export function useContactsOwner(walletId: string) {
     queryFn: () => b.identities(walletId),
     enabled: status.data?.kind === "startupIncomplete",
   });
-  return { owner: contactsOwner(status.data, identities.data), status };
+  const failed = (status.isError && !status.data) || (status.data?.kind === "startupIncomplete" && identities.isError && !identities.data);
+  const retry = () => void (status.isError ? status.refetch() : identities.refetch());
+  return { owner: failed ? { kind: "error" } : contactsOwner(status.data, identities.data), retry };
 }
 
 /** Every section of `identity`'s contacts, sorted and filtered by the engine. The last answer
- * stays on screen while a new sort or search loads. */
+ * stays on screen while a new sort or search loads; another identity's never does. */
 export function useContactList(walletId: string, identity: string, sort: ContactSortName, text: string) {
   const b = useBackend();
   return useQuery({
     queryKey: [...keys.contactsAll(walletId), identity, sort, text] as const,
     queryFn: () => b.dashpayContacts(walletId, identity, { sections: [], sort, text: text || null }),
-    placeholderData: keepPreviousData,
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[3] === identity ? prev : undefined),
   });
 }
 
