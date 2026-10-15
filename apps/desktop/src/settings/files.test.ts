@@ -197,13 +197,16 @@ describe("backups to keep (D30)", () => {
 
   it("QT110_theQuestionNamesWhatGoesAndWhatTheListMayMiss", () => {
     expect(FilesText.keepDeletes(0, 4, "/b")).toBe(
-      "Turning automatic backups off deletes every automatic backup in /b now, and no new ones are made. Of the backups listed here, 4 go, and any written since the list was read.",
+      "Turning automatic backups off deletes every automatic backup in /b now, and no new ones are made. The list shown counts 4 of them; there can be more.",
     );
     expect(FilesText.keepDeletes(1, 1, "/b")).toBe(
-      "Keeping 1 for each wallet deletes its older automatic backups in /b now: each wallet keeps its newest 1. Of the backups listed here, 1 goes, and any written since the list was read.",
+      "Keeping 1 for each wallet deletes all but each wallet's newest automatic backup in /b now. Which ones go is decided then: a backup written since this list was read counts among the newest, so backups shown here can go too. The list shown counts 1 of them; there can be more.",
     );
-    expect(FilesText.keepDeletes(3, 0, "/b")).toMatch(/None of the backups listed here goes, only any written since the list was read\.$/);
-    expect(FilesText.keepDeletes(3, null, "/b")).toMatch(/keeps its newest 3\.$/);
+    // D46: no listed backup is promised to stay, even when the list counts none.
+    const none = FilesText.keepDeletes(3, 0, "/b");
+    expect(none).toMatch(/backups shown here can go too\. The list shown counts none of them; there can be more\.$/);
+    expect(none).not.toMatch(/None of the backups listed here goes/);
+    expect(FilesText.keepDeletes(3, null, "/b")).toMatch(/backups shown here can go too\.$/);
   });
 });
 

@@ -380,7 +380,7 @@ test.describe("Backups", () => {
     // D30: a count that deletes files asks first, and says how many and where.
     await page.getByTestId("settings-backup-keep").selectOption("0");
     await expect(page.getByTestId("settings-backup-keep-sheet")).toContainText(`deletes every automatic backup in ${FIXTURE_BACKUP_DIR} now`);
-    await expect(page.getByTestId("settings-backup-keep-sheet")).toContainText("Of the backups listed here, 2 go");
+    await expect(page.getByTestId("settings-backup-keep-sheet")).toContainText("The list shown counts 2 of them; there can be more.");
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.getByTestId("settings-backup-keep-sheet")).toHaveCount(0);
     expect(await world(page, (w) => w.settings.keep)).toBe(keep);
@@ -402,11 +402,22 @@ test.describe("Backups", () => {
       const [b] = s.backups;
       s.backups.push({ ...b, path: `${b.path}.new`, createdAt: b.createdAt + 1 });
     });
-    // D42: by the list keeping 2 deletes nothing, but the engine would delete the oldest of three.
+    const listed = await page.getByTestId("settings-backup-list").locator("li").allTextContents();
+    const oldest = await world(page, (w) => w.settings.backups.toSorted((a, b) => a.createdAt - b.createdAt)[0].path);
+    // D42: by the list keeping 2 deletes nothing, but the engine deletes the oldest of three.
     await page.getByTestId("settings-backup-keep").selectOption("2");
-    await expect(page.getByTestId("settings-backup-keep-sheet")).toContainText("None of the backups listed here goes, only any written since the list was read.");
+    const sheet = page.getByTestId("settings-backup-keep-sheet");
+    await expect(sheet).toContainText("each wallet's newest 2");
+    await expect(sheet).toContainText("so backups shown here can go too. The list shown counts none of them; there can be more.");
     await page.getByRole("button", { name: "Cancel" }).click();
     expect(await world(page, (w) => [w.settings.keep, w.settings.backups.length])).toEqual([5, 3]);
+    // D46: confirmed, the prune takes a backup the list shows, as the question warned.
+    expect(listed.some((t) => t.includes(oldest))).toBe(true);
+    await page.getByTestId("settings-backup-keep").selectOption("2");
+    await page.getByTestId("settings-backup-keep-confirm").click();
+    await expect.poll(() => world(page, (w) => w.settings.keep)).toBe(2);
+    expect(await world(page, (w) => w.settings.backups.map((b) => b.path))).not.toContain(oldest);
+    expect(await world(page, (w) => w.settings.backups.some((b) => b.path.endsWith(".new")))).toBe(true);
   });
 
   test("QT116_aListStillBeingReadAsksBeforeALowerCount", async ({ page }) => {
@@ -426,8 +437,8 @@ test.describe("Backups", () => {
     // D30: by the old list keeping 3 deletes nothing; a list still being read is not counted, so
     // the question gives no number (every lower count asks, D42).
     await page.getByTestId("settings-backup-keep").selectOption("3");
-    await expect(page.getByTestId("settings-backup-keep-sheet")).toContainText("each wallet keeps its newest 3.");
-    await expect(page.getByTestId("settings-backup-keep-sheet")).not.toContainText("listed here");
+    await expect(page.getByTestId("settings-backup-keep-sheet")).toContainText("each wallet's newest 3 automatic backups");
+    await expect(page.getByTestId("settings-backup-keep-sheet")).not.toContainText("The list shown counts");
     expect(await world(page, (w) => [w.settings.keep, w.settings.backups.length])).toEqual([5, 6]);
     await release();
   });

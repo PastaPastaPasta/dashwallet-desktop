@@ -46,16 +46,15 @@ export const FilesText = {
   exportWarning: "This file holds your private keys. Anyone who gets it can take your Dash.",
   /** D30: a lower count deletes files at once. */
   keepTitle: "Delete automatic backups?",
-  /** `shown`: how many of the listed backups go. The list may miss one written since it was read,
-   * so the count is never the whole promise (D42). */
+  /** Only what the engine's prune guarantees (D46): each wallet keeps its newest `keep` as they
+   * are when it prunes. A backup written since the list was read counts among those, so a listed
+   * one can go that the list says stays: `shown`, the count by the list, is an estimate. */
   keepDeletes: (keep: number, shown: number | null, dir: string) => {
     const what =
       keep === 0
         ? `Turning automatic backups off deletes every automatic backup in ${dir} now, and no new ones are made.`
-        : `Keeping ${keep} for each wallet deletes its older automatic backups in ${dir} now: each wallet keeps its newest ${keep}.`;
-    if (shown === null) return what;
-    if (shown === 0) return `${what} None of the backups listed here goes, only any written since the list was read.`;
-    return `${what} Of the backups listed here, ${shown} ${shown === 1 ? "goes" : "go"}, and any written since the list was read.`;
+        : `Keeping ${keep} for each wallet deletes all but each wallet's newest ${keep === 1 ? "automatic backup" : `${keep} automatic backups`} in ${dir} now. Which ones go is decided then: a backup written since this list was read counts among the newest, so backups shown here can go too.`;
+    return shown === null ? what : `${what} The list shown counts ${shown === 0 ? "none" : shown} of them; there can be more.`;
   },
   keepConfirm: "Delete backups",
   warnings: {
