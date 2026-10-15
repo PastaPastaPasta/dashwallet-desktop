@@ -42,17 +42,22 @@ let work: string | undefined;
 /** What no file of OUT may hold: each phrase (as read and single-spaced) and the passphrase. */
 const secrets: string[] = [];
 
-/** dwcli on a testnet data root; its stdout (JSON, no secrets). Its stderr is shown with every
- * word of a phrase and the passphrase masked, wherever they stand. */
-function dwcli(root: string, passFile: string, args: string[], input?: string): string {
-  const r = spawnSync(DWCLI, ["--datadir", root, ...NETWORK, "--passphrase-file", passFile, ...args], { encoding: "utf8", input, timeout: 900_000 });
-  if (r.status === 0) return r.stdout;
+/** `text` with every word of a phrase and the passphrase masked, wherever they stand. */
+function mask(text: string): string {
   const words = [...new Set(secrets.flatMap((s) => s.split(/\s+/)))].filter(Boolean).sort((a, b) => b.length - a.length);
+  if (!words.length) return text;
   // Whole words only: a phrase word inside a longer one ("air" in "repair") stays, so a mask does
   // not tell which words the phrase holds.
   const alternation = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  const masked = words.length ? `${r.stderr}${r.stdout}`.replace(new RegExp(`(?<![\\w-])(?:${alternation})(?![\\w-])`, "g"), "***") : r.stderr;
-  throw new Error(`dwcli ${args.slice(0, 3).join(" ")} failed (${r.status}): ${masked.slice(-800)}`);
+  return text.replace(new RegExp(`(?<![\\w-])(?:${alternation})(?![\\w-])`, "g"), "***");
+}
+
+/** dwcli on a testnet data root; its stdout (JSON, no secrets). Its output is shown masked when it
+ * fails. */
+function dwcli(root: string, passFile: string, args: string[], input?: string): string {
+  const r = spawnSync(DWCLI, ["--datadir", root, ...NETWORK, "--passphrase-file", passFile, ...args], { encoding: "utf8", input, timeout: 900_000 });
+  if (r.status === 0) return r.stdout;
+  throw new Error(`dwcli ${args.slice(0, 3).join(" ")} failed (${r.status}): ${mask(`${r.stderr}${r.stdout}`).slice(-800)}`);
 }
 
 /** dwcli's `{"ok":true,"result":…}`. */
@@ -96,15 +101,20 @@ interface Ledger {
   at: string;
 }
 
-/** The one contact request (D19): sent unless the ledger says it was (or may have been). */
+/** The one contact request (D19): sent unless the ledger says it was (or may have been). The
+ * sender is restored either way, for the check after the accept. */
 function send(root: string, passFile: string, from: string, to: string, step: (s: string) => void): Ledger {
+  restore(root, passFile, SENDER);
   if (existsSync(LEDGER)) {
     const ledger = JSON.parse(readFileSync(LEDGER, "utf8")) as Ledger;
+    if (ledger.senderIdentity !== from || ledger.receiverIdentity !== to)
+      throw new Error(`${LEDGER} records ${ledger.sender}→${ledger.receiver}, not ${SENDER}→${RECEIVER}: run that pair, or move the ledger aside for a new one`);
     if (ledger.state !== "sent") throw new Error(`${LEDGER} says ${ledger.state}: a send may have reached Platform; look before running again`);
+    const now = contacts(root, passFile, from).find((r) => r.contact === to);
+    if (now?.relation === "contact") throw new Error(`${SENDER} and ${RECEIVER} are contacts already: the request was accepted; move the ledger aside and pick a new pair (D20)`);
     step(`the request ${SENDER}→${RECEIVER} was sent before (${ledger.at}); not sending again`);
     return ledger;
   }
-  restore(root, passFile, SENDER);
   const before = contacts(root, passFile, from);
   const known = before.find((r) => r.contact === to);
   step(`sender ${SENDER} before: ${before.map((r) => `${r.contact.slice(0, 6)} ${r.relation}`).join(", ") || "no rows"}`);
@@ -154,6 +164,8 @@ async function run(passphrase: string, sender: string, wd: WebDriver, step: (s: 
   await poll(DASHPAY_TIMEOUT_MS, "the sidebar to offer Contacts", () => wd.find(tid("sidebar-contacts")).then((e) => e ?? undefined));
   await wd.press(tid("sidebar-contacts"));
   await wd.waitFor(tid("page-contacts"), "the Contacts page");
+  // The bell opens its popover once DashPay knows the main identity (before, it opens the page).
+  await poll(DASHPAY_TIMEOUT_MS, "the bell to open a popover", () => wd.find(`${tid("toolbar-bell")}[aria-haspopup="dialog"]`).then((e) => e ?? undefined));
   out.badgeBefore = await wd.script<string | null>(`return document.querySelector('${tid("toolbar-bell-badge")}')?.textContent ?? null`);
   step(`Contacts opened; bell badge ${String(out.badgeBefore)}`);
 
@@ -184,7 +196,7 @@ async function run(passphrase: string, sender: string, wd: WebDriver, step: (s: 
   await wd.press(`${tid("bell-request")}[data-contact="${sender}"] ${tid("bell-accept")}`);
   await wd.fill(tid("grant-sheet-field"), passphrase);
   await wd.screenshot("2-grant-sheet");
-  await wd.type(await wd.waitFor(tid("grant-sheet-field")), "");
+  await wd.press(tid("grant-sheet-submit"));
   await wd.waitGone(tid("grant-sheet"), "the passphrase sheet");
   step("accepted from the bell; passphrase given");
   const outcome = await poll(ACCEPT_TIMEOUT_MS, "the accept's outcome in the bell", async () => (await wd.script<Bell | null>(BELL_SCRIPT))?.outcome ?? undefined);
@@ -259,7 +271,7 @@ async function main() {
     }
     // The sender's side after the accept: the receiver is its contact (a pass reads the reverse
     // request). Only once the app accepted.
-    if (!failure && existsSync(senderRoot)) {
+    if (!failure) {
       senderAfter = await poll(DASHPAY_TIMEOUT_MS, `${SENDER} to list ${RECEIVER} as a contact`, async () => {
         const rows = contacts(senderRoot, passFile, sender);
         return rows.some((r) => r.contact === receiver && r.relation === "contact") ? rows : undefined;
@@ -309,7 +321,7 @@ process.once("SIGTERM", (s) => void interrupted(s));
 
 main()
   .catch((e) => {
-    console.error(`bell-accept: FAIL: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`bell-accept: FAIL: ${mask(e instanceof Error ? e.message : String(e))}`);
     process.exitCode = 1;
   })
   .finally(() => {
