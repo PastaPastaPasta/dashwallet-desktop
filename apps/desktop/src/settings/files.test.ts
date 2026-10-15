@@ -10,7 +10,7 @@ import { FIXTURE_PASSPHRASE as PASS, FIXTURE_WALLET_ID as A, type ScenarioName }
 import { CORE_WALLET_PASSPHRASE, FIXTURE_BACKUP_DIR, FIXTURE_FILES } from "../fixture/settings";
 import { WRONG_PASSPHRASE } from "../onboarding/model";
 import { PassphraseText } from "../onboarding/passphrase";
-import { BackupModel, deletedByKeep, ExportModel, fileName, fileStem, FilesText, ImportFileModel, ImportKeysModel, importPlan, inDirectory, keyMaterial } from "./files";
+import { BackupModel, deletedByKeep, ExportModel, fileName, fileStem, FilesText, ImportFileModel, ImportKeysModel, importPlan, inDirectory, keepAsks, keyMaterial } from "./files";
 
 const AT = new Date(2026, 9, 6, 9, 5);
 
@@ -177,25 +177,33 @@ describe("backups to keep (D30)", () => {
   // Newest first, as automaticBackups lists them: A has 3, B has 1.
   const list = [backup("A", 1), backup("B", 1), backup("A", 2), backup("A", 3)];
 
-  it("QT110_aLowerCountSaysHowManyBackupsItDeletes", () => {
-    expect(deletedByKeep(list, 5, 0)).toBe(4);
-    expect(deletedByKeep(list, 5, 1)).toBe(2);
-    expect(deletedByKeep(list, 5, 2)).toBe(1);
-    expect(deletedByKeep(list, 5, 3)).toBe(0);
-    expect(deletedByKeep([], 5, 0)).toBe(0);
+  it("QT110_aLowerCountSaysHowManyListedBackupsItDeletes", () => {
+    expect(deletedByKeep(list, 0)).toBe(4);
+    expect(deletedByKeep(list, 1)).toBe(2);
+    expect(deletedByKeep(list, 2)).toBe(1);
+    expect(deletedByKeep(list, 3)).toBe(0);
+    expect(deletedByKeep([], 0)).toBe(0);
+    expect(deletedByKeep(undefined, 0)).toBeNull();
   });
 
-  it("QT110_anUnknownListAsksBeforeAnyLowerCount", () => {
-    expect(deletedByKeep(undefined, 5, 4)).toBeNull();
-    expect(deletedByKeep(undefined, 5, 0)).toBeNull();
-    expect(deletedByKeep(undefined, 5, 5)).toBe(0);
-    expect(deletedByKeep(undefined, 5, 8)).toBe(0);
+  it("QT110_everyLowerCountAsksEvenWhenTheListShowsNothingToDelete", () => {
+    // D42: by this list keeping 3 deletes nothing, but a backup written since may go.
+    expect(deletedByKeep(list, 3)).toBe(0);
+    expect(keepAsks(5, 3)).toBe(true);
+    expect(keepAsks(5, 0)).toBe(true);
+    expect(keepAsks(5, 5)).toBe(false);
+    expect(keepAsks(5, 8)).toBe(false);
   });
 
-  it("QT110_theQuestionNamesWhatGoes", () => {
-    expect(FilesText.keepDeletes(0, 4, "/b")).toBe("Turning automatic backups off deletes 4 automatic backups in /b now, and no new ones are made.");
-    expect(FilesText.keepDeletes(1, 1, "/b")).toBe("Keeping 1 for each wallet deletes 1 automatic backup in /b now: each wallet keeps its newest 1.");
-    expect(FilesText.keepConfirm(4)).toBe("Delete 4 backups");
+  it("QT110_theQuestionNamesWhatGoesAndWhatTheListMayMiss", () => {
+    expect(FilesText.keepDeletes(0, 4, "/b")).toBe(
+      "Turning automatic backups off deletes every automatic backup in /b now, and no new ones are made. Of the backups listed here, 4 go, and any written since the list was read.",
+    );
+    expect(FilesText.keepDeletes(1, 1, "/b")).toBe(
+      "Keeping 1 for each wallet deletes its older automatic backups in /b now: each wallet keeps its newest 1. Of the backups listed here, 1 goes, and any written since the list was read.",
+    );
+    expect(FilesText.keepDeletes(3, 0, "/b")).toMatch(/None of the backups listed here goes, only any written since the list was read\.$/);
+    expect(FilesText.keepDeletes(3, null, "/b")).toMatch(/keeps its newest 3\.$/);
   });
 });
 

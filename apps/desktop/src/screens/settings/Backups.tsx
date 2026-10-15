@@ -14,7 +14,7 @@ import { NewPassphraseForm, PassphrasePrompt } from "../../components/passphrase
 import { Sheet } from "../../components/sheet";
 import { detailDate } from "../../format/tx";
 import { failureText, useModel } from "../../onboarding/model";
-import { BackupModel, deletedByKeep, ExportModel, FilesText, ImportFileModel, ImportKeysModel, KEY_KINDS, type ImportDone, type KeyKind } from "../../settings/files";
+import { BackupModel, deletedByKeep, ExportModel, FilesText, ImportFileModel, ImportKeysModel, keepAsks, KEY_KINDS, type ImportDone, type KeyKind } from "../../settings/files";
 import { useLockTimer } from "../LockScreen";
 import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
 
@@ -101,10 +101,10 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
     setAsking(null);
   };
   const choose = (keep: number) => {
-    // A list still being read may be out of date: count it as unknown (D30).
-    const deleted = deletedByKeep(backups.isFetching ? undefined : backups.data, policy.data?.keep ?? 0, keep);
-    if (deleted === 0) void setKeep(keep);
-    else setAsking({ keep, deleted });
+    // Every lower count asks, even when the list shows nothing to delete (D42). A list still
+    // being read is not counted (D30).
+    if (!keepAsks(policy.data?.keep ?? 0, keep)) return void setKeep(keep);
+    setAsking({ keep, deleted: deletedByKeep(backups.isFetching ? undefined : backups.data, keep) });
   };
   return (
     <SettingsCard title="Automatic backups" testId="settings-automatic-backups">
@@ -138,7 +138,7 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
               Cancel
             </DashButton>
             <DashButton variant="plainRed" data-testid="settings-backup-keep-confirm" disabled={saving} onClick={() => void setKeep(asking.keep)}>
-              {FilesText.keepConfirm(asking.deleted)}
+              {FilesText.keepConfirm}
             </DashButton>
           </div>
         </Sheet>

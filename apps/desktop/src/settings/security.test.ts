@@ -4,6 +4,7 @@
 
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Backend } from "../api/backend";
 import { IpcBackend } from "../api/tauri";
 import { installFixture, type FixtureHandle } from "../fixture";
 import { FIXTURE_PASSPHRASE as PASS, SECOND_WALLET_ID, type ScenarioName } from "../fixture/scenarios";
@@ -126,9 +127,9 @@ describe("auto lock", () => {
   });
 });
 
-/** A wipe at its passphrase step. */
-async function wipeReady() {
-  const model = new WipeModel(b);
+/** A wipe at its passphrase step, on `api` (the backend, or one with a call replaced). */
+async function wipeReady(api: Backend = b) {
+  const model = new WipeModel(api);
   await model.load();
   model.accept(SecurityText.wipeAcceptPhrase);
   return model;
@@ -210,7 +211,7 @@ describe("wipe", () => {
     fixture.fail("destroy_vault", "call");
     await model.wipe(PASS);
     expect(model.step).toBe("stopped");
-    expect(model.error).toMatch(/^Every wallet was removed, but the vault could not be deleted: .* Try again\. If you close this instead, the vault stays: the next wallet you add goes into it/);
+    expect(model.error).toMatch(/^Every wallet was removed, but the vault could not be fully deleted: .* Try again\. If you close this instead, part of it may stay on this computer/);
     expect(fixture.world.wallets).toEqual([]);
     expect(fixture.world.lock.state).not.toBe("noVault");
     fixture.fail("destroy_vault", null);
@@ -221,17 +222,42 @@ describe("wipe", () => {
     expect(fixture.world.lock.state).toBe("noVault");
   });
 
-  it("IOS109_theWipeIsDoneOnlyOnceTheEngineSaysThereIsNoVault", async () => {
-    const model = await wipeReady();
-    const release = fixture.hold("destroy_vault");
-    const wiping = model.wipe(PASS);
-    await vi.waitFor(() => expect(fixture.calls).toContain("destroy_vault"));
-    // The vault's answer arrives; the check after it cannot read the vault's state.
-    fixture.fail("lock_status", "call");
-    release();
-    await wiping;
+  it("IOS109_theWipeIsDoneOnlyWhenTheDeletionAnswersNoVault", async () => {
+    // The engine answers the deletion with a vault still there: the wipe is not done (D33).
+    const api: Backend = Object.create(b);
+    api.destroyVault = async (c) => ({ ...(await b.destroyVault(c)), state: "unlocked" });
+    const model = await wipeReady(api);
+    await model.wipe(PASS);
     expect(model.step).toBe("stopped");
-    expect(model.error).toMatch(/^Every wallet was removed, but the vault could not be deleted: /);
+    expect(model.error).toMatch(/^Every wallet was removed, but the vault could not be fully deleted\. Try again\./);
+  });
+
+  it("IOS109_aFailedStatusReadAfterTheDeletionStillEndsTheWipe", async () => {
+    const model = await wipeReady();
+    // The deletion's own answer says noVault; a later read of the status would fail (D43).
+    fixture.fail("lock_status", "call");
+    await model.wipe(PASS);
+    expect(model.step).toBe("done");
+    expect(fixture.world.lock.state).toBe("noVault");
+  });
+
+  it("IOS109_aSecondFailedDeletionStopsAgainAndSaysWhy", async () => {
+    const model = await wipeReady();
+    fixture.fail("destroy_vault", "call");
+    await model.wipe(PASS);
+    model.retry();
+    // No wallet is left: the retry's passphrase check is the deletion itself, and its failure
+    // is the vault's, not the passphrase's (D44).
+    await model.wipe(PASS);
+    expect(model.step).toBe("stopped");
+    expect(model.error).toMatch(/^Every wallet was removed, but the vault could not be fully deleted: /);
+    expect(model.lock.message).toBeNull();
+    // A wrong passphrase still stays on the passphrase step.
+    fixture.fail("destroy_vault", null);
+    model.retry();
+    await model.wipe("wrong");
+    expect(model.step).toBe("passphrase");
+    expect(model.lock.message).toContain(WRONG_PASSPHRASE);
   });
 
   it("IOS109_aClosedSheetDuringThePassphraseDeletesNothing", async () => {

@@ -234,7 +234,7 @@ test.describe("Security", () => {
     await page.getByTestId("settings-wipe-passphrase-field").fill(PASS);
     await page.getByTestId("settings-wipe-passphrase-submit").click();
     // D33: the wallet list is empty, but onboarding waits while the sheet says what failed.
-    await expect(page.getByTestId("settings-wipe-error")).toContainText("the vault could not be deleted");
+    await expect(page.getByTestId("settings-wipe-error")).toContainText("the vault could not be fully deleted");
     await expect(page.getByTestId("onboarding")).toHaveCount(0);
     // D39: Enter tries again; D38: a menu shortcut leaves the sheet where it is.
     await expect(page.getByTestId("settings-wipe-retry")).toBeFocused();
@@ -379,7 +379,8 @@ test.describe("Backups", () => {
     const keep = await world(page, (w) => w.settings.keep);
     // D30: a count that deletes files asks first, and says how many and where.
     await page.getByTestId("settings-backup-keep").selectOption("0");
-    await expect(page.getByTestId("settings-backup-keep-sheet")).toContainText(`deletes 2 automatic backups in ${FIXTURE_BACKUP_DIR} now`);
+    await expect(page.getByTestId("settings-backup-keep-sheet")).toContainText(`deletes every automatic backup in ${FIXTURE_BACKUP_DIR} now`);
+    await expect(page.getByTestId("settings-backup-keep-sheet")).toContainText("Of the backups listed here, 2 go");
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.getByTestId("settings-backup-keep-sheet")).toHaveCount(0);
     expect(await world(page, (w) => w.settings.keep)).toBe(keep);
@@ -389,6 +390,23 @@ test.describe("Backups", () => {
     await page.getByTestId("settings-backup-keep-confirm").click();
     await expect.poll(() => world(page, (w) => w.settings.keep)).toBe(0);
     await expect(page.getByTestId("settings-backup-list").locator("li")).toHaveCount(0);
+  });
+
+  test("QT116_aBackupWrittenAfterTheListWasReadIsNotDeletedWithoutAsking", async ({ page }) => {
+    await settings(page, "backups");
+    await expect(page.getByTestId("settings-backup-list").locator("li")).toHaveCount(2);
+    // The engine writes a third backup in the background and says nothing (D28): the list shown
+    // keeps two.
+    await page.evaluate(() => {
+      const s = window.__dwFixture!.world.settings;
+      const [b] = s.backups;
+      s.backups.push({ ...b, path: `${b.path}.new`, createdAt: b.createdAt + 1 });
+    });
+    // D42: by the list keeping 2 deletes nothing, but the engine would delete the oldest of three.
+    await page.getByTestId("settings-backup-keep").selectOption("2");
+    await expect(page.getByTestId("settings-backup-keep-sheet")).toContainText("None of the backups listed here goes, only any written since the list was read.");
+    await page.getByRole("button", { name: "Cancel" }).click();
+    expect(await world(page, (w) => [w.settings.keep, w.settings.backups.length])).toEqual([5, 3]);
   });
 
   test("QT116_aListStillBeingReadAsksBeforeALowerCount", async ({ page }) => {

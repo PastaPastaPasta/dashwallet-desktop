@@ -3,8 +3,9 @@
 // `LockModel.attempt` (U-02 D12), as each counts a failure in the vault. Passphrases stay in the
 // call that uses them; a model keeps none past its step.
 
-import type { Backend } from "../api/backend";
+import { hasCode, type Backend } from "../api/backend";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
+import type { LockStatus } from "../api/generated/LockStatus";
 import { LockModel } from "../onboarding/lock";
 import { failureText, Model } from "../onboarding/model";
 import { passphraseProblem } from "../onboarding/passphrase";
@@ -41,9 +42,10 @@ export const SecurityText = {
   wipeKeeps: (dir: string) =>
     `Backups and exports in ${dir} are not deleted. An export for Dash Core holds private keys in plain text: delete it yourself if you no longer need it.`,
   wipeNoList: (why: string) => `The list of every wallet could not be read: ${why} Nothing was deleted.`,
-  /** The wallets are gone but the vault is not (D33). */
+  /** The wallets are gone but not all of the vault: dw-vault deletes the vault file before its
+   * older copies, so what is left on disk is not known (D33, D45). */
   vaultKept: (why: string) =>
-    `Every wallet was removed, but the vault could not be deleted${why ? `: ${why}` : "."} Try again. If you close this instead, the vault stays: the next wallet you add goes into it, under its passphrase.`,
+    `Every wallet was removed, but the vault could not be fully deleted${why ? `: ${why}` : "."} Try again. If you close this instead, part of it may stay on this computer, and a wallet you add next may be kept under the old passphrase.`,
   wipeStopped: (name: string, why: string, removed: number) =>
     `${name} could not be removed: ${why} ${removed === 0 ? "Nothing was deleted." : `${removed === 1 ? "The wallet" : `The ${removed} wallets`} before it ${removed === 1 ? "was" : "were"} removed; the others and the vault were kept.`}`,
 };
@@ -295,11 +297,21 @@ export class WipeModel extends Model {
       return this.#stop(SecurityText.wipeNoList(failureText(e)));
     }
     let first = null as string | null;
-    // No wallet left (an earlier wipe stopped after its last removal): only the vault goes.
+    // The engine's answer to the vault's deletion (D43), or why it failed (D44).
+    let status = null as LockStatus | null;
+    let kept = null as unknown;
+    // No wallet left (an earlier wipe stopped after its last removal): only the vault goes. Only
+    // a passphrase refusal stays on the passphrase step; any other failure stops the wipe (D44).
     const check = (pass: string) =>
       wallets.length > 0
         ? this.api.authorize({ kind: "wipe" }, wallets[0].walletId, vaultCredential(this.encrypted, pass)).then((g) => void (first = g.id))
-        : this.api.destroyVault(vaultCredential(this.encrypted, pass));
+        : this.api.destroyVault(vaultCredential(this.encrypted, pass)).then(
+            (s) => void (status = s),
+            (e: unknown) => {
+              if (hasCode(e, "vault.wrong_passphrase") || hasCode(e, "vault.throttled")) throw e;
+              kept = e;
+            },
+          );
     if (this.encrypted) {
       if (!(await this.lock.attempt(p, check))) return this.changed();
     } else {
@@ -340,18 +352,15 @@ export class WipeModel extends Model {
         }
       }
       try {
-        await this.api.destroyVault(vaultCredential(this.encrypted, p));
+        status = await this.api.destroyVault(vaultCredential(this.encrypted, p));
       } catch (e) {
-        return this.#stop(SecurityText.vaultKept(failureText(e)));
+        kept = e;
       }
     }
-    // Done only once the engine says there is no vault (D33).
-    try {
-      const status = await this.api.lockStatus();
-      if (status.state !== "noVault") return this.#stop(SecurityText.vaultKept(""));
-    } catch (e) {
-      return this.#stop(SecurityText.vaultKept(failureText(e)));
-    }
+    if (kept) return this.#stop(SecurityText.vaultKept(failureText(kept)));
+    // Done only once the engine says there is no vault (D33), in its answer to the deletion: a
+    // separate read that failed would report a deleted vault as kept (D43).
+    if (status?.state !== "noVault") return this.#stop(SecurityText.vaultKept(""));
     this.#go("done");
   }
 

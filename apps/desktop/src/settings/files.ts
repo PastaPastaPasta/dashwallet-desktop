@@ -46,14 +46,18 @@ export const FilesText = {
   exportWarning: "This file holds your private keys. Anyone who gets it can take your Dash.",
   /** D30: a lower count deletes files at once. */
   keepTitle: "Delete automatic backups?",
-  keepDeletes: (keep: number, deleted: number | null, dir: string) => {
+  /** `shown`: how many of the listed backups go. The list may miss one written since it was read,
+   * so the count is never the whole promise (D42). */
+  keepDeletes: (keep: number, shown: number | null, dir: string) => {
     const what =
-      deleted === null ? "the older automatic backups" : deleted === 1 ? "1 automatic backup" : `${deleted} automatic backups`;
-    return keep === 0
-      ? `Turning automatic backups off deletes ${deleted === null ? "every automatic backup" : what} in ${dir} now, and no new ones are made.`
-      : `Keeping ${keep} for each wallet deletes ${what} in ${dir} now: each wallet keeps its newest ${keep}.`;
+      keep === 0
+        ? `Turning automatic backups off deletes every automatic backup in ${dir} now, and no new ones are made.`
+        : `Keeping ${keep} for each wallet deletes its older automatic backups in ${dir} now: each wallet keeps its newest ${keep}.`;
+    if (shown === null) return what;
+    if (shown === 0) return `${what} None of the backups listed here goes, only any written since the list was read.`;
+    return `${what} Of the backups listed here, ${shown} ${shown === 1 ? "goes" : "go"}, and any written since the list was read.`;
   },
-  keepConfirm: (deleted: number | null) => (deleted === null ? "Delete backups" : `Delete ${deleted === 1 ? "1 backup" : `${deleted} backups`}`),
+  keepConfirm: "Delete backups",
   warnings: {
     mnemonicNotCoreCompatible:
       "Dash Core cannot rebuild this wallet from its recovery phrase. The exported keys still work, but keep this wallet's phrase for Dash Wallet.",
@@ -340,11 +344,17 @@ export class ImportKeysModel extends Model {
 
 // ------------------------------------------------------------- backups to keep (QT-110, D30)
 
-/** The automatic backups `keep` deletes at once: the engine keeps each wallet's newest `keep`
- * (`set_backup_policy` prunes), `backups` being newest first as `automaticBackups` lists them.
- * `null`: the list is not known, and a lower count than `current` may delete some. */
-export function deletedByKeep(backups: BackupSummary[] | undefined, current: number, keep: number): number | null {
-  if (!backups) return keep < current ? null : 0;
+/** Whether choosing `keep` asks first: any count lower than `current` may delete files at once,
+ * whatever the list shows. The engine writes automatic backups in the background without telling
+ * the renderer, so a list that shows nothing to delete may be out of date (D42). */
+export function keepAsks(current: number, keep: number): boolean {
+  return keep < current;
+}
+
+/** How many of `backups` (newest first, as `automaticBackups` lists them) `keep` deletes: the
+ * engine keeps each wallet's newest `keep` (`set_backup_policy` prunes). `null`: no list. */
+export function deletedByKeep(backups: BackupSummary[] | undefined, keep: number): number | null {
+  if (!backups) return null;
   const seen = new Map<string, number>();
   let deleted = 0;
   for (const b of backups) {

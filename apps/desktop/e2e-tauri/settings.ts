@@ -312,7 +312,7 @@ async function main() {
     await wd.press(tid("settings-wipe-passphrase-submit"));
     // The storage error is the blocker's; a vault the engine thought still had wallets would fail
     // with another class.
-    const kept = await waitText(tid("settings-wipe-error"), /the vault could not be deleted: .*\(storage\)/, "the vault's failed deletion on the sheet");
+    const kept = await waitText(tid("settings-wipe-error"), /the vault could not be fully deleted: .*\(storage\)/, "the vault's failed deletion on the sheet");
     if ((await loadStates()).length !== 0) throw new Error("the wallets were not all removed before the vault");
     // The wallet list is empty, yet onboarding waits: the failure is on screen, not under it.
     if (await wd.find(tid("onboarding"))) throw new Error("onboarding covers the failed vault deletion");
