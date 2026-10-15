@@ -14,7 +14,8 @@ import { Onboarding } from "../screens/Onboarding";
 import { Overview } from "../screens/Overview";
 import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
-import { ContactsPage, PayPage, Placeholder, ToolsPage } from "../screens/Routes";
+import { ContactsPage, PayPage, Placeholder } from "../screens/Routes";
+import { ToolsPage } from "../screens/tools/ToolsPage";
 import { SettingsPage } from "../screens/Settings";
 import { AboutSheet, OpenUriSheet } from "../screens/ShellDialogs";
 import { Transactions } from "../screens/Transactions";
@@ -149,7 +150,7 @@ function Shell() {
     else if (route === "receive") content = <ReceivePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
   } else if (route === "contacts") content = <ContactsPage />;
-  else if (route === "tools") content = <ToolsPage />;
+  else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} />;
   else if (route === "settings") content = <SettingsPage />;
   else content = <Placeholder route={route} />;
 

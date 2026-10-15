@@ -81,6 +81,12 @@ export function stuckFundingText(r: StuckFundingRefusalName, retryLater: boolean
 }
 
 /** A registration whose funding may or may not have gone out: Repair can settle it. */
+/** A block height as typed: a whole number that fits a `u32`, else `null`. */
+export function parseHeight(text: string): number | null {
+  const t = text.trim();
+  return /^\d+$/.test(t) && Number(t) <= 0xffff_ffff ? Number(t) : null;
+}
+
 export const isStuck = (r: RegistrationStatus) => r.waiting === "fundingUnknown";
 
 /** The funding step a registration's Repair names (`dispatchStatus`'s id). */
@@ -184,7 +190,7 @@ export class RepairModel extends Model {
     if (this.state.kind !== "confirming") return;
     const what = this.state.what;
     await this.#run(async () => {
-      if (what === "dropUnconfirmed") return { kind: "done", text: RepairText.dropped(await this.api.dropUnconfirmed(null)) };
+      if (what === "dropUnconfirmed") return { kind: "done", text: RepairText.dropped(await this.api.dropUnconfirmed(this.walletId)) };
       // The engine resets only a stopped client; sync starts again whatever the reset did.
       await this.api.stopSpv();
       try {
@@ -196,11 +202,17 @@ export class RepairModel extends Model {
     });
   }
 
+  /** A rescan from a typed height: a whole number, else refused before any call (D10). */
+  async rescanFrom(text: string) {
+    const height = parseHeight(text);
+    if (height === null) return this.#set({ kind: "failed", text: RepairText.birthHeightInvalid });
+    await this.rescan({ kind: "height", height });
+  }
+
   /** IOS-113: a lower height schedules a rescan from it. */
   async setBirthHeight(text: string) {
-    const t = text.trim();
-    if (!/^\d+$/.test(t) || Number(t) > 0xffff_ffff) return this.#set({ kind: "failed", text: RepairText.birthHeightInvalid });
-    const height = Number(t);
+    const height = parseHeight(text);
+    if (height === null) return this.#set({ kind: "failed", text: RepairText.birthHeightInvalid });
     await this.#run(async () => {
       await this.api.setBirthHeight(this.walletId, height);
       return { kind: "done", text: RepairText.birthHeightSaved(height) };

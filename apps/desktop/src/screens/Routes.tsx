@@ -7,7 +7,7 @@
 import { useId, type ReactNode } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { DashButton } from "../components/basics";
-import { navigate, ui, useUi, type PayTab, type Route, type ToolsTab } from "../app/ui";
+import { ui, useUi, type PayTab, type Route } from "../app/ui";
 import { PayToAddress } from "./pay/PayToAddress";
 
 const TITLES: Record<Route, string> = {
@@ -72,13 +72,13 @@ export function Placeholder({ route }: { route: keyof typeof NOT_YET }) {
   );
 }
 
-interface Tab<T extends string> {
+export interface Tab<T extends string> {
   id: T;
   title: string;
 }
 
 /** Tabs (WAI-ARIA tabs pattern): arrow keys move between them. */
-function Tabs<T extends string>({
+export function Tabs<T extends string>({
   label,
   tabs,
   current,
@@ -178,29 +178,6 @@ export function ContactsPage() {
         </section>
       )}
       <NotYet testId="placeholder-contacts">Your DashPay contacts are not available yet.</NotYet>
-    </Page>
-  );
-}
-
-const TOOLS_TABS: Tab<ToolsTab>[] = [
-  { id: "information", title: "Information" },
-  { id: "console", title: "Console" },
-  { id: "peers", title: "Peers" },
-  { id: "repair", title: "Repair" },
-  { id: "addressBook", title: "Address Book" },
-  { id: "signVerify", title: "Sign/Verify" },
-  { id: "psbt", title: "PSBT" },
-  { id: "coinSelection", title: "Coin Selection" },
-];
-
-export function ToolsPage() {
-  const tab = useUi((s) => s.toolsTab);
-  const title = TOOLS_TABS.find((t) => t.id === tab)!.title;
-  return (
-    <Page route="tools">
-      <Tabs label="Tools" tabs={TOOLS_TABS} current={tab} onSelect={(toolsTab) => navigate("tools", { toolsTab })} testId="tools-tabs">
-        <NotYet testId={`placeholder-tools-${tab}`}>{title} is not available yet.</NotYet>
-      </Tabs>
     </Page>
   );
 }

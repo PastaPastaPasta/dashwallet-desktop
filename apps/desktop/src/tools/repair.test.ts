@@ -103,12 +103,21 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(calls).toEqual(["stop", "start"]);
   });
 
+  it("QT117_rescanFromATypedHeightNeedsAWholeNumber", async () => {
+    const { model, api } = setup();
+    await model.rescanFrom("12.5");
+    expect(model.state).toEqual({ kind: "failed", text: RepairText.birthHeightInvalid });
+    expect(api.rescan).not.toHaveBeenCalled();
+    await model.rescanFrom(" 900000 ");
+    expect(api.rescan).toHaveBeenCalledExactlyOnceWith({ kind: "height", height: 900_000 });
+  });
+
   it("IOS034_dropUnconfirmedCountsAndSchedulesRescan", async () => {
     const { model, api } = setup();
     model.ask("dropUnconfirmed");
     await model.confirm();
     expect(model.state).toEqual({ kind: "done", text: "2 transactions were removed; a rescan was scheduled." });
-    expect(api.dropUnconfirmed).toHaveBeenCalledExactlyOnceWith(null);
+    expect(api.dropUnconfirmed).toHaveBeenCalledExactlyOnceWith(WALLET_A);
     expect(RepairText.dropped(1)).toBe("1 transaction was removed; a rescan was scheduled.");
   });
 

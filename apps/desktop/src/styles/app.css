@@ -1303,7 +1303,10 @@ button {
 .inline-field select,
 .inline-field-column input,
 .filter-amount,
-.label-editor input {
+.label-editor input,
+.tool-inline-form input,
+.tool-field,
+.console-input input {
   padding: var(--dw-space-xs) var(--dw-space-sm);
   border: 1px solid var(--dw-role-field-stroke);
   border-radius: var(--dw-radius-text-field);
@@ -2391,4 +2394,158 @@ button {
   max-width: var(--dw-layout-form-max-width);
   color: var(--dw-role-danger);
   text-align: center;
+}
+
+/* ------------------------------------------------------------------ Tools (U-05) */
+
+.tool-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-layout-section-gap);
+}
+
+.tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-sm);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.tool-card .placeholder-note {
+  margin: 0;
+}
+
+.tool-card .detail-list {
+  padding: 0;
+}
+
+.tool-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-s);
+}
+
+.tool-owner {
+  color: var(--dw-role-text-tertiary);
+}
+
+.tool-banner {
+  margin: 0;
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.tool-value {
+  overflow-wrap: anywhere;
+}
+
+.tool-note {
+  display: block;
+}
+
+.tool-actions,
+.tool-inline-form,
+.tool-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.tool-inline-form label {
+  font-size: var(--dw-type-footnote-size);
+  color: var(--dw-role-text-secondary);
+}
+
+.tool-inline-form input {
+  width: 12em;
+}
+
+.tool-progress progress {
+  flex: 1 1 200px;
+  accent-color: var(--dw-role-accent);
+}
+
+.tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tool-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-s);
+}
+
+.console-bar,
+.console-font {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.console-bar {
+  justify-content: flex-end;
+}
+
+.console-log {
+  height: 360px;
+  overflow-y: auto;
+  padding: var(--dw-space-m);
+  border-radius: var(--dw-radius-card);
+  font-family: var(--dw-font-mono);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.console-entry + .console-entry {
+  margin-top: var(--dw-space-xs);
+}
+
+.console-json {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+}
+
+.console-command {
+  color: var(--dw-role-text-secondary);
+}
+
+.console-error {
+  color: var(--dw-role-danger);
+}
+
+.console-warning {
+  color: var(--dw-role-caution);
+}
+
+.console-input {
+  display: flex;
+  gap: var(--dw-space-s);
+}
+
+.console-input input {
+  flex: 1;
+  min-width: 0;
+}
+
+.peers-table .table-open {
+  cursor: pointer;
+  text-align: left;
 }
