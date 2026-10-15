@@ -4,6 +4,7 @@
 // TypeScript over the generated types; the queries are in queries.ts and the screen in
 // screens/contacts. Copy follows the mobile wallets (iOS ContactsScreen, Android strings-dashpay).
 
+import type { ChannelStateName } from "../api/generated/ChannelStateName";
 import type { ContactList } from "../api/generated/ContactList";
 import type { ContactSectionName } from "../api/generated/ContactSectionName";
 import type { ContactSortName } from "../api/generated/ContactSortName";
@@ -12,6 +13,7 @@ import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { LockStateName } from "../api/generated/LockStateName";
 import type { UserHit } from "../api/generated/UserHit";
+import type { UserRelation } from "../api/generated/UserRelation";
 
 /** Whose contacts the page shows (D2), or why it shows none. */
 export type ContactsOwner =
@@ -82,7 +84,7 @@ export function initials(name: string): string {
   return out || "?";
 }
 
-export type ChipTone = "info" | "caution" | "danger";
+export type ChipTone = "info" | "warning" | "danger";
 export interface RowChip {
   id: "settingUp" | "unavailable" | "unverified";
   text: string;
@@ -99,7 +101,7 @@ export function rowChips(c: Pick<ContactSummaryInfo, "relation" | "channel" | "u
   if (c.relation === "contact" && c.channel === "broken")
     chips.push({ id: "unavailable", text: "Payments unavailable", tone: "danger", detail: "Payments to this contact cannot be sent right now." });
   if (c.unverified)
-    chips.push({ id: "unverified", text: "Unverified", tone: "caution", detail: "Not yet verified against the Dash network." });
+    chips.push({ id: "unverified", text: "Unverified", tone: "warning", detail: "Not yet verified against the Dash network." });
   return chips;
 }
 
@@ -181,20 +183,35 @@ export function networkHits(hits: UserHit[], listed: Set<string>): { shown: User
   return { shown: fresh.slice(0, NETWORK_SHOWN), more: fresh.length > NETWORK_SHOWN };
 }
 
+const RELATIONS: Record<UserRelation, string> = {
+  contact: "Contact",
+  pendingOutgoing: "Request sent",
+  pendingIncoming: "Request received",
+  ignored: "Ignored",
+  stranger: "Not a contact",
+  isSelf: "You",
+};
+
+/** A relation as the detail slot names it. */
+export function relationTitle(r: UserRelation): string {
+  return RELATIONS[r];
+}
+
 /** How a network hit relates to the identity, when it is not a stranger (Android's search rows). */
 export function relationNote(h: Pick<UserHit, "relation">): string | null {
-  switch (h.relation) {
-    case "contact":
-      return "Contact";
-    case "pendingOutgoing":
-      return "Request sent";
-    case "pendingIncoming":
-      return "Request received";
-    case "ignored":
-      return "Ignored";
-    default:
-      return null;
-  }
+  return h.relation === "stranger" || h.relation === "isSelf" ? null : RELATIONS[h.relation];
+}
+
+const CHANNELS: Record<ChannelStateName, string> = {
+  notEstablished: "Not set up",
+  setupPending: "Setting up",
+  ready: "Ready",
+  broken: "Unavailable",
+};
+
+/** The DIP-15 payment channel as the detail slot names it. */
+export function channelTitle(c: ChannelStateName): string {
+  return CHANNELS[c];
 }
 
 /** The pending-setup hint (D8). */

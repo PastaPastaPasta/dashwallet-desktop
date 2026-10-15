@@ -8,6 +8,7 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { UserHit } from "../api/generated/UserHit";
 import {
   avatarLetters,
+  channelTitle,
   contactsOwner,
   DEFAULT_SORT,
   findContact,
@@ -18,6 +19,7 @@ import {
   networkHits,
   networkPrefix,
   relationNote,
+  relationTitle,
   rowChips,
   rowNote,
   setupHint,
@@ -138,6 +140,14 @@ describe("Contacts view model", () => {
     expect(relationNote(hit(1, "contact"))).toBe("Contact");
     expect(relationNote(hit(1, "pendingIncoming"))).toBe("Request received");
     expect(relationNote(hit(1))).toBeNull();
+    expect(relationNote(hit(1, "isSelf"))).toBeNull();
+  });
+
+  it("IOS-072 names the relation and the payment channel in the detail slot", () => {
+    expect(relationTitle("pendingOutgoing")).toBe("Request sent");
+    expect(relationTitle("stranger")).toBe("Not a contact");
+    expect(channelTitle("setupPending")).toBe("Setting up");
+    expect(channelTitle("broken")).toBe("Unavailable");
   });
 
   it("finds the selected contact in any group, and nothing for an id the list does not hold", () => {
