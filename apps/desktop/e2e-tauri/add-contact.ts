@@ -19,7 +19,7 @@
 
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
@@ -96,6 +96,17 @@ function contacts(root: string, passFile: string, identity: string): ContactRow[
   return list.sections.flatMap((s) => s.contacts);
 }
 
+/** The data roots' logs (`<root>/logs`, `<root>/<network>/logs`) into the run's log directory,
+ * which is scanned for secrets like OUT: a failure is diagnosed from them after `work` is gone. */
+function keepLogs(roots: Record<string, string>) {
+  if (!SCAN_EXTRA) return;
+  for (const [name, root] of Object.entries(roots)) {
+    const dirs = existsSync(root) ? ["", ...readdirSync(root)].map((d) => join(root, d, "logs")) : [];
+    for (const dir of dirs.filter((d) => existsSync(d)))
+      cpSync(dir, join(SCAN_EXTRA, name, dir.slice(root.length + 1)), { recursive: true });
+  }
+}
+
 const rows = (list: ContactRow[]) => list.map((r) => `${r.contact.slice(0, 6)} ${r.relation}`).join(", ") || "no rows";
 
 interface Ledger {
@@ -112,7 +123,7 @@ interface Ledger {
   at: string;
 }
 
-/** The ledger of an earlier run, if any (D24): only a finished send for this pair is reused. */
+/** The ledger of an earlier run, if any (D18): only a finished send for this pair is reused. */
 function earlier(from: string, to: string): Ledger | null {
   if (!existsSync(LEDGER)) return null;
   const ledger = JSON.parse(readFileSync(LEDGER, "utf8")) as Ledger;
@@ -264,8 +275,13 @@ async function run(
   out.link = link;
   out.cardLink = linked;
   await wd.screenshot("5-link");
-  if (!linked.verified?.includes("Verified on the Dash network") || !linked.verified.includes("From a link"))
-    throw new Error(`the link's card is not verified: ${linked.verified}`);
+  // Verified: `dashpay_verify_scanned` found the link's username owned by its identity (an
+  // unverifiable link is an error, not a card). The chip says how Platform vouched for it (proofs,
+  // or the trusted fallback while the wallet's quorums are not yet trusted: "Unverified"), the same
+  // for the link as for the search's hit.
+  if (!linked.verified?.includes("From a link")) throw new Error(`the card is not the link's: ${linked.verified}`);
+  const chip = (c: Card) => (c.verified?.includes("Unverified") ? "Unverified" : "Verified on the Dash network");
+  if (chip(linked) !== chip(before)) throw new Error(`the link's card says ${chip(linked)}, the search's hit ${chip(before)}`);
   if (linked.send) throw new Error("the link's card offers a second Send");
   if (linked.line !== SENT_LINE) throw new Error(`the link's card says ${JSON.stringify(linked.line)}, not "${SENT_LINE}"`);
   step(`link card: ${linked.name} ${linked.username ?? ""}, ${linked.verified.replace(/\s+/g, " ")}, line ${JSON.stringify(linked.line)}, no Send`);
@@ -301,7 +317,7 @@ async function main() {
   let recipientAfter: ContactRow[] | undefined;
   try {
     ledger = earlier(sender, recipient);
-    // The recipient's side first: a pair that relates already is refused before the app runs (D24).
+    // The recipient's side first: a pair that relates already is refused before the app runs (D18).
     restore(recipientRoot, passFile, RECIPIENT);
     recipientBefore = contacts(recipientRoot, passFile, recipient);
     step(`recipient ${RECIPIENT} before: ${rows(recipientBefore)}`);
@@ -340,6 +356,7 @@ async function main() {
     stopDriver(driver);
     await driverGone(driver);
     driver = undefined;
+    keepLogs({ app: appRoot, recipient: recipientRoot });
   }
   const found = [...leaks(OUT, secrets), ...(SCAN_EXTRA ? leaks(SCAN_EXTRA, secrets) : [])];
   if (found.length > 0) {
