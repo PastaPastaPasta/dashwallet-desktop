@@ -844,16 +844,17 @@ Rules that apply to every screen here:
   Every other string here is new (mark `new` in L10n) or from iOS.
 - **Honest data.** Status comes from the SPV deterministic masternode list, which carries only the ProTx
   hash, service, operator key, voting key, type and valid/banned. Owner, payout address, payees, collateral,
-  operator's share and registration height come from the masternode's ProRegTx. The current payout address,
-  payees and the operator key and voting key it names are known only after the wallet has applied **every**
-  later ProUpRegTx (and ProUpShareTx for a shared masternode) for that ProTx hash up to the tip. MG-03 watches
-  each known ProTx hash through compact filters for this, including after a restore (D42). Until that check
-  has finished, these values show "Checking…", payout custody in "In this wallet" reads "Payout address:
+  operator's share and registration height come from the masternode's ProRegTx (operator and voting keys
+  are always read live from the list). The current payout address and payees are known only after the
+  wallet has applied **every** later ProUpRegTx (and ProUpShareTx for a shared masternode) for that ProTx hash
+  up to the tip. MG-03 watches each known ProTx hash through compact filters from the registration height,
+  including after a restore (D42). Until that check has finished, these values show "Checking…", payout custody in "In this wallet" reads "Payout address:
   checking", and actions that depend on them (a fixed withdrawal destination) are disabled with "Checking
   the current payout address…". Without the ProRegTx they show "—" or are left out, and actions that need
   them aren't offered. Values only a full node knows
   (PoSe score, last-paid height, next payment, consecutive payments, ban and revive heights) show "—" with
-  the hint "needs a full node". Nothing is estimated (D9). Payouts are what this wallet's history shows.
+  the hint "needs a full node". Nothing is estimated except values labelled as estimates: the governance
+cutoff (D19) and vote tallies (D45) (D9). Payouts are what this wallet's history shows.
 - **No dead buttons.** An action the wallet can't do says why in its tooltip or in a row note, or is not
   shown. Operator actions are one explanation sheet, never disabled lookalikes of dash-qt's buttons (D24).
 - **Signing.** Every signing flow ends with the inline Passphrase field on its last step, as Pay's
@@ -887,8 +888,8 @@ not yet submitted because submission failed. Unvoted proposals never badge (D8).
 
 Below the tabs, a small muted line on the right: "Masternode list at block 1,214,880" (the SPV list height).
 
-**Status bar.** The dash-qt moon-phase clock (QT-026) is replaced (D19). While the voting window is open
-and the wallet holds at least one eligible voting key, the status bar shows a short text item "Nov 4 votes:
+**Status bar.** The dash-qt moon-phase clock (QT-026) is replaced (D19). Until the estimated cutoff for
+the next payout, while the wallet holds at least one eligible voting key, the status bar shows a short text item "Nov 4 votes:
 about 1 d 6 h left" (mock `gov-list`); click → Governance. Otherwise nothing. Tooltip: "Votes cast before
 about block 2,373,386 (the estimated cutoff) count for the Nov 4 payout at block 2,375,048. Later votes still
 count, but may only change later payouts." (D19)
@@ -975,11 +976,14 @@ Voting key (checked live: "Matches this masternode's voting key" / "This key doe
 masternode"), Owner key ("Lets you withdraw evonode credits to its payout address. Checked the first time
 you use it." — the list doesn't carry the owner key, D13). Footer note "Tracking sends nothing to the
 network." [Track]. Above the footer: "After you track it, the wallet looks up its registration to find its
-collateral and current payout address. Until it finds them, the masternode can't vote here." The lookup
-(D43): fetch the ProRegTx by ProTx hash from peers (authentic when its hash equals the ProTx hash) and read
-the collateral outpoint from it; if no peer serves it, rescan compact filters for the ProTx hash from DIP3
-activation. Then reconcile later updates (D42). While it runs the row shows "finding its collateral"; if both
-fail: "Couldn't find this masternode's registration. It can't vote from this wallet yet." [Try again]. Keys
+collateral and current payout address. Until it finds its collateral, the masternode can't vote here."
+The lookup (D43): the list entry's confirmed block (`confirmedHash`) is the registration block plus the
+network's minimum masternode confirmations (15 on mainnet, 1 on testnet), so the wallet downloads the block
+at that height minus the minimum from a full-block peer, checks it against its headers, and takes the
+transaction whose txid equals the ProTx hash: that is the ProRegTx, with the collateral outpoint. Then it
+reconciles later updates from that height (D42). A masternode not yet confirmed waits for it. While the
+lookup runs (usually seconds) the row shows "finding its collateral" (mock `mn-list`, Club evonode); if it
+fails: "Couldn't find this masternode's registration. It can't vote from this wallet yet." [Try again]. Keys
 can be added later from the masternode's More menu. Errors:
 "No masternode with this address or ProTx hash on Testnet."; "Already tracked as Friend's evonode.".
 
@@ -1003,26 +1007,29 @@ credits…", Withdraw disabled); Platform unreachable ("Couldn't reach Dash Plat
 again]); too little ("0.00002 credits is less than the Platform fee."); locked (passphrase on the sheet);
 watch-only (not offered).
 
-**Withdrawal with an unconfirmed result** (mock `mn-withdraw-pending`, D44): when Platform took the request
-but its result didn't arrive (the engine's unconfirmed outcome), the sheet and the evonode's pane show a
-persistent "Withdrawal sent; checking its result" with Amount, To, "Sent Oct 15 at 3:41 PM · last checked
-3:44 PM", "Platform received the request but hasn't confirmed it yet. The wallet is re-reading this
-evonode's credit balance to see whether it went through.", and the warning "**Don't send it again from
+**Withdrawal with an unconfirmed result** (mock `mn-withdraw-pending`, D44): when the request was sent
+but its result didn't arrive (the engine's unconfirmed outcome: accepted for broadcast, or its
+acknowledgement lost), the sheet and the evonode's pane show a persistent "Withdrawal sent; checking its
+result" with Amount, To, "Sent Oct 15 at 3:41 PM · last checked 3:44 PM", "The request was sent, but
+Platform hasn't confirmed the result yet. The wallet is checking whether Platform applied it.", and the
+warning "**Don't send it again from
 another device.** If this one went through, sending again would start a second withdrawal. Withdraw stays
 off until Platform confirms or rejects it." Withdraw is disabled (tooltip "Waiting for the result of the
 withdrawal already sent"); [Close] keeps checking ("Keeps checking after you close this"), across restarts.
-The wallet re-reads the claimable balance and the identity nonce. The outcomes: the balance dropped or the
-transition is found → "Withdrawal done" (credits arrive as Dash in Activity); a definitive rejection →
-"Platform rejected the withdrawal: <reason>. Nothing was withdrawn." and only then [Try again]. If the
-result stays unknown, the row says "Still checking" and nothing is offered to resend.
+The wallet decides by the identity nonce and by looking up the signed transition, not by the balance
+(rewards can credit it at the same time; the balance is display only). The outcomes: the nonce moved past
+the request or the transition is found → "Withdrawal done" (credits arrive as Dash in Activity); a
+definitive rejection → "Platform rejected the withdrawal: <reason>. Nothing was withdrawn." and only then
+[Try again]. While the result stays unknown, the row says "Still checking" and the wallet rebroadcasts the
+**same** signed transition now and then (same nonce, so it can't withdraw twice); nothing new is offered
+to send. The summary's "Evonode credits" note reads "withdrawal being checked" meanwhile.
 
 #### 4.25.3 Governance
 
 Mock `gov-list` (mainnet sample). Single column on top, split view below.
 
 **Clock card** (replaces §4.24): title "About 1 day 6 hours left to vote for the Nov 4 payout"; sub "Next
-payout to proposals: Nov 4, around 3 PM · block 2,375,048. From about block 2,373,386 the network starts
-fixing that payout; later votes still count, but may only change later payouts."; a cycle bar (`mg-cycle`)
+payout to proposals: Nov 4, around 3 PM · block 2,375,048. Later votes may only count for later payouts."; a cycle bar (`mg-cycle`)
 from the last superblock to the next with the **estimated cutoff** mark (start of the maturity window, 1,662
 blocks on mainnet: Core begins building the superblock trigger there, it doesn't reject later votes, D19) and
 the current position; labels "Oct 6 · last payout", "estimated cutoff, Nov 1", "Nov 4". Times come from block
@@ -1042,7 +1049,8 @@ Name.
 **Proposal row:** name, "1,500 Ð × 3 payments · You: 1 of 3 voted" (or "once", "You voted Yes", "You: not
 voted"), a vote bar (`mg-votebar`: yes / no /
 abstain, with the funding-line mark), status chip and the margin
-("+414 over", "692 short"; with uncertain weight "about 6 short, ±12").
+("about +414 over", "692 short"; margins follow the same rule as the detail pane's counts, D45: "about"
+when any weight is unverified, "about 6 short, ±12" when the bound is within reach of the line).
 
 **Status chips** (D17; engine `ProposalStatus`):
 
@@ -1064,8 +1072,8 @@ payments (Nov 4 to Jan 3)", "Paid to"
 "about 771 net yes · needs 357" (exact numbers without "about" only when the engine reports no unverified
 weight, D45) with legend "Yes 812 · No 41 · Abstain 9 · Funding line" (weighted: an evonode counts 4) and, when estimated, "Estimate, off by up to 12: not enough to change this
 result." (or "…: too close to call"), "Your masternodes" (each with its current vote and time, or "Not
-voted"; a vote this wallet sent is exact, one only seen from peers reads "No (estimate)" unless the engine
-verified the masternode's outpoint), [Vote…] filledBlue (opens §4.25.4), More: Copy proposal
+voted"; exact, because a masternode is listed here only once its outpoint is known, D43; one whose
+collateral isn't found yet shows "—"), [Vote…] filledBlue (opens §4.25.4), More: Copy proposal
 hash · Copy raw JSON. Threshold = max(min quorum, weighted valid masternodes / 10) computed by the engine
 (Core's `fundingthreshold` omits the floor).
 
@@ -1132,10 +1140,9 @@ sheet (D11).
   (disabled row). Disabled rows also for: voted less than an hour ago ("Voted Yes 40 min ago · can change
   after 4:12 PM", the network accepts one change per masternode per hour), PoSe banned ("a banned
   masternode can't vote"), collateral not yet found ("Key you added · finding its collateral first": tracked,
-  outpoint unresolved, D43; never pre-checked). Eligible rows start checked. Current votes seen only from
-  peers read "No (estimate)" (D45); votes this wallet sent are exact.
+  outpoint unresolved, D43; never pre-checked; current vote "—"). Eligible rows start checked.
 - **Privacy:** warning notice, shown when two or more rows are checked: "Voting with several masternodes
-  together shows that one person controls them." (iOS idea, D12).
+  together shows that one person controls them. Choose fewer to keep them unlinked." (iOS idea, D12).
 - Note: "A new vote replaces that masternode's earlier one. The network accepts one change per masternode
   per hour."
 - Footer note "2 masternodes · weight 8 · no fee", Passphrase, [Vote Yes] (label follows the outcome).
@@ -1253,7 +1260,7 @@ pane shows "Collateral released: spending it ends this masternode." with [Lock i
 
 Mock `mn-operator`. More ▸ **Service update or revoke…** (menu note "Done by the operator on the node") opens
 an explanation sheet "Service update and revocation", not a form (D24): "Your operator signs these with the
-operator key, which stays on their server. Dash Wallet doesn't hold that key, so it can't send them."
+operator key, which stays on the server. Dash Wallet doesn't hold that key, so it can't send them."
 (self-run: "This wallet derives your operator key, but Dash Wallet doesn't use it to sign service updates or
 revocations. Send those from your node; the secret is in Masternode keys.") Three rows:
 **Bring a banned masternode back** "The operator fixes the server, then sends a service update (`protx
@@ -1331,14 +1338,16 @@ coordinator goes back to Lock terms and everyone approves again. Payout copy alw
 earns: "30% of the owner portion after the operator's 5% cut, so about 28.5% of each payout"; the
 invitation and the locked terms show the effective split (mock `sh-session` "Payout split": "After the
 operator's 5%: Alice 40%, Bob 30%, Carol 30% of the rest, about 38%, 28.5% and 28.5% of each payout"), since
-Core pays the operator's share first and splits only the rest by shares.
+Core pays the operator's share first and splits only the rest by shares. Until the operator sets its
+payout address with a service update, the owners split the whole payout; the copy then says so ("30% of
+each payout until the operator's payout address is set, then about 28.5%").
 
 **Session sheet** (`sh-session`): title "Shared masternode · Session 3F9A2C"; stages (`mg-stages`) **1 Invite ·
 2 Collect details · 3 Lock terms · 4 Approvals · 5 Signatures · 6 Send** (D31: user-facing names, not R3's or
 dash-qt's); heading for the current stage ("2 of 3 approved the locked terms"), check code; share bar;
 participants (name, role, share, stage chip `Approved` / `Waiting` / `Signed`); the terms (server, operator
 key, operator's share 5%, Payout split, Network fee "0.00006, split by share: Alice 0.000024, Bob 0.000018,
-Carol 0.000018 (each within the 0.0001 most in the invitation)", early period); note "Send each
+Carol 0.000018 (each within the 0.0001 maximum from the invitation)", early period); note "Send each
 reply back here. If a check code differs from the one the sender sees, the message changed on the way: ask
 for it again."; footer [Copy …] [Save to file…] | [Close] [Paste a reply]. The coordinator's last stage is
 [Send registration] with Passphrase.
