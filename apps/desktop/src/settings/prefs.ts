@@ -14,6 +14,15 @@ export async function loadPrefs(backend: Backend, launch: LaunchInfo) {
   ui.set({ prefs, theme: launch.theme ?? prefs.theme, discreet: prefs.autohideBalance });
 }
 
+/** The changes a screen shows while their save is out (D36): a control shows what was chosen, not
+ * what dw-app last wrote. When a save settles, its keys leave the overlay unless a later change
+ * of the same key is still out. */
+export function settledPending(pending: Partial<UiSettings>, patch: Partial<UiSettings>): Partial<UiSettings> {
+  const next = { ...pending };
+  for (const key of Object.keys(patch) as (keyof UiSettings)[]) if (next[key] === patch[key]) delete next[key];
+  return next;
+}
+
 /** The settings the latest save asked for, until dw-app has answered it: a change made meanwhile
  * builds on it, not on the store, so it does not write the earlier change back. */
 let wanted: UiSettings | null = null;

@@ -120,6 +120,16 @@ describe("remove wallet", () => {
     expect(fixture.world.wallets).toHaveLength(2);
   });
 
+  it("IOS110_aSheetMountedAgainStillRemoves", async () => {
+    const model = new RemoveWalletModel(b, B);
+    await model.load();
+    // StrictMode runs the sheet's cleanup once and mounts the same model again (D37).
+    model.cancel();
+    await model.remove(PASS);
+    expect(model.step).toBe("done");
+    expect(fixture.calls).toContain("remove_wallet");
+  });
+
   it("IOS110_theQuestionSaysHowTheWalletComesBack", () => {
     expect(WalletsText.removeQuestion("Main", false)).toMatch(/recovery phrase, or a backup or export you kept/);
     expect(WalletsText.removeQuestion("Watcher", true)).toMatch(/extended public key adds it again/);

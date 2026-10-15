@@ -297,6 +297,8 @@ async function main() {
     await tab("security");
     // The engine's own deletion fails first (D33): a directory where dw-vault's remove_all expects
     // a "replaced" copy of the vault file cannot be unlinked. Wallet removals never touch it.
+    // remove_all unlinks vault.dwv before it reaches the blocker: the engine still holds the vault
+    // in memory, so the retry works, but the disk is half deleted (D40 follow-up).
     const vaultDir = join(appRoot, "regtest", "vault");
     if (!existsSync(join(vaultDir, "vault.dwv"))) throw new Error(`no vault file in ${vaultDir}`);
     const blocker = join(vaultDir, "vault.dwv.replaced-t1-blocker");
@@ -308,8 +310,10 @@ async function main() {
     await wd.press(tid("settings-wipe-continue"));
     await enter("settings-wipe-passphrase-field", NEW_PASSPHRASE);
     await wd.press(tid("settings-wipe-passphrase-submit"));
-    const kept = await waitText(tid("settings-wipe-error"), /the vault could not be deleted/, "the vault's failed deletion on the sheet");
-    if ((await invoke<WalletSummary[]>("list_wallets")).length !== 0) throw new Error("the wallets were not removed before the vault");
+    // The storage error is the blocker's; a vault the engine thought still had wallets would fail
+    // with another class.
+    const kept = await waitText(tid("settings-wipe-error"), /the vault could not be deleted: .*\(storage\)/, "the vault's failed deletion on the sheet");
+    if ((await loadStates()).length !== 0) throw new Error("the wallets were not all removed before the vault");
     // The wallet list is empty, yet onboarding waits: the failure is on screen, not under it.
     if (await wd.find(tid("onboarding"))) throw new Error("onboarding covers the failed vault deletion");
     await wd.screenshot("08-vault-kept");

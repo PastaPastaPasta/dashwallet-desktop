@@ -6,7 +6,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState, type ChangeEvent, type FormEvent } from "react";
 import { useBackend, useBackupDirectory, useLockStatus } from "../../api/queries";
-import { navigate, ui, useUi } from "../../app/ui";
+import { navigate, ui } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { NewPassphraseForm, PassphrasePrompt } from "../../components/passphrase";
 import { Sheet } from "../../components/sheet";
@@ -22,8 +22,7 @@ type SecuritySheet = "encrypt" | "change" | "wipe" | null;
 
 export function SecurityTab() {
   const lock = useLockStatus();
-  const prefs = useUi((s) => s.prefs);
-  const { save, problem } = useSavePrefs();
+  const { prefs, save, problem } = useSavePrefs();
   const [sheet, setSheet] = useState<SecuritySheet>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const id = useId();
@@ -296,6 +295,7 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
   // says what happened.
   useEffect(() => {
     if (model.step !== "done") return;
+    ui.set({ wiping: false });
     showToast(SecurityText.wiped);
     navigate("home");
     void client.invalidateQueries();
@@ -303,10 +303,9 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
   }, [model.step, client, onClose]);
   const [sentence, setSentence] = useState("");
   const id = useId();
-  const working = model.step === "working" || model.lock.working;
   const backupDir = useBackupDirectory();
   return (
-    <Sheet title={SecurityText.wipeTitle} width="medium" testId="settings-wipe-sheet" focusKey={model.step} closable={!working} onClose={onClose}>
+    <Sheet title={SecurityText.wipeTitle} width="medium" testId="settings-wipe-sheet" focusKey={model.step} closable={!model.busy} onClose={onClose}>
       {model.step === "sentence" && (
         <form
           className="secret-form"
@@ -343,14 +342,14 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
           <PassphrasePrompt
             testId="settings-wipe-passphrase"
             error={model.lock.message ?? model.error}
-            busy={model.lock.working}
+            busy={model.busy}
             disabled={model.lock.blocked}
             submitLabel="Delete everything"
             onSubmit={(p) => model.wipe(p)}
           />
         ) : (
           // No autofocus: Enter on opening this step must not delete everything (D35).
-          <DashButton variant="filledBlue" size="large" fill data-testid="settings-wipe-confirm" onClick={() => void model.wipe("")}>
+          <DashButton variant="filledBlue" size="large" fill data-testid="settings-wipe-confirm" disabled={model.busy} onClick={() => void model.wipe("")}>
             Delete everything
           </DashButton>
         ))}
@@ -362,7 +361,8 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
       {model.step === "stopped" && (
         <>
           <Problem text={model.error} testId="settings-wipe-error" />
-          <DashButton variant="tintedBlue" size="large" fill data-testid="settings-wipe-retry" onClick={() => model.retry()}>
+          {/* Enter on a stop tries again; closing is a choice the text explains (D39). */}
+          <DashButton variant="tintedBlue" size="large" fill data-testid="settings-wipe-retry" data-autofocus onClick={() => model.retry()}>
             Try again
           </DashButton>
         </>

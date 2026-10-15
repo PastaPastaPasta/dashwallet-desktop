@@ -3,7 +3,7 @@
 // Reset Options (D8).
 
 import { useQueryClient } from "@tanstack/react-query";
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import type { ThemeName } from "../../api/generated/ThemeName";
 import type { UiSettings } from "../../api/generated/UiSettings";
 import { keys, useBackend, useDustProtection, useNodeInfo } from "../../api/queries";
@@ -14,7 +14,7 @@ import { CopyValue, DetailRow } from "../../components/detail";
 import { Sheet } from "../../components/sheet";
 import { failureText } from "../../onboarding/model";
 import { DEFAULT_DUST, DIGIT_CHOICES, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
-import { savePrefs } from "../../settings/prefs";
+import { savePrefs, settledPending } from "../../settings/prefs";
 import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
 
 const THEMES: { theme: ThemeName | null; label: string; id: string }[] = [
@@ -23,30 +23,37 @@ const THEMES: { theme: ThemeName | null; label: string; id: string }[] = [
   { theme: "dark", label: "Dark", id: "dark" },
 ];
 
-/** Saves a change of the display settings; the problem says when dw-app could not write them. */
+/** The display settings as the controls show them, and their save; the problem says when dw-app
+ * could not write them. A change shows at once, while its save is out (D36). */
 export function useSavePrefs() {
   const backend = useBackend();
   const launch = useLaunch();
+  const saved = useUi((s) => s.prefs);
+  const [pending, setPending] = useState<Partial<UiSettings>>({});
   const [problem, setProblem] = useState<string | null>(null);
   /** Resolves to whether dw-app wrote the change; a failure shows `problem`. */
-  const save = (patch: Partial<UiSettings>) =>
-    savePrefs(backend, launch, patch).then(
-      () => {
-        setProblem(null);
-        return true;
-      },
-      () => {
-        setProblem(OptionsText.settingsNotSaved);
-        return false;
-      },
-    );
-  return { save, problem };
+  const save = (patch: Partial<UiSettings>) => {
+    setPending((p) => ({ ...p, ...patch }));
+    return savePrefs(backend, launch, patch)
+      .then(
+        () => {
+          setProblem(null);
+          return true;
+        },
+        () => {
+          setProblem(OptionsText.settingsNotSaved);
+          return false;
+        },
+      )
+      .finally(() => setPending((p) => settledPending(p, patch)));
+  };
+  const prefs = useMemo(() => ({ ...saved, ...pending }), [saved, pending]);
+  return { prefs, save, problem };
 }
 
 export function GeneralTab() {
   const launch = useLaunch();
-  const prefs = useUi((s) => s.prefs);
-  const { save, problem } = useSavePrefs();
+  const { prefs, save, problem } = useSavePrefs();
   const [resetting, setResetting] = useState(false);
   const [resetDone, setResetDone] = useState(false);
   const id = useId();
@@ -181,10 +188,12 @@ function DustCard() {
   const dust = useDustProtection();
   const [text, setText] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  /** The box as clicked, until the engine has answered (D36). */
+  const [turning, setTurning] = useState<boolean | null>(null);
   const id = useId();
   if (dust.isPending) return null;
   const current = dust.data ?? null;
-  const on = current !== null;
+  const on = turning ?? current !== null;
   const shown = text ?? String(current ?? DEFAULT_DUST);
   const apply = async (threshold: number | null) => {
     setProblem(null);
@@ -205,9 +214,10 @@ function DustCard() {
           data-testid="settings-dust-on"
           checked={on}
           onChange={(e) => {
-            if (!e.target.checked) return void apply(null);
+            const want = e.target.checked;
             const t = dustThreshold(shown);
-            void apply(typeof t === "number" ? t : DEFAULT_DUST);
+            setTurning(want);
+            void apply(want ? (typeof t === "number" ? t : DEFAULT_DUST) : null).finally(() => setTurning(null));
           }}
         />
         Hide received coins at or under a threshold

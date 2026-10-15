@@ -8,7 +8,7 @@ import { IpcBackend } from "../api/tauri";
 import { DEFAULT_PREFS, ui } from "../app/ui";
 import { installFixture, type FixtureHandle } from "../fixture";
 import { DIGIT_CHOICES, dustThreshold, OptionsText, UNIT_CHOICES } from "./options";
-import { loadPrefs, savePrefs } from "./prefs";
+import { loadPrefs, savePrefs, settledPending } from "./prefs";
 
 let fixture: FixtureHandle;
 let b: IpcBackend;
@@ -42,6 +42,15 @@ describe("display settings", () => {
     await Promise.all(saves);
     expect(fixture.world.settings.ui).toMatchObject({ theme: "dark", unit: "milliDash", decimalDigits: 3 });
     expect(ui.get().prefs).toMatchObject({ theme: "dark", unit: "milliDash", decimalDigits: 3 });
+  });
+
+  it("QT020_aChoiceShowsUntilItsOwnSaveAnswers", () => {
+    // D36: the screen shows each choice while it is saved; an answer clears only its own
+    // choice, not a later one for the same setting.
+    const pending = { unit: "milliDash", theme: "dark" } as const;
+    expect(settledPending(pending, { unit: "milliDash" })).toEqual({ theme: "dark" });
+    expect(settledPending(pending, { unit: "duffs" })).toEqual(pending);
+    expect(settledPending({ theme: "dark" }, { theme: "dark" })).toEqual({});
   });
 
   it("QT139_unitsAreDashQts", () => {

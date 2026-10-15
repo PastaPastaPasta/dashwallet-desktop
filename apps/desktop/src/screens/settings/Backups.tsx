@@ -101,7 +101,8 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
     setAsking(null);
   };
   const choose = (keep: number) => {
-    const deleted = deletedByKeep(backups.data, policy.data?.keep ?? 0, keep);
+    // A list still being read may be out of date: count it as unknown (D30).
+    const deleted = deletedByKeep(backups.isFetching ? undefined : backups.data, policy.data?.keep ?? 0, keep);
     if (deleted === 0) void setKeep(keep);
     else setAsking({ keep, deleted });
   };

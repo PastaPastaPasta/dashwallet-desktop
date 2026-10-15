@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { CommandName } from "../src/api/generated/commands";
 import type { ShellCommand } from "../src/api/generated/ShellCommand";
 import { FIXTURE_PASSPHRASE as PASS, FIXTURE_WALLET_ID, SECOND_WALLET_ID } from "../src/fixture/scenarios";
 import { FIXTURE_BACKUP_DIR, FIXTURE_FILES } from "../src/fixture/settings";
@@ -17,7 +18,7 @@ const world = <T,>(page: Page, fn: (w: NonNullable<Window["__dwFixture"]>["world
   page.evaluate(`(${fn.toString()})(window.__dwFixture.world)`) as Promise<T>;
 
 /** Holds the next call of `cmd` until the returned function is called (a late reply). */
-async function hold(page: Page, cmd: "authorize") {
+async function hold(page: Page, cmd: CommandName) {
   const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), cmd);
   return () => release.evaluate((r) => r());
 }
@@ -99,6 +100,17 @@ test.describe("General", () => {
     await page.getByTestId("settings-dust-on").uncheck();
     await expect.poll(() => world(page, (w) => w.settings.dust)).toBeNull();
     await expect(page.getByTestId("settings-dust-threshold")).toBeDisabled();
+  });
+
+  test("QT075_theSwitchMovesBeforeTheEngineAnswers", async ({ page }) => {
+    await settings(page, "general");
+    const release = await hold(page, "set_dust_protection");
+    // D36: the switch shows the choice while it is saved, not the engine's last answer.
+    await page.getByTestId("settings-dust-on").uncheck();
+    await expect(page.getByTestId("settings-dust-on")).not.toBeChecked();
+    await release();
+    await expect.poll(() => world(page, (w) => w.settings.dust)).toBeNull();
+    await expect(page.getByTestId("settings-dust-on")).not.toBeChecked();
   });
 
   test("rows without an engine say who brings them (D6, D7)", async ({ page }) => {
@@ -183,6 +195,17 @@ test.describe("Security", () => {
     await expect(page.getByTestId("hero-amount")).not.toContainText("#");
   });
 
+  test("IOS020_theSwitchMovesBeforeTheSettingIsSaved", async ({ page }) => {
+    await settings(page, "security");
+    const release = await hold(page, "set_ui_settings");
+    // D36: a saved display setting shows the choice while dw-app writes it.
+    await page.getByTestId("settings-autohide").check();
+    await expect(page.getByTestId("settings-autohide")).toBeChecked();
+    await release();
+    await expect.poll(() => world(page, (w) => w.settings.ui.autohideBalance)).toBe(true);
+    await expect(page.getByTestId("settings-autohide")).toBeChecked();
+  });
+
   test("IOS009_deleteAllWithTypedSentence", async ({ page }) => {
     const errors = await settings(page, "security", "two-wallets");
     await page.getByTestId("settings-wipe").click();
@@ -212,6 +235,11 @@ test.describe("Security", () => {
     // D33: the wallet list is empty, but onboarding waits while the sheet says what failed.
     await expect(page.getByTestId("settings-wipe-error")).toContainText("the vault could not be deleted");
     await expect(page.getByTestId("onboarding")).toHaveCount(0);
+    // D39: Enter tries again; D38: a menu shortcut leaves the sheet where it is.
+    await expect(page.getByTestId("settings-wipe-retry")).toBeFocused();
+    await page.keyboard.press("Control+2");
+    await expect(page.getByTestId("settings-wipe-sheet")).toBeVisible();
+    await expect(page.getByTestId("settings-tabs-security")).toBeVisible();
     expect(await world(page, (w) => [w.wallets.length, w.lock.state === "noVault"])).toEqual([0, false]);
     await page.evaluate(() => window.__dwFixture!.fail("destroy_vault", null));
     await page.getByTestId("settings-wipe-retry").click();
@@ -344,6 +372,27 @@ test.describe("Backups", () => {
     await page.getByTestId("settings-backup-keep-confirm").click();
     await expect.poll(() => world(page, (w) => w.settings.keep)).toBe(0);
     await expect(page.getByTestId("settings-backup-list").locator("li")).toHaveCount(0);
+  });
+
+  test("QT116_aListStillBeingReadAsksBeforeALowerCount", async ({ page }) => {
+    await settings(page, "backups");
+    await expect(page.getByTestId("settings-backup-list").locator("li")).toHaveCount(2);
+    // Four more backups appear while another tab shows; the list shown next is the old one until
+    // it is read again (D28), and that read is held.
+    await page.evaluate(() => {
+      const s = window.__dwFixture!.world.settings;
+      const [b] = s.backups;
+      for (let i = 1; i <= 4; i++) s.backups.push({ ...b, path: `${b.path}.${i}`, createdAt: b.createdAt + i });
+    });
+    await page.getByTestId("settings-tabs-general").click();
+    const release = await hold(page, "automatic_backups");
+    await page.getByTestId("settings-tabs-backups").click();
+    await expect(page.getByTestId("settings-backup-list").locator("li")).toHaveCount(2);
+    // D30: by the old list keeping 3 deletes nothing; it is unknown, so the count asks.
+    await page.getByTestId("settings-backup-keep").selectOption("3");
+    await expect(page.getByTestId("settings-backup-keep-sheet")).toBeVisible();
+    expect(await world(page, (w) => [w.settings.keep, w.settings.backups.length])).toEqual([5, 6]);
+    await release();
   });
 
   test("QT109_exportForCoreNeedsThePassphrase", async ({ page }) => {

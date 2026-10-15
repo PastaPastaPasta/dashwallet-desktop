@@ -43,7 +43,7 @@ export const SecurityText = {
   wipeNoList: (why: string) => `The list of every wallet could not be read: ${why} Nothing was deleted.`,
   /** The wallets are gone but the vault is not (D33). */
   vaultKept: (why: string) =>
-    `Every wallet was removed, but the vault could not be deleted${why ? `: ${why}` : "."} Try again; onboarding opens once it is gone.`,
+    `Every wallet was removed, but the vault could not be deleted${why ? `: ${why}` : "."} Try again. If you close this instead, the vault stays: the next wallet you add goes into it, under its passphrase.`,
   wipeStopped: (name: string, why: string, removed: number) =>
     `${name} could not be removed: ${why} ${removed === 0 ? "Nothing was deleted." : `${removed === 1 ? "The wallet" : `The ${removed} wallets`} before it ${removed === 1 ? "was" : "were"} removed; the others and the vault were kept.`}`,
 };
@@ -271,8 +271,19 @@ export class WipeModel extends Model {
   /** Runs the wipe; `p` is ignored on an unencrypted vault. The first grant checks the
    * passphrase under the lockout policy; the other wallets reuse it. */
   async wipe(p: string) {
-    if (this.step !== "passphrase" || this.lock.working) return;
+    if (this.step !== "passphrase" || this.busy) return;
+    this.#running = true;
+    try {
+      await this.#wipe(p);
+    } finally {
+      this.#running = false;
+      this.changed();
+    }
+  }
+
+  async #wipe(p: string) {
     this.error = null;
+    const epoch = this.#epoch;
     let wallets: WipeWallet[];
     try {
       // Every registered wallet, closed ones too. `listWallets` holds only the open ones, so a
@@ -299,7 +310,7 @@ export class WipeModel extends Model {
       if (failed) return this.#stop(failureText(failed));
     }
     // The sheet went away while the passphrase was checked: nothing is deleted (D31).
-    if (this.#cancelled) {
+    if (epoch !== this.#epoch) {
       if (first) this.api.revokeGrant(first).catch(() => {});
       return;
     }
@@ -350,11 +361,19 @@ export class WipeModel extends Model {
     if (this.encrypted) void this.lock.load();
   }
 
-  #cancelled = false;
+  // A wipe is under way, from its first engine call (a second click starts none, D41).
+  #running = false;
+  // Not a flag: StrictMode cancels and mounts the same model again (D37).
+  #epoch = 0;
+
+  /** A wipe is under way: the sheet stays open (D31, D41). */
+  get busy(): boolean {
+    return this.#running || this.lock.working || this.step === "working";
+  }
 
   /** The sheet is gone: a wipe still checking the passphrase deletes nothing. */
   cancel() {
-    this.#cancelled = true;
+    this.#epoch++;
   }
 
   #go(step: WipeModel["step"]) {
@@ -363,6 +382,8 @@ export class WipeModel extends Model {
   }
 
   #stop(message: string) {
+    // The stop ends the run before it renders: Close is offered with it (D39).
+    this.#running = false;
     this.error = message;
     this.step = "stopped";
     this.changed();

@@ -227,6 +227,16 @@ describe("export for Dash Core", () => {
     expect(fixture.calls).toContain("revoke_grant");
   });
 
+  it("QT109_aSheetMountedAgainStillExports", async () => {
+    const model = new ExportModel(b, () => AT, A, "Main");
+    await model.load();
+    // StrictMode runs the sheet's cleanup once and mounts the same model again (D37).
+    model.cancel();
+    await model.export("dumpWallet", PASS);
+    expect(model.step).toBe("done");
+    expect(fixture.calls).toContain("export_for_core");
+  });
+
   it("QT109_aLockedVaultStillOffersTheExport", async () => {
     install("locked");
     const model = new ExportModel(b, () => AT, A, "Main");

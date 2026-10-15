@@ -210,7 +210,7 @@ describe("wipe", () => {
     fixture.fail("destroy_vault", "call");
     await model.wipe(PASS);
     expect(model.step).toBe("stopped");
-    expect(model.error).toMatch(/^Every wallet was removed, but the vault could not be deleted: .* Try again;/);
+    expect(model.error).toMatch(/^Every wallet was removed, but the vault could not be deleted: .* Try again\. If you close this instead, the vault stays: the next wallet you add goes into it/);
     expect(fixture.world.wallets).toEqual([]);
     expect(fixture.world.lock.state).not.toBe("noVault");
     fixture.fail("destroy_vault", null);
@@ -245,6 +245,31 @@ describe("wipe", () => {
     expect(fixture.calls).not.toContain("remove_wallet");
     expect(fixture.calls).toContain("revoke_grant");
     expect(fixture.world.wallets).toHaveLength(1);
+  });
+
+  it("IOS109_aSheetMountedAgainStillWipes", async () => {
+    const model = await wipeReady();
+    // StrictMode runs the sheet's cleanup once and mounts the same model again (D37).
+    model.cancel();
+    await model.wipe(PASS);
+    expect(model.step).toBe("done");
+    expect(fixture.world.lock.state).toBe("noVault");
+  });
+
+  it("IOS109_aSecondClickStartsNoSecondWipe", async () => {
+    install("unencrypted");
+    const model = await wipeReady();
+    const release = fixture.hold("wallet_load_states");
+    const first = model.wipe("");
+    await vi.waitFor(() => expect(fixture.calls).toContain("wallet_load_states"));
+    // The list is still being read: the sheet stays open and a second click does nothing (D41).
+    expect(model.busy).toBe(true);
+    const second = model.wipe("");
+    release();
+    await Promise.all([first, second]);
+    expect(fixture.calls.filter((c) => c === "wallet_load_states")).toHaveLength(1);
+    expect(model.step).toBe("done");
+    expect(model.busy).toBe(false);
   });
 
   it("IOS109_theWarningSaysHowEachKindOfWalletComesBack", () => {

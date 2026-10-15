@@ -191,11 +191,12 @@ export class RemoveWalletModel extends Model {
   }
 
   #authorizing = false;
-  #cancelled = false;
+  // Not a flag: StrictMode cancels and mounts the same model again (D37).
+  #epoch = 0;
 
   /** The sheet is gone: an authorization still running removes nothing. */
   cancel() {
-    this.#cancelled = true;
+    this.#epoch++;
   }
 
   async remove(passphrase: string) {
@@ -205,21 +206,26 @@ export class RemoveWalletModel extends Model {
       grant = (await this.api.authorize({ kind: "wipe" }, this.walletId, vaultCredential(this.encrypted, p))).id;
     };
     this.error = null;
+    const epoch = this.#epoch;
     this.#authorizing = true;
     this.changed();
-    const ok = this.encrypted
-      ? await this.lock.attempt(passphrase, authorize)
-      : await authorize("").then(
-          () => true,
-          (e) => {
-            this.error = failureText(e);
-            return false;
-          },
-        );
-    this.#authorizing = false;
+    let ok: boolean;
+    try {
+      ok = this.encrypted
+        ? await this.lock.attempt(passphrase, authorize)
+        : await authorize("").then(
+            () => true,
+            (e) => {
+              this.error = failureText(e);
+              return false;
+            },
+          );
+    } finally {
+      this.#authorizing = false;
+    }
     if (!ok || !grant) return this.changed();
     // The sheet went away while the passphrase was checked: the wallet stays (D31).
-    if (this.#cancelled) return void this.api.revokeGrant(grant).catch(() => {});
+    if (epoch !== this.#epoch) return void this.api.revokeGrant(grant).catch(() => {});
     this.step = "working";
     this.changed();
     try {
