@@ -135,6 +135,7 @@ Help ▸ About keeps U-01's small About sheet.
 | D26 | Remove is disabled for the last open wallet while another wallet is closed ("Open another wallet first to remove this one"). Removing it would empty the wallet list, so onboarding would open with no Cancel, and the closed wallet (off the startup list since Close, D17) could not be reached until a new wallet was made. With no closed wallet, the last wallet can be removed and onboarding opens as U-02 D1 says. The wipe follows the same rule: it opens every closed wallet before its first removal, so a wallet that fails to open stops the wipe with nothing deleted. | D17's rule for Close, which Remove would otherwise get around (found by review). `QT101_theLastOpenWalletCannotBeRemovedWhileAnotherIsClosed`, `IOS109_aClosedWalletThatCannotOpenStopsTheWipeBeforeAnyRemoval`. |
 | D27 | The wipe deletes what the engine holds (wallets, vault), not the files in the backup folder: automatic and manual `.dwbackup` files and Dash Core exports stay. The sheet says so under iOS's text, naming the folder (`backupDirectory`), and that an export holds private keys in plain text. A stopped wipe says which wallets before the failing one were already removed. Follow-up (U-04): an opt-in "also delete the backup folder" step, once the engine has a command for it. | dash-qt and iOS keep no backup folder of their own, so their texts do not cover it. A renderer-side delete would need a file-system permission. |
 | D28 | The automatic backups list is read again each time the Backups tab shows, not kept until a change. The engine writes an automatic backup on a background task after an import or a restore and sends no event when it is written (`walletCreated` comes before it). Follow-up (engine): a "backup written" event, so an open tab updates as well. | Reading on show is the honest subset: the list is short and local. |
+| D29 | Launch reads the display settings (`ui_settings`) before the first render, as it reads `launch_info`, so the first frame has the saved appearance and "Hide balances" (D3, D14). The fixture's `?delay=` stands for a slow engine and does not hold either read. dw-app answers both from memory and `settings.json`, without the engine. | The gate's `loading` scenario waited for a splash that never rendered: the fixture held `ui_settings` for the delay, which dw-app never does. |
 
 ## Follow-ups to file
 
@@ -167,12 +168,12 @@ on a manager to file them:
 
 ## T1 evidence
 
-2026-10-14, branch `dw/u-04-settings`: app and renderer built at `2c599647` (the D24 save queue),
-with the harness's D25 wait for the destroyed vault. Run on agentbox (Xvfb, WebKitGTK through
+2026-10-15, branch `dw/u-04-settings`: app, renderer and harness built at `1a12d176` (the review
+rounds, D25–D28, and the follow-merge of main `dbdc06a7`). Run on agentbox (Xvfb, WebKitGTK through
 tauri-driver) against `dwd-regtest-dashd:24.0.0-rc.2` (compose project `dw-e2e-settings`).
 `scripts/e2e-tauri-settings.sh` → PASS, 9 steps:
 
-1. unlock: Wallet 1 holds 1.5 DASH through SPV (funding txid `1c2bfee4e98cf15d…`, 2 blocks mined)
+1. unlock: Wallet 1 holds 1.5 DASH through SPV (funding txid `65952239bd6e6894…`, 2 blocks mined)
 2. General: Dark, mDASH with 3 digits (Home 1500.000 mtDASH), Pay starts with Subtract fee;
    `ui_settings` agrees
 3. Security: a wrong current passphrase is counted, then the passphrase changes (the old one is
@@ -187,7 +188,7 @@ tauri-driver) against `dwd-regtest-dashd:24.0.0-rc.2` (compose project `dw-e2e-s
    `lock_status` reads noVault
 9. no phrase or passphrase in the data root, the logs or the other output files
 
-Earlier runs failed twice. Step 2 caught the D24 race (a lost unit change). Step 8 read
+The same 9 steps also passed at `2c599647` and `dc1e6010` (2026-10-14). Earlier runs failed twice. Step 2 caught the D24 race (a lost unit change). Step 8 read
 `lock_status` the moment onboarding opened, before the final `destroyVault` had answered (D25).
 
 ## Ported view-model tests
