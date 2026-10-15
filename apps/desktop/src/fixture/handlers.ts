@@ -590,6 +590,29 @@ export const HANDLERS: Handlers = {
   main_name: ({ walletId, identity }, { world }) =>
     dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!.mainName,
   registrations: ({ walletId }, { world }) => dashpay(world, walletId).registrations,
+  // DashPay::registration_quote (registration.rs `plan`): the label's rules, the funding kinds this
+  // build takes, then the lock floor for the name's kind (contested 0.25, else 0.03 Dash) and a
+  // fee for the wallet's coins. The fixture's contested quote reads no contenders.
+  registration_quote: ({ walletId, request }, { world }) => {
+    dashpay(world, walletId);
+    const { label, funding } = request;
+    if (!/^[A-Za-z0-9-]{3,23}$/.test(label) || label.startsWith("-") || label.endsWith("-"))
+      throw fail("name.invalid", `invalid username: ${label}`);
+    if (funding.kind === "invitation") throw fail("platform.not_implemented", "DashPay.registration_quote", { kind: "call", call: "DashPay.registration_quote" });
+    if (funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
+    const contested = /^[A-Za-z01-]{3,19}$/.test(label);
+    const lockDuffs = contested ? 25_000_000 : 3_000_000;
+    const feeDuffs = 2_260;
+    const credits = 2_000_000_000;
+    return {
+      contested,
+      lockDuffs,
+      feeDuffs,
+      totalDuffs: lockDuffs + feeDuffs,
+      remainingCredits: String(lockDuffs * 1000 - credits),
+      grant: { maxDuffs: lockDuffs + feeDuffs, maxCredits: String(credits) },
+    };
+  },
   search_users: ({ walletId, prefix, limit }, { world }) => {
     const dp = dashpay(world, walletId);
     if (dp.searchOffline) throw fail("platform.unavailable", "DAPI did not answer");

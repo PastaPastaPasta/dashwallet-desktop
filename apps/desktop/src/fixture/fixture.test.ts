@@ -8,6 +8,7 @@ import { isAppError } from "../api/backend";
 import * as cmd from "../api/generated/commands";
 import type { AppEvent } from "../api/generated/commands";
 import type { HistoryRequest } from "../api/generated/HistoryRequest";
+import type { RegistrationFunding } from "../api/generated/RegistrationFunding";
 import type { UserRelation } from "../api/generated/UserRelation";
 import type { ChannelStateName } from "../api/generated/ChannelStateName";
 import { IpcBackend } from "../api/tauri";
@@ -167,6 +168,16 @@ describe("fixture backend", () => {
     backend({ scenario: "dashpay-registering" });
     expect(await cmd.dashpayStatus(FIXTURE_WALLET_ID)).toEqual({ kind: "registering", draft: "reg-1" });
     expect((await cmd.registrations(FIXTURE_WALLET_ID))[0]).toMatchObject({ phase: "fundingSent", waiting: "instantSend", fundsCommitted: true });
+  });
+
+  it("quotes a registration as the engine plans it (DP1-08 D6)", async () => {
+    backend({ scenario: "dashpay-no-identity" });
+    const quote = (label: string, funding: RegistrationFunding = { kind: "coreBalance" }) =>
+      cmd.registrationQuote(FIXTURE_WALLET_ID, { label, temporaryLabel: null, funding, initialProfile: null });
+    expect(await quote("dashpaydesktopquote2")).toMatchObject({ contested: false, lockDuffs: 3_000_000, totalDuffs: 3_002_260 });
+    expect(await quote("alice")).toMatchObject({ contested: true, lockDuffs: 25_000_000 });
+    await expect(quote("-alice")).rejects.toMatchObject({ code: "name.invalid" });
+    await expect(quote("alice", { kind: "invitation", linkId: "1" })).rejects.toMatchObject({ code: "platform.not_implemented" });
   });
 
   it("rejects a command it does not implement with a typed AppError", async () => {

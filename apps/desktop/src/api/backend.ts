@@ -59,6 +59,8 @@ import type { NodeSummary } from "./generated/NodeSummary";
 import type { NodeWarning } from "./generated/NodeWarning";
 import type { PeerSummary } from "./generated/PeerSummary";
 import type { PsbtAnalysis } from "./generated/PsbtAnalysis";
+import type { RegistrationQuote } from "./generated/RegistrationQuote";
+import type { RegistrationRequest } from "./generated/RegistrationRequest";
 import type { RegistrationStatus } from "./generated/RegistrationStatus";
 import type { RescanStart } from "./generated/RescanStart";
 import type { RescanStatus } from "./generated/RescanStatus";
@@ -228,6 +230,8 @@ export interface Backend {
    * schedules a rescan; returns how many. */
   dropUnconfirmed(walletId: string | null): Promise<number>;
   registrations(walletId: string): Promise<RegistrationStatus[]>;
+  /** The costs of registering `request` (DP1-02); local for a non-contested name. */
+  registrationQuote(walletId: string, request: RegistrationRequest): Promise<RegistrationQuote>;
   resolveStuckFunding(walletId: string, step: string, grant: string): Promise<BroadcastOutcome>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;
   saveAddressBookEntry(walletId: string, address: string, label: string, purpose: AddressPurposeName, replace: boolean): Promise<AddressBookEntry>;
