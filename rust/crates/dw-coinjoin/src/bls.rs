@@ -37,7 +37,7 @@ pub fn verify_basic(operator_public_key: &[u8; 48], signature: &[u8], msg: &[u8;
 /// exception here and dw-protx's `no_operator_signing` guard (MG-01 D9):
 /// it stands in for a masternode in the CoinJoin tests and signs no wallet
 /// transaction.
-#[allow(clippy::disallowed_types)]
+#[expect(clippy::disallowed_types)]
 pub mod testing {
     use dash_pkc::bls::{BlsScIetf, BlsSecretKey, BlsSigId};
     use dashcore::hashes::{Hash, sha256};

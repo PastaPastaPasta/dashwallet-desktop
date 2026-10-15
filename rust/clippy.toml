@@ -1,7 +1,9 @@
 # The wallet never holds or signs with an operator key (CLAUDE.md product
 # scope, MG-01 §4). Clippy resolves these by definition, so a `use … as`
 # alias or a re-export does not hide a use; `tests/no_operator_signing.rs`
-# in dw-protx covers what clippy cannot see (names, IPC, Swift).
+# in dw-protx covers what clippy cannot see (names, IPC, Swift). Clippy reads
+# only the nearest clippy.toml: a crate with its own (dw-ffi) repeats these
+# entries, which that test checks.
 # `allow-invalid`: a crate whose graph has no dash-pkc or platform-wallet
 # cannot resolve the path, which is fine.
 
@@ -11,9 +13,13 @@ disallowed-types = [
     { path = "dash_pkc::bls::BlsSkBytes", reason = "BLS secret key bytes: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
     { path = "dashcore::bls_sig_utils::BlsSkBytes", reason = "BLS secret key bytes: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
     { path = "dashcore::bls_sig_utils::BlsSecretKey", reason = "BLS secret key: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "dpp::bls::SecretKey", reason = "BLS secret key: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "key_wallet::derivation_bls_bip32::ExtendedBLSPrivKey", reason = "BLS extended private key: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
 ]
 
 disallowed-methods = [
     { path = "platform_wallet::masternode::update_service::prepare_masternode_update_service", reason = "ProUpServTx is operator-signed and out of scope (MG-01 §4)", allow-invalid = true },
     { path = "platform_wallet::masternode::update_service::execute_masternode_update_service", reason = "ProUpServTx is operator-signed and out of scope (MG-01 §4)", allow-invalid = true },
+    { path = "dpp::bls::BlsModule::sign", reason = "BLS signing with raw secret bytes: the wallet never signs with an operator key (MG-01 §4)", allow-invalid = true },
+    { path = "key_wallet::account::BLSAccount::operator_private_key_at", reason = "operator private key: the wallet holds no operator secret outside the keychain reveal (MG-01 D6)", allow-invalid = true },
 ]
