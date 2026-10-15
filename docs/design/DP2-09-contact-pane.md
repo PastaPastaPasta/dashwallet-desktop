@@ -73,14 +73,14 @@ contract or §4 table changes, so no Swift T0 run. Copy follows the mobile walle
 | D16 | Each surface (Contacts, the popover, the page) owns one `ContactActions` model and its `GrantModel` with U-05's passphrase sheet. One action runs at a time per surface; its buttons are disabled meanwhile and the busy row says "Accepting…". Unmounting cancels a pending grant request. | A request belongs to the screen that made it (U-05 D1). |
 | D17 | `ContactsPage` takes the window's `network` (for amounts); App passes it. The bell keeps navigating to the page when no main identity is known. | Minimal shared edits. |
 | D18 | Fixture: handlers for `grant_request` (the engine's per-action credit bounds), `contact_activity` (per-contact payments, filtered, paged by 50 with an opaque cursor), `dashpay_enable_keys`, `credits_cost_table`; accept and ignore journal nothing (DP2-05 vectors: a write journals through the sweep). New scenarios: `dashpay-no-keys` (Alice without DashPay keys), `dashpay-low-credits` (balance under one request), `dashpay-bell-empty`. | The UI tests mean something only if the fixture refuses as the engine does. |
-| D19 | GL: two fixture wallets that are not contacts (D20). The sender's request goes out through `dwcli contact --spv request` on a scratch data root (phrase on stdin), after its `contact list` showed no relation to the receiver; the recipient's wallet is restored in the real app (`--sync`), the bell must list the request, Accept in the popover (grant through the passphrase sheet), then Contacts must list the sender under My Contacts and the sender's dwcli must list the receiver as a contact. Secrets scanned on every exit as DP2-07 D17, over OUT and the run's log directory. The send is recorded in `<fixture>/DP2-09.json`, written exclusively before it is made, so a rerun never sends again (as DP3-02's ledger). Script: `scripts/e2e-tauri-bell-accept.sh` → `e2e-tauri/bell-accept.ts`. | The row's acceptance, with the write path the user takes. |
-| D20 | The GL pair: the fixture's contacts are A:{B,C}, B:{A}, C:{A,D}, D:{C}, so B–C, B–D and A–D are not contacts. C sends, B accepts: B holds the most credits (~44.8e9) and pays the accept, C (~8.7e9) pays the request; both have DashPay keys. | The brief: two fixture wallets that are not contacts, with enough credits. |
-
+| D19 | GL: two fixture wallets that are not contacts (D20). The sender's request goes out through `dwcli contact --spv request` on a scratch data root (phrase on stdin), after its `contact list` showed no relation to the receiver; the recipient's wallet is restored in the real app (`--sync`), the bell must list the request, Accept in the popover (grant through the passphrase sheet), then Contacts must list the sender under My Contacts and the sender's dwcli must list the receiver as a contact. Secrets scanned on every exit as DP2-07 D17, over OUT and the run's log directory. The send is recorded in `<fixture>/DP2-09.json`, written exclusively before it is made, so a rerun never sends again (as DP3-02's ledger); a rerun refuses a ledger of another pair, and a pair that is contacts already (the request was accepted). Script: `scripts/e2e-tauri-bell-accept.sh` → `e2e-tauri/bell-accept.ts`. | The row's acceptance, with the write path the user takes. |
+| D20 | The GL pair: the fixture's contacts are A:{B,C}, B:{A}, C:{A,D}, D:{C}, so B–C, B–D and A–D are not contacts. C sends, B accepts: B holds the most credits (~44.8e9) and pays the accept, C (~8.7e9) pays the request; both have DashPay keys. Since this task's run (Evidence) B and C are contacts; B–D and A–D are left, and a new pair needs the ledger moved aside. | The brief: two fixture wallets that are not contacts, with enough credits. |
 | D21 | The contact avatar's fill is the accent tint mixed opaque into the card colour (was a translucent tint): on a selected row or the raised popover the translucent tint stacked under the link-coloured initials and fell below AA (axe, serious). Same look on a plain card. | Found by this task's axe states; a shared rule, one line. |
 | D22 | Accept that meets `contact.already_contact` (the other surface, or another device, accepted first) reports success: it is what was asked. Every outcome, a refusal too, re-reads what the action touches; Enable revokes its grant in a `finally`, as the engine leaves it unused when the keys were already there. | Review r1 M1, L1, L2. |
 | D23 | An outcome that lands after its view closed (the popover closed by the bell, the page left) is said as a toast; while the view is open it is said inline. The action runs on: closing never cancels a Platform write once its passphrase was given. | Review r1 M2; D4's toast for the popover. |
 | D24 | Private details: Hide shows the saved value, or the value being saved, and a refused or cancelled Hide shows the saved value again. A re-read of the saved details updates only the fields the user has not edited. Each view reads the event feed afresh on opening (`refetchOnMount: "always"`) and marks read from that read only. | Review r1 M3, H1. |
 | D25 | The fixture's activity cursor names its contact and filter (the engine's is bound to its query), `set_private_details` checks the size before the relation and counts the identity's own contacts. | Review r1 L7. |
+| D26 | Load flake: the gate's first Playwright run failed 15 WebKit tests, every one on the 30 s test timeout with its element resolved (a11y, onboarding axe, contacts axe, and the two longest contact-pane tests), at load 100–211; the UI half rerun alone passed all 714. | Box rule: rerun alone before blaming the code. |
 
 ## Deferred
 
@@ -103,4 +103,40 @@ contract or §4 table changes, so no Swift T0 run. Copy follows the mobile walle
 
 ## Evidence
 
-(Filled in by slice 6.)
+**Gate (copy of the desktop CI gate on a `git archive` of 7f17b123; later commits are this section, the GL script
+and parity only):** `GATE EXIT 0`: fmt; clippy (workspace and `dw-app --features selftest`); Rust tests 1894 passed, 0 failed;
+tokens, typecheck, vitest 653 passed (46 files), production and fixture builds, the fixture guard and its negative
+control, the selftest judge; Playwright + axe 714 passed, 170 skipped (the visual project without `DW_VISUAL`). The
+UI half is the rerun (`dw-gate-ui.sh`, same copy): the first run's Playwright lost 15 WebKit tests to the 30 s test
+timeout at load 100–211, ten of them in specs this task does not touch (D26).
+
+**T0 (fixture backend, Playwright in the pinned image, `scripts/e2e-docker.sh`):** vitest 653 passed;
+`e2e/contact-pane.spec.ts`, `e2e/notifications.spec.ts`, `contacts.spec.ts`, `routes.spec.ts` and `screens.spec.ts`,
+Chromium and WebKit, 278 passed, then the specs touched by the review fixes 40 passed; visual baselines (Chromium) 68
+passed, with `contacts` and the new `notifications-popover` / `notifications-page` light and dark baselines. axe
+(serious and critical) in light and dark, both engines: the popover, the page, the pane on a request (`pane-request`)
+and on a contact (`pane-contact`), and the Enable DashPay banner (`enable-banner`).
+
+**GL (real app, real engine, public testnet; 2026-10-15 14:12–14:13 UTC):** `scripts/e2e-tauri-bell-accept.sh` with
+`DW_TESTNET_FIXTURE` = the testnet DashPay fixture. Pair: C and B, which were not contacts (C's contacts were A and D).
+The sender's `dwcli contact --spv request` ran first and was recorded in the fixture's ledger `DP2-09.json` (written
+with `wx` before the send, so a rerun cannot send twice); then wallet B was restored by `dwcli import --birth-height
+1568806` (phrase on stdin) and the app launched with `--network testnet --sync` under tauri-driver on a private X
+display. Evidence: `result.json` and four screenshots (`1-bell-request`, `2-grant-sheet`, `3-accepted`,
+`4-my-contacts`).
+
+| Step | Result |
+|---|---|
+| C before | contacts `CgPsN9…` (A) and `CQdTQx…` (D) |
+| C → B request | 14:12:41, grant `max_credits` 150000000, outcome `pending`, request `1792073559863`; sender C `44ZjKSRCzscQaNymnykM4BnY7YzBsNJqiF1LpmTHWyPc`, receiver B `HjfQJmEbqM8bbwtoGMVbouiWVC9Wmk6187VLx3XjN4J6` |
+| Unlock B, open Contacts | the real renderer; bell badge empty |
+| Open the bell | 14:13:05: Contact requests lists 1 row, `44ZjKS…WyPc`, Accept and Ignore; New lists "Your username @dwrecoverb2 is registered" |
+| Accept from the bell | the passphrase sheet (a `platformOp` grant); passphrase given |
+| Outcome | 14:13:10 `bell-outcome` "You and 44ZjKS…WyPc are now contacts."; the bell's requests empty, New gains "You and 44ZjKS…WyPc are now contacts" |
+| B's Contacts | My Contacts lists `44ZjKS…WyPc`, relation Contact; Contact Requests gone |
+| C after (`dwcli contact list`) | A, D and `HjfQJm…` (B), each relation `contact`, channel ready |
+| Secret scan | no phrase or passphrase in the output directory or the run's logs |
+
+Seen on the way, not changed here: the badge read 4 with the popover open, because three "dwrecovera2 sent you a
+payment" events and the accept arrived after it opened (D11 marks read on opening only); and those payment events
+carry the time the engine saw them while syncing, not the payments' own times (DP2-05's journal).
