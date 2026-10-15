@@ -26,7 +26,7 @@ import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
 import { isCheckable } from "../api/lockReport";
 import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
-import { eventOf, sectionOf, type DashPayWorld } from "./dashpay";
+import { contactList, eventOf, type DashPayWorld } from "./dashpay";
 import { routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers } from "./send";
@@ -282,10 +282,6 @@ function bell(w: World, walletId: string, identity: string): DashPayWorld {
   return dp;
 }
 
-/** The engine's `DateAdded` order of requests: the newest first, unknown times last, then by id. */
-const byDateAdded = (a: { since: number | null; contact: string }, b: { since: number | null; contact: string }) =>
-  (a.since === null ? 1 : 0) - (b.since === null ? 1 : 0) || (b.since ?? 0) - (a.since ?? 0) || (a.contact < b.contact ? -1 : a.contact > b.contact ? 1 : 0);
-
 /** `DashPay::events`: on the first page the requests waiting, then `limit` (1–200) rows below
  * `cursor`, newest first, less an ignored sender's, split into unread and read. */
 function eventPage(dp: DashPayWorld, identity: string, cursor: number | null, limit: number): DashPayEventPage {
@@ -298,7 +294,8 @@ function eventPage(dp: DashPayWorld, identity: string, cursor: number | null, li
   const page = rows.slice(0, Math.min(Math.max(limit, 1), MAX_PAGE));
   const events = page.map(eventOf);
   return {
-    pending: cursor === null ? dp.contacts.filter((c) => sectionOf(c) === "requests").map((c) => c.summary).sort(byDateAdded) : [],
+    // As `contacts`' Requests section lists them.
+    pending: cursor === null ? contactList(dp, { sections: ["requests"], sort: "dateAdded", text: null }).sections[0].contacts : [],
     new: events.filter((e) => e.readAt === null),
     earlier: events.filter((e) => e.readAt !== null),
     nextCursor: rows.length > page.length ? page[page.length - 1].id : null,
@@ -516,6 +513,8 @@ export const HANDLERS: Handlers = {
 
   // DashPay: identities and registration
   dashpay_status: ({ walletId }, { world }) => dashpay(world, walletId).status,
+  // A pass is asked for; the fixture's world is always past it.
+  dashpay_sync_soon: () => null,
   dashpay_startup: ({ walletId }, { world }) => dashpay(world, walletId).startup,
   identities: ({ walletId }, { world }) => dashpay(world, walletId).identities,
   identity_detail: ({ walletId, identity }, { world }) => ({
@@ -526,25 +525,16 @@ export const HANDLERS: Handlers = {
   main_name: ({ walletId, identity }, { world }) =>
     dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!.mainName,
   registrations: ({ walletId }, { world }) => dashpay(world, walletId).registrations,
-  search_users: ({ walletId, prefix, limit }, { world }) =>
-    dashpay(world, walletId)
-      .directory.filter((u) => u.username.startsWith(prefix.toLowerCase()))
-      .slice(0, limit),
+  search_users: ({ walletId, prefix, limit }, { world }) => {
+    const dp = dashpay(world, walletId);
+    if (dp.searchOffline) throw fail("platform.unavailable", "DAPI did not answer");
+    return dp.directory.filter((u) => u.username.startsWith(prefix.trim().toLowerCase())).slice(0, limit);
+  },
   resolve_user: ({ walletId, username }, { world }) =>
     dashpay(world, walletId).directory.find((u) => u.username === username.toLowerCase()) ?? null,
 
   // DashPay: contacts
-  dashpay_contacts: ({ walletId, identity, query }, { world }) => {
-    const text = query.text?.trim().toLowerCase();
-    const contacts = dashpay(world, walletId, identity).contacts.filter(
-      (c) => !text || [c.summary.username, c.summary.displayName, c.summary.alias].some((v) => v?.toLowerCase().includes(text)),
-    );
-    const sections = query.sections.length ? query.sections : (["requests", "contacts", "pending", "hidden"] as const);
-    return {
-      sections: sections.map((section) => ({ section, contacts: contacts.filter((c) => sectionOf(c) === section).map((c) => c.summary) })),
-      updating: false,
-    };
-  },
+  dashpay_contacts: ({ walletId, identity, query }, { world }) => contactList(dashpay(world, walletId, identity), query),
   dashpay_contact: ({ walletId, identity, contact: id }, { world }) =>
     dashpay(world, walletId, identity).contacts.find((c) => c.summary.contact === id) ?? null,
   dashpay_pending_setup_count: ({ walletId }, { world }) =>

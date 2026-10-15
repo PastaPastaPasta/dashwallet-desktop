@@ -105,3 +105,18 @@ for (const theme of THEMES) {
     });
   }
 }
+
+// DP2-07: Contacts with Hidden open and a contact selected.
+for (const theme of THEMES) {
+  test(`visual contacts ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-registered", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "contacts" }));
+    await page.getByTestId("contacts-group-hidden").getByRole("button").click();
+    await page.getByTestId("contact-row").filter({ hasText: "Carol" }).click();
+    await page.getByTestId("contact-detail").waitFor();
+    // No row under the pointer.
+    await page.mouse.move(0, 0);
+    await shoot(page, "contacts", theme);
+  });
+}
