@@ -1153,7 +1153,34 @@ impl AppDb {
         wallet_id: &str,
         row: &DpPaymentLockRow,
     ) -> Result<Option<String>> {
+        Self::upsert_payment_lock(&self.conn(), wallet_id, row)
+    }
+
+    /// [`Self::set_dp_payment_lock`], durable against power loss when it
+    /// returns `Ok`: the write commits under `synchronous=FULL`, which syncs
+    /// the WAL at the commit (the connection otherwise runs `NORMAL`, under
+    /// which a commit is not synced), and a failed sync is an error. One
+    /// WAL fsync, not a checkpoint: no other connection can make it busy.
+    /// The connection is back to `NORMAL` afterwards (DP3-01 D27).
+    pub fn set_dp_payment_lock_durable(
+        &self,
+        wallet_id: &str,
+        row: &DpPaymentLockRow,
+    ) -> Result<Option<String>> {
         let conn = self.conn();
+        conn.pragma_update(None, "synchronous", "FULL")?;
+        let written = Self::upsert_payment_lock(&conn, wallet_id, row);
+        let normal = conn.pragma_update(None, "synchronous", "NORMAL");
+        let held = written?;
+        normal?;
+        Ok(held)
+    }
+
+    fn upsert_payment_lock(
+        conn: &Connection,
+        wallet_id: &str,
+        row: &DpPaymentLockRow,
+    ) -> Result<Option<String>> {
         conn.execute(
             "INSERT INTO dp_payment_lock (wallet_id, identity, contact, txid, since, inputs)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -1442,6 +1469,48 @@ mod tests {
             vec![row("carol", "t3", 30)]
         );
         assert_eq!(db.dp_payment_locks(W2).unwrap(), vec![row("bob", "t4", 40)]);
+    }
+
+    /// D27: the durable write commits under `synchronous=FULL` (a trigger
+    /// refusing any other commit sees it), the plain one does not, and the
+    /// connection is back to `NORMAL` after either outcome.
+    #[test]
+    fn the_durable_payment_lock_commits_synced() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = AppDb::open(&dir.path().join(APP_DB_FILE)).unwrap();
+        let row = DpPaymentLockRow {
+            identity: "me".into(),
+            contact: "bob".into(),
+            txid: "t1".into(),
+            since: 1,
+            inputs: String::new(),
+        };
+        let synchronous = |db: &AppDb| -> i64 {
+            db.conn()
+                .query_row("PRAGMA synchronous", [], |r| r.get(0))
+                .unwrap()
+        };
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER need_full BEFORE INSERT ON dp_payment_lock BEGIN
+                 SELECT RAISE(FAIL, 'not synced')
+                 WHERE (SELECT synchronous FROM pragma_synchronous) < 2; END;",
+            )
+            .unwrap();
+        assert!(db.set_dp_payment_lock(W, &row).is_err());
+        assert_eq!(synchronous(&db), 1);
+        assert_eq!(db.set_dp_payment_lock_durable(W, &row).unwrap(), None);
+        assert_eq!(synchronous(&db), 1, "back to NORMAL");
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER need_full;
+                 CREATE TRIGGER fail_lock BEFORE UPDATE ON dp_payment_lock BEGIN
+                 SELECT RAISE(FAIL, 'injected'); END;",
+            )
+            .unwrap();
+        assert!(db.set_dp_payment_lock_durable(W, &row).is_err());
+        assert_eq!(synchronous(&db), 1, "back to NORMAL after an error");
+        assert_eq!(db.dp_payment_locks(W).unwrap(), vec![row]);
     }
 
     #[test]

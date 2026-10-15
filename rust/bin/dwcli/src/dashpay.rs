@@ -1680,27 +1680,32 @@ enum PaymentFailed {
 /// success: the contact accepted, the payment's error and what to do next.
 /// Not an error: the accept stands, and `--accept` again would be refused.
 fn after_accept(grant: Value, payment: Result<Value, PaymentFailed>) -> Value {
-    let (e, unknown) = match payment {
+    let (e, broadcasting) = match payment {
         Ok(mut paid) => {
             paid["accepted"] = json!(true);
             return paid;
         }
         // Nothing was recorded or sent before the broadcast.
         Err(PaymentFailed::Prepare(e)) => (e, false),
-        Err(PaymentFailed::Broadcast(e)) => {
-            let unknown = e.is_task_panic()
-                || matches!(e, EngineError::Send(SendFailure::BroadcastUnknown { .. }));
-            (e, unknown)
-        }
+        Err(PaymentFailed::Broadcast(e)) => (e, true),
     };
-    let e = CliError::from(e);
-    let next = if unknown {
+    let next = if matches!(e, EngineError::Contact(ContactError::PaymentLocked { .. })) {
+        // Another payment to the contact, from either step: paying again
+        // now would be refused the same way.
+        "another payment to the contact (`payment_error.params.txid`) is under way \
+         or locked: wait for it, or settle its lock (`contact lock`, \
+         `contact resolve-lock`), then pay with `pay-contact` without --accept"
+    } else if broadcasting
+        && (e.is_task_panic()
+            || matches!(e, EngineError::Send(SendFailure::BroadcastUnknown { .. })))
+    {
         "the payment may have gone out: the contact is locked until \
          `contact resolve-lock` settles it"
     } else {
         "accepted, payment cancelled: pay now with `pay-contact` without \
          --accept (a new Spend grant)"
     };
+    let e = CliError::from(e);
     json!({
         "grant": grant,
         "accepted": true,
@@ -1973,6 +1978,18 @@ mod tests {
         let panicked = EngineError::Internal(dw_engine::TASK_PANICKED.into());
         let r = after_accept(grant.clone(), Err(PaymentFailed::Broadcast(panicked)));
         assert!(r["next"].as_str().unwrap().contains("resolve-lock"));
+
+        // Sol r2: another payment locks the contact, found at either step.
+        for failed in [PaymentFailed::Prepare, PaymentFailed::Broadcast] {
+            let locked = EngineError::Contact(ContactError::PaymentLocked { txid: "t0".into() });
+            let r = after_accept(grant.clone(), Err(failed(locked)));
+            assert_eq!(r["paid"], json!(false));
+            assert_eq!(r["payment_error"]["code"], json!("contact.payment_locked"));
+            assert_eq!(r["payment_error"]["params"]["txid"], json!("t0"));
+            let next = r["next"].as_str().unwrap();
+            assert!(next.contains("resolve-lock"), "{next}");
+            assert!(!next.contains("pay now"), "{next}");
+        }
 
         let r = after_accept(grant, Ok(json!({"txid": "t"})));
         assert_eq!(r, json!({"txid": "t", "accepted": true}));

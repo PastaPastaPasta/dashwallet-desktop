@@ -242,13 +242,15 @@ impl NetworkSession {
         })
     }
 
-    /// Writes `txid`'s lock row for `pair` before its first hand-off (D23):
-    /// what a restart or a reload reads back as the pair's lock, so no
-    /// payment that may have gone out lives in memory only. Refused, and
+    /// Writes `txid`'s lock row for `pair` before its first hand-off (D23),
+    /// synced against power loss (D27): what a restart or a reload reads
+    /// back as the pair's lock, so no payment that may have gone out lives
+    /// in memory only. Refused, and
     /// nothing written, while another payment's row holds the pair
     /// (`contact.payment_locked`; that row becomes the pair's lock in memory,
     /// for `payment_lock` and `resolve_payment_lock`, should memory have
-    /// lost it) or when the write fails: the hand-off must not happen.
+    /// lost it) or when the write or its sync fails: the hand-off must not
+    /// happen.
     /// Memory is otherwise left to the outcome (`lock_payment`).
     pub(crate) async fn record_payment(
         &self,
@@ -268,7 +270,7 @@ impl NetworkSession {
         let wallet = id.to_string();
         let held = self
             .appdb_op(move |db| {
-                if db.set_dp_payment_lock(&wallet, &row)?.is_none() {
+                if db.set_dp_payment_lock_durable(&wallet, &row)?.is_none() {
                     return Ok(None);
                 }
                 let rows = db.dp_payment_locks(&wallet)?;

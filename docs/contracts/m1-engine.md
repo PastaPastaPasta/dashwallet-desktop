@@ -427,8 +427,8 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
   `Spend` grant (it becomes a one-payment lease) or an `AcceptAndPay` lease with a `Spend` grant; another lease is
   `send.grant_invalid`. The hand-off goes through the dispatch fence: a vault lock before it is `send.cancelled`
   (nothing sent; prepare again with a new grant). With contact crypto queued and the vault locked, `prepare` is
-  `send.vault_locked` before the grant is redeemed. Before the first hand-off the payment's lock row is written
-  (m4's `dp_payment_lock`): if it cannot be written, nothing is handed off and the broadcast fails with `storage`
+  `send.vault_locked` before the grant is redeemed. Before the first hand-off the payment's lock row is written and
+  synced against power loss (m4's `dp_payment_lock`): if it cannot be written or synced, nothing is handed off and the broadcast fails with `storage`
   (the payment stays prepared, its address with the contact); a restart or reload reads the row back as the
   contact's lock until positive evidence settles it. Broadcasts of one prepared contact payment run one at a time:
   a concurrent one waits for the one before it to settle the contact (another payment's overlap is still

@@ -911,8 +911,8 @@ fn a_row_on_disk_holds_the_contact_at_the_hand_off() {
     assert_eq!(f.resolve(BOB), LockResolution::Unknown);
 }
 
-/// D23: the hand-off waits for the payment's row: while its write is
-/// held, nothing reaches a peer.
+/// D23/D27: the hand-off waits for the payment's synced row: while that
+/// write is held, nothing reaches a peer.
 #[test]
 fn a_held_record_holds_the_hand_off() {
     let f = fixture(false);
@@ -1000,6 +1000,46 @@ fn a_repeat_waits_for_the_settlement_before_it() {
     assert_eq!(seam.entered.load(Ordering::SeqCst), 2);
     assert!(f.lock(BOB).is_none(), "accepted: no lock in memory");
     assert!(f.rows().is_empty(), "nor on disk");
+}
+
+/// D27 (Sol r2): the row is synced before the hand-off. A failure of the
+/// synced commit alone (a trigger that refuses only a commit under
+/// `synchronous=FULL`, as a failed sync refuses it) refuses the hand-off:
+/// no peer gets the bytes. Were the row written unsynced, the trigger would
+/// let it pass and the payment would go out.
+#[test]
+fn a_failed_sync_refuses_the_hand_off() {
+    let f = fixture(false);
+    let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Accept);
+    let p = (f.engine)
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    let sqlite = f.sqlite();
+    sqlite
+        .execute_batch(
+            "CREATE TRIGGER fail_sync BEFORE INSERT ON dp_payment_lock BEGIN \
+             SELECT RAISE(FAIL, 'injected sync failure') \
+             WHERE (SELECT synchronous FROM pragma_synchronous) >= 2; END;",
+        )
+        .unwrap();
+    let refused = f.engine.block_on(d.broadcast(Arc::clone(&p)));
+    assert!(
+        matches!(refused, Err(EngineError::Storage(_))),
+        "{refused:?}"
+    );
+    assert_eq!(
+        seam.entered.load(Ordering::SeqCst),
+        0,
+        "no peer got the bytes"
+    );
+    assert!(f.rows().is_empty());
+    assert!(f.lock(BOB).is_none());
+    assert_eq!(f.reserved(BOB).map(|a| a.to_string()), Some(paid(&p)));
+
+    sqlite.execute_batch("DROP TRIGGER fail_sync;").unwrap();
+    f.engine.block_on(d.broadcast(p)).unwrap();
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 1);
 }
 
 /// Makes every write of a `dp_payment_lock` row fail.
