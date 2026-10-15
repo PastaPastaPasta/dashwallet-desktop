@@ -260,19 +260,18 @@ pub fn to_recoverable_compact(
 /// the masternode type whose collateral is `masternode_outpoint` in the tip
 /// list, 0 when no masternode has that collateral.
 pub fn current_vote_string(vote: &GovernanceVote, weight: u32) -> String {
-    // `ConvertOutcomeToString` / `ConvertSignalToString`: 0 is "none", an
-    // unknown code "error".
+    // `ConvertOutcomeToString`: 0 is "none", an unknown code "error";
+    // `ConvertSignalToString`: 0 and unknown codes are "none".
     let outcome = match vote.outcome {
         0 => "none",
         code => VoteOutcome::from_code(code).map_or("error", VoteOutcome::as_str),
     };
     let signal = match vote.signal {
-        0 => "none",
         1 => "funding",
         2 => "valid",
         3 => "delete",
         4 => "endorsed",
-        _ => "error",
+        _ => "none",
     };
     format!(
         "{}:{}:{}:{}:{}",
@@ -288,6 +287,20 @@ pub fn current_vote_string(vote: &GovernanceVote, weight: u32) -> String {
 mod tests {
     use super::*;
     use dashcore::secp256k1::SecretKey;
+
+    #[test]
+    fn current_vote_string_prints_unknown_codes_as_core_does() {
+        let mut v = sample();
+        let suffix = |v: &GovernanceVote| {
+            let s = current_vote_string(v, 4);
+            s[s.find(':').unwrap()..].to_string()
+        };
+        assert_eq!(suffix(&v), ":1700000000:yes:funding:4");
+        (v.outcome, v.signal) = (0, 0);
+        assert_eq!(suffix(&v), ":1700000000:none:none:4");
+        (v.outcome, v.signal) = (9, 9);
+        assert_eq!(suffix(&v), ":1700000000:error:none:4");
+    }
 
     fn sample() -> GovernanceVote {
         let txid = "f3d0bbd2e2c0e21a6a3a44a0f4b4c2fb4a2a6f1d1b4b9f6cfc2e3e2d1c0b0a09"

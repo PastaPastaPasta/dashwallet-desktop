@@ -5,8 +5,12 @@
 //! counts only when its signature recovers the voting key the masternode
 //! list gives for its collateral outpoint ([`GovernanceStore::set_voting_keys`],
 //! Core `CGovernanceVote::IsValid`), as MG-00 D45 assumes: without the list
-//! every vote is refused. Votes whose object has not arrived yet wait
-//! (bounded) until it does.
+//! every vote is refused. Only funding votes on proposals are kept: Core
+//! checks votes on triggers against the operator key, which this wallet
+//! does not handle. Votes whose object has not arrived yet wait (bounded)
+//! until it does. Core's per-masternode minimum between vote updates
+//! (`GOVERNANCE_UPDATE_MIN`, timed by the node's own receive clock) is not
+//! mirrored (MG-01 D13).
 
 use std::collections::{HashMap, HashSet};
 
@@ -52,8 +56,9 @@ pub struct StoredObject {
 pub enum VoteRejection {
     /// Already stored.
     Duplicate,
-    /// Not a funding vote with a yes / no / abstain outcome (trigger votes
-    /// are operator-signed and not tallied here).
+    /// Not a funding vote with a yes / no / abstain outcome on a proposal
+    /// (votes on triggers are checked against the operator key and not
+    /// tallied here).
     NotTallied,
     /// The signature recovers no key, or not the masternode's voting key.
     BadSignature,
@@ -62,7 +67,8 @@ pub enum VoteRejection {
     /// Timed more than an hour ahead of the local clock.
     TooNew,
     /// An older vote than the masternode's current one, or one of the same
-    /// time with a lower outcome (Core keeps the higher one).
+    /// time with a lower outcome (Core keeps the higher one). Not
+    /// remembered, as in Core: its signature was never checked.
     Obsolete,
     /// Kept until its object arrives.
     Orphan,
@@ -150,8 +156,9 @@ impl GovernanceStore {
         true
     }
 
-    /// Sets the voting key id of every valid masternode, by collateral
-    /// outpoint (MG-00 D43), and drops the current votes it no longer
+    /// Sets the voting key id of every masternode in the tip list, by
+    /// collateral outpoint (MG-00 D43), PoSe-banned ones included (Core
+    /// `GetMNByCollateral` finds them too), and drops the current votes it no longer
     /// backs: a masternode that left the list or changed its voting key
     /// (Core `CGovernanceManager::RemoveInvalidVotes`). Dropped votes are
     /// no longer seen, so a newer one can be fetched again.
@@ -194,6 +201,9 @@ impl GovernanceStore {
             }
             return Err(VoteRejection::Orphan);
         }
+        if self.objects[&vote.parent_hash].object.object_type != OBJECT_TYPE_PROPOSAL {
+            return Err(VoteRejection::NotTallied);
+        }
         let Some(&key_id) = self.voting_keys.get(&vote.masternode_outpoint) else {
             return Err(VoteRejection::UnknownMasternode);
         };
@@ -205,7 +215,6 @@ impl GovernanceStore {
             && (current.time > vote.time
                 || (current.time == vote.time && current.outcome.code() > outcome.code()))
         {
-            self.seen_votes.insert(hash);
             return Err(VoteRejection::Obsolete);
         }
         // Checked last, as Core does (the cost of recovery). A rejected
@@ -448,6 +457,40 @@ mod tests {
             s.outcome_of(&h, &no.masternode_outpoint),
             Some(VoteOutcome::Abstain)
         );
+    }
+
+    #[test]
+    fn test_qt_128_obsolete_votes_are_not_remembered() {
+        let obj = GovernanceObject::new_proposal(1, 1, br#"{"name":"a","type":1}"#.to_vec());
+        let h = obj.hash();
+        let (current, key) = signed_vote(h, 1, VoteOutcome::Yes, 20);
+        let mut s = store_with(&obj, &[(current.masternode_outpoint, key)]);
+        assert_eq!(s.add_vote(current, Network::Regtest), Ok(()));
+        // Unsigned and older: refused before any signature check, and
+        // left out of the seen set so junk cannot grow it.
+        let mut junk = signed_vote(h, 1, VoteOutcome::No, 10).0;
+        junk.signature.clear();
+        let junk_hash = junk.hash();
+        assert_eq!(
+            s.add_vote(junk, Network::Regtest),
+            Err(VoteRejection::Obsolete)
+        );
+        assert!(!s.has_vote(&junk_hash));
+    }
+
+    #[test]
+    fn test_qt_128_votes_on_triggers_are_not_tallied() {
+        let mut t = GovernanceObject::new_proposal(1, 2, Vec::new());
+        t.object_type = OBJECT_TYPE_TRIGGER;
+        let (vote, key) = signed_vote(t.hash(), 1, VoteOutcome::Yes, 10);
+        let mut s = store_with(&t, &[(vote.masternode_outpoint, key)]);
+        let hash = vote.hash();
+        assert_eq!(
+            s.add_vote(vote, Network::Regtest),
+            Err(VoteRejection::NotTallied)
+        );
+        assert!(!s.has_vote(&hash));
+        assert_eq!(s.vote_count(), 0);
     }
 
     #[test]
