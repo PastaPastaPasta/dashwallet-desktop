@@ -19,8 +19,9 @@ export function useEventFeed(walletId: string, identity: string) {
 }
 
 /** Marks the feed read once its first page shows (D11), and returns the ids that were unread
- * then: they stay under New for this opening. */
-export function useReadOnOpen(walletId: string, identity: string, feed: ReturnType<typeof useEventFeed>): ReadonlySet<number> {
+ * then: they stay under New for this opening. `onMarked` runs once the mark is stored (the
+ * bell's badge re-reads then). */
+export function useReadOnOpen(walletId: string, identity: string, feed: ReturnType<typeof useEventFeed>, onMarked: () => void): ReadonlySet<number> {
   const b = useBackend();
   const first = feed.data?.pages[0];
   const [unreadAtOpen, setUnread] = useState<ReadonlySet<number> | null>(null);
@@ -29,7 +30,7 @@ export function useReadOnOpen(walletId: string, identity: string, feed: ReturnTy
     setUnread(new Set(first.new.map((e) => e.id)));
     const upTo = newestId(first);
     // A failed mark leaves the events unread for the next opening; nothing to say now.
-    if (first.new.length > 0 && upTo !== null) b.dashpayMarkRead(walletId, identity, upTo).catch(() => undefined);
-  }, [b, walletId, identity, first, unreadAtOpen]);
+    if (first.new.length > 0 && upTo !== null) b.dashpayMarkRead(walletId, identity, upTo).then(onMarked, () => undefined);
+  }, [b, walletId, identity, first, unreadAtOpen, onMarked]);
   return unreadAtOpen ?? new Set();
 }

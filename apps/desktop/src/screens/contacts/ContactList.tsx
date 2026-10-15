@@ -2,6 +2,7 @@
 // D13), and the network search under them (D6).
 
 import { useId, useRef, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from "react";
+import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { UserHit } from "../../api/generated/UserHit";
 import { Chip, DashButton } from "../../components/basics";
 import { avatarLetters, initials, moveFocus, rowChips, rowNote, shownName, subtitle, type Group, type RowChip } from "../../contacts/model";
@@ -16,10 +17,19 @@ export function RowChips({ chips, testIds = false }: { chips: RowChip[]; testIds
   ));
 }
 
-/** One row: avatar, name, `@username` under it, and what trails it. */
-function Row({ letters, name, sub, trailing, ...button }: { letters: string; name: string; sub: string | null; trailing: ReactNode } & ButtonHTMLAttributes<HTMLButtonElement> & Record<`data-${string}`, string | undefined>) {
+/** One row: avatar, name, `@username` under it, and what trails it; `after` sits beside the
+ * row's button, as buttons do not nest (DP2-09 D15). */
+function Row({
+  letters,
+  name,
+  sub,
+  trailing,
+  after,
+  ...button
+}: { letters: string; name: string; sub: string | null; trailing: ReactNode; after?: ReactNode } & ButtonHTMLAttributes<HTMLButtonElement> &
+  Record<`data-${string}`, string | undefined>) {
   return (
-    <li>
+    <li className={after ? "contact-row-item has-actions" : undefined}>
       <button type="button" className="contact-row tx-row" {...button}>
         <Avatar letters={letters} />
         <span className="contact-row-text tx-row-text">
@@ -28,6 +38,7 @@ function Row({ letters, name, sub, trailing, ...button }: { letters: string; nam
         </span>
         <span className="contact-row-trailing">{trailing}</span>
       </button>
+      {after}
     </li>
   );
 }
@@ -37,11 +48,14 @@ export function ContactGroups({
   selected,
   onSelect,
   onToggleHidden,
+  rowActions,
 }: {
   groups: Group[];
   selected: string | null;
   onSelect: (id: string) => void;
   onToggleHidden: () => void;
+  /** What a row offers beside its button: a request's Accept and Ignore (DP2-09 D15). */
+  rowActions?: (c: ContactSummaryInfo) => ReactNode;
 }) {
   const list = useRef<HTMLDivElement>(null);
   // Arrows, Home and End move between the rows of the open groups, across groups (D13).
@@ -57,13 +71,25 @@ export function ContactGroups({
   return (
     <div className="tx-groups" ref={list} onKeyDown={onKeyDown} data-testid="contacts-groups">
       {groups.map((g) => (
-        <ContactGroup key={g.section} group={g} selected={selected} onSelect={onSelect} onToggle={onToggleHidden} />
+        <ContactGroup key={g.section} group={g} selected={selected} onSelect={onSelect} onToggle={onToggleHidden} rowActions={rowActions} />
       ))}
     </div>
   );
 }
 
-function ContactGroup({ group, selected, onSelect, onToggle }: { group: Group; selected: string | null; onSelect: (id: string) => void; onToggle: () => void }) {
+function ContactGroup({
+  group,
+  selected,
+  onSelect,
+  onToggle,
+  rowActions,
+}: {
+  group: Group;
+  selected: string | null;
+  onSelect: (id: string) => void;
+  onToggle: () => void;
+  rowActions?: (c: ContactSummaryInfo) => ReactNode;
+}) {
   const titleId = useId();
   const rowsId = useId();
   return (
@@ -97,6 +123,7 @@ function ContactGroup({ group, selected, onSelect, onToggle }: { group: Group; s
                 data-contact={c.contact}
                 aria-current={selected === c.contact ? "true" : undefined}
                 onClick={() => onSelect(c.contact)}
+                after={rowActions?.(c)}
               />
             );
           })}

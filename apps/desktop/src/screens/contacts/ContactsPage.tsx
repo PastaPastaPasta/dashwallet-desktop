@@ -1,14 +1,18 @@
 // Contacts (DASHPAY §4, DP2-07): the main identity's contacts in the engine's groups, a sort, the
 // local and network search, the pending-setup hint, and a detail slot beside the list that
-// DP2-08 (Add contact) and DP2-09 (the contact's actions) fill. Copy follows the mobile wallets.
+// DP2-08 (Add contact) and DP2-09 (the contact's pane) fill. DP2-09 adds the Enable DashPay banner
+// and a request row's Accept and Ignore. Copy follows the mobile wallets.
 
 import { useEffect, useRef, useState } from "react";
 import type { ContactSortName } from "../../api/generated/ContactSortName";
+import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
+import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { errorMessage } from "../../api/backend";
 import { useBackend, useLockStatus } from "../../api/queries";
 import { navigate, ui, useUi, type AddContactIntent } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
-import { DashButton, Icon } from "../../components/basics";
+import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
+import { showToast } from "../../components/toast";
 import { EmptyState, LoadingState } from "../../components/history";
 import {
   findContact,
@@ -18,17 +22,22 @@ import {
   networkPrefix,
   SEARCH_DEBOUNCE_MS,
   setupHint,
+  shownName,
   SORTS,
   type ContactsOwner,
 } from "../../contacts/model";
-import { useContactList, useContactsOwner, useNetworkSearch, usePendingSetup } from "../../contacts/queries";
+import type { ContactActions } from "../../contacts/actions";
+import { ENABLE_FIRST, selectionAnnouncement, type EnableBanner as Banner } from "../../contacts/pane";
+import { useContactActions, useContactList, useContactsOwner, useEnableBanner, useNetworkSearch, usePendingSetup } from "../../contacts/queries";
+import { useModel } from "../../onboarding/model";
+import { GrantSheet, Outcome } from "../tools/common";
 import { ContactGroups, NetworkResults } from "./ContactList";
 import { ContactPane } from "./ContactPane";
 
 /** Opens Add contact's slot (D12), in place of a selection or a link's card. */
 const openAdd = (addContact: AddContactIntent) => ui.set({ addContact, contact: null, contactPrefill: null });
 
-export function ContactsPage({ walletId }: { walletId: string }) {
+export function ContactsPage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const backend = useBackend();
   const { owner, retry } = useContactsOwner(walletId);
   // Opening Contacts asks for a DashPay pass soon (D9); a refused ask leaves the engine's schedule.
@@ -46,7 +55,7 @@ export function ContactsPage({ walletId }: { walletId: string }) {
             </DashButton>
           )}
         </header>
-        {owner.kind === "identity" ? <ContactsView walletId={walletId} identity={owner.identity} /> : <NoContacts owner={owner} retry={retry} />}
+        {owner.kind === "identity" ? <ContactsView walletId={walletId} identity={owner.identity} network={network} /> : <NoContacts owner={owner} retry={retry} />}
       </div>
     </main>
   );
@@ -102,13 +111,13 @@ function NoContacts({ owner, retry }: { owner: Exclude<ContactsOwner, { kind: "i
   // A `dashpay://user` link still shows what it carried (U-01 D12).
   return (
     <>
-      {prefill && <ContactPane prefill={prefill} add={null} selected={null} />}
+      {prefill && <ContactPane prefill={prefill} add={null} selected={null} pane={null} />}
       {body}
     </>
   );
 }
 
-function ContactsView({ walletId, identity }: { walletId: string; identity: string }) {
+function ContactsView({ walletId, identity, network }: { walletId: string; identity: string; network: NetworkInfo }) {
   const [search, setSearch] = useState("");
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const sort = useUi((s) => s.contactSort);
@@ -127,6 +136,9 @@ function ContactsView({ walletId, identity }: { walletId: string; identity: stri
   const pending = usePendingSetup(walletId);
   const lock = useLockStatus();
   const net = useNetworkSearch(walletId, identity, prefix);
+  // One actions model and passphrase prompt for the pane, the rows and the banner (DP2-09 D16).
+  const actions = useContactActions(walletId, identity);
+  const { banner, hasKeys } = useEnableBanner(walletId, identity);
 
   // Another wallet's Add intent is not this one's (D12).
   const add = intent?.walletId === walletId ? intent : null;
@@ -181,7 +193,13 @@ function ContactsView({ walletId, identity }: { walletId: string; identity: stri
             Updating contacts…
           </p>
         )}
-        <ContactGroups groups={groups} selected={selected?.contact ?? null} onSelect={select} onToggleHidden={() => setHiddenOpen((o) => !o)} />
+        <ContactGroups
+          groups={groups}
+          selected={selected?.contact ?? null}
+          onSelect={select}
+          onToggleHidden={() => setHiddenOpen((o) => !o)}
+          rowActions={(c) => c.relation === "pendingIncoming" && <RequestButtons contact={c} actions={actions} hasKeys={hasKeys} />}
+        />
       </>
     );
 
@@ -215,6 +233,7 @@ function ContactsView({ walletId, identity }: { walletId: string; identity: stri
           </select>
         </label>
       </div>
+      {banner && <EnableDashPay banner={banner} actions={actions} />}
       {hint && (
         <div className={`contacts-hint card-l1 is-${hint.kind}`} role="status" data-testid="contacts-setup-hint">
           <span>{hint.text}</span>
@@ -240,8 +259,79 @@ function ContactsView({ walletId, identity }: { walletId: string; identity: stri
             />
           )}
         </div>
-        <ContactPane prefill={prefill} add={add} selected={selected} />
+        <ContactPane prefill={prefill} add={add} selected={selected} pane={{ walletId, identity, network, actions, hasKeys }} />
       </div>
+      {/* The detail slot's change, said once (DP2-09 D14). */}
+      <VisuallyHidden>
+        <span role="status" aria-live="polite" data-testid="contacts-announcer">
+          {prefill || add ? "" : selectionAnnouncement(selected)}
+        </span>
+      </VisuallyHidden>
+      <GrantSheet grants={actions.grants} />
     </>
+  );
+}
+
+/** A request row's Accept and Ignore (DP2-09 D15). The pane says the outcome of its own contact;
+ * a toast says another's. */
+function RequestButtons({ contact: c, actions: model, hasKeys }: { contact: ContactSummaryInfo; actions: ContactActions; hasKeys: boolean | undefined }) {
+  const actions = useModel(model);
+  const name = shownName(c);
+  const busy = actions.running !== null;
+  const tell = (o: { text: string } | null) => {
+    if (o && ui.get().contact !== c.contact) showToast(o.text);
+  };
+  return (
+    <span className="contact-row-actions">
+      <DashButton
+        variant="filledBlue"
+        size="small"
+        data-testid="contact-row-accept"
+        aria-label={`Accept ${name}`}
+        title={hasKeys === false ? ENABLE_FIRST : undefined}
+        disabled={busy || hasKeys === false}
+        onClick={() => void actions.accept(c.contact, name).then(tell)}
+      >
+        {actions.isRunning("accept", c.contact) ? "Accepting…" : "Accept"}
+      </DashButton>
+      <DashButton
+        variant="tintedGray"
+        size="small"
+        data-testid="contact-row-ignore"
+        aria-label={`Ignore ${name}`}
+        disabled={busy}
+        onClick={() => void actions.ignore(c.contact).then(tell)}
+      >
+        {actions.isRunning("ignore", c.contact) ? "Ignoring…" : "Ignore"}
+      </DashButton>
+    </span>
+  );
+}
+
+/** "Enable DashPay" (DP2-09 D10): the main identity lacks its DashPay keys, so it cannot accept
+ * requests nor pay contacts until it adds them. */
+function EnableDashPay({ banner, actions: model }: { banner: Banner; actions: ContactActions }) {
+  const actions = useModel(model);
+  const outcome = actions.outcome?.kind === "enable" ? actions.outcome : null;
+  return (
+    <div className="contacts-hint contacts-enable card-l1" data-testid="contacts-enable-banner">
+      <span className="contacts-enable-text">
+        <strong>Enable DashPay</strong>
+        <span>
+          Add the keys DashPay needs to accept contact requests and pay contacts
+          {banner.fee !== null && (
+            <>
+              {" "}
+              (a fee of about <span data-testid="contacts-enable-fee">{banner.fee.toLocaleString()}</span> duffs in credits)
+            </>
+          )}
+          .
+        </span>
+        <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contacts-enable-outcome" />
+      </span>
+      <DashButton variant="tintedBlue" size="small" data-testid="contacts-enable" disabled={actions.running !== null} onClick={() => void actions.enable()}>
+        {actions.isRunning("enable", null) ? "Enabling…" : "Enable"}
+      </DashButton>
+    </div>
   );
 }

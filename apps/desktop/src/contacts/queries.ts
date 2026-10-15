@@ -12,6 +12,7 @@ import { keys, useBackend } from "../api/queries";
 import { GrantModel } from "../tools/grant";
 import { ContactActions, type Refresh } from "./actions";
 import { contactsOwner, NETWORK_LIMIT, type ContactsOwner } from "./model";
+import { enableBanner, type EnableBanner } from "./pane";
 
 /** Whose contacts show (D2): the DashPay status, the shell's query; `retry` reads it again (the
  * page shows "starting" while it runs). */
@@ -81,15 +82,9 @@ export function useContactActivity(walletId: string, identity: string, contact: 
 }
 
 /** The wallet's identities (the shell's query): whether the main one has its DashPay keys. */
-export function useIdentities(walletId: string) {
+function useIdentities(walletId: string) {
   const b = useBackend();
   return useQuery({ queryKey: keys.identities(walletId), queryFn: () => b.identities(walletId) });
-}
-
-/** The credit costs, for the Enable DashPay banner's fee (DP2-09 D10). */
-export function useCostTable(walletId: string) {
-  const b = useBackend();
-  return useQuery({ queryKey: ["dashpay", "costTable", walletId] as const, queryFn: () => b.creditsCostTable(walletId), staleTime: 600_000 });
 }
 
 /** The actions one surface runs for `identity` (DP2-09 D16): one model and grant prompt per
@@ -108,4 +103,20 @@ export function useContactActions(walletId: string, identity: string): ContactAc
   }, [b, client, walletId, identity]);
   useEffect(() => () => actions.cancel(), [actions]);
   return actions;
+}
+
+/** The Enable DashPay banner (DP2-09 D10) over the shell's status and identities, with the fee
+ * read only while the banner shows; `hasKeys` is the main identity's (`undefined` while unknown). */
+export function useEnableBanner(walletId: string, identity: string): { banner: EnableBanner | null; hasKeys: boolean | undefined } {
+  const b = useBackend();
+  const status = useQuery({ queryKey: keys.dashpayStatus(walletId), queryFn: () => b.dashpayStatus(walletId) });
+  const identities = useIdentities(walletId);
+  const hasKeys = identities.data?.find((i) => i.identity === identity)?.hasDashpayKeys;
+  const costs = useQuery({
+    queryKey: ["dashpay", "costTable", walletId] as const,
+    queryFn: () => b.creditsCostTable(walletId),
+    staleTime: 600_000,
+    enabled: hasKeys === false,
+  });
+  return { banner: enableBanner(status.data, identities.data, costs.data), hasKeys };
 }

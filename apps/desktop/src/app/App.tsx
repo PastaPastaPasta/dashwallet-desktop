@@ -16,6 +16,7 @@ import { Overview } from "../screens/Overview";
 import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
 import { ContactsPage, PayPage, Placeholder } from "../screens/Routes";
+import { NotificationsPage, NotificationsPopover } from "../screens/notifications/Notifications";
 import { ToolsPage } from "../screens/tools/ToolsPage";
 import { SettingsPage } from "../screens/settings/SettingsPage";
 import { AboutSheet, OpenUriSheet } from "../screens/ShellDialogs";
@@ -156,7 +157,7 @@ function Shell() {
   };
 
   let content;
-  if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts") {
+  if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts" || route === "notifications") {
     if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
     else if (wallets.isError)
       content = (
@@ -179,7 +180,8 @@ function Shell() {
     else if (route === "home") content = <Overview key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
     else if (route === "pay") content = <PayPage walletId={wallet.walletId} network={network} />;
     else if (route === "receive") content = <ReceivePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
-    else if (route === "contacts") content = <ContactsPage key={wallet.walletId} walletId={wallet.walletId} />;
+    else if (route === "contacts") content = <ContactsPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
+    else if (route === "notifications") content = <NotificationsPage key={wallet.walletId} walletId={wallet.walletId} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
   } else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} />;
   else if (route === "settings") content = <SettingsPage />;
@@ -207,6 +209,11 @@ function Shell() {
           unread={dashpay.unread}
           canLock={canLock}
           onLock={lockNow}
+          bellPanel={
+            wallet && dashpay.main
+              ? (id, close) => <NotificationsPopover key={`${wallet.walletId}:${dashpay.main!.identity}`} walletId={wallet.walletId} identity={dashpay.main!.identity} id={id} close={close} />
+              : undefined
+          }
         />
         <div className="app-body">
           <Sidebar joined={joined} requests={dashpay.requests} />
