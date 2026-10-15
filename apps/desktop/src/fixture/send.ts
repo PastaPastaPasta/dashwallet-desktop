@@ -535,15 +535,17 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
       const built = build(world, w, d);
       const change = d.change.kind === "address" ? d.change.address : receiveAddress(w, 2000 + draft, null).address;
       const psbt = btoa(`psbt\xffdraft-${draft}`);
+      const outputs = [
+        ...d.recipients.map((r, i) => ({ address: r.address, amount: i === 0 ? built.totalSent : r.amount, isMine: owns(w, r.address) })),
+        ...(built.change === null ? [] : [{ address: change, amount: built.change, isMine: d.change.kind === "auto" || owns(w, change) }]),
+      ];
       world.tools.psbts[psbt] = {
-        outputs: [
-          ...d.recipients.map((r, i) => ({ address: r.address, amount: i === 0 ? built.totalSent : r.amount, isMine: owns(w, r.address) })),
-          ...(built.change === null ? [] : [{ address: change, amount: built.change, isMine: d.change.kind === "auto" || owns(w, change) }]),
-        ],
+        outputs,
         fee: built.fee,
         inputs: built.inputs.length,
         signedInputs: 0,
         signer: d.walletId,
+        tx: JSON.stringify([built.inputs, outputs.map((o) => [o.address, o.amount])]),
       };
       return psbt;
     },

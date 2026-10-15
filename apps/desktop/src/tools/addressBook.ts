@@ -26,11 +26,39 @@ export const AddressBookText = {
 };
 
 /** dash-qt's wildcard filter: `*` any run, `?` one character, case-insensitive, anywhere in the
- * text. */
+ * text. A greedy matcher that backs up only to the last star, so the work stays within pattern ×
+ * text however many stars there are (a regular expression backtracks exponentially, U-05 D39). */
 export function wildcard(pattern: string): (text: string) => boolean {
-  const source = [...pattern].map((c) => (c === "*" ? ".*" : c === "?" ? "." : c.replace(/[.+^${}()|[\]\\]/g, "\\$&"))).join("");
-  const re = new RegExp(source, "i");
-  return (text) => re.test(text);
+  // "Anywhere in the text" is a star at each end; a run of stars is one star.
+  // Each character folded alone, as the regular expression's `i` did: lowercasing a whole string
+  // depends on context (a final sigma) and can turn one character into two (İ).
+  const fold = (text: string) => [...text].map((c) => c.toLowerCase());
+  const p = fold(`*${pattern}*`.replace(/\*+/g, "*"));
+  return (text) => {
+    const t = fold(text);
+    let i = 0;
+    let j = 0;
+    let star = -1;
+    let resume = 0;
+    while (j < t.length) {
+      if (i < p.length && (p[i] === "?" || p[i] === t[j])) {
+        i += 1;
+        j += 1;
+      } else if (i < p.length && p[i] === "*") {
+        star = i;
+        i += 1;
+        resume = j;
+      } else if (star >= 0) {
+        i = star + 1;
+        resume += 1;
+        j = resume;
+      } else {
+        return false;
+      }
+    }
+    while (p[i] === "*") i += 1;
+    return i === p.length;
+  };
 }
 
 const quote = (s: string) => `"${s.replaceAll('"', '""')}"`;

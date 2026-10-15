@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { CommandName } from "../src/api/generated/commands";
 import { seriousAxeViolations } from "./axe";
 import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 import { PAYEE } from "./wallet";
@@ -13,6 +14,8 @@ type ToolsTab = (typeof TABS)[number];
 /** A binary PSBT the funded wallet signs (src/fixture/tools.ts FIXTURE_PSBT.unsigned). */
 const UNSIGNED = Buffer.from("psbt\xffunsigned", "latin1").toString("base64");
 const FOREIGN = Buffer.from("psbt\xffforeign", "latin1").toString("base64");
+/** A signed PSBT ready to broadcast (FIXTURE_PSBT.complete). */
+const COMPLETE = Buffer.from("psbt\xffcomplete", "latin1").toString("base64");
 
 async function open(page: Page, scenario = "funded", theme: Theme = "light") {
   const errors = trackPageErrors(page);
@@ -39,6 +42,12 @@ async function fakeClipboard(page: Page) {
 }
 
 const copied = (page: Page) => page.evaluate(() => (window as unknown as { __copied?: string }).__copied);
+
+/** Holds the next call of `cmd` until the returned function is called (a late reply). */
+async function hold(page: Page, cmd: CommandName) {
+  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), cmd);
+  return () => release.evaluate((r) => r());
+}
 
 /** The passphrase sheet of a pending grant, answered. */
 async function authorize(page: Page, passphrase = "demo") {
@@ -283,6 +292,45 @@ test.describe("Sign/Verify", () => {
     await page.getByTestId("verify-clear").click();
     await expect(page.getByTestId("verify-result")).toHaveCount(0);
   });
+
+  test("D38: an edit clears the signature or outcome it no longer describes", async ({ page }) => {
+    await open(page);
+    await tools(page, "signVerify");
+    await page.getByTestId("sign-choose").click();
+    await page.getByTestId("address-book-picker").locator("tr", { hasText: "Payroll" }).getByRole("button", { name: /Choose/ }).click();
+    const address = await page.getByTestId("sign-address").inputValue();
+    await page.getByTestId("sign-message").fill("hello dash");
+    await page.getByTestId("sign-sign").click();
+    await expect(page.getByTestId("sign-result")).toHaveText("Message signed.");
+    const signature = await page.getByTestId("sign-signature").inputValue();
+    await page.getByTestId("sign-message").fill("hello dash!");
+    await expect(page.getByTestId("sign-result")).toHaveCount(0);
+    await expect(page.getByTestId("sign-signature")).toHaveCount(0);
+    // The address, typed or chosen again, clears it too.
+    await page.getByTestId("sign-sign").click();
+    await expect(page.getByTestId("sign-result")).toHaveText("Message signed.");
+    await page.getByTestId("sign-address").fill(`${address} `);
+    await expect(page.getByTestId("sign-result")).toHaveCount(0);
+    await page.getByTestId("sign-sign").click();
+    await expect(page.getByTestId("sign-result")).toHaveText("Message signed.");
+    await page.getByTestId("sign-choose").click();
+    await page.getByTestId("address-book-picker").locator("tr", { hasText: "Payroll" }).getByRole("button", { name: /Choose/ }).click();
+    await expect(page.getByTestId("sign-result")).toHaveCount(0);
+
+    await page.getByTestId("verify-address").fill(address);
+    await page.getByTestId("verify-message").fill("hello dash");
+    await page.getByTestId("verify-signature").fill(signature);
+    await page.getByTestId("verify-verify").click();
+    await expect(page.getByTestId("verify-result")).toHaveText("Message verified.");
+    for (const field of ["verify-message", "verify-address", "verify-signature"]) {
+      const before = await page.getByTestId(field).inputValue();
+      await page.getByTestId(field).fill(`${before} `);
+      await expect(page.getByTestId("verify-result")).toHaveCount(0);
+      await page.getByTestId(field).fill(before);
+      await page.getByTestId("verify-verify").click();
+      await expect(page.getByTestId("verify-result")).toHaveText("Message verified.");
+    }
+  });
 });
 
 test.describe("PSBT", () => {
@@ -302,6 +350,38 @@ test.describe("PSBT", () => {
     await expect(page.getByTestId("psbt-message")).toHaveText("Signed transaction successfully. Transaction is ready to broadcast.");
     await page.getByTestId("psbt-broadcast").click();
     await expect(page.getByTestId("psbt-message")).toContainText("Transaction broadcast successfully! Transaction ID:");
+    await expect(page.getByTestId("psbt-broadcast")).toBeDisabled();
+    expect(await world(page, (w) => w.tools.broadcasts.length)).toBe(1);
+  });
+
+  test("D40: a broadcast in flight holds every tab, and the same payment with other PSBT fields is not broadcast again", async ({ page }) => {
+    await open(page);
+    // The same unsigned transaction and signatures with an extra PSBT field: another base64.
+    const annotated = await world(page, (w) => {
+      const copy = btoa("psbt\xffcomplete+proprietary");
+      w.tools.psbts[copy] = { ...w.tools.psbts[btoa("psbt\xffcomplete")] };
+      return copy;
+    });
+    await tools(page, "psbt");
+    await page.getByTestId("psbt-paste").fill(COMPLETE);
+    await page.getByTestId("psbt-load-text").click();
+    const release = await hold(page, "broadcast_psbt");
+    await page.getByTestId("psbt-broadcast").click();
+    await expect(page.getByTestId("psbt-broadcast")).toHaveText("Broadcasting…");
+
+    // Away to another tab and back while the network has not answered: a new PSBT tab.
+    await tools(page, "signVerify");
+    await tools(page, "psbt");
+    await page.getByTestId("psbt-paste").fill(annotated);
+    await page.getByTestId("psbt-load-text").click();
+    await expect(page.getByTestId("psbt-notice")).toHaveText("This transaction is being broadcast already.");
+    await expect(page.getByTestId("psbt-broadcast")).toBeDisabled();
+    await release();
+    await expect(page.getByTestId("psbt-notice")).toContainText("This transaction was broadcast already. Transaction ID:");
+    await expect(page.getByTestId("psbt-broadcast")).toBeDisabled();
+    await page.getByTestId("psbt-paste").fill(COMPLETE);
+    await page.getByTestId("psbt-load-text").click();
+    await expect(page.getByTestId("psbt-notice")).toContainText("This transaction was broadcast already.");
     await expect(page.getByTestId("psbt-broadcast")).toBeDisabled();
     expect(await world(page, (w) => w.tools.broadcasts.length)).toBe(1);
   });
@@ -339,6 +419,46 @@ test.describe("PSBT", () => {
     expect(await copied(page)).toMatch(/^[A-Za-z0-9+/]+=*$/);
     // Nothing was signed or sent.
     expect(await world(page, (w) => w.tools.broadcasts.length)).toBe(0);
+  });
+
+  test("QT076_D37: Create Unsigned copies nothing when the plan changed after the review", async ({ page }) => {
+    await fakeClipboard(page);
+    await open(page);
+    await page.getByTestId("sidebar-pay").click();
+    await page.getByTestId("pay-tabs-address").click();
+    await page.getByTestId("pay-address").fill(PAYEE);
+    await page.getByTestId("pay-amount").fill("0.5");
+    await expect(page.getByTestId("pay-continue")).toBeEnabled();
+    await page.getByTestId("pay-continue").click();
+    await expect(page.getByTestId("pay-confirm-unsigned")).toBeEnabled();
+    // The coin the estimate planned with goes (spent elsewhere): create_unsigned plans with others.
+    await world(page, (w) => {
+      const coins = w.wallets[0].coins.filter((u) => u.spendable).toSorted((a, b) => b.amount - a.amount);
+      coins[0].spendable = false;
+    });
+    await page.getByTestId("pay-confirm-unsigned").click();
+    await expect(page.getByTestId("pay-result-failed")).toBeVisible();
+    await expect(page.getByTestId("pay-result-text")).toHaveText("The payment changed. Review it again.");
+    expect(await copied(page)).toBeUndefined();
+    await expect(page.getByTestId("tools-tabs")).toHaveCount(0);
+  });
+
+  test("QT076_D37: Create Unsigned copies nothing when its PSBT cannot be checked", async ({ page }) => {
+    await fakeClipboard(page);
+    await open(page);
+    await page.getByTestId("sidebar-pay").click();
+    await page.getByTestId("pay-tabs-address").click();
+    await page.getByTestId("pay-address").fill(PAYEE);
+    await page.getByTestId("pay-amount").fill("0.5");
+    await page.getByTestId("pay-continue").click();
+    await expect(page.getByTestId("pay-confirm-unsigned")).toBeEnabled();
+    await page.evaluate(() => window.__dwFixture!.fail("analyze_psbt", "call"));
+    await page.getByTestId("pay-confirm-unsigned").click();
+    // Said on the sheet, as a failed create_unsigned is.
+    await expect(page.getByTestId("pay-confirm-error")).not.toBeEmpty();
+    await expect(page.getByTestId("pay-confirm-unsigned")).toBeEnabled();
+    expect(await copied(page)).toBeUndefined();
+    await expect(page.getByTestId("tools-tabs")).toHaveCount(0);
   });
 
   test("QT076_D18: a watch-only wallet's confirm sheet offers Create Unsigned instead of Send", async ({ page }) => {

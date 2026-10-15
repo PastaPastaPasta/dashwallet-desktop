@@ -45,6 +45,9 @@ export interface FixturePsbt {
   signedInputs: number;
   /** The wallet holding the inputs' keys; `null`: none of the fixture's. */
   signer: string | null;
+  /** Names the unsigned transaction: copies sharing it (signed, or with other PSBT fields) are one
+   * payment and analyze to one `unsignedTxid` (U-05 D40). */
+  tx: string;
 }
 
 export interface ToolsWorld {
@@ -123,9 +126,24 @@ export function newToolsWorld(main: FixtureWallet): ToolsWorld {
         inputs: 2,
         signedInputs: 0,
         signer: walletId,
+        tx: "unsigned",
       },
-      [FIXTURE_PSBT.foreign]: { outputs: [{ address: PAYEE, amount: 25_000_000, isMine: false }], fee: 1_000, inputs: 1, signedInputs: 0, signer: null },
-      [FIXTURE_PSBT.complete]: { outputs: [{ address: PAYEE, amount: 10_000_000, isMine: false }], fee: 226, inputs: 1, signedInputs: 1, signer: walletId },
+      [FIXTURE_PSBT.foreign]: {
+        outputs: [{ address: PAYEE, amount: 25_000_000, isMine: false }],
+        fee: 1_000,
+        inputs: 1,
+        signedInputs: 0,
+        signer: null,
+        tx: "foreign",
+      },
+      [FIXTURE_PSBT.complete]: {
+        outputs: [{ address: PAYEE, amount: 10_000_000, isMine: false }],
+        fee: 226,
+        inputs: 1,
+        signedInputs: 1,
+        signer: walletId,
+        tx: "complete",
+      },
     },
     broadcasts: [],
   };
@@ -271,6 +289,7 @@ function analyze(world: World, deps: ToolsDeps, walletId: string | null, p: Fixt
     status: p.fee === null ? "missingInputInfo" : p.signedInputs === p.inputs ? "complete" : "needsSignatures",
     signability: walletId === null ? "noWallet" : watchOnly ? "watchOnly" : walletId === p.signer ? "canSign" : "noMatchingKeys",
     externalSent: p.fee === null ? null : externalSent,
+    unsignedTxid: txidOf(`unsigned:${p.tx}`),
   };
 }
 

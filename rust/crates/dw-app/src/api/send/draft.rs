@@ -384,6 +384,9 @@ pub struct PsbtAnalysis {
     pub signability: PsbtSignability,
     /// Value paid to scripts the wallet does not own, fee excluded.
     pub external_sent: Option<u64>,
+    /// The unsigned transaction's txid: the same for every copy of the
+    /// payment whatever its signatures or other PSBT fields (U-05 D40).
+    pub unsigned_txid: String,
 }
 
 impl From<EnginePsbtAnalysis> for PsbtAnalysis {
@@ -396,6 +399,7 @@ impl From<EnginePsbtAnalysis> for PsbtAnalysis {
             status,
             signability,
             external_sent,
+            unsigned_txid,
         } = a;
         PsbtAnalysis {
             outputs: outputs.into_iter().map(Into::into).collect(),
@@ -405,6 +409,7 @@ impl From<EnginePsbtAnalysis> for PsbtAnalysis {
             status: status.into(),
             signability: signability.into(),
             external_sent,
+            unsigned_txid: unsigned_txid.to_string(),
         }
     }
 }

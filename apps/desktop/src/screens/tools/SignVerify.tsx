@@ -1,6 +1,7 @@
 // Tools ▸ Sign/Verify (QT-099, QT-100): dash-qt's two tabs as two cards. Sign takes an address
 // (typed, or chosen from the receiving addresses, QT-097), the message, then a `signMessage`
-// grant (D15); Verify shows the engine's outcome in dash-qt's words.
+// grant (D15); Verify shows the engine's outcome in dash-qt's words. Any edit clears the result it
+// would contradict (D38).
 
 import { useCallback, useId, useState, type ReactNode } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -33,10 +34,14 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
   const [verifyMessage, setVerifyMessage] = useState("");
   const [signature, setSignature] = useState("");
   const [picking, setPicking] = useState(false);
-  const chosen = useCallback((address: string) => {
-    setSignAddress(address);
-    setPicking(false);
-  }, []);
+  const chosen = useCallback(
+    (address: string) => {
+      setSignAddress(address);
+      model.clearSign();
+      setPicking(false);
+    },
+    [model],
+  );
   const verified = model.verifyResult;
 
   return (
@@ -64,7 +69,10 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
                   autoComplete="off"
                   spellCheck={false}
                   placeholder="The Dash address to sign the message with"
-                  onChange={(e) => setSignAddress(e.target.value)}
+                  onChange={(e) => {
+                    setSignAddress(e.target.value);
+                    model.clearSign();
+                  }}
                 />
                 <DashButton variant="tintedGray" size="small" data-testid="sign-choose" onClick={() => setPicking(true)}>
                   Choose…
@@ -81,7 +89,10 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
                 value={signMessage}
                 rows={4}
                 placeholder="Enter the message you want to sign here"
-                onChange={(e) => setSignMessage(e.target.value)}
+                onChange={(e) => {
+                  setSignMessage(e.target.value);
+                  model.clearSign();
+                }}
               />
             )}
           </Field>
@@ -140,7 +151,10 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
                 autoComplete="off"
                 spellCheck={false}
                 placeholder="The Dash address the message was signed with"
-                onChange={(e) => setVerifyAddress(e.target.value)}
+                onChange={(e) => {
+                  setVerifyAddress(e.target.value);
+                  model.clearVerify();
+                }}
               />
             )}
           </Field>
@@ -152,7 +166,10 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
                 data-testid="verify-message"
                 value={verifyMessage}
                 rows={4}
-                onChange={(e) => setVerifyMessage(e.target.value)}
+                onChange={(e) => {
+                  setVerifyMessage(e.target.value);
+                  model.clearVerify();
+                }}
               />
             )}
           </Field>
@@ -165,7 +182,10 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
                 value={signature}
                 autoComplete="off"
                 spellCheck={false}
-                onChange={(e) => setSignature(e.target.value)}
+                onChange={(e) => {
+                  setSignature(e.target.value);
+                  model.clearVerify();
+                }}
               />
             )}
           </Field>

@@ -1311,6 +1311,45 @@ fn psbt_signing_caps_the_wallet_outflow_including_the_fee() {
         .unwrap();
 }
 
+/// U-05 D40: the analysis names the payment by its unsigned txid, which
+/// signatures and extra PSBT fields leave alone and another payment changes.
+#[test]
+fn psbt_analysis_names_the_unsigned_transaction() {
+    let f = fixture(false);
+    let prev = f.credit_with_prev(1, COIN);
+    let change = f.own_address();
+    let psbt = psbt_spending(&prev, &[(FOREIGN, COIN / 2), (&change, 45_000_000)]);
+    let analyze = |p: &dw_psbt::PartiallySignedTransaction| {
+        f.engine
+            .block_on(f.session.analyze_psbt(Some(f.wallet), p.clone()))
+            .unwrap()
+            .unsigned_txid
+    };
+    let txid = analyze(&psbt);
+    assert_eq!(txid, psbt.unsigned_tx.txid());
+
+    let mut annotated = psbt.clone();
+    annotated.unknown.insert(
+        dw_psbt::psbt::raw::Key {
+            type_value: 0xf0,
+            key: vec![1, 2, 3],
+        },
+        vec![9],
+    );
+    assert_eq!(analyze(&annotated), txid);
+    let signed = f.sign_psbt(&psbt, f.spend_grant(55_000_000)).unwrap();
+    assert_eq!(analyze(&signed), txid);
+    // No wallet: the same name.
+    let unloaded = f
+        .engine
+        .block_on(f.session.analyze_psbt(None, signed))
+        .unwrap();
+    assert_eq!(unloaded.unsigned_txid, txid);
+
+    let other = psbt_spending(&prev, &[(FOREIGN, COIN / 2), (&change, 44_000_000)]);
+    assert_ne!(analyze(&other), txid);
+}
+
 /// `witness_utxo` (no segwit on Dash; nothing commits to its value) never
 /// stands in for the previous transaction: the fee is unknown and nothing
 /// is signed.

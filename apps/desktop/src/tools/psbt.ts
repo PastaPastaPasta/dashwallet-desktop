@@ -30,6 +30,10 @@ export const PsbtText = {
   couldNotSign: "Could not sign any more inputs.",
   broadcastSucceeded: (txid: string) => `Transaction broadcast successfully! Transaction ID: ${txid}`,
   broadcastFailed: (why: string) => `Transaction broadcast failed: ${why}`,
+  broadcastUnknown:
+    "The transaction was handed to the network, but whether it was accepted is unknown. Check the transaction list before trying again.",
+  broadcastPending: "This transaction is being broadcast already.",
+  broadcastEarlier: (txid: string) => `This transaction was broadcast already. Transaction ID: ${txid}`,
   copied: "PSBT copied to clipboard.",
   saved: "PSBT saved to disk.",
   saveFailed: "There was an error trying to save the data to this location.",
@@ -67,7 +71,7 @@ export function psbtErrorText(e: unknown): string {
     case "psbt.broadcast_rejected":
       return "The network rejected the transaction.";
     case "psbt.broadcast_unknown":
-      return "The transaction was handed to the network, but whether it was accepted is unknown. Check the transaction list before trying again.";
+      return PsbtText.broadcastUnknown;
     case "vault.locked":
     case "vault.mixing_only":
       return "Cannot sign inputs while wallet is locked.";
@@ -94,9 +98,30 @@ export type PsbtStep = "empty" | "loading" | "ready" | "signing" | "broadcasting
 
 type Api = Pick<Backend, "analyzePsbt" | "signPsbt" | "broadcastPsbt" | "saveFileAs">;
 
-/** Every PSBT broadcast this session, whichever tab or wallet sent it: the same transaction is
- * not offered for broadcast twice (D30). */
-export const SESSION_BROADCASTS = new Map<string, string | true>();
+/** A broadcast of a payment: waiting for the network, sent with its txid, or handed over with an
+ * unknown outcome, which offers no second broadcast either (D17). */
+export type Broadcast = { kind: "pending" } | { kind: "sent"; txid: string } | { kind: "unknown" };
+
+/** The PSBT broadcasts of a session by the payment's unsigned txid, which the engine reads from the
+ * PSBT: signatures and other PSBT fields leave it alone (D40). A broadcast is pending before its
+ * request goes out, and every PSBT tab reads the same log as it changes, so neither another tab nor
+ * the payment loaded again can broadcast it a second time (D30). */
+export class BroadcastLog extends Model {
+  readonly #byTx = new Map<string, Broadcast>();
+
+  get(unsignedTxid: string): Broadcast | null {
+    return this.#byTx.get(unsignedTxid) ?? null;
+  }
+
+  set(unsignedTxid: string, broadcast: Broadcast | null) {
+    if (broadcast === null) this.#byTx.delete(unsignedTxid);
+    else this.#byTx.set(unsignedTxid, broadcast);
+    this.changed();
+  }
+}
+
+/** The log of this session, whichever tab or wallet broadcast. */
+export const SESSION_BROADCASTS = new BroadcastLog();
 
 export class PsbtModel extends Model {
   step: PsbtStep = "empty";
@@ -106,11 +131,6 @@ export class PsbtModel extends Model {
   /** dash-qt's result line after sign, broadcast, copy or save. */
   message: string | null = null;
   error: string | null = null;
-  /** The broadcast's txid; or `true` once a broadcast's outcome is unknown, which offers no
-   * second broadcast (D17). */
-  sent: string | true | null = null;
-  /** A broadcast whose outcome is unknown: said as a note, not a failure (D17). */
-  notice: string | null = null;
   constructor(
     private readonly api: Api,
     readonly grants: GrantModel,
@@ -118,9 +138,9 @@ export class PsbtModel extends Model {
     readonly walletId: string | null,
     /** The display settings (U-04 D4): amounts are said in this unit. */
     private readonly shown: { chain: Chain; amountUnit: Unit },
-    /** What each PSBT broadcast answered, so loading it again offers no second broadcast either;
-     * the screen passes `SESSION_BROADCASTS`, which outlives the tab. */
-    private readonly broadcasts: Map<string, string | true> = new Map(),
+    /** The broadcasts so far; the screen passes `SESSION_BROADCASTS`, which outlives the tab and
+     * re-renders on its changes. */
+    readonly broadcasts: BroadcastLog = new BroadcastLog(),
   ) {
     super();
   }
@@ -158,8 +178,23 @@ export class PsbtModel extends Model {
     return this.step === "ready" && this.walletId !== null && this.analysis?.status === "needsSignatures" && this.analysis.signability === "canSign";
   }
 
+  /** This payment's broadcast, by this tab or another. */
+  get earlier(): Broadcast | null {
+    return this.analysis ? this.broadcasts.get(this.analysis.unsignedTxid) : null;
+  }
+
   get canBroadcast(): boolean {
-    return this.step === "ready" && this.sent === null && this.analysis?.status === "complete";
+    return this.step === "ready" && this.earlier === null && this.analysis?.status === "complete";
+  }
+
+  /** A note on an earlier or running broadcast of this payment; an unknown outcome is said as a
+   * note, not a failure (D17). This tab's own success is its result line instead. */
+  get notice(): string | null {
+    const b = this.earlier;
+    if (b === null || this.step === "broadcasting" || this.step === "broadcast") return null;
+    if (b.kind === "pending") return PsbtText.broadcastPending;
+    if (b.kind === "sent") return PsbtText.broadcastEarlier(b.txid);
+    return PsbtText.broadcastUnknown;
   }
 
   /** dash-qt's Save suggestion: `<address>-<amount>` per paid output, `.psbt`. */
@@ -228,25 +263,25 @@ export class PsbtModel extends Model {
   }
 
   async broadcast() {
-    if (!this.canBroadcast || !this.psbt) return;
-    this.#to("broadcasting");
+    const tx = this.analysis?.unsignedTxid;
+    if (!this.canBroadcast || !this.psbt || tx === undefined) return;
+    // Pending before the request: a second tab, or this payment loaded again, waits on it.
+    this.broadcasts.set(tx, { kind: "pending" });
     this.error = null;
     this.message = null;
-    this.notice = null;
-    const psbt = this.psbt;
+    this.#to("broadcasting");
     try {
-      const txid = await this.api.broadcastPsbt(psbt);
-      this.sent = txid;
-      this.broadcasts.set(psbt, txid);
+      const txid = await this.api.broadcastPsbt(this.psbt);
+      this.broadcasts.set(tx, { kind: "sent", txid });
       this.message = PsbtText.broadcastSucceeded(txid);
       this.#to("broadcast");
     } catch (e) {
       // An unknown outcome is not a failure: it may have been sent (D17).
-      if (hasCode(e, "psbt.broadcast_unknown")) {
-        this.sent = true;
-        this.broadcasts.set(psbt, true);
-        this.notice = psbtErrorText(e);
-      } else this.error = PsbtText.broadcastFailed(psbtErrorText(e));
+      if (hasCode(e, "psbt.broadcast_unknown")) this.broadcasts.set(tx, { kind: "unknown" });
+      else {
+        this.broadcasts.set(tx, null);
+        this.error = PsbtText.broadcastFailed(psbtErrorText(e));
+      }
       this.#to("ready");
     }
   }
@@ -270,9 +305,7 @@ export class PsbtModel extends Model {
     this.psbt = null;
     this.analysis = null;
     this.message = null;
-    this.notice = null;
     this.error = null;
-    this.sent = null;
     this.#to("empty");
   }
 
@@ -280,13 +313,11 @@ export class PsbtModel extends Model {
     const had = this.psbt !== null;
     this.step = "loading";
     this.message = null;
-    this.notice = null;
     this.error = null;
     this.changed();
     try {
       this.analysis = await this.api.analyzePsbt(this.walletId, psbt);
       this.psbt = psbt;
-      this.sent = this.broadcasts.get(psbt) ?? null;
       this.#to("ready");
       return true;
     } catch (e) {

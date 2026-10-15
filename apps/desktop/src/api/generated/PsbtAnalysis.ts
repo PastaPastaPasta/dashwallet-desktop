@@ -19,4 +19,9 @@ total: number | null, unsignedInputs: number, status: PsbtStatus, signability: P
 /**
  * Value paid to scripts the wallet does not own, fee excluded.
  */
-externalSent: number | null, };
+externalSent: number | null, 
+/**
+ * The unsigned transaction's txid: the same for every copy of the
+ * payment whatever its signatures or other PSBT fields (U-05 D40).
+ */
+unsignedTxid: string, };

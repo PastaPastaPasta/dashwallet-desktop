@@ -22,6 +22,8 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
   const shown = useDisplay(network);
   const [model] = useState(() => new PsbtModel(b, grants, walletId, shown, SESSION_BROADCASTS));
   useModel(model);
+  // A broadcast by another tab changes what this one offers (D40).
+  useModel(model.broadcasts);
   const [pasted, setPasted] = useState("");
   const id = useId();
   // Pay's Create Unsigned leaves its PSBT here once (D18).

@@ -72,6 +72,22 @@ describe("Address Book (QT-095…098)", () => {
     expect(wildcard("a*c")("xxABCxx")).toBe(true);
     expect(wildcard("a?c")("abbc")).toBe(false);
     expect(wildcard("a.c")("abc")).toBe(false);
+    expect(wildcard("")("anything")).toBe(true);
+    expect(wildcard("a*b?d")("xxA12BcDxx")).toBe(true);
+    expect(wildcard("*a*b*")("ba")).toBe(false);
+    expect(wildcard("(x)[y]+$")("label (x)[y]+$")).toBe(true);
+    // Folded per character, as the old `i` flag: a final sigma, and İ's one character.
+    expect(wildcard("οδοσ")("ΟΔΟΣ")).toBe(true);
+    expect(wildcard("a?b")("aİb")).toBe(true);
+  });
+
+  it("D39_manyStarsAgainstANonMatchingLabelStayFast", () => {
+    const label = "a".repeat(40);
+    const started = performance.now();
+    expect(wildcard(`${"*a".repeat(20)}*b`)(label)).toBe(false);
+    expect(wildcard(`${"a*".repeat(200)}b`)(label.repeat(25))).toBe(false);
+    // The regular expression this replaced took over 3 s on the first case alone.
+    expect(performance.now() - started).toBeLessThan(500);
   });
 
   it("QT095_newEntryIsValidatedAndSaved", async () => {

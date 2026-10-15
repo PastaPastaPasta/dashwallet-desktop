@@ -6,7 +6,7 @@ import type { PsbtAnalysis } from "../api/generated/PsbtAnalysis";
 import { bytesToBase64, textToBase64 } from "../app/files";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { GrantModel } from "./grant";
-import { PsbtModel, psbtErrorText, psbtOfFile, PsbtText } from "./psbt";
+import { BroadcastLog, PsbtModel, psbtErrorText, psbtOfFile, PsbtText } from "./psbt";
 import { fakeVault } from "./testApi";
 
 const UNSIGNED = "cHNidP8BAHUCAAAAAQ==";
@@ -24,6 +24,7 @@ const analysis = (patch: Partial<PsbtAnalysis> = {}): PsbtAnalysis => ({
   status: "needsSignatures",
   signability: "canSign",
   externalSent: 150_000_000,
+  unsignedTxid: "cd".repeat(32),
   ...patch,
 });
 
@@ -233,7 +234,7 @@ describe("PSBT (QT-076…079)", () => {
     unknown.api.broadcastPsbt.mockRejectedValueOnce(appError("psbt.broadcast_unknown"));
     await unknown.m.loadText(SIGNED);
     await unknown.m.broadcast();
-    expect(unknown.m.sent).toBe(true);
+    expect(unknown.m.earlier).toEqual({ kind: "unknown" });
     expect(unknown.m.notice).toBe(psbtErrorText(appError("psbt.broadcast_unknown")));
     expect(unknown.m.error).toBeNull();
     expect(unknown.m.canBroadcast).toBe(false);
@@ -242,16 +243,79 @@ describe("PSBT (QT-076…079)", () => {
     expect(unknown.m.canBroadcast).toBe(false);
     expect(unknown.api.broadcastPsbt).toHaveBeenCalledTimes(1);
 
-    // The screen's models share one map: a later tab (a new model) remembers the broadcast too.
-    const session = new Map<string, string | true>();
+    // The screen's models share one log: a later tab (a new model) remembers the broadcast too.
+    const session = new BroadcastLog();
     const first = psbt();
     const sentBy = new PsbtModel(first.api, first.grants, WALLET_A, TEST_DASH, session);
     await sentBy.loadText(SIGNED);
     await sentBy.broadcast();
     const later = new PsbtModel(first.api, first.grants, WALLET_A, TEST_DASH, session);
     await later.loadText(SIGNED);
-    expect(later.sent).toBe(TXID);
+    expect(later.earlier).toEqual({ kind: "sent", txid: TXID });
+    expect(later.notice).toBe(PsbtText.broadcastEarlier(TXID));
     expect(later.canBroadcast).toBe(false);
+  });
+
+  it("D40_aBroadcastIsPendingInEveryTabBeforeItsRequestGoesOut", async () => {
+    const session = new BroadcastLog();
+    const t = psbt();
+    let answer!: (r: unknown) => void;
+    t.api.broadcastPsbt.mockImplementation(() => new Promise<string>((ok, no) => (answer = (r) => (typeof r === "string" ? ok(r) : no(r)))));
+    const first = new PsbtModel(t.api, t.grants, WALLET_A, TEST_DASH, session);
+    await first.loadText(SIGNED);
+    let heard = 0;
+    session.subscribe(() => (heard += 1));
+    const sending = first.broadcast();
+    expect(session.get(analysis().unsignedTxid)).toEqual({ kind: "pending" });
+    expect(heard).toBeGreaterThan(0);
+    // The tab is switched away and back: a new model loads the payment mid-flight.
+    const again = new PsbtModel(t.api, t.grants, WALLET_A, TEST_DASH, session);
+    await again.loadText(SIGNED);
+    expect(again.canBroadcast).toBe(false);
+    expect(again.notice).toBe(PsbtText.broadcastPending);
+    await again.broadcast();
+    expect(t.api.broadcastPsbt).toHaveBeenCalledTimes(1);
+    answer(TXID);
+    await sending;
+    expect(again.notice).toBe(PsbtText.broadcastEarlier(TXID));
+    expect(again.canBroadcast).toBe(false);
+    expect(first.notice).toBeNull();
+    expect(first.message).toBe(PsbtText.broadcastSucceeded(TXID));
+
+    // A refused broadcast leaves nothing pending: the payment can be broadcast again.
+    const other = psbt();
+    other.api.broadcastPsbt.mockImplementation(() => new Promise<string>((ok, no) => (answer = (r) => (typeof r === "string" ? ok(r) : no(r)))));
+    const log = new BroadcastLog();
+    const a = new PsbtModel(other.api, other.grants, WALLET_A, TEST_DASH, log);
+    const b = new PsbtModel(other.api, other.grants, WALLET_A, TEST_DASH, log);
+    await a.loadText(SIGNED);
+    await b.loadText(SIGNED);
+    const refused = a.broadcast();
+    expect(b.canBroadcast).toBe(false);
+    answer(appError("psbt.broadcast_rejected"));
+    await refused;
+    expect(b.canBroadcast).toBe(true);
+    expect(b.notice).toBeNull();
+  });
+
+  it("D40_theSamePaymentEncodedDifferentlyIsNotBroadcastTwice", async () => {
+    const session = new BroadcastLog();
+    const t = psbt();
+    // The same unsigned transaction and signatures, with an extra PSBT field.
+    const annotated = "cHNidP8BAHUCAAAAAw==";
+    const elsewhere = "cHNidP8BAHUCAAAABA==";
+    t.byPsbt[annotated] = analysis({ unsignedInputs: 0, status: "complete" });
+    t.byPsbt[elsewhere] = analysis({ unsignedInputs: 0, status: "complete", unsignedTxid: "ef".repeat(32) });
+    const first = new PsbtModel(t.api, t.grants, WALLET_A, TEST_DASH, session);
+    await first.loadText(SIGNED);
+    await first.broadcast();
+    const second = new PsbtModel(t.api, t.grants, WALLET_A, TEST_DASH, session);
+    await second.loadText(annotated);
+    expect(second.canBroadcast).toBe(false);
+    expect(second.notice).toBe(PsbtText.broadcastEarlier(TXID));
+    // Another payment is its own.
+    await second.loadText(elsewhere);
+    expect(second.canBroadcast).toBe(true);
   });
 
   it("QT079_copyAndClose", async () => {

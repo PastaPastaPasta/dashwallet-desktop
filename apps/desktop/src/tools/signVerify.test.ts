@@ -106,4 +106,69 @@ describe("Sign/Verify (QT-099, QT-100)", () => {
     expect(signs).toHaveLength(1);
     expect(m.signing).toBe(false);
   });
+
+  it("D38_anEditClearsTheResultItWouldContradict", async () => {
+    const { m } = signer();
+    await m.sign(ALICE, "hello");
+    expect(m.signature).toBe("H+signature==");
+    m.clearSign();
+    expect(m.signature).toBe("");
+    expect(m.signResult).toBeNull();
+    await m.verify(ALICE, "sig", "hello");
+    expect(m.verified).toBe(true);
+    m.clearVerify();
+    expect(m.verifyResult).toBeNull();
+  });
+
+  it("D38_inputsEditedDuringThePassphraseAreNotSigned", async () => {
+    const { m, grants, signs, vault } = signer({ encrypted: true, state: "locked" });
+    const signing = m.sign(ALICE, "hello");
+    await vi.waitFor(() => expect(grants.pending).not.toBeNull());
+    m.clearSign(); // the message is edited while the passphrase sheet is open
+    await grants.submit("pw");
+    await signing;
+    expect(signs).toEqual([]);
+    expect(vault.calls.revoked).toEqual(["grant-1"]);
+    expect(m.signature).toBe("");
+    expect(m.signResult).toEqual({ ok: false, text: SignVerifyText.changedWhileSigning });
+  });
+
+  it("D38_aSignatureForInputsEditedDuringTheEngineCallIsDropped", async () => {
+    const { m, api } = signer({ encrypted: false });
+    let answer!: (s: string) => void;
+    api.signMessage.mockImplementationOnce(() => new Promise<string>((resolve) => (answer = resolve)));
+    const signing = m.sign(ALICE, "hello");
+    await vi.waitFor(() => expect(api.signMessage).toHaveBeenCalled());
+    m.clearSign();
+    answer("H+old==");
+    await signing;
+    expect(m.signature).toBe("");
+    expect(m.signResult).toEqual({ ok: false, text: SignVerifyText.changedWhileSigning });
+  });
+
+  it("D38_anOlderVerifyReplyDoesNotOverwriteANewerOne", async () => {
+    const { m, api } = signer();
+    let answerFirst!: (r: { outcome: VerifyOutcomeName; text: string }) => void;
+    api.verifyMessage.mockImplementationOnce(() => new Promise((resolve) => (answerFirst = resolve)));
+    api.verifyMessage.mockResolvedValueOnce({ outcome: "malformedSignature", text: "second" });
+    const first = m.verify(ALICE, "sig", "old message");
+    expect(m.verifyResult).toBeNull();
+    await m.verify(ALICE, "sig", "new message");
+    expect(m.verifyResult?.text).toBe("second");
+    answerFirst({ outcome: "verified", text: "first" });
+    await first;
+    expect(m.verifyResult?.text).toBe("second");
+    expect(m.verified).toBe(false);
+  });
+
+  it("D38_aVerifyReplyAfterAnEditIsDropped", async () => {
+    const { m, api } = signer();
+    let answer!: (r: { outcome: VerifyOutcomeName; text: string }) => void;
+    api.verifyMessage.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    const pending = m.verify(ALICE, "sig", "hello");
+    m.clearVerify();
+    answer({ outcome: "verified", text: "verified" });
+    await pending;
+    expect(m.verifyResult).toBeNull();
+  });
 });

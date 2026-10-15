@@ -10,6 +10,7 @@ import { isAppError } from "../../api/backend";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
+import type { PsbtAnalysis } from "../../api/generated/PsbtAnalysis";
 import { useBackend, useLockStatus, usePaymentAuthentication, useWallets } from "../../api/queries";
 import { navigate } from "../../app/ui";
 import { AmountText, DashButton } from "../../components/basics";
@@ -17,7 +18,7 @@ import { DetailRow } from "../../components/detail";
 import { LoadingState } from "../../components/history";
 import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
-import { authRefusal, broadcastFailure, credentialPrompt, failureText, keepsPromise, type Advanced, type Confirmed, type Outcome } from "./model";
+import { authRefusal, broadcastFailure, credentialPrompt, failureText, keepsPromise, unsignedKeepsPromise, type Advanced, type Confirmed, type Outcome } from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 const USING: Record<Advanced["coins"], string> = {
@@ -170,11 +171,18 @@ export function ConfirmSheet({
     setBusy(true);
     setError(null);
     let psbt: string;
+    let analysis: PsbtAnalysis;
     try {
       psbt = await draft.createUnsigned(spec);
+      // The engine planned again: the PSBT leaves the sheet only if it is the payment shown (D37).
+      analysis = await b.analyzePsbt(walletId, psbt);
     } catch (e) {
       setBusy(false);
       setError(failureText(e, chain));
+      return;
+    }
+    if (!unsignedKeepsPromise(confirmed, analysis)) {
+      onOutcome({ kind: "failed", text: "The payment changed. Review it again." });
       return;
     }
     const copied = await navigator.clipboard.writeText(psbt).then(
