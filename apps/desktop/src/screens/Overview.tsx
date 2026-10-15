@@ -11,6 +11,9 @@ import { useBalance, useHistory, useSyncStatus, type HistoryFilter } from "../ap
 import { AmountText, DashButton, Icon, NetworkCapsule } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
+import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
+import { useStatusInputs } from "../dashpay/queries";
+import { homeCard } from "../dashpay/status";
 import { useDisplay } from "../format/display";
 import { isSyncing, syncPercent } from "../format/sync";
 
@@ -118,6 +121,13 @@ function ShortcutCard() {
   );
 }
 
+/** DP1-08: the DashPay status card (D13), none in the steady state (D2). */
+function HomeDashPayCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const { inputs, retry } = useStatusInputs(walletId, network);
+  const card = homeCard(inputs);
+  return card && <DashPayCard card={card} onAction={(kind) => defaultCardAction(kind, retry)} />;
+}
+
 export function Overview({ walletId, network, onOpen }: { walletId: string; network: NetworkInfo; onOpen: (row: TxRow) => void }) {
   const balance = useBalance(walletId);
   const sync = useSyncStatus();
@@ -140,6 +150,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         <ShortcutCard />
       </div>
       <div className="page-column">
+        <HomeDashPayCard walletId={walletId} network={network} />
         <div className="history-header" data-testid="history-header">
           <h2 className="history-title">History</h2>
           <span className="history-actions">

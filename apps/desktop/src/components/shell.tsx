@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { LockStatus } from "../api/generated/LockStatus";
+import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { navigate, ui, useUi, type Route } from "../app/ui";
@@ -114,22 +115,29 @@ function BellIcon() {
 }
 
 /** What the identity chip shows (DASHPAY §4): the way into DashPay, its progress, or the main
- * identity, which opens My Profile. `null` hides it (DashPay still starting, or unavailable).
+ * identity, which opens My Profile. `null` hides it (DashPay still starting, unavailable, or a
+ * watch-only wallet, which cannot join: DP1-08 D3).
  * `updating`: the main identity's names are not known yet (unread, or a sync pass holds them). */
 export type ChipState =
   | { kind: "join" }
+  /** `label`: the registration's username once its row is read (DP1-08 S11). */
   | { kind: "registering"; label: string | null }
+  | { kind: "contest"; label: string }
   | { kind: "identity"; username: string | null; updating: boolean }
   | null;
 
-export function chipState(status: DashPayStatus | undefined, main: IdentitySummary | undefined): ChipState {
+export function chipState(
+  status: DashPayStatus | undefined,
+  main: IdentitySummary | undefined,
+  registration?: RegistrationStatus,
+): ChipState {
   switch (status?.kind) {
     case "noIdentity":
-      return { kind: "join" };
+      return status.reason === "watchOnly" ? null : { kind: "join" };
     case "registering":
-      return { kind: "registering", label: null };
+      return { kind: "registering", label: registration?.draft === status.draft ? registration.label : null };
     case "contestPending":
-      return { kind: "registering", label: status.label };
+      return { kind: "contest", label: status.label };
     case "ready":
       return { kind: "identity", username: main?.mainName ?? null, updating: !main || main.namesUpdating };
     default:
@@ -145,7 +153,14 @@ function chipLabel(name: string | null, updating: boolean): string {
 function IdentityChip({ chip }: { chip: ChipState }) {
   if (chip === null) return null;
   if (chip.kind !== "identity") {
-    const text = chip.kind === "join" ? "Join DashPay" : chip.label ? `@${chip.label} · Pending` : "Registering…";
+    const text =
+      chip.kind === "join"
+        ? "Join DashPay"
+        : chip.kind === "contest"
+          ? `@${chip.label} · Pending`
+          : chip.label
+            ? `@${chip.label} · Registering`
+            : "Registering…";
     return (
       <button type="button" className="identity-chip" data-testid="toolbar-chip" onClick={() => navigate("joinDashPay")}>
         {text}

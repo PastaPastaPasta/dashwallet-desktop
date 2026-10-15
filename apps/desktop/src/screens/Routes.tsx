@@ -25,12 +25,11 @@ const TITLES: Record<Route, string> = {
 };
 
 /** The placeholder text of each route that `Placeholder` renders. */
-const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "tools" | "settings">, string> = {
+const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "tools" | "settings" | "joinDashPay">, string> = {
   coinJoin: "CoinJoin mixing is not available yet.",
   explore: "Explore is not available yet.",
   notifications: "DashPay notifications are not available yet.",
   profile: "Your DashPay profile is not available yet.",
-  joinDashPay: "Creating a DashPay username is not available yet.",
 };
 
 /** `wide`: the page's tables take the window's width, as Activity's table mode does. */
@@ -57,15 +56,8 @@ export function NotYet({ testId, children }: { testId: string; children: ReactNo
 
 /** A page whose content comes with a later task. */
 export function Placeholder({ route }: { route: keyof typeof NOT_YET }) {
-  const invitation = useUi((s) => s.invitation);
   return (
     <Page route={route}>
-      {route === "joinDashPay" && invitation && (
-        <p className="placeholder-note" role="status" data-testid="invitation-received">
-          You opened a DashPay invitation. Joining with an invitation is not available yet: keep the link and open it
-          again once it is.
-        </p>
-      )}
       <NotYet testId={`placeholder-${route}`}>{NOT_YET[route]}</NotYet>
     </Page>
   );
@@ -155,3 +147,5 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
 
 // Contacts is DP2-07's (screens/contacts); the link card moved into its detail slot.
 export { ContactsPage } from "./contacts/ContactsPage";
+// Join DashPay is DP1-08's (screens/dashpay), with the invitation note.
+export { JoinDashPayPage } from "./dashpay/JoinDashPay";

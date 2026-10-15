@@ -2978,3 +2978,223 @@ button {
 .row-menu-items button:disabled {
   color: var(--dw-role-text-tertiary);
 }
+
+/* ------------------------------------------------------------------ DashPay status (DP1-08) */
+
+.dashpay-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.dashpay-card-icon {
+  width: var(--dw-layout-row-icon-size);
+  height: var(--dw-layout-row-icon-size);
+  padding: var(--dw-space-xxs);
+  box-sizing: border-box;
+  border-radius: 50%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-link);
+}
+
+.dashpay-card.is-problem .dashpay-card-icon {
+  background: var(--dw-role-danger-tint);
+  color: var(--dw-role-danger);
+}
+
+.dashpay-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+}
+
+.dashpay-card-title {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+  overflow-wrap: anywhere;
+}
+
+.dashpay-card-spinner {
+  flex: none;
+  width: var(--dw-space-m);
+  height: var(--dw-space-m);
+}
+
+.dashpay-card-step {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.dashpay-card-progress {
+  width: var(--dw-layout-status-progress-width);
+  height: 4px;
+  accent-color: var(--dw-role-accent);
+}
+
+.dashpay-card-line {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.dashpay-card-note {
+  align-self: flex-start;
+  margin: var(--dw-space-xs) 0 0;
+  padding: var(--dw-space-xxs) var(--dw-space-m);
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-link);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.dashpay-card-action {
+  align-self: center;
+}
+
+.join-intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.join-intro-headline {
+  margin: 0;
+  font-size: var(--dw-type-title3-medium-size);
+  font-weight: var(--dw-type-title3-medium-weight);
+  line-height: var(--dw-type-title3-medium-line);
+}
+
+.join-intro-pitch,
+.about-dashpay-intro {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-callout-size);
+  line-height: var(--dw-type-callout-line);
+}
+
+.join-features,
+.about-dashpay-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  margin: var(--dw-space-s) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.join-feature {
+  display: flex;
+  flex-direction: column;
+}
+
+.join-feature-title,
+.about-dashpay-item-title {
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.join-feature-text,
+.about-dashpay-item-text {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.join-readiness {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin-bottom: var(--dw-space-l);
+}
+
+.join-readiness .dashpay-card {
+  margin-bottom: 0;
+}
+
+.join-line {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.join-shortfall {
+  color: var(--dw-role-danger);
+}
+
+.join-tip {
+  color: var(--dw-role-text-secondary);
+}
+
+.join-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-m);
+  margin-top: var(--dw-space-s);
+}
+
+.join-actions .dashpay-card-note {
+  align-self: center;
+  margin: 0;
+}
+
+.join-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-m);
+}
+
+.about-dashpay-headline {
+  margin: 0;
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.about-dashpay-faq {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.about-dashpay-question {
+  padding: var(--dw-space-s) 0;
+  border-bottom: 1px solid var(--dw-role-separator);
+}
+
+.about-dashpay-question summary {
+  cursor: pointer;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.about-dashpay-question .about-dashpay-item-text {
+  margin-top: var(--dw-space-xs);
+}
