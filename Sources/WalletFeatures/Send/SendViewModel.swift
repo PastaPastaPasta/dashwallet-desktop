@@ -12,8 +12,8 @@
 //   redeemed. A prepare that finishes after such an edit is abandoned on
 //   arrival.
 // - A broadcast the network definitely did not take ends in `.failed`. After
-//   `send.no_peers`, `send.broadcast_rejected` and `send.prepared_tx_spent`
-//   the engine has already released the inputs and spent the prepared
+//   `send.no_peers`, `send.broadcast_rejected`, `send.prepared_tx_spent` and
+//   `send.cancelled` (a lock before the hand-off, m1-swift.md) the engine has already released the inputs and spent the prepared
 //   transaction, so sending again means a new review: new grant, new
 //   prepare (review M1). The other definite failures are errors the engine
 //   raises before it hands the transaction to the network (m1-engine.md
@@ -589,23 +589,23 @@ public final class SendViewModel {
 
     /// Errors of a first broadcast after which peers certainly do not have
     /// the transaction: never sent (`send.no_peers`, `send.broadcast_rejected`,
-    /// `send.prepared_tx_spent`), not held by the draft, or raised by the
+    /// `send.prepared_tx_spent`, `send.cancelled`), not held by the draft, or raised by the
     /// engine before dispatch, which leaves the transaction pending
     /// (m1-engine.md §2.7.1 "not dispatched": `network_not_open`,
     /// `wallet_not_found`, `invalid_argument`, `wallet`, `storage`, `spv`,
     /// `io`; review L5).
     public static let definiteBroadcastFailures: Set<ServiceErrorCode> = [
-        .sendBroadcastRejected, .sendPreparedTxSpent, .sendNoPeers, .sendPreparedTxUnknown, .networkNotOpen,
-        .walletNotFound, .invalidArgument, .notImplemented, .wallet, .storage, .spv, .io,
+        .sendBroadcastRejected, .sendPreparedTxSpent, .sendNoPeers, .sendCancelled, .sendPreparedTxUnknown,
+        .networkNotOpen, .walletNotFound, .invalidArgument, .notImplemented, .wallet, .storage, .spv, .io,
     ]
 
     /// Broadcast errors after which the prepared transaction no longer
     /// exists: the engine released its inputs (`send.no_peers`,
-    /// `send.broadcast_rejected`, `send.prepared_tx_spent`) or the draft does
+    /// `send.broadcast_rejected`, `send.prepared_tx_spent`, `send.cancelled`) or the draft does
     /// not hold it (`send.prepared_tx_unknown`). Nothing is left to abandon or
     /// broadcast; sending needs a new prepare and grant.
     static let preparedGoneAfter: Set<ServiceErrorCode> = [
-        .sendNoPeers, .sendBroadcastRejected, .sendPreparedTxSpent, .sendPreparedTxUnknown,
+        .sendNoPeers, .sendBroadcastRejected, .sendPreparedTxSpent, .sendCancelled, .sendPreparedTxUnknown,
     ]
 
     // MARK: Private
@@ -899,6 +899,7 @@ public final class SendViewModel {
         case .sendBroadcastRejected: message = L10n.Send.broadcastRejected
         case .sendPreparedTxSpent: message = L10n.Send.preparedTxSpent
         case .sendNoPeers: message = L10n.Send.noPeers
+        case .sendCancelled: message = L10n.Send.cancelled
         case EngineCode.sendInsufficientMixedFunds: message = L10n.Send.insufficientMixedFunds
         case EngineCode.sendOutpointUnavailable: message = L10n.Send.preselectedCoinsInsufficient
         case EngineCode.sendTxTooLarge: message = L10n.Send.txTooLarge

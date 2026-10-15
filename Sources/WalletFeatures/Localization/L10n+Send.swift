@@ -27,6 +27,8 @@ extension L10n {
             "The coins of this transaction were spent meanwhile. Review the payment again."
         public static let noPeers =
             "No connected peers. The transaction was not sent. Review the payment again once the wallet is connected."
+        public static let cancelled =
+            "The wallet was locked before the payment was sent. The transaction was not sent. Review the payment again."
         public static let broadcastRejected = "The transaction was rejected by the network."
         public static let grantExceeded = "The amount is larger than this authorization allows. Enter your passphrase."
         public static let syncing = "Please wait until the wallet has finished synchronizing."
