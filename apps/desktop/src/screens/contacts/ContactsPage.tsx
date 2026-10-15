@@ -25,6 +25,7 @@ import {
   type ContactsOwner,
 } from "../../contacts/model";
 import type { ActionOutcome, ContactActions } from "../../contacts/actions";
+import { listedNow } from "../../contacts/add";
 import { selectionAnnouncement, type EnableBanner } from "../../contacts/pane";
 import { useContactActions, useContactList, useContactsOwner, useEnableBanner, useNetworkSearch, usePendingSetup } from "../../contacts/queries";
 import { useModel } from "../../onboarding/model";
@@ -301,7 +302,7 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
             (prefill || add) && (
               <AddContact
                 key={walletId}
-                ctx={{ walletId, owner: { kind: "identity", identity }, actions, listed: all.data?.sections.flatMap((s) => s.contacts) }}
+                ctx={{ walletId, owner: { kind: "identity", identity }, actions, listed: listedNow(all.data) }}
                 intent={add}
                 link={prefill}
               />

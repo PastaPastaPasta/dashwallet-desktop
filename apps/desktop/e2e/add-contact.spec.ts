@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { LinkRoute } from "../src/api/generated/LinkRoute";
 import { IDENTITY } from "../src/fixture/dashpay";
+import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { seriousAxeViolations } from "./axe";
 import { artifactPath, authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
@@ -9,8 +10,8 @@ import { artifactPath, authorize, fixtureUrl, fontsReady, THEMES, trackPageError
 // Tests are named by parity ID: IOS-073 (search with eligibility, send, My QR, the verified
 // `dashpay://user` link) and IOS-043 (the desktop's scan sources: file, drop, paste, screen).
 
-/** The fixture's clock, in UNIX seconds (src/fixture/wallet.ts FIXTURE_NOW). */
-const NOW = Math.floor(new Date(2026, 9, 6, 12, 0, 0).getTime() / 1000);
+/** The fixture's clock, in UNIX seconds. */
+const NOW = Math.floor(FIXTURE_NOW.getTime() / 1000);
 const LINK = (id: string, username: string) => `dashpay://user?id=${id}&username=${username}`;
 
 async function openContacts(page: Page, scenario = "dashpay-registered", theme: Theme = "light") {
@@ -237,6 +238,9 @@ test("IOS-073 D7 an auto-accept code says so, and its send carries the claim onc
   await expect(page.getByTestId("add-contact-claim")).toHaveText(
     "This code asks them to accept you automatically. They confirm it when your request arrives. It expires in 30 min.",
   );
+  // D16: the key went to verification only: not on the page, in its storage or in its URL.
+  const kept = await page.evaluate(() => [document.documentElement.outerHTML, JSON.stringify({ ...localStorage }), JSON.stringify({ ...sessionStorage }), location.href].filter((t) => t.includes("dapk")));
+  expect(kept).toEqual([]);
   await page.getByTestId("add-contact-send").click();
   await authorize(page);
   await expect(page.getByTestId("add-contact-outcome")).toHaveText("Contact request sent to Mallory.");

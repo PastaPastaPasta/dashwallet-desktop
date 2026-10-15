@@ -62,9 +62,10 @@ describe("ContactActions", () => {
 
   it("DP2-08 D5 says the send's refusals in the user's words", async () => {
     const cases: [ReturnType<typeof appError>, string][] = [
-      [appError("contact.request_pending"), "A contact request to Grace is already being sent."],
+      [appError("contact.request_pending"), "A contact request to this user is already being sent."],
       [appError("contact.scan_expired"), "This QR code has expired. Ask for a new one."],
       [appError("contact.self"), "This is you."],
+      [appError("platform.context_unavailable"), "You can send this request once the wallet has synced."],
       [appError("contact.ineligible", { kind: "ineligible", reason: "alreadyContact" }), "Already in your contacts."],
       [appError("contact.ineligible", { kind: "ineligible", reason: "contactCannotReceive" }), "This user cannot receive contact requests yet."],
       [appError("contact.ineligible", { kind: "ineligible", reason: "noDashPayKeys" }), "Enable DashPay first."],
@@ -79,7 +80,6 @@ describe("ContactActions", () => {
       await authorize();
       expect(await done).toMatchObject({ ok: false, text });
     }
-    expect(actionError(appError("contact.request_pending"))).toBe("A contact request to them is already being sent.");
   });
 
   it("IOS-075 accepts under a platformOp grant sized by grant_request", async () => {

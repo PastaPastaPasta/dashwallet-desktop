@@ -31,6 +31,7 @@ import type { GrantAction } from "../api/generated/GrantAction";
 import type { PrivateContactDetails } from "../api/generated/PrivateContactDetails";
 import type { EligibilityName } from "../api/generated/EligibilityName";
 import type { UserHit } from "../api/generated/UserHit";
+import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
 import { activityPage, contactList, eventOf, relationOf, type DashPayWorld, type FixtureScan } from "./dashpay";
 import { scanHandlers } from "./scan";
 import { routeLink } from "./links";
@@ -85,6 +86,8 @@ function setLock({ world, emit }: Ctx, state: World["lock"]["state"]) {
 
 /** The quote of a contact request or its acceptance (dw-engine flows.rs `CONTACT_REQUEST_CREDITS`). */
 const CONTACT_REQUEST_CREDITS = 150_000_000n;
+/** requests.rs: an auto-accept claim needs this long left when its request goes out. */
+const SCAN_MARGIN_SECS = 60;
 /** flows.rs `DOCUMENT_10K_CREDITS` (a profile or `contactInfo`) and `KEY_UPDATE_CREDITS`. */
 const DOCUMENT_10K_CREDITS = 300_000_000n;
 const KEY_UPDATE_CREDITS = 100_000_000n;
@@ -326,6 +329,16 @@ function lookup(dp: DashPayWorld, username: string): UserHit | null {
   const hit = dp.directory.find((u) => u.username === label);
   return hit ? { ...hit, relation: relationOf(dp, hit.identity) } : null;
 }
+
+/** `verify_scanned`'s answer for the user `hit`, verified by `code`. */
+const scanned = (hit: UserHit, code: ScannedContactInfo["code"]): ScannedContactInfo => ({
+  identity: hit.identity,
+  username: hit.username,
+  displayName: hit.displayName,
+  code,
+  relation: hit.relation,
+  unverified: hit.unverified,
+});
 
 /** DashPay::eligibility (requests.rs): the wallet's own state first, in the engine's order after
  * `isSelf` (a contact, our request out, theirs in), then the identity's own DashPay keys; only
@@ -716,12 +729,11 @@ export const HANDLERS: Handlers = {
   // write goes out; from there the scan is spent. The request is a new outgoing one, `pending`.
   dashpay_send_request: ({ walletId, identity, to, scan, grant }, ctx) => {
     const { world } = ctx;
-    wallet(world, walletId);
+    const dp0 = dashpay(world, walletId);
     if (!isIdentityId(identity) || !isIdentityId(to)) throw fail("invalid_argument", "not an identity id");
-    const dp0 = world.dashpayOf?.[walletId] ?? world.dashpay;
     let claim: FixtureScan | undefined;
     if (scan !== null) {
-      claim = dp0.scans.find((x) => x.id === scan && !x.spent && x.expiresAt > secs(FIXTURE_NOW));
+      claim = dp0.scans.find((x) => x.id === scan && !x.spent);
       if (!claim) throw fail("contact.scan_expired", "scan expired");
       if (claim.recipient !== to) throw fail("invalid_argument", "the scan is for another identity");
     }
@@ -732,11 +744,23 @@ export const HANDLERS: Handlers = {
     const available = me.balance ?? "0";
     if (BigInt(available) < CONTACT_REQUEST_CREDITS)
       throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(CONTACT_REQUEST_CREDITS), available });
-    writeLease(ctx, walletId, grant, ["contactRequest"], CONTACT_REQUEST_CREDITS)();
+    // The claim needs a minute left once the grant is in (`SCAN_MARGIN_SECS`).
+    const consume = writeLease(ctx, walletId, grant, ["contactRequest"], CONTACT_REQUEST_CREDITS);
+    if (claim && claim.expiresAt <= secs(FIXTURE_NOW) + SCAN_MARGIN_SECS) throw fail("contact.scan_expired", "scan expired");
+    consume();
     if (claim) claim.spent = true;
     const hit = dp.directory.find((u) => u.identity === to)!;
     const createdAt = FIXTURE_NOW.getTime();
     const since = Math.floor(createdAt / 1000);
+    // An ignored sender's request is in: the library joins the two (`established`).
+    const ignored = dp.contacts.find((c) => c.summary.contact === to);
+    if (ignored) {
+      dp.requestTimes[to] = { incoming: dp.requestTimes[to]?.incoming ?? null, outgoing: createdAt };
+      Object.assign(ignored.summary, { relation: "contact", hidden: false, channel: "ready", lastActivityAt: since });
+      ignored.requestSentAt = since;
+      contactsChanged(ctx, walletId, identity);
+      return { kind: "established", request: String(createdAt) };
+    }
     dp.requestTimes[to] = { incoming: null, outgoing: createdAt };
     dp.contacts.push({
       summary: {
@@ -902,7 +926,7 @@ export const HANDLERS: Handlers = {
     if (link) {
       const hit = lookup(dp, link.username);
       if (hit?.identity !== link.identity) throw fail("contact.scan_unverified", "the scanned code could not be verified");
-      return { identity: hit.identity, username: hit.username, displayName: hit.displayName, code: { kind: "userLink" }, relation: hit.relation, unverified: hit.unverified };
+      return scanned(hit, { kind: "userLink" });
     }
     const code = parseContactCode(text);
     if (!code) throw fail("invalid_argument", "not a DashPay contact code");
@@ -911,14 +935,7 @@ export const HANDLERS: Handlers = {
     if (!hit) throw fail("contact.scan_unverified", "the scanned code could not be verified");
     const id = `scan-${dp.scans.length + 1}`;
     dp.scans.push({ id, recipient: hit.identity, expiresAt: code.expiresAt, spent: false });
-    return {
-      identity: hit.identity,
-      username: hit.username,
-      displayName: hit.displayName,
-      code: { kind: "autoAcceptClaim", scan: id, expiresAt: code.expiresAt },
-      relation: hit.relation,
-      unverified: hit.unverified,
-    };
+    return scanned(hit, { kind: "autoAcceptClaim", scan: id, expiresAt: code.expiresAt });
   },
   dashpay_profile: ({ walletId, identity }, { world }) =>
     dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!.profile,

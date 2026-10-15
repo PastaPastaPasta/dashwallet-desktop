@@ -2,7 +2,7 @@
 // candidate a hit, a scan or a `dashpay://user` link shows. The card's Send is DP2-09's
 // `ContactActions.send` (D5); its other next steps select the contact, where DP2-09's pane acts.
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type DragEvent, type ReactNode } from "react";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { UserHit } from "../../api/generated/UserHit";
 import { useBackend, useQrMatrix } from "../../api/queries";
@@ -16,12 +16,14 @@ import type { ActionOutcome, ContactActions } from "../../contacts/actions";
 import {
   ADD_TABS,
   AddContactModel,
+  answersAtOnce,
   candidateName,
   cardLine,
   claimNote,
   currentRelation,
   myQr,
   ownerLine,
+  scanStatus,
   SCREEN_SHORTCUT,
   type AddTab,
   type Candidate,
@@ -34,6 +36,7 @@ import { Outcome } from "../tools/common";
 import { Tabs } from "../Routes";
 import { useActionToast, useRefocus } from "./afterAction";
 import { Avatar } from "./Avatar";
+import { Row } from "./ContactList";
 
 /** What Add Contact acts for: the wallet, whose contacts (BL-153's status), the identity's actions
  * (`null` without one) and its unfiltered contacts (D14; `undefined` while unread). */
@@ -73,13 +76,13 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
     setTab("search");
     const h = intent?.hit;
     if (!h) return model.clear();
-    model.pick(searchHits.data?.find((x) => x.identity === h.identity) ?? { ...h, displayName: null, avatarUrl: null, relation: "stranger", unverified: false });
+    model.pick(searchHits.data?.find((x) => x.identity === h.identity) ?? { ...h, displayName: null, relation: "stranger", unverified: true });
   }, [model, link, intent, searchHits.data]);
   // Leaving stops a screen capture still waiting.
   useEffect(() => () => model.cancelScreen(), [model]);
 
   const scan = model.scan;
-  const linkState = scan.kind === "verifying" || scan.kind === "failed" ? (scan.source === "link" ? scan : null) : null;
+  const linkState = (scan.kind === "verifying" || scan.kind === "failed") && scan.source === "link" ? scan : null;
   return (
     <section className="add-contact add-contact-slot card-l1" aria-labelledby="add-contact-title" data-testid="add-contact">
       <header className="add-contact-header">
@@ -90,7 +93,8 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
           Close
         </DashButton>
       </header>
-      {model.candidate && <CandidateCard ctx={ctx} candidate={model.candidate} />}
+      {/* A new candidate is a new card: a send still running for the last one toasts (D5). */}
+      {model.candidate && <CandidateCard key={model.candidate.identity} ctx={ctx} candidate={model.candidate} />}
       {linkState && link && (
         <div className="add-contact-candidate" data-testid="add-contact-link">
           <p className="contact-row-username" data-testid="add-contact-username">
@@ -135,6 +139,12 @@ function ScanProblem({ text, retry, testId }: { text: string; retry: (() => void
   );
 }
 
+const SHOW: Record<"showContact" | "showRequest" | "showHidden", string> = {
+  showContact: "Show Contact",
+  showRequest: "Show Request",
+  showHidden: "Show in Hidden",
+};
+
 const SOURCES: Record<Candidate["source"], string> = {
   search: "Found by username search",
   scan: "From a QR code",
@@ -146,7 +156,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
   const backend = useBackend();
   const identity = ctx.owner.kind === "identity" ? ctx.owner.identity : null;
   const relation = currentRelation(c, ctx.listed);
-  const asks = identity !== null && relation !== "ignored" && relation !== "isSelf";
+  const asks = identity !== null && !answersAtOnce(relation);
   const eligibility = useEligibility(ctx.walletId, identity, asks ? c.identity : null);
   const line: CardLine | undefined =
     ctx.owner.kind !== "identity" ? ownerLine(ctx.owner) : cardLine(relation, { data: eligibility.data, failed: eligibility.isError && !eligibility.isFetching });
@@ -186,7 +196,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
     case "showHidden":
       button = (
         <DashButton key="show" variant="tintedBlue" data-testid="add-contact-show" onClick={() => select(c.identity)}>
-          {line.next === "showContact" ? "Show Contact" : line.next === "showRequest" ? "Show Request" : "Show in Hidden"}
+          {SHOW[line.next]}
         </DashButton>
       );
       break;
@@ -277,61 +287,72 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
   // Clearing the field hides the hits at once.
   const prefix = typed === null ? null : debounced;
   const search = useNetworkSearch(ctx.walletId, identity, prefix);
-  const hits = search.data ?? [];
-  return (
-    <div className="add-contact-search">
-      <label className="search-field" data-testid="add-contact-search">
-        <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
-        <input type="search" value={text} placeholder="Search username" aria-label="Search username" onChange={(e) => setText(e.target.value)} autoFocus={query !== ""} />
-      </label>
-      {prefix === null ? (
+  const results = (): ReactNode => {
+    if (prefix === null)
+      return (
         <p className="placeholder-note" data-testid="add-contact-search-hint">
           Search for a User on the Dash Network by their username.
         </p>
-      ) : search.isPending || (search.isError && search.isFetching) ? (
+      );
+    if (search.isPending || (search.isError && search.isFetching))
+      return (
         <p className="contacts-network-note" role="status">
           Searching…
         </p>
-      ) : search.isError ? (
+      );
+    if (search.isError)
+      return (
         <p className="contacts-network-note" role="alert" data-testid="add-contact-search-error">
           Could not search the Dash network.{" "}
           <DashButton variant="plainBlue" size="small" onClick={() => void search.refetch()}>
             Try again
           </DashButton>
         </p>
-      ) : hits.length === 0 ? (
+      );
+    if (search.data.length === 0)
+      return (
         <p className="contacts-network-note" data-testid="add-contact-search-none">
           No usernames found
         </p>
-      ) : (
-        <ul className="tx-group-rows" aria-label="Usernames">
-          {hits.map((h) => {
-            const displayName = h.displayName?.trim();
-            const relation = currentRelation({ identity: h.identity, relation: h.relation }, ctx.listed);
-            return (
-              <li key={h.identity}>
-                <button type="button" className="contact-row tx-row" data-testid="add-contact-hit" onClick={() => onPick({ ...h, relation })}>
-                  <Avatar letters={initials(displayName || h.username)} />
-                  <span className="contact-row-text tx-row-text">
-                    <span className="contact-row-name tx-row-title">{displayName || h.username}</span>
-                    {displayName && <span className="contact-row-username">@{h.username}</span>}
-                  </span>
-                  <span className="contact-row-trailing">
-                    {relation !== "stranger" && <span className="contact-row-note">{relationTitle(relation)}</span>}
-                    {h.unverified && <Chip tone="warning">Unverified</Chip>}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+      );
+    return (
+      <ul className="tx-group-rows" aria-label="Usernames">
+        {search.data.map((h) => {
+          const displayName = h.displayName?.trim();
+          const relation = currentRelation({ identity: h.identity, relation: h.relation }, ctx.listed);
+          return (
+            <Row
+              key={h.identity}
+              letters={initials(displayName || h.username)}
+              name={displayName || h.username}
+              sub={displayName ? `@${h.username}` : null}
+              trailing={
+                <>
+                  {relation !== "stranger" && <span className="contact-row-note">{relationTitle(relation)}</span>}
+                  {h.unverified && <Chip tone="warning">Unverified</Chip>}
+                </>
+              }
+              data-testid="add-contact-hit"
+              onClick={() => onPick({ ...h, relation })}
+            />
+          );
+        })}
+      </ul>
+    );
+  };
+  return (
+    <div className="add-contact-search">
+      <label className="search-field" data-testid="add-contact-search">
+        <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
+        <input type="search" value={text} placeholder="Search username" aria-label="Search username" onChange={(e) => setText(e.target.value)} autoFocus={query !== ""} />
+      </label>
+      {results()}
     </div>
   );
 }
 
-/** The files a drag carries, or its text (a dragged link). */
-function dropped(e: DragEvent | ClipboardEvent): { file: File | null; text: string } {
+/** The file a drag or a paste carries, else its text (a dragged link). */
+function carried(e: DragEvent | ClipboardEvent): { file: File | null; text: string } {
   const data = "dataTransfer" in e ? e.dataTransfer : e.clipboardData;
   const file = [...(data?.files ?? [])][0] ?? null;
   return { file, text: file ? "" : (data?.getData("text/uri-list") || data?.getData("text/plain") || "") };
@@ -346,29 +367,22 @@ function ScanTab({ model }: { model: AddContactModel }) {
   const busy = scan.kind === "reading" || scan.kind === "capturing" || scan.kind === "verifying";
   const take = async ({ file, text }: { file: File | null; text: string }) => {
     if (file) await model.imageBytes(new Uint8Array(await file.arrayBuffer()));
-    else if (text.trim()) await model.verifyText(text);
+    else await model.verifyText(text);
   };
   const onDrop = (e: DragEvent) => {
     // The document's guard (D11) leaves a drop the area took alone.
     e.preventDefault();
     setOver(false);
-    void take(dropped(e));
+    void take(carried(e));
   };
   const onPaste = (e: ClipboardEvent<HTMLInputElement>) => {
-    const got = dropped(e);
+    const got = carried(e);
     // A pasted image goes to the decoder; a pasted text is verified without entering the field
     // (it may carry a key, D16).
     e.preventDefault();
     void take(got);
   };
-  const status =
-    scan.kind === "reading"
-      ? "Reading the image…"
-      : scan.kind === "capturing"
-        ? "Select a region of the screen…"
-        : scan.kind === "verifying" && scan.source === "scan"
-          ? "Checking the code on the Dash network…"
-          : null;
+  const status = scanStatus(scan);
   return (
     <div
       className="add-contact-scan"

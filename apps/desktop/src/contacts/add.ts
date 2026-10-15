@@ -38,7 +38,10 @@ export interface Candidate {
   source: CandidateSource;
 }
 
-export function candidateOfHit(hit: Pick<UserHit, "identity" | "username" | "displayName" | "relation" | "unverified">): Candidate {
+/** A search hit's fields the card reads. */
+export type HitFields = Pick<UserHit, "identity" | "username" | "displayName" | "relation" | "unverified">;
+
+export function candidateOfHit(hit: HitFields): Candidate {
   return { ...hitFields(hit), claim: null, source: "search" };
 }
 
@@ -61,10 +64,18 @@ export function candidateName(c: Pick<Candidate, "displayName" | "username" | "i
 }
 
 /** The relation the card goes by (D14): the one the identity's unfiltered contact list holds once
- * it is read (a request may have come or gone since the hit or the scan), else the candidate's. */
+ * it is read (a request may have come or gone since the hit or the scan), else the candidate's.
+ * `listed` is `undefined` until read (`listedNow`). */
 export function currentRelation(c: Pick<Candidate, "identity" | "relation">, listed: { contact: string; relation: UserRelation }[] | undefined): UserRelation {
   if (listed === undefined || c.relation === "isSelf") return c.relation;
   return listed.find((l) => l.contact === c.identity)?.relation ?? "stranger";
+}
+
+/** The contact list's rows for `currentRelation`; `undefined` while a pass holds a list with no
+ * rows yet (an empty snapshot says nothing about who relates how). */
+export function listedNow<R>(list: { sections: { contacts: R[] }[]; updating: boolean } | undefined): R[] | undefined {
+  const rows = list?.sections.flatMap((s) => s.contacts);
+  return list?.updating && !rows?.length ? undefined : rows;
 }
 
 /** What the card offers next (D4, D13). */
@@ -107,9 +118,12 @@ export function ownerLine(owner: Exclude<ContactsOwner, { kind: "identity" }>): 
   }
 }
 
-/** The card's line (D4): an ignored sender answers at once (the engine's eligibility treats them
- * as a stranger); else the eligibility read, `undefined` while it runs (the card says
- * "Checking…"). */
+/** Whether the card answers without asking eligibility: oneself, or an ignored sender (the
+ * engine's eligibility treats them as a stranger). */
+export const answersAtOnce = (relation: UserRelation) => relation === "isSelf" || relation === "ignored";
+
+/** The card's line (D4): oneself and an ignored sender answer at once (`answersAtOnce`); else the
+ * eligibility read, `undefined` while it runs (the card says "Checking…"). */
 export function cardLine(relation: UserRelation, eligibility: { data: EligibilityName | undefined; failed: boolean }): CardLine | undefined {
   if (relation === "isSelf") return ELIGIBILITY.isSelf;
   if (relation === "ignored") return { text: "You ignored their contact request.", next: "showHidden" };
@@ -118,11 +132,14 @@ export function cardLine(relation: UserRelation, eligibility: { data: Eligibilit
   return undefined;
 }
 
+/** The engine's `SCAN_MARGIN_SECS`: a claim with less left is refused as expired. */
+const SCAN_MARGIN_SECS = 60;
+
 /** The auto-accept note (D7). */
 export function claimNote(claim: Candidate["claim"], now: number): string | null {
   if (!claim) return null;
   const left = claim.expiresAt - Math.floor(now / 1000);
-  const when = left <= 0 ? "This code has expired." : left < 3600 ? `It expires in ${Math.max(1, Math.round(left / 60))} min.` : `It expires in ${Math.round(left / 3600)} h.`;
+  const when = left <= SCAN_MARGIN_SECS ? "This code has expired." : left < 3600 ? `It expires in ${Math.max(1, Math.round(left / 60))} min.` : `It expires in ${Math.round(left / 3600)} h.`;
   return `This code asks them to accept you automatically. They confirm it when your request arrives. ${when}`;
 }
 
@@ -132,11 +149,11 @@ export function userLinkText(identity: string, username: string): string {
 }
 
 export const SCAN_UNVERIFIED = "This QR code couldn't be verified on the Dash network.";
-export const LINK_UNVERIFIED = "This link couldn't be verified on the Dash network.";
+const LINK_UNVERIFIED = "This link couldn't be verified on the Dash network.";
 export const SCAN_EXPIRED = "This QR code has expired. Ask for a new one.";
 export const NOT_A_CODE = "This is not a DashPay contact code.";
 export const NO_CODE_IN_IMAGE = "There is no DashPay contact code in this image.";
-export const PLATFORM_DOWN = "Could not reach Dash Platform.";
+const PLATFORM_DOWN = "Could not reach Dash Platform.";
 
 const isNetwork = (e: unknown) => hasCode(e, "platform.unavailable") || hasCode(e, "platform.timeout");
 
@@ -180,15 +197,22 @@ export const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 
 export type ScanApi = Pick<Backend, "dashpayVerifyScanned" | "scanQrFile" | "scanQrImage" | "scanQrScreen" | "cancelScreenScan">;
 
-/** A scan's progress: reading an image or the screen, verifying (with the link's unverified
- * username while a link's runs, D13), or its refusal; `source` says where the screen shows it (a
- * link's on the card, a scan's on the Scan tab). */
+/** A scan's progress: reading an image or the screen, verifying, or its refusal; `source` says
+ * where the screen shows it (a link's on the card, a scan's on the Scan tab). */
 export type ScanState =
   | { kind: "idle" }
   | { kind: "reading" }
   | { kind: "capturing" }
-  | { kind: "verifying"; source: CandidateSource; username: string | null }
+  | { kind: "verifying"; source: CandidateSource }
   | { kind: "failed"; source: CandidateSource; text: string; retry: boolean };
+
+/** The Scan tab's progress line, if any. */
+export function scanStatus(scan: ScanState): string | null {
+  if (scan.kind === "reading") return "Reading the image…";
+  if (scan.kind === "capturing") return "Select a region of the screen…";
+  if (scan.kind === "verifying" && scan.source === "scan") return "Checking the code on the Dash network…";
+  return null;
+}
 
 /** The candidate and the scans of one Add Contact (one wallet). The latest request wins: an older
  * answer that lands later is dropped, and a new one drops the candidate it would replace. */
@@ -208,7 +232,7 @@ export class AddContactModel extends Model {
   }
 
   /** A search hit: Platform's answer already, nothing to verify. */
-  pick(hit: UserHit) {
+  pick(hit: HitFields) {
     this.#begin();
     this.candidate = candidateOfHit(hit);
     this.changed();
@@ -224,12 +248,12 @@ export class AddContactModel extends Model {
   verifyText(text: string): Promise<void> {
     const t = text.trim();
     if (!t) return Promise.resolve();
-    return this.#verify([t], "scan", false, null);
+    return this.#verify([t], "scan", false);
   }
 
   /** A `dashpay://user` link's identity and (unverified) username (D13). */
   verifyLink(identity: string, username: string): Promise<void> {
-    return this.#verify([userLinkText(identity, username)], "link", false, username);
+    return this.#verify([userLinkText(identity, username)], "link", false);
   }
 
   /** Open Image… (D9); a cancelled dialog changes nothing. */
@@ -237,17 +261,11 @@ export class AddContactModel extends Model {
     return this.#image("reading", () => this.api.scanQrFile());
   }
 
-  /** A dropped or pasted image, base64 (D9). */
-  image(data: string): Promise<void> {
-    return this.#image("reading", () => this.api.scanQrImage(data));
-  }
-
   /** A dropped or pasted image's bytes (D9). */
   imageBytes(bytes: Uint8Array): Promise<void> {
-    if (bytes.length <= MAX_IMAGE_BYTES) return this.image(bytesToBase64(bytes));
+    if (bytes.length <= MAX_IMAGE_BYTES) return this.#image("reading", () => this.api.scanQrImage(bytesToBase64(bytes)));
     this.#begin();
-    this.scan = { kind: "failed", source: "scan", text: "The image is too large.", retry: false };
-    this.changed();
+    this.#refuse("scan", "The image is too large.");
     return Promise.resolve();
   }
 
@@ -267,14 +285,7 @@ export class AddContactModel extends Model {
   retry(): Promise<void> {
     const r = this.#retry;
     if (!r) return Promise.resolve();
-    return this.#verify(r.texts, r.source, r.image, null);
-  }
-
-  /** Forgets the last scan's refusal. */
-  dismiss() {
-    if (this.scan.kind !== "failed") return;
-    this.#begin();
-    this.changed();
+    return this.#verify(r.texts, r.source, r.image);
   }
 
   /** A new request (or none): the last one's answer, refusal and candidate go. */
@@ -292,6 +303,11 @@ export class AddContactModel extends Model {
     return ++this.#seq;
   }
 
+  #refuse(source: CandidateSource, text: string, retry = false) {
+    this.scan = { kind: "failed", source, text, retry };
+    this.changed();
+  }
+
   /** An image's codes, verified; the candidate stays until there are some (a cancelled dialog or
    * picker changes nothing). */
   async #image(kind: "reading" | "capturing", read: () => Promise<string[] | null>) {
@@ -303,25 +319,26 @@ export class AddContactModel extends Model {
       texts = await read();
     } catch (e) {
       if (seq !== this.#seq) return;
+      // The read is over: nothing is left to cancel.
+      this.scan = { kind: "idle" };
       this.#begin();
-      this.scan = { kind: "failed", source: "scan", text: imageError(e), retry: false };
-      this.changed();
+      this.#refuse("scan", imageError(e));
       return;
     }
     if (seq !== this.#seq) return;
+    this.scan = { kind: "idle" };
     if (texts === null) {
-      this.scan = { kind: "idle" };
       this.changed();
       return;
     }
-    await this.#verify(texts, "scan", true, null);
+    await this.#verify(texts, "scan", true);
   }
 
   /** D8: `texts` in order, the first that verifies wins; a text that is no contact code is skipped,
    * any other refusal stops there. */
-  async #verify(texts: string[], source: CandidateSource, image: boolean, username: string | null) {
+  async #verify(texts: string[], source: CandidateSource, image: boolean) {
     const seq = this.#begin();
-    this.scan = { kind: "verifying", source, username };
+    this.scan = { kind: "verifying", source };
     this.changed();
     for (let i = 0; i < texts.length; i++) {
       try {
@@ -337,12 +354,10 @@ export class AddContactModel extends Model {
         const { text: said, retry } = verifyError(e);
         const text = source === "link" && said === SCAN_UNVERIFIED ? LINK_UNVERIFIED : said;
         this.#retry = retry ? { texts: texts.slice(i), source, image } : null;
-        this.scan = { kind: "failed", source, text, retry };
-        this.changed();
+        this.#refuse(source, text, retry);
         return;
       }
     }
-    this.scan = { kind: "failed", source, text: image ? NO_CODE_IN_IMAGE : NOT_A_CODE, retry: false };
-    this.changed();
+    this.#refuse(source, image ? NO_CODE_IN_IMAGE : NOT_A_CODE);
   }
 }

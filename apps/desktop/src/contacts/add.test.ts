@@ -5,11 +5,13 @@ import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import {
   AddContactModel,
+  answersAtOnce,
   candidateName,
   candidateOfHit,
   cardLine,
   claimNote,
   currentRelation,
+  listedNow,
   eligibilityLine,
   imageError,
   myQr,
@@ -17,6 +19,7 @@ import {
   NOT_A_CODE,
   ownerLine,
   SCAN_UNVERIFIED,
+  scanStatus,
   SCREEN_UNAVAILABLE,
   userLinkText,
   verifyError,
@@ -81,6 +84,17 @@ describe("eligibility (D4, D13)", () => {
     expect(currentRelation({ ...c, relation: "isSelf" }, [])).toBe("isSelf");
   });
 
+  it("D14 an empty list a pass still holds says nothing: the candidate's relation stands", () => {
+    const rows = [{ contact: GRACE, relation: "ignored" as const }];
+    const list = (contacts: typeof rows, updating: boolean) => ({ sections: [{ contacts }], updating });
+    expect(listedNow(undefined)).toBeUndefined();
+    expect(listedNow(list([], true))).toBeUndefined();
+    expect(listedNow(list([], false))).toEqual([]);
+    expect(listedNow(list(rows, true))).toEqual(rows);
+    const c = candidateOfHit({ identity: GRACE, username: "grace", displayName: null, relation: "ignored", unverified: false });
+    expect(currentRelation(c, listedNow(list([], true)))).toBe("ignored");
+  });
+
   it("names the candidate by display name, username, then id", () => {
     expect(candidateName({ displayName: "Grace", username: "g", identity: GRACE })).toBe("Grace");
     expect(candidateName({ displayName: null, username: "g", identity: GRACE })).toBe("@g");
@@ -111,6 +125,23 @@ describe("copy (D6, D7, D9, D12)", () => {
     expect(claimNote(at(1800), now)).toMatch(/accept you automatically.*expires in 30 min\.$/);
     expect(claimNote(at(7200), now)).toMatch(/expires in 2 h\.$/);
     expect(claimNote(at(-1), now)).toMatch(/This code has expired\.$/);
+    // The engine refuses a claim with a minute or less left.
+    expect(claimNote(at(60), now)).toMatch(/This code has expired\.$/);
+    expect(claimNote(at(61), now)).toMatch(/expires in 1 min\.$/);
+  });
+
+  it("D9 D10 the Scan tab's progress line; a link's check shows on the card", () => {
+    expect(scanStatus({ kind: "idle" })).toBeNull();
+    expect(scanStatus({ kind: "reading" })).toBe("Reading the image…");
+    expect(scanStatus({ kind: "capturing" })).toBe("Select a region of the screen…");
+    expect(scanStatus({ kind: "verifying", source: "scan" })).toBe("Checking the code on the Dash network…");
+    expect(scanStatus({ kind: "verifying", source: "link" })).toBeNull();
+  });
+
+  it("D4 only oneself and an ignored sender answer without eligibility", () => {
+    expect(["isSelf", "ignored"].every((r) => answersAtOnce(r as "isSelf"))).toBe(true);
+    expect(answersAtOnce("stranger")).toBe(false);
+    expect(answersAtOnce("pendingOutgoing")).toBe(false);
   });
 
   it("D13 rebuilds a link in the engine's form", () => {
@@ -129,7 +160,7 @@ describe("copy (D6, D7, D9, D12)", () => {
 describe("AddContactModel", () => {
   it("IOS-073 a search hit is a candidate without verification", () => {
     const { api, model } = setup();
-    model.pick({ identity: GRACE, username: "grace", displayName: null, avatarUrl: null, relation: "stranger", unverified: false });
+    model.pick({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false });
     expect(model.candidate).toMatchObject({ identity: GRACE, source: "search", claim: null });
     expect(api.dashpayVerifyScanned).not.toHaveBeenCalled();
   });
@@ -137,7 +168,7 @@ describe("AddContactModel", () => {
   it("IOS-073 a pasted text is verified; Platform's answer is the candidate", async () => {
     const { api, model } = setup({ dashpayVerifyScanned: vi.fn(async () => info({ code: { kind: "autoAcceptClaim", scan: "scan-1", expiresAt: 99 } })) });
     const done = model.verifyText(`  ${LINK}\n`);
-    expect(model.scan).toEqual({ kind: "verifying", source: "scan", username: null });
+    expect(model.scan).toEqual({ kind: "verifying", source: "scan" });
     await done;
     expect(api.dashpayVerifyScanned).toHaveBeenCalledWith(WALLET_A, LINK);
     expect(model.candidate).toMatchObject({ username: "Grace", source: "scan", claim: { scan: "scan-1", expiresAt: 99 } });
@@ -159,7 +190,7 @@ describe("AddContactModel", () => {
     let fail!: (e: unknown) => void;
     const { api, model } = setup({ dashpayVerifyScanned: vi.fn(() => new Promise<ScannedContactInfo>((_, reject) => (fail = reject))) });
     const done = model.verifyLink(GRACE, "grace");
-    expect(model.scan).toEqual({ kind: "verifying", source: "link", username: "grace" });
+    expect(model.scan).toEqual({ kind: "verifying", source: "link" });
     expect(api.dashpayVerifyScanned).toHaveBeenCalledWith(WALLET_A, LINK);
     fail(appError("contact.scan_unverified"));
     await done;
@@ -172,7 +203,7 @@ describe("AddContactModel", () => {
       return info();
     });
     const { api, model } = setup({ scanQrImage: vi.fn(async () => ["dash:XpayRequest", LINK, "dashpay://user?id=other"]), dashpayVerifyScanned: verify });
-    await model.image("aW1n");
+    await model.imageBytes(new TextEncoder().encode("img"));
     expect(api.scanQrImage).toHaveBeenCalledWith("aW1n");
     expect(verify.mock.calls.map((c) => c[1])).toEqual(["dash:XpayRequest", LINK]);
     expect(model.candidate?.source).toBe("scan");
@@ -196,13 +227,22 @@ describe("AddContactModel", () => {
         throw appError("app.no_qr_code");
       }),
     });
-    model.pick({ identity: GRACE, username: "grace", displayName: null, avatarUrl: null, relation: "stranger", unverified: false });
+    model.pick({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false });
     await model.openImage();
     expect(model.scan).toEqual({ kind: "idle" });
     expect(model.candidate?.identity).toBe(GRACE);
     expect(api.dashpayVerifyScanned).not.toHaveBeenCalled();
     await model.screen();
     expect(model.scan).toMatchObject({ kind: "failed", text: "No QR code was found in this image." });
+    // A capture that ended has nothing to cancel.
+    expect(api.cancelScreenScan).not.toHaveBeenCalled();
+  });
+
+  it("IOS-043 a finished capture's codes are verified without cancelling it", async () => {
+    const { api, model } = setup({ scanQrScreen: vi.fn(async () => [LINK]) });
+    await model.screen();
+    expect(model.candidate?.source).toBe("scan");
+    expect(api.cancelScreenScan).not.toHaveBeenCalled();
   });
 
   it("IOS-043 D10 Cancel stops the picker and drops its late answer", async () => {

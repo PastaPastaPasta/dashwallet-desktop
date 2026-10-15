@@ -5,6 +5,7 @@
 // or BMP is; `fixture-qr:` with no line is `app.no_qr_code`.
 
 import type { AppError } from "../api/generated/commands";
+import { base64ToBytes } from "../app/files";
 import type { ScreenScanMode } from "../api/generated/ScreenScanMode";
 import type { Handlers } from "./handlers";
 
@@ -40,8 +41,6 @@ export function decodeFixtureImage(bytes: Uint8Array): string[] {
   return texts;
 }
 
-const fromBase64 = (data: string) => Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
-
 export function scanHandlers(): Handlers {
   return {
     screen_scan_mode: (_, { world }) => world.scan.mode,
@@ -49,12 +48,12 @@ export function scanHandlers(): Handlers {
     scan_qr_file: (_, { world }) => {
       const { files } = world.tools;
       files.dialogs.push({ purpose: "qrImage", save: false, suggestedName: null });
-      return files.open ? decodeFixtureImage(fromBase64(files.open.data)) : null;
+      return files.open ? decodeFixtureImage(base64ToBytes(files.open.data)) : null;
     },
     scan_qr_image: ({ data }) => {
       let bytes: Uint8Array;
       try {
-        bytes = fromBase64(data);
+        bytes = base64ToBytes(data);
       } catch {
         throw fail("invalid_argument", "data: not base64");
       }
@@ -63,10 +62,10 @@ export function scanHandlers(): Handlers {
     // Answers later when held (a promise: the mock IPC awaits it).
     scan_qr_screen: (_, { world }) => {
       const { scan } = world;
-      if (scan.mode !== "picker" || scan.screen === "unavailable")
+      const { screen } = scan;
+      if (scan.mode !== "picker" || screen === "unavailable")
         throw fail("app.screen_capture_unavailable", "screen capture: org.freedesktop.portal.Desktop was not provided by any .service files unsupported here");
-      const answer = () => (scan.screen === null || scan.screen === "unavailable" ? null : decodeFixtureImage(fromBase64(scan.screen)));
-      if (!scan.holdScreen) return answer();
+      if (!scan.holdScreen) return screen === null ? null : decodeFixtureImage(base64ToBytes(screen));
       return new Promise<string[] | null>((resolve) => scan.waiting.push(() => resolve(null))) as unknown as string[] | null;
     },
     cancel_screen_scan: (_, { world }) => {

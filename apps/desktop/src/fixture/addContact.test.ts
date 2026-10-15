@@ -5,7 +5,7 @@
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as cmd from "../api/generated/commands";
-import { textToBase64 } from "../app/files";
+import { bytesToBase64 as b64, textToBase64 } from "../app/files";
 import { IDENTITY } from "./dashpay";
 import { installFixture, type FixtureHandle } from "./index";
 import { fixtureQrImage } from "./scan";
@@ -25,7 +25,6 @@ const install = (scenario: ScenarioName = "dashpay-registered"): FixtureHandle =
 const grant = async (maxCredits = "150000000") => (await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits }, W, { kind: "passphrase", passphrase: "demo" })).id;
 const now = Math.floor(FIXTURE_NOW.getTime() / 1000);
 const link = (id: string, username: string) => `dashpay://user?id=${id}&username=${username}`;
-const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
 
 describe("dashpay_eligibility (fixture, as requests.rs)", () => {
   it("IOS-073 answers from the wallet's state, then the contact", async () => {
@@ -90,6 +89,21 @@ describe("dashpay_send_request (fixture, as requests.rs)", () => {
     await expect(cmd.dashpaySendRequest(W, ME, IDENTITY.marta, scan, await grant())).rejects.toMatchObject({ code: "invalid_argument" });
     await cmd.dashpaySendRequest(W, ME, IDENTITY.mallory, scan, await grant());
     await expect(cmd.dashpaySendRequest(W, ME, IDENTITY.mallory, scan, await grant())).rejects.toMatchObject({ code: "contact.scan_expired" });
+  });
+
+  it("refuses a claim with a minute or less left once the grant is in, unspent", async () => {
+    const f = install();
+    const scanned = await cmd.dashpayVerifyScanned(W, `dash:?du=mallory&dapk=${now + 60}`);
+    if (scanned.code.kind !== "autoAcceptClaim") throw new Error("expected a claim");
+    await expect(cmd.dashpaySendRequest(W, ME, IDENTITY.mallory, scanned.code.scan, await grant())).rejects.toMatchObject({ code: "contact.scan_expired" });
+    expect(f.world.dashpay.contacts.some((c) => c.summary.contact === IDENTITY.mallory)).toBe(false);
+  });
+
+  it("a send to an ignored sender joins their request: established, one row", async () => {
+    const f = install();
+    expect(await cmd.dashpaySendRequest(W, ME, IDENTITY.ivan, null, await grant())).toMatchObject({ kind: "established" });
+    const rows = f.world.dashpay.contacts.filter((c) => c.summary.contact === IDENTITY.ivan);
+    expect(rows.map((r) => r.summary.relation)).toEqual(["contact"]);
   });
 });
 
