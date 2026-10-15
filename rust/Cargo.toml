@@ -66,6 +66,7 @@ dw-fs = { path = "crates/dw-fs" }
 dw-governance = { path = "crates/dw-governance" }
 dw-message = { path = "crates/dw-message" }
 dw-p2p = { path = "crates/dw-p2p" }
+dw-protx = { path = "crates/dw-protx" }
 dw-psbt = { path = "crates/dw-psbt" }
 dw-testutil = { path = "crates/dw-testutil" }
 dw-units = { path = "crates/dw-units" }

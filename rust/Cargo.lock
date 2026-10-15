@@ -2607,6 +2607,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dw-protx"
+version = "0.1.0"
+dependencies = [
+ "dashcore",
+ "hex",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
 name = "dw-psbt"
 version = "0.1.0"
 dependencies = [
