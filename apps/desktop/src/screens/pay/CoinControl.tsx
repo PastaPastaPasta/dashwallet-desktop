@@ -12,6 +12,7 @@ import { useDebounced } from "../../app/useDebounced";
 import { CoinSummary, CoinTable } from "../../components/coins";
 import { LoadingState } from "../../components/history";
 import { full } from "../../format/amount";
+import { useDisplay } from "../../format/display";
 import { DEFAULT_TARGET_BLOCKS, feeMode, outpointOf, type Advanced, type CoinChoice } from "./model";
 
 /** Dash's target block interval: 2.5 minutes. */
@@ -49,15 +50,15 @@ function Coins({ walletId, network, advanced, onChange, payAmount }: Props) {
   });
   const toggle = (key: string, on: boolean) =>
     onChange({ ...advanced, selected: on ? [...advanced.selected, key] : advanced.selected.filter((k) => k !== key) });
-  const unit = network.unitName;
+  const shown = useDisplay(network);
   if (utxos.isPending) return <LoadingState testId="coins-loading" text="Loading coins" />;
   if (utxos.isError) return <p className="form-problem">Could not load the coins: {errorMessage(utxos.error)}</p>;
   if (utxos.data.length === 0) return <p className="placeholder-note">This wallet has no coins yet.</p>;
   const s = summary.data;
   return (
     <>
-      <CoinTable coins={utxos.data} unit={unit} selected={selected} onToggle={toggle} />
-      {s && <CoinSummary summary={s} unit={unit} />}
+      <CoinTable coins={utxos.data} shown={shown} selected={selected} onToggle={toggle} />
+      {s && <CoinSummary summary={s} shown={shown} />}
       {s?.insufficientFunds && (
         <p className="form-problem" data-testid="coin-insufficient">
           Insufficient funds! The selected coins do not cover the amount and the fee.
@@ -73,7 +74,7 @@ function Fee({ advanced, onChange, network }: Props) {
   const [text, setText] = useState("");
   const custom = useDebounced(text.trim(), 300);
   const id = useId();
-  const parsed = useQuery({ queryKey: ["parseAmount", custom], queryFn: () => b.parseAmount(custom), enabled: custom !== "", staleTime: Infinity });
+  const parsed = useQuery({ queryKey: ["parseAmount", "dash", custom], queryFn: () => b.parseAmount(custom, "dash"), enabled: custom !== "", staleTime: Infinity });
   const p = policy.data;
   const rate = parsed.data;
   const problem = advanced.fee.kind !== "custom" || custom === "" || parsed.isPending || !p ? null : rateProblem(rate, p, network.unitName);

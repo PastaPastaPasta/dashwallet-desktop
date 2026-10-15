@@ -7,7 +7,7 @@ import { hasCode, isAppError, type Backend } from "../api/backend";
 import type { OpenedFile } from "../api/generated/OpenedFile";
 import type { PsbtAnalysis } from "../api/generated/PsbtAnalysis";
 import { base64ToBytes, saveBase64 } from "../app/files";
-import { formatWithUnit, type Chain } from "../format/amount";
+import { formatWithUnit, type Chain, type Unit } from "../format/amount";
 import { failureText, Model } from "../onboarding/model";
 import type { GrantModel } from "./grant";
 
@@ -116,7 +116,8 @@ export class PsbtModel extends Model {
     readonly grants: GrantModel,
     /** The wallet that signs; `null`: no wallet is loaded. */
     readonly walletId: string | null,
-    private readonly chain: Chain,
+    /** The display settings (U-04 D4): amounts are said in this unit. */
+    private readonly shown: { chain: Chain; amountUnit: Unit },
     /** What each PSBT broadcast answered, so loading it again offers no second broadcast either;
      * the screen passes `SESSION_BROADCASTS`, which outlives the tab. */
     private readonly broadcasts: Map<string, string | true> = new Map(),
@@ -125,7 +126,7 @@ export class PsbtModel extends Model {
   }
 
   #amount(duffs: number) {
-    return formatWithUnit("DASH", duffs, false, "standard", this.chain);
+    return formatWithUnit(this.shown.amountUnit, duffs, false, "standard", this.shown.chain);
   }
 
   /** dash-qt `renderTransaction`: one line per output, the fee and total, unsigned inputs. */

@@ -12,6 +12,8 @@ import { openPayForm } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CoinSummary, CoinTable } from "../../components/coins";
 import { LoadingState } from "../../components/history";
+import type { Unit } from "../../format/amount";
+import { useDisplay } from "../../format/display";
 import { useModel } from "../../onboarding/model";
 import { CoinSelectionModel, CoinText, copyText, type CopyField } from "../../tools/coins";
 import { outpointKey } from "../pay/model";
@@ -25,12 +27,12 @@ const COPY: [CopyField, string][] = [
 ];
 
 /** dash-qt's coin context menu: the copies, then Lock or Unlock. */
-function CoinMenu({ u, model }: { u: Utxo; model: CoinSelectionModel }) {
+function CoinMenu({ u, model, unit }: { u: Utxo; model: CoinSelectionModel; unit: Unit }) {
   const key = outpointKey(u.outpoint);
   const lock: MenuItem = u.userLocked
     ? { title: "Unlock unspent", run: () => void model.unlock([key]) }
     : { title: "Lock unspent", run: () => void model.lock([key]), disabled: u.reserved };
-  return <RowMenu label="Actions" name={`Actions for ${copyText(u, "amount")} at ${u.address}`} items={[...COPY.map(([field, title]) => ({ title, copy: copyText(u, field) })), lock]} testId={`coin-menu-${key}`} />;
+  return <RowMenu label="Actions" name={`Actions for ${copyText(u, "amount", unit)} at ${u.address}`} items={[...COPY.map(([field, title]) => ({ title, copy: copyText(u, field, unit) })), lock]} testId={`coin-menu-${key}`} />;
 }
 
 /** The tab's model; the page keeps one per window wallet, so the view (mode, sort, CoinJoin
@@ -45,6 +47,7 @@ export function newCoinSelection(b: Backend, client: QueryClient, walletId: stri
 
 export function CoinSelectionTab({ model, walletId, network }: { model: CoinSelectionModel; walletId: string; network: NetworkInfo }) {
   const utxos = useUtxos(walletId, true);
+  const shown = useDisplay(network);
   useModel(model);
   useEffect(() => {
     if (utxos.data) model.setCoins(utxos.data);
@@ -52,7 +55,6 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
 
   if (utxos.isPending) return <LoadingState testId="coins-loading" text="Loading coins" />;
   if (utxos.isError) return <Outcome ok={false} text={`Could not load the coins: ${errorMessage(utxos.error)}`} testId="coins-error" />;
-  const unit = network.unitName;
   const selected = new Set(model.selected);
   return (
     <div className="tool-stack" data-testid="tools-coinSelection">
@@ -93,7 +95,7 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
         <div className="table-card">
           <CoinTable
             coins={model.visible}
-            unit={unit}
+            shown={shown}
             selected={selected}
             onToggle={(key) => model.toggle(key)}
             detail={{
@@ -101,14 +103,14 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
               onSort: (c) => model.sortBy(c),
               groups: model.mode === "tree" ? model.groups : null,
               onToggleGroup: (g) => model.toggleCoins(g.coins),
-              actions: (u) => <CoinMenu u={u} model={model} />,
+              actions: (u) => <CoinMenu u={u} model={model} unit={shown.amountUnit} />,
             }}
           />
         </div>
       )}
       {model.summary && (
         <section className="tool-card card-l1" aria-label="Selection" data-testid="coins-selection">
-          <CoinSummary summary={model.summary} unit={unit} />
+          <CoinSummary summary={model.summary} shown={shown} />
           <p className="tool-note">{CoinText.tolerance(model.summary.feeTolerancePerInput)}</p>
         </section>
       )}

@@ -28,6 +28,8 @@ const analysis = (patch: Partial<PsbtAnalysis> = {}): PsbtAnalysis => ({
 });
 
 /** Unencrypted by default: no passphrase prompt. */
+const TEST_DASH = { chain: "test", amountUnit: "DASH" } as const;
+
 function psbt(lock: Partial<LockStatus> = { encrypted: false }, walletId: string | null = WALLET_A) {
   const vault = fakeVault(lock);
   const byPsbt: Record<string, PsbtAnalysis> = {
@@ -52,7 +54,7 @@ function psbt(lock: Partial<LockStatus> = { encrypted: false }, walletId: string
     }),
   };
   const grants = new GrantModel(vault.api);
-  return { m: new PsbtModel(api, grants, walletId, "test"), api, vault, grants, byPsbt, saved };
+  return { m: new PsbtModel(api, grants, walletId, TEST_DASH), api, vault, grants, byPsbt, saved };
 }
 
 describe("PSBT (QT-076…079)", () => {
@@ -243,10 +245,10 @@ describe("PSBT (QT-076…079)", () => {
     // The screen's models share one map: a later tab (a new model) remembers the broadcast too.
     const session = new Map<string, string | true>();
     const first = psbt();
-    const sentBy = new PsbtModel(first.api, first.grants, WALLET_A, "test", session);
+    const sentBy = new PsbtModel(first.api, first.grants, WALLET_A, TEST_DASH, session);
     await sentBy.loadText(SIGNED);
     await sentBy.broadcast();
-    const later = new PsbtModel(first.api, first.grants, WALLET_A, "test", session);
+    const later = new PsbtModel(first.api, first.grants, WALLET_A, TEST_DASH, session);
     await later.loadText(SIGNED);
     expect(later.sent).toBe(TXID);
     expect(later.canBroadcast).toBe(false);

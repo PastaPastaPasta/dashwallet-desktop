@@ -25,12 +25,11 @@ const TITLES: Record<Route, string> = {
 };
 
 /** The placeholder text of each route that `Placeholder` renders. */
-const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "tools">, string> = {
+const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "tools" | "settings">, string> = {
   coinJoin: "CoinJoin mixing is not available yet.",
   explore: "Explore is not available yet.",
   notifications: "DashPay notifications are not available yet.",
   profile: "Your DashPay profile is not available yet.",
-  settings: "Settings are not available yet.",
   joinDashPay: "Creating a DashPay username is not available yet.",
 };
 
@@ -48,7 +47,7 @@ export function Page({ route, wide = false, children }: { route: Route; wide?: b
   );
 }
 
-function NotYet({ testId, children }: { testId: string; children: ReactNode }) {
+export function NotYet({ testId, children }: { testId: string; children: ReactNode }) {
   return (
     <p className="placeholder card-l1" data-testid={testId}>
       {children}

@@ -1,8 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 import { fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
+import { showSettingsView, type SettingsView } from "./settings";
 import { showWalletView, type WalletView } from "./wallet";
 
-// Visual baselines of the four gate screens, U-03's wallet screens and U-05's Tools tabs in light and dark
+// Visual baselines of the four gate screens, U-03's wallet screens, U-04's settings and U-05's Tools tabs in light and dark
 // (Chromium). Opt-in with DW_VISUAL=1: pixels are only comparable inside the pinned Playwright image (scripts/e2e-docker.sh and the
 // CI job's container), where fonts, Chromium and its software rasteriser are fixed.
 test.skip(process.env.DW_VISUAL !== "1", "visual baselines run in the Playwright image only (DW_VISUAL=1)");
@@ -134,6 +135,17 @@ for (const theme of THEMES) {
       await page.evaluate((t) => window.__dwFixture!.shellCommand({ kind: "tools", tab: t as never }), tab);
       await ready(page);
       await shoot(page, `tools-${tab}`, theme);
+    });
+  }
+}
+
+const SETTINGS: SettingsView[] = ["general", "security", "wallets", "backups", "about", "exportSheet"];
+
+for (const theme of THEMES) {
+  for (const view of SETTINGS) {
+    test(`visual settings-${view} ${theme}`, async ({ page }) => {
+      await showSettingsView(page, view, theme);
+      await expect(page).toHaveScreenshot(`${theme}-settings-${view}.png`, { animations: "disabled", caret: "hide" });
     });
   }
 }

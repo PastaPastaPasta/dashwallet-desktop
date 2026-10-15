@@ -21,6 +21,7 @@ import type { AppError, AppEvent } from "../api/generated/commands";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import { classifyAddress, owns } from "./send";
+import { FIXTURE_DATA_DIR } from "./settings";
 import { FIXTURE_NOW, makeIds, prng, secs, TIP } from "./wallet";
 
 /** What the OS dialogs answer, and what was saved. */
@@ -148,8 +149,9 @@ const TIP_HASH = "00000ab1c3".padEnd(64, "7");
 function nodeInfo(world: World): NodeSummary {
   const { sync, launch } = world;
   return {
-    userAgent: `/Dash Wallet:${launch.appVersion}/`,
-    dataDir: `/home/user/.local/share/dashwallet/${launch.network.dirName}`,
+    // Settings ▸ About and General show these two (U-04).
+    userAgent: `/DashWallet:${launch.appVersion}/`,
+    dataDir: FIXTURE_DATA_DIR,
     startupTime: STARTED_SECS,
     network: launch.network,
     connectionsIn: 0,

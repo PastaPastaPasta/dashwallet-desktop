@@ -11,7 +11,7 @@ import { useBalance, useHistory, useSyncStatus, type HistoryFilter } from "../ap
 import { AmountText, DashButton, Icon, NetworkCapsule } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
-import { floored, formatWithUnit, masked } from "../format/amount";
+import { useDisplay } from "../format/display";
 import { isSyncing, syncPercent } from "../format/sync";
 
 /** dash-qt's overview shows this many recent transactions. */
@@ -32,10 +32,11 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId }: { title: s
 
 function BalanceHero({ balances, network, syncing }: { balances: Balances | null; network: NetworkInfo; syncing: boolean }) {
   const discreet = useUi((s) => s.discreet);
-  const fmt = (duffs: number) => (discreet ? masked() : floored(duffs));
+  const shown = useDisplay(network);
+  const fmt = (duffs: number) => (discreet ? shown.masked() : shown.floored(duffs));
   // dash-qt's `.withUnit` tooltip on amounts (UX-SPEC §5.1); none while masked.
-  const full = (duffs: number) => (discreet ? undefined : formatWithUnit("DASH", duffs, false, "standard", network.kind === "mainnet" ? "main" : "test"));
-  const unit = network.unitName;
+  const full = (duffs: number) => (discreet ? undefined : shown.withUnit(duffs));
+  const unit = shown.name;
   return (
     <section className="hero" data-testid="hero" aria-label="Balance">
       {network.kind === "mainnet" ? <span className="network-capsule-slot" /> : <NetworkCapsule network={network} testId="hero-capsule" />}

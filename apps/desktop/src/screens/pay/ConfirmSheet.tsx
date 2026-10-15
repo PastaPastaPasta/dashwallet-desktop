@@ -16,9 +16,8 @@ import { AmountText, DashButton } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
 import { LoadingState } from "../../components/history";
 import { Sheet } from "../../components/sheet";
-import { full } from "../../format/amount";
+import { useDisplay } from "../../format/display";
 import { authRefusal, broadcastFailure, credentialPrompt, failureText, keepsPromise, type Advanced, type Confirmed, type Outcome } from "./model";
-import { chainOf } from "./PayToAddress";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 const USING: Record<Advanced["coins"], string> = {
@@ -53,7 +52,8 @@ export function ConfirmSheet({
   onOutcome: (o: Outcome) => void;
 }) {
   const b = useBackend();
-  const chain = chainOf(network);
+  const shown = useDisplay(network);
+  const { chain, amountUnit } = shown;
   const lock = useLockStatus();
   const policy = usePaymentAuthentication();
   // `undefined` until the wallet list is read: neither the prompt nor Send shows before it is
@@ -87,16 +87,16 @@ export function ConfirmSheet({
         setWaitKnown(true);
       },
       (e) => {
-        if (live) setError(failureText(e, chain));
+        if (live) setError(failureText(e, chain, amountUnit));
       },
     );
     return () => {
       live = false;
     };
-  }, [b, chain]);
+  }, [b, chain, amountUnit]);
   const waitSecs = retryAt === null ? 0 : Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));
   const fieldId = useId();
-  const unit = network.unitName;
+  const unit = shown.name;
   const { recipient, estimate, changeAddress, total } = confirmed;
 
   // A failed read of the policy counts as "on" (U-03 D3): the prompt waits only while it loads.
@@ -137,7 +137,7 @@ export function ConfirmSheet({
         setError(refusal.text);
         // The vault refuses every attempt until then: Send waits too (Sol r1).
         if (refusal.waitSecs > 0) setRetryAt(Date.now() + refusal.waitSecs * 1000);
-      } else onOutcome({ kind: "failed", text: failureText(e, chain) });
+      } else onOutcome({ kind: "failed", text: failureText(e, chain, amountUnit) });
       return;
     }
 
@@ -146,7 +146,7 @@ export function ConfirmSheet({
       held = await draft.prepare(spec, grant.id);
     } catch (e) {
       void b.revokeGrant(grant.id).catch(() => null);
-      onOutcome({ kind: "failed", text: failureText(e, chain) });
+      onOutcome({ kind: "failed", text: failureText(e, chain, amountUnit) });
       return;
     }
     const { draft: d, prepared } = held;
@@ -161,7 +161,7 @@ export function ConfirmSheet({
       onOutcome({ kind: "sent", txid, ...sent });
     } catch (e) {
       // "Not sent" only when the engine released it; nothing is abandoned after a broadcast.
-      onOutcome(broadcastFailure(e, chain, { draft: d, prepared: prepared.handle, ...sent }, true));
+      onOutcome(broadcastFailure(e, chain, { draft: d, prepared: prepared.handle, ...sent }, true, amountUnit));
     }
   };
 
@@ -194,7 +194,7 @@ export function ConfirmSheet({
         }}
       >
         <div className="confirm-summary">
-          <AmountText className="confirm-amount" text={full(total, false)} unitName={unit} glyphFactor={0.8} />
+          <AmountText className="confirm-amount" text={shown.full(total)} unitName={unit} glyphFactor={0.8} />
           <p className="confirm-question">
             {watchOnly
               ? "Please, review your transaction proposal. This will produce a Partially Signed Transaction (PSBT) which you can save or copy and then sign with e.g. an offline Dash Core wallet."
@@ -207,20 +207,20 @@ export function ConfirmSheet({
             <span className="address-full">{recipient.address}</span>
           </DetailRow>
           <DetailRow label="Amount" testId="pay-confirm-amount">
-            <AmountText text={full(estimate.totalSent, false)} unitName={unit} glyph={false} />
+            <AmountText text={shown.full(estimate.totalSent)} unitName={unit} glyph={false} />
           </DetailRow>
           <DetailRow label="Network fee" testId="pay-confirm-fee">
-            <AmountText text={full(estimate.fee, false)} unitName={unit} glyph={false} />
+            <AmountText text={shown.full(estimate.fee)} unitName={unit} glyph={false} />
           </DetailRow>
           <DetailRow label="Using">{coinsText(coins)}</DetailRow>
           {changeAddress !== null && (
             <DetailRow label="Change to" testId="pay-confirm-change">
               <span className="address-full">{changeAddress}</span>
-              <AmountText text={full(estimate.change ?? 0, false)} unitName={unit} glyph={false} />
+              <AmountText text={shown.full(estimate.change ?? 0)} unitName={unit} glyph={false} />
             </DetailRow>
           )}
           <DetailRow label="Total" testId="pay-confirm-total">
-            <AmountText text={full(total, false)} unitName={unit} glyph={false} />
+            <AmountText text={shown.full(total)} unitName={unit} glyph={false} />
           </DetailRow>
         </dl>
         {recipient.subtractFeeFromAmount && <p className="placeholder-note">The fee is subtracted from the amount: the payee receives the amount above.</p>}

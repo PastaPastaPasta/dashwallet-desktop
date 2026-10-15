@@ -16,7 +16,7 @@ import { inTauri, IpcBackend } from "./api/tauri";
 import { App, LaunchContext } from "./app/App";
 import { exposeSelftest, runTauriSelftest } from "./app/selftest";
 import { milestones } from "./app/startup";
-import { ui } from "./app/ui";
+import { loadPrefs } from "./settings/prefs";
 
 /** Inside Tauri: dw-app and the engine. In a fixture build (`vite dev`, `pnpm build:fixture`)
  * outside Tauri: the fixture backend, chosen with `?scenario=&theme=&fail=&delay=`. A
@@ -37,7 +37,7 @@ async function boot() {
   const { backend, fixturePassphrase } = await connect();
   const launch = await backend.launchInfo();
   milestones.launchInfo = performance.now();
-  ui.set({ theme: launch.theme });
+  await loadPrefs(backend, launch);
 
   const client = new QueryClient({
     // Engine data changes only when a signal says so: no polling, no refetch on focus.

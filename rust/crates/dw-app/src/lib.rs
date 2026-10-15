@@ -18,6 +18,7 @@ mod ipc;
 #[cfg(test)]
 mod ipc_tests;
 pub mod launch;
+pub mod settings;
 pub mod shell;
 pub mod state;
 
@@ -282,7 +283,13 @@ fn app_builder<R: Runtime>(
         .invoke_handler(api::invoke)
         .setup(move |app| {
             eprintln!("dw-app: startup setup {}", started.elapsed().as_millis());
-            let theme = launch.theme;
+            // `--theme` wins; otherwise the appearance Settings saved (U-04 D3).
+            let theme = launch.theme.or_else(|| {
+                launch
+                    .data_dir
+                    .as_deref()
+                    .and_then(|root| settings::read(root).theme)
+            });
             let window_size = launch.window_size;
             let title = window_title(&launch.network);
             let handle = app.handle();

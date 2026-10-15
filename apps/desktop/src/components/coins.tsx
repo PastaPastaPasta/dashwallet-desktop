@@ -5,7 +5,7 @@
 import type { ReactNode } from "react";
 import type { CoinSelectionSummary } from "../api/generated/CoinSelectionSummary";
 import type { Utxo } from "../api/generated/Utxo";
-import { compact, full } from "../format/amount";
+import type { Display } from "../format/display";
 import { shortAddress } from "../format/tx";
 import { notSelectable, outpointKey } from "../screens/pay/model";
 import { COLUMN_TITLE, coinLabel, type CoinColumn, type CoinGroup, type CoinSort } from "../tools/coins";
@@ -23,7 +23,8 @@ export interface CoinTableDetail {
 
 interface Props {
   coins: Utxo[];
-  unit: string;
+  /** The display settings (U-04 D4): the unit and its name. */
+  shown: Display;
   selected: ReadonlySet<string>;
   onToggle: (key: string, on: boolean) => void;
   detail?: CoinTableDetail;
@@ -53,7 +54,7 @@ function SortHeader({ column, unit, detail }: { column: CoinColumn; unit: string
   );
 }
 
-function CoinRow({ u, unit, selected, onToggle, detail }: Omit<Props, "coins"> & { u: Utxo }) {
+function CoinRow({ u, shown, selected, onToggle, detail }: Omit<Props, "coins"> & { u: Utxo }) {
   const key = outpointKey(u.outpoint);
   const why = notSelectable(u);
   const party = u.label || shortAddress(u.address);
@@ -63,13 +64,13 @@ function CoinRow({ u, unit, selected, onToggle, detail }: Omit<Props, "coins"> &
       <td>
         <input
           type="checkbox"
-          aria-label={`Use ${compact(u.amount, false)} ${unit} at ${party}`}
+          aria-label={`Use ${shown.compact(u.amount)} ${shown.name} at ${party}`}
           checked={on}
           disabled={why !== null && !on}
           onChange={(e) => onToggle(key, e.target.checked)}
         />
       </td>
-      <td className="num">{compact(u.amount, false)}</td>
+      <td className="num">{shown.compact(u.amount)}</td>
       {detail ? (
         <>
           <td>{coinLabel(u)}</td>
@@ -89,7 +90,7 @@ function CoinRow({ u, unit, selected, onToggle, detail }: Omit<Props, "coins"> &
   );
 }
 
-function GroupRow({ g, selected, detail }: { g: CoinGroup; selected: ReadonlySet<string>; detail: CoinTableDetail }) {
+function GroupRow({ g, shown, selected, detail }: { g: CoinGroup; shown: Display; selected: ReadonlySet<string>; detail: CoinTableDetail }) {
   const selectable = g.coins.filter((u) => notSelectable(u) === null);
   const all = selectable.length > 0 && selectable.every((u) => selected.has(outpointKey(u.outpoint)));
   return (
@@ -103,7 +104,7 @@ function GroupRow({ g, selected, detail }: { g: CoinGroup; selected: ReadonlySet
           onChange={() => detail.onToggleGroup(g)}
         />
       </td>
-      <td className="num">{compact(g.total, false)}</td>
+      <td className="num">{shown.compact(g.total)}</td>
       <td>{g.label}</td>
       <td className="mono" title={g.address}>
         {shortAddress(g.address)}
@@ -113,8 +114,9 @@ function GroupRow({ g, selected, detail }: { g: CoinGroup; selected: ReadonlySet
   );
 }
 
-export function CoinTable({ coins, unit, selected, onToggle, detail }: Props) {
-  const row = (u: Utxo) => <CoinRow key={outpointKey(u.outpoint)} u={u} unit={unit} selected={selected} onToggle={onToggle} detail={detail} />;
+export function CoinTable({ coins, shown, selected, onToggle, detail }: Props) {
+  const unit = shown.name;
+  const row = (u: Utxo) => <CoinRow key={outpointKey(u.outpoint)} u={u} shown={shown} selected={selected} onToggle={onToggle} detail={detail} />;
   return (
     <table className={detail ? "data-table coin-table coin-table-detail" : "data-table coin-table"} data-testid="coin-table">
       <caption className="sr-only">Coins of this wallet</caption>
@@ -149,7 +151,7 @@ export function CoinTable({ coins, unit, selected, onToggle, detail }: Props) {
       </thead>
       <tbody>
         {detail?.groups
-          ? detail.groups.flatMap((g) => [<GroupRow key={g.address} g={g} selected={selected} detail={detail} />, ...g.coins.map(row)])
+          ? detail.groups.flatMap((g) => [<GroupRow key={g.address} g={g} shown={shown} selected={selected} detail={detail} />, ...g.coins.map(row)])
           : coins.map(row)}
       </tbody>
     </table>
@@ -157,8 +159,8 @@ export function CoinTable({ coins, unit, selected, onToggle, detail }: Props) {
 }
 
 /** dash-qt's coin control summary; estimates carry "≈". */
-export function CoinSummary({ summary: s, unit }: { summary: CoinSelectionSummary; unit: string }) {
-  const amount = (duffs: number) => <AmountText text={full(duffs, false)} unitName={unit} glyph={false} />;
+export function CoinSummary({ summary: s, shown }: { summary: CoinSelectionSummary; shown: Display }) {
+  const amount = (duffs: number) => <AmountText text={shown.full(duffs)} unitName={shown.name} glyph={false} />;
   return (
     <dl className="coin-summary" data-testid="coin-summary" aria-live="polite">
       <div>

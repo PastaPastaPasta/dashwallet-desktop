@@ -13,12 +13,14 @@ import { showToast } from "../../components/toast";
 import { useModel } from "../../onboarding/model";
 import type { GrantModel } from "../../tools/grant";
 import { PsbtModel, SESSION_BROADCASTS } from "../../tools/psbt";
-import { chainOf } from "../pay/PayToAddress";
+import { useDisplay } from "../../format/display";
 import { NotYet, Outcome, ToolCard } from "./common";
 
 export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; walletId: string | null; network: NetworkInfo }) {
   const b = useBackend();
-  const [model] = useState(() => new PsbtModel(b, grants, walletId, chainOf(network), SESSION_BROADCASTS));
+  // Amounts in the display unit (U-04 D4); General changes it on another route, which remounts this.
+  const shown = useDisplay(network);
+  const [model] = useState(() => new PsbtModel(b, grants, walletId, shown, SESSION_BROADCASTS));
   useModel(model);
   const [pasted, setPasted] = useState("");
   const id = useId();

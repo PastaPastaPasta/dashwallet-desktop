@@ -1,9 +1,11 @@
-//! The binding's own commands: launch facts, the start-up marks (G-02's U5)
-//! and the refusal probe. The self-test's commands are in `selftest`.
+//! The binding's own commands: launch facts, the start-up marks (G-02's U5),
+//! the renderer's display settings (U-04 D2) and the refusal probe. The
+//! self-test's commands are in `selftest`.
 
 use crate::bridge::RecentNotice;
 use crate::dto::LaunchInfo;
 use crate::ipc::commands;
+use crate::settings::{self, UiSettings};
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
 
@@ -31,6 +33,25 @@ commands! {
         // Escaped: the harness reads these lines, so a mark cannot forge one.
         eprintln!("dw-app: startup {} {ms}", mark.escape_debug());
         Ok(ms)
+    }
+
+    /// The display settings in `<data root>/settings.json` (U-04 D2); the
+    /// defaults when there is no readable file.
+    #[facade()]
+    fn ui_settings(state) -> UiSettings {
+        Ok(settings::read(&state.data_root))
+    }
+
+    /// Checks and saves the display settings (decimal digits 2-8, auto lock
+    /// 1 s to 24 hours; `invalid_argument` otherwise), and gives the main
+    /// window the chosen appearance unless `--theme` forced one (U-04 D3).
+    #[facade()]
+    fn set_ui_settings(state, settings: UiSettings) -> UiSettings {
+        settings::write(&state.data_root, &settings)?;
+        if state.launch.theme.is_none() {
+            (state.apply_theme)(settings.theme);
+        }
+        Ok(settings)
     }
 
     /// Registered but granted by no capability: the U6 probe that the ACL

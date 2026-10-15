@@ -14,6 +14,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::Mutex;
 
 use crate::bridge::{EventMemory, TauriSink};
+use crate::dto::ThemeName;
 use crate::error::{AppCode, AppError, EngineCode};
 use crate::instance::InstanceLock;
 use crate::launch::LaunchOptions;
@@ -24,6 +25,11 @@ pub struct AppState {
     /// Taken at the top of `main`, for the cold-start measurement (U5).
     pub started: Instant,
     pub engine: Engine,
+    /// The data root (`--datadir` or the platform default), where
+    /// `settings.json` lives (U-04 D2).
+    pub data_root: PathBuf,
+    /// Gives the main window an appearance (`None`: the system's).
+    pub apply_theme: Box<dyn Fn(Option<ThemeName>) + Send + Sync>,
     /// The network the window shows (D-row "one active session"). Session
     /// commands act on it; `open_network` and `close_network` change it.
     session: Mutex<Option<Arc<NetworkSession>>>,
@@ -195,19 +201,26 @@ impl AppState {
         };
         let engine = Engine::new(
             EngineConfig {
-                data_root,
+                data_root: data_root.clone(),
                 worker_threads: None,
                 vault,
             },
             Arc::new(TauriSink::new(app.clone(), Arc::clone(&memory))?),
         )?;
         let handle = app.clone();
+        let window = app.clone();
         let shell = crate::shell::shell(app)
             .unwrap_or_else(|| Arc::new(Shell::new(launch.selftest_link_trace.clone())));
         Ok(AppState {
             launch,
             started,
             engine,
+            data_root,
+            apply_theme: Box::new(move |theme| {
+                if let Some(w) = window.get_webview_window("main") {
+                    let _ = w.set_theme(theme.map(Into::into));
+                }
+            }),
             session: Mutex::new(None),
             exit: Box::new(move |code| handle.exit(code)),
             sends: SendHandles::default(),

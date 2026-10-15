@@ -6,7 +6,7 @@
 import { hasCode, type Backend } from "../api/backend";
 import type { CoinSelectionSummary } from "../api/generated/CoinSelectionSummary";
 import type { Utxo } from "../api/generated/Utxo";
-import { format } from "../format/amount";
+import { format, type Unit } from "../format/amount";
 import { failureText, Model } from "../onboarding/model";
 import { DEFAULT_TARGET_BLOCKS, notSelectable, outpointKey, outpointOf } from "../screens/pay/model";
 
@@ -36,8 +36,8 @@ export const CoinText = {
 
 export const coinLabel = (u: Utxo) => (u.isChange ? CoinText.change : u.label || CoinText.noLabel);
 
-/** A coin's amount as dash-qt copies it: plain DASH, no separators. */
-export const plainAmount = (duffs: number) => format("DASH", duffs, false, "never", false);
+/** A coin's amount as dash-qt copies it: in the display unit (U-04 D4), no separators. */
+export const plainAmount = (duffs: number, unit: Unit = "DASH") => format(unit, duffs, false, "never", false);
 
 const VALUE: Record<CoinColumn, (u: Utxo) => number | string> = {
   amount: (u) => u.amount,
@@ -87,14 +87,14 @@ export function groupCoins(coins: Utxo[]): CoinGroup[] {
 
 export type CopyField = "address" | "label" | "amount" | "outpoint";
 
-export function copyText(u: Utxo, field: CopyField): string {
+export function copyText(u: Utxo, field: CopyField, unit: Unit = "DASH"): string {
   switch (field) {
     case "address":
       return u.address;
     case "label":
       return u.label ?? "";
     case "amount":
-      return plainAmount(u.amount);
+      return plainAmount(u.amount, unit);
     case "outpoint":
       return outpointKey(u.outpoint);
   }

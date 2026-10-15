@@ -113,6 +113,8 @@ describe("Coin Selection (QT-069…074)", () => {
     const u = m.visible[0];
     expect(copyText(u, "outpoint")).toBe(key(1));
     expect(copyText(u, "amount")).toBe("1.23456789");
+    // In the display unit (U-04 D4), as dash-qt copies it.
+    expect(copyText(u, "amount", "mDASH")).toBe("1234.56789");
     expect(copyText(u, "label")).toBe("Rent");
     expect(copyText(u, "address")).toBe(A1);
     m.toggle(key(1));

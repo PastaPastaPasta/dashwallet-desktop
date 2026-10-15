@@ -14,7 +14,7 @@ import type { Recipient } from "../../api/generated/Recipient";
 import type { TxEstimate } from "../../api/generated/TxEstimate";
 import type { OutPoint } from "../../api/generated/OutPoint";
 import type { Utxo } from "../../api/generated/Utxo";
-import { formatWithUnit, type Chain } from "../../format/amount";
+import { formatWithUnit, type Chain, type Unit } from "../../format/amount";
 
 /** The coins a payment may use (coin control, U-03 D7). */
 export type CoinChoice = "any" | "mixed" | "selected";
@@ -123,9 +123,9 @@ export type Field = "address" | "amount" | null;
 
 /** dash-qt's send-dialog text for a refusal (`SendCoinsDialog::processSendCoinsReturn`), and the
  * field it belongs to; `null` when the error is not a send refusal. */
-export function sendErrorText(e: unknown, chain: Chain): { text: string; field: Field } | null {
+export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH"): { text: string; field: Field } | null {
   if (!isAppError(e)) return null;
-  const amount = (duffs: number) => formatWithUnit("DASH", duffs, false, "standard", chain);
+  const amount = (duffs: number) => formatWithUnit(unit, duffs, false, "standard", chain);
   switch (e.code) {
     case "send.no_recipients":
       return { text: "Enter an address and an amount.", field: null };
@@ -283,16 +283,22 @@ const RELEASED = ["send.no_peers", "send.broadcast_rejected", "send.prepared_tx_
  * released, or one whose handle was already gone (never dispatched), is "not sent". Anything
  * else may have reached the network: it stays unknown, never abandoned, so the user is not
  * invited to pay twice. A retry is never released (the engine keeps an unknown transaction). */
-export function broadcastFailure(e: unknown, chain: Chain, held: { draft: number; prepared: number; amount: number; fee: number }, first: boolean): Outcome {
+export function broadcastFailure(
+  e: unknown,
+  chain: Chain,
+  held: { draft: number; prepared: number; amount: number; fee: number },
+  first: boolean,
+  unit: Unit = "DASH",
+): Outcome {
   const gone = hasCode(e, "app.unknown_handle");
-  if (first && (gone || RELEASED.some((c) => hasCode(e, c)))) return { kind: "failed", text: failureText(e, chain) };
+  if (first && (gone || RELEASED.some((c) => hasCode(e, c)))) return { kind: "failed", text: failureText(e, chain, unit) };
   // The handle went with the draft (a lock or network switch closed it): nothing to retry here.
-  const text = gone ? "The payment may have been sent, and it can no longer be retried here." : failureText(e, chain);
+  const text = gone ? "The payment may have been sent, and it can no longer be retried here." : failureText(e, chain, unit);
   return { kind: "unknown", text, retry: !gone, ...held };
 }
 
-export function failureText(e: unknown, chain: Chain): string {
-  const send = sendErrorText(e, chain);
+export function failureText(e: unknown, chain: Chain, unit: Unit = "DASH"): string {
+  const send = sendErrorText(e, chain, unit);
   if (send) return send.text;
   if (isAppError(e)) return e.message;
   return e instanceof Error ? e.message : String(e);
