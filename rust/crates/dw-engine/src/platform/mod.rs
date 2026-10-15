@@ -33,6 +33,7 @@ mod journal_tests;
 pub mod keys_policy;
 pub mod lease;
 mod names;
+mod names_check;
 mod notifications;
 #[cfg(test)]
 mod notifications_tests;

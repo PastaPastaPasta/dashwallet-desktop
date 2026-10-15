@@ -4,8 +4,8 @@
 //! at the end).
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dpp::identity::Identity;
@@ -30,11 +30,11 @@ use super::bringup::NO_IDENTITY_KEY;
 use super::contacts::{PrivateDetails, PublishState};
 use super::errors::PlatformError;
 use super::names::{MainNamePrefs, resolve_main_name};
+use super::names_check::NamesChecks;
 use super::private_details::InfoSource;
 use super::private_details_tests::FakeInfos;
 use super::recovery::{
-    BoxedFuture, IdentityChoices, MockPlatform, NamesChecks, OwnedIdentity, Pause, owned_names,
-    summaries,
+    BoxedFuture, IdentityChoices, MockPlatform, OwnedIdentity, Pause, owned_names, summaries,
 };
 use super::reverify::{Held, Recorded, ShownProfile, confirmed, held_unverified, record_step};
 use super::runtime::{TestPause, guard};
@@ -298,6 +298,10 @@ impl EventSink for NoEvents {
 const ABANDON_12: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
+/// A second seed (a BIP39 test vector).
+const LEGAL_12: &[u8] =
+    b"legal winner thank year wave sausage worth useful legal winner thank yellow";
+
 const ALICE: [u8; 32] = [7; 32];
 const SECOND: [u8; 32] = [8; 32];
 /// The library's stamp on every name one fetch finds.
@@ -341,6 +345,8 @@ struct Platform {
     skip_names: bool,
     /// Holds each question about an identity's names.
     hold_check: Option<Arc<Notify>>,
+    /// The questions about names asked, per wallet.
+    questions: Mutex<HashMap<WalletId, u32>>,
     /// Identities whose listed labels have no domain document on Platform
     /// (a refused registration, a contest still open): Platform says they
     /// own no name.
@@ -479,7 +485,8 @@ impl MockPlatform for Platform {
         })
     }
 
-    fn owns_a_name(&self, _: WalletId, identity: String) -> BoxedFuture<Option<bool>> {
+    fn owns_a_name(&self, id: WalletId, identity: String) -> BoxedFuture<Option<bool>> {
+        *guard(&self.questions).entry(id).or_default() += 1;
         let answer = (!self.fail_names.load(Ordering::SeqCst)).then(|| {
             (self.names.iter()).any(|(raw, list)| {
                 base58(*raw) == identity && !list.is_empty() && !self.no_documents.contains(raw)
@@ -1571,23 +1578,135 @@ fn an_identity_on_file_reads_pending_until_platform_answers() {
 
 /// DP1-08 D23: a pass owed again (a discovery, or a pass cut off before a
 /// restart) keeps an identity Platform said is nameless nameless, and an
-/// unknown one reads pending until that pass ends.
+/// unknown one reads pending until that pass ends and a check settles it.
 #[test]
 fn owing_a_names_pass_again_keeps_the_answers() {
     let checks = NamesChecks::default();
     let (id, a, b) = (WalletId([1; 32]), base58(ALICE), base58(SECOND));
     assert_eq!(checks.of(&id, &a), Some(NamesCheck::Pending));
     checks.owe(id);
-    assert!(checks.answered(id, vec![(a.clone(), true), (b.clone(), false)], false));
+    let at = checks.generation(&id);
+    assert!(checks.answered(id, at, vec![(a.clone(), true), (b.clone(), false)]));
     assert_eq!(checks.of(&id, &a), None);
     assert_eq!(checks.of(&id, &b), Some(NamesCheck::Pending));
-    assert!(checks.answered(id, vec![], true));
+    checks.pass_ended(id, at);
+    assert!(checks.answered(id, at, vec![]));
     assert_eq!(checks.of(&id, &b), Some(NamesCheck::Failed));
 
     checks.owe(id);
     assert_eq!(checks.of(&id, &a), None);
     assert_eq!(checks.of(&id, &b), Some(NamesCheck::Pending));
-    assert!(!checks.answered(id, vec![(a.clone(), true)], false));
+    assert!(!checks.answered(id, at, vec![(a.clone(), true)]));
+}
+
+/// DP1-08 D28: an answer asked before the wallet was forgotten (removed or
+/// unloaded) is dropped, as is the end of a pass begun before it.
+#[test]
+fn an_answer_for_a_forgotten_wallet_is_dropped() {
+    let checks = NamesChecks::default();
+    let (id, a) = (WalletId([1; 32]), base58(ALICE));
+    checks.owe(id);
+    let before = checks.generation(&id);
+    checks.forget(&id);
+    checks.owe(id);
+    checks.pass_ended(id, before);
+    assert!(!checks.answered(id, before, vec![(a.clone(), true)]));
+    assert_eq!(checks.of(&id, &a), Some(NamesCheck::Pending));
+
+    let now = checks.generation(&id);
+    checks.pass_ended(id, now);
+    assert!(checks.answered(id, now, vec![(a.clone(), true)]));
+    assert_eq!(checks.of(&id, &a), None);
+}
+
+/// The names questions asked about `id`'s identities so far.
+fn questions(platform: &Platform, id: WalletId) -> u32 {
+    guard(&platform.questions)
+        .get(&id)
+        .copied()
+        .unwrap_or_default()
+}
+
+/// DP1-08 D27 (Sol r2 finding 1): a names check whose Platform answers are
+/// held stalls nothing else: a wallet added meanwhile is brought up while
+/// it waits. Triggers while it runs make one more run follow, not one each.
+#[test]
+fn a_held_names_check_stalls_no_other_wallet() {
+    let dir = dw_testutil::private_tempdir();
+    let hold_check = Arc::new(Notify::new());
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        // Platform says it owns a name the session has not loaded: asked
+        // again by every check.
+        names: vec![(ALICE, vec![("alice", Some(100))])],
+        hold_check: Some(Arc::clone(&hold_check)),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let first = restore(&engine, &s);
+    let manager = s.manager().unwrap();
+    engine.block_on(platform.bring_up(manager, first)).unwrap();
+
+    start(&engine, &s);
+    wait_until("the first wallet's question", || {
+        questions(&platform, first) == 1
+    });
+    let second = engine
+        .block_on(s.import_wallet(
+            Zeroizing::new(LEGAL_12.to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions::default(),
+        ))
+        .unwrap();
+    // Unbounded before D27: the supervisor awaited the held check.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while s.dashpay_startup(&second).unwrap().startup != StartupStatus::Ready {
+        assert!(
+            Instant::now() < deadline,
+            "the second wallet's bring-up waited on the check"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(questions(&platform, first), 1);
+    assert_eq!(names_check(&s, first), Some(NamesCheck::Pending));
+
+    // Two triggers while it runs: one more run.
+    s.kick_names_check(first);
+    s.kick_names_check(first);
+    hold_check.notify_one();
+    wait_until("the rerun's question", || questions(&platform, first) == 2);
+    assert_eq!(names_check(&s, first), Some(NamesCheck::Failed));
+    hold_check.notify_one();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(questions(&platform, first), 2);
+    assert_eq!(names_check(&s, first), Some(NamesCheck::Failed));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP1-08 D28 (Sol r2 finding 2): an answer that comes back after its wallet
+/// was removed is dropped, even with the same wallet imported again
+/// meanwhile: it never inherits a stale "nameless".
+#[test]
+fn an_answer_landing_after_a_removal_is_dropped() {
+    let (_dir, engine, s, id, wipe) = removable();
+    let (reached, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel());
+    *guard(&s.platform.recovery.pause_before_answer) = Some((reached.0, release.1));
+    let (session, manager) = (Arc::clone(&s), s.manager().unwrap());
+    let check =
+        s.rt.spawn(async move { session.check_names(&manager, id).await });
+    reached
+        .1
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the check answered");
+
+    engine.block_on(s.remove_wallet(id, wipe)).unwrap();
+    assert_eq!(restore(&engine, &s), id);
+    let manager = s.manager().unwrap();
+    engine.block_on(add_identities(&manager, id, &[(ALICE, 0)]));
+    release.0.send(()).unwrap();
+    engine.block_on(check).unwrap();
+    assert_eq!(names_check(&s, id), Some(NamesCheck::Pending));
+    engine.block_on(engine.shutdown()).unwrap();
 }
 
 /// A grant of `purpose` for the wallet, as the UI's prompt gets it.
