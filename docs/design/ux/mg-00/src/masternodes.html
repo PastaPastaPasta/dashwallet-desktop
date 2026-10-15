@@ -282,7 +282,92 @@
 </div>
 <!-- /frame -->
 
-<!-- frame id="mn-withdraw-pending" title="Withdrawal sent, result not confirmed: no second submit (§4.25.2)" route="masternodes" behind="mn-list" -->
+<!-- frame id="mn-pending-behind" title="Backdrop: Hosted evonode with a withdrawal being checked" route="masternodes" badge="1" -->
+<main class="page page-masternodes">
+ <div class="page-column">
+  <header class="top-intro mg-header">
+   <h1 class="top-intro-title">Masternodes</h1>
+   <span class="mg-header-actions">
+    <button type="button" class="dash-button dash-button-tintedGray dash-button-small">More</button>
+    <button type="button" class="dash-button dash-button-filledBlue dash-button-small">Set up a masternode</button>
+   </span>
+  </header>
+  <div class="mg-spread" style="margin-bottom: var(--dw-space-l)">
+   <div class="tabs" role="tablist" style="margin:0"><button class="tab" role="tab" aria-selected="true">My masternodes</button><button class="tab" role="tab">Governance</button></div>
+   <span class="mg-muted mg-small">Masternode list at block 1,214,880</span>
+  </div>
+  <div class="mg-summary card-l1">
+   <div><span class="mg-summary-label">Masternodes</span><span class="mg-summary-value">3 <span class="mg-muted mg-small">yours</span></span><span class="mg-summary-note">2 active · 2 tracked</span></div>
+   <div><span class="mg-summary-label">Payouts, last 30 days</span><span class="mg-summary-value"><span class="amount">7.83<dash/></span></span><span class="mg-summary-note">to payout addresses in this wallet</span></div>
+   <div><span class="mg-summary-label">Evonode credits</span><span class="mg-summary-value"><span class="amount">0.42<dash/></span></span><span class="mg-summary-note">withdrawal being checked</span></div>
+  </div>
+  <div class="contacts-split">
+   <div class="contacts-list">
+    <section class="tx-group card-l1">
+     <h2 class="contacts-group-title">Needs attention</h2>
+     <ul class="tx-group-rows" style="list-style:none;margin:0;padding:0 var(--dw-space-xs) var(--dw-space-xs)">
+      <li><button class="mg-row"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">Office node</span><span class="mg-row-sub">Masternode · 192.0.2.44:19999</span></span><span class="mg-row-trailing"><span class="chip chip-danger">PoSe banned</span><span class="mg-row-meta">noticed Oct 12</span></span></button></li>
+     </ul>
+    </section>
+    <section class="tx-group card-l1">
+     <h2 class="contacts-group-title">In progress</h2>
+     <ul class="tx-group-rows" style="list-style:none;margin:0;padding:0 var(--dw-space-xs) var(--dw-space-xs)">
+      <li><button class="mg-row"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">New masternode</span><span class="mg-row-sub">Masternode · registration sent</span></span><span class="mg-row-trailing"><span class="chip chip-info">Registering</span><span class="mg-row-meta">0 of 1 confirmations</span></span></button></li>
+     </ul>
+    </section>
+    <section class="tx-group card-l1">
+     <h2 class="contacts-group-title">My masternodes</h2>
+     <ul class="tx-group-rows" style="list-style:none;margin:0;padding:0 var(--dw-space-xs) var(--dw-space-xs)">
+      <li><button class="mg-row"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">Home node</span><span class="mg-row-sub">Masternode · 203.0.113.7:19999</span></span><span class="mg-row-trailing"><span class="chip chip-success">Active</span><span class="mg-row-meta">Paid Oct 13</span></span></button></li>
+      <li><button class="mg-row" aria-current="true"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">Hosted evonode</span><span class="mg-row-sub">Evonode · 198.51.100.4:19999</span></span><span class="mg-row-trailing"><span class="chip chip-success">Active</span><span class="mg-row-meta">0.42 credits to claim</span></span></button></li>
+     </ul>
+    </section>
+    <section class="tx-group card-l1">
+     <h2 class="contacts-group-title">Tracked</h2>
+     <ul class="tx-group-rows" style="list-style:none;margin:0;padding:0 var(--dw-space-xs) var(--dw-space-xs)">
+      <li><button class="mg-row"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">Club evonode</span><span class="mg-row-sub">Evonode · 203.0.113.9:19999 · voting key</span></span><span class="mg-row-trailing"><span class="chip chip-success">Active</span><span class="mg-row-meta">finding its collateral</span></span></button></li>
+      <li><button class="mg-row"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">Friend's evonode</span><span class="mg-row-sub">Evonode · 192.0.2.80:19999 · no keys</span></span><span class="mg-row-trailing"><span class="chip chip-success">Active</span><span class="mg-row-meta">Tracked</span></span></button></li>
+     </ul>
+    </section>
+   </div>
+   <aside class="contacts-pane" aria-label="Masternode">
+    <section class="mg-pane card-l1">
+     <header class="mg-pane-header">
+      <img src="icon:masternode-network-monitor" alt="">
+      <div>
+       <h2 class="mg-pane-title">Hosted evonode</h2>
+       <div class="chip-row" style="margin-top:2px"><span class="chip chip-success">Active</span><span class="chip chip-neutral">Evonode</span></div>
+      </div>
+     </header>
+     <div class="loading-state" style="padding:0"><span class="spinner" aria-hidden="true"></span><span>Withdrawal of <span class="amount">0.41990000<dash/></span> sent; checking its result</span></div>
+     <dl class="mg-facts">
+      <dt>Service</dt><dd>198.51.100.4:19999</dd>
+      <dt>Evonode credits</dt><dd><span class="amount">0.42<dash/></span> · withdrawal being checked</dd>
+      <dt>Payout address</dt><dd><span class="mono">yPay8vK2…Wm4c</span> · checked up to block 1,214,880</dd>
+      <dt>PoSe score</dt><dd>— <span class="mg-muted">(needs a full node)</span></dd>
+     </dl>
+     <div>
+      <h3 class="mg-section-title">In this wallet</h3>
+      <ul class="mg-roles">
+       <li class="mg-held">Owner key</li>
+       <li class="mg-held">Voting key</li>
+       <li class="mg-held">Payout address</li>
+       <li class="mg-held">Collateral, 4,000 Dash</li>
+       <li class="mg-elsewhere">Operator key: your operator</li>
+      </ul>
+     </div>
+     <div class="mg-actions">
+      <button class="dash-button dash-button-tintedBlue dash-button-small">Vote on proposals</button>
+      <button class="dash-button dash-button-tintedBlue dash-button-small" disabled title="Waiting for the result of the withdrawal already sent">Withdraw credits</button>
+      <button class="dash-button dash-button-tintedGray dash-button-small">More</button>
+     </div>
+    </section>
+   </aside>
+  </div>
+ </div>
+</main>
+<!-- /frame -->
+<!-- frame id="mn-withdraw-pending" title="Withdrawal sent, result not confirmed: no second submit (§4.25.2)" route="masternodes" behind="mn-pending-behind" -->
 <!-- sheet -->
 <div class="sheet sheet-small" role="dialog" aria-modal="true">
  <header class="sheet-header"><span></span><h2 class="sheet-title">Withdraw credits</h2><span><x-close/></span></header>

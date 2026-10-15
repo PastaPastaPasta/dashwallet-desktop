@@ -163,7 +163,7 @@
      <li class="mg-node" style="grid-template-columns:minmax(0,1fr) 160px 72px"><span><input class="mg-input" value="Carol" style="width:200px"></span><span class="mg-node-weight"><input class="mg-input" value="300" style="width:96px;text-align:right"> Dash</span><span class="mg-node-result"><button class="dash-button dash-button-plainRed dash-button-small">Remove</button></span></li>
     </ul>
     <div class="mg-spread"><button class="dash-button dash-button-plainBlue dash-button-small">Add a participant</button><span class="mg-field-ok">1,000 of 1,000 Dash · 3 shares</span></div>
-    <p class="mg-muted mg-small" style="margin:0">2 to 8 people. Each share is at least 100 Dash and earns its part of the owner portion of every payout, after the operator's share. Names are labels: they go into the invitation so everyone sees the same list, and nothing else uses them.</p>
+    <p class="mg-muted mg-small" style="margin:0">2 to 8 people. Each share is at least 100 Dash and earns its part of every payout, after the operator's share once the operator sets a payout address. Names are labels: they go into the invitation so everyone sees the same list, and nothing else uses them.</p>
    </div>
   </div>
  </div>
@@ -276,8 +276,8 @@
   <p class="mg-notice mg-notice-info">Before joining, ask Alice to read you the check code, by phone or in person. If it differs, the invitation changed on the way: don't join.</p>
   <div class="mg-shares"><span class="mg-share-1" style="width:40%"></span><span class="mg-share-2" style="width:30%"></span><span class="mg-share-3" style="width:30%"></span></div>
   <dl class="detail-list card-l1">
-   <div class="detail-row"><dt class="detail-label">Your share</dt><dd class="detail-value"><span class="amount">300<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span>: 30% of the owner portion after the operator's 5% cut, so about 28.5% of each payout · Alice 400 · Carol 300</dd></div>
-   <div class="detail-row"><dt class="detail-label">Masternode</dt><dd class="detail-value">203.0.113.30:19999 · run by Alice, who takes a 5% operator's share</dd></div>
+   <div class="detail-row"><dt class="detail-label">Your share</dt><dd class="detail-value"><span class="amount">300<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span>: 30% of each payout; about 28.5% once the operator's payout address is set · Alice 400 · Carol 300</dd></div>
+   <div class="detail-row"><dt class="detail-label">Masternode</dt><dd class="detail-value">203.0.113.30:19999 · run by Alice · operator's share 5%, paid only after the operator sets a payout address</dd></div>
    <div class="detail-row"><dt class="detail-label">Votes</dt><dd class="detail-value">From Alice's wallet</dd></div>
    <div class="detail-row"><dt class="detail-label">Leaving</dt><dd class="detail-value">Alone: 20 Dash penalty during a 6-month early period, then free. Together: free.</dd></div>
    <div class="detail-row"><dt class="detail-label">Network fee</dt><dd class="detail-value">Split by share, at most 0.0001 Dash from you; the exact amount is in the locked terms</dd></div>
@@ -338,7 +338,7 @@
   </ul>
   <dl class="detail-list card-l1">
    <div class="detail-row"><dt class="detail-label">Terms</dt><dd class="detail-value">Masternode at 203.0.113.30:19999 · operator key <span class="mono">93ac…e1f0</span>, from Alice · operator's share 5%</dd></div>
-   <div class="detail-row"><dt class="detail-label">Payout split</dt><dd class="detail-value">After the operator's 5%: Alice 40%, Bob 30%, Carol 30% of the rest, about 38%, 28.5% and 28.5% of each payout</dd></div>
+   <div class="detail-row"><dt class="detail-label">Payout split</dt><dd class="detail-value">Now 40%, 30%, 30% of each payout. Once the operator's payout address is set, its 5% comes first: about 38%, 28.5%, 28.5%</dd></div>
    <div class="detail-row"><dt class="detail-label">Network fee</dt><dd class="detail-value"><span class="amount">0.00006<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span>, split by share: Alice 0.000024, Bob 0.000018, Carol 0.000018 (each within the 0.0001 maximum from the invitation)</dd></div>
    <div class="detail-row"><dt class="detail-label">Early period</dt><dd class="detail-value">6 months (105,120 blocks) · leaving alone before then costs <span class="amount">20<span class="glyph" aria-hidden="true" style="--glyph-url:var(--mg-glyph);--glyph-factor:0.8"></span></span></dd></div>
   </dl>
@@ -436,7 +436,8 @@
      </div>
      <dl class="mg-facts">
       <dt>Service</dt><dd>203.0.113.30:19999</dd>
-      <dt>Your payouts</dt><dd>40% of the owner portion after the operator's 5%, about 38% of each payout, to <span class="mono">yRw4…n8Ka</span></dd>
+      <dt>Your payouts</dt><dd>40% of each payout to <span class="mono">yRw4…n8Ka</span>; about 38% once the operator's payout address is set</dd>
+      <dt>Operator's share</dt><dd>5%, not paid yet: Alice hasn't set an operator payout address · checked up to block 1,214,880</dd>
       <dt>Your refund</dt><dd><span class="mono">yRf9…3dQe</span> gets your 400 Dash back when it dissolves</dd>
       <dt>Early period</dt><dd>Ends at block 1,319,400, about Apr 13, 2027</dd>
       <dt>Standby dissolution</dt><dd>Saved on this computer on Oct 15</dd>
@@ -502,7 +503,8 @@
      </div>
      <dl class="mg-facts">
       <dt>Service</dt><dd>203.0.113.30:19999</dd>
-      <dt>Your payouts</dt><dd>40% of the owner portion after the operator's 5%, about 38% of each payout, to <span class="mono">yRw4…n8Ka</span></dd>
+      <dt>Your payouts</dt><dd>40% of each payout to <span class="mono">yRw4…n8Ka</span>; about 38% once the operator's payout address is set</dd>
+      <dt>Operator's share</dt><dd>5%, not paid yet: Alice hasn't set an operator payout address · checked up to block 1,214,880</dd>
       <dt>Your refund</dt><dd><span class="mono">yRf9…3dQe</span> gets your 400 Dash back when it dissolves</dd>
       <dt>Early period</dt><dd>Ends at block 1,319,400, about Apr 13, 2027</dd>
       <dt>Standby dissolution</dt><dd>Saved on this computer on Oct 15</dd>
