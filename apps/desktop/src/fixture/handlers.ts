@@ -32,6 +32,7 @@ import type { PrivateContactDetails } from "../api/generated/PrivateContactDetai
 import type { EligibilityName } from "../api/generated/EligibilityName";
 import type { UserHit } from "../api/generated/UserHit";
 import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
+import { userLinkText } from "../contacts/add";
 import { activityPage, contactList, eventOf, relationOf, type DashPayWorld, type FixtureScan } from "./dashpay";
 import { scanHandlers } from "./scan";
 import { routeLink } from "./links";
@@ -914,7 +915,7 @@ export const HANDLERS: Handlers = {
     const me = dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!;
     if (me.namesUpdating) throw fail("platform.unavailable", "names are being updated");
     if (!me.mainName) throw fail("contact.no_username", "the identity has no username");
-    return `dashpay://user?id=${identity}&username=${encodeURIComponent(me.mainName)}`;
+    return userLinkText(identity, me.mainName);
   },
   // DashPay::verify_scanned (users.rs): a user link must name the identity that owns its username
   // now; a DIP-15 code must not have expired (checked before any query), and its username must
@@ -929,7 +930,7 @@ export const HANDLERS: Handlers = {
       return scanned(hit, { kind: "userLink" });
     }
     const code = parseContactCode(text);
-    if (!code) throw fail("invalid_argument", "not a DashPay contact code");
+    if (!code) throw fail("invalid_argument", "text: no contact code");
     if (code.expiresAt <= secs(FIXTURE_NOW)) throw fail("contact.scan_expired", "scan expired");
     const hit = lookup(dp, code.username);
     if (!hit) throw fail("contact.scan_unverified", "the scanned code could not be verified");
