@@ -3,7 +3,8 @@
 
 use dw_engine::{
     BroadcastOutcome as EngineBroadcastOutcome, ChangePolicy as EngineChangePolicy,
-    CoinSource as EngineCoinSource, FeeMode as EngineFeeMode, PreparedInput as EnginePreparedInput,
+    CoinSource as EngineCoinSource, ContactRecipient as EngineContactRecipient,
+    FeeMode as EngineFeeMode, PreparedInput as EnginePreparedInput,
     PreparedOutput as EnginePreparedOutput, PreparedSummary, PsbtAnalysis as EnginePsbtAnalysis,
     PsbtOutputInfo, PsbtSignability as EnginePsbtSignability, Recipient as EngineRecipient,
     TxEstimate as EngineTxEstimate,
@@ -45,6 +46,42 @@ impl From<Recipient> for EngineRecipient {
             subtract_fee_from_amount,
             label,
             message,
+        }
+    }
+}
+
+/// A DashPay contact as a draft's one recipient (DP3-01): its DIP-15
+/// address is reserved at `draftPrepare`; until then a same-size
+/// placeholder plans the fee. `identity` is ours and `contact` the one it
+/// pays, both Base58 (`contact` established, or with its request waiting
+/// for "Accept and pay"); `amount` is in duffs, at least 546; `note` is
+/// stored with the transaction as its message.
+// No field docs: ts-rs would put trailing spaces in the generated file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactRecipient {
+    pub identity: String,
+    pub contact: String,
+    pub amount: u64,
+    pub subtract_fee: bool,
+    pub note: Option<String>,
+}
+
+impl From<ContactRecipient> for EngineContactRecipient {
+    fn from(r: ContactRecipient) -> Self {
+        let ContactRecipient {
+            identity,
+            contact,
+            amount,
+            subtract_fee,
+            note,
+        } = r;
+        EngineContactRecipient {
+            identity,
+            contact,
+            amount,
+            subtract_fee,
+            note,
         }
     }
 }

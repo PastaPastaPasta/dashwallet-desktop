@@ -17,6 +17,7 @@ const OUTCOMES: i64 = 2026101202;
 const CONTACT_INFO: i64 = 2026101301;
 const REMOVED_WALLETS: i64 = 2026101302;
 const DP_EVENTS_PAGE: i64 = 2026101303;
+const LOCK_INPUTS: i64 = 2026101401;
 
 const DP_TABLES: [&str; 10] = [
     "dp_avatar",
@@ -78,7 +79,7 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), DP_EVENTS_PAGE);
+    assert_eq!(db.schema_version().unwrap(), LOCK_INPUTS);
     drop(db);
 
     let conn = Connection::open(&path).unwrap();
@@ -93,7 +94,8 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
             OUTCOMES,
             CONTACT_INFO,
             REMOVED_WALLETS,
-            DP_EVENTS_PAGE
+            DP_EVENTS_PAGE,
+            LOCK_INPUTS
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -135,7 +137,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     }
 
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), DP_EVENTS_PAGE);
+    assert_eq!(db.schema_version().unwrap(), LOCK_INPUTS);
     assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "Main".into())]);
     assert_eq!(
         db.label(W, crate::LabelKind::Tx, "t").unwrap().as_deref(),
@@ -159,7 +161,8 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
             OUTCOMES,
             CONTACT_INFO,
             REMOVED_WALLETS,
-            DP_EVENTS_PAGE
+            DP_EVENTS_PAGE,
+            LOCK_INPUTS
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -177,7 +180,7 @@ fn reopening_and_rerunning_change_nothing() {
     }
     for _ in 0..3 {
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), DP_EVENTS_PAGE);
+        assert_eq!(db.schema_version().unwrap(), LOCK_INPUTS);
         db.conn()
             .execute(
                 "INSERT OR IGNORE INTO dp_main_identity (wallet_id, identity) VALUES (?1, 'id1')",
@@ -205,7 +208,8 @@ fn reopening_and_rerunning_change_nothing() {
             OUTCOMES,
             CONTACT_INFO,
             REMOVED_WALLETS,
-            DP_EVENTS_PAGE
+            DP_EVENTS_PAGE,
+            LOCK_INPUTS
         ]
     );
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_main_identity"), 1);
@@ -257,6 +261,11 @@ fn shipped_migrations_are_unchanged() {
                 "dp_events_page".to_string(),
                 CHECKSUM_DP_EVENTS_PAGE
             ),
+            (
+                LOCK_INPUTS,
+                "payment_lock_inputs".to_string(),
+                CHECKSUM_LOCK_INPUTS
+            ),
         ]
     );
 }
@@ -270,6 +279,7 @@ const CHECKSUM_OUTCOMES: u64 = 9183630881616259306;
 const CHECKSUM_CONTACT_INFO: u64 = 6330962680869650951;
 const CHECKSUM_REMOVED_WALLETS: u64 = 15219075048203792465;
 const CHECKSUM_DP_EVENTS_PAGE: u64 = 3406283282772175885;
+const CHECKSUM_LOCK_INPUTS: u64 = 5402975231604979268;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -720,7 +730,7 @@ fn verification_records_without_a_digest_verify_nothing() {
         .unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), DP_EVENTS_PAGE);
+    assert_eq!(db.schema_version().unwrap(), LOCK_INPUTS);
     assert!(db.verified_entities().unwrap().is_empty(), "the old row");
     assert_eq!(
         count(

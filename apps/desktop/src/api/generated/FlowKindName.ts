@@ -3,4 +3,4 @@
 /**
  * What a lease is for; it fixes which budgets its grants may fund.
  */
-export type FlowKindName = "registration" | "topUp" | "withdraw" | "nameRegistration" | "profileEdit" | "contactRequest" | "accept" | "acceptAndPay" | "privateDetails" | "enableDashPayKeys";
+export type FlowKindName = "registration" | "topUp" | "withdraw" | "nameRegistration" | "profileEdit" | "contactRequest" | "accept" | "acceptAndPay" | "privateDetails" | "enableDashPayKeys" | "contactPayment";

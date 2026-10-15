@@ -138,6 +138,10 @@ pub enum EngineError {
     /// refusal's own code says what the user can do (review Opus O-5).
     #[error("stuck funding: {0}")]
     StuckFunding(crate::platform::lease::StuckFundingRefusal),
+    /// A contact payment's refusal (DP3-01): the contact's, Platform's or
+    /// the identity's code (`contact.*`, `platform.*`, `identity.*`).
+    #[error("contact: {0}")]
+    Contact(crate::platform::ContactError),
 }
 
 impl EngineError {
@@ -186,6 +190,7 @@ impl EngineError {
             EngineError::CoinJoin(_) => "coinjoin",
             EngineError::Masternode(_) => "masternode",
             EngineError::StuckFunding(_) => "stuck_funding",
+            EngineError::Contact(_) => "contact",
         }
     }
 }
@@ -193,6 +198,12 @@ impl EngineError {
 impl From<std::io::Error> for EngineError {
     fn from(e: std::io::Error) -> Self {
         EngineError::Io(e.to_string())
+    }
+}
+
+impl From<crate::platform::ContactError> for EngineError {
+    fn from(e: crate::platform::ContactError) -> Self {
+        EngineError::Contact(e)
     }
 }
 

@@ -351,6 +351,18 @@ impl LockReason {
     }
 }
 
+/// A `dp_payment_lock` row (DP3-01): payments from `identity` to `contact`
+/// wait for `txid`'s outcome, locked at `since`; `inputs` are its
+/// comma-separated `txid:vout` outpoints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DpPaymentLockRow {
+    pub identity: String,
+    pub contact: String,
+    pub txid: String,
+    pub since: u64,
+    pub inputs: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockRow {
     pub txid: String,
@@ -1111,6 +1123,139 @@ impl AppDb {
         Ok(())
     }
 
+    // ---- DashPay payment locks (DP3-01) ----
+
+    /// Every lock of the wallet, by identity and contact.
+    pub fn dp_payment_locks(&self, wallet_id: &str) -> Result<Vec<DpPaymentLockRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT identity, contact, txid, since, inputs FROM dp_payment_lock
+             WHERE wallet_id = ?1 ORDER BY identity, contact",
+        )?;
+        let rows = stmt.query_map([wallet_id], |r| {
+            Ok(DpPaymentLockRow {
+                identity: r.get(0)?,
+                contact: r.get(1)?,
+                txid: r.get(2)?,
+                since: r.get::<_, i64>(3)? as u64,
+                inputs: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Locks payments from `row.identity` to `row.contact` behind
+    /// `row.txid`, unless another payment holds the pair: then nothing is
+    /// written and that payment's txid is returned. Writing `row.txid`'s
+    /// lock again keeps its `since` and takes `row.inputs`.
+    pub fn set_dp_payment_lock(
+        &self,
+        wallet_id: &str,
+        row: &DpPaymentLockRow,
+    ) -> Result<Option<String>> {
+        Self::upsert_payment_lock(&self.conn(), wallet_id, row)
+    }
+
+    /// [`Self::set_dp_payment_lock`], durable against power loss when it
+    /// returns `Ok`: the write commits under `synchronous=FULL`, which syncs
+    /// the WAL at the commit (the connection otherwise runs `NORMAL`, under
+    /// which a commit is not synced), and a failed sync is an error. On
+    /// Apple platforms also `fullfsync`, as the dispatch journal's: their
+    /// fsync does not flush the disk cache. One WAL sync, not a checkpoint:
+    /// no other connection can make it busy. The connection is back to
+    /// `NORMAL` afterwards (DP3-01 D27).
+    pub fn set_dp_payment_lock_durable(
+        &self,
+        wallet_id: &str,
+        row: &DpPaymentLockRow,
+    ) -> Result<Option<String>> {
+        self.durably(|conn| Self::upsert_payment_lock(conn, wallet_id, row))
+    }
+
+    /// Runs `write` on the connection with its commits synced (`synchronous=
+    /// FULL`, plus `fullfsync` on Apple platforms), then back to `NORMAL` on
+    /// every exit, a panic included: the connection outlives a poisoned
+    /// mutex (Sol r3). The write's error comes before the restore's.
+    fn durably<T>(&self, write: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        /// Puts the connection back to `NORMAL` when dropped, unless
+        /// `restore` already did.
+        struct Synced<'c>(Option<&'c Connection>);
+        impl Synced<'_> {
+            fn restore(&mut self) -> rusqlite::Result<()> {
+                match self.0.take() {
+                    Some(conn) => set_synced(conn, false),
+                    None => Ok(()),
+                }
+            }
+        }
+        impl Drop for Synced<'_> {
+            fn drop(&mut self) {
+                let _ = self.restore();
+            }
+        }
+        fn set_synced(conn: &Connection, on: bool) -> rusqlite::Result<()> {
+            conn.pragma_update(None, "synchronous", if on { "FULL" } else { "NORMAL" })?;
+            if cfg!(target_vendor = "apple") {
+                conn.pragma_update(None, "fullfsync", on)?;
+            }
+            Ok(())
+        }
+
+        let conn = self.conn();
+        let mut synced = Synced(Some(&conn));
+        let written = set_synced(&conn, true)
+            .map_err(Into::into)
+            .and_then(|()| write(&conn));
+        let normal = synced.restore();
+        let written = written?;
+        normal?;
+        Ok(written)
+    }
+
+    fn upsert_payment_lock(
+        conn: &Connection,
+        wallet_id: &str,
+        row: &DpPaymentLockRow,
+    ) -> Result<Option<String>> {
+        conn.execute(
+            "INSERT INTO dp_payment_lock (wallet_id, identity, contact, txid, since, inputs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (wallet_id, identity, contact)
+             DO UPDATE SET inputs = excluded.inputs WHERE txid = excluded.txid",
+            params![
+                wallet_id,
+                row.identity,
+                row.contact,
+                row.txid,
+                row.since as i64,
+                row.inputs
+            ],
+        )?;
+        let held: String = conn.query_row(
+            "SELECT txid FROM dp_payment_lock
+             WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3",
+            params![wallet_id, row.identity, row.contact],
+            |r| r.get(0),
+        )?;
+        Ok((held != row.txid).then_some(held))
+    }
+
+    /// Removes the pair's lock if it is still `txid`'s; whether one went.
+    pub fn clear_dp_payment_lock(
+        &self,
+        wallet_id: &str,
+        identity: &str,
+        contact: &str,
+        txid: &str,
+    ) -> Result<bool> {
+        let n = self.conn().execute(
+            "DELETE FROM dp_payment_lock
+             WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3 AND txid = ?4",
+            params![wallet_id, identity, contact, txid],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Every `(identity, key, value)` of the wallet's `dp_prefs` rows, by
     /// identity and key, from one statement: one snapshot of the rows, so a
     /// write between two reads cannot mix their generations.
@@ -1311,11 +1456,122 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026101303);
+        assert_eq!(db.schema_version().unwrap(), 2026101401);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();
         assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "Main".into())]);
+    }
+
+    #[test]
+    fn payment_locks_keep_their_payment_and_clear_only_their_txid() {
+        let db = AppDb::open_in_memory().unwrap();
+        let row = |c: &str, t: &str, since| DpPaymentLockRow {
+            identity: "me".into(),
+            contact: c.into(),
+            txid: t.into(),
+            since,
+            inputs: format!("{t}:0"),
+        };
+        assert_eq!(
+            db.set_dp_payment_lock(W, &row("bob", "t1", 10)).unwrap(),
+            None
+        );
+        // Another payment never replaces the pair's lock.
+        assert_eq!(
+            db.set_dp_payment_lock(W, &row("bob", "t2", 20)).unwrap(),
+            Some("t1".into())
+        );
+        // The same payment's again keeps its `since`, takes its inputs.
+        let again = DpPaymentLockRow {
+            inputs: "t1:1".into(),
+            ..row("bob", "t1", 15)
+        };
+        assert_eq!(db.set_dp_payment_lock(W, &again).unwrap(), None);
+        db.set_dp_payment_lock(W, &row("carol", "t3", 30)).unwrap();
+        db.set_dp_payment_lock(W2, &row("bob", "t4", 40)).unwrap();
+        let first = DpPaymentLockRow {
+            inputs: "t1:1".into(),
+            ..row("bob", "t1", 10)
+        };
+        assert_eq!(
+            db.dp_payment_locks(W).unwrap(),
+            vec![first, row("carol", "t3", 30)]
+        );
+        assert!(!db.clear_dp_payment_lock(W, "me", "bob", "t2").unwrap());
+        assert!(db.clear_dp_payment_lock(W, "me", "bob", "t1").unwrap());
+        assert_eq!(
+            db.dp_payment_locks(W).unwrap(),
+            vec![row("carol", "t3", 30)]
+        );
+        assert_eq!(db.dp_payment_locks(W2).unwrap(), vec![row("bob", "t4", 40)]);
+    }
+
+    /// D27: the durable write commits under `synchronous=FULL` (a trigger
+    /// refusing any other commit sees it), the plain one does not, and the
+    /// connection is back to `NORMAL` after either outcome.
+    #[test]
+    fn the_durable_payment_lock_commits_synced() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = AppDb::open(&dir.path().join(APP_DB_FILE)).unwrap();
+        let row = DpPaymentLockRow {
+            identity: "me".into(),
+            contact: "bob".into(),
+            txid: "t1".into(),
+            since: 1,
+            inputs: String::new(),
+        };
+        // Apple platforms also need `fullfsync` for a sync that survives
+        // power loss.
+        let synchronous = |db: &AppDb| -> i64 {
+            let conn = db.conn();
+            let level: i64 = conn
+                .query_row("PRAGMA synchronous", [], |r| r.get(0))
+                .unwrap();
+            let full: i64 = conn
+                .query_row("PRAGMA fullfsync", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(full, 0, "fullfsync is back off");
+            level
+        };
+        let apple = if cfg!(target_vendor = "apple") {
+            " OR (SELECT fullfsync FROM pragma_fullfsync) = 0"
+        } else {
+            ""
+        };
+        db.conn()
+            .execute_batch(&format!(
+                "CREATE TRIGGER need_full BEFORE INSERT ON dp_payment_lock BEGIN
+                 SELECT RAISE(FAIL, 'not synced')
+                 WHERE (SELECT synchronous FROM pragma_synchronous) < 2{apple}; END;"
+            ))
+            .unwrap();
+        assert!(db.set_dp_payment_lock(W, &row).is_err());
+        assert_eq!(synchronous(&db), 1);
+        assert_eq!(db.set_dp_payment_lock_durable(W, &row).unwrap(), None);
+        assert_eq!(synchronous(&db), 1, "back to NORMAL");
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER need_full;
+                 CREATE TRIGGER fail_lock BEFORE UPDATE ON dp_payment_lock BEGIN
+                 SELECT RAISE(FAIL, 'injected'); END;",
+            )
+            .unwrap();
+        assert!(db.set_dp_payment_lock_durable(W, &row).is_err());
+        assert_eq!(synchronous(&db), 1, "back to NORMAL after an error");
+        assert_eq!(db.dp_payment_locks(W).unwrap(), vec![row]);
+
+        // A panic in the synced section (Sol r3): the reused connection is
+        // back to NORMAL.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            db.durably(|conn| -> Result<()> {
+                let level: i64 = conn.query_row("PRAGMA synchronous", [], |r| r.get(0))?;
+                assert_eq!(level, 2, "FULL inside");
+                panic!("injected panic");
+            })
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(synchronous(&db), 1, "back to NORMAL after a panic");
     }
 
     #[test]

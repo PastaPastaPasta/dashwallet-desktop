@@ -80,8 +80,9 @@ pub use platform::{
 pub use receive::{AddressFilter, AddressInfo, ReceiveRequest};
 pub use send::psbt::{PsbtAnalysis, PsbtFailure, PsbtOutputInfo, PsbtSignability};
 pub use send::{
-    BroadcastOutcome, ChangePolicy, CoinSource, FeeMode, MAX_TX_FEE, PreparedInput, PreparedOutput,
-    PreparedSummary, PreparedTx, Recipient, SendFailure, TxDraft, TxEstimate,
+    BroadcastOutcome, ChangePolicy, CoinSource, ContactRecipient, FeeMode, MAX_TX_FEE,
+    PreparedInput, PreparedOutput, PreparedSummary, PreparedTx, Recipient, SendFailure, TxDraft,
+    TxEstimate,
 };
 pub use session::{CreatedWallet, NetworkSession, SessionOptions, WalletBalances, WalletId};
 pub use sync::{PeerInfo, RescanFrom, SyncPhase, SyncPhaseProgress, SyncSnapshot};
