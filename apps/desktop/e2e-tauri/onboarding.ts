@@ -82,7 +82,6 @@ function fundedPhrase(root: string, passFile: string): { phrase: string; address
   return { phrase, address, txid };
 }
 
-
 async function main() {
   mkdirSync(OUT, { recursive: true });
   work = mkdtempSync(join(tmpdir(), "dw-onboarding-")); // mode 0700

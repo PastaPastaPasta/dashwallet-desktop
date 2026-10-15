@@ -39,12 +39,13 @@ let work: string | undefined;
  * passphrase. */
 const secrets: string[] = [];
 
-/** dwcli on the testnet data root. Its stderr is printed with the phrase's words masked. */
+/** dwcli on the testnet data root. Its stderr is printed with every word of the phrase and the
+ * passphrase masked, wherever they stand (quoted, in a list). */
 function dwcli(root: string, passFile: string, args: string[], input?: string): void {
   const r = spawnSync(DWCLI, ["--datadir", root, ...NETWORK, "--passphrase-file", passFile, ...args], { encoding: "utf8", input, timeout: 600_000 });
   if (r.status === 0) return;
-  const words = new Set(secrets.flatMap((s) => s.split(/\s+/)));
-  const masked = r.stderr.split(/(\s+)/).map((w) => (words.has(w) ? "***" : w)).join("");
+  const words = [...new Set(secrets.flatMap((s) => s.split(/\s+/)))].filter(Boolean).sort((a, b) => b.length - a.length);
+  const masked = words.length ? r.stderr.replace(new RegExp(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g"), "***") : r.stderr;
   throw new Error(`dwcli ${args[0]} failed (${r.status}): ${masked.slice(-600)}`);
 }
 
@@ -79,6 +80,9 @@ async function run(passphrase: string, wd: WebDriver, step: (s: string) => void)
   if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
   step("unlocked the restored wallet");
 
+  // The sidebar offers Contacts once DashPay knows the identity (before that, Join DashPay):
+  // on a fresh restore, after SPV and DashPay's bring-up.
+  await poll(DASHPAY_TIMEOUT_MS, "the sidebar to offer Contacts", () => wd.find(tid("sidebar-contacts")).then((e) => e ?? undefined));
   await wd.press(tid("sidebar-contacts"));
   await wd.waitFor(tid("page-contacts"), "the Contacts page");
   await wd.screenshot("1-contacts-opened");
@@ -152,7 +156,7 @@ async function main() {
   const passFile = join(work, "passphrase");
   const passphrase = randomBytes(18).toString("base64url");
   const phrase = readFileSync(join(FIXTURE, `${WALLET}.mnemonic`), "utf8").trim();
-  secrets.push(phrase, phrase.split(/\s+/).join(" "), passphrase);
+  secrets.push(...new Set([phrase, phrase.split(/\s+/).join(" "), passphrase]));
   writeFileSync(passFile, `${passphrase}\n`, { mode: 0o600 });
   const steps: string[] = [];
   const step = (s: string) => {
@@ -197,6 +201,18 @@ async function main() {
   writeFileSync(join(OUT, "result.json"), JSON.stringify({ ok: true, wallet: WALLET, birthHeight: BIRTH_HEIGHT, ...result, steps }, null, 2));
   console.log(`contacts: PASS (${steps.length} steps); screenshots in ${OUT}`);
 }
+
+/** Interrupted (Ctrl-C, an outer timeout): stop the app, delete the vault and passphrase, and
+ * delete any file of OUT holding a secret, as a normal exit does. */
+function interrupted(signal: NodeJS.Signals) {
+  stopDriver(driver);
+  if (work) rmSync(work, { recursive: true, force: true });
+  for (const f of leaks(OUT, secrets)) rmSync(f.replace(/ \(\d+\)$/, ""), { force: true });
+  console.error(`contacts: FAIL: ${signal}`);
+  process.exit(1);
+}
+process.once("SIGINT", interrupted);
+process.once("SIGTERM", interrupted);
 
 main()
   .catch((e) => {
