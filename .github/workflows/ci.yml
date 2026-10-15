@@ -4,7 +4,8 @@
 #   its `selftest` feature (E0-13 D17: the workspace build proves the self-test is absent, the
 #   feature build that it works); rust-linux then regenerates the Tauri bindings
 #   (apps/desktop/src/api/generated and the E0-13 facade coverage table) and fails if they
-#   differ from the committed ones.
+#   differ from the committed ones. lint also runs `cargo deny check advisories` (BL-151,
+#   rust/deny.toml) so a RustSec advisory against Cargo.lock fails CI.
 # - desktop-renderer: the Tauri renderer (apps/desktop): design tokens, tsc, vitest, the
 #   production and fixture bundles (scripts/check-bundle.mjs: neither fixture marker and none of
 #   the fixture sources' literals in production), the guard's negative control, and the test of
@@ -87,6 +88,11 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo clippy -p dw-app --all-targets --features selftest --locked -- -D warnings
+      # Pinned like tauri-driver below; rust-cache keeps the installed binary between runs.
+      - name: cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
+      - name: RustSec advisories (Cargo.lock; ignores in rust/deny.toml)
+        run: cargo deny --locked check advisories
 
   rust-linux:
     name: Rust tests (Linux)
