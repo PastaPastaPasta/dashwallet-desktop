@@ -10,6 +10,7 @@
 //! The native parts (plugins, menus, tray) are added in [`native`] by `run`
 //! only: tests build the app on the mock runtime without them.
 
+pub mod files;
 pub mod links;
 pub mod menu;
 pub mod native;
@@ -133,6 +134,9 @@ pub struct Shell {
     /// Applies the content protection ([`protect_secrets`]); none without a
     /// window (the IPC tests).
     protect: Mutex<Option<ProtectFn>>,
+    /// Shows the native file dialogs ([`files::install`]); none without a
+    /// window (the IPC tests install a fake one).
+    choose: Mutex<Option<files::ChooseFn>>,
     /// The self-test's link trace (`--selftest-link-trace`).
     trace: Option<PathBuf>,
 }
@@ -143,6 +147,7 @@ impl Shell {
             inbox: Inbox::default(),
             sync: Mutex::default(),
             protect: Mutex::default(),
+            choose: Mutex::default(),
             trace,
         }
     }
@@ -179,6 +184,27 @@ impl Shell {
             Some(reply) => reply
                 .await
                 .unwrap_or_else(|_| Err("the main thread did not run the change".to_owned())),
+        }
+    }
+
+    pub fn on_choose(&self, f: files::ChooseFn) {
+        *self.choose.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+    }
+
+    /// Shows a file dialog and answers with the path the user chose, `None`
+    /// when they cancelled; an error when no dialog can be shown.
+    pub async fn choose(&self, request: files::FileRequest) -> Result<Option<PathBuf>, String> {
+        let shown = self
+            .choose
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|f| f(request));
+        match shown {
+            None => Err("no file dialog is set up".to_owned()),
+            Some(reply) => reply
+                .await
+                .map_err(|_| "the file dialog did not answer".to_owned()),
         }
     }
 

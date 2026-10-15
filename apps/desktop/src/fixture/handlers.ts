@@ -30,6 +30,7 @@ import { eventOf, sectionOf, type DashPayWorld } from "./dashpay";
 import { routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers } from "./send";
+import { toolsHandlers } from "./tools";
 import { emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
 import { BASE58, FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
@@ -375,6 +376,8 @@ export const HANDLERS: Handlers = {
     spendGrant: (w, id, walletId) => checkGrant(w, id, walletId, ["spend"]),
     useGrant,
   }),
+  // Tools (U-05): tools.ts.
+  ...toolsHandlers,
 
   // App and network
   launch_info: (_, { world }) => world.launch,

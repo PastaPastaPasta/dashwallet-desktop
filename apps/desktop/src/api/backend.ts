@@ -48,6 +48,8 @@ import type { TxDetailExtrasInfo } from "./generated/TxDetailExtrasInfo";
 import type { TxEstimate } from "./generated/TxEstimate";
 import type { Utxo } from "./generated/Utxo";
 import type { UtxoFilter } from "./generated/UtxoFilter";
+import type { FilePurpose } from "./generated/FilePurpose";
+import type { OpenedFile } from "./generated/OpenedFile";
 
 export interface Backend {
   readonly kind: "tauri" | "fixture";
@@ -131,6 +133,10 @@ export interface Backend {
   routeLink(network: string, text: string): Promise<LinkRoute>;
   /** What the native menus and the tray mirror. */
   shellSync(sync: ShellSync): Promise<null>;
+  // Files from the OS's dialogs (U-05 D2; screens go through app/files.ts).
+  openFile(purpose: FilePurpose): Promise<OpenedFile | null>;
+  saveFileAs(purpose: FilePurpose, suggestedName: string, data: string): Promise<string | null>;
+  chooseFilePath(purpose: FilePurpose, save: boolean, suggestedName: string | null): Promise<string | null>;
   /** Subscribes to engine events; returns the unsubscribe function. */
   onEvent(listener: (event: AppEvent) => void): Promise<() => void>;
   /** Subscribes to the shell's events (menus, tray, deep links). */

@@ -83,6 +83,9 @@ export class IpcBackend implements Backend {
   takeLinks = cmd.takeLinks;
   routeLink = cmd.routeLink;
   shellSync = cmd.shellSync;
+  openFile = cmd.openFile;
+  saveFileAs = cmd.saveFileAs;
+  chooseFilePath = cmd.chooseFilePath;
   onEvent = (listener: (e: AppEvent) => void) => listen<AppEvent>(cmd.ENGINE_EVENT, (e) => listener(e.payload));
   onShellEvent = (listener: (e: ShellEvent) => void) => listen<ShellEvent>(cmd.SHELL_EVENT, (e) => listener(e.payload));
   now = () => this.clock();
@@ -100,4 +103,7 @@ export const tauriTools = {
   probeUnlisted: cmd.probeUnlisted,
   /** A plugin command that is not installed (U6: the renderer cannot reach a shell). */
   invokeUnknownPlugin: () => invoke<unknown>("plugin:shell|execute", { program: "sh", args: ["-c", "id"] }),
+  /** The dialog plugin's own open command: the plugin is installed for dw-app's file chooser, but no
+   * capability grants its commands (U-05 D2), so the page cannot show a dialog or name a path. */
+  invokeDialogPlugin: () => invoke<unknown>("plugin:dialog|open", { options: {} }),
 };

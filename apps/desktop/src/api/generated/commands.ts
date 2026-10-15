@@ -58,6 +58,7 @@ import type { ErrorCode } from "./ErrorCode";
 import type { FaucetLockKey } from "./FaucetLockKey";
 import type { FeeMode } from "./FeeMode";
 import type { FeePolicy } from "./FeePolicy";
+import type { FilePurpose } from "./FilePurpose";
 import type { FinishReport } from "./FinishReport";
 import type { FlowKindName } from "./FlowKindName";
 import type { GrantAction } from "./GrantAction";
@@ -90,6 +91,7 @@ import type { NetworkData } from "./NetworkData";
 import type { NetworkInfo } from "./NetworkInfo";
 import type { NodeSummary } from "./NodeSummary";
 import type { NodeWarning } from "./NodeWarning";
+import type { OpenedFile } from "./OpenedFile";
 import type { OpenedNetwork } from "./OpenedNetwork";
 import type { OutPoint } from "./OutPoint";
 import type { PaymentLockInfo } from "./PaymentLockInfo";
@@ -1947,6 +1949,36 @@ export function shellSync(sync: ShellSync): Promise<null> {
 }
 
 /**
+ * Shows the open dialog for `purpose` and reads the chosen file; `null`
+ * when the user cancelled. `app.file_too_large` at or above the
+ * purpose's limit (a PSBT: 100 MiB, dash-qt's), `app.file_read` when it
+ * cannot be read.
+ */
+export function openFile(purpose: FilePurpose): Promise<OpenedFile | null> {
+  return invoke<OpenedFile | null>("open_file", { purpose });
+}
+
+/**
+ * Shows the save dialog for `purpose`, offering `suggested_name`, and
+ * writes `data` (base64) there, readable by the user only (0600 on
+ * Unix). A file already there is replaced only after the OS's own
+ * question, and whole: the bytes go to a new file that then takes its
+ * place. Returns the path, `null` when the user cancelled.
+ */
+export function saveFileAs(purpose: FilePurpose, suggestedName: string, data: string): Promise<string | null> {
+  return invoke<string | null>("save_file_as", { purpose, suggestedName, data });
+}
+
+/**
+ * The dialog alone, for a file the engine reads or writes itself (U-04's
+ * backups, exports and imports): the path the user chose, `null` when
+ * they cancelled. A save dialog asks before naming an existing file.
+ */
+export function chooseFilePath(purpose: FilePurpose, save: boolean, suggestedName: string | null): Promise<string | null> {
+  return invoke<string | null>("choose_file_path", { purpose, save, suggestedName });
+}
+
+/**
  * `--selftest`: writes the renderer's report, and exits once the report
  * is final (`"final": false` is a checkpoint before a probe that could
  * end the page).
@@ -2225,6 +2257,9 @@ export type CommandArgs = {
   take_links: { network: string };
   route_link: { network: string; text: string };
   shell_sync: { sync: ShellSync };
+  open_file: { purpose: FilePurpose };
+  save_file_as: { purpose: FilePurpose; suggestedName: string; data: string };
+  choose_file_path: { purpose: FilePurpose; save: boolean; suggestedName: string | null };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -2458,6 +2493,9 @@ export type CommandResults = {
   take_links: Array<LinkRoute>;
   route_link: LinkRoute;
   shell_sync: null;
+  open_file: OpenedFile | null;
+  save_file_as: string | null;
+  choose_file_path: string | null;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -2693,6 +2731,9 @@ export const COMMANDS: Record<CommandName, string> = {
   take_links: "shell",
   route_link: "shell",
   shell_sync: "shell",
+  open_file: "files",
+  save_file_as: "files",
+  choose_file_path: "files",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",
@@ -2712,6 +2753,10 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.unknown_handle",
   "app.too_many_handles",
   "app.screen_protection",
+  "app.file_dialog",
+  "app.file_too_large",
+  "app.file_read",
+  "app.file_write",
   "invalid_config",
   "invalid_argument",
   "network_not_open",

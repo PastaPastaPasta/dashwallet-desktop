@@ -21,6 +21,7 @@ import type { WalletSummary } from "../api/generated/WalletSummary";
 import { IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
 import type { Utxo } from "../api/generated/Utxo";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
+import { newToolsWorld, type ToolsWorld } from "./tools";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FUNDED_BALANCES, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
@@ -72,6 +73,8 @@ export interface World {
   throttledUntil: number | null;
   /** Drafts, prepared transactions and what the next broadcast does (send.ts). */
   send: SendWorld;
+  /** Tools: node facts, console, peers, repair, address book, messages, PSBT, files (tools.ts). */
+  tools: ToolsWorld;
 }
 
 /** A vault grant: single use (`used` once redeemed or revoked); `ownKey` when it was issued
@@ -159,6 +162,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     throttleSecs: null,
     throttledUntil: null,
     send: newSendWorld(),
+    tools: newToolsWorld(),
   };
 }
 
