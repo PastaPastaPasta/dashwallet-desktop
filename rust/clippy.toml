@@ -1,0 +1,19 @@
+# The wallet never holds or signs with an operator key (CLAUDE.md product
+# scope, MG-01 §4). Clippy resolves these by definition, so a `use … as`
+# alias or a re-export does not hide a use; `tests/no_operator_signing.rs`
+# in dw-protx covers what clippy cannot see (names, IPC, Swift).
+# `allow-invalid`: a crate whose graph has no dash-pkc or platform-wallet
+# cannot resolve the path, which is fine.
+
+disallowed-types = [
+    { path = "dash_pkc::bls::BlsSecretKey", reason = "BLS secret key: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "dash_pkc::bls::BlsSkShare", reason = "BLS secret key share: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "dash_pkc::bls::BlsSkBytes", reason = "BLS secret key bytes: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "dashcore::bls_sig_utils::BlsSkBytes", reason = "BLS secret key bytes: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "dashcore::bls_sig_utils::BlsSecretKey", reason = "BLS secret key: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+]
+
+disallowed-methods = [
+    { path = "platform_wallet::masternode::update_service::prepare_masternode_update_service", reason = "ProUpServTx is operator-signed and out of scope (MG-01 §4)", allow-invalid = true },
+    { path = "platform_wallet::masternode::update_service::execute_masternode_update_service", reason = "ProUpServTx is operator-signed and out of scope (MG-01 §4)", allow-invalid = true },
+]

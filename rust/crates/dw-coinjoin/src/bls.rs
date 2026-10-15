@@ -33,6 +33,11 @@ pub fn verify_basic(operator_public_key: &[u8; 48], signature: &[u8], msg: &[u8;
 }
 
 /// Test helpers: a deterministic operator key that signs like a masternode.
+/// The one BLS secret in the workspace, allowed by `rust/clippy.toml`'s
+/// exception here and dw-protx's `no_operator_signing` guard (MG-01 D9):
+/// it stands in for a masternode in the CoinJoin tests and signs no wallet
+/// transaction.
+#[allow(clippy::disallowed_types)]
 pub mod testing {
     use dash_pkc::bls::{BlsScIetf, BlsSecretKey, BlsSigId};
     use dashcore::hashes::{Hash, sha256};
