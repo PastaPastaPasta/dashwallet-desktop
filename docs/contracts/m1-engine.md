@@ -83,8 +83,8 @@ DASHPAY §3.2 left these open; E0-05 implements them as below (rulings by pasta,
    auto-accept pass submits state transitions, which unattended work never does (§2.6, E0-04).
 3. **`IdentityUnsettled`.** Any non-`Ready` outcome of a bring-up without keys (a locked vault), or one the vault locked
    during. The first unlock runs it again. It sends no notice: the unlock settles it.
-4. **The `Platform{Startup}` signal.** `EngineEvent::Platform` is E0-06's. Until then the outcome is
-   `Notice{DashPayStartupIncomplete}` for the unsettled statuses plus `dashpay_startup`.
+4. **The `Platform{Startup}` signal.** `EngineEvent::Platform` is E0-06's; BL-153 sends `Platform{Startup}` whenever a
+   wallet's outcome or named identity changes. `Notice{DashPayStartupIncomplete}` still reports the unsettled statuses.
 5. **"`is_spv_running` reports Starting".** `spv_running()` stays `bool` (the Swift bindings are frozen) and is true
    while starting; `spv_state()` carries `Starting`.
 6. **Close order (deviation).** §3.2 orders close as: cancel a running bring-up, quiesce the loops, stop SPV,

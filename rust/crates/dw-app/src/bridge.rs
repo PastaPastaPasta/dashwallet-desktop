@@ -230,6 +230,9 @@ pub enum PlatformChangeName {
     Events {
         identity: String,
     },
+    /// The wallet's DashPay bring-up outcome (`dashpay_startup`, and with it
+    /// `dashpay_status`).
+    Startup,
 }
 
 impl From<PlatformChange> for PlatformChangeName {
@@ -249,6 +252,7 @@ impl From<PlatformChange> for PlatformChangeName {
             PlatformChange::Events { identity } => Self::Events {
                 identity: cap_text(identity, MAX_ID_BYTES),
             },
+            PlatformChange::Startup => Self::Startup,
         }
     }
 }

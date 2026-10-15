@@ -428,7 +428,7 @@ impl NetworkSession {
             trust,
             vault,
             spv_peers,
-            hub,
+            hub: Arc::clone(&hub),
             gate: OpGate::default(),
             wallet_lifecycle: WalletLifecycle::default(),
             live: RwLock::new(Some(Live {
@@ -447,7 +447,11 @@ impl NetworkSession {
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
-            platform: crate::platform::runtime::PlatformRuntime::new(lock_state, !opts.no_platform),
+            platform: crate::platform::runtime::PlatformRuntime::new(
+                lock_state,
+                !opts.no_platform,
+                Arc::clone(&hub),
+            ),
             leases,
             flow_leases: Mutex::default(),
         });

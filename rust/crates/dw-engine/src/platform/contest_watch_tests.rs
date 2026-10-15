@@ -21,7 +21,7 @@ use super::names::{ContestContender, ContestState, record_contest};
 use super::notifications::EventKind;
 use super::runtime::guard;
 use crate::events::unix_now;
-use crate::{DashNetwork, EngineEvent, SessionOptions};
+use crate::{DashNetwork, EngineEvent, PlatformChange, SessionOptions};
 
 const ME: u8 = 1;
 const BOB: u8 = 2;
@@ -212,6 +212,14 @@ impl Fixture {
     /// Every row due again: what the time to the next check does.
     fn later(&self) {
         self.s.platform.contests.forget(&self.wallet);
+    }
+
+    /// Whether a `Platform{Names}` went out since the last call (BL-153:
+    /// `DashPay::status` shows the end and drops an unplaced contest).
+    fn names_signalled(&self) -> bool {
+        let mut marks = self.s.hub.pump.platform_marks.lock().unwrap();
+        let seen = marks.replace(Vec::new()).unwrap_or_default();
+        seen.iter().any(|(_, c)| c.contains(&PlatformChange::Names))
     }
 
     fn open_contests(&self) -> Vec<String> {
@@ -522,10 +530,12 @@ fn a_contest_still_voting_is_adopted_and_learns_its_end() {
     net.set("b0b", poll(None, 0, &[ME, CAROL]));
     let end = unix_now() + 3 * 3600;
     net.set_end("b0b", end);
+    f.names_signalled();
     f.pass(&net).unwrap();
     assert_eq!(f.watches(), [watch("b0b", end, Some("open"))]);
     assert_eq!(net.calls(), (1, 1));
     assert!(f.outcomes().is_empty());
+    assert!(f.names_signalled(), "the end learned");
 
     // Not due yet; then due, with the end known.
     f.pass(&net).unwrap();
@@ -533,6 +543,7 @@ fn a_contest_still_voting_is_adopted_and_learns_its_end() {
     f.later();
     f.pass(&net).unwrap();
     assert_eq!(net.calls(), (2, 1));
+    assert!(!f.names_signalled(), "the end unchanged");
     assert_eq!(f.open_contests(), ["b0b"]);
 }
 
@@ -639,8 +650,10 @@ fn an_unplaced_watch_ends_after_a_day_without_news() {
 
     f.set_state("alice", &format!("unplaced:{}", unix_now() - 24 * 3600));
     f.later();
+    f.names_signalled();
     f.pass(&net).unwrap();
     assert!(f.watches().is_empty());
+    assert!(f.names_signalled(), "the watch ended");
     assert!(f.outcomes().is_empty());
     assert!(f.open_contests().is_empty());
     f.later();

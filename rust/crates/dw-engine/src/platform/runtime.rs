@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
 use dw_vault::{LockState, Vault};
@@ -14,8 +14,9 @@ use tokio::task::{AbortHandle, JoinHandle};
 
 use super::startup::{StartupStatus, SyncLoop, SyncLoopStatus};
 use super::startup_status::{DashPayStartup, PlatformCadence, SpvState};
+use crate::events::SessionHub;
 use crate::session::Manager;
-use crate::{EngineError, NetworkSession, WalletId};
+use crate::{EngineError, NetworkSession, PlatformChange, WalletId};
 
 /// `dashpay_sync` while a window is visible, and while hidden (§3.2).
 const DASHPAY_VISIBLE: Duration = Duration::from_secs(15);
@@ -88,6 +89,8 @@ pub(crate) struct PlatformRuntime {
     /// Orders `start_spv`, `stop_spv` and `reset_chain_data`.
     pub(crate) lifecycle: tokio::sync::Mutex<()>,
     startup: RwLock<HashMap<WalletId, DashPayStartup>>,
+    /// Where a changed bring-up outcome is signalled ([`StartupWrite`]).
+    hub: Arc<SessionHub>,
     cadence: Mutex<PlatformCadence>,
     pub(super) lock: watch::Sender<LockView>,
     /// Each wallet's bring-up or unlock task in flight, ended when the
@@ -125,6 +128,48 @@ pub(crate) struct PlatformRuntime {
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
     pub(super) pause_after_keys: Mutex<Option<Arc<TestPause>>>,
+}
+
+/// What `DashPay::status` reads of a wallet's bring-up.
+fn seen(s: &DashPayStartup) -> (StartupStatus, Option<String>) {
+    (s.startup, s.identity.clone())
+}
+
+/// [`PlatformRuntime::write_startup`]'s guard: on drop, after the lock is
+/// released, it signals the wallets whose outcome changed.
+pub(super) struct StartupWrite<'a> {
+    map: Option<RwLockWriteGuard<'a, HashMap<WalletId, DashPayStartup>>>,
+    before: HashMap<WalletId, (StartupStatus, Option<String>)>,
+    hub: &'a SessionHub,
+}
+
+impl std::ops::Deref for StartupWrite<'_> {
+    type Target = HashMap<WalletId, DashPayStartup>;
+
+    fn deref(&self) -> &Self::Target {
+        self.map.as_ref().expect("held until drop")
+    }
+}
+
+impl std::ops::DerefMut for StartupWrite<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.map.as_mut().expect("held until drop")
+    }
+}
+
+impl Drop for StartupWrite<'_> {
+    fn drop(&mut self) {
+        let map = self.map.take().expect("held until drop");
+        let mut changed: Vec<WalletId> = (map.iter())
+            .filter(|(id, s)| self.before.get(id) != Some(&seen(s)))
+            .map(|(id, _)| *id)
+            .collect();
+        changed.extend(self.before.keys().filter(|id| !map.contains_key(id)));
+        drop(map);
+        for id in changed {
+            self.hub.pump.mark_platform(id, [PlatformChange::Startup]);
+        }
+    }
 }
 
 /// A one-shot pause point for tests.
@@ -289,12 +334,13 @@ pub(super) fn guard<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl PlatformRuntime {
-    pub(crate) fn new(lock: LockState, enabled: bool) -> Self {
+    pub(crate) fn new(lock: LockState, enabled: bool, hub: Arc<SessionHub>) -> Self {
         Self {
             enabled,
             supervisor: Mutex::new(None),
             lifecycle: tokio::sync::Mutex::new(()),
             startup: RwLock::new(HashMap::new()),
+            hub,
             cadence: Mutex::new(PlatformCadence::default()),
             lock: watch::Sender::new(LockView {
                 state: lock,
@@ -426,10 +472,16 @@ impl PlatformRuntime {
         self.key_work.wait_idle().await
     }
 
-    pub(super) fn write_startup(
-        &self,
-    ) -> std::sync::RwLockWriteGuard<'_, HashMap<WalletId, DashPayStartup>> {
-        self.startup.write().unwrap_or_else(|p| p.into_inner())
+    /// The outcomes, to change: each wallet whose outcome or named identity
+    /// differs when the guard drops gets `Platform{Startup}` (BL-153 D8).
+    pub(super) fn write_startup(&self) -> StartupWrite<'_> {
+        let map = self.startup.write().unwrap_or_else(|p| p.into_inner());
+        let before = map.iter().map(|(id, s)| (*id, seen(s))).collect();
+        StartupWrite {
+            map: Some(map),
+            before,
+            hub: &self.hub,
+        }
     }
 
     pub(super) fn startup_of(&self, id: &WalletId) -> Option<DashPayStartup> {

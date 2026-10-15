@@ -447,6 +447,15 @@ fn owned_identities(info: &PlatformWalletInfo, id: &WalletId) -> Vec<OwnedIdenti
         .collect()
 }
 
+/// One read of the wallet's identities ([`NetworkSession::identity_read`]).
+pub(super) struct IdentityRead {
+    pub(super) summaries: Vec<IdentitySummary>,
+    /// From the library, not the snapshot a sync pass left (DEC-138).
+    pub(super) live: bool,
+    /// The main-name rows the read used, identity → rows.
+    pub(super) names: HashMap<String, MainNamePrefs>,
+}
+
 /// The facade's form of a stored DashPay profile (an identity's own, or a
 /// contact's).
 pub(super) fn profile_of(p: &DashPayProfile) -> Profile {
@@ -468,6 +477,12 @@ impl NetworkSession {
         &self,
         id: WalletId,
     ) -> Result<Vec<IdentitySummary>, EngineError> {
+        Ok(self.identity_read(id)?.summaries)
+    }
+
+    /// [`Self::identity_summaries`] with what `DashPay::status` also needs
+    /// of the same read: whether it was live, and the main-name rows.
+    pub(super) fn identity_read(&self, id: WalletId) -> Result<IdentityRead, EngineError> {
         let _op = self.try_enter()?;
         self.require_wallet(&id)?;
         let manager = self.manager()?;
@@ -494,7 +509,7 @@ impl NetworkSession {
             }
         };
         let choices = IdentityChoices {
-            names,
+            names: names.clone(),
             ..recovery.choices_of(&id)
         };
         let provenance = self.live()?.provenance;
@@ -514,7 +529,11 @@ impl NetworkSession {
                     (self.platform.balances).stale(id, i, s.balance_as_of)
                 });
         }
-        Ok(summaries)
+        Ok(IdentityRead {
+            summaries,
+            live: current,
+            names,
+        })
     }
 
     /// Takes the identity snapshot after a pass of ours changed the

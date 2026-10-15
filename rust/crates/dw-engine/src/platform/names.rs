@@ -256,7 +256,7 @@ pub(crate) fn valid_label(label: &str) -> Result<UsernameCheck, NameError> {
 }
 
 /// Whether two labels are one DPNS name (homograph folding).
-fn same_name(a: &str, b: &str) -> bool {
+pub(super) fn same_name(a: &str, b: &str) -> bool {
     convert_to_homograph_safe_chars(a) == convert_to_homograph_safe_chars(b)
 }
 
