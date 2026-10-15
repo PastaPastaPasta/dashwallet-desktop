@@ -16,3 +16,7 @@ dashcore = { workspace = true, features = ["bls", "eddsa"] }
 hex = { workspace = true }
 thiserror = { workspace = true }
 zeroize = { workspace = true }
+
+[dev-dependencies]
+dw-uri = { workspace = true }
+serde_json = "1"

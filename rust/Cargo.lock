@@ -2611,7 +2611,9 @@ name = "dw-protx"
 version = "0.1.0"
 dependencies = [
  "dashcore",
+ "dw-uri",
  "hex",
+ "serde_json",
  "thiserror 2.0.18",
  "zeroize",
 ]
