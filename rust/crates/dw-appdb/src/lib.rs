@@ -1169,21 +1169,47 @@ impl AppDb {
         wallet_id: &str,
         row: &DpPaymentLockRow,
     ) -> Result<Option<String>> {
-        let conn = self.conn();
-        let synced = |on: bool| -> rusqlite::Result<()> {
+        self.durably(|conn| Self::upsert_payment_lock(conn, wallet_id, row))
+    }
+
+    /// Runs `write` on the connection with its commits synced (`synchronous=
+    /// FULL`, plus `fullfsync` on Apple platforms), then back to `NORMAL` on
+    /// every exit, a panic included: the connection outlives a poisoned
+    /// mutex (Sol r3). The write's error comes before the restore's.
+    fn durably<T>(&self, write: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        /// Puts the connection back to `NORMAL` when dropped, unless
+        /// `restore` already did.
+        struct Synced<'c>(Option<&'c Connection>);
+        impl Synced<'_> {
+            fn restore(&mut self) -> rusqlite::Result<()> {
+                match self.0.take() {
+                    Some(conn) => set_synced(conn, false),
+                    None => Ok(()),
+                }
+            }
+        }
+        impl Drop for Synced<'_> {
+            fn drop(&mut self) {
+                let _ = self.restore();
+            }
+        }
+        fn set_synced(conn: &Connection, on: bool) -> rusqlite::Result<()> {
             conn.pragma_update(None, "synchronous", if on { "FULL" } else { "NORMAL" })?;
             if cfg!(target_vendor = "apple") {
                 conn.pragma_update(None, "fullfsync", on)?;
             }
             Ok(())
-        };
-        let written = synced(true)
+        }
+
+        let conn = self.conn();
+        let mut synced = Synced(Some(&conn));
+        let written = set_synced(&conn, true)
             .map_err(Into::into)
-            .and_then(|()| Self::upsert_payment_lock(&conn, wallet_id, row));
-        let normal = synced(false);
-        let held = written?;
+            .and_then(|()| write(&conn));
+        let normal = synced.restore();
+        let written = written?;
         normal?;
-        Ok(held)
+        Ok(written)
     }
 
     fn upsert_payment_lock(
@@ -1534,6 +1560,18 @@ mod tests {
         assert!(db.set_dp_payment_lock_durable(W, &row).is_err());
         assert_eq!(synchronous(&db), 1, "back to NORMAL after an error");
         assert_eq!(db.dp_payment_locks(W).unwrap(), vec![row]);
+
+        // A panic in the synced section (Sol r3): the reused connection is
+        // back to NORMAL.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            db.durably(|conn| -> Result<()> {
+                let level: i64 = conn.query_row("PRAGMA synchronous", [], |r| r.get(0))?;
+                assert_eq!(level, 2, "FULL inside");
+                panic!("injected panic");
+            })
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(synchronous(&db), 1, "back to NORMAL after a panic");
     }
 
     #[test]
