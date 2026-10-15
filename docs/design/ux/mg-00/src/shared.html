@@ -1,0 +1,144 @@
+<!-- board title="Shared masternodes (v24)" -->
+
+<!-- frame id="sh-behind" title="The page behind the sheets" route="masternodes" -->
+<main class="page page-masternodes">
+ <div class="page-column">
+  <header class="top-intro mg-header">
+   <h1 class="top-intro-title">Masternodes</h1>
+   <span class="mg-header-actions">
+    <button type="button" class="dash-button dash-button-tintedGray dash-button-small">More</button>
+    <button type="button" class="dash-button dash-button-filledBlue dash-button-small">Set up a masternode</button>
+   </span>
+  </header>
+  <div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="true">My masternodes</button><button class="tab" role="tab">Governance</button></div>
+  <section class="mg-empty card-l1"><img src="icon:masternode-network-monitor" alt=""><h2>Masternodes</h2></section>
+ </div>
+</main>
+<!-- /frame -->
+
+<!-- frame id="sh-start" title="Shared masternode: start or continue (§4.25.8)" route="masternodes" behind="sh-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-large" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Shared masternode</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <p class="sheet-text" style="margin:0">Two to eight people fund one masternode together and split its payouts by share. One person coordinates; everyone else pastes what they receive and copies back a reply. Nothing reaches the network until the coordinator sends the registration.</p>
+  <div class="mg-choices mg-choices-2">
+   <div class="mg-choice" style="grid-template-columns:1fr"><span class="mg-choice-title">Start one</span><span class="mg-choice-help">You enter who takes part, each share and the masternode's settings, then send everyone the same invitation.</span><span style="margin-top:var(--dw-space-s)"><button class="dash-button dash-button-filledBlue dash-button-small">Start a shared masternode</button></span></div>
+   <div class="mg-choice" style="grid-template-columns:1fr"><span class="mg-choice-title">Join or continue</span><span class="mg-choice-help">Paste an invitation, locked terms, a signing request or a reply you received, or open the file someone sent you.</span><span class="mg-inline" style="margin-top:var(--dw-space-s)"><button class="dash-button dash-button-tintedBlue dash-button-small">Paste</button><button class="dash-button dash-button-tintedBlue dash-button-small">Open file…</button></span></div>
+  </div>
+  <dl class="detail-list card-l1">
+   <div class="detail-row"><dt class="detail-label">Shares</dt><dd class="detail-value">2 to 8. Each is at least 100 Dash, and together they make exactly 1,000 Dash.</dd></div>
+   <div class="detail-row"><dt class="detail-label">Your coins</dt><dd class="detail-value">Stay in this wallet, reserved for the session, until the registration is sent. Only you see which coins they are.</dd></div>
+   <div class="detail-row"><dt class="detail-label">Leaving</dt><dd class="detail-value">Anyone can dissolve the masternode alone at any time and everyone gets their share back. In the early period, whoever leaves alone pays a penalty to the others.</dd></div>
+  </dl>
+  <h3 class="mg-section-title" style="margin:0">Sessions in progress</h3>
+  <section class="tx-group card-l1"><ul style="list-style:none;margin:0;padding:var(--dw-space-xs)">
+   <li><button class="mg-row mg-row-wide"><span class="mg-row-text"><span class="mg-row-title">Session 3F9A2C · you coordinate</span><span class="mg-row-sub">3 shares · 2 of 3 approved · started Oct 14</span></span><span class="mg-row-trailing"><span class="chip chip-info">Approvals</span><span class="mg-row-meta">coins reserved</span></span></button></li>
+  </ul></section>
+ </div>
+</div>
+<!-- /frame -->
+
+<!-- frame id="sh-session" title="A running session, coordinator view: approvals (§4.25.8)" route="masternodes" behind="sh-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-large" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Shared masternode · Session 3F9A2C</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <ol class="mg-stages">
+   <li class="is-done">1 Invite</li><li class="is-done">2 Collect details</li><li class="is-done">3 Lock terms</li><li aria-current="step">4 Approvals</li><li>5 Signatures</li><li>6 Send</li>
+  </ol>
+  <div class="mg-spread"><h3 class="mg-step-title">2 of 3 approved the locked terms</h3><span class="mg-muted mg-small">Check code <span class="mono">A41F-09C2</span></span></div>
+  <div class="mg-shares"><span class="mg-share-1" style="width:40%"></span><span class="mg-share-2" style="width:30%"></span><span class="mg-share-3" style="width:30%"></span></div>
+  <ul class="mg-nodes card-l1">
+   <li class="mg-node mg-node-head" style="grid-template-columns:minmax(0,1fr) 120px 140px"><span>Participant</span><span class="mg-node-weight">Share</span><span class="mg-node-result">Terms</span></li>
+   <li class="mg-node" style="grid-template-columns:minmax(0,1fr) 120px 140px"><span><span class="mg-node-name">Alice (you)</span><div class="mg-node-sub">Coordinator · runs the server</div></span><span class="mg-node-weight"><span class="amount">400<dash/></span></span><span class="mg-node-result"><span class="chip chip-success">Approved</span></span></li>
+   <li class="mg-node" style="grid-template-columns:minmax(0,1fr) 120px 140px"><span><span class="mg-node-name">Bob</span><div class="mg-node-sub">Replied Oct 14</div></span><span class="mg-node-weight"><span class="amount">300<dash/></span></span><span class="mg-node-result"><span class="chip chip-success">Approved</span></span></li>
+   <li class="mg-node" style="grid-template-columns:minmax(0,1fr) 120px 140px"><span><span class="mg-node-name">Carol</span><div class="mg-node-sub">Has the locked terms since Oct 14</div></span><span class="mg-node-weight"><span class="amount">300<dash/></span></span><span class="mg-node-result"><span class="chip chip-neutral">Waiting</span></span></li>
+  </ul>
+  <dl class="detail-list card-l1">
+   <div class="detail-row"><dt class="detail-label">Terms</dt><dd class="detail-value">Masternode at 203.0.113.30:19999 · operator key <span class="mono">93ac…e1f0</span>, from Alice · operator share 0%</dd></div>
+   <div class="detail-row"><dt class="detail-label">Early period</dt><dd class="detail-value">6 months (105,120 blocks) · leaving alone before then costs <span class="amount">20<dash/></span></dd></div>
+  </dl>
+  <p class="mg-muted mg-small" style="margin:0">Send each reply back here. If a check code differs from the one the sender sees, the message changed on the way: ask for it again.</p>
+ </div>
+ <footer class="mg-sheet-footer"><span class="mg-actions"><button class="dash-button dash-button-tintedBlue dash-button-small">Copy locked terms</button><button class="dash-button dash-button-tintedBlue dash-button-small">Save to file…</button></span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Close</button><button class="dash-button dash-button-filledBlue dash-button-medium">Paste a reply</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="sh-close" title="Closing a running session keeps it (§4.25.8)" route="masternodes" behind="sh-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-small" role="alertdialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Keep this session for later?</h2><span></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <p class="sheet-text" style="margin:0">Keeping it leaves your 400 Dash reserved so you can carry on where you left off. Discarding releases them; if the others are still waiting for you, they have to start over.</p>
+ </div>
+ <footer class="mg-sheet-footer"><button class="dash-button dash-button-plainRed dash-button-small">Discard and release coins</button><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Cancel</button><button class="dash-button dash-button-filledBlue dash-button-medium">Keep and close</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="sh-detail" title="A shared masternode in My masternodes (§4.25.8)" route="masternodes" -->
+<main class="page page-masternodes">
+ <div class="page-column">
+  <header class="top-intro mg-header">
+   <h1 class="top-intro-title">Masternodes</h1>
+   <span class="mg-header-actions">
+    <button type="button" class="dash-button dash-button-tintedGray dash-button-small">More</button>
+    <button type="button" class="dash-button dash-button-filledBlue dash-button-small">Set up a masternode</button>
+   </span>
+  </header>
+  <div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="true">My masternodes</button><button class="tab" role="tab">Governance</button></div>
+  <div class="contacts-split">
+   <div class="contacts-list">
+    <section class="tx-group card-l1">
+     <h2 class="contacts-group-title">My masternodes</h2>
+     <ul style="list-style:none;margin:0;padding:0 var(--dw-space-xs) var(--dw-space-xs)">
+      <li><button class="mg-row" aria-current="true"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">Club node</span><span class="mg-row-sub">Shared masternode · you hold 1 of 3 shares</span></span><span class="mg-row-trailing"><span class="chip chip-success">Active</span><span class="mg-row-meta">Paid Oct 11</span></span></button></li>
+      <li><button class="mg-row"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">Home node</span><span class="mg-row-sub">Masternode · 203.0.113.7:19999</span></span><span class="mg-row-trailing"><span class="chip chip-success">Active</span><span class="mg-row-meta">Paid Oct 13</span></span></button></li>
+     </ul>
+    </section>
+   </div>
+   <aside class="contacts-pane">
+    <section class="mg-pane card-l1">
+     <header class="mg-pane-header"><img src="icon:masternode-network-monitor" alt=""><div><h2 class="mg-pane-title">Club node</h2><div class="chip-row" style="margin-top:2px"><span class="chip chip-success">Active</span><span class="chip chip-neutral">Shared · 3 shares</span></div></div></header>
+     <div class="mg-stack" style="gap:var(--dw-space-xs)">
+      <div class="mg-shares"><span class="mg-share-1" style="width:40%"></span><span class="mg-share-2" style="width:30%"></span><span class="mg-share-3" style="width:30%"></span></div>
+      <div class="mg-vote-legend"><span class="l-yes" style="color:var(--dw-role-text-primary)">You · 400 Dash</span><span>Bob · 300</span><span>Carol · 300</span></div>
+     </div>
+     <dl class="mg-facts">
+      <dt>Service</dt><dd>203.0.113.30:19999</dd>
+      <dt>Your payouts</dt><dd>40% of each payout to <span class="mono">yRw4…n8Ka</span></dd>
+      <dt>Your refund</dt><dd><span class="mono">yRf9…3dQe</span> gets your 400 Dash back when it dissolves</dd>
+      <dt>Early period</dt><dd>Ends at block 1,319,400, about Apr 13, 2027</dd>
+      <dt>Standby dissolution</dt><dd>Saved on this computer on Oct 15</dd>
+     </dl>
+     <div class="mg-actions">
+      <button class="dash-button dash-button-tintedBlue dash-button-small">Change my payout address</button>
+      <button class="dash-button dash-button-tintedBlue dash-button-small">Change keys together</button>
+      <button class="dash-button dash-button-tintedGray dash-button-small">Dissolve…</button>
+     </div>
+    </section>
+   </aside>
+  </div>
+ </div>
+</main>
+<!-- /frame -->
+
+<!-- frame id="sh-dissolve" title="Dissolve: alone during the early period (§4.25.8)" route="masternodes" behind="sh-detail" -->
+<!-- sheet -->
+<div class="sheet sheet-medium" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Dissolve Club node</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <div class="segmented" role="tablist" style="width:fit-content"><button class="segment" aria-selected="true" style="background:var(--dw-role-card);box-shadow:var(--dw-shadow-card)">Alone, now</button><button class="segment">Together</button><button class="segment">Standby</button></div>
+  <p class="sheet-text" style="margin:0">Dissolving ends the masternode and returns every share to its owner's refund address. You can do it alone at any time.</p>
+  <dl class="detail-list card-l1">
+   <div class="detail-row"><dt class="detail-label">You get back</dt><dd class="detail-value"><span class="amount">379.999<dash/></span> to <span class="mono">yRf9…3dQe</span> (your 400 minus the penalty and the fee)</dd></div>
+   <div class="detail-row"><dt class="detail-label">Bob and Carol</dt><dd class="detail-value">Their 300 each, plus 10 each from your penalty</dd></div>
+   <div class="detail-row"><dt class="detail-label">Network fee</dt><dd class="detail-value"><span class="amount">0.001<dash/></span>, taken from your share</dd></div>
+  </dl>
+  <p class="mg-notice mg-notice-warning"><strong>Early exit: you pay the 20 Dash penalty.</strong> Leaving is free after block 1,319,400 (about Apr 13, 2027), or at any time if everyone agrees: use Together.</p>
+  <label class="checkbox-row"><input type="checkbox"> I accept paying the 20 Dash early-exit penalty</label>
+ <label class="form-field" style="max-width:320px">Passphrase<input type="password"></label>
+ </div>
+ <footer class="mg-sheet-footer"><span></span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Cancel</button><button class="dash-button dash-button-plainRed dash-button-medium" disabled>Dissolve now</button></span></footer>
+</div>
+<!-- /frame -->
