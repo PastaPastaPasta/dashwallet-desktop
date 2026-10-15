@@ -3,12 +3,12 @@
 // Unsigned made (D18); dash-qt's PSBT Operations lines and status; Sign under a spend grant that
 // covers what leaves the wallet (D17); Broadcast; Copy; Save as a binary `.psbt` (D2).
 
-import { errorMessage, hasCode, isAppError, type Backend } from "../api/backend";
+import { hasCode, isAppError, type Backend } from "../api/backend";
 import type { OpenedFile } from "../api/generated/OpenedFile";
 import type { PsbtAnalysis } from "../api/generated/PsbtAnalysis";
 import { base64ToBytes, saveBase64 } from "../app/files";
 import { formatWithUnit, type Chain } from "../format/amount";
-import { Model } from "../onboarding/model";
+import { failureText, Model } from "../onboarding/model";
 import type { GrantModel } from "./grant";
 
 export const PsbtText = {
@@ -43,7 +43,7 @@ export const PsbtText = {
 
 /** Copy for the `psbt.*` refusals (the Swift `L10n.M2Errors`). */
 export function psbtErrorText(e: unknown): string {
-  if (!isAppError(e)) return errorMessage(e);
+  if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "psbt.invalid":
       return PsbtText.invalid;
@@ -74,7 +74,7 @@ export function psbtErrorText(e: unknown): string {
     case "app.file_read":
       return "The file could not be read.";
     default:
-      return errorMessage(e);
+      return failureText(e);
   }
 }
 
@@ -94,6 +94,10 @@ export type PsbtStep = "empty" | "loading" | "ready" | "signing" | "broadcasting
 
 type Api = Pick<Backend, "analyzePsbt" | "signPsbt" | "broadcastPsbt" | "saveFileAs">;
 
+/** Every PSBT broadcast this session, whichever tab or wallet sent it: the same transaction is
+ * not offered for broadcast twice (D30). */
+export const SESSION_BROADCASTS = new Map<string, string | true>();
+
 export class PsbtModel extends Model {
   step: PsbtStep = "empty";
   /** The PSBT, base64. */
@@ -105,13 +109,17 @@ export class PsbtModel extends Model {
   /** The broadcast's txid; or `true` once a broadcast's outcome is unknown, which offers no
    * second broadcast (D17). */
   sent: string | true | null = null;
-
+  /** A broadcast whose outcome is unknown: said as a note, not a failure (D17). */
+  notice: string | null = null;
   constructor(
     private readonly api: Api,
     readonly grants: GrantModel,
     /** The wallet that signs; `null`: no wallet is loaded. */
     readonly walletId: string | null,
     private readonly chain: Chain,
+    /** What each PSBT broadcast answered, so loading it again offers no second broadcast either;
+     * the screen passes `SESSION_BROADCASTS`, which outlives the tab. */
+    private readonly broadcasts: Map<string, string | true> = new Map(),
   ) {
     super();
   }
@@ -193,30 +201,27 @@ export class PsbtModel extends Model {
     if (!this.canSign || !a || !this.psbt || this.walletId === null) return;
     // `null` while the fee is unknown; the engine refuses to sign then (review H1).
     if (a.total === null) return this.#fail(PsbtText.noExternalAmount);
+    const { walletId, psbt } = this;
     this.#to("signing");
-    let grant;
     try {
-      grant = await this.grants.obtain({ kind: "spend", maxDuffs: a.total }, this.walletId);
+      const signed = await this.grants.withGrant({ kind: "spend", maxDuffs: a.total }, walletId, (grant) => this.api.signPsbt(walletId, psbt, grant.id));
+      if (signed) {
+        // The signatures are kept even if reading them back fails; the old analysis is dropped
+        // then, so neither Sign nor Broadcast acts on it (Copy and Save still do).
+        this.psbt = signed.value;
+        this.analysis = null;
+        const after = await this.api.analyzePsbt(walletId, signed.value);
+        this.analysis = after;
+        this.error = null;
+        this.message =
+          after.status === "complete"
+            ? PsbtText.signedComplete
+            : after.unsignedInputs < a.unsignedInputs
+              ? PsbtText.signedPartially(a.unsignedInputs - after.unsignedInputs)
+              : PsbtText.couldNotSign;
+      }
     } catch (e) {
-      this.#to("ready");
-      return this.#fail(psbtErrorText(e));
-    }
-    if (grant === null) return this.#to("ready");
-    try {
-      const signed = await this.api.signPsbt(this.walletId, this.psbt, grant.id);
-      const after = await this.api.analyzePsbt(this.walletId, signed);
-      this.psbt = signed;
-      this.analysis = after;
-      this.error = null;
-      this.message =
-        after.status === "complete"
-          ? PsbtText.signedComplete
-          : after.unsignedInputs < a.unsignedInputs
-            ? PsbtText.signedPartially(a.unsignedInputs - after.unsignedInputs)
-            : PsbtText.couldNotSign;
-    } catch (e) {
-      this.grants.revoke(grant);
-      this.error = psbtErrorText(e);
+      this.#fail(psbtErrorText(e));
     }
     this.#to("ready");
   }
@@ -226,16 +231,21 @@ export class PsbtModel extends Model {
     this.#to("broadcasting");
     this.error = null;
     this.message = null;
+    this.notice = null;
+    const psbt = this.psbt;
     try {
-      const txid = await this.api.broadcastPsbt(this.psbt);
+      const txid = await this.api.broadcastPsbt(psbt);
       this.sent = txid;
+      this.broadcasts.set(psbt, txid);
       this.message = PsbtText.broadcastSucceeded(txid);
       this.#to("broadcast");
     } catch (e) {
       // An unknown outcome is not a failure: it may have been sent (D17).
-      const unknown = hasCode(e, "psbt.broadcast_unknown");
-      if (unknown) this.sent = true;
-      this.error = unknown ? psbtErrorText(e) : PsbtText.broadcastFailed(psbtErrorText(e));
+      if (hasCode(e, "psbt.broadcast_unknown")) {
+        this.sent = true;
+        this.broadcasts.set(psbt, true);
+        this.notice = psbtErrorText(e);
+      } else this.error = PsbtText.broadcastFailed(psbtErrorText(e));
       this.#to("ready");
     }
   }
@@ -259,6 +269,7 @@ export class PsbtModel extends Model {
     this.psbt = null;
     this.analysis = null;
     this.message = null;
+    this.notice = null;
     this.error = null;
     this.sent = null;
     this.#to("empty");
@@ -268,12 +279,13 @@ export class PsbtModel extends Model {
     const had = this.psbt !== null;
     this.step = "loading";
     this.message = null;
+    this.notice = null;
     this.error = null;
     this.changed();
     try {
       this.analysis = await this.api.analyzePsbt(this.walletId, psbt);
       this.psbt = psbt;
-      this.sent = null;
+      this.sent = this.broadcasts.get(psbt) ?? null;
       this.#to("ready");
       return true;
     } catch (e) {

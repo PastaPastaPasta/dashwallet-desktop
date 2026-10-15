@@ -6,13 +6,13 @@
 import { useEffect, useId, useState } from "react";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useQueryClient } from "@tanstack/react-query";
-import { keys, useBackend, useSyncStatus } from "../../api/queries";
+import { keys, useBackend } from "../../api/queries";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { useModel } from "../../onboarding/model";
 import type { GrantModel } from "../../tools/grant";
 import { RepairModel, RepairText, type Confirmation } from "../../tools/repair";
-import { NotYet, Outcome, ToolCard } from "./common";
+import { NotYet, Outcome, ToolCard, useReloadOnSync } from "./common";
 
 /** The rescan's progress is read this often while one runs (D10). */
 const POLL_MS = 1000;
@@ -31,8 +31,7 @@ export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: Wall
   const [from, setFrom] = useState("");
   const [birth, setBirth] = useState("");
   const id = useId();
-  const synced = useSyncStatus().dataUpdatedAt;
-  useEffect(() => void model.refresh(), [model, synced]);
+  useReloadOnSync(() => void model.refresh());
   useEffect(() => {
     if (!model.rescanning) return;
     const timer = setInterval(() => void model.refresh(), POLL_MS);
@@ -127,6 +126,11 @@ export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: Wall
             ))}
           </ul>
         </ToolCard>
+      )}
+      {model.stuckUnreadable && (
+        <p className="placeholder-note" data-testid="repair-stuck-unreadable">
+          {RepairText.stuckUnreadable}
+        </p>
       )}
       <NotYet title="Asset locks" owner="DP1-09, DP1-02" testId="repair-asset-locks-not-yet">
         Finishing stranded transfers and sending or cancelling unrecorded asset locks.

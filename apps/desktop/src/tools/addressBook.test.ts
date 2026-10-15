@@ -143,4 +143,14 @@ describe("Address Book (QT-095…098)", () => {
     expect(await m.save(FRESH, "x", false)).toBe(false);
     expect(m.error).toBe(AddressBookText.alreadyInBook(FRESH, ""));
   });
+
+  it("a refusal for an entry this list has not read yet names its label", async () => {
+    const { m, api } = await model("send", false, appError("labels.own_address"));
+    const read = api.addressBook.getMockImplementation()!;
+    api.addressBook.mockImplementation(async (w, purpose) =>
+      purpose === "receive" ? [{ address: FRESH, label: "Savings", purpose: "receive", createdAt: null }] : read(w, purpose),
+    );
+    expect(await m.save(FRESH, "x", false)).toBe(false);
+    expect(m.error).toBe(AddressBookText.existsAsReceiving(FRESH, "Savings"));
+  });
 });

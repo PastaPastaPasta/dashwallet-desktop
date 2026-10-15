@@ -3,11 +3,11 @@
 // dash-qt's list and tree views, sorting (this session, D8), CoinJoin coins hidden by default,
 // locks, copy, and the selection's summary. "Pay with these coins" hands the selection to Pay.
 
-import { errorMessage, hasCode, type Backend } from "../api/backend";
+import { hasCode, type Backend } from "../api/backend";
 import type { CoinSelectionSummary } from "../api/generated/CoinSelectionSummary";
 import type { Utxo } from "../api/generated/Utxo";
 import { format } from "../format/amount";
-import { Model } from "../onboarding/model";
+import { failureText, Model } from "../onboarding/model";
 import { DEFAULT_TARGET_BLOCKS, notSelectable, outpointKey, outpointOf } from "../screens/pay/model";
 
 export type CoinColumn = "amount" | "label" | "address" | "rounds" | "date" | "confirmations";
@@ -223,13 +223,16 @@ export class CoinSelectionModel extends Model {
 
   async #locks(lock: string[], unlock: string[]) {
     try {
-      if (lock.length) await this.api.lockOutpoints(this.walletId, lock.map(outpointOf));
+      if (lock.length) {
+        await this.api.lockOutpoints(this.walletId, lock.map(outpointOf));
+        // A locked coin cannot stay selected; that is the user's doing, not a spend: no notice.
+        // Dropped at once, so a failed unlock after it leaves no locked coin selected.
+        this.selected = this.selected.filter((k) => !lock.includes(k));
+      }
       if (unlock.length) await this.api.unlockOutpoints(this.walletId, unlock.map(outpointOf));
       this.error = null;
-      // A locked coin cannot stay selected; that is the user's doing, not a spend: no notice.
-      if (lock.length) this.selected = this.selected.filter((k) => !lock.includes(k));
     } catch (e) {
-      this.error = errorMessage(e);
+      this.error = failureText(e);
     }
     const coins = await this.reload().catch(() => this.coins ?? []);
     this.coins = coins;
@@ -259,7 +262,7 @@ export class CoinSelectionModel extends Model {
       if (seq !== this.#summarySeq) return;
       this.summary = null;
       this.summaryUnavailable = hasCode(e, "not_implemented");
-      if (!this.summaryUnavailable) this.error = errorMessage(e);
+      if (!this.summaryUnavailable) this.error = failureText(e);
     }
     this.changed();
   }

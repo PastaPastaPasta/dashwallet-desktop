@@ -3,11 +3,10 @@
 // hold only the redacted line (D6); a command that needs a grant asks for it and runs again (D7).
 // The font size lasts the session (D8).
 
-import { errorMessage, hasCode, isAppError, type Backend } from "../api/backend";
-import type { AuthGrant } from "../api/generated/AuthGrant";
+import { hasCode, type Backend } from "../api/backend";
 import type { ConsoleCommand } from "../api/generated/ConsoleCommand";
 import type { WalletSummary } from "../api/generated/WalletSummary";
-import { Model } from "../onboarding/model";
+import { failureText, Model } from "../onboarding/model";
 import type { GrantModel } from "./grant";
 
 export const HISTORY_LIMIT = 50;
@@ -51,10 +50,13 @@ export function consoleErrorText(e: unknown): string {
   if (hasCode(e, "console.not_available")) return ConsoleText.notAvailable;
   if (hasCode(e, "console.wallet_required")) return ConsoleText.walletRequired;
   if (hasCode(e, "vault.grant_invalid")) return ConsoleText.grantInvalid;
-  return errorMessage(e);
+  return failureText(e);
 }
 
 type Api = Pick<Backend, "consoleCommands" | "consoleRedact" | "consoleExecute">;
+
+/** Ctrl+L's name in the welcome text. */
+export const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
 
 export class ConsoleModel extends Model {
   entries: ConsoleEntry[] = [];
@@ -85,13 +87,16 @@ export class ConsoleModel extends Model {
     return this.wallets.length >= 2;
   }
 
-  /** Command names for completion; the wallets for the selector (the first is selected). */
+  /** Command names for completion; the wallets for the selector (the first is selected). Runs
+   * each time the tab shows. */
   async load(wallets: WalletSummary[]) {
+    // The tab shows again: ↑ starts from the newest line.
+    this.#cursor = null;
     this.setWallets(wallets);
     try {
       this.commands = await this.api.consoleCommands();
     } catch (e) {
-      this.error = errorMessage(e);
+      this.error = failureText(e);
     }
     this.changed();
   }
@@ -115,22 +120,24 @@ export class ConsoleModel extends Model {
   async run(text: string): Promise<boolean> {
     const line = text.trim();
     if (this.running || line === "") return false;
-    let redacted: string;
-    try {
-      redacted = await this.api.consoleRedact(line);
-    } catch (e) {
-      this.error = hasCode(e, "console.parse_error") ? ConsoleText.invalidCommandLine : errorMessage(e);
-      this.changed();
-      return false;
-    }
-    this.error = null;
-    this.history = [...this.history, redacted].slice(-HISTORY_LIMIT);
-    this.#cursor = null;
-    this.#append("command", redacted);
+    // Busy before the first await: a second Enter meanwhile must not run the line twice.
     this.running = true;
+    const since = this.grants.epoch;
     this.changed();
     try {
-      await this.#execute(line);
+      let redacted: string;
+      try {
+        redacted = await this.api.consoleRedact(line);
+      } catch (e) {
+        this.error = hasCode(e, "console.parse_error") ? ConsoleText.invalidCommandLine : failureText(e);
+        return false;
+      }
+      this.error = null;
+      this.history = [...this.history, redacted].slice(-HISTORY_LIMIT);
+      this.#cursor = null;
+      this.#append("command", redacted);
+      this.changed();
+      await this.#execute(line, since);
     } finally {
       this.running = false;
       this.changed();
@@ -138,31 +145,22 @@ export class ConsoleModel extends Model {
     return true;
   }
 
-  async #execute(line: string) {
-    let grant: AuthGrant | null = null;
-    for (;;) {
+  /** Runs the line; when it needs a grant, asks for it and runs the line once more with it,
+   * unless the grants were cancelled since the line was entered (`since`). */
+  async #execute(line: string, since: number) {
+    try {
+      let out;
       try {
-        const out = await this.api.consoleExecute(this.walletId, line, grant?.id ?? null);
-        this.#append("reply", out.text, out.isJson);
-        return;
+        out = await this.api.consoleExecute(this.walletId, line, null);
       } catch (e) {
-        // A grant the engine refused once is not asked for in a loop.
-        if (!hasCode(e, "console.authorization_required") || grant !== null || e.data?.kind !== "authorize") {
-          if (grant) this.grants.revoke(grant);
-          this.#append("error", isAppError(e) ? consoleErrorText(e) : errorMessage(e));
-          return;
-        }
-        try {
-          grant = await this.grants.obtain(e.data.purpose, e.data.walletId);
-        } catch (refused) {
-          this.#append("error", errorMessage(refused));
-          return;
-        }
-        if (grant === null) {
-          this.#append("error", ConsoleText.authorizationCancelled);
-          return;
-        }
+        if (!hasCode(e, "console.authorization_required") || e.data?.kind !== "authorize") throw e;
+        const again = await this.grants.withGrant(e.data.purpose, e.data.walletId, (grant) => this.api.consoleExecute(this.walletId, line, grant.id), since);
+        if (again === null) return this.#append("error", ConsoleText.authorizationCancelled);
+        out = again.value;
       }
+      this.#append("reply", out.text, out.isJson);
+    } catch (e) {
+      this.#append("error", consoleErrorText(e));
     }
   }
 

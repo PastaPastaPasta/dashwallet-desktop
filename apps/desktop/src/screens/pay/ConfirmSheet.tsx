@@ -56,7 +56,13 @@ export function ConfirmSheet({
   const chain = chainOf(network);
   const lock = useLockStatus();
   const policy = usePaymentAuthentication();
-  const watchOnly = useWallets().data?.find((w) => w.walletId === walletId)?.watchOnly ?? false;
+  // `undefined` until the wallet list is read: neither the prompt nor Send shows before it is
+  // known whether the wallet can sign.
+  const wallets = useWallets();
+  const watchOnlyKnown = wallets.data?.find((w) => w.walletId === walletId)?.watchOnly;
+  // Read and not there, or not readable: Send stays hidden, and the sheet says why.
+  const walletUnknown = watchOnlyKnown === undefined && (wallets.isError || wallets.isSuccess);
+  const watchOnly = watchOnlyKnown ?? false;
   const [askAnyway, setAskAnyway] = useState(false);
   const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +101,7 @@ export function ConfirmSheet({
 
   // A failed read of the policy counts as "on" (U-03 D3): the prompt waits only while it loads.
   const policyKnown = !policy.isPending;
-  const prompt = watchOnly ? "none" : askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined);
+  const prompt = watchOnlyKnown !== false ? "none" : askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined);
   // The policy loads after the sheet opened: once it asks for nothing, Cancel takes the focus,
   // so Return does not send (U-03 D4). The passphrase field focuses itself when it appears.
   const cancel = useRef<HTMLButtonElement>(null);
@@ -184,7 +190,7 @@ export function ConfirmSheet({
         className="confirm"
         onSubmit={(e) => {
           e.preventDefault();
-          if (!watchOnly) void send();
+          if (watchOnlyKnown === false) void send();
         }}
       >
         <div className="confirm-summary">
@@ -251,6 +257,11 @@ export function ConfirmSheet({
             {error ? "" : "Too many attempts. "}Try again in {waitSecs} s.
           </p>
         )}
+        {walletUnknown && (
+          <p className="placeholder-note" role="status" data-testid="pay-confirm-wallet-unknown">
+            This wallet could not be read, so it cannot send now. Create Unsigned still works.
+          </p>
+        )}
         <div className="sheet-actions sheet-actions-fit">
           <DashButton ref={cancel} variant="tintedGray" size="large" data-testid="pay-confirm-cancel" disabled={busy} onClick={onCancel}>
             Cancel
@@ -264,7 +275,7 @@ export function ConfirmSheet({
           >
             Create Unsigned
           </DashButton>
-          {!watchOnly && (
+          {watchOnlyKnown === false && (
             <DashButton type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null}>
               {busy ? "Sending…" : "Send"}
             </DashButton>

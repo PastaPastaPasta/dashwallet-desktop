@@ -4,12 +4,12 @@
 // unconfirmed transactions; the birth height; and "send all coins to yourself" for a registration
 // whose funding is unknown (D12).
 
-import { errorMessage, hasCode, isAppError, type Backend } from "../api/backend";
+import { hasCode, isAppError, type Backend } from "../api/backend";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RescanStart } from "../api/generated/RescanStart";
 import type { RescanStatus } from "../api/generated/RescanStatus";
 import type { StuckFundingRefusalName } from "../api/generated/StuckFundingRefusalName";
-import { Model } from "../onboarding/model";
+import { failureText, Model } from "../onboarding/model";
 import type { GrantModel } from "./grant";
 
 export const RepairText = {
@@ -26,6 +26,7 @@ export const RepairText = {
   birthHeightSaved: (h: number) => `The wallet's birth height is now ${h}.`,
   resetDone: "The chain data was deleted; syncing again.",
   resolveStuck: "Resolve stuck funding",
+  stuckUnreadable: "This wallet's username registrations could not be read, so stuck funding cannot be checked here.",
   resolveStuckQuestion:
     "Send every coin of this wallet to yourself? Whether the registration's funding reached the network is settled either way; the payment costs only its fee.",
   resolved: (txid: string) => `All coins were sent to yourself (transaction ${txid}). The registration can go on once it is confirmed.`,
@@ -33,7 +34,7 @@ export const RepairText = {
 
 /** Copy for the engine's Repair refusals (the Swift `L10n.M2Errors`). */
 export function repairErrorText(e: unknown): string {
-  if (!isAppError(e)) return errorMessage(e);
+  if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "spv_running":
       return "Stop syncing first.";
@@ -50,7 +51,7 @@ export function repairErrorText(e: unknown): string {
     case "stuck_funding":
       return e.data?.kind === "stuckFunding" ? stuckFundingText(e.data.refusal, e.data.retryLater) : e.message;
     default:
-      return errorMessage(e);
+      return failureText(e);
   }
 }
 
@@ -115,6 +116,8 @@ export class RepairModel extends Model {
   progress: RescanStatus | null = null;
   /** The wallet's registrations waiting on unknown funding. */
   stuck: RegistrationStatus[] = [];
+  /** `registrations` failed (no Platform session, D12): the screen says so. */
+  stuckUnreadable = false;
 
   constructor(
     private readonly api: Api,
@@ -156,9 +159,11 @@ export class RepairModel extends Model {
     }
     try {
       this.stuck = (await this.api.registrations(this.walletId)).filter(isStuck);
+      this.stuckUnreadable = false;
     } catch {
-      // No Platform session (DashPay off): nothing to repair there.
+      // No Platform session (DashPay off, D12).
       this.stuck = [];
+      this.stuckUnreadable = true;
     }
     this.changed();
   }
@@ -199,13 +204,17 @@ export class RepairModel extends Model {
     }
     await this.#run(async () => {
       if (what === "dropUnconfirmed") return { kind: "done", text: RepairText.dropped(await this.api.dropUnconfirmed(this.walletId)) };
-      // The engine resets only a stopped client; sync starts again whatever the reset did.
-      await this.api.stopSpv();
+      // The engine resets only a stopped client; sync starts again whatever the stop or the reset
+      // did (the stop can fail after SPV stopped, on a Platform drain, D11).
+      // The first failure is the one shown; a restart that then fails too would only hide it.
       try {
+        await this.api.stopSpv();
         await this.api.resetChainData();
-      } finally {
-        await this.api.startSpv();
+      } catch (e) {
+        await this.api.startSpv().catch(() => undefined);
+        throw e;
       }
+      await this.api.startSpv();
       return { kind: "done", text: RepairText.resetDone };
     });
   }
@@ -231,17 +240,16 @@ export class RepairModel extends Model {
    * covers the fee only, capped at the engine's maximum (U-05 D12). */
   async resolveStuck(r: RegistrationStatus) {
     if (this.busy) return;
+    const since = this.grants.epoch;
     await this.#run(async () => {
       const { maxTxFee } = await this.api.feePolicy();
-      const grant = await this.grants.obtain({ kind: "spend", maxDuffs: maxTxFee }, this.walletId);
-      if (grant === null) return { kind: "idle" };
-      try {
-        const { txid } = await this.api.resolveStuckFunding(this.walletId, fundingStep(r), grant.id);
-        return { kind: "done", text: RepairText.resolved(txid) };
-      } catch (e) {
-        this.grants.revoke(grant);
-        throw e;
-      }
+      const sent = await this.grants.withGrant(
+        { kind: "spend", maxDuffs: maxTxFee },
+        this.walletId,
+        (grant) => this.api.resolveStuckFunding(this.walletId, fundingStep(r), grant.id),
+        since,
+      );
+      return sent ? { kind: "done", text: RepairText.resolved(sent.value.txid) } : { kind: "idle" };
     });
   }
 

@@ -33,6 +33,7 @@ const PASSPHRASE = "e2e tools passphrase";
 const FUNDING = "10";
 const PAYMENT = "1.25";
 const PAYMENT_DUFFS = 125_000_000;
+const FUNDING_DUFFS = 1_000_000_000;
 const MESSAGE = "U-05 says hello";
 /** SPV sync, a scan or a sighting on a loaded host (as regtest-send.ts allows). */
 const LOAD_WAIT_MS = Number(env("DW_E2E_LOAD_WAIT_MS", "600000"));
@@ -80,6 +81,12 @@ async function main() {
   await wd.start({ alwaysMatch: { "tauri:options": { application: APP, args } } });
   const textOf = (css: string) => wd.script<string>(`return document.querySelector('${css}')?.textContent ?? ""`);
   const valueOf = (css: string) => wd.script<string>(`return document.querySelector('${css}')?.value ?? ""`);
+  /** An Information row's value, by its title. */
+  const infoRow = (title: string) =>
+    wd.script<string>(
+      `for (const r of document.querySelectorAll(".detail-row")) if (r.querySelector("dt")?.textContent === ${JSON.stringify(title)}) return r.querySelector("dd").textContent.trim(); return ""`,
+    );
+  const lastReply = () => wd.script<string>(`return [...document.querySelectorAll('${tid("console-entry-reply")}')].at(-1)?.textContent.trim() ?? ""`);
   const disabled = (css: string) => wd.script<boolean>(`return !!document.querySelector('${css}')?.disabled`);
   const tools = async (tab: string) => {
     await wd.press(tid(`tools-tabs-${tab}`));
@@ -118,14 +125,14 @@ async function main() {
     await openTools(wd);
     await tools("information");
     const height = String(chain.height());
-    await poll(LOAD_WAIT_MS, "the tip height in Information", async () => ((await textOf(tid("information-block-chain"))).includes(height) ? true : undefined));
+    await poll(LOAD_WAIT_MS, "the tip height in Information", async () => ((await infoRow("Current block height")) === height ? true : undefined));
     evidence.information = await textOf(tid("information-block-chain"));
     await wd.screenshot("1-information");
     step(`Information: current block height ${height}, as dashd`);
 
     await tools("console");
     await wd.fill(tid("console-line"), `getblockcount${ENTER}`);
-    await poll(TIMEOUT_MS, "getblockcount's reply", async () => ((await textOf(tid("console-log"))).includes(height) ? true : undefined));
+    await poll(TIMEOUT_MS, "getblockcount's reply", async () => ((await lastReply()) === height ? true : undefined));
     await wd.fill(tid("console-line"), `getblock 1${ENTER}`);
     await poll(TIMEOUT_MS, "getblock's refusal", async () => ((await textOf(tid("console-log"))).includes("Not available in SPV mode") ? true : undefined));
     evidence.console = await textOf(tid("console-log"));
@@ -205,7 +212,9 @@ async function main() {
     step(`Pay with these coins → the book's address, ${PAYMENT} DASH → Create Unsigned → PSBT: ${evidence.unsigned}`);
 
     await wd.press(tid("psbt-sign"));
+    // An encrypted vault under the default payment policy always asks before a spend.
     evidence.signPassphrase = await authorizeIfAsked();
+    if (evidence.signPassphrase !== "asked") throw new Error("Sign Tx spent without asking for the passphrase");
     await poll(TIMEOUT_MS, "the signature", async () => ((await textOf(tid("psbt-message"))).includes("Signed transaction successfully") ? true : undefined));
     evidence.signed = await textOf(tid("psbt-lines"));
     if (String(evidence.signed).includes("unsigned inputs")) throw new Error(`the signed PSBT still reads ${evidence.signed}`);
@@ -215,12 +224,14 @@ async function main() {
     const tx = chain.json<RawTx>("getrawtransaction", txid, "true");
     evidence.txid = txid;
     evidence.paid = paysTo(tx, payee);
+    const entry = chain.json<{ fees?: { base: number }; fee?: number }>("getmempoolentry", txid);
+    evidence.fee = Math.round((entry.fees?.base ?? entry.fee ?? NaN) * 1e8);
     if (evidence.paid !== PAYMENT_DUFFS) throw new Error(`the transaction pays ${payee} ${evidence.paid} duffs, not ${PAYMENT_DUFFS}`);
     // dashd is the judge; the app says sent, or (SPV hears no answer to a broadcast) that it was
     // handed to the network and its outcome is unknown, as Pay's result does (U-03).
     evidence.broadcast = await poll(TIMEOUT_MS, "Broadcast's outcome", async () => {
       if ((await textOf(tid("psbt-message"))).includes(txid)) return "sent";
-      if ((await textOf(tid("psbt-error"))).includes("whether it was accepted is unknown")) return "unknown";
+      if ((await textOf(tid("psbt-notice"))).includes("whether it was accepted is unknown")) return "unknown";
       return undefined;
     });
     if (!(await disabled(tid("psbt-broadcast")))) throw new Error("Broadcast Tx is offered again");
@@ -228,18 +239,37 @@ async function main() {
     await wd.screenshot("8-psbt-broadcast");
     step(`PSBT: signed (passphrase ${evidence.signPassphrase}), broadcast (${evidence.broadcast}); dashd's mempool holds ${txid} paying ${PAYMENT} DASH; mined in ${evidence.block}`);
 
-    // Repair: a rescan from the first block runs to its end.
+    // Repair: a rescan from the first block runs and ends; the balance it leaves is the funding
+    // less the payment and its fee. 103 regtest blocks can rescan inside the screen's first
+    // one-second poll, so the progress card may never show (D32).
     await openTools(wd);
     await tools("repair");
+    // The observer notes the start (the buttons disable, or the progress card shows) and the
+    // card's text, so the end below is never read before the rescan began.
+    await wd.script(`window.__repair = { started: false, progress: null };
+      new MutationObserver(() => {
+        const p = document.querySelector('${tid("repair-progress")}');
+        const b = document.querySelector('${tid("repair-rescan-genesis")}');
+        if (p || b?.disabled) window.__repair.started = true;
+        if (p && window.__repair.progress === null) window.__repair.progress = p.textContent;
+      }).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });`);
     await wd.press(tid("repair-rescan-genesis"));
-    await poll(LOAD_WAIT_MS, "the rescan to finish", async () =>
+    await poll(LOAD_WAIT_MS, "the rescan to start", async () => ((await wd.script<boolean>("return window.__repair.started")) ? true : undefined));
+    await poll(LOAD_WAIT_MS, "the rescan to end", async () =>
       (await wd.find(tid("repair-progress"))) || (await disabled(tid("repair-rescan-genesis"))) ? undefined : true,
     );
-    const problem = await wd.find(`${tid("repair-outcome")}.form-problem`);
-    evidence.repair = await textOf(tid("tools-repair"));
-    await wd.screenshot("9-repair");
-    if (problem) throw new Error(`the rescan failed: ${await textOf(tid("repair-outcome"))}`);
-    step("Repair: a rescan from the first block ran to its end");
+    if (await wd.find(`${tid("repair-outcome")}.form-problem`)) throw new Error(`the rescan failed: ${await textOf(tid("repair-outcome"))}`);
+    const seen = await wd.script<string | null>("return window.__repair.progress");
+    evidence.repairRunning = seen ?? "ended before the first poll";
+    await wd.screenshot("9-repair-ended");
+    await wd.press(tid("sidebar-pay"));
+    await wd.press(tid("pay-tabs-address"));
+    const left = (FUNDING_DUFFS - PAYMENT_DUFFS - Number(evidence.fee)) / 1e8;
+    await poll(LOAD_WAIT_MS, "the balance after the rescan", async () =>
+      (await textOf(tid("pay-address-form"))).includes(`Available: ${left.toFixed(8)}`) ? true : undefined,
+    );
+    await wd.screenshot("10-balance-after-rescan");
+    step(`Repair: a rescan from the first block ran (progress: ${evidence.repairRunning}) and ended; Pay says Available: ${left.toFixed(8)}`);
   } catch (e) {
     await wd.screenshot("failure").catch(() => undefined);
     throw e;

@@ -19,6 +19,7 @@ pub mod tray;
 
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -137,6 +138,8 @@ pub struct Shell {
     /// Shows the native file dialogs ([`files::install`]); none without a
     /// window (the IPC tests install a fake one).
     choose: Mutex<Option<files::ChooseFn>>,
+    /// A file dialog is open: a second is refused, not stacked (U-05 D31).
+    choosing: AtomicBool,
     /// The self-test's link trace (`--selftest-link-trace`).
     trace: Option<PathBuf>,
 }
@@ -148,6 +151,7 @@ impl Shell {
             sync: Mutex::default(),
             protect: Mutex::default(),
             choose: Mutex::default(),
+            choosing: AtomicBool::new(false),
             trace,
         }
     }
@@ -193,7 +197,18 @@ impl Shell {
 
     /// Shows a file dialog and answers with the path the user chose, `None`
     /// when they cancelled; an error when no dialog can be shown.
+    /// One dialog at a time: while one is open, another request is an error.
     pub async fn choose(&self, request: files::FileRequest) -> Result<Option<PathBuf>, String> {
+        if self.choosing.swap(true, Ordering::AcqRel) {
+            return Err("a file dialog is already open".to_owned());
+        }
+        struct Open<'a>(&'a AtomicBool);
+        impl Drop for Open<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        let _open = Open(&self.choosing);
         let shown = self
             .choose
             .lock()
@@ -326,6 +341,62 @@ pub fn deliver_links<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_second_file_dialog_is_refused_while_one_is_open() {
+        let shell = Arc::new(Shell::new(None));
+        let (answer, reply) = tokio::sync::oneshot::channel();
+        let reply = Mutex::new(Some(reply));
+        shell.on_choose(Box::new(move |_| {
+            reply.lock().unwrap().take().unwrap_or_else(|| {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let _ = tx.send(None);
+                rx
+            })
+        }));
+        let request = files::FileRequest {
+            purpose: files::FilePurpose::Psbt,
+            save: false,
+            suggested_name: None,
+        };
+        let first = tokio::spawn({
+            let (shell, request) = (shell.clone(), request.clone());
+            async move { shell.choose(request).await }
+        });
+        while !shell.choosing.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        let refused = shell.choose(request.clone()).await.unwrap_err();
+        assert!(refused.contains("already open"), "{refused}");
+        answer.send(Some(PathBuf::from("/a.psbt"))).unwrap();
+        assert_eq!(
+            first.await.unwrap().unwrap(),
+            Some(PathBuf::from("/a.psbt"))
+        );
+        // Closed, the next one shows.
+        assert_eq!(shell.choose(request.clone()).await.unwrap(), None);
+
+        // A request dropped while its dialog is open (the IPC call went away) frees it too.
+        let (_never, reply) = tokio::sync::oneshot::channel();
+        let reply = Mutex::new(Some(reply));
+        shell.on_choose(Box::new(move |_| {
+            reply.lock().unwrap().take().unwrap_or_else(|| {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let _ = tx.send(None);
+                rx
+            })
+        }));
+        let dropped = tokio::spawn({
+            let (shell, request) = (shell.clone(), request.clone());
+            async move { shell.choose(request).await }
+        });
+        while !shell.choosing.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        dropped.abort();
+        let _ = dropped.await;
+        assert_eq!(shell.choose(request).await.unwrap(), None);
+    }
 
     #[test]
     fn only_links_are_queued_and_traced_by_scheme() {

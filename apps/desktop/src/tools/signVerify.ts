@@ -2,9 +2,9 @@
 // address first with dash-qt's texts, then asks for a `signMessage` grant (U-05 D15); a grant the
 // signature did not use is revoked. Verify shows the engine's outcome and dash-qt's text.
 
-import { errorMessage, isAppError, type Backend } from "../api/backend";
+import { isAppError, type Backend } from "../api/backend";
 import type { VerifyMessageResult } from "../api/generated/VerifyMessageResult";
-import { Model } from "../onboarding/model";
+import { failureText, Model } from "../onboarding/model";
 import type { GrantModel } from "./grant";
 
 export const SignVerifyText = {
@@ -60,19 +60,21 @@ export class SignVerifyModel extends Model {
   async sign(address: string, message: string) {
     if (this.signing) return;
     const a = address.trim();
-    this.signature = "";
-    const kind = await this.api.classifyAddress(this.network, a).catch(() => null);
-    if (kind?.kind !== "core") return this.#signed({ ok: false, text: SignVerifyText.invalidAddress });
-    if (kind.scriptHash) return this.#signed({ ok: false, text: SignVerifyText.addressNoKey });
+    // Busy before the first await: a second submit meanwhile must not sign twice.
     this.signing = true;
+    const since = this.grants.epoch;
+    this.signature = "";
     this.signResult = null;
     this.changed();
     try {
+      const kind = await this.api.classifyAddress(this.network, a).catch(() => null);
+      if (kind?.kind !== "core") return this.#signed({ ok: false, text: SignVerifyText.invalidAddress });
+      if (kind.scriptHash) return this.#signed({ ok: false, text: SignVerifyText.addressNoKey });
       let grant;
       try {
-        grant = await this.grants.obtain({ kind: "signMessage" }, this.walletId);
+        grant = await this.grants.obtain({ kind: "signMessage" }, this.walletId, since);
       } catch (e) {
-        return this.#signed({ ok: false, text: errorMessage(e) });
+        return this.#signed({ ok: false, text: failureText(e) });
       }
       if (grant === null) return this.#signed({ ok: false, text: SignVerifyText.unlockCancelled });
       try {
@@ -98,7 +100,7 @@ export class SignVerifyModel extends Model {
     try {
       this.verifyResult = await this.api.verifyMessage(address.trim(), signature.trim(), message);
     } catch (e) {
-      this.verifyResult = { outcome: "invalidAddress", text: errorMessage(e) };
+      this.verifyResult = { outcome: "invalidAddress", text: failureText(e) };
     }
     this.changed();
   }

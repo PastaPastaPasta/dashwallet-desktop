@@ -2,12 +2,12 @@
 // dash-qt's columns, list or tree, sorting, CoinJoin coins hidden by default, locks, copy and the
 // selection's summary. "Pay with these coins" opens Pay with the selection (QT-068).
 
-import { useEffect, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { errorMessage } from "../../api/backend";
+import { useEffect } from "react";
+import type { QueryClient } from "@tanstack/react-query";
+import { errorMessage, type Backend } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { Utxo } from "../../api/generated/Utxo";
-import { keys, useBackend, useUtxos } from "../../api/queries";
+import { keys, useUtxos } from "../../api/queries";
 import { openPayForm } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CoinSummary, CoinTable } from "../../components/coins";
@@ -30,21 +30,21 @@ function CoinMenu({ u, model }: { u: Utxo; model: CoinSelectionModel }) {
   const lock: MenuItem = u.userLocked
     ? { title: "Unlock unspent", run: () => void model.unlock([key]) }
     : { title: "Lock unspent", run: () => void model.lock([key]), disabled: u.reserved };
-  return <RowMenu label="Actions" items={[...COPY.map(([field, title]) => ({ title, copy: copyText(u, field) })), lock]} testId={`coin-menu-${key}`} />;
+  return <RowMenu label="Actions" name={`Actions for ${copyText(u, "amount")} at ${u.address}`} items={[...COPY.map(([field, title]) => ({ title, copy: copyText(u, field) })), lock]} testId={`coin-menu-${key}`} />;
 }
 
-export function CoinSelectionTab({ walletId, network }: { walletId: string; network: NetworkInfo }) {
-  const b = useBackend();
-  const client = useQueryClient();
+/** The tab's model; the page keeps one per window wallet, so the view (mode, sort, CoinJoin
+ * coins) and the selection outlive a tab change (D8). */
+export function newCoinSelection(b: Backend, client: QueryClient, walletId: string): CoinSelectionModel {
+  return new CoinSelectionModel(b, walletId, async () => {
+    // A lock changes the coins and the balance: every coin read of the wallet goes stale.
+    await client.invalidateQueries({ queryKey: keys.coinsAll(walletId) });
+    return client.getQueryData<Utxo[]>(keys.utxos(walletId)) ?? [];
+  });
+}
+
+export function CoinSelectionTab({ model, walletId, network }: { model: CoinSelectionModel; walletId: string; network: NetworkInfo }) {
   const utxos = useUtxos(walletId, true);
-  const [model] = useState(
-    () =>
-      new CoinSelectionModel(b, walletId, async () => {
-        // A lock changes the coins and the balance: every coin read of the wallet goes stale.
-        await client.invalidateQueries({ queryKey: keys.coinsAll(walletId) });
-        return client.getQueryData<Utxo[]>(keys.utxos(walletId)) ?? [];
-      }),
-  );
   useModel(model);
   useEffect(() => {
     if (utxos.data) model.setCoins(utxos.data);

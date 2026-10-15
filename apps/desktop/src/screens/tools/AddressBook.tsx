@@ -208,6 +208,7 @@ export function AddressBookTab({ walletId, network }: { walletId: string; networ
           <span className="tool-row-actions">
             <RowMenu
               label="Copy"
+              name={`Copy ${model.labelText(e)}`}
               items={[
                 { title: "Copy address", copy: e.address },
                 { title: "Copy label", copy: e.label },

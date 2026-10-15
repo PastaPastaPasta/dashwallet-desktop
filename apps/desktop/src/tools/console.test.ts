@@ -173,6 +173,25 @@ describe("Console (QT-145)", () => {
 });
 
 describe("Grants (U-05 D7)", () => {
+  it("a tab or wallet switch before the engine asks for a grant ends the line without a prompt", async () => {
+    const { model, grants, c } = setup({ encrypted: true });
+    await model.load([summary(WALLET_A, "Main")]);
+    let answer = () => {};
+    const execute = c.api.consoleExecute.getMockImplementation()!;
+    c.api.consoleExecute.mockImplementationOnce(async (...args) => {
+      await new Promise<void>((r) => (answer = r));
+      return execute(...args);
+    });
+    const ran = model.run(`sendtoaddress ${PAYEE} 1`);
+    await vi.waitFor(() => expect(c.api.consoleExecute).toHaveBeenCalledTimes(1));
+    grants.cancel(); // what ToolsPage does when the tab or the wallet changes
+    answer();
+    await ran;
+    expect(grants.pending).toBeNull();
+    expect(model.entries.at(-1)).toMatchObject({ kind: "error", text: ConsoleText.authorizationCancelled });
+    expect(c.executed.filter(([, line]) => line.startsWith("sendtoaddress"))).toHaveLength(1);
+  });
+
   it("asks for the passphrase as the vault and the payment policy say", () => {
     const sign = { kind: "signMessage" } as GrantPurposeSpec;
     expect(needsPassphrase(SPEND, status({ encrypted: false }), true)).toBe(false);
@@ -198,5 +217,14 @@ describe("Grants (U-05 D7)", () => {
     const { api } = fakeVault({ encrypted: false });
     api.authorize.mockRejectedValueOnce(appError("wallet_not_found"));
     await expect(new GrantModel(api).obtain(SPEND, WALLET_A)).rejects.toMatchObject({ code: "wallet_not_found" });
+  });
+
+  it("QT145_aSecondSubmitWhileALineRunsIsIgnored", async () => {
+    const { model, c } = setup({ encrypted: false });
+    const first = model.run("getblockcount");
+    expect(await model.run("getblockcount")).toBe(false);
+    expect(await first).toBe(true);
+    expect(c.api.consoleExecute).toHaveBeenCalledTimes(1);
+    expect(model.running).toBe(false);
   });
 });

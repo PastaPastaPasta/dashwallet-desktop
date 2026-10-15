@@ -96,4 +96,14 @@ describe("Sign/Verify (QT-099, QT-100)", () => {
     m.clearVerify();
     expect(m.verifyResult).toBeNull();
   });
+
+  it("QT099_aSecondSignWhileOneRunsIsIgnored", async () => {
+    const { m, signs, api } = signer({ encrypted: false });
+    const first = m.sign(ALICE, "hello");
+    await m.sign(ALICE, "hello");
+    await first;
+    expect(api.classifyAddress).toHaveBeenCalledTimes(1);
+    expect(signs).toHaveLength(1);
+    expect(m.signing).toBe(false);
+  });
 });

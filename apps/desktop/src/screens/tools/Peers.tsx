@@ -2,14 +2,14 @@
 // change; a row opens its details; Change peers drops every connection and dials again.
 // Disconnect, ban and unban are not built (D9, product scope).
 
-import { useEffect, useState } from "react";
-import { useBackend, useSyncStatus } from "../../api/queries";
+import { useState } from "react";
+import { useBackend } from "../../api/queries";
 import { DashButton } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
 import { LoadingState } from "../../components/history";
 import { useModel } from "../../onboarding/model";
 import { peerRow, PeersModel, PeersText, type PeerRow } from "../../tools/peers";
-import { ToolCard } from "./common";
+import { Outcome, ToolCard, useReloadOnSync } from "./common";
 
 const COLUMNS: [keyof PeerRow, string, boolean][] = [
   ["address", "Address", false],
@@ -28,8 +28,7 @@ export function PeersTab() {
   const [model] = useState(() => new PeersModel(b));
   useModel(model);
   const [open, setOpen] = useState<string | null>(null);
-  const synced = useSyncStatus().dataUpdatedAt;
-  useEffect(() => void model.load(), [model, synced]);
+  useReloadOnSync(() => void model.load());
   const now = Math.floor(b.now().getTime() / 1000);
   const rows = (model.peers ?? []).map((p) => peerRow(p, now));
   const detail = rows.find((r) => r.address === open);
@@ -44,16 +43,8 @@ export function PeersTab() {
           </DashButton>
         }
       >
-        {model.notice && (
-          <p className="form-ok" role="status" data-testid="peers-notice">
-            {model.notice}
-          </p>
-        )}
-        {model.error && (
-          <p className="form-problem" role="alert" data-testid="peers-error">
-            {model.error}
-          </p>
-        )}
+        <Outcome ok text={model.notice} testId="peers-notice" />
+        <Outcome ok={false} text={model.error} testId="peers-error" />
         {model.peers === null ? (
           !model.error && <LoadingState testId="peers-loading" text="Reading the peers" />
         ) : rows.length === 0 ? (

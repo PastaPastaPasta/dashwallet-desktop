@@ -3,14 +3,13 @@
 // shows "—", the memory pool with "Requires full-node data source" (U-05 D4).
 
 import type { Backend } from "../api/backend";
-import { errorMessage } from "../api/backend";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { MasternodeCounts } from "../api/generated/MasternodeCounts";
 import type { NodeSummary } from "../api/generated/NodeSummary";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { NodeWarning } from "../api/generated/NodeWarning";
 import type { WarningCodeName } from "../api/generated/WarningCodeName";
-import { Model } from "../onboarding/model";
+import { failureText, Model } from "../onboarding/model";
 
 export const NONE = "—";
 export const REQUIRES_FULL_NODE = "Requires full-node data source";
@@ -154,7 +153,7 @@ export class InformationModel extends Model {
       this.error = null;
     } catch (e) {
       if (seq !== this.#seq) return;
-      this.error = `The node information could not be read: ${errorMessage(e)}`;
+      this.error = `The node information could not be read: ${failureText(e)}`;
     }
     this.changed();
   }

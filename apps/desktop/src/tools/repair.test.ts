@@ -103,6 +103,25 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(calls).toEqual(["stop", "start"]);
   });
 
+  it("QT148_aStopThatFailsAfterStoppingStillStartsSyncAgain", async () => {
+    const { model, api, calls } = setup();
+    api.stopSpv.mockRejectedValueOnce(appError("platform.timeout"));
+    model.ask("resetChainData");
+    await model.confirm();
+    expect(calls).toEqual(["start"]);
+    expect(api.resetChainData).not.toHaveBeenCalled();
+    expect(model.state.kind).toBe("failed");
+  });
+
+  it("QT148_aRestartThatFailsTooLeavesTheFirstFailureShown", async () => {
+    const { model, api } = setup();
+    api.resetChainData.mockRejectedValueOnce(appError("spv_running"));
+    api.startSpv.mockRejectedValueOnce(appError("platform.timeout"));
+    model.ask("resetChainData");
+    await model.confirm();
+    expect(model.state).toEqual({ kind: "failed", text: "Stop syncing first." });
+  });
+
   it("QT117_rescanFromATypedHeightNeedsAWholeNumber", async () => {
     const { model, api } = setup();
     await model.rescanFrom("12.5");
@@ -136,6 +155,16 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
 });
 
 describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
+  it("a failed registrations read is said, not hidden", async () => {
+    const { model, api } = setup();
+    api.registrations.mockRejectedValueOnce(appError("platform.unavailable"));
+    await model.refresh();
+    expect(model.stuck).toEqual([]);
+    expect(model.stuckUnreadable).toBe(true);
+    await model.refresh();
+    expect(model.stuckUnreadable).toBe(false);
+  });
+
   it("lists only registrations whose funding is unknown", async () => {
     const { model } = setup();
     await model.refresh();

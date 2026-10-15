@@ -88,13 +88,24 @@ async fn choose(
     let request = FileRequest {
         purpose,
         save,
-        suggested_name,
+        suggested_name: suggested_name.and_then(|n| bare_file_name(&n)),
     };
     state
         .shell
         .choose(request)
         .await
         .map_err(|e| AppError::app(AppCode::FileDialog, e))
+}
+
+/// The renderer's suggestion as a bare file name: no directory part (either
+/// separator), no control characters, at most 200 characters; `None` when
+/// nothing is left. The dialog then opens where the OS would, never where a
+/// page chose.
+fn bare_file_name(name: &str) -> Option<String> {
+    let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let clean: String = last.chars().filter(|c| !c.is_control()).take(200).collect();
+    let clean = clean.trim();
+    (!clean.is_empty() && clean != "." && clean != "..").then(|| clean.to_owned())
 }
 
 /// The engine's paths are strings: a path that is not UTF-8 cannot reach it.
@@ -197,6 +208,17 @@ mod tests {
         assert_eq!(e.code_str(), AppCode::FileRead.as_str());
         let e = read_capped(&dir.path().join("missing"), 11).unwrap_err();
         assert_eq!(e.code_str(), AppCode::FileRead.as_str());
+    }
+
+    #[test]
+    fn a_suggested_name_is_a_bare_file_name() {
+        assert_eq!(bare_file_name("yPay-1.5 tDASH.psbt").as_deref(), Some("yPay-1.5 tDASH.psbt"));
+        assert_eq!(bare_file_name("../../.bashrc").as_deref(), Some(".bashrc"));
+        assert_eq!(bare_file_name("C:\\Users\\x\\a.csv").as_deref(), Some("a.csv"));
+        assert_eq!(bare_file_name("a\nb\u{7}.csv").as_deref(), Some("ab.csv"));
+        assert_eq!(bare_file_name("dir/").as_deref(), None);
+        assert_eq!(bare_file_name("..").as_deref(), None);
+        assert_eq!(bare_file_name(&"x".repeat(300)).map(|n| n.len()), Some(200));
     }
 
     #[test]

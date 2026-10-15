@@ -4,17 +4,13 @@
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
-import { useBackend } from "../../api/queries";
 import { DashButton } from "../../components/basics";
 import { useModel } from "../../onboarding/model";
-import { ConsoleModel, FONT_SIZES } from "../../tools/console";
-import type { GrantModel } from "../../tools/grant";
+import { FONT_SIZES, type ConsoleModel } from "../../tools/console";
 
-const MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
-
-export function ConsoleTab({ grants, wallets }: { grants: GrantModel; wallets: WalletSummary[] }) {
-  const b = useBackend();
-  const [model] = useState(() => new ConsoleModel(b, grants, MAC));
+/** `model` is the page's, one per window wallet: lines, history and font size outlive a tab
+ * change (D1, D8). */
+export function ConsoleTab({ model, wallets }: { model: ConsoleModel; wallets: WalletSummary[] }) {
   useModel(model);
   const [line, setLine] = useState("");
   const log = useRef<HTMLDivElement>(null);

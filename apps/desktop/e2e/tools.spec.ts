@@ -80,6 +80,13 @@ test.describe("Console", () => {
     await line.fill("getnetw");
     await line.press("Tab");
     await expect(line).toHaveValue("getnetworkinfo ");
+    // Lines and history outlive a tab change (D1).
+    await line.fill("");
+    await tools(page, "peers");
+    await tools(page, "console");
+    await expect(page.getByTestId("console-entry-command")).toHaveCount(2);
+    await line.press("ArrowUp");
+    await expect(line).toHaveValue("getblock 1");
     await line.press("Control+l");
     await expect(page.getByTestId("console-entry-command")).toHaveCount(0);
   });
@@ -90,9 +97,12 @@ test.describe("Console", () => {
     const line = page.getByTestId("console-line");
     await line.fill('walletpassphrase "hunter2" 60');
     await line.press("Enter");
+    // The echo is there (redacted) before its absence counts; then history gives back only that.
+    await expect(page.getByTestId("console-entry-command").last()).toHaveText(/walletpassphrase\(…\)/);
+    await expect(line).toHaveValue("");
     await expect(page.getByTestId("console-log")).not.toContainText("hunter2");
     await line.press("ArrowUp");
-    await expect(line).not.toHaveValue(/hunter2/);
+    await expect(line).toHaveValue("walletpassphrase(…)");
   });
 
   test("QT145_D7: signmessage gets a signMessage grant (the unlocked vault asks nothing), then answers", async ({ page }) => {
@@ -364,6 +374,11 @@ test.describe("Coin Selection", () => {
     await expect(page.getByTestId("coins-selection")).toContainText("Can vary +/-");
     await page.getByTestId("coins-mode-tree").click();
     await expect(page.locator("[data-testid^=coin-group-]")).toHaveCount(5);
+    // The view and the selection outlive a tab change (D8).
+    await tools(page, "psbt");
+    await tools(page, "coinSelection");
+    await expect(page.getByTestId("coins-mode-tree")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("coin-summary")).toContainText("Quantity4");
   });
 
   test("QT070: lock and unlock from a row's menu and with Toggle lock state; copy the outpoint", async ({ page }) => {
@@ -372,6 +387,12 @@ test.describe("Coin Selection", () => {
     await tools(page, "coinSelection");
     const menu = page.locator("summary[data-testid^=coin-menu-]").first();
     const key = (await menu.getAttribute("data-testid"))!.replace("coin-menu-", "");
+    // Escape closes the menu and focus goes back to its button.
+    await menu.click();
+    await page.getByTestId(`coin-menu-${key}-copy-transaction-id-and-output-index`).focus();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId(`coin-menu-${key}-copy-transaction-id-and-output-index`)).toBeHidden();
+    await expect(menu).toBeFocused();
     await menu.click();
     await page.getByTestId(`coin-menu-${key}-copy-transaction-id-and-output-index`).click();
     expect(await copied(page)).toBe(key);
@@ -399,15 +420,20 @@ test.describe("Coin Selection", () => {
 });
 
 for (const theme of THEMES) {
-  test(`axe: every Tools tab, ${theme}`, async ({ page }) => {
-    await open(page, "tools-stuck-funding", theme);
-    for (const tab of TABS) {
+  for (const tab of TABS) {
+    test(`axe: Tools ▸ ${tab}, ${theme}`, async ({ page }) => {
+      await open(page, "tools-stuck-funding", theme);
       await tools(page, tab);
       await page.getByTestId(`tools-${tab}`).waitFor();
       await fontsReady(page);
       expect(await seriousAxeViolations(page), tab).toEqual([]);
-    }
-    // The sheets: the address book's editor, the grant sheet and Repair's question.
+    });
+  }
+
+  test(`axe: the Tools sheets, ${theme}`, async ({ page }) => {
+    // The address book's editor, Repair's question and the grant sheet.
+    await open(page, "tools-stuck-funding", theme);
+    await fontsReady(page);
     await tools(page, "addressBook");
     await page.getByTestId("address-book-new").click();
     expect(await seriousAxeViolations(page), "address book editor").toEqual([]);

@@ -6,6 +6,7 @@ import type { CoinSelectionSummary } from "../api/generated/CoinSelectionSummary
 import type { OutPoint } from "../api/generated/OutPoint";
 import type { Utxo } from "../api/generated/Utxo";
 import { appError, settle, WALLET_A } from "../onboarding/testWorld";
+import { failureText } from "../onboarding/model";
 import { notSelectable, outpointKey } from "../screens/pay/model";
 import { COLUMN_TITLE, CoinSelectionModel, CoinText, coinLabel, copyText } from "./coins";
 
@@ -144,7 +145,7 @@ describe("Coin Selection (QT-069…074)", () => {
     m.toggle(key(1));
     api.lockOutpoints.mockRejectedValueOnce(appError("wallet_not_found"));
     await m.lock([key(1)]);
-    expect(m.error).toBe("wallet_not_found");
+    expect(m.error).toBe(failureText(appError("wallet_not_found")));
     expect(m.selected).toEqual([key(1)]);
   });
 

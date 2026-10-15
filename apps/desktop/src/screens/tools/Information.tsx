@@ -1,28 +1,22 @@
 // Tools ▸ Information (QT-143, QT-144, QT-040): dash-qt's Information tab over `nodeInfo`, read
 // again on every sync status change (D4); the warning banner shows the most severe warning.
 
-import { useEffect, useState } from "react";
-import { useBackend, useSyncStatus } from "../../api/queries";
+import { useState } from "react";
+import { useBackend } from "../../api/queries";
 import { useLaunch } from "../../app/App";
 import { DetailRow } from "../../components/detail";
 import { LoadingState } from "../../components/history";
 import { useModel } from "../../onboarding/model";
 import { informationSections, InformationModel } from "../../tools/information";
-import { NotYet, ToolCard } from "./common";
+import { NotYet, Outcome, ToolCard, useReloadOnSync } from "./common";
 
 export function InformationTab() {
   const b = useBackend();
   const launch = useLaunch();
   const [model] = useState(() => new InformationModel(b));
   useModel(model);
-  const synced = useSyncStatus().dataUpdatedAt;
-  useEffect(() => void model.load(), [model, synced]);
-  if (model.error && !model.info)
-    return (
-      <p className="form-problem" role="alert" data-testid="information-error">
-        {model.error}
-      </p>
-    );
+  useReloadOnSync(() => void model.load());
+  if (model.error && !model.info) return <Outcome ok={false} text={model.error} testId="information-error" />;
   if (!model.info) return <LoadingState testId="information-loading" text="Reading the node information" />;
   return (
     <div className="tool-stack" data-testid="tools-information">

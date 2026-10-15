@@ -2,9 +2,9 @@
 // nothing, and Change peers (`rotatePeers`). Disconnect and ban are node administration, which
 // stays with the node (CLAUDE.md "Product scope"; U-05 D9).
 
-import { errorMessage, hasCode, type Backend } from "../api/backend";
+import { hasCode, type Backend } from "../api/backend";
 import type { PeerSummary } from "../api/generated/PeerSummary";
-import { Model } from "../onboarding/model";
+import { failureText, Model } from "../onboarding/model";
 import { NONE } from "./information";
 
 /** dash-qt `GUIUtil::formatBytes`. */
@@ -81,7 +81,7 @@ export class PeersModel extends Model {
       this.peers = await this.api.peers();
       this.error = null;
     } catch (e) {
-      this.error = `The peers could not be read: ${errorMessage(e)}`;
+      this.error = `The peers could not be read: ${failureText(e)}`;
     }
     this.changed();
   }
@@ -95,7 +95,7 @@ export class PeersModel extends Model {
       await this.api.rotatePeers();
       this.notice = PeersText.rotated;
     } catch (e) {
-      this.notice = hasCode(e, "no_peers") ? PeersText.noPeers : errorMessage(e);
+      this.notice = hasCode(e, "no_peers") ? PeersText.noPeers : failureText(e);
     }
     this.rotating = false;
     await this.load();

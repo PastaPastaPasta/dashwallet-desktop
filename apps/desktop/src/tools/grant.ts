@@ -30,6 +30,16 @@ export class GrantModel extends Model {
   pending: GrantRequest | null = null;
   readonly lock: LockModel;
   #answer: ((grant: AuthGrant | null) => void) | null = null;
+  /** Set from the first moment of `obtain` to its end, so two requests never overlap. */
+  #asking = false;
+  /** Moves on every `cancel`: a request cancelled before its prompt showed ends there. */
+  #epoch = 0;
+
+  /** Taken when a tool's action begins and passed to `obtain` as `since`: a cancel after the
+   * action began (a tab or wallet switch) then ends a request it makes later. */
+  get epoch(): number {
+    return this.#epoch;
+  }
 
   constructor(private readonly api: Api) {
     super();
@@ -38,22 +48,36 @@ export class GrantModel extends Model {
   }
 
   /** A grant for `purpose`: at once when the vault's credential will do, else once the user
-   * entered the passphrase; `null` when they cancelled. Other refusals throw. */
-  async obtain(purpose: GrantPurposeSpec, walletId: string | null): Promise<AuthGrant | null> {
-    if (this.pending) throw new Error("a grant is already being asked for");
-    const [lock, paymentAuth] = await Promise.all([this.api.lockStatus(), this.api.paymentAuthentication().catch(() => true)]);
-    if (!needsPassphrase(purpose, lock, paymentAuth)) {
-      try {
-        return await this.api.authorize(purpose, walletId, { kind: "unencrypted" });
-      } catch (e) {
-        // The vault locked meanwhile, or the policy says otherwise: ask after all.
-        if (!hasCode(e, "vault.credential_required") && !hasCode(e, "vault.locked") && !hasCode(e, "vault.mixing_only")) throw e;
+   * entered the passphrase; `null` when they cancelled, or when a cancel came after `since`
+   * (the action's `epoch`). Other refusals throw. */
+  async obtain(purpose: GrantPurposeSpec, walletId: string | null, since = this.#epoch): Promise<AuthGrant | null> {
+    if (since !== this.#epoch) return null;
+    if (this.#asking) throw new Error("a grant is already being asked for");
+    this.#asking = true;
+    const epoch = since;
+    try {
+      const [lock, paymentAuth] = await Promise.all([this.api.lockStatus(), this.api.paymentAuthentication().catch(() => true)]);
+      if (epoch !== this.#epoch) return null;
+      if (!needsPassphrase(purpose, lock, paymentAuth)) {
+        try {
+          const grant = await this.api.authorize(purpose, walletId, { kind: "unencrypted" });
+          if (epoch === this.#epoch) return grant;
+          this.revoke(grant);
+          return null;
+        } catch (e) {
+          // The vault locked meanwhile, or the policy says otherwise: ask after all.
+          if (!hasCode(e, "vault.credential_required") && !hasCode(e, "vault.locked") && !hasCode(e, "vault.mixing_only")) throw e;
+        }
+        if (epoch !== this.#epoch) return null;
       }
+      const answer = new Promise<AuthGrant | null>((resolve) => (this.#answer = resolve));
+      this.pending = { purpose, walletId };
+      this.changed();
+      void this.lock.load();
+      return await answer;
+    } finally {
+      this.#asking = false;
     }
-    this.pending = { purpose, walletId };
-    this.changed();
-    void this.lock.load();
-    return new Promise((resolve) => (this.#answer = resolve));
   }
 
   /** One passphrase attempt for the pending request; `true` once it was granted. */
@@ -64,12 +88,38 @@ export class GrantModel extends Model {
     const ok = await this.lock.attempt(passphrase, async (p) => {
       grant = await this.api.authorize(request.purpose, request.walletId, { kind: "passphrase", passphrase: p });
     });
-    if (ok && grant) this.#finish(grant);
+    if (!grant) return ok;
+    // Cancelled (or another request began) while the passphrase was checked: this grant has
+    // no taker, so it is dropped, never handed to the next request.
+    if (this.pending !== request) {
+      this.revoke(grant);
+      return false;
+    }
+    if (ok) this.#finish(grant);
     return ok;
   }
 
   cancel() {
+    this.#epoch++;
     if (this.pending) this.#finish(null);
+  }
+
+  /** `run` under a grant for `purpose`; a grant `run` did not use (it threw) is revoked. `null`
+   * when the request was cancelled (`since` as for `obtain`); a refusal throws. */
+  async withGrant<T>(
+    purpose: GrantPurposeSpec,
+    walletId: string | null,
+    run: (grant: AuthGrant) => Promise<T>,
+    since = this.#epoch,
+  ): Promise<{ value: T } | null> {
+    const grant = await this.obtain(purpose, walletId, since);
+    if (grant === null) return null;
+    try {
+      return { value: await run(grant) };
+    } catch (e) {
+      this.revoke(grant);
+      throw e;
+    }
   }
 
   /** Drops a grant the call did not use (unknown or spent ids are ignored). */

@@ -2,7 +2,8 @@
 // a card with a title, a "not yet" row naming its owning task (ROADMAP §0), and the wallet a tab
 // needs.
 
-import type { ReactNode } from "react";
+import { useEffect, useEffectEvent, type ReactNode } from "react";
+import { useSyncStatus } from "../../api/queries";
 import { PassphrasePrompt } from "../../components/passphrase";
 import { Sheet } from "../../components/sheet";
 import { useModel } from "../../onboarding/model";
@@ -24,7 +25,8 @@ export function GrantSheet({ grants }: { grants: GrantModel }) {
   const request = grants.pending;
   if (!request) return null;
   return (
-    <Sheet title="Authorize" width="small" testId="grant-sheet" onClose={() => grants.cancel()}>
+    // Not closed while the passphrase is checked: the grant it brings has to find its request.
+    <Sheet title="Authorize" width="small" testId="grant-sheet" closable={!lock.working} onClose={() => grants.cancel()}>
       <p className="sheet-text">{PURPOSE_TEXT[request.purpose.kind] ?? "Enter your passphrase to continue."}</p>
       <PassphrasePrompt
         testId="grant-sheet"
@@ -67,6 +69,13 @@ export function NeedsWallet({ testId }: { testId: string }) {
   return <EmptyState testId={testId} title="No wallet on this network yet" message="Create or restore a wallet to use this tool." />;
 }
 
+/** Reads again whenever the sync status is read anew (every `sync` event refreshes it, D4). */
+export function useReloadOnSync(reload: () => void) {
+  const synced = useSyncStatus().dataUpdatedAt;
+  const latest = useEffectEvent(reload);
+  useEffect(() => latest(), [synced]);
+}
+
 /** An outcome line under an action: the result, or what went wrong. */
 export function Outcome({ ok, text, testId }: { ok: boolean; text: string | null; testId: string }) {
   if (!text) return null;
@@ -81,10 +90,23 @@ export function Outcome({ ok, text, testId }: { ok: boolean; text: string | null
 export type MenuItem = { title: string; copy: string } | { title: string; run: () => void; disabled?: boolean };
 
 /** A row's menu, as dash-qt's context menus: copies and actions behind one summary. */
-export function RowMenu({ label, items, testId }: { label: string; items: MenuItem[]; testId: string }) {
+/** `name` says whose menu it is to a screen reader ("Actions for …"), as rows look alike. */
+export function RowMenu({ label, name, items, testId }: { label: string; name: string; items: MenuItem[]; testId: string }) {
   return (
-    <details className="row-menu">
-      <summary data-testid={testId}>{label}</summary>
+    <details
+      className="row-menu"
+      onKeyDown={(e) => {
+        // Escape closes the menu and gives focus back to its button, as a native menu does.
+        if (e.key !== "Escape" || !e.currentTarget.open) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.currentTarget.removeAttribute("open");
+        e.currentTarget.querySelector("summary")?.focus();
+      }}
+    >
+      <summary data-testid={testId} aria-label={name}>
+        {label}
+      </summary>
       <div className="row-menu-items">
         {items.map((item) => (
           <button

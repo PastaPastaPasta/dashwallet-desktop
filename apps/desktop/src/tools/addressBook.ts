@@ -3,10 +3,10 @@
 // dash-qt's messages, delete for sending entries only (D14), the CSV export and a QR of an entry.
 // In selection mode (the pickers in Pay and Sign, QT-097) choosing an entry hands it back.
 
-import { errorMessage, isAppError, type Backend } from "../api/backend";
+import { hasCode, isAppError, type Backend } from "../api/backend";
 import type { AddressBookEntry } from "../api/generated/AddressBookEntry";
 import type { AddressPurposeName } from "../api/generated/AddressPurposeName";
-import { Model } from "../onboarding/model";
+import { failureText, Model } from "../onboarding/model";
 
 export const AddressBookText = {
   sendingHeader: "These are your Dash addresses for sending payments. Always check the amount and the receiving address before sending coins.",
@@ -96,7 +96,7 @@ export class AddressBookModel extends Model {
       this.all = [...send, ...receive];
       this.error = null;
     } catch (e) {
-      this.error = errorMessage(e);
+      this.error = failureText(e);
     }
     this.changed();
   }
@@ -125,7 +125,10 @@ export class AddressBookModel extends Model {
     try {
       await this.api.saveAddressBookEntry(this.walletId, a, label.trim(), purpose, replace);
     } catch (e) {
-      return this.#fail(this.#errorText(e, a, known));
+      // The engine knows an entry this list did not have yet (changed since the last read):
+      // dash-qt's text names its label.
+      const entry = known ?? (hasCode(e, "labels.duplicate_address") || hasCode(e, "labels.own_address") ? await this.#entryOf(a) : undefined);
+      return this.#fail(this.#errorText(e, a, entry));
     }
     this.error = null;
     await this.load();
@@ -169,7 +172,7 @@ export class AddressBookModel extends Model {
   }
 
   #errorText(e: unknown, address: string, known: AddressBookEntry | undefined): string {
-    if (!isAppError(e)) return errorMessage(e);
+    if (!isAppError(e)) return failureText(e);
     switch (e.code) {
       case "labels.invalid_address":
         return AddressBookText.invalidAddress(address);
@@ -182,8 +185,17 @@ export class AddressBookModel extends Model {
       case "labels.receive_entry_not_deletable":
         return AddressBookText.receivingNotDeletable;
       default:
-        return errorMessage(e);
+        return failureText(e);
     }
+  }
+
+  async #entryOf(address: string): Promise<AddressBookEntry | undefined> {
+    for (const purpose of ["receive", "send"] as const) {
+      const list = await this.api.addressBook(this.walletId, purpose).catch(() => []);
+      const found = list.find((e) => e.address === address);
+      if (found) return found;
+    }
+    return undefined;
   }
 
   #fail(text: string): false {

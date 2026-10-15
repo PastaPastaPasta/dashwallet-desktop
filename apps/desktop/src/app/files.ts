@@ -2,7 +2,8 @@
 // reads or writes the chosen file; the renderer never names a path. Screens call these, not the
 // commands, so the encodings and the error texts are in one place.
 
-import { errorMessage, hasCode, type Backend } from "../api/backend";
+import { hasCode, type Backend } from "../api/backend";
+import { failureText } from "../onboarding/model";
 import type { FilePurpose } from "../api/generated/FilePurpose";
 import type { OpenedFile } from "../api/generated/OpenedFile";
 
@@ -44,5 +45,5 @@ export function fileErrorText(e: unknown): string {
   if (hasCode(e, "app.file_too_large")) return "The file is too large.";
   if (hasCode(e, "app.file_read")) return "The file could not be read.";
   if (hasCode(e, "app.file_write")) return "The file could not be saved.";
-  return errorMessage(e);
+  return failureText(e);
 }

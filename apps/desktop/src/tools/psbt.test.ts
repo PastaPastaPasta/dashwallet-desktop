@@ -163,6 +163,18 @@ describe("PSBT (QT-076…079)", () => {
     expect(m.message).toBe(PsbtText.couldNotSign);
   });
 
+  it("QT079_aFailedReadBackKeepsTheSignaturesAndActsOnNothingStale", async () => {
+    const { m, api } = psbt();
+    await m.loadText(UNSIGNED);
+    api.analyzePsbt.mockRejectedValueOnce(appError("psbt.invalid"));
+    await m.sign();
+    expect(m.psbt).toBe(SIGNED);
+    expect(m.analysis).toBeNull();
+    expect(m.canSign).toBe(false);
+    expect(m.canBroadcast).toBe(false);
+    expect(m.error).not.toBeNull();
+  });
+
   it("QT079_failedSignRevokesTheGrantAndLockedSaysSo", async () => {
     const { m, api, vault } = psbt();
     api.signPsbt.mockRejectedValueOnce(appError("vault.locked"));
@@ -220,9 +232,24 @@ describe("PSBT (QT-076…079)", () => {
     await unknown.m.loadText(SIGNED);
     await unknown.m.broadcast();
     expect(unknown.m.sent).toBe(true);
-    expect(unknown.m.error).toBe(psbtErrorText(appError("psbt.broadcast_unknown")));
-    expect(unknown.m.error).not.toContain("failed");
+    expect(unknown.m.notice).toBe(psbtErrorText(appError("psbt.broadcast_unknown")));
+    expect(unknown.m.error).toBeNull();
     expect(unknown.m.canBroadcast).toBe(false);
+    // Loading the same PSBT again offers no second broadcast either.
+    await unknown.m.loadText(SIGNED);
+    expect(unknown.m.canBroadcast).toBe(false);
+    expect(unknown.api.broadcastPsbt).toHaveBeenCalledTimes(1);
+
+    // The screen's models share one map: a later tab (a new model) remembers the broadcast too.
+    const session = new Map<string, string | true>();
+    const first = psbt();
+    const sentBy = new PsbtModel(first.api, first.grants, WALLET_A, "test", session);
+    await sentBy.loadText(SIGNED);
+    await sentBy.broadcast();
+    const later = new PsbtModel(first.api, first.grants, WALLET_A, "test", session);
+    await later.loadText(SIGNED);
+    expect(later.sent).toBe(TXID);
+    expect(later.canBroadcast).toBe(false);
   });
 
   it("QT079_copyAndClose", async () => {

@@ -12,13 +12,13 @@ import { LoadingState } from "../../components/history";
 import { showToast } from "../../components/toast";
 import { useModel } from "../../onboarding/model";
 import type { GrantModel } from "../../tools/grant";
-import { PsbtModel } from "../../tools/psbt";
+import { PsbtModel, SESSION_BROADCASTS } from "../../tools/psbt";
 import { chainOf } from "../pay/PayToAddress";
 import { NotYet, Outcome, ToolCard } from "./common";
 
 export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; walletId: string | null; network: NetworkInfo }) {
   const b = useBackend();
-  const [model] = useState(() => new PsbtModel(b, grants, walletId, chainOf(network)));
+  const [model] = useState(() => new PsbtModel(b, grants, walletId, chainOf(network), SESSION_BROADCASTS));
   useModel(model);
   const [pasted, setPasted] = useState("");
   const id = useId();
@@ -76,9 +76,9 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
           </div>
         </form>
       </ToolCard>
-      {model.error && <Outcome ok={false} text={model.error} testId="psbt-error" />}
+      <Outcome ok={false} text={model.error} testId="psbt-error" />
       {step === "loading" && <LoadingState testId="psbt-loading" text="Reading the PSBT" />}
-      {model.analysis && (
+      {model.psbt && (
         <ToolCard
           title="PSBT Operations"
           testId="psbt-operations"
@@ -98,7 +98,12 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
               {model.status}
             </p>
           )}
-          {model.message && <Outcome ok text={model.message} testId="psbt-message" />}
+          <Outcome ok text={model.message} testId="psbt-message" />
+          {model.notice && (
+            <p className="placeholder-note" role="status" data-testid="psbt-notice">
+              {model.notice}
+            </p>
+          )}
           <div className="tool-actions">
             <DashButton variant="filledBlue" size="small" data-testid="psbt-sign" disabled={!model.canSign} onClick={() => void model.sign()}>
               {step === "signing" ? "Signing…" : "Sign Tx"}
