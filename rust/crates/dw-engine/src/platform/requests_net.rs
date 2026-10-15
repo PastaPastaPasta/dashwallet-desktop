@@ -15,7 +15,7 @@ use dpp::document::{Document, DocumentV0, DocumentV0Getters, INITIAL_REVISION};
 use dpp::identity::{Identity, IdentityPublicKey};
 use dpp::platform_value::platform_value;
 use dpp::prelude::Identifier;
-use dpp::system_data_contracts::dashpay_contract;
+use dpp::system_data_contracts::dashpay_contract::ID as DASHPAY_ID;
 use platform_wallet::{
     AutoAcceptProofSource, ContactInfoPublishOutcome, ContactRequest, PlatformWallet,
 };
@@ -250,7 +250,7 @@ impl RequestNet for SdkRequests {
     }
 
     async fn profile_schema(&self) -> Result<Option<ProfileSchema>, PlatformError> {
-        let contract = DataContract::fetch(&self.0, dashpay_contract::ID).await?;
+        let contract = DataContract::fetch(&self.0, DASHPAY_ID).await?;
         Ok(contract.and_then(|c| {
             let profile = c.document_type_for_name(PROFILE).ok()?;
             Some(schema_of(profile.properties()))

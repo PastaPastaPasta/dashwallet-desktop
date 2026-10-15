@@ -117,7 +117,7 @@ pub(crate) fn schema_of<'a>(
 /// otherwise: the document the edit read was parsed with the bundled type,
 /// so the replacement would drop or reshape that field (D21). A property
 /// only the bundled contract has is no loss.
-fn check_contract(live: Option<&ProfileSchema>) -> Result<(), ProfileError> {
+pub(super) fn check_contract(live: Option<&ProfileSchema>) -> Result<(), ProfileError> {
     let bundled = bundled_schema();
     let unknown = match live {
         None => Some("the profile document type"),
@@ -234,9 +234,12 @@ fn shown(properties: &ProfileProperties) -> Option<Profile> {
 
 /// Whether `baseline` is what `profile` shows of Platform's document now
 /// (`shown`); no baseline, no check. `updated_at` is never shown, so it is
-/// not compared.
+/// not compared; the avatar hashes are compared in lower case, as shown.
 fn matches(baseline: Option<&ProfileBaseline>, shown: Option<&Profile>) -> bool {
+    let lower = |h: &Option<String>| h.as_ref().map(|h| h.to_ascii_lowercase());
     let without_time = |p: &Profile| Profile {
+        avatar_hash: lower(&p.avatar_hash),
+        avatar_fingerprint: lower(&p.avatar_fingerprint),
         updated_at: None,
         ..p.clone()
     };
@@ -297,18 +300,18 @@ pub(super) async fn update(
         detail: "the wallet only watches this identity; it cannot publish".into(),
     })?;
     let current = net.profile_document(identity).await?;
-    let wanted = merged(current.as_ref().map(|d| &d.properties), &edit);
-    // Nothing to send (D7); the cache follows Platform.
-    if current.as_ref().is_some_and(|d| d.properties == wanted) {
+    let held = (current.as_ref())
+        .map(|d| d.properties.clone())
+        .unwrap_or_default();
+    let wanted = merged(Some(&held), &edit);
+    // Nothing to send (D7), whatever the baseline: Platform's document (or
+    // none) is the edit's already. The cache follows Platform.
+    if held == wanted {
         remember(wallet, identity, &wanted).await;
         return Ok(());
     }
     // Changed since it was read (D23): the cache follows Platform, and the
     // caller gets what it now shows.
-    let held = current
-        .as_ref()
-        .map(|d| d.properties.clone())
-        .unwrap_or_default();
     let now = shown(&held);
     if !matches(edit.baseline.as_ref(), now.as_ref()) {
         remember(wallet, identity, &held).await;
@@ -317,11 +320,9 @@ pub(super) async fn update(
         }
         .into());
     }
+    // Only a document can be emptied: none, with nothing to set, was a no-op.
     if wanted.is_empty() {
-        return match current {
-            None => Ok(()),
-            Some(_) => Err(ProfileError::Empty.into()),
-        };
+        return Err(ProfileError::Empty.into());
     }
     check_contract(net.profile_schema().await?.as_ref())?;
     let (lease, permit, signer) = prepare_signer(

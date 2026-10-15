@@ -27,8 +27,8 @@ use super::profile::{
     AvatarChange, Profile, ProfileBaseline, ProfileEdit, ProfileField, ProfileLimits,
 };
 use super::profiles::{
-    BUILT_IN_LIMITS, ProfileDocument, ProfileProperties, bundled_schema, contract_limits, limits,
-    merged, normalized, update,
+    BUILT_IN_LIMITS, ProfileDocument, ProfileProperties, bundled_schema, check_contract,
+    contract_limits, limits, merged, normalized, schema_of, update,
 };
 use super::registration_flow::b58;
 use super::requests::tests::{Fixture, keys, wait_until};
@@ -639,11 +639,53 @@ fn an_edit_of_a_changed_profile_is_a_conflict() {
         .unwrap();
     assert_eq!(f.document().unwrap().revision, 8);
     // An edit that matches Platform already sends nothing, whatever it was
-    // made against.
+    // made against; so does one that sets nothing where there is nothing.
     let grant = f.grant(DOCUMENT_10K_CREDITS);
     f.update(against(edit(Some("Cy"), None), None), &grant)
         .unwrap();
+    let stale = f.profile(ME).unwrap();
+    f.net.profiles.lock().unwrap().clear();
+    f.update(against(edit(None, None), stale), &grant).unwrap();
+    assert_eq!(f.profile(ME), Ok(None), "the cache follows");
     assert!(f.unused(&grant));
+    // A baseline's avatar hashes are compared in lower case.
+    f.publish(full(), 9);
+    f.update(edit(Some("Me"), Some("hello")), &grant).unwrap();
+    let shown = f.profile(ME).unwrap().unwrap();
+    let upper = |h: Option<String>| h.map(|h| h.to_ascii_uppercase());
+    let seen = Profile {
+        avatar_hash: upper(shown.avatar_hash.clone()),
+        avatar_fingerprint: upper(shown.avatar_fingerprint.clone()),
+        ..shown
+    };
+    f.update(against(edit(Some("Di"), None), Some(seen)), &grant)
+        .unwrap();
+    assert_eq!(f.document().unwrap().revision, 10);
+}
+
+/// Every DashPay contract version the pinned library ships passes the
+/// guard: Platform running any of them loses no profile field (D21).
+#[test]
+fn every_shipped_dashpay_contract_passes_the_guard() {
+    use dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+    use dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+    use dpp::version::PlatformVersion;
+    let latest = PlatformVersion::latest().protocol_version;
+    let mut dashpay = std::collections::BTreeSet::new();
+    for v in 1..=latest {
+        let pv = PlatformVersion::get(v).unwrap();
+        dashpay.insert(pv.system_data_contracts.dashpay);
+        let contract = load_system_data_contract(SystemDataContract::Dashpay, pv).unwrap();
+        let profile = contract.document_type_for_name("profile").unwrap();
+        let live = schema_of(profile.properties());
+        assert_eq!(check_contract(Some(&live)), Ok(()), "protocol {v}");
+    }
+    assert_eq!(
+        dashpay.into_iter().collect::<Vec<_>>(),
+        [1, 2],
+        "both versions seen"
+    );
 }
 
 /// When Platform's contract has a profile property the bundled one lacks

@@ -1133,6 +1133,18 @@ fn a_document_key_may_sign_its_document() {
     for flow in document_flows {
         assert_eq!(first(&set, flow), Ok(vec![2]), "limited {flow:?}");
     }
+    let budget = IdentityPublicKeyV1::from_v0_with_limits(v0(&keys(true)[&1]), Some(1_000), None);
+    let mut budgeted = keys(true);
+    budgeted.insert(1, IdentityPublicKey::V1(budget));
+    let group = ContractBounds::ContractGroup {
+        id: dashpay_contract::ID,
+    };
+    let mut grouped = keys(true);
+    grouped.insert(1, bound(&grouped[&1], group));
+    for flow in document_flows {
+        assert_eq!(first(&budgeted, flow), Ok(vec![2]), "budget {flow:?}");
+        assert_eq!(first(&grouped, flow), Ok(vec![2]), "group-bound {flow:?}");
+    }
     set.insert(2, bound(&set[&2], to("contactInfo")));
     assert_eq!(first(&set, FlowKind::ContactRequest), Ok(vec![1]));
     set.insert(1, expiring(&keys(true)[&1], 1));
