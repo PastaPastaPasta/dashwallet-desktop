@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use dashcore::address::Payload;
 use dashcore::hashes::Hash;
-use dashcore::{Address, PubkeyHash};
+use dashcore::{Address, OutPoint, PubkeyHash};
 use dw_vault::{GrantKind, VaultError};
 use platform_wallet::wallet::platform_wallet::PlatformWallet;
 
@@ -241,11 +241,32 @@ impl TxDraft {
         }
     }
 
+    /// Before a contact payment's first hand-off: its lock row (D23). If it
+    /// cannot be written, or another payment's holds the contact, nothing
+    /// is handed off: the payment is `Pending` again and its address back
+    /// with the contact.
+    pub(super) async fn record_contact(&self, prepared: &PreparedTx) -> Result<(), EngineError> {
+        let Some((pair, address)) = &prepared.contact else {
+            return Ok(());
+        };
+        let inputs: Vec<OutPoint> = prepared.summary.inputs.iter().map(|i| i.outpoint).collect();
+        let recorded = (self.session)
+            .record_payment(self.wallet_id, *pair, &prepared.summary.txid, &inputs)
+            .await;
+        if recorded.is_err() {
+            (self.session.platform.payments).keep(self.wallet_id, *pair, address.clone());
+            *prepared.phase() = Phase::Pending;
+        }
+        recorded
+    }
+
     /// After a broadcast of a contact payment left it in `next`: a first
-    /// one never sent returns its address to the contact; unknown, the
-    /// contact is locked behind it; accepted, its own lock clears (D7, D8).
-    /// A wallet removed meanwhile is left alone: its address and lock went
-    /// with it, and a re-added wallet starts afresh.
+    /// one never sent returns its address to the contact and drops its row;
+    /// unknown, the contact is locked behind it; accepted, its lock and row
+    /// go (D7, D8, D23). Runs before the payment leaves `Broadcasting`,
+    /// under its attempt guard, so a repeat settles after it (D24). A
+    /// wallet removed or unloaded meanwhile is left alone: its row stays
+    /// and its next load settles it on the evidence.
     pub(super) async fn settle_contact(&self, prepared: &PreparedTx, first: bool, next: Phase) {
         let Some((pair, address)) = &prepared.contact else {
             return;
@@ -253,10 +274,22 @@ impl TxDraft {
         if self.session.wallet(&self.wallet_id).await.is_err() {
             return;
         }
+        #[cfg(test)]
+        {
+            if let Some(pause) = self.session.platform.payments.settle_pause() {
+                pause
+                    .reached
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                pause.release.notified().await;
+            }
+        }
         let txid = &prepared.summary.txid;
         match next {
             Phase::Pending | Phase::Released if first => {
                 (self.session.platform.payments).keep(self.wallet_id, *pair, address.clone());
+                (self.session)
+                    .clear_payment_lock(self.wallet_id, *pair, txid)
+                    .await;
             }
             Phase::Unknown => {
                 if let Ok(parsed) = txid.parse() {

@@ -352,9 +352,10 @@ from, and when:
    The reserved address is kept for the contact (in the session; DP3-01 D21). Another `prepare` to the contact reuses it
    instead of reserving a new one — for example after `send.no_peers`, which in M1 means the transaction was definitely never sent. Grants
    are single-use, so that retry prompts again, as in M1.
-6. `broadcast` runs at once.
+6. `broadcast` runs at once. Before the first hand-off it writes the payment's `dp_payment_lock` row, and refuses
+   the hand-off if that write fails (DP3-01 D23).
 7. `reconcile_sent_payments_from_tx_history` attributes the payment.
-8. An unknown outcome sets the per-contact lock (`dp_payment_lock`).
+8. An unknown outcome sets the per-contact lock (`dp_payment_lock`); the row keeps it across a restart.
 
 **Why the sheet shows an estimate for contact recipients.** iOS does the same, and M1's prepared transaction cannot be
 used here:

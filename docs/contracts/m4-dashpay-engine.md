@@ -2622,13 +2622,20 @@ renames or reshapes them takes the next version bump:
       after the reservation) until a broadcast may have handed it out (accepted or unknown). A second prepared
       payment whose address went out is `send.prepared_tx_spent`.
     - **One at a time.** While a first broadcast to a contact is under way, every other payment to it is
-      `contact.payment_locked{txid}` (`payment_lock` stays `None` until an unknown outcome locks it).
-    - **The lock.** An unknown outcome sets `dp_payment_lock` (memory at once, then the row, with the payment's
-      inputs for `resolve_payment_lock`'s conflict evidence after a restart; a lock is never replaced by another
-      payment's) and signals
-      `Platform{Payments}` and `Platform{Contacts}`. `set_contact_recipient`, `estimate`, `prepare` and a first
-      broadcast refuse a locked contact; a repeat broadcast of the locking transaction proceeds, and its acceptance
-      clears the lock, as `resolve_payment_lock`'s `Sent` or `NotSent` does. Only a different contact is unaffected.
+      `contact.payment_locked{txid}` (`payment_lock` stays `None` until an unknown outcome locks it). Broadcasts of
+      one prepared payment run one at a time, each through its settlement of the lock (D24).
+    - **The record.** A first broadcast writes the payment's `dp_payment_lock` row (pair, txid, inputs) before the
+      dispatch fence can hand it off; a failed write refuses the hand-off (`storage`, the payment still prepared,
+      its address with the contact), and another payment's row refuses it as `contact.payment_locked{txid}`: a
+      row is never replaced by another payment's. A definitely unsent first broadcast and an accepted one drop
+      the row (D23).
+    - **The lock.** An unknown outcome sets the lock in memory (the row is there already, written again with the
+      payment's inputs for `resolve_payment_lock`'s conflict evidence after a restart) and signals
+      `Platform{Payments}` and `Platform{Contacts}`. The locks load with the wallet's identity choices: every row
+      becomes a lock, and a loaded lock with positive evidence (as `resolve_payment_lock`'s) is settled at once;
+      an unload keeps the rows. `set_contact_recipient`, `estimate`, `prepare` and a first broadcast refuse a
+      locked contact; a repeat broadcast of the locking transaction proceeds, and its acceptance clears the lock,
+      as `resolve_payment_lock`'s `Sent` or `NotSent` does. Only a different contact is unaffected.
     - **Records.** The note is the transaction's message; a contact payment adds no address-book entry and writes no
       library `PaymentEntry` (the library's own pass rebuilds those from history; DP3-02 attributes the payment).
     - "Accept and pay" needs no new call: one `authorize_set`, one `begin_flow(AcceptAndPay)`, `accept_request`,

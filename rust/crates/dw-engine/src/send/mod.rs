@@ -1186,6 +1186,7 @@ impl TxDraft {
                 signed: Mutex::new(None),
                 mixed: Some(tx),
                 phase: Mutex::new(Phase::Pending),
+                attempts: tokio::sync::Mutex::new(()),
                 lease: lease.map(|l| (l, artifact)),
                 contact,
             }));
@@ -1251,6 +1252,7 @@ impl TxDraft {
             signed: Mutex::new(Some(Arc::new(signed))),
             mixed: None,
             phase: Mutex::new(Phase::Pending),
+            attempts: tokio::sync::Mutex::new(()),
             lease: lease.map(|l| (l, artifact)),
             contact,
         }))
@@ -1307,6 +1309,7 @@ impl TxDraft {
         &self,
         prepared: Arc<PreparedTx>,
     ) -> Result<BroadcastOutcome, EngineError> {
+        let _attempt = prepared.attempts.lock().await;
         // A contact payment's first broadcast is under way until its
         // outcome settled the contact (`settle_contact`).
         let (first, _in_flight) = {
@@ -1326,6 +1329,9 @@ impl TxDraft {
             *phase = Phase::Broadcasting;
             (first, in_flight)
         };
+        if first {
+            self.record_contact(&prepared).await?;
+        }
         let (outcome, next) = match &prepared.lease {
             Some((lease, artifact)) => self.fenced(&prepared, lease, *artifact, first).await,
             None => {
@@ -1334,8 +1340,9 @@ impl TxDraft {
                 (outcome, next)
             }
         };
-        *prepared.phase() = next;
+        // The contact settles before the phase leaves `Broadcasting`.
         self.settle_contact(&prepared, first, next).await;
+        *prepared.phase() = next;
         match next {
             Phase::Sent => self.session.spends.release(&self.wallet_id, prepared.owner),
             // Never sent: release key-wallet's reservation (owner-guarded, a
@@ -1805,6 +1812,9 @@ pub struct PreparedTx {
     /// key-wallet reservation, only the engine's pending spends.
     mixed: Option<Transaction>,
     phase: Mutex<Phase>,
+    /// One broadcast at a time, through its contact settlement: a repeat
+    /// waits for the attempt before it (DP3-01 D24).
+    attempts: tokio::sync::Mutex<()>,
     /// Prepared under a lease: its hand-offs go through the dispatch
     /// fence, scoped to the lease, as this artifact (E0-04 §5.4).
     lease: Option<(Lease, ArtifactId)>,

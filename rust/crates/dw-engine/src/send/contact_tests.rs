@@ -372,6 +372,27 @@ impl Fixture {
             .unwrap()
     }
 
+    /// The wallet's `dp_payment_lock` rows, as (contact, txid).
+    fn rows(&self) -> Vec<(String, String)> {
+        let w = self.wallet.to_string();
+        let rows = (self.engine)
+            .block_on(self.session.appdb_op(move |db| db.dp_payment_locks(&w)))
+            .unwrap();
+        rows.into_iter().map(|r| (r.contact, r.txid)).collect()
+    }
+
+    /// app.sqlite outside the engine, to make its lock writes fail.
+    fn sqlite(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(self.session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap()
+    }
+
+    /// An unload and a reload of the wallet's locks.
+    fn reload(&self) {
+        self.session.platform.payments.forget(&self.wallet);
+        self.engine
+            .block_on(self.session.load_payment_locks(self.wallet));
+    }
+
     fn resolve(&self, to: u8) -> LockResolution {
         (self.engine)
             .block_on(
@@ -567,6 +588,7 @@ fn a_no_peers_re_prepare_reuses_the_address() {
         .unwrap();
     assert_eq!(paid(&twin), paid(&again));
     seam.set(Net::Accept);
+    assert!(f.rows().is_empty(), "definitely unsent: no row");
     f.engine.block_on(d.broadcast(again)).unwrap();
     assert_eq!(
         send_failure(f.engine.block_on(d.broadcast(twin))),
@@ -637,11 +659,7 @@ fn an_unknown_outcome_locks_the_contact() {
     seam.set(Net::Accept);
     f.engine.block_on(d.broadcast(p)).unwrap();
     assert!(f.lock(BOB).is_none());
-    let w = f.wallet.to_string();
-    let rows = (f.engine)
-        .block_on(f.session.appdb_op(move |db| db.dp_payment_locks(&w)))
-        .unwrap();
-    assert!(rows.is_empty());
+    assert!(f.rows().is_empty());
 }
 
 /// D9: the fence's word settles a lock: a sighting is `Sent`.
@@ -699,11 +717,7 @@ fn a_payment_under_way_holds_the_contact() {
         let (d, p) = (Arc::clone(&d), Arc::clone(&p));
         async move { d.broadcast(p).await }
     });
-    let start = std::time::Instant::now();
-    while seam.entered.load(Ordering::SeqCst) == 0 {
-        assert!(start.elapsed() < std::time::Duration::from_secs(30));
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    wait_until(|| seam.entered.load(Ordering::SeqCst) > 0);
     let held = |r| matches!(contact_error(r), ContactError::PaymentLocked { txid: t } if t == txid);
     assert!(held(
         f.engine
@@ -783,6 +797,190 @@ fn a_conflict_proves_a_lock_unsent_after_a_restart() {
     (f.session.hub.history).with_wallet(f.wallet, |h| h.upsert(&record, None));
     assert_eq!(f.resolve(BOB), LockResolution::NotSent);
     assert!(f.lock(BOB).is_none());
+}
+
+/// D23 (Sol r1): the payment's row is written before its hand-off. A
+/// restart while the outcome is awaited finds the contact locked; so does
+/// an unload and reload after the outcome's own lock write failed.
+#[test]
+fn a_restart_after_the_hand_off_finds_the_contact_locked() {
+    let f = fixture(false);
+    let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Hold);
+    let p = (f.engine)
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    let txid = p.summary().txid.clone();
+    let broadcast = f.session.rt.spawn({
+        let (d, p) = (Arc::clone(&d), Arc::clone(&p));
+        async move { d.broadcast(p).await }
+    });
+    wait_until(|| seam.entered.load(Ordering::SeqCst) > 0);
+    assert_eq!(f.rows(), vec![(b58(BOB), txid.clone())]);
+    f.session.platform.payments.restart();
+    f.engine.block_on(f.session.load_payment_locks(f.wallet));
+    assert_eq!(f.lock(BOB).unwrap().txid, txid, "no outcome: still locked");
+
+    let sqlite = f.sqlite();
+    sqlite.execute_batch(FAIL_LOCK_WRITES).unwrap();
+    seam.gate.notify_one();
+    assert!(matches!(
+        send_failure(f.engine.block_on(broadcast).unwrap()),
+        SendFailure::BroadcastUnknown { .. }
+    ));
+    f.reload();
+    assert_eq!(f.lock(BOB).unwrap().txid, txid);
+    assert!(matches!(
+        contact_error(f.session.new_tx_draft(f.wallet).unwrap().set_contact_recipient(f.pay(BOB, AMOUNT))),
+        ContactError::PaymentLocked { txid: t } if t == txid
+    ));
+    sqlite.execute_batch(DROP_FAIL_LOCK_WRITES).unwrap();
+}
+
+/// D23 (Sol r1): when the payment's row cannot be written nothing is
+/// handed off: the payment stays `Pending` with its address and no row or
+/// lock, and once app.sqlite works the same payment goes out.
+#[test]
+fn a_failed_record_refuses_the_hand_off() {
+    let f = fixture(false);
+    let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Accept);
+    let p = (f.engine)
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    let sqlite = f.sqlite();
+    sqlite.execute_batch(FAIL_LOCK_WRITES).unwrap();
+    let refused = f.engine.block_on(d.broadcast(Arc::clone(&p)));
+    assert!(
+        matches!(refused, Err(EngineError::Storage(_))),
+        "{refused:?}"
+    );
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 0);
+    assert_eq!(f.reserved(BOB).map(|a| a.to_string()), Some(paid(&p)));
+    // What a reload would read: nothing went out, nothing locks.
+    assert!(f.rows().is_empty());
+    assert!(f.lock(BOB).is_none());
+
+    sqlite.execute_batch(DROP_FAIL_LOCK_WRITES).unwrap();
+    f.engine.block_on(d.broadcast(p)).unwrap();
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 1);
+    assert!(f.lock(BOB).is_none());
+    assert!(f.rows().is_empty());
+}
+
+/// D23: the row on disk is what holds a contact at the hand-off, even when
+/// memory lost the lock (a load that could not read it).
+#[test]
+fn a_row_on_disk_holds_the_contact_at_the_hand_off() {
+    let f = fixture(false);
+    let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Accept);
+    let p = (f.engine)
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    let held = "11".repeat(32);
+    let (w, row) = (
+        f.wallet.to_string(),
+        dw_appdb::DpPaymentLockRow {
+            identity: b58(ME),
+            contact: b58(BOB),
+            txid: held.clone(),
+            since: 1,
+            inputs: String::new(),
+        },
+    );
+    (f.engine)
+        .block_on(
+            f.session
+                .appdb_op(move |db| db.set_dp_payment_lock(&w, &row)),
+        )
+        .unwrap();
+    assert!(matches!(
+        contact_error(f.engine.block_on(d.broadcast(Arc::clone(&p)))),
+        ContactError::PaymentLocked { txid } if txid == held
+    ));
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        f.rows(),
+        vec![(b58(BOB), held)],
+        "the other payment's row stays"
+    );
+    assert_eq!(f.reserved(BOB).map(|a| a.to_string()), Some(paid(&p)));
+}
+
+/// D9/D23: a load settles a loaded lock on positive evidence: here the
+/// fence's `Sent`, for a payment whose settlement never ran (its wallet
+/// was unloaded meanwhile).
+#[test]
+fn a_load_settles_a_lock_on_the_evidence() {
+    let f = fixture(false);
+    let d = f.draft(BOB);
+    Seam::install(&d, Net::Unconfirmed);
+    let p = (f.engine)
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    let txid = p.summary().txid.clone();
+    let _ = f.engine.block_on(d.broadcast(p));
+    f.reload();
+    assert_eq!(f.lock(BOB).unwrap().txid, txid, "no evidence: kept");
+    f.session
+        .leases
+        .note_seen(f.wallet, ArtifactId::parse(&txid).unwrap());
+    f.reload();
+    assert!(f.lock(BOB).is_none());
+    assert!(f.rows().is_empty());
+}
+
+/// D24 (Sol r1): a repeat broadcast of the same payment, started while the
+/// first attempt's settlement is held, waits for it: nothing is handed
+/// off meanwhile, and its acceptance then leaves neither a lock nor a row.
+#[test]
+fn a_repeat_waits_for_the_settlement_before_it() {
+    let f = fixture(false);
+    let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Unconfirmed);
+    let p = (f.engine)
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    (f.session.platform.payments).pause_settle(Arc::clone(&pause));
+    let spawn = || {
+        let (d, p) = (Arc::clone(&d), Arc::clone(&p));
+        f.session.rt.spawn(async move { d.broadcast(p).await })
+    };
+    let first = spawn();
+    wait_until(|| pause.reached.load(Ordering::SeqCst));
+    seam.set(Net::Accept);
+    let repeat = spawn();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!repeat.is_finished(), "the repeat waits for the settlement");
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 1);
+
+    pause.release.notify_one();
+    assert!(matches!(
+        send_failure(f.engine.block_on(first).unwrap()),
+        SendFailure::BroadcastUnknown { .. }
+    ));
+    f.engine.block_on(repeat).unwrap().unwrap();
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 2);
+    assert!(f.lock(BOB).is_none(), "accepted: no lock in memory");
+    assert!(f.rows().is_empty(), "nor on disk");
+}
+
+/// Makes every write of a `dp_payment_lock` row fail.
+const FAIL_LOCK_WRITES: &str = "\
+    CREATE TRIGGER fail_lock_insert BEFORE INSERT ON dp_payment_lock \
+    BEGIN SELECT RAISE(FAIL, 'injected lock write failure'); END; \
+    CREATE TRIGGER fail_lock_update BEFORE UPDATE ON dp_payment_lock \
+    BEGIN SELECT RAISE(FAIL, 'injected lock write failure'); END;";
+const DROP_FAIL_LOCK_WRITES: &str = "DROP TRIGGER fail_lock_insert; DROP TRIGGER fail_lock_update;";
+
+fn wait_until(mut done: impl FnMut() -> bool) {
+    let start = std::time::Instant::now();
+    while !done() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(30));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 /// D12: the CoinJoin source applies to a contact payment (the wallet has
@@ -878,6 +1076,7 @@ fn a_lock_before_the_hand_off_cancels() {
     );
     assert_eq!(seam.entered.load(Ordering::SeqCst), 0);
     assert!(f.lock(BOB).is_none(), "definitely unsent: no lock");
+    assert!(f.rows().is_empty(), "nor a row");
     assert_eq!(f.reserved(BOB).map(|a| a.to_string()), Some(address));
     // Locked: refused before any grant is looked at.
     assert_eq!(

@@ -2,7 +2,9 @@
 //! step 8): a contact payment whose broadcast outcome is unknown locks its
 //! (identity, contact) pair until positive evidence settles it. Held in
 //! memory for the sync `payment_lock` read (m4 rule 3), mirrored to
-//! app.sqlite, loaded with the wallet's identity choices. Also the pair's
+//! app.sqlite, loaded with the wallet's identity choices. A payment's row
+//! is written before its first hand-off (D23), so the row, not memory, is
+//! the record of every payment that may have gone out. Also the pair's
 //! first broadcast under way (D20) and its reserved address no broadcast
 //! handed out yet (D21), both for the session.
 
@@ -21,7 +23,7 @@ use super::lease::ArtifactId;
 use super::payments::{LockResolution, PaymentLock};
 use super::registration_flow::b58;
 use super::runtime::guard;
-use crate::{NetworkSession, PlatformChange, WalletId};
+use crate::{EngineError, NetworkSession, PlatformChange, WalletId};
 
 /// One side of a contact payment: our identity and the contact it pays.
 pub(crate) type Pair = (Identifier, Identifier);
@@ -37,6 +39,13 @@ pub(crate) struct PaymentLocks {
     in_flight: Mutex<HashMap<(WalletId, Pair), String>>,
     /// Each pair's reserved address that no broadcast handed out (D21).
     reserved: Mutex<HashMap<(WalletId, Pair), Address>>,
+    /// Orders the lock changes (memory and row together): no clear's
+    /// delete lands before an earlier write, nor a load between them
+    /// (D23).
+    rows: tokio::sync::Mutex<()>,
+    /// Tests: holds the next contact settlement before it changes a lock.
+    #[cfg(test)]
+    pause_settle: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
 
 impl PaymentLocks {
@@ -44,6 +53,8 @@ impl PaymentLocks {
         guard(&self.locks).get(id)?.get(pair).cloned()
     }
 
+    /// Memory only: every lock's row was written before its payment's
+    /// hand-off (D23), so the next load reads it back.
     pub(crate) fn forget(&self, id: &WalletId) {
         guard(&self.locks).remove(id);
         guard(&self.reserved).retain(|(w, _), _| w != id);
@@ -56,6 +67,17 @@ impl PaymentLocks {
         guard(&self.inputs).clear();
         guard(&self.in_flight).clear();
         guard(&self.reserved).clear();
+    }
+
+    /// Tests: holds the next contact settlement until `pause` is released.
+    #[cfg(test)]
+    pub(crate) fn pause_settle(&self, pause: Arc<crate::coins::TestPause>) {
+        *guard(&self.pause_settle) = Some(pause);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn settle_pause(&self) -> Option<Arc<crate::coins::TestPause>> {
+        guard(&self.pause_settle).take()
     }
 
     /// The pair's reserved address, if no broadcast handed it out.
@@ -114,10 +136,13 @@ pub(crate) fn pair_of(identity: &str, contact: &str) -> Result<Pair, ContactErro
 
 impl NetworkSession {
     /// Loads the wallet's locks from app.sqlite into memory, where a lock
-    /// held already (one whose row write failed or has not landed) stays.
-    /// A read error keeps memory as it was; a row that does not parse is
-    /// skipped.
+    /// held already stays, then settles each loaded one that has positive
+    /// evidence (D9, D23): a payment that may have gone out before a restart
+    /// or an unload is locked until it is `Sent` or provably `NotSent`. A
+    /// pair whose first broadcast is under way here is left to it. A read
+    /// error keeps memory as it was; a row that does not parse is skipped.
     pub(crate) async fn load_payment_locks(&self, id: WalletId) {
+        let _rows = self.platform.payments.rows.lock().await;
         let wallet = id.to_string();
         let rows = match self.appdb_op(move |db| db.dp_payment_locks(&wallet)).await {
             Ok(rows) => rows,
@@ -127,20 +152,32 @@ impl NetworkSession {
             }
         };
         let payments = &self.platform.payments;
-        let mut locks = guard(&payments.locks);
-        let wallet = locks.entry(id).or_default();
-        for row in rows {
-            let (Ok(pair), Ok(txid)) = (
-                pair_of(&row.identity, &row.contact),
-                row.txid.parse::<Txid>(),
-            ) else {
-                continue;
-            };
-            (guard(&payments.inputs).entry(txid)).or_insert_with(|| decode_inputs(&row.inputs));
-            wallet.entry(pair).or_insert(PaymentLock {
-                txid: row.txid,
-                since: row.since,
-            });
+        let mut loaded = Vec::new();
+        {
+            let in_flight = guard(&payments.in_flight);
+            let mut locks = guard(&payments.locks);
+            let wallet = locks.entry(id).or_default();
+            for row in rows {
+                let (Ok(pair), Ok(txid)) = (
+                    pair_of(&row.identity, &row.contact),
+                    row.txid.parse::<Txid>(),
+                ) else {
+                    continue;
+                };
+                (guard(&payments.inputs).entry(txid)).or_insert_with(|| decode_inputs(&row.inputs));
+                wallet.entry(pair).or_insert(PaymentLock {
+                    txid: row.txid,
+                    since: row.since,
+                });
+                if !in_flight.contains_key(&(id, pair)) {
+                    loaded.push((pair, txid));
+                }
+            }
+        }
+        for (pair, txid) in loaded {
+            if self.lock_evidence(id, &txid) != LockResolution::Unknown {
+                self.clear_held(id, pair, &txid.to_string()).await;
+            }
         }
     }
 
@@ -203,11 +240,42 @@ impl NetworkSession {
         })
     }
 
+    /// Writes `txid`'s lock row for `pair` before its first hand-off (D23):
+    /// what a restart or a reload reads back as the pair's lock, so no
+    /// payment that may have gone out lives in memory only. Refused, and
+    /// nothing written, while another payment's row holds the pair
+    /// (`contact.payment_locked`) or when the write fails: the hand-off
+    /// must not happen. Memory is left to the outcome (`lock_payment`).
+    pub(crate) async fn record_payment(
+        &self,
+        id: WalletId,
+        pair: Pair,
+        txid: &str,
+        inputs: &[OutPoint],
+    ) -> Result<(), EngineError> {
+        let _rows = self.platform.payments.rows.lock().await;
+        let row = DpPaymentLockRow {
+            identity: b58(&pair.0),
+            contact: b58(&pair.1),
+            txid: txid.to_owned(),
+            since: crate::events::unix_now(),
+            inputs: encode_inputs(inputs),
+        };
+        let wallet = id.to_string();
+        match self
+            .appdb_op(move |db| db.set_dp_payment_lock(&wallet, &row))
+            .await?
+        {
+            None => Ok(()),
+            Some(txid) => Err(ContactError::PaymentLocked { txid }.into()),
+        }
+    }
+
     /// Locks `pair` behind `txid`, whose broadcast outcome is unknown
-    /// (D8): memory first, then the row. A failed write is logged; the lock
-    /// holds for the session, and a repeat broadcast's unknown outcome
-    /// writes the row again. A lock of another payment is kept (the oldest
-    /// unknown outcome; D20 lets no second one start).
+    /// (D8): memory, then the row again (its first write was the
+    /// payment's record, D23; this one is idempotent). A failed write is
+    /// logged. A lock of another payment is kept (the oldest unknown
+    /// outcome; D20 lets no second one start).
     pub(crate) async fn lock_payment(
         &self,
         id: WalletId,
@@ -215,6 +283,7 @@ impl NetworkSession {
         txid: Txid,
         inputs: Vec<OutPoint>,
     ) {
+        let _rows = self.platform.payments.rows.lock().await;
         let mut lock = PaymentLock {
             txid: txid.to_string(),
             since: crate::events::unix_now(),
@@ -226,9 +295,7 @@ impl NetworkSession {
                 None => {
                     wallet.insert(pair, lock.clone());
                 }
-                // A repeat broadcast's unknown outcome: locked already, the
-                // row written again (idempotent) should the first write
-                // have failed.
+                // A repeat broadcast's unknown outcome: locked already.
                 Some(held) if held.txid == lock.txid => lock.since = held.since,
                 Some(held) => {
                     tracing::warn!(wallet_id = %id, %txid, held = %held.txid,
@@ -246,27 +313,43 @@ impl NetworkSession {
         };
         guard(&self.platform.payments.inputs).insert(txid, inputs);
         let wallet = id.to_string();
-        let row = self
+        match self
             .appdb_op(move |db| db.set_dp_payment_lock(&wallet, &row))
-            .await;
-        if let Err(e) = row {
-            tracing::warn!(wallet_id = %id, %txid, error = %e, "could not store the payment lock");
+            .await
+        {
+            Ok(None) => {}
+            Ok(Some(held)) => {
+                tracing::warn!(wallet_id = %id, %txid, %held, "another payment's row holds the contact");
+            }
+            Err(e) => {
+                tracing::warn!(wallet_id = %id, %txid, error = %e, "could not store the payment lock");
+            }
         }
         self.signal_payments(id, &pair.0);
     }
 
-    /// Clears `pair`'s lock if it is still `txid`'s.
+    /// Clears `pair`'s lock, in memory and on disk, where it is still
+    /// `txid`'s: its payment was accepted, or is provably unsent.
     pub(crate) async fn clear_payment_lock(&self, id: WalletId, pair: Pair, txid: &str) {
-        {
+        let _rows = self.platform.payments.rows.lock().await;
+        self.clear_held(id, pair, txid).await;
+    }
+
+    /// [`Self::clear_payment_lock`] under the caller's `rows` guard. The
+    /// row goes even if memory never held it (a payment whose first
+    /// broadcast did not hand it off, D23).
+    async fn clear_held(&self, id: WalletId, pair: Pair, txid: &str) {
+        let held = {
             let mut locks = guard(&self.platform.payments.locks);
-            match locks.get_mut(&id) {
+            let wallet = locks.get_mut(&id);
+            match wallet {
                 Some(wallet) if wallet.get(&pair).is_some_and(|l| l.txid == txid) => {
                     wallet.remove(&pair);
+                    true
                 }
-                // Every row is in memory (`load_payment_locks`).
-                _ => return,
+                _ => false,
             }
-        }
+        };
         if let Ok(parsed) = txid.parse::<Txid>() {
             guard(&self.platform.payments.inputs).remove(&parsed);
         }
@@ -275,10 +358,16 @@ impl NetworkSession {
         let row = self
             .appdb_op(move |db| db.clear_dp_payment_lock(&wallet, &identity, &contact, &txid))
             .await;
-        if let Err(e) = row {
-            tracing::warn!(wallet_id = %id, error = %e, "could not clear the payment lock");
+        let cleared = match row {
+            Ok(cleared) => cleared,
+            Err(e) => {
+                tracing::warn!(wallet_id = %id, error = %e, "could not clear the payment lock");
+                false
+            }
+        };
+        if held || cleared {
+            self.signal_payments(id, &pair.0);
         }
-        self.signal_payments(id, &pair.0);
     }
 
     fn signal_payments(&self, id: WalletId, owner: &Identifier) {

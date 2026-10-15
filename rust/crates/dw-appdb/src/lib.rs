@@ -1145,14 +1145,20 @@ impl AppDb {
     }
 
     /// Locks payments from `row.identity` to `row.contact` behind
-    /// `row.txid`, replacing any earlier lock of the pair.
-    pub fn set_dp_payment_lock(&self, wallet_id: &str, row: &DpPaymentLockRow) -> Result<()> {
-        self.conn().execute(
+    /// `row.txid`, unless another payment holds the pair: then nothing is
+    /// written and that payment's txid is returned. Writing `row.txid`'s
+    /// lock again keeps its `since` and takes `row.inputs`.
+    pub fn set_dp_payment_lock(
+        &self,
+        wallet_id: &str,
+        row: &DpPaymentLockRow,
+    ) -> Result<Option<String>> {
+        let conn = self.conn();
+        conn.execute(
             "INSERT INTO dp_payment_lock (wallet_id, identity, contact, txid, since, inputs)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (wallet_id, identity, contact)
-             DO UPDATE SET txid = excluded.txid, since = excluded.since,
-                           inputs = excluded.inputs",
+             DO UPDATE SET inputs = excluded.inputs WHERE txid = excluded.txid",
             params![
                 wallet_id,
                 row.identity,
@@ -1162,7 +1168,13 @@ impl AppDb {
                 row.inputs
             ],
         )?;
-        Ok(())
+        let held: String = conn.query_row(
+            "SELECT txid FROM dp_payment_lock
+             WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3",
+            params![wallet_id, row.identity, row.contact],
+            |r| r.get(0),
+        )?;
+        Ok((held != row.txid).then_some(held))
     }
 
     /// Removes the pair's lock if it is still `txid`'s; whether one went.
@@ -1389,7 +1401,7 @@ mod tests {
     }
 
     #[test]
-    fn payment_locks_replace_and_clear_only_their_txid() {
+    fn payment_locks_keep_their_payment_and_clear_only_their_txid() {
         let db = AppDb::open_in_memory().unwrap();
         let row = |c: &str, t: &str, since| DpPaymentLockRow {
             identity: "me".into(),
@@ -1398,16 +1410,33 @@ mod tests {
             since,
             inputs: format!("{t}:0"),
         };
-        db.set_dp_payment_lock(W, &row("bob", "t1", 10)).unwrap();
-        db.set_dp_payment_lock(W, &row("bob", "t2", 20)).unwrap();
+        assert_eq!(
+            db.set_dp_payment_lock(W, &row("bob", "t1", 10)).unwrap(),
+            None
+        );
+        // Another payment never replaces the pair's lock.
+        assert_eq!(
+            db.set_dp_payment_lock(W, &row("bob", "t2", 20)).unwrap(),
+            Some("t1".into())
+        );
+        // The same payment's again keeps its `since`, takes its inputs.
+        let again = DpPaymentLockRow {
+            inputs: "t1:1".into(),
+            ..row("bob", "t1", 15)
+        };
+        assert_eq!(db.set_dp_payment_lock(W, &again).unwrap(), None);
         db.set_dp_payment_lock(W, &row("carol", "t3", 30)).unwrap();
         db.set_dp_payment_lock(W2, &row("bob", "t4", 40)).unwrap();
+        let first = DpPaymentLockRow {
+            inputs: "t1:1".into(),
+            ..row("bob", "t1", 10)
+        };
         assert_eq!(
             db.dp_payment_locks(W).unwrap(),
-            vec![row("bob", "t2", 20), row("carol", "t3", 30)]
+            vec![first, row("carol", "t3", 30)]
         );
-        assert!(!db.clear_dp_payment_lock(W, "me", "bob", "t1").unwrap());
-        assert!(db.clear_dp_payment_lock(W, "me", "bob", "t2").unwrap());
+        assert!(!db.clear_dp_payment_lock(W, "me", "bob", "t2").unwrap());
+        assert!(db.clear_dp_payment_lock(W, "me", "bob", "t1").unwrap());
         assert_eq!(
             db.dp_payment_locks(W).unwrap(),
             vec![row("carol", "t3", 30)]

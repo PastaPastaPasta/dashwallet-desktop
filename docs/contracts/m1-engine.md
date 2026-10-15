@@ -427,7 +427,11 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
   `Spend` grant (it becomes a one-payment lease) or an `AcceptAndPay` lease with a `Spend` grant; another lease is
   `send.grant_invalid`. The hand-off goes through the dispatch fence: a vault lock before it is `send.cancelled`
   (nothing sent; prepare again with a new grant). With contact crypto queued and the vault locked, `prepare` is
-  `send.vault_locked` before the grant is redeemed. `send.broadcast_unknown` locks the contact
+  `send.vault_locked` before the grant is redeemed. Before the first hand-off the payment's lock row is written
+  (m4's `dp_payment_lock`): if it cannot be written, nothing is handed off and the broadcast fails with `storage`
+  (the payment stays prepared, its address with the contact); a restart or reload reads the row back as the
+  contact's lock until positive evidence settles it. Broadcasts of one prepared payment run one at a time.
+  `send.broadcast_unknown` locks the contact
   (`contact.payment_locked{txid}` for `set_contact_recipient`, `estimate`, `prepare` and the first broadcast of any
   other payment to it) until a repeat broadcast of the same transaction is accepted or m4's
   `resolve_payment_lock` finds evidence. A contact payment adds no address-book entry. CoinJoin and coin control

@@ -45,7 +45,9 @@ use dw_engine::platform::{
     PlatformError, PrivateDetails, ProfileEdit, RegistrationError, RegistrationFunding,
     RegistrationRequest, RegistrationWait, ScannedCode, WithdrawAmount, check_username,
 };
-use dw_engine::{ContactRecipient, Engine, EngineError, NetworkSession, PreparedTx, TASK_PANICKED};
+use dw_engine::{
+    ContactRecipient, Engine, EngineError, NetworkSession, PreparedTx, SendFailure, TASK_PANICKED,
+};
 use dw_vault::{GrantPurpose, VaultError};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -1649,15 +1651,51 @@ fn pay_contact(
         FlowKind::AcceptAndPay,
         grants,
     ))?;
-    let result = (|| {
-        ctx.block_on(dp.accept_request(identity, contact, lease.clone()))?;
-        let prepared = ctx.block_on(draft.prepare(lease.clone()))?;
-        let outcome = ctx.block_on(draft.broadcast(Arc::clone(&prepared)))?;
-        Ok(paid(json!(request), &prepared, &outcome.txid))
-    })();
+    let result = ctx
+        .block_on(dp.accept_request(identity, contact, lease.clone()))
+        .map_err(CliError::from)
+        .map(|_| {
+            let payment = (|| -> Result<Value, EngineError> {
+                let prepared = ctx.block_on(draft.prepare(lease.clone()))?;
+                let outcome = ctx.block_on(draft.broadcast(Arc::clone(&prepared)))?;
+                Ok(paid(json!(request), &prepared, &outcome.txid))
+            })();
+            after_accept(json!(request), payment)
+        });
     // The lease's last owner: it ends with the payment's hand-off done.
     let _ = ctx.session.end_flow(lease);
     result
+}
+
+/// "Accept and pay"'s result once the accept went through (D15): the
+/// payment's with `accepted`, or, when the payment failed, a partial
+/// success: the contact accepted, the payment's error and what to do next.
+/// Not an error: the accept stands, and `--accept` again would be refused.
+fn after_accept(grant: Value, payment: Result<Value, EngineError>) -> Value {
+    let e = match payment {
+        Ok(mut paid) => {
+            paid["accepted"] = json!(true);
+            return paid;
+        }
+        Err(e) => e,
+    };
+    let unknown =
+        e.is_task_panic() || matches!(e, EngineError::Send(SendFailure::BroadcastUnknown { .. }));
+    let e = CliError::from(e);
+    let next = if unknown {
+        "the payment may have gone out: the contact is locked until \
+         `contact resolve-lock` settles it"
+    } else {
+        "accepted, payment cancelled: pay now with `pay-contact` without \
+         --accept (a new Spend grant)"
+    };
+    json!({
+        "grant": grant,
+        "accepted": true,
+        "paid": false,
+        "payment_error": {"code": e.code, "message": e.message, "params": e.params},
+        "next": next,
+    })
 }
 
 /// `pay-contact`'s result: the Platform grant it asked for (or null) and
@@ -1893,6 +1931,32 @@ mod tests {
 
     use super::*;
     use crate::{Cli, Command};
+
+    /// D15 (Sol r1): an accept that went through and a payment that did
+    /// not is a partial success, never a plain error.
+    #[test]
+    fn accept_and_pay_reports_an_accepted_contact_whose_payment_failed() {
+        let grant = json!({"max_duffs": 1});
+        let cancelled = EngineError::Send(SendFailure::Cancelled);
+        let message = cancelled.to_string();
+        let r = after_accept(grant.clone(), Err(cancelled));
+        assert_eq!(r["accepted"], json!(true));
+        assert_eq!(r["paid"], json!(false));
+        assert_eq!(r["grant"], grant);
+        assert_eq!(r["payment_error"]["code"], json!("send"));
+        assert_eq!(r["payment_error"]["message"], json!(message));
+        assert!(r["next"].as_str().unwrap().contains("without --accept"));
+
+        let unknown = EngineError::Send(SendFailure::BroadcastUnknown {
+            reason: "no verdict".into(),
+        });
+        let r = after_accept(grant.clone(), Err(unknown));
+        assert_eq!(r["paid"], json!(false));
+        assert!(r["next"].as_str().unwrap().contains("resolve-lock"));
+
+        let r = after_accept(grant, Ok(json!({"txid": "t"})));
+        assert_eq!(r, json!({"txid": "t", "accepted": true}));
+    }
 
     const GROUPS: &[&str] = &[
         "dashpay",

@@ -52,19 +52,18 @@ impl From<Recipient> for EngineRecipient {
 
 /// A DashPay contact as a draft's one recipient (DP3-01): its DIP-15
 /// address is reserved at `draftPrepare`; until then a same-size
-/// placeholder plans the fee.
+/// placeholder plans the fee. `identity` is ours and `contact` the one it
+/// pays, both Base58 (`contact` established, or with its request waiting
+/// for "Accept and pay"); `amount` is in duffs, at least 546; `note` is
+/// stored with the transaction as its message.
+// No field docs: ts-rs would put trailing spaces in the generated file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ContactRecipient {
-    /// Our identity, Base58.
     pub identity: String,
-    /// The contact it pays, Base58: established, or with its request
-    /// waiting for "Accept and pay".
     pub contact: String,
-    /// Duffs; at least 546.
     pub amount: u64,
     pub subtract_fee: bool,
-    /// Stored with the transaction as its message.
     pub note: Option<String>,
 }
 

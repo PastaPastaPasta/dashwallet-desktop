@@ -3,23 +3,9 @@
 /**
  * A DashPay contact as a draft's one recipient (DP3-01): its DIP-15
  * address is reserved at `draftPrepare`; until then a same-size
- * placeholder plans the fee.
+ * placeholder plans the fee. `identity` is ours and `contact` the one it
+ * pays, both Base58 (`contact` established, or with its request waiting
+ * for "Accept and pay"); `amount` is in duffs, at least 546; `note` is
+ * stored with the transaction as its message.
  */
-export type ContactRecipient = { 
-/**
- * Our identity, Base58.
- */
-identity: string, 
-/**
- * The contact it pays, Base58: established, or with its request
- * waiting for "Accept and pay".
- */
-contact: string, 
-/**
- * Duffs; at least 546.
- */
-amount: number, subtractFee: boolean, 
-/**
- * Stored with the transaction as its message.
- */
-note: string | null, };
+export type ContactRecipient = { identity: string, contact: string, amount: number, subtractFee: boolean, note: string | null, };
