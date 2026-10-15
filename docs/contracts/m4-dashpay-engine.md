@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 23
+Contract-Version: 25
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -198,7 +198,7 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 | `status()` | sync | The banner state (F1) shared by the Home card, the chip and the Contacts empty state: `NoIdentity{reason}`, `Registering{draft}`, `ContestPending{identity, label, ends_at}`, `Ready{main}`, `StartupIncomplete{startup}`. Reads memory and app.sqlite only, never Platform, so it answers offline; the rules are item 49. `StartupIncomplete` only while no identity is on file. Changes are signalled as `Platform{Startup}` (bring-up), `Platform{Registration}`, `Platform{Identities}`, `Platform{Names}`; `WaitingForSync` ends with sync, which has its own events. **Implemented (BL-153).** | `PlatformError` |
 | `sync_status()` | sync | Tools ▸ Information's DashPay card (F23): startup status, last pass, pending contact crypto, loops, quorum source. **works** (E0-10b): `last_pass` is `None` until sync passes report one. | `PlatformError` |
 | `sync_now()` | async | Runs one DashPay pass now and reports it. | `PlatformError` |
-| `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown) with `balance_as_of` (the Platform block time, ms, of the balance shown, once a refresh read it) and `balance_stale` (it may be behind: spent by a write since its refresh, or neither refreshed by this process nor stored by Platform in the last ten minutes; the engine refreshes it in the background and sends `Platform{Identities}` when the flag may have changed, §7 item 44), and its `credit_level` against the cost table (`None` while the balance is unknown; DP1-06), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `names` and `main_name` are as `main_name(identity)` (§2.3) has them: names the identity owns by Platform's evidence (not a label in a contest or one whose write may be in flight), and its pick while owned, else the temporary or won contested name, else the name acquired first; `None` while it owns none. Read from the library's memory, or the last snapshot while a sync pass writes it; which names show comes from the app database's main-name rows, read in one statement on each call (a failed read fails the call), never from a cache. From the live list, a label whose write may be in flight or that Platform refused is hidden. From the older snapshot, `names` is empty, `main_name` is `None` and `names_updating` is `true` (show "updating", not "no name"); the other fields still come from it. `names_updating` is `false` on a live read. **Implemented (DP1-05).** | `PlatformError` |
+| `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown) with `balance_as_of` (the Platform block time, ms, of the balance shown, once a refresh read it) and `balance_stale` (it may be behind: spent by a write since its refresh, or neither refreshed by this process nor stored by Platform in the last ten minutes; the engine refreshes it in the background and sends `Platform{Identities}` when the flag may have changed, §7 item 44), and its `credit_level` against the cost table (`None` while the balance is unknown; DP1-06), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `names` and `main_name` are as `main_name(identity)` (§2.3) has them: names the identity owns by Platform's evidence (not a label in a contest or one whose write may be in flight), and its pick while owned, else the temporary or won contested name, else the name acquired first; `None` while it owns none. Read from the library's memory, or the last snapshot while a sync pass writes it; which names show comes from the app database's main-name rows, read in one statement on each call (a failed read fails the call), never from a cache. From the live list, a label whose write may be in flight or that Platform refused is hidden. From the older snapshot, `names` is empty, `main_name` is `None` and `names_updating` is `true` (show "updating", not "no name"); the other fields still come from it. `names_updating` is `false` on a live read. `names_check` (item 51) is `Pending` or `Failed` while `main_name` is `None` and no names pass has succeeded for the wallet this session: the identity may still own a name. **Implemented (DP1-05).** | `PlatformError` |
 | `set_main_identity(identity)` | async | Writes `dp_main_identity`; one of the wallet's identities, else `identity.not_found`. **Implemented (DP1-05).** | `PlatformError` (`identity.not_found`) |
 | `identity_detail(identity)` | async | The summary plus revision and public keys. | `PlatformError` (`identity.not_found`) |
 | `refresh_balance(identity)` | async | Fetches the credit balance, proved, and stores it with its block time (an older answer never overwrites a newer one), so `identities()` shows it; a spend marked before stays `balance_stale` until a balance of the spend's end or later is read (§7 item 44); `None` = not found on Platform yet. Needs no key: works with the vault locked. **Implemented (DP1-06).** | `PlatformError` (`identity.not_found`) |
@@ -548,7 +548,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: b483b7fa954bdbfbf1869f72d095577582ceec1b692c01a5325cff84ea69afdb version: 23 -->
+<!-- surface-sha256: 80a5b7f4de7a99148849ddcbe6ab8c58e9ad827021345692e12686689267543e version: 25 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1040,6 +1040,7 @@ pub struct IdentitySummary {
     pub names: Vec<String>,
     pub main_name: Option<String>,
     pub names_updating: bool,
+    pub names_check: Option<NamesCheck>,
     pub is_main: bool,
     pub balance: Option<u64>,
     pub balance_as_of: Option<u64>,
@@ -1048,6 +1049,12 @@ pub struct IdentitySummary {
     pub has_dashpay_keys: bool,
     pub profile: Option<Profile>,
     pub unverified: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NamesCheck {
+    Pending,
+    Failed,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentityDetail {
@@ -2663,3 +2670,22 @@ renames or reshapes them takes the next version bump:
       hosts re-read `status` and `sync_status`; a write that changes neither sends nothing. A status that relied on
       Platform's proof of no identity also sends one at the proof's expiry. The contest watch sends
       `Platform{Names}` when it learns a contest's end or drops a watch that stayed unplaced for a day.
+
+**From DP1-08** (version 25):
+
+51. **Whether an identity's names are known (DP1-08 D23, version 25).** `IdentitySummary` gains
+    `names_check: Option<NamesCheck>` (`Pending`, `Failed`), so a host never says "no username" for an identity whose
+    names the library has not fetched. The library holds no names for the identities a restore or a discovery found
+    until a DPNS pass fetches them, and its stored names may be stale after a pass was cut off before a restart or a
+    name was registered elsewhere.
+    - **Known** (`None`) once a names pass succeeded for the wallet this session: the recovery's names pass (DP1-05,
+      queued by a restore's bring-up or a discovery) or a pass of the library's DPNS loop
+      (`on_dpns_marketplace_sync_completed`, the wallet's outcome `Ok`). While a restore or a discovery owes the
+      recovery pass, only that pass settles it: a loop pass may have begun before the identities were stored. A pass
+      that came due again meanwhile (a discovery stored more) leaves it owed.
+    - **`Pending`** until then; **`Failed`** once the owed pass, or with none owed a loop pass, failed or ran out of
+      its budget, until one succeeds. A failed loop pass leaves known names known.
+    - Set only while `main_name` is `None`: a name is evidence on its own. `names_updating` (the older snapshot) is
+      unchanged and independent.
+    - **`Platform{Names}`** is sent when the check of a wallet changes, as a pass that finds nothing new writes no
+      changeset.

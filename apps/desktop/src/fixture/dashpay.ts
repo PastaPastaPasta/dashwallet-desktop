@@ -280,6 +280,7 @@ function aliceIdentity(): IdentitySummary {
     names: ["alice"],
     mainName: "alice",
     namesUpdating: false,
+    namesCheck: null,
     isMain: true,
     balance: "184500000000",
     // Refreshed a minute before FIXTURE_NOW, so not stale (the engine's ten minutes); far above

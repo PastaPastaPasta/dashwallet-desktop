@@ -46,6 +46,7 @@ mod private_details_tests;
 mod profile;
 pub(crate) mod provenance;
 mod recovery;
+pub(crate) use recovery::NamesChecks;
 #[cfg(test)]
 mod recovery_tests;
 mod registration;
@@ -93,7 +94,8 @@ pub use flows::{
     GrantAction, GrantRequest, LeaseStateView, LeaseView, ParkReason, RevokeCause,
 };
 pub use identity::{
-    IdentityDetail, IdentityKeyInfo, IdentitySummary, KeyPurpose, KeyType, SecurityLevel,
+    IdentityDetail, IdentityKeyInfo, IdentitySummary, KeyPurpose, KeyType, NamesCheck,
+    SecurityLevel,
 };
 pub use invitations::{InvitationInvalidReason, InvitationStatus};
 pub use lease::{FlowOutcome, FlowReport, LeaseError, LockPhase, LockReport};

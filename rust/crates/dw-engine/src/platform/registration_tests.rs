@@ -2001,8 +2001,8 @@ impl MockPlatform for PartialBringUp {
         })
     }
 
-    fn names_pass(&self, _: Arc<Manager>, _: WalletId) -> BoxedFuture<()> {
-        Box::pin(async {})
+    fn names_pass(&self, _: Arc<Manager>, _: WalletId) -> BoxedFuture<bool> {
+        Box::pin(async { true })
     }
 
     fn discover(&self, _: Arc<Manager>, _: WalletId) -> BoxedFuture<Result<usize, PlatformError>> {
