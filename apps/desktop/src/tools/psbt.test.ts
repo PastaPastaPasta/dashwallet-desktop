@@ -6,7 +6,7 @@ import type { PsbtAnalysis } from "../api/generated/PsbtAnalysis";
 import { bytesToBase64, textToBase64 } from "../app/files";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { GrantModel } from "./grant";
-import { PsbtModel, psbtOfFile, PsbtText } from "./psbt";
+import { PsbtModel, psbtErrorText, psbtOfFile, PsbtText } from "./psbt";
 import { fakeVault } from "./testApi";
 
 const UNSIGNED = "cHNidP8BAHUCAAAAAQ==";
@@ -125,6 +125,10 @@ describe("PSBT (QT-076…079)", () => {
       expect(m.status).toBe(`${PsbtText.needsSignatures} ${but}`);
       expect(m.canSign).toBe(false);
     }
+    // Signed but not finalized: the engine still counts the input; complete says no line (D26).
+    byPsbt[UNSIGNED] = analysis({ unsignedInputs: 1, status: "complete" });
+    await m.loadText(UNSIGNED);
+    expect(m.lines.some((l) => l.includes("unsigned inputs"))).toBe(false);
     byPsbt[UNSIGNED] = analysis({ outputs: [{ address: null, amount: 5, isMine: false }], fee: null, total: null, status: "missingInputInfo" });
     await m.loadText(UNSIGNED);
     expect(m.lines).toEqual([" * Sends 0.00000005 tDASH to unknown address", PsbtText.feeUnknown, "Transaction has 2 unsigned inputs."]);
@@ -216,6 +220,8 @@ describe("PSBT (QT-076…079)", () => {
     await unknown.m.loadText(SIGNED);
     await unknown.m.broadcast();
     expect(unknown.m.sent).toBe(true);
+    expect(unknown.m.error).toBe(psbtErrorText(appError("psbt.broadcast_unknown")));
+    expect(unknown.m.error).not.toContain("failed");
     expect(unknown.m.canBroadcast).toBe(false);
   });
 

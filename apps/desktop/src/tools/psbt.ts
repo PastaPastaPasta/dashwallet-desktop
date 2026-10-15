@@ -129,7 +129,9 @@ export class PsbtModel extends Model {
       lines.push(PsbtText.paysFee(this.#amount(a.fee)));
       if (a.total !== null) lines.push(PsbtText.total(this.#amount(a.total)));
     } else lines.push(PsbtText.feeUnknown);
-    if (a.unsignedInputs > 0) lines.push(PsbtText.unsignedInputs(a.unsignedInputs));
+    // The engine signs without finalizing, so its count stays above 0 once complete; dash-qt's
+    // fillPSBT finalizes and shows no such line then (D26).
+    if (a.unsignedInputs > 0 && a.status !== "complete") lines.push(PsbtText.unsignedInputs(a.unsignedInputs));
     return lines;
   }
 
@@ -230,8 +232,10 @@ export class PsbtModel extends Model {
       this.message = PsbtText.broadcastSucceeded(txid);
       this.#to("broadcast");
     } catch (e) {
-      if (hasCode(e, "psbt.broadcast_unknown")) this.sent = true;
-      this.error = PsbtText.broadcastFailed(psbtErrorText(e));
+      // An unknown outcome is not a failure: it may have been sent (D17).
+      const unknown = hasCode(e, "psbt.broadcast_unknown");
+      if (unknown) this.sent = true;
+      this.error = unknown ? psbtErrorText(e) : PsbtText.broadcastFailed(psbtErrorText(e));
       this.#to("ready");
     }
   }
