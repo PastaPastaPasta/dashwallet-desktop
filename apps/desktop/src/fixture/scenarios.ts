@@ -293,8 +293,14 @@ function attributePayments(w: World) {
   };
   const rows = w.wallets[0].rows;
   const first = (type: TxRow["txType"]) => rows.find((r) => r.txType === type && !r.label && r.status.kind === "confirmed");
-  first("recvWithAddress")!.counterparty = party("bob");
-  first("sendToAddress")!.counterparty = party("dave");
+  const attribute = (row: TxRow, name: "bob" | "dave", direction: "sent" | "received") => {
+    row.counterparty = party(name);
+    // The contact's activity lists it too (DP2-09), so its row opens the transaction.
+    const items = (w.dashpay.activity[IDENTITY[name]] ??= []);
+    items.push({ txid: row.txid, direction, amount: Math.abs(row.amount) - (direction === "sent" ? (row.fee ?? 0) : 0), height: row.blockHeight, timestamp: row.timestamp });
+  };
+  attribute(first("recvWithAddress")!, "bob", "received");
+  attribute(first("sendToAddress")!, "dave", "sent");
 }
 
 function twoWallets(w: World): World {
@@ -444,6 +450,27 @@ const SCENARIOS = {
     const w = base(t);
     w.dashpay = registered();
     w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    return w;
+  },
+  /** "alice" registered before DashPay keys existed: the Enable DashPay banner (DP2-09 D10). */
+  "dashpay-no-keys": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, hasDashpayKeys: false }));
+    return w;
+  },
+  /** "alice" with fewer credits than one contact request: Accept is refused (DP2-09 D4). */
+  "dashpay-low-credits": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, balance: "4000000", creditLevel: "empty" }));
+    return w;
+  },
+  /** "alice" with nothing in the bell: no request waiting, no event (DP2-09 D12). */
+  "dashpay-bell-empty": (t) => {
+    const w = base(t);
+    const world = registered();
+    w.dashpay = { ...world, contacts: world.contacts.filter((c) => c.summary.relation !== "pendingIncoming"), journal: [] };
     return w;
   },
   /** DAPI does not answer user searches: the network section fails with Try again. */
