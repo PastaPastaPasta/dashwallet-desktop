@@ -844,9 +844,14 @@ Rules that apply to every screen here:
   Every other string here is new (mark `new` in L10n) or from iOS.
 - **Honest data.** Status comes from the SPV deterministic masternode list, which carries only the ProTx
   hash, service, operator key, voting key, type and valid/banned. Owner, payout address, payees, collateral,
-  operator's share and registration height show only when the wallet holds the masternode's ProRegTx or a
-  later ProUpRegTx (it built them, or its filters matched them because a role is in the wallet); otherwise
-  they show "—" or are left out, and actions that need them aren't offered. Values only a full node knows
+  operator's share and registration height come from the masternode's ProRegTx. The current payout address,
+  payees and the operator key and voting key it names are known only after the wallet has applied **every**
+  later ProUpRegTx (and ProUpShareTx for a shared masternode) for that ProTx hash up to the tip. MG-03 watches
+  each known ProTx hash through compact filters for this, including after a restore (D42). Until that check
+  has finished, these values show "Checking…", payout custody in "In this wallet" reads "Payout address:
+  checking", and actions that depend on them (a fixed withdrawal destination) are disabled with "Checking
+  the current payout address…". Without the ProRegTx they show "—" or are left out, and actions that need
+  them aren't offered. Values only a full node knows
   (PoSe score, last-paid height, next payment, consecutive payments, ban and revive heights) show "—" with
   the hint "needs a full node". Nothing is estimated (D9). Payouts are what this wallet's history shows.
 - **No dead buttons.** An action the wallet can't do says why in its tooltip or in a row note, or is not
@@ -883,9 +888,10 @@ not yet submitted because submission failed. Unvoted proposals never badge (D8).
 Below the tabs, a small muted line on the right: "Masternode list at block 1,214,880" (the SPV list height).
 
 **Status bar.** The dash-qt moon-phase clock (QT-026) is replaced (D19). While the voting window is open
-and the wallet holds at least one eligible voting key, the status bar shows a short text item "Voting closes
-in about 1 d 6 h" (mock `gov-list`); click → Governance. Otherwise nothing. Tooltip: "Votes count until
-block 2,373,386. The next superblock pays at block 2,375,048 (about Nov 4)."
+and the wallet holds at least one eligible voting key, the status bar shows a short text item "Nov 4 votes:
+about 1 d 6 h left" (mock `gov-list`); click → Governance. Otherwise nothing. Tooltip: "Votes cast before
+about block 2,373,386 (the estimated cutoff) count for the Nov 4 payout at block 2,375,048. Later votes still
+count, but may only change later payouts." (D19)
 
 **States shared by every screen** (each screen section lists only its additions):
 
@@ -913,7 +919,7 @@ evonode).
 | Needs attention | PoSe-banned masternodes whose owner key or collateral is in this wallet, with "noticed Oct 12" (the wallet's own first observation, D9); a banned one where only the voting key is here stays under My masternodes with its chip |
 | In progress | registrations not yet in the list (`Registering`, `Needs signature`) and shared sessions (§4.25.8) |
 | My masternodes | masternodes with a role in this wallet, including shared ones ("you hold 1 of 3 shares") |
-| Tracked | masternodes added with Track (IOS-082), whatever keys were attached |
+| Tracked | masternodes added with Track (IOS-082), whatever keys were attached; meta "finding its collateral" until the outpoint is resolved (D43) |
 | Retired (N) | collapsed disclosure: deregistered masternodes that still have history in this wallet |
 
 **Row:** icon (`masternode-network-monitor`), name (the user's label, default "Masternode 1"/"Evonode 1"),
@@ -968,7 +974,13 @@ masternode from here. Keys are kept encrypted in this wallet and used only to si
 Voting key (checked live: "Matches this masternode's voting key" / "This key doesn't belong to this
 masternode"), Owner key ("Lets you withdraw evonode credits to its payout address. Checked the first time
 you use it." — the list doesn't carry the owner key, D13). Footer note "Tracking sends nothing to the
-network." [Track]. Keys can be added later from the masternode's More menu. Errors:
+network." [Track]. Above the footer: "After you track it, the wallet looks up its registration to find its
+collateral and current payout address. Until it finds them, the masternode can't vote here." The lookup
+(D43): fetch the ProRegTx by ProTx hash from peers (authentic when its hash equals the ProTx hash) and read
+the collateral outpoint from it; if no peer serves it, rescan compact filters for the ProTx hash from DIP3
+activation. Then reconcile later updates (D42). While it runs the row shows "finding its collateral"; if both
+fail: "Couldn't find this masternode's registration. It can't vote from this wallet yet." [Try again]. Keys
+can be added later from the masternode's More menu. Errors:
 "No masternode with this address or ProTx hash on Testnet."; "Already tracked as Friend's evonode.".
 
 **Masternode keys** (sheet large, mock `mn-keys`; IOS-083, QT-124 as the reveal gate only): segments Owner ·
@@ -982,25 +994,43 @@ sheet. This is the only place an operator secret is ever shown (§5a).
 **Withdraw credits** (sheet small, mock `mn-withdraw`; IOS-081 owner part; engine MG-13, UI MG-10): "Hosted
 evonode · Claimable 0.42000000"; Amount + [Max] ("Max leaves enough for the Platform fee."); To: fixed to the
 payout address when signing with the owner key, any address when the payout key is in the wallet (iOS rule,
-D23); "Signed with: Owner key"; Platform fee "Taken from the credits"; info notice "With the owner key,
+D23); the fixed destination appears only once the current payout address is reconciled (D42): help "The
+evonode's current payout address, in this wallet · checked up to block 1,214,880"; until then "Checking the
+current payout address…" and Withdraw is disabled; "Signed with: Owner key"; Platform fee "Taken from the credits"; info notice "With the owner key,
 credits can only go to the registered payout address. Dash Platform pays them out on the Dash chain; they
 show in Activity when they arrive."; Passphrase; [Withdraw]. States: loading ("Checking Platform for
 credits…", Withdraw disabled); Platform unreachable ("Couldn't reach Dash Platform. Try again later." [Try
 again]); too little ("0.00002 credits is less than the Platform fee."); locked (passphrase on the sheet);
 watch-only (not offered).
 
+**Withdrawal with an unconfirmed result** (mock `mn-withdraw-pending`, D44): when Platform took the request
+but its result didn't arrive (the engine's unconfirmed outcome), the sheet and the evonode's pane show a
+persistent "Withdrawal sent; checking its result" with Amount, To, "Sent Oct 15 at 3:41 PM · last checked
+3:44 PM", "Platform received the request but hasn't confirmed it yet. The wallet is re-reading this
+evonode's credit balance to see whether it went through.", and the warning "**Don't send it again from
+another device.** If this one went through, sending again would start a second withdrawal. Withdraw stays
+off until Platform confirms or rejects it." Withdraw is disabled (tooltip "Waiting for the result of the
+withdrawal already sent"); [Close] keeps checking ("Keeps checking after you close this"), across restarts.
+The wallet re-reads the claimable balance and the identity nonce. The outcomes: the balance dropped or the
+transition is found → "Withdrawal done" (credits arrive as Dash in Activity); a definitive rejection →
+"Platform rejected the withdrawal: <reason>. Nothing was withdrawn." and only then [Try again]. If the
+result stays unknown, the row says "Still checking" and nothing is offered to resend.
+
 #### 4.25.3 Governance
 
 Mock `gov-list` (mainnet sample). Single column on top, split view below.
 
-**Clock card** (replaces §4.24): title "Voting closes in about 1 day 6 hours"; sub "Next payout to
-proposals: Nov 4, around 3 PM · block 2,375,048"; a cycle bar (`mg-cycle`) from the last superblock to the
-next with the voting cutoff mark (the maturity window, 1,662 blocks on mainnet) and the current position;
-labels "Oct 6 · last payout", "voting closes Nov 1", "Nov 4". Times come from block heights at 2.5 minutes a
-block, always "about". After the cutoff: "Voting for Nov 4 has closed. Payout in about 2 days." While awaiting
-the superblock: "Payout due now (block 2,375,048)".
+**Clock card** (replaces §4.24): title "About 1 day 6 hours left to vote for the Nov 4 payout"; sub "Next
+payout to proposals: Nov 4, around 3 PM · block 2,375,048. From about block 2,373,386 the network starts
+fixing that payout; later votes still count, but may only change later payouts."; a cycle bar (`mg-cycle`)
+from the last superblock to the next with the **estimated cutoff** mark (start of the maturity window, 1,662
+blocks on mainnet: Core begins building the superblock trigger there, it doesn't reject later votes, D19) and
+the current position; labels "Oct 6 · last payout", "estimated cutoff, Nov 1", "Nov 4". Times come from block
+heights at 2.5 minutes a block, always "about". After the cutoff: "Votes now may be too late for the Nov 4
+payout; they still count for later ones. Payout in about 2 days." While awaiting the superblock: "Payout due
+now (block 2,375,048)".
 
-**Budget card:** "Budget for Nov 4", muted "from peers, may lag"; "4,760 of 6,018 goes to 9 passing
+**Budget card:** "Budget for Nov 4", muted "from peers, an estimate" (D45); "4,760 of 6,018 goes to 9 passing
 proposals"; "2 more pass the vote but don't fit (690)"; a stacked bar (`mg-budget-bar`: passing, the part
 that doesn't fit). Core packs proposals by net votes and skips one that doesn't fit, so "Over budget" can
 sit above a smaller proposal that is paid.
@@ -1010,8 +1040,9 @@ appears only with an eligible voting key); Sort ▾ Closest to passing (default)
 Name.
 
 **Proposal row:** name, "1,500 Ð × 3 payments · You: 1 of 3 voted" (or "once", "You voted Yes", "You: not
-voted"), a vote bar (`mg-votebar`: yes / no / abstain, with the funding-line mark), status chip and the margin
-("+414 over", "105 short").
+voted"), a vote bar (`mg-votebar`: yes / no /
+abstain, with the funding-line mark), status chip and the margin
+("+414 over", "692 short"; with uncertain weight "about 6 short, ±12").
 
 **Status chips** (D17; engine `ProposalStatus`):
 
@@ -1022,21 +1053,25 @@ voted"), a vote bar (`mg-votebar`: yes / no / abstain, with the funding-line mar
 | Voting | Needs votes | info | "Not enough net yes votes yet." |
 | Failing | Not funded | danger | "More no than yes votes." |
 | Funded | Funded | success | "Paid in the last superblock." |
-| Confirming | Confirming | neutral | "The fee transaction needs 6 confirmations before peers relay it." |
+| Confirming | Confirming | neutral | "Submitted after the first confirmation; fully valid after six." |
 | Pending | Ready to submit / Fee paid | warning / neutral | Mine only (below) |
 | Lapsed | Ended | neutral | "All payments made or the end date passed." Hidden unless "Show ended proposals" |
+| Passing, Unfunded, Voting or Failing whose margin (or budget rank) the uncertainty could flip | **Too close to call** | neutral | "The vote count is an estimate, and this one is within its margin." (D45) |
 
 **Detail pane:** name, chip + "paid Nov 4 if it stays above the line", "Asks for 1,500 Ð per payment, 3
 payments (Nov 4 to Jan 3)", "Paid to"
 (address, copy), Link (plainBlue; opening shows dash-qt's External Link Warning, default No), weighted votes
-"771 net yes · needs 357" with legend "Yes 812 · No 41 · Abstain 9 · Funding line" (weighted: an evonode counts 4), "Your masternodes" (each
-with its current vote and time, or "Not voted"), [Vote…] filledBlue (opens §4.25.4), More: Copy proposal
+"about 771 net yes · needs 357" (exact numbers without "about" only when the engine reports no unverified
+weight, D45) with legend "Yes 812 · No 41 · Abstain 9 · Funding line" (weighted: an evonode counts 4) and, when estimated, "Estimate, off by up to 12: not enough to change this
+result." (or "…: too close to call"), "Your masternodes" (each with its current vote and time, or "Not
+voted"; a vote this wallet sent is exact, one only seen from peers reads "No (estimate)" unless the engine
+verified the masternode's outpoint), [Vote…] filledBlue (opens §4.25.4), More: Copy proposal
 hash · Copy raw JSON. Threshold = max(min quorum, weighted valid masternodes / 10) computed by the engine
 (Core's `fundingthreshold` omits the floor).
 
 **Governance numbers** (sheet medium, mock `gov-numbers`; from Governance ▸ More; QT-134, D20): **This cycle**
-— Last superblock "Block 2,358,432 · Oct 6", Voting closes "Block 2,373,386 · about Nov 1", Next superblock
-"Block 2,375,048 · about Nov 4", Cycle "16,616 blocks; voting closes 1,662 blocks before the superblock";
+— Last superblock "Block 2,358,432 · Oct 6", Estimated cutoff "Block 2,373,386 · about Nov 1: votes after it may be too late for the Nov 4 payout", Next superblock
+"Block 2,375,048 · about Nov 4", Cycle "16,616 blocks; the network starts fixing a payout 1,662 blocks before its superblock";
 **Votes and budget** — Voting weight "3,570: 2,850 masternodes and 180 evonodes, which count 4 each", Funding
 line "357 net yes votes: a tenth of the weight, and at least 10", Budget "6,018 per superblock · 4,760 to 9
 passing proposals", Proposals "37 open · 9 passing · 2 over budget", Data "Up to date at block 2,372,666 ·
@@ -1048,8 +1083,8 @@ from 8 peers". Before sync, the vote and budget rows show "after sync". [Done].
 2. **Payments:** First payment (the next 12 superblocks with date and block; help "Payments happen at
    superblocks, about every 29 days."), Number of payments (1–12; "Last payment Feb 1, 2027."), Amount per
    payment, Total, Pay to (**A new address in this wallet** / **Another address…**). When the nearest
-   superblock's voting closes within two days the wizard preselects the next one and says so: "Voting for
-   Nov 4 closes in about 1 day 6 hours, so the first payment is Dec 4. New proposals rarely gather enough
+   superblock's estimated cutoff is within two days the wizard preselects the next one and says so: "The
+   estimated cutoff for the Nov 4 payout is in about 1 day 6 hours, so the first payment is Dec 4. New proposals rarely gather enough
    votes in a day." Info: "Each superblock pays out about 6,018. Passing proposals already ask for 4,760, so
    yours fits only if it passes with more votes than others that don't fit." (shown once proposals are
    synced).
@@ -1064,7 +1099,7 @@ transaction are saved in the wallet before the fee is sent, so a crash can't bur
 
 **Mine** (mock `gov-mine`): the user's proposals with their own chips — `Fee paid 0 of 1` ("Fee paid Oct 15
 at 2:02 PM · waiting for its first confirmation, then the wallet submits it"; D16), `Confirming 4 of 6`
-("Submitted · the network shows it after 6 confirmations"), then the public statuses. If submission fails: `Ready to submit` (warning) with [Submit] and the error ("No peer accepted
+("Submitted after the first confirmation · fully valid after 6"), then the public statuses. If submission fails: `Ready to submit` (warning) with [Submit] and the error ("No peer accepted
 the proposal. Try again in a few minutes."). Note "Proposals you create are kept with this wallet, so you can finish them after a restart; they travel
 in wallet backups."
 
@@ -1096,10 +1131,11 @@ sheet (D11).
   wallet" (keychain), "key you added" (tracked, vault), "Its voting key is not in this wallet" + [Add key]
   (disabled row). Disabled rows also for: voted less than an hour ago ("Voted Yes 40 min ago · can change
   after 4:12 PM", the network accepts one change per masternode per hour), PoSe banned ("a banned
-  masternode can't vote"). Eligible rows start checked.
-- **Privacy:** warning notice, shown when two or more rows are checked: "Voting with several masternodes at
-  once shows the network that one person controls them. Choose fewer to keep them unlinked." (iOS idea,
-  D12).
+  masternode can't vote"), collateral not yet found ("Key you added · finding its collateral first": tracked,
+  outpoint unresolved, D43; never pre-checked). Eligible rows start checked. Current votes seen only from
+  peers read "No (estimate)" (D45); votes this wallet sent are exact.
+- **Privacy:** warning notice, shown when two or more rows are checked: "Voting with several masternodes
+  together shows that one person controls them." (iOS idea, D12).
 - Note: "A new vote replaces that masternode's earlier one. The network accepts one change per masternode
   per hour."
 - Footer note "2 masternodes · weight 8 · no fee", Passphrase, [Vote Yes] (label follows the outcome).
@@ -1217,7 +1253,9 @@ pane shows "Collateral released: spending it ends this masternode." with [Lock i
 
 Mock `mn-operator`. More ▸ **Service update or revoke…** (menu note "Done by the operator on the node") opens
 an explanation sheet "Service update and revocation", not a form (D24): "Your operator signs these with the
-operator key, which stays on the node. Dash Wallet doesn't hold it, so it can't send them." Three rows:
+operator key, which stays on their server. Dash Wallet doesn't hold that key, so it can't send them."
+(self-run: "This wallet derives your operator key, but Dash Wallet doesn't use it to sign service updates or
+revocations. Send those from your node; the secret is in Masternode keys.") Three rows:
 **Bring a banned masternode back** "The operator fixes the server, then sends a service update (`protx
 update_service`) from the node." · **Stop the operator** "The operator can revoke its key (`protx revoke`).
 You can also replace the operator yourself: change the operator key in Change keys or payout. The masternode
@@ -1250,7 +1288,7 @@ split its payouts by share. One person coordinates; everyone else pastes what th
 reply. Nothing reaches the network until the coordinator sends the registration." Two cards: **Start one**
 ([Start a shared masternode]) and **Join or continue** ([Paste] [Open file…]); facts: Shares ("2 to 8. Each is
 at least 100 Dash, and together they make exactly 1,000 Dash."), Your coins ("Stay in this wallet, reserved
-for the session, until the registration is sent."), Leaving ("Anyone can dissolve the masternode alone at
+for the session (your share plus your part of the network fee), until the registration is sent."), Leaving ("Anyone can dissolve the masternode alone at
 any time and everyone gets their share back. In the early period, whoever leaves alone pays a penalty to the
 others."); "Sessions in progress" list.
 
@@ -1260,8 +1298,8 @@ terms · Your coins · Invite**):
    1,000 Dash.") / **Evonode** ("Shares add up to 4,000 Dash. Also runs Dash Platform."); participant rows
    (name field, share field in Dash, [Remove]; the coordinator's row "Alice (you) · Coordinator"); [Add a
    participant] (up to 8); live sum "1,000 of 1,000 Dash · 3 shares" (error "200 Dash still unassigned" /
-   "100 Dash too much"); help "2 to 8 people. Each share is at least 100 Dash and earns the same part of
-   every payout. Names are labels: they go into the invitation so everyone sees the same list, and nothing
+   "100 Dash too much"); help "2 to 8 people. Each share is at least 100 Dash and earns its part of
+   the owner portion of every payout, after the operator's share. Names are labels: they go into the invitation so everyone sees the same list, and nothing
    else uses them." Errors: "Each share needs at least 100 Dash."
 2. **Masternode:** the registration wizard's step 3 fields (operator public key or "I run it myself", server
    address, operator's share; evonode Platform fields) plus **Votes** — "From this wallet" (default) /
@@ -1275,18 +1313,32 @@ terms · Your coins · Invite**):
    together "Always free when everyone agrees", Network fee to leave "Paid from the share of whoever
    leaves". With an early period and a 0 penalty, Core's warning becomes "With an early period and no
    penalty, anyone can leave early for just the network fee."
-4. **Your coins:** the coordinator's own share is reserved from this wallet ("400 Dash of your 1,204.37 will
-   be reserved"), refunds and payouts to new addresses in this wallet (or another payout address).
+4. **Your coins:** the coordinator's own share plus the fee maximum is reserved from this wallet ("400.0001
+   Dash of your 1,204.37 will be reserved: your 400 Dash share and up to 0.0001 Dash for the network fee"), refunds and payouts to new addresses in this wallet (or another payout address).
 5. **Invite:** [Copy invitation] [Save to file…], the session code (6 hex) and the check code (`XXXX-XXXX`),
    "Send it to each participant. Ask each to read the check code back to you." [Done] opens the session
    sheet.
 
-The registration's network fee is split by share and shown per participant in the locked terms (D41).
+**Fee and rewards** (D41, D46). The collateral output must be exactly 1,000 Dash, so each participant
+funds their share **plus** their part of the network fee. The invitation fixes a fee maximum per
+participant (from the coordinator's estimate with headroom: 0.0001 Dash in the mock); each wallet reserves
+share + maximum, and the Join button names the total. The locked terms state the real fee, split by share,
+each part at or under the maximum; the unused rest comes back as change. If the coordinator's estimate
+before locking the terms exceeds a maximum, the coordinator sends a new invitation with a higher maximum
+and every participant joins again (their wallet reserves the difference); nobody's contribution rises
+without them accepting. Once the terms are approved the fee is fixed; if it no longer relays at Send, the
+coordinator goes back to Lock terms and everyone approves again. Payout copy always says what a share
+earns: "30% of the owner portion after the operator's 5% cut, so about 28.5% of each payout"; the
+invitation and the locked terms show the effective split (mock `sh-session` "Payout split": "After the
+operator's 5%: Alice 40%, Bob 30%, Carol 30% of the rest, about 38%, 28.5% and 28.5% of each payout"), since
+Core pays the operator's share first and splits only the rest by shares.
 
 **Session sheet** (`sh-session`): title "Shared masternode · Session 3F9A2C"; stages (`mg-stages`) **1 Invite ·
 2 Collect details · 3 Lock terms · 4 Approvals · 5 Signatures · 6 Send** (D31: user-facing names, not R3's or
 dash-qt's); heading for the current stage ("2 of 3 approved the locked terms"), check code; share bar;
-participants (name, role, share, stage chip `Approved` / `Waiting` / `Signed`); the terms; note "Send each
+participants (name, role, share, stage chip `Approved` / `Waiting` / `Signed`); the terms (server, operator
+key, operator's share 5%, Payout split, Network fee "0.00006, split by share: Alice 0.000024, Bob 0.000018,
+Carol 0.000018 (each within the 0.0001 most in the invitation)", early period); note "Send each
 reply back here. If a check code differs from the one the sender sees, the message changed on the way: ask
 for it again."; footer [Copy …] [Save to file…] | [Close] [Paste a reply]. The coordinator's last stage is
 [Send registration] with Passphrase.
@@ -1294,22 +1346,26 @@ for it again."; footer [Copy …] [Save to file…] | [Close] [Paste a reply]. T
 **Participant** (`sh-join`): Paste or open → "Join a shared masternode": "Alice invites you to share a
 masternode", "Check code 7D3B-E519 · session 3F9A2C"; info notice "Before joining, ask Alice to read you the
 check code, by phone or in person. If it differs, the invitation changed on the way: don't join."; share
-bar; Your share ("300, 30% of every payout · Alice 400 · Carol 300"), Masternode ("203.0.113.30:19999 · run by
-Alice · operator's share 0%"), Votes ("From Alice's wallet"), Leaving ("Alone: 20 Dash penalty during a
-6-month early period, then free. Together: free."), Network fee ("Split by share; the exact amount is in the
-locked terms"), Your coins ("300 Dash of your 412.80 are reserved until the registration is sent or you leave
-the session. Refunds and payouts go to new addresses in this wallet."); footer note "Nothing is sent to the
-network now", [Decline] [Join with 300 Dash], which reserves the coins and shows the reply to copy back
-(not enough coins: disabled with "You need 300 Dash; you have 212.80."). Later pastes (locked
+bar; Your share ("300: 30% of the owner portion after the operator's 5% cut, so about 28.5% of each payout ·
+Alice 400 · Carol 300"), Masternode ("203.0.113.30:19999 · run by Alice, who takes a 5% operator's share"), Votes ("From Alice's wallet"), Leaving ("Alone: 20 Dash penalty during a
+6-month early period, then free. Together: free."), Network fee ("Split by share, at most 0.0001 Dash from you;
+the exact amount is in the locked terms"), Your coins ("300.0001 Dash of your 412.80 are reserved until the
+registration is sent or you leave the session: your 300 Dash share and up to 0.0001 Dash for the network
+fee. What the fee doesn't use comes back as change. Refunds and payouts go to new addresses in this
+wallet."); footer note "Nothing is sent to the
+network now", [Decline] [Join: reserve 300.0001 Dash], which reserves the coins and shows the reply to copy
+back (not enough coins: disabled with "You need 300.0001 Dash; you have 212.80."). A re-invitation with a
+higher fee maximum shows "The network fee went up: Alice asks for up to 0.0003 Dash from you instead of
+0.0001." and the button "Join again: reserve 300.0003 Dash". Later pastes (locked
 terms, signing request) open the same session at its stage; approving and signing each ask for the
 passphrase. A participant never builds the transaction.
 
-**Close** (`sh-close`): alert "Keep this session for later?" "Keeping it leaves your 400 Dash reserved so you
+**Close** (`sh-close`): alert "Keep this session for later?" "Keeping it leaves your 400.0001 Dash reserved so you
 can carry on where you left off. Discarding releases them; if the others are still waiting for you, they
 have to start over." [Discard and release coins] plainRed · [Cancel] · [Keep and close] (D32).
 
 **After registration** (`sh-detail`): the masternode lists under My masternodes ("you hold 1 of 3 shares"),
-pane with the share bar and legend, Your payouts ("40% of each payout to yRw4…n8Ka"), Your refund, Early
+pane with the share bar and legend, Your payouts ("40% of the owner portion after the operator's 5%, about 38% of each payout, to yRw4…n8Ka"), Your refund, Early
 period ("Ends at block 1,319,400, about Apr 13, 2027"), Standby dissolution ("Saved on this computer on Oct
 15" + [Save a copy…]); actions [Change my payout address] (ProUpShareTx, this share only, fee from this
 wallet), [Change keys together] (ProUpSharedRegTx: a new session where every owner approves; operator-key

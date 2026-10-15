@@ -198,7 +198,7 @@
 <div class="sheet sheet-medium" role="dialog" aria-modal="true">
  <header class="sheet-header"><span></span><h2 class="sheet-title">Service update and revocation</h2><span><x-close/></span></header>
  <div class="sheet-body mg-sheet-body">
-  <p class="sheet-text" style="margin:0">Your operator signs these with the operator key, which stays on the node. Dash Wallet doesn't hold it, so it can't send them.</p>
+  <p class="sheet-text" style="margin:0">Your operator signs these with the operator key, which stays on their server. Dash Wallet doesn't hold that key, so it can't send them.</p>
   <dl class="detail-list card-l1">
    <div class="detail-row"><dt class="detail-label">Bring a banned masternode back</dt><dd class="detail-value">The operator fixes the server, then sends a service update (<span class="mono">protx update_service</span>) from the node.</dd></div>
    <div class="detail-row"><dt class="detail-label">Stop the operator</dt><dd class="detail-value">The operator can revoke its key (<span class="mono">protx revoke</span>). You can also replace the operator yourself: change the operator key in <strong>Change keys or payout</strong>. The masternode then waits for the new operator's service update.</dd></div>
@@ -233,6 +233,7 @@
     <label class="mg-field">Owner key<input class="mono" placeholder="Private key (WIF)"><span class="mg-field-help">Lets you withdraw evonode credits to its payout address. Checked the first time you use it.</span></label>
    </div>
   </div>
+  <p class="mg-muted mg-small" style="margin:0">After you track it, the wallet looks up its registration to find its collateral and current payout address. Until it finds them, the masternode can't vote here.</p>
  </div>
  <footer class="mg-sheet-footer"><span class="mg-sheet-footer-note">Tracking sends nothing to the network.</span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Cancel</button><button class="dash-button dash-button-filledBlue dash-button-medium">Track</button></span></footer>
 </div>
@@ -269,7 +270,7 @@
    <span class="mg-field-help">Max leaves enough for the Platform fee.</span>
   </label>
   <dl class="detail-list card-l1">
-   <div class="detail-row"><dt class="detail-label">To</dt><dd class="detail-value"><span class="mono mg-small">yPay8vK2…Wm4c</span><div class="mg-field-help">The evonode's payout address, in this wallet</div></dd></div>
+   <div class="detail-row"><dt class="detail-label">To</dt><dd class="detail-value"><span class="mono mg-small">yPay8vK2…Wm4c</span><div class="mg-field-help">The evonode's current payout address, in this wallet · checked up to block 1,214,880</div></dd></div>
    <div class="detail-row"><dt class="detail-label">Signed with</dt><dd class="detail-value">Owner key</dd></div>
    <div class="detail-row"><dt class="detail-label">Platform fee</dt><dd class="detail-value">Taken from the credits</dd></div>
   </dl>
@@ -277,5 +278,23 @@
   <label class="form-field" style="max-width:320px">Passphrase<input type="password" value="••••••••••••"></label>
  </div>
  <footer class="mg-sheet-footer"><span></span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Cancel</button><button class="dash-button dash-button-filledBlue dash-button-medium">Withdraw</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="mn-withdraw-pending" title="Withdrawal sent, result not confirmed: no second submit (§4.25.2)" route="masternodes" behind="mn-list" -->
+<!-- sheet -->
+<div class="sheet sheet-small" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Withdraw credits</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <div class="loading-state" style="padding:var(--dw-space-m) 0"><span class="spinner" aria-hidden="true"></span><span><strong>Withdrawal sent; checking its result</strong></span></div>
+  <p class="sheet-text" style="margin:0">Platform received the request but hasn't confirmed it yet. The wallet is re-reading this evonode's credit balance to see whether it went through.</p>
+  <dl class="detail-list card-l1">
+   <div class="detail-row"><dt class="detail-label">Amount</dt><dd class="detail-value">0.41990000 credits</dd></div>
+   <div class="detail-row"><dt class="detail-label">To</dt><dd class="detail-value"><span class="mono mg-small">yPay8vK2…Wm4c</span></dd></div>
+   <div class="detail-row"><dt class="detail-label">Sent</dt><dd class="detail-value">Oct 15 at 3:41 PM · last checked 3:44 PM</dd></div>
+  </dl>
+  <p class="mg-notice mg-notice-warning"><strong>Don't send it again from another device.</strong> If this one went through, sending again would start a second withdrawal. Withdraw stays off until Platform confirms or rejects it.</p>
+ </div>
+ <footer class="mg-sheet-footer"><span class="mg-sheet-footer-note">Keeps checking after you close this</span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Close</button><button class="dash-button dash-button-filledBlue dash-button-medium" disabled title="Waiting for the result of the withdrawal already sent">Withdraw</button></span></footer>
 </div>
 <!-- /frame -->
