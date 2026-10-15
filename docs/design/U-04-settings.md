@@ -184,12 +184,12 @@ on a manager to file them:
 
 ## T1 evidence
 
-2026-10-15, branch `dw/u-04-settings`: app, renderer and harness built at `743b6796` (review r1-Sol,
-D30–D35, and its Opus re-check, D36–D41). Run on agentbox (Xvfb, WebKitGTK through tauri-driver)
+2026-10-15, branch `dw/u-04-settings`: app, renderer and harness built at `6ea452ed` (reviews r1-Sol
+and r2-Sol with their Opus re-checks, D30–D45). Run on agentbox (Xvfb, WebKitGTK through tauri-driver)
 against `dwd-regtest-dashd:24.0.0-rc.2` (compose project `dw-e2e-settings`).
 `scripts/e2e-tauri-settings.sh` → PASS, 10 steps:
 
-1. unlock: Wallet 1 holds 1.5 DASH through SPV (funding txid `a33e9de34bd1c488…`)
+1. unlock: Wallet 1 holds 1.5 DASH through SPV (funding txid `3af06d10ace04fc8…`)
 2. General: Dark, mDASH with 3 digits (Home 1500.000 mtDASH), Pay starts with Subtract fee;
    `ui_settings` agrees
 3. Security: a wrong current passphrase is counted, then the passphrase changes (the old one is
@@ -202,14 +202,15 @@ against `dwd-regtest-dashd:24.0.0-rc.2` (compose project `dw-e2e-settings`).
 7. Wallets: Watcher opened again, then removed with the passphrase
 8. Wipe, with a directory blocking dw-vault's `remove_all` (D33, D40): every wallet is removed
    (`wallet_load_states` empty), the vault's deletion fails with the storage error, and the sheet
-   says so with no onboarding ("Every wallet was removed, but the vault could not be deleted:
-   Something went wrong (storage). Try again. If you close this instead, the vault stays: …")
+   says so with no onboarding ("Every wallet was removed, but the vault could not be fully
+   deleted: Something went wrong (storage). Try again. If you close this instead, part of it may
+   stay on this computer, …")
 9. Try again, with the blocker gone: onboarding opens, `list_wallets` is empty and `lock_status`
    reads noVault
 10. no phrase or passphrase in the data root, the logs or the other output files
 
-Earlier runs: 9 steps passed at `2c599647`, `dc1e6010` and `1a12d176`, and the 10-step run at the
-`51b950f6` tree. Two runs failed. Step 2 caught the D24 race (a lost unit change). The wipe step read
+Earlier runs: 9 steps passed at `2c599647`, `dc1e6010` and `1a12d176`, and 10 steps at the
+`51b950f6` tree, `743b6796` and `faf15deb`. Two runs failed. Step 2 caught the D24 race (a lost unit change). The wipe step read
 `lock_status` the moment onboarding opened, before the final `destroyVault` had answered (D25, now D33).
 
 ## Ported view-model tests
