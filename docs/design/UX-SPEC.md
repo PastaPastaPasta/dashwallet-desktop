@@ -8,7 +8,8 @@ string or number, and this file wins for layout, styling and interaction.
 Who uses this file:
 - the **restyle agents** (MacUI + DashUIMac, CrossUI + DashUICross) — sections 2–5;
 - the **design reviewer** — sections 6 and 7;
-- the **M3 feature agents** (CoinJoin, Masternodes, Governance) — sections 3, 4.21–4.24 and 5.
+- the **feature agents** for CoinJoin (sections 3, 4.21 and 5) and for masternodes and governance (MG-09,
+  MG-10, MG-10b: sections 3, 4.25 and 5).
 
 Reference images: `docs/design/ux/home-light.png`, `docs/design/ux/home-dark.png` (a rendered mock of §4.5,
 drawn with the real tokens and the exported icons; sample data). They show the target. The current app
@@ -379,9 +380,9 @@ element comes from iOS; new strings only where neither has one (mark them in L10
 │ ☰ Transact.│                                                                   │
 │ ⤨ CoinJoin*│                                                                   │
 │ ▤ Mastern.*│                                                                   │
-│ ✓ Governa.*│                                                                   │
+│            │                                                                   │
 ├────────────┴───────────────────────────────────────────────────────────────────┤
-│ Up to date ▬▬▬▬            tDASH ▾   HD   🔒   ⇄ proxy   ▮▮▮ 8   ◐ gov   ✓     │
+│ Up to date ▬▬▬▬            tDASH ▾   HD   🔒   ⇄ proxy   ▮▮▮ 8   vote 1d ✓     │
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
 - **Window title**: dash-qt's (`MainViewModel.windowTitle`, QT-003/QT-011) — kept; it is the *only* place
@@ -392,7 +393,9 @@ element comes from iOS; new strings only where neither has one (mark them in L10
 - **Demo mode**: one neutral `Badge("Demo")` at the left of the status bar with the tooltip
   `MacStrings.App.demoHelp`; not in the toolbar, not a sentence in the status bar (Cross today shows
   "Demo mode: sample data, nothing is sent (passphrase: demo)").
-- **Sidebar**: §C1. Shortcut tooltips "(⌘1)" renumbered by visible items (QT-012, exists). Cross only:
+- **Sidebar**: §C1. Shortcut tooltips "(⌘1)" renumbered by visible items (QT-012, exists). Masternodes is one item
+  with the tabs My masternodes and Governance, shown under the rules of §4.25.1 (MG-00 D1–D3; there is no
+  separate Governance item). Cross only:
   a second section "More" with Address Book, Sign / Verify, Tools, PSBT, Wallets, Options, Security,
   About as normal rows (same style, PNG `settings-*` icons), replacing today's bold blue link buttons
   (`CrossUI/WalletRootView.swift` `toolButton`).
@@ -406,7 +409,7 @@ element comes from iOS; new strings only where neither has one (mark them in L10
   `lock.fill` with a badge on a locked vault and the mixing-only icon with a badge on a mixing-only one. Tooltip
   "Registration of @name holds a key for 4:12 — Lock to cancel" before the funds are committed, "… — Lock to stop"
   after; E0-04 design §16.10 C7), proxy, connections (`antenna.radiowaves.left.and.right` + count; red when disabled),
-  governance clock (§4.24), sync (`checkmark.circle.fill` green / `arrow.triangle.2.circlepath` orange
+  governance item (§4.25.1), sync (`checkmark.circle.fill` green / `arrow.triangle.2.circlepath` orange
   spinning). Tooltips verbatim (research 02 §2.3). Cross: the same items as short text ("tDASH", "HD",
   "Locked", "8 peers", "Synced"); in the key-held state "Locked · key held" or "Mixing only · key held".
 - **App menus**: dash-qt menus exactly (QT-015…018, `WalletCommands.swift`, `CrossUI/ShellMenus.swift`);
@@ -808,107 +811,455 @@ TopIntro  CoinJoin / "Send mixed funds. Mixing breaks the link between your coin
   per denomination Target/Maximum steppers (10–100000; target ≤ maximum). Live-apply, like dash-qt.
 - **CoinJoin information** (Help menu): `SheetScaffold` medium, `TopIntro` + Core's information text.
 
-### 4.22 Masternodes (M3, QT-118…127)
+### 4.22 Masternodes — replaced by §4.25
 
-Visibility: Display option "Show Masternodes Tab" (default off), plus shown automatically when the wallet
-owns masternodes (iOS "Nodes" shortcut behaviour).
-```
-TopIntro  Masternodes                                   [Register Masternode…] filledBlue M
-                                                        [Shared Masternode…]   tintedBlue M
-‹Your masternodes card›  (only when Owned ≥ 1, iOS MasternodesScreen sections)
-   (masternode-keys) 203.0.113.7:9999   Evo · [Active] chip        Next payment ~ block 2 345 678  ›
-   (masternode-keys) 198.51.100.4:9999  Regular · [PoSe banned]    —                             ›
-   Tracked ▸ 2      Retired ▸ 1
-Filter bar: (Filter by any property (e.g. address or protx hash)) [All|Regular|Evo|Shared] ☐ Owned ☐ Hide banned
-‹DataTable› ● | Service | Type | PoSe Score | Registered | Last Paid | Next Payment | Operator Reward
-Footer: Node Count: 3 512
-```
-- Full-node-only columns (PoSe score, last paid, next payment, operator reward, payout) show "—" with
-  tooltip "Requires full-node data source" unless a NodeLink/dashd source is configured
-  (DESIGN-opus §1.14). Never estimated.
-- Status icon: `circle.fill` `success` active ("Active for X"), `danger` banned ("Banned for X").
-- Context menu: dash-qt order (Copy ProTx Hash, Copy Collateral Outpoint, Update Service…, Update
-  Registrar…, shared-only items, Revoke…, Filter by ▸). Cross: row "More" menu.
-- **Detail sheet** (medium 640; iOS sections): header (status chip, type, service, ProTx hash copy row),
-  Registration, Keys (copy rows: owner/voting address, key hashes, operator BLS pubkey, platform node ID,
-  payout), Key ownership (Owner/Voting/Operator/Platform node: "In this wallet" / "Not in this wallet"),
-  Collateral, Revocation, Shared shares table (shared MNs), Claimable balance (evonode; with
-  [Refresh]); actions row: [Update Service…] [Update Registrar…] tintedBlue, [Revoke…] plainRed; evonode:
-  [Request status], [Withdraw…], [Unban…] (IOS-081).
-- **Register wizard** (sheet 760 × 620, `WizardHeader` "Step %1 of %2 · %3"): Type (two large radio cards
-  "Masternode · 1,000 DASH" / "EvoNode · 4,000 DASH") → Collateral (three `RadioButtonRow`s) → Service →
-  Keys → Payout (+ reward slider/field, warning > 0) → Platform (Evo) → Fee source → Review (`DetailList`
-  + countdown confirm) → Save operator key (technical box with the secret and the
-  `masternodeblsprivkey=` line, copy buttons, "Type the last 4 characters" field gating Continue; red
-  `SystemMessage` "The secret is never stored.") → Prove ownership (external) → Complete
-  (`ResultView` success + ProTx hash copy row + next steps). Footer: [Back] tintedGray L, [Continue]
-  filledBlue L. Validation inline per field with dash-qt rules/strings; engine error codes mapped to
-  research 02 explanations.
-- **Maintenance sheets** (small/medium): Update Service, Update Registrar (warning `SystemMessage` "Changing
-  the operator key immediately PoSe-bans the masternode…"), Revoke (reason picker); operator secret
-  field = `PassphraseField` (never stored).
-- **Shared masternode session** (window, 760 × 640): header with session code `ABC123` and fingerprint
-  `XXXX-XXXX` (monospaced, in neutral badges), stage stepper (Invitation → Details → Locked Terms →
-  Approvals → Signing → Broadcast), participants `DataTable`, primary area for the current step, actions
-  [Copy message] [Save .json…] [Paste message]; close protection alert ("Save session" / "Release
-  coins" / Cancel) per research 02 §10.5.
-- **Masternode Keys** (Window ▸ Masternode Keys, IOS-083): `SegmentedControl` Owner | Voting | Operator
-  (BLS) | Evonode operator (ed25519); list card rows = index, address/pubkey middle-truncated, chips
-  "Used at ip:port" (info) / "Revoked" (danger); detail sheet with copy rows (address, public key, legacy
-  key, Platform node ID, Tenderdash node key) and private key/WIF behind [Reveal] (auth gate), shown in a
-  technical monospaced box with screen-capture guard.
-- **Tracked masternodes** (IOS-082): "Tracked" row → list; [+ Track masternode] sheet with SearchBar
-  "IP, proTxHash or key" and result card; attach-keys sheet with one `PassphraseField` per key type.
-- Empty (no MNs, list syncing): `EmptyState` "No masternodes yet" + iOS explanation strings; list
-  loading: `LoadingState` "Loading masternode list…".
+Replaced by **§4.25 Masternodes (MG-00)** (DASHPAY §5a, DEC-01). The dash-qt table layout described here
+before is gone: My masternodes is §4.25.2, the registration wizard §4.25.5, the update sheets §4.25.6,
+shared masternodes §4.25.8. Operator-signed Update Service and Revoke are out (§4.25.7).
 
-### 4.23 Governance (M3, QT-128…134)
+### 4.23 Governance — replaced by §4.25
 
-Visibility: Display option "Show Governance Tab" (default off).
-```
-TopIntro  Governance                     [Create Proposal] filledBlue M  [Resume Proposal] tintedBlue M
-‹info strip SystemMessage(.info)› Voting deadline: ~3 days left (1 234 blocks, block 2 345 678)  ⓘ
-Filter bar: [Active Proposals | My Proposals]   (Filter by Title)            [List | Table]
-‹proposal cards list›
-  (status chip Passing)  dash-core-group-oct     1,000 Ð × 3 payments · Nov 1 – Jan 30
-                         ▮▮▮▮▮▮▮▮▮░░ 512Y · 48N · 12A  (+152)       My votes: 2Y / 1 unvoted   ›
-Footer: Proposal Count: 37        [Votes…] (selected proposal)
-```
-- Status chip colours: Funded `success`, Passing `success` tint, Failing `danger`, Voting `info`,
-  Confirming / Pending `warning`, Unfunded `warning`, Lapsed neutral; tooltips from research 02 §11.1.
-- Votes bar: proportional Yes/No/Abstain segments (`green` / `red` / `gray300`) + dash-qt text
-  `"%1Y, %2N, %3A (%4%5)"`; margin in `success`/`danger`.
-- Before governance sync: `LoadingState` "Synchronizing governance objects… N %" (no list, no counts).
-  Votes and tallies are SPV-native via govsync once synced; never shown partially as final.
-- Table mode: dash-qt columns (Status, Title, Amount, Start, End, Votes, My Votes, Hash).
-- **Proposal detail** (sheet medium): title, URL (plainBlue; opening shows the dash-qt "External Link
-  Warning" confirmation defaulting to No), `DetailList` (destination, payment amount, payments
-  requested, start, end, object hash, parent hash, collateral date/hash — hashes monospaced), votes bar,
-  actions [Vote Yes] [Vote No] [Vote Abstain] (tintedBlue/tintedGray), [Copy Raw JSON].
-- **Vote sheet** ("Proposal Votes", medium 760): outcome `SegmentedControl` Yes | No | Abstain;
-  `DataTable` with checkboxes (Masternode, Voting Address, Weight, Current Vote, Vote Time, ProTx Hash);
-  [Select All] [Clear Selection]; "Selected weight: N"; [Vote %1] filledBlue L; result view with
-  "Voted successfully %n time(s)" / "Failed to vote %n time(s)" + per-MN errors list. Needs full unlock.
-- **Create proposal wizard** (sheet 640, 3 steps): Details (name 1–40 `[-_a-z0-9]`, URL) → Payments
-  (payment date picker listing the next 12 superblocks with dates, payments stepper 1–12, address
-  field, amount `AmountEntry`, derived total) → Review ([View JSON] [View Payload] technical boxes) →
-  confirmation alert "Creating a proposal pays 1 DASH to the network. This fee is non-refundable
-  regardless of outcome." → opens Resume. (Fable: the chosen payment date is honoured; dash-qt's bug is
-  not copied.)
-- **Resume proposals** (sheet medium): list rows with title, URL, payments, collateral hash (copy),
-  collateral status chip Unknown/Pending/Ready, [Broadcast] filledBlue S enabled at ≥ 1 confirmation;
-  success toast "Proposal has been broadcasted to the network with hash %1".
-- **Governance information** (Tools ▸ Information ▸ Governance section, QT-134): cards General,
-  Participation, Node, Proposals, Budget; budget donut on macOS (Swift Charts `SectorMark`, colours
-  `accent` / `gray300`), Cross fallback = stacked horizontal bar with legend.
+Replaced by **§4.25.3** (Governance tab: clock, budget, proposals, create, Mine) and **§4.25.4** (vote sheet).
 
-### 4.24 Governance clock (status bar, QT-026)
+### 4.24 Governance clock — replaced by §4.25
 
-- macOS: SF Symbol `moonphase.*` chosen from the cycle phase (8 phases), `accent` when "awaiting
-  superblock"; animated (`arrow.triangle.2.circlepath` pulse) before governance sync. Tooltip = dash-qt
-  lines (research 02 §2.3). Click → Governance page.
-- Cross: text item "Gov 63 %" / "Gov syncing" with the same tooltip.
-- Shown only when governance tab + "Show governance clock" are on and there are peers (dash-qt rule).
+Replaced by the clock card in **§4.25.3** and the status-bar item in **§4.25.1** (MG-00 D19).
+
+### 4.25 Masternodes (MG-00; release 1.1; MG-09, MG-10, MG-10b, MG-13)
+
+Owner-side masternode and governance flows for wallet holders (DEC-01). Scope is DASHPAY §5a's left column;
+everything in its right column (operator and server) is out and appears only as an explanation (§4.25.7).
+Mocks: `docs/design/ux/mg-00/*.html` (open `…?theme=dark` for dark; `#<frame>` for one frame), screenshots
+`docs/design/screenshots/mg-00/<frame>-{light,dark}.png`. Decisions are the D-rows in
+`docs/design/MG-00-masternodes-ux.md`; "D7" below means that file's row D7.
+
+Rules that apply to every screen here:
+- **Mobile-inspired, not dash-qt.** Layout and wording follow the DashPay screens (U-02…U-05, DP2-07's
+  split view) and iOS `MasternodesScreen`. No data tables, no column pickers. dash-qt strings are kept
+  verbatim only for the two warnings that carry risk: the proposal fee and the operator-key PoSe ban (D29).
+  Every other string here is new (mark `new` in L10n) or from iOS.
+- **Honest data.** Status comes from the SPV deterministic masternode list (valid or banned). Values only a
+  full node knows (PoSe score, last-paid height, next payment, consecutive payments, ban and revive heights)
+  show "—" with the hint "needs a full node". Nothing is estimated (D9). Payouts are what this wallet's
+  history shows.
+- **No dead buttons.** An action the wallet can't do says why in its tooltip or in a row note, or is not
+  shown. Operator actions are one explanation sheet, never disabled lookalikes of dash-qt's buttons (D24).
+- **Signing.** Every signing flow ends with the inline Passphrase field on its last step, as Pay's
+  ConfirmSheet does (D14). The flow takes a single-use grant (E0-04, MG-05) under a named lease (D35); a
+  locked wallet browses freely and asks only there.
+- **Testnet and mainnet look the same.** Network differences are validation messages, not modes.
+
+#### 4.25.1 Sidebar item, visibility, page frame and shared states
+
+**Sidebar.** One item **Masternodes** (icon: two stacked server boxes, `sidebar-icon` 20 × 20 stroke), after
+CoinJoin. Shown when any of these is true (D1):
+1. the wallet holds a masternode role: collateral, owner key, voting key, payout script or share refund
+   (the same set as Core's `protx list wallet`);
+2. it holds an unspent output of exactly 1,000 or 4,000 Dash (a collateral-shaped coin);
+3. it tracks a masternode, or has a registration, shared session or proposal in progress;
+4. Settings ▸ Advanced ▸ **Show Masternodes** is on (new toggle, default off; this is DASHPAY §5a's
+   "advanced mode"; there is no general advanced mode, D2).
+
+When the item disappears (for example the last collateral is spent), the route stays reachable from the
+setting. Badge (red count, as Contacts): items that need the user's action only — a PoSe-banned masternode
+the user owns, a registration or shared session waiting on this user, a proposal whose fee is confirmed but
+not yet submitted because submission failed. Unvoted proposals never badge (D8).
+
+**Page frame.** `TopIntro` "Masternodes", trailing actions; then `tabs` **My masternodes | Governance**
+(`ui.masternodesTab` remembered per window, D3). Header actions per tab:
+
+| Tab | Primary (filledBlue S) | More menu (tintedGray S) |
+|---|---|---|
+| My masternodes | Set up a masternode | Track a masternode… · Masternode keys… · Join a shared masternode… |
+| Governance | Create proposal | Show ended proposals · Governance numbers… (D20) |
+
+Below the tabs, a small muted line on the right: "Masternode list at block 1,214,880" (the SPV list height).
+
+**Status bar.** The dash-qt moon-phase clock (QT-026) is replaced (D19). While the voting window is open
+and the wallet holds at least one eligible voting key, the status bar shows a short item "Voting closes in
+1 d 6 h" (Cross-style text, no icon); click → Governance. Otherwise nothing. Tooltip: "Votes count until
+block 2,373,386. The next superblock pays at block 2,375,048 (about Nov 4)."
+
+**States shared by every screen** (each screen section lists only its additions):
+
+| State | What the user sees |
+|---|---|
+| Loading (masternode list not yet synced) | `loading-state` "Loading the masternode list…" in place of the list; own masternodes already known from the wallet show with the `Unknown` chip and "list syncing" |
+| List failed | `mg-notice-warning` "Couldn't load the masternode list. Statuses may be out of date." [Try again]; rows keep their last status with "as of block N" |
+| Locked | Everything browses. The lock is asked for only on a signing step, by the inline Passphrase field. Mock `mn-locked` |
+| Watch-only | Info notice "**Watch-only wallet.** It shows the masternodes whose collateral or payout address it watches, and their payouts. Voting, registering and changing keys need the wallet that holds the keys." Signing actions are disabled with the reason as tooltip; Set up uses dash-qt's "This wallet is watch-only. Masternode registration requires a wallet that can sign transactions." Roles read "(watched)". Mock `mn-watchonly` |
+| No peers / offline | Lists keep their last data with "as of block N"; signing steps say "Not connected. The transaction will be sent when the wallet reconnects." only where the engine queues; otherwise the commit button is disabled with tooltip "Not connected to the network" |
+| Network mismatch | Never a page state: a field, paste or file from another network is refused where it is entered, with "This is a Mainnet address. This wallet is on Testnet." (address), "9999 is the Mainnet port. This wallet is on Testnet, where masternodes use 19999." (port), "This key is for Mainnet…" (key), "This invitation is for Mainnet…" (shared messages), "No masternode with this ProTx hash on Testnet." (track) |
+| Network not upgraded | Features that need a deployment the network hasn't activated (v24 shared masternodes, `evo_shares`) show their choice disabled with "Needs the v24 network upgrade, not active on Mainnet yet." The engine reports activation; the UI never assumes it (D33) |
+
+#### 4.25.2 My masternodes
+
+Mock `mn-list`. A split view like Contacts (DP2-07): list on the left (`contacts-list`), the selected
+masternode on the right (`contacts-pane`). A summary strip on top (`mg-summary`): **Masternodes** "3 · 2 active and 1 you track", **Payouts, last 30
+days** "7.83 to payout addresses in this wallet", **Evonode credits** "0.42 ready to withdraw" (only with an
+evonode).
+
+**List groups** (in this order, empty groups hidden; D4):
+
+| Group | Holds |
+|---|---|
+| Needs attention | the user's masternodes that are PoSe banned, with "noticed Oct 12" (the wallet's own first observation, D9) |
+| In progress | registrations not yet in the list (`Registering`, `Needs signature`) and shared sessions (§4.25.8) |
+| My masternodes | masternodes with a role in this wallet, including shared ones ("you hold 1 of 3 shares") |
+| Tracked | masternodes added with Track (IOS-082), whatever keys were attached |
+| Retired (N) | collapsed disclosure: deregistered masternodes that still have history in this wallet |
+
+**Row:** icon (`masternode-network-monitor`), name (the user's label, default "Masternode 1"/"Evonode 1"),
+sub "Masternode · 203.0.113.7:19999" / "Evonode · …" / "Shared masternode · you hold 1 of 3 shares",
+trailing status chip and a meta line ("Paid Oct 13", "0 of 1 confirmations", "0.42 credits to claim").
+
+**Status chips** (D5): `Active` (success: dot + primary text, D30), `PoSe banned` (danger), `Retired`
+(neutral), `Unknown` (neutral: not in the list, or list syncing), `Registering` (info: sent, waiting for the
+list), `Needs signature` (warning: external collateral, waiting for the proof). No "Next payment".
+
+**Detail pane** (`mg-pane`):
+- header: icon, name (rename by clicking it), chips: status + type (`Masternode` / `Evonode` / `Shared · 3 shares`);
+- facts (`mg-facts`): Service; Registered ("block 1,108,420 · Mar 3"); Last payout (amount · date, from
+  history); Payouts in 30 days with **See in Activity** (opens Activity filtered to this masternode's
+  payouts, D10); PoSe score "— (needs a full node)"; ProTx hash (copy); evonode: Platform node ID,
+  "Credits to claim 0.42" with [Withdraw…] (MG-13);
+- **In this wallet** (`mg-roles`): Collateral, Owner key, Voting key, Payout address, Operator key (only
+  for self-operators, from the keychain), each ✓ held or – elsewhere;
+- actions: [Vote on proposals] (opens Governance filtered to "Needs my vote"), [Change keys or payout…]
+  (§4.25.6; needs the owner key), [More]: Rename · Copy ProTx hash · Copy collateral outpoint · Release
+  collateral… · Service update or revoke… (§4.25.7) · Stop tracking (tracked only). Items the wallet can't
+  do carry a `mg-menu-note` ("Needs the owner key", "Done by the operator on the node").
+
+**PoSe banned** (mock `mn-banned`): danger notice in the pane "**This masternode is banned and earns
+nothing.** This wallet first saw it banned on Oct 12: the server stopped doing its work. Your operator fixes
+the server, then sends a service update from the node. The wallet can't do that: it needs the operator key."
+The More menu shows the operator item with its note (§4.25.7). A banned masternode never recovers on its own
+(Core), so the notice stays until the list shows it valid. The date is the wallet's own first sighting: the
+SPV list carries no ban height (D9).
+
+**Empty** (mock `mn-empty`): `mg-empty` "No masternodes yet" / "Masternodes and evonodes registered with this
+wallet's keys appear here after the wallet syncs. You can also track any masternode on the network by its IP
+address or ProTx hash." and three points: **Own one** "Lock 1,000 Dash (4,000 for an evonode) as collateral.
+It stays in your wallet." · **Someone runs it** "A hosting provider, or you, runs the server. The wallet never
+needs the server's key." · **Earn and vote** "Payouts arrive in this wallet, and the node votes on how the
+network spends its budget." Then [Set up a masternode] [Track a masternode]. Only reachable from the setting
+(D1).
+
+**Track a masternode** (sheet medium, mock `mn-track`; IOS-082): search "IP address or ProTx hash" [Find]
+(iOS also searches by private key; here keys are added after the masternode is found, D13), "Track any
+masternode or evonode on the network. It doesn't have to belong to this wallet." → result card (type,
+service, status, ProTx, registered) → "Label (optional)" → **Keys (optional)** "Add a key to act for this
+masternode from here. Keys are kept encrypted in this wallet and used only to sign what you approve.":
+Voting key (checked live: "Matches this masternode's voting key" / "This key doesn't belong to this
+masternode"), Owner key ("Lets you withdraw evonode credits to its payout address."). Footer note "Tracking
+sends nothing to the network." [Track]. Keys can be added later from the masternode's More menu. Errors:
+"No masternode with this address or ProTx hash on Testnet."; "Already tracked as Friend's evonode.".
+
+**Masternode keys** (sheet large, mock `mn-keys`; IOS-083, QT-124 as the reveal gate only): segments Owner ·
+Voting · Operator · Platform node; "Keys this wallet derives for masternodes it registers. 2 of 3 used.";
+rows "Keypair 1 · yNq3…8Rz1 · Used by Home node · 203.0.113.7:19999" / "Not yet used" with [Show]; the shown
+keypair's Address or public key (copy) and "Private key · Hidden" [Reveal…] "Needs your passphrase. Anyone
+with this key controls the masternode's registration." (operator: "…runs the masternode's server"). Reveal
+uses the RevealSecret gate and shows the secret in a monospaced box until the user hides it or closes the
+sheet. This is the only place an operator secret is ever shown (§5a).
+
+**Withdraw credits** (sheet small, mock `mn-withdraw`; IOS-081 owner part, MG-13): Amount + [Max]; To:
+fixed to the payout address when signing with the owner key, any address when the payout key is in the
+wallet (iOS rule, D23); "Signed with: Owner key"; fee; Passphrase; [Withdraw]. Info notice "With the owner
+key, credits can only go to the registered payout address. Dash Platform pays them out on the Dash chain,
+usually within a few minutes."
+
+#### 4.25.3 Governance
+
+Mock `gov-list` (mainnet sample). Single column on top, split view below.
+
+**Clock card** (replaces §4.24): title "Voting closes in about 1 day 6 hours"; sub "Next payout to
+proposals: Nov 4, around 3 PM · block 2,375,048"; a cycle bar (`mg-cycle`) from the last superblock to the
+next with the voting cutoff mark (the maturity window, 1,662 blocks on mainnet) and the current position;
+labels "Oct 6 · last payout", "voting closes Nov 1", "Nov 4". Times come from block heights at 2.5 minutes a
+block, always "about". After the cutoff: "Voting for Nov 4 has closed. Payout in about 2 days." While awaiting
+the superblock: "Payout due now (block 2,375,048)".
+
+**Budget card:** "Budget for Nov 4", muted "from peers, may lag"; "4,760 of 6,018 goes to 9 passing
+proposals"; "2 more pass the vote but don't fit (690)"; a stacked bar (`mg-budget-bar`: passing, the part
+that doesn't fit). Core packs proposals by net votes and skips one that doesn't fit, so "Over budget" can
+sit above a smaller proposal that is paid.
+
+**Toolbar:** search "Search proposals"; segmented **All 37 · Needs my vote 12 · Mine 1** ("Needs my vote"
+appears only with an eligible voting key); Sort ▾ Closest to passing (default) · Most asked · Newest ·
+Name.
+
+**Proposal row:** name, "1,500 Ð × 3 payments · You: 1 of 3 voted" (or "once", "You voted Yes", "You: not
+voted"), a vote bar (`mg-votebar`: yes / no / abstain, with the funding-line mark), status chip and the margin
+("+414 over", "105 short").
+
+**Status chips** (D17; engine `ProposalStatus`):
+
+| Engine | Chip | Style | Tooltip |
+|---|---|---|---|
+| Passing | Passing | success | "Enough net yes votes and fits the budget." |
+| Unfunded | Over budget | warning | "Enough votes, but proposals with more votes use up the budget." |
+| Voting | Needs votes | info | "Not enough net yes votes yet." |
+| Failing | Not funded | danger | "More no than yes votes." |
+| Funded | Funded | success | "Paid in the last superblock." |
+| Confirming | Confirming | neutral | "The fee transaction needs 6 confirmations before peers relay it." |
+| Pending | Ready to submit / Fee paid | warning / neutral | Mine only (below) |
+| Lapsed | Ended | neutral | "All payments made or the end date passed." Hidden unless "Show ended proposals" |
+
+**Detail pane:** name, chip + "paid Nov 4 if it stays above the line", "Asks for 1,500 Ð per payment, 3
+payments (Nov 4 to Jan 3)", "Paid to"
+(address, copy), Link (plainBlue; opening shows dash-qt's External Link Warning, default No), weighted votes
+"771 net yes · needs 357" with legend "Yes 812 · No 41 · Abstain 9 · Funding line" (weighted: an evonode counts 4), "Your masternodes" (each
+with its current vote and time, or "Not voted"), [Vote…] filledBlue (opens §4.25.4), More: Copy proposal
+hash · Copy raw JSON. Threshold = max(min quorum, weighted valid masternodes / 10) computed by the engine
+(Core's `fundingthreshold` omits the floor).
+
+**Create proposal** (wizard sheet large, 3 steps; mocks `gov-create`, `gov-create-review`):
+1. **Details:** Name (1–40 characters `a-z 0-9 - _`, help "Lower case letters, digits, - and _"), Link
+   (help "A page describing the proposal, such as a Dash Central or forum post").
+2. **Payments:** First payment (the next 12 superblocks with date and block; help "Payments happen at
+   superblocks, about every 29 days."), Number of payments (1–12; "Last payment Feb 1, 2027."), Amount per
+   payment, Total, Pay to (**A new address in this wallet** / **Another address…**). When the nearest
+   superblock's voting closes within two days the wizard preselects the next one and says so: "Voting for
+   Nov 4 closes in about 1 day 6 hours, so the first payment is Dec 4. New proposals rarely gather enough
+   votes in a day." Info: "Each superblock pays out about 6,018. Passing proposals already ask for 4,760, so
+   yours fits only if it passes with more votes than others that don't fit." (shown once proposals are
+   synced).
+3. **Review and pay the fee:** detail list (Name, Link, Payments "1,200 × 3, Dec 4 to Feb 1 · total
+   3,600", Paid to, Fee "1.00000000 + network fee 0.00000227"), disclosure "Proposal data (JSON)", warning
+   with dash-qt's verbatim bold sentences "Creating a proposal pays 1 DASH to the network. This fee is
+   non-refundable regardless of outcome." then "After it confirms, the wallet submits the proposal for you.
+   You can close this window; Mine shows the progress." Passphrase. [Pay 1 Dash and create].
+
+The chosen first payment is honoured (dash-qt's date bug is not copied). The proposal and its fee
+transaction are saved in the wallet before the fee is sent, so a crash can't burn the fee (D18).
+
+**Mine** (mock `gov-mine`): the user's proposals with their own chips — `Fee paid 0 of 1` ("Fee paid Oct 15
+at 2:02 PM · waiting for its first confirmation, then the wallet submits it"; D16), `Confirming 4 of 6`
+("Submitted · the network shows it after 6 confirmations"), then the public statuses. If submission fails: `Ready to submit` (warning) with [Submit] and the error ("No peer accepted
+the proposal. Try again in a few minutes."). Note "Proposals you create are kept with this wallet, so you can finish them after a restart; they travel
+in wallet backups."
+
+**States** (adds to §4.25.1):
+- **Syncing** (mock `gov-syncing`; engine phases Waiting/SyncingObjects/SyncingVotes): the clock card shows
+  (it needs only headers); the list area is `loading-state` "Loading proposals from the network… 64%"; no
+  counts or tallies show until Synced: "1,204 of about 1,880 objects and votes. Counts appear when the sync
+  is complete, never partly."; the budget card shows only "6,018 available" and "What passing proposals take
+  shows after sync"; Create proposal stays enabled (D21).
+- **No voting key:** info notice "**Browsing only.** This wallet holds no masternode voting keys, so it can
+  read proposals but not vote. You can still create a proposal." [Add a voting key] (opens Track ▸ Add its
+  keys). "Needs my vote" hidden.
+- **Failed:** "Couldn't load proposals: no peer is serving governance data." [Try again].
+- **Empty cycle:** "No proposals for Nov 4 yet." [Create proposal]. **Needs my vote empty:** "You have voted
+  on every open proposal." **Mine empty:** "You haven't created a proposal." **No match:** "No proposals
+  match “fund”."
+- **Disabled** (governance sync off for the network, engine phase Disabled): the tab shows "Governance data is
+  off for this network." without the clock.
+
+#### 4.25.4 Vote sheet
+
+Mock `gov-vote`, result `gov-vote-result`. Sheet medium "Vote on dash-incubator-nov", one proposal per
+sheet (D11).
+- Summary line: amount, payments, status and net votes.
+- **Outcome:** segmented Yes · No · Abstain (radiogroup), no default selection when the user has no current
+  vote; preselects the current vote otherwise.
+- **Vote with:** one row per masternode the engine lists for this wallet (owned and tracked), with a checkbox,
+  name, service, key custody, weight (1, or 4 for an evonode) and current vote. Custody (D13): "key in this
+  wallet" (keychain), "key you added" (tracked, vault), "Its voting key is not in this wallet" + [Add key]
+  (disabled row). Disabled rows also for: voted less than an hour ago ("Voted Yes 40 min ago · can change
+  after 4:12 PM", the network accepts one change per masternode per hour), PoSe banned ("a banned
+  masternode can't vote"). Eligible rows start checked.
+- **Privacy:** warning notice, shown when two or more rows are checked: "Voting with several masternodes at
+  once shows the network that one person controls them. Choose fewer to keep them unlinked." (iOS idea,
+  D12).
+- Note: "A new vote replaces that masternode's earlier one. The network accepts one change per masternode
+  per hour."
+- Footer note "2 masternodes · weight 8 · no fee", Passphrase, [Vote Yes] (label follows the outcome).
+  Votes are free messages, not transactions; no extra confirmation step (D14).
+- **Result** (same sheet): "2 of 2 votes sent" (success) or "1 of 2 votes sent" with per-masternode lines
+  ("Friend's evonode — Not sent: its voting key changed on the network. Add the new key and vote again."),
+  [Done]. Engine `governance.*` codes map to sentences; never raw codes.
+- **States:** locked (passphrase on the sheet); watch-only (Vote disabled, tooltip "Voting needs the
+  wallet that holds the voting keys"); syncing (Vote disabled until Synced: "Votes can be sent once
+  proposals finish loading").
+
+#### 4.25.5 Registration wizard
+
+Sheet large with a step list (`mg-wizard`, 188 px left column) over the current tab; mocks `reg-type` →
+`reg-done`. Footer [Back] tintedGray, [Continue] filledBlue (disabled until the step is valid; the reason is
+the first field error). Esc / close on a step after 1 asks "Discard this registration?" (nothing was sent;
+reserved coins are released). Steps (D25, the order of §5a with the type first):
+
+1. **What and who** (`reg-type`): "What are you setting up?" — **Masternode** ("1,000 Dash collateral. Runs
+   Dash Core.") / **Evonode** ("4,000 Dash collateral. Also runs Dash Platform and earns Platform credits.") /
+   **Shared masternode** ("2 to 8 people each put in a share of the collateral and split the payouts.") (opens §4.25.8; note "Masternodes only; shared
+   evonodes come with a later network upgrade"; disabled without v24, §4.25.1). "Who runs the server?":
+   **A hosting provider, or someone else** ("They give you an operator key (a public key), the server's
+   address and their fee. You keep the collateral and the owner key.") / **I run it myself** ("The wallet fills
+   in the operator key from its masternode keys. You copy the operator secret to your server later, from
+   Masternode keys.").
+2. **Collateral** (`reg-collateral`): "Where is the 1,000 Dash collateral?" / "The collateral stays yours.
+   While it is unspent the masternode stays registered; spending it ends the masternode." — **Send it from
+   this wallet** (FundNew; "Moves 1,000 Dash to a new address in this wallet, in the same transaction as the
+   registration." + "Available: 1,204.37 Dash"; not enough → disabled with "You need 1,000 Dash and the fee;
+   you have 812.40."), **Use a 1,000 Dash output already in this wallet** (ExistingUtxo; "Pick an unspent
+   output of exactly 1,000 Dash."; rows outpoint · address · confirmations; one already used is disabled "In
+   use"), **It is in another wallet** (External; "For example dash-qt or a hardware wallet. Enter the output;
+   before sending you sign a message with that wallet to prove it is yours."; the output must be exactly the
+   collateral at a regular P2PKH address — "This output can't be a masternode collateral: it isn't 1,000 Dash
+   at a regular address.").
+3. **Operator** (`reg-operator`; hosted): Operator public key (BLS, 48 bytes; ok "A valid BLS public key";
+   help "The key the server signs with. Your operator keeps the matching secret on the server; never paste
+   a secret here."; a pasted secret → "This looks like a secret key. Ask your operator for the public key."),
+   Server address (IP and port; required, D26; help "Ask your operator for it. A masternode registered
+   without an address earns nothing until the operator adds one."), Operator's share of payouts (0–100 %,
+   two decimals; help "The operator gets this share of every payout once they set their payout address from
+   the server; until then it stays with you. Leave it at 0 unless you agreed on a share."). Evonode adds
+   Platform node ID, Platform P2P port and Platform HTTPS port (as the operator gives them).
+   **Self-run** (`reg-operator-evo`): the operator key and (evonode) Platform node ID are filled from this
+   wallet's keychain (next unused operator keypair, keypair 3 in the mock) with "Enter one instead"; a note
+   "After registering, put the operator secret on the server: Masternode keys ▸ Operator ▸ Reveal." The
+   wallet never generates a secret for the user to save here (§5a; QT-124's save gate is gone, D27).
+4. **Keys and payout** (`reg-keys`): Owner key — "This wallet, owner keypair 3" / "Controls the
+   registration: changing keys and payout. Always kept in this wallet." (no choice, D25). Voting — **Vote
+   from this wallet** ("Uses voting keypair 3.") / **Let someone else vote** ("Enter their voting address.
+   You can change it later."). Payouts go to — **A new address in this wallet** ("Payouts appear in Activity
+   as "Masternode payout".") / **Another address** ("For example a cold wallet. This wallet then can't show
+   the payouts."). Validation from Core: owner, voting, collateral and payout keys differ.
+   One payout address only (D28).
+5. **Review** (`reg-review`): detail list (Type "Masternode, run by your operator", Collateral with "Locked
+   against spending while the masternode is registered", Server, Operator key "…, from your operator",
+   Operator's share "5% of each payout", Voting, Payouts to, Network fee "…, from this wallet", Then "Send
+   your operator the ProTx hash. The masternode earns once the server runs and the network accepts it."),
+   Passphrase, footer note "Only the fee leaves this wallet." (FundNew: "1,000 Dash move to a new address in
+   this wallet; only the fee leaves it."), [Register]. External collateral: [Continue] to step 6 instead,
+   without the passphrase.
+6. **Prove the collateral** (external only, `reg-prove`): "Sign with the wallet that holds the collateral" /
+   "The collateral b07e…c1d2:0 is in another wallet. In that wallet, sign this message with the collateral's
+   address (in dash-qt: File ▸ Sign message), then paste the signature here." Address (copy), Message (copy,
+   monospaced: `payout|operator share in basis points|owner|voting|payload hash`, Core's format), Signature
+   with a live check ("The signature matches the collateral's address"), "The message holds this
+   registration's details. If you go back and change them, sign again." (D25), Passphrase, [Register]. The
+   prepared registration survives closing the app (`Needs signature` in My masternodes, mock `mn-locked`).
+7. **Sent** (`reg-done`): "Registration sent", chip `Registering` "waiting for 1 confirmation", ProTx hash,
+   next steps (hosted): "Send your operator the ProTx hash. They start the server with it." · "The masternode
+   shows Active once the network sees the server." · "Payouts then arrive in this wallet and show in
+   Activity as "Masternode payout"." Self-run replaces the first with "Reveal the operator secret in
+   Masternode keys and put it on your server." [Copy ProTx hash] [Done].
+
+**States:** locked (passphrase on Review/Prove); watch-only (Set up disabled, §4.25.1); network mismatch
+(per field, §4.25.1); not enough funds (step 2); a collateral-shaped coin spent while the wizard is open
+("This output was spent. Choose another."); engine refusal on Register maps `protx.*` codes to sentences
+("The operator key is already used by another masternode.", "This server address is already registered.").
+
+**Hosted vs self vs shared vs external** are not separate wizards: "who runs it" decides step 3, the
+collateral choice decides step 6, and Shared hands over to §4.25.8.
+
+#### 4.25.6 Change keys, payout, and ending a masternode
+
+**Change keys or payout** (sheet medium, mock `upd-registrar`; ProUpRegTx, QT-125's Update Registrar):
+"Home node · signed with its owner key, which is in this wallet. Change only what you need; the rest
+stays." Fields: Operator public key [Keep current], Voting (Keep / this wallet / another address), Payouts
+go to (Keep / new address / another). When the operator key changes: dash-qt verbatim warning "Changing the
+operator key immediately PoSe-bans the masternode. The new operator must send an Update Service transaction
+to revive it." rendered as "**Changing the operator key immediately PoSe-bans the masternode.** It earns
+nothing until the new operator sends a service update from their server." (D29: the bold sentence is
+verbatim). Note: "A new voting key drops this masternode's current votes; vote again afterwards. Changing
+only the voting key or the payout address doesn't ban the masternode." Network fee, Passphrase; the button
+names the change ("Change operator", "Change voting key", "Change payout", "Save changes" for several).
+Without the owner key the menu item is disabled with "Needs the owner key". Shared masternodes use
+§4.25.8 instead.
+
+**Release collateral** (sheet small, mock `upd-release`): "Home node's 1,000 Dash collateral is locked so you
+don't spend it by accident. Releasing it makes it spendable again." Danger notice "**Spending the collateral
+ends the masternode at once.** It leaves the list, stops earning and can't be brought back; a new masternode
+needs a new registration." Checkbox "I understand that Home node ends when I spend this collateral". "Nothing
+is sent now. Until you spend the coins you can lock them again from this masternode's details." [Release]
+plainRed. This is the owner's way to end a masternode (D24); there is no revoke button.
+
+#### 4.25.7 Operator-only actions (out of scope, explained)
+
+Mock `mn-operator`. More ▸ **Service update or revoke…** (menu note "Done by the operator on the node") opens
+an explanation sheet "Service update and revocation", not a form (D24): "Your operator signs these with the
+operator key, which stays on the node. Dash Wallet doesn't hold it, so it can't send them." Three rows:
+**Bring a banned masternode back** "The operator fixes the server, then sends a service update (`protx
+update_service`) from the node." · **Stop the operator** "The operator can revoke its key (`protx revoke`).
+You can also replace the operator yourself: change the operator key in Change keys or payout. The masternode
+then waits for the new operator's service update." · **End the masternode** "Spend the collateral. The
+masternode leaves the list at once. Use Release collateral in this masternode's More menu." Then "For Office
+node, send your operator this ProTx hash:" (copy) [Copy ProTx hash] [Done]. Self-operators get the same
+sheet: their operator secret is in Masternode keys, and they send these from their node.
+
+Out of scope here, per DASHPAY §5a's right column: ProUpServTx (Update Service, Unban, IOS-081/082 unban),
+ProUpRevTx (Revoke), generating or holding an operator BLS secret the wallet doesn't derive, Platform node
+operation, node administration. QT-124 survives only as the Masternode keys reveal gate.
+
+#### 4.25.8 Shared masternodes (v24, MG-04b, MG-10b)
+
+Mocks in `shared.html`. Needs v24 on the wallet's network (§4.25.1); masternode type only until
+`evo_shares` is active (D33).
+
+**Start or continue** (sheet large, `sh-start`): intro "Two to eight people fund one masternode together and
+split its payouts by share. One person coordinates; everyone else pastes what they receive and copies back a
+reply. Nothing reaches the network until the coordinator sends the registration." Two cards: **Start one**
+([Start a shared masternode]) and **Join or continue** ([Paste] [Open file…]); facts: Shares ("2 to 8. Each is
+at least 100 Dash, and together they make exactly 1,000 Dash."), Your coins ("Stay in this wallet, reserved
+for the session, until the registration is sent."), Leaving ("Anyone can dissolve the masternode alone at
+any time and everyone gets their share back. In the early period, whoever leaves alone pays a penalty to the
+others."); "Sessions in progress" list.
+
+**Coordinator setup** (wizard inside the same sheet; MG-10b details the fields): participants (name, share
+in Dash; live sum "1,000 of 1,000 Dash"), masternode settings (server address, operator public key or "I run
+it myself", operator's share, who votes: "Voting key from this wallet" / "Another address", D34), exit terms
+(early period: None / 3 months / 6 months / 1 year / 2 years, max 420,480 blocks; early-exit penalty in Dash,
+below the smallest share; penalty 0 with an early period shows Core's warning as "With no penalty, anyone
+can leave early for just the network fee."), the coordinator's own contribution (coins reserved). Then the
+invitation: [Copy invitation] [Save to file…], the session code (6 hex) and the check code (`XXXX-XXXX`).
+
+**Session sheet** (`sh-session`): title "Shared masternode · Session 3F9A2C"; stages (`mg-stages`) **1 Invite ·
+2 Collect details · 3 Lock terms · 4 Approvals · 5 Signatures · 6 Send** (D31: user-facing names, not R3's or
+dash-qt's); heading for the current stage ("2 of 3 approved the locked terms"), check code; share bar;
+participants (name, role, share, stage chip `Approved` / `Waiting` / `Signed`); the terms; note "Send each
+reply back here. If a check code differs from the one the sender sees, the message changed on the way: ask
+for it again."; footer [Copy …] [Save to file…] | [Close] [Paste a reply]. The coordinator's last stage is
+[Send registration] with Passphrase.
+
+**Participant:** Paste or open → a summary of the invitation (coordinator, shares, settings, exit terms, check
+code) → [Join with 300 Dash] reserves the coins and produces the reply to copy back. Later pastes (locked
+terms, signing request) open the same session at its stage; approving and signing each ask for the
+passphrase. A participant never builds the transaction.
+
+**Close** (`sh-close`): alert "Keep this session for later?" "Keeping it leaves your 400 Dash reserved so you
+can carry on where you left off. Discarding releases them; if the others are still waiting for you, they
+have to start over." [Discard and release coins] plainRed · [Cancel] · [Keep and close] (D32).
+
+**After registration** (`sh-detail`): the masternode lists under My masternodes ("you hold 1 of 3 shares"),
+pane with the share bar and legend, Your payouts ("40% of each payout to yRw4…n8Ka"), Your refund, Early
+period ("Ends at block 1,319,400, about Apr 13, 2027"), Standby dissolution ("Saved on this computer on Oct
+15" + [Save a copy…]); actions [Change my payout address] (ProUpShareTx, this share only, fee from this
+wallet), [Change keys together] (ProUpSharedRegTx: a new session where every owner approves; operator-key
+warning as §4.25.6), [Dissolve…].
+
+**Standby dissolution:** right after the registration confirms the wallet prepares and stores a
+zero-penalty dissolution of this user's share (valid once the early period ends, Core's advice) and offers
+[Save a copy…] to a file kept elsewhere (D32).
+
+**Dissolve** (sheet medium, `sh-dissolve`), segments **Alone, now · Together · Standby**:
+- Alone: "Dissolving ends the masternode and returns every share to its owner's refund address. You can do
+  it alone at any time." You get back (share − penalty − fee, the fee comes out of your share), the others
+  (their shares plus the penalty split by share), Network fee "0.001 Dash, taken from your share"; in the
+  early period a warning "**Early exit: you pay the 20 Dash penalty.** Leaving is free after block 1,319,400
+  (about Apr 13, 2027), or at any time if everyone agrees: use Together." and a checkbox "I accept paying the
+  20 Dash early-exit penalty" gating [Dissolve now] (plainRed). Passphrase.
+- Together: a session like registration (everyone signs), no penalty.
+- Standby: shows the saved standby, "valid from block 1,319,400", [Send it] when valid.
+
+**States:** v24 inactive (Shared disabled); locked (passphrase per signing stage); watch-only (view only; no
+Start/Join); network mismatch ("This invitation is for Mainnet. This wallet is on Testnet."); bad paste ("This
+isn't a shared-masternode message." / "This reply belongs to session 7B21E0, not 3F9A2C."); too large (over
+2 MiB: "This file is too large to be a shared-masternode message."); a participant's coins spent meanwhile
+("Bob's coins were spent. Ask Bob for a new reply."); coordinator vanished (participant can Discard at any
+time; coins come back at once since nothing was sent).
 
 ---
 
