@@ -84,6 +84,7 @@ contract or §4 table changes, so no Swift T0 run. Copy follows the mobile walle
 | D27 | Wallet scope. The bell's open state belongs to the wallet and main identity that opened it (`Toolbar`'s `bellOwner`): a switch of either while it is open, from the keyboard or a link, closes it, so the next wallet's first page is never marked read unopened. An outcome that ends after the window moved to another wallet is always a toast, named for the wallet it ran in ("Savings: You and heidi are now contacts."); the inline outcome belongs to the view that is gone. One hook says outcomes for every surface (`useActionToast`: the popover, the page, the pane, the request rows, the banner, private details), which also closes D23's gap on Contacts: a pane or row outcome that ends after the page was left is a toast. | Sol r1 findings 1 and 3. |
 | D28 | Focus after an action whose control leaves with its row (`useRefocus`): in the popover and the page, the request now in its place, else the popover's heading or the page's `h1`; in the Contacts list, the next request row, else the page's `h1`; in the pane (Accept, Ignore, Unignore), its actions area with what the pane offers now and the outcome; Enable, the page's `h1`. Only focus that fell to the body moves, and it retries for a few frames while the closing passphrase sheet leaves the shell inert. The pane's buttons are keyed per action, so React does not reuse the Accept element as Pay and keep focus on a now-disabled button. | Sol r1 finding 2 (was review r1 L3). |
 | D29 | Fixture: `World.dashpayOf` gives a wallet its own DashPay state (others share `dashpay`), and `dashpay-two-wallets` has "alice" in both wallets with unread events in each, for D27's tests. The bell tests open the popover only once the bell offers it (`aria-haspopup="dialog"`): before the main identity is known it opens the page, which under load made a keyboard test open the page. | Test support. |
+| D30 | Fix round F1 re-gates the UI half only (`dw-gate-ui.sh` on a `git archive` of the head): nothing Rust, Cargo or CI changed since 7f17b123, whose full gate passed Rust (1894/0). From the F1 delta review: a row outcome counts as shown only while the pane shows that contact (a link's card or Add contact may hold the slot), and an armed refocus disarms after 10 s. Left: the refocus index is the row's place at the click (a request arriving above meanwhile shifts it by one), and the fixture's receive-request usernames and registrations still read the first wallet's DashPay state. | Brief: re-gate; review r2 (F1) L1–L4. |
 
 ## Deferred
 
@@ -112,6 +113,12 @@ tokens, typecheck, vitest 653 passed (46 files), production and fixture builds, 
 control, the selftest judge; Playwright + axe 714 passed, 170 skipped (the visual project without `DW_VISUAL`). The
 UI half is the rerun (`dw-gate-ui.sh`, same copy): the first run's Playwright lost 15 WebKit tests to the 30 s test
 timeout at load 100–211, ten of them in specs this task does not touch (D26).
+
+**Fix round F1 (Sol r1; UI half on a `git archive` of e79012f5, D30):** tokens, typecheck, vitest 653 passed (46
+files), production and fixture builds, the fixture guard and its negative control, the selftest judge; Playwright +
+axe 728 passed, 170 skipped: 711 in the run, and its 17 failures, every one the 30 s test timeout at load 220–255 in
+specs this round does not touch (a11y, onboarding and routes axe states), passed alone (`--last-failed`, D26). The
+new D27/D28 tests fail with their fix reverted (mutation checks on the bell's owner and the toast's wallet name).
 
 **T0 (fixture backend, Playwright in the pinned image, `scripts/e2e-docker.sh`):** vitest 653 passed;
 `e2e/contact-pane.spec.ts`, `e2e/notifications.spec.ts`, `contacts.spec.ts`, `routes.spec.ts` and `screens.spec.ts`,
