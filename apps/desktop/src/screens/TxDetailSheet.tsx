@@ -14,7 +14,7 @@ import type { UsedIcon } from "../components/icons";
 import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
 import { CopyValue, DetailRow } from "../components/detail";
-import { full } from "../format/amount";
+import { useDisplay } from "../format/display";
 import { contactName, detailDate, isProblem, rowDate, shownAmount, txChip, txIcon, txTitle } from "../format/tx";
 
 /** dash-qt `TransactionDesc::FormatTxStatus`, for the states the engine reports. */
@@ -167,15 +167,16 @@ function Body({ d, network, walletId }: { d: TxDetails; network: NetworkInfo; wa
     row?.address ?? d.outputs.find((o) => (amount >= 0 ? o.isMine : !o.isMine) && !o.isChange)?.address ?? null;
   const shown = shownAmount(amount, row?.txType ?? "other");
   const own = d.outputs.some((o) => o.isMine && o.address === counterparty);
+  const display = useDisplay(network);
+  const unit = display.name;
   // The DashPay contact of the record whose title and address the sheet shows (DP3-02 D24).
   const contact = contactName(row?.counterparty);
-  const unit = network.unitName;
   return (
     <>
       <div className="tx-detail-summary" data-testid="tx-detail-summary">
         <Icon id={headerIcon} size={50} />
         <h3 className="tx-detail-title">{row ? txTitle({ ...row, amount }) : "Transaction"}</h3>
-        <AmountText className="tx-detail-amount" text={full(shown.duffs, shown.signed)} unitName={unit} glyphFactor={0.8} />
+        <AmountText className="tx-detail-amount" text={display.full(shown.duffs, shown.signed)} unitName={unit} glyphFactor={0.8} />
         <div className="tx-detail-status">
           {chip && <Chip tone={isProblem(d.status) ? "danger" : "info"}>{chip}</Chip>}
           {date && <span className="tx-detail-date">{detailDate(date, backend.locale)}</span>}
@@ -195,7 +196,7 @@ function Body({ d, network, walletId }: { d: TxDetails; network: NetworkInfo; wa
         )}
         {d.fee !== null && (
           <DetailRow label="Network fee">
-            <AmountText text={full(d.fee, false)} unitName={unit} glyph={false} />
+            <AmountText text={display.full(d.fee)} unitName={unit} glyph={false} />
           </DetailRow>
         )}
         <DetailRow label="Status">{statusText(d.status)}</DetailRow>
@@ -215,7 +216,7 @@ function Body({ d, network, walletId }: { d: TxDetails; network: NetworkInfo; wa
             <li key={`${i.previousTxid}:${i.previousVout}`} className="io-row">
               <span className="mono io-ref">{`${i.previousTxid.slice(0, 16)}…:${i.previousVout}`}</span>
               <span>{i.address ?? "—"}</span>
-              {i.amount !== null ? <AmountText text={full(i.amount, false)} unitName={unit} glyph={false} /> : <span title="Not a wallet input">—</span>}
+              {i.amount !== null ? <AmountText text={display.full(i.amount)} unitName={unit} glyph={false} /> : <span title="Not a wallet input">—</span>}
             </li>
           ))}
         </ul>
@@ -230,7 +231,7 @@ function Body({ d, network, walletId }: { d: TxDetails; network: NetworkInfo; wa
                 {o.address ?? "—"}
                 {o.isChange ? " (change)" : o.isMine ? " (own address)" : ""}
               </span>
-              <AmountText text={full(o.amount, false)} unitName={unit} glyph={false} />
+              <AmountText text={display.full(o.amount)} unitName={unit} glyph={false} />
             </li>
           ))}
         </ul>

@@ -74,9 +74,14 @@ function focusPage() {
   });
 }
 
+/** Said when a link arrives while the wipe sheet is open (D38). */
+export const WIPE_OPEN = "The link was not opened: close “Delete all wallet data?” first";
+
 /** Opens what `route` leads to. Links open while the vault is locked too: the page is there
- * once it unlocks. */
+ * once it unlocks. While the wipe sheet is open nothing opens: the page would go from under it,
+ * and a wipe that then failed would say so nowhere (D38). */
 export function applyLink(route: LinkRoute) {
+  if (ui.get().wiping) return showToast(WIPE_OPEN);
   ui.set({ dialog: null });
   switch (route.kind) {
     case "pay": {
@@ -107,6 +112,8 @@ export function applyLink(route: LinkRoute) {
 /** Carries out a menu or tray command. A route command closes an open dialog first, as a link
  * does, so the page it opens takes the focus. */
 export function runCommand(command: ShellCommand, lock: () => void) {
+  // The wipe sheet is open: only lock and discreet mode leave it in place (D38).
+  if (ui.get().wiping && command.kind !== "lock" && command.kind !== "toggleDiscreet") return;
   switch (command.kind) {
     case "navigate":
       navigate(command.route, { dialog: null });
@@ -133,7 +140,7 @@ export function runCommand(command: ShellCommand, lock: () => void) {
       ui.set({ onboarding: true, dialog: null, detail: null });
       return;
     case "recoveryPhrase":
-      ui.set({ dialog: "recoveryPhrase" });
+      ui.set({ dialog: "recoveryPhrase", recoveryWallet: null });
   }
 }
 

@@ -12,7 +12,8 @@ import { useBackend, useFeePolicy, useUtxos } from "../../api/queries";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText } from "../../components/basics";
 import { LoadingState } from "../../components/history";
-import { compact, full } from "../../format/amount";
+import { full } from "../../format/amount";
+import { useDisplay } from "../../format/display";
 import { shortAddress } from "../../format/tx";
 import { DEFAULT_TARGET_BLOCKS, feeMode, outpointKey, outpointOf, type Advanced, type CoinChoice } from "./model";
 
@@ -60,7 +61,8 @@ function Coins({ walletId, network, advanced, onChange, payAmount }: Props) {
   });
   const toggle = (key: string, on: boolean) =>
     onChange({ ...advanced, selected: on ? [...advanced.selected, key] : advanced.selected.filter((k) => k !== key) });
-  const unit = network.unitName;
+  const shown = useDisplay(network);
+  const unit = shown.name;
   if (utxos.isPending) return <LoadingState testId="coins-loading" text="Loading coins" />;
   if (utxos.isError) return <p className="form-problem">Could not load the coins: {errorMessage(utxos.error)}</p>;
   if (utxos.data.length === 0) return <p className="placeholder-note">This wallet has no coins yet.</p>;
@@ -94,13 +96,13 @@ function Coins({ walletId, network, advanced, onChange, payAmount }: Props) {
                 <td>
                   <input
                     type="checkbox"
-                    aria-label={`Use ${compact(u.amount, false)} ${unit} at ${party}`}
+                    aria-label={`Use ${shown.compact(u.amount)} ${unit} at ${party}`}
                     checked={selected.has(key)}
                     disabled={why !== null && !selected.has(key)}
                     onChange={(e) => toggle(key, e.target.checked)}
                   />
                 </td>
-                <td className="num">{compact(u.amount, false)}</td>
+                <td className="num">{shown.compact(u.amount)}</td>
                 <td title={u.address}>{party}</td>
                 <td className="num">{u.confirmations}</td>
                 <td>{why ?? (u.coinjoinRounds !== null ? `Mixed, ${u.coinjoinRounds} rounds` : u.isChange ? "Change" : "")}</td>
@@ -118,19 +120,19 @@ function Coins({ walletId, network, advanced, onChange, payAmount }: Props) {
           <div>
             <dt>Amount</dt>
             <dd>
-              <AmountText text={full(s.amount, false)} unitName={unit} glyph={false} />
+              <AmountText text={shown.full(s.amount)} unitName={unit} glyph={false} />
             </dd>
           </div>
           <div>
             <dt>Fee</dt>
             <dd>
-              ≈ <AmountText text={full(s.fee, false)} unitName={unit} glyph={false} />
+              ≈ <AmountText text={shown.full(s.fee)} unitName={unit} glyph={false} />
             </dd>
           </div>
           <div>
             <dt>After fee</dt>
             <dd>
-              ≈ <AmountText text={full(s.afterFee, false)} unitName={unit} glyph={false} />
+              ≈ <AmountText text={shown.full(s.afterFee)} unitName={unit} glyph={false} />
             </dd>
           </div>
           <div>
@@ -140,7 +142,7 @@ function Coins({ walletId, network, advanced, onChange, payAmount }: Props) {
           <div>
             <dt>Change</dt>
             <dd>
-              ≈ <AmountText text={full(s.change, false)} unitName={unit} glyph={false} />
+              ≈ <AmountText text={shown.full(s.change)} unitName={unit} glyph={false} />
             </dd>
           </div>
         </dl>
@@ -160,7 +162,7 @@ function Fee({ advanced, onChange, network }: Props) {
   const [text, setText] = useState("");
   const custom = useDebounced(text.trim(), 300);
   const id = useId();
-  const parsed = useQuery({ queryKey: ["parseAmount", custom], queryFn: () => b.parseAmount(custom), enabled: custom !== "", staleTime: Infinity });
+  const parsed = useQuery({ queryKey: ["parseAmount", "dash", custom], queryFn: () => b.parseAmount(custom, "dash"), enabled: custom !== "", staleTime: Infinity });
   const p = policy.data;
   const rate = parsed.data;
   const problem = advanced.fee.kind !== "custom" || custom === "" || parsed.isPending || !p ? null : rateProblem(rate, p, network.unitName);

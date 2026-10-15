@@ -2493,6 +2493,141 @@ button {
   line-height: var(--dw-type-headline-line);
 }
 
+/* ------------------------------------------------------------------ settings (U-04) */
+
+.settings-card > .dash-button-plainBlue,
+.settings-card > .dash-button-plainRed {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-s) var(--dw-space-m);
+  width: 100%;
+  margin: 0;
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.settings-row-title {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.settings-not-yet {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xxxs);
+}
+
+.settings-not-yet + .settings-not-yet {
+  padding-top: var(--dw-space-s);
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.settings-select {
+  padding: var(--dw-space-xs) var(--dw-space-sm);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.settings-hint {
+  margin: 0;
+}
+
+.settings-done {
+  margin: 0;
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.settings-list {
+  margin: 0;
+  padding-left: var(--dw-space-xl);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.settings-details {
+  width: 100%;
+  padding: 0;
+}
+
+.settings-inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--dw-space-m);
+}
+
+.settings-textarea {
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-footnote-size);
+  resize: vertical;
+}
+
+.settings-wallet-list,
+.settings-backup-list {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-wallet,
+.settings-backup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  padding: var(--dw-space-m) 0;
+  min-width: 0;
+}
+
+.settings-wallet + .settings-wallet,
+.settings-backup + .settings-backup {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.settings-wallet .mono,
+.settings-backup .mono {
+  overflow-wrap: anywhere;
+}
+
+.settings-wallet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.settings-wallet-name {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.settings-wallet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+}
+
 /* After `.check-row input`, which it overrides on hero blue. */
 .lock-check input {
   accent-color: var(--dw-c-white);
