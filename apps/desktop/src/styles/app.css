@@ -543,7 +543,9 @@ button {
   display: inline-grid;
   place-items: center;
   border-radius: 50%;
-  background: var(--dw-role-accent-tint);
+  /* The accent tint on a card, opaque: on a selected row or the bell's raised panel a translucent
+     tint would darken under the link-coloured initials (DP2-09 axe). */
+  background: color-mix(in srgb, var(--dw-role-accent) 10%, var(--dw-role-card));
   color: var(--dw-role-text-link);
   font-weight: var(--dw-type-caption1-medium-weight);
 }
@@ -2977,4 +2979,190 @@ button {
 
 .row-menu-items button:disabled {
   color: var(--dw-role-text-tertiary);
+}
+
+/* DP2-09: the contact pane's sections, a request row's Accept and Ignore, the Enable DashPay
+   banner, and the bell's popover and page. */
+
+.contact-row-item.has-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.contact-row-item.has-actions > .contact-row {
+  flex: 1;
+  min-width: 0;
+}
+
+.contact-row-actions {
+  display: flex;
+  flex: none;
+  gap: var(--dw-space-xs);
+  padding-right: var(--dw-space-s);
+}
+
+.contacts-enable-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+}
+
+.contact-pane-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+}
+
+.contact-pane-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  padding-top: var(--dw-space-m);
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.contact-pane-heading,
+.bell-section-title {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.contact-details-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+.contact-note {
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  font-weight: var(--dw-type-body-weight);
+  resize: vertical;
+}
+
+.contact-activity-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.toolbar-bell {
+  position: relative;
+}
+
+.bell-popover {
+  position: absolute;
+  top: calc(100% + var(--dw-space-xs));
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  width: 22rem;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: var(--dw-space-m);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-card-raised);
+  box-shadow: var(--dw-shadow-floating);
+}
+
+.bell-title {
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.bell-title:focus {
+  outline: none;
+}
+
+.bell-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+}
+
+.bell-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bell-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.bell-row-open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--dw-space-s);
+  min-width: 0;
+  padding: var(--dw-space-xs);
+  border: 0;
+  border-radius: var(--dw-radius-small);
+  background: none;
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: left;
+}
+
+button.bell-row-open:hover,
+button.bell-row-open:focus-visible {
+  background: var(--dw-role-accent-tint);
+}
+
+.bell-row-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bell-row-title {
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.bell-row-sub,
+.bell-more {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.bell-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dw-role-accent);
+}
+
+.bell-all {
+  align-self: flex-start;
+}
+
+.notifications {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-l);
+}
+
+.notifications .bell-section {
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card);
 }

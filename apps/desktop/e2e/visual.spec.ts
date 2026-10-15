@@ -159,8 +159,31 @@ for (const theme of THEMES) {
     await page.getByTestId("contacts-group-hidden").getByRole("button").click();
     await page.getByTestId("contact-row").filter({ hasText: "Carol" }).click();
     await page.getByTestId("contact-detail").waitFor();
+    // DP2-09's pane, read in full: the private details and the (empty) activity.
+    await page.getByTestId("contact-private").waitFor();
+    await page.getByTestId("contact-activity-empty").waitFor();
     // No row under the pointer.
     await page.mouse.move(0, 0);
     await shoot(page, "contacts", theme);
+  });
+}
+
+// DP2-09: the bell's popover over Home, and the Notifications page.
+for (const theme of THEMES) {
+  test(`visual bell ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-registered", theme));
+    await page.getByTestId("hero").waitFor();
+    await page.getByTestId("toolbar-bell").click();
+    await page.getByTestId("bell-new").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "bell", theme);
+  });
+
+  test(`visual notifications ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-registered", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "notifications" }));
+    await page.getByTestId("notifications-earlier").waitFor();
+    await shoot(page, "notifications", theme);
   });
 }

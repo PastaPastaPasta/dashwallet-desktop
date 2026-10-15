@@ -25,10 +25,9 @@ const TITLES: Record<Route, string> = {
 };
 
 /** The placeholder text of each route that `Placeholder` renders. */
-const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "tools" | "settings">, string> = {
+const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "tools" | "settings" | "notifications">, string> = {
   coinJoin: "CoinJoin mixing is not available yet.",
   explore: "Explore is not available yet.",
-  notifications: "DashPay notifications are not available yet.",
   profile: "Your DashPay profile is not available yet.",
   joinDashPay: "Creating a DashPay username is not available yet.",
 };
