@@ -45,7 +45,10 @@ function dwcli(root: string, passFile: string, args: string[], input?: string): 
   const r = spawnSync(DWCLI, ["--datadir", root, ...NETWORK, "--passphrase-file", passFile, ...args], { encoding: "utf8", input, timeout: 600_000 });
   if (r.status === 0) return;
   const words = [...new Set(secrets.flatMap((s) => s.split(/\s+/)))].filter(Boolean).sort((a, b) => b.length - a.length);
-  const masked = words.length ? r.stderr.replace(new RegExp(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g"), "***") : r.stderr;
+  // Whole words only: a phrase word inside a longer one ("air" in "repair") stays, so a mask does
+  // not tell which words the phrase holds.
+  const alternation = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const masked = words.length ? r.stderr.replace(new RegExp(`(?<![\\w-])(?:${alternation})(?![\\w-])`, "g"), "***") : r.stderr;
   throw new Error(`dwcli ${args[0]} failed (${r.status}): ${masked.slice(-600)}`);
 }
 
@@ -133,15 +136,17 @@ async function run(passphrase: string, wd: WebDriver, step: (s: string) => void)
   // The local search keeps the contact; the network search reads DPNS (a read, no write).
   const prefix = EXPECT[0].slice(0, 5);
   await wd.fill(`${tid("contacts-search")} input`, prefix);
-  const network = await poll(TIMEOUT_MS, "the network search to answer", () =>
-    wd.script<string | undefined>(`
+  // WebDriver returns a script's `undefined` as `null`: both mean "not yet".
+  const network = await poll(TIMEOUT_MS, "the network search to answer", async () =>
+    (await wd.script<string | null>(`
       const n = document.querySelector('${tid("contacts-network")}');
-      if (!n || n.getAttribute('aria-busy') === 'true') return undefined;
-      return n.innerText;`),
+      return !n || n.getAttribute('aria-busy') === 'true' ? null : n.innerText;`)) ?? undefined,
   );
-  const filtered = await poll(TIMEOUT_MS, `the search “${prefix}” to keep ${EXPECT[0]}`, async () => {
+  // The filtered list: the contact kept, every row matching the prefix (the others dropped).
+  const matches = (r: Row) => `${r.name} ${r.username ?? ""}`.toLowerCase().includes(prefix.toLowerCase());
+  const filtered = await poll(TIMEOUT_MS, `the search “${prefix}” to keep only matches, ${EXPECT[0]} among them`, async () => {
     const rows = await wd.script<Row[]>(ROWS_SCRIPT);
-    return rows.some((r) => isRow(r, EXPECT[0])) ? rows : undefined;
+    return rows.some((r) => isRow(r, EXPECT[0])) && rows.every(matches) ? rows : undefined;
   });
   result.search = { prefix, rows: filtered.map((r) => r.name), network };
   await wd.screenshot("5-search");
@@ -170,7 +175,7 @@ async function main() {
     dwcli(dataRoot, passFile, ["init-vault"]);
     dwcli(dataRoot, passFile, ["import", "--birth-height", BIRTH_HEIGHT, "--name", `Fixture ${WALLET}`], `${phrase}\n`);
     step(`testnet data root with fixture wallet ${WALLET}, birth ${BIRTH_HEIGHT}`);
-    const started = await startDriver(PORT, OUT);
+    const started = await startDriver(PORT, OUT, (d) => (driver = d));
     driver = started.driver;
     const wd = new WebDriver(started.base, OUT);
     try {
@@ -202,17 +207,23 @@ async function main() {
   console.log(`contacts: PASS (${steps.length} steps); screenshots in ${OUT}`);
 }
 
-/** Interrupted (Ctrl-C, an outer timeout): stop the app, delete the vault and passphrase, and
- * delete any file of OUT holding a secret, as a normal exit does. */
-function interrupted(signal: NodeJS.Signals) {
-  stopDriver(driver);
-  if (work) rmSync(work, { recursive: true, force: true });
-  for (const f of leaks(OUT, secrets)) rmSync(f.replace(/ \(\d+\)$/, ""), { force: true });
+/** Interrupted (Ctrl-C, an outer timeout): stop the app and wait for it, delete the vault and
+ * passphrase, and delete any file of OUT holding a secret, as a normal exit does. A signal that
+ * lands while dwcli runs waits for it (`spawnSync`). */
+async function interrupted(signal: NodeJS.Signals) {
   console.error(`contacts: FAIL: ${signal}`);
+  stopDriver(driver);
+  await driverGone(driver);
+  try {
+    if (work) rmSync(work, { recursive: true, force: true, maxRetries: 3 });
+  } catch (e) {
+    console.error(`contacts: could not remove ${work}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  for (const f of leaks(OUT, secrets)) rmSync(f.replace(/ \(\d+\)$/, ""), { force: true });
   process.exit(1);
 }
-process.once("SIGINT", interrupted);
-process.once("SIGTERM", interrupted);
+process.once("SIGINT", (s) => void interrupted(s));
+process.once("SIGTERM", (s) => void interrupted(s));
 
 main()
   .catch((e) => {
