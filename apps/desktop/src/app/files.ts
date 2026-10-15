@@ -23,18 +23,18 @@ export function base64ToBytes(b64: string): Uint8Array {
 }
 
 /** The open dialog for `purpose`, then the chosen file; `null` when the user cancelled. */
-export const openFile = (b: Backend, purpose: FilePurpose): Promise<OpenedFile | null> => b.openFile(purpose);
+export const openFile = (b: Pick<Backend, "openFile">, purpose: FilePurpose): Promise<OpenedFile | null> => b.openFile(purpose);
 
 /** The save dialog, offering `name`, then `text` written there owner-only; the path, `null` when
  * the user cancelled. */
-export const saveText = (b: Backend, purpose: FilePurpose, name: string, text: string): Promise<string | null> =>
+export const saveText = (b: Pick<Backend, "saveFileAs">, purpose: FilePurpose, name: string, text: string): Promise<string | null> =>
   b.saveFileAs(purpose, name, textToBase64(text));
 
 /** `saveText` for bytes already in base64 (a PSBT). */
-export const saveBase64 = (b: Backend, purpose: FilePurpose, name: string, data: string): Promise<string | null> => b.saveFileAs(purpose, name, data);
+export const saveBase64 = (b: Pick<Backend, "saveFileAs">, purpose: FilePurpose, name: string, data: string): Promise<string | null> => b.saveFileAs(purpose, name, data);
 
 /** The dialog alone, for a file the engine reads or writes itself (U-04). */
-export const chooseFilePath = (b: Backend, purpose: FilePurpose, save: boolean, suggestedName: string | null): Promise<string | null> =>
+export const chooseFilePath = (b: Pick<Backend, "chooseFilePath">, purpose: FilePurpose, save: boolean, suggestedName: string | null): Promise<string | null> =>
   b.chooseFilePath(purpose, save, suggestedName);
 
 /** Why a file call failed, for a line under the button. The too-large text is the caller's, which
