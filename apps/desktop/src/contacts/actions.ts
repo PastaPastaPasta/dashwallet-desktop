@@ -1,5 +1,5 @@
-// The contact actions one surface runs (DP2-09 D3, D16): Accept, Ignore, Unignore, saving the
-// private details and enabling DashPay's keys, for the window's wallet and its main identity.
+// The contact actions one surface runs (DP2-09 D3, D16): Send (DP2-08 D5), Accept, Ignore,
+// Unignore, saving the private details and enabling DashPay's keys, for the window's wallet and its main identity.
 // Each Platform write sizes its `platformOp` grant with `grant_request` and gets it through
 // U-05's GrantModel (the passphrase sheet when needed). One action runs at a time; the screens
 // read `running` to disable their buttons and show the outcome where the action was (D4).
@@ -10,15 +10,16 @@ import type { GrantAction } from "../api/generated/GrantAction";
 import type { PrivateContactDetails } from "../api/generated/PrivateContactDetails";
 import type { PublishStateName } from "../api/generated/PublishStateName";
 import { Model } from "../onboarding/model";
+import { eligibilityLine, SCAN_EXPIRED } from "./add";
 import { ENABLE_FIRST } from "./pane";
 import type { GrantModel } from "../tools/grant";
 
 export type ActionApi = Pick<
   Backend,
-  "grantRequest" | "dashpayAcceptRequest" | "dashpayIgnoreContact" | "dashpayUnignoreContact" | "dashpaySetPrivateDetails" | "dashpayEnableKeys"
+  "grantRequest" | "dashpaySendRequest" | "dashpayAcceptRequest" | "dashpayIgnoreContact" | "dashpayUnignoreContact" | "dashpaySetPrivateDetails" | "dashpayEnableKeys"
 >;
 
-export type ActionKind = "accept" | "ignore" | "unignore" | "details" | "enable";
+export type ActionKind = "send" | "accept" | "ignore" | "unignore" | "details" | "enable";
 
 /** What an action did, said where it ran; `contact` is `null` for Enable. */
 export interface ActionOutcome {
@@ -32,8 +33,13 @@ export interface ActionOutcome {
  * contacts of the identity, its identities (keys), or its cached network search (D6). */
 export type Refresh = "contacts" | "identities" | "search";
 
-/** D4: the copy of a refusal. */
-export function actionError(e: unknown): string {
+/** D4: the copy of a refusal; `name` is the contact's, for the ones that name it. */
+export function actionError(e: unknown, name: string | null = null): string {
+  if (hasCode(e, "contact.ineligible") && e.data?.kind === "ineligible" && e.data.reason !== "noDashPayKeys")
+    return eligibilityLine(e.data.reason).text ?? e.message;
+  if (hasCode(e, "contact.request_pending")) return `A contact request to ${name ?? "them"} is already being sent.`;
+  if (hasCode(e, "contact.scan_expired")) return SCAN_EXPIRED;
+  if (hasCode(e, "contact.self")) return "This is you.";
   if (hasCode(e, "platform.insufficient_credits")) return "Not enough credits. Top up your credits and try again.";
   if (hasCode(e, "contact.ineligible")) return ENABLE_FIRST;
   if (hasCode(e, "contact.already_contact")) return "You are already contacts.";
@@ -81,10 +87,20 @@ export class ContactActions extends Model {
     return this.running?.kind === kind && this.running.contact === contact;
   }
 
+  /** Sends a contact request to `contact` (DP2-08 D5), with the auto-accept `scan` it answers
+   * (D7). Their request was already in: they are contacts now. */
+  send(contact: string, name: string, scan: string | null): Promise<ActionOutcome | null> {
+    return this.#run("send", contact, ["contacts", "search"], name, async () => {
+      const done = await this.#withPlatformGrant({ kind: "sendRequest" }, (grant) => this.api.dashpaySendRequest(this.walletId, this.identity, contact, scan, grant.id));
+      if (!done) return null;
+      return done.kind === "established" ? `You and ${name} are now contacts.` : `Contact request sent to ${name}.`;
+    });
+  }
+
   /** Accepts `contact`'s request (D3): it sends the reverse request under a grant. Already
    * contacts (another surface or device accepted first) is what was asked for. */
   accept(contact: string, name: string): Promise<ActionOutcome | null> {
-    return this.#run("accept", contact, ["contacts"], async () => {
+    return this.#run("accept", contact, ["contacts"], name, async () => {
       const text = `You and ${name} are now contacts.`;
       try {
         const done = await this.#withPlatformGrant({ kind: "acceptRequest" }, (grant) => this.api.dashpayAcceptRequest(this.walletId, this.identity, contact, grant.id));
@@ -98,7 +114,7 @@ export class ContactActions extends Model {
 
   /** Ignores `contact`'s request (D5): free, reversible from Hidden. */
   ignore(contact: string): Promise<ActionOutcome | null> {
-    return this.#run("ignore", contact, ["contacts"], async () => {
+    return this.#run("ignore", contact, ["contacts"], null, async () => {
       await this.api.dashpayIgnoreContact(this.walletId, this.identity, contact);
       return "Request ignored. You can find it under Hidden.";
     });
@@ -106,7 +122,7 @@ export class ContactActions extends Model {
 
   /** Unignores `contact` (D5); the cached network search is read again (D6). */
   unignore(contact: string): Promise<ActionOutcome | null> {
-    return this.#run("unignore", contact, ["contacts", "search"], async () => {
+    return this.#run("unignore", contact, ["contacts", "search"], null, async () => {
       await this.api.dashpayUnignoreContact(this.walletId, this.identity, contact);
       return "The request is back in Contact Requests.";
     });
@@ -114,7 +130,7 @@ export class ContactActions extends Model {
 
   /** Saves `contact`'s private details, publishing them under a grant (D7). */
   saveDetails(contact: string, details: PrivateContactDetails): Promise<ActionOutcome | null> {
-    return this.#run("details", contact, ["contacts"], async () => {
+    return this.#run("details", contact, ["contacts"], null, async () => {
       const state = await this.#withPlatformGrant({ kind: "publishPrivateDetails" }, async (grant) => {
         try {
           return await this.api.dashpaySetPrivateDetails(this.walletId, this.identity, contact, details, grant.id);
@@ -129,7 +145,7 @@ export class ContactActions extends Model {
 
   /** Adds the identity's DashPay keys (D10). */
   enable(): Promise<ActionOutcome | null> {
-    return this.#run("enable", null, ["identities"], async () => {
+    return this.#run("enable", null, ["identities"], null, async () => {
       const done = await this.#withPlatformGrant({ kind: "enableDashPayKeys" }, async (grant) => {
         try {
           await this.api.dashpayEnableKeys(this.walletId, this.identity, grant.id);
@@ -157,7 +173,7 @@ export class ContactActions extends Model {
   }
 
   /** One action at a time: its outcome, or `null` when it was cancelled or another one runs. */
-  async #run(kind: ActionKind, contact: string | null, refresh: Refresh[], act: () => Promise<string | null>): Promise<ActionOutcome | null> {
+  async #run(kind: ActionKind, contact: string | null, refresh: Refresh[], name: string | null, act: () => Promise<string | null>): Promise<ActionOutcome | null> {
     if (this.running) return null;
     this.running = { kind, contact };
     this.outcome = null;
@@ -167,7 +183,7 @@ export class ContactActions extends Model {
       const text = await act();
       if (text) outcome = { kind, contact, ok: true, text };
     } catch (e) {
-      outcome = { kind, contact, ok: false, text: actionError(e) };
+      outcome = { kind, contact, ok: false, text: actionError(e, name) };
     } finally {
       this.running = null;
       this.outcome = outcome;

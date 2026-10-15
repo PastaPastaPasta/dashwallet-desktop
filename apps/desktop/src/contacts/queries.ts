@@ -119,3 +119,32 @@ export function useEnableBanner(walletId: string, identity: string): { banner: E
   });
   return { banner: enableBanner(identity, hasKeys, costs.data), hasKeys };
 }
+
+/** Whether `identity` may send a request to `contact` (DP2-08 D4); under `["dashpay"]`, so the
+ * DashPay signals and every action's re-read check again (D14). Idle while `contact` is `null`. */
+export function useEligibility(walletId: string, identity: string | null, contact: string | null) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: ["dashpay", "eligibility", walletId, identity, contact] as const,
+    queryFn: () => b.dashpayEligibility(walletId, identity!, contact!),
+    enabled: identity !== null && contact !== null,
+    retry: false,
+  });
+}
+
+/** The identity's `dashpay://user` link for My QR (DP2-08 D12); under `["dashpay"]`, so a new
+ * main name re-reads it. */
+export function useMyUserLink(walletId: string, identity: string) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: ["dashpay", "myUserLink", walletId, identity] as const,
+    queryFn: () => b.dashpayMyUserLink(walletId, identity),
+    retry: false,
+  });
+}
+
+/** How this OS scans a screen region (DP2-08 D10); it never changes. */
+export function useScreenScanMode() {
+  const b = useBackend();
+  return useQuery({ queryKey: ["screenScanMode"] as const, queryFn: () => b.screenScanMode(), staleTime: Infinity });
+}
