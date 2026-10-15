@@ -187,7 +187,7 @@ Unit tests lead with the parity row they cover (`src/tools/*.test.ts`); Playwrig
 ## T1 evidence
 
 `scripts/e2e-tauri-tools.sh` on agentbox (2026-10-15, display :57, dashd 23.1.0 regtest), 11 steps,
-PASS:
+PASS at 9c27eb71 (after the follow-merge of main dcc2a62a, U-04):
 
 1. dashd mines 101 blocks; dwcli makes an encrypted vault and a wallet; dashd pays it 10 DASH, one
    block. The app syncs SPV from dashd alone and is unlocked; Pay counts the 10 DASH.
