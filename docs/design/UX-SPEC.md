@@ -1025,7 +1025,8 @@ result" with Amount, To, "Sent Oct 15 at 3:41 PM · last checked 3:44 PM", "The 
 Platform hasn't confirmed the result yet. The wallet is checking whether Platform applied it.", and the
 warning "**Don't send it again from
 another device.** If this one went through, sending again would start a second withdrawal. Withdraw stays
-off until Platform confirms or rejects it." Withdraw is disabled (tooltip "Waiting for the result of the
+off while the wallet checks the result." (shown in Sent; the Couldn't confirm row replaces it) Withdraw is
+disabled (tooltip "Waiting for the result of the
 withdrawal already sent"); [Close] keeps checking ("Keeps checking after you close this"), across restarts.
 This needs an extended Platform-wallet API (MG-13 dependency, D44): before broadcasting, the engine
 hands back and the wallet stores the signed transition, its ID and the identity nonce it used; an
@@ -1040,19 +1041,40 @@ bytes. The outcomes:
 - **Still checking:** anything else. The wallet looks the transition up and rebroadcasts the **same**
   signed bytes now and then (same nonce, so it can't apply twice); nothing new is offered to send. Neither
   the balance (rewards can credit it meanwhile) nor the nonce counts as proof, and a **nonce rejection of a
-  rebroadcast** ("already present", "too far in past") proves nothing either way: Platform nonces work in a
-  window, and that nonce was used by this withdrawal or by another request that took the same number.
-- **Couldn't confirm** (D47): once a rebroadcast is refused because its nonce was used and no proof is
-  found, the row reads "Couldn't confirm this withdrawal. This evonode's Platform nonce was used, by this
-  withdrawal or by another request. Check whether 0.4199 Dash arrived at yPay8vK2…Wm4c (Activity, or a
-  block explorer; withdrawals can take a few hours)." with [It arrived] (→ "Withdrawal done") and [It
-  didn't arrive…], which asks "Allow a new withdrawal? If the first one did go through, a new one withdraws
-  again from this evonode's credits. Only continue if 0.4199 Dash didn't arrive." [Cancel] [Allow a new
-  withdrawal]. Withdraw stays off until one of the two is chosen; the wallet keeps looking for proof
-  meanwhile and settles the state itself if it finds it.
+  rebroadcast** proves nothing either way: Platform nonces work in a window ("already present" means that
+  nonce was used, by this withdrawal or by another request; "too far in past" only that the window moved
+  on). Either one, with no proof, moves to Couldn't confirm.
+- **Couldn't confirm** (D47): once the identical transition can no longer be accepted and no proof is
+  found. Two branches, by the rebroadcast's nonce error:
+  - "already present": "Couldn't confirm this withdrawal. Its nonce was used, by this withdrawal or by
+    another request from this evonode, so it can't be sent again."
+  - "too far in past": "Couldn't confirm this withdrawal. The original request is too old to retry, and
+    the wallet still can't confirm whether it went through." (Platform's window moved on; this says nothing
+    about whether that nonce was used.)
 
-While any of these is open, the summary's "Evonode credits" note reads "withdrawal being checked", and the
-evonode's pane shows the same state with Withdraw credits disabled (mock `mn-withdraw-pending`, behind the
+  Both continue "Check whether 0.4199 Dash arrived at yPay8vK2…Wm4c (Activity, or a block explorer;
+  withdrawals can take a few hours)." with [It arrived] and [It didn't arrive…]; the second asks "Allow a
+  new withdrawal? If the first one did go through, a new one withdraws again from this evonode's credits.
+  Only continue if 0.4199 Dash didn't arrive." [Cancel] [Allow a new withdrawal]. Withdraw stays off until
+  one is chosen.
+- **Marked as received / Marked as not received** (D47): the user's choice, recorded as such and never as
+  "Withdrawal done". The row reads "Marked as received" (or "Marked as not received"); the detail view adds
+  a quiet "You marked this; the network hasn't confirmed it." Withdraw is enabled again. The wallet keeps
+  the transition ID and signed bytes and keeps looking the transition up (no rebroadcast: it can't be
+  accepted any more).
+- **Late proof** (D47): proof found after "Marked as received" upgrades the record to "Withdrawal done"
+  without a notice. Proof found after "Marked as not received" corrects the record to "Withdrawal done" and
+  shows a notice: "The withdrawal of 0.4199 Dash sent Oct 15 did go through. Its record now says Withdrawal
+  done. If you withdrew again since, both withdrawals went to yPay8vK2…Wm4c." Proof found while still in
+  Couldn't confirm settles it as Done directly. There is no proof that a transition was **not** applied,
+  so nothing downgrades a marked record.
+
+The state machine: Sent → Done (proof) · Rejected (merits) · Couldn't confirm (no longer acceptable, no
+proof); Couldn't confirm → Marked as received · Marked as not received (user) · Done (late proof); Marked as
+received → Done (late proof, silent); Marked as not received → Done (late proof, with the notice).
+
+While Sent or Couldn't confirm is open, the summary's "Evonode credits" note reads "withdrawal being
+checked", and the evonode's pane shows the same state with Withdraw credits disabled (mock `mn-withdraw-pending`, behind the
 sheet).
 
 #### 4.25.3 Governance
@@ -1116,9 +1138,11 @@ hash · Copy raw JSON. Threshold = max(min quorum, weighted valid masternodes / 
 — Last superblock "Block 2,358,432 · Oct 6", Estimated cutoff "Block 2,373,386 · about Nov 1: votes after it may be too late for the Nov 4 payout", Next superblock
 "Block 2,375,048 · about Nov 4", Cycle "16,616 blocks; the network starts fixing a payout 1,662 blocks before its superblock";
 **Votes and budget** — Voting weight "3,570: 2,850 masternodes and 180 evonodes, which count 4 each", Funding
-line "357 net yes votes: a tenth of the weight, and at least 10", Budget "6,018 per superblock · 4,760 to 9
-passing proposals", Proposals "37 open · 9 passing · 2 over budget", Data "Up to date at block 2,372,666 ·
-from 8 peers". Before sync, the vote and budget rows show "after sync". [Done].
+line "357 net yes votes: a tenth of the weight, and at least 10", Budget "6,018 per superblock" (these three
+are exact, from the chain and the masternode list, and carry no "about"), **Passing, estimated** "about
+4,760 to about 9 of 37 open · about 2 more over budget" (the only vote-derived row; its label scopes the
+estimate), Data "Block 2,372,666 · 8 peers; some votes may be missing" (D45). Before sync, the vote and
+budget rows show "after sync". [Done].
 
 **Create proposal** (wizard sheet large, 3 steps; mocks `gov-create`, `gov-create-review`):
 1. **Details:** Name (1–40 characters `a-z 0-9 - _`, help "Lower case letters, digits, - and _"), Link
@@ -1128,9 +1152,10 @@ from 8 peers". Before sync, the vote and budget rows show "after sync". [Done].
    payment, Total, Pay to (**A new address in this wallet** / **Another address…**). When the nearest
    superblock's estimated cutoff is within two days the wizard preselects the next one and says so: "The
    estimated cutoff for the Nov 4 payout is in about 1 day 6 hours, so the first payment is Dec 4. New proposals rarely gather enough
-   votes in a day." Info: "Each superblock pays out about 6,018. Passing proposals already ask for 4,760, so
-   yours fits only if it passes with more votes than others that don't fit." (shown once proposals are
-   synced).
+   votes in a day." Info: "Each superblock pays out 6,018. From the votes peers have sent, passing proposals
+   already ask for about 4,760, so yours fits only if it passes with more votes than others that don't
+   fit." (shown once proposals are synced; the budget is exact, the passing total an estimate, D45; this
+   is shown before the non-refundable 1 Dash fee).
 3. **Review and pay the fee:** detail list (Name, Link, Payments "1,200 × 3, Dec 4 to Feb 1 · total
    3,600", Paid to, Fee "1.00000000 + network fee 0.00000227"), disclosure "Proposal data (JSON)", warning
    with dash-qt's verbatim bold sentences "Creating a proposal pays 1 DASH to the network. This fee is

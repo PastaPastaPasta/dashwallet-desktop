@@ -121,7 +121,8 @@ def shell(frame: dict, page: str, sheet: str) -> str:
     lock = frame.get("lock", "Unlocked")
     net = frame.get("net", "tDASH")
     status_right = "".join(f"<span>{x}</span>" for x in frame.get("right", f"{net}|HD|{lock}|8 peers|Synced").split("|"))
-    layer = f'<div class="sheet-scrim">{sheet}</div>' if sheet.strip() else ""
+    # Strip the frame bodies so the template emits no whitespace-only lines (git diff --check).
+    layer = f'\n <div class="sheet-scrim">{sheet.strip()}</div>' if sheet.strip() else ""
     return f"""
 <div class="app" data-mock-shell>
  <div class="app-chrome">
@@ -138,11 +139,10 @@ def shell(frame: dict, page: str, sheet: str) -> str:
   </header>
   <div class="app-body">
    <nav class="sidebar" aria-label="Main"><ul role="list" class="sidebar-list">{"".join(items)}</ul></nav>
-   {page}
+   {page.strip()}
   </div>
   <footer class="status-bar"><span class="status-left"><span role="status">{html.escape(frame.get("status", "Up to date"))}</span></span><span class="status-right">{status_right}</span></footer>
- </div>
- {layer}
+ </div>{layer}
 </div>"""
 
 
