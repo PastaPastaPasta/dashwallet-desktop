@@ -189,7 +189,8 @@ for (const theme of THEMES) {
     test(`visual dashpay-card-${state} ${theme}`, async ({ page }) => {
       await page.goto(fixtureUrl(scenario, theme, extra));
       const card = page.getByTestId("dashpay-card");
-      await card.waitFor();
+      // S17 waits out D21's hold.
+      await card.waitFor({ timeout: 20_000 });
       await fontsReady(page);
       await expect(card).toHaveScreenshot(`${theme}-dashpay-card-${state}.png`, SHOT);
     });
