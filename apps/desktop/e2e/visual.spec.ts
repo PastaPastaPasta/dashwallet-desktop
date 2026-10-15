@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { CARDS, CHIPS } from "./dashpay";
 import { fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
 import { showSettingsView, type SettingsView } from "./settings";
 import { showWalletView, type WalletView } from "./wallet";
@@ -162,5 +163,68 @@ for (const theme of THEMES) {
     // No row under the pointer.
     await page.mouse.move(0, 0);
     await shoot(page, "contacts", theme);
+  });
+}
+
+// DP1-08: every Home card state and identity chip (element shots), the Join DashPay page's
+// readiness states, the voting info and the FAQ.
+const SHOT = { animations: "disabled", caret: "hide" } as const;
+
+const JOIN: Record<string, { scenario: string; ready: string }> = {
+  join: { scenario: "dashpay-no-identity", ready: "join-cost" },
+  "join-shortfall": { scenario: "empty", ready: "join-shortfall" },
+  "join-waiting": { scenario: "dashpay-waiting-for-sync", ready: "join-waiting" },
+  "join-watch-only": { scenario: "dashpay-watch-only", ready: "join-watch-only" },
+  "join-voting": { scenario: "dashpay-contest-pending", ready: "dashpay-card" },
+};
+
+async function openJoin(page: Page, scenario: string, theme: Theme) {
+  await page.goto(fixtureUrl(scenario, theme));
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "joinDashPay" }));
+}
+
+for (const theme of THEMES) {
+  for (const [state, { scenario, extra }] of Object.entries(CARDS)) {
+    test(`visual dashpay-card-${state} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(scenario, theme, extra));
+      const card = page.getByTestId("dashpay-card");
+      await card.waitFor();
+      await fontsReady(page);
+      await expect(card).toHaveScreenshot(`${theme}-dashpay-card-${state}.png`, SHOT);
+    });
+  }
+  for (const [kind, scenario] of Object.entries(CHIPS)) {
+    test(`visual dashpay-chip-${kind} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(scenario, theme));
+      const chip = page.getByTestId("toolbar-chip");
+      await chip.waitFor();
+      // The registration's username or the main name, once read.
+      if (kind === "registeringLabel") await expect(chip).toContainText("@alice");
+      if (kind === "identity") await expect(chip).toContainText("@alice");
+      await fontsReady(page);
+      await expect(chip).toHaveScreenshot(`${theme}-dashpay-chip-${kind}.png`, SHOT);
+    });
+  }
+  for (const [name, { scenario, ready }] of Object.entries(JOIN)) {
+    test(`visual dashpay-${name} ${theme}`, async ({ page }) => {
+      await openJoin(page, scenario, theme);
+      await page.getByTestId(ready).waitFor();
+      await shoot(page, `dashpay-${name}`, theme);
+    });
+  }
+  test(`visual dashpay-voting-info ${theme}`, async ({ page }) => {
+    await openJoin(page, "dashpay-no-identity", theme);
+    await page.getByTestId("join-voting-info").click();
+    await page.getByTestId("voting-info").waitFor();
+    await shoot(page, "dashpay-voting-info", theme);
+  });
+  test(`visual dashpay-faq ${theme}`, async ({ page }) => {
+    await openJoin(page, "dashpay-no-identity", theme);
+    await page.getByTestId("join-faq").click();
+    await page.getByTestId("dashpay-faq-item").first().locator("summary").click();
+    // No question under the pointer.
+    await page.mouse.move(0, 0);
+    await shoot(page, "dashpay-faq", theme);
   });
 }
