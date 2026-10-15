@@ -168,6 +168,32 @@ for (const theme of THEMES) {
   });
 }
 
+// DP2-08: Add Contact with a search hit's card (Send), and My QR.
+for (const theme of THEMES) {
+  test(`visual add-contact ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-registered", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "contacts" }));
+    await page.getByTestId("contacts-add").click();
+    await page.getByRole("searchbox", { name: "Search username" }).fill("ma");
+    await page.getByTestId("add-contact-hit").filter({ hasText: "Marta" }).click();
+    await page.getByTestId("add-contact-send").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "add-contact", theme);
+  });
+
+  test(`visual add-contact-my-qr ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-registered", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "contacts" }));
+    await page.getByTestId("contacts-add").click();
+    await page.getByTestId("add-contact-tabs-myQr").click();
+    await page.getByTestId("add-contact-qr").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "add-contact-my-qr", theme);
+  });
+}
+
 // DP2-09: the bell's popover over Home, and the Notifications page.
 for (const theme of THEMES) {
   test(`visual bell ${theme}`, async ({ page }) => {
