@@ -1064,8 +1064,13 @@ bytes. The outcomes:
   accepted any more).
 - **Late proof** (D47): proof found after "Marked as received" upgrades the record to "Withdrawal done"
   without a notice. Proof found after "Marked as not received" corrects the record to "Withdrawal done" and
-  shows a notice: "The withdrawal of 0.4199 Dash sent Oct 15 did go through. Its record now says Withdrawal
-  done. If you withdrew again since, both withdrawals went to yPay8vK2…Wm4c." Proof found while still in
+  shows a notice naming the proven withdrawal and its stored destination: "The withdrawal of 0.4199 Dash
+  to yPay8vK2…Wm4c, sent Oct 15, did go through. Its record now says Withdrawal done. If you withdrew again
+  since, that withdrawal may also have gone through: check its own status and destination." When this
+  wallet sent the later withdrawal, the notice links it ([Show the later withdrawal]); only when that later
+  transition has proof too does the notice say both went through, each with its own amount and
+  destination ("Both withdrawals went through: 0.4199 Dash to yPay8vK2…Wm4c on Oct 15, and 0.4199 Dash to
+  yQx7…3hLp on Oct 16."). Proof found while still in
   Couldn't confirm settles it as Done directly. There is no proof that a transition was **not** applied,
   so nothing downgrades a marked record.
 
@@ -1152,7 +1157,7 @@ budget rows show "after sync". [Done].
    payment, Total, Pay to (**A new address in this wallet** / **Another address…**). When the nearest
    superblock's estimated cutoff is within two days the wizard preselects the next one and says so: "The
    estimated cutoff for the Nov 4 payout is in about 1 day 6 hours, so the first payment is Dec 4. New proposals rarely gather enough
-   votes in a day." Info: "Each superblock pays out 6,018. From the votes peers have sent, passing proposals
+   votes in a day." Info: "Up to 6,018 Dash is available at each superblock. From the votes peers have sent, passing proposals
    already ask for about 4,760, so yours fits only if it passes with more votes than others that don't
    fit." (shown once proposals are synced; the budget is exact, the passing total an estimate, D45; this
    is shown before the non-refundable 1 Dash fee).
