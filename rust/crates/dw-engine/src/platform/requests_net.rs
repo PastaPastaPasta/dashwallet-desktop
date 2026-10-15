@@ -4,16 +4,22 @@
 //! every refusal and write boundary without a network. Not part of the
 //! facade.
 
-use dash_sdk::platform::Fetch;
+use dash_sdk::drive::query::{WhereClause, WhereOperator};
+use dash_sdk::platform::transition::put_document::PutDocument;
+use dash_sdk::platform::{DocumentQuery, Fetch, FetchMany};
 use dash_sdk::query_types::IdentityBalance;
+use dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dpp::document::{Document, DocumentV0, DocumentV0Getters, INITIAL_REVISION};
 use dpp::identity::{Identity, IdentityPublicKey};
+use dpp::platform_value::platform_value;
 use dpp::prelude::Identifier;
 use platform_wallet::{
     AutoAcceptProofSource, ContactInfoPublishOutcome, ContactRequest, PlatformWallet,
 };
 
 use super::super::contacts::PrivateDetails;
-use super::super::profiles::{ProfileDocument, ProfileProperties};
+use super::super::profiles::{PROFILE, ProfileDocument, ProfileProperties};
+use super::super::registration_flow::dashpay_contract;
 use super::{Arc, Future, PlatformError, VaultContactCrypto, VaultIdentitySigner};
 
 /// What a contact-request write asks of Platform.
@@ -211,18 +217,14 @@ impl RequestNet for SdkRequests {
         &self,
         owner: Identifier,
     ) -> Result<Option<ProfileDocument>, PlatformError> {
-        use dash_sdk::drive::query::{WhereClause, WhereOperator};
-        use dash_sdk::platform::{DocumentQuery, FetchMany};
-        use dpp::document::{Document, DocumentV0Getters, INITIAL_REVISION};
-        let contract = super::super::registration_flow::dashpay_contract()?;
-        let query = DocumentQuery::new(contract, "profile")
+        let query = DocumentQuery::new(dashpay_contract()?, PROFILE)
             .map_err(|e| PlatformError::Internal {
                 detail: format!("the profile query: {e}"),
             })?
             .with_where(WhereClause {
                 field: "$ownerId".into(),
                 operator: WhereOperator::Equal,
-                value: dpp::platform_value::platform_value!(owner),
+                value: platform_value!(owner),
             })
             .with_limit(1);
         let documents = Document::fetch_many(&self.0, query).await?;
@@ -245,20 +247,15 @@ impl RequestNet for SdkRequests {
         key: &IdentityPublicKey,
         signer: &VaultIdentitySigner,
     ) -> Result<(), PlatformError> {
-        use dash_sdk::platform::transition::put_document::PutDocument;
-        use dpp::data_contract::accessors::v0::DataContractV0Getters;
-        use dpp::document::{Document, DocumentV0};
-        let contract = super::super::registration_flow::dashpay_contract()?;
-        let document_type = (contract.document_type_for_name("profile"))
+        let contract = dashpay_contract()?;
+        let document_type = (contract.document_type_for_name(PROFILE))
             .map_err(|e| PlatformError::Internal {
                 detail: format!("the profile document type: {e}"),
             })?
             .to_owned_document_type();
         // A creation's id is drawn by the SDK with its entropy.
-        let (id, revision) = match current {
-            Some((id, revision)) => (id, Some(revision + 1)),
-            None => (Identifier::default(), None),
-        };
+        let (id, revision) =
+            current.map_or((Identifier::default(), None), |(id, r)| (id, Some(r + 1)));
         let document = Document::V0(DocumentV0 {
             id,
             owner_id: owner,

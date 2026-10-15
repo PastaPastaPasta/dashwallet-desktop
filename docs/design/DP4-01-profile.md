@@ -95,7 +95,8 @@ the library's next pass fetches them all again (one `$ownerId In [...]` query pe
 each), applies them with its own full-replace rules (an absent profile is cached as absent, an unsafe avatar URL
 dropped), stores them and signals.
 
-- **When.** At session open, for every loaded wallet; and after every pass that fetched: the pass stores each owner's
+- **When.** At session open, for every loaded wallet; when a wallet is opened later (`load_wallet`, whose cache
+  comes back from the database with its check times); and after every pass that fetched: the pass stores each owner's
   identity snapshot with the fetched entries' new `checked_at_ms`; the tap sees a stored contact-profile entry with
   a non-zero `checked_at_ms` and hands the wallet to the session's hook, which expires the wallet's entries in a
   task (it cannot take the library's lock inside `store`, which runs under it). The task queues on the library's
@@ -105,8 +106,10 @@ dropped), stores them and signals.
 - **Bound.** An edit that has landed on Platform before a pass begins its contact-profile step is fetched by that
   pass; one that lands during it, by the next. So the contact sees it within two passes of the write (15 s each
   while a window is visible, 60 s hidden), which T2 measures.
-- **Cost** (D12): per pass, one profile query per own identity with contacts, and the library's store of each
-  owner's snapshot (it persists after every fetch), so a `Platform{Identities}` signal per pass.
+- **Cost** (D12, D17): per pass, one proved profile query per 100 contacts of each own identity, and the library's
+  store of each such owner's whole identity entry (one SQLite commit of a blob that carries its payments and contact
+  profiles; the library persists after every fetch), so a `Platform{Identities}` signal per pass: about four of
+  each a minute while a window is visible, one while hidden. The one-hour window existed to bound exactly this.
 
 ## Decisions
 
@@ -121,16 +124,41 @@ dropped), stores them and signals.
 | D7 | An edit equal to Platform's document sends nothing and returns `Ok`, the grant unused. | Saves credits; makes a retry after `broadcast_unknown`-like failures harmless. |
 | D8 | The refusal order is §"Update" steps 1–7: everything local, then one Platform read, then credits, grant and key, so a refusal before step 8 never redeems the grant. | DP2-02's rule for every write (`requests.rs` header). |
 | D9 | A failed signed write is read back from Platform and counts as done when the document holds the new properties. | As DP2-02/DP2-04: platform-wallet flattens the SDK's errors, and a timeout often hides a landed write. |
-| D10 | On success the library's cached own profile is set (`ManagedIdentity::set_dashpay_profile`), which persists and signals `Platform{Identities}`; the next pass's `sync_profiles` replaces it with Platform's anyway. | `profile()` and `identities()` show the edit at once instead of after the next pass. |
+| D10 | On success the library's cached own profile is set (`ManagedIdentity::set_dashpay_profile`), which persists and signals `Platform{Identities}`; the next pass's `sync_profiles` replaces it with Platform's anyway. The cached value is what the library's own fetch makes of the document (`fetch_contact_profiles_chunk`): an avatar URL that is not `https://` or longer than 2048 dropped, and no profile when no field is left, so the next pass changes nothing. Known flicker: a pass whose own-profile fetch ran before the write landed applies after it and shows the old profile until the next pass (15–60 s). | `profile()` and `identities()` show the edit at once instead of after the next pass. |
 | D11 | `profile(identity)` serves own identities from the identity read and other users from the contacts read model (main identity's view first); unknown is `None`; stale with no snapshot is `platform.unavailable`. | One source per kind, the ones `identities()` and `contact()` already show, so the three calls never disagree. |
 | D12 | The engine expires the library's contact-profile cache at session open and after each pass that fetched (the tap's hook), so every pass fetches the contacts' profiles. | The acceptance (2 passes) against the library's one-hour window. The library offers no setting; a patch to the pin is outside DEC-18 (cherry-picks of public upstream PRs only). Follow-up F1: an upstream option for the window, or the `$updatedAt` query Android uses, would let this go. |
 | D13 | `dwcli profile get` is an alias of the existing `profile show`. | The brief names `get`; E0-09 named it `show`, and tests and scripts use that. |
 | D14 | `profile_limits` reads no wallet and needs no open session, like `cost_table`. | The limits are the network's contract, not a wallet's. |
 | D15 | `Profile.updated_at` stays `None`. | The library keeps no `$updatedAt` for a profile; reading it would mean a second query per read. |
 | D16 | The write's quote is `DOCUMENT_10K_CREDITS` (`grant_request(UpdateProfile)`), not the cost table's `profile_update`. | The grant a host asks for is `grant_request`'s, and the engine charges no more than the grant's quote (m4 §1). DP2-04 does the same. |
+| D17 | The per-pass cost of D12 (a proved query per 100 contacts per own identity, a store of each such identity's entry, an `Identities` signal; about four a minute while visible) is accepted, not throttled. | The acceptance is two passes; a throttle (say, every few minutes while hidden) would break it for a hidden window. F1 removes the cost at its source. |
+| D18 | Expiry also runs when a wallet is opened mid-session (`load_wallet`), after its state is refreshed. A restore or a bring-up starts with an empty cache, which the library fetches anyway. | Review finding: a reopened wallet's cache comes back with its check times, and nothing else stores an entry that would fire the hook. |
+| D19 | Identities the wallet only watches keep their check times: the expiry covers `wallet_managed_identities`. | The contacts read model shows none of their contacts; their snapshot stores fire a no-op expiry. |
+| D20 | The document key is DP2's choice (`requests::flow_keys`: the first HIGH or CRITICAL `ECDSA_SECP256K1` authentication key the vault holds), not the library's `profile_signing_key`, which also takes `ECDSA_HASH160` and skips keys bound to another contract. | One key policy for every DashPay document write (E0-04 leases check the vault holds it). An identity whose only such key is HASH160 gets `identity.keys_missing`, as for a contact request. |
+| D21 | A document field the bundled contract does not know (a later contract version) may be lost: Platform's document is parsed with the bundled contract before the replace carries it. | Residual risk for a future contract upgrade, as for every document read here; a pin bump brings the new contract. |
 
 ## Follow-ups
 
 - F1 (D12): upstream, a configurable contact-profile refresh window (or an `$updatedAt`-incremental fetch) in
   `rs-platform-wallet`, then drop the expiry.
 - F2: DP4-02 fills `AvatarChange::Set` (step 4) and `avatar`.
+- F3 (D21): carry unknown fields across a contract upgrade, if Platform's DashPay contract gains profile fields.
+
+## T2 evidence (testnet, 2026-10-15)
+
+dwcli sessions (`dashpay session --spv`) for fixture wallets A (identity
+`CgPsN9TRQK4yLcU5jhtK475YfXLqpQb2mkqU5ExUUA6a`) and B (`HjfQJmEbqM8bbwtoGMVbouiWVC9Wmk6187VLx3XjN4J6`), established
+contacts. Before: A had no profile document (`profile get` on A, and on B `profile get --identity <A>`: `null`).
+`profile limits`: 25 / 140. B polled `dashpay sync-status` (`dash_pay_sync.last_run_at`, a pass every 15 s) and
+`profile get --identity <A>` every 2 s.
+
+| Edit on A (`profile set`) | Write returned (UNIX s) | B shows it at | Pass on B that showed it |
+|---|---|---|---|
+| create: "DP4-01 Alice" / "DP4-01 T2 check: profile update reaches contact B" | 1792075045 | 1792075046 (1 s) | the first pass begun after the write (046) |
+| replace: "DP4-01 Alice v2" / "second edit: replace at the next revision" | 1792075081 | 1792075092 (11 s) | the first pass begun after the write (091); the one running at the write (076) did not |
+| replace, message cleared: "DP4-01 Alice v3" / `null` | 1792075130 | 1792075137 (7 s) | the first pass begun after the write (137) |
+
+Between the edits B fetched A's profile on every pass (the cached entry was minutes old, inside the library's hour),
+which is D12 at work. The same edit again sent nothing; a 26-character name was `profile.too_long{field:
+"display_name", length: 26, max: 25}` and a message-only edit of blanks `profile.empty` (it would have left no field).
+A's credits went from 46 487 960 420 to 46 435 126 689 over the three writes.

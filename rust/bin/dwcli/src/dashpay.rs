@@ -631,7 +631,8 @@ fn platform_params(e: &PlatformError) -> Value {
         | P::LeaseExpired
         | P::NetworkNotOpen
         | P::WalletNotFound
-        | P::Identity(IdentityError::NotFound) => json!({}),
+        | P::Identity(IdentityError::NotFound)
+        | P::Profile(ProfileError::Empty) => json!({}),
         P::InsufficientCredits { needed, available } => {
             json!({"needed": needed, "available": available})
         }
@@ -648,7 +649,6 @@ fn platform_params(e: &PlatformError) -> Value {
         P::Profile(ProfileError::TooLong { field, length, max }) => {
             json!({"field": field, "length": length, "max": max})
         }
-        P::Profile(ProfileError::Empty) => json!({}),
         P::LeaseRevoked { cause } => json!({"cause": cause}),
         P::FeatureOff { feature } => json!({"feature": feature}),
         P::NotImplemented { call } => json!({"call": call}),

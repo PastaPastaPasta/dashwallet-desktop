@@ -773,9 +773,7 @@ impl NetworkSession {
     ) -> Result<Option<Option<Profile>>, EngineError> {
         let (contacts, _) = self.read_contacts(id)?;
         Ok(contacts.map(|contacts| {
-            (owners.iter())
-                .filter_map(|owner| contacts.get(owner)?.get(user)?.profile.clone())
-                .next()
+            (owners.iter()).find_map(|owner| contacts.get(owner)?.get(user)?.profile.clone())
         }))
     }
 

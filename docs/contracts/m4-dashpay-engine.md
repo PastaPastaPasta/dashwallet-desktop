@@ -2698,5 +2698,6 @@ renames or reshapes them takes the next version bump:
     - **Contacts' profiles every pass.** The library refreshes a contact's profile at most once an hour. The engine
       sets the cached entries' check time to 0 in memory at session open and whenever the tap stores a contact
       profile checked since (a pass that fetched), in a task behind the pass's own write, so the next pass fetches
-      them again: a contact sees an edit within two passes. Cost: one profile query per own identity with contacts
-      per pass. Follow-up: an upstream setting for the window.
+      them again: a contact sees an edit within two passes. A wallet opened mid-session is expired as it opens.
+      Cost per pass: a proved profile query per 100 contacts of each own identity, and the library's store of each
+      such identity's entry with an `Identities` signal. Follow-up: an upstream setting for the window.

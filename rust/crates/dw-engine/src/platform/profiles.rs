@@ -52,6 +52,8 @@ pub(crate) struct ProfileDocument {
     pub(crate) properties: ProfileProperties,
 }
 
+/// The DashPay contract's profile document type.
+pub(super) const PROFILE: &str = "profile";
 const DISPLAY_NAME: &str = "displayName";
 const PUBLIC_MESSAGE: &str = "publicMessage";
 const AVATAR_URL: &str = "avatarUrl";
@@ -59,6 +61,8 @@ const AVATAR_HASH: &str = "avatarHash";
 const AVATAR_FINGERPRINT: &str = "avatarFingerprint";
 /// The avatar fields, all or none (the contract's `dependentRequired`).
 const AVATAR: [&str; 3] = [AVATAR_URL, AVATAR_HASH, AVATAR_FINGERPRINT];
+/// The longest avatar URL the library caches (its `MAX_AVATAR_URL_LEN`).
+const MAX_AVATAR_URL_LEN: usize = 2048;
 
 /// The limits if the contract lacked them (D3): DIP-15's.
 pub(super) const BUILT_IN_LIMITS: ProfileLimits = ProfileLimits {
@@ -80,7 +84,7 @@ pub(super) fn limits() -> ProfileLimits {
 
 pub(super) fn contract_limits() -> Result<ProfileLimits, String> {
     let contract = dashpay_contract().map_err(|e| e.to_string())?;
-    let profile = (contract.document_type_for_name("profile")).map_err(|e| e.to_string())?;
+    let profile = (contract.document_type_for_name(PROFILE)).map_err(|e| e.to_string())?;
     let max = |field: &str| match profile.properties().get(field).map(|p| &p.property_type) {
         Some(DocumentPropertyType::String(sizes)) => {
             (sizes.max_length.map(u32::from)).ok_or_else(|| format!("{field} has no maxLength"))
@@ -100,7 +104,12 @@ pub(super) fn normalized(
     edit: ProfileEdit,
     limits: ProfileLimits,
 ) -> Result<ProfileEdit, ProfileError> {
-    let text = |value: Option<String>, field: ProfileField, max: u32| {
+    let ProfileEdit {
+        display_name,
+        public_message,
+        avatar,
+    } = edit;
+    let text = |(value, field, max): (Option<String>, ProfileField, u32)| {
         let Some(value) = value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()) else {
             return Ok(None);
         };
@@ -110,18 +119,11 @@ pub(super) fn normalized(
         }
         Ok(Some(value))
     };
+    use ProfileField::{DisplayName, PublicMessage};
     Ok(ProfileEdit {
-        display_name: text(
-            edit.display_name,
-            ProfileField::DisplayName,
-            limits.display_name_max,
-        )?,
-        public_message: text(
-            edit.public_message,
-            ProfileField::PublicMessage,
-            limits.public_message_max,
-        )?,
-        avatar: edit.avatar,
+        display_name: text((display_name, DisplayName, limits.display_name_max))?,
+        public_message: text((public_message, PublicMessage, limits.public_message_max))?,
+        avatar,
     })
 }
 
@@ -148,8 +150,9 @@ pub(super) fn merged(current: Option<&ProfileProperties>, edit: &ProfileEdit) ->
 }
 
 /// The profile the library caches for a document of `properties`, as its
-/// own fetch parses one (`profile_from_properties`).
-fn library_profile(properties: &ProfileProperties) -> DashPayProfile {
+/// own fetch parses one (`fetch_contact_profiles_chunk`): an avatar URL it
+/// would not trust dropped, and `None` when no field is left.
+fn library_profile(properties: &ProfileProperties) -> Option<DashPayProfile> {
     let text = |key: &str| {
         (properties.get(key).and_then(Value::as_str))
             .filter(|s| !s.is_empty())
@@ -157,20 +160,22 @@ fn library_profile(properties: &ProfileProperties) -> DashPayProfile {
     };
     let bytes = |key: &str| properties.get(key).and_then(|v| v.as_bytes_slice().ok());
     let public_message = text(PUBLIC_MESSAGE);
-    DashPayProfile {
+    let profile = DashPayProfile {
         display_name: text(DISPLAY_NAME),
         bio: public_message.clone(),
-        avatar_url: text(AVATAR_URL),
+        avatar_url: text(AVATAR_URL)
+            .filter(|u| u.len() <= MAX_AVATAR_URL_LEN && u.starts_with("https://")),
         avatar_hash: bytes(AVATAR_HASH).and_then(|b| b.try_into().ok()),
         avatar_fingerprint: bytes(AVATAR_FINGERPRINT).and_then(|b| b.try_into().ok()),
         public_message,
-    }
+    };
+    (profile != DashPayProfile::default()).then_some(profile)
 }
 
 /// Sets the library's cached own profile to `properties` (D10): its store
 /// signals `Platform{Identities}`. Nothing when it already says so.
 async fn remember(wallet: &PlatformWallet, identity: Identifier, properties: &ProfileProperties) {
-    let profile = Some(library_profile(properties));
+    let profile = library_profile(properties);
     let mut state = wallet.state_mut().await;
     let Some(m) = state.identity_manager.managed_identity_mut(&identity) else {
         return;
@@ -222,15 +227,16 @@ pub(super) async fn update(
     })?;
     let current = net.profile_document(identity).await?;
     let wanted = merged(current.as_ref().map(|d| &d.properties), &edit);
-    match &current {
-        // Nothing to send (D7); the cache follows Platform.
-        Some(d) if d.properties == wanted => {
-            remember(wallet, identity, &d.properties).await;
-            return Ok(());
-        }
-        None if wanted.is_empty() => return Ok(()),
-        _ if wanted.is_empty() => return Err(ProfileError::Empty.into()),
-        _ => {}
+    // Nothing to send (D7); the cache follows Platform.
+    if current.as_ref().is_some_and(|d| d.properties == wanted) {
+        remember(wallet, identity, &wanted).await;
+        return Ok(());
+    }
+    if wanted.is_empty() {
+        return match current {
+            None => Ok(()),
+            Some(_) => Err(ProfileError::Empty.into()),
+        };
     }
     let (lease, permit, signer) = prepare_signer(
         net,
@@ -272,9 +278,10 @@ pub(super) async fn update(
             remember(wallet, identity, &wanted).await;
             Ok(())
         }
-        Ok(_) => Err(e),
-        Err(again) => {
-            tracing::info!("after the failure: {again}");
+        read => {
+            if let Err(again) = read {
+                tracing::info!("after the failure: {again}");
+            }
             Err(e)
         }
     }
@@ -320,15 +327,17 @@ impl NetworkSession {
             .collect();
         let _op = self.try_enter()?;
         match self.shown_profile(id, &user, &owners)? {
-            Some(Some(profile)) => Ok(Some(profile)),
-            Some(None) if read.live || !read.summaries.is_empty() => Ok(None),
+            Some(profile) if profile.is_some() || read.live || !read.summaries.is_empty() => {
+                Ok(profile)
+            }
             _ => Err(PlatformError::Unavailable),
         }
     }
 
     /// Expires every contact profile the library caches for the wallet's
     /// identities, in its memory only, so its next DashPay pass fetches them
-    /// all again (D12). Waits for the library's lock.
+    /// all again (D12). Waits for the library's lock. Identities the wallet
+    /// only watches keep theirs, as the contacts model shows none of them.
     pub(crate) async fn expire_contact_profiles(&self, manager: &Manager, id: WalletId) {
         let Some(wallet) = manager.get_wallet(&id.0).await else {
             return;

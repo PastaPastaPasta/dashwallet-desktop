@@ -23,7 +23,7 @@ use super::profiles::{
     normalized, update,
 };
 use super::registration_flow::b58;
-use super::requests::tests::{Fixture, wait_until};
+use super::requests::tests::{Fixture, keys, wait_until};
 use crate::{EngineEvent, PlatformChange};
 
 const ME: u8 = 1;
@@ -56,11 +56,12 @@ fn full() -> ProfileProperties {
         ("avatarUrl", text("https://example.org/me.png")),
         ("avatarHash", Value::Bytes32([1; 32])),
         ("avatarFingerprint", Value::Bytes(vec![2; 8])),
-        (
-            "corePaymentAddress",
-            text("yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr"),
-        ),
+        ("corePaymentAddress", Value::Bytes(vec![7; 21])),
     ])
+}
+
+fn texts(p: &Profile) -> (Option<&str>, Option<&str>) {
+    (p.display_name.as_deref(), p.public_message.as_deref())
 }
 
 fn fixture() -> Fixture {
@@ -70,11 +71,15 @@ fn fixture() -> Fixture {
 
 impl Fixture {
     fn update(&self, edit: ProfileEdit, grant: &str) -> Result<(), PlatformError> {
+        self.update_as(ME, edit, grant)
+    }
+
+    fn update_as(&self, n: u8, edit: ProfileEdit, grant: &str) -> Result<(), PlatformError> {
         let (net, wallet_id, grant) = (Arc::clone(&self.net), self.wallet, grant.to_owned());
         let dp = self.s.dashpay(self.wallet);
         self.engine
             .block_on(dp.on_wallet(move |s, _, w| async move {
-                update(&*net, &s, &w, (wallet_id, &b58(&id(ME))), edit, grant).await
+                update(&*net, &s, &w, (wallet_id, &b58(&id(n))), edit, grant).await
             }))
     }
 
@@ -203,10 +208,7 @@ fn an_edit_replaces_only_what_it_owns() {
         removed,
         properties([
             ("displayName", text("Me")),
-            (
-                "corePaymentAddress",
-                text("yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr")
-            ),
+            ("corePaymentAddress", Value::Bytes(vec![7; 21])),
         ])
     );
     assert_eq!(
@@ -240,13 +242,7 @@ fn an_edit_creates_then_replaces_the_document() {
     let signed = f.net.profile_keys.lock().unwrap().clone();
     assert!(matches!(signed[..], [1 | 2]), "a document key: {signed:?}");
     let shown = f.profile(ME).unwrap().unwrap();
-    assert_eq!(
-        (
-            shown.display_name.as_deref(),
-            shown.public_message.as_deref()
-        ),
-        (Some("Alice"), Some("hi"))
-    );
+    assert_eq!(texts(&shown), (Some("Alice"), Some("hi")));
     wait_until("the Identities signal", Duration::from_secs(10), || {
         f.identities_signals() > signals
     });
@@ -259,10 +255,7 @@ fn an_edit_creates_then_replaces_the_document() {
         (id(9), 2, &properties([("publicMessage", text("bye"))]))
     );
     let shown = f.profile(ME).unwrap().unwrap();
-    assert_eq!(
-        (shown.display_name, shown.public_message.as_deref()),
-        (None, Some("bye"))
-    );
+    assert_eq!(texts(&shown), (None, Some("bye")));
     assert_eq!(f.net.writes(), 2);
 }
 
@@ -292,10 +285,29 @@ fn an_edit_that_changes_nothing_sends_nothing() {
     let emptied = f.update(edit(None, None), &grant);
     assert_eq!(emptied.unwrap_err().code(), "profile.empty");
     assert!(f.unused(&grant));
+
+    // The cache is what the library's own fetch makes of the document: an
+    // avatar URL it would not trust dropped, no profile without a field.
+    let mut http = full();
+    http.insert("avatarUrl".into(), text("http://example.org/me.png"));
+    f.publish(http, 3);
+    f.update(edit(Some("Me"), Some("hello")), &grant).unwrap();
+    let shown = f.profile(ME).unwrap().unwrap();
+    assert_eq!(
+        (texts(&shown), shown.avatar_url.as_deref()),
+        ((Some("Me"), Some("hello")), None)
+    );
+    let core_only = properties([("corePaymentAddress", Value::Bytes(vec![7; 21]))]);
+    f.publish(core_only, 3);
+    f.update(edit(None, None), &grant).unwrap();
+    assert_eq!(f.profile(ME), Ok(None));
+    assert!(f.unused(&grant));
 }
 
 /// Each refusal comes before the grant is redeemed: a text too long, an
-/// avatar candidate (DP4-02), Platform unreachable, too few credits.
+/// avatar candidate (DP4-02), Platform unreachable, an identity the wallet
+/// lacks, a grant below the quote, a lease of another flow, too few
+/// credits.
 #[test]
 fn refusals_come_before_the_grant() {
     let f = fixture();
@@ -318,14 +330,22 @@ fn refusals_come_before_the_grant() {
         "platform.unavailable"
     );
     f.net.down.store(false, Ordering::SeqCst);
-    assert!(f.unused(&grant));
+    let unknown = f.update_as(DAVE, edit(Some("Al"), None), &grant);
+    assert_eq!(unknown.unwrap_err().code(), "identity.not_found");
+    let short = f.grant(DOCUMENT_10K_CREDITS - 1);
+    let exceeded = f.update(edit(Some("Al"), None), &short);
+    assert_eq!(exceeded.unwrap_err().code(), "platform.grant_exceeded");
+    let other = f.flow(
+        FlowKind::PrivateDetails,
+        vec![f.grant(DOCUMENT_10K_CREDITS)],
+    );
+    let invalid = f.update(edit(Some("Al"), None), &other);
+    assert_eq!(invalid.unwrap_err().code(), "platform.grant_invalid");
+    assert!(f.unused(&grant) && f.unused(&short));
     assert_eq!(f.net.writes(), 0);
 
-    let poor = {
-        drop(f);
-        one_test_at_a_time();
-        Fixture::new(DOCUMENT_10K_CREDITS - 1)
-    };
+    drop(f);
+    let poor = Fixture::new(DOCUMENT_10K_CREDITS - 1);
     let grant = poor.grant(DOCUMENT_10K_CREDITS);
     assert_eq!(
         poor.update(edit(Some("Al"), None), &grant)
@@ -336,9 +356,22 @@ fn refusals_come_before_the_grant() {
     assert!(poor.unused(&grant));
 }
 
+/// Without the document key in the vault the edit is
+/// `identity.keys_missing`, the grant unused.
+#[test]
+fn a_profile_without_a_held_key_keeps_the_grant() {
+    one_test_at_a_time();
+    let f = Fixture::foreign(keys(true), u64::MAX / 2);
+    let grant = f.grant(DOCUMENT_10K_CREDITS);
+    let refused = f.update(edit(Some("Al"), None), &grant);
+    assert_eq!(refused.unwrap_err().code(), "identity.keys_missing");
+    assert!(f.unused(&grant));
+    assert_eq!(f.net.writes(), 0);
+}
+
 /// A write that signed nothing spends nothing; one that failed after
 /// signing is decided by Platform's document: kept when it landed, the
-/// error when it did not, the cache unchanged.
+/// error (the quote spent) when it did not, the cache unchanged.
 #[test]
 fn a_failed_write_is_read_back() {
     let f = fixture();
@@ -351,8 +384,10 @@ fn a_failed_write_is_read_back() {
     *f.net.fails_unsigned.lock().unwrap() = None;
 
     *f.net.fails.lock().unwrap() = Some(PlatformError::Timeout);
-    let failed = f.update(edit(Some("Al"), None), &f.profile_lease());
+    let lease = f.profile_lease();
+    let failed = f.update(edit(Some("Al"), None), &lease);
     assert_eq!(failed.unwrap_err().code(), "platform.timeout");
+    assert_eq!(f.credits_spent(&lease), DOCUMENT_10K_CREDITS);
     assert_eq!(f.document().unwrap().revision, 3);
     assert_eq!(f.profile(ME), Ok(None), "nothing cached");
 
@@ -366,7 +401,7 @@ fn a_failed_write_is_read_back() {
 
 /// Another user's profile is the contacts model's (the library's cache of
 /// it); one the wallet knows nothing of is `None`; an id that is not one
-/// is `platform.invalid_argument`.
+/// is `invalid_argument`.
 #[test]
 fn a_contacts_profile_is_the_cached_one() {
     let f = fixture();
@@ -386,13 +421,7 @@ fn a_contacts_profile_is_the_cached_one() {
         );
     });
     let shown = f.profile(ERIN).unwrap().unwrap();
-    assert_eq!(
-        (
-            shown.display_name.as_deref(),
-            shown.public_message.as_deref()
-        ),
-        (Some("Erin"), Some("hey"))
-    );
+    assert_eq!(texts(&shown), (Some("Erin"), Some("hey")));
     assert_eq!(f.profile(DAVE), Ok(None));
     let bad = f.s.dashpay(f.wallet).profile("not an id".into());
     assert_eq!(bad.unwrap_err().code(), "invalid_argument");
