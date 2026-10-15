@@ -53,6 +53,8 @@ export const keys = {
   identities: (walletId: string) => ["dashpay", "identities", walletId] as const,
   unread: (walletId: string, identity: string) => ["dashpay", "unread", walletId, identity] as const,
   requests: (walletId: string, identity: string) => ["dashpay", "requests", walletId, identity] as const,
+  /** Every Contacts list of a wallet (DP2-07): a mined payment moves `lastActivityAt` too. */
+  contactsAll: (walletId: string) => ["dashpay", "contacts", walletId] as const,
 };
 
 /** Opens the network; its lock status seeds `lockStatus`, so the shell never renders
