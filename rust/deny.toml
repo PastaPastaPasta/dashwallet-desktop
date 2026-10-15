@@ -1,0 +1,11 @@
+# cargo-deny configuration. CI runs only `cargo deny check advisories` (BL-151);
+# licenses, bans and sources are not checked.
+
+[advisories]
+ignore = [
+    # proc-macro-error 1.0.4 is unmaintained (no safe upgrade exists). It is a build-time
+    # proc-macro of glib-macros 0.18, reached only through the gtk3 stack of tauri/wry on
+    # Linux (gtk, libappindicator, tray-icon), so it never runs in the app. Drop this entry
+    # when tauri moves to gtk4 or a glib that no longer uses it.
+    { id = "RUSTSEC-2024-0370", reason = "unmaintained build-time proc-macro in the gtk3/tauri stack, no safe upgrade" },
+]
