@@ -349,6 +349,9 @@ pub(super) struct FakeJournal {
     pub(super) signed_lock_unmarked: AtomicBool,
     /// A `NotSent` row: lost (nothing written, error).
     pub(super) fail_resolve: AtomicBool,
+    /// The next `NotSent` write reports it began, then waits to be
+    /// released ([`Self::hold_not_sent`]).
+    not_sent_hold: Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>,
     pub(super) panic_resolve: AtomicBool,
     /// A `NotSent` row: durable, then an error.
     pub(super) resolve_durable_err: AtomicBool,
@@ -624,6 +627,13 @@ impl JournalBackend for FakeJournal {
     }
 
     fn resolve(&self, wallet: &[u8; 32], artifact: &[u8; 32], r: Resolution) -> Result<(), String> {
+        let hold = (r == Resolution::NotSent)
+            .then(|| self.not_sent_hold.lock().unwrap().take())
+            .flatten();
+        if let Some((began, release)) = hold {
+            began.send(()).unwrap();
+            let _ = release.recv();
+        }
         self.resolve_rows(wallet, artifact, r, &[], &[])
     }
 
@@ -732,6 +742,15 @@ impl FakeJournal {
         let (began, began_rx) = mpsc::sync_channel(1);
         let (release, release_rx) = mpsc::sync_channel(1);
         *self.signed_lock_hold.lock().unwrap() = Some((began, release_rx));
+        (began_rx, release)
+    }
+
+    /// Holds the next `NotSent` write, as [`Self::hold_signed_lock`] does
+    /// the next `signed_lock` append.
+    pub(super) fn hold_not_sent(&self) -> (mpsc::Receiver<()>, mpsc::SyncSender<()>) {
+        let (began, began_rx) = mpsc::sync_channel(1);
+        let (release, release_rx) = mpsc::sync_channel(1);
+        *self.not_sent_hold.lock().unwrap() = Some((began, release_rx));
         (began_rx, release)
     }
 
@@ -2920,6 +2939,47 @@ fn resolving(t: &LeaseTable, a: ArtifactId) -> bool {
     t.with_j(|i, _| i.fence.resolving(&(W, a)))
 }
 
+/// Whether `a`'s `NotSent` write has begun.
+fn superseding(t: &LeaseTable, a: ArtifactId) -> bool {
+    t.inspect(|i| {
+        i.log.iter().any(|e| {
+            matches!(e, super::stress_tests::LogEvent::Superseding { artifact } if *artifact == a)
+        })
+    })
+}
+
+/// Records every event, and can hold the next `LeaseChanged` until
+/// released: its emitter has left one J step and not begun the next.
+#[derive(Default)]
+struct HoldingSink {
+    rec: Recorder,
+    hold: Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>,
+}
+
+impl EventSink for HoldingSink {
+    fn emit(&self, e: EngineEvent) {
+        let held = matches!(e, EngineEvent::LeaseChanged { .. })
+            .then(|| self.hold.lock().unwrap().take())
+            .flatten();
+        self.rec.emit(e);
+        if let Some((began, release)) = held {
+            let _ = began.send(());
+            let _ = release.recv();
+        }
+    }
+}
+
+impl HoldingSink {
+    /// Holds the next `LeaseChanged`, as [`FakeJournal::hold_release`]
+    /// holds a write.
+    fn hold_lease_changed(&self) -> (mpsc::Receiver<()>, mpsc::SyncSender<()>) {
+        let (began, began_rx) = mpsc::sync_channel(1);
+        let (release, release_rx) = mpsc::sync_channel(1);
+        *self.hold.lock().unwrap() = Some((began, release_rx));
+        (began_rx, release)
+    }
+}
+
 /// Review of r1 (fix round): a marker write that returns never settles
 /// an artifact already seen sent, so its charge is never refunded.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2969,20 +3029,70 @@ async fn r1_f2_an_artifact_seen_sent_during_its_resolution_keeps_its_marker() {
     let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
     let a = art(95);
     let permit = first(t.admit(step_copy(&l, a, "s")).await);
-    j.stall_ms.store(300, Ordering::SeqCst);
+    // BL-159: seen while the NotSent write is held; seen while the entry is
+    // `Resolving` but before the write, see the next test.
+    let (began, release) = j.hold_not_sent();
     let finish = tokio::task::spawn_blocking(move || permit.finish(Outcome::NotSent));
-    until(|| resolving(&t, a)).await;
+    until(|| began.try_recv().is_ok()).await;
     t.note_seen(W, a);
+    release.send(()).unwrap();
     assert_eq!(finish.await.unwrap(), Settlement::MaybeOut);
     // DEC-154: the Sent row makes the marker stand over the NotSent row.
-    until(|| j.load().1.len() == 1).await;
-    assert!(j.load().1[0].sent);
+    // BL-159: the row is awaited as the fence acknowledges it, which also
+    // hands off the copy below; the row count alone is no end state.
+    until(|| t.with_j(|i, _| i.fence.evidence_mark(&W, &a)) == Some(fence::Mark::Durable)).await;
+    let steps = j.load().1;
+    assert_eq!(steps.len(), 1);
+    assert!(steps[0].sent);
     assert_eq!(budget(&l, BudgetPurpose::Credits), Some((1_000, 10)));
     assert_eq!(
         rec.resolved(),
         vec![(a.to_string(), DispatchResolution::Sent)]
     );
-    j.stall_ms.store(0, Ordering::SeqCst);
+    resend(t.admit(step_copy(&l, a, "s")).await).finish(Outcome::Sent);
+}
+
+/// BL-159, DEC-154: seen sent after its definite rejection made it
+/// `Resolving` but before its `NotSent` write began, an artifact writes no
+/// `NotSent` row, keeps its charge, and its Sent row keeps its marker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r1_f2_an_artifact_seen_sent_before_its_resolution_is_written_keeps_its_marker() {
+    let sink = Arc::new(HoldingSink::default());
+    let t = LeaseTable::new(
+        DashNetwork::Regtest,
+        sink.clone(),
+        Handle::current(),
+        LeaseConfig::default(),
+        0,
+    );
+    let j = with_journal(&t);
+    let l = begin(&t, W, 0, 1_000, 0).await.unwrap();
+    let a = art(101);
+    let permit = first(t.admit(step_copy(&l, a, "s")).await);
+    // `finish` is held between the J step that makes the entry `Resolving`
+    // (its lease's `LeaseChanged`) and the one that begins the write.
+    let (began, release) = sink.hold_lease_changed();
+    let finish = tokio::task::spawn_blocking(move || permit.finish(Outcome::NotSent));
+    until(|| began.try_recv().is_ok()).await;
+    assert!(resolving(&t, a) && !superseding(&t, a));
+    t.note_seen(W, a);
+    release.send(()).unwrap();
+    assert_eq!(finish.await.unwrap(), Settlement::MaybeOut);
+    until(|| t.with_j(|i, _| i.fence.evidence_mark(&W, &a)) == Some(fence::Mark::Durable)).await;
+    let steps = j.load().1;
+    assert_eq!(steps.len(), 1);
+    assert!(steps[0].sent);
+    assert!(
+        j.log()
+            .iter()
+            .all(|r| r.event != StepEvent::Resolved(Resolution::NotSent)),
+        "no NotSent row was written"
+    );
+    assert_eq!(budget(&l, BudgetPurpose::Credits), Some((1_000, 10)));
+    assert_eq!(
+        sink.rec.resolved(),
+        vec![(a.to_string(), DispatchResolution::Sent)]
+    );
     resend(t.admit(step_copy(&l, a, "s")).await).finish(Outcome::Sent);
 }
 
