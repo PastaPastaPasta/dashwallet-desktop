@@ -693,14 +693,15 @@ export const HANDLERS: Handlers = {
   // needs one and is not saved; with one, unchanged published details send nothing.
   dashpay_set_private_details: ({ walletId, identity, contact: id, details, grant }, ctx) => {
     if (id === identity) throw fail("contact.self", "contact is the identity itself");
-    const c = contact(ctx.world, walletId, identity, id);
-    if (c.summary.relation !== "contact") throw fail("invalid_argument", "not a contact of this identity");
-    const clean = (v: string | null) => (v?.trim() ? v.trim() : null);
+    // The size first, then the relation, as the engine checks them.
+    const clean = (v: string | null) => v?.trim() || null;
     const d: PrivateContactDetails = { alias: clean(details.alias), note: clean(details.note), hidden: details.hidden };
     const bytes = new TextEncoder().encode(JSON.stringify({ alias: d.alias, note: d.note })).length;
     if (bytes > DETAILS_MAX_BYTES)
       throw fail("contact.details_too_long", "contact details too long", { kind: "size", bytes, max: DETAILS_MAX_BYTES });
-    const dp = ctx.world.dashpay;
+    const c = contact(ctx.world, walletId, identity, id);
+    if (c.summary.relation !== "contact") throw fail("invalid_argument", "not a contact of this identity");
+    const dp = dashpay(ctx.world, walletId, identity);
     const same = JSON.stringify(d) === JSON.stringify(c.privateDetails);
     const save = (state: ContactDetailInfo["publishState"]) => {
       c.privateDetails = d;
@@ -737,7 +738,7 @@ export const HANDLERS: Handlers = {
     if (id === identity) throw fail("contact.self", "contact is the identity itself");
     const dp = dashpay(world, walletId, identity);
     try {
-      return activityPage(dp.activity[id] ?? [], cursor, filter);
+      return activityPage(dp.activity[id] ?? [], cursor, filter, id);
     } catch {
       throw fail("invalid_argument", "not a cursor of this query");
     }

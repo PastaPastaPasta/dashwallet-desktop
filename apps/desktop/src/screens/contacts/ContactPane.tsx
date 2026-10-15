@@ -123,7 +123,8 @@ const SINCE: Record<ContactSummaryInfo["relation"], string> = {
 function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: PaneContext }) {
   const sub = subtitle(c);
   const chips = rowChips(c);
-  const detail = useContactDetail(pane.walletId, pane.identity, c.contact);
+  // Only a contact has private details (DP2-09 D7).
+  const detail = useContactDetail(pane.walletId, pane.identity, c.relation === "contact" ? c.contact : null);
   return (
     <section className="add-contact contact-detail card-l1" aria-labelledby="contact-detail-name" data-testid="contact-detail">
       <header className="contact-detail-header">
@@ -163,7 +164,7 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
       <PaneButtons contact={c} pane={pane} />
       {c.relation === "contact" && (
         <>
-          {detail.data && <PrivateDetails key={JSON.stringify(detail.data.privateDetails)} contact={c} detail={detail.data} actions={pane.actions} />}
+          {detail.data && <PrivateDetails contact={c} detail={detail.data} actions={pane.actions} />}
           {detail.isError && (
             <p className="form-problem" role="alert">
               Could not read this contact: {errorMessage(detail.error)}
@@ -180,7 +181,7 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
 function PaneButtons({ contact: c, pane }: { contact: ContactSummaryInfo; pane: PaneContext }) {
   const actions = useModel(pane.actions);
   const offer = paneActions(c, pane.hasKeys);
-  const busy = actions.running !== null;
+  const busy = actions.busy;
   const outcome = actions.outcome?.contact === c.contact && actions.outcome.kind !== "details" ? actions.outcome : null;
   let buttons;
   let note: string | null = null;
@@ -236,16 +237,27 @@ function PaneButtons({ contact: c, pane }: { contact: ContactSummaryInfo; pane: 
   );
 }
 
-/** "Only visible to you" (D7): alias, note and Hide, saved and published together. */
-function PrivateDetails({ contact: c, detail, actions: model }: { contact: ContactSummaryInfo; detail: ContactDetailInfo; actions: ContactActions }) {
-  const actions = useModel(model);
+/** "Only visible to you" (D7): alias, note and Hide, saved and published together. A re-read of
+ * the saved details updates the fields the user has not edited; Hide shows what is saved, or the
+ * value being saved. */
+function PrivateDetails({ contact: c, detail, actions }: { contact: ContactSummaryInfo; detail: ContactDetailInfo; actions: ContactActions }) {
+  useModel(actions);
   const id = useId();
-  const saved = detail.privateDetails;
-  const [form, setForm] = useState<DetailsForm>(() => detailsForm(saved));
-  const busy = actions.running !== null;
+  const saved = detailsForm(detail.privateDetails);
+  const [base, setBase] = useState(saved);
+  const [text, setText] = useState({ alias: saved.alias, note: saved.note });
+  if (base.alias !== saved.alias || base.note !== saved.note) {
+    setBase(saved);
+    setText((t) => ({ alias: t.alias === base.alias ? saved.alias : t.alias, note: t.note === base.note ? saved.note : t.note }));
+  }
+  const [hiding, setHiding] = useState<boolean | null>(null);
+  // Once the re-read holds the value Hide saved, it is the saved one.
+  if (hiding !== null && hiding === saved.hidden) setHiding(null);
+  const form: DetailsForm = { ...text, hidden: hiding ?? saved.hidden };
+  const busy = actions.busy;
   const saving = actions.isRunning("details", c.contact);
   const outcome = actions.outcome?.contact === c.contact && actions.outcome.kind === "details" ? actions.outcome : null;
-  const save = (f: DetailsForm) => void actions.saveDetails(c.contact, detailsOf(f));
+  const save = (f: DetailsForm) => actions.saveDetails(c.contact, detailsOf(f));
   return (
     <section className="contact-pane-section" aria-labelledby={`${id}-title`} data-testid="contact-private">
       <h3 id={`${id}-title`} className="contact-pane-heading">
@@ -255,16 +267,16 @@ function PrivateDetails({ contact: c, detail, actions: model }: { contact: Conta
         className="contact-details-form"
         onSubmit={(e) => {
           e.preventDefault();
-          save(form);
+          void save(form);
         }}
       >
         <label className="form-field">
           Alias
-          <input data-testid="contact-alias" value={form.alias} disabled={busy} onChange={(e) => setForm({ ...form, alias: e.target.value })} />
+          <input data-testid="contact-alias" value={form.alias} disabled={busy} onChange={(e) => setText({ ...text, alias: e.target.value })} />
         </label>
         <label className="form-field">
           Note
-          <textarea className="contact-note" data-testid="contact-note" rows={3} value={form.note} disabled={busy} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+          <textarea className="contact-note" data-testid="contact-note" rows={3} value={form.note} disabled={busy} onChange={(e) => setText({ ...text, note: e.target.value })} />
         </label>
         <label className="check-row contact-hide">
           <input
@@ -273,16 +285,19 @@ function PrivateDetails({ contact: c, detail, actions: model }: { contact: Conta
             checked={form.hidden}
             disabled={busy}
             onChange={(e) => {
-              // Hide saves at once, with the alias and note as last saved (D7).
-              const next = { ...detailsForm(saved), hidden: e.target.checked };
-              setForm({ ...form, hidden: next.hidden });
-              save(next);
+              // Hide saves at once, with the alias and note as last saved (D7); a refusal or a
+              // cancel shows the saved value again.
+              const hidden = e.target.checked;
+              setHiding(hidden);
+              void save({ ...saved, hidden }).then((o) => {
+                if (!o?.ok) setHiding(null);
+              });
             }}
           />
           Hide this contact
         </label>
         <span className="add-contact-actions">
-          <DashButton variant="tintedBlue" type="submit" data-testid="contact-details-save" disabled={busy || !detailsChanged(form, saved)}>
+          <DashButton variant="tintedBlue" type="submit" data-testid="contact-details-save" disabled={busy || !detailsChanged(form, detail.privateDetails)}>
             {saving ? "Saving…" : "Save"}
           </DashButton>
         </span>
@@ -296,7 +311,7 @@ function PrivateDetails({ contact: c, detail, actions: model }: { contact: Conta
 function Activity({ contact, pane }: { contact: string; pane: PaneContext }) {
   const id = useId();
   const [filter, setFilter] = useState<ActivityFilterName>("all");
-  const activity = useContactActivity(pane.walletId, pane.identity, contact, filter, true);
+  const activity = useContactActivity(pane.walletId, pane.identity, contact, filter);
   const ctx = useRowContext(pane.network);
   const items = activity.data?.pages.flatMap((p) => p.items) ?? [];
   return (

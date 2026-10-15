@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
-import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { artifactPath, authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // DP2-09: the bell's popover and the Notifications page on the fixture backend, whose journal
 // holds alice's events (src/fixture/dashpay.ts `journal`). IOS-075 is the parity ID: a request
@@ -20,13 +20,6 @@ const request = (page: Page, name: string) => page.getByTestId("bell-request").f
 async function openBell(page: Page) {
   await bell(page).click();
   await expect(popover(page).getByRole("heading", { name: "Notifications" })).toBeFocused();
-}
-
-async function authorize(page: Page, passphrase = "demo") {
-  const sheet = page.getByTestId("grant-sheet");
-  await sheet.locator("input[type=password]").fill(passphrase);
-  await sheet.locator("input[type=password]").press("Enter");
-  await expect(sheet).toHaveCount(0);
 }
 
 test("IOS-075 the bell lists the requests and the new events, marks them read, and Escape gives focus back", async ({ page }) => {
@@ -69,6 +62,20 @@ test("IOS-075 accepts a request from the bell under a passphrase grant", async (
   await page.getByTestId("sidebar-contacts").click();
   await expect(page.getByTestId("contacts-group-contacts").locator(".contact-row-name")).toContainText(["heidi"]);
   expect(errors).toEqual([]);
+});
+
+test("D4 an accept that ends after the popover closed says so in a toast", async ({ page }) => {
+  await open(page);
+  await openBell(page);
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("dashpay_accept_request"));
+  await request(page, "heidi").getByTestId("bell-accept").click();
+  await authorize(page);
+  // The fixture applies the accept and holds its reply: the action still runs.
+  await expect(request(page, "Grace Hopper").getByTestId("bell-accept")).toBeDisabled();
+  await bell(page).click();
+  await expect(popover(page)).toHaveCount(0);
+  await release.evaluate((r) => r());
+  await expect(page.locator(".toast")).toHaveText("You and heidi are now contacts.");
 });
 
 test("D12 an event opens what it is about, and a click outside closes the popover", async ({ page }) => {

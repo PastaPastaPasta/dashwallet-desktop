@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { trackPageErrors, fixtureUrl } from "./helpers";
+import { authorize, fixtureUrl, trackPageErrors } from "./helpers";
 
 // DP2-09: the selected contact's pane on the fixture backend, whose DashPay writes check their
 // grant as the engine does (src/fixture/pane.test.ts). Tests are named by parity ID: IOS-074 (a
@@ -19,14 +19,6 @@ const group = (page: Page, section: string) => page.getByTestId(`contacts-group-
 const names = (page: Page, section: string) => group(page, section).locator(".contact-row-name");
 const row = (page: Page, name: string) => page.getByTestId("contact-row").filter({ has: page.locator(".contact-row-name", { hasText: name }) });
 const rowItem = (page: Page, name: string) => page.locator("li").filter({ has: row(page, name) });
-
-/** The passphrase sheet of a pending grant, answered (the fixture's passphrase). */
-async function authorize(page: Page, passphrase = "demo") {
-  const sheet = page.getByTestId("grant-sheet");
-  await sheet.locator("input[type=password]").fill(passphrase);
-  await sheet.locator("input[type=password]").press("Enter");
-  await expect(sheet).toHaveCount(0);
-}
 
 test("IOS-074 accepts a request from the pane under a passphrase grant; the contact moves to My Contacts", async ({ page }) => {
   const errors = await openContacts(page);
@@ -98,6 +90,26 @@ test("IOS-074 saves an alias and a note under a grant; Hide saves at once and mo
   await expect(names(page, "hidden")).toContainText(["Bobby"]);
   await expect(page.getByTestId("contact-hide")).toBeChecked();
   expect(errors).toEqual([]);
+});
+
+test("D7 Hide keeps an alias being typed, and a refused Hide shows the saved value again", async ({ page }) => {
+  await openContacts(page);
+  await row(page, "Bob Builder").click();
+  await page.getByTestId("contact-alias").fill("Bobby");
+  await page.getByTestId("contact-hide").check();
+  await authorize(page);
+  await expect(page.getByTestId("contact-details-outcome")).toHaveText("Saved");
+  await expect(page.getByTestId("contact-hide")).toBeChecked();
+  // Hide saved the alias as it was; the one typed stays, unsaved.
+  await expect(page.getByTestId("contact-alias")).toHaveValue("Bobby");
+  await expect(page.getByTestId("contact-details-save")).toBeEnabled();
+
+  await openContacts(page, "dashpay-low-credits");
+  await row(page, "Bob Builder").click();
+  await page.getByTestId("contact-hide").check();
+  await authorize(page);
+  await expect(page.getByTestId("contact-details-outcome")).toHaveText("Not enough credits. Top up your credits and try again.");
+  await expect(page.getByTestId("contact-hide")).not.toBeChecked();
 });
 
 test("AND-093 lists a contact's payments 50 at a time, filters them and opens one", async ({ page }) => {

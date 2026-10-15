@@ -5,7 +5,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ContactSortName } from "../../api/generated/ContactSortName";
-import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { errorMessage } from "../../api/backend";
 import { useBackend, useLockStatus } from "../../api/queries";
@@ -22,17 +21,17 @@ import {
   networkPrefix,
   SEARCH_DEBOUNCE_MS,
   setupHint,
-  shownName,
   SORTS,
   type ContactsOwner,
 } from "../../contacts/model";
 import type { ContactActions } from "../../contacts/actions";
-import { ENABLE_FIRST, selectionAnnouncement, type EnableBanner as Banner } from "../../contacts/pane";
+import { selectionAnnouncement, type EnableBanner } from "../../contacts/pane";
 import { useContactActions, useContactList, useContactsOwner, useEnableBanner, useNetworkSearch, usePendingSetup } from "../../contacts/queries";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet, Outcome } from "../tools/common";
 import { ContactGroups, NetworkResults } from "./ContactList";
 import { ContactPane } from "./ContactPane";
+import { RequestButtons } from "./RequestButtons";
 
 /** Opens Add contact's slot (D12), in place of a selection or a link's card. */
 const openAdd = (addContact: AddContactIntent) => ui.set({ addContact, contact: null, contactPrefill: null });
@@ -198,7 +197,12 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
           selected={selected?.contact ?? null}
           onSelect={select}
           onToggleHidden={() => setHiddenOpen((o) => !o)}
-          rowActions={(c) => c.relation === "pendingIncoming" && <RequestButtons contact={c} actions={actions} hasKeys={hasKeys} />}
+          rowActions={(c) =>
+            c.relation === "pendingIncoming" && (
+              // The pane says its own contact's outcome; a toast says another's.
+              <RequestButtons contact={c} actions={actions} hasKeys={hasKeys} testPrefix="contact-row" onDone={(o) => o && ui.get().contact !== c.contact && showToast(o.text)} />
+            )
+          }
         />
       </>
     );
@@ -272,46 +276,10 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
   );
 }
 
-/** A request row's Accept and Ignore (DP2-09 D15). The pane says the outcome of its own contact;
- * a toast says another's. */
-function RequestButtons({ contact: c, actions: model, hasKeys }: { contact: ContactSummaryInfo; actions: ContactActions; hasKeys: boolean | undefined }) {
-  const actions = useModel(model);
-  const name = shownName(c);
-  const busy = actions.running !== null;
-  const tell = (o: { text: string } | null) => {
-    if (o && ui.get().contact !== c.contact) showToast(o.text);
-  };
-  return (
-    <span className="contact-row-actions">
-      <DashButton
-        variant="filledBlue"
-        size="small"
-        data-testid="contact-row-accept"
-        aria-label={`Accept ${name}`}
-        title={hasKeys === false ? ENABLE_FIRST : undefined}
-        disabled={busy || hasKeys === false}
-        onClick={() => void actions.accept(c.contact, name).then(tell)}
-      >
-        {actions.isRunning("accept", c.contact) ? "Accepting…" : "Accept"}
-      </DashButton>
-      <DashButton
-        variant="tintedGray"
-        size="small"
-        data-testid="contact-row-ignore"
-        aria-label={`Ignore ${name}`}
-        disabled={busy}
-        onClick={() => void actions.ignore(c.contact).then(tell)}
-      >
-        {actions.isRunning("ignore", c.contact) ? "Ignoring…" : "Ignore"}
-      </DashButton>
-    </span>
-  );
-}
-
 /** "Enable DashPay" (DP2-09 D10): the main identity lacks its DashPay keys, so it cannot accept
  * requests nor pay contacts until it adds them. Success removes the banner, so a toast says it. */
-function EnableDashPay({ banner, actions: model }: { banner: Banner; actions: ContactActions }) {
-  const actions = useModel(model);
+function EnableDashPay({ banner, actions }: { banner: EnableBanner; actions: ContactActions }) {
+  useModel(actions);
   const outcome = actions.outcome?.kind === "enable" && !actions.outcome.ok ? actions.outcome : null;
   return (
     <div className="contacts-hint contacts-enable card-l1" data-testid="contacts-enable-banner">
@@ -329,7 +297,7 @@ function EnableDashPay({ banner, actions: model }: { banner: Banner; actions: Co
         </span>
         <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contacts-enable-outcome" />
       </span>
-      <DashButton variant="tintedBlue" size="small" data-testid="contacts-enable" disabled={actions.running !== null} onClick={() => void actions.enable().then((o) => o?.ok && showToast(o.text))}>
+      <DashButton variant="tintedBlue" size="small" data-testid="contacts-enable" disabled={actions.busy} onClick={() => void actions.enable().then((o) => o?.ok && showToast(o.text))}>
         {actions.isRunning("enable", null) ? "Enabling…" : "Enable"}
       </DashButton>
     </div>

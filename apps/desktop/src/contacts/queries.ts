@@ -40,6 +40,9 @@ export function usePendingSetup(walletId: string) {
   return useQuery({ queryKey: ["dashpay", "pendingSetup", walletId] as const, queryFn: () => b.dashpayPendingSetupCount(walletId) });
 }
 
+/** The network search's queries of `identity`: Unignore drops them (DP2-09 D6). */
+const searchKey = (walletId: string, identity: string) => ["userSearch", walletId, identity] as const;
+
 /** DPNS usernames starting with `prefix` (D6); idle while `prefix` is `null`. A failure is shown
  * with Try again, not retried behind the user's back. The hits' relations are the main identity's,
  * so it is part of the key (D21). */
@@ -54,9 +57,6 @@ export function useNetworkSearch(walletId: string, identity: string, prefix: str
   });
 }
 
-/** The network search's queries of `identity` (D6: Unignore drops them, DP2-09 D6). */
-const searchKey = (walletId: string, identity: string) => ["userSearch", walletId, identity] as const;
-
 /** One contact's detail: private details, publish state, request times (DP2-09 D1). Under
  * `contactsAll`, so every re-read of the list re-reads it. */
 export function useContactDetail(walletId: string, identity: string, contact: string | null) {
@@ -70,21 +70,14 @@ export function useContactDetail(walletId: string, identity: string, contact: st
 
 /** A contact's payments, a page at a time (DP2-09 D8); under `contactsAll`, so `historyChanged`
  * and the contact and payment signals re-read it. */
-export function useContactActivity(walletId: string, identity: string, contact: string, filter: ActivityFilterName, enabled: boolean) {
+export function useContactActivity(walletId: string, identity: string, contact: string, filter: ActivityFilterName) {
   const b = useBackend();
   return useInfiniteQuery({
     queryKey: [...keys.contactsAll(walletId), "activity", identity, contact, filter] as const,
     queryFn: ({ pageParam }) => b.contactActivity(walletId, identity, contact, pageParam, filter),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
-    enabled,
   });
-}
-
-/** The wallet's identities (the shell's query): whether the main one has its DashPay keys. */
-function useIdentities(walletId: string) {
-  const b = useBackend();
-  return useQuery({ queryKey: keys.identities(walletId), queryFn: () => b.identities(walletId) });
 }
 
 /** The actions one surface runs for `identity` (DP2-09 D16): one model and grant prompt per
@@ -105,18 +98,24 @@ export function useContactActions(walletId: string, identity: string): ContactAc
   return actions;
 }
 
-/** The Enable DashPay banner (DP2-09 D10) over the shell's status and identities, with the fee
- * read only while the banner shows; `hasKeys` is the main identity's (`undefined` while unknown). */
+/** Whether `identity` has its DashPay keys, from the shell's identities query; `undefined`
+ * while unknown (DP2-09 D2, D10). */
+export function useHasKeys(walletId: string, identity: string): boolean | undefined {
+  const b = useBackend();
+  const identities = useQuery({ queryKey: keys.identities(walletId), queryFn: () => b.identities(walletId) });
+  return identities.data?.find((i) => i.identity === identity)?.hasDashpayKeys;
+}
+
+/** The Enable DashPay banner (DP2-09 D10) for the main `identity`, with the fee read only while
+ * the banner shows. */
 export function useEnableBanner(walletId: string, identity: string): { banner: EnableBanner | null; hasKeys: boolean | undefined } {
   const b = useBackend();
-  const status = useQuery({ queryKey: keys.dashpayStatus(walletId), queryFn: () => b.dashpayStatus(walletId) });
-  const identities = useIdentities(walletId);
-  const hasKeys = identities.data?.find((i) => i.identity === identity)?.hasDashpayKeys;
+  const hasKeys = useHasKeys(walletId, identity);
   const costs = useQuery({
-    queryKey: ["dashpay", "costTable", walletId] as const,
+    queryKey: keys.costTable(walletId),
     queryFn: () => b.creditsCostTable(walletId),
     staleTime: 600_000,
     enabled: hasKeys === false,
   });
-  return { banner: enableBanner(status.data, identities.data, costs.data), hasKeys };
+  return { banner: enableBanner(identity, hasKeys, costs.data), hasKeys };
 }

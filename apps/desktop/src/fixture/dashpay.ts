@@ -53,12 +53,13 @@ export const ACTIVITY_PAGE = 50;
 /** `DashPay::contact_activity` over `items`: filtered, unmined first, then newest first, ties by
  * txid (DP3-02 D9), 50 per page. The fixture's cursor is `a:<filter>:<offset>`; one of another
  * filter, or one it did not issue, is `invalid_argument` as the engine's tagged cursor is. */
-export function activityPage(items: ContactActivityItem[], cursor: string | null, filter: ActivityFilterName): ContactActivityPage {
+export function activityPage(items: ContactActivityItem[], cursor: string | null, filter: ActivityFilterName, contact: string): ContactActivityPage {
   let offset = 0;
+  // Bound to its contact and filter, as the engine's cursor is to its query.
   if (cursor !== null) {
-    const m = /^a:(all|sent|received):(\d+)$/.exec(cursor);
-    if (!m || m[1] !== filter) throw new Error("cursor");
-    offset = Number(m[2]);
+    const m = /^a:(\w+):(all|sent|received):(\d+)$/.exec(cursor);
+    if (!m || m[1] !== contact || m[2] !== filter) throw new Error("cursor");
+    offset = Number(m[3]);
   }
   const unmined = (i: ContactActivityItem) => (i.height === null ? 1 : 0);
   const rows = items
@@ -66,7 +67,7 @@ export function activityPage(items: ContactActivityItem[], cursor: string | null
     .sort((a, b) => unmined(b) - unmined(a) || (b.timestamp ?? 0) - (a.timestamp ?? 0) || (a.txid < b.txid ? -1 : a.txid > b.txid ? 1 : 0));
   const page = rows.slice(offset, offset + ACTIVITY_PAGE);
   const next = offset + page.length;
-  return { items: page, nextCursor: next < rows.length ? `a:${filter}:${next}` : null };
+  return { items: page, nextCursor: next < rows.length ? `a:${contact}:${filter}:${next}` : null };
 }
 
 /** A journal row as dw-appdb stores it: the kind's journal name, `""` for no contact or reference,

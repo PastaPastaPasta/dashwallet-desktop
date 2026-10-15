@@ -187,6 +187,12 @@ function Shell() {
   else if (route === "settings") content = <SettingsPage />;
   else content = <Placeholder route={route} />;
 
+  // The bell's popover once the main identity is known; before that the bell opens its page.
+  const main = dashpay.main?.identity;
+  const bellPanel =
+    wallet && main
+      ? (id: string, close: () => void) => <NotificationsPopover key={`${wallet.walletId}:${main}`} walletId={wallet.walletId} identity={main} id={id} close={close} />
+      : undefined;
   // A contested username still has its identity: Contacts, not Join DashPay (D11).
   const joined = !(dashpay.status?.kind === "noIdentity" || dashpay.status?.kind === "registering");
   const sheet = !!(detail && wallet && !locked);
@@ -209,11 +215,7 @@ function Shell() {
           unread={dashpay.unread}
           canLock={canLock}
           onLock={lockNow}
-          bellPanel={
-            wallet && dashpay.main
-              ? (id, close) => <NotificationsPopover key={`${wallet.walletId}:${dashpay.main!.identity}`} walletId={wallet.walletId} identity={dashpay.main!.identity} id={id} close={close} />
-              : undefined
-          }
+          bellPanel={bellPanel}
         />
         <div className="app-body">
           <Sidebar joined={joined} requests={dashpay.requests} />

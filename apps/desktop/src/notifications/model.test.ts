@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ContactList } from "../api/generated/ContactList";
 import type { DashPayEventInfo } from "../api/generated/DashPayEventInfo";
 import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
-import { eventTarget, eventText, feedOf, namesFrom, newestId, popoverCut } from "./model";
+import { eventLink, eventText, feedOf, namesFrom, newestId, popoverCut } from "./model";
 
 const BOB = "8GopLQQPjKr2gXjNEt9G8k2PzRZrdbBqQBNTCXV2DYiN";
 const UNKNOWN = "MALLoRyCRFtBn7r9fqD4ZcVaxu3Rx1oEkJ38EN6Hbnm";
@@ -61,9 +61,9 @@ describe("event lines", () => {
   });
 
   it("leads a contact event to the contact and a payment to its transaction", () => {
-    expect(eventTarget(ev(1, { kind: "requestReceived" }))).toEqual({ kind: "contact", contact: BOB });
-    expect(eventTarget(ev(1, { kind: "paymentReceived", reference: "b0" }))).toEqual({ kind: "tx", txid: "b0" });
-    expect(eventTarget(ev(1, { kind: "contestWon", contact: null }))).toBeNull();
+    expect(eventLink(ev(1, { kind: "requestReceived" }))).toEqual({ kind: "contact", contact: BOB });
+    expect(eventLink(ev(1, { kind: "paymentReceived", reference: "b0" }))).toEqual({ kind: "tx", txid: "b0" });
+    expect(eventLink(ev(1, { kind: "contestWon", contact: null }))).toBeNull();
   });
 });
 

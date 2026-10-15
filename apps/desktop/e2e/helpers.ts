@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { Page, TestInfo } from "@playwright/test";
+import { expect, type Page, type TestInfo } from "@playwright/test";
 
 export type Theme = "light" | "dark";
 export const THEMES: Theme[] = ["light", "dark"];
@@ -58,4 +58,12 @@ export function artifactPath(info: TestInfo, name: string): string {
 export function writeJson(path: string, value: unknown) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(value, null, 2));
+}
+
+/** The passphrase sheet of a pending grant, answered (the fixture's passphrase by default). */
+export async function authorize(page: Page, passphrase = "demo") {
+  const sheet = page.getByTestId("grant-sheet");
+  await sheet.locator("input[type=password]").fill(passphrase);
+  await sheet.locator("input[type=password]").press("Enter");
+  await expect(sheet).toHaveCount(0);
 }

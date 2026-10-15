@@ -73,6 +73,18 @@ describe("ContactActions", () => {
     expect(calls.revoked).toEqual(["grant-1"]);
   });
 
+  it("L2 an accept that finds them contacts already succeeds, and every outcome re-reads", async () => {
+    const { actions, refreshed, authorize } = setup({
+      dashpayAcceptRequest: vi.fn(async () => {
+        throw appError("contact.already_contact");
+      }),
+    });
+    const done = actions.accept(GRACE, "Grace");
+    await authorize();
+    expect(await done).toMatchObject({ ok: true, text: "You and Grace are now contacts." });
+    expect(refreshed).toEqual([["contacts"]]);
+  });
+
   it("runs one action at a time", async () => {
     const { actions, authorize } = setup();
     const first = actions.accept(GRACE, "Grace");
@@ -107,6 +119,8 @@ describe("ContactActions", () => {
     expect(calls.authorize[0].purpose).toEqual({ kind: "platformOp", maxDuffs: 0, maxCredits: "300000000" });
     expect(api.dashpayEnableKeys).toHaveBeenCalledWith(WALLET_A, ME, "grant-1");
     expect(refreshed).toEqual([["identities"]]);
+    // The engine leaves the grant unused when the keys were there: never left live.
+    expect(calls.revoked).toEqual(["grant-1"]);
   });
 
   it("names the refusals D4 lists", () => {

@@ -2,55 +2,73 @@
 // the Notifications page. Both list the contact requests waiting, with Accept and Ignore, then the
 // identity's events: New (unread when the view opened) and, on the page, Earlier.
 
-import { useEffect, useId, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useId, useRef } from "react";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { DashPayEventInfo } from "../../api/generated/DashPayEventInfo";
 import { errorMessage } from "../../api/backend";
-import { keys } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
+import { showToast } from "../../components/toast";
 import { EmptyState, LoadingState } from "../../components/history";
-import type { ContactActions } from "../../contacts/actions";
+import type { ActionOutcome, ContactActions } from "../../contacts/actions";
 import { avatarLetters, shownName, subtitle } from "../../contacts/model";
 import { ENABLE_FIRST } from "../../contacts/pane";
-import { useContactActions, useContactList, useContactsOwner, useEnableBanner } from "../../contacts/queries";
+import { useContactActions, useContactList, useContactsOwner, useHasKeys } from "../../contacts/queries";
 import { detailDate } from "../../format/tx";
-import { eventTarget, eventText, feedOf, namesFrom, popoverCut, type NameOf } from "../../notifications/model";
+import { eventLink, eventText, feedOf, namesFrom, popoverCut, type NameOf } from "../../notifications/model";
 import { useEventFeed, useReadOnOpen } from "../../notifications/queries";
 import { useModel } from "../../onboarding/model";
 import { Avatar } from "../contacts/Avatar";
+import { RequestButtons } from "../contacts/RequestButtons";
 import { Page } from "../Routes";
 import { GrantSheet, Outcome } from "../tools/common";
 
 /** What a view of the bell reads: the feed, read on opening, the names its events use, and the
  * actions its request rows run (one model per view, D16). */
 function useBell(walletId: string, identity: string) {
-  const client = useQueryClient();
   const sort = useUi((s) => s.contactSort);
   const feed = useEventFeed(walletId, identity);
-  const unreadAtOpen = useReadOnOpen(walletId, identity, feed, () => void client.invalidateQueries({ queryKey: keys.unread(walletId, identity) }));
+  const unreadAtOpen = useReadOnOpen(walletId, identity, feed);
   const list = useContactList(walletId, identity, sort, "");
   const actions = useContactActions(walletId, identity);
-  const { hasKeys } = useEnableBanner(walletId, identity);
+  const hasKeys = useHasKeys(walletId, identity);
   return { feed, shown: feedOf(feed.data?.pages ?? [], unreadAtOpen), nameOf: namesFrom(list.data), actions, hasKeys };
 }
 
+/** An action's outcome that lands after its view closed (the popover, the page left): the action
+ * ran on, so a toast says how it ended (D4). */
+function useToastWhenGone(): (outcome: ActionOutcome | null) => void {
+  const gone = useRef(false);
+  useEffect(() => {
+    gone.current = false;
+    return () => {
+      gone.current = true;
+    };
+  }, []);
+  return useCallback((o) => {
+    if (o && gone.current) showToast(o.text);
+  }, []);
+}
+
+/** Opens `contact`'s pane in Contacts (D12). */
+const openContact = (contact: string) => navigate("contacts", { contact, addContact: null, contactPrefill: null });
+
 /** Opens what an event is about (D12): the contact's pane, or the payment's transaction. */
 function openEvent(e: DashPayEventInfo) {
-  const target = eventTarget(e);
-  if (target?.kind === "contact") navigate("contacts", { contact: target.contact, addContact: null, contactPrefill: null });
-  else if (target?.kind === "tx") ui.set({ detail: target.txid });
+  const link = eventLink(e);
+  if (link?.kind === "contact") openContact(link.contact);
+  else if (link?.kind === "tx") ui.set({ detail: link.txid });
 }
 
 /** The popover under the bell (D11). Escape or a click outside closes it, except while an action
  * or its passphrase prompt is open; `close` gives focus back to the bell. */
 export function NotificationsPopover({ walletId, identity, id, close }: { walletId: string; identity: string; id: string; close: () => void }) {
-  const { feed, shown, nameOf, actions: model, hasKeys } = useBell(walletId, identity);
-  const actions = useModel(model);
+  const { feed, shown, nameOf, actions, hasKeys } = useBell(walletId, identity);
+  useModel(actions);
   const root = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  const busy = actions.running !== null;
+  const busy = actions.busy;
+  const onDone = useToastWhenGone();
   const cut = popoverCut(shown);
   useEffect(() => heading.current?.focus(), []);
   useEffect(() => {
@@ -94,14 +112,14 @@ export function NotificationsPopover({ walletId, identity, id, close }: { wallet
         </p>
       )}
       {cut.pending.length > 0 && (
-        <Requests contacts={cut.pending} more={cut.morePending} actions={model} hasKeys={hasKeys} onOpen={(c) => go(() => navigate("contacts", { contact: c, addContact: null, contactPrefill: null }))} testId="bell-requests" />
+        <Requests contacts={cut.pending} more={cut.morePending} actions={actions} hasKeys={hasKeys} onOpen={(c) => go(() => openContact(c))} onDone={onDone} testId="bell-requests" />
       )}
       {cut.fresh.length > 0 && <Events title="New" events={cut.fresh} fresh more={cut.moreFresh} nameOf={nameOf} onOpen={(e) => go(() => openEvent(e))} testId="bell-new" />}
       <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="bell-outcome" />
       <DashButton variant="plainBlue" size="small" className="bell-all" data-testid="bell-see-all" onClick={() => go(() => navigate("notifications"))}>
         See all notifications
       </DashButton>
-      <GrantSheet grants={model.grants} />
+      <GrantSheet grants={actions.grants} />
     </div>
   );
 }
@@ -109,22 +127,18 @@ export function NotificationsPopover({ walletId, identity, id, close }: { wallet
 /** The Notifications page (D12): every request waiting and every event, a page at a time. */
 export function NotificationsPage({ walletId }: { walletId: string }) {
   const { owner } = useContactsOwner(walletId);
-  return (
-    <Page route="notifications">
-      {owner.kind === "identity" ? (
-        <NotificationsView walletId={walletId} identity={owner.identity} />
-      ) : owner.kind === "starting" ? (
-        <LoadingState testId="notifications-starting" text="Starting DashPay…" />
-      ) : (
-        <EmptyState testId="notifications-no-identity" title="No notifications" message="Create a username to get contact requests and payments from contacts." />
-      )}
-    </Page>
-  );
+  let body;
+  // Another main identity starts the view over: its own feed, read and marked afresh.
+  if (owner.kind === "identity") body = <NotificationsView key={owner.identity} walletId={walletId} identity={owner.identity} />;
+  else if (owner.kind === "starting") body = <LoadingState testId="notifications-starting" text="Starting DashPay…" />;
+  else body = <EmptyState testId="notifications-no-identity" title="No notifications" message="Create a username to get contact requests and payments from contacts." />;
+  return <Page route="notifications">{body}</Page>;
 }
 
 function NotificationsView({ walletId, identity }: { walletId: string; identity: string }) {
-  const { feed, shown, nameOf, actions: model, hasKeys } = useBell(walletId, identity);
-  const actions = useModel(model);
+  const { feed, shown, nameOf, actions, hasKeys } = useBell(walletId, identity);
+  useModel(actions);
+  const onDone = useToastWhenGone();
   if (feed.isPending) return <LoadingState testId="notifications-loading" text="Loading notifications…" />;
   if (feed.isError && !feed.data)
     return (
@@ -139,14 +153,13 @@ function NotificationsView({ walletId, identity }: { walletId: string; identity:
         }
       />
     );
-  const open = (c: string) => navigate("contacts", { contact: c, addContact: null, contactPrefill: null });
   return (
     <div className="notifications" data-testid="notifications">
       <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="notifications-outcome" />
       {shown.pending.length === 0 && shown.fresh.length === 0 && shown.earlier.length === 0 && (
         <EmptyState testId="notifications-empty" title="No notifications yet" message="Contact requests and payments from your contacts show here." />
       )}
-      {shown.pending.length > 0 && <Requests contacts={shown.pending} more={0} actions={model} hasKeys={hasKeys} onOpen={open} testId="notifications-requests" />}
+      {shown.pending.length > 0 && <Requests contacts={shown.pending} more={0} actions={actions} hasKeys={hasKeys} onOpen={openContact} onDone={onDone} testId="notifications-requests" />}
       {shown.fresh.length > 0 && <Events title="New" events={shown.fresh} fresh more={0} nameOf={nameOf} onOpen={openEvent} testId="notifications-new" />}
       {shown.earlier.length > 0 && <Events title="Earlier" events={shown.earlier} fresh={false} more={0} nameOf={nameOf} onOpen={openEvent} testId="notifications-earlier" />}
       {feed.hasNextPage && (
@@ -154,7 +167,7 @@ function NotificationsView({ walletId, identity }: { walletId: string; identity:
           {feed.isFetchingNextPage ? "Loading…" : "Show more"}
         </DashButton>
       )}
-      <GrantSheet grants={model.grants} />
+      <GrantSheet grants={actions.grants} />
     </div>
   );
 }
@@ -163,9 +176,10 @@ function NotificationsView({ walletId, identity }: { walletId: string; identity:
 function Requests({
   contacts,
   more,
-  actions: model,
+  actions,
   hasKeys,
   onOpen,
+  onDone,
   testId,
 }: {
   contacts: ContactSummaryInfo[];
@@ -173,11 +187,10 @@ function Requests({
   actions: ContactActions;
   hasKeys: boolean | undefined;
   onOpen: (contact: string) => void;
+  onDone: (outcome: ActionOutcome | null) => void;
   testId: string;
 }) {
-  const actions = useModel(model);
   const titleId = useId();
-  const busy = actions.running !== null;
   return (
     <section className="bell-section" aria-labelledby={titleId} data-testid={testId}>
       <h3 className="bell-section-title" id={titleId}>
@@ -185,38 +198,27 @@ function Requests({
       </h3>
       <ul className="bell-rows">
         {contacts.map((c) => {
-          const name = shownName(c);
           const sub = subtitle(c);
           return (
             <li key={c.contact} className="bell-row has-actions" data-testid="bell-request" data-contact={c.contact}>
               <button type="button" className="bell-row-open" onClick={() => onOpen(c.contact)}>
                 <Avatar letters={avatarLetters(c)} />
                 <span className="bell-row-text">
-                  <span className="bell-row-title">{name}</span>
+                  <span className="bell-row-title">{shownName(c)}</span>
                   {sub && <span className="bell-row-sub">{sub}</span>}
                 </span>
               </button>
-              <span className="contact-row-actions">
-                <DashButton
-                  variant="filledBlue"
-                  size="small"
-                  data-testid="bell-accept"
-                  aria-label={`Accept ${name}`}
-                  title={hasKeys === false ? ENABLE_FIRST : undefined}
-                  disabled={busy || hasKeys === false}
-                  onClick={() => void actions.accept(c.contact, name)}
-                >
-                  {actions.isRunning("accept", c.contact) ? "Accepting…" : "Accept"}
-                </DashButton>
-                <DashButton variant="tintedGray" size="small" data-testid="bell-ignore" aria-label={`Ignore ${name}`} disabled={busy} onClick={() => void actions.ignore(c.contact)}>
-                  {actions.isRunning("ignore", c.contact) ? "Ignoring…" : "Ignore"}
-                </DashButton>
-              </span>
+              <RequestButtons contact={c} actions={actions} hasKeys={hasKeys} testPrefix="bell" onDone={onDone} />
             </li>
           );
         })}
       </ul>
       {more > 0 && <p className="bell-more">{more === 1 ? "1 more request" : `${more} more requests`}</p>}
+      {hasKeys === false && (
+        <p className="bell-more" data-testid={`${testId}-enable-first`}>
+          {ENABLE_FIRST} Contacts offers it.
+        </p>
+      )}
     </section>
   );
 }
@@ -258,7 +260,7 @@ function Events({
           );
           return (
             <li key={e.id} className={fresh ? "bell-row is-new" : "bell-row"} data-testid="bell-event" data-kind={e.kind}>
-              {eventTarget(e) ? (
+              {eventLink(e) ? (
                 <button type="button" className="bell-row-open" onClick={() => onOpen(e)}>
                   {body}
                 </button>

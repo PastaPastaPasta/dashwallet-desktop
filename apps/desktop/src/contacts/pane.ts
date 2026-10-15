@@ -7,8 +7,6 @@ import type { ActivityFilterName } from "../api/generated/ActivityFilterName";
 import type { ContactActivityItem } from "../api/generated/ContactActivityItem";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CostTable } from "../api/generated/CostTable";
-import type { DashPayStatus } from "../api/generated/DashPayStatus";
-import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { PrivateContactDetails } from "../api/generated/PrivateContactDetails";
 import { relationTitle, shownName } from "./model";
 
@@ -66,7 +64,7 @@ export function detailsForm(d: PrivateContactDetails | undefined): DetailsForm {
 
 /** The details a form saves: trimmed, blank is none (the engine trims too). */
 export function detailsOf(f: DetailsForm): PrivateContactDetails {
-  const clean = (v: string) => (v.trim() ? v.trim() : null);
+  const clean = (v: string) => v.trim() || null;
   return { alias: clean(f.alias), note: clean(f.note), hidden: f.hidden };
 }
 
@@ -77,18 +75,16 @@ export function detailsChanged(f: DetailsForm, saved: PrivateContactDetails | un
   return a.alias !== b.alias || a.note !== b.note || a.hidden !== b.hidden;
 }
 
-/** The Enable DashPay banner (D10): the main identity named by the status, when it lacks its
- * DashPay keys; `fee` the upgrade's cost in duffs, `null` while unknown. */
+/** The Enable DashPay banner (D10): the main identity, when it lacks its DashPay keys (not while
+ * that is unknown); `fee` the upgrade's cost in duffs, `null` while unknown. */
 export interface EnableBanner {
   identity: string;
   fee: number | null;
 }
 
-export function enableBanner(status: DashPayStatus | undefined, identities: IdentitySummary[] | undefined, costs: CostTable | undefined): EnableBanner | null {
-  const main = status?.kind === "ready" ? status.main : status?.kind === "contestPending" ? status.identity : null;
-  const identity = main === null ? undefined : identities?.find((i) => i.identity === main);
-  if (!identity || identity.hasDashpayKeys) return null;
-  return { identity: identity.identity, fee: costs ? creditsToDuffs(costs.enableDashpayKeys, costs.creditsPerDuff) : null };
+export function enableBanner(identity: string, hasKeys: boolean | undefined, costs: CostTable | undefined): EnableBanner | null {
+  if (hasKeys !== false) return null;
+  return { identity, fee: costs ? creditsToDuffs(costs.enableDashpayKeys, costs.creditsPerDuff) : null };
 }
 
 /** Credits as duffs, rounded up (a fee is never shown smaller than it is). */

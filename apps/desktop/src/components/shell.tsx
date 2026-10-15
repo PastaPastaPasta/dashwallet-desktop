@@ -226,26 +226,26 @@ export function Toolbar({
       </span>
       <span className="toolbar-actions">
         <span className="toolbar-bell" data-bell>
-        <button
-          type="button"
-          className="toolbar-button"
-          data-testid="toolbar-bell"
-          aria-label={bellLabel}
-          title={bellLabel}
-          ref={bell}
-          aria-haspopup={bellPanel ? "dialog" : undefined}
-          aria-expanded={bellPanel ? open : undefined}
-          aria-controls={open ? panelId : undefined}
-          onClick={() => (bellPanel ? setBellOpen(!open) : navigate("notifications"))}
-        >
-          <BellIcon />
-          {!!unread && (
-            <span className="toolbar-badge" data-testid="toolbar-bell-badge" aria-hidden="true">
-              {badgeText(unread)}
-            </span>
-          )}
-        </button>
-        {open && bellPanel(panelId, closeBell)}
+          <button
+            type="button"
+            className="toolbar-button"
+            data-testid="toolbar-bell"
+            aria-label={bellLabel}
+            title={bellLabel}
+            ref={bell}
+            aria-haspopup={bellPanel ? "dialog" : undefined}
+            aria-expanded={bellPanel ? open : undefined}
+            aria-controls={open ? panelId : undefined}
+            onClick={() => (bellPanel ? setBellOpen(!open) : navigate("notifications"))}
+          >
+            <BellIcon />
+            {!!unread && (
+              <span className="toolbar-badge" data-testid="toolbar-bell-badge" aria-hidden="true">
+                {badgeText(unread)}
+              </span>
+            )}
+          </button>
+          {open && bellPanel(panelId, closeBell)}
         </span>
         <button
           type="button"

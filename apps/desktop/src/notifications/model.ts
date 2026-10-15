@@ -47,9 +47,9 @@ export function eventText(e: Pick<DashPayEventInfo, "kind" | "contact" | "refere
 
 /** Where a click on an event leads (D12): the contact's pane, the payment's transaction, or
  * nowhere (the name events). */
-export type EventTarget = { kind: "contact"; contact: string } | { kind: "tx"; txid: string } | null;
+export type EventLink = { kind: "contact"; contact: string } | { kind: "tx"; txid: string } | null;
 
-export function eventTarget(e: Pick<DashPayEventInfo, "kind" | "contact" | "reference">): EventTarget {
+export function eventLink(e: Pick<DashPayEventInfo, "kind" | "contact" | "reference">): EventLink {
   if (e.kind === "paymentReceived" && e.reference) return { kind: "tx", txid: e.reference };
   if (e.contact && (e.kind === "requestReceived" || e.kind === "requestAccepted" || e.kind === "contactEstablished"))
     return { kind: "contact", contact: e.contact };

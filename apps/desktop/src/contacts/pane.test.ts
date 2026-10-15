@@ -3,7 +3,6 @@
 import { describe, expect, it } from "vitest";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CostTable } from "../api/generated/CostTable";
-import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import { activityRow, creditsToDuffs, detailsChanged, detailsForm, detailsOf, enableBanner, ENABLE_FIRST, paneActions, selectionAnnouncement } from "./pane";
 
 const row = (patch: Partial<ContactSummaryInfo>): ContactSummaryInfo => ({
@@ -55,18 +54,16 @@ describe("private details form", () => {
 });
 
 describe("enableBanner", () => {
-  const identity = (hasDashpayKeys: boolean) => ({ identity: "A", hasDashpayKeys }) as IdentitySummary;
   const costs = { enableDashpayKeys: "61330100", creditsPerDuff: 1000 } as CostTable;
 
   it("IOS-072 shows for the main identity without DashPay keys, with the fee in duffs", () => {
-    expect(enableBanner({ kind: "ready", main: "A" }, [identity(false)], costs)).toEqual({ identity: "A", fee: 61331 });
-    expect(enableBanner({ kind: "contestPending", identity: "A", label: "a", endsAt: null }, [identity(false)], undefined)).toEqual({ identity: "A", fee: null });
+    expect(enableBanner("A", false, costs)).toEqual({ identity: "A", fee: 61331 });
+    expect(enableBanner("A", false, undefined)).toEqual({ identity: "A", fee: null });
   });
 
-  it("hides with the keys, without an identity, or while the identities are unknown", () => {
-    expect(enableBanner({ kind: "ready", main: "A" }, [identity(true)], costs)).toBeNull();
-    expect(enableBanner({ kind: "noIdentity", reason: null }, [identity(false)], costs)).toBeNull();
-    expect(enableBanner({ kind: "ready", main: "A" }, undefined, costs)).toBeNull();
+  it("hides with the keys, or while they are unknown", () => {
+    expect(enableBanner("A", true, costs)).toBeNull();
+    expect(enableBanner("A", undefined, costs)).toBeNull();
   });
 
   it("rounds credits up to whole duffs", () => {

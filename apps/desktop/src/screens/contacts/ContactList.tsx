@@ -17,6 +17,9 @@ export function RowChips({ chips, testIds = false }: { chips: RowChip[]; testIds
   ));
 }
 
+/** What a row offers beside its button: a request's Accept and Ignore (DP2-09 D15). */
+type RowActions = (c: ContactSummaryInfo) => ReactNode;
+
 /** One row: avatar, name, `@username` under it, and what trails it; `after` sits beside the
  * row's button, as buttons do not nest (DP2-09 D15). */
 function Row({
@@ -54,8 +57,7 @@ export function ContactGroups({
   selected: string | null;
   onSelect: (id: string) => void;
   onToggleHidden: () => void;
-  /** What a row offers beside its button: a request's Accept and Ignore (DP2-09 D15). */
-  rowActions?: (c: ContactSummaryInfo) => ReactNode;
+  rowActions?: RowActions;
 }) {
   const list = useRef<HTMLDivElement>(null);
   // Arrows, Home and End move between the rows of the open groups, across groups (D13).
@@ -88,7 +90,7 @@ function ContactGroup({
   selected: string | null;
   onSelect: (id: string) => void;
   onToggle: () => void;
-  rowActions?: (c: ContactSummaryInfo) => ReactNode;
+  rowActions?: RowActions;
 }) {
   const titleId = useId();
   const rowsId = useId();

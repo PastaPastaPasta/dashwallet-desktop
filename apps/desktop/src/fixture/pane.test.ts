@@ -47,10 +47,11 @@ describe("contact_activity (fixture, as DP3-02)", () => {
     expect(sent.nextCursor).toBeNull();
   });
 
-  it("refuses a cursor of another filter, the identity itself and another wallet's identity; a contact never paid is empty", async () => {
+  it("refuses a cursor of another filter or contact, the identity itself and another wallet's identity; a contact never paid is empty", async () => {
     install();
     const first = await cmd.contactActivity(W, ME, IDENTITY.bob, null, "all");
     await expect(cmd.contactActivity(W, ME, IDENTITY.bob, first.nextCursor, "sent")).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(cmd.contactActivity(W, ME, IDENTITY.dave, first.nextCursor, "all")).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(cmd.contactActivity(W, ME, ME, null, "all")).rejects.toMatchObject({ code: "contact.self" });
     await expect(cmd.contactActivity(W, IDENTITY.bob, ME, null, "all")).rejects.toMatchObject({ code: "identity.not_found" });
     expect(await cmd.contactActivity(W, ME, IDENTITY.carol, null, "all")).toEqual({ items: [], nextCursor: null });
