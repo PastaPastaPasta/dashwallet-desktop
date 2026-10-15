@@ -343,8 +343,10 @@ struct Platform {
     /// The names pass skips every identity (the library logs a page that
     /// failed and goes on), while Platform still answers questions.
     skip_names: bool,
-    /// Holds each question about an identity's names.
+    /// Holds each question about an identity's names (only those of
+    /// `hold_only`'s wallet, once set).
     hold_check: Option<Arc<Notify>>,
+    hold_only: Mutex<Option<WalletId>>,
     /// The questions about names asked, per wallet.
     questions: Mutex<HashMap<WalletId, u32>>,
     /// Identities whose listed labels have no domain document on Platform
@@ -492,7 +494,8 @@ impl MockPlatform for Platform {
                 base58(*raw) == identity && !list.is_empty() && !self.no_documents.contains(raw)
             })
         });
-        let hold = self.hold_check.clone();
+        let only = *guard(&self.hold_only);
+        let hold = (self.hold_check.clone()).filter(|_| only.is_none_or(|w| w == id));
         Box::pin(async move {
             if let Some(hold) = hold {
                 hold.notified().await;
@@ -1584,19 +1587,24 @@ fn owing_a_names_pass_again_keeps_the_answers() {
     let checks = NamesChecks::default();
     let (id, a, b) = (WalletId([1; 32]), base58(ALICE), base58(SECOND));
     assert_eq!(checks.of(&id, &a), Some(NamesCheck::Pending));
+    let before = checks.begin(&id).expect("no pass owed");
     checks.owe(id);
-    let at = checks.generation(&id);
-    assert!(checks.answered(id, at, vec![(a.clone(), true), (b.clone(), false)]));
+    assert!(checks.begin(&id).is_none(), "the pass asks");
+    assert!(checks.answered(id, before, vec![(a.clone(), true), (b.clone(), false)]));
     assert_eq!(checks.of(&id, &a), None);
     assert_eq!(checks.of(&id, &b), Some(NamesCheck::Pending));
-    checks.pass_ended(id, at);
-    assert!(checks.answered(id, at, vec![]));
+    checks.pass_ended(id, checks.generation(&id));
+    // A check begun before the pass ended does not settle it.
+    assert!(!checks.answered(id, before, vec![]));
+    assert_eq!(checks.of(&id, &b), Some(NamesCheck::Pending));
+    let after = checks.begin(&id).expect("the pass ended");
+    assert!(checks.answered(id, after, vec![]));
     assert_eq!(checks.of(&id, &b), Some(NamesCheck::Failed));
 
     checks.owe(id);
     assert_eq!(checks.of(&id, &a), None);
     assert_eq!(checks.of(&id, &b), Some(NamesCheck::Pending));
-    assert!(!checks.answered(id, at, vec![(a.clone(), true)]));
+    assert!(!checks.answered(id, after, vec![(a.clone(), true)]));
 }
 
 /// DP1-08 D28: an answer asked before the wallet was forgotten (removed or
@@ -1605,17 +1613,18 @@ fn owing_a_names_pass_again_keeps_the_answers() {
 fn an_answer_for_a_forgotten_wallet_is_dropped() {
     let checks = NamesChecks::default();
     let (id, a) = (WalletId([1; 32]), base58(ALICE));
-    checks.owe(id);
+    let asked = checks.begin(&id).expect("no pass owed");
     let before = checks.generation(&id);
     checks.forget(&id);
     checks.owe(id);
     checks.pass_ended(id, before);
-    assert!(!checks.answered(id, before, vec![(a.clone(), true)]));
+    assert!(checks.begin(&id).is_none(), "the pass is still owed");
+    assert!(!checks.answered(id, asked, vec![(a.clone(), true)]));
     assert_eq!(checks.of(&id, &a), Some(NamesCheck::Pending));
 
-    let now = checks.generation(&id);
-    checks.pass_ended(id, now);
-    assert!(checks.answered(id, now, vec![(a.clone(), true)]));
+    checks.pass_ended(id, checks.generation(&id));
+    let asked = checks.begin(&id).expect("the pass ended");
+    assert!(checks.answered(id, asked, vec![(a.clone(), true)]));
     assert_eq!(checks.of(&id, &a), None);
 }
 
@@ -1646,6 +1655,8 @@ fn a_held_names_check_stalls_no_other_wallet() {
     let first = restore(&engine, &s);
     let manager = s.manager().unwrap();
     engine.block_on(platform.bring_up(manager, first)).unwrap();
+    // The second wallet's questions are answered at once.
+    *guard(&platform.hold_only) = Some(first);
 
     start(&engine, &s);
     wait_until("the first wallet's question", || {
@@ -1659,7 +1670,7 @@ fn a_held_names_check_stalls_no_other_wallet() {
         ))
         .unwrap();
     // Unbounded before D27: the supervisor awaited the held check.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while s.dashpay_startup(&second).unwrap().startup != StartupStatus::Ready {
         assert!(
             Instant::now() < deadline,

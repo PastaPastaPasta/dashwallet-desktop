@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dpp::prelude::Identifier;
+use futures_util::{StreamExt, stream};
 use tokio::runtime::Handle;
 use tokio::task::{AbortHandle, JoinSet};
 
@@ -27,8 +28,8 @@ use crate::{NetworkSession, PlatformChange, WalletId};
 
 /// How long Platform has to say whether one identity owns a name.
 const QUESTION_BUDGET: Duration = Duration::from_secs(10);
-/// How long one check of a wallet may take: an identity still unanswered
-/// then is unknown (`Failed`), never nameless.
+/// How long the questions of one check may take: an identity still
+/// unanswered then is unknown (`Failed`), never nameless.
 const CHECK_BUDGET: Duration = Duration::from_secs(20);
 /// The questions of one check in flight at once.
 const CONCURRENCY: usize = 4;
@@ -89,9 +90,15 @@ impl NamesChecks {
         }
     }
 
-    /// Whether `id` waits for a names pass, which asks when it ends.
-    fn awaits_pass(&self, id: &WalletId) -> bool {
-        guard(&self.0).owed.get(id) == Some(&false)
+    /// A check of `id` begins: what its answers apply to, or `None` while
+    /// the wallet waits for a names pass, which starts one when it ends.
+    pub(super) fn begin(&self, id: &WalletId) -> Option<Asked> {
+        let checks = guard(&self.0);
+        let owed = checks.owed.get(id).copied();
+        (owed != Some(false)).then(|| Asked {
+            generation: checks.generation(id),
+            settles: owed == Some(true),
+        })
     }
 
     pub(super) fn generation(&self, id: &WalletId) -> u64 {
@@ -103,21 +110,23 @@ impl NamesChecks {
         guard(&self.0).answers.get(id).and_then(|a| a.get(identity)) == Some(&true)
     }
 
-    /// Records Platform's `answers` for `id`'s identities, asked for
-    /// `generation`, and ends the pass owed if it has ended. Nothing for an
-    /// earlier generation (D28). Whether a check changed.
+    /// Records Platform's `answers` for `id`'s identities, asked as
+    /// `asked` says, and ends the pass owed if the check began after it
+    /// ended. Nothing for an earlier generation (D28). Whether a check
+    /// changed.
     pub(super) fn answered(
         &self,
         id: WalletId,
-        generation: u64,
+        asked: Asked,
         answers: Vec<(String, bool)>,
     ) -> bool {
         let mut checks = guard(&self.0);
-        if checks.generation(&id) != generation {
+        if checks.generation(&id) != asked.generation {
             return false;
         }
         let mut changed = false;
-        if checks.owed.get(&id) == Some(&true) {
+        // Not by a check asked before the pass ended: it starts another.
+        if asked.settles && checks.owed.get(&id) == Some(&true) {
             checks.owed.remove(&id);
             changed = true;
         }
@@ -135,6 +144,14 @@ impl NamesChecks {
         checks.answers.remove(id);
         *checks.generations.entry(*id).or_default() += 1;
     }
+}
+
+/// What a check's answers apply to: the wallet generation it asked for, and
+/// whether it began after the names pass owed ended.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Asked {
+    generation: u64,
+    settles: bool,
 }
 
 impl Checks {
@@ -166,8 +183,9 @@ struct Run {
 }
 
 impl NamesRuns {
-    /// Starts `run(token)` for `id` on `rt`, unless `id`'s runs: then that
-    /// one runs once more when it ends, however many triggers came.
+    /// Starts `run(token)` for `id` on `rt`, unless one of `id`'s runs:
+    /// then that one runs once more when it ends, however many triggers
+    /// came.
     fn start<F>(&self, rt: &Handle, id: WalletId, run: impl FnOnce(u64) -> F)
     where
         F: Future<Output = ()> + Send + 'static,
@@ -212,7 +230,10 @@ impl NamesRuns {
     }
 
     fn set_retry(&self, retry: AbortHandle) {
-        if let Some(old) = guard(&self.0).retry.replace(retry) {
+        let mut runs = guard(&self.0);
+        if runs.closed {
+            retry.abort();
+        } else if let Some(old) = runs.retry.replace(retry) {
             old.abort();
         }
     }
@@ -302,10 +323,9 @@ impl NetworkSession {
     /// ends.
     pub(super) async fn check_names(self: &Arc<Self>, manager: &Arc<Manager>, id: WalletId) {
         let checks = &self.platform.recovery.names_checks;
-        if checks.awaits_pass(&id) {
+        let Some(asked) = checks.begin(&id) else {
             return;
-        }
-        let generation = checks.generation(&id);
+        };
         let answers = self.ask_names(manager, id).await;
         #[cfg(test)]
         {
@@ -317,7 +337,7 @@ impl NetworkSession {
                 let _ = release.recv();
             }
         }
-        if checks.answered(id, generation, answers) {
+        if checks.answered(id, asked, answers) {
             self.hub.pump.mark_platform(id, [PlatformChange::Names]);
         }
     }
@@ -325,13 +345,9 @@ impl NetworkSession {
     /// Platform's answer for each identity of `id` that shows no main name
     /// (as `identities()` would: a refused or contested label is none) and
     /// that it has not said is nameless: `true` when it owns no DPNS name.
-    /// Within [`CHECK_BUDGET`]; one unanswered by then is `false`. Nothing
+    /// Its questions within [`CHECK_BUDGET`]; one unanswered by then is `false`. Nothing
     /// when the main-name rows cannot be read: the next check asks.
-    async fn ask_names(
-        self: &Arc<Self>,
-        manager: &Arc<Manager>,
-        id: WalletId,
-    ) -> Vec<(String, bool)> {
+    async fn ask_names(&self, manager: &Manager, id: WalletId) -> Vec<(String, bool)> {
         let checks = &self.platform.recovery.names_checks;
         let prefs = match self.appdb_op(move |db| read_name_prefs(db, id)).await {
             Ok(prefs) => prefs,
@@ -355,33 +371,21 @@ impl NetworkSession {
                 .map(|o| (o.identity, o.owner))
                 .collect()
         };
+        // In this task, so an abort of the check drops every question.
         let mut answers = Vec::with_capacity(asked.len());
-        let mut unasked = asked.clone().into_iter();
-        let mut questions = JoinSet::new();
-        let asking = async {
-            loop {
-                while questions.len() < CONCURRENCY
-                    && let Some((identity, owner)) = unasked.next()
-                {
-                    let (this, manager) = (Arc::clone(self), Arc::clone(manager));
-                    questions.spawn(async move {
-                        let owns = this.owns_a_name(&manager, id, &identity, &owner).await;
-                        (identity, owns == Some(false))
-                    });
-                }
-                match questions.join_next().await {
-                    Some(Ok(answer)) => answers.push(answer),
-                    Some(Err(e)) => {
-                        tracing::warn!(wallet_id = %id, error = %e, "a names question failed")
-                    }
-                    None => break,
-                }
-            }
-        };
-        if tokio::time::timeout(CHECK_BUDGET, asking).await.is_err() {
+        let questions = stream::iter(asked.iter().cloned())
+            .map(|(identity, owner)| async move {
+                let owns = self.owns_a_name(manager, id, &identity, &owner).await;
+                (identity, owns == Some(false))
+            })
+            .buffer_unordered(CONCURRENCY)
+            .for_each(|answer| {
+                answers.push(answer);
+                std::future::ready(())
+            });
+        if tokio::time::timeout(CHECK_BUDGET, questions).await.is_err() {
             tracing::warn!(wallet_id = %id, "the names check ran out of time");
         }
-        questions.abort_all();
         let answered: HashSet<String> = answers.iter().map(|(i, _)| i.clone()).collect();
         for (identity, _) in asked {
             if !answered.contains(&identity) {

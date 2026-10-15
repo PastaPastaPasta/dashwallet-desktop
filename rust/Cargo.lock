@@ -2514,6 +2514,7 @@ dependencies = [
  "dw-units",
  "dw-uri",
  "dw-vault",
+ "futures-util",
  "hex",
  "key-wallet",
  "libc",
