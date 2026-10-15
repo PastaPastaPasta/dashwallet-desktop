@@ -1,8 +1,8 @@
-// The Contacts detail slot (DP2-07 D11, D12; DP2-09): a `dashpay://user` link's card (U-01), else
-// Add contact's placeholder (DP2-08), else the selected contact's pane (its actions, payment
-// activity and private details), else a prompt to pick one.
+// The Contacts detail slot (DP2-07 D11, D12; DP2-09): Add Contact (DP2-08, a search, a scan or a
+// `dashpay://user` link), else the selected contact's pane (its actions, payment activity and
+// private details), else a prompt to pick one.
 
-import { useId, useRef, useState } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import type { ActivityFilterName } from "../../api/generated/ActivityFilterName";
 import type { ContactDetailInfo } from "../../api/generated/ContactDetailInfo";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
@@ -11,7 +11,7 @@ import { errorMessage } from "../../api/backend";
 import { AmountText, DashButton, Icon } from "../../components/basics";
 import { CopyValue } from "../../components/detail";
 import { useRowContext } from "../../components/history";
-import { navigate, ui, type AddContactIntent, type ContactPrefill } from "../../app/ui";
+import { navigate, ui } from "../../app/ui";
 import type { ActionOutcome, ContactActions } from "../../contacts/actions";
 import { avatarLetters, channelTitle, relationTitle, rowChips, shownName, subtitle } from "../../contacts/model";
 import { ACTIVITY_FILTERS, activityRow, detailsChanged, detailsForm, detailsOf, paneActions, type DetailsForm } from "../../contacts/pane";
@@ -33,20 +33,9 @@ export interface PaneContext {
   hasKeys: boolean | undefined;
 }
 
-export function ContactPane({
-  prefill,
-  add,
-  selected,
-  pane,
-}: {
-  prefill: ContactPrefill | null;
-  add: AddContactIntent | null;
-  selected: ContactSummaryInfo | null;
-  pane: PaneContext | null;
-}) {
+export function ContactPane({ adding, selected, pane }: { adding: ReactNode; selected: ContactSummaryInfo | null; pane: PaneContext | null }) {
   let slot;
-  if (prefill) slot = <LinkCard prefill={prefill} />;
-  else if (add) slot = <AddContact add={add} />;
+  if (adding) slot = adding;
   else if (selected && pane) slot = <Selected key={selected.contact} contact={selected} pane={pane} />;
   else
     slot = (
@@ -58,55 +47,6 @@ export function ContactPane({
     <aside className="contacts-pane" aria-label="Contact" data-testid="contacts-pane">
       {slot}
     </aside>
-  );
-}
-
-/** U-01's card for a `dashpay://user` link (its D12): the link's username and identity, unverified. */
-function LinkCard({ prefill }: { prefill: ContactPrefill }) {
-  return (
-    <section className="add-contact card-l1" aria-labelledby="add-contact-title" data-testid="add-contact">
-      <h2 id="add-contact-title" className="add-contact-title">
-        Add contact
-      </h2>
-      <p data-testid="add-contact-username">@{prefill.username}</p>
-      <p className="mono" data-testid="add-contact-identity">
-        {prefill.identity}
-      </p>
-      <p className="placeholder-note">The username comes from the link and is not verified yet.</p>
-      <span className="add-contact-actions">
-        <DashButton variant="filledWhiteBlue" disabled>
-          Send contact request
-        </DashButton>
-        <DashButton variant="plainBlue" onClick={() => ui.set({ contactPrefill: null })}>
-          Dismiss
-        </DashButton>
-      </span>
-    </section>
-  );
-}
-
-/** Add contact's slot (D12), which DP2-08 fills: what opened it, and a "not yet". */
-function AddContact({ add }: { add: AddContactIntent }) {
-  return (
-    <section className="add-contact card-l1" aria-labelledby="add-contact-slot-title" data-testid="placeholder-add-contact">
-      <h2 id="add-contact-slot-title" className="add-contact-title">
-        Add contact
-      </h2>
-      {add.hit ? (
-        <>
-          <p data-testid="add-contact-hit-username">@{add.hit.username}</p>
-          <p className="mono">{add.hit.identity}</p>
-        </>
-      ) : (
-        add.query && <p data-testid="add-contact-query">Usernames starting with “{add.query}”</p>
-      )}
-      <p className="placeholder-note">Searching for users and sending contact requests are not available yet.</p>
-      <span className="add-contact-actions">
-        <DashButton variant="plainBlue" onClick={() => ui.set({ addContact: null })}>
-          Close
-        </DashButton>
-      </span>
-    </section>
   );
 }
 

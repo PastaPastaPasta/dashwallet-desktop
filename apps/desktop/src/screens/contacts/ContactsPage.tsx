@@ -1,6 +1,6 @@
 // Contacts (DASHPAY §4, DP2-07): the main identity's contacts in the engine's groups, a sort, the
 // local and network search, the pending-setup hint, and a detail slot beside the list that
-// DP2-08 (Add contact) and DP2-09 (the contact's pane) fill. DP2-09 adds the Enable DashPay banner
+// DP2-08 (Add Contact) and DP2-09 (the contact's pane) fill. DP2-09 adds the Enable DashPay banner
 // and a request row's Accept and Ignore. Copy follows the mobile wallets.
 
 import { useEffect, useRef, useState } from "react";
@@ -30,6 +30,7 @@ import { useContactActions, useContactList, useContactsOwner, useEnableBanner, u
 import { useModel } from "../../onboarding/model";
 import { GrantSheet, Outcome } from "../tools/common";
 import { ContactGroups, NetworkResults } from "./ContactList";
+import { AddContact } from "./AddContact";
 import { ContactPane } from "./ContactPane";
 import { useActionToast, useRefocus } from "./afterAction";
 import { RequestButtons } from "./RequestButtons";
@@ -55,7 +56,11 @@ export function ContactsPage({ walletId, network }: { walletId: string; network:
             </DashButton>
           )}
         </header>
-        {owner.kind === "identity" ? <ContactsView walletId={walletId} identity={owner.identity} network={network} /> : <NoContacts owner={owner} retry={retry} />}
+        {owner.kind === "identity" ? (
+          <ContactsView walletId={walletId} identity={owner.identity} network={network} />
+        ) : (
+          <NoContacts walletId={walletId} owner={owner} retry={retry} />
+        )}
       </div>
     </main>
   );
@@ -69,7 +74,7 @@ const JOIN_MESSAGES = {
 
 /** Why the page lists no one (D2): no identity yet, one being registered, DashPay starting, or
  * its status unreadable. */
-function NoContacts({ owner, retry }: { owner: Exclude<ContactsOwner, { kind: "identity" }>; retry: () => void }) {
+function NoContacts({ walletId, owner, retry }: { walletId: string; owner: Exclude<ContactsOwner, { kind: "identity" }>; retry: () => void }) {
   const prefill = useUi((s) => s.contactPrefill);
   let body;
   switch (owner.kind) {
@@ -108,10 +113,17 @@ function NoContacts({ owner, retry }: { owner: Exclude<ContactsOwner, { kind: "i
         />
       );
   }
-  // A `dashpay://user` link still shows what it carried (U-01 D12).
+  // A `dashpay://user` link still shows who it leads to, verified, with what the wallet can do
+  // (DP2-08 D13).
   return (
     <>
-      {prefill && <ContactPane prefill={prefill} add={null} selected={null} pane={null} />}
+      {prefill && (
+        <ContactPane
+          adding={<AddContact key={walletId} ctx={{ walletId, owner, actions: null, listed: undefined }} intent={null} link={prefill} />}
+          selected={null}
+          pane={null}
+        />
+      )}
       {body}
     </>
   );
@@ -284,7 +296,20 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
             />
           )}
         </div>
-        <ContactPane prefill={prefill} add={add} selected={selected} pane={{ walletId, identity, network, actions, hasKeys }} />
+        <ContactPane
+          adding={
+            (prefill || add) && (
+              <AddContact
+                key={walletId}
+                ctx={{ walletId, owner: { kind: "identity", identity }, actions, listed: all.data?.sections.flatMap((s) => s.contacts) }}
+                intent={add}
+                link={prefill}
+              />
+            )
+          }
+          selected={selected}
+          pane={{ walletId, identity, network, actions, hasKeys }}
+        />
       </div>
       {/* The detail slot's change, said once (DP2-09 D14). */}
       <VisuallyHidden>

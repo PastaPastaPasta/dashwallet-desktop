@@ -14,6 +14,7 @@ import { bridgeEvents } from "./api/events";
 import { BackendContext } from "./api/queries";
 import { inTauri, IpcBackend } from "./api/tauri";
 import { App, LaunchContext } from "./app/App";
+import { installDropGuard } from "./app/dropGuard";
 import { exposeSelftest, runTauriSelftest } from "./app/selftest";
 import { milestones } from "./app/startup";
 import { loadPrefs } from "./settings/prefs";
@@ -46,6 +47,7 @@ async function boot() {
   await bridgeEvents(backend, client);
   if (fixturePassphrase !== null) exposeSelftest(backend, client, fixturePassphrase);
 
+  installDropGuard();
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <QueryClientProvider client={client}>
