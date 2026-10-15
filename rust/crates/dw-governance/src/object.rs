@@ -105,7 +105,10 @@ impl GovernanceObject {
         let revision = i32::consensus_decode(&mut r)?;
         let time = i64::consensus_decode(&mut r)?;
         let collateral_hash = <[u8; 32]>::consensus_decode(&mut r)?;
-        let data = read_bytes(&mut r, MAX_DATA_SIZE * 4)?;
+        // No cap of its own: `MAX_DATA_SIZE` is the proposal rule
+        // (`ParseProposalJSON`), and a superblock trigger grows with every
+        // payee. `read_bytes` bounds it by the payload.
+        let data = read_bytes(&mut r, usize::MAX)?;
         let object_type = i32::consensus_decode(&mut r)?;
         let masternode_outpoint = OutPoint::consensus_decode(&mut r)?;
         let signature = read_bytes(&mut r, 1024)?;
@@ -168,6 +171,17 @@ pub fn outpoint_short(o: &OutPoint) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_trigger_larger_than_a_proposal_decodes() {
+        let mut t = GovernanceObject::new_proposal(1, 2, vec![b'x'; 8 * MAX_DATA_SIZE]);
+        t.object_type = OBJECT_TYPE_TRIGGER;
+        assert_eq!(GovernanceObject::decode(&t.encode()).unwrap(), t);
+        // A length past the payload is still refused.
+        let mut bytes = t.encode();
+        bytes.truncate(bytes.len() - 50);
+        assert!(GovernanceObject::decode(&bytes).is_err());
+    }
 
     #[test]
     fn round_trips_and_refuses_trailing_bytes() {

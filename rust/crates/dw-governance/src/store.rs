@@ -1,9 +1,12 @@
 //! The synced governance objects and current votes, in memory.
 //!
 //! Objects are kept by hash; for each object only the latest funding vote
-//! of every masternode outpoint is kept (Core `mapCurrentMNVotes`), with
-//! the voting key id recovered from its signature. Votes whose object has
-//! not arrived yet wait (bounded) until it does.
+//! of every masternode outpoint is kept (Core `mapCurrentMNVotes`). A vote
+//! counts only when its signature recovers the voting key the masternode
+//! list gives for its collateral outpoint ([`GovernanceStore::set_voting_keys`],
+//! Core `CGovernanceVote::IsValid`), as MG-00 D45 assumes: without the list
+//! every vote is refused. Votes whose object has not arrived yet wait
+//! (bounded) until it does.
 
 use std::collections::{HashMap, HashSet};
 
@@ -16,6 +19,15 @@ use crate::vote::{GovernanceVote, SIGNAL_FUNDING, VoteOutcome};
 
 /// Votes kept for objects that have not arrived (per store).
 const MAX_ORPHAN_VOTES: usize = 50_000;
+/// How far ahead of the local clock a vote may be timed, seconds (Core
+/// `CGovernanceVote::IsValid`: `nTime > GetAdjustedTime() + 60 * 60`).
+const MAX_VOTE_TIME_AHEAD: i64 = 60 * 60;
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
 
 /// What an object's data says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,12 +52,17 @@ pub struct StoredObject {
 pub enum VoteRejection {
     /// Already stored.
     Duplicate,
-    /// Not a funding vote with an ECDSA signature (trigger votes are
-    /// operator-signed and not tallied here).
+    /// Not a funding vote with a yes / no / abstain outcome (trigger votes
+    /// are operator-signed and not tallied here).
     NotTallied,
-    /// The signature recovers no key.
+    /// The signature recovers no key, or not the masternode's voting key.
     BadSignature,
-    /// An older vote than the masternode's current one.
+    /// No masternode in the list has this collateral outpoint.
+    UnknownMasternode,
+    /// Timed more than an hour ahead of the local clock.
+    TooNew,
+    /// An older vote than the masternode's current one, or one of the same
+    /// time with a lower outcome (Core keeps the higher one).
     Obsolete,
     /// Kept until its object arrives.
     Orphan,
@@ -61,6 +78,8 @@ pub struct GovernanceStore {
     orphans: HashMap<[u8; 32], Vec<GovernanceVote>>,
     orphan_count: usize,
     vote_count: u64,
+    /// Collateral outpoint → voting key id, from the masternode list.
+    voting_keys: HashMap<OutPoint, [u8; 20]>,
 }
 
 impl GovernanceStore {
@@ -131,6 +150,27 @@ impl GovernanceStore {
         true
     }
 
+    /// Sets the voting key id of every valid masternode, by collateral
+    /// outpoint (MG-00 D43), and drops the current votes it no longer
+    /// backs: a masternode that left the list or changed its voting key
+    /// (Core `CGovernanceManager::RemoveInvalidVotes`). Dropped votes are
+    /// no longer seen, so a newer one can be fetched again.
+    pub fn set_voting_keys(&mut self, keys: HashMap<OutPoint, [u8; 20]>) {
+        let mut dropped = 0u64;
+        for per_object in self.votes.values_mut() {
+            per_object.retain(|outpoint, current| {
+                let keep = keys.get(outpoint) == Some(&current.key_id);
+                if !keep {
+                    self.seen_votes.remove(&current.vote_hash);
+                    dropped += 1;
+                }
+                keep
+            });
+        }
+        self.vote_count -= dropped;
+        self.voting_keys = keys;
+    }
+
     /// Stores `vote` as its masternode's current funding vote on its object.
     pub fn add_vote(
         &mut self,
@@ -154,15 +194,25 @@ impl GovernanceStore {
             }
             return Err(VoteRejection::Orphan);
         }
-        let Some(key_id) = vote.signer_key_id(network) else {
-            return Err(VoteRejection::NotTallied);
+        let Some(&key_id) = self.voting_keys.get(&vote.masternode_outpoint) else {
+            return Err(VoteRejection::UnknownMasternode);
         };
+        if vote.time > unix_now() + MAX_VOTE_TIME_AHEAD {
+            return Err(VoteRejection::TooNew);
+        }
         let per_object = self.votes.entry(vote.parent_hash).or_default();
         if let Some(current) = per_object.get(&vote.masternode_outpoint)
-            && current.time > vote.time
+            && (current.time > vote.time
+                || (current.time == vote.time && current.outcome.code() > outcome.code()))
         {
             self.seen_votes.insert(hash);
             return Err(VoteRejection::Obsolete);
+        }
+        // Checked last, as Core does (the cost of recovery). A rejected
+        // signature leaves the hash unseen, so the vote can still arrive
+        // from another peer.
+        if vote.signer_key_id(network) != Some(key_id) {
+            return Err(VoteRejection::BadSignature);
         }
         let replaced = per_object
             .insert(
@@ -297,6 +347,7 @@ mod tests {
         let h = obj.hash();
         let mut s = GovernanceStore::new();
         let (v1, key) = signed_vote(h, 1, VoteOutcome::Yes, 10);
+        s.set_voting_keys(HashMap::from([(v1.masternode_outpoint, key)]));
         assert_eq!(
             s.add_vote(v1.clone(), Network::Regtest),
             Err(VoteRejection::Orphan)
@@ -326,6 +377,77 @@ mod tests {
         assert_eq!(s.vote_count(), 1);
         assert_eq!(s.current_proposals(50), vec![h]);
         assert!(s.current_proposals(100).is_empty());
+    }
+
+    fn store_with(obj: &GovernanceObject, keys: &[(OutPoint, [u8; 20])]) -> GovernanceStore {
+        let mut s = GovernanceStore::new();
+        assert!(s.add_object(obj.clone(), Network::Regtest));
+        s.set_voting_keys(keys.iter().copied().collect());
+        s
+    }
+
+    #[test]
+    fn test_qt_128_only_the_masternodes_voting_key_counts() {
+        let obj = GovernanceObject::new_proposal(1, 1, br#"{"name":"a","type":1}"#.to_vec());
+        let h = obj.hash();
+        let (genuine, key) = signed_vote(h, 1, VoteOutcome::Yes, 10);
+        let outpoint = genuine.masternode_outpoint;
+
+        // No masternode list yet: nothing counts.
+        let mut s = store_with(&obj, &[]);
+        assert_eq!(
+            s.add_vote(genuine.clone(), Network::Regtest),
+            Err(VoteRejection::UnknownMasternode)
+        );
+
+        // A vote for this outpoint signed by another key is refused and
+        // does not block the genuine one, whose hash it shares.
+        let mut s = store_with(&obj, &[(outpoint, key)]);
+        let (other, _) = signed_vote(h, 2, VoteOutcome::No, 10);
+        let mut forged = genuine.clone();
+        forged.signature = other.signature.clone();
+        assert_eq!(forged.hash(), genuine.hash());
+        assert_eq!(
+            s.add_vote(forged, Network::Regtest),
+            Err(VoteRejection::BadSignature)
+        );
+        assert_eq!(s.add_vote(genuine.clone(), Network::Regtest), Ok(()));
+        assert_eq!(s.vote_count(), 1);
+
+        // A vote timed more than an hour ahead is refused.
+        let (late, _) = signed_vote(h, 1, VoteOutcome::No, unix_now() + 2 * 3600);
+        assert_eq!(
+            s.add_vote(late, Network::Regtest),
+            Err(VoteRejection::TooNew)
+        );
+
+        // The masternode changes its voting key: its vote is dropped and
+        // can be fetched again.
+        s.set_voting_keys(HashMap::from([(outpoint, [9; 20])]));
+        assert_eq!(s.vote_count(), 0);
+        assert!(s.current_vote(&h, &outpoint).is_none());
+        s.set_voting_keys(HashMap::from([(outpoint, key)]));
+        assert_eq!(s.add_vote(genuine, Network::Regtest), Ok(()));
+    }
+
+    #[test]
+    fn test_qt_128_same_time_votes_keep_the_higher_outcome() {
+        let obj = GovernanceObject::new_proposal(1, 1, br#"{"name":"a","type":1}"#.to_vec());
+        let h = obj.hash();
+        let (no, key) = signed_vote(h, 1, VoteOutcome::No, 10);
+        let (yes, _) = signed_vote(h, 1, VoteOutcome::Yes, 10);
+        let (abstain, _) = signed_vote(h, 1, VoteOutcome::Abstain, 10);
+        let mut s = store_with(&obj, &[(no.masternode_outpoint, key)]);
+        assert_eq!(s.add_vote(no.clone(), Network::Regtest), Ok(()));
+        assert_eq!(
+            s.add_vote(yes, Network::Regtest),
+            Err(VoteRejection::Obsolete)
+        );
+        assert_eq!(s.add_vote(abstain, Network::Regtest), Ok(()));
+        assert_eq!(
+            s.outcome_of(&h, &no.masternode_outpoint),
+            Some(VoteOutcome::Abstain)
+        );
     }
 
     #[test]

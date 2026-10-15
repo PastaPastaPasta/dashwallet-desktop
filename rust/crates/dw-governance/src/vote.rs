@@ -260,16 +260,19 @@ pub fn to_recoverable_compact(
 /// the masternode type whose collateral is `masternode_outpoint` in the tip
 /// list, 0 when no masternode has that collateral.
 pub fn current_vote_string(vote: &GovernanceVote, weight: u32) -> String {
-    let outcome = vote
-        .vote_outcome()
-        .map(VoteOutcome::as_str)
-        .unwrap_or("none");
+    // `ConvertOutcomeToString` / `ConvertSignalToString`: 0 is "none", an
+    // unknown code "error".
+    let outcome = match vote.outcome {
+        0 => "none",
+        code => VoteOutcome::from_code(code).map_or("error", VoteOutcome::as_str),
+    };
     let signal = match vote.signal {
+        0 => "none",
         1 => "funding",
         2 => "valid",
         3 => "delete",
         4 => "endorsed",
-        _ => "none",
+        _ => "error",
     };
     format!(
         "{}:{}:{}:{}:{}",
