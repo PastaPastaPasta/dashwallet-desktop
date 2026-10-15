@@ -1,0 +1,1014 @@
+/* MG-00 mocks (UX-SPEC §4.25). Two parts:
+   1. the board: frames of 1280 × 820, the Tauri window's default inner size (playwright.config.ts);
+   2. the components the Masternodes screens add, prefixed `mg-`. Values come only from the
+      generated tokens, like app.css; MG-09/MG-10 move them into app.css as they build the screens. */
+
+/* ------------------------------------------------------------------ 1. board */
+
+html,
+body.mock-board {
+  height: auto;
+}
+
+body.mock-board {
+  margin: 0;
+  padding: var(--dw-space-xxl);
+  background: var(--dw-role-neutral-tint);
+}
+
+.mock-board-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--dw-space-l);
+  margin-bottom: var(--dw-space-l);
+}
+
+.mock-board-header h1 {
+  margin: 0;
+  font-size: var(--dw-type-title3-size);
+}
+
+.mock-board-header p {
+  flex: 1;
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+}
+
+.mock-frame {
+  margin-bottom: var(--dw-space-xxxl);
+}
+
+.mock-caption {
+  margin: 0 0 var(--dw-space-s);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+/* `transform` makes the frame the containing block of the sheet layer's `position: fixed`. */
+.mock-window {
+  position: relative;
+  width: 1280px;
+  height: 820px;
+  overflow: hidden;
+  transform: translateZ(0);
+  background: var(--dw-role-canvas);
+}
+
+.mock-window .page {
+  overflow: hidden;
+}
+
+/* :target shows one frame alone (render.mjs screenshots `#<id> .mock-window`). */
+body.mock-board:has(.mock-frame:target) .mock-frame:not(:target),
+body.mock-board:has(.mock-frame:target) .mock-board-header {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ 2. components */
+
+/* Page header with the two tabs under the title (§4.25.1). */
+.mg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-space-l);
+}
+
+.mg-header .tabs {
+  margin: 0;
+}
+
+.mg-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.page-masternodes .page-column {
+  max-width: calc(var(--dw-layout-content-max-width) + var(--dw-layout-sheet-width-small));
+}
+
+/* Status chips. Green text fails AA on white (UX-SPEC §2.1a), so a success chip is a dot in
+   `success` (non-text, 3:1) and the label in the primary text colour (MG-00 D24). */
+.chip-success,
+.chip-neutral {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dw-space-xxs);
+}
+
+.chip-success {
+  background: var(--dw-role-success-tint);
+  color: var(--dw-role-text-primary);
+}
+
+.chip-success::before,
+.chip-dot::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dw-role-success);
+}
+
+.chip-neutral {
+  background: var(--dw-role-neutral-tint);
+  color: var(--dw-role-text-secondary);
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xxs);
+}
+
+/* Summary strip: three numbers over the list (Home's breakdown strip, on a card). */
+.mg-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-space-m) 0;
+  border-radius: var(--dw-radius-group);
+}
+
+.mg-summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+  padding: 0 var(--dw-space-l);
+}
+
+.mg-summary > div + div {
+  border-left: 1px solid var(--dw-role-separator);
+}
+
+.mg-summary-label {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-summary-value {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.mg-summary-note {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption2-size);
+  line-height: var(--dw-type-caption2-line);
+}
+
+/* A masternode or proposal row: Activity's .tx-row with a two-line trailing column. */
+.mg-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--dw-space-m);
+  width: 100%;
+  padding: var(--dw-space-transaction-row-vertical) var(--dw-space-l);
+  border: 0;
+  border-radius: var(--dw-radius-standard);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.mg-row-wide {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.mg-row[aria-current="true"] {
+  background: var(--dw-role-accent-tint);
+}
+
+.mg-row img {
+  width: 30px;
+  height: 30px;
+}
+
+.mg-row-text,
+.mg-row-trailing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+  min-width: 0;
+}
+
+.mg-row-trailing {
+  align-items: flex-end;
+}
+
+.mg-row-title {
+  overflow: hidden;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mg-row-sub,
+.mg-row-meta {
+  overflow: hidden;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mg-row .mg-votebar {
+  margin-top: var(--dw-space-xxs);
+}
+
+/* Detail pane (Contacts' pane): header, facts, sections, actions. */
+.mg-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-l);
+  padding: var(--dw-layout-card-padding) var(--dw-space-xl);
+  border-radius: var(--dw-radius-card);
+}
+
+.mg-pane-header {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--dw-space-m);
+}
+
+.mg-pane-header img {
+  width: 46px;
+  height: 46px;
+}
+
+.mg-pane-title {
+  margin: 0;
+  font-size: var(--dw-type-title3-size);
+  font-weight: var(--dw-type-title3-weight);
+  line-height: var(--dw-type-title3-line);
+}
+
+.mg-section-title {
+  margin: 0 0 var(--dw-space-xxs);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.mg-facts {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: var(--dw-space-xs) var(--dw-space-m);
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-facts dt {
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+}
+
+/* What this wallet holds: one line per role, a mark and a word (no colour alone). */
+.mg-roles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--dw-space-xs) var(--dw-space-l);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-roles li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--dw-space-xs);
+}
+
+.mg-roles .mg-held::before,
+.mg-roles .mg-elsewhere::before {
+  flex: none;
+  width: 14px;
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.mg-roles .mg-held::before {
+  content: "✓";
+  color: var(--dw-role-success);
+}
+
+.mg-roles .mg-elsewhere::before {
+  content: "–";
+  color: var(--dw-role-text-tertiary);
+}
+
+.mg-roles .mg-elsewhere {
+  color: var(--dw-role-text-secondary);
+}
+
+/* Notices: info (accent tint), warning, danger. */
+.mg-notice {
+  margin: 0;
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border-radius: var(--dw-radius-standard);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-notice strong {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.mg-notice-info {
+  background: var(--dw-role-accent-tint);
+}
+
+.mg-notice-warning {
+  background: var(--dw-role-warning-tint);
+}
+
+.mg-notice-danger {
+  background: var(--dw-role-danger-tint);
+}
+
+.mg-notice-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+}
+
+/* Votes bar: yes / no / abstain segments by weight, with the funding threshold as a tick. */
+.mg-votebar {
+  position: relative;
+  display: flex;
+  height: 6px;
+  overflow: visible;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-progress-track);
+}
+
+.mg-votebar > span {
+  height: 100%;
+}
+
+.mg-votebar > span:first-child {
+  border-radius: var(--dw-radius-capsule) 0 0 var(--dw-radius-capsule);
+}
+
+.mg-vote-yes {
+  background: var(--dw-role-success);
+}
+
+.mg-vote-no {
+  background: var(--dw-role-danger);
+}
+
+.mg-vote-abstain {
+  background: var(--dw-role-text-tertiary);
+}
+
+.mg-votebar .mg-threshold {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+  background: var(--dw-role-text-primary);
+}
+
+.mg-vote-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xxs) var(--dw-space-m);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-vote-legend span::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--dw-space-xxs);
+  border-radius: 2px;
+  vertical-align: 0;
+}
+
+.mg-vote-legend .l-yes::before {
+  background: var(--dw-role-success);
+}
+
+.mg-vote-legend .l-no::before {
+  background: var(--dw-role-danger);
+}
+
+.mg-vote-legend .l-abstain::before {
+  background: var(--dw-role-text-tertiary);
+}
+
+.mg-vote-legend .l-threshold::before {
+  width: 2px;
+  background: var(--dw-role-text-primary);
+}
+
+/* Governance clock card: the cycle as a bar with the voting cutoff and the superblock. */
+.mg-clock {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: var(--dw-space-xl);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-layout-card-padding) var(--dw-space-xl);
+  border-radius: var(--dw-radius-card);
+}
+
+.mg-clock-title {
+  margin: 0;
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.mg-clock-sub {
+  margin: var(--dw-space-xxxs) 0 var(--dw-space-m);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-cycle {
+  position: relative;
+  height: 8px;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-progress-track);
+}
+
+.mg-cycle-done {
+  height: 100%;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-accent);
+}
+
+.mg-cycle-mark {
+  position: absolute;
+  top: -4px;
+  width: 2px;
+  height: 16px;
+  background: var(--dw-role-text-primary);
+}
+
+.mg-cycle-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--dw-space-xs);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-budget-bar {
+  display: flex;
+  height: 8px;
+  margin: var(--dw-space-s) 0 var(--dw-space-xs);
+  overflow: hidden;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-progress-track);
+}
+
+.mg-budget-bar > span {
+  height: 100%;
+}
+
+.mg-budget-passing {
+  background: var(--dw-role-accent);
+}
+
+.mg-budget-over {
+  background: var(--dw-role-warning);
+}
+
+/* Wizard: the step header and the step list beside the step. */
+.mg-wizard {
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  gap: var(--dw-space-xl);
+  min-height: 0;
+}
+
+.mg-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-steps li {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  padding: var(--dw-space-xs) var(--dw-space-s);
+  border-radius: var(--dw-radius-small);
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-steps li::before {
+  content: attr(data-n);
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--dw-role-separator);
+  border-radius: 50%;
+  font-size: var(--dw-type-caption2-size);
+}
+
+.mg-steps li.is-done::before {
+  content: "✓";
+  border-color: transparent;
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-link);
+}
+
+.mg-steps li[aria-current="step"] {
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-primary);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.mg-steps li[aria-current="step"]::before {
+  border-color: transparent;
+  background: var(--dw-c-app-dash-blue-color, var(--dw-role-accent));
+  color: var(--dw-role-text-on-hero);
+}
+
+.mg-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  min-width: 0;
+}
+
+.mg-step-title {
+  margin: 0;
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.mg-step-intro {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+/* Large radio cards: a choice with a title, a line of help and an optional note. */
+.mg-choices {
+  display: grid;
+  gap: var(--dw-space-s);
+}
+
+.mg-choices-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mg-choice {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: var(--dw-space-xxxs) var(--dw-space-s);
+  padding: var(--dw-space-m) var(--dw-space-l);
+  border: 1px solid var(--dw-role-separator);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-card);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-choice input {
+  grid-row: 1 / span 3;
+  margin: 2px 0 0;
+  accent-color: var(--dw-role-accent);
+}
+
+.mg-choice.is-selected {
+  border-color: var(--dw-role-accent);
+  background: var(--dw-role-accent-tint);
+}
+
+.mg-choice[aria-disabled="true"] {
+  color: var(--dw-role-text-tertiary);
+}
+
+.mg-choice-title {
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.mg-choice-help {
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-choice-note {
+  margin-top: var(--dw-space-xxs);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+/* Form fields with help under them (the operator fields' plain-language help, §5a). */
+.mg-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--dw-space-m) var(--dw-space-l);
+}
+
+.mg-form .mg-span {
+  grid-column: 1 / -1;
+}
+
+.mg-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.mg-field input,
+.mg-field select,
+.mg-field textarea,
+.mg-input {
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  font-weight: var(--dw-type-footnote-weight);
+}
+
+.mg-field textarea {
+  resize: none;
+}
+
+.mg-field .mono,
+.mg-field input.mono {
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-caption1-size);
+}
+
+.mg-field-help {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  font-weight: var(--dw-type-caption1-weight);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-field-error {
+  color: var(--dw-role-danger);
+  font-size: var(--dw-type-caption1-size);
+  font-weight: var(--dw-type-caption1-weight);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-field.has-error input {
+  border-color: var(--dw-role-danger);
+}
+
+.mg-field-ok {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  font-weight: var(--dw-type-caption1-weight);
+}
+
+.mg-field-ok::before {
+  content: "✓ ";
+  color: var(--dw-role-success);
+}
+
+.mg-field-row {
+  display: flex;
+  gap: var(--dw-space-s);
+  align-items: center;
+}
+
+.mg-field-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Technical box: hashes, a message to sign, a command (UX-SPEC §5.6, monospaced allowlist). */
+.mg-code {
+  margin: 0;
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-neutral-tint);
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* The sheet's footer: secondary on the left, the primary on the right. */
+.mg-sheet-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-m) var(--dw-layout-page-padding-h) var(--dw-layout-page-padding-h);
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.mg-sheet-footer-note {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-sheet-footer .mg-actions {
+  flex-wrap: nowrap;
+}
+
+.sheet .mg-sheet-body {
+  padding-top: var(--dw-space-xxs);
+}
+
+/* Vote sheet: masternodes with a checkbox, their weight and current vote. */
+.mg-nodes {
+  margin: 0;
+  padding: var(--dw-space-xxs) 0;
+  border-radius: var(--dw-radius-group);
+  list-style: none;
+}
+
+.mg-node {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 64px 112px;
+  align-items: center;
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-s) var(--dw-space-l);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-node + .mg-node {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.mg-node input {
+  margin: 0;
+  accent-color: var(--dw-role-accent);
+}
+
+.mg-node[aria-disabled="true"] .mg-node-name {
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-node-name {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.mg-node-sub {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-node-head {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-medium-size);
+  font-weight: var(--dw-type-caption1-medium-weight);
+}
+
+.mg-node-weight {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.mg-node-result {
+  text-align: right;
+}
+
+/* Shared masternode: shares and participants. */
+.mg-shares {
+  display: flex;
+  height: 10px;
+  overflow: hidden;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-progress-track);
+}
+
+.mg-shares > span {
+  height: 100%;
+  border-right: 2px solid var(--dw-role-card);
+}
+
+.mg-share-1 {
+  background: var(--dw-role-accent);
+}
+
+.mg-share-2 {
+  background: var(--dw-c-app-dash-blue-color, var(--dw-role-accent));
+  opacity: 0.6;
+}
+
+.mg-share-3 {
+  background: var(--dw-role-accent);
+  opacity: 0.35;
+}
+
+.mg-share-open {
+  background: transparent;
+}
+
+/* Inline stepper of a running session (stage names, current one emphasised). */
+.mg-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-stages li {
+  padding: 2px var(--dw-space-s);
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-neutral-tint);
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-stages li.is-done {
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-link);
+}
+
+.mg-stages li[aria-current="step"] {
+  background: var(--dw-role-accent);
+  color: var(--dw-role-text-on-hero);
+}
+
+/* Empty state with an explanation list (iOS MasternodesScreen's intro). */
+.mg-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-xxxl) var(--dw-space-xxl);
+  border-radius: var(--dw-radius-card);
+  text-align: center;
+}
+
+.mg-empty img {
+  width: 46px;
+  height: 46px;
+}
+
+.mg-empty h2 {
+  margin: 0;
+  font-size: var(--dw-type-title3-size);
+  font-weight: var(--dw-type-title3-weight);
+  line-height: var(--dw-type-title3-line);
+}
+
+.mg-empty p {
+  max-width: 520px;
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-empty-points {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--dw-space-l);
+  max-width: 680px;
+  margin: var(--dw-space-s) 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-empty-points strong {
+  display: block;
+  margin-bottom: var(--dw-space-xxxs);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.mg-empty-points span {
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-muted {
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-small {
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
+.mg-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.mg-spread {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+}
+
+.mg-progress-line {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+/* Menu opened from a "More" button (the row menu's look, shown open in a mock). */
+.mg-menu {
+  position: absolute;
+  z-index: 2;
+  min-width: 248px;
+  margin: 0;
+  padding: var(--dw-space-xxs);
+  border: var(--dw-border-floating);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-card-raised);
+  box-shadow: var(--dw-shadow-floating);
+  list-style: none;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-menu li {
+  padding: var(--dw-space-xs) var(--dw-space-m);
+  border-radius: var(--dw-radius-small);
+}
+
+.mg-menu li.is-hover {
+  background: var(--dw-role-accent);
+  color: var(--dw-role-text-on-hero);
+}
+
+.mg-menu li.sep {
+  height: 1px;
+  margin: var(--dw-space-xxs) var(--dw-space-s);
+  padding: 0;
+  background: var(--dw-role-separator);
+}
+
+.mg-menu li .mg-menu-note {
+  display: block;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+}
+
+.mg-link {
+  color: var(--dw-role-text-link);
+  cursor: pointer;
+}

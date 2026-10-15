@@ -1,0 +1,153 @@
+<!-- board title="Change keys, end a masternode, states" -->
+
+<!-- frame id="upd-behind" title="The page behind the sheets" route="masternodes" -->
+<main class="page page-masternodes">
+ <div class="page-column">
+  <header class="top-intro mg-header">
+   <h1 class="top-intro-title">Masternodes</h1>
+   <span class="mg-header-actions">
+    <button type="button" class="dash-button dash-button-tintedGray dash-button-small">More</button>
+    <button type="button" class="dash-button dash-button-filledBlue dash-button-small">Set up a masternode</button>
+   </span>
+  </header>
+  <div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="true">My masternodes</button><button class="tab" role="tab">Governance</button></div>
+  <div class="contacts-split">
+   <div class="contacts-list">
+    <section class="tx-group card-l1">
+     <h2 class="contacts-group-title">My masternodes</h2>
+     <ul style="list-style:none;margin:0;padding:0 var(--dw-space-xs) var(--dw-space-xs)">
+      <li><button class="mg-row" aria-current="true"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">Home node</span><span class="mg-row-sub">Masternode · 203.0.113.7:19999</span></span><span class="mg-row-trailing"><span class="chip chip-success">Active</span><span class="mg-row-meta">Paid Oct 13</span></span></button></li>
+     </ul>
+    </section>
+   </div>
+   <aside class="contacts-pane"><section class="mg-pane card-l1"><h2 class="mg-pane-title">Home node</h2></section></aside>
+  </div>
+ </div>
+</main>
+<!-- /frame -->
+
+<!-- frame id="upd-registrar" title="Change keys or payout (ProUpRegTx), replacing the operator (§4.25.6)" route="masternodes" behind="upd-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-medium" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Change keys or payout</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <p class="mg-muted mg-small" style="margin:0">Home node · signed with its owner key, which is in this wallet. Change only what you need; the rest stays.</p>
+  <div class="mg-form">
+   <label class="mg-field mg-span">Operator public key
+    <span class="mg-field-row"><input class="mono" value="b47e09c1d5a2f38e6b0c47d19a52e8f3c06b1d7a49e25f08c3b6d1a7e42f9c05b8d3e1a6f74c2b09e5d8a13f6c7b2e4"><button class="dash-button dash-button-plainBlue dash-button-small">Keep current</button></span>
+    <span class="mg-field-ok">A new operator key: from your new operator</span>
+   </label>
+   <label class="mg-field">Voting<select><option>Keep: this wallet (voting keypair 1)</option></select></label>
+   <label class="mg-field">Payouts go to<select><option>Keep: yPay3n…Q2wd, this wallet</option></select></label>
+  </div>
+  <p class="mg-notice mg-notice-warning"><strong>Changing the operator key immediately PoSe-bans the masternode.</strong> It earns nothing until the new operator sends a service update from their server. Do this when you move to a new operator.</p>
+  <p class="mg-muted mg-small" style="margin:0">A new voting key drops this masternode's current votes; vote again afterwards. Changing only the voting key or the payout address doesn't ban the masternode.</p>
+  <dl class="detail-list card-l1">
+   <div class="detail-row"><dt class="detail-label">Network fee</dt><dd class="detail-value"><span class="amount">0.00000312<dash/></span>, from this wallet</dd></div>
+  </dl>
+  <label class="form-field" style="max-width:320px">Passphrase<input type="password" value="••••••••••••"></label>
+ </div>
+ <footer class="mg-sheet-footer"><span></span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Cancel</button><button class="dash-button dash-button-filledBlue dash-button-medium">Change operator</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="upd-release" title="End a masternode: release the collateral (§4.25.6)" route="masternodes" behind="upd-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-small" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Release collateral</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <p class="sheet-text" style="margin:0">Home node's 1,000 Dash collateral is locked so you don't spend it by accident. Releasing it makes it spendable again.</p>
+  <p class="mg-notice mg-notice-danger"><strong>Spending the collateral ends the masternode at once.</strong> It leaves the list, stops earning and can't be brought back; a new masternode needs a new registration.</p>
+  <label class="checkbox-row"><input type="checkbox" checked> I understand that Home node ends when I spend this collateral</label>
+  <p class="mg-muted mg-small" style="margin:0">Nothing is sent now. Until you spend the coins you can lock them again from this masternode's details.</p>
+ </div>
+ <footer class="mg-sheet-footer"><span></span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Cancel</button><button class="dash-button dash-button-plainRed dash-button-medium">Release</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="mn-watchonly" title="A watch-only wallet: read only, every signing action says why (§4.25.1)" route="masternodes" wallet="Cold storage (watch-only)" lock="Watch-only" -->
+<main class="page page-masternodes">
+ <div class="page-column">
+  <header class="top-intro mg-header">
+   <h1 class="top-intro-title">Masternodes</h1>
+   <span class="mg-header-actions">
+    <button type="button" class="dash-button dash-button-tintedGray dash-button-small">More</button>
+    <button type="button" class="dash-button dash-button-filledBlue dash-button-small" disabled title="This wallet is watch-only. Masternode registration requires a wallet that can sign transactions.">Set up a masternode</button>
+   </span>
+  </header>
+  <div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="true">My masternodes</button><button class="tab" role="tab">Governance</button></div>
+  <p class="mg-notice mg-notice-info" style="margin-bottom:var(--dw-space-l)"><strong>Watch-only wallet.</strong> It shows the masternodes whose collateral or payout address it watches, and their payouts. Voting, registering and changing keys need the wallet that holds the keys.</p>
+  <div class="contacts-split">
+   <div class="contacts-list">
+    <section class="tx-group card-l1">
+     <h2 class="contacts-group-title">My masternodes</h2>
+     <ul style="list-style:none;margin:0;padding:0 var(--dw-space-xs) var(--dw-space-xs)">
+      <li><button class="mg-row" aria-current="true"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">Masternode 1</span><span class="mg-row-sub">Masternode · 203.0.113.50:19999</span></span><span class="mg-row-trailing"><span class="chip chip-success">Active</span><span class="mg-row-meta">Paid Oct 9</span></span></button></li>
+      <li><button class="mg-row"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">Masternode 2</span><span class="mg-row-sub">Masternode · not in the list</span></span><span class="mg-row-trailing"><span class="chip chip-neutral">Unknown</span><span class="mg-row-meta">list syncing</span></span></button></li>
+     </ul>
+    </section>
+   </div>
+   <aside class="contacts-pane">
+    <section class="mg-pane card-l1">
+     <header class="mg-pane-header"><img src="icon:masternode-network-monitor" alt=""><div><h2 class="mg-pane-title">Masternode 1</h2><div class="chip-row" style="margin-top:2px"><span class="chip chip-success">Active</span><span class="chip chip-neutral">Masternode</span></div></div></header>
+     <dl class="mg-facts">
+      <dt>Service</dt><dd>203.0.113.50:19999</dd>
+      <dt>Last payout</dt><dd><span class="amount">2.58<dash/></span> · Oct 9</dd>
+     </dl>
+     <div><h3 class="mg-section-title">In this wallet</h3>
+      <ul class="mg-roles"><li class="mg-held">Collateral (watched)</li><li class="mg-held">Payout address (watched)</li><li class="mg-elsewhere">Owner key</li><li class="mg-elsewhere">Voting key</li></ul>
+     </div>
+     <div class="mg-actions"><button class="dash-button dash-button-tintedBlue dash-button-small" disabled title="Voting needs the wallet that holds the voting keys">Vote on proposals</button><button class="dash-button dash-button-tintedGray dash-button-small">More</button></div>
+    </section>
+   </aside>
+  </div>
+ </div>
+</main>
+<!-- /frame -->
+
+<!-- frame id="mn-locked" title="Locked wallet with a registration in progress (external collateral, §4.25.1, §4.25.5)" route="masternodes" lock="Locked" status="Up to date" -->
+<main class="page page-masternodes">
+ <div class="page-column">
+  <header class="top-intro mg-header">
+   <h1 class="top-intro-title">Masternodes</h1>
+   <span class="mg-header-actions">
+    <button type="button" class="dash-button dash-button-tintedGray dash-button-small">More</button>
+    <button type="button" class="dash-button dash-button-filledBlue dash-button-small">Set up a masternode</button>
+   </span>
+  </header>
+  <div class="mg-spread" style="margin-bottom: var(--dw-space-l)">
+   <div class="tabs" role="tablist" style="margin:0"><button class="tab" role="tab" aria-selected="true">My masternodes</button><button class="tab" role="tab">Governance</button></div>
+   <span class="mg-muted mg-small">Masternode list at block 1,214,880</span>
+  </div>
+  <p class="mg-notice mg-notice-warning mg-notice-row" style="margin-bottom:var(--dw-space-l)"><span><strong>New masternode is waiting for the collateral signature.</strong> Sign the message in the wallet that holds the collateral, then paste it here.</span><button class="dash-button dash-button-tintedBlue dash-button-small">Continue</button></p>
+  <div class="contacts-split">
+   <div class="contacts-list">
+    <section class="tx-group card-l1">
+     <h2 class="contacts-group-title">In progress</h2>
+     <ul style="list-style:none;margin:0;padding:0 var(--dw-space-xs) var(--dw-space-xs)">
+      <li><button class="mg-row" aria-current="true"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">New masternode</span><span class="mg-row-sub">Masternode · collateral in another wallet</span></span><span class="mg-row-trailing"><span class="chip chip-warning">Needs signature</span><span class="mg-row-meta">started Oct 15</span></span></button></li>
+     </ul>
+    </section>
+    <section class="tx-group card-l1">
+     <h2 class="contacts-group-title">My masternodes</h2>
+     <ul style="list-style:none;margin:0;padding:0 var(--dw-space-xs) var(--dw-space-xs)">
+      <li><button class="mg-row"><img src="icon:masternode-network-monitor" alt=""><span class="mg-row-text"><span class="mg-row-title">Home node</span><span class="mg-row-sub">Masternode · 203.0.113.7:19999</span></span><span class="mg-row-trailing"><span class="chip chip-success">Active</span><span class="mg-row-meta">Paid Oct 13</span></span></button></li>
+     </ul>
+    </section>
+   </div>
+   <aside class="contacts-pane">
+    <section class="mg-pane card-l1">
+     <header class="mg-pane-header"><img src="icon:masternode-network-monitor" alt=""><div><h2 class="mg-pane-title">New masternode</h2><div class="chip-row" style="margin-top:2px"><span class="chip chip-warning">Needs signature</span></div></div></header>
+     <ol class="mg-small" style="margin:0;padding-left:var(--dw-space-xl);display:flex;flex-direction:column;gap:var(--dw-space-xs)">
+      <li>Registration prepared Oct 15 · collateral <span class="mono">b07e…c1d2:0</span></li>
+      <li><strong>Sign the message in the other wallet and paste the signature</strong></li>
+      <li class="mg-muted">Send the registration: you'll be asked for your passphrase</li>
+      <li class="mg-muted">Wait for 1 confirmation</li>
+     </ol>
+     <div class="mg-actions"><button class="dash-button dash-button-filledBlue dash-button-small">Continue</button><button class="dash-button dash-button-tintedGray dash-button-small">Discard…</button></div>
+    </section>
+   </aside>
+  </div>
+ </div>
+</main>
+<!-- /frame -->
