@@ -847,9 +847,10 @@ Rules that apply to every screen here:
   operator's share and registration height come from the masternode's ProRegTx (operator and voting keys
   are always read live from the list). The current payout address and payees are known only after the
   wallet has applied **every** later ProUpRegTx (and ProUpShareTx for a shared masternode) for that ProTx hash
-  up to the tip; whether the operator's share is paid yet comes the same way from the latest ProUpServTx
-  (its operator payout address) since the last operator-key change, which clears it (D46). The wallet only
-  reads ProUpServTx; it never sends one. MG-03 watches each known ProTx hash through compact filters from the registration height,
+  up to the tip; whether the operator's share is paid yet comes the same way: it is paid once the latest
+  ProUpServTx sets an operator payout address, and Core clears that address on every revocation (ProUpRevTx)
+  and every operator-key change (ProUpRegTx or ProUpSharedRegTx), so the wallet applies all of these in block
+  order (D42, D46). The wallet only reads ProUpServTx and ProUpRevTx; it never sends them. MG-03 watches each known ProTx hash through compact filters from the registration height,
   including after a restore (D42). Until that check has finished, these values show "Checking…", payout custody in "In this wallet" reads "Payout address:
   checking", and actions that depend on them (a fixed withdrawal destination) are disabled with "Checking
   the current payout address…". Without the ProRegTx they show "—" or are left out, and actions that need
@@ -981,7 +982,8 @@ network." [Track]. Above the footer: "After you track it, the wallet looks up it
 collateral and current payout address. Until it finds its collateral, the masternode can't vote here."
 The lookup (D43): the list entry's `confirmedHash` names the block at the registration height plus the
 network's minimum masternode confirmations. The wallet looks that hash up in its verified header chain,
-subtracts 15 on mainnet or 1 on testnet from its height, downloads the block at the result from a
+subtracts the network's `nMasternodeMinimumConfirmations` (15 on mainnet; 1 on testnet, devnet and
+regtest) from its height, downloads the block at the result from a
 full-block peer, checks the block against the verified header at that height (hash and merkle root), and
 takes the transaction whose txid equals the ProTx hash: the ProRegTx. The collateral outpoint follows
 Core's rule: when the payload's collateral hash is null (the collateral is created in the ProRegTx itself,
@@ -1028,18 +1030,30 @@ withdrawal already sent"); [Close] keeps checking ("Keeps checking after you clo
 This needs an extended Platform-wallet API (MG-13 dependency, D44): before broadcasting, the engine
 hands back and the wallet stores the signed transition, its ID and the identity nonce it used; an
 ambiguous outcome returns them; and the engine can look a transition up by ID and rebroadcast the identical
-bytes. The outcomes: proof that **this** transition was applied (found by its ID, or its result returned)
-→ "Withdrawal done" (credits arrive as Dash in Activity); a definitive rejection of it → "Platform rejected
-the withdrawal: <reason>. Nothing was withdrawn." and only then [Try again]. Neither the balance (rewards
-can credit it meanwhile) nor an advanced nonce counts as proof: another device may have used the nonce.
-An advanced nonce with no matching transition is an unresolved conflict: the row reads "Couldn't confirm
-this withdrawal. Another request from this evonode reached Platform since. Check whether the credits
-arrived before withdrawing again elsewhere.", Withdraw stays off, and the wallet keeps looking the
-transition up and rebroadcasting it until Platform applies or definitively rejects it. While the result is
-unknown the row says "Still checking", and the wallet rebroadcasts the **same** signed transition now and
-then (same bytes and nonce, so it can't apply twice); nothing new is offered to send. The summary's
-"Evonode credits" note reads "withdrawal being checked" meanwhile, and the evonode's pane shows the same
-state with Withdraw credits disabled (mock `mn-withdraw-pending`, behind the sheet).
+bytes. The outcomes:
+- **Done:** proof that **this** transition was applied (its result returned for its ID, or an equivalent
+  record uniquely attributable to it; the upstream change names which) → "Withdrawal done" (credits arrive
+  as Dash in Activity).
+- **Rejected:** a rejection **on the merits** (not a nonce error) of the first broadcast, or of a
+  rebroadcast while the transition's nonce is still unused → "Platform rejected the withdrawal: <reason>.
+  Nothing was withdrawn." and only then [Try again].
+- **Still checking:** anything else. The wallet looks the transition up and rebroadcasts the **same**
+  signed bytes now and then (same nonce, so it can't apply twice); nothing new is offered to send. Neither
+  the balance (rewards can credit it meanwhile) nor the nonce counts as proof, and a **nonce rejection of a
+  rebroadcast** ("already present", "too far in past") proves nothing either way: Platform nonces work in a
+  window, and that nonce was used by this withdrawal or by another request that took the same number.
+- **Couldn't confirm** (D47): once a rebroadcast is refused because its nonce was used and no proof is
+  found, the row reads "Couldn't confirm this withdrawal. This evonode's Platform nonce was used, by this
+  withdrawal or by another request. Check whether 0.4199 Dash arrived at yPay8vK2…Wm4c (Activity, or a
+  block explorer; withdrawals can take a few hours)." with [It arrived] (→ "Withdrawal done") and [It
+  didn't arrive…], which asks "Allow a new withdrawal? If the first one did go through, a new one withdraws
+  again from this evonode's credits. Only continue if 0.4199 Dash didn't arrive." [Cancel] [Allow a new
+  withdrawal]. Withdraw stays off until one of the two is chosen; the wallet keeps looking for proof
+  meanwhile and settles the state itself if it finds it.
+
+While any of these is open, the summary's "Evonode credits" note reads "withdrawal being checked", and the
+evonode's pane shows the same state with Withdraw credits disabled (mock `mn-withdraw-pending`, behind the
+sheet).
 
 #### 4.25.3 Governance
 
@@ -1064,20 +1078,21 @@ sit above a smaller proposal that is paid.
 appears only with an eligible voting key); Sort ▾ Closest to passing (default) · Most asked · Newest ·
 Name.
 
-**Proposal row:** name, "1,500 Ð × 3 payments · You: 1 of 3 voted" (or "once", "You voted Yes", "You: not
-voted"), a vote bar (`mg-votebar`: yes / no /
+**Proposal row:** name, "1,500 Ð × 3 payments · You: 1 of 3 seen voting" (or "once", "You: Yes (last
+seen)", "You: no vote seen"; D45), a vote bar (`mg-votebar`: yes / no /
 abstain, with the funding-line mark), status chip and the margin
-("about +414 over", "about 692 short": margins are estimates like every count, D45; "about 6 short,
-±12" when the range from the votes seen crosses the line).
+("about +414 over", "about 692 short": margins are estimates like every vote count, D45; when the range
+from the votes seen crosses the line it is shown, "about 6 short; −18 to +6", generally not symmetric
+because each unverifiable vote counts 0, 1 or 4).
 
 **Status chips** (D17; engine `ProposalStatus`):
 
 | Engine | Chip | Style | Tooltip |
 |---|---|---|---|
-| Passing | Passing | success | "Enough net yes votes and fits the budget." |
-| Unfunded | Over budget | warning | "Enough votes, but proposals with more votes use up the budget." |
-| Voting | Needs votes | info | "Not enough net yes votes yet." |
-| Failing | Not funded | danger | "More no than yes votes." |
+| Passing | Passing | success | "From the votes peers sent: enough net yes votes and fits the budget." |
+| Unfunded | Over budget | warning | "From the votes peers sent: enough votes, but proposals with more votes use up the budget." |
+| Voting | Needs votes | info | "From the votes peers sent: not enough net yes votes yet." |
+| Failing | Not funded | danger | "From the votes peers sent: more no than yes votes." |
 | Funded | Funded | success | "Paid in the last superblock." |
 | Confirming | Confirming | neutral | "Submitted after the first confirmation; fully valid after six." |
 | Pending | Ready to submit / Fee paid | warning / neutral | Mine only (below) |
@@ -1152,8 +1167,8 @@ in wallet backups."
 Mock `gov-vote`, result `gov-vote-result`. Sheet medium "Vote on dash-incubator-nov", one proposal per
 sheet (D11).
 - Summary line: amount, payments, status and net votes.
-- **Outcome:** segmented Yes · No · Abstain (radiogroup), no default selection when the user has no current
-  vote; preselects the last vote seen otherwise.
+- **Outcome:** segmented Yes · No · Abstain (radiogroup), no default selection when no last vote has been
+  seen; preselects the last vote seen otherwise.
 - **Vote with:** one row per masternode the engine lists for this wallet (owned and tracked), with a checkbox,
   name, service, key custody, weight (1, or 4 for an evonode) and last vote seen (column "Last vote seen";
   "None" when no vote has been seen, D45). Custody (D13): "key in this
@@ -1397,8 +1412,9 @@ have to start over." [Discard and release coins] plainRed · [Cancel] · [Keep a
 
 **After registration** (`sh-detail`): the masternode lists under My masternodes ("you hold 1 of 3 shares"),
 pane with the share bar and legend, Your payouts ("40% of each payout to yRw4…n8Ka; about 38% once the operator's payout address is set"),
-Operator's share ("5%, not paid yet: Alice hasn't set an operator payout address · checked up to block
-1,214,880"; once set: "5%, paid first" and Your payouts reads "about 38% of each payout (after the operator's
+Operator's share ("5%, not paid yet: you haven't set an operator payout address. Set it with a service
+update from your node · checked up to block 1,214,880": this pane is the operator Alice's; another
+participant sees "Alice hasn't set an operator payout address"; once set: "5%, paid first" and Your payouts reads "about 38% of each payout (after the operator's
 5%) to yRw4…n8Ka"), Your refund, Early
 period ("Ends at block 1,319,400, about Apr 13, 2027"), Standby dissolution ("Saved on this computer on Oct
 15" + [Save a copy…]); actions [Change my payout address] (ProUpShareTx, this share only, fee from this
