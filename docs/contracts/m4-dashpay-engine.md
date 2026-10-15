@@ -2744,6 +2744,12 @@ renames or reshapes them takes the next version bump:
     asks Platform, per identity whose `main_name` is `None` (by this row's rule: a refused or still-contested label
     is no name), whether it owns any DPNS name (`dpns_domain_states_for_identity`, the `records.identity` index,
     which the protocol rewrites on a purchase or transfer; at most one document, a 10-second budget).
+    - **In the background** (DP1-08 D27): a wallet's check is a task of its own, never awaited by the Platform
+      supervisor, so a slow Platform delays no bring-up, unlock or readmission. One check per wallet runs at a time;
+      triggers while it runs make exactly one more follow. It asks four identities at a time, the whole check within
+      20 seconds; an identity unanswered by then is `Failed`, never nameless.
+    - **An answer for a removed or unloaded wallet is dropped** (D28): each check asks for the wallet's generation,
+      which a removal or an unload raises, so a wallet imported again starts `Pending`.
     - **Nameless** (`None`) once Platform answered that it owns none. The answer lasts for the session; a wallet
       closed and opened again asks again. A name registered elsewhere after that answer shows when the DPNS loop
       loads it (its 600-second interval); until then the identity reads nameless.
@@ -2753,7 +2759,7 @@ renames or reshapes them takes the next version bump:
       bring-up ends.
     - **`Failed`** when the question failed or ran out of its budget, or Platform said the identity owns a name the
       library has not loaded (the DPNS loop fetches it, and then `main_name` is set). The engine asks again every
-      minute, with the balance pass, until Platform says it owns none or a name shows.
+      minute, on a timer of its own, until Platform says it owns none or a name shows.
     - Nothing is asked while Platform is off (`--no-platform`) or before the bring-up: the check stays `Pending`.
     - Set only while `main_name` is `None`: a name is evidence on its own. `names_updating` (the older snapshot) is
       unchanged and independent. `my_user_link` is `platform.unavailable` while it is set.
