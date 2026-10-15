@@ -42,8 +42,9 @@ use dw_engine::platform::{
     ActivityFilter, AvatarChange, AvatarError, AvatarSize, AvatarSource, BearerSecret,
     ContactError, ContactQuery, ContactSection, ContactSort, CreditsError, DashPay, FlowKind,
     GrantAction, GrantRequest, IdentityError, InitialProfile, InvitationError, NameError,
-    PlatformError, PrivateDetails, ProfileEdit, RegistrationError, RegistrationFunding,
-    RegistrationRequest, RegistrationWait, ScannedCode, WithdrawAmount, check_username,
+    PlatformError, PrivateDetails, ProfileEdit, ProfileError, RegistrationError,
+    RegistrationFunding, RegistrationRequest, RegistrationWait, ScannedCode, WithdrawAmount,
+    check_username,
 };
 use dw_engine::{
     ContactRecipient, Engine, EngineError, NetworkSession, PreparedTx, SendFailure, TASK_PANICKED,
@@ -498,7 +499,8 @@ pub enum ContactCmd {
 
 #[derive(Subcommand)]
 pub enum ProfileCmd {
-    /// The stored profile (`null` if none).
+    /// An identity's profile, own or another user's (`null` if none).
+    #[command(visible_alias = "get")]
     Show {
         #[command(flatten)]
         who: Who,
@@ -643,6 +645,10 @@ fn platform_params(e: &PlatformError) -> Value {
         }
         P::NeedsGrant { purpose } => json!({"purpose": purpose}),
         P::Identity(IdentityError::KeysMissing { purpose }) => json!({"purpose": purpose}),
+        P::Profile(ProfileError::TooLong { field, length, max }) => {
+            json!({"field": field, "length": length, "max": max})
+        }
+        P::Profile(ProfileError::Empty) => json!({}),
         P::LeaseRevoked { cause } => json!({"cause": cause}),
         P::FeatureOff { feature } => json!({"feature": feature}),
         P::NotImplemented { call } => json!({"call": call}),
@@ -2006,7 +2012,7 @@ mod tests {
     ];
 
     /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01,
-    /// DP2-03, DP1-02, DP2-02, DP1-06, DP3-01), with the
+    /// DP2-03, DP1-02, DP2-02, DP1-06, DP3-01, DP4-01), with the
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
@@ -2095,6 +2101,13 @@ mod tests {
         // DP3-02.
         ("contact activity --identity I C --filter sent", NOT_BASE58),
         ("contact frequent --identity I", NOT_BASE58),
+        // DP4-01.
+        ("profile show --identity I", NOT_BASE58),
+        (
+            "profile limits",
+            r#"{"ok":true,"result":{"display_name_max":25,"public_message_max":140}}"#,
+        ),
+        ("profile set --identity I --display-name Al", NOT_BASE58),
         ("identity balance --identity I", NOT_IDENTIFIER),
         (
             "identity top-up --identity I --duffs 100000",
@@ -2416,6 +2429,18 @@ mod tests {
         ] {
             assert!(parse(args).is_err(), "{args:?} parsed");
         }
+    }
+
+    #[test]
+    fn profile_get_is_profile_show() {
+        let Ok(DashPayCommand::Profile {
+            cmd: ProfileCmd::Show { who },
+            ..
+        }) = parse("profile get --identity I")
+        else {
+            panic!();
+        };
+        assert_eq!(who.identity.as_deref(), Some("I"));
     }
 
     #[test]

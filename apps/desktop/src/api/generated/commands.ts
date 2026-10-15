@@ -2951,6 +2951,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "platform.not_implemented",
   "identity.not_found",
   "identity.keys_missing",
+  "profile.too_long",
+  "profile.empty",
   "registration.in_progress",
   "registration.funding_insufficient",
   "registration.coins_locked",

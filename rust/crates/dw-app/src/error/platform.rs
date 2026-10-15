@@ -3,7 +3,7 @@
 
 use dw_engine::platform::{
     AvatarError, ContactError, CreditsError, IdentityError, InvitationError, NameError,
-    PlatformError, RegistrationError,
+    PlatformError, ProfileError, RegistrationError,
 };
 
 use super::{AppError, EngineCode, ErrorData, codes};
@@ -35,6 +35,13 @@ codes! {
     IdentityCode {
         NotFound = "identity.not_found",
         KeysMissing = "identity.keys_missing",
+    }
+}
+
+codes! {
+    ProfileCode {
+        TooLong = "profile.too_long",
+        Empty = "profile.empty",
     }
 }
 
@@ -173,6 +180,15 @@ impl From<PlatformError> for AppError {
                     purpose: purpose.into(),
                 }),
             ),
+            P::Profile(ProfileError::TooLong { field, length, max }) => (
+                ProfileCode::TooLong.into(),
+                Some(ErrorData::ProfileTooLong {
+                    field: field.into(),
+                    length,
+                    max,
+                }),
+            ),
+            P::Profile(ProfileError::Empty) => (ProfileCode::Empty.into(), None),
             P::InvalidArgument { .. } => (EngineCode::InvalidArgument.into(), None),
             P::NetworkNotOpen => (EngineCode::NetworkNotOpen.into(), None),
             P::WalletNotFound => (EngineCode::WalletNotFound.into(), None),
@@ -351,7 +367,9 @@ impl From<CreditsError> for AppError {
 
 #[cfg(test)]
 mod tests {
-    use dw_engine::platform::{BudgetPurpose, Eligibility, KeyPurpose, RevokeCause, UsernameRule};
+    use dw_engine::platform::{
+        BudgetPurpose, Eligibility, KeyPurpose, ProfileField, RevokeCause, UsernameRule,
+    };
 
     use super::*;
 
@@ -394,6 +412,12 @@ mod tests {
             PlatformError::Identity(IdentityError::KeysMissing {
                 purpose: KeyPurpose::Encryption,
             }),
+            PlatformError::Profile(ProfileError::TooLong {
+                field: ProfileField::PublicMessage,
+                length: 141,
+                max: 140,
+            }),
+            PlatformError::Profile(ProfileError::Empty),
             PlatformError::InvalidArgument { detail: s() },
             PlatformError::NetworkNotOpen,
             PlatformError::WalletNotFound,
@@ -520,6 +544,20 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&e).unwrap()["data"]["rules"],
             serde_json::json!(["noEdgeHyphen"])
+        );
+        let e = AppError::from(PlatformError::Profile(ProfileError::TooLong {
+            field: ProfileField::DisplayName,
+            length: 26,
+            max: 25,
+        }));
+        assert_eq!(
+            serde_json::to_value(&e).unwrap()["data"],
+            serde_json::json!({
+                "kind": "profileTooLong",
+                "field": "displayName",
+                "length": 26,
+                "max": 25
+            })
         );
         let e = AppError::from(RegistrationError::InProgress {
             draft: "registration/3/funding".into(),

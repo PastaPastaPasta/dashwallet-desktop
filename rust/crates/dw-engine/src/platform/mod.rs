@@ -44,6 +44,9 @@ mod private_details;
 #[cfg(test)]
 mod private_details_tests;
 mod profile;
+#[cfg(test)]
+mod profile_tests;
+mod profiles;
 pub(crate) mod provenance;
 mod recovery;
 #[cfg(test)]
@@ -86,7 +89,7 @@ pub use credits::{
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{
     AvatarError, ContactError, CreditsError, IdentityError, InvitationError, NameError,
-    PlatformError, RegistrationError,
+    PlatformError, ProfileError, RegistrationError,
 };
 pub use flows::{
     BudgetPurpose, BudgetView, DispatchResolution, DispatchResolved, DispatchState, FlowKind,
@@ -108,7 +111,7 @@ pub use payments::{
 };
 pub use profile::{
     AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect, Profile,
-    ProfileEdit, ProfileLimits,
+    ProfileEdit, ProfileField, ProfileLimits,
 };
 pub use registration::{
     FaucetLockKey, FinishReport, InitialProfile, RegistrationFailure, RegistrationFunding,

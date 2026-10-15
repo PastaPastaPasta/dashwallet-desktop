@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use super::dashpay::{DashPay, stub};
 use super::errors::{AvatarError, PlatformError};
+use super::profiles;
+use super::requests::SdkRequests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
@@ -23,6 +25,14 @@ pub struct Profile {
 pub struct ProfileLimits {
     pub display_name_max: u32,
     pub public_message_max: u32,
+}
+
+/// A profile text the contract limits (`profile.too_long`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileField {
+    DisplayName,
+    PublicMessage,
 }
 
 /// The whole new profile; `None` clears a field.
@@ -128,16 +138,44 @@ mod base64_bytes {
     }
 }
 
-#[expect(unused_variables, reason = "stubs until DP4-01 and DP4-02")]
 impl DashPay {
+    /// The profile of `identity` (DP4-01): an own identity's as
+    /// `identities()` shows it, another user's as the contacts read model
+    /// holds it, `None` when the library has none. From memory; a stale read
+    /// with nothing to answer from is `platform.unavailable`.
     pub fn profile(&self, identity: String) -> Result<Option<Profile>, PlatformError> {
-        stub("DashPay.profile")
+        self.session.profile_of(self.wallet_id(), &identity)
     }
 
+    /// The display name's and public message's `maxLength` in the DashPay
+    /// contract the library bundles. Reads no wallet.
     pub fn profile_limits(&self) -> Result<ProfileLimits, PlatformError> {
-        stub("DashPay.profile_limits")
+        Ok(profiles::limits())
     }
 
+    /// Publishes `edit` as the identity's whole profile (DP4-01): texts are
+    /// trimmed, an empty one clears its field, one past its limit is
+    /// `profile.too_long`, and a profile left with no field at all is
+    /// `profile.empty`. The avatar is kept or removed; `Set` waits for
+    /// DP4-02. An edit that changes nothing is `Ok` with nothing sent.
+    /// `grant` is a `PlatformOp` grant (or a `ProfileEdit` lease).
+    pub async fn update_profile(
+        &self,
+        identity: String,
+        edit: ProfileEdit,
+        grant: String,
+    ) -> Result<(), PlatformError> {
+        let wallet_id = self.wallet_id();
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = SdkRequests(manager.sdk_arc());
+            profiles::update(&net, &session, &wallet, (wallet_id, &identity), edit, grant).await
+        })
+        .await
+    }
+}
+
+#[expect(unused_variables, reason = "stubs until DP4-02")]
+impl DashPay {
     pub async fn prepare_avatar(&self, src: AvatarSource) -> Result<AvatarCandidate, AvatarError> {
         stub("DashPay.prepare_avatar")
     }
@@ -148,15 +186,6 @@ impl DashPay {
 
     pub async fn upload_avatar(&self, candidate: String) -> Result<String, AvatarError> {
         stub("DashPay.upload_avatar")
-    }
-
-    pub async fn update_profile(
-        &self,
-        identity: String,
-        edit: ProfileEdit,
-        grant: String,
-    ) -> Result<(), PlatformError> {
-        stub("DashPay.update_profile")
     }
 
     pub async fn avatar(

@@ -212,6 +212,9 @@ pub(crate) struct Classified {
     events: Vec<Event>,
     /// The DPNS names of the wallet's own identities, by identity.
     names: BTreeMap<Identifier, Vec<DpnsNameInfo>>,
+    /// A contact profile the library checked since the engine expired it
+    /// (DP4-01 D12): a pass fetched contact profiles.
+    contact_profiles_checked: bool,
 }
 
 impl Classified {
@@ -236,6 +239,9 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
                 c.names.insert(*id, entry.dpns_names.clone());
             }
         }
+        c.contact_profiles_checked = (ids.identities.values())
+            .flat_map(|e| e.contact_profiles.values())
+            .any(|p| p.checked_at_ms != 0);
     }
     // Keys and profiles are identity data too.
     if cs.identity_keys.as_ref().is_some_and(|k| !k.is_empty())
@@ -411,6 +417,9 @@ pub(crate) struct ChangesetTap {
     /// automatic backup of §3.4 Restore rule 4). Set once the session
     /// exists.
     pub(crate) on_funded: OnceLock<Box<dyn Fn(WalletId, i64) + Send + Sync>>,
+    /// Told when a pass fetched contact profiles (DP4-01 D12), so the
+    /// session expires them again. Set once the session exists.
+    pub(crate) on_contact_profiles: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// The session's registration flows, whose actors write a tracked
     /// lock's outpoint (DEC-173). Set once the session exists.
     pub(crate) registrations: OnceLock<Arc<super::registration_flow::Flows>>,
@@ -451,6 +460,7 @@ impl ChangesetTap {
             catch_up_before: Mutex::new(HashMap::new()),
             locks_changed: OnceLock::new(),
             on_funded: OnceLock::new(),
+            on_contact_profiles: OnceLock::new(),
             registrations: OnceLock::new(),
             unread: Mutex::new(HashMap::new()),
             counts_queued: AtomicU64::new(0),
@@ -781,6 +791,11 @@ impl ChangesetTap {
     /// only while the wallet is still at it.
     pub(crate) fn record(&self, id: WalletId, epoch: u64, mut c: Classified, times: &dyn Times) {
         let wallet = id.to_string();
+        if c.contact_profiles_checked
+            && let Some(expire) = self.on_contact_profiles.get()
+        {
+            expire(id);
+        }
         let mut changes = std::mem::take(&mut c.changes);
         // Before the library broadcasts a registration's lock, its
         // outpoint goes to the flow's row (§3.4 Restore rule 3).

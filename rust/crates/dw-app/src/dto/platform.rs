@@ -6,7 +6,7 @@ use dw_engine::platform as engine;
 use dw_engine::platform::{
     BudgetPurpose, BudgetView, DispatchResolution, DispatchResolved, DispatchState, Eligibility,
     FlowKind, FlowOutcome, FlowReport, KeyPurpose, LeaseStateView, LeaseView, LockPhase,
-    LockReport, ParkReason, RevokeCause, UsernameRule,
+    LockReport, ParkReason, ProfileField, RevokeCause, UsernameRule,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -81,6 +81,16 @@ pub enum KeyPurposeName {
 mirror_enum!(KeyPurpose => KeyPurposeName {
     Authentication, Encryption, Decryption, Transfer, System, Voting, Owner
 });
+
+/// The profile text a `profile.too_long` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ProfileFieldName {
+    DisplayName,
+    PublicMessage,
+}
+
+mirror_enum!(ProfileField => ProfileFieldName { DisplayName, PublicMessage });
 
 /// A DPNS label rule (`check_username`, `name.invalid`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

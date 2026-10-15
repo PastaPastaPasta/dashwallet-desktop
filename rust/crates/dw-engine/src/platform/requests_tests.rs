@@ -33,6 +33,7 @@ use super::super::journal_tests::{
 };
 use super::super::keys_policy::registration_specs;
 use super::super::private_details_tests::FakeInfos;
+use super::super::profiles::{ProfileDocument, ProfileProperties};
 use super::super::signers::{VaultContactCrypto, VaultIdentitySigner};
 use super::super::startup::SyncLoop;
 use super::*;
@@ -115,7 +116,7 @@ pub(crate) fn identity(n: u8, keys: BTreeMap<KeyID, IdentityPublicKey>, balance:
 pub(crate) struct FakeRequests {
     platform: Mutex<HashMap<Identifier, Identity>>,
     /// Reads fail: `platform.unavailable`.
-    down: AtomicBool,
+    pub(crate) down: AtomicBool,
     /// Writes fail with this error, having landed or not as `landed` says.
     pub(crate) fails: Mutex<Option<PlatformError>>,
     /// Writes fail with this error before they sign anything.
@@ -130,6 +131,10 @@ pub(crate) struct FakeRequests {
     pub(crate) infos: Arc<FakeInfos>,
     /// A `contactInfo` write takes their reads down as it lands (or not).
     pub(crate) infos_down_after: AtomicBool,
+    /// The `profile` documents, by owner.
+    pub(crate) profiles: Mutex<HashMap<Identifier, ProfileDocument>>,
+    /// The key each profile write was signed with.
+    pub(crate) profile_keys: Mutex<Vec<KeyID>>,
 }
 
 impl FakeRequests {
@@ -335,6 +340,49 @@ impl RequestNet for FakeRequests {
             self.infos.down.store(true, Ordering::SeqCst);
         }
         landed.map(|()| ContactInfoPublishOutcome::Published)
+    }
+
+    async fn profile_document(
+        &self,
+        owner: Identifier,
+    ) -> Result<Option<ProfileDocument>, PlatformError> {
+        self.up()?;
+        Ok(self.profiles.lock().unwrap().get(&owner).cloned())
+    }
+
+    /// As Platform: a creation draws an id, a replacement must name the
+    /// document's revision; either costs the fee.
+    async fn put_profile(
+        &self,
+        owner: Identifier,
+        current: Option<(Identifier, u64)>,
+        properties: ProfileProperties,
+        key: &IdentityPublicKey,
+        signer: &VaultIdentitySigner,
+    ) -> Result<(), PlatformError> {
+        assert!(signer.can_sign_with(key), "the key it signs with");
+        self.sign(owner, signer).await?;
+        self.profile_keys.lock().unwrap().push(key.id());
+        let landed = self.write();
+        if landed.is_ok() || self.landed.load(Ordering::SeqCst) {
+            let mut profiles = self.profiles.lock().unwrap();
+            let held = profiles.get(&owner).map(|d| (d.id, d.revision));
+            assert_eq!(held, current, "the document it replaces");
+            let (id, revision) =
+                current.map_or((Identifier::from([9; 32]), 1), |(i, r)| (i, r + 1));
+            profiles.insert(
+                owner,
+                ProfileDocument {
+                    id,
+                    revision,
+                    properties,
+                },
+            );
+            let mut platform = self.platform.lock().unwrap();
+            let copy = platform.get_mut(&owner).unwrap();
+            copy.set_balance(copy.balance() - self.fee);
+        }
+        landed
     }
 }
 

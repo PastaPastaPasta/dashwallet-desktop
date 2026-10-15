@@ -492,6 +492,13 @@ impl NetworkSession {
                 }
             };
             let _ = live.tap.on_funded.set(Box::new(funded));
+            let weak = Arc::downgrade(&session);
+            let checked = move |wallet| {
+                if let Some(session) = weak.upgrade() {
+                    session.expire_contact_profiles_soon(wallet);
+                }
+            };
+            let _ = live.tap.on_contact_profiles.set(Box::new(checked));
             let _ = live
                 .tap
                 .registrations
@@ -507,6 +514,10 @@ impl NetworkSession {
             session.refresh_wallet_state(&manager, WalletId(id)).await;
             session.load_identity_choices(WalletId(id)).await;
             session.load_payment_locks(WalletId(id)).await;
+            // Each pass fetches the contacts' profiles (DP4-01 D12).
+            session
+                .expire_contact_profiles(&manager, WalletId(id))
+                .await;
         }
         session.load_history().await?;
         session.start_pump(&manager, appdb);

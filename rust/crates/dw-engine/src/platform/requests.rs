@@ -330,7 +330,8 @@ fn flow_levels(flow: FlowKind) -> &'static [SecurityLevel] {
         FlowKind::ContactRequest
         | FlowKind::Accept
         | FlowKind::AcceptAndPay
-        | FlowKind::PrivateDetails => &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+        | FlowKind::PrivateDetails
+        | FlowKind::ProfileEdit => &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
         FlowKind::EnableDashPayKeys => &[SecurityLevel::MASTER],
         _ => &[],
     }
@@ -350,7 +351,8 @@ fn candidate_keys(
 }
 
 /// The keys `flow`'s transition signs with, and no others:
-/// - a contact request, an accept or a `contactInfo` (DP2-04): the document
+/// - a contact request, an accept, a `contactInfo` (DP2-04) or a `profile`
+///   (DP4-01): the document
 ///   key, the identity's first HIGH or CRITICAL authentication key that is
 ///   `usable` (the vault holds it; DPP refuses the master on document
 ///   writes; the DashPay keys only do ECDH and the `contactInfo` AES keys,
@@ -377,7 +379,8 @@ fn flow_keys(
         FlowKind::ContactRequest
         | FlowKind::Accept
         | FlowKind::AcceptAndPay
-        | FlowKind::PrivateDetails => {
+        | FlowKind::PrivateDetails
+        | FlowKind::ProfileEdit => {
             let key = first_auth_key(identity, flow_levels(flow), usable);
             Ok(vec![key.ok_or_else(missing)?])
         }
@@ -425,28 +428,42 @@ fn flow_signer(
 }
 
 /// What a document write (a contact request or accept, a `contactInfo`)
-/// needs once its own checks pass, refused before anything is redeemed
-/// where it can be: the credits of `identity` (index `index`) against
-/// `quote`, then the lease of one of `flows` (which checks the vault holds
-/// the document key, then `ready`, a scan's expiry), the call permit
-/// `label` charged the quote, its signer (the document key alone) and the
-/// lease's contact crypto.
+/// needs once its own checks pass: [`prepare_signer`]'s, then the lease's
+/// contact crypto.
 pub(super) async fn prepare(
+    net: &impl RequestNet,
+    session: &Arc<NetworkSession>,
+    signs: (u32, &Identity),
+    by: (WalletId, &str),
+    write: (&[FlowKind], u64, &str),
+    ready: impl FnOnce() -> Result<(), ContactError>,
+) -> Result<(Lease, CallPermit, VaultIdentitySigner, VaultContactCrypto), ContactError> {
+    let (lease, permit, signer) = prepare_signer(net, session, signs, by, write, ready).await?;
+    let crypto = lease.contact_crypto().map_err(PlatformError::from)?;
+    Ok((lease, permit, signer, crypto))
+}
+
+/// What a document write needs once its own checks pass, refused before
+/// anything is redeemed where it can be: the credits of `identity` (index
+/// `index`) against `quote`, then the lease of one of `flows` (which checks
+/// the vault holds the document key, then `ready`, a scan's expiry), the
+/// call permit `label` charged the quote and its signer (the document key
+/// alone).
+pub(super) async fn prepare_signer(
     net: &impl RequestNet,
     session: &Arc<NetworkSession>,
     (index, identity): (u32, &Identity),
     (wallet, grant): (WalletId, &str),
     (flows, quote, label): (&[FlowKind], u64, &str),
     ready: impl FnOnce() -> Result<(), ContactError>,
-) -> Result<(Lease, CallPermit, VaultIdentitySigner, VaultContactCrypto), ContactError> {
+) -> Result<(Lease, CallPermit, VaultIdentitySigner), ContactError> {
     let balance = net.balance(identity.id()).await?.ok_or_else(not_found)?;
     cover(balance, quote)?;
     let signs = (index, identity);
     let lease = write_lease(session, wallet, grant, (flows, quote), signs, ready).await?;
     let permit = write_permit(&lease, label, quote)?;
     let signer = flow_signer(&permit, index, identity, &[])?;
-    let crypto = lease.contact_crypto().map_err(PlatformError::from)?;
-    Ok((lease, permit, signer, crypto))
+    Ok((lease, permit, signer))
 }
 
 /// A request write's outcome; after a failure, whether `pair.identity`'s
