@@ -28,7 +28,7 @@ models, 2026-10-06).
 | Checklist | done | partial | not started | parked | total |
 |---|---|---|---|---|---|
 | dash-qt (QT) | 51 | 63 | 22 | 18 | 154 |
-| iOS (IOS) | 12 | 48 | 60 | 3 | 123 |
+| iOS (IOS) | 12 | 49 | 59 | 3 | 123 |
 
 What backs these statuses on `main`:
 
@@ -295,7 +295,7 @@ touches, and keep the summary counts in step.
 | IOS-069 | Identity profile sheet (credits, names, top-up from Core / Platform / Shielded) | not started | M4 |  |  |
 | IOS-070 | Withdraw identity credits to Core / transfer to own Platform address | not started | M4 |  |  |
 | IOS-071 | Identities screen (list, set main, keys, refresh, find, get username) | not started | M4 |  |  |
-| IOS-072 | Contacts tab (contacts, pending requests, search, hidden, my identity card, Enable DashPay keys, FAQ) | not started | M4 |  |  |
+| IOS-072 | Contacts tab (contacts, pending requests, search, hidden, my identity card, Enable DashPay keys, FAQ) | partial | M4 | Desktop (Tauri) Contacts split view (DP2-07): Contact Requests (n), My Contacts, Pending Requests and a collapsible Hidden from the engine's `contacts` read, Android's four sort orders (AND-090), local search and the inline network username search ("On the Dash network", "Show more results"), the pending-setup hint, keyboard navigation and a detail slot. No inline Accept/Ignore (DP2-09), Add contact (DP2-08), identity card, Enable DashPay keys or FAQ | apps/desktop/e2e/contacts.spec.ts `IOS-072 …`, `AND-090 …`; apps/desktop/src/contacts/model.test.ts; apps/desktop/src/fixture/contacts.test.ts; apps/desktop/e2e-tauri/contacts.ts (testnet, GL) |
 | IOS-073 | Add contact by username search or QR; My QR | not started | M4 |  |  |
 | IOS-074 | Contact profile: accept / ignore, pay, payment activity, alias / note / hide | not started | M4 |  |  |
 | IOS-075 | DashPay notifications screen (bell, unread count, New / Earlier / Pending, inline accept) | not started | M4 |  |  |

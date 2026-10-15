@@ -81,6 +81,9 @@ export class IpcBackend implements Backend {
   identities = cmd.identities;
   dashpayUnreadCount = cmd.dashpayUnreadCount;
   dashpayContacts = cmd.dashpayContacts;
+  dashpayPendingSetupCount = cmd.dashpayPendingSetupCount;
+  dashpaySyncSoon = () => cmd.dashpaySyncSoon();
+  searchUsers = cmd.searchUsers;
   takeLinks = cmd.takeLinks;
   routeLink = cmd.routeLink;
   shellSync = cmd.shellSync;

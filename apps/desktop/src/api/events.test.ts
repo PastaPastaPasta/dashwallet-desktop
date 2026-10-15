@@ -27,7 +27,13 @@ afterEach(() => {
 
 describe("event bridge", () => {
   it("maps each signal to the queries it touches", () => {
-    expect(invalidationsFor({ kind: "historyChanged", network: "testnet", walletId: "w", txids: [] })).toEqual([["history", "w"], ["txDetail", "w"], ["receive", "w"], ["coins", "w"]]);
+    expect(invalidationsFor({ kind: "historyChanged", network: "testnet", walletId: "w", txids: [] })).toEqual([
+      ["history", "w"],
+      ["txDetail", "w"],
+      ["receive", "w"],
+      ["coins", "w"],
+      ["dashpay", "contacts", "w"],
+    ]);
     expect(invalidationsFor({ kind: "balances", network: "testnet", walletId: "w", balances: null })).toEqual([keys.balance("w"), keys.wallets, keys.coinsAll("w")]);
     expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile]);
     expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: {} as never })).toEqual([keys.lockReconcile]);

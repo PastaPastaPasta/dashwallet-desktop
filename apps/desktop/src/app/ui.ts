@@ -3,6 +3,7 @@
 // self-test and the shell bridge can drive it.
 
 import { useEffect, useSyncExternalStore } from "react";
+import type { ContactSortName } from "../api/generated/ContactSortName";
 import type { Route } from "../api/generated/Route";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { ToolsTab } from "../api/generated/ToolsTab";
@@ -29,6 +30,14 @@ export interface ContactPrefill {
   /** Base58 identity id. */
   identity: string;
   username: string;
+}
+
+/** What opened Contacts' Add contact slot (DP2-07 D12): the wallet it was opened in, the search
+ * text, and the network hit picked, if any. */
+export interface AddContactIntent {
+  walletId: string;
+  query: string;
+  hit: { identity: string; username: string } | null;
 }
 
 /** The window's content protection while a secret surface is open (U-02 D27): `pending` until
@@ -69,6 +78,12 @@ export interface UiState {
   secrets: number;
   /** Whether the content protection those views need is in effect (D27; set by the shell). */
   protection: Protection;
+  /** Contacts (DP2-07): the selected contact (its identity id), whatever opened it (DP2-07 D11). */
+  contact: string | null;
+  /** Contacts' Add contact slot: what a search or the Add button carries to it (D12). */
+  addContact: AddContactIntent | null;
+  /** Contacts' order of My Contacts and Hidden, for the session (D3). */
+  contactSort: ContactSortName;
   /** Bumped by Try again after `failed`: the shell asks for the protection again. */
   protectionTries: number;
   discreet: boolean;
@@ -95,6 +110,9 @@ let state: UiState = {
   forgotPassphrase: false,
   secrets: 0,
   protection: "off",
+  contact: null,
+  addContact: null,
+  contactSort: "displayName",
   protectionTries: 0,
   discreet: false,
   theme: null,

@@ -140,8 +140,9 @@ pub struct Shell {
     choose: Mutex<Option<files::ChooseFn>>,
     /// A file dialog is open: a second is refused, not stacked (U-05 D31).
     choosing: AtomicBool,
-    /// The self-test's link trace (`--selftest-link-trace`).
-    trace: Option<PathBuf>,
+    /// The self-test's link trace (`--selftest-link-trace`), behind a lock:
+    /// lines come from concurrent commands and native callbacks.
+    trace: Option<Mutex<PathBuf>>,
 }
 
 impl Shell {
@@ -152,7 +153,7 @@ impl Shell {
             protect: Mutex::default(),
             choose: Mutex::default(),
             choosing: AtomicBool::new(false),
-            trace,
+            trace: trace.map(Mutex::new),
         }
     }
 
@@ -225,13 +226,21 @@ impl Shell {
 
     /// Appends `line` to the self-test's link trace, if there is one. Lines
     /// name schemes and routes, never a link's text.
+    ///
+    /// One write per line, under the lock: `escape_debug` formats a character
+    /// at a time, and written straight into the unbuffered file that was one
+    /// write per character, so the renderer's concurrent `routed pay` and
+    /// `routed ready` interleaved into lines the CI link jobs never matched
+    /// (Windows CI).
     pub fn trace(&self, line: &str) {
         let Some(path) = &self.trace else { return };
+        let path = path.lock().unwrap_or_else(|e| e.into_inner());
+        let line = format!("{}\n", line.escape_debug());
         let written = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)
-            .and_then(|mut f| writeln!(f, "{}", line.escape_debug()));
+            .open(&*path)
+            .and_then(|mut f| f.write_all(line.as_bytes()));
         if let Err(e) = written {
             eprintln!("dw-app: link trace: {e}");
         }
@@ -417,6 +426,32 @@ mod tests {
             std::fs::read_to_string(&trace).unwrap(),
             "received forwarded dashpay\nreceived forwarded pay\n"
         );
+    }
+
+    #[test]
+    fn concurrent_trace_lines_stay_whole() {
+        let dir = dw_testutil::private_tempdir();
+        let trace = dir.path().join("trace");
+        let shell = Shell::new(Some(trace.clone()));
+        let routes = [
+            "routed pay",
+            "routed ready",
+            "routed addContact",
+            "routed scanQr",
+        ];
+        std::thread::scope(|s| {
+            for route in routes {
+                let shell = &shell;
+                s.spawn(move || (0..200).for_each(|_| shell.trace(route)));
+            }
+        });
+        let text = std::fs::read_to_string(&trace).unwrap();
+        for line in text.lines() {
+            assert!(routes.contains(&line), "a torn trace line: {line:?}");
+        }
+        for route in routes {
+            assert_eq!(text.lines().filter(|l| *l == route).count(), 200, "{route}");
+        }
     }
 
     #[test]

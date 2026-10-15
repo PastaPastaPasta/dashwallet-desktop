@@ -125,7 +125,7 @@ function Shell() {
   };
 
   let content;
-  if (route === "home" || route === "activity" || route === "pay" || route === "receive") {
+  if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts") {
     if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
     else if (wallets.isError)
       content = (
@@ -148,9 +148,9 @@ function Shell() {
     else if (route === "home") content = <Overview key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
     else if (route === "pay") content = <PayPage walletId={wallet.walletId} network={network} />;
     else if (route === "receive") content = <ReceivePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
+    else if (route === "contacts") content = <ContactsPage key={wallet.walletId} walletId={wallet.walletId} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
-  } else if (route === "contacts") content = <ContactsPage />;
-  else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} />;
+  } else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} />;
   else if (route === "settings") content = <SettingsPage />;
   else content = <Placeholder route={route} />;
 
