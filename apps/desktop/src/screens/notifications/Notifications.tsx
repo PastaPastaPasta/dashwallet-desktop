@@ -2,13 +2,12 @@
 // the Notifications page. Both list the contact requests waiting, with Accept and Ignore, then the
 // identity's events: New (unread when the view opened) and, on the page, Earlier.
 
-import { useCallback, useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, type RefObject } from "react";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { DashPayEventInfo } from "../../api/generated/DashPayEventInfo";
 import { errorMessage } from "../../api/backend";
 import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
-import { showToast } from "../../components/toast";
 import { EmptyState, LoadingState } from "../../components/history";
 import type { ActionOutcome, ContactActions } from "../../contacts/actions";
 import { avatarLetters, shownName, subtitle } from "../../contacts/model";
@@ -19,6 +18,7 @@ import { eventLink, eventText, feedOf, namesFrom, popoverCut, type NameOf } from
 import { useEventFeed, useReadOnOpen } from "../../notifications/queries";
 import { useModel } from "../../onboarding/model";
 import { Avatar } from "../contacts/Avatar";
+import { useActionToast, useRefocus } from "../contacts/afterAction";
 import { RequestButtons } from "../contacts/RequestButtons";
 import { Page } from "../Routes";
 import { GrantSheet, Outcome } from "../tools/common";
@@ -35,19 +35,22 @@ function useBell(walletId: string, identity: string) {
   return { feed, shown: feedOf(feed.data?.pages ?? [], unreadAtOpen), nameOf: namesFrom(list.data), actions, hasKeys };
 }
 
-/** An action's outcome that lands after its view closed (the popover, the page left): the action
- * ran on, so a toast says how it ended (D4). */
-function useToastWhenGone(): (outcome: ActionOutcome | null) => void {
-  const gone = useRef(false);
-  useEffect(() => {
-    gone.current = false;
-    return () => {
-      gone.current = true;
-    };
-  }, []);
-  return useCallback((o) => {
-    if (o && gone.current) showToast(o.text);
-  }, []);
+/** What a request row's action calls when it ends: the row's contact and place among the rows. */
+type RequestDone = (outcome: ActionOutcome | null, contact: string, index: number) => void;
+
+/** A view's request rows after an action (D23, D28): the outcome is said inline while the view
+ * is open, else in a toast; a request accepted or ignored leaves, and focus goes to the request
+ * now in its place, else to `heading`. */
+function useRequestDone(walletId: string, pending: ContactSummaryInfo[], root: RefObject<HTMLElement | null>, heading: () => HTMLElement | null | undefined): RequestDone {
+  const toast = useActionToast(walletId);
+  const arm = useRefocus(
+    (contact) => pending.some((c) => c.contact === contact),
+    (i) => root.current?.querySelectorAll<HTMLElement>(".bell-row.has-actions > .bell-row-open")[i] ?? heading(),
+  );
+  return (o, contact, index) => {
+    toast(o, true);
+    if (o?.ok) arm(contact, index);
+  };
 }
 
 /** Opens `contact`'s pane in Contacts (D12). */
@@ -68,8 +71,8 @@ export function NotificationsPopover({ walletId, identity, id, close }: { wallet
   const root = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const busy = actions.busy;
-  const onDone = useToastWhenGone();
   const cut = popoverCut(shown);
+  const onDone = useRequestDone(walletId, cut.pending, root, () => heading.current);
   useEffect(() => heading.current?.focus(), []);
   useEffect(() => {
     if (busy) return;
@@ -138,7 +141,8 @@ export function NotificationsPage({ walletId }: { walletId: string }) {
 function NotificationsView({ walletId, identity }: { walletId: string; identity: string }) {
   const { feed, shown, nameOf, actions, hasKeys } = useBell(walletId, identity);
   useModel(actions);
-  const onDone = useToastWhenGone();
+  const root = useRef<HTMLDivElement>(null);
+  const onDone = useRequestDone(walletId, shown.pending, root, () => root.current?.closest("main")?.querySelector("h1"));
   if (feed.isPending) return <LoadingState testId="notifications-loading" text="Loading notifications…" />;
   if (feed.isError && !feed.data)
     return (
@@ -154,7 +158,7 @@ function NotificationsView({ walletId, identity }: { walletId: string; identity:
       />
     );
   return (
-    <div className="notifications" data-testid="notifications">
+    <div className="notifications" data-testid="notifications" ref={root}>
       <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="notifications-outcome" />
       {shown.pending.length === 0 && shown.fresh.length === 0 && shown.earlier.length === 0 && (
         <EmptyState testId="notifications-empty" title="No notifications yet" message="Contact requests and payments from your contacts show here." />
@@ -187,7 +191,7 @@ function Requests({
   actions: ContactActions;
   hasKeys: boolean | undefined;
   onOpen: (contact: string) => void;
-  onDone: (outcome: ActionOutcome | null) => void;
+  onDone: RequestDone;
   testId: string;
 }) {
   const titleId = useId();
@@ -197,7 +201,7 @@ function Requests({
         Contact requests
       </h3>
       <ul className="bell-rows">
-        {contacts.map((c) => {
+        {contacts.map((c, i) => {
           const sub = subtitle(c);
           return (
             <li key={c.contact} className="bell-row has-actions" data-testid="bell-request" data-contact={c.contact}>
@@ -208,7 +212,7 @@ function Requests({
                   {sub && <span className="bell-row-sub">{sub}</span>}
                 </span>
               </button>
-              <RequestButtons contact={c} actions={actions} hasKeys={hasKeys} testPrefix="bell" onDone={onDone} />
+              <RequestButtons contact={c} actions={actions} hasKeys={hasKeys} testPrefix="bell" onDone={(o) => onDone(o, c.contact, i)} />
             </li>
           );
         })}

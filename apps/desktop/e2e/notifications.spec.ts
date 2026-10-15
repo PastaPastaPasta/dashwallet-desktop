@@ -17,8 +17,14 @@ const bell = (page: Page) => page.getByTestId("toolbar-bell");
 const popover = (page: Page) => page.getByTestId("bell-popover");
 const request = (page: Page, name: string) => page.getByTestId("bell-request").filter({ hasText: name });
 
-async function openBell(page: Page) {
-  await bell(page).click();
+/** Opens the popover, once the main identity is known (before, the bell opens the page). */
+async function openBell(page: Page, by: "click" | "keyboard" = "click") {
+  await expect(bell(page)).toHaveAttribute("aria-haspopup", "dialog");
+  if (by === "click") await bell(page).click();
+  else {
+    await bell(page).focus();
+    await page.keyboard.press("Enter");
+  }
   await expect(popover(page).getByRole("heading", { name: "Notifications" })).toBeFocused();
 }
 
@@ -76,6 +82,85 @@ test("D4 an accept that ends after the popover closed says so in a toast", async
   await expect(popover(page)).toHaveCount(0);
   await release.evaluate((r) => r());
   await expect(page.locator(".toast")).toHaveText("You and heidi are now contacts.");
+});
+
+test("D27 a wallet switch from the keyboard closes the bell; the other wallet's events stay unread", async ({ page }) => {
+  const errors = await open(page, "dashpay-two-wallets");
+  const badge = page.getByTestId("toolbar-bell-badge");
+  const picker = page.getByTestId("toolbar-wallet-picker");
+  await expect(badge).toBeVisible();
+  await openBell(page, "keyboard");
+  await expect(badge).toHaveCount(0);
+  // Back to the picker with the keyboard (no click outside the popover), and the other wallet.
+  await page.keyboard.press("Shift+Tab");
+  await expect(bell(page)).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(picker).toBeFocused();
+  await picker.selectOption({ index: 1 });
+  // Its bell, once its identity is known, stays closed and its events unread.
+  await expect(bell(page)).toHaveAttribute("aria-haspopup", "dialog");
+  await expect(bell(page)).toHaveAttribute("aria-expanded", "false");
+  await expect(badge).toBeVisible();
+  await expect(popover(page)).toHaveCount(0);
+  await page.getByTestId("sidebar-home").click();
+  await expect(badge).toBeVisible();
+  // Wallet A's bell is read; reopening wallet A does not reopen it.
+  await picker.selectOption({ index: 0 });
+  await expect(bell(page)).toHaveAttribute("aria-haspopup", "dialog");
+  await expect(popover(page)).toHaveCount(0);
+  await expect(badge).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("D27 an accept that ends after a wallet switch says so under its wallet's name", async ({ page }) => {
+  await open(page, "dashpay-two-wallets");
+  const picker = page.getByTestId("toolbar-wallet-picker");
+  const walletA = (await picker.locator("option").first().textContent())!;
+  await openBell(page);
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("dashpay_accept_request"));
+  await request(page, "heidi").getByTestId("bell-accept").click();
+  await authorize(page);
+  await picker.selectOption({ index: 1 });
+  await expect(popover(page)).toHaveCount(0);
+  await release.evaluate((r) => r());
+  await expect(page.locator(".toast")).toHaveText(`${walletA}: You and heidi are now contacts.`);
+  // The accept was wallet A's: wallet B's request from heidi still waits.
+  await openBell(page);
+  await expect(request(page, "heidi")).toHaveCount(1);
+});
+
+test("D28 after a keyboard accept, focus goes to the next request, then to the popover's heading", async ({ page }) => {
+  const errors = await open(page);
+  await openBell(page, "keyboard");
+  await request(page, "heidi").getByTestId("bell-accept").focus();
+  await page.keyboard.press("Enter");
+  await authorize(page);
+  await expect(page.getByTestId("bell-outcome")).toHaveText("You and heidi are now contacts.");
+  await expect(request(page, "heidi")).toHaveCount(0);
+  await expect(request(page, "Grace Hopper").locator(".bell-row-open")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(request(page, "Grace Hopper").getByTestId("bell-accept")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await authorize(page);
+  await expect(page.getByTestId("bell-request")).toHaveCount(0);
+  await expect(popover(page).getByRole("heading", { name: "Notifications" })).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test("D28 on the page, an ignored request hands focus to the next one, the last to the heading", async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "notifications" }));
+  const requests = page.getByTestId("notifications-requests");
+  await requests.getByTestId("bell-request").first().waitFor();
+  await requests.getByTestId("bell-ignore").first().focus();
+  await page.keyboard.press("Enter");
+  await expect(requests.getByTestId("bell-request")).toHaveCount(1);
+  await expect(requests.locator(".bell-row-open")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Enter");
+  await authorize(page);
+  await expect(requests).toHaveCount(0);
+  await expect(page.getByTestId("page-notifications").locator("h1")).toBeFocused();
 });
 
 test("D12 an event opens what it is about, and a click outside closes the popover", async ({ page }) => {

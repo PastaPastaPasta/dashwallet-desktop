@@ -39,6 +39,36 @@ test("IOS-074 accepts a request from the pane under a passphrase grant; the cont
   expect(errors).toEqual([]);
 });
 
+test("D28 after a keyboard accept in the pane, focus goes to what the pane offers now", async ({ page }) => {
+  await openContacts(page);
+  await row(page, "heidi").click();
+  await page.getByTestId("contact-accept").focus();
+  await page.keyboard.press("Enter");
+  await authorize(page);
+  await expect(page.getByTestId("contact-detail-relation")).toHaveText("Contact");
+  await expect(page.getByTestId("contact-pane-actions")).toBeFocused();
+  await expect(page.getByTestId("contact-pane-actions")).toContainText("You and heidi are now contacts.");
+  // Ignore and Unignore move it the same way.
+  await row(page, "Grace Hopper").click();
+  await page.getByTestId("contact-ignore").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("contact-unignore")).toBeVisible();
+  await expect(page.getByTestId("contact-pane-actions")).toBeFocused();
+});
+
+test("D28 a request row's keyboard Accept hands focus to the next request, the last to the heading", async ({ page }) => {
+  await openContacts(page);
+  await rowItem(page, "heidi").getByTestId("contact-row-accept").focus();
+  await page.keyboard.press("Enter");
+  await authorize(page);
+  await expect(names(page, "requests")).toHaveText(["Grace Hopper"]);
+  await expect(row(page, "Grace Hopper")).toBeFocused();
+  await rowItem(page, "Grace Hopper").getByTestId("contact-row-ignore").focus();
+  await page.keyboard.press("Enter");
+  await expect(group(page, "requests")).toHaveCount(0);
+  await expect(page.getByTestId("page-contacts").locator("h1")).toBeFocused();
+});
+
 test("D3 a cancelled passphrase sends nothing; the request stays", async ({ page }) => {
   await openContacts(page);
   await row(page, "heidi").click();

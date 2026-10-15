@@ -2,7 +2,7 @@
 // Add contact's placeholder (DP2-08), else the selected contact's pane (its actions, payment
 // activity and private details), else a prompt to pick one.
 
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import type { ActivityFilterName } from "../../api/generated/ActivityFilterName";
 import type { ContactDetailInfo } from "../../api/generated/ContactDetailInfo";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
@@ -12,7 +12,7 @@ import { AmountText, DashButton, Icon } from "../../components/basics";
 import { CopyValue } from "../../components/detail";
 import { useRowContext } from "../../components/history";
 import { navigate, ui, type AddContactIntent, type ContactPrefill } from "../../app/ui";
-import type { ContactActions } from "../../contacts/actions";
+import type { ActionOutcome, ContactActions } from "../../contacts/actions";
 import { avatarLetters, channelTitle, relationTitle, rowChips, shownName, subtitle } from "../../contacts/model";
 import { ACTIVITY_FILTERS, activityRow, detailsChanged, detailsForm, detailsOf, paneActions, type DetailsForm } from "../../contacts/pane";
 import { useContactActivity, useContactDetail } from "../../contacts/queries";
@@ -20,6 +20,7 @@ import { useModel } from "../../onboarding/model";
 import { detailDate } from "../../format/tx";
 import { Outcome } from "../tools/common";
 import { RowChips } from "./ContactList";
+import { useActionToast, useRefocus } from "./afterAction";
 import { Avatar } from "./Avatar";
 
 /** What the selected contact's pane acts with (DP2-09 D16): the identity's actions, and whether
@@ -164,7 +165,7 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
       <PaneButtons contact={c} pane={pane} />
       {c.relation === "contact" && (
         <>
-          {detail.data && <PrivateDetails contact={c} detail={detail.data} actions={pane.actions} />}
+          {detail.data && <PrivateDetails walletId={pane.walletId} contact={c} detail={detail.data} actions={pane.actions} />}
           {detail.isError && (
             <p className="form-problem" role="alert">
               Could not read this contact: {errorMessage(detail.error)}
@@ -183,6 +184,15 @@ function PaneButtons({ contact: c, pane }: { contact: ContactSummaryInfo; pane: 
   const offer = paneActions(c, pane.hasKeys);
   const busy = actions.busy;
   const outcome = actions.outcome?.contact === c.contact && actions.outcome.kind !== "details" ? actions.outcome : null;
+  // Accept, Ignore and Unignore change the relation, and their buttons go with it: focus goes to
+  // what the pane offers now and the outcome (D28); a toast says an outcome the pane cannot.
+  const toast = useActionToast(pane.walletId);
+  const area = useRef<HTMLDivElement>(null);
+  const arm = useRefocus((kind) => kind === offer.kind, () => area.current);
+  const done = (o: ActionOutcome | null) => {
+    toast(o, true);
+    if (o?.ok) arm(offer.kind);
+  };
   let buttons;
   let note: string | null = null;
   switch (offer.kind) {
@@ -191,14 +201,15 @@ function PaneButtons({ contact: c, pane }: { contact: ContactSummaryInfo; pane: 
       buttons = (
         <>
           <DashButton
+            key="accept"
             variant="filledBlue"
             data-testid="contact-accept"
             disabled={busy || offer.acceptBlocked !== null}
-            onClick={() => void actions.accept(c.contact, shownName(c))}
+            onClick={() => void actions.accept(c.contact, shownName(c)).then(done)}
           >
             {actions.isRunning("accept", c.contact) ? "Accepting…" : "Accept"}
           </DashButton>
-          <DashButton variant="tintedGray" data-testid="contact-ignore" disabled={busy} onClick={() => void actions.ignore(c.contact)}>
+          <DashButton key="ignore" variant="tintedGray" data-testid="contact-ignore" disabled={busy} onClick={() => void actions.ignore(c.contact).then(done)}>
             {actions.isRunning("ignore", c.contact) ? "Ignoring…" : "Ignore"}
           </DashButton>
         </>
@@ -210,7 +221,7 @@ function PaneButtons({ contact: c, pane }: { contact: ContactSummaryInfo; pane: 
     case "contact":
       note = offer.payBlocked;
       buttons = (
-        <DashButton variant="filledBlue" data-testid="contact-pay" disabled={offer.payBlocked !== null} onClick={() => navigate("pay", { payTab: "contact" })}>
+        <DashButton key="pay" variant="filledBlue" data-testid="contact-pay" disabled={offer.payBlocked !== null} onClick={() => navigate("pay", { payTab: "contact" })}>
           Pay
         </DashButton>
       );
@@ -218,14 +229,14 @@ function PaneButtons({ contact: c, pane }: { contact: ContactSummaryInfo; pane: 
     case "ignored":
       note = "You ignored this contact request.";
       buttons = (
-        <DashButton variant="tintedBlue" data-testid="contact-unignore" disabled={busy} onClick={() => void actions.unignore(c.contact)}>
+        <DashButton key="unignore" variant="tintedBlue" data-testid="contact-unignore" disabled={busy} onClick={() => void actions.unignore(c.contact).then(done)}>
           {actions.isRunning("unignore", c.contact) ? "Unignoring…" : "Unignore"}
         </DashButton>
       );
       break;
   }
   return (
-    <div className="contact-pane-actions" data-testid="contact-pane-actions">
+    <div className="contact-pane-actions" data-testid="contact-pane-actions" ref={area}>
       {buttons && <span className="add-contact-actions">{buttons}</span>}
       {note && (
         <p className="placeholder-note" data-testid="contact-pane-note">
@@ -240,7 +251,7 @@ function PaneButtons({ contact: c, pane }: { contact: ContactSummaryInfo; pane: 
 /** "Only visible to you" (D7): alias, note and Hide, saved and published together. A re-read of
  * the saved details updates the fields the user has not edited; Hide shows what is saved, or the
  * value being saved. */
-function PrivateDetails({ contact: c, detail, actions }: { contact: ContactSummaryInfo; detail: ContactDetailInfo; actions: ContactActions }) {
+function PrivateDetails({ walletId, contact: c, detail, actions }: { walletId: string; contact: ContactSummaryInfo; detail: ContactDetailInfo; actions: ContactActions }) {
   useModel(actions);
   const id = useId();
   const saved = detailsForm(detail.privateDetails);
@@ -257,7 +268,12 @@ function PrivateDetails({ contact: c, detail, actions }: { contact: ContactSumma
   const busy = actions.busy;
   const saving = actions.isRunning("details", c.contact);
   const outcome = actions.outcome?.contact === c.contact && actions.outcome.kind === "details" ? actions.outcome : null;
-  const save = (f: DetailsForm) => actions.saveDetails(c.contact, detailsOf(f));
+  const toast = useActionToast(walletId);
+  const save = (f: DetailsForm) =>
+    actions.saveDetails(c.contact, detailsOf(f)).then((o) => {
+      toast(o, true);
+      return o;
+    });
   return (
     <section className="contact-pane-section" aria-labelledby={`${id}-title`} data-testid="contact-private">
       <h3 id={`${id}-title`} className="contact-pane-heading">

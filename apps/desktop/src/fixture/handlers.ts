@@ -57,9 +57,10 @@ function wallet(w: World, walletId: string) {
 /** The wallet's DashPay state, for one of its identities. */
 function dashpay(w: World, walletId: string, identity?: string) {
   wallet(w, walletId);
-  if (identity !== undefined && !w.dashpay.identities.some((i) => i.identity === identity))
+  const dp = w.dashpayOf?.[walletId] ?? w.dashpay;
+  if (identity !== undefined && !dp.identities.some((i) => i.identity === identity))
     throw fail("identity.not_found", `identity not found: ${identity}`);
-  return w.dashpay;
+  return dp;
 }
 
 function contact(w: World, walletId: string, identity: string, id: string): ContactDetailInfo {
@@ -677,7 +678,7 @@ export const HANDLERS: Handlers = {
     const c = contact(ctx.world, walletId, identity, id);
     c.summary = { ...c.summary, relation: "ignored" };
     contactsChanged(ctx, walletId, identity);
-    markRead(ctx, walletId, ctx.world.dashpay, identity, Number.MAX_SAFE_INTEGER, id);
+    markRead(ctx, walletId, dashpay(ctx.world, walletId), identity, Number.MAX_SAFE_INTEGER, id);
     return null;
   },
   // The request is back at once: platform-wallet refetches it on its next sweep, which the

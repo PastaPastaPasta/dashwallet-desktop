@@ -5,13 +5,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ContactSortName } from "../../api/generated/ContactSortName";
+import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { errorMessage } from "../../api/backend";
 import { useBackend, useLockStatus } from "../../api/queries";
 import { navigate, ui, useUi, type AddContactIntent } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
-import { showToast } from "../../components/toast";
 import { EmptyState, LoadingState } from "../../components/history";
 import {
   findContact,
@@ -24,13 +24,14 @@ import {
   SORTS,
   type ContactsOwner,
 } from "../../contacts/model";
-import type { ContactActions } from "../../contacts/actions";
+import type { ActionOutcome, ContactActions } from "../../contacts/actions";
 import { selectionAnnouncement, type EnableBanner } from "../../contacts/pane";
 import { useContactActions, useContactList, useContactsOwner, useEnableBanner, useNetworkSearch, usePendingSetup } from "../../contacts/queries";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet, Outcome } from "../tools/common";
 import { ContactGroups, NetworkResults } from "./ContactList";
 import { ContactPane } from "./ContactPane";
+import { useActionToast, useRefocus } from "./afterAction";
 import { RequestButtons } from "./RequestButtons";
 
 /** Opens Add contact's slot (D12), in place of a selection or a link's card. */
@@ -153,6 +154,25 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
   const hits = networkHits(net.data, all.data);
   const updating = list.data?.updating === true;
   const select = (contact: string) => ui.set({ contact, addContact: null, contactPrefill: null });
+  // A row's Accept or Ignore: the pane says its own contact's outcome, a toast another's; focus
+  // goes to the request now in the row's place, else to the page's heading (D28).
+  const toast = useActionToast(walletId);
+  const requests = groups.find((g) => g.section === "requests")?.contacts ?? [];
+  const pageHeading = () => document.querySelector<HTMLElement>(".app-body > main h1");
+  const arm = useRefocus(
+    (contact) => requests.some((c) => c.contact === contact),
+    (i) => document.querySelectorAll<HTMLElement>(".contact-row-item.has-actions > .contact-row")[i] ?? pageHeading(),
+  );
+  const rowDone = (c: ContactSummaryInfo) => (o: ActionOutcome | null) => {
+    toast(o, ui.get().contact === c.contact);
+    if (o?.ok) arm(c.contact, requests.indexOf(c));
+  };
+  // Enable: success removes the banner, so a toast says it and focus goes to the heading.
+  const armEnable = useRefocus(() => banner !== null, pageHeading);
+  const enableDone = (o: ActionOutcome | null) => {
+    toast(o, !o?.ok);
+    if (o?.ok) armEnable("enable");
+  };
 
   let body;
   if (list.isPending) body = <LoadingState testId="contacts-loading" text="Loading contacts…" />;
@@ -198,10 +218,7 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
           onSelect={select}
           onToggleHidden={() => setHiddenOpen((o) => !o)}
           rowActions={(c) =>
-            c.relation === "pendingIncoming" && (
-              // The pane says its own contact's outcome; a toast says another's.
-              <RequestButtons contact={c} actions={actions} hasKeys={hasKeys} testPrefix="contact-row" onDone={(o) => o && ui.get().contact !== c.contact && showToast(o.text)} />
-            )
+            c.relation === "pendingIncoming" && <RequestButtons contact={c} actions={actions} hasKeys={hasKeys} testPrefix="contact-row" onDone={rowDone(c)} />
           }
         />
       </>
@@ -237,7 +254,7 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
           </select>
         </label>
       </div>
-      {banner && <EnableDashPay banner={banner} actions={actions} />}
+      {banner && <EnableDashPay banner={banner} actions={actions} onDone={enableDone} />}
       {hint && (
         <div className={`contacts-hint card-l1 is-${hint.kind}`} role="status" data-testid="contacts-setup-hint">
           <span>{hint.text}</span>
@@ -278,7 +295,7 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
 
 /** "Enable DashPay" (DP2-09 D10): the main identity lacks its DashPay keys, so it cannot accept
  * requests nor pay contacts until it adds them. Success removes the banner, so a toast says it. */
-function EnableDashPay({ banner, actions }: { banner: EnableBanner; actions: ContactActions }) {
+function EnableDashPay({ banner, actions, onDone }: { banner: EnableBanner; actions: ContactActions; onDone: (o: ActionOutcome | null) => void }) {
   useModel(actions);
   const outcome = actions.outcome?.kind === "enable" && !actions.outcome.ok ? actions.outcome : null;
   return (
@@ -297,7 +314,7 @@ function EnableDashPay({ banner, actions }: { banner: EnableBanner; actions: Con
         </span>
         <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contacts-enable-outcome" />
       </span>
-      <DashButton variant="tintedBlue" size="small" data-testid="contacts-enable" disabled={actions.busy} onClick={() => void actions.enable().then((o) => o?.ok && showToast(o.text))}>
+      <DashButton variant="tintedBlue" size="small" data-testid="contacts-enable" disabled={actions.busy} onClick={() => void actions.enable().then(onDone)}>
         {actions.isRunning("enable", null) ? "Enabling…" : "Enable"}
       </DashButton>
     </div>

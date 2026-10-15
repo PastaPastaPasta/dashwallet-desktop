@@ -49,6 +49,8 @@ export interface World {
   sync: SyncStatus;
   /** The first wallet's DashPay state. */
   dashpay: DashPayWorld;
+  /** Another wallet's own DashPay state, by wallet id; a wallet not here shares `dashpay`. */
+  dashpayOf?: Record<string, DashPayWorld>;
   leases: Lease[];
   /** The vault grants `authorize` issued since the last lock or unlock (each revokes them all). */
   grants: FixtureGrant[];
@@ -471,6 +473,14 @@ const SCENARIOS = {
     const w = base(t);
     const world = registered();
     w.dashpay = { ...world, contacts: world.contacts.filter((c) => c.summary.relation !== "pendingIncoming"), journal: [] };
+    return w;
+  },
+  /** Two wallets, each "alice" with her own contacts and unread events: the bell is the window
+   * wallet's (DP2-09 D27). */
+  "dashpay-two-wallets": (t) => {
+    const w = twoWallets(base(t));
+    w.dashpay = registered();
+    w.dashpayOf = { [SECOND_WALLET_ID]: registered() };
     return w;
   },
   /** DAPI does not answer user searches: the network section fails with Try again. */

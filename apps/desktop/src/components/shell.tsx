@@ -196,6 +196,7 @@ export function Toolbar({
   canLock,
   onLock,
   bellPanel,
+  bellOwner,
 }: {
   wallets: WalletSummary[];
   wallet: WalletSummary | undefined;
@@ -207,17 +208,22 @@ export function Toolbar({
   /** The bell's popover (DP2-09 D11), given its id and `close`; without it the bell opens the
    * Notifications page. */
   bellPanel?: (id: string, close: () => void) => ReactNode;
+  /** Whose bell `bellPanel` is (wallet and identity): another owner closes it (DP2-09 D27). */
+  bellOwner?: string;
 }) {
   const discreet = useUi((s) => s.discreet);
   const bellLabel = unread ? `Notifications, ${unread} unread` : "Notifications";
-  const [bellOpen, setBellOpen] = useState(false);
+  // The owner whose bell is open: a switch of wallet (or main identity) while it is open, with the
+  // keyboard, closes it rather than opening, and marking read, the next owner's (D27).
+  const [openFor, setOpenFor] = useState<string | null>(null);
+  if (openFor !== null && openFor !== bellOwner) setOpenFor(null);
   const bell = useRef<HTMLButtonElement>(null);
   const panelId = useId();
   const closeBell = useCallback(() => {
-    setBellOpen(false);
+    setOpenFor(null);
     bell.current?.focus();
   }, []);
-  const open = bellOpen && !!bellPanel;
+  const open = openFor !== null && openFor === bellOwner && !!bellPanel;
   return (
     <header className="toolbar" data-testid="toolbar">
       <span className="toolbar-start">
@@ -236,7 +242,7 @@ export function Toolbar({
             aria-haspopup={bellPanel ? "dialog" : undefined}
             aria-expanded={bellPanel ? open : undefined}
             aria-controls={open ? panelId : undefined}
-            onClick={() => (bellPanel ? setBellOpen(!open) : navigate("notifications"))}
+            onClick={() => (bellPanel ? setOpenFor(open ? null : (bellOwner ?? null)) : navigate("notifications"))}
           >
             <BellIcon />
             {!!unread && (
