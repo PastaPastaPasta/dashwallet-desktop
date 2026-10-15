@@ -50,6 +50,18 @@ import type { Utxo } from "./generated/Utxo";
 import type { UtxoFilter } from "./generated/UtxoFilter";
 import type { FilePurpose } from "./generated/FilePurpose";
 import type { OpenedFile } from "./generated/OpenedFile";
+import type { AddressBookEntry } from "./generated/AddressBookEntry";
+import type { AddressPurposeName } from "./generated/AddressPurposeName";
+import type { ConsoleCommand } from "./generated/ConsoleCommand";
+import type { ConsoleOutput } from "./generated/ConsoleOutput";
+import type { NodeSummary } from "./generated/NodeSummary";
+import type { NodeWarning } from "./generated/NodeWarning";
+import type { PeerSummary } from "./generated/PeerSummary";
+import type { PsbtAnalysis } from "./generated/PsbtAnalysis";
+import type { RegistrationStatus } from "./generated/RegistrationStatus";
+import type { RescanStart } from "./generated/RescanStart";
+import type { RescanStatus } from "./generated/RescanStatus";
+import type { VerifyMessageResult } from "./generated/VerifyMessageResult";
 
 export interface Backend {
   readonly kind: "tauri" | "fixture";
@@ -133,6 +145,41 @@ export interface Backend {
   routeLink(network: string, text: string): Promise<LinkRoute>;
   /** What the native menus and the tray mirror. */
   shellSync(sync: ShellSync): Promise<null>;
+  // Tools (U-05).
+  nodeInfo(): Promise<NodeSummary>;
+  warnings(): Promise<NodeWarning[]>;
+  consoleCommands(): Promise<ConsoleCommand[]>;
+  /** The line with sensitive arguments replaced by `(…)`; `console.parse_error` when it does not parse. */
+  consoleRedact(line: string): Promise<string>;
+  consoleExecute(walletId: string | null, line: string, grantId: string | null): Promise<ConsoleOutput>;
+  peers(): Promise<PeerSummary[]>;
+  /** Drops every connection and dials again. */
+  rotatePeers(): Promise<null>;
+  rescan(from: RescanStart): Promise<null>;
+  rescanProgress(): Promise<RescanStatus | null>;
+  cancelRescan(): Promise<boolean>;
+  stopSpv(): Promise<null>;
+  startSpv(): Promise<null>;
+  /** Deletes the headers and filters; SPV must be stopped (`spv_running`). */
+  resetChainData(): Promise<null>;
+  setBirthHeight(walletId: string, height: number): Promise<null>;
+  /** Abandons the unconfirmed transactions the network does not have (`null`: every wallet) and
+   * schedules a rescan; returns how many. */
+  dropUnconfirmed(walletId: string | null): Promise<number>;
+  registrations(walletId: string): Promise<RegistrationStatus[]>;
+  resolveStuckFunding(walletId: string, step: string, grant: string): Promise<BroadcastOutcome>;
+  addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;
+  saveAddressBookEntry(walletId: string, address: string, label: string, purpose: AddressPurposeName, replace: boolean): Promise<AddressBookEntry>;
+  deleteAddressBookEntry(walletId: string, address: string): Promise<null>;
+  signMessage(walletId: string, address: string, message: string, grantId: string): Promise<string>;
+  verifyMessage(address: string, signature: string, message: string): Promise<VerifyMessageResult>;
+  analyzePsbt(walletId: string | null, psbt: string): Promise<PsbtAnalysis>;
+  signPsbt(walletId: string, psbt: string, grantId: string): Promise<string>;
+  broadcastPsbt(psbt: string): Promise<string>;
+  /** dash-qt "Create Unsigned": the draft as a base64 PSBT; signs and reserves nothing. */
+  draftCreateUnsigned(draft: number): Promise<string>;
+  lockOutpoints(walletId: string, outpoints: OutPoint[]): Promise<null>;
+  unlockOutpoints(walletId: string, outpoints: OutPoint[]): Promise<null>;
   // Files from the OS's dialogs (U-05 D2; screens go through app/files.ts).
   openFile(purpose: FilePurpose): Promise<OpenedFile | null>;
   saveFileAs(purpose: FilePurpose, suggestedName: string, data: string): Promise<string | null>;
