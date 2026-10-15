@@ -3,7 +3,7 @@
 /**
  * One output line of the PSBT Operations dialog (" * Sends %1 to %2").
  */
-export type PsbtOutput = { address: string | null, amount: number, 
+export type PsbtOutput = { address: string | null, amount: number,
 /**
  * " (own address)".
  */

@@ -5,11 +5,11 @@ import type { UserRelation } from "./UserRelation";
 /**
  * A scanned or pasted contact, verified against Platform.
  */
-export type ScannedContactInfo = { identity: string, username: string | null, displayName: string | null, 
+export type ScannedContactInfo = { identity: string, username: string | null, displayName: string | null,
 /**
  * What was scanned, and what it claims beyond the name.
  */
-code: ScannedCodeInfo, relation: UserRelation, 
+code: ScannedCodeInfo, relation: UserRelation,
 /**
  * Verified only through the trusted fallback.
  */

@@ -5,7 +5,7 @@ import type { ContactSortName } from "./ContactSortName";
 /**
  * Which contacts `dashpayContacts` lists.
  */
-export type ContactQueryArgs = { 
+export type ContactQueryArgs = {
 /**
  * Empty means every section.
  */

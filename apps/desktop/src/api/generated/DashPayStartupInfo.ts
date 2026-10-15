@@ -5,19 +5,19 @@ import type { StartupStatus } from "./StartupStatus";
  * The outcome of a wallet's DashPay bring-up.
  * One wallet's last DashPay bring-up.
  */
-export type DashPayStartupInfo = { startup: StartupStatus, 
+export type DashPayStartupInfo = { startup: StartupStatus,
 /**
  * The wallet has no keys, so DashPay is read-only for it.
  */
-readOnly: boolean, 
+readOnly: boolean,
 /**
  * Base58 id of the identity the bring-up knew, if any.
  */
-identity: string | null, 
+identity: string | null,
 /**
  * Contact-account builds still queued for an unlock or the DIP-15 rescan.
  */
-contactAccountsPending: number, identityScanIncomplete: boolean, 
+contactAccountsPending: number, identityScanIncomplete: boolean,
 /**
  * UNIX seconds the bring-up ended.
  */

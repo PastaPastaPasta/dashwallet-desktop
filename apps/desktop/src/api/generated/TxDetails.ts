@@ -7,7 +7,7 @@ import type { TxStatusInfo } from "./TxStatusInfo";
 /**
  * The transaction detail sheet (QT-092, IOS-031).
  */
-export type TxDetails = { txid: string, rows: Array<TxRow>, status: TxStatusInfo, timestamp: number | null, blockHeight: number | null, blockHash: string | null, fee: number | null, sizeBytes: number, inputs: Array<TxInput>, outputs: Array<TxOutput>, message: string | null, label: string | null, 
+export type TxDetails = { txid: string, rows: Array<TxRow>, status: TxStatusInfo, timestamp: number | null, blockHeight: number | null, blockHash: string | null, fee: number | null, sizeBytes: number, inputs: Array<TxInput>, outputs: Array<TxOutput>, message: string | null, label: string | null,
 /**
  * The consensus-serialised transaction, hex.
  */

@@ -3,7 +3,7 @@
 /**
  * The DashPay identity on the other side of a history record (DP3-02).
  */
-export type TxCounterparty = { 
+export type TxCounterparty = {
 /**
  * Base58 identity id.
  */

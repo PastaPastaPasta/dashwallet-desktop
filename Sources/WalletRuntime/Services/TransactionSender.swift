@@ -43,8 +43,8 @@ public final class TransactionSender: TransactionSending {
 /// - Any setter first abandons the prepared transactions that were never
 ///   broadcast, so an edit after "Review" never leaves inputs reserved for a
 ///   transaction the user will not confirm.
-/// - `send.no_peers`, `send.broadcast_rejected` and `send.prepared_tx_spent`
-///   mean the engine released the inputs and spent its `PreparedTx`
+/// - `send.no_peers`, `send.broadcast_rejected`, `send.prepared_tx_spent` and
+///   `send.cancelled` mean the engine released the inputs and spent its `PreparedTx`
 ///   (m1-engine.md §2.7): the transaction is forgotten, `abandon` is a no-op
 ///   and `broadcast` fails with `send.prepared_tx_unknown`. Sending again
 ///   needs a new `prepare` and a new grant.
@@ -146,7 +146,7 @@ public actor TransactionDraft: TransactionDrafting {
                 // Not dispatched. A transaction that was uncertain before
                 // this call stays uncertain.
                 prepared[transaction.id]?.state = entry.state
-            case .sendNoPeers, .sendPreparedTxSpent, .sendBroadcastRejected:
+            case .sendNoPeers, .sendPreparedTxSpent, .sendBroadcastRejected, .sendCancelled:
                 // The engine released the inputs and spent the PreparedTx
                 // (m1-engine.md §2.7): nothing is left to abandon or retry.
                 prepared[transaction.id] = nil

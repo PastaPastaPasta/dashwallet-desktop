@@ -3,19 +3,19 @@
 /**
  * A top-up lock of the wallet that Platform has not taken yet.
  */
-export type PendingTopUp = { 
+export type PendingTopUp = {
 /**
  * The asset lock's txid (hex).
  */
-txid: string, 
+txid: string,
 /**
  * The identity it tops up (Base58), when known.
  */
-identity: string | null, identityIndex: number, duffs: number, 
+identity: string | null, identityIndex: number, duffs: number,
 /**
  * It has its proof: `resumeTopUp` applies it at once.
  */
-proved: boolean, 
+proved: boolean,
 /**
  * A lock a top-up of this wallet funded, final, whose consumption by
  * Platform is unknown: it blocks the identity's top-ups until

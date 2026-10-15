@@ -7,15 +7,15 @@ import type { NetworkInfo } from "./NetworkInfo";
  * dash-qt Tools, Information. Values only a full node has are `null` or
  * empty.
  */
-export type NodeSummary = { 
+export type NodeSummary = {
 /**
  * The user agent announced to peers.
  */
-userAgent: string, dataDir: string, 
+userAgent: string, dataDir: string,
 /**
  * UNIX seconds this session opened.
  */
-startupTime: number, network: NetworkInfo, connectionsIn: number, connectionsOut: number, localAddresses: Array<string>, tipHeight: number | null, tipTime: number | null, tipHash: string | null, bestChainlock: ChainLock | null, 
+startupTime: number, network: NetworkInfo, connectionsIn: number, connectionsOut: number, localAddresses: Array<string>, tipHeight: number | null, tipTime: number | null, tipHash: string | null, bestChainlock: ChainLock | null,
 /**
  * From the synced masternode list; `null` before that phase finished.
  */

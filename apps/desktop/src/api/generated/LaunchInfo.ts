@@ -5,21 +5,21 @@ import type { ThemeName } from "./ThemeName";
 /**
  * What the renderer needs to know before its first query.
  */
-export type LaunchInfo = { selftest: boolean, 
+export type LaunchInfo = { selftest: boolean,
 /**
  * Milliseconds the self-test waits on each screen (0 = no pause).
  */
-selftestPauseMs: number, 
+selftestPauseMs: number,
 /**
  * The self-test can unlock the vault (`selftest_unlock`): the app was
  * launched with `--selftest-passphrase-file`.
  */
-selftestUnlock: boolean, 
+selftestUnlock: boolean,
 /**
  * The renderer reports each link it routes (`selftest_link_routed`):
  * the app was launched with `--selftest-link-trace`.
  */
-selftestLinkTrace: boolean, theme: ThemeName | null, 
+selftestLinkTrace: boolean, theme: ThemeName | null,
 /**
  * The network `open_network` opens when it names none.
  */

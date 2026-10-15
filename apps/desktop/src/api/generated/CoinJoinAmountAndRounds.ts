@@ -3,11 +3,11 @@
 /**
  * "Amount and Rounds".
  */
-export type CoinJoinAmountAndRounds = { 
+export type CoinJoinAmountAndRounds = {
 /**
  * `min(anonymizable + fullyMixed, target)`.
  */
-amount: number, rounds: number, 
+amount: number, rounds: number,
 /**
  * "Not enough compatible inputs to mix...".
  */

@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "files",
+  "description": "Files the user picks in the OS's open and save dialogs (U-05 D2). Granted to the main window only; the dialog plugin's own commands are granted nowhere.",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-open-file",
+    "allow-save-file-as",
+    "allow-choose-file-path"
+  ]
+}

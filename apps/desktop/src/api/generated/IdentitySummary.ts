@@ -2,38 +2,38 @@
 import type { CreditLevelName } from "./CreditLevelName";
 import type { DashPayProfile } from "./DashPayProfile";
 
-export type IdentitySummary = { 
+export type IdentitySummary = {
 /**
  * Base58.
  */
-identity: string, 
+identity: string,
 /**
  * `i` in `m/9'/c'/5'/0'/0'/i'`.
  */
-index: number, names: Array<string>, mainName: string | null, 
+index: number, names: Array<string>, mainName: string | null,
 /**
  * `names` and `mainName` are not known right now (a sync pass holds the
  * wallet's identity state): both are empty until a later read, and the
  * UI shows "updating" rather than "no name".
  */
-namesUpdating: boolean, isMain: boolean, 
+namesUpdating: boolean, isMain: boolean,
 /**
  * Credits; `null` while unknown.
  */
-balance: string | null, 
+balance: string | null,
 /**
  * The Platform block time (ms) of `balance`, once refreshed.
  */
-balanceAsOf: number | null, 
+balanceAsOf: number | null,
 /**
  * `balance` may be behind (never refreshed, older than ten minutes, or
  * spent since); the engine refreshes it in the background.
  */
-balanceStale: boolean, hasDashpayKeys: boolean, profile: DashPayProfile | null, 
+balanceStale: boolean, hasDashpayKeys: boolean, profile: DashPayProfile | null,
 /**
  * Verified only through the trusted fallback.
  */
-unverified: boolean, 
+unverified: boolean,
 /**
  * The balance against the cost table; `null` while either is unknown.
  */

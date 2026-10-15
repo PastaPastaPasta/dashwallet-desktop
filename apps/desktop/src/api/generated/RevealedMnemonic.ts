@@ -3,11 +3,11 @@
 /**
  * A revealed recovery phrase. Both fields are secret.
  */
-export type RevealedMnemonic = { 
+export type RevealedMnemonic = {
 /**
  * Space-separated phrase.
  */
-phrase: string, 
+phrase: string,
 /**
  * The BIP39 passphrase ("25th word"); empty when none.
  */

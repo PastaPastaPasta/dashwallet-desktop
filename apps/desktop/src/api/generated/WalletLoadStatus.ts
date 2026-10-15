@@ -5,7 +5,7 @@
  * its data but is absent from `listWallets`, and every wallet-scoped call
  * for it is `wallet_not_found`.
  */
-export type WalletLoadStatus = { walletId: string, name: string, loaded: boolean, 
+export type WalletLoadStatus = { walletId: string, name: string, loaded: boolean,
 /**
  * Loaded when the network opens.
  */

@@ -4,11 +4,11 @@
  * The caps of the `PlatformOp` grant an action needs: what to ask the
  * vault's grant prompt for.
  */
-export type GrantRequest = { 
+export type GrantRequest = {
 /**
  * Core duffs an asset lock may take.
  */
-maxDuffs: number, 
+maxDuffs: number,
 /**
  * Identity credits the state transitions may spend.
  */

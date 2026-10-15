@@ -21,9 +21,10 @@ import type { WalletSummary } from "../api/generated/WalletSummary";
 import { IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
 import type { Utxo } from "../api/generated/Utxo";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
+import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
-import { buildRows, caughtUp, FUNDED_BALANCES, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
+import { buildRows, caughtUp, FUNDED_BALANCES, makeIds, prng, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
 export const FIXTURE_PASSPHRASE = "demo";
 export const FIXTURE_WALLET_ID = "a1".repeat(32);
@@ -73,6 +74,8 @@ export interface World {
   throttledUntil: number | null;
   /** Drafts, prepared transactions and what the next broadcast does (send.ts). */
   send: SendWorld;
+  /** Tools: node facts, console, peers, repair, address book, messages, PSBT, files (tools.ts). */
+  tools: ToolsWorld;
   /** The settings file, load states, backups and files (settings.ts, U-04). */
   settings: SettingsWorld;
 }
@@ -130,6 +133,7 @@ function lockedAfter(w: World, failedAttempts: number): World {
 }
 
 function base(theme: ThemeName | null, variant: HistoryVariant = "default"): World {
+  const main = wallet(variant);
   return {
     launch: {
       selftest: false,
@@ -145,7 +149,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     passphrase: FIXTURE_PASSPHRASE,
     lock: unlocked([FIXTURE_WALLET_ID]),
     phrases: { [FIXTURE_WALLET_ID]: MAIN_PHRASE },
-    wallets: [wallet(variant)],
+    wallets: [main],
     sync: caughtUp(),
     dashpay: noIdentity(),
     leases: [],
@@ -162,6 +166,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     throttleSecs: null,
     throttledUntil: null,
     send: newSendWorld(),
+    tools: newToolsWorld(main),
     settings: withAutomaticBackups(newSettingsWorld(), FIXTURE_WALLET_ID, MAIN_PHRASE, FIXTURE_PASSPHRASE),
   };
 }
@@ -299,6 +304,25 @@ function twoWallets(w: World): World {
   return w;
 }
 
+/** Three mixed coins (100.001, 10.0001 and 1.00001 DASH denominations), counted in the balances. */
+function withCoinJoinCoins(w: World): World {
+  const main = w.wallets[0];
+  const { hex } = makeIds(prng(0xc01d));
+  const mixed = [10_000_100_000, 1_000_010_000, 100_001_000].map((amount, i): Utxo => ({
+    ...main.coins[0],
+    outpoint: { txid: hex(64), vout: i },
+    amount,
+    label: null,
+    coinjoinDenominated: true,
+    coinjoinRounds: 4 + i,
+  }));
+  main.coins = [...main.coins, ...mixed];
+  const sum = mixed.reduce((n, u) => n + u.amount, 0);
+  const b = main.summary.balances!;
+  main.summary = { ...main.summary, balances: { ...b, confirmed: b.confirmed + sum, total: b.total + sum, coinjoin: b.coinjoin + sum } };
+  return w;
+}
+
 const SCENARIOS = {
   /** The reference wallet: balance, a month of history, caught up, unlocked. */
   funded: (t) => base(t),
@@ -360,6 +384,31 @@ const SCENARIOS = {
     attributePayments(w);
     return w;
   },
+  /** Tools ▸ Repair: the registration's funding broadcast's outcome is unknown (E0-04.P2b). */
+  "tools-stuck-funding": (t) => {
+    const w = base(t);
+    w.dashpay = registering();
+    w.dashpay.registrations[0].waiting = "fundingUnknown";
+    return w;
+  },
+  /** Tools ▸ Information: every node warning; the banner shows the most severe (QT-040). */
+  "tools-warnings": (t) => {
+    const w = base(t);
+    w.tools.warnings = [
+      { code: "prereleaseBuild", detail: "" },
+      { code: "syncStalled", detail: "" },
+      { code: "uncleanShutdown", detail: "" },
+    ];
+    return w;
+  },
+  /** The funded wallet watch-only: Pay's confirm sheet offers Create Unsigned only (U-05 D18). */
+  "watch-only": (t) => {
+    const w = base(t);
+    w.wallets[0].summary = { ...w.wallets[0].summary, watchOnly: true };
+    return w;
+  },
+  /** Coin Selection: CoinJoin denominations beside the plain coins, hidden by default (QT-071). */
+  "tools-coinjoin": (t) => withCoinJoinCoins(base(t)),
   /** "alice" before her first contact: the Contacts empty state (DP2-07). */
   "dashpay-contacts-empty": (t) => {
     const w = base(t);

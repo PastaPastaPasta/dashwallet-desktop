@@ -7,15 +7,13 @@ import { useQuery } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import type { FeePolicy } from "../../api/generated/FeePolicy";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import type { Utxo } from "../../api/generated/Utxo";
 import { useBackend, useFeePolicy, useUtxos } from "../../api/queries";
 import { useDebounced } from "../../app/useDebounced";
-import { AmountText } from "../../components/basics";
+import { CoinSummary, CoinTable } from "../../components/coins";
 import { LoadingState } from "../../components/history";
 import { full } from "../../format/amount";
 import { useDisplay } from "../../format/display";
-import { shortAddress } from "../../format/tx";
-import { DEFAULT_TARGET_BLOCKS, feeMode, outpointKey, outpointOf, type Advanced, type CoinChoice } from "./model";
+import { DEFAULT_TARGET_BLOCKS, feeMode, outpointOf, type Advanced, type CoinChoice } from "./model";
 
 /** Dash's target block interval: 2.5 minutes. */
 const BLOCK_MINUTES = 2.5;
@@ -25,15 +23,6 @@ const COIN_CHOICES: { id: CoinChoice; title: string }[] = [
   { id: "mixed", title: "Fully mixed funds only (CoinJoin)" },
   { id: "selected", title: "Selected coins" },
 ];
-
-/** Why a coin cannot be chosen, or `null` when it can. */
-function notSelectable(u: Utxo): string | null {
-  if (u.spendable) return null;
-  if (u.reserved) return "Reserved by a payment in progress";
-  if (u.userLocked) return "Locked";
-  if (u.isCoinbase) return "Immature";
-  return "Not spendable";
-}
 
 function targetTitle(blocks: number): string {
   const minutes = blocks * BLOCK_MINUTES;
@@ -62,91 +51,14 @@ function Coins({ walletId, network, advanced, onChange, payAmount }: Props) {
   const toggle = (key: string, on: boolean) =>
     onChange({ ...advanced, selected: on ? [...advanced.selected, key] : advanced.selected.filter((k) => k !== key) });
   const shown = useDisplay(network);
-  const unit = shown.name;
   if (utxos.isPending) return <LoadingState testId="coins-loading" text="Loading coins" />;
   if (utxos.isError) return <p className="form-problem">Could not load the coins: {errorMessage(utxos.error)}</p>;
   if (utxos.data.length === 0) return <p className="placeholder-note">This wallet has no coins yet.</p>;
   const s = summary.data;
   return (
     <>
-      <table className="data-table coin-table" data-testid="coin-table">
-        <caption className="sr-only">Coins of this wallet</caption>
-        <thead>
-          <tr>
-            <th scope="col">
-              <span className="sr-only">Select</span>
-            </th>
-            <th scope="col" className="num">
-              Amount ({unit})
-            </th>
-            <th scope="col">Address / Label</th>
-            <th scope="col" className="num">
-              Confirmations
-            </th>
-            <th scope="col">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {utxos.data.map((u) => {
-            const key = outpointKey(u.outpoint);
-            const why = notSelectable(u);
-            const party = u.label || shortAddress(u.address);
-            return (
-              <tr key={key} data-testid={`coin-${u.outpoint.txid.slice(0, 8)}-${u.outpoint.vout}`}>
-                <td>
-                  <input
-                    type="checkbox"
-                    aria-label={`Use ${shown.compact(u.amount)} ${unit} at ${party}`}
-                    checked={selected.has(key)}
-                    disabled={why !== null && !selected.has(key)}
-                    onChange={(e) => toggle(key, e.target.checked)}
-                  />
-                </td>
-                <td className="num">{shown.compact(u.amount)}</td>
-                <td title={u.address}>{party}</td>
-                <td className="num">{u.confirmations}</td>
-                <td>{why ?? (u.coinjoinRounds !== null ? `Mixed, ${u.coinjoinRounds} rounds` : u.isChange ? "Change" : "")}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      {s && (
-        <dl className="coin-summary" data-testid="coin-summary" aria-live="polite">
-          <div>
-            <dt>Quantity</dt>
-            <dd>{s.quantity}</dd>
-          </div>
-          <div>
-            <dt>Amount</dt>
-            <dd>
-              <AmountText text={shown.full(s.amount)} unitName={unit} glyph={false} />
-            </dd>
-          </div>
-          <div>
-            <dt>Fee</dt>
-            <dd>
-              ≈ <AmountText text={shown.full(s.fee)} unitName={unit} glyph={false} />
-            </dd>
-          </div>
-          <div>
-            <dt>After fee</dt>
-            <dd>
-              ≈ <AmountText text={shown.full(s.afterFee)} unitName={unit} glyph={false} />
-            </dd>
-          </div>
-          <div>
-            <dt>Bytes</dt>
-            <dd>≈ {s.bytes}</dd>
-          </div>
-          <div>
-            <dt>Change</dt>
-            <dd>
-              ≈ <AmountText text={shown.full(s.change)} unitName={unit} glyph={false} />
-            </dd>
-          </div>
-        </dl>
-      )}
+      <CoinTable coins={utxos.data} shown={shown} selected={selected} onToggle={toggle} />
+      {s && <CoinSummary summary={s} shown={shown} />}
       {s?.insufficientFunds && (
         <p className="form-problem" data-testid="coin-insufficient">
           Insufficient funds! The selected coins do not cover the amount and the fee.
@@ -284,8 +196,11 @@ interface Props {
 export function CoinControl(props: Props) {
   const { advanced, onChange } = props;
   const id = useId();
+  // Open from the start when the form came with coins (Coin Selection, U-05 D19); after that the
+  // user opens and closes it.
+  const [startOpen] = useState(advanced.selected.length > 0);
   return (
-    <details className="disclosure card-l1 coin-control" data-testid="pay-advanced">
+    <details className="disclosure card-l1 coin-control" data-testid="pay-advanced" open={startOpen || undefined}>
       <summary>Advanced: coins, fee and change</summary>
       <div className="coin-control-body">
         <fieldset className="radio-group" data-testid="coin-choice">

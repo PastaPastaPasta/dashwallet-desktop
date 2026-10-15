@@ -3,11 +3,11 @@
 /**
  * The running rescan.
  */
-export type RescanStatus = { fromHeight: number, 
+export type RescanStatus = { fromHeight: number,
 /**
  * The lowest filter checkpoint among the wallets still rescanning.
  */
-currentHeight: number | null, targetHeight: number | null, 
+currentHeight: number | null, targetHeight: number | null,
 /**
  * UNIX seconds.
  */

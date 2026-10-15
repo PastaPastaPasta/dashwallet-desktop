@@ -5,7 +5,7 @@
  * credential issues a grant only up to `spendLimitDuffs`, and only while
  * the passphrase was entered within `passphraseMaxAgeSecs`.
  */
-export type QuickUnlockPolicy = { enrolled: boolean, spendLimitDuffs: number, passphraseMaxAgeSecs: number, 
+export type QuickUnlockPolicy = { enrolled: boolean, spendLimitDuffs: number, passphraseMaxAgeSecs: number,
 /**
  * UNIX seconds of the last successful passphrase entry.
  */

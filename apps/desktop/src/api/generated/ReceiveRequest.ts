@@ -3,19 +3,19 @@
 /**
  * A stored payment request (QT-081/083, IOS-055).
  */
-export type ReceiveRequest = { id: number, 
+export type ReceiveRequest = { id: number,
 /**
  * UNIX seconds.
  */
-createdAt: number, address: string, 
+createdAt: number, address: string,
 /**
  * Duffs; `null`: any amount.
  */
-amount: number | null, label: string | null, message: string | null, 
+amount: number | null, label: string | null, message: string | null,
 /**
  * The wallet's DashPay username, as `uri` carries it (DP3-03).
  */
-username: string | null, 
+username: string | null,
 /**
  * The `dash:` URI of the request.
  */

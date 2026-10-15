@@ -3,15 +3,15 @@
 /**
  * Options of `importWatchOnly` (QT-114).
  */
-export type WatchOnlyOptions = { 
+export type WatchOnlyOptions = {
 /**
  * 1-64 characters after trimming; `null`: "Wallet N".
  */
-name: string | null, 
+name: string | null,
 /**
  * First block to scan; `null`: genesis (an xpub has no birth date).
  */
-birthHeight: number | null, 
+birthHeight: number | null,
 /**
  * Gap limit of the watched chains, 1..=1000; `null`: 30.
  */

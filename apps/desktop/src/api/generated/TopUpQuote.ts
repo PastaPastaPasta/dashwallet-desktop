@@ -4,7 +4,7 @@ import type { GrantRequest } from "./GrantRequest";
 /**
  * What a top-up of some duffs costs and buys.
  */
-export type TopUpQuote = { feeDuffs: number, 
+export type TopUpQuote = { feeDuffs: number,
 /**
  * The duffs plus `feeDuffs`: what the grant must cover.
  */

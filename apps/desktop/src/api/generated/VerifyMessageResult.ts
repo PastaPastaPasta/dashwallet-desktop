@@ -5,7 +5,7 @@ import type { VerifyOutcomeName } from "./VerifyOutcomeName";
  * The result of `verifyMessage`. A failed check is a result, not an error:
  * the Verify Message tab shows each failure's own text.
  */
-export type VerifyMessageResult = { outcome: VerifyOutcomeName, 
+export type VerifyMessageResult = { outcome: VerifyOutcomeName,
 /**
  * dash-qt's status text for the outcome.
  */

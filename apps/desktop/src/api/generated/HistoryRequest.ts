@@ -9,31 +9,31 @@ import type { WatchOnlyFilterName } from "./WatchOnlyFilterName";
  * The engine's `HistoryQuery`: a filter (its fields sit beside `sort`),
  * the sort order and the page.
  */
-export type HistoryRequest = { sort: HistorySortName, cursor: string | null, limit: number, 
+export type HistoryRequest = { sort: HistorySortName, cursor: string | null, limit: number,
 /**
  * Record types to show; empty: all.
  */
-types?: Array<TxTypeName>, 
+types?: Array<TxTypeName>,
 /**
  * Categories to show; empty: all.
  */
-categories: Array<TxCategoryName>, 
+categories: Array<TxCategoryName>,
 /**
  * Statuses to show; empty: all.
  */
-statuses?: Array<TxStatusKindName>, 
+statuses?: Array<TxStatusKindName>,
 /**
  * Earliest record time, UNIX seconds.
  */
-dateFrom?: number, 
+dateFrom?: number,
 /**
  * Latest record time, UNIX seconds.
  */
-dateTo?: number, 
+dateTo?: number,
 /**
  * Matches address, label and txid; blank is no filter.
  */
-text: string | null, 
+text: string | null,
 /**
  * Smallest absolute amount, duffs.
  */

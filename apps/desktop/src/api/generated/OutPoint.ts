@@ -3,7 +3,7 @@
 /**
  * A transaction output reference, `txid:vout`.
  */
-export type OutPoint = { 
+export type OutPoint = {
 /**
  * 64 lower-case hex characters, display byte order.
  */

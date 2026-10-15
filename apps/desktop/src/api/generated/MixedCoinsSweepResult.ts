@@ -4,11 +4,11 @@
  * The result of "Move mixed coins". A later chunk can fail after earlier
  * ones were broadcast.
  */
-export type MixedCoinsSweepResult = { txids: Array<string>, moved: number, remaining: number, 
+export type MixedCoinsSweepResult = { txids: Array<string>, moved: number, remaining: number,
 /**
  * The code of the error that stopped the sweep; `null` when complete.
  */
-failureCode: string | null, 
+failureCode: string | null,
 /**
  * With `coinjoin.broadcast_unknown`: the chunk that may be on the
  * network (display txid), its coins reserved until the wallet sees

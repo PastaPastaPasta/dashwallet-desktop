@@ -5,7 +5,7 @@ import type { RegistrationFunding } from "./RegistrationFunding";
 /**
  * What to register. Passed to the quote and to the start alike.
  */
-export type RegistrationRequest = { label: string, 
+export type RegistrationRequest = { label: string,
 /**
  * A non-contested name registered next to a contested `label`.
  */

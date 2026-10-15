@@ -3,15 +3,15 @@ import type { KeyPurposeName } from "./KeyPurposeName";
 import type { KeyTypeName } from "./KeyTypeName";
 import type { SecurityLevelName } from "./SecurityLevelName";
 
-export type IdentityKeyInfo = { id: number, purpose: KeyPurposeName, securityLevel: SecurityLevelName, keyType: KeyTypeName, 
+export type IdentityKeyInfo = { id: number, purpose: KeyPurposeName, securityLevel: SecurityLevelName, keyType: KeyTypeName,
 /**
  * Hex.
  */
-publicKey: string, readOnly: boolean, disabledAt: number | null, 
+publicKey: string, readOnly: boolean, disabledAt: number | null,
 /**
  * Base58 id of the contract the key is bound to.
  */
-contractBound: string | null, 
+contractBound: string | null,
 /**
  * The document type within `contractBound` (`contactRequest`).
  */

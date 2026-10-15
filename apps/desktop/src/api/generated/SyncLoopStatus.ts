@@ -4,7 +4,7 @@ import type { SyncLoop } from "./SyncLoop";
 /**
  * One Platform sync loop.
  */
-export type SyncLoopStatus = { syncLoop: SyncLoop, running: boolean, 
+export type SyncLoopStatus = { syncLoop: SyncLoop, running: boolean,
 /**
  * UNIX seconds.
  */

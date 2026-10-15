@@ -4,15 +4,15 @@ import type { AddressChainName } from "./AddressChainName";
 /**
  * One address of the wallet's BIP44 account 0.
  */
-export type AddressInfo = { address: string, chain: AddressChainName, index: number, 
+export type AddressInfo = { address: string, chain: AddressChainName, index: number,
 /**
  * e.g. `m/44'/5'/0'/0/7`.
  */
-derivationPath: string, 
+derivationPath: string,
 /**
  * Has received funds at least once.
  */
-used: boolean, label: string | null, 
+used: boolean, label: string | null,
 /**
  * Duffs held by this address.
  */

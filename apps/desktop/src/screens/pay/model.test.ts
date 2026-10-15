@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AppError } from "../../api/generated/AppError";
 import type { LockStatus } from "../../api/generated/LockStatus";
 import type { PreparedTxSummary } from "../../api/generated/PreparedTxSummary";
+import type { PsbtAnalysis } from "../../api/generated/PsbtAnalysis";
 import {
   addressProblem,
   authRefusal,
@@ -13,6 +14,7 @@ import {
   DEFAULT_ADVANCED,
   feeMode,
   keepsPromise,
+  unsignedKeepsPromise,
   outpointKey,
   outpointOf,
   recipientOf,
@@ -194,5 +196,56 @@ describe("the confirm sheet's promise (U-03 D2)", () => {
     expect(keepsPromise(confirmed, summary({ totalDebit: 50_000_225 }))).toBe(false);
     // A change output to the payee's address does not count as paying it.
     expect(keepsPromise(confirmed, summary({ outputs: [{ ...outputs[0], amount: 25_000_000 }, { ...outputs[1], address: PAYEE, amount: 25_000_000 }] }))).toBe(false);
+  });
+});
+
+describe("Create Unsigned keeps the sheet's promise (U-05 D37)", () => {
+  const unsigned = (over: Partial<PsbtAnalysis> = {}): PsbtAnalysis => ({
+    outputs: [
+      { address: PAYEE, amount: 50_000_000, isMine: false },
+      { address: "yOwnChange", amount: 10, isMine: true },
+    ],
+    fee: 226,
+    total: 50_000_226,
+    unsignedInputs: 1,
+    status: "needsSignatures",
+    signability: "canSign",
+    externalSent: 50_000_000,
+    unsignedTxid: "cd".repeat(32),
+    ...over,
+  });
+  const [pay, change] = unsigned().outputs;
+
+  it("holds for the PSBT of the plan the sheet showed", () => {
+    expect(unsignedKeepsPromise(confirmed, unsigned())).toBe(true);
+    const custom = confirmedOf(recipient, estimate, { kind: "address", address: "yForeign" });
+    expect(unsignedKeepsPromise(custom, unsigned({ outputs: [pay, { address: "yForeign", amount: 10, isMine: false }] }))).toBe(true);
+    // Change somewhere other than the custom address the sheet showed.
+    expect(unsignedKeepsPromise(custom, unsigned())).toBe(false);
+    // No change: the payment alone.
+    const whole = confirmedOf(recipient, { ...estimate, change: null }, { kind: "auto" });
+    expect(unsignedKeepsPromise(whole, unsigned({ outputs: [pay] }))).toBe(true);
+    expect(unsignedKeepsPromise(whole, unsigned())).toBe(false);
+    // Subtract fee: the recipient gets the estimate's amount after the fee.
+    const net = recipientOf({ address: PAYEE, amount: 50_000_000, subtractFee: true, label: "", message: "" });
+    const lessFee = confirmedOf(net, { ...estimate, totalSent: 49_999_774 }, { kind: "auto" });
+    expect(unsignedKeepsPromise(lessFee, unsigned({ outputs: [{ ...pay, amount: 49_999_774 }, change] }))).toBe(true);
+    expect(unsignedKeepsPromise(lessFee, unsigned())).toBe(false);
+    // Change sent back to the recipient's own address, as the sheet showed.
+    const back = confirmedOf(recipient, estimate, { kind: "address", address: PAYEE });
+    expect(unsignedKeepsPromise(back, unsigned({ outputs: [{ ...pay, amount: 10 }, pay] }))).toBe(true);
+    expect(unsignedKeepsPromise(back, unsigned({ outputs: [pay, pay] }))).toBe(false);
+  });
+
+  it("refuses a plan that changed after the estimate: fee, change, amount, coins or outputs", () => {
+    expect(unsignedKeepsPromise(confirmed, unsigned({ fee: 400, outputs: [pay, { ...change, amount: 1 }] }))).toBe(false);
+    expect(unsignedKeepsPromise(confirmed, unsigned({ outputs: [pay] }))).toBe(false);
+    // A subtract-fee payment that now pays less.
+    expect(unsignedKeepsPromise(confirmed, unsigned({ outputs: [{ ...pay, amount: 49_999_000 }, change] }))).toBe(false);
+    // Another coin (the fee estimate rounded to the same).
+    expect(unsignedKeepsPromise(confirmed, unsigned({ unsignedInputs: 2 }))).toBe(false);
+    expect(unsignedKeepsPromise(confirmed, unsigned({ outputs: [pay, change, { address: "yOther", amount: 5, isMine: false }] }))).toBe(false);
+    expect(unsignedKeepsPromise(confirmed, unsigned({ outputs: [pay, { ...change, isMine: false }] }))).toBe(false);
+    expect(unsignedKeepsPromise(confirmed, unsigned({ fee: null }))).toBe(false);
   });
 });

@@ -4,11 +4,11 @@ import type { EventKindName } from "./EventKindName";
 /**
  * One journal row.
  */
-export type DashPayEventInfo = { 
+export type DashPayEventInfo = {
 /**
  * Pass the newest id read to `dashpayMarkRead`.
  */
-id: number, kind: EventKindName, contact: string | null, 
+id: number, kind: EventKindName, contact: string | null,
 /**
  * Per kind: the txid of `paymentReceived`, the contact-request id of
  * the request kinds, the label of the name kinds.

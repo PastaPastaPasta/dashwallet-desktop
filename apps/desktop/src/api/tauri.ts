@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
+import type { AddressPurposeName } from "./generated/AddressPurposeName";
 import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { FeeMode } from "./generated/FeeMode";
 import type { OutPoint } from "./generated/OutPoint";
@@ -117,6 +118,37 @@ export class IpcBackend implements Backend {
   takeLinks = cmd.takeLinks;
   routeLink = cmd.routeLink;
   shellSync = cmd.shellSync;
+  warnings = () => cmd.warnings();
+  consoleCommands = () => cmd.consoleCommands();
+  consoleRedact = cmd.consoleRedact;
+  consoleExecute = cmd.consoleExecute;
+  peers = () => cmd.peers();
+  rotatePeers = () => cmd.rotatePeers();
+  rescan = cmd.rescan;
+  rescanProgress = () => cmd.rescanProgress();
+  cancelRescan = () => cmd.cancelRescan();
+  stopSpv = () => cmd.stopSpv();
+  startSpv = () => cmd.startSpv();
+  resetChainData = () => cmd.resetChainData();
+  setBirthHeight = cmd.setBirthHeight;
+  dropUnconfirmed = cmd.dropUnconfirmed;
+  registrations = cmd.registrations;
+  resolveStuckFunding = cmd.resolveStuckFunding;
+  // The search is the renderer's (U-05 D13): dash-qt's wildcards over label and address.
+  addressBook = (walletId: string, purpose: AddressPurposeName | null) => cmd.addressBook(walletId, purpose, null);
+  saveAddressBookEntry = cmd.saveAddressBookEntry;
+  deleteAddressBookEntry = cmd.deleteAddressBookEntry;
+  signMessage = cmd.signMessage;
+  verifyMessage = cmd.verifyMessage;
+  analyzePsbt = cmd.analyzePsbt;
+  signPsbt = cmd.signPsbt;
+  broadcastPsbt = cmd.broadcastPsbt;
+  draftCreateUnsigned = cmd.draftCreateUnsigned;
+  lockOutpoints = cmd.lockOutpoints;
+  unlockOutpoints = cmd.unlockOutpoints;
+  openFile = cmd.openFile;
+  saveFileAs = cmd.saveFileAs;
+  chooseFilePath = cmd.chooseFilePath;
   onEvent = (listener: (e: AppEvent) => void) => listen<AppEvent>(cmd.ENGINE_EVENT, (e) => listener(e.payload));
   onShellEvent = (listener: (e: ShellEvent) => void) => listen<ShellEvent>(cmd.SHELL_EVENT, (e) => listener(e.payload));
   now = () => this.clock();
@@ -134,4 +166,7 @@ export const tauriTools = {
   probeUnlisted: cmd.probeUnlisted,
   /** A plugin command that is not installed (U6: the renderer cannot reach a shell). */
   invokeUnknownPlugin: () => invoke<unknown>("plugin:shell|execute", { program: "sh", args: ["-c", "id"] }),
+  /** The dialog plugin's own open command: the plugin is installed for dw-app's file chooser, but no
+   * capability grants its commands (U-05 D2), so the page cannot show a dialog or name a path. */
+  invokeDialogPlugin: () => invoke<unknown>("plugin:dialog|open", { options: {} }),
 };

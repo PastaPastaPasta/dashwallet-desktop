@@ -10,15 +10,15 @@ import type { LockStatus } from "./LockStatus";
  * with `flowsOmitted` or `artifactsOmitted` above 0 is not complete:
  * treat what it leaves out as unresolved (`dispatchStatus`, `leases`).
  */
-export type LockOutcome = { status: LockStatus, 
+export type LockOutcome = { status: LockStatus,
 /**
  * At most [`MAX_LOCK_FLOWS`], unresolved ones first (as artifacts).
  */
-flows: Array<FlowLockReport>, 
+flows: Array<FlowLockReport>,
 /**
  * Flows beyond [`MAX_LOCK_FLOWS`], not listed.
  */
-flowsOmitted: number, 
+flowsOmitted: number,
 /**
  * Wallets beyond `status`'s [`MAX_REPORT_WALLETS`], not listed.
  */
