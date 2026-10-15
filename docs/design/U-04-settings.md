@@ -142,12 +142,12 @@ Help ▸ About keeps U-01's small About sheet.
 | D33 | Onboarding stays closed while the wipe sheet is open (`ui.wiping`, set by the sheet while mounted). The last removal empties the wallet list before the vault is deleted, so a failure there shows on the sheet instead of under onboarding. The wipe is done only once `lockStatus` reads noVault after `destroyVault`. Otherwise it stops with "Every wallet was removed, but the vault could not be deleted: … Try again. If you close this instead, the vault stays: the next wallet you add goes into it, under its passphrase." Try again asks for the passphrase and deletes what is left (here only the vault). Onboarding opens when the sheet closes: on done, or when the user closes a stopped sheet, having read why and what closing leads to (D39). Supersedes D25. | Review r1-Sol #4. `IOS109_aVaultThatCannotBeDeletedStopsTheWipeAndATryAgainFinishesIt`, `IOS109_theWipeIsDoneOnlyOnceTheEngineSaysThereIsNoVault`; e2e `IOS009_aVaultThatCannotBeDeletedIsSaidNotCoveredByOnboarding`. T1 (real engine): a directory where dw-vault's `remove_all` expects a replaced copy makes the deletion fail. The sheet says so with no onboarding; Try again after the blocker is gone ends in onboarding and noVault. |
 | D34 | The deletion texts say how each kind of wallet comes back. A wallet that spends comes back from its recovery phrase, or from a backup or export you kept. A watch-only wallet comes back from its extended public key. iOS's typed sentence stays word for word. The note that kept exports hold private keys in plain text stays (D27). | Review r1-Sol #5. `IOS109_theWarningSaysHowEachKindOfWalletComesBack`, `IOS110_theQuestionSaysHowTheWalletComesBack`. |
 | D35 | No destructive or secret-writing button takes the focus when its step opens: Remove wallet, Delete everything and Export on an unencrypted vault. The sheet's first control (Close) has it, so Enter right after opening deletes nothing. The Remove sheet re-runs its focus once it knows whether the vault is encrypted (`focusKey`). | Review r1-Sol #6. e2e `IOS009_IOS110_destructiveConfirmationsTakeNoFocus`. |
-| D36 | A setting's control shows the choice while it is saved, not dw-app's or the engine's last answer. The prefs hook keeps the changes still out as an overlay over the saved settings (`settledPending` drops a key once its own save answers, not a later change of it), and the dust switch keeps its click until `set_dust_protection` answers. A controlled checkbox that followed only the saved value snapped back on click whenever the answer came after the next render. | Found by the gate on `51b950f6`: `QT075_dustProtectionKeepsItsThresholdInRange` failed "Clicking the checkbox did not change its state", 3 of 10 runs alone at load ~53. A real race, not a load flake: a held answer fails it every time. `QT020_aChoiceShowsUntilItsOwnSaveAnswers`; e2e `QT075_theSwitchMovesBeforeTheEngineAnswers`, `IOS020_theSwitchMovesBeforeTheSettingIsSaved` (the fixture holds the save). |
+| D36 | A setting's control shows the choice while it is saved, not dw-app's or the engine's last answer. The prefs hook keeps the changes still out as an overlay over the saved settings (`settledPending` drops a key once its own save answers, not a later change of it), and the dust switch keeps its click until `set_dust_protection` answers, disabled meanwhile so two answers cannot cross. Not done: tagging each prefs save. A, B, A in quick succession shows B for a moment, until the third answer arrives. Writes are chained, so they answer in order and it settles on A (Opus re-check nit). A controlled checkbox that followed only the saved value snapped back on click whenever the answer came after the next render. | Found by the gate on `51b950f6`: `QT075_dustProtectionKeepsItsThresholdInRange` failed "Clicking the checkbox did not change its state", 3 of 10 runs alone at load ~53. A real race, not a load flake: a held answer fails it every time. `QT020_aChoiceShowsUntilItsOwnSaveAnswers`; e2e `QT075_theSwitchMovesBeforeTheEngineAnswers`, `IOS020_theSwitchMovesBeforeTheSettingIsSaved` (the fixture holds the save; the dust switch is disabled meanwhile). |
 | D37 | The cancel in Remove wallet, Export for Dash Core and the wipe is an epoch, not a flag: `cancel()` moves it on, and an action stops after authorization only if the epoch moved since the action began. React's StrictMode runs each effect's cleanup once and mounts the same model again in a development build, so a one-way flag stopped every remove, export and wipe there after the passphrase. Payments already used a round per question. | Opus re-check of `51b950f6` (Major). Playwright runs the production build, so only the models' tests see it: `IOS110_aSheetMountedAgainStillRemoves`, `QT109_aSheetMountedAgainStillExports`, `IOS109_aSheetMountedAgainStillWipes`. |
 | D38 | While the wipe sheet is open, menu and tray commands other than Lock and Hide balances do nothing, and a link is not opened ("The link was not opened: close “Delete all wallet data?” first"). A route change would unmount the sheet in the middle of a wipe; the last removal would then open onboarding, and a failure of the vault's deletion would show nowhere. Lock draws over the sheet and keeps it. | Opus re-check (Minor 2): of the two fixes offered, refusing route changes is the one that keeps a stop on screen; a hold owned by the model would keep onboarding closed with nothing to say why. `IOS109_aMenuCommandLeavesThePageInPlace`, `IOS109_aLinkIsNotOpened`; e2e `IOS009_aVaultThatCannotBeDeletedIsSaidNotCoveredByOnboarding` (Ctrl+2 leaves the sheet). |
 | D39 | A stopped wipe's sheet stays closable, with Try again focused: Enter retries, and closing is a choice. The vault-kept text says what closing does (D33): the vault stays, and the next wallet goes into it under its passphrase. A stop ends the wipe's run before it renders, so Close is offered with it. Not done: a stop that can only be left by Try again. If the vault cannot be deleted at all (a broken disk), that would leave no way out. | Opus re-check (Minor 3). `IOS109_aVaultThatCannotBeDeletedStopsTheWipeAndATryAgainFinishesIt` (the text); e2e `IOS009_aVaultThatCannotBeDeletedIsSaidNotCoveredByOnboarding` (Try again has the focus). |
 | D40 | Not in this slice: dw-vault's `remove_all` unlinks `vault.dwv` first, then the temp file and the replaced copies. A failure after the first unlink leaves the engine holding the vault in memory (so Try again works and the sheet's text is true of the engine) while the disk is half deleted, possibly with replaced copies of old encrypted secrets left. The order belongs to dw-vault: delete the copies and the temp file first and `vault.dwv` last, so a failure leaves disk and memory in step. Follow-up below. | Opus re-check (Minor 4); a Rust change outside U-04's renderer slice. T1 meets the half-deleted state on purpose: its blocker is a replaced copy. |
-| D41 | One wipe at a time: `wipe()` marks itself running before its first engine call (the list of wallets), and `busy` covers it. A second click on Delete everything on an unencrypted vault started a second wipe while the first read the list; the sheet could also be closed then. | Opus re-check (Minor 5). `IOS109_aSecondClickStartsNoSecondWipe`. |
+| D41 | One wipe at a time: `wipe()` marks itself running before its first engine call (the list of wallets) and redraws the sheet. `busy` covers that state, so Close, Escape and Delete everything are off from the first click. A second click on Delete everything on an unencrypted vault started a second wipe while the first read the list; the sheet could also be closed then. | Opus re-check (Minor 5; the redraw from its second round). `IOS109_aSecondClickStartsNoSecondWipe`; e2e `IOS109_aWipeReadingItsListCannotClose`. |
 
 ## Follow-ups to file
 
@@ -180,12 +180,12 @@ on a manager to file them:
 
 ## T1 evidence
 
-2026-10-15, branch `dw/u-04-settings`: app, renderer and harness built at `1a12d176` (the review
-rounds, D25–D28, and the follow-merge of main `dbdc06a7`). Run on agentbox (Xvfb, WebKitGTK through
-tauri-driver) against `dwd-regtest-dashd:24.0.0-rc.2` (compose project `dw-e2e-settings`).
-`scripts/e2e-tauri-settings.sh` → PASS, 9 steps:
+2026-10-15, branch `dw/u-04-settings`: app, renderer and harness built at `743b6796` (review r1-Sol,
+D30–D35, and its Opus re-check, D36–D41). Run on agentbox (Xvfb, WebKitGTK through tauri-driver)
+against `dwd-regtest-dashd:24.0.0-rc.2` (compose project `dw-e2e-settings`).
+`scripts/e2e-tauri-settings.sh` → PASS, 10 steps:
 
-1. unlock: Wallet 1 holds 1.5 DASH through SPV (funding txid `65952239bd6e6894…`, 2 blocks mined)
+1. unlock: Wallet 1 holds 1.5 DASH through SPV (funding txid `a33e9de34bd1c488…`)
 2. General: Dark, mDASH with 3 digits (Home 1500.000 mtDASH), Pay starts with Subtract fee;
    `ui_settings` agrees
 3. Security: a wrong current passphrase is counted, then the passphrase changes (the old one is
@@ -196,12 +196,17 @@ tauri-driver) against `dwd-regtest-dashd:24.0.0-rc.2` (compose project `dw-e2e-s
 6. relaunch: `settings.json` kept mDASH, 3 digits, Dark and autohide (Home `#.### mtDASH`);
    Watcher stayed closed; the new passphrase unlocks
 7. Wallets: Watcher opened again, then removed with the passphrase
-8. Wipe: the typed sentence and the passphrase; onboarding opens; `list_wallets` is empty and
-   `lock_status` reads noVault
-9. no phrase or passphrase in the data root, the logs or the other output files
+8. Wipe, with a directory blocking dw-vault's `remove_all` (D33, D40): every wallet is removed
+   (`wallet_load_states` empty), the vault's deletion fails with the storage error, and the sheet
+   says so with no onboarding ("Every wallet was removed, but the vault could not be deleted:
+   Something went wrong (storage). Try again. If you close this instead, the vault stays: …")
+9. Try again, with the blocker gone: onboarding opens, `list_wallets` is empty and `lock_status`
+   reads noVault
+10. no phrase or passphrase in the data root, the logs or the other output files
 
-The same 9 steps also passed at `2c599647` and `dc1e6010` (2026-10-14). Earlier runs failed twice. Step 2 caught the D24 race (a lost unit change). Step 8 read
-`lock_status` the moment onboarding opened, before the final `destroyVault` had answered (D25).
+Earlier runs: 9 steps passed at `2c599647`, `dc1e6010` and `1a12d176`, and the 10-step run at the
+`51b950f6` tree. Two runs failed. Step 2 caught the D24 race (a lost unit change). The wipe step read
+`lock_status` the moment onboarding opened, before the final `destroyVault` had answered (D25, now D33).
 
 ## Ported view-model tests
 

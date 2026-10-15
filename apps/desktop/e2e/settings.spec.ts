@@ -108,6 +108,7 @@ test.describe("General", () => {
     // D36: the switch shows the choice while it is saved, not the engine's last answer.
     await page.getByTestId("settings-dust-on").uncheck();
     await expect(page.getByTestId("settings-dust-on")).not.toBeChecked();
+    await expect(page.getByTestId("settings-dust-on")).toBeDisabled();
     await release();
     await expect.poll(() => world(page, (w) => w.settings.dust)).toBeNull();
     await expect(page.getByTestId("settings-dust-on")).not.toBeChecked();
@@ -262,6 +263,22 @@ test.describe("Security", () => {
     await page.getByTestId(`${A}-remove`).click();
     await expect(page.getByTestId("settings-remove-confirm")).toBeVisible();
     await expect(page.getByTestId("settings-remove-confirm")).not.toBeFocused();
+  });
+
+  test("IOS109_aWipeReadingItsListCannotClose", async ({ page }) => {
+    await settings(page, "security", "unencrypted");
+    await page.getByTestId("settings-wipe").click();
+    await page.getByTestId("settings-wipe-sentence").fill(SecurityText.wipeAcceptPhrase);
+    await page.getByTestId("settings-wipe-continue").click();
+    // D41: from the first engine call the sheet cannot close and the button is off.
+    const release = await hold(page, "wallet_load_states");
+    await page.getByTestId("settings-wipe-confirm").click();
+    const sheet = page.getByTestId("settings-wipe-sheet");
+    await expect(page.getByTestId("settings-wipe-confirm")).toBeDisabled();
+    await expect(sheet.getByRole("button", { name: "Close" })).toBeDisabled();
+    await release();
+    await expect(page.getByTestId("onboarding")).toBeVisible();
+    expect(await world(page, (w) => w.lock.state)).toBe("noVault");
   });
 
   test("quick unlock is not yet, and says who brings it (D7)", async ({ page }) => {

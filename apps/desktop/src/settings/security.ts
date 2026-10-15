@@ -273,6 +273,8 @@ export class WipeModel extends Model {
   async wipe(p: string) {
     if (this.step !== "passphrase" || this.busy) return;
     this.#running = true;
+    // The sheet shows it at once: Close and the button are off while the list is read (D41).
+    this.changed();
     try {
       await this.#wipe(p);
     } finally {

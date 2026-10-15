@@ -260,10 +260,13 @@ describe("wipe", () => {
     install("unencrypted");
     const model = await wipeReady();
     const release = fixture.hold("wallet_load_states");
+    const before = model.version();
     const first = model.wipe("");
     await vi.waitFor(() => expect(fixture.calls).toContain("wallet_load_states"));
-    // The list is still being read: the sheet stays open and a second click does nothing (D41).
+    // The list is still being read: the sheet, told so, stays open and a second click does
+    // nothing (D41).
     expect(model.busy).toBe(true);
+    expect(model.version()).toBeGreaterThan(before);
     const second = model.wipe("");
     release();
     await Promise.all([first, second]);

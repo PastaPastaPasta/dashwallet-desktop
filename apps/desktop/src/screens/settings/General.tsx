@@ -213,6 +213,8 @@ function DustCard() {
           type="checkbox"
           data-testid="settings-dust-on"
           checked={on}
+          // One save at a time: a second click's answer could arrive first (D36).
+          disabled={turning !== null}
           onChange={(e) => {
             const want = e.target.checked;
             const t = dustThreshold(shown);
