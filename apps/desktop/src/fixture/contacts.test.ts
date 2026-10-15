@@ -50,8 +50,9 @@ describe("dashpay_contacts (fixture, as the engine)", () => {
     it(`AND-090 sorts My Contacts by ${sort}`, async () => {
       const sections = await usernames("dashpay-registered", { sort });
       expect(sections.contacts).toEqual(order);
-      // Requests and Pending ignore the sort: Grace and Heidi arrived together, so by id.
-      expect(sections.requests).toEqual(["grace", "heidi"]);
+      // Requests and Pending ignore the sort: newest first. Heidi's came an hour after Grace's,
+      // the reverse of their name, username and id orders, so only newest first gives this.
+      expect(sections.requests).toEqual(["heidi", "grace"]);
       expect(sections.pending).toEqual(["frank"]);
       // Hidden follows the sort too; Ivan has no time at all, so he is last by time.
       expect(sections.hidden).toEqual(sort === "dateAdded" || sort === "lastActivity" ? ["judy", "ivan"] : ["ivan", "judy"]);

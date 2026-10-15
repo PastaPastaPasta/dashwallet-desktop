@@ -134,10 +134,17 @@ describe("Contacts view model", () => {
 
   it("IOS-072 shows at most three network hits, strangers only: the identity and its relations are listed above", () => {
     const hits = [hit(0, "isSelf"), hit(1, "contact"), hit(2, "ignored"), hit(3), hit(4), hit(5), hit(6, "pendingIncoming"), hit(7)];
-    expect(networkHits(hits)).toEqual({ shown: [hit(3), hit(4), hit(5)], more: true });
-    expect(networkHits(hits.slice(0, 5))).toEqual({ shown: [hit(3), hit(4)], more: false });
-    expect(networkHits([])).toEqual({ shown: [], more: false });
-    expect(networkHits(undefined)).toEqual({ shown: [], more: false });
+    expect(networkHits(hits, undefined)).toEqual({ shown: [hit(3), hit(4), hit(5)], more: true });
+    expect(networkHits(hits.slice(0, 5), undefined)).toEqual({ shown: [hit(3), hit(4)], more: false });
+    expect(networkHits([], undefined)).toEqual({ shown: [], more: false });
+    expect(networkHits(undefined, undefined)).toEqual({ shown: [], more: false });
+  });
+
+  it("IOS-072 drops a cached stranger hit the contact list now holds (D21)", () => {
+    // Hit 3 was read as a stranger; since then its request arrived and the list holds it.
+    const hits = [hit(3), hit(4), hit(5), hit(7)];
+    const listed = list({ requests: [summary(3, { relation: "pendingIncoming" })] });
+    expect(networkHits(hits, listed)).toEqual({ shown: [hit(4), hit(5), hit(7)], more: false });
   });
 
   it("IOS-072 names the relation and the payment channel in the detail slot", () => {

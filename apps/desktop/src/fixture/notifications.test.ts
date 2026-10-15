@@ -175,7 +175,8 @@ describe("the dashpay-registered bell", () => {
   it("shows the two requests waiting and the rows as the contacts have them", async () => {
     installFixture({ scenario: "dashpay-registered" });
     const page = await cmd.dashpayEvents(W, IDENTITY.alice, null, 50);
-    expect(page.pending.map((c) => c.contact)).toEqual([IDENTITY.grace, IDENTITY.heidi]);
+    // Newest first: Heidi's request came an hour after Grace's (DP2-07's fixture times).
+    expect(page.pending.map((c) => c.contact)).toEqual([IDENTITY.heidi, IDENTITY.grace]);
     expect(page.new.map((e) => [e.kind, e.contact])).toEqual(
       expect.arrayContaining([
         ["requestReceived", IDENTITY.grace],

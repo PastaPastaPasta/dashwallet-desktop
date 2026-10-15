@@ -183,9 +183,11 @@ export function networkPrefix(text: string): string | null {
 
 /** The network rows under the local groups: strangers only (the identity itself and everyone it
  * relates to are in the groups already, whatever the local filter matched), at most three; `more`
- * when others remain (iOS `networkResultsSection`). */
-export function networkHits(hits: UserHit[] | undefined): { shown: UserHit[]; more: boolean } {
-  const fresh = (hits ?? []).filter((h) => h.relation === "stranger");
+ * when others remain (iOS `networkResultsSection`). `listed` is everyone the current contact list
+ * holds: a cached hit read before its request or contact arrived still says `stranger` (D21). */
+export function networkHits(hits: UserHit[] | undefined, listed: ContactList | undefined): { shown: UserHit[]; more: boolean } {
+  const known = new Set(listed?.sections.flatMap((s) => s.contacts.map((c) => c.contact)));
+  const fresh = (hits ?? []).filter((h) => h.relation === "stranger" && !known.has(h.identity));
   return { shown: fresh.slice(0, NETWORK_SHOWN), more: fresh.length > NETWORK_SHOWN };
 }
 

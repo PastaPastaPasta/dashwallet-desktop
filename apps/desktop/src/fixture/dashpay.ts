@@ -161,7 +161,8 @@ const CONTACTS: ContactSpec[] = [
   { name: "erin", displayName: "Erin", relation: "contact", channel: "notEstablished", since: at(5), unverified: true },
   { name: "frank", displayName: "Frank", relation: "pendingOutgoing", channel: "notEstablished", since: null },
   { name: "grace", displayName: "Grace Hopper", relation: "pendingIncoming", channel: "notEstablished", since: null },
-  { name: "heidi", displayName: null, relation: "pendingIncoming", channel: "notEstablished", since: null },
+  // An hour after Grace's: requests are newest first, which no sort's order gives (DP2-07).
+  { name: "heidi", displayName: null, relation: "pendingIncoming", channel: "notEstablished", since: at(0, 1) },
   { name: "ivan", displayName: "Ivan", relation: "ignored", channel: "notEstablished", since: null },
   {
     name: "judy",

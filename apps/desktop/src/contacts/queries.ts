@@ -50,11 +50,12 @@ export function usePendingSetup(walletId: string) {
 }
 
 /** DPNS usernames starting with `prefix` (D6); idle while `prefix` is `null`. A failure is shown
- * with Try again, not retried behind the user's back. */
-export function useNetworkSearch(walletId: string, prefix: string | null) {
+ * with Try again, not retried behind the user's back. The hits' relations are the main identity's,
+ * so it is part of the key (D21). */
+export function useNetworkSearch(walletId: string, identity: string, prefix: string | null) {
   const b = useBackend();
   return useQuery({
-    queryKey: ["userSearch", walletId, prefix] as const,
+    queryKey: ["userSearch", walletId, identity, prefix] as const,
     queryFn: () => b.searchUsers(walletId, prefix!, NETWORK_LIMIT),
     enabled: prefix !== null,
     retry: false,

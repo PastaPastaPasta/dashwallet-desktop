@@ -121,9 +121,12 @@ function ContactsView({ walletId, identity }: { walletId: string; identity: stri
   const typedPrefix = networkPrefix(search);
 
   const list = useContactList(walletId, identity, sort, text);
+  // Everyone this identity relates to, unfiltered (the same query as `list` without a search): the
+  // selection and the network rows are checked against it (D11, D21).
+  const all = useContactList(walletId, identity, sort, "");
   const pending = usePendingSetup(walletId);
   const lock = useLockStatus();
-  const net = useNetworkSearch(walletId, prefix);
+  const net = useNetworkSearch(walletId, identity, prefix);
 
   // Another wallet's Add intent is not this one's (D12).
   const add = intent?.walletId === walletId ? intent : null;
@@ -132,13 +135,11 @@ function ContactsView({ walletId, identity }: { walletId: string; identity: stri
   const shownText = useRef(text);
   if (!list.isPlaceholderData) shownText.current = text;
   const groups = toGroups(list.data, { hiddenOpen, searching: shownText.current !== "" });
-  // A search that filters the selected contact out keeps it in the detail slot (D11).
-  const found = findContact(list.data, selectedId);
-  const lastFound = useRef(found);
-  if (found) lastFound.current = found;
-  const selected = found ?? (text !== "" && lastFound.current?.contact === selectedId ? lastFound.current : null);
+  // A search that filters the selected contact out keeps it in the detail slot, as long as this
+  // identity still relates to it (D11).
+  const selected = findContact(list.data, selectedId) ?? (text !== "" ? findContact(all.data, selectedId) : null);
   const hint = setupHint(pending.data, lock.data?.state);
-  const hits = networkHits(net.data);
+  const hits = networkHits(net.data, all.data);
   const updating = list.data?.updating === true;
   const select = (contact: string) => ui.set({ contact, addContact: null, contactPrefill: null });
 

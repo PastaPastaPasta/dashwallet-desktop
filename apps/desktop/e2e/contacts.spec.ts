@@ -34,7 +34,7 @@ test("IOS-072 groups requests, contacts, pending and a closed Hidden, with the r
     "Pending Requests",
     "Hidden (2)",
   ]);
-  await expect(names(page, "requests")).toHaveText(["Grace Hopper", "heidi"]);
+  await expect(names(page, "requests")).toHaveText(["heidi", "Grace Hopper"]);
   await expect(names(page, "contacts")).toHaveText(["Bob Builder", "Carol", "dave", "Erin"]);
   await expect(names(page, "pending")).toHaveText(["Frank"]);
   await expect(group(page, "requests").locator(".contact-row-note")).toHaveText(["Request received", "Request received"]);
@@ -66,7 +66,12 @@ test("AND-090 sorts My Contacts and Hidden by the chosen order, for the session;
   // The last payment, else the contact's own time.
   await sort.selectOption("lastActivity");
   await expect(names(page, "contacts")).toHaveText(["Bob Builder", "Carol", "Erin", "dave"]);
-  await expect(names(page, "requests")).toHaveText(["Grace Hopper", "heidi"]);
+  // Requests stay newest first whatever the sort: Heidi's came after Grace's, the reverse of their
+  // name, username and id orders.
+  for (const order of ["displayName", "username", "dateAdded", "lastActivity"]) {
+    await sort.selectOption(order);
+    await expect(names(page, "requests")).toHaveText(["heidi", "Grace Hopper"]);
+  }
   // The choice outlives the page.
   await page.getByTestId("sidebar-home").click();
   await page.getByTestId("sidebar-contacts").click();
@@ -187,26 +192,88 @@ test("selecting a row shows it in the detail slot; a search that filters it out 
 
 test("the keyboard moves between rows across groups and Enter selects", async ({ page }) => {
   await openContacts(page);
-  await row(page, "Grace Hopper").focus();
+  await row(page, "heidi").focus();
   await page.keyboard.press("ArrowDown");
-  await expect(row(page, "heidi")).toBeFocused();
+  await expect(row(page, "Grace Hopper")).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(row(page, "Bob Builder")).toBeFocused();
   await page.keyboard.press("ArrowUp");
-  await expect(row(page, "heidi")).toBeFocused();
+  await expect(row(page, "Grace Hopper")).toBeFocused();
   // Hidden is closed, so End stops at Pending's last row.
   await page.keyboard.press("End");
   await expect(row(page, "Frank")).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(row(page, "Frank")).toBeFocused();
   await page.keyboard.press("Home");
-  await expect(row(page, "Grace Hopper")).toBeFocused();
+  await expect(row(page, "heidi")).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
-  await expect(row(page, "heidi")).toHaveAttribute("aria-current", "true");
+  await expect(row(page, "Grace Hopper")).toHaveAttribute("aria-current", "true");
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press(" ");
   await expect(row(page, "Bob Builder")).toHaveAttribute("aria-current", "true");
+});
+
+test("D11 a selection the search hides leaves the slot when its relation goes", async ({ page }) => {
+  const errors = await openContacts(page);
+  const detail = page.getByTestId("contact-detail");
+  // Carol's relation goes while a search hides her row: the slot empties.
+  await row(page, "Carol").click();
+  await search(page).fill("grace");
+  await expect(names(page, "requests")).toHaveText(["Grace Hopper"]);
+  await expect(detail.getByRole("heading", { level: 2 })).toHaveText("Carol");
+  await page.evaluate((carol) => {
+    const f = window.__dwFixture!;
+    f.world.dashpay.contacts = f.world.dashpay.contacts.filter((c) => c.summary.contact !== carol);
+    const walletId = f.world.wallets[0].summary.walletId;
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId, change: { domain: "contacts", identity: f.world.dashpay.identities[0].identity } });
+  }, IDENTITY.carol);
+  await expect(page.getByTestId("contact-pane-empty")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("D11 a selection the search hides leaves the slot when another identity becomes main", async ({ page }) => {
+  const errors = await openContacts(page);
+  const detail = page.getByTestId("contact-detail");
+  // Its contacts are not the old identity's.
+  await row(page, "Bob Builder").click();
+  await search(page).fill("grace");
+  await expect(detail.getByRole("heading", { level: 2 })).toHaveText("Bob Builder");
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    const d = f.world.dashpay;
+    const other = "9qWZ5vJxnxV4gNTjYzLM7rpyV8Ff2T3vV9aH6uDWkQZt";
+    d.identities = [...d.identities.map((i) => ({ ...i, isMain: false })), { ...d.identities[0], identity: other, index: 1, isMain: true, names: [], mainName: null }];
+    d.status = { kind: "ready", main: other };
+    d.contacts = [];
+    const walletId = f.world.wallets[0].summary.walletId;
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId, change: { domain: "identities" } });
+  });
+  await expect(page.getByTestId("contacts-no-match")).toBeVisible();
+  await expect(page.getByTestId("contact-pane-empty")).toBeVisible();
+  await expect(detail).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("IOS-072 a network hit that becomes a request leaves On the Dash network (D21)", async ({ page }) => {
+  const errors = await openContacts(page);
+  await search(page).fill("ma");
+  const mallory = page.locator(`[data-testid="network-row"][data-identity="${IDENTITY.mallory}"]`);
+  await expect(mallory).toHaveCount(1);
+  // Mallory's request arrives; the cached search answer still calls Mallory a stranger.
+  await page.evaluate((id) => {
+    const f = window.__dwFixture!;
+    const d = f.world.dashpay;
+    const request = structuredClone(d.contacts.find((c) => c.summary.relation === "pendingIncoming")!);
+    request.summary = { ...request.summary, contact: id, username: "mallory", displayName: "Mallory", alias: null };
+    d.contacts = [...d.contacts, request];
+    const walletId = f.world.wallets[0].summary.walletId;
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId, change: { domain: "contacts", identity: d.identities[0].identity } });
+  }, IDENTITY.mallory);
+  await expect(names(page, "requests")).toHaveText(["Mallory"]);
+  await expect(mallory).toHaveCount(0);
+  await expect(page.getByTestId("network-row")).toHaveCount(3);
+  expect(errors).toEqual([]);
 });
 
 test("Add contact opens its placeholder in the slot, in place of a dashpay: link's card; a row replaces either", async ({ page }) => {
