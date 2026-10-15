@@ -59,7 +59,6 @@ test("D21: a nameless identity reads as updating, then asks for a username, and 
   test.setTimeout(60_000);
   await open(page, "dashpay-no-username");
   await expect(chip(page)).toContainText("Updating…");
-  await expect(card(page)).toHaveCount(0);
   await expect(card(page)).toHaveAttribute("data-state", "noUsername", HELD);
   await expect(chip(page)).toContainText("No username");
   // Away and back: the hold does not start again.

@@ -202,7 +202,8 @@ export function mainIdentityOf(status: DashPayStatus | undefined): string | null
   }
 }
 
-/** When each identity was first read nameless this session; a remount does not restart it. */
+/** When each identity was first read nameless this session, until a name arrives: a remount or
+ * a later names pass does not restart it. */
 const namelessSince = new Map<string, number>();
 
 /** `main`, read as still updating while it has been nameless for less than `NAMELESS_HOLD_MS`
@@ -211,20 +212,20 @@ const namelessSince = new Map<string, number>();
 export function useHeldNames(main: IdentitySummary | undefined): IdentitySummary | undefined {
   const id = main?.identity;
   const nameless = !!main && !main.namesUpdating && main.mainName === null;
+  const named = !!main && main.mainName !== null;
   const since = id && nameless ? (namelessSince.get(id) ?? Date.now()) : null;
-  const [, rerender] = useState(0);
+  // The tick re-arms the timer should it fire before the hold is over.
+  const [tick, rerender] = useState(0);
   useEffect(() => {
     if (!id) return;
-    if (since === null) {
-      namelessSince.delete(id);
-      return;
-    }
+    if (named) namelessSince.delete(id);
+    if (since === null) return;
     namelessSince.set(id, since);
     const left = since + NAMELESS_HOLD_MS - Date.now();
     if (left <= 0) return;
     const timer = setTimeout(() => rerender((n) => n + 1), left);
     return () => clearTimeout(timer);
-  }, [id, since]);
+  }, [id, since, named, tick]);
   return since !== null && Date.now() - since < NAMELESS_HOLD_MS ? { ...main!, namesUpdating: true } : main;
 }
 
