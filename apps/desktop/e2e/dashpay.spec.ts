@@ -3,7 +3,6 @@ import { FIXTURE_WALLET_ID } from "../src/fixture/scenarios";
 import { seriousAxeViolations } from "./axe";
 import { CARDS } from "./dashpay";
 import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
-import { NAMELESS_HOLD_MS } from "../src/dashpay/status";
 
 // DP1-08: the DashPay status card on Home, the identity chip, the Join DashPay page, the voting
 // info and the FAQ on the fixture backend, by parity ID: IOS-065 (the Join DashPay banner states,
@@ -24,15 +23,13 @@ async function openJoin(page: Page, scenario: string, theme: Theme = "light", ex
 }
 
 const card = (page: Page) => page.getByTestId("dashpay-card");
-/** S17 waits out D21's hold. */
-const HELD = { timeout: NAMELESS_HOLD_MS + 10_000 };
 const chip = (page: Page) => page.getByTestId("toolbar-chip");
 
 for (const theme of THEMES) {
   for (const [state, { scenario, extra, title, chip: chipText }] of Object.entries(CARDS)) {
     test(`IOS-065 / AND-024 Home card ${state} ${theme}: title, chip, 0 serious axe issues`, async ({ page }) => {
       const errors = await open(page, scenario, theme, extra);
-      await expect(card(page)).toHaveAttribute("data-state", state === "votingNoEnd" ? "voting" : state, HELD);
+      await expect(card(page)).toHaveAttribute("data-state", state === "votingNoEnd" ? "voting" : state);
       await expect(card(page).locator("h2")).toHaveText(title);
       // An identity chip leads with its avatar letter.
       if (chipText) await expect(chip(page)).toContainText(chipText);
@@ -44,33 +41,105 @@ for (const theme of THEMES) {
   }
 }
 
-test("D2: Home has no card for an identity with a username, or one whose names are updating (S16, S18)", async ({ page }) => {
+test("D2: Home has no card for an identity with a username, or one whose names are not known (S16, S18, D23)", async ({ page }) => {
   await open(page, "dashpay-registered");
   await expect(page.getByTestId("history-header")).toBeVisible();
   await expect(chip(page)).toContainText("@alice");
   await expect(card(page)).toHaveCount(0);
-  await open(page, "dashpay-names-updating");
-  await expect(page.getByTestId("history-header")).toBeVisible();
-  await expect(chip(page)).toContainText("Updating…");
-  await expect(card(page)).toHaveCount(0);
+  for (const [scenario, text] of [
+    ["dashpay-names-updating", "Updating…"],
+    ["dashpay-names-pending", "Updating…"],
+    ["dashpay-names-unknown", "Username not loaded"],
+  ]) {
+    await open(page, scenario);
+    await expect(page.getByTestId("history-header")).toBeVisible();
+    await expect(chip(page), scenario).toContainText(text);
+    await expect(card(page), scenario).toHaveCount(0);
+  }
 });
 
-test("D21: a nameless identity reads as updating, then asks for a username, and not again after a revisit", async ({ page }) => {
+/** Records every card state and chip text the page shows, in order, as `window.__seen`. */
+function recordDashPay() {
+  const seen: string[] = [];
+  (window as unknown as { __seen: string[] }).__seen = seen;
+  const note = () => {
+    const state = document.querySelector('[data-testid="dashpay-card"]')?.getAttribute("data-state") ?? "none";
+    const entry = `${state}|${document.querySelector('[data-testid="toolbar-chip"]')?.textContent ?? ""}`;
+    if (seen.at(-1) !== entry) seen.push(entry);
+  };
+  new MutationObserver(note).observe(document, { subtree: true, childList: true, characterData: true, attributes: true });
+}
+
+/** The engine's names pass ends: Alice's identity now shows `names`. */
+async function namesPassEnds(page: Page, names: string[]) {
+  await page.evaluate(
+    ({ walletId, names }) => {
+      const f = window.__dwFixture!;
+      f.world.dashpay.identities = f.world.dashpay.identities.map((i) => ({ ...i, names, mainName: names[0] ?? null, namesCheck: null }));
+      f.emit({ kind: "platform", network: "testnet", walletId, change: { domain: "names" } });
+    },
+    { walletId: FIXTURE_WALLET_ID, names },
+  );
+}
+
+test("D23 (Sol r1 #1): names that take more than 10 s to load never read as missing; the pass's end settles them", async ({ page }) => {
   test.setTimeout(60_000);
-  await open(page, "dashpay-no-username");
+  await page.addInitScript(recordDashPay);
+  await open(page, "dashpay-names-pending");
   await expect(chip(page)).toContainText("Updating…");
-  await expect(card(page)).toHaveAttribute("data-state", "noUsername", HELD);
+  // Past the 10 s the UI once waited before asking for a username (D21).
+  await page.waitForTimeout(11_000);
+  await expect(chip(page)).toContainText("Updating…");
+  await expect(card(page)).toHaveCount(0);
+  await namesPassEnds(page, ["alice"]);
+  await expect(chip(page)).toContainText("@alice");
+  const seen = await page.evaluate(() => (window as unknown as { __seen: string[] }).__seen);
+  expect(seen.length).toBeGreaterThan(1);
+  expect(seen.filter((s) => s.startsWith("noUsername|") || s.includes("No username"))).toEqual([]);
+});
+
+test("D23: a names pass that ends with no name asks for one at once", async ({ page }) => {
+  await open(page, "dashpay-names-pending");
+  await expect(chip(page)).toContainText("Updating…");
+  await namesPassEnds(page, []);
+  await expect(card(page)).toHaveAttribute("data-state", "noUsername");
   await expect(chip(page)).toContainText("No username");
-  // Away and back: the hold does not start again.
-  await page.getByTestId("sidebar-activity").click();
-  await page.getByTestId("sidebar-home").click();
-  await expect(card(page)).toHaveAttribute("data-state", "noUsername", { timeout: 2_000 });
+});
+
+test("D24 (Sol r1 #2): a refetch that fails after a read shows the error, hides the chip and offers no Join", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  await expect(card(page)).toHaveAttribute("data-state", "join");
+  await expect(chip(page)).toHaveText("Join DashPay");
+  const invalidate = () =>
+    page.evaluate((walletId) => {
+      const f = window.__dwFixture!;
+      f.emit({ kind: "platform", network: "testnet", walletId, change: { domain: "startup" } });
+    }, FIXTURE_WALLET_ID);
+  await page.evaluate(() => window.__dwFixture!.fail("dashpay_status", "none"));
+  await invalidate();
+  await expect(card(page)).toHaveAttribute("data-state", "error");
+  await expect(chip(page)).toHaveCount(0);
+  await expect(page.getByTestId("sidebar-joinDashPay")).toHaveCount(0);
+  // The Join page too: its card is the error, with no Create username.
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "joinDashPay" }));
+  await expect(page.getByTestId("join-readiness")).toHaveAttribute("data-kind", "card");
+  await expect(page.getByTestId("join-readiness").getByTestId("dashpay-card")).toHaveAttribute("data-state", "error");
+  await expect(page.getByTestId("join-create")).toHaveCount(0);
+  // Try again, once the read works.
+  await page.evaluate(() => window.__dwFixture!.fail("dashpay_status", null));
+  await page.getByTestId("join-readiness").getByTestId("dashpay-card-action").click();
+  await expect(page.getByTestId("join-create")).toBeEnabled();
+  await expect(chip(page)).toHaveText("Join DashPay");
+  expect(errors).toEqual([]);
 });
 
 test("IOS-065 the card's lines: a running step, a paused registration's reason, the vote's end and temporary name", async ({ page }) => {
   await open(page, "dashpay-registering");
   await expect(card(page).getByTestId("dashpay-card-step")).toHaveText("(1/3) Processing payment");
-  await expect(card(page).getByRole("status")).toHaveText("Waiting for the network to confirm the payment.");
+  await expect(card(page).getByTestId("dashpay-card-lines")).toHaveText("Waiting for the network to confirm the payment.");
+  // D25 (Sol r1 #3): the live region carries the username and the step as well.
+  await expect(card(page).getByRole("status")).toContainText("Creating – @alice");
+  await expect(card(page).getByRole("status")).toContainText("(1/3) Processing payment");
 
   await open(page, "dashpay-registering-paused");
   await expect(card(page).getByRole("status")).toContainText("Registration paused");
@@ -88,10 +157,9 @@ test("IOS-065 the card's lines: a running step, a paused registration's reason, 
 });
 
 test("the card's buttons: Join, Continue and Choose a username open Join DashPay; Repair opens Tools ▸ Repair", async ({ page }) => {
-  test.setTimeout(60_000);
   for (const scenario of ["dashpay-no-identity", "dashpay-registering-paused", "dashpay-no-username"]) {
     await open(page, scenario);
-    await card(page).getByTestId("dashpay-card-action").click(HELD);
+    await card(page).getByTestId("dashpay-card-action").click();
     await expect(page.getByTestId("page-joinDashPay"), scenario).toBeVisible();
   }
   await open(page, "tools-stuck-funding");

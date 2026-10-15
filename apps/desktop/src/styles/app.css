@@ -3008,7 +3008,8 @@ button {
   color: var(--dw-role-danger);
 }
 
-.dashpay-card-body {
+.dashpay-card-body,
+.dashpay-card-live {
   display: flex;
   flex-direction: column;
   gap: var(--dw-space-xxs);

@@ -68,25 +68,28 @@ export function DashPayCard({ card, onAction }: { card: CardModel; onAction: (ki
     >
       <CardIcon tone={card.tone} />
       <div className="dashpay-card-body">
-        <h2 className="dashpay-card-title" id={`${id}-title`}>
-          {card.title}
-          {card.busy && <span className="spinner dashpay-card-spinner" aria-hidden="true" />}
-        </h2>
-        {step && (
-          <div className="dashpay-card-step" data-testid="dashpay-card-step">
-            <span>
-              ({step.n}/3) {step.text}
-            </span>
-            <progress className="dashpay-card-progress" max={3} value={step.n} aria-label="Registration progress" />
+        {/* Changes as the registration or the vote moves on: the title (its username), the step and
+            the lines, announced politely (D25). */}
+        <div role="status" className="dashpay-card-live">
+          <h2 className="dashpay-card-title" id={`${id}-title`}>
+            {card.title}
+            {card.busy && <span className="spinner dashpay-card-spinner" aria-hidden="true" />}
+          </h2>
+          {step && (
+            <div className="dashpay-card-step" data-testid="dashpay-card-step">
+              <span>
+                ({step.n}/3) {step.text}
+              </span>
+              <progress className="dashpay-card-progress" max={3} value={step.n} aria-label="Registration progress" />
+            </div>
+          )}
+          <div data-testid="dashpay-card-lines">
+            {card.lines.map((line) => (
+              <p key={line} className="dashpay-card-line">
+                {line}
+              </p>
+            ))}
           </div>
-        )}
-        {/* Changes as the registration or the vote moves on: announced politely. */}
-        <div role="status">
-          {card.lines.map((line) => (
-            <p key={line} className="dashpay-card-line">
-              {line}
-            </p>
-          ))}
         </div>
         {card.note && (
           <p className="dashpay-card-note" data-testid="dashpay-card-note">

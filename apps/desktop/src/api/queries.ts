@@ -1,15 +1,13 @@
 // Server state lives in TanStack Query. Keys mirror the dw-app commands, so an engine
 // signal names exactly the queries to refetch (events.ts).
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
 import type { DashPayStatus } from "./generated/DashPayStatus";
-import type { IdentitySummary } from "./generated/IdentitySummary";
 import type { HistoryRequest } from "./generated/HistoryRequest";
 import type { LockOutcome } from "./generated/LockOutcome";
 import type { LockProgress } from "./generated/LockProgress";
-import { NAMELESS_HOLD_MS } from "../dashpay/status";
 import { reconcileLockReport } from "./lockReport";
 
 /** A history query without its paging fields. */
@@ -202,36 +200,10 @@ export function mainIdentityOf(status: DashPayStatus | undefined): string | null
   }
 }
 
-/** When each identity was first read nameless this session, until a name arrives: a remount or
- * a later names pass does not restart it. */
-const namelessSince = new Map<string, number>();
-
-/** `main`, read as still updating while it has been nameless for less than `NAMELESS_HOLD_MS`
- * (DP1-08 D21): the chip, the Home card and the Join page wait out the engine's window between
- * an identity's discovery and its first names pass. The shell, always mounted, keeps the record. */
-export function useHeldNames(main: IdentitySummary | undefined): IdentitySummary | undefined {
-  const id = main?.identity;
-  const nameless = !!main && !main.namesUpdating && main.mainName === null;
-  const named = !!main && main.mainName !== null;
-  const since = id && nameless ? (namelessSince.get(id) ?? Date.now()) : null;
-  // The tick re-arms the timer should it fire before the hold is over.
-  const [tick, rerender] = useState(0);
-  useEffect(() => {
-    if (!id) return;
-    if (named) namelessSince.delete(id);
-    if (since === null) return;
-    namelessSince.set(id, since);
-    const left = since + NAMELESS_HOLD_MS - Date.now();
-    if (left <= 0) return;
-    const timer = setTimeout(() => rerender((n) => n + 1), left);
-    return () => clearTimeout(timer);
-  }, [id, since, named, tick]);
-  return since !== null && Date.now() - since < NAMELESS_HOLD_MS ? { ...main!, namesUpdating: true } : main;
-}
-
 /** The identity chip's, the sidebar's and the bell's DashPay state (DASHPAY §4
  * `DashPayStatusModel`): the status, the main identity's summary, its unread events and the
- * contact requests waiting. Each read is `undefined` while unknown or when it fails. A contested
+ * contact requests waiting. Each read is `undefined` while unknown or when it fails, a refetch
+ * that failed included: the answer cached before it may be wrong now (DP1-08 D24). A contested
  * username's identity is the main one too (BL-153 D11). */
 export function useDashPayShell(walletId: string | undefined) {
   const b = useBackend();
@@ -260,8 +232,8 @@ export function useDashPayShell(walletId: string | undefined) {
     enabled: !!walletId && main !== null,
   });
   return {
-    status: status.data,
-    main: useHeldNames(identities.data?.find((i) => i.identity === main)),
+    status: status.isError ? undefined : status.data,
+    main: identities.isError ? undefined : identities.data?.find((i) => i.identity === main),
     unread: unread.data ?? null,
     requests: requests.data ?? 0,
   };

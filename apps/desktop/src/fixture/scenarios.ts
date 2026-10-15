@@ -490,6 +490,21 @@ const SCENARIOS = {
     w.dashpay = { ...world, identities: world.identities.map((i) => ({ ...i, names: [], mainName: null, namesUpdating: true })) };
     return w;
   },
+  /** A restore found Alice; the engine's names pass that fetches her names has not ended (D23):
+   * no card, the chip says "Updating…". */
+  "dashpay-names-pending": (t) => {
+    const w = base(t);
+    const world = registered();
+    w.dashpay = { ...world, identities: world.identities.map((i) => ({ ...i, names: [], mainName: null, namesCheck: "pending" as const })) };
+    return w;
+  },
+  /** That names pass failed (D23): Alice may own a name, so no card and a neutral chip. */
+  "dashpay-names-unknown": (t) => {
+    const w = base(t);
+    const world = registered();
+    w.dashpay = { ...world, identities: world.identities.map((i) => ({ ...i, names: [], mainName: null, namesCheck: "failed" as const })) };
+    return w;
+  },
   /** Tools ▸ Repair: the registration's funding broadcast's outcome is unknown (E0-04.P2b). */
   "tools-stuck-funding": (t) => {
     const w = base(t);

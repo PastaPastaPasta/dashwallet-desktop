@@ -234,9 +234,16 @@ function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): Ca
   return card("creating", "pending", title, wait ? [wait] : [], { step, busy: true });
 }
 
-/** D21: how long an identity reads nameless before the card asks for a username (S17). The engine
- * reports a freshly discovered identity as current, with no names, until its first names pass. */
-export const NAMELESS_HOLD_MS = 10_000;
+/** What the main identity's names say (D23): it has a name; they are not known yet (unread, a
+ * sync pass holds them, or the engine's names pass has not ended); they could not be fetched; or
+ * it owns none. Only the last asks for a username. */
+export type NamesState = "named" | "updating" | "unknown" | "none";
+
+export function namesState(main: IdentitySummary | undefined): NamesState {
+  if (main?.mainName) return "named";
+  if (!main || main.namesUpdating || main.namesCheck === "pending") return "updating";
+  return main.namesCheck === "failed" ? "unknown" : "none";
+}
 
 /**
  * The Home card for the wallet's DashPay state (S1–S18), or `null` where Home shows none (D2):
@@ -270,7 +277,7 @@ export function homeCard(i: StatusInputs): CardModel | null {
       return card("voting", "pending", COPY.voting.title(s.label), lines, { action: action("votingInfo", COPY.voting.action) });
     }
     case "ready":
-      if (!i.main || i.main.namesUpdating || i.main.mainName !== null) return null;
+      if (namesState(i.main) !== "none") return null;
       return card("noUsername", "quiet", COPY.noUsername.title, [COPY.noUsername.message], { action: action("chooseName", COPY.noUsername.action) });
   }
 }

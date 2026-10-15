@@ -7,7 +7,7 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { RegistrationFailure } from "../api/generated/RegistrationFailure";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { StartupStatus } from "../api/generated/StartupStatus";
-import { COPY, FAQ, failureText, homeCard, JOIN_COPY, joinModel, QUOTE_LABEL, roundedCost, stepOf, VOTING_INFO, type StatusInputs } from "./status";
+import { COPY, FAQ, failureText, homeCard, JOIN_COPY, joinModel, namesState, QUOTE_LABEL, roundedCost, stepOf, VOTING_INFO, type StatusInputs } from "./status";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
@@ -24,7 +24,8 @@ const inputs = (status: DashPayStatus | undefined, rest: Partial<StatusInputs> =
   ...rest,
 });
 
-const identity = (mainName: string | null, namesUpdating = false) => ({ identity: "A", mainName, namesUpdating }) as IdentitySummary;
+const identity = (mainName: string | null, namesUpdating = false, namesCheck: IdentitySummary["namesCheck"] = null) =>
+  ({ identity: "A", mainName, namesUpdating, namesCheck }) as IdentitySummary;
 
 const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   draft: "reg-1",
@@ -70,6 +71,8 @@ describe("IOS-065 / AND-024 Home card: one per banner state", () => {
     const c = homeCard(inputs(undefined, { statusError: true }))!;
     expect(c).toMatchObject({ state: "error", tone: "problem", title: COPY.error.title, action: { kind: "retry", disabled: false } });
     expect(homeCard(inputs({ kind: "noIdentity", reason: null }, { statusError: true }))!.state).toBe("error");
+    // D24: nor does the Join page offer Create username on a cached answer.
+    expect(joinModel(inputs({ kind: "noIdentity", reason: null }, { statusError: true }), 100, 100)).toMatchObject({ kind: "card", card: { state: "error" } });
   });
 
   it("S3–S6: every StartupStatus has its card", () => {
@@ -194,6 +197,22 @@ describe("IOS-065 / AND-024 Home card: one per banner state", () => {
       title: COPY.noUsername.title,
       action: { kind: "chooseName", label: COPY.noUsername.action },
     });
+  });
+
+  it("D23: only names the engine has fetched say there is none; pending or failed ones ask for nothing", () => {
+    expect(namesState(undefined)).toBe("updating");
+    expect(namesState(identity("alice", false, "pending"))).toBe("named");
+    expect(namesState(identity(null, true))).toBe("updating");
+    expect(namesState(identity(null, false, "pending"))).toBe("updating");
+    expect(namesState(identity(null, false, "failed"))).toBe("unknown");
+    expect(namesState(identity(null))).toBe("none");
+    for (const check of ["pending", "failed"] as const) {
+      expect(homeCard(inputs({ kind: "ready", main: "A" }, { main: identity(null, false, check) })), check).toBeNull();
+      expect(joinModel(inputs({ kind: "ready", main: "A" }, { main: identity(null, false, check) }), null, null), check).toEqual({
+        kind: "joined",
+        username: null,
+      });
+    }
   });
 });
 

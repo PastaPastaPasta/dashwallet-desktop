@@ -29,4 +29,13 @@ export const CHIPS: Record<string, string> = {
   identity: "dashpay-registered",
   noUsername: "dashpay-no-username",
   updating: "dashpay-names-updating",
+  namesUnknown: "dashpay-names-unknown",
+};
+
+/** The text a chip settles on once the identities are read; until then it says "Updating…". */
+export const CHIP_TEXT: Record<string, string> = {
+  registeringLabel: "@alice",
+  identity: "@alice",
+  noUsername: "No username",
+  namesUnknown: "Username not loaded",
 };

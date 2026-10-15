@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { CARDS, CHIPS } from "./dashpay";
+import { CARDS, CHIP_TEXT, CHIPS } from "./dashpay";
 import { fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
 import { showSettingsView, type SettingsView } from "./settings";
 import { showWalletView, type WalletView } from "./wallet";
@@ -189,8 +189,7 @@ for (const theme of THEMES) {
     test(`visual dashpay-card-${state} ${theme}`, async ({ page }) => {
       await page.goto(fixtureUrl(scenario, theme, extra));
       const card = page.getByTestId("dashpay-card");
-      // S17 waits out D21's hold.
-      await card.waitFor({ timeout: 20_000 });
+      await card.waitFor();
       await fontsReady(page);
       await expect(card).toHaveScreenshot(`${theme}-dashpay-card-${state}.png`, SHOT);
     });
@@ -200,10 +199,8 @@ for (const theme of THEMES) {
       await page.goto(fixtureUrl(scenario, theme));
       const chip = page.getByTestId("toolbar-chip");
       await chip.waitFor();
-      // The registration's username or the main name, once read.
-      if (kind === "registeringLabel" || kind === "identity") await expect(chip).toContainText("@alice");
-      // D21's hold first reads "Updating…".
-      if (kind === "noUsername") await expect(chip).toContainText("No username", { timeout: 20_000 });
+      // The registration's username, the main name or the lack of one, once read.
+      if (CHIP_TEXT[kind]) await expect(chip).toContainText(CHIP_TEXT[kind]);
       await fontsReady(page);
       await expect(chip).toHaveScreenshot(`${theme}-dashpay-chip-${kind}.png`, SHOT);
     });

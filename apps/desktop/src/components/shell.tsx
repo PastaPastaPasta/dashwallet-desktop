@@ -8,6 +8,7 @@ import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { navigate, ui, useUi, type Route } from "../app/ui";
+import { namesState, type NamesState } from "../dashpay/status";
 import { isSyncing, syncPercent, syncState } from "../format/sync";
 
 interface SidebarItem {
@@ -116,14 +117,14 @@ function BellIcon() {
 
 /** What the identity chip shows (DASHPAY §4): the way into DashPay, its progress, or the main
  * identity, which opens My Profile. `null` hides it (DashPay still starting, unavailable, or a
- * watch-only wallet, which cannot join: DP1-08 D3).
- * `updating`: the main identity's names are not known yet (unread, or a sync pass holds them). */
+ * watch-only wallet, which cannot join: DP1-08 D3), as does a status read that failed (D24).
+ * `names`: what the main identity's names say (DP1-08 D23). */
 export type ChipState =
   | { kind: "join" }
   /** `label`: the registration's username once its row is read (DP1-08 S11). */
   | { kind: "registering"; label: string | null }
   | { kind: "contest"; label: string }
-  | { kind: "identity"; username: string | null; updating: boolean }
+  | { kind: "identity"; username: string | null; names: NamesState }
   | null;
 
 export function chipState(
@@ -139,15 +140,22 @@ export function chipState(
     case "contestPending":
       return { kind: "contest", label: status.label };
     case "ready":
-      return { kind: "identity", username: main?.mainName ?? null, updating: !main || main.namesUpdating };
+      return { kind: "identity", username: main?.mainName ?? null, names: namesState(main) };
     default:
       return null;
   }
 }
 
-function chipLabel(name: string | null, updating: boolean): string {
+function chipLabel(name: string | null, names: NamesState): string {
   if (name) return `@${name}`;
-  return updating ? "Updating…" : "No username";
+  switch (names) {
+    case "unknown":
+      return "Username not loaded";
+    case "none":
+      return "No username";
+    default:
+      return "Updating…";
+  }
 }
 
 function chipText(chip: Exclude<ChipState, { kind: "identity" } | null>): string {
@@ -182,7 +190,7 @@ function IdentityChip({ chip }: { chip: ChipState }) {
       <span className="identity-chip-avatar" aria-hidden="true">
         {(name ?? "?").slice(0, 1).toUpperCase()}
       </span>
-      <span>{chipLabel(name, chip.updating)}</span>
+      <span>{chipLabel(name, chip.names)}</span>
     </button>
   );
 }
