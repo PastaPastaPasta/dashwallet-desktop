@@ -6,30 +6,30 @@ import type { RegistrationWaitName } from "./RegistrationWaitName";
 /**
  * One persisted registration.
  */
-export type RegistrationStatus = { draft: string, phase: RegistrationPhaseName, label: string, temporaryLabel: string | null, identity: string | null, txid: string | null, 
+export type RegistrationStatus = { draft: string, phase: RegistrationPhaseName, label: string, temporaryLabel: string | null, identity: string | null, txid: string | null,
 /**
  * `resumeRegistration` needs a grant exactly when this is `unlock` or
  * `authorize`.
  */
-waiting: RegistrationWaitName | null, 
+waiting: RegistrationWaitName | null,
 /**
  * A lease holds a key for this flow ("Lock to cancel").
  */
-holdsKey: boolean, 
+holdsKey: boolean,
 /**
  * A funding of the flow has committed and is not definitely unsent.
  */
-fundsCommitted: boolean, 
+fundsCommitted: boolean,
 /**
  * While `phase` is `contested`.
  */
-contestEndsAt: number | null, failure: RegistrationFailure | null, 
+contestEndsAt: number | null, failure: RegistrationFailure | null,
 /**
  * The code the name step ended with when the identity was registered
  * but its name was not (`name.taken`, …): the flow still ends `done`,
  * and the identity claims a name with `registerName`.
  */
-nameFailure: string | null, 
+nameFailure: string | null,
 /**
  * The same for the initial profile, which `updateProfile` publishes.
  */

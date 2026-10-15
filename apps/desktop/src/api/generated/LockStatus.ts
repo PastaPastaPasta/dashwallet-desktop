@@ -4,19 +4,19 @@ import type { LockStateName } from "./LockStateName";
 /**
  * The vault's state (`Vault::status`).
  */
-export type LockStatus = { state: LockStateName, 
+export type LockStatus = { state: LockStateName,
 /**
  * A passphrase slot exists.
  */
-encrypted: boolean, 
+encrypted: boolean,
 /**
  * Quick unlock (slot B) is enrolled.
  */
-quickUnlockEnrolled: boolean, failedAttempts: number, 
+quickUnlockEnrolled: boolean, failedAttempts: number,
 /**
  * Seconds until the next passphrase attempt is accepted, when throttled.
  */
-retryAfterSecs: number | null, 
+retryAfterSecs: number | null,
 /**
  * Wallets with a seed record, sorted.
  */

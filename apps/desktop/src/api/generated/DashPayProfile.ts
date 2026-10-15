@@ -3,11 +3,11 @@
 /**
  * A DashPay profile as published.
  */
-export type DashPayProfile = { displayName: string | null, publicMessage: string | null, avatarUrl: string | null, 
+export type DashPayProfile = { displayName: string | null, publicMessage: string | null, avatarUrl: string | null,
 /**
  * Hex SHA-256 of the image bytes, as published.
  */
-avatarHash: string | null, 
+avatarHash: string | null,
 /**
  * Hex dHash, as published.
  */

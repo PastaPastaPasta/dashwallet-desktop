@@ -4,15 +4,15 @@ import type { CoinJoinSettings } from "./CoinJoinSettings";
 /**
  * Fixed CoinJoin values (Dash Core `coinjoin/{common,options}.h`).
  */
-export type CoinJoinLimits = { 
+export type CoinJoinLimits = {
 /**
  * Largest first, duffs.
  */
-denominations: Array<number>, 
+denominations: Array<number>,
 /**
  * 0.00140001 DASH: smallest denomination plus the largest collateral.
  */
-minMixingBalance: number, collateralAmount: number, maxCollateralAmount: number, minRounds: number, maxRounds: number, minSessions: number, maxSessions: number, minAmountDash: number, maxAmountDash: number, minDenoms: number, maxDenoms: number, 
+minMixingBalance: number, collateralAmount: number, maxCollateralAmount: number, minRounds: number, maxRounds: number, minSessions: number, maxSessions: number, minAmountDash: number, maxAmountDash: number, minDenoms: number, maxDenoms: number,
 /**
  * The defaults dash-qt starts with.
  */

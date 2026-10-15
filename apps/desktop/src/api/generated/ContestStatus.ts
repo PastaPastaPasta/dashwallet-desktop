@@ -5,7 +5,7 @@ import type { ContestState } from "./ContestState";
 /**
  * The own contest.
  */
-export type ContestStatus = { label: string, state: ContestState, endsAt: number | null, contenders: Array<ContestContender>, lockVotes: number | null, abstainVotes: number | null, 
+export type ContestStatus = { label: string, state: ContestState, endsAt: number | null, contenders: Array<ContestContender>, lockVotes: number | null, abstainVotes: number | null,
 /**
  * The name used until the contest resolves.
  */

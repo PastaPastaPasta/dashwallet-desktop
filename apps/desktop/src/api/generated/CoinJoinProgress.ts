@@ -3,7 +3,7 @@
 /**
  * dash-qt's progress (QT-042) and its tooltip parts, each 0..=100.
  */
-export type CoinJoinProgress = { overallPercent: number, denominatedPercent: number, partiallyMixedPercent: number, mixedPercent: number, 
+export type CoinJoinProgress = { overallPercent: number, denominatedPercent: number, partiallyMixedPercent: number, mixedPercent: number,
 /**
  * "Denominated inputs have X of N rounds on average".
  */

@@ -2,15 +2,15 @@
 import type { ChannelStateName } from "./ChannelStateName";
 import type { UserRelation } from "./UserRelation";
 
-export type ContactSummaryInfo = { 
+export type ContactSummaryInfo = {
 /**
  * The contact's identity, Base58.
  */
-contact: string, username: string | null, displayName: string | null, alias: string | null, relation: UserRelation, hidden: boolean, channel: ChannelStateName, 
+contact: string, username: string | null, displayName: string | null, alias: string | null, relation: UserRelation, hidden: boolean, channel: ChannelStateName,
 /**
  * UNIX time of the contact.
  */
-since: number | null, lastActivityAt: number | null, 
+since: number | null, lastActivityAt: number | null,
 /**
  * Verified only through the trusted fallback.
  */

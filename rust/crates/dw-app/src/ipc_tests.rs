@@ -1247,6 +1247,80 @@ fn shell_sync_answers_once_the_protection_is_in_effect() {
     demo.err("shell_sync", sync(true), "app.screen_protection");
 }
 
+/// U-05 D2: files come from the user's choice in the OS dialog, which the
+/// shell shows: the commands read and write only the path it answered with,
+/// and `null` is a cancel.
+#[test]
+fn files_go_through_the_dialog_the_user_answers() {
+    use crate::shell::files::{FilePurpose, FileRequest};
+    use tauri::Manager;
+    let demo = Demo::new();
+    let shell = Arc::clone(&demo.app.state::<crate::state::AppState>().shell);
+    // No dialog at all: an error, never a silent cancel.
+    demo.err("open_file", json!({ "purpose": "psbt" }), "app.file_dialog");
+
+    let dir = dw_testutil::private_tempdir();
+    let answer = Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
+    let asked = Arc::new(std::sync::Mutex::new(Vec::<FileRequest>::new()));
+    let (a, q) = (Arc::clone(&answer), Arc::clone(&asked));
+    shell.on_choose(Box::new(move |request| {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        q.lock().unwrap().push(request);
+        let _ = tx.send(a.lock().unwrap().clone());
+        rx
+    }));
+    let choose = |path: Option<&std::path::Path>| *answer.lock().unwrap() = path.map(Into::into);
+
+    // Cancelled.
+    assert_eq!(
+        demo.ok("open_file", json!({ "purpose": "psbt" })),
+        Value::Null
+    );
+    let psbt = dir.path().join("in.psbt");
+    std::fs::write(&psbt, b"psbt\xffxyz").unwrap();
+    choose(Some(&psbt));
+    assert_eq!(
+        demo.ok("open_file", json!({ "purpose": "psbt" })),
+        json!({ "name": "in.psbt", "data": "cHNidP94eXo=" })
+    );
+
+    let out = dir.path().join("out.csv");
+    choose(Some(&out));
+    let saved = demo.ok(
+        "save_file_as",
+        json!({ "purpose": "csv", "suggestedName": "Addresses.csv", "data": "YSxi" }),
+    );
+    assert_eq!(saved, json!(out.to_str().unwrap()));
+    assert_eq!(std::fs::read(&out).unwrap(), b"a,b");
+    demo.err(
+        "save_file_as",
+        json!({ "purpose": "csv", "suggestedName": "x.csv", "data": "not base64!" }),
+        "invalid_argument",
+    );
+    assert_eq!(
+        demo.ok(
+            "choose_file_path",
+            json!({ "purpose": "walletBackup", "save": true, "suggestedName": "Everyday.dwbackup" })
+        ),
+        json!(out.to_str().unwrap())
+    );
+    let asked = asked.lock().unwrap();
+    let seen: Vec<_> = asked
+        .iter()
+        .map(|r| (r.purpose, r.save, r.suggested_name.as_deref()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (FilePurpose::Psbt, false, None),
+            (FilePurpose::Psbt, false, None),
+            (FilePurpose::Csv, true, Some("Addresses.csv")),
+            (FilePurpose::WalletBackup, true, Some("Everyday.dwbackup")),
+        ],
+        "a bad payload is refused before any dialog"
+    );
+}
+
 /// `--selftest-link-trace`: the shell records each launch link's scheme
 /// and the renderer each route, never the link's text.
 #[cfg(feature = "selftest")]

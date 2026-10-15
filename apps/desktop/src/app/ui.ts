@@ -58,7 +58,13 @@ export interface UiState {
   /** Counts the links that opened Pay: each one starts a fresh form, the same link again too. */
   payLinks: number;
   contactPrefill: ContactPrefill | null;
+  /** Coin Selection's "Pay with these coins" (U-05 D19): the `txid:vout` keys Pay ▸ To an
+   * address starts with, under Advanced on "Selected coins". */
+  payCoins: string[] | null;
   toolsTab: ToolsTab;
+  /** Pay's Create Unsigned (U-05 D18): the PSBT Tools ▸ PSBT opens with, and whether it reached
+   * the clipboard. The tab takes it once. */
+  psbtPrefill: { psbt: string; copied: boolean } | null;
   settingsTab: SettingsTab;
   /** An invitation link arrived (DP5-01 adds its intake; Join DashPay says so meanwhile). */
   invitation: boolean;
@@ -116,7 +122,9 @@ let state: UiState = {
   payPrefill: null,
   payLinks: 0,
   contactPrefill: null,
+  payCoins: null,
   toolsTab: "information",
+  psbtPrefill: null,
   settingsTab: "general",
   invitation: false,
   walletId: null,
@@ -154,6 +162,12 @@ export const ui = {
 /** Opens `route`, closing the detail sheet. */
 export function navigate(route: Route, patch: Partial<UiState> = {}) {
   ui.set({ route, detail: null, ...patch });
+}
+
+/** Opens a fresh Pay ▸ To an address form (each call starts a new one), with what a link or a
+ * tool put in it. */
+export function openPayForm(patch: Pick<Partial<UiState>, "payPrefill" | "payCoins"> = {}) {
+  navigate("pay", { payTab: "address", payPrefill: null, payCoins: null, payLinks: ui.get().payLinks + 1, ...patch });
 }
 
 export function useUi<T>(select: (s: UiState) => T): T {

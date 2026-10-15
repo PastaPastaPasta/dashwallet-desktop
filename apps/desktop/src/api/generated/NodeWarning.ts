@@ -4,7 +4,7 @@ import type { WarningCodeName } from "./WarningCodeName";
 /**
  * A node warning for the alert banner.
  */
-export type NodeWarning = { code: WarningCodeName, 
+export type NodeWarning = { code: WarningCodeName,
 /**
  * Diagnostic text for logs only.
  */

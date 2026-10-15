@@ -4,7 +4,7 @@
  * A command's result as dashd prints it: JSON pretty-printed with a
  * 2-space indent, or plain text for string results (`help`).
  */
-export type ConsoleOutput = { text: string, isJson: boolean, 
+export type ConsoleOutput = { text: string, isJson: boolean,
 /**
  * The line with sensitive arguments replaced by `(…)`: the only form
  * the console may echo or keep in its history.

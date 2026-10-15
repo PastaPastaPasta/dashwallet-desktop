@@ -3,11 +3,11 @@
 /**
  * A `.dwbackup` file: the wallet it holds and when it was written.
  */
-export type BackupSummary = { path: string, walletId: string, 
+export type BackupSummary = { path: string, walletId: string,
 /**
  * UNIX seconds.
  */
-createdAt: number, sizeBytes: number, 
+createdAt: number, sizeBytes: number,
 /**
  * Written by the automatic rotation rather than on request.
  */

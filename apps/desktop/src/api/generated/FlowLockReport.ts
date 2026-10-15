@@ -3,21 +3,21 @@ import type { ArtifactOutcome } from "./ArtifactOutcome";
 import type { FlowKindName } from "./FlowKindName";
 import type { FlowOutcomeName } from "./FlowOutcomeName";
 
-export type FlowLockReport = { 
+export type FlowLockReport = {
 /**
  * The facade's lease id.
  */
-lease: string, walletId: string, flow: FlowKindName, 
+lease: string, walletId: string, flow: FlowKindName,
 /**
  * The strongest of all its artifacts' outcomes, listed or not.
  */
-outcome: FlowOutcomeName, 
+outcome: FlowOutcomeName,
 /**
  * The flow's committed artifacts, each with its own outcome: at most
  * [`MAX_FLOW_ARTIFACTS`], unresolved ones first (`maybeSent`,
  * `willBeSent`, `sent`, `cancelled`).
  */
-artifacts: Array<ArtifactOutcome>, 
+artifacts: Array<ArtifactOutcome>,
 /**
  * Artifacts beyond [`MAX_FLOW_ARTIFACTS`], not listed.
  */

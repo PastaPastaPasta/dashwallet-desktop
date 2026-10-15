@@ -4,25 +4,25 @@
  * Credit costs of the DashPay actions at the network's protocol version,
  * for "≈ N contact requests" and the low-credit warnings.
  */
-export type CostTable = { 
+export type CostTable = {
 /**
  * The protocol version priced.
  */
-protocolVersion: number, contactRequest: string, profileUpdate: string, contactInfo: string, enableDashpayKeys: string, 
+protocolVersion: number, contactRequest: string, profileUpdate: string, contactInfo: string, enableDashpayKeys: string,
 /**
  * Credits one duff buys.
  */
-creditsPerDuff: number, 
+creditsPerDuff: number,
 /**
  * What a top-up's lock must hold before Platform processes it, in
  * credits. Not the fee charged, which is metered and has been far
  * lower.
  */
-topUpFee: string, topUpMinDuffs: number, 
+topUpFee: string, topUpMinDuffs: number,
 /**
  * At or below this balance the credits are low.
  */
-lowCredits: string, 
+lowCredits: string,
 /**
  * Below this balance the credits are depleted.
  */

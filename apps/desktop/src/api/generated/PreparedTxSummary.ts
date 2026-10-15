@@ -5,16 +5,16 @@ import type { PreparedOutput } from "./PreparedOutput";
 /**
  * What the confirm dialog shows (QT-059, IOS-046).
  */
-export type PreparedTxSummary = { txid: string, fee: number, feeRatePerKb: number, sizeBytes: number, inputs: Array<PreparedInput>, outputs: Array<PreparedOutput>, 
+export type PreparedTxSummary = { txid: string, fee: number, feeRatePerKb: number, sizeBytes: number, inputs: Array<PreparedInput>, outputs: Array<PreparedOutput>,
 /**
  * What the recipients receive.
  */
-totalSent: number, 
+totalSent: number,
 /**
  * Inputs minus outputs back to the wallet: what leaves the wallet, fee
  * included; the figure a `Spend` grant caps.
  */
-totalDebit: number, 
+totalDebit: number,
 /**
  * Paid to scripts the wallet does not own (recipients and a foreign
  * change address), fee excluded.

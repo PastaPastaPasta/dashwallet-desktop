@@ -6,7 +6,7 @@
 
 import { useId, type ReactNode } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { navigate, ui, useUi, type PayTab, type Route, type ToolsTab } from "../app/ui";
+import { ui, useUi, type PayTab, type Route } from "../app/ui";
 import { PayToAddress } from "./pay/PayToAddress";
 
 const TITLES: Record<Route, string> = {
@@ -33,9 +33,10 @@ const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "
   joinDashPay: "Creating a DashPay username is not available yet.",
 };
 
-export function Page({ route, children }: { route: Route; children?: ReactNode }) {
+/** `wide`: the page's tables take the window's width, as Activity's table mode does. */
+export function Page({ route, wide = false, children }: { route: Route; wide?: boolean; children?: ReactNode }) {
   return (
-    <main className="page" data-testid={`page-${route}`}>
+    <main className={wide ? "page page-wide" : "page"} data-testid={`page-${route}`}>
       <div className="page-column">
         <header className="top-intro">
           <h1 className="top-intro-title">{TITLES[route]}</h1>
@@ -137,12 +138,13 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
   const tab = useUi((s) => s.payTab);
   const prefill = useUi((s) => s.payPrefill);
   const links = useUi((s) => s.payLinks);
+  const coins = useUi((s) => s.payCoins);
   return (
     <Page route="pay">
       <Tabs label="Pay" tabs={PAY_TABS} current={tab} onSelect={(payTab) => ui.set({ payTab })} testId="pay-tabs">
         {tab === "address" ? (
           // Keyed by the links that opened Pay and the wallet, so each one starts a fresh form.
-          <PayToAddress key={`${links}:${walletId}`} prefill={prefill} walletId={walletId} network={network} />
+          <PayToAddress key={`${links}:${walletId}`} prefill={prefill} coins={coins} walletId={walletId} network={network} />
         ) : (
           <NotYet testId="pay-contact">Paying a DashPay contact is not available yet.</NotYet>
         )}
@@ -153,26 +155,3 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
 
 // Contacts is DP2-07's (screens/contacts); the link card moved into its detail slot.
 export { ContactsPage } from "./contacts/ContactsPage";
-
-const TOOLS_TABS: Tab<ToolsTab>[] = [
-  { id: "information", title: "Information" },
-  { id: "console", title: "Console" },
-  { id: "peers", title: "Peers" },
-  { id: "repair", title: "Repair" },
-  { id: "addressBook", title: "Address Book" },
-  { id: "signVerify", title: "Sign/Verify" },
-  { id: "psbt", title: "PSBT" },
-  { id: "coinSelection", title: "Coin Selection" },
-];
-
-export function ToolsPage() {
-  const tab = useUi((s) => s.toolsTab);
-  const title = TOOLS_TABS.find((t) => t.id === tab)!.title;
-  return (
-    <Page route="tools">
-      <Tabs label="Tools" tabs={TOOLS_TABS} current={tab} onSelect={(toolsTab) => navigate("tools", { toolsTab })} testId="tools-tabs">
-        <NotYet testId={`placeholder-tools-${tab}`}>{title} is not available yet.</NotYet>
-      </Tabs>
-    </Page>
-  );
-}

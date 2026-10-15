@@ -133,7 +133,7 @@ describe("generated commands", () => {
       .sort();
     expect(wrappers).toEqual(Object.keys(cmd.COMMANDS).map(camel).sort());
     expect(new Set(Object.values(cmd.COMMANDS))).toEqual(
-      new Set(["app", "network", "vault", "wallets", "chain", "history", "backup", "send", "coinjoin", "identity", "social", "console", "units", "shell", "selftest"]),
+      new Set(["app", "network", "vault", "wallets", "chain", "history", "backup", "send", "coinjoin", "identity", "social", "console", "units", "shell", "files", "selftest"]),
     );
   });
 });

@@ -5,7 +5,7 @@ import type { CoinJoinPoolState } from "./CoinJoinPoolState";
 /**
  * One open mixing session.
  */
-export type CoinJoinSession = { 
+export type CoinJoinSession = {
 /**
  * The masternode's proTxHash, display order.
  */

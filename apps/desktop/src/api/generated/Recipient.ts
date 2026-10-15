@@ -3,19 +3,19 @@
 /**
  * One payment line (QT-052/053).
  */
-export type Recipient = { address: string, 
+export type Recipient = { address: string,
 /**
  * Duffs; at least the output's dust threshold (546 for P2PKH).
  */
-amount: number, 
+amount: number,
 /**
  * dash-qt "Subtract fee from amount".
  */
-subtractFeeFromAmount: boolean, 
+subtractFeeFromAmount: boolean,
 /**
  * Saved to the address book after a broadcast (QT-063).
  */
-label: string | null, 
+label: string | null,
 /**
  * `message` of a `dash:` URI; stored with the transaction.
  */

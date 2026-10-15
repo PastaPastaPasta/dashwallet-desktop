@@ -3,15 +3,15 @@
 /**
  * An account-level extended public key (IOS-111).
  */
-export type AccountXpub = { 
+export type AccountXpub = {
 /**
  * BIP44 account index.
  */
-account: number, 
+account: number,
 /**
  * `m/44'/5'/0'` on mainnet, `m/44'/1'/0'` elsewhere.
  */
-derivationPath: string, 
+derivationPath: string,
 /**
  * `xpub...` on mainnet, `tpub...` elsewhere.
  */

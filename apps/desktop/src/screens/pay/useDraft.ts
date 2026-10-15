@@ -36,6 +36,9 @@ export interface DraftApi {
   estimate(spec: DraftSpec): Promise<TxEstimate>;
   /** Writes `spec` into the draft and signs it with `grantId` (nothing is sent). */
   prepare(spec: DraftSpec, grantId: string): Promise<{ draft: number; prepared: PreparedTxHandle }>;
+  /** Writes `spec` into the draft and returns it as an unsigned PSBT, base64 (Create Unsigned,
+   * QT-077): nothing is signed or reserved. */
+  createUnsigned(spec: DraftSpec): Promise<string>;
   /** `draftBroadcast`, counted as running until it settles (DEC-67's line on close). */
   broadcast(draft: number, prepared: number): Promise<BroadcastOutcome>;
   /** Releases a prepared transaction that will not be sent. */
@@ -137,6 +140,14 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
     [b, serial, write],
   );
 
+  const createUnsigned = useCallback(
+    (spec: DraftSpec) => {
+      const gen = generation.current;
+      return serial(() => write(gen, spec, (d) => b.draftCreateUnsigned(d), false));
+    },
+    [b, serial, write],
+  );
+
   const broadcast = useCallback(
     async (d: number, prepared: number) => {
       broadcasts.current++;
@@ -164,5 +175,5 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
     if (locked) void close();
   }, [close, locked]);
 
-  return { estimate, prepare, broadcast, abandon, close };
+  return { estimate, prepare, createUnsigned, broadcast, abandon, close };
 }

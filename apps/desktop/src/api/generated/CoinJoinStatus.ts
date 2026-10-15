@@ -12,23 +12,23 @@ import type { CoinJoinUnavailable } from "./CoinJoinUnavailable";
  * Everything the Overview CoinJoin panel, the advanced view and the
  * session status text show for one wallet (QT-041..050).
  */
-export type CoinJoinStatus = { walletId: string, state: CoinJoinState, 
+export type CoinJoinStatus = { walletId: string, state: CoinJoinState,
 /**
  * Why the last run stopped; `null` while mixing or before any run.
  */
-stopReason: CoinJoinStopReason | null, 
+stopReason: CoinJoinStopReason | null,
 /**
  * Set when "Start CoinJoin" cannot be offered.
  */
-unavailable: CoinJoinUnavailable | null, balances: CoinJoinBalances, progress: CoinJoinProgress, amountAndRounds: CoinJoinAmountAndRounds, 
+unavailable: CoinJoinUnavailable | null, balances: CoinJoinBalances, progress: CoinJoinProgress, amountAndRounds: CoinJoinAmountAndRounds,
 /**
  * "Submitted Denom" (advanced): denominations of the open sessions.
  */
-submittedDenominations: Array<number>, sessions: Array<CoinJoinSession>, status: CoinJoinStatusCode, 
+submittedDenominations: Array<number>, sessions: Array<CoinJoinSession>, status: CoinJoinStatusCode,
 /**
  * `dsq` queues known.
  */
-queueSize: number, 
+queueSize: number,
 /**
  * Legacy keypool keys left; `null` for HD wallets (all of ours).
  */

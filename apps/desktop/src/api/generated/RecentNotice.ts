@@ -4,7 +4,7 @@ import type { NoticeCodeName } from "./NoticeCodeName";
 /**
  * A notice as `recentNotices` returns it.
  */
-export type RecentNotice = { 
+export type RecentNotice = {
 /**
  * Increases by one per notice, from 1, for the life of the process.
  */

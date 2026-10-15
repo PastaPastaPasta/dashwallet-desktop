@@ -5,7 +5,7 @@ import type { ErrorData } from "./ErrorData";
 /**
  * Error returned by every command.
  */
-export type AppError = { code: ErrorCode, 
+export type AppError = { code: ErrorCode,
 /**
  * Diagnostic detail for logs; the UI's copy comes from `code`.
  */

@@ -144,6 +144,10 @@ pub struct PsbtAnalysis {
     /// Value paid to scripts the wallet does not own; `None` without a
     /// wallet.
     pub external_sent: Option<u64>,
+    /// The txid of the unsigned transaction: the same inputs and outputs
+    /// whatever the signatures or other PSBT fields, so it names the payment
+    /// across differently encoded copies of one PSBT.
+    pub unsigned_txid: Txid,
 }
 
 /// What the wallet knows about a PSBT: the derivation paths of the inputs
@@ -328,6 +332,7 @@ impl NetworkSession {
             let _op = this.enter().await?;
             let network = this.network.core_network();
             let base = dw_psbt::analyze(&psbt, network);
+            let unsigned_txid = dw_psbt::unsigned_txid(&psbt);
             let Some(id) = wallet else {
                 return Ok(PsbtAnalysis {
                     outputs: base
@@ -345,6 +350,7 @@ impl NetworkSession {
                     status: base.status,
                     signability: PsbtSignability::NoWallet,
                     external_sent: None,
+                    unsigned_txid,
                 });
             };
             let w = this.wallet(&id).await?;
@@ -389,6 +395,7 @@ impl NetworkSession {
                 status: base.status,
                 signability,
                 external_sent: Some(external_sent),
+                unsigned_txid,
             })
         })
         .await

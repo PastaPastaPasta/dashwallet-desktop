@@ -4,11 +4,11 @@ import type { UsernameRuleCheck } from "./UsernameRuleCheck";
 /**
  * The inline rule checklist of a username label.
  */
-export type UsernameCheck = { valid: boolean, 
+export type UsernameCheck = { valid: boolean,
 /**
  * The label under DPNS's homograph folding.
  */
-normalized: string, 
+normalized: string,
 /**
  * Set only for a valid label.
  */

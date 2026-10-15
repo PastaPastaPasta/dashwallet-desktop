@@ -372,7 +372,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
                   return false;
                 }
               })();
-      if (!ok) throw fail("compat.invalid_key_material", `not a valid ${material.kind}`);
+      if (!ok) throw fail("compat.invalid_key_material", `the ${material.kind} does not parse`);
       const seed = material.kind === "hdSeed" ? material.seedHex : material.kind === "xprv" ? material.xprv : material.json;
       return coreImport(ctx, `${material.kind} ${seed.trim().toLowerCase()}`, options, null);
     },
@@ -401,23 +401,6 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       world.settings.dust = threshold;
       return null;
     },
-    node_info: (_, { world }) => ({
-      userAgent: `/DashWallet:${world.launch.appVersion}/`,
-      dataDir: FIXTURE_DATA_DIR,
-      startupTime: secs(FIXTURE_NOW) - 5400,
-      network: world.launch.network,
-      connectionsIn: 0,
-      connectionsOut: 8,
-      localAddresses: [],
-      tipHeight: world.sync.tipHeight,
-      tipTime: world.sync.tipTime,
-      tipHash: null,
-      bestChainlock: null,
-      masternodes: null,
-      evonodes: null,
-      mempoolTxCount: null,
-      mempoolUsageBytes: null,
-    }),
   };
 }
 

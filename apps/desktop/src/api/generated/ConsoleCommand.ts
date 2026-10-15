@@ -3,19 +3,19 @@
 /**
  * One console command, for `help` and tab completion.
  */
-export type ConsoleCommand = { name: string, 
+export type ConsoleCommand = { name: string,
 /**
  * Core's help category ("Wallet", "Network", "Control", …).
  */
-category: string, 
+category: string,
 /**
  * dash-qt redacts its arguments in the echo and the history.
  */
-sensitive: boolean, 
+sensitive: boolean,
 /**
  * Answered by this console; `false`: "Not available in SPV mode."
  */
-available: boolean, 
+available: boolean,
 /**
  * The argument synopsis `help <command>` shows.
  */

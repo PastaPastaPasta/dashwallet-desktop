@@ -43,6 +43,19 @@ pub fn write_bindings(dir: &Path) -> Result<(), String> {
     for t in types {
         t.export(&cfg, &mut exports)?;
     }
+    // ts-rs ends a field's line with ", " when a doc comment follows it;
+    // `git diff --check` refuses that (U-05 D42).
+    for path in exports.files.keys() {
+        let path = dir.join(path);
+        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let trimmed: String = text
+            .lines()
+            .map(|l| format!("{}\n", l.trim_end()))
+            .collect();
+        if trimmed != text {
+            std::fs::write(&path, trimmed).map_err(|e| e.to_string())?;
+        }
+    }
     // Re-exported for the renderer's error handling; written with `AppError`.
     if let Some(path) = ErrorCode::output_path() {
         exports.imports.insert(ErrorCode::ident(&cfg), path);
@@ -211,6 +224,24 @@ pub(crate) mod tests {
             read_dir_sorted(fresh.path()),
             "apps/desktop/src/api/generated is stale; run DW_UPDATE_BINDINGS=1 cargo test -p dw-app bindings"
         );
+    }
+
+    /// No generated line ends in whitespace (`git diff --check`, U-05 D42).
+    #[test]
+    fn bindings_have_no_trailing_whitespace() {
+        let fresh = tempfile::tempdir().unwrap();
+        write_bindings(fresh.path()).unwrap();
+        for (name, text) in read_dir_sorted(fresh.path()) {
+            for (n, line) in text.lines().enumerate() {
+                assert_eq!(
+                    line,
+                    line.trim_end(),
+                    "{}:{} ends in whitespace",
+                    name.display(),
+                    n + 1
+                );
+            }
+        }
     }
 
     /// Two Rust types of one TypeScript name are refused, not overwritten.

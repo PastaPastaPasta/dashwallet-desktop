@@ -3,11 +3,11 @@
 /**
  * A `dash:` URI as dash-qt reads it (`GUIUtil::parseBitcoinURI`).
  */
-export type PaymentUri = { 
+export type PaymentUri = {
 /**
  * A valid L1 address on the network.
  */
-address: string, 
+address: string,
 /**
  * Duffs; `null` when absent or zero.
  */

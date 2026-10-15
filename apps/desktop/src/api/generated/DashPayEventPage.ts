@@ -2,15 +2,15 @@
 import type { ContactSummaryInfo } from "./ContactSummaryInfo";
 import type { DashPayEventInfo } from "./DashPayEventInfo";
 
-export type DashPayEventPage = { 
+export type DashPayEventPage = {
 /**
  * Incoming requests waiting for an answer.
  */
-pending: Array<ContactSummaryInfo>, 
+pending: Array<ContactSummaryInfo>,
 /**
  * Unread events, newest first.
  */
-new: Array<DashPayEventInfo>, 
+new: Array<DashPayEventInfo>,
 /**
  * Read events, newest first.
  */

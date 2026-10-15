@@ -327,6 +327,8 @@ async function selftestRun(backend: Backend, client: QueryClient, pauseMs: numbe
   report.security = {
     unlistedCommand: await refused(() => tauriTools.probeUnlisted()),
     unknownPluginCommand: await refused(() => tauriTools.invokeUnknownPlugin()),
+    // A granted plugin command would show the dialog and wait for it: give up after 5 s.
+    dialogPluginCommand: await refused(() => within(tauriTools.invokeDialogPlugin(), 5000, "the dialog stayed open")),
     remoteFetch: await cspProbe(() => fetch("https://example.com/", { cache: "no-store" })),
     windowOpen: windowOpenProbe(),
   };

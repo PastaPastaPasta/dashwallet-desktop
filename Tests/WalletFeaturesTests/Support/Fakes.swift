@@ -619,7 +619,7 @@ final class FakeDraft: TransactionDrafting, @unchecked Sendable {
             case .invalidArgument, .networkNotOpen, .notImplemented, .walletNotFound, .wallet, .storage, .spv, .io:
                 // Raised before dispatch (m1-engine.md §2.7.1 "not dispatched").
                 s.held[prepared.id] = previous
-            case .sendNoPeers, .sendPreparedTxSpent, .sendBroadcastRejected:
+            case .sendNoPeers, .sendPreparedTxSpent, .sendBroadcastRejected, .sendCancelled:
                 s.held[prepared.id] = nil
                 s.released.append(prepared)
             default:

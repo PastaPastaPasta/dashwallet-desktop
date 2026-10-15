@@ -4,15 +4,15 @@ import type { NetworkInfo } from "./NetworkInfo";
 /**
  * What a user-chosen file is, detected from its content.
  */
-export type WalletFileInfo = { "kind": "dumpWallet", 
+export type WalletFileInfo = { "kind": "dumpWallet",
 /**
  * The network of its keys; `null` when the file has no keys.
  */
-network: NetworkInfo | null, hasMnemonic: boolean, hasHdSeed: boolean, hasXprv: boolean, 
+network: NetworkInfo | null, hasMnemonic: boolean, hasHdSeed: boolean, hasXprv: boolean,
 /**
  * Loose (non-HD) WIF keys, which an import leaves out.
  */
-looseKeyCount: number, scriptCount: number, labelCount: number, } | { "kind": "walletDatSqlite", encrypted: boolean, hasMnemonic: boolean, } | { "kind": "walletDatBdb", encrypted: boolean | null, } | { "kind": "dwBackup", 
+looseKeyCount: number, scriptCount: number, labelCount: number, } | { "kind": "walletDatSqlite", encrypted: boolean, hasMnemonic: boolean, } | { "kind": "walletDatBdb", encrypted: boolean | null, } | { "kind": "dwBackup",
 /**
  * `null` when the backup names a network this build does not know.
  */
