@@ -313,10 +313,14 @@ fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, 
         let candidates: Vec<BudgetCandidate> = tallied
             .iter()
             .filter(|(_, d, _)| d.end_epoch.is_none_or(|e| e > now))
-            .map(|(o, d, t)| BudgetCandidate {
-                hash: o.hash_hex.clone(),
-                payment_amount: d.payment_amount.unwrap_or(0),
-                absolute_yes: net(t),
+            // Core's trigger builder skips an amount `ParsePaymentAmount`
+            // refuses.
+            .filter_map(|(o, d, t)| {
+                Some(BudgetCandidate {
+                    hash: o.hash_hex.clone(),
+                    payment_amount: d.payable_amount?,
+                    absolute_yes: net(t),
+                })
             })
             .collect();
         tally::fundable(&candidates, threshold, budget)
@@ -330,7 +334,7 @@ fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, 
     let allocated = tallied
         .iter()
         .filter(|(o, _, _)| estimate.contains(&o.hash_hex))
-        .map(|(_, d, _)| d.payment_amount.unwrap_or(0))
+        .filter_map(|(_, d, _)| d.payable_amount)
         .sum();
 
     let mut keyed: Vec<(i64, ProposalRow)> = tallied

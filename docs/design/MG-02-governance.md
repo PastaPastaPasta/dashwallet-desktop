@@ -257,7 +257,9 @@ claimed. Unique voters (regular, evonode) follow the same attribution.
 
 The passing threshold is Core's `max(nGovernanceMinQuorum, m_valid_weighted / 10)` from the list's valid entries
 (`UpdateSentinelVariables`, `object.cpp:968`), exact. The fundable set is node `getFundableProposalHashes` over
-`GetApprovedProposals` (MG-01 `tally::fundable`), computed on the estimates, and "too close to call" (MG-00 D45) is
+`GetApprovedProposals` (MG-01 `tally::fundable`), computed on the estimates, with each amount read as Core's trigger
+builder reads it (`ParsePaymentAmount` on the number's text, `signing.cpp:72`): a valid proposal whose amount has an
+exponent is skipped there, so it is never fundable here either. "Too close to call" (MG-00 D45) is
 whether the minimum or maximum net yes moves a proposal across the threshold or changes the fundable set.
 
 ### 4.3 Casting votes

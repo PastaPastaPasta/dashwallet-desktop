@@ -307,6 +307,7 @@ fn check_proposal(
         url: Some(url),
         payment_address: Some(address),
         payment_amount: amount_from_number(amount),
+        payable_amount: parse_payment_amount(amount),
         start_epoch: Some(start),
         end_epoch: Some(end),
     })
@@ -414,7 +415,18 @@ mod tests {
             panic!("not a proposal")
         };
         assert_eq!(p.payment_amount, Some(1_250_000_000));
+        assert_eq!(p.payable_amount, Some(1_250_000_000));
         assert_eq!(p.name.as_deref(), Some("my-prop_1"));
+        // Valid (`get_real`), but Core's trigger builder cannot read the
+        // amount (`ParsePaymentAmount`): never fundable.
+        let ValidObject::Proposal(e) = check(&proposal(&GOOD.replace("12.5", "1.25e1"))).unwrap()
+        else {
+            panic!("not a proposal")
+        };
+        assert_eq!(
+            (e.payment_amount, e.payable_amount),
+            (Some(1_250_000_000), None)
+        );
 
         let bad = |from: &str, to: &str, field| {
             let d = proposal(&GOOD.replace(from, to));

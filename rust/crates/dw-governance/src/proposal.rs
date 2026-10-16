@@ -252,6 +252,10 @@ pub struct ProposalData {
     pub payment_address: Option<String>,
     /// Duffs.
     pub payment_amount: Option<u64>,
+    /// Duffs as Core's trigger builder reads them (`ParsePaymentAmount` on
+    /// the number's text): `None` for an amount it skips (an exponent), so
+    /// the proposal is never in the fundable set.
+    pub payable_amount: Option<u64>,
     pub start_epoch: Option<i64>,
     pub end_epoch: Option<i64>,
 }
@@ -297,6 +301,7 @@ pub fn parse_proposal(data: &[u8]) -> Option<ProposalData> {
         url: text("url"),
         payment_address: text("payment_address"),
         payment_amount: o.get("payment_amount").and_then(json_amount),
+        payable_amount: None,
         start_epoch: int("start_epoch"),
         end_epoch: int("end_epoch"),
     })
