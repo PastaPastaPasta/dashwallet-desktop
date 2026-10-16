@@ -12,7 +12,7 @@ import { useDebounced } from "../../app/useDebounced";
 import { navigate, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
-import { creditsToDuffs, estimateText } from "../../dashpay/profile";
+import { creditBalance, estimateText } from "../../dashpay/profile";
 import { useTopUpQuote } from "../../dashpay/profileQueries";
 import { amountCanChange, minTopUp, outcomeText, PRESETS, routesToRepair, TOPUP_COPY, topUpCredits, topUpErrorText, type TopUpFlow } from "../../dashpay/topup";
 import { useDisplay } from "../../format/display";
@@ -146,7 +146,7 @@ export function TopUpSheet({ flow, walletId, network, costs }: { flow: TopUpFlow
   const amount = (duffs: number) => `${shown.compact(duffs)} ${shown.name}`;
   if (!flow.open) return <GrantSheet grants={flow.grants} />;
   const { step } = flow;
-  const balance = (credits: string) => (discreet || !costs ? shown.masked() : amount(creditsToDuffs(credits, costs)));
+  const balance = (credits: string) => creditBalance(credits, costs, discreet, amount, shown.masked());
   const done = step === "done" && flow.outcome ? outcomeText(flow.outcome, balance) : null;
   return (
     <>

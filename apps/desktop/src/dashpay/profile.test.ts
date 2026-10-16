@@ -8,8 +8,9 @@ import type { CostTable } from "../api/generated/CostTable";
 import type { DashPayEventInfo } from "../api/generated/DashPayEventInfo";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
-import { creditsModel, estimateText, headerModel, holdsTopUp, outcomeRows, pageModel, PROFILE_COPY, requestModel, tallyRows, type CreditsInputs } from "./profile";
+import { creditBalance, creditsModel, estimateText, headerModel, holdsTopUp, outcomeRows, pageModel, PROFILE_COPY, requestModel, tallyRows, type CreditsInputs } from "./profile";
 import { homeCard, joinModel, type StatusInputs } from "./status";
+import { outcomeText } from "./topup";
 
 const COSTS: CostTable = {
   protocolVersion: 10,
@@ -102,6 +103,16 @@ describe("credits (IOS-069, AND-078)", () => {
   it("a known balance before the cost table is read shows its credits (review m3)", () => {
     expect(creditsModel(alice({ balance: "1845000000" }), credits({ costs: undefined }))).toMatchObject({ figure: "1,845,000,000 credits", estimate: null });
     expect(creditsModel(alice(), credits({ costs: undefined, discreet: true })).figure).toBe("***");
+  });
+
+  it("D30: the top-up sheet's balance before the cost table is read shows its credits; only Discreet Mode masks", () => {
+    const amount = (duffs: number) => `${duffs} duffs`;
+    const applied = { txid: "aa", state: { kind: "applied", creditsAdded: "4950000000", balance: "189450000000" } } as const;
+    const balance = (costs: CostTable | undefined, discreet: boolean) => (c: string) => creditBalance(c, costs, discreet, amount, "***");
+    expect(outcomeText(applied, balance(undefined, false)).text).toBe("+4,950,000,000 credits. Your balance is 189,450,000,000 credits.");
+    expect(outcomeText(applied, balance(undefined, true)).text).toBe("+4,950,000,000 credits. Your balance is ***.");
+    expect(outcomeText(applied, balance(COSTS, false)).text).toBe("+4,950,000,000 credits. Your balance is 189450000 duffs.");
+    expect(outcomeText(applied, balance(COSTS, true)).text).toBe("+4,950,000,000 credits. Your balance is ***.");
   });
 
   it("C8 (D7): discreet mode masks the figure and the estimate", () => {

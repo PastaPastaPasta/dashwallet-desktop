@@ -210,17 +210,21 @@ const ofIdentity = (main: IdentitySummary) => (r: { identity: string | null; ide
 export const holdsTopUp = (main: IdentitySummary, pending: PendingTopUp[], stuck: StuckTopUpFunding[]) =>
   pending.some(ofIdentity(main)) || stuck.some(ofIdentity(main));
 
+/** A credit balance as shown (D29, D30): the amount once the cost table is read, raw credits until then; masked only in Discreet Mode. */
+export function creditBalance(credits: string, costs: CostTable | undefined, discreet: boolean, amount: (duffs: number) => string, masked: string): string {
+  if (discreet) return masked;
+  return costs ? amount(creditsToDuffs(credits, costs)) : PROFILE_COPY.credits.creditsOnly(BigInt(credits).toLocaleString("en-US"));
+}
+
 /** The credits block (C1–C8). */
 export function creditsModel(main: IdentitySummary, i: CreditsInputs): CreditsModel {
   const known = main.balance !== null;
   const level = main.creditLevel ?? (known ? "ok" : "unknown");
   let figure: string | null = null;
   let estimate: string | null = null;
-  if (main.balance !== null && i.costs) {
-    figure = i.discreet ? i.masked : i.amount(creditsToDuffs(main.balance, i.costs));
-    estimate = i.discreet ? PROFILE_COPY.credits.estimate(i.masked, i.masked) : estimateText(main.balance, i.costs);
-  } else if (main.balance !== null) {
-    figure = i.discreet ? i.masked : PROFILE_COPY.credits.creditsOnly(BigInt(main.balance).toLocaleString("en-US"));
+  if (main.balance !== null) {
+    figure = creditBalance(main.balance, i.costs, i.discreet, i.amount, i.masked);
+    if (i.costs) estimate = i.discreet ? PROFILE_COPY.credits.estimate(i.masked, i.masked) : estimateText(main.balance, i.costs);
   }
   const warning = level === "low" ? PROFILE_COPY.credits.low : level === "empty" ? PROFILE_COPY.credits.empty : null;
   const pending = i.pending
