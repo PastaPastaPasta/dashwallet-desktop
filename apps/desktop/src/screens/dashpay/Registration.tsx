@@ -143,9 +143,10 @@ function WedgeSheet({ wiz, quote, inputs }: { wiz: RegistrationWizard; quote: Re
 function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizard; walletId: string; identity: string | null; inputs: StatusInputs }) {
   const quote = useLabelQuote(walletId, wiz.label, identity === null);
   const credits = useNameCredits(walletId, identity, wiz.label);
+  // Either read failing says so (review r2 L1).
+  if ((identity !== null ? credits : quote).isError) return <p className="registration-line registration-problem">{REG_COPY.confirm.quoteFailed}</p>;
   if (identity !== null)
     return <p className="registration-line">{credits.data ? REG_COPY.confirm.fromCredits(credits.data.maxCredits) : REG_COPY.confirm.quoting}</p>;
-  if (quote.isError) return <p className="registration-line registration-problem">{REG_COPY.confirm.quoteFailed}</p>;
   if (!quote.data) return <p className="registration-line">{REG_COPY.confirm.quoting}</p>;
   const model = confirmModel(quote.data, inputs.amount);
   return (

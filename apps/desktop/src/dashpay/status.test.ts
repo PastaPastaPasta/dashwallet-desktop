@@ -36,6 +36,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   txid: null,
   waiting: "instantSend",
   holdsKey: true,
+  running: true,
   fundsCommitted: true,
   contestEndsAt: null,
   failure: null,
@@ -145,14 +146,20 @@ describe("IOS-065 / AND-024 Home card: one per banner state", () => {
     expect(homeCard(inputs(REGISTERING, { registration: r }))!.action).toBeNull();
   });
 
-  it("D21: an idle row (a keyless wait, no key held: after a relaunch) is paused, not running", () => {
-    expect(homeCard(inputs(REGISTERING, { registration: row({ waiting: "chainLock", holdsKey: false }) }))).toMatchObject({
-      state: "creatingPaused",
-      lines: ["Registration paused", "Waiting for your approval to continue."],
-      action: { kind: "continue" },
-    });
-    expect(homeCard(inputs(REGISTERING, { registration: row({ waiting: "chainLock", holdsKey: true }) }))!.state).toBe("creating");
-    expect(homeCard(inputs(REGISTERING, { registration: row({ phase: "nameRequested", waiting: null, holdsKey: false }) }))!.state).toBe("creating");
+  it("D21, D26: an idle row waiting for a proof or the network (after a relaunch) is paused, not running", () => {
+    for (const waiting of ["chainLock", "network"] as const) {
+      expect(homeCard(inputs(REGISTERING, { registration: row({ waiting, holdsKey: false, running: false }) }))).toMatchObject({
+        state: "creatingPaused",
+        lines: ["Registration paused", "Waiting for your approval to continue."],
+        action: { kind: "continue" },
+      });
+    }
+    // A run on an unlocked vault holds no key of its own and still runs (review r2 H1).
+    for (const waiting of ["instantSend", "chainLock", "network", null] as const) {
+      expect(homeCard(inputs(REGISTERING, { registration: row({ waiting, holdsKey: false, running: true }) }))!.state).toBe("creating");
+    }
+    // An idle row held for sync or the DashPay start runs again on its own.
+    expect(homeCard(inputs(REGISTERING, { registration: row({ waiting: "sync", holdsKey: false, running: false }) }))!.state).toBe("creating");
   });
 
   it("S13: a failure or an authorization wait pauses it, with Continue into the Join page", () => {

@@ -21,6 +21,7 @@ const reg = (draft: string, waiting: RegistrationStatus["waiting"]): Registratio
   txid: null,
   waiting,
   holdsKey: false,
+  running: false,
   fundsCommitted: true,
   contestEndsAt: null,
   failure: null,

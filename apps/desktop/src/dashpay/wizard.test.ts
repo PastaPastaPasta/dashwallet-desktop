@@ -30,6 +30,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   txid: "f0".repeat(32),
   waiting: "authorize",
   holdsKey: false,
+  running: false,
   fundsCommitted: true,
   contestEndsAt: null,
   failure: null,
@@ -184,6 +185,13 @@ describe("IOS-068 the row's actions", () => {
     await wiz.another(row({ fundsCommitted: false, phase: "failed" }));
     expect(calls).toEqual(["discard reg-1"]);
     expect(wiz).toMatchObject({ step: "name", mode: { kind: "core" }, label: "" });
+  });
+
+  it("D27: from a row stopped for good with its funds committed, step 1 opens and nothing is discarded", async () => {
+    const { wiz, calls } = setup();
+    await wiz.another(row({ phase: "failed", fundsCommitted: true, failure: { code: "registration.islock_timeout", phase: "fundingSent", retryable: false, needed: null, available: null } }));
+    expect(calls).toEqual([]);
+    expect(wiz).toMatchObject({ step: "name", mode: { kind: "core" }, draft: null });
   });
 
   it("R10: after a refused name, another one is paid from the identity's credits", async () => {

@@ -47,6 +47,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   txid: "f0".repeat(32),
   waiting: "instantSend",
   holdsKey: true,
+  running: true,
   fundsCommitted: true,
   contestEndsAt: null,
   failure: null,
@@ -130,16 +131,21 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
     expect(isRunning(row({ waiting: "unlock" }))).toBe(false);
   });
 
-  it("D21: a keyless wait with no key held is an idle row (after a relaunch): paused, Continue", () => {
-    expect(kinds(row({ waiting: "chainLock", holdsKey: false }))).toEqual(["paused", "continue"]);
-    expect(isRunning(row({ waiting: "chainLock", holdsKey: false }))).toBe(false);
-    // A run holding its key, or one between waits, runs.
-    expect(kinds(row({ waiting: "chainLock", holdsKey: true }))[0]).toBe("progress");
+  it("D21, D26: an idle row waiting for a proof (after a relaunch) is paused, Continue", () => {
+    expect(kinds(row({ waiting: "chainLock", running: false }))).toEqual(["paused", "continue"]);
+    expect(isRunning(row({ waiting: "chainLock", running: false }))).toBe(false);
+    // A run is progress and polled whether or not it holds a key of its own (review r2 H1).
+    for (const holdsKey of [true, false]) {
+      expect(kinds(row({ waiting: "chainLock", holdsKey }))[0]).toBe("progress");
+      expect(isRunning(row({ waiting: "instantSend", holdsKey }))).toBe(true);
+    }
     expect(kinds(row({ phase: "nameRequested", waiting: null, holdsKey: false }))[0]).toBe("progress");
   });
 
   it("D23: a draft started here and not read yet is busy, never the Join page", () => {
     expect(pendingModel()).toMatchObject({ kind: "progress", busy: true, step: null, actions: [{ kind: "home" }] });
+    // A failed read is not busy forever (review r2 L2).
+    expect(pendingModel(true)).toMatchObject({ busy: false, lines: [REG_COPY.progress.readFailed], actions: [{ kind: "home" }] });
   });
 
   it("R4, R5: funds waiting for a decision say they are safe and point to Repair", () => {
@@ -169,7 +175,7 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
       "another",
     ]);
     const stopped = screenModel(row({ phase: "failed", waiting: null, failure: failure("registration.islock_timeout", { retryable: false }) }), I);
-    expect([stopped.kind, ...stopped.actions.map((a) => a.kind)]).toEqual(["stopped", "repair"]);
+    expect([stopped.kind, ...stopped.actions.map((a) => a.kind)]).toEqual(["stopped", "repair", "another"]);
     expect(stopped.lines).toContain(REG_COPY.recovery);
   });
 

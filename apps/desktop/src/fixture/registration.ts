@@ -107,16 +107,20 @@ function active(world: World, walletId: string, dp: DashPayWorld, draft: string)
  * the user's unlock or grant; its key went with the run (D21). */
 export function reported(world: World, walletId: string, dp: DashPayWorld, r: RegistrationStatus): RegistrationStatus {
   // A copy: `advance` changes the world's row in place, and a read answering the same object
-  // would look unchanged to the query cache.
-  if (r.phase === "done" || active(world, walletId, dp, r.draft)) return { ...r };
-  if (r.phase === "failed") return { ...r, waiting: null, holdsKey: false };
+  // would look unchanged to the query cache. A parked run still runs (D26).
+  const running = dp.runs.includes(r.draft);
+  if (r.phase === "done" || active(world, walletId, dp, r.draft)) return { ...r, running };
+  if (r.phase === "failed") return { ...r, waiting: null, holdsKey: false, running };
   const kept = r.waiting === "needsFinish" || r.waiting === "fundingUnknown";
   // A parked run (its lease revoked or parked, D14) says what it parks for; an idle row its proof.
   const proofless = !dp.runs.includes(r.draft) && (r.phase === "fundingSent" || r.phase === "proofWaiting");
-  const keyless = world.lock.state === "locked" || world.lock.state === "unlockedMixingOnly";
-  const waiting: RegistrationWaitName = kept ? r.waiting! : proofless ? "chainLock" : keyless ? "unlock" : "authorize";
-  return { ...r, waiting, holdsKey: false };
+  const waiting: RegistrationWaitName = kept ? r.waiting! : proofless ? "chainLock" : keyless(world) ? "unlock" : "authorize";
+  return { ...r, waiting, holdsKey: false, running };
 }
+
+/** The vault holds no full-scope key, so a passphrase grant carries its own (vault.rs): only then
+ * does a run hold a key (`holdsKey`); on an unlocked vault it signs with the vault's (D26). */
+const keyless = (world: World) => world.lock.state === "locked" || world.lock.state === "unlockedMixingOnly";
 
 /** What a running row waits for in `phase`: the funding's InstantSend lock, else nothing. */
 const runningWait = (phase: RegistrationStatus["phase"]): RegistrationWaitName | null =>
@@ -215,7 +219,8 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         identity: null,
         txid: dp.assetLocks.toString(16).padStart(2, "0").repeat(32),
         waiting: "instantSend",
-        holdsKey: true,
+        holdsKey: keyless(world),
+        running: true,
         fundsCommitted: true,
         contestEndsAt: null,
         failure: null,
@@ -260,7 +265,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       // A parked run takes the grant (a new lease); an idle row runs again.
       d.newLease(ctx, walletId, "registration", [g]);
       const phase = row.phase === "failed" ? row.failure!.phase : row.phase;
-      Object.assign(row, { phase, failure: null, waiting: runningWait(phase), holdsKey: true, updatedAt: secs(FIXTURE_NOW) });
+      Object.assign(row, { phase, failure: null, waiting: runningWait(phase), holdsKey: keyless(world), running: true, updatedAt: secs(FIXTURE_NOW) });
       dp.runs = [...dp.runs.filter((x) => x !== draft), draft];
       settleStatus(dp);
       changed(ctx, walletId, draft);
@@ -287,7 +292,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       const stranded = dp.registrations.filter((r) => !dp.runs.includes(r.draft) && r.waiting === "needsFinish");
       d.newLease(ctx, walletId, "registration", [g]);
       for (const row of stranded) {
-        Object.assign(row, { waiting: runningWait(row.phase), holdsKey: true });
+        Object.assign(row, { waiting: runningWait(row.phase), holdsKey: keyless(world), running: true });
         dp.runs = [...dp.runs, row.draft];
         changed(ctx, walletId, row.draft);
       }
@@ -410,7 +415,7 @@ export function failRun(ctx: Ctx, walletId: string, draft: string, code: string,
 /** The run ends: its row settles, its lease ends. */
 function end(ctx: Ctx, walletId: string, dp: DashPayWorld, row: RegistrationStatus, d: Pick<RegistrationDeps, "setLease">) {
   if (row.phase !== "failed") row.phase = "done";
-  Object.assign(row, { waiting: null, holdsKey: false });
+  Object.assign(row, { waiting: null, holdsKey: false, running: false });
   dp.runs = dp.runs.filter((x) => x !== row.draft);
   const lease = runLease(ctx.world, walletId);
   if (lease) d.setLease(ctx, { ...lease, state: { kind: "ended" }, keyExpiresInSecs: null });

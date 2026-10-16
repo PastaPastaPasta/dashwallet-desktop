@@ -56,7 +56,7 @@ describe("start_registration", () => {
     expect(quote).toMatchObject({ contested: false, totalDuffs: 3_002_260 });
     expect(quote.availableDuffs).toBeGreaterThan(quote.totalDuffs);
     const draft = await cmd.startRegistration(W, coreRequest(LABEL), await grant());
-    expect(await rowOf(draft)).toMatchObject({ phase: "fundingSent", label: LABEL, waiting: "instantSend", holdsKey: true, fundsCommitted: true });
+    expect(await rowOf(draft)).toMatchObject({ phase: "fundingSent", label: LABEL, waiting: "instantSend", holdsKey: false, running: true, fundsCommitted: true });
     expect(f.world.dashpay.assetLocks).toBe(1);
     expect(await cmd.dashpayStatus(W)).toEqual({ kind: "registering", draft });
     expect((await cmd.leases()).filter((l) => l.flow === "registration")).toHaveLength(1);
@@ -133,10 +133,10 @@ describe("relaunch and resume (the acceptance: no second asset lock)", () => {
     expect(g.world.leases).toEqual([]);
     // No proof was recorded (the fixture models none): the engine's idle_wait says chainLock,
     // locked or not, and no key is held (D21).
-    expect(await rowOf(draft)).toMatchObject({ phase: "fundingSent", waiting: "chainLock", holdsKey: false, fundsCommitted: true });
+    expect(await rowOf(draft)).toMatchObject({ phase: "fundingSent", waiting: "chainLock", holdsKey: false, running: false, fundsCommitted: true });
     expect(g.advanceRegistration(draft)).toBe(false);
     await cmd.unlock("demo");
-    expect(await rowOf(draft)).toMatchObject({ waiting: "chainLock", holdsKey: false });
+    expect(await rowOf(draft)).toMatchObject({ waiting: "chainLock", holdsKey: false, running: false });
   });
 
   it("Continue resumes the same draft and lock, and the run completes", async () => {
@@ -146,9 +146,9 @@ describe("relaunch and resume (the acceptance: no second asset lock)", () => {
     await cmd.unlock("demo");
     // No grant: only keyless waits, so it stays idle for the fixture (no proof comes).
     await cmd.resumeRegistration(W, draft, null);
-    expect(await rowOf(draft)).toMatchObject({ waiting: "chainLock", holdsKey: false });
+    expect(await rowOf(draft)).toMatchObject({ waiting: "chainLock", holdsKey: false, running: false });
     await cmd.resumeRegistration(W, draft, await grant());
-    expect(await rowOf(draft)).toMatchObject({ waiting: "instantSend", holdsKey: true });
+    expect(await rowOf(draft)).toMatchObject({ waiting: "instantSend", holdsKey: false, running: true });
     while (g.advanceRegistration(draft));
     expect(await rowOf(draft)).toMatchObject({ phase: "done" });
     expect(g.world.dashpay.assetLocks).toBe(1);
@@ -169,10 +169,11 @@ describe("a parked run (DP1-09 D14)", () => {
     const f = install();
     const draft = await cmd.startRegistration(W, coreRequest(LABEL), await grant());
     f.world.leases = f.world.leases.map((l) => ({ ...l, state: { kind: "revoked", cause: "passphraseChange" } }));
-    expect(await rowOf(draft)).toMatchObject({ waiting: "authorize", holdsKey: false });
+    // The parked run still runs: Continue hands it the grant (D26).
+    expect(await rowOf(draft)).toMatchObject({ waiting: "authorize", holdsKey: false, running: true });
     expect(f.advanceRegistration(draft)).toBe(false);
     await cmd.resumeRegistration(W, draft, await grant());
-    expect(await rowOf(draft)).toMatchObject({ waiting: "instantSend", holdsKey: true });
+    expect(await rowOf(draft)).toMatchObject({ waiting: "instantSend", holdsKey: false, running: true });
     expect(f.advanceRegistration(draft)).toBe(true);
     expect(f.world.dashpay.assetLocks).toBe(1);
   });
@@ -191,7 +192,7 @@ describe("discard and Finish transfers", () => {
   it("D10: Finish transfers resumes the rows waiting for it", async () => {
     install("dashpay-registration-needs-finish");
     expect(await cmd.finishAssetLocks(W, await grant(1))).toEqual({ resumed: 1, completed: 0, stillPending: 0 });
-    expect(await rowOf("reg-1")).toMatchObject({ waiting: "instantSend", holdsKey: true });
+    expect(await rowOf("reg-1")).toMatchObject({ waiting: "instantSend", holdsKey: false, running: true });
   });
 });
 

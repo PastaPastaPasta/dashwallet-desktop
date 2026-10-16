@@ -394,6 +394,7 @@ export function registering(): DashPayWorld {
         txid: "f0".repeat(32),
         waiting: "instantSend",
         holdsKey: true,
+        running: true,
         fundsCommitted: true,
         contestEndsAt: null,
         failure: null,

@@ -178,11 +178,14 @@ export class RegistrationWizard extends Model {
   /** Choose another username (R6, R7, R10): an unfinished row is discarded first, and only while
    * nothing is committed (D7); after a refused name the identity pays from its credits. */
   async another(row: RegistrationStatus | null): Promise<void> {
-    if (row && row.phase !== "done" && row.fundsCommitted) return;
+    // A funded row that may run again is never left for a new one (D7); one stopped for good is
+    // kept as it is, and the start decides (D27).
+    const stopped = row?.phase === "failed" && row.failure?.retryable === false;
+    if (row && row.phase !== "done" && row.fundsCommitted && !stopped) return;
     // A done row's next name is its identity's; without one it would be a second lock.
     if (row?.phase === "done" && !row.identity) return;
     await this.#call("discard", async () => {
-      if (row && row.phase !== "done") await this.api.discardRegistration(this.walletId, row.draft);
+      if (row && row.phase !== "done" && !row.fundsCommitted) await this.api.discardRegistration(this.walletId, row.draft);
       const identity = row?.phase === "done" ? row.identity : null;
       this.begin(identity ? { kind: "credits", identity } : { kind: "core" });
     });
@@ -212,6 +215,7 @@ export class RegistrationWizard extends Model {
   #started(draft: string) {
     this.draft = draft;
     this.step = null;
+    this.wedge = null;
   }
 
   /** `run` under a `platformOp` grant of `caps`; `null` when the user cancelled the passphrase. */

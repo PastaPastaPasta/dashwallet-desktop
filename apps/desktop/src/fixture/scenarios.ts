@@ -467,7 +467,7 @@ const SCENARIOS = {
   "dashpay-registering-unlock": (t) => {
     const w = base(t);
     w.dashpay = registering();
-    w.dashpay.registrations[0] = { ...w.dashpay.registrations[0], phase: "draft", waiting: "unlock", txid: null, holdsKey: false, fundsCommitted: false };
+    w.dashpay.registrations[0] = { ...w.dashpay.registrations[0], phase: "draft", waiting: "unlock", txid: null, holdsKey: false, running: false, fundsCommitted: false };
     w.dashpay.runs = [];
     w.lock = { ...w.lock, state: "unlockedMixingOnly" };
     return w;
@@ -482,6 +482,7 @@ const SCENARIOS = {
       waiting: null,
       txid: null,
       holdsKey: false,
+      running: false,
       fundsCommitted: false,
       failure: { phase: "keysPrepared", code: "registration.funding_insufficient", retryable: true, needed: "3002260", available: "1000000" },
     };
@@ -512,6 +513,7 @@ const SCENARIOS = {
       phase: "failed",
       waiting: null,
       holdsKey: false,
+      running: false,
       failure: { phase: "fundingSent", code: "registration.islock_timeout", retryable: false, needed: null, available: null },
     };
     return w;

@@ -45,6 +45,8 @@ const SYNC_TIMEOUT_MS = Number(env("DW_E2E_SYNC_TIMEOUT_MS", "1800000"));
 const FUNDS_TIMEOUT_MS = Number(env("DW_E2E_FUNDS_TIMEOUT_MS", "1800000"));
 /** The asset lock, the identity, the name: Platform state transitions and their proofs. */
 const REGISTRATION_TIMEOUT_MS = Number(env("DW_E2E_REGISTRATION_TIMEOUT_MS", "1200000"));
+/** How long the screen may still read paused after Continue (a read or two behind the resume). */
+const PAUSED_AFTER_CONTINUE_MS = 60_000;
 const LEDGER = join(FIXTURE, "DP1-09.json");
 const MNEMONIC = join(FIXTURE, "E.mnemonic");
 const ROOT = join(STATE, "app");
@@ -282,10 +284,14 @@ async function registerAndClose(wd: WebDriver, a: App, walletId: string, passphr
     return r?.txid ? r : undefined;
   });
   if (row.phase !== "fundingSent" && row.phase !== "proofWaiting") throw new Error(`the row reached ${row.phase} before the app could be closed`);
+  // A run shows progress, whether or not its lease holds a key of its own (review r2 H1, D26).
+  const kind = await a.attr(tid("registration-screen"), "data-kind");
   // Close first, look later: every step here is time the identity has to confirm.
   await wd.end();
   save({ state: "closed", draft: row.draft, lockTxid: row.txid!, closedAt: { phase: row.phase, waiting: row.waiting } });
-  step(`closed the app at ${row.phase} (waiting ${row.waiting}), lock ${row.txid}`);
+  step(`closed the app at ${row.phase} (waiting ${row.waiting}, running ${row.running}, screen ${kind}), lock ${row.txid}`);
+  // After the save: the row is resumable either way, so a rerun goes on from closed.
+  if (kind !== "progress" || !row.running) throw new Error(`the running registration showed ${kind} (running ${row.running}, waiting ${row.waiting})`);
 }
 
 /** The relaunch: locked, Home's card paused, Continue under the passphrase, Hello @name. */
@@ -296,8 +302,8 @@ async function resume(wd: WebDriver, a: App, walletId: string, passphrase: strin
   if (after.length !== 1 || after[0]!.draft !== draft || after[0]!.txid !== lockTxid)
     throw new Error(`after the relaunch the engine lists ${after.map((r) => `${r.draft} ${r.phase} ${r.txid}`).join("; ") || "no rows"}`);
   const parked = after[0]!;
-  step(`relaunched: the row is ${parked.phase}, waiting ${parked.waiting}, holdsKey ${parked.holdsKey}`);
-  // Nothing resumes alone (D12): Home says paused until Continue (D21: an idle row with no key).
+  step(`relaunched: the row is ${parked.phase}, waiting ${parked.waiting}, running ${parked.running}`);
+  // Nothing resumes alone (D12): Home says paused until Continue (D21, D26: nothing runs the row).
   let state: string | null = null;
   await poll(TIMEOUT_MS, "Home's card to say paused", async () => {
     state = await a.attr(tid("dashpay-card"), "data-state");
@@ -313,8 +319,12 @@ async function resume(wd: WebDriver, a: App, walletId: string, passphrase: strin
   await grantPassphrase(wd, a, passphrase);
   await wd.waitGone(tid("grant-sheet"), "the passphrase sheet");
   step("Continue: passphrase given");
+  // Continue's run shows progress: a paused screen that outlasts a few polls is the D26 bug.
+  let pausedSince: number | null = null;
   const end = await poll(REGISTRATION_TIMEOUT_MS, "the registration to end", async () => {
     const kind = await a.attr(tid("registration-screen"), "data-kind");
+    pausedSince = kind === "paused" ? (pausedSince ?? Date.now()) : null;
+    if (pausedSince !== null && Date.now() - pausedSince > PAUSED_AFTER_CONTINUE_MS) throw new Error("the screen stayed paused after Continue");
     return kind && kind !== "progress" && kind !== "paused" ? kind : undefined;
   });
   await wd.screenshot("6-end");

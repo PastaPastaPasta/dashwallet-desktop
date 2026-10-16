@@ -56,6 +56,7 @@ export const REG_COPY = {
     message: (label: string) => `Your username @${label} is being created on the Dash network. It may take some time.`,
     close: "You can close this page or the app: the registration goes on, and Home shows its progress.",
     home: "Let me know when it's done",
+    readFailed: "Could not read the registration's progress. It goes on; Home shows it.",
     authorize: (label: string) => `Paused. Confirm to finish creating @${label}.`,
     unlock: (label: string) => `Unlock the wallet to finish creating @${label}.`,
     continue: COPY.continue,
@@ -277,7 +278,10 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
       if (!row.fundsCommitted) actions.push(act("another", REG_COPY.failed.another));
       return base("retry", progressTitle, [COPY.paused, why, ...recovery], actions);
     }
-    if (row.fundsCommitted) return base("stopped", REG_COPY.stopped.title, [why, REG_COPY.recovery], [act("repair", REG_COPY.progress.repair)]);
+    // D27: the engine may take a new start past it (its lock settled), so a new name is offered;
+    // a refusal shows this row again (`registration.in_progress`).
+    if (row.fundsCommitted)
+      return base("stopped", REG_COPY.stopped.title, [why, REG_COPY.recovery], [act("repair", REG_COPY.progress.repair), act("another", REG_COPY.failed.another)]);
     return base("failed", REG_COPY.failed.title, [why], [act("another", REG_COPY.failed.another)], { step: null });
   }
 
@@ -290,15 +294,16 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
   });
 }
 
-/** D23: the page's row while a draft this session started is not read yet. */
-export function pendingModel(): ScreenModel {
+/** D23: the page's row while a draft this session started is not read yet, or when the read
+ * failed (review r2 L2). */
+export function pendingModel(readFailed = false): ScreenModel {
   return {
     kind: "progress",
     label: "",
     title: REG_COPY.progress.title,
-    lines: [],
+    lines: readFailed ? [REG_COPY.progress.readFailed] : [],
     step: null,
-    busy: true,
+    busy: !readFailed,
     actions: [act("home", REG_COPY.progress.home)],
   };
 }

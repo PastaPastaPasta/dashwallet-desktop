@@ -58,6 +58,20 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
   useEffect(() => {
     if (shown !== undefined) wiz.adopt(shown);
   }, [wiz, shown]);
+  // A draft of this session's missing from a read (D23) is read once more; still missing (it was
+  // discarded elsewhere), the page is the Join page again (review r2 L2).
+  const missing = wiz.draft !== null && !wiz.named && rows.isSuccess && !row ? wiz.draft : null;
+  const { refetch } = rows;
+  useEffect(() => {
+    if (missing === null) return;
+    let live = true;
+    void refetch().then((r) => {
+      if (live && r.isSuccess && wiz.draft === missing && !r.data.some((x) => x.draft === missing)) wiz.close();
+    });
+    return () => {
+      live = false;
+    };
+  }, [wiz, missing, refetch]);
 
   const onAction = (kind: CardActionKind) => {
     if (kind === "chooseName" && inputs.main) return wiz.begin({ kind: "credits", identity: inputs.main.identity });
@@ -97,7 +111,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
   if (wiz.draft !== null && !row)
     return (
       <Page route="joinDashPay">
-        <RegistrationScreen wiz={wiz} model={pendingModel()} onAction={onScreenAction} inputs={inputs} />
+        <RegistrationScreen wiz={wiz} model={pendingModel(rows.isError)} onAction={onScreenAction} inputs={inputs} />
       </Page>
     );
   if (row) {

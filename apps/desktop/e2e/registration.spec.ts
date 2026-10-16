@@ -263,6 +263,11 @@ test("R5 Finish transfers on the page; R8 a stopped funded registration says the
   await expect(card(page)).toHaveAttribute("data-state", "join");
   await toJoin(page);
   await expect(screen(page)).toHaveAttribute("data-kind", "stopped");
+  // D27: a new name is offered; leaving step 1 shows the stopped row again.
+  await page.getByTestId("registration-another").click();
+  await expect(page.getByTestId("registration-name")).toBeVisible();
+  await page.getByTestId("registration-cancel").click();
+  await expect(screen(page)).toHaveAttribute("data-kind", "stopped");
   await page.getByTestId("registration-repair").click();
   await expect(page.getByTestId("tools-repair")).toBeVisible();
 });
