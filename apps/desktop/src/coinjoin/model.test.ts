@@ -15,6 +15,7 @@ import {
   levelOf,
   lockLine,
   settingsFailureText,
+  START_WINDOW_MS,
   statusLine,
   type ViewInputs,
 } from "./model";
@@ -39,7 +40,7 @@ function status(patch: Partial<CoinJoinStatus> = {}): CoinJoinStatus {
   };
 }
 
-const view = (s: CoinJoinStatus | undefined, extra: Partial<ViewInputs> = {}) => coinjoinView({ status: s, readFailed: false, amount, masked: null, ...extra });
+const view = (s: CoinJoinStatus | undefined, extra: Partial<ViewInputs> = {}) => coinjoinView({ status: s, readFailed: false, amount, masked: null, now: 1_000_000, ...extra });
 
 const LIMITS: CoinJoinLimits = {
   denominations: [],
@@ -73,28 +74,55 @@ describe("coinjoinView", () => {
     expect(view(status({ state: "stopping" }))).toMatchObject({ state: "stopping", action: { kind: "stop", disabled: true }, busy: true, onHome: true, line: null });
   });
 
+  // D16: a start this window saw, read stopped with these marks at `since`; the view is read at `now`.
+  const T = 1_000_000;
+  const marks = { balances: status().balances, total: 300_000_000 };
+  const seen = { marks, since: T };
+  const at = (ms: number) => ({ start: seen, total: 300_000_000, now: T + ms });
+
   it("S4 starting: mixing whose first step has not run", () => {
-    const atStart = { balances: status().balances, total: 300_000_000 };
-    expect(view(status({ state: "mixing" }), { atStart, total: 300_000_000 })).toMatchObject({
+    expect(view(status({ state: "mixing" }), at(0))).toMatchObject({
       state: "starting",
       title: CoinJoinText.starting,
       action: { kind: "stop", disabled: false },
       busy: true,
       onHome: true,
     });
+    // The first read of the mixer running, before the window's start is recorded.
+    expect(view(status({ state: "mixing" }), { ...at(0), start: { marks } }).state).toBe("starting");
   });
 
   it("S4 ends with the first step: idle after a funding step is Mixing (D16, review Sol r1 #1)", () => {
     const b = status().balances;
-    const atStart = { balances: b, total: 300_000_000 };
     // The step made denominations and reported nothing; the engine then waits a block, still idle.
     const funded = status({ state: "mixing", balances: { ...b, anonymizable: b.anonymizable - 1_000, denominated: b.denominated + 40_000_000 } });
-    expect(view(funded, { atStart, total: 299_999_000 })).toMatchObject({ state: "mixing", title: CoinJoinText.mixing, line: null, busy: false, action: { kind: "stop" } });
+    expect(view(funded, { ...at(6_000), total: 299_999_000 })).toMatchObject({ state: "mixing", title: CoinJoinText.mixing, line: null, busy: false, action: { kind: "stop" } });
     // A collateral step from change below the smallest denomination moves none of the four
     // balances: its fee moves the wallet's total.
-    expect(view(status({ state: "mixing" }), { atStart, total: 299_999_000 }).state).toBe("mixing");
+    expect(view(status({ state: "mixing" }), { ...at(6_000), total: 299_999_000 })).toMatchObject({ state: "mixing", line: null });
     // A window that never read the mixer stopped cannot tell: the mixer runs.
     expect(view(status({ state: "mixing" }))).toMatchObject({ state: "mixing", line: null });
+  });
+
+  it("S4 is bounded: nothing moving past the window is Mixing, waiting for the next step (D16, review Sol r2 #1)", () => {
+    // Stop and Start in the block of the last funding step: the engine waits for a block, idle,
+    // and nothing moves.
+    expect(view(status({ state: "mixing" }), at(START_WINDOW_MS - 1)).state).toBe("starting");
+    expect(view(status({ state: "mixing" }), at(START_WINDOW_MS))).toMatchObject({
+      state: "mixing",
+      title: CoinJoinText.mixing,
+      line: CoinJoinText.nextStep,
+      busy: false,
+      action: { kind: "stop" },
+    });
+    expect(CoinJoinText.nextStep).toBe("Waiting for the next mixing step");
+  });
+
+  it("S4 with the balance read late: no marks, only the window (D16, review Sol r2 P3)", () => {
+    // Started before the wallet's balance was read: the balance arriving is not mixer activity.
+    const late = { start: { since: T }, total: 300_000_000 };
+    expect(view(status({ state: "mixing" }), { ...late, now: T + 5_000 }).state).toBe("starting");
+    expect(view(status({ state: "mixing" }), { ...late, now: T + START_WINDOW_MS })).toMatchObject({ state: "mixing", line: CoinJoinText.nextStep });
   });
 
   it("S5 paused: a waiting code shows Paused with Core's line (D4)", () => {

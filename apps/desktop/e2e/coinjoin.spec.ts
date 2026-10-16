@@ -48,6 +48,11 @@ const mixerMoves = (page: Page, patch: Record<string, unknown>) =>
     { walletId: FIXTURE_WALLET_ID, patch },
   );
 
+/** A funding step: denominations made, the status left idle (D16). */
+const FUNDING_STEP = { progress: { overallPercent: 4, denominatedPercent: 40, partiallyMixedPercent: 0, mixedPercent: 0, averageRounds: 0 } };
+/** Past D16's START_WINDOW_MS (20 s). */
+const PAST_START_WINDOW_MS = 21_000;
+
 for (const theme of THEMES) {
   for (const [state, { scenario, extra, start, title, home }] of Object.entries(STATES)) {
     test(`U-06 ${state} ${theme}: page and Home card, 0 serious axe issues`, async ({ page }) => {
@@ -95,7 +100,7 @@ test("acceptance: mixing starts and stops from the page", async ({ page }) => {
   await expect(page.getByTestId("coinjoin-action")).toHaveText("Stop Mixing");
   // The first step makes denominations and leaves the status idle (then waits a block): it has
   // begun, so not Starting… any more (D16, review Sol r1 #1).
-  await mixerMoves(page, { progress: { overallPercent: 4, denominatedPercent: 40, partiallyMixedPercent: 0, mixedPercent: 0, averageRounds: 0 } });
+  await mixerMoves(page, FUNDING_STEP);
   await expect(status(page)).toHaveAttribute("data-state", "mixing");
   await expect(page.getByTestId("coinjoin-status-title")).toHaveText("Mixing");
   await expect(page.getByTestId("coinjoin-status-line")).toHaveCount(0);
@@ -145,6 +150,53 @@ test("D3: a target lowered below the mixed balance shows the target as mixed (re
   await expect(page.getByTestId("coinjoin-card-mixed")).toHaveText(/^2(\.0+)? tDASH of 2(\.0+)? tDASH$/);
   await navigate(page, "coinJoin");
   await expect(page.getByTestId("coinjoin-status-mixed")).toHaveText(/^2(\.0+)? tDASH of 2(\.0+)? tDASH$/);
+  expect(errors).toEqual([]);
+});
+
+test("D16: Stop and Start in a funding step's block: Starting… for a while, then Mixing, waiting (review Sol r2 #1)", async ({ page }) => {
+  await page.clock.install();
+  const errors = await openPage(page, "funded");
+  await page.getByTestId("coinjoin-action").click();
+  await expect(status(page)).toHaveAttribute("data-state", "starting");
+  await mixerMoves(page, FUNDING_STEP);
+  await expect(status(page)).toHaveAttribute("data-state", "mixing");
+  await page.getByTestId("coinjoin-action").click();
+  await page.getByTestId("coinjoin-stop-confirm").click();
+  await expect(status(page)).toHaveAttribute("data-state", "off");
+  // Started again before a block: the engine waits for one, idle, and nothing moves.
+  await page.getByTestId("coinjoin-action").click();
+  await expect(status(page)).toHaveAttribute("data-state", "starting");
+  await page.clock.runFor(PAST_START_WINDOW_MS);
+  await expect(status(page)).toHaveAttribute("data-state", "mixing");
+  await expect(page.getByTestId("coinjoin-status-title")).toHaveText("Mixing");
+  await expect(page.getByTestId("coinjoin-status-line")).toHaveText("Waiting for the next mixing step");
+  await navigate(page, "home");
+  await expect(card(page)).toHaveAttribute("data-state", "mixing");
+  await expect(page.getByTestId("coinjoin-card-line")).toHaveText("Waiting for the next mixing step");
+  // The next step moves something: the line goes.
+  await mixerMoves(page, { status: { kind: "waitingInQueue" } });
+  await expect(page.getByTestId("coinjoin-card-line")).toHaveText("Submitted to masternode, waiting in queue .");
+  expect(errors).toEqual([]);
+});
+
+test("D16: a balance read only after Start is not the mixer's step (review Sol r2 P3)", async ({ page }) => {
+  await page.clock.install();
+  const errors = await openPage(page, "funded", "light", "&fail=balance:none");
+  await expect(status(page)).toHaveAttribute("data-state", "off");
+  await page.getByTestId("coinjoin-action").click();
+  await expect(status(page)).toHaveAttribute("data-state", "starting");
+  // The balance arrives late.
+  await page.evaluate((walletId) => {
+    const f = window.__dwFixture!;
+    f.fail("balance", null);
+    f.emit({ kind: "balances", network: f.world.launch.network.dirName, walletId, balances: null });
+  }, FIXTURE_WALLET_ID);
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "balance").length)).toBeGreaterThan(1);
+  await expect(status(page)).toHaveAttribute("data-state", "starting");
+  // Only the window ends it.
+  await page.clock.runFor(PAST_START_WINDOW_MS);
+  await expect(status(page)).toHaveAttribute("data-state", "mixing");
+  await expect(page.getByTestId("coinjoin-status-line")).toHaveText("Waiting for the next mixing step");
   expect(errors).toEqual([]);
 });
 

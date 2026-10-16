@@ -10,7 +10,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { keys, useBackend, useBalance } from "../api/queries";
 import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
-import { actionFailureText, coinjoinView, sameMarks, type CoinJoinView, type MixerMarks } from "./model";
+import { actionFailureText, coinjoinView, sameMarks, START_WINDOW_MS, type CoinJoinView, type MixerMarks, type SeenStart } from "./model";
 
 /** dw-coinjoin's fixed values: they never change while the app runs. */
 export function useCoinJoinLimits() {
@@ -57,16 +57,27 @@ export function useCoinJoinView(walletId: string, network: NetworkInfo): { view:
   const amount = useCoinJoinAmount(network);
   const masked = useMaskedAmount(network);
   const total = useBalance(walletId).data?.total;
-  const atStart = useSyncExternalStore(subscribe, () => resting.get(walletId));
-  const view = coinjoinView({ status: status.data, readFailed: status.isError, readError: status.error, amount, masked, total, atStart });
-  // Mixing again ends the dismissal of the last stop (D1), whichever surface sees it run; a stopped
-  // mixer's marks are what a start starts from (D16).
+  const start = useSyncExternalStore(subscribe, () => starts.get(walletId));
+  const [, tick] = useState(0);
+  const view = coinjoinView({ status: status.data, readFailed: status.isError, readError: status.error, amount, masked, total, start, now: Date.now() });
+  // Mixing again ends the dismissal of the last stop (D1), whichever surface sees it run. A stopped
+  // mixer's marks are what a start starts from, once the balance has been read too (D16).
   const state = status.data?.state;
   const balances = status.data?.balances;
   useEffect(() => {
-    if (state === "idle" && balances) setResting(walletId, { balances, total });
-    else if (state !== undefined) setDismissed(walletId, false);
+    if (state === "idle" && balances) setStopped(walletId, total === undefined ? undefined : { balances, total });
+    else if (state !== undefined) {
+      setDismissed(walletId, false);
+      setStarted(walletId);
+    }
   }, [walletId, state, balances, total]);
+  // Starting… ends on its own when its window does (D16).
+  const until = view.state === "starting" && start?.since !== undefined ? start.since + START_WINDOW_MS : null;
+  useEffect(() => {
+    if (until === null) return;
+    const t = window.setTimeout(() => tick((n) => n + 1), Math.max(0, until - Date.now()) + 50);
+    return () => window.clearTimeout(t);
+  }, [until]);
   return { view, status: status.data, retry: () => void status.refetch() };
 }
 
@@ -99,8 +110,8 @@ export function useMixingAction(walletId: string, network: NetworkInfo) {
 // D1: the wallets whose stopped card the user dismissed. It stays hidden until any CoinJoin surface
 // sees mixing run again (`useCoinJoinView`), or the window reloads.
 let dismissed: ReadonlySet<string> = new Set();
-// D16: each wallet's marks when a CoinJoin surface last read its mixer stopped.
-let resting: ReadonlyMap<string, MixerMarks> = new Map();
+// D16: each wallet's start as the CoinJoin surfaces saw it, from the last read of its mixer stopped.
+let starts: ReadonlyMap<string, SeenStart> = new Map();
 const listeners = new Set<() => void>();
 const notify = () => {
   for (const l of listeners) l();
@@ -115,10 +126,19 @@ function setDismissed(walletId: string, on: boolean) {
   notify();
 }
 
-function setResting(walletId: string, marks: MixerMarks) {
-  const was = resting.get(walletId);
-  if (was && sameMarks(was, marks)) return;
-  resting = new Map(resting).set(walletId, marks);
+/** The mixer was read stopped; `marks` once the wallet's balance has been read as well. */
+function setStopped(walletId: string, marks: MixerMarks | undefined) {
+  const was = starts.get(walletId);
+  if (was && was.since === undefined && (was.marks === marks || (was.marks && marks && sameMarks(was.marks, marks)))) return;
+  starts = new Map(starts).set(walletId, { marks });
+  notify();
+}
+
+/** The mixer was read running: the first such read after a stopped one starts the window. */
+function setStarted(walletId: string) {
+  const was = starts.get(walletId);
+  if (!was || was.since !== undefined) return;
+  starts = new Map(starts).set(walletId, { ...was, since: Date.now() });
   notify();
 }
 

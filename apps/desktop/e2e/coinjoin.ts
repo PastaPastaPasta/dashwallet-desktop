@@ -23,6 +23,8 @@ export const STATES: Record<string, { scenario: string; extra?: string; start?: 
 /** Start Mixing from the page, then back to Home: Starting… is only a start this window saw, from
  * the balances it read stopped (D16). The fixture's mixer then waits for a test to move it. */
 export async function pressStart(page: Page) {
+  // The page's clock stands still (its timers run): Starting… outlasts D16's 20 s window.
+  await page.clock.setFixedTime(new Date("2026-10-16T12:00:00Z"));
   const go = (route: "coinJoin" | "home") => page.evaluate((route) => window.__dwFixture!.shellCommand({ kind: "navigate", route }), route);
   await go("coinJoin");
   await page.locator("[data-testid=coinjoin-status][data-state=off]").waitFor();

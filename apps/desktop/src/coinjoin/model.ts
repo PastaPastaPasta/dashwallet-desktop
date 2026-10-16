@@ -25,6 +25,7 @@ export const CoinJoinText = {
   dismiss: "Dismiss",
   notStarted: "Not Started",
   starting: "Starting…",
+  nextStep: "Waiting for the next mixing step",
   mixing: "Mixing",
   paused: "Paused",
   stopping: "Stopping…",
@@ -232,18 +233,32 @@ export interface ViewInputs {
   masked: string | null;
   /** The wallet's total balance; undefined until read. */
   total?: number;
-  /** The wallet's marks when this window last read its mixer stopped (D16); absent if it never did. */
-  atStart?: MixerMarks;
+  /** A start this window saw (D16); absent if it never read the mixer stopped. */
+  start?: SeenStart;
+  /** `Date.now()` for `start`. */
+  now: number;
+}
+
+/** How long a start this window saw can read as Starting… (D16): the engine's first step runs 5–15
+ * s after Start (dw-coinjoin `AUTO_TIMEOUT_MIN/MAX`), and takes a few seconds. */
+export const START_WINDOW_MS = 20_000;
+
+/** A start this window saw (D16): the marks it last read with the mixer stopped, taken only once
+ * the status and the wallet's balance had both been read, and when it first read the mixer running
+ * after that (absent until then). */
+export interface SeenStart {
+  marks?: MixerMarks;
+  since?: number;
 }
 
 /** What a mixer's step moves (D16): its balances, and the wallet's total, which a funding
  * transaction's fee moves even when it spends and makes only coins the four balances leave out. */
 export interface MixerMarks {
   balances: CoinJoinBalances;
-  total: number | undefined;
+  total: number;
 }
 
-export const sameMarks = (a: MixerMarks, b: MixerMarks) =>
+export const sameMarks = (a: MixerMarks, b: { balances: CoinJoinBalances; total: number | undefined }) =>
   a.total === b.total &&
   a.balances.anonymizable === b.balances.anonymizable &&
   a.balances.denominated === b.balances.denominated &&
@@ -260,7 +275,7 @@ const ACTION_LABEL: Record<ViewActionKind, string> = {
 const action = (kind: ViewActionKind, disabled = false): ViewAction => ({ kind, disabled, label: ACTION_LABEL[kind] });
 
 /** S1–S14: the first row that matches wins. */
-export function coinjoinView({ status, readFailed, readError, amount, masked, total, atStart }: ViewInputs): CoinJoinView {
+export function coinjoinView({ status, readFailed, readError, amount, masked, total, start, now }: ViewInputs): CoinJoinView {
   const base = { line: null, percent: null, mixed: null, onHome: false, dismissable: false, busy: false };
   if (readFailed) return { ...base, state: "readFailed", title: CoinJoinText.readFailed, line: failureText(readError), action: action("retry") };
   if (!status) return { ...base, state: "loading", title: "", action: null };
@@ -285,12 +300,14 @@ export function coinjoinView({ status, readFailed, readError, amount, masked, to
     // A fully mixed mixer waits for new coins: "Not enough funds to mix." below the target, idle
     // above it (dw-engine `auto_denominate` does not rebalance). Neither is a pause or a start.
     if (full) return running("finished", CoinJoinText.fullyMixed, status.status.kind !== "idle");
-    // The engine reports `idle` before its first step and again after a funding step (or while it
-    // waits a block after one): Starting… only while nothing has moved since it was stopped (D16).
-    if (status.status.kind === "idle")
-      return atStart && sameMarks(atStart, { balances: status.balances, total })
-        ? running("starting", CoinJoinText.starting, false)
-        : running("mixing", CoinJoinText.mixing, false);
+    // The engine reports `idle` before its first step, after a funding step, and while it waits
+    // a block after one (also across Stop and Start): Starting… only for a start this window saw,
+    // for a bounded time, while nothing has moved since it read the mixer stopped (D16).
+    if (status.status.kind === "idle") {
+      const moved = start?.marks !== undefined && !sameMarks(start.marks, { balances: status.balances, total });
+      if (start && !moved && now - (start.since ?? now) < START_WINDOW_MS) return running("starting", CoinJoinText.starting, false);
+      return { ...running("mixing", CoinJoinText.mixing, false), line: start && !moved ? CoinJoinText.nextStep : null };
+    }
     if (WAITING.has(status.status.kind)) return running("paused", CoinJoinText.paused, true);
     return running("mixing", CoinJoinText.mixing, true);
   }
