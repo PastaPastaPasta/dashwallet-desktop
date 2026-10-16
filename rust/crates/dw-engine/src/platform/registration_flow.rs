@@ -82,14 +82,6 @@ pub(crate) const CREDITS_PER_DUFF: u64 = 1_000;
 pub(crate) const IDENTITY_CREATE_CREDITS: u64 = 300_000_000;
 /// The profile document's bound (`flows.rs` `UpdateProfile`).
 pub(crate) const PROFILE_CREDITS: u64 = 300_000_000;
-/// The asset-lock fee rate at the pin (platform-wallet
-/// `asset_lock/manager.rs` `DEFAULT_FEE_PER_KB`), duffs per 1000 bytes.
-const FEE_PER_KB: u64 = 1_000;
-/// A P2PKH input, signed, at most.
-const INPUT_BYTES: u64 = 149;
-/// Version, counts, lock time, the change and credit outputs and the
-/// asset-lock payload, generously.
-const FIXED_BYTES: u64 = 300;
 /// The library's own InstantSend wait in `create_funded_asset_lock_proof`
 /// (`build.rs:1265-1300`): the in-memory key window (§2.6).
 pub(crate) const IS_WINDOW: Duration = Duration::from_secs(300);
@@ -113,10 +105,11 @@ const NETWORK_RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// Mode B's worst-case funding fee (E0-04 §2a.3): spending every
 /// spendable coin of the funding sources, a true upper bound on what the
-/// library's coin selection can pay.
+/// library's coin selection can pay. The funding permit charges the same
+/// bound (`fee_bound_worst` in `lease/mode_b.rs`), so a quote's grant
+/// covers it exactly (DP1-09 D29).
 pub(crate) fn fee_bound_worst(inputs: usize) -> u64 {
-    let bytes = FIXED_BYTES.saturating_add(INPUT_BYTES.saturating_mul(inputs as u64));
-    bytes.saturating_mul(FEE_PER_KB).div_ceil(1000)
+    crate::fees::asset_lock_fee_bound(inputs)
 }
 
 /// The funding step id (E0-04 §7.6), which `dispatch_status` and

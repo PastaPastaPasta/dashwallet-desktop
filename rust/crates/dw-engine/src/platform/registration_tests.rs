@@ -1163,6 +1163,36 @@ fn a_kill_at_any_transition_resumes_to_one_registration() {
     }
 }
 
+/// The wizard asks for exactly the quote's grant (DP1-09): a run under it
+/// funds and finishes, never `grant_exceeded`.
+#[test]
+fn a_grant_of_the_quote_runs_to_done() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let quote = f
+        .engine
+        .block_on(registration::quote(&*lib, &request(PLAIN)))
+        .unwrap();
+    let grant = f.grant(quote.grant.max_duffs, quote.grant.max_credits, Credential::None);
+    let draft = f
+        .engine
+        .block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            request(PLAIN),
+            grant,
+        ))
+        .unwrap();
+    let draft: i64 = draft.parse().unwrap();
+    f.settle(draft);
+    let status = f.status(&lib, draft);
+    assert_eq!(
+        (status.phase, status.failure.map(|x| x.code)),
+        (RegistrationPhase::Done, None)
+    );
+}
+
 #[test]
 fn start_runs_to_done_and_reports_the_flow() {
     let f = fixture(false);
