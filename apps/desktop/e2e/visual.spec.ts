@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { STATES as COINJOIN } from "./coinjoin";
 import { CARDS, CHIP_TEXT, CHIPS } from "./dashpay";
 import { fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
 import { showSettingsView, type SettingsView } from "./settings";
@@ -380,5 +381,40 @@ for (const theme of THEMES) {
     await page.locator(".tx-row").filter({ hasText: "Coffee refund" }).click();
     await page.getByTestId("tx-detail-view-contact").waitFor();
     await shoot(page, "tx-detail-contact", theme);
+  });
+}
+
+// U-06: the CoinJoin Home card in each state it shows, the page (off, mixing, paused, locked) and
+// Settings ▸ CoinJoin.
+const COINJOIN_PAGES = ["off", "mixing", "paused", "locked"] as const;
+
+for (const theme of THEMES) {
+  for (const [state, { scenario, home }] of Object.entries(COINJOIN)) {
+    if (!home) continue;
+    test(`visual coinjoin-card-${state} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(scenario, theme));
+      const card = page.getByTestId("coinjoin-card");
+      await card.waitFor();
+      await fontsReady(page);
+      await expect(card).toHaveScreenshot(`${theme}-coinjoin-card-${state}.png`, SHOT);
+    });
+  }
+  for (const state of COINJOIN_PAGES) {
+    test(`visual coinjoin-page-${state} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(COINJOIN[state].scenario, theme));
+      await page.getByTestId("toolbar").waitFor();
+      await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
+      await page.locator(`[data-testid=coinjoin-status][data-state=${state}]`).waitFor();
+      await page.getByTestId("coinjoin-levels").locator("fieldset").waitFor();
+      await shoot(page, `coinjoin-page-${state}`, theme);
+    });
+  }
+  test(`visual settings-coinjoin ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("funded", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+    await page.getByTestId("settings-tabs-coinjoin").click();
+    await page.getByTestId("settings-coinjoin-mixing").waitFor();
+    await shoot(page, "settings-coinjoin", theme);
   });
 }
