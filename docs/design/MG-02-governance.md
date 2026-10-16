@@ -235,7 +235,7 @@ list gives K's `n_K` masternodes with their weights:
 |---|---|---|
 | The outpoint was resolved (MG-03) | that masternode's weight | yes |
 | `c ≤ n_K` and K's masternodes all have weight `w` | `w` | yes, if the votes are genuine (D1) |
-| `c ≤ n_K`, mixed types | between the lowest and the highest weight | no |
+| `c ≤ n_K`, mixed types, or a revoked masternode among them (type not in the list, D34) | between the lowest and the highest weight | no |
 | `c > n_K` | between 0 and the highest weight | no |
 | The outpoint has claims under more than one key (D19) | each claim between 0 and its key's highest weight; the outpoint is one voter | no |
 
@@ -244,7 +244,8 @@ whose outpoints the wallet resolved. Of a contested outpoint's claims, the estim
 (`c ≤ n_K`) if exactly one is, and none otherwise.
 
 The tally reports, per outcome, a `WeightRange { min, max }` and an **estimate**: exact votes at their weight;
-ranged votes at the most common weight of K's masternodes (ties to the lower), counting at most `n_K` of them
+ranged votes at the most common weight of K's masternodes (ties to the lower, revoked ones counted as regular),
+counting at most `n_K` of them
 (newest first). Every number is "from the votes peers sent" (MG-00 D45): completeness of the vote set is never
 claimed. Unique voters (regular, evonode) follow the same attribution.
 
@@ -274,9 +275,17 @@ every call returns `Result<_, GovernanceError>`, sync calls read memory only, as
 runtime. The contract lists the calls, records and codes.
 
 - **Sync lifecycle.** `set_sync_enabled(true)` persists `governance.sync_enabled` in app.sqlite and starts the sync
-  task; the session starts it at open when the setting is on. The task waits for the tip and the list, feeds the
-  store the list on every list change (the pump's masternode-count refresh calls it), and runs §2.3. Disabling stops
-  the task and keeps the store.
+  task; the session starts it at open when the setting is on. The task waits for the tip and the list, polls both
+  every 2 s (the list is read again only when the tip moved, and fed to the store only when it changed), and runs
+  §2.3. A synced run that loses every peer reconnects after 5 s; a failed one backs off. Disabling stops the task
+  and keeps the store. The session holds this state (`governance/sync.rs`), so the only shared engine edits are the
+  session's field, its open and close, and the event variant.
+- **Voting masternodes.** `voting_masternodes` derives voting keys 0–19 through the keychain
+  (`masternode_keys`), hashes them to key ids and matches the tip list's `voting_key_id`; each match carries the
+  key's latest vote seen on the proposal.
+- **Relaying.** `relay_vote` refuses a vote whose proposal the store does not hold confirmed (`unknown_object`) or
+  that is a trigger (`not_a_proposal`), then runs the store's own checks; the vote is queued for announcement after
+  Synced (D24).
 - **Reads.** `clock`, `info`, `proposals`, `proposal`, `current_votes` and `sync_state` read the store, the list
   snapshot and the sync tracker's tip. Proposal rows and tallies are answered only once a run reached Synced
   (`governance.not_synced{phase}` before; MG-00 D21: no partial tally). The clock and the budget need only the tip.
@@ -286,7 +295,14 @@ runtime. The contract lists the calls, records and codes.
 - **Superblock budget.** `superblock_budget(network, height)` is MG-01's `GetPaymentsLimit` port, a free function;
   the vectors of `governance_budget.json` and `governance_live.json` check it.
 - **Event.** `EngineEvent::Governance { network }`, coalesced to at most one a second with the trailing edge kept,
-  after any change of the store, the sync state or the list (D7).
+  after any change of the store, the sync state or the list (D7). It is engine-side: dw-ffi drops it, dw-app maps it
+  to `AppEvent::Governance` and the renderer invalidates nothing yet.
+- **Info counts.** `passing` counts Passing and Funded, `failing` Failing and Voting, `unfunded` Unfunded; `total`
+  is the current proposals. A proposal is a close call when the range of its net yes crosses the threshold, or the
+  fundable set computed on every proposal's minimum or maximum differs from the one on the estimates for it.
+- **`dwcli governance`** turns sync on, waits for Synced (and optional proposal and voter counts), prints the
+  records as JSON lines, and can relay a vote and run console lines in the same session: the regtest suite and G7
+  use it.
 
 ## 6. Console commands
 
@@ -294,18 +310,19 @@ The console answers these with Core's result shapes (`rpc/governance.cpp` at the
 
 | Command | Answer |
 |---|---|
-| `getgovernanceinfo` | Core's object; `fundingthreshold`, `governancebudget`, `lastsuperblock`, `nextsuperblock`, `superblockcycle`, `superblockmaturitywindow`, `targetSpacing`, `proposalfee`, `relayRequiredConfs`, `requiredConfs` |
-| `getsuperblockbudget <height>` | the budget in DASH |
-| `gobject count [json\|all]` | counts of the synced, confirmed objects |
-| `gobject list [valid\|funding\|delete\|endorsed\|all] [proposals\|triggers\|all]` | Core's object per hash; vote counts are the estimates; `fBlockchainValidity` is the local validity (D3) |
-| `gobject get <hash>` | Core's object, with `FundingResult` etc. from the tally |
-| `gobject getcurrentvotes <hash> [txid vout]` | `hash: "outpoint:time:outcome:signal:weight"` (MG-01 D10) |
-| `voteraw <txid> <n> <hash> funding <outcome> <time> <sig>` | `relay_vote`; Core's "Voted successfully" or its error |
+| `getgovernanceinfo` | Core v24's eight keys in its order: `governanceminquorum`, `proposalfee`, `superblockcycle`, `superblockmaturitywindow`, `lastsuperblock`, `nextsuperblock`, `fundingthreshold` (`valid weight / 10`, no quorum floor, as Core prints it), `governancebudget` |
+| `getsuperblockbudget <height>` | the budget in DASH; answers with sync off, since Core reads only the chain for it |
+| `gobject count [json\|all]` | Core's `ToJson` keys or `ToString` text; proposals only, `triggers`, `other` and `erased` are 0 (D33) |
+| `gobject list [valid\|funding\|delete\|endorsed\|all] [proposals\|triggers\|all]` | Core's object per hash, in Core's map order; vote counts are the estimates; `fBlockchainValidity` is the local validity (D3) |
+| `gobject get <hash>` | Core's object, with `FundingResult` from the tally; `fCachedFunding` is `net yes >= passing threshold` (Core's rule) |
+| `gobject getcurrentvotes <hash> [txid vout]` | Core's vote hash → `"outpoint:time:outcome:signal:weight"` (MG-01 D10); the filter needs both txid and vout, as in Core |
+| `voteraw <txid> <n> <hash> funding <outcome> <time> <sig>` | `relay_vote`, with Core's argument checks and order; Core's "Voted successfully" or its error (D30, D31) |
 
-`gobject vote-many`, `vote-alias`, `vote-conf`, `prepare`, `submit`, `check`, `deserialize` stay "Not available in
-SPV mode." until MG-05/MG-06 (the vote and proposal flows). Without governance sync on, every governance command
-answers Core's error for a disabled governance manager. The signals `delete` and `endorsed` match nothing (the
-wallet tallies funding votes only), as an SPV node would honestly report.
+`gobject vote-many`, `vote-alias`, `prepare`, `list-prepared`, `submit`, `check`, `deserialize` and `diff` stay
+"Not available in SPV mode." until MG-05/MG-06 (the vote and proposal flows); `vote-conf` is not a v24 command and
+gets Core's "Must be a valid command". With governance sync off every governance command but `getsuperblockbudget`
+answers -1 (D29); before the first Synced, -10 (`RPC_CLIENT_IN_INITIAL_DOWNLOAD`) with the phase. The signals
+`delete` and `endorsed` match nothing (the wallet tallies funding votes only), as an SPV node would honestly report.
 
 ## 7. Tests and evidence
 
@@ -317,7 +334,7 @@ wallet tallies funding votes only), as an SPV node would honestly report.
 | Vote signatures | MG-01's regtest vector, plus a **testnet** vector of raw votes captured by one per-object `govsync` (MG-01 D12), signature recovered byte for byte. |
 | Facade contract | `dw-engine/tests/mg_governance_contract.rs`: the generated surface, call rows, codes, stub calls (as m4's). |
 | Console | `dw-console/tests/console_governance.rs` against a fixture store. |
-| T1 | `regtest/functional/dwd_governance.py`: 4 masternodes, proposals by node 0, votes by the masternodes (including an evonode-weight check when the framework offers one), `voteraw` relayed by the wallet, the wallet's tallies equal `gobject list`'s, the superblock's trigger makes the proposal Funded, `getsuperblockbudget` and `getgovernanceinfo` equal. |
+| T1 | `regtest/functional/dwd_governance.py`: 4 masternodes, three regular and one evonode (added with `dynamically_add_masternode(evo=True)`; the framework's static masternodes are all regular), proposals by node 0, votes by the masternodes, `voteraw` signed with the voting key (`signmessage`: off testnet the vote digest is the signed-message hash of `GetSignatureString`) and relayed by the wallet, the wallet's tallies equal Core's `FundingResult` (the evonode's vote at weight 4, every weight exact), the superblock's trigger makes the proposal Funded at 1500, `getsuperblockbudget` and `getgovernanceinfo` equal. Real time and Core's default regtest budget parameters: the wallet checks times against its clock and cannot see `-budgetparams`; with real time, sporks 2 and 19 are switched off (no quorums lock anything, and enforced ChainLocks hold unlocked transactions out of blocks for 10 minutes). |
 | G7 | §8. |
 
 ## 8. G7 on mainnet
@@ -369,3 +386,9 @@ ranged votes, the bytes, the times and the peers.
 | D26 | A vote with a BLS signature is malformed on a proposal and unverifiable on an unknown parent; the wallet never verifies or signs with operator keys. | Core signs trigger votes with the operator key; funding votes on proposals are always ECDSA. Without the parent the wallet cannot tell which applies, so it neither penalizes nor keeps the vote. The brief's guard: no operator-key path. |
 | D27 | Vote invs count towards a peer's announced votes only while that peer is answering a vote `govsync`. | Relayed votes arrive at any time; counted outside a vote sync they would complete the phase before the synced votes arrived. |
 | D28 | A non-funding ECDSA vote on an unknown parent is ignored without penalty; Core gives it 20 points. | The wallet cannot tell an unknown trigger from an unknown proposal, and a trigger's vote of another signal is valid in Core; looser than Core, never stricter, so honest peers are never penalized. |
+| D29 | With governance sync off the console answers -1 "Governance is disabled: …"; Core has no such error. | Core always has a governance manager (`-disablegovernance` leaves it empty); the wallet's sync is a setting the user turns on, and an empty answer would read as "no proposals". |
+| D30 | `voteraw` takes only the `funding` signal; `valid`, `delete` and `endorsed` answer "Not available in SPV mode.". | Core relays all four; the wallet tallies funding votes only (D20, D21), and the facade never handles operator-key votes (D26). |
+| D31 | `voteraw`'s "Failure to find masternode in list : <outpoint>" is folded into "Failure to verify vote."; a vote rejected for the per-key limit or on a trigger gets a wallet-worded "Error voting : …". | The SML carries no collateral outpoints, so the wallet learns the masternode only from the recovered voting key (D1); the per-key limit (D11) and the refusal of votes on triggers (D20) have no Core counterpart. Every other check and text follows Core's `voteraw` order: object, base64, validity, `ProcessVoteAndRelay`. |
+| D32 | A vote stored with no peer connected answers `no_peers` (console -9), not success. | The vote is kept and announced to the next peer, but nothing has left the wallet yet; the caller should know. |
+| D33 | `gobject count` reports `triggers`, `other` and `erased` as 0, and `votes` as the store's vote count. | The facade lists proposals only; triggers are kept for the paid check (D17) but not exposed, and erased objects are not counted (D23). The keys stay so that scripts parsing Core's shape keep working. |
+| D34 | A masternode whose list entry has a null operator key (revoked) has an unknown type: its key's votes range between 1 and 4, estimated at 1. | Core's `ResetOperatorFields` (ProUpRevTx) sets the state to the legacy version, whose SML entry serializes no `nType`, so every SPV client decodes a revoked evonode as regular while Core counts its vote at 4 (`dmn->nType`). Found by the testnet vector: 7 of 11 votes on 01934d6d… come from revoked evonodes (dashd's `getcurrentvotes` weight 4). Revoked entries are banned, so the threshold is unaffected. Mainnet has 354 revoked entries and G7 matches Core with them at weight 1, hence the estimate. The wallet's own revoked evonode shows as regular in `voting_masternodes` until MG-03 resolves its outpoint. |
