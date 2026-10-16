@@ -70,7 +70,7 @@ fn objects_dashd_accepts_validate() {
             c["time"].as_i64().unwrap(),
             hex::decode(c["data_hex"].as_str().unwrap()).unwrap(),
         );
-        let r = check_object(&obj, dashcore::Network::Regtest, 1_900_000_000);
+        let r = check_object(&obj, dashcore::Network::Regtest, 1_900_000_000, true);
         assert!(
             matches!(r, Ok(ValidObject::Proposal(_))),
             "{r:?} {}",
@@ -92,7 +92,7 @@ fn objects_dashd_accepts_validate() {
             hex::decode(p["data_hex"].as_str().unwrap()).unwrap(),
         );
         assert_eq!(display_hex(&obj.hash()), p["object_hash"].as_str().unwrap());
-        let r = check_object(&obj, dashcore::Network::Testnet, 1_900_000_000);
+        let r = check_object(&obj, dashcore::Network::Testnet, 1_900_000_000, true);
         assert!(matches!(r, Ok(ValidObject::Proposal(_))), "{r:?}");
     }
 }

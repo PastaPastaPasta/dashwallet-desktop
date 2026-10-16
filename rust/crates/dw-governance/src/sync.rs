@@ -1398,6 +1398,7 @@ async fn run_inner(
     }
     run.votes_open = true;
 
+    shared.store().set_synced();
     {
         let mut p = shared.progress();
         p.phase = Phase::Synced;

@@ -248,11 +248,14 @@ fn json_object(data: &[u8]) -> Option<(Members, bool)> {
 }
 
 /// Checks `object` as Core would before storing it from a peer; `now` is
-/// the local clock in Unix seconds.
+/// the local clock in Unix seconds. `rate_checked` applies a trigger's
+/// creation-time window, which Core skips until its governance is synced
+/// (`MasternodeRateCheck`).
 pub fn check_object(
     object: &GovernanceObject,
     network: Network,
     now: i64,
+    rate_checked: bool,
 ) -> Result<ValidObject, ObjectRejection> {
     let typed = |kind: i32| {
         let (o, top_level) = json_object(&object.data).ok_or(ObjectRejection::Unparsable)?;
@@ -278,7 +281,10 @@ pub fn check_object(
             let trigger = check_trigger(&o, network)?;
             let p = governance_params(network);
             let cycle_secs = i64::from(p.superblock_cycle) * i64::from(p.target_spacing_secs);
-            if object.time < now - 2 * cycle_secs || object.time > now + MAX_TIME_FUTURE_DEVIATION {
+            if rate_checked
+                && (object.time < now - 2 * cycle_secs
+                    || object.time > now + MAX_TIME_FUTURE_DEVIATION)
+            {
                 return Err(ObjectRejection::TriggerTimeOutOfRange);
             }
             Ok(ValidObject::Trigger(trigger))
@@ -424,7 +430,7 @@ mod tests {
     const GOOD: &str = r#""name":"my-prop_1","start_epoch":100,"end_epoch":200,"payment_amount":12.5,"payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","url":"http://x.y","#;
 
     fn check(data: &str) -> Result<ValidObject, ObjectRejection> {
-        check_object(&object(data, 1_000), Network::Testnet, 1_000)
+        check_object(&object(data, 1_000), Network::Testnet, 1_000, true)
     }
 
     #[test]
@@ -487,13 +493,13 @@ mod tests {
         let mut wire = object(&proposal(GOOD), 1_000);
         wire.object_type = OBJECT_TYPE_TRIGGER;
         assert_eq!(
-            check_object(&wire, Network::Testnet, 1_000),
+            check_object(&wire, Network::Testnet, 1_000, true),
             Err(ObjectRejection::InvalidTrigger("type"))
         );
         let mut as_proposal = object(&trigger("4224", ADDR, "1", HASH), 1_000);
         as_proposal.object_type = OBJECT_TYPE_PROPOSAL;
         assert_eq!(
-            check_object(&as_proposal, Network::Testnet, 1_000),
+            check_object(&as_proposal, Network::Testnet, 1_000, true),
             Err(ObjectRejection::InvalidProposal("type"))
         );
         for data in [r#"{"type":"1"}"#, r#"{"type":3}"#, "{}"] {
@@ -506,7 +512,7 @@ mod tests {
         let mut unknown = object(&proposal(GOOD), 1_000);
         unknown.object_type = 3;
         assert_eq!(
-            check_object(&unknown, Network::Testnet, 1_000),
+            check_object(&unknown, Network::Testnet, 1_000, true),
             Err(ObjectRejection::UnknownType)
         );
         let long = proposal(&format!("{GOOD}\"pad\":\"{}\",", "x".repeat(400)));
@@ -588,8 +594,10 @@ mod tests {
             (1_000_000 + 3600, true),
             (1_000_000 + 3601, false),
         ] {
-            let r = check_object(&object(&d, time), Network::Testnet, 1_000_000);
+            let r = check_object(&object(&d, time), Network::Testnet, 1_000_000, true);
             assert_eq!(r.is_ok(), ok, "{time}");
+            // Unsynced, Core skips the window.
+            assert!(check_object(&object(&d, time), Network::Testnet, 1_000_000, false).is_ok());
             // Core's rate check ignores such an object without a penalty.
             if let Err(e) = r {
                 assert_eq!(e, ObjectRejection::TriggerTimeOutOfRange);

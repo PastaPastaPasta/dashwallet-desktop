@@ -265,6 +265,9 @@ pub struct GovernanceStore {
     valid_weight: u32,
     list_size: u32,
     resolved: HashMap<OutPoint, ResolvedMasternode>,
+    /// Whether a sync has completed, after which triggers outside their
+    /// creation-time window are ignored (Core's `MasternodeRateCheck`).
+    synced: bool,
 }
 
 impl GovernanceStore {
@@ -293,7 +296,14 @@ impl GovernanceStore {
             valid_weight: 0,
             list_size: 0,
             resolved: HashMap::new(),
+            synced: false,
         }
+    }
+
+    /// Notes that a sync completed: from now on triggers are checked
+    /// against their creation-time window, as Core does once synced.
+    pub fn set_synced(&mut self) {
+        self.synced = true;
     }
 
     /// Sets how many distinct peers must announce an object (at least 1).
@@ -444,7 +454,7 @@ impl GovernanceStore {
             }
             return Ok(false);
         }
-        let kind = match check_object(&object, self.network, now)? {
+        let kind = match check_object(&object, self.network, now, self.synced)? {
             ValidObject::Proposal(p) => ObjectKind::Proposal(p),
             ValidObject::Trigger(t) => ObjectKind::Trigger(t),
         };
@@ -1481,6 +1491,23 @@ mod tests {
         assert_eq!(
             s.add_vote(vote(h, 1, 4, VoteOutcome::No, 11), None, NOW),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn the_trigger_time_window_applies_once_synced() {
+        // Regtest cycles are 20 blocks of 150 s; two cycles is 6000 s.
+        let mut old = trigger(1520);
+        old.time = NOW - 6001;
+        let mut s = GovernanceStore::new(Network::Regtest);
+        s.set_confirmations(1);
+        assert_eq!(s.add_object(old.clone(), peer(1), NOW), Ok(true));
+        let mut s = GovernanceStore::new(Network::Regtest);
+        s.set_confirmations(1);
+        s.set_synced();
+        assert_eq!(
+            s.add_object(old, peer(1), NOW),
+            Err(ObjectRejection::TriggerTimeOutOfRange)
         );
     }
 

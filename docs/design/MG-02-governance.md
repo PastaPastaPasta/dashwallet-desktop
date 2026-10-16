@@ -180,7 +180,9 @@ what §1 says cannot be checked):
   `event_block_height`; `payment_addresses`, `payment_amounts` and `proposal_hashes` strings split on `|` into equal,
   non-empty lists of valid destinations (surrounding spaces allowed, as Core's base58 decoder skips them, unlike a
   proposal's address), `ParsePaymentAmount` amounts and 64-hex hashes. Its creation time is not
-  more than an hour ahead and not older than two superblock cycles (`MasternodeRateCheck`, `governance.cpp:747`).
+  more than an hour ahead and not older than two superblock cycles (`MasternodeRateCheck`, `governance.cpp:747`);
+  like Core, which skips that check until its governance is synced, the store applies it only once a sync has
+  reached Synced in the session, so the first sync accepts the same triggers a fresh Core does.
   It expires as `CSuperblock::IsExpired` says for a valid trigger: 576 blocks (or one cycle if shorter) after its
   event height, or one cycle once it has been paid (its event height is at or below the tip); off mainnet, a trigger
   more than two cycles ahead is expired too. The event height is any 32-bit integer, negative included (Core's
