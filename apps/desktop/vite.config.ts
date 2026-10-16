@@ -61,7 +61,8 @@ export default defineConfig(({ command, mode }) => {
       outDir: mode === "fixture" ? "dist-fixture" : "dist",
     },
     test: {
-      include: ["src/**/*.test.ts"],
+      // e2e-tauri: the run helpers that need no driver (scratch.ts, BL-162).
+      include: ["src/**/*.test.ts", "e2e-tauri/**/*.test.ts"],
       environment: "node",
     },
   };
