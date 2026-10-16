@@ -44,6 +44,7 @@ export const keys = {
   receiveAddress: (walletId: string) => ["receive", walletId, "address"] as const,
   receiveRequests: (walletId: string) => ["receive", walletId, "requests"] as const,
   receiveUsername: (walletId: string) => ["receive", walletId, "username"] as const,
+  usernameInRequests: (walletId: string) => ["receive", walletId, "usernameInRequests"] as const,
   /** The coin control list of a wallet: history and balance changes move coins. */
   coinsAll: (walletId: string) => ["coins", walletId] as const,
   utxos: (walletId: string) => ["coins", walletId, "utxos"] as const,
@@ -137,6 +138,12 @@ export function useReceiveAddress(walletId: string) {
 export function useReceiveUsername(walletId: string) {
   const b = useBackend();
   return useQuery({ queryKey: keys.receiveUsername(walletId), queryFn: () => b.receiveUsername(walletId) });
+}
+
+/** "Include my username in payment requests" for the wallet (DP3-03b); on by default. */
+export function useUsernameInRequests(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.usernameInRequests(walletId), queryFn: () => b.usernameInRequests(walletId) });
 }
 
 export function useReceiveRequests(walletId: string) {

@@ -8,7 +8,7 @@ import { errorMessage, hasCode } from "../api/backend";
 import type { AddressInfo } from "../api/generated/AddressInfo";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ReceiveRequest } from "../api/generated/ReceiveRequest";
-import { keys, useBackend, useQrMatrix, useReceiveAddress, useReceiveRequests, useReceiveUsername } from "../api/queries";
+import { keys, useBackend, useQrMatrix, useReceiveAddress, useReceiveRequests, useReceiveUsername, useUsernameInRequests } from "../api/queries";
 import { useDebounced } from "../app/useDebounced";
 import { AmountText, DashButton } from "../components/basics";
 import { CopyValue, DetailRow } from "../components/detail";
@@ -47,13 +47,18 @@ function AddressCard({ walletId }: { walletId: string }) {
   // The QR carries the wallet's DashPay username as `user=` (DP3-03). The engine reads none
   // while names are updating (a busy identity store during sync), so the card keeps the last
   // name it showed for this wallet rather than dropping it (DP3-02 D25); a failed read is none.
+  // With "Include my username in payment requests" off, or not known to be on, it holds none
+  // (DP3-03b): the engine's none is then the answer, not a busy store.
   const username = useReceiveUsername(walletId);
+  const included = useUsernameInRequests(walletId);
   const held = useRef<{ walletId: string; name: string } | null>(null);
   if (username.data) held.current = { walletId, name: username.data };
-  const last = held.current?.walletId === walletId ? held.current.name : null;
-  const user = username.isError ? last : username.data === undefined ? undefined : (username.data ?? last);
+  const last = included.data === true && held.current?.walletId === walletId ? held.current.name : null;
+  const user =
+    included.data === false ? null : username.isError ? last : username.data === undefined ? undefined : (username.data ?? last);
   const uri = useQuery({
-    queryKey: ["paymentUri", shown?.address ?? "", user ?? null] as const,
+    // Its own prefix: Tools ▸ Address book's `paymentUri` key takes a label in the same place.
+    queryKey: ["receiveUri", shown?.address ?? "", user ?? null] as const,
     queryFn: () => b.buildPaymentUri(shown!.address, null, null, null, user ?? null),
     enabled: !!shown && user !== undefined,
     staleTime: Infinity,
