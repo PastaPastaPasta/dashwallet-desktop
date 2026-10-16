@@ -1396,7 +1396,30 @@ impl Fixture {
         platform
     }
 
-    /// Bob's request to us replaced, as a sync pass leaves a rotation.
+    /// `prepare` of `d` under a fresh grant for it.
+    fn prepare(&self, d: &Arc<TxDraft>) -> Result<Arc<PreparedTx>, EngineError> {
+        (self.engine).block_on(d.prepare(self.spend(AMOUNT + FEE_ROOM)))
+    }
+
+    /// [`Self::prepare`] on the runtime, to race it.
+    fn spawn_prepare(&self, d: &Arc<TxDraft>) -> tokio::task::JoinHandle<Result<(), EngineError>> {
+        let (d, grant) = (Arc::clone(d), self.spend(AMOUNT + FEE_ROOM));
+        self.session
+            .rt
+            .spawn(async move { d.prepare(grant).await.map(|_| ()) })
+    }
+
+    /// `prepare` of `d`, held at `point` while Bob's request is replaced.
+    fn prepare_replacing_bob_at(&self, d: &Arc<TxDraft>, point: Point) -> Result<(), EngineError> {
+        let pause = Arc::new(crate::coins::TestPause::default());
+        (self.session.platform.money_gate).pause_at(point, Arc::clone(&pause));
+        let prepare = self.spawn_prepare(d);
+        wait_until(|| pause.reached.load(Ordering::SeqCst));
+        self.replace_bobs_request(2_500_000);
+        pause.release.notify_one();
+        self.engine.block_on(prepare).unwrap()
+    }
+
     /// Runs `f` on our identity as the library holds it.
     fn with_me(&self, f: impl FnOnce(&mut ManagedIdentity) + Send + 'static) {
         let manager = self.session.manager().unwrap();
@@ -1411,6 +1434,7 @@ impl Fixture {
         });
     }
 
+    /// Bob's request to us replaced, as a sync pass leaves a rotation.
     fn replace_bobs_request(&self, created_at: u64) {
         self.with_me(move |me| {
             let mut c = EstablishedContact::new(
@@ -1494,9 +1518,7 @@ fn an_unverified_payee_moves_nothing() {
     f.credit(2, COIN);
     let again = f.draft(BOB);
     Seam::install(&again, Net::Accept);
-    f.engine
-        .block_on(again.prepare(f.spend(AMOUNT + FEE_ROOM)))
-        .unwrap();
+    f.prepare(&again).unwrap();
     assert_eq!(platform.fetches(), fetched, "recorded: no fetch");
 }
 
@@ -1510,7 +1532,7 @@ fn a_mismatched_payee_moves_nothing_in_either_mode() {
         let d = f.draft(BOB);
         let seam = Seam::install(&d, Net::Accept);
         assert_eq!(
-            platform_error(f.engine.block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))),
+            platform_error(f.prepare(&d)),
             "platform.trust_mismatch",
             "{mode:?}"
         );
@@ -1526,9 +1548,7 @@ fn the_degraded_mode_and_the_toggle_pay_an_unverified_payee() {
     let f = fixture(false);
     let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
     let d = f.draft(BOB);
-    let p = (f.engine)
-        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
-        .unwrap();
+    let p = f.prepare(&d).unwrap();
     assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
     assert_eq!(platform.fetches(), 2, "one probe of each request");
     assert!(f.bob_unverified());
@@ -1536,9 +1556,7 @@ fn the_degraded_mode_and_the_toggle_pay_an_unverified_payee() {
     f.engine.block_on(d.abandon(p)).unwrap();
     f.session.trust.set_mode(TrustMode::Enforcing);
     f.session.trust.set_trusted_only(true);
-    let p = (f.engine)
-        .block_on(f.draft(BOB).prepare(f.spend(AMOUNT + FEE_ROOM)))
-        .unwrap();
+    let p = f.prepare(&f.draft(BOB)).unwrap();
     assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
     assert_eq!(platform.fetches(), 2, "the toggle fetches nothing");
 }
@@ -1551,9 +1569,7 @@ fn the_gate_and_the_contacts_row_agree() {
     assert!(!f.bob_unverified(), "no latch");
     f.gated(TrustMode::Enforcing, Proof::Verified);
     assert!(f.bob_unverified());
-    f.engine
-        .block_on(f.draft(BOB).prepare(f.spend(AMOUNT + FEE_ROOM)))
-        .unwrap();
+    f.prepare(&f.draft(BOB)).unwrap();
     assert!(!f.bob_unverified(), "the gate recorded both requests");
     f.replace_bobs_request(2_500_000);
     assert!(f.bob_unverified(), "a replacement is unverified again");
@@ -1569,7 +1585,7 @@ fn a_shown_username_must_verify_too() {
     show_username(&f.session, id(BOB), "Bob");
     let d = f.draft(BOB);
     assert_eq!(
-        platform_error(f.engine.block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))),
+        platform_error(f.prepare(&d)),
         "platform.context_unavailable",
         "the name is not on Platform"
     );
@@ -1578,9 +1594,7 @@ fn a_shown_username_must_verify_too() {
         "the requests verified, the name did not"
     );
     platform.answer_domain("Bob", id(BOB));
-    f.engine
-        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
-        .unwrap();
+    f.prepare(&d).unwrap();
     assert!(!f.bob_unverified());
 }
 
@@ -1591,10 +1605,7 @@ fn a_payment_lock_during_the_gate_wait_refuses() {
     let f = fixture(false);
     let platform = f.gated(TrustMode::Enforcing, Proof::Unverified);
     let d = f.draft(BOB);
-    let prepare = f.session.rt.spawn({
-        let (d, grant) = (Arc::clone(&d), f.spend(AMOUNT + FEE_ROOM));
-        async move { d.prepare(grant).await.map(|_| ()) }
-    });
+    let prepare = f.spawn_prepare(&d);
     wait_until(|| platform.fetches() > 0);
     let txid = Txid::from_byte_array([9; 32]);
     (f.engine).block_on(
@@ -1618,10 +1629,7 @@ fn a_lock_during_the_gate_wait_moves_nothing() {
     let platform = f.gated(TrustMode::Enforcing, Proof::Unverified);
     let d = f.draft(BOB);
     let seam = Seam::install(&d, Net::Accept);
-    let prepare = f.session.rt.spawn({
-        let (d, grant) = (Arc::clone(&d), f.spend(AMOUNT + FEE_ROOM));
-        async move { d.prepare(grant).await.map(|_| ()) }
-    });
+    let prepare = f.spawn_prepare(&d);
     wait_until(|| platform.fetches() > 0);
     let started = std::time::Instant::now();
     f.session.lock_vault_sync().unwrap();
@@ -1641,28 +1649,14 @@ fn a_payee_replaced_before_the_reservation_is_refused() {
     f.gated(TrustMode::Enforcing, Proof::Verified);
     // An address kept, checked, from a payment abandoned before.
     let d = f.draft(BOB);
-    let p = (f.engine)
-        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
-        .unwrap();
+    let p = f.prepare(&d).unwrap();
     f.engine.block_on(d.abandon(p)).unwrap();
     assert_eq!(
         f.reserved_checked(BOB),
         Some((f.contact_address(BOB, 0), true))
     );
-    let pause = Arc::new(crate::coins::TestPause::default());
-    f.session
-        .platform
-        .money_gate
-        .pause_at(Point::Gated, Arc::clone(&pause));
-    let prepare = f.session.rt.spawn({
-        let (d, grant) = (Arc::clone(&d), f.spend(AMOUNT + FEE_ROOM));
-        async move { d.prepare(grant).await.map(|_| ()) }
-    });
-    wait_until(|| pause.reached.load(Ordering::SeqCst));
-    f.replace_bobs_request(2_500_000);
-    pause.release.notify_one();
     assert_eq!(
-        platform_error(f.engine.block_on(prepare).unwrap()),
+        platform_error(f.prepare_replacing_bob_at(&d, Point::Gated)),
         "platform.context_unavailable"
     );
     assert!(f.reserved(BOB).is_none(), "the kept address is dropped");
@@ -1674,18 +1668,9 @@ fn a_payee_replaced_before_the_reservation_is_refused() {
 fn a_payee_replaced_after_the_reservation_is_refused() {
     let f = fixture(false);
     f.gated(TrustMode::Enforcing, Proof::Verified);
-    let pause = Arc::new(crate::coins::TestPause::default());
-    (f.session.platform.money_gate).pause_at(Point::Reserved, Arc::clone(&pause));
     let d = f.draft(BOB);
-    let prepare = f.session.rt.spawn({
-        let (d, grant) = (Arc::clone(&d), f.spend(AMOUNT + FEE_ROOM));
-        async move { d.prepare(grant).await.map(|_| ()) }
-    });
-    wait_until(|| pause.reached.load(Ordering::SeqCst));
-    f.replace_bobs_request(2_500_000);
-    pause.release.notify_one();
     assert_eq!(
-        platform_error(f.engine.block_on(prepare).unwrap()),
+        platform_error(f.prepare_replacing_bob_at(&d, Point::Reserved)),
         "platform.context_unavailable"
     );
     assert!(f.reserved(BOB).is_none(), "the address is not kept");
@@ -1698,9 +1683,7 @@ fn an_address_kept_without_rule_5_is_not_paid_under_it() {
     let f = fixture(false);
     let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
     let d = f.draft(BOB);
-    let p = (f.engine)
-        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
-        .unwrap();
+    let p = f.prepare(&d).unwrap();
     assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
     f.engine.block_on(d.abandon(p)).unwrap();
     assert_eq!(
@@ -1710,9 +1693,7 @@ fn an_address_kept_without_rule_5_is_not_paid_under_it() {
 
     f.session.trust.set_mode(TrustMode::Enforcing);
     platform.set_proof(Proof::Verified);
-    let p = (f.engine)
-        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
-        .unwrap();
+    let p = f.prepare(&d).unwrap();
     assert_eq!(paid(&p), f.contact_address(BOB, 1).to_string());
     assert_eq!(
         f.reserved_checked(BOB),
@@ -1731,7 +1712,7 @@ fn a_stale_paying_account_is_not_paid() {
         f.bobs_account_built_from(stale);
         let d = f.draft(BOB);
         assert_eq!(
-            platform_error(f.engine.block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))),
+            platform_error(f.prepare(&d)),
             "platform.context_unavailable",
             "{stale:?}"
         );
@@ -1742,9 +1723,7 @@ fn a_stale_paying_account_is_not_paid() {
         let c = me.established_contact_mut(&id(BOB)).unwrap();
         c.external_account_reference = Some(c.incoming_request.account_reference);
     });
-    let p = (f.engine)
-        .block_on(f.draft(BOB).prepare(f.spend(AMOUNT + FEE_ROOM)))
-        .unwrap();
+    let p = f.prepare(&f.draft(BOB)).unwrap();
     assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
 }
 
@@ -1761,7 +1740,7 @@ fn an_unverified_profile_holds_the_payment() {
     f.cache_profile(BOB, profile.clone());
     let d = f.draft(BOB);
     assert_eq!(
-        platform_error(f.engine.block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))),
+        platform_error(f.prepare(&d)),
         "platform.context_unavailable",
         "Platform has not got the profile"
     );
@@ -1770,9 +1749,7 @@ fn an_unverified_profile_holds_the_payment() {
         "the requests verified, the profile did not"
     );
     platform.answer_profile(id(BOB), &profile);
-    f.engine
-        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
-        .unwrap();
+    f.prepare(&d).unwrap();
     assert!(!f.bob_unverified());
 }
 
@@ -1785,7 +1762,7 @@ fn accept_and_pay_waits_for_the_new_request() {
     f.establish(CAROL, false);
     let d = f.draft(CAROL);
     assert_eq!(
-        platform_error(f.engine.block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))),
+        platform_error(f.prepare(&d)),
         "platform.context_unavailable",
         "Platform has not got Carol's requests"
     );
@@ -1794,9 +1771,7 @@ fn accept_and_pay_waits_for_the_new_request() {
         request(ME, CAROL, 1_000_000),
         request(CAROL, ME, 2_000_000),
     ]);
-    let p = (f.engine)
-        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
-        .unwrap();
+    let p = f.prepare(&d).unwrap();
     assert_eq!(paid(&p), f.contact_address(CAROL, 0).to_string());
 }
 

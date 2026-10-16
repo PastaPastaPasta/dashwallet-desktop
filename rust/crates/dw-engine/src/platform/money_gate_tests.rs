@@ -74,6 +74,24 @@ impl FakePlatform {
         guard(&self.answers).keys.insert(id, keys);
     }
 
+    /// Platform's DPNS domain spelled `spelling`, its `records.identity`
+    /// `owner`.
+    pub(crate) fn answer_domain(&self, spelling: &str, owner: Identifier) {
+        self.answer(&[Held::label(spelling, owner)]);
+    }
+
+    /// Platform holds `id`'s DashPay profile as `profile`.
+    pub(crate) fn answer_profile(
+        &self,
+        id: Identifier,
+        profile: &platform_wallet::wallet::identity::DashPayProfile,
+    ) {
+        self.answer(&[Held::Profile {
+            id,
+            shown: ShownProfile::of(profile),
+        }]);
+    }
+
     /// Platform holds exactly what `held` says.
     fn answer(&self, held: &[Held]) {
         let mut a = guard(&self.answers);
@@ -165,26 +183,6 @@ pub(crate) fn show_username(session: &NetworkSession, contact: Identifier, name:
     provenance.show_label(contact, Some(name));
 }
 
-impl FakePlatform {
-    /// Platform's DPNS domain spelled `spelling`, its `records.identity`
-    /// `owner`.
-    pub(crate) fn answer_domain(&self, spelling: &str, owner: Identifier) {
-        self.answer(&[Held::label(spelling, owner)]);
-    }
-
-    /// Platform holds `id`'s DashPay profile as `profile`.
-    pub(crate) fn answer_profile(
-        &self,
-        id: Identifier,
-        profile: &platform_wallet::wallet::identity::DashPayProfile,
-    ) {
-        self.answer(&[Held::Profile {
-            id,
-            shown: ShownProfile::of(profile),
-        }]);
-    }
-}
-
 /// The session tests' switches: the fallback latch set, the provider in
 /// `mode`, short waits, and `platform` answering the gate's re-fetches.
 pub(crate) fn gate_session(session: &NetworkSession, mode: TrustMode, platform: Arc<FakePlatform>) {
@@ -249,9 +247,10 @@ impl GateEnv for Arc<World> {
     }
 
     fn open(&self) -> Result<(), Refusal> {
-        match self.open.load(Ordering::SeqCst) {
-            true => Ok(()),
-            false => Err(Refusal::Failed(PlatformError::NetworkNotOpen)),
+        if self.open.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(Refusal::Failed(PlatformError::NetworkNotOpen))
         }
     }
 }
@@ -297,7 +296,7 @@ fn lock_reports() -> watch::Sender<LockView> {
 }
 
 /// Runs the gate on `world` with `platform` and the lock reports `lock`.
-async fn gate(
+async fn gate_locking(
     world: &Arc<World>,
     platform: &Arc<FakePlatform>,
     rule: Rule5,
@@ -309,6 +308,21 @@ async fn gate(
         lock: lock.subscribe(),
     };
     run(world, move || Ok(fetch), signals, waits()).await
+}
+
+/// [`gate_locking`] with the vault never locked.
+async fn gate(
+    world: &Arc<World>,
+    platform: &Arc<FakePlatform>,
+    rule: Rule5,
+) -> Result<(), Refusal> {
+    gate_locking(world, platform, rule, &lock_reports()).await
+}
+
+/// The re-check on `world` with `platform`.
+async fn recheck_on(world: &Arc<World>, platform: &Arc<FakePlatform>) -> Result<(), Refusal> {
+    let fetch = Arc::clone(platform) as Arc<dyn Refetcher>;
+    recheck(world, move || Ok(fetch), waits()).await
 }
 
 fn platform_holding(held: &[Held], proof: Proof) -> Arc<FakePlatform> {
@@ -324,7 +338,7 @@ async fn without_the_latch_everything_passes() {
     let world = World::new(payee(), false);
     let platform = platform_holding(&payee(), Proof::Unverified);
     for rule in [Rule5::Enforce, Rule5::Probe, Rule5::Off] {
-        assert_eq!(gate(&world, &platform, rule, &lock_reports()).await, Ok(()));
+        assert_eq!(gate(&world, &platform, rule).await, Ok(()));
     }
     assert_eq!(platform.fetches(), 0);
 }
@@ -338,10 +352,7 @@ async fn a_verified_payee_passes_without_a_fetch() {
     }
     let platform = platform_holding(&payee(), Proof::Unverified);
     let started = Instant::now();
-    assert_eq!(
-        gate(&world, &platform, Rule5::Enforce, &lock_reports()).await,
-        Ok(())
-    );
+    assert_eq!(gate(&world, &platform, Rule5::Enforce).await, Ok(()));
     assert_eq!((platform.fetches(), started.elapsed()), (0, Duration::ZERO));
 }
 
@@ -351,16 +362,10 @@ async fn a_verified_payee_passes_without_a_fetch() {
 async fn enforcing_refetches_records_and_passes() {
     let world = World::new(payee(), true);
     let platform = platform_holding(&payee(), Proof::Verified);
-    assert_eq!(
-        gate(&world, &platform, Rule5::Enforce, &lock_reports()).await,
-        Ok(())
-    );
+    assert_eq!(gate(&world, &platform, Rule5::Enforce).await, Ok(()));
     assert!(world.verified(), "recorded");
     assert_eq!(platform.fetches(), 3);
-    assert_eq!(
-        gate(&world, &platform, Rule5::Enforce, &lock_reports()).await,
-        Ok(())
-    );
+    assert_eq!(gate(&world, &platform, Rule5::Enforce).await, Ok(()));
     assert_eq!(platform.fetches(), 3, "nothing fetched again");
 }
 
@@ -377,10 +382,7 @@ async fn enforcing_waits_until_spv_verifies() {
         later.set_proof(Proof::Verified);
     });
     let started = Instant::now();
-    assert_eq!(
-        gate(&world, &platform, Rule5::Enforce, &lock_reports()).await,
-        Ok(())
-    );
+    assert_eq!(gate(&world, &platform, Rule5::Enforce).await, Ok(()));
     let waited = started.elapsed();
     assert!(
         waited >= Duration::from_secs(20) && waited < WAIT,
@@ -396,7 +398,7 @@ async fn enforcing_refuses_when_nothing_verifies_in_time() {
     let world = World::new(payee(), true);
     let platform = platform_holding(&payee(), Proof::Unverified);
     let started = Instant::now();
-    let refused = gate(&world, &platform, Rule5::Enforce, &lock_reports()).await;
+    let refused = gate(&world, &platform, Rule5::Enforce).await;
     assert_eq!(refused, Err(Refusal::Unverified));
     assert_eq!(
         refused.unwrap_err().platform().code(),
@@ -416,8 +418,7 @@ async fn enforcing_refuses_when_nothing_verifies_in_time() {
 async fn the_recheck_verifies_what_appeared_since_the_gate() {
     let world = World::new(payee(), true);
     let platform = platform_holding(&payee(), Proof::Verified);
-    let fetch = Arc::clone(&platform) as Arc<dyn Refetcher>;
-    assert_eq!(recheck(&world, move || Ok(fetch), waits()).await, Ok(()));
+    assert_eq!(recheck_on(&world, &platform).await, Ok(()));
     assert!(world.verified());
     assert_eq!(platform.fetches(), 3);
 }
@@ -432,20 +433,15 @@ async fn the_recheck_refuses_what_does_not_verify_in_its_round() {
     ] {
         let world = World::new(payee(), true);
         let platform = platform_holding(&payee(), proof);
-        let fetch = Arc::clone(&platform) as Arc<dyn Refetcher>;
         let started = Instant::now();
-        assert_eq!(
-            recheck(&world, move || Ok(fetch), waits()).await,
-            Err(refusal)
-        );
+        assert_eq!(recheck_on(&world, &platform).await, Err(refusal));
         assert!(started.elapsed() <= waits().probe, "{proof:?}");
     }
     let world = World::new(payee(), true);
     *guard(&world.held) = None;
     let platform = platform_holding(&payee(), Proof::Verified);
-    let fetch = Arc::clone(&platform) as Arc<dyn Refetcher>;
     assert_eq!(
-        recheck(&world, move || Ok(fetch), waits()).await,
+        recheck_on(&world, &platform).await,
         Err(Refusal::Unverified),
         "the subject gone"
     );
@@ -459,7 +455,7 @@ async fn a_mismatch_refuses_in_every_mode() {
         let world = World::new(payee(), true);
         let platform = platform_holding(&payee(), Proof::Mismatch);
         let started = Instant::now();
-        let refused = gate(&world, &platform, rule, &lock_reports()).await;
+        let refused = gate(&world, &platform, rule).await;
         assert_eq!(refused, Err(Refusal::Mismatch), "{rule:?}");
         assert_eq!(
             refused.unwrap_err().platform().code(),
@@ -477,18 +473,12 @@ async fn a_mismatch_refuses_in_every_mode() {
 async fn degraded_probes_once_and_proceeds() {
     let world = World::new(payee(), true);
     let platform = platform_holding(&payee(), Proof::Unverified);
-    assert_eq!(
-        gate(&world, &platform, Rule5::Probe, &lock_reports()).await,
-        Ok(())
-    );
+    assert_eq!(gate(&world, &platform, Rule5::Probe).await, Ok(()));
     assert_eq!(platform.fetches(), 3, "one round");
     assert_eq!(world.unverified().unwrap().len(), 3);
 
     platform.set_proof(Proof::Verified);
-    assert_eq!(
-        gate(&world, &platform, Rule5::Probe, &lock_reports()).await,
-        Ok(())
-    );
+    assert_eq!(gate(&world, &platform, Rule5::Probe).await, Ok(()));
     assert!(world.verified(), "the probe records");
 }
 
@@ -544,10 +534,7 @@ async fn the_degraded_probe_is_bounded() {
 async fn trusted_only_proceeds_without_a_fetch() {
     let world = World::new(payee(), true);
     let platform = platform_holding(&payee(), Proof::Verified);
-    assert_eq!(
-        gate(&world, &platform, Rule5::Off, &lock_reports()).await,
-        Ok(())
-    );
+    assert_eq!(gate(&world, &platform, Rule5::Off).await, Ok(()));
     assert_eq!(platform.fetches(), 0);
 }
 
@@ -562,7 +549,7 @@ async fn a_differing_refetch_records_nothing() {
         Held::ContactRequest(request(2, 1, 2_001)),
         Held::label("B0b", Identifier::from([2; 32])),
     ]);
-    let refused = gate(&world, &platform, Rule5::Enforce, &lock_reports()).await;
+    let refused = gate(&world, &platform, Rule5::Enforce).await;
     assert_eq!(refused, Err(Refusal::Unverified));
     let left = world.unverified().unwrap();
     assert_eq!(left.len(), 2, "only the matching request recorded");
@@ -586,10 +573,7 @@ async fn a_record_written_during_the_wait_releases_it() {
         }
     });
     let started = Instant::now();
-    assert_eq!(
-        gate(&world, &platform, Rule5::Enforce, &lock_reports()).await,
-        Ok(())
-    );
+    assert_eq!(gate(&world, &platform, Rule5::Enforce).await, Ok(()));
     let waited = started.elapsed();
     assert!(
         waited >= Duration::from_secs(7) && waited < Duration::from_secs(10),
@@ -612,17 +596,14 @@ async fn content_replaced_during_the_wait_is_verified_anew() {
     ];
     *guard(&world.held) = Some(replaced.clone());
     let platform = platform_holding(&payee(), Proof::Verified);
-    let refused = gate(&world, &platform, Rule5::Enforce, &lock_reports()).await;
+    let refused = gate(&world, &platform, Rule5::Enforce).await;
     assert_eq!(
         refused,
         Err(Refusal::Unverified),
         "the old content's answer"
     );
     platform.answer(&replaced);
-    assert_eq!(
-        gate(&world, &platform, Rule5::Enforce, &lock_reports()).await,
-        Ok(())
-    );
+    assert_eq!(gate(&world, &platform, Rule5::Enforce).await, Ok(()));
 }
 
 /// Race: the vault is locked during the wait. The wait ends at once and
@@ -641,7 +622,7 @@ async fn a_vault_lock_ends_the_wait() {
         });
     });
     let started = Instant::now();
-    let refused = gate(&world, &platform, Rule5::Enforce, &lock).await;
+    let refused = gate_locking(&world, &platform, Rule5::Enforce, &lock).await;
     assert_eq!(refused, Err(Refusal::Locked));
     assert!(started.elapsed() < Duration::from_secs(6));
 }
@@ -656,7 +637,7 @@ async fn a_closing_session_ends_the_wait() {
         tokio::time::sleep(Duration::from_secs(5)).await;
         closing.open.store(false, Ordering::SeqCst);
     });
-    let refused = gate(&world, &platform, Rule5::Enforce, &lock_reports()).await;
+    let refused = gate(&world, &platform, Rule5::Enforce).await;
     assert_eq!(refused, Err(Refusal::Failed(PlatformError::NetworkNotOpen)));
 }
 
@@ -668,11 +649,11 @@ async fn a_subject_gone_refuses_only_when_enforcing() {
     *guard(&world.held) = None;
     let platform = platform_holding(&payee(), Proof::Verified);
     assert_eq!(
-        gate(&world, &platform, Rule5::Enforce, &lock_reports()).await,
+        gate(&world, &platform, Rule5::Enforce).await,
         Err(Refusal::Unverified)
     );
     for rule in [Rule5::Probe, Rule5::Off] {
-        assert_eq!(gate(&world, &platform, rule, &lock_reports()).await, Ok(()));
+        assert_eq!(gate(&world, &platform, rule).await, Ok(()));
     }
     assert_eq!(platform.fetches(), 0);
 }
@@ -688,13 +669,10 @@ async fn an_identity_verifies_by_its_keys() {
     let world = World::new(held.clone(), true);
     let platform = FakePlatform::new(Proof::Verified);
     assert_eq!(
-        gate(&world, &platform, Rule5::Enforce, &lock_reports()).await,
+        gate(&world, &platform, Rule5::Enforce).await,
         Err(Refusal::Unverified),
         "Platform has no such identity"
     );
     platform.answer(&held);
-    assert_eq!(
-        gate(&world, &platform, Rule5::Enforce, &lock_reports()).await,
-        Ok(())
-    );
+    assert_eq!(gate(&world, &platform, Rule5::Enforce).await, Ok(()));
 }

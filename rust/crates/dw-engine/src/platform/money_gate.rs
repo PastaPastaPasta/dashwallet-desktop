@@ -245,9 +245,10 @@ pub(super) async fn recheck<E: GateEnv>(
     }
     round(env, &*fetch()?, &pending, Instant::now() + waits.probe).await?;
     env.open()?;
-    match env.pending().await?.ok_or(Refusal::Unverified)?.is_empty() {
-        true => Ok(()),
-        false => Err(Refusal::Unverified),
+    if env.pending().await?.ok_or(Refusal::Unverified)?.is_empty() {
+        Ok(())
+    } else {
+        Err(Refusal::Unverified)
     }
 }
 
@@ -262,8 +263,7 @@ async fn round<E: GateEnv>(
     let mut verified = Vec::new();
     for h in pending {
         env.open()?;
-        let checked = tokio::time::timeout_at(deadline, reverify::check(h, fetch)).await;
-        match checked {
+        match tokio::time::timeout_at(deadline, reverify::check(h, fetch)).await {
             Ok(Check::Verified) => verified.push(h.clone()),
             Ok(Check::Mismatch) => return Err(Refusal::Mismatch),
             Ok(Check::Unverified) => {}
@@ -334,7 +334,13 @@ struct SessionEnv<'a> {
 }
 
 impl SessionEnv<'_> {
-    fn held(&self, wm: &WalletManager<PlatformWalletInfo>) -> Option<Vec<Held>> {
+    /// The subject's entities `provenance` holds unverified; `None` if the
+    /// library no longer holds the subject, or it is not payable (D12).
+    fn unverified(
+        &self,
+        wm: &WalletManager<PlatformWalletInfo>,
+        provenance: &Provenance,
+    ) -> Option<Vec<Held>> {
         let (wallet, owner) = match self.subject {
             Subject::Payee(wallet, pair) => (wallet, pair.0),
             Subject::Identity(wallet, identity) => (wallet, identity),
@@ -342,7 +348,7 @@ impl SessionEnv<'_> {
         let info = wm.get_wallet_info(&wallet.0)?;
         let m = (info.identity_manager.wallet_managed_identities(&wallet.0))
             .find(|m| m.identity.id() == owner)?;
-        match self.subject {
+        let held = match self.subject {
             Subject::Payee(_, (_, contact)) if paying_account_stale(m, &contact) => None,
             Subject::Payee(_, (_, contact)) => {
                 let username = self.session.platform.contacts.names.label(&contact);
@@ -352,13 +358,12 @@ impl SessionEnv<'_> {
                 id: owner,
                 keys: m.identity.public_keys().clone(),
             }]),
-        }
-    }
-
-    fn unverified(provenance: &Provenance, held: Vec<Held>) -> Vec<Held> {
-        (held.into_iter())
-            .filter(|h| provenance.is_unverified(&h.entity()))
-            .collect()
+        };
+        Some(
+            (held?.into_iter())
+                .filter(|h| provenance.is_unverified(&h.entity()))
+                .collect(),
+        )
     }
 }
 
@@ -367,7 +372,7 @@ impl GateEnv for SessionEnv<'_> {
         let live = self.session.live()?;
         let wm = live.manager.wallet_manager_arc();
         let wm = wm.read().await;
-        Ok((self.held(&wm)).map(|held| Self::unverified(&live.provenance, held)))
+        Ok(self.unverified(&wm, &live.provenance))
     }
 
     async fn record(&self, verified: Vec<Held>) {
@@ -377,9 +382,9 @@ impl GateEnv for SessionEnv<'_> {
         let wm = live.manager.wallet_manager_arc();
         // Held across the writes: the library cannot change what is recorded.
         let wm = wm.read().await;
-        let current = (self.held(&wm)).map(|held| Self::unverified(&live.provenance, held));
+        let current = self.unverified(&wm, &live.provenance).unwrap_or_default();
         let verified: Vec<&Held> = verified.iter().collect();
-        let records = reverify::confirmed(&verified, &current.unwrap_or_default());
+        let records = reverify::confirmed(&verified, &current);
         let provenance = Arc::clone(&live.provenance);
         let written =
             tokio::task::spawn_blocking(move || reverify::record_all(&provenance, &records)).await;
