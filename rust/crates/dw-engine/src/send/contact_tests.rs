@@ -17,6 +17,7 @@ use dpp::prelude::Identifier;
 use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use key_wallet::Utxo;
 use key_wallet::account::AccountType;
+use key_wallet::account::account_collection::DashpayAccountKey;
 use key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use key_wallet::managed_account::ManagedCoreFundsAccount;
 use platform_wallet::{ContactRequest, EstablishedContact};
@@ -75,6 +76,17 @@ fn contact_xpub(n: u8) -> ExtendedPubKey {
     ExtendedPubKey::from_priv(&master)
 }
 
+/// The DIP-15 address at `index` of an external account built from `xpub`.
+fn address_at(xpub: ExtendedPubKey, index: u32) -> Address {
+    let child = xpub
+        .derive_pub(&[key_wallet::bip32::ChildNumber::Normal { index }])
+        .unwrap();
+    Address::p2pkh(
+        &dashcore::PublicKey::new(child.public_key),
+        dashcore::Network::Regtest,
+    )
+}
+
 /// The library's broadcast, faked: what each attempt returns.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Net {
@@ -83,6 +95,8 @@ enum Net {
     Unconfirmed,
     /// Unconfirmed once `gate` is notified.
     Hold,
+    /// Not sent once `gate` is notified.
+    HoldUnsent,
 }
 
 struct Seam {
@@ -122,12 +136,12 @@ impl TestBroadcaster for Seam {
         let mode = *self.mode.lock().unwrap();
         let gate = Arc::clone(&self.gate);
         Box::pin(async move {
-            if mode == Net::Hold {
+            if matches!(mode, Net::Hold | Net::HoldUnsent) {
                 gate.notified().await;
             }
             match mode {
                 Net::Accept => Ok(txid),
-                Net::NoPeers => Err(PlatformWalletError::TransactionBroadcast(
+                Net::NoPeers | Net::HoldUnsent => Err(PlatformWalletError::TransactionBroadcast(
                     "not connected".into(),
                 )),
                 Net::Unconfirmed | Net::Hold => Err(
@@ -246,32 +260,8 @@ impl Fixture {
     /// leaves an accept: the request pair, the immutable account carrying
     /// the contact's xpub and its managed pool. `broken`: its channel.
     fn establish(&self, n: u8, broken: bool) {
-        let manager = self.session.manager().unwrap();
-        let wallet = self.wallet;
-        self.engine.block_on(async move {
-            let wm = manager.wallet_manager_arc();
-            let mut wm = wm.write().await;
-            let (w, info) = wm.get_wallet_mut_and_info_mut(&wallet.0).unwrap();
-            let account_type = AccountType::DashpayExternalAccount {
-                index: 0,
-                user_identity_id: [ME; 32],
-                friend_identity_id: [n; 32],
-            };
-            let xpub = contact_xpub(n);
-            w.add_account(account_type, Some(xpub)).unwrap();
-            let managed = ManagedCoreFundsAccount::from_account(&key_wallet::Account {
-                parent_wallet_id: Some(wallet.0),
-                account_type,
-                network: dashcore::Network::Regtest,
-                account_xpub: xpub,
-                is_watch_only: true,
-            });
-            (info.core_wallet.accounts)
-                .insert_funds_bearing_account(managed)
-                .unwrap();
-            let me = (info.identity_manager)
-                .managed_identity_mut(&id(ME))
-                .unwrap();
+        self.build_paying_account(n, contact_xpub(n));
+        self.with_me(move |me| {
             let mut c = EstablishedContact::new(
                 id(n),
                 request(ME, n, 1_000_000),
@@ -283,16 +273,46 @@ impl Fixture {
         });
     }
 
+    /// Contact `n`'s paying account built from `xpub`, replacing any it
+    /// had: the immutable account carrying the xpub and its managed pool,
+    /// as an accept or a rotation's teardown and rebuild leave them.
+    fn build_paying_account(&self, n: u8, xpub: ExtendedPubKey) {
+        let manager = self.session.manager().unwrap();
+        let wallet = self.wallet;
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let (w, info) = wm.get_wallet_mut_and_info_mut(&wallet.0).unwrap();
+            let key = DashpayAccountKey {
+                index: 0,
+                user_identity_id: [ME; 32],
+                friend_identity_id: [n; 32],
+            };
+            w.accounts.dashpay_external_accounts.remove(&key);
+            (info.core_wallet.accounts.dashpay_external_accounts).remove(&key);
+            let account_type = AccountType::DashpayExternalAccount {
+                index: 0,
+                user_identity_id: [ME; 32],
+                friend_identity_id: [n; 32],
+            };
+            w.add_account(account_type, Some(xpub)).unwrap();
+            let managed = ManagedCoreFundsAccount::from_account(&key_wallet::Account {
+                parent_wallet_id: Some(wallet.0),
+                account_type,
+                network: dashcore::Network::Regtest,
+                account_xpub: xpub,
+                is_watch_only: true,
+            });
+            (info.core_wallet.accounts)
+                .insert_funds_bearing_account(managed)
+                .unwrap();
+        });
+    }
+
     /// Contact `n`'s DIP-15 address at `index` (the external account's
     /// derivation).
     fn contact_address(&self, n: u8, index: u32) -> Address {
-        let child = (contact_xpub(n))
-            .derive_pub(&[key_wallet::bip32::ChildNumber::Normal { index }])
-            .unwrap();
-        Address::p2pkh(
-            &dashcore::PublicKey::new(child.public_key),
-            dashcore::Network::Regtest,
-        )
+        address_at(contact_xpub(n), index)
     }
 
     fn credit(&self, seed: u8, value: u64) -> OutPoint {
@@ -1470,6 +1490,21 @@ impl Fixture {
         });
     }
 
+    /// Bob rotates, as a sync pass and the drain leave it: his request to
+    /// us replaced by one naming his account 1, his paying account rebuilt
+    /// from it (its xpub `xpub`) and stamped with it, and Platform holding
+    /// the new request.
+    fn rotate_bob(&self, platform: &FakePlatform, xpub: ExtendedPubKey) {
+        let rotated = ContactRequest::new(id(BOB), id(ME), 0, 0, 1, vec![2; 96], 1, 2_500_000);
+        platform.answer_requests(vec![request(ME, BOB, 1_000_000), rotated.clone()]);
+        self.build_paying_account(BOB, xpub);
+        self.with_me(move |me| {
+            let mut c = EstablishedContact::new(id(BOB), request(ME, BOB, 1_000_000), rotated);
+            c.external_account_reference = Some(1);
+            me.apply_established_contact(c);
+        });
+    }
+
     /// The library's paying account for Bob, built from his request
     /// `reference` names (`None`: torn down).
     fn bobs_account_built_from(&self, reference: Option<u32>) {
@@ -1854,6 +1889,93 @@ fn an_address_claimed_before_it_is_kept_is_not_kept_again() {
         EngineError::Send(SendFailure::PreparedTxSpent)
     ));
     assert!(f.reserved(BOB).is_none());
+}
+
+/// Design D21 (Sol r1 #1): Bob rotates while his address is reserved, and
+/// the library rebuilds his paying account from the new request, which
+/// Platform holds verifiably; the address from the account it replaced is
+/// neither paid nor kept.
+#[test]
+fn an_address_from_a_replaced_account_is_not_paid() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    let d = f.draft(BOB);
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[7; 32]).unwrap();
+    let rotated = ExtendedPubKey::from_priv(&master);
+    let refused = f.prepare_held_at(&d, Point::Reserved, || f.rotate_bob(&platform, rotated));
+    assert_eq!(platform_error(refused), "platform.context_unavailable");
+    assert!(
+        f.reserved(BOB).is_none(),
+        "the replaced account's address is not kept"
+    );
+}
+
+/// D21's control: a rotation whose rebuilt account derives from the same
+/// xpub still holds the reserved address; the new request verifies in the
+/// re-check and the address is paid and kept.
+#[test]
+fn an_address_the_rebuilt_account_still_holds_is_paid() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    let d = f.draft(BOB);
+    f.prepare_held_at(&d, Point::Reserved, || {
+        f.rotate_bob(&platform, contact_xpub(BOB))
+    })
+    .unwrap();
+    assert_eq!(
+        f.reserved_checked(BOB),
+        Some((f.contact_address(BOB, 0), true))
+    );
+    assert!(!f.bob_unverified(), "the new request verified");
+}
+
+/// Sol r1 #2: a payment's fresh address displaced before it is kept (the
+/// first payment's broadcast took its address, and gave it back unsent
+/// after this one reserved a fresh one) is not paid, and not kept.
+#[test]
+fn a_fresh_address_displaced_before_it_is_kept_is_not_paid() {
+    let f = fixture(false);
+    f.gated(TrustMode::Enforcing, Proof::Verified);
+    let first = f.draft(BOB);
+    let seam = Seam::install(&first, Net::HoldUnsent);
+    let p = f.prepare(&first).unwrap();
+    f.credit(2, COIN);
+    let gate = &f.session.platform.money_gate;
+    let (planned, reserved) = (
+        Arc::new(crate::coins::TestPause::default()),
+        Arc::new(crate::coins::TestPause::default()),
+    );
+    gate.pause_at(Point::Planned, Arc::clone(&planned));
+    gate.pause_at(Point::Reserved, Arc::clone(&reserved));
+    let second = f.draft(BOB);
+    let prepare = f.spawn_prepare(&second);
+    wait_until(|| planned.reached.load(Ordering::SeqCst));
+    let broadcast = f.session.rt.spawn({
+        let (d, p) = (Arc::clone(&first), Arc::clone(&p));
+        async move { d.broadcast(p).await }
+    });
+    wait_until(|| seam.entered.load(Ordering::SeqCst) == 1);
+    assert!(f.reserved(BOB).is_none(), "the first took its address");
+    planned.release.notify_one();
+    wait_until(|| reserved.reached.load(Ordering::SeqCst));
+    seam.gate.notify_one();
+    let given_back = f.contact_address(BOB, 0);
+    wait_until(|| f.reserved(BOB).is_some());
+    reserved.release.notify_one();
+    let refused = f.engine.block_on(prepare).unwrap();
+    assert!(matches!(
+        refused.unwrap_err(),
+        EngineError::Send(SendFailure::PreparedTxSpent)
+    ));
+    assert_eq!(
+        f.reserved_checked(BOB),
+        Some((given_back, false)),
+        "the fresh address is not kept"
+    );
+    assert_eq!(
+        send_failure(f.engine.block_on(broadcast).unwrap()),
+        SendFailure::NoPeers
+    );
 }
 
 /// D1 with a cached profile: the profile the user picks the payee by is

@@ -2799,7 +2799,8 @@ renames or reshapes them takes the next version bump:
 **From DP3-04** (version 28, no surface change):
 
 54. **The money-move trust gate (DASHPAY §2.2 rule 5; `docs/design/DP3-04-trust-gate.md`).** Once the fallback latch
-    is set, money waits for its payee's data to verify against SPV. No signature, record or code changes.
+    is set, money waits for its payee's data to verify against SPV. Public signatures, record shapes and error codes are
+    unchanged.
     - **Subjects.** A contact payment's `prepare` (its "Accept and pay" too): what the contacts row of the payee
       shows unverified (§2.4 `contacts`: the cached profile, each request the relation rests on, the shown
       username). A `top_up`: the identity and its keys. A registration has no subject.
@@ -2820,6 +2821,9 @@ renames or reshapes them takes the next version bump:
       meanwhile (the payee replaced, its name landed) one 10 s round of re-fetches and refuses what still does not
       verify (`platform.context_unavailable`, `platform.trust_mismatch`); the address is kept only once it passed,
       so no later `prepare` pays one taken from unverified data, and an address kept while rule 5 did not apply is
-      not paid under `Enforcing` (a new one is reserved). A reused address another payment's broadcast claimed
-      during the re-check is `send.prepared_tx_spent`. `top_up` runs the gate after its journal check and before the identity's write
+      not paid under `Enforcing` (a new one is reserved). The re-check reads the address with the request it checks:
+      one no longer in the payee's paying account (a rotation rebuilt it from a new request) is
+      `platform.context_unavailable` and not kept (design D21). A reused address another payment's broadcast claimed
+      during the re-check, or a fresh one displaced meanwhile by another payment's address given back unsent, is
+      `send.prepared_tx_spent`. `top_up` runs the gate after its journal check and before the identity's write
       lock, an identity the wallet lacks refused first (`identity.not_found`).

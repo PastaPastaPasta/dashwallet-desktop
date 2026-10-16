@@ -221,6 +221,8 @@ impl TxDraft {
         crypto: Option<VaultContactCrypto>,
     ) -> Result<Address, EngineError> {
         let (session, payments) = (&self.session, &self.session.platform.payments);
+        #[cfg(test)]
+        session.platform.money_gate.reached(Point::Planned).await;
         let rule = session.trust.rule_5();
         let (address, fresh) = match payments.reserved_checked(self.wallet_id, pair) {
             // Kept while rule 5 did not apply: not paid once it does.
@@ -236,8 +238,8 @@ impl TxDraft {
         // The payee may have changed since the gate (§4 step 5): an address
         // taken from content that does not verify now is neither kept nor
         // paid.
-        let subject = Subject::Payee(self.wallet_id, pair);
-        let checked = match session.money_recheck(subject, rule).await {
+        let recheck = session.money_recheck(self.wallet_id, pair, &address, rule);
+        let checked = match recheck.await {
             Ok(checked) => checked,
             Err(refusal) => {
                 payments.drop_reserved(self.wallet_id, pair, &address);

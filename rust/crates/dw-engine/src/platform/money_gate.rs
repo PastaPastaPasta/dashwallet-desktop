@@ -16,8 +16,11 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use dashcore::Address;
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::prelude::Identifier;
+use key_wallet::account::account_collection::DashpayAccountKey;
+use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use platform_wallet::changeset::PendingContactCryptoKind;
 use platform_wallet::key_wallet_manager::WalletManager;
 use platform_wallet::{ManagedIdentity, PlatformWalletInfo};
@@ -76,6 +79,8 @@ pub(crate) struct MoneyGate {
 pub(crate) enum Point {
     /// Right after its gate passed.
     Gated,
+    /// After its plan, before its address is reserved.
+    Planned,
     /// After its address was reserved, before the re-check.
     Reserved,
 }
@@ -333,12 +338,38 @@ fn paying_account_stale(m: &ManagedIdentity, contact: &Identifier, reserved: boo
         && (reserved || !rebuild_queued())
 }
 
+/// Design D21: `address` is in the address pool of `pair`'s paying
+/// account as the library holds it now. A rotation tears the account down
+/// and rebuilds it from the new request's xpub, so an address reserved
+/// from the account it replaced is in no pool of the current one.
+fn in_paying_account(
+    wm: &WalletManager<PlatformWalletInfo>,
+    wallet: WalletId,
+    (owner, contact): Pair,
+    address: &Address,
+) -> bool {
+    let key = DashpayAccountKey {
+        index: 0,
+        user_identity_id: owner.to_buffer(),
+        friend_identity_id: contact.to_buffer(),
+    };
+    (wm.get_wallet_info(&wallet.0))
+        .and_then(|info| {
+            info.core_wallet
+                .accounts
+                .dashpay_external_accounts
+                .get(&key)
+        })
+        .is_some_and(|account| account.contains_address(address))
+}
+
 /// The gate's subject in the library: every entity it rests on.
 struct SessionEnv<'a> {
     session: &'a NetworkSession,
     subject: Subject,
-    /// The re-check after the reservation (D12's strict reading).
-    reserved: bool,
+    /// The re-check: the address reserved for the payee (D12's strict
+    /// reading, D21).
+    reserved: Option<&'a Address>,
 }
 
 impl SessionEnv<'_> {
@@ -356,8 +387,9 @@ impl SessionEnv<'_> {
         let info = wm.get_wallet_info(&wallet.0)?;
         let m = (info.identity_manager.wallet_managed_identities(&wallet.0))
             .find(|m| m.identity.id() == owner)?;
-        let stale =
-            |contact| provenance.fallback_used() && paying_account_stale(m, contact, self.reserved);
+        let stale = |contact| {
+            provenance.fallback_used() && paying_account_stale(m, contact, self.reserved.is_some())
+        };
         let held = match self.subject {
             Subject::Payee(_, (_, contact)) if stale(&contact) => None,
             Subject::Payee(_, (_, contact)) => {
@@ -382,6 +414,13 @@ impl GateEnv for SessionEnv<'_> {
         let live = self.session.live()?;
         let wm = live.manager.wallet_manager_arc();
         let wm = wm.read().await;
+        // D21: the reserved address is checked under the read that checks
+        // the account's stamp and the request it names.
+        if let (Some(address), Subject::Payee(wallet, pair)) = (self.reserved, self.subject)
+            && !in_paying_account(&wm, wallet, pair, address)
+        {
+            return Ok(None);
+        }
         Ok(self.unverified(&wm, &live.provenance))
     }
 
@@ -421,7 +460,7 @@ impl NetworkSession {
         let env = SessionEnv {
             session: self,
             subject,
-            reserved: false,
+            reserved: None,
         };
         let gated = run(&env, || self.gate_refetcher(), signals, waits).await;
         if let Err(refusal) = &gated {
@@ -435,22 +474,26 @@ impl NetworkSession {
         Ok(self.platform.money_gate.refetcher(sdk))
     }
 
-    /// The gate's re-check (design §4 step 5) under `rule`, read once by
-    /// the caller: `Ok(true)` once it checked `subject` under `Enforce`,
-    /// `Ok(false)` when rule 5 does not apply.
+    /// The gate's re-check (design §4 step 5) of the payment to `pair`
+    /// paying `address`, under `rule`, read once by the caller: `Ok(true)`
+    /// once it checked them under `Enforce`, `Ok(false)` when rule 5 does
+    /// not apply.
     pub(crate) async fn money_recheck(
         &self,
-        subject: Subject,
+        wallet: WalletId,
+        pair: Pair,
+        address: &Address,
         rule: Rule5,
     ) -> Result<bool, Refusal> {
         if rule != Rule5::Enforce {
             return Ok(false);
         }
         let waits = *guard(&self.platform.money_gate.waits);
+        let subject = Subject::Payee(wallet, pair);
         let env = SessionEnv {
             session: self,
             subject,
-            reserved: true,
+            reserved: Some(address),
         };
         let checked = recheck(&env, || self.gate_refetcher(), waits).await;
         if let Err(refusal) = &checked {
