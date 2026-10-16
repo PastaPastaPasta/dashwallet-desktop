@@ -1,0 +1,231 @@
+// A DashPay profile edit from the real app on public testnet, timed against SPV's sync phases
+// (BL-162): tauri-driver starts the production app on a fresh data root with a wallet of the
+// testnet DashPay fixture restored (`--sync`), unlocks it, logs every sync-phase change and a
+// profile read every DW_PROFILE_READ_EVERY_S, then edits the wallet's profile through the app's
+// own IPC (`authorize` + `dashpay_update_profile`, as a profile editor would) at the phase
+// DW_PROFILE_WRITE_AT names:
+//
+//   early    as soon as DashPay knows the identity (SPV still syncing)
+//   synced   DW_PROFILE_AFTER_SYNCED_S seconds after the status bar says Synced and masternode
+//            sync is done (default 60)
+//   never    reads only: as `synced`, then ends without writing
+//
+//   DW_APP=… DWCLI=… TAURI_DRIVER=… DW_TESTNET_FIXTURE=<dir> node e2e-tauri/profile-write.ts
+//
+// Writes: ONE profile edit of wallet DW_PROFILE_WALLET (default A), harmless and repeatable
+// (display name and public message DW_PROFILE_LABEL). Reads otherwise. Phrases go to dwcli on
+// stdin, never argv; no file of OUT (nor of DW_E2E_SCAN_EXTRA) may hold a phrase or the
+// passphrase afterwards. Set DW_LOG (EnvFilter) for the engine's log in OUT/tauri-driver.log.
+// `scripts/e2e-tauri-profile-write.sh` builds the binaries and runs this file under a private
+// session bus, on the private X display in $DISPLAY.
+
+import { spawnSync, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, WebDriver } from "./driver.ts";
+
+const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
+const WALLET = env("DW_PROFILE_WALLET", "A");
+const WRITE_AT = env("DW_PROFILE_WRITE_AT", "synced");
+const AFTER_SYNCED_S = Number(env("DW_PROFILE_AFTER_SYNCED_S", "60"));
+const READ_EVERY_S = Number(env("DW_PROFILE_READ_EVERY_S", "20"));
+const LABEL = env("DW_PROFILE_LABEL", `BL-162 ${new Date().toISOString().slice(0, 16)}`);
+const BIRTH_HEIGHT = env("DW_PROFILE_BIRTH_HEIGHT", "1568806");
+const OUT = resolve(env("DW_E2E_OUT", "test-results/tauri-profile-write"));
+const PORT = Number(env("DW_E2E_PORT", "4770"));
+const SCAN_EXTRA = process.env.DW_E2E_SCAN_EXTRA ? resolve(process.env.DW_E2E_SCAN_EXTRA) : null;
+/** A fresh testnet sync, headers to masternodes. */
+const SYNC_TIMEOUT_MS = Number(env("DW_E2E_SYNC_TIMEOUT_MS", "1800000"));
+/** The write: a Platform state transition and its proof. */
+const WRITE_TIMEOUT_MS = Number(env("DW_E2E_WRITE_TIMEOUT_MS", "600000"));
+const NETWORK = ["--network", "testnet"];
+
+if (!["early", "synced", "never"].includes(WRITE_AT)) throw new Error(`DW_PROFILE_WRITE_AT=${WRITE_AT}: early, synced or never`);
+
+let driver: ChildProcess | undefined;
+let work: string | undefined;
+const secrets: string[] = [];
+
+function mask(text: string): string {
+  const words = [...new Set(secrets.flatMap((s) => s.split(/\s+/)))].filter(Boolean).sort((a, b) => b.length - a.length);
+  if (!words.length) return text;
+  const alternation = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  return text.replace(new RegExp(`(?<![\\w-])(?:${alternation})(?![\\w-])`, "g"), "***");
+}
+
+function dwcli(root: string, passFile: string, args: string[], input?: string): string {
+  const r = spawnSync(DWCLI, ["--datadir", root, ...NETWORK, "--passphrase-file", passFile, ...args], { encoding: "utf8", input, timeout: 900_000 });
+  if (r.status === 0) return r.stdout;
+  throw new Error(`dwcli ${args.slice(0, 3).join(" ")} failed (${r.status}): ${mask(`${r.stderr}${r.stdout}`).slice(-800)}`);
+}
+
+function identityOf(wallet: string): string {
+  const fixture = JSON.parse(readFileSync(join(FIXTURE, "fixture.json"), "utf8")) as Record<string, string | { identity_id?: string }>;
+  const row = fixture[wallet];
+  const id = typeof row === "string" ? row : row?.identity_id;
+  if (!id) throw new Error(`the fixture names no identity for wallet ${wallet}`);
+  return id;
+}
+
+/** An IPC call from the renderer's own context, as the app's screens make them. */
+const INVOKE = `const [cmd, args, done] = arguments;
+  window.__TAURI_INTERNALS__.invoke(cmd, args).then((ok) => done({ ok }), (err) => done({ err }));`;
+
+interface Answer<T> {
+  ok?: T;
+  err?: unknown;
+}
+
+async function invoke<T>(wd: WebDriver, cmd: string, args: Record<string, unknown> = {}): Promise<Answer<T>> {
+  return wd.scriptAsync<Answer<T>>(INVOKE, [cmd, args]);
+}
+
+interface Phase {
+  phase: string;
+  done: boolean;
+}
+
+interface Sync {
+  running: boolean;
+  phases: Phase[];
+  activePhase: string | null;
+  caughtUp: boolean;
+}
+
+const phaseLine = (s: Sync) => `${s.caughtUp ? "Synced" : "Syncing"} active=${s.activePhase ?? "-"} done=[${s.phases.filter((p) => p.done).map((p) => p.phase).join(",")}]`;
+const masternodesDone = (s: Sync) => s.caughtUp && s.phases.some((p) => p.phase === "masternodes" && p.done);
+
+async function main() {
+  mkdirSync(OUT, { recursive: true });
+  work = mkdtempSync(join(tmpdir(), "dw-profile-")); // mode 0700
+  const appRoot = join(work, "app");
+  const passFile = join(work, "passphrase");
+  const passphrase = randomBytes(18).toString("base64url");
+  const phrase = readFileSync(join(FIXTURE, `${WALLET}.mnemonic`), "utf8").trim();
+  secrets.push(phrase, phrase.split(/\s+/).join(" "), passphrase);
+  writeFileSync(passFile, `${passphrase}\n`, { mode: 0o600 });
+  const steps: string[] = [];
+  const t0 = Date.now();
+  const step = (s: string) => {
+    const line = `${new Date().toISOString()} +${((Date.now() - t0) / 1000).toFixed(1)}s ${s}`;
+    steps.push(line);
+    console.log(`profile-write: ${line}`);
+  };
+  const identity = identityOf(WALLET);
+  let failure: unknown;
+  let write: Record<string, unknown> | undefined;
+  try {
+    dwcli(appRoot, passFile, ["init-vault"]);
+    dwcli(appRoot, passFile, ["import", "--birth-height", BIRTH_HEIGHT, "--name", `Fixture ${WALLET}`], `${phrase}\n`);
+    step(`fresh testnet data root with fixture wallet ${WALLET}, birth ${BIRTH_HEIGHT}; write at ${WRITE_AT}`);
+    const started = await startDriver(PORT, OUT, (d) => (driver = d));
+    driver = started.driver;
+    const wd = new WebDriver(started.base, OUT);
+    try {
+      await wd.start({ alwaysMatch: { "tauri:options": { application: APP, args: ["--datadir", appRoot, ...NETWORK, "--sync", "--theme", "light"] } } });
+      await wd.call("POST", wd.s("/timeouts"), { script: WRITE_TIMEOUT_MS });
+      await wd.fill(tid("lock-field"), passphrase);
+      await wd.press(tid("lock-submit"));
+      await wd.waitGone(tid("lock-screen"), "the lock screen");
+      if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
+      const wallets = await invoke<{ walletId: string }[]>(wd, "list_wallets");
+      const walletId = wallets.ok?.[0]?.walletId;
+      if (!walletId) throw new Error(`no wallet: ${JSON.stringify(wallets.err)}`);
+      step(`unlocked wallet ${WALLET} (${walletId.slice(0, 8)})`);
+
+      let last = "";
+      let syncedAt: number | null = null;
+      let lastRead = 0;
+      let known = false;
+      const watch = async () => {
+        const s = await invoke<Sync>(wd, "sync_status");
+        if (s.ok) {
+          const line = phaseLine(s.ok);
+          if (line !== last) step(`sync: ${line}`);
+          last = line;
+          if (syncedAt === null && masternodesDone(s.ok)) syncedAt = Date.now();
+        }
+        if (Date.now() - lastRead >= READ_EVERY_S * 1000) {
+          lastRead = Date.now();
+          const t = Date.now();
+          const p = await invoke<{ displayName: string | null } | null>(wd, "dashpay_profile", { walletId, identity });
+          known ||= p.ok !== undefined;
+          step(`read profile in ${Date.now() - t} ms: ${p.err ? `error ${JSON.stringify(p.err)}` : JSON.stringify(p.ok?.displayName ?? null)}`);
+        }
+      };
+      await poll(SYNC_TIMEOUT_MS, `the write phase (${WRITE_AT})`, async () => {
+        await watch();
+        if (WRITE_AT === "early") return known ? true : undefined;
+        return syncedAt !== null && Date.now() - syncedAt >= AFTER_SYNCED_S * 1000 ? true : undefined;
+      });
+      await wd.screenshot("1-before-write");
+      if (WRITE_AT === "never") {
+        step("reads only: no write");
+        return;
+      }
+
+      const grant = await invoke<{ id: string }>(wd, "authorize", {
+        purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "300000000" },
+        walletId,
+        credential: { kind: "passphrase", passphrase },
+      });
+      if (!grant.ok) throw new Error(`authorize: ${JSON.stringify(grant.err)}`);
+      const edit = { displayName: LABEL, publicMessage: `${LABEL}, written ${WRITE_AT}`, avatar: { kind: "keep" } };
+      step(`writing the profile (${last})`);
+      const t = Date.now();
+      const r = await invoke<null>(wd, "dashpay_update_profile", { walletId, identity, edit, grant: grant.ok.id });
+      const ms = Date.now() - t;
+      write = { at: WRITE_AT, phase: last, ms, ok: r.err === undefined, error: r.err ?? null, label: LABEL };
+      step(`write ${r.err === undefined ? "OK" : `FAILED ${JSON.stringify(r.err)}`} in ${ms} ms`);
+      await wd.screenshot("2-after-write");
+      if (r.err === undefined) {
+        const back = await invoke<{ displayName: string | null } | null>(wd, "dashpay_profile", { walletId, identity });
+        step(`read back: ${JSON.stringify(back.ok?.displayName ?? back.err)}`);
+        write.readBack = back.ok?.displayName ?? null;
+      }
+    } catch (e) {
+      failure = e;
+      await wd.screenshot("failure").catch(() => undefined);
+    } finally {
+      await wd.end().catch(() => undefined);
+    }
+  } catch (e) {
+    failure ??= e;
+  } finally {
+    stopDriver(driver);
+    await driverGone(driver);
+    driver = undefined;
+  }
+  const found = [...leaks(OUT, secrets), ...(SCAN_EXTRA && existsSync(SCAN_EXTRA) ? leaks(SCAN_EXTRA, secrets) : [])];
+  if (found.length > 0) {
+    for (const f of found) rmSync(f.replace(/ \(\d+\)$/, ""), { force: true });
+    throw new Error(`secrets in plain text: ${found.join(", ")}`);
+  }
+  writeFileSync(join(OUT, "result.json"), JSON.stringify({ wallet: WALLET, identity, write, failure: failure ? mask(String(failure)) : null, steps }, null, 2));
+  if (failure) throw failure;
+  step(`no phrase or passphrase in OUT${SCAN_EXTRA ? " or the run's logs" : ""}`);
+  if (WRITE_AT !== "never" && !write?.ok) throw new Error("the write failed");
+  console.log(`profile-write: PASS (${steps.length} steps)`);
+}
+
+async function interrupted(signal: NodeJS.Signals) {
+  console.error(`profile-write: FAIL: ${signal}`);
+  stopDriver(driver);
+  await driverGone(driver);
+  if (work) rmSync(work, { recursive: true, force: true, maxRetries: 3 });
+  process.exit(1);
+}
+process.once("SIGINT", (s) => void interrupted(s));
+process.once("SIGTERM", (s) => void interrupted(s));
+
+main()
+  .catch((e) => {
+    console.error(`profile-write: FAIL: ${mask(e instanceof Error ? e.message : String(e))}`);
+    process.exitCode = 1;
+  })
+  .finally(() => {
+    stopDriver(driver);
+    if (work) rmSync(work, { recursive: true, force: true, maxRetries: 3 });
+  });
