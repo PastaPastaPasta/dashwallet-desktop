@@ -10,6 +10,7 @@
 //! same nonce, here inside the reader so subscribers never see it.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -124,6 +125,8 @@ struct Subscriber {
 struct Shared {
     subscribers: Mutex<Vec<Subscriber>>,
     closed: watch::Sender<bool>,
+    /// Bytes of every frame read after the handshake, headers included.
+    bytes_received: AtomicU64,
 }
 
 impl Shared {
@@ -287,6 +290,7 @@ impl Session {
         let shared = Arc::new(Shared {
             subscribers: Mutex::new(Vec::new()),
             closed,
+            bytes_received: AtomicU64::new(0),
         });
         let (out, out_rx) = mpsc::channel::<Vec<u8>>(256);
         let tasks = vec![
@@ -337,6 +341,12 @@ impl Session {
 
     pub fn is_closed(&self) -> bool {
         *self.shared.closed.borrow()
+    }
+
+    /// Bytes read from the peer since the handshake (frame headers
+    /// included, pings too).
+    pub fn bytes_received(&self) -> u64 {
+        self.shared.bytes_received.load(Ordering::Relaxed)
     }
 
     /// Resolves once the session closed (peer, error or [`Self::close`]).
@@ -440,6 +450,9 @@ async fn read_loop(
                 break;
             }
         };
+        shared
+            .bytes_received
+            .fetch_add((HEADER_LEN + msg.payload.len()) as u64, Ordering::Relaxed);
         if msg.command == "ping" {
             match codec::encode(magic, "pong", &msg.payload) {
                 Ok(pong) => {
