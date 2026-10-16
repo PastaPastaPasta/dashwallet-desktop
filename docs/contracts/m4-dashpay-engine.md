@@ -2823,7 +2823,7 @@ renames or reshapes them takes the next version bump:
       so no later `prepare` pays one taken from unverified data, and an address kept while rule 5 did not apply is
       not paid under `Enforcing` (a new one is reserved). The re-check reads the address with the request it checks:
       one no longer in the payee's paying account (a rotation rebuilt it from a new request) is
-      `platform.context_unavailable` and not kept (design D21). A reused address another payment's broadcast claimed
+      `platform.context_unavailable` and not kept, under `Enforcing` with or without the latch (design D21). A reused address another payment's broadcast claimed
       during the re-check, or a fresh one displaced meanwhile by another payment's address given back unsent, is
       `send.prepared_tx_spent`. `top_up` runs the gate after its journal check and before the identity's write
       lock, an identity the wallet lacks refused first (`identity.not_found`).
