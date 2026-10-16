@@ -1,0 +1,83 @@
+# DP3-07: history rows with the contact; transaction detail → contact pane (Tauri)
+
+ROADMAP DP3-07 on the Tauri renderer: [DASHPAY §5](DASHPAY.md) F15 ("avatar and name on rows"; the title rule label →
+contact → type) on Home and Activity, the transaction detail naming the contact and opening its pane (DP2-09's), and
+the follow-ups DP3-06 left: F2 (Home's frequent-contacts strip), F3 (the "Include my username in payment requests"
+setting) and F4 (rows with avatars). Tier T0 (fixture, Playwright + axe, visual baselines). Copy and layout follow the
+mobile wallets: iOS `TxListCell` / `TxDetailViewController` with a DashPay user (the user's avatar in place of the
+type icon, the name as the title, the profile one tap away) and Android `TransactionRowView`.
+
+The engine side is merged and adds nothing here: DP3-02 (history and detail counterparties, `frequent_contacts`,
+`contact_activity`), DP2-07 (`dashpay_contacts`), DP2-09 (the pane). No dw-app command, binding, contract, §4 table or
+error code changes, so no Rust change and no Swift T0 run (D11).
+
+## What DP3-02 exposes
+
+| What | Where | Notes |
+|---|---|---|
+| `TxRow.counterparty?: TxCounterparty{identity, username, displayName, avatarUrl}` | every `history_page` row, and `TxDetails.rows` | absent when the record is not a contact payment (DP3-02 D1–D3, D22–D23); `username` may land later (D4) |
+| Title rule label → contact → type | `format/tx.ts` `txTitle`, `rowParty`, `contactName` (DP3-02 D24) | already wired by DP3-02's follow-merge of U-03 |
+| Detail "Sent to contact" / "Received from contact" row | `TxDetailSheet.tsx` (DP3-02 D24) | the name only; no avatar, no way to the contact (D26) |
+| `RowDecor.leading` | `components/history.tsx` | the slot U-03 left for the avatar (DP3-02 D26), unused |
+| Refresh on `Platform{Contacts, Payments, Identities}` | `app/shellBridge.ts` (DP3-02 D25) | history and the detail re-read when a name lands |
+| `frequent_contacts(wallet, identity, limit)` | `screens/pay/contactQueries.ts` `useFrequentContacts` (DP3-06 D3) | Android's rule (DP3-02 D11); under `contactsAll(wallet)` |
+| The contact pane | `screens/contacts/ContactsPage.tsx`, selected by `ui.contact` | lists the main identity's contacts in every section (`findContact`) |
+
+## Screen inventory
+
+| Part | What it shows | Mobile reference |
+|---|---|---|
+| History row (Home, Activity list) | a contact payment: the contact's initials avatar in place of the type icon, the title by the rule (label, else the contact's name); any other row as before | iOS `TxListCell` with a DashPay user; Android `TransactionRowView` |
+| Activity table | unchanged: the Address / Label column is the label, else the contact's name, else the address (DP3-02 D24) | dash-qt |
+| Transaction detail | the contact row ("Sent to contact" / "Received from contact") gains the avatar, the name and `@username`, and "View contact", which opens Contacts on the contact's pane; the address row stays | iOS `TxDetailViewController` header's user, tap → profile |
+| Home ▸ Frequent contacts | up to 8 contacts the main identity pays most (DP3-06's strip), above History; picking one opens Pay ▸ To a contact on them | DP3-06 F2; Android Pay's "Frequent contacts" |
+
+## Bindings
+
+| Call | When | Notes |
+|---|---|---|
+| `history_page` (`useHistory`) | as U-03 | rows carry `counterparty`; no new call |
+| `tx_detail` (`useTxDetail`) | as U-03 | its `rows[0].counterparty` |
+| `dashpay_status` (`useContactsOwner`) | detail sheet with a contact; Home | whose contacts the pane lists (DP2-07 D2) |
+| `dashpay_contacts(wallet, identity, {sections: [], sort, text: null})` (`useContactList`) | detail sheet with a contact | the same query as Contacts' unfiltered list, so the pane opens warm (D4) |
+| `frequent_contacts(wallet, identity, 8)` (`useFrequentContacts`) | Home with an owner | DP3-06's query, shared with the Pay tab |
+
+## D-rows
+
+| # | Decision | Why |
+|---|---|---|
+| D1 | A row whose record has a counterparty with a name (`contactName` not `null`) shows the contact's initials avatar (`Avatar`, DP2-07 D10) in place of the type icon; the letters are `avatarLetters` of the display name, else the username. A counterparty with neither (the username lands later, DP3-02 D4) keeps the type icon, as it keeps the type title. A label still wins the title (DP3-02 D24) while the avatar stays the contact's. The avatar is decoration (`aria-hidden`); the title names the contact for a screen reader. | iOS and Android draw the user's picture where the type icon was. A `?` avatar for a name not yet known would say less than the icon it replaces. The label is the user's own word; the avatar still says who. |
+| D2 | Pictures are the initials avatar until DP4-02 / DP4-03 (F1). `avatarUrl` is not fetched by the UI: the engine owns avatar fetching (DASHPAY §4, `avatar()`), and its body is a stub at this base. | Brief; DASHPAY's avatar policy. |
+| D3 | The address shows when there is no contact where U-03 shows one: the table's Address / Label column (`rowParty`: label, else the contact, else the address) and the detail's To / Received with row, which stays under the contact row too. List rows carry no address (U-03 D14, iOS). | The brief's "address shown when there is no contact" is DP3-02 D24's fallback; attribution is display data (DP3-02 D4), not a replacement for what was paid. |
+| D4 | The detail's contact row offers "View contact" only when the main identity (DP2-07's owner) relates to the counterparty: it is in the identity's unfiltered contact list (`findContact`, any section, hidden included), the same check the Contacts page selects with. Otherwise (another identity of this wallet paid it, the contact went, DashPay not ready, the list not read yet) the row names the contact without the button. "View contact" calls `navigate("contacts", { contact, addContact: null, contactPrefill: null })`, which closes the sheet and opens the contact's pane. | Contacts lists one identity; a button that opened an empty pane would be a dead end. The list query is Contacts' own key, so the page opens on cached rows. |
+| D5 | Rows themselves open the detail, not the pane: a row is one button (U-03), and a nested control would break it for the keyboard and for screen readers. The pane is one step on, from the detail (the ROADMAP row's "transaction detail → contact pane"). The pane's activity already opens the transaction (DP2-09), so the two link both ways. | One control per row (U-03 D13). iOS opens the transaction too, and the profile from its header. |
+| D6 | The detail's contact row shows the avatar, the name (`contactName`), and `@username` under it when the name is the display name. Its label stays DP3-02 D24's ("Sent to contact" / "Received from contact"), and it names the contact of the record whose address the sheet shows (each record's contact is DP3-02 D26's follow-up, F5). | DP3-06's payee card and confirm sheet show a contact this way. |
+| D7 | Home's frequent strip is DP3-06's strip, moved to `screens/pay/FrequentStrip.tsx` and used by both: Home and the Pay tab render the same component, with their own test ids (`home-frequent`, `pay-frequent`). Home's sits under the DashPay card and above History, in a card; it asks for 8 (DP3-06 D3), shows nothing without an owner, when empty, while loading or when the read failed (a shortcut, as on Pay). Picking a contact opens Pay ▸ To a contact on them (`payContact`, as the pane's Pay does, DP3-06 D2/D15). | Brief (F2); no second copy. |
+| D8 | Discreet mode hides Home's strip with the history (UX-SPEC §4.5 QT-039 hides the recent rows): who the wallet pays most is payment history. | The strip is a summary of the same rows. |
+| D9 | F3 is deferred: DASHPAY.md does not define the setting (§5 F15 says request URIs carry the username, with no opt-out), and the engine does not take the flag (`receive_username(wallet)`, `create_receive_request`, `receive_requests` have no parameter; DP3-02 D21's ruling left it unthreaded because dw-ffi is frozen until E0-13). Building a toggle that changes nothing would mislead. Follow-up F3 (engine first, then the Settings ▸ General toggle). | Brief: only if DASHPAY defines it and the engine supports it. |
+| D10 | Fixture: the new scenario `dashpay-history-contacts` is `dashpay-registered` (Bob's and Dave's attributed payments) plus a labelled payment to Bob ("Lunch with Bob"), a payment from Marta (a stranger to the main identity: no "View contact"), and a payment whose counterparty has no name yet. They are the newest rows, so Home's five recent rows show them. `dashpay-registered` is unchanged, so its specs keep their rows. | Each D1–D4 branch needs a row; changing `dashpay-registered` would move 37 specs' data. |
+| D11 | No Rust, contract or Swift change: `TxRow.counterparty`, `frequent_contacts` and `dashpay_contacts` are bound already (DP3-02 D14, DP3-06). | dw-common: only a §4 or contract change needs Swift T0. |
+| D12 | The table mode keeps text only (no avatar column). | dash-qt's columns (U-03 D13); the name is already in Address / Label. |
+
+## Deferred
+
+| # | What | Owner |
+|---|---|---|
+| F1 | Avatar pictures on rows, the detail and the strip | DP4-02, DP4-03 |
+| F2 | A direction badge on a contact's avatar (UX-SPEC C9's 14 pt badge): the amount's sign says it today | backlog (UI) |
+| F3 | Settings ▸ "Include my username in payment requests" (D9): DASHPAY to define it, the engine to take the flag, then the toggle | engine (DP3-03 follow-up), then UI |
+| F4 | Activity's search matching contact names (DP3-02 D7) | backlog (engine) |
+| F5 | The detail naming each record's contact (DP3-02 D26) | backlog (UI) |
+| F6 | "View contact" for a payment of the wallet's other identity (D4): Contacts lists the main identity only | after an identity switcher (DP1) |
+
+## Slices
+
+1. This document.
+2. Fixture: the `dashpay-history-contacts` scenario and its test.
+3. View model (`format/tx.ts` `contactLetters`, `components/history.tsx` the default leading avatar) and tests.
+4. Screens: the detail's contact row and "View contact"; `FrequentStrip` shared by Pay and Home.
+5. Playwright and axe (light and dark, Chromium and WebKit); visual baselines.
+
+## Evidence
+
+(Filled in when the slices land.)
