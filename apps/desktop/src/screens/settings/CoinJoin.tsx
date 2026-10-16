@@ -45,8 +45,11 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
   /** A box as clicked, until the engine has answered (U-04 D36). */
   const [turning, setTurning] = useState<Partial<CoinJoinSettings>>({});
   const shown = { ...current, ...turning };
-  const form = { ...formOf(current), ...edits };
-  const changed = Object.keys(edits).length > 0;
+  const saved = formOf(current);
+  const form = { ...saved, ...edits };
+  /** What Save writes: Parallel sessions is not saved while multi-session is off (D11). */
+  const effective = current.multiSession ? form : { ...form, maxSessions: saved.maxSessions };
+  const changed = FIELDS.some(({ field }) => effective[field] !== saved[field]);
 
   /** Resolves to whether the engine took `next`; a refusal shows its message. */
   const write = async (next: CoinJoinSettings) => {
@@ -66,8 +69,7 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    // Parallel sessions is off without multi-session: what was typed there is not saved.
-    const checked = checkSettings(current.multiSession ? form : { ...form, maxSessions: String(current.maxSessions) }, current, limits);
+    const checked = checkSettings(effective, current, limits);
     if ("field" in checked) {
       setWrong(checked.field);
       setDone(null);
@@ -100,7 +102,14 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
           onChange={(e) => {
             const p = patch(e.target.checked);
             setTurning(p);
-            void write({ ...current, ...p }).finally(() => setTurning({}));
+            void write({ ...current, ...p })
+              .then((ok) => {
+                if (!ok || p.multiSession !== false) return;
+                // Parallel sessions went off with it: what was typed there is dropped.
+                setEdits(({ maxSessions: _, ...rest }) => rest);
+                setWrong((w) => (w === "maxSessions" ? null : w));
+              })
+              .finally(() => setTurning({}));
           }}
         />
         {label}
@@ -118,28 +127,32 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
       </SettingsCard>
       <SettingsCard title="Mixing" testId="settings-coinjoin-mixing">
         <form className="coinjoin-settings-form" noValidate onSubmit={submit}>
-          {FIELDS.map(({ field, label, hint }) => (
-            <div className="form-field" key={field}>
-              <label htmlFor={`${id}-${field}`}>{label}</label>
-              <input
-                id={`${id}-${field}`}
-                data-testid={`settings-coinjoin-${field}`}
-                inputMode="numeric"
-                autoComplete="off"
-                value={form[field]}
-                disabled={field === "maxSessions" && !shown.multiSession}
-                aria-invalid={wrong === field ? true : undefined}
-                aria-describedby={hint ? `${id}-${field}-hint` : undefined}
-                onChange={(e) => {
-                  setEdits((d) => ({ ...d, [field]: e.target.value }));
-                  setWrong(null);
-                  setProblem(null);
-                  setDone(null);
-                }}
-              />
-              {hint && <Hint id={`${id}-${field}-hint`}>{hint}</Hint>}
-            </div>
-          ))}
+          {FIELDS.map(({ field, label, hint }) => {
+            // Parallel sessions is off without multi-session, and shows the saved value.
+            const off = field === "maxSessions" && !shown.multiSession;
+            return (
+              <div className="form-field" key={field}>
+                <label htmlFor={`${id}-${field}`}>{label}</label>
+                <input
+                  id={`${id}-${field}`}
+                  data-testid={`settings-coinjoin-${field}`}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  value={off ? saved.maxSessions : form[field]}
+                  disabled={off}
+                  aria-invalid={wrong === field ? true : undefined}
+                  aria-describedby={hint ? `${id}-${field}-hint` : undefined}
+                  onChange={(e) => {
+                    setEdits((d) => ({ ...d, [field]: e.target.value }));
+                    setWrong(null);
+                    setProblem(null);
+                    setDone(null);
+                  }}
+                />
+                {hint && <Hint id={`${id}-${field}-hint`}>{hint}</Hint>}
+              </div>
+            );
+          })}
           <Problem text={problem} testId="settings-coinjoin-problem" />
           <Done text={done} testId="settings-coinjoin-done" />
           <div className="card-actions">
