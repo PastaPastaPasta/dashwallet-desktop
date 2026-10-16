@@ -14,14 +14,19 @@
 //
 // Writes: ONE profile edit of wallet DW_PROFILE_WALLET (default A), harmless and repeatable
 // (display name and public message DW_PROFILE_LABEL). Reads otherwise. Phrases go to dwcli on
-// stdin, never argv; no file of OUT (nor of DW_E2E_SCAN_EXTRA) may hold a phrase or the
-// passphrase afterwards. Set DW_LOG (EnvFilter) for the engine's log in OUT/tauri-driver.log.
-// `scripts/e2e-tauri-profile-write.sh` builds the binaries and runs this file under a private
-// session bus, on the private X display in $DISPLAY.
+// stdin, never argv. Set DW_LOG (EnvFilter) for the engine's log in OUT/tauri-driver.log.
+//
+// Files: every runtime file (data root, passphrase file, the app's XDG dirs and TMPDIR, OUT) lies
+// in a new run directory under one scratch root, DW_PROFILE_ROOT (default $TMPDIR/dw-profile-write;
+// never inside the checkout). DW_E2E_OUT, if set, must be a new directory under that root. Every
+// mode ends the same way: result.json, then a scan of OUT and the app's XDG dirs and TMPDIR, whose
+// leaked files are deleted, and of DW_E2E_SCAN_EXTRA (another log directory), which is only read.
+// The data root and passphrase are deleted; OUT stays. `scripts/e2e-tauri-profile-write.sh` runs
+// this file under a private session bus, on the private X display in $DISPLAY.
 
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AuthGrant } from "../src/api/generated/AuthGrant";
@@ -29,6 +34,7 @@ import type { DashPayProfile } from "../src/api/generated/DashPayProfile";
 import type { SyncStatus } from "../src/api/generated/SyncStatus";
 import type { WalletSummary } from "../src/api/generated/WalletSummary";
 import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, WebDriver } from "./driver.ts";
+import { canonical, newDirIn, removeOwned, scratchRoot } from "./scratch.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
 const WALLET = env("DW_PROFILE_WALLET", "A");
@@ -37,11 +43,9 @@ const AFTER_SYNCED_S = Number(env("DW_PROFILE_AFTER_SYNCED_S", "60"));
 const READ_EVERY_S = Number(env("DW_PROFILE_READ_EVERY_S", "20"));
 const LABEL = env("DW_PROFILE_LABEL", `BL-162 ${new Date().toISOString().slice(0, 16)}`);
 const BIRTH_HEIGHT = env("DW_PROFILE_BIRTH_HEIGHT", "1568806");
-const OUT = resolve(env("DW_E2E_OUT", "test-results/tauri-profile-write"));
 const PORT = Number(env("DW_E2E_PORT", "4770"));
-const SCAN_EXTRA = process.env.DW_E2E_SCAN_EXTRA ? resolve(process.env.DW_E2E_SCAN_EXTRA) : null;
-/** Where no phrase or passphrase may be left: OUT, and the run's logs when named. */
-const SCANNED = [OUT, ...(SCAN_EXTRA ? [SCAN_EXTRA] : [])];
+/** Read-only: scanned for secrets, never written or swept. */
+const SCAN_EXTRA = process.env.DW_E2E_SCAN_EXTRA ? canonical(process.env.DW_E2E_SCAN_EXTRA) : null;
 /** A fresh testnet sync, headers to masternodes. */
 const SYNC_TIMEOUT_MS = Number(env("DW_E2E_SYNC_TIMEOUT_MS", "1800000"));
 /** The write: a Platform state transition and its proof. */
@@ -51,8 +55,44 @@ const NETWORK = ["--network", "testnet"];
 if (!["early", "synced", "never"].includes(WRITE_AT)) throw new Error(`DW_PROFILE_WRITE_AT=${WRITE_AT}: early, synced or never`);
 
 let driver: ChildProcess | undefined;
-let work: string | undefined;
+/** This run's directory under the scratch root, and its output directory (below it by default). */
+let run: string | undefined;
+let OUT = "";
 const secrets: string[] = [];
+
+/** Creates the run directory and OUT, and points the app's XDG dirs and TMPDIR into the run. */
+function layout() {
+  const checkout = resolve(import.meta.dirname, "../../..");
+  const root = scratchRoot(process.env.DW_PROFILE_ROOT ?? join(tmpdir(), "dw-profile-write"), checkout);
+  run = mkdtempSync(join(root, "run-")); // mode 0700
+  OUT = newDirIn(root, process.env.DW_E2E_OUT ?? join(run, "out"));
+  for (const [name, dir] of [
+    ["XDG_DATA_HOME", "home/data"],
+    ["XDG_CACHE_HOME", "home/cache"],
+    ["XDG_CONFIG_HOME", "home/config"],
+    ["TMPDIR", "tmp"],
+  ]) {
+    process.env[name] = join(run, dir);
+    mkdirSync(process.env[name], { recursive: true, mode: 0o700 });
+  }
+}
+
+/** Every file of OUT and the app's XDG dirs and TMPDIR holding a secret is deleted; one under
+ * DW_E2E_SCAN_EXTRA is reported and left. Returns all of them. */
+function sweep(): string[] {
+  if (!run) return [];
+  const owned = [OUT, join(run, "home"), join(run, "tmp")].filter((d) => existsSync(d));
+  const found = [...owned.flatMap((d) => leaks(d, secrets)), ...(SCAN_EXTRA && existsSync(SCAN_EXTRA) ? leaks(SCAN_EXTRA, secrets) : [])];
+  removeOwned(found, [run, OUT]);
+  return found;
+}
+
+/** Deletes the run's runtime files (data root, passphrase, XDG dirs, TMPDIR); OUT stays. */
+function dropRuntime() {
+  if (!run || !existsSync(run)) return;
+  for (const name of readdirSync(run)) if (join(run, name) !== OUT) rmSync(join(run, name), { recursive: true, force: true, maxRetries: 3 });
+  if (readdirSync(run).length === 0) rmSync(run, { recursive: true, force: true });
+}
 
 function mask(text: string): string {
   const words = [...new Set(secrets.flatMap((s) => s.split(/\s+/)))].filter(Boolean).sort((a, b) => b.length - a.length);
@@ -98,21 +138,14 @@ interface WriteResult {
   readBack?: string | null;
 }
 
-/** Every file under SCANNED holding a secret; the files are deleted. */
-function sweep(): string[] {
-  const found = SCANNED.filter((d) => existsSync(d)).flatMap((d) => leaks(d, secrets));
-  for (const f of found) rmSync(f.replace(/ \(\d+\)$/, ""), { force: true });
-  return found;
-}
-
 const phaseLine = (s: SyncStatus) => `${s.caughtUp ? "Synced" : "Syncing"} active=${s.activePhase ?? "-"} done=[${s.phases.filter((p) => p.done).map((p) => p.phase).join(",")}]`;
 const masternodesDone = (s: SyncStatus) => s.caughtUp && s.phases.some((p) => p.phase === "masternodes" && p.done);
 
 async function main() {
-  mkdirSync(OUT, { recursive: true });
-  work = mkdtempSync(join(tmpdir(), "dw-profile-")); // mode 0700
-  const appRoot = join(work, "app");
-  const passFile = join(work, "passphrase");
+  layout();
+  if (!run) throw new Error("no run directory");
+  const appRoot = join(run, "app");
+  const passFile = join(run, "passphrase");
   const passphrase = randomBytes(18).toString("base64url");
   const phrase = readFileSync(join(FIXTURE, `${WALLET}.mnemonic`), "utf8").trim();
   secrets.push(phrase, phrase.split(/\s+/).join(" "), passphrase);
@@ -130,7 +163,7 @@ async function main() {
   try {
     dwcli(appRoot, passFile, ["init-vault"]);
     dwcli(appRoot, passFile, ["import", "--birth-height", BIRTH_HEIGHT, "--name", `Fixture ${WALLET}`], `${phrase}\n`);
-    step(`fresh testnet data root with fixture wallet ${WALLET}, birth ${BIRTH_HEIGHT}; write at ${WRITE_AT}`);
+    step(`fresh testnet data root with fixture wallet ${WALLET}, birth ${BIRTH_HEIGHT}; write at ${WRITE_AT}; run ${run}, output ${OUT}`);
     const started = await startDriver(PORT, OUT, (d) => (driver = d));
     const wd = new WebDriver(started.base, OUT);
     try {
@@ -171,31 +204,8 @@ async function main() {
         return ready || undefined;
       });
       await wd.screenshot("1-before-write");
-      if (WRITE_AT === "never") {
-        step("reads only: no write");
-        return;
-      }
-
-      const grant = await invoke<AuthGrant>(wd, "authorize", {
-        purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "300000000" },
-        walletId,
-        credential: { kind: "passphrase", passphrase },
-      });
-      if (!grant.ok) throw new Error(`authorize: ${JSON.stringify(grant.err)}`);
-      const edit = { displayName: LABEL, publicMessage: `${LABEL}, written ${WRITE_AT}`, avatar: { kind: "keep" } };
-      step(`writing the profile (${lastPhaseLine})`);
-      const t = Date.now();
-      const r = await invoke<null>(wd, "dashpay_update_profile", { walletId, identity, edit, grant: grant.ok.id });
-      const ms = Date.now() - t;
-      const ok = r.err === undefined;
-      write = { at: WRITE_AT, phase: lastPhaseLine, ms, ok, error: ok ? null : mask(JSON.stringify(r.err)), label: LABEL };
-      step(`write ${ok ? "OK" : `FAILED ${write.error}`} in ${ms} ms`);
-      await wd.screenshot("2-after-write");
-      if (ok) {
-        const back = await invoke<DashPayProfile | null>(wd, "dashpay_profile", { walletId, identity });
-        step(`read back: ${JSON.stringify(back.ok?.displayName ?? back.err)}`);
-        write.readBack = back.ok?.displayName ?? null;
-      }
+      if (WRITE_AT === "never") step("reads only: no write");
+      else write = await writeProfile(wd, { walletId, identity, passphrase, phase: lastPhaseLine }, step);
     } catch (e) {
       failure = e;
       await wd.screenshot("failure").catch(() => undefined);
@@ -209,25 +219,55 @@ async function main() {
     await driverGone(driver);
     driver = undefined;
   }
-  // Written before the scan, which covers it too.
-  writeFileSync(join(OUT, "result.json"), JSON.stringify({ wallet: WALLET, identity, write, failure: failure ? mask(String(failure)) : null, steps }, null, 2));
+  // Every mode ends here. result.json first: the scan covers it.
+  writeFileSync(join(OUT, "result.json"), JSON.stringify({ wallet: WALLET, identity, writeAt: WRITE_AT, write: write ?? null, failure: failure ? mask(String(failure)) : null, steps }, null, 2));
   const found = sweep();
+  dropRuntime();
   if (found.length > 0) {
     const leak = `secrets in plain text: ${found.join(", ")}`;
     throw new Error(failure ? `${failure instanceof Error ? failure.message : String(failure)}; ${leak}` : leak);
   }
   if (failure) throw failure;
-  step(`no phrase or passphrase in OUT${SCAN_EXTRA ? " or the run's logs" : ""}`);
+  step(`no phrase or passphrase in OUT, the app's XDG dirs or TMPDIR${SCAN_EXTRA ? `, or ${SCAN_EXTRA}` : ""}`);
   if (WRITE_AT !== "never" && !write?.ok) throw new Error("the write failed");
-  console.log(`profile-write: PASS (${steps.length} steps)`);
+  console.log(`profile-write: PASS (${steps.length} steps, ${WRITE_AT === "never" ? "reads only" : "one write"}); output in ${OUT}`);
+}
+
+/** The one profile edit, under a single-use grant, then a read back. */
+async function writeProfile(
+  wd: WebDriver,
+  { walletId, identity, passphrase, phase }: { walletId: string; identity: string; passphrase: string; phase: string },
+  step: (s: string) => void,
+): Promise<WriteResult> {
+  const grant = await invoke<AuthGrant>(wd, "authorize", {
+    purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "300000000" },
+    walletId,
+    credential: { kind: "passphrase", passphrase },
+  });
+  if (!grant.ok) throw new Error(`authorize: ${JSON.stringify(grant.err)}`);
+  const edit = { displayName: LABEL, publicMessage: `${LABEL}, written ${WRITE_AT}`, avatar: { kind: "keep" } };
+  step(`writing the profile (${phase})`);
+  const t = Date.now();
+  const r = await invoke<null>(wd, "dashpay_update_profile", { walletId, identity, edit, grant: grant.ok.id });
+  const ms = Date.now() - t;
+  const ok = r.err === undefined;
+  const write: WriteResult = { at: WRITE_AT, phase, ms, ok, error: ok ? null : mask(JSON.stringify(r.err)), label: LABEL };
+  step(`write ${ok ? "OK" : `FAILED ${write.error}`} in ${ms} ms`);
+  await wd.screenshot("2-after-write");
+  if (ok) {
+    const back = await invoke<DashPayProfile | null>(wd, "dashpay_profile", { walletId, identity });
+    step(`read back: ${JSON.stringify(back.ok?.displayName ?? back.err)}`);
+    write.readBack = back.ok?.displayName ?? null;
+  }
+  return write;
 }
 
 async function interrupted(signal: NodeJS.Signals) {
   console.error(`profile-write: FAIL: ${signal}`);
   stopDriver(driver);
   await driverGone(driver);
-  if (work) rmSync(work, { recursive: true, force: true, maxRetries: 3 });
   sweep();
+  dropRuntime();
   process.exit(1);
 }
 process.once("SIGINT", (s) => void interrupted(s));
@@ -240,5 +280,5 @@ main()
   })
   .finally(() => {
     stopDriver(driver);
-    if (work) rmSync(work, { recursive: true, force: true, maxRetries: 3 });
+    dropRuntime();
   });
