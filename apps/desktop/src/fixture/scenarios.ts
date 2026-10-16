@@ -468,6 +468,7 @@ const SCENARIOS = {
     const w = base(t);
     w.dashpay = registering();
     w.dashpay.registrations[0] = { ...w.dashpay.registrations[0], phase: "draft", waiting: "unlock", txid: null, holdsKey: false, fundsCommitted: false };
+    w.dashpay.runs = [];
     w.lock = { ...w.lock, state: "unlockedMixingOnly" };
     return w;
   },
@@ -483,6 +484,34 @@ const SCENARIOS = {
       holdsKey: false,
       fundsCommitted: false,
       failure: { phase: "keysPrepared", code: "registration.funding_insufficient", retryable: true, needed: "3002260", available: "1000000" },
+    };
+    w.dashpay.runs = [];
+    return w;
+  },
+  // DP1-09: a registration's screens (R2, R5, R8). Its run ended with the last launch.
+  /** Funded, after a relaunch: the row waits for Continue's grant (R2). */
+  "dashpay-registration-paused": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registering(), runs: [] };
+    return w;
+  },
+  /** Its asset lock is proved but no flow finished it: Finish transfers (R5). */
+  "dashpay-registration-needs-finish": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registering(), runs: [] };
+    w.dashpay.registrations[0].waiting = "needsFinish";
+    return w;
+  },
+  /** Failed for good after its funding went out: the recovery copy and Repair (R8). */
+  "dashpay-registration-stopped": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registering(), runs: [] };
+    w.dashpay.registrations[0] = {
+      ...w.dashpay.registrations[0],
+      phase: "failed",
+      waiting: null,
+      holdsKey: false,
+      failure: { phase: "fundingSent", code: "registration.islock_timeout", retryable: false, needed: null, available: null },
     };
     return w;
   },

@@ -35,6 +35,7 @@ import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
 import { userLinkText } from "../contacts/add";
 import { activityPage, contactList, eventOf, relationOf, type DashPayWorld, type FixtureScan } from "./dashpay";
 import { scanHandlers } from "./scan";
+import { advance, costs, failRun, fundable, NAME_CREDITS, registrationHandlers } from "./registration";
 import { routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers } from "./send";
@@ -508,6 +509,8 @@ export const HANDLERS: Handlers = {
   // Settings (U-04): settings.ts.
   ...settingsHandlers({ wallet, grant: checkGrant, useGrant }),
   ...scanHandlers(),
+  // Username registration (DP1-09): registration.ts.
+  ...registrationHandlers({ wallet, dashpay, grant: checkGrant, newLease, setLease, writeLease }),
 
   // App and network
   launch_info: (_, { world }) => world.launch,
@@ -707,7 +710,6 @@ export const HANDLERS: Handlers = {
   }),
   main_name: ({ walletId, identity }, { world }) =>
     dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!.mainName,
-  registrations: ({ walletId }, { world }) => dashpay(world, walletId).registrations,
   // DashPay::registration_quote (registration.rs `plan`): the label's rules, the funding kinds this
   // build takes, then the lock floor for the name's kind (contested 0.25, else 0.03 Dash) and a
   // fee for the wallet's coins. The fixture's contested quote reads no contenders.
@@ -718,17 +720,15 @@ export const HANDLERS: Handlers = {
       throw fail("name.invalid", `invalid username: ${label}`);
     if (funding.kind === "invitation") throw fail("platform.not_implemented", "DashPay.registration_quote", { kind: "call", call: "DashPay.registration_quote" });
     if (funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
-    const contested = /^[A-Za-z01-]{3,19}$/.test(label);
-    const lockDuffs = contested ? 25_000_000 : 3_000_000;
-    const feeDuffs = 2_260;
-    const credits = 2_000_000_000;
+    const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label);
     return {
       contested,
       lockDuffs,
       feeDuffs,
-      totalDuffs: lockDuffs + feeDuffs,
-      remainingCredits: String(lockDuffs * 1000 - credits),
-      grant: { maxDuffs: lockDuffs + feeDuffs, maxCredits: String(credits) },
+      totalDuffs,
+      remainingCredits: String(BigInt(lockDuffs * 1000) - credits),
+      availableDuffs: funding.kind === "coreBalance" ? fundable(wallet(world, walletId)) : 0,
+      grant: { maxDuffs: totalDuffs, maxCredits: String(credits) },
     };
   },
   search_users: ({ walletId, prefix, limit }, { world }) => {
@@ -921,12 +921,11 @@ export const HANDLERS: Handlers = {
     ctx.emit({ kind: "platform", network: ctx.world.launch.network.dirName, walletId, change: { domain: "identities" } });
     return null;
   },
-  // DashPay::grant_request (flows.rs): only an empty identity is refused; `registerName` is
-  // DP1-03's quote, which the fixture does not model.
+  // DashPay::grant_request (flows.rs): only an empty identity is refused; `registerName` is the
+  // name's credits (registration.ts).
   grant_request: ({ identity, action }) => {
     if (!identity.trim()) throw fail("invalid_argument", "identity is empty");
-    if (action.kind === "registerName") throw fail("platform.not_implemented", "the fixture does not quote names", { kind: "call", call: "grant_request(registerName)" });
-    return { maxDuffs: 0, maxCredits: String(GRANT_CREDITS[action.kind]) };
+    return { maxDuffs: 0, maxCredits: String(action.kind === "registerName" ? NAME_CREDITS : GRANT_CREDITS[action.kind]) };
   },
   credits_cost_table: ({ walletId }, { world }) => {
     wallet(world, walletId);
@@ -972,4 +971,11 @@ export const HANDLERS: Handlers = {
     markRead(ctx, walletId, bell(ctx.world, walletId, identity), identity, upTo);
     return null;
   },
+};
+
+/** A registration run's steps, where the network would answer (FixtureHandle's
+ * `advanceRegistration` and `failRegistration`). */
+export const registrationRun = {
+  advance: (ctx: Ctx, walletId: string, draft: string) => advance(ctx, walletId, draft, { dashpay, setLease }),
+  fail: (ctx: Ctx, walletId: string, draft: string, code: string, retryable: boolean) => failRun(ctx, walletId, draft, code, retryable, { dashpay, setLease }),
 };

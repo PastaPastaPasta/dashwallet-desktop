@@ -51,6 +51,10 @@ export interface DashPayWorld {
   cannotReceive: string[];
   /** The `dapk` scans `verify_scanned` kept, as the engine's `Scans` (DP2-03): spent once sent. */
   scans: FixtureScan[];
+  /** Asset locks the wallet's registrations broadcast (DP1-09): a resume adds none. */
+  assetLocks: number;
+  /** The drafts whose run this session holds (DP1-09); a relaunch drops them. */
+  runs: string[];
 }
 
 /** A kept `dapk` scan: its id, whom it reaches, and when it expires (UNIX seconds). */
@@ -368,6 +372,8 @@ export function noIdentity(): DashPayWorld {
     activity: {},
     cannotReceive: [],
     scans: [],
+    assetLocks: 0,
+    runs: [],
   };
 }
 
@@ -376,6 +382,8 @@ export function registering(): DashPayWorld {
   return {
     ...noIdentity(),
     status: { kind: "registering", draft: "reg-1" },
+    assetLocks: 1,
+    runs: ["reg-1"],
     registrations: [
       {
         draft: "reg-1",
@@ -477,6 +485,8 @@ export function registered(): DashPayWorld {
     // Mayumi registered a name but never added DashPay's keys (DP2-08 D4).
     cannotReceive: [IDENTITY.mayumi],
     scans: [],
+    assetLocks: 1,
+    runs: [],
     directory: [
       ...contacts.map(hit),
       { identity: IDENTITY.mallory, username: "mallory", displayName: "Mallory", avatarUrl: null, relation: "stranger", unverified: false },
