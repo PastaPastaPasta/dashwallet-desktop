@@ -114,7 +114,7 @@ The record with times is `/work/scratch/dw-bl162/writes.md`. Logs: `/work/scratc
 
 | # | What | Owner |
 |---|---|---|
-| F1 | Correct DP2-08's D32 and F6: the failed sends went out during sync ("Syncing 72.8 %"), not after Synced. F6 is closed by BL-162 (trust layer cleared, not reproduced). | DP2-08 doc owner |
+| F1 | Correct DP2-08's D32 and F6: the failed sends went out during sync ("Syncing 72.8 %"), not after Synced. F6 is closed by BL-162 (trust layer cleared, not reproduced). | done on main d0fef6b4 (DP2-08 merge) |
 | F2 | If a write fails like this again: rerun with `DW_LOG=info,dw_engine=debug,dash_sdk=debug,dash_sdk::platform::transition=trace,rs_dapi_client=debug` (each failed DAPI attempt and ban is logged; broadcast success is only at `trace`, which tells reading (a) from (b)), or `scripts/e2e-tauri-profile-write.sh` with `DW_PROFILE_WRITE_AT=early`. dw_engine prints a quorum hash in display order (`00000000c9…`), dash-spv's `Quorum not found` in byte order (`…00000000`): reverse one to match. | whoever sees it |
 | F3 | A log file a user can send. A Windows release build has no console, so `DW_LOG` writes nowhere there. | packaging / support |
 | F4 | A long write shows nothing for 2 min before failing. A progress or "still trying" state on the card, or a `PutSettings::wait_timeout` shorter than the 4 × 30 s wait, would help. | DashPay UX |
