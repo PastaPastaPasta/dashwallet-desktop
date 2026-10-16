@@ -24,6 +24,10 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { AuthGrant } from "../src/api/generated/AuthGrant";
+import type { DashPayProfile } from "../src/api/generated/DashPayProfile";
+import type { SyncStatus } from "../src/api/generated/SyncStatus";
+import type { WalletSummary } from "../src/api/generated/WalletSummary";
 import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, WebDriver } from "./driver.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
@@ -36,6 +40,8 @@ const BIRTH_HEIGHT = env("DW_PROFILE_BIRTH_HEIGHT", "1568806");
 const OUT = resolve(env("DW_E2E_OUT", "test-results/tauri-profile-write"));
 const PORT = Number(env("DW_E2E_PORT", "4770"));
 const SCAN_EXTRA = process.env.DW_E2E_SCAN_EXTRA ? resolve(process.env.DW_E2E_SCAN_EXTRA) : null;
+/** Where no phrase or passphrase may be left: OUT, and the run's logs when named. */
+const SCANNED = [OUT, ...(SCAN_EXTRA ? [SCAN_EXTRA] : [])];
 /** A fresh testnet sync, headers to masternodes. */
 const SYNC_TIMEOUT_MS = Number(env("DW_E2E_SYNC_TIMEOUT_MS", "1800000"));
 /** The write: a Platform state transition and its proof. */
@@ -82,20 +88,25 @@ async function invoke<T>(wd: WebDriver, cmd: string, args: Record<string, unknow
   return wd.scriptAsync<Answer<T>>(INVOKE, [cmd, args]);
 }
 
-interface Phase {
+interface WriteResult {
+  at: string;
   phase: string;
-  done: boolean;
+  ms: number;
+  ok: boolean;
+  error: string | null;
+  label: string;
+  readBack?: string | null;
 }
 
-interface Sync {
-  running: boolean;
-  phases: Phase[];
-  activePhase: string | null;
-  caughtUp: boolean;
+/** Every file under SCANNED holding a secret; the files are deleted. */
+function sweep(): string[] {
+  const found = SCANNED.filter((d) => existsSync(d)).flatMap((d) => leaks(d, secrets));
+  for (const f of found) rmSync(f.replace(/ \(\d+\)$/, ""), { force: true });
+  return found;
 }
 
-const phaseLine = (s: Sync) => `${s.caughtUp ? "Synced" : "Syncing"} active=${s.activePhase ?? "-"} done=[${s.phases.filter((p) => p.done).map((p) => p.phase).join(",")}]`;
-const masternodesDone = (s: Sync) => s.caughtUp && s.phases.some((p) => p.phase === "masternodes" && p.done);
+const phaseLine = (s: SyncStatus) => `${s.caughtUp ? "Synced" : "Syncing"} active=${s.activePhase ?? "-"} done=[${s.phases.filter((p) => p.done).map((p) => p.phase).join(",")}]`;
+const masternodesDone = (s: SyncStatus) => s.caughtUp && s.phases.some((p) => p.phase === "masternodes" && p.done);
 
 async function main() {
   mkdirSync(OUT, { recursive: true });
@@ -115,13 +126,12 @@ async function main() {
   };
   const identity = identityOf(WALLET);
   let failure: unknown;
-  let write: Record<string, unknown> | undefined;
+  let write: WriteResult | undefined;
   try {
     dwcli(appRoot, passFile, ["init-vault"]);
     dwcli(appRoot, passFile, ["import", "--birth-height", BIRTH_HEIGHT, "--name", `Fixture ${WALLET}`], `${phrase}\n`);
     step(`fresh testnet data root with fixture wallet ${WALLET}, birth ${BIRTH_HEIGHT}; write at ${WRITE_AT}`);
     const started = await startDriver(PORT, OUT, (d) => (driver = d));
-    driver = started.driver;
     const wd = new WebDriver(started.base, OUT);
     try {
       await wd.start({ alwaysMatch: { "tauri:options": { application: APP, args: ["--datadir", appRoot, ...NETWORK, "--sync", "--theme", "light"] } } });
@@ -130,35 +140,35 @@ async function main() {
       await wd.press(tid("lock-submit"));
       await wd.waitGone(tid("lock-screen"), "the lock screen");
       if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
-      const wallets = await invoke<{ walletId: string }[]>(wd, "list_wallets");
+      const wallets = await invoke<WalletSummary[]>(wd, "list_wallets");
       const walletId = wallets.ok?.[0]?.walletId;
       if (!walletId) throw new Error(`no wallet: ${JSON.stringify(wallets.err)}`);
       step(`unlocked wallet ${WALLET} (${walletId.slice(0, 8)})`);
 
-      let last = "";
+      let lastPhaseLine = "";
       let syncedAt: number | null = null;
       let lastRead = 0;
-      let known = false;
-      const watch = async () => {
-        const s = await invoke<Sync>(wd, "sync_status");
+      let identityKnown = false;
+      const observe = async () => {
+        const s = await invoke<SyncStatus>(wd, "sync_status");
         if (s.ok) {
           const line = phaseLine(s.ok);
-          if (line !== last) step(`sync: ${line}`);
-          last = line;
+          if (line !== lastPhaseLine) step(`sync: ${line}`);
+          lastPhaseLine = line;
           if (syncedAt === null && masternodesDone(s.ok)) syncedAt = Date.now();
         }
         if (Date.now() - lastRead >= READ_EVERY_S * 1000) {
           lastRead = Date.now();
           const t = Date.now();
-          const p = await invoke<{ displayName: string | null } | null>(wd, "dashpay_profile", { walletId, identity });
-          known ||= p.ok !== undefined;
+          const p = await invoke<DashPayProfile | null>(wd, "dashpay_profile", { walletId, identity });
+          identityKnown ||= p.ok !== undefined;
           step(`read profile in ${Date.now() - t} ms: ${p.err ? `error ${JSON.stringify(p.err)}` : JSON.stringify(p.ok?.displayName ?? null)}`);
         }
       };
       await poll(SYNC_TIMEOUT_MS, `the write phase (${WRITE_AT})`, async () => {
-        await watch();
-        if (WRITE_AT === "early") return known ? true : undefined;
-        return syncedAt !== null && Date.now() - syncedAt >= AFTER_SYNCED_S * 1000 ? true : undefined;
+        await observe();
+        const ready = WRITE_AT === "early" ? identityKnown : syncedAt !== null && Date.now() - syncedAt >= AFTER_SYNCED_S * 1000;
+        return ready || undefined;
       });
       await wd.screenshot("1-before-write");
       if (WRITE_AT === "never") {
@@ -166,22 +176,23 @@ async function main() {
         return;
       }
 
-      const grant = await invoke<{ id: string }>(wd, "authorize", {
+      const grant = await invoke<AuthGrant>(wd, "authorize", {
         purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "300000000" },
         walletId,
         credential: { kind: "passphrase", passphrase },
       });
       if (!grant.ok) throw new Error(`authorize: ${JSON.stringify(grant.err)}`);
       const edit = { displayName: LABEL, publicMessage: `${LABEL}, written ${WRITE_AT}`, avatar: { kind: "keep" } };
-      step(`writing the profile (${last})`);
+      step(`writing the profile (${lastPhaseLine})`);
       const t = Date.now();
       const r = await invoke<null>(wd, "dashpay_update_profile", { walletId, identity, edit, grant: grant.ok.id });
       const ms = Date.now() - t;
-      write = { at: WRITE_AT, phase: last, ms, ok: r.err === undefined, error: r.err ?? null, label: LABEL };
-      step(`write ${r.err === undefined ? "OK" : `FAILED ${JSON.stringify(r.err)}`} in ${ms} ms`);
+      const ok = r.err === undefined;
+      write = { at: WRITE_AT, phase: lastPhaseLine, ms, ok, error: ok ? null : mask(JSON.stringify(r.err)), label: LABEL };
+      step(`write ${ok ? "OK" : `FAILED ${write.error}`} in ${ms} ms`);
       await wd.screenshot("2-after-write");
-      if (r.err === undefined) {
-        const back = await invoke<{ displayName: string | null } | null>(wd, "dashpay_profile", { walletId, identity });
+      if (ok) {
+        const back = await invoke<DashPayProfile | null>(wd, "dashpay_profile", { walletId, identity });
         step(`read back: ${JSON.stringify(back.ok?.displayName ?? back.err)}`);
         write.readBack = back.ok?.displayName ?? null;
       }
@@ -198,12 +209,13 @@ async function main() {
     await driverGone(driver);
     driver = undefined;
   }
-  const found = [...leaks(OUT, secrets), ...(SCAN_EXTRA && existsSync(SCAN_EXTRA) ? leaks(SCAN_EXTRA, secrets) : [])];
-  if (found.length > 0) {
-    for (const f of found) rmSync(f.replace(/ \(\d+\)$/, ""), { force: true });
-    throw new Error(`secrets in plain text: ${found.join(", ")}`);
-  }
+  // Written before the scan, which covers it too.
   writeFileSync(join(OUT, "result.json"), JSON.stringify({ wallet: WALLET, identity, write, failure: failure ? mask(String(failure)) : null, steps }, null, 2));
+  const found = sweep();
+  if (found.length > 0) {
+    const leak = `secrets in plain text: ${found.join(", ")}`;
+    throw new Error(failure ? `${failure instanceof Error ? failure.message : String(failure)}; ${leak}` : leak);
+  }
   if (failure) throw failure;
   step(`no phrase or passphrase in OUT${SCAN_EXTRA ? " or the run's logs" : ""}`);
   if (WRITE_AT !== "never" && !write?.ok) throw new Error("the write failed");
@@ -215,6 +227,7 @@ async function interrupted(signal: NodeJS.Signals) {
   stopDriver(driver);
   await driverGone(driver);
   if (work) rmSync(work, { recursive: true, force: true, maxRetries: 3 });
+  sweep();
   process.exit(1);
 }
 process.once("SIGINT", (s) => void interrupted(s));
