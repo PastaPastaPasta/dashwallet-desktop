@@ -62,6 +62,9 @@ pub struct SessionConfig {
     pub idle_timeout: Duration,
     /// Outbound messages per second (token bucket, burst of the same size).
     pub send_rate_per_sec: u32,
+    /// Outbound messages queued before [`Session::send`] waits and
+    /// [`Session::try_send`] gives up on the peer.
+    pub send_queue: usize,
 }
 
 impl Default for SessionConfig {
@@ -77,6 +80,7 @@ impl Default for SessionConfig {
             ping_interval: Duration::from_secs(120),
             idle_timeout: Duration::from_secs(20 * 60),
             send_rate_per_sec: 50,
+            send_queue: 256,
         }
     }
 }
@@ -292,12 +296,13 @@ impl Session {
             closed,
             bytes_received: AtomicU64::new(0),
         });
-        let (out, out_rx) = mpsc::channel::<Vec<u8>>(256);
+        let (out, out_rx) = mpsc::channel::<Vec<u8>>(config.send_queue.max(1));
         let tasks = vec![
             tokio::spawn(write_loop(
                 writer,
                 out_rx,
                 config.send_rate_per_sec.max(1),
+                config.idle_timeout,
                 Arc::clone(&shared),
             )),
             tokio::spawn(read_loop(
@@ -367,6 +372,22 @@ impl Session {
             .map_err(|_| P2pError::Closed(self.addr))
     }
 
+    /// Queues `payload` as `command` without waiting. A full queue means the
+    /// peer stopped reading: the session is closed. Fails once closed.
+    pub fn try_send(&self, command: &str, payload: Vec<u8>) -> Result<(), P2pError> {
+        if self.is_closed() {
+            return Err(P2pError::Closed(self.addr));
+        }
+        let framed = codec::encode(self.magic, command, &payload)?;
+        self.out.try_send(framed).map_err(|e| {
+            if matches!(e, mpsc::error::TrySendError::Full(_)) {
+                tracing::debug!(addr = %self.addr, "p2p send queue full; closing");
+                self.close();
+            }
+            P2pError::Closed(self.addr)
+        })
+    }
+
     /// Messages whose command is in `commands` (every message when empty),
     /// from now on, until the session closes (the stream then ends).
     pub fn subscribe(&self, commands: &[&str]) -> mpsc::UnboundedReceiver<Message> {
@@ -404,10 +425,13 @@ impl Drop for Session {
     }
 }
 
+/// Writes queued frames at `rate` per second; a write that does not finish
+/// within `stall` (the peer stopped reading) closes the session.
 async fn write_loop(
     mut writer: OwnedWriteHalf,
     mut rx: mpsc::Receiver<Vec<u8>>,
     rate: u32,
+    stall: Duration,
     shared: Arc<Shared>,
 ) {
     let mut tokens = rate;
@@ -422,9 +446,16 @@ async fn write_loop(
             refill = now + Duration::from_secs(1);
         }
         tokens = tokens.saturating_sub(1);
-        if let Err(e) = writer.write_all(&frame).await {
-            tracing::debug!(error = %e, "p2p write failed; closing");
-            break;
+        match tokio::time::timeout(stall, writer.write_all(&frame)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, "p2p write failed; closing");
+                break;
+            }
+            Err(_) => {
+                tracing::debug!("p2p write stalled; closing");
+                break;
+            }
         }
     }
     let _ = writer.shutdown().await;
@@ -454,13 +485,13 @@ async fn read_loop(
             .bytes_received
             .fetch_add((HEADER_LEN + msg.payload.len()) as u64, Ordering::Relaxed);
         if msg.command == "ping" {
-            match codec::encode(magic, "pong", &msg.payload) {
-                Ok(pong) => {
-                    if out.send(pong).await.is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
+            // Never wait here: a peer that pings but does not read our
+            // writes would hold the loop outside its idle timeout.
+            let queued = codec::encode(magic, "pong", &msg.payload)
+                .is_ok_and(|pong| out.try_send(pong).is_ok());
+            if !queued {
+                tracing::debug!("p2p pong not queued; closing");
+                break;
             }
             continue;
         }

@@ -142,6 +142,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn try_send_closes_a_session_whose_peer_stops_reading() {
+        let peer = MockPeer::bind(Network::Regtest).await.unwrap();
+        let addr = peer.addr();
+        let server = tokio::spawn(async move { peer.accept().await.unwrap() });
+        let config = SessionConfig {
+            send_queue: 4,
+            send_rate_per_sec: 1,
+            ..SessionConfig::default()
+        };
+        let session = Session::connect(addr, Network::Regtest, config)
+            .await
+            .unwrap();
+        let _conn = server.await.unwrap();
+        // One frame a second leaves the queue: the fifth or sixth send in a
+        // row finds it full and closes the session instead of waiting.
+        let sent = (0..8)
+            .take_while(|_| session.try_send("dsa", vec![0; 8]).is_ok())
+            .count();
+        assert!((4..=6).contains(&sent), "{sent}");
+        assert!(session.is_closed());
+        assert!(matches!(
+            session.try_send("dsa", vec![]),
+            Err(P2pError::Closed(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn peer_close_ends_subscriptions() {
         let peer = MockPeer::bind(Network::Regtest).await.unwrap();
         let addr = peer.addr();
