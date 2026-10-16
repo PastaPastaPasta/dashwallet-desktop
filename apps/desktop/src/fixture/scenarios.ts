@@ -518,6 +518,23 @@ const SCENARIOS = {
     };
     return w;
   },
+  /** Failed (a retryable timeout) while its funding's outcome is unknown: the engine keeps the
+   * wait of the step it still owns (`Awaiting`), so the page, Home and Tools ▸ Repair send it to
+   * Resolve stuck funding (f1, Sol r1 P2). */
+  "dashpay-registration-failed-unknown": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registering(), runs: [] };
+    w.dashpay.registrations[0] = {
+      ...w.dashpay.registrations[0],
+      phase: "failed",
+      waiting: "fundingUnknown",
+      holdsKey: false,
+      running: false,
+      fundsCommitted: true,
+      failure: { phase: "keysPrepared", code: "platform.timeout", retryable: true, needed: null, available: null },
+    };
+    return w;
+  },
   /** "alice" contested, the vote's end not read yet. */
   "dashpay-contest-pending-no-end": (t) => contestPending(base(t), null),
   /** Alice without a username (its name step failed): Finish username registration; My QR has no link (DP2-08 D12). */

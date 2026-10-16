@@ -110,7 +110,9 @@ export function reported(world: World, walletId: string, dp: DashPayWorld, r: Re
   // would look unchanged to the query cache. A parked run has ended, as the engine's does (D26).
   const running = active(world, walletId, dp, r.draft);
   if (r.phase === "done" || running) return { ...r, running };
-  if (r.phase === "failed") return { ...r, waiting: null, holdsKey: false, running: false };
+  // A failed row that still owns an outstanding funding step (the engine's `Awaiting` standing)
+  // keeps that step's wait; any other failed row waits for nothing (f1, Sol r1 P2).
+  if (r.phase === "failed") return { ...r, waiting: awaitingWait(r.waiting), holdsKey: false, running: false };
   const kept = r.waiting === "needsFinish" || r.waiting === "fundingUnknown";
   // A parked run (its lease revoked or parked, D14) says what it parks for; an idle row its proof.
   const proofless = !dp.runs.includes(r.draft) && (r.phase === "fundingSent" || r.phase === "proofWaiting");
@@ -118,6 +120,11 @@ export function reported(world: World, walletId: string, dp: DashPayWorld, r: Re
   const waiting: RegistrationWaitName = kept ? r.waiting! : proofless ? "chainLock" : keyless ? "unlock" : "authorize";
   return { ...r, waiting, holdsKey: false, running: false };
 }
+
+/** The waits registration.rs keeps on a failed `Awaiting` row: its funding's unknown outcome, or
+ * its lock's proof (`chainLock`, `network`). */
+const awaitingWait = (w: RegistrationStatus["waiting"]): RegistrationWaitName | null =>
+  w === "fundingUnknown" || w === "chainLock" || w === "network" ? w : null;
 
 /** What a running row waits for in `phase`: the funding's InstantSend lock, else nothing. */
 const runningWait = (phase: RegistrationStatus["phase"]): RegistrationWaitName | null =>

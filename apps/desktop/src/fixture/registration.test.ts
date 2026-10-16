@@ -122,6 +122,16 @@ describe("a run, step by step", () => {
     expect(await rowOf(second)).toMatchObject({ phase: "fundingSent", failure: null, waiting: "instantSend" });
     expect(g.world.dashpay.assetLocks).toBe(1);
   });
+
+  it("a failed row keeps the wait of a funding step it still owns, as the engine's Awaiting row (Sol r1 P2)", async () => {
+    const f = install("dashpay-registration-failed-unknown");
+    const [row] = await cmd.registrations(W);
+    expect(row).toMatchObject({ phase: "failed", waiting: "fundingUnknown", failure: { retryable: true }, running: false, fundsCommitted: true });
+    for (const [kept, reads] of [["chainLock", "chainLock"], ["network", "network"], ["authorize", null], ["instantSend", null]] as const) {
+      f.world.dashpay.registrations[0].waiting = kept;
+      expect((await rowOf(row.draft)).waiting, kept).toBe(reads);
+    }
+  });
 });
 
 describe("relaunch and resume (the acceptance: no second asset lock)", () => {

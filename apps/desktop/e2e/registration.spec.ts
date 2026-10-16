@@ -248,6 +248,22 @@ test("D5: a shortfall against what the wallet can spend holds Confirm & pay", as
   await expect(page.getByTestId("registration-pay")).toBeDisabled();
 });
 
+test("R4 a failed registration whose funding is unknown goes to Repair, which resolves it (Sol r1 P2)", async ({ page }) => {
+  await open(page, "dashpay-registration-failed-unknown");
+  await expect(card(page)).toHaveAttribute("data-state", "creatingRepair");
+  await toJoin(page);
+  await expect(screen(page)).toHaveAttribute("data-kind", "repair");
+  await expect(page.getByTestId("registration-lines")).toContainText("Your funds are safe.");
+  await page.getByTestId("registration-repair").click();
+  const stuck = page.getByTestId("repair-stuck");
+  await expect(stuck).toContainText("alice");
+  await stuck.getByRole("button").first().click();
+  await page.getByTestId("repair-confirm-ok").click();
+  await authorize(page);
+  await expect(page.getByTestId("repair-outcome")).toContainText("All coins were sent to yourself");
+  await expect(stuck).toBeHidden();
+});
+
 test("R5 Finish transfers on the page; R8 a stopped funded registration says the funds are safe and opens Repair", async ({ page }) => {
   await open(page, "dashpay-registration-needs-finish");
   await toJoin(page);
@@ -295,6 +311,7 @@ const SCREENS: { name: string; scenario: string; reach: (page: Page) => Promise<
   { name: "paused", scenario: "dashpay-registration-paused", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "paused")) },
   { name: "retry", scenario: "dashpay-registering-paused", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "retry")) },
   { name: "repair", scenario: "dashpay-registration-needs-finish", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "repair")) },
+  { name: "repair-unknown", scenario: "dashpay-registration-failed-unknown", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "repair")) },
   { name: "stopped", scenario: "dashpay-registration-stopped", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "stopped")) },
 ];
 
