@@ -38,8 +38,8 @@ matches wins.
 | S2 | `readFailed` | the status read failed | "Could not read the mixing status" | the failure | Try again | none |
 | S3 | `stopping` | `state = stopping` | "Stopping…" | — | Stop (disabled) | yes |
 | S4 | `starting` | `state = mixing`, status `idle` (the first step runs 5–15 s after Start) | "Starting…" | — | Stop Mixing | yes |
-| S5 | `paused` | `state = mixing`, status one of the **waiting** codes (D4) | "Paused" | Core's status line | Stop Mixing | yes |
-| S6 | `finished` | `state = mixing`, completion ≥ 100 % | "Fully Mixed" | Core's status line | Stop Mixing | yes |
+| S5 | `paused` | `state = mixing`, below 100 %, status one of the **waiting** codes (D4) | "Paused" | Core's status line | Stop Mixing | yes |
+| S6 | `finished` | `state = mixing`, completion ≥ 100 %, whatever the status (it waits for new coins) | "Fully Mixed" | Core's status line | Stop Mixing | yes |
 | S7 | `mixing` | `state = mixing`, any other status | "Mixing" | Core's status line | Stop Mixing | yes |
 | S8 | `disabled` | `unavailable = disabled` | "CoinJoin is turned off" | "Turn it on in Settings ▸ CoinJoin." | Open Settings | none |
 | S9 | `watchOnly` | `unavailable = watchOnly` | "Watch-only wallets cannot mix." | — | none | none |
