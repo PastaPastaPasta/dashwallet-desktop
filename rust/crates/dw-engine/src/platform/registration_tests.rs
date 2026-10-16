@@ -1173,6 +1173,12 @@ fn a_grant_of_the_quote_runs_to_done() {
         let f = fixture(false);
         let lib = f.fake();
         lib.w().spendable.inputs = 0;
+        let wallet = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
+        assert_eq!(
+            f.engine.block_on(crate::coins::funding_coin_count(&wallet)),
+            0,
+            "the permit counts the fixture wallet's real coins"
+        );
         let quote = f
             .engine
             .block_on(registration::quote(&*lib, &request(PLAIN)))
@@ -1203,6 +1209,18 @@ fn a_grant_of_the_quote_runs_to_done() {
         f.settle(draft);
         let status = f.status(&lib, draft);
         let got = (status.phase, status.waiting, status.failure.map(|x| x.code));
+        // The funding charged the total and never the extra duff.
+        let funding: Vec<_> = f
+            .session
+            .leases()
+            .unwrap()
+            .into_iter()
+            .filter(|l| l.flow == FlowKind::Registration)
+            .flat_map(|l| l.budgets)
+            .filter(|b| b.purpose == super::flows::BudgetPurpose::Funding)
+            .map(|b| (b.ceiling, b.spent))
+            .collect();
+        assert_eq!(funding, [(quote.total_duffs + headroom, quote.total_duffs)]);
         if done {
             assert_eq!(got, (RegistrationPhase::Done, None, None));
         } else {

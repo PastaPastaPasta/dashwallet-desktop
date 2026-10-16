@@ -36,7 +36,7 @@ afterEach(() => {
 
 const install = (scenario: ScenarioName = "dashpay-no-identity"): FixtureHandle => installFixture({ scenario });
 
-async function grant(maxDuffs = 3_002_260, maxCredits = "2000000000") {
+async function grant(maxDuffs = 3_002_261, maxCredits = "2000000000") {
   return (await cmd.authorize({ kind: "platformOp", maxDuffs, maxCredits }, W, { kind: "passphrase", passphrase: "demo" })).id;
 }
 
