@@ -1,11 +1,13 @@
 // Pay ▸ To an address, the logic without React (U-03): which credential the confirm sheet
 // asks for, what the engine's send refusals say and where, what the confirm sheet promised and
-// whether the signed transaction keeps that promise, and how a broadcast ended.
+// whether the signed transaction keeps that promise, and how a broadcast ended. A payment to a
+// DashPay contact (DP3-06) shares all of it; its own parts are in contact.ts.
 
 import { hasCode, isAppError, retryAfterSecs } from "../../api/backend";
 import type { AddressClass } from "../../api/generated/AddressClass";
 import type { AppError } from "../../api/generated/AppError";
 import type { ChangePolicy } from "../../api/generated/ChangePolicy";
+import type { ContactRecipient } from "../../api/generated/ContactRecipient";
 import type { CoinSource } from "../../api/generated/CoinSource";
 import type { FeeMode } from "../../api/generated/FeeMode";
 import type { LockStatus } from "../../api/generated/LockStatus";
@@ -91,6 +93,14 @@ export interface PayInput {
   label: string;
   message: string;
 }
+
+/** What a payment pays: an address, or a DashPay contact whose address the engine reserves at
+ * prepare (DP3-06 D8). */
+export type PayRecipient = Recipient | ContactRecipient;
+
+export const isContact = (r: PayRecipient): r is ContactRecipient => "contact" in r;
+
+export const subtractsFee = (r: PayRecipient) => (isContact(r) ? r.subtractFee : r.subtractFeeFromAmount);
 
 export function recipientOf(input: PayInput): Recipient {
   return {
@@ -189,6 +199,35 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH"): { 
       return { text: "The payment may have been sent: the network did not answer in time.", field: null };
     case "send.cancelled":
       return { text: "The payment was cancelled before anything was sent.", field: null };
+    // A payment to a contact (DP3-06 D13).
+    case "contact.payment_locked":
+      return { text: "Another payment to this contact is still being sent or may have been sent. Pay again once it is settled.", field: null };
+    case "contact.channel_broken":
+      return { text: "Payments to this contact cannot be sent right now.", field: null };
+    case "contact.ineligible":
+      return {
+        text: e.data?.kind === "ineligible" && e.data.reason === "pendingIncoming" ? "Accept the contact request first, or use Accept and pay." : "This contact cannot be paid now.",
+        field: null,
+      };
+    case "contact.self":
+      return { text: "This is you.", field: null };
+    case "identity.not_found":
+      return { text: "Your DashPay identity is not available. Try again once DashPay has synced.", field: null };
+    case "platform.unavailable":
+    case "platform.timeout":
+      return { text: "Could not reach Dash Platform. Try again.", field: null };
+    case "platform.lease_revoked":
+      return { text: "The wallet locked before the payment was sent. Nothing was sent.", field: null };
+    case "platform.lease_expired":
+    case "platform.grant_invalid":
+      return { text: "The authorization expired. Send again.", field: null };
+    case "platform.needs_grant":
+    case "platform.signer_unavailable":
+      return { text: "Unlock the wallet and try again.", field: null };
+    case "platform.grant_exceeded":
+      return { text: "The payment changed. Review it again.", field: null };
+    case "storage":
+      return { text: "The payment could not be recorded, so it was not sent. Try again.", field: null };
     default:
       return null;
   }
@@ -227,7 +266,7 @@ export function authRefusal(e: AppError): AuthRefusal {
 
 /** What the confirm sheet showed and the user agreed to. */
 export interface Confirmed {
-  recipient: Recipient;
+  recipient: PayRecipient;
   estimate: TxEstimate;
   /** The custom change address, if any. */
   changeAddress: string | null;
@@ -237,7 +276,7 @@ export interface Confirmed {
   total: number;
 }
 
-export function confirmedOf(recipient: Recipient, estimate: TxEstimate, change: ChangePolicy): Confirmed {
+export function confirmedOf(recipient: PayRecipient, estimate: TxEstimate, change: ChangePolicy): Confirmed {
   const changeAddress = change.kind === "address" ? change.address : null;
   const total = estimate.totalSent + estimate.fee + (changeAddress === null ? 0 : (estimate.change ?? 0));
   return { recipient, estimate, changeAddress, total };
@@ -248,10 +287,15 @@ export function confirmedOf(recipient: Recipient, estimate: TxEstimate, change: 
  * change where it said (the wallet's own, or the custom address); the payment, the fee and the
  * change are exactly the confirmed ones; and the wallet's debit is exactly the confirmed total,
  * less what of it comes back to the wallet (a payment to its own address, a custom change address
- * it owns). Anything else, even within the grant's cap, is a different payment. */
+ * it owns). Anything else, even within the grant's cap, is a different payment. A contact's
+ * address is the one the engine reserved at prepare (DP3-06 D9): its payment is the one output
+ * that is neither change nor the wallet's. */
 export function keepsPromise(c: Confirmed, s: PreparedTxSummary): boolean {
-  const { estimate } = c;
-  const shown = s.outputs.every((o) => (o.isChange ? (c.changeAddress === null ? o.isMine : o.address === c.changeAddress) : o.address === c.recipient.address));
+  const { estimate, recipient: r } = c;
+  const paysPayee = (o: PreparedTxSummary["outputs"][number]) => (isContact(r) ? !o.isMine : o.address === r.address);
+  const shown =
+    s.outputs.every((o) => (o.isChange ? (c.changeAddress === null ? o.isMine : o.address === c.changeAddress) : paysPayee(o))) &&
+    (!isContact(r) || s.outputs.filter((o) => !o.isChange).length === 1);
   const sum = (outputs: PreparedTxSummary["outputs"]) => outputs.reduce((n, o) => n + o.amount, 0);
   const paid = sum(s.outputs.filter((o) => !o.isChange));
   const change = sum(s.outputs.filter((o) => o.isChange));
@@ -274,10 +318,12 @@ export function keepsPromise(c: Confirmed, s: PreparedTxSummary): boolean {
  * as the estimate (an unsigned PSBT's inputs are all unsigned). With the fee and every output
  * fixed, the coins' total is too; chosen coins are spent exactly by the engine (U-03 D7). */
 export function unsignedKeepsPromise(c: Confirmed, a: PsbtAnalysis): boolean {
-  const { estimate } = c;
+  const { estimate, recipient } = c;
+  // A contact's address exists only once prepared: there is no unsigned contact payment.
+  if (isContact(recipient)) return false;
   // The payment is taken out first, so a custom change address equal to the recipient's still
   // leaves the change to check.
-  const paid = a.outputs.findIndex((o) => o.address === c.recipient.address && o.amount === estimate.totalSent);
+  const paid = a.outputs.findIndex((o) => o.address === recipient.address && o.amount === estimate.totalSent);
   if (paid < 0) return false;
   const rest = a.outputs.filter((_, i) => i !== paid);
   const change =
@@ -290,7 +336,8 @@ export function unsignedKeepsPromise(c: Confirmed, a: PsbtAnalysis): boolean {
 // ---------------------------------------------------------------- the result
 
 export type Outcome =
-  | { kind: "sent"; txid: string; amount: number; fee: number }
+  /** `note`: what else went through (an accepted contact request, DP3-06 D12). */
+  | { kind: "sent"; txid: string; amount: number; fee: number; note?: string }
   /** The transaction may have reached the network. `retry`: the engine still holds it, so Try
    * again repeats the broadcast. */
   | { kind: "unknown"; text: string; retry: boolean; draft: number; prepared: number; amount: number; fee: number }
@@ -299,6 +346,11 @@ export type Outcome =
 /** The engine's codes for a first broadcast that released the transaction (E0-13 D8, `released`
  * in send.rs): nothing was sent and its handle is gone. */
 const RELEASED = ["send.no_peers", "send.broadcast_rejected", "send.prepared_tx_spent", "send.cancelled"] as const;
+
+/** A contact payment's first broadcast refused before its hand-off, its transaction still held
+ * (DP3-01 D20, D23): another payment to the contact is locked or under way, or its lock row could
+ * not be written. Nothing was sent; the sheet abandons it. */
+export const CONTACT_HELD = ["contact.payment_locked", "storage"] as const;
 
 /** The outcome of a failed broadcast of `prepared` (U-03 D10). Only a first attempt the engine
  * released, or one whose handle was already gone (never dispatched), is "not sent". Anything
@@ -310,9 +362,11 @@ export function broadcastFailure(
   held: { draft: number; prepared: number; amount: number; fee: number },
   first: boolean,
   unit: Unit = "DASH",
+  contact = false,
 ): Outcome {
   const gone = hasCode(e, "app.unknown_handle");
-  if (first && (gone || RELEASED.some((c) => hasCode(e, c)))) return { kind: "failed", text: failureText(e, chain, unit) };
+  const notSent = [...RELEASED, ...(contact ? CONTACT_HELD : [])];
+  if (first && (gone || notSent.some((c) => hasCode(e, c)))) return { kind: "failed", text: failureText(e, chain, unit) };
   // The handle went with the draft (a lock or network switch closed it): nothing to retry here.
   const text = gone ? "The payment may have been sent, and it can no longer be retried here." : failureText(e, chain, unit);
   return { kind: "unknown", text, retry: !gone, ...held };

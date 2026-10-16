@@ -75,6 +75,11 @@ export function ResultSheet({
         ) : (
           <>
             <AmountText className="result-amount" text={shown.full(outcome.amount)} unitName={unit} glyphFactor={0.8} />
+            {outcome.kind === "sent" && outcome.note && (
+              <p className="result-text" data-testid="pay-result-note">
+                {outcome.note}
+              </p>
+            )}
             {outcome.kind === "unknown" && (
               <p className="result-text" role="alert" data-testid="pay-result-text">
                 {outcome.text} Check Activity before you pay again.
