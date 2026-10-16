@@ -121,6 +121,15 @@ describe("IOS-067 Confirm & pay", () => {
     expect(wiz).toMatchObject({ step: null, draft: "reg-1", error: null, wedge: null });
   });
 
+  it("D27: a start refused by a row stopped for good shows that row and says why", async () => {
+    const { wiz, api, setRows } = setup();
+    setRows([row({ draft: "reg-1", phase: "failed", waiting: null, failure: { code: "registration.islock_timeout", phase: "fundingSent", retryable: false, needed: null, available: null } })]);
+    api.startRegistration.mockRejectedValueOnce(appError("registration.in_progress", { kind: "draft", draft: "reg-1" }));
+    atConfirm(wiz, "alice-77");
+    await wiz.confirm(quote("x").grant);
+    expect(wiz).toMatchObject({ step: null, draft: "reg-1", error: { code: "registration.in_progress" } });
+  });
+
   it("the wedge: behind a funding that is unknown, it asks, then starts past it (m4 §2.2)", async () => {
     const { wiz, api, calls, setRows } = setup();
     setRows([row({ draft: "reg-1", waiting: "fundingUnknown" })]);

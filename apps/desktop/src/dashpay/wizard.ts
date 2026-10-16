@@ -255,6 +255,8 @@ export class RegistrationWizard extends Model {
     // A funding entry with no registration of its own (no label) has no screen to show.
     if (row && row.label !== "") {
       this.#started(draft);
+      // A row stopped for good shows again: say why no new one started (D27).
+      if (row.failure?.retryable === false) this.error = e;
       return;
     }
     this.error = e;

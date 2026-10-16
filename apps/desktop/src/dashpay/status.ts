@@ -150,7 +150,8 @@ export const WAITS = {
 /** DP1-09 D21/D26: the row waits for Continue's grant. It says `authorize`, or nothing runs it
  * (`running`) and it waits for a proof or the network: the engine reports an idle row's first
  * missing piece (`idle_wait`) whether or not a run waits for it, and nothing resumes such a row
- * alone (D12). An idle row held for sync or the DashPay start runs again on its own. */
+ * alone (D12). An idle row held for sync or the DashPay start shows progress: once the hold
+ * lifts it reads `authorize` or `unlock` and pauses, which D15's poll sees. */
 export function awaitsContinue(r: RegistrationStatus): boolean {
   if (r.phase === "done" || r.phase === "failed" || r.phase === "contested" || r.failure) return false;
   return r.waiting === "authorize" || (!r.running && (r.waiting === "chainLock" || r.waiting === "network"));

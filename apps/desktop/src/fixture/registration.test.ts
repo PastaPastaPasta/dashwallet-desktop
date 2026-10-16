@@ -169,8 +169,8 @@ describe("a parked run (DP1-09 D14)", () => {
     const f = install();
     const draft = await cmd.startRegistration(W, coreRequest(LABEL), await grant());
     f.world.leases = f.world.leases.map((l) => ({ ...l, state: { kind: "revoked", cause: "passphraseChange" } }));
-    // The parked run still runs: Continue hands it the grant (D26).
-    expect(await rowOf(draft)).toMatchObject({ waiting: "authorize", holdsKey: false, running: true });
+    // The parked run has ended: Continue runs the row again under the grant (D26).
+    expect(await rowOf(draft)).toMatchObject({ waiting: "authorize", holdsKey: false, running: false });
     expect(f.advanceRegistration(draft)).toBe(false);
     await cmd.resumeRegistration(W, draft, await grant());
     expect(await rowOf(draft)).toMatchObject({ waiting: "instantSend", holdsKey: false, running: true });

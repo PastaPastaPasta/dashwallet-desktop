@@ -158,7 +158,7 @@ describe("IOS-065 / AND-024 Home card: one per banner state", () => {
     for (const waiting of ["instantSend", "chainLock", "network", null] as const) {
       expect(homeCard(inputs(REGISTERING, { registration: row({ waiting, holdsKey: false, running: true }) }))!.state).toBe("creating");
     }
-    // An idle row held for sync or the DashPay start runs again on its own.
+    // An idle row held for sync or the DashPay start shows progress until the hold lifts.
     expect(homeCard(inputs(REGISTERING, { registration: row({ waiting: "sync", holdsKey: false, running: false }) }))!.state).toBe("creating");
   });
 

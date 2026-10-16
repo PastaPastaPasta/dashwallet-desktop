@@ -107,8 +107,8 @@ function active(world: World, walletId: string, dp: DashPayWorld, draft: string)
  * the user's unlock or grant; its key went with the run (D21). */
 export function reported(world: World, walletId: string, dp: DashPayWorld, r: RegistrationStatus): RegistrationStatus {
   // A copy: `advance` changes the world's row in place, and a read answering the same object
-  // would look unchanged to the query cache. A parked run still runs (D26).
-  const running = dp.runs.includes(r.draft);
+  // would look unchanged to the query cache. A parked run has ended, as the engine's does (D26).
+  const running = active(world, walletId, dp, r.draft);
   if (r.phase === "done" || active(world, walletId, dp, r.draft)) return { ...r, running };
   if (r.phase === "failed") return { ...r, waiting: null, holdsKey: false, running };
   const kept = r.waiting === "needsFinish" || r.waiting === "fundingUnknown";

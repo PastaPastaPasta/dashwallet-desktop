@@ -291,7 +291,7 @@ async function registerAndClose(wd: WebDriver, a: App, walletId: string, passphr
   save({ state: "closed", draft: row.draft, lockTxid: row.txid!, closedAt: { phase: row.phase, waiting: row.waiting } });
   step(`closed the app at ${row.phase} (waiting ${row.waiting}, running ${row.running}, screen ${kind}), lock ${row.txid}`);
   // After the save: the row is resumable either way, so a rerun goes on from closed.
-  if (kind !== "progress" || !row.running) throw new Error(`the running registration showed ${kind} (running ${row.running}, waiting ${row.waiting})`);
+  if (kind !== "progress" || !row.running) throw new Error(`the running registration showed ${kind} (running ${row.running}, waiting ${row.waiting}); a rerun goes on from closed without this check, so fix this first`);
 }
 
 /** The relaunch: locked, Home's card paused, Continue under the passphrase, Hello @name. */

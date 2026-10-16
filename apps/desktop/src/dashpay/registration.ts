@@ -359,6 +359,7 @@ export function startErrorText(e: unknown, amount: (duffs: number) => string, di
       : `The earlier registration's payment was sent less than an hour ago. Try again in ${waitText(secs)}.`;
   }
   if (hasCode(e, "registration.already_has_username")) return "This wallet already has a username.";
+  if (hasCode(e, "registration.in_progress")) return "This registration's payment must be finished first. Open Repair to finish it.";
   if (hasCode(e, "platform.grant_exceeded")) return "The cost went above what you approved. Try again.";
   if (hasCode(e, "platform.insufficient_credits")) return "The identity's credits do not cover this username.";
   if (hasCode(e, "name.taken")) return "Username taken. Choose another one.";

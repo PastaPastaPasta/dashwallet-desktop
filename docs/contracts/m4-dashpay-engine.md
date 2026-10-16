@@ -2783,7 +2783,9 @@ renames or reshapes them takes the next version bump:
     below `total_duffs` (DP1-08 D18's follow-up). The quote's other fields are unchanged.
 53. **Whether a run drives the row (DP1-09 D26, version 27).** `RegistrationStatus` gains `running`: a driver runs
     the flow now (its task, or "Finish transfers"; `FlowState::running`), and `waiting` is what that run waits for.
-    When false, nothing moves the row until `resume_registration` claims it, and `waiting` is `idle_wait`'s first
-    missing piece. `holds_key` cannot tell the two apart: a run on an unlocked vault signs with the vault's key and
-    never holds one of its own, and a run past the InstantSend window has dropped its own. Hosts offer Continue for
-    `Authorize`, and for `ChainLock` or `Network` only when `running` is false. An orphan funding step reads false.
+    When false, nothing moves the row until `resume_registration` or "Finish transfers" claims it, and an unfinished
+    row's `waiting` is `idle_wait`'s first missing piece (a done or failed row reads `None`, as before). A parked
+    run has ended, so it reads false. `holds_key` cannot tell the two apart: a run on an unlocked vault signs with the
+    vault's key and never holds one of its own, and a run past the InstantSend window has dropped its own. Hosts
+    offer Continue for `Authorize`, and for `ChainLock` or `Network` only when `running` is false. An orphan funding
+    step (empty `label`) reads false and takes no resume.
