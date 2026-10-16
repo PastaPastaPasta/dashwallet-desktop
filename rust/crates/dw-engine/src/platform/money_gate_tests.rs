@@ -513,9 +513,10 @@ async fn the_degraded_probe_is_bounded() {
         }
     }
     let world = World::new(payee(), true);
+    let lock = lock_reports();
     let signals = |rule| Signals {
         rule,
-        lock: lock_reports().subscribe(),
+        lock: lock.subscribe(),
     };
     let hung = || Ok(Arc::new(Hung) as Arc<dyn Refetcher>);
     let started = Instant::now();

@@ -83,7 +83,7 @@ const ALL_SECTIONS: [ContactSection; 4] = [
 /// The deferred ops that build a contact's payment accounts: the "unlock to
 /// finish setting up" work (the library's own banner count,
 /// `count_account_build_ops`, adds `AutoAccept`, which holds a request).
-pub(super) const ACCOUNT_OPS: [PendingContactCryptoKind; 2] = [
+const ACCOUNT_OPS: [PendingContactCryptoKind; 2] = [
     PendingContactCryptoKind::RegisterReceiving,
     PendingContactCryptoKind::RegisterExternal,
 ];

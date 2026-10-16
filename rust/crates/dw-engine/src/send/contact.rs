@@ -221,33 +221,39 @@ impl TxDraft {
         crypto: Option<VaultContactCrypto>,
     ) -> Result<Address, EngineError> {
         let (session, payments) = (&self.session, &self.session.platform.payments);
-        let address = match payments.reserved_checked(self.wallet_id, pair) {
+        let rule = session.trust.rule_5();
+        let (address, fresh) = match payments.reserved_checked(self.wallet_id, pair) {
             // Kept while rule 5 did not apply: not paid once it does.
-            Some((address, false)) if session.trust.rule_5() == Rule5::Enforce => {
+            Some((address, false)) if rule == Rule5::Enforce => {
                 payments.drop_reserved(self.wallet_id, pair, &address);
-                self.reserve(wallet, pair, crypto).await?
+                (self.reserve(wallet, pair, crypto).await?, true)
             }
-            Some((address, _)) => address,
-            None => self.reserve(wallet, pair, crypto).await?,
+            Some((address, _)) => (address, false),
+            None => (self.reserve(wallet, pair, crypto).await?, true),
         };
         #[cfg(test)]
         session.platform.money_gate.reached(Point::Reserved).await;
         // The payee may have changed since the gate (§4 step 5): an address
         // taken from content that does not verify now is neither kept nor
         // paid.
-        match session
-            .money_recheck(Subject::Payee(self.wallet_id, pair))
-            .await
-        {
-            Ok(checked) => {
-                payments.keep(self.wallet_id, pair, address.clone(), checked);
-                Ok(address)
-            }
+        let subject = Subject::Payee(self.wallet_id, pair);
+        let checked = match session.money_recheck(subject, rule).await {
+            Ok(checked) => checked,
             Err(refusal) => {
                 payments.drop_reserved(self.wallet_id, pair, &address);
-                Err(gate_refusal(refusal))
+                return Err(gate_refusal(refusal));
             }
+        };
+        if fresh {
+            payments.keep(self.wallet_id, pair, address.clone(), checked);
+        } else if payments
+            .reserved_checked(self.wallet_id, pair)
+            .is_none_or(|(a, _)| a != address)
+        {
+            // Another payment's broadcast claimed it during the re-check.
+            return Err(SendFailure::PreparedTxSpent.into());
         }
+        Ok(address)
     }
 
     /// A new address of `pair`'s contact from the library (D7).

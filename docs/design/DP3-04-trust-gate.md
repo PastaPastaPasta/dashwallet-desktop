@@ -69,14 +69,18 @@ A contact payment, in `prepare_contact` (DP3-01 D4's order, with the gate added)
    re-check passed, marked checked (D14). The lease and its charge end with the refusal, as for any refusal after
    the reservation (DP3-01 D4).
 
-Under `Enforce` the payee is also not payable while its paying account was built from an older request than the
-one the gate verifies and no queued op rebuilds it at the reservation (D12): `platform.context_unavailable` at
-once, at the wait and at the re-check.
+Under `Enforce`, with the latch set, the payee is also not payable while its paying account was not built from the
+request the gate verifies (D12): `platform.context_unavailable` at once. At the wait a queued `RegisterExternal`
+exempts it (the reservation's drain is to rebuild the account); at the re-check, after the drain, nothing does.
+
+A reused reserved address that another payment's broadcast claimed while the re-check ran is not kept again: the
+payment is `send.prepared_tx_spent`, as the claim would have refused it before DP3-04.
 
 The broadcast does not run the gate again: the signed transaction pays the address the re-check passed, which
 the payee's later changes do not move. The contact's identity key the reservation's drain may fetch to build the
-paying account is not a gate entity: the verified request binds it through its encryption (a wrong key does not
-decrypt the request's xpub), so a forged key fails the build rather than redirecting money.
+paying account is not a gate entity: the verified request binds it through its encryption (only the holder of the
+right key's secret could have encrypted the xpub), so a forged key cannot redirect money; at worst the build fails
+or, rarely, yields an xpub nobody controls, which the request's own verification makes a fault, not an attack.
 
 The wait ends early, and the rest of `prepare` then refuses as it would have: on a vault Lock (`send.vault_locked`
 from the grant check, the lease's revocation for a lease), and when the session closes. A payment lock written
@@ -138,11 +142,12 @@ dropped only when the payee's current content is unverified.
 | D9 | The gate records verified re-fetches itself, under the wallet manager's read lock, only for content the library still holds unchanged. | E0-10b §5's record step, scoped to the subject: waiting for the 10-minute background task would not fit the wait. |
 | D10 | No facade call to verify ahead of the passphrase. | The gate in `prepare` is the choke point and cannot be bypassed. A host-side "verify before Confirm" read is a follow-up for H-09 or the UI (the contact row's `unverified` already tells the host when the step will show). |
 | D11 | `kind::PAYMENT` stays without a consumer. | The gate checks the entities that decide where money goes; a record that a payment's txid verified says nothing about that. |
-| D12 | Under `Enforce`, a payee whose paying account is stale (`external_account_reference` is not the current incoming request's, and no `RegisterReceiving`/`RegisterExternal` op is queued) is not payable: the gate and the re-check treat it as gone. | The address derives from the account's stored xpub, not from the request the gate verifies. A rebuild deferred before a restart is lost with its in-memory queue, and the account would pay the old (possibly forged) xpub until a DashPay sweep rebuilds it (review r1 #1). With an op queued, the reservation's drain rebuilds it first. The degraded mode keeps DP3-01's behaviour (rule 5 suspended). |
-| D13 | The re-check verifies in one bounded round instead of refusing on anything unverified. | T2: the contact's DPNS name lands in the background after the first contacts read, often between the wait and the reservation, and a no-wait re-check refused every first payment of a session. One round (10 s) verifies it; the coin fence is held across it, the long wait stays before the fence. |
-| D14 | A kept reserved address records whether rule 5's re-check passed for it. Under `Enforce`, an unchecked one (kept while rule 5 was off, or given back by a failed hand-off) is dropped and a new one reserved. | An address taken while the toggle or the degraded mode let unverified data through must not be paid once rule 5 applies (review r1 #3). A given-back address is marked unchecked because the hand-off does not carry how it was kept; under `Enforce` this skips one index after a failed hand-off. |
+| D12 | Under `Enforce` with the latch set, a payee whose paying account is stale (`external_account_reference` is not the current incoming request's) is not payable: the gate and the re-check treat it as gone. At the gate a queued `RegisterExternal` exempts it; at the re-check (after the reservation's drain) nothing does. | The address derives from the account's stored xpub, not from the request the gate verifies; the library stamps an account with its request only when built from it and every re-key clears the stamp, so the stamp equal to the verified request's is what binds the address to it. A rebuild deferred before a restart is lost with its in-memory queue (review r1 #1), and a drain can leave its op queued and still derive from the old account (r2 #1), hence the strict re-check. `RegisterReceiving` never rebuilds the paying account. Before the latch nothing came through the fallback, so DP3-01's rule stands (r2 #3); the degraded mode keeps it too (rule 5 suspended). Stricter than the library's own trigger (`has_external && !broken && mismatch`): a broken channel is refused earlier, a missing account fails the reservation. |
+| D13 | The re-check verifies in one bounded round instead of refusing on anything unverified. | T2: the contact's DPNS name lands in the background after the first contacts read, often between the wait and the reservation, and a no-wait re-check refused every first payment of a session. One round (10 s) verifies it. The coin fence is held across it, so the wallet's estimates, coin locks and other prepares wait up to 10 s plus one fetch's blocking lookups (under `Enforcing` a lookup on a quorum SPV lacks can block for the rule-3 wait, r2 #6); the 60 s wait stays before the fence. Usually nothing is pending and the re-check reads memory only. |
+| D14 | A kept reserved address records whether rule 5's re-check passed for it. Under `Enforce`, an unchecked one (kept while rule 5 was off, or given back by a failed hand-off) is dropped and a new one reserved by the next `prepare`. Rule 5 is read once per `prepare` (r2 #5). A transaction already prepared is broadcast as prepared: the broadcast does not re-gate, so one prepared under `Probe`/`Off` and broadcast after the mode changed pays its address (r2 #4; the mode changes at run time only through the developer toggle and tests). | An address taken while the toggle or the degraded mode let unverified data through must not be paid once rule 5 applies (review r1 #3). A given-back address is marked unchecked because the hand-off does not carry how it was kept; under `Enforce` this skips one DIP-15 index after a failed hand-off (follow-up: carry the bit on `PreparedTx.contact`, r2 #7). |
 | D15 | Correct the bound instead of moving each fetch into its own task. | Review r1 #7: a spawned fetch timed out on its join handle would leave blocked fetches running detached. Fails closed either way; the bound is documented as "plus one fetch's blocking lookups". |
 | D16 | Review r1 #2 (a `prepare` dropped between reservation and re-check keeps the address) is not reachable: `TxDraft::prepare` runs in its own task (`on_runtime`), which a host dropping its future does not cancel. Keeping the address only after the re-check closes it anyway. | Checked with a test that aborted the caller: the inner task ran on (and held the coin fence). |
+| D17 | `payee_held` keeps its own copy of the contacts read model's precedence. | Sharing one helper means restructuring `owner_contacts` (a shared file DP3-07 and MG-02 also touch); `the_gate_and_the_contacts_row_agree` and `an_unverified_profile_holds_the_payment` pin the two together, and the payee-without-profile/label mutations are caught. |
 
 ## 9. Tests (T0)
 
@@ -174,7 +179,9 @@ dropped only when the payee's current content is unverified.
 | replaced after the wait: refused, address dropped | `contact_tests::a_payee_replaced_before_the_reservation_is_refused` |
 | replaced after the reservation: refused, not kept | `contact_tests::a_payee_replaced_after_the_reservation_is_refused` |
 | the re-check verifies in one round, refuses what does not verify | `money_gate_tests::the_recheck_verifies_what_appeared_since_the_gate`, `…::the_recheck_refuses_what_does_not_verify_in_its_round` |
-| D12 stale paying account | `contact_tests::a_stale_paying_account_is_not_paid` |
+| D12 stale paying account | `contact_tests::a_stale_paying_account_is_not_paid` (latch, `RegisterReceiving` queued), `…::a_stale_account_the_drain_leaves_is_not_paid` (strict re-check) |
+| D13 a name landing before the re-check | `contact_tests::a_name_landing_before_the_recheck_is_verified_there` |
+| a reused address claimed during the re-check | `contact_tests::an_address_claimed_during_the_recheck_is_not_kept_again` |
 | D14 unchecked kept address | `contact_tests::an_address_kept_without_rule_5_is_not_paid_under_it` |
 | D1 cached profile | `contact_tests::an_unverified_profile_holds_the_payment` |
 | top-up of an unverified identity moves nothing | `topup_tests::an_unverified_identity_is_not_topped_up` |

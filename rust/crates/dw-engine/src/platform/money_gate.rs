@@ -18,12 +18,12 @@ use std::time::Duration;
 
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::prelude::Identifier;
+use platform_wallet::changeset::PendingContactCryptoKind;
 use platform_wallet::key_wallet_manager::WalletManager;
 use platform_wallet::{ManagedIdentity, PlatformWalletInfo};
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-use super::contacts_model::ACCOUNT_OPS;
 use super::errors::PlatformError;
 use super::payment_locks::Pair;
 use super::provenance::Provenance;
@@ -313,24 +313,32 @@ pub(super) fn payee_held(
 }
 
 /// Design D12: the account a payment to `contact` derives its address
-/// from was built from an older request than the one the gate verifies
-/// (a rebuild deferred before a restart is lost with its queue), and no
-/// queued op rebuilds it at the reservation. Until a DashPay sweep does,
-/// the payee is not payable on verified data.
-fn paying_account_stale(m: &ManagedIdentity, contact: &Identifier) -> bool {
+/// from was not built from the request the gate verifies (the library
+/// stamps an account with its request only when built from it, and every
+/// re-key clears the stamp; a rebuild deferred before a restart is lost
+/// with its queue). Before the reservation a queued `RegisterExternal`
+/// rebuilds it at the reservation's drain; after it nothing does, as a
+/// drain may leave the op queued and derive from the old account.
+fn paying_account_stale(m: &ManagedIdentity, contact: &Identifier, reserved: bool) -> bool {
     let dp = m.dashpay();
     let Some(c) = dp.established_contacts().get(contact) else {
         return false;
     };
-    let rebuild_queued = (dp.pending_contact_crypto.iter())
-        .any(|p| p.contact_id == *contact && ACCOUNT_OPS.contains(&p.op.kind()));
-    c.external_account_reference != Some(c.incoming_request.account_reference) && !rebuild_queued
+    let rebuild_queued = || {
+        (dp.pending_contact_crypto.iter()).any(|p| {
+            p.contact_id == *contact && p.op.kind() == PendingContactCryptoKind::RegisterExternal
+        })
+    };
+    c.external_account_reference != Some(c.incoming_request.account_reference)
+        && (reserved || !rebuild_queued())
 }
 
 /// The gate's subject in the library: every entity it rests on.
 struct SessionEnv<'a> {
     session: &'a NetworkSession,
     subject: Subject,
+    /// The re-check after the reservation (D12's strict reading).
+    reserved: bool,
 }
 
 impl SessionEnv<'_> {
@@ -348,8 +356,10 @@ impl SessionEnv<'_> {
         let info = wm.get_wallet_info(&wallet.0)?;
         let m = (info.identity_manager.wallet_managed_identities(&wallet.0))
             .find(|m| m.identity.id() == owner)?;
+        let stale =
+            |contact| provenance.fallback_used() && paying_account_stale(m, contact, self.reserved);
         let held = match self.subject {
-            Subject::Payee(_, (_, contact)) if paying_account_stale(m, &contact) => None,
+            Subject::Payee(_, (_, contact)) if stale(&contact) => None,
             Subject::Payee(_, (_, contact)) => {
                 let username = self.session.platform.contacts.names.label(&contact);
                 payee_held(m, &contact, username.as_deref())
@@ -411,6 +421,7 @@ impl NetworkSession {
         let env = SessionEnv {
             session: self,
             subject,
+            reserved: false,
         };
         let gated = run(&env, || self.gate_refetcher(), signals, waits).await;
         if let Err(refusal) = &gated {
@@ -424,16 +435,22 @@ impl NetworkSession {
         Ok(self.platform.money_gate.refetcher(sdk))
     }
 
-    /// The gate's re-check (design §4 step 5): `Ok(true)` once it checked
-    /// `subject` under `Enforce`, `Ok(false)` when rule 5 does not apply.
-    pub(crate) async fn money_recheck(&self, subject: Subject) -> Result<bool, Refusal> {
-        if self.trust.rule_5() != Rule5::Enforce {
+    /// The gate's re-check (design §4 step 5) under `rule`, read once by
+    /// the caller: `Ok(true)` once it checked `subject` under `Enforce`,
+    /// `Ok(false)` when rule 5 does not apply.
+    pub(crate) async fn money_recheck(
+        &self,
+        subject: Subject,
+        rule: Rule5,
+    ) -> Result<bool, Refusal> {
+        if rule != Rule5::Enforce {
             return Ok(false);
         }
         let waits = *guard(&self.platform.money_gate.waits);
         let env = SessionEnv {
             session: self,
             subject,
+            reserved: true,
         };
         let checked = recheck(&env, || self.gate_refetcher(), waits).await;
         if let Err(refusal) = &checked {

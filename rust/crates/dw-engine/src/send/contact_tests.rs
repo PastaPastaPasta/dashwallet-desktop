@@ -1377,6 +1377,7 @@ fn t2_testnet_pays_a_contact() {
 // `prepare`, with the fallback latch set and Platform faked.
 
 use platform_wallet::ManagedIdentity;
+use platform_wallet::changeset::{PendingContactCrypto, PendingContactCryptoOp};
 use platform_wallet::wallet::identity::{ContactProfileEntry, DashPayProfile};
 
 use crate::platform::money_gate::{Point, Refusal, Subject};
@@ -1411,13 +1412,35 @@ impl Fixture {
 
     /// `prepare` of `d`, held at `point` while Bob's request is replaced.
     fn prepare_replacing_bob_at(&self, d: &Arc<TxDraft>, point: Point) -> Result<(), EngineError> {
+        self.prepare_held_at(d, point, || self.replace_bobs_request(2_500_000))
+    }
+
+    /// `prepare` of `d`, held at `point` while `meanwhile` runs.
+    fn prepare_held_at(
+        &self,
+        d: &Arc<TxDraft>,
+        point: Point,
+        meanwhile: impl FnOnce(),
+    ) -> Result<(), EngineError> {
         let pause = Arc::new(crate::coins::TestPause::default());
         (self.session.platform.money_gate).pause_at(point, Arc::clone(&pause));
         let prepare = self.spawn_prepare(d);
         wait_until(|| pause.reached.load(Ordering::SeqCst));
-        self.replace_bobs_request(2_500_000);
+        meanwhile();
         pause.release.notify_one();
         self.engine.block_on(prepare).unwrap()
+    }
+
+    /// Queues `op` for Bob in the library's deferred contact crypto.
+    fn queue_for_bob(&self, op: PendingContactCryptoOp) {
+        self.with_me(move |me| {
+            (me.dashpay_pending_contact_crypto_mut()).push(PendingContactCrypto {
+                owner_identity_id: id(ME),
+                contact_id: id(BOB),
+                op,
+                enqueued_at_ms: 0,
+            });
+        });
     }
 
     /// Runs `f` on our identity as the library holds it.
@@ -1707,7 +1730,18 @@ fn an_address_kept_without_rule_5_is_not_paid_under_it() {
 #[test]
 fn a_stale_paying_account_is_not_paid() {
     let f = fixture(false);
+    // Before the latch nothing came through the fallback: DP3-01's rule.
+    f.session.trust.set_mode(TrustMode::Enforcing);
+    f.bobs_account_built_from(Some(77));
+    let d = f.draft(BOB);
+    let p = f.prepare(&d).unwrap();
+    assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
+    f.engine.block_on(d.abandon(p)).unwrap();
+
     let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    // A queued op that does not rebuild the paying account changes nothing.
+    f.queue_for_bob(PendingContactCryptoOp::RegisterReceiving);
+    let kept = f.reserved_checked(BOB);
     for stale in [None, Some(77)] {
         f.bobs_account_built_from(stale);
         let d = f.draft(BOB);
@@ -1716,7 +1750,7 @@ fn a_stale_paying_account_is_not_paid() {
             "platform.context_unavailable",
             "{stale:?}"
         );
-        assert!(f.reserved(BOB).is_none());
+        assert_eq!(f.reserved_checked(BOB), kept, "no address taken");
     }
     assert_eq!(platform.fetches(), 0, "refused before any fetch");
     f.with_me(|me| {
@@ -1725,6 +1759,83 @@ fn a_stale_paying_account_is_not_paid() {
     });
     let p = f.prepare(&f.draft(BOB)).unwrap();
     assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
+}
+
+/// D12 after the reservation: a queued `RegisterExternal` lets the gate
+/// pass a stale account (the drain is to rebuild it), but a drain that
+/// leaves it queued derives from the old account, and the strict re-check
+/// refuses that address.
+#[test]
+fn a_stale_account_the_drain_leaves_is_not_paid() {
+    let f = fixture(false);
+    f.gated(TrustMode::Enforcing, Proof::Verified);
+    f.bobs_account_built_from(Some(77));
+    // Ciphertext no key decrypts: the drain cannot rebuild from it.
+    f.queue_for_bob(PendingContactCryptoOp::RegisterExternal {
+        encrypted_public_key: vec![0; 96],
+        our_decryption_key_index: 0,
+        contact_encryption_key_index: 0,
+    });
+    let d = f.draft(BOB);
+    let reached = Arc::new(AtomicU32::new(0));
+    let refused = f.prepare_held_at(&d, Point::Reserved, || {
+        reached.fetch_add(1, Ordering::SeqCst);
+    });
+    assert_eq!(reached.load(Ordering::SeqCst), 1, "the gate let it through");
+    assert_eq!(platform_error(refused), "platform.context_unavailable");
+    assert!(
+        f.reserved(BOB).is_none(),
+        "the old account's address is not kept"
+    );
+}
+
+/// D13 at the contact level: the contact's name lands while the payment
+/// is between its gate and its reservation; the re-check verifies it and
+/// the payment goes on, its address kept checked.
+#[test]
+fn a_name_landing_before_the_recheck_is_verified_there() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    let d = f.draft(BOB);
+    let before = platform.fetches();
+    f.prepare_held_at(&d, Point::Gated, || {
+        show_username(&f.session, id(BOB), "Bob");
+        platform.answer_domain("Bob", id(BOB));
+    })
+    .unwrap();
+    assert_eq!(
+        platform.fetches(),
+        before + 3,
+        "both requests, then the name"
+    );
+    assert_eq!(
+        f.reserved_checked(BOB),
+        Some((f.contact_address(BOB, 0), true))
+    );
+    assert!(!f.bob_unverified());
+}
+
+/// A reused address another payment's broadcast claimed while the
+/// re-check ran is not kept again: the payment is refused as spent and
+/// no later payment reuses the address.
+#[test]
+fn an_address_claimed_during_the_recheck_is_not_kept_again() {
+    let f = fixture(false);
+    f.gated(TrustMode::Enforcing, Proof::Verified);
+    let first = f.draft(BOB);
+    let seam = Seam::install(&first, Net::Accept);
+    let p = f.prepare(&first).unwrap();
+    f.credit(2, COIN);
+    let second = f.draft(BOB);
+    let refused = f.prepare_held_at(&second, Point::Reserved, || {
+        f.engine.block_on(first.broadcast(Arc::clone(&p))).unwrap();
+    });
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        refused.map(|_| ()).unwrap_err(),
+        EngineError::Send(SendFailure::PreparedTxSpent)
+    ));
+    assert!(f.reserved(BOB).is_none());
 }
 
 /// D1 with a cached profile: the profile the user picks the payee by is
@@ -1744,12 +1855,15 @@ fn an_unverified_profile_holds_the_payment() {
         "platform.context_unavailable",
         "Platform has not got the profile"
     );
-    assert!(
-        f.bob_unverified(),
-        "the requests verified, the profile did not"
-    );
+    assert!(f.bob_unverified());
     platform.answer_profile(id(BOB), &profile);
+    let fetched = platform.fetches();
     f.prepare(&d).unwrap();
+    assert_eq!(
+        platform.fetches(),
+        fetched + 1,
+        "only the profile: the requests were recorded"
+    );
     assert!(!f.bob_unverified());
 }
 

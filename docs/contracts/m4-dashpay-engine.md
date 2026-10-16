@@ -2782,8 +2782,8 @@ renames or reshapes them takes the next version bump:
       trust scope, every 3 s for up to 60 s (plus one fetch's blocking lookups); a fetch that used only SPV-verified quorum keys and equals what the
       library holds is recorded (`dp_trust_verified`), and the money moves once nothing is unverified. Otherwise
       `platform.context_unavailable`. A re-fetch refused as a quorum-key mismatch is `platform.trust_mismatch` at
-      once. A payee whose paying account was built from an older request than its current one, with no rebuild
-      queued, is `platform.context_unavailable` at once (design D12). A registration's or top-up's funding is held while `TrustProvider::writes_wait` (masternode sync not
+      once. A payee whose paying account was not built from its current request is `platform.context_unavailable`
+      at once (design D12; at the wait a queued rebuild of the account exempts it, not after the reservation). A registration's or top-up's funding is held while `TrustProvider::writes_wait` (masternode sync not
       done): a registration waits `Sync`, a top-up is `platform.context_unavailable`, as while SPV is behind.
     - **Degraded** (the default, DEC-168): one round of re-fetches of the unverified entities, 10 s (plus one
       fetch's blocking lookups), records what verifies; a mismatch is `platform.trust_mismatch`; otherwise the money moves (rule 5 suspended).
@@ -2795,5 +2795,6 @@ renames or reshapes them takes the next version bump:
       meanwhile (the payee replaced, its name landed) one 10 s round of re-fetches and refuses what still does not
       verify (`platform.context_unavailable`, `platform.trust_mismatch`); the address is kept only once it passed,
       so no later `prepare` pays one taken from unverified data, and an address kept while rule 5 did not apply is
-      not paid under `Enforcing` (a new one is reserved). `top_up` runs the gate after its journal check and before the identity's write
+      not paid under `Enforcing` (a new one is reserved). A reused address another payment's broadcast claimed
+      during the re-check is `send.prepared_tx_spent`. `top_up` runs the gate after its journal check and before the identity's write
       lock, an identity the wallet lacks refused first (`identity.not_found`).

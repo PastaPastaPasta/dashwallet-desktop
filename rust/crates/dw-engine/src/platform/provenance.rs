@@ -187,6 +187,11 @@ impl Provenance {
             .collect()
     }
 
+    /// Whether the fallback was ever used (the latch, DEC-125).
+    pub(crate) fn fallback_used(&self) -> bool {
+        self.fallback_used.load(Ordering::SeqCst)
+    }
+
     /// Whether `entity` must be treated as unverified: the fallback has been
     /// used and no verification of this content is on record (DEC-183: a
     /// record of other content does not count). In memory.
