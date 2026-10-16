@@ -12,6 +12,7 @@ import type { AddressInfo } from "../api/generated/AddressInfo";
 import type { AppError } from "../api/generated/AppError";
 import type { CoinSource } from "../api/generated/CoinSource";
 import type { ChangePolicy } from "../api/generated/ChangePolicy";
+import type { ContactRecipient } from "../api/generated/ContactRecipient";
 import type { DisplayUnit } from "../api/generated/DisplayUnit";
 import type { FeeMode } from "../api/generated/FeeMode";
 import type { FeePolicy } from "../api/generated/FeePolicy";
@@ -25,6 +26,9 @@ import type { TxDetailExtrasInfo } from "../api/generated/TxDetailExtrasInfo";
 import type { TxEstimate } from "../api/generated/TxEstimate";
 import type { TxRow } from "../api/generated/TxRow";
 import type { Utxo } from "../api/generated/Utxo";
+import type { LockResolutionName } from "../api/generated/LockResolutionName";
+import type { PaymentLockInfo } from "../api/generated/PaymentLockInfo";
+import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import { mainUsername } from "./dashpay";
@@ -51,6 +55,8 @@ export type BroadcastMode = "ok" | "unknown" | "rejected" | "noPeers";
 interface Draft {
   walletId: string;
   recipients: Recipient[];
+  /** Set by `draft_set_contact_recipient` (DP3-01): `recipients` then holds its placeholder. */
+  contact: ContactRecipient | null;
   source: CoinSource;
   fee: FeeMode;
   change: ChangePolicy;
@@ -61,6 +67,8 @@ interface Prepared {
   walletId: string;
   summary: PreparedTxSummary;
   recipient: Recipient;
+  /** The contact a contact payment pays (DP3-01). */
+  contact: ContactRecipient | null;
   /** A broadcast's outcome was unknown: it may be on the network, so it is never released. */
   handedOver: boolean;
 }
@@ -75,9 +83,38 @@ export interface SendWorld {
   sent: Record<string, { walletId: string; spent: Utxo[]; change: OutPoint | null }>;
   /** `resend_transaction`'s announcements. */
   announced: Record<string, number>;
+  /** Each contact's next DIP-15 index, and the one reserved for it until a broadcast hands it
+   * out (DP3-01 D7, D21), by `pairKey`. */
+  contactIndex: Record<string, { next: number; reserved: number | null }>;
+  /** What `resolve_contact_payment_lock` finds for a lock whose payment the fixture did not hand
+   * over itself (a scenario's lock); one it handed over is `sent`. */
+  lockEvidence: LockResolutionName | null;
 }
 
-export const newSendWorld = (): SendWorld => ({ drafts: {}, prepared: {}, handles: 0, broadcast: "ok", sent: {}, announced: {} });
+export const newSendWorld = (): SendWorld => ({
+  drafts: {},
+  prepared: {},
+  handles: 0,
+  broadcast: "ok",
+  sent: {},
+  announced: {},
+  contactIndex: {},
+  lockEvidence: null,
+});
+
+/** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
+/** A payer identity and its contact. */
+export type Pair = Pick<ContactRecipient, "identity" | "contact">;
+
+const pairKey = (walletId: string, r: Pair) => `${walletId}:${r.identity}:${r.contact}`;
+
+/** The DIP-15 address of index `index` of the wallet's account for paying `r`'s contact: the
+ * same one for a contact and index every run. */
+export function contactAddress(walletId: string, r: Pick<ContactRecipient, "identity" | "contact">, index: number): string {
+  let seed = index * 7919;
+  for (const ch of pairKey(walletId, r)) seed = (Math.imul(seed, 31) + ch.charCodeAt(0)) >>> 0;
+  return makeIds(prng(seed)).address();
+}
 
 /** A wallet's receive side: the first unused receiving index, the last one issued, requests. */
 export interface ReceiveWorld {
@@ -342,6 +379,20 @@ export interface SendDeps {
   spendGrant(w: World, grantId: string, walletId: string): FixtureGrant | null;
   /** Redeems (or revokes) a grant. */
   useGrant(w: World, grantId: string): void;
+  /** DP3-01's contact checks of `r` (D2 for a draft, D4 for `prepare`), in the engine's order;
+   * throws its refusal. `amount`: a draft's amount checks, which the engine makes after the ids
+   * and before the payee (`validate_recipients`). */
+  checkContact(w: World, walletId: string, r: ContactRecipient, stage: "draft" | "prepare", amount?: () => void): void;
+  /** For a `begin_flow` lease id: charges `outflow` to the lease's Spend budget, or throws the
+   * engine's refusal; `false` when `id` is not a lease id (a vault grant). */
+  chargeLease(ctx: Ctx, walletId: string, id: string, outflow: number): boolean;
+  /** The pair's payment lock (DP3-01 D8); `null` when none. */
+  paymentLock(w: World, walletId: string, r: Pair): PaymentLockInfo | null;
+  /** Sets or (`null`) clears the pair's payment lock, signalled. */
+  setPaymentLock(ctx: Ctx, walletId: string, r: Pair, lock: PaymentLockInfo | null): void;
+  /** A payment to `r`'s contact reached the wallet's history: its activity and last activity
+   * (DP3-02), signalled; returns the history's counterparty. */
+  contactPaid(ctx: Ctx, walletId: string, r: ContactRecipient, txid: string, amount: number): TxCounterparty;
 }
 
 const unknownHandle = (h: number) => fail("app.unknown_handle", `unknown handle: ${h}`);
@@ -387,7 +438,7 @@ function moveBalance(wallet: FixtureWallet, delta: number) {
   wallet.summary = { ...wallet.summary, balances: { ...b, confirmed: b.confirmed + delta, total: b.total + delta } };
 }
 
-export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handlers {
+export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, chargeLease, paymentLock, setPaymentLock, contactPaid }: SendDeps): Handlers {
   const draftOf = (w: World, h: number) => {
     const found = w.send.drafts[h];
     if (!found) throw unknownHandle(h);
@@ -448,6 +499,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
       label: prep.recipient.label,
       countsTowardBalance: true,
       involvesWatchOnly: false,
+      ...(prep.contact && { counterparty: contactPaid(ctx, prep.walletId, prep.contact, s.txid, s.totalSent) }),
     };
     w.rows = [row, ...w.rows];
     moveBalance(w, -s.totalDebit);
@@ -458,6 +510,8 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
     w.send.drafts[h] = { ...draftOf(w, h), ...patch };
     return null;
   };
+  /** The pair's DIP-15 indexes. */
+  const indexesOf = (w: World, walletId: string, r: Pair) => (w.send.contactIndex[pairKey(walletId, r)] ??= { next: 0, reserved: null });
 
   return {
     fee_policy: () => feePolicy(),
@@ -507,7 +561,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
     new_tx_draft: ({ walletId }, { world }) => {
       wallet(world, walletId);
       const h = ++world.send.handles;
-      world.send.drafts[h] = { walletId, recipients: [], source: { kind: "any" }, fee: { kind: "recommended", targetBlocks: 6 }, change: { kind: "auto" } };
+      world.send.drafts[h] = { walletId, recipients: [], contact: null, source: { kind: "any" }, fee: { kind: "recommended", targetBlocks: 6 }, change: { kind: "auto" } };
       return h;
     },
     // A transaction that may be on the network keeps its inputs; its handle goes with the draft.
@@ -518,12 +572,31 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
       delete world.send.drafts[draft];
       return true;
     },
-    draft_set_recipients: ({ draft, recipients }, { world }) => set(world, draft, { recipients }),
+    draft_set_recipients: ({ draft, recipients }, { world }) => set(world, draft, { recipients, contact: null }),
+    // TxDraft::set_contact_recipient (DP3-01 D1, D2): the contact checks, the amount among them
+    // as `set_recipients` checks it; the contact becomes the only recipient, planned with a
+    // placeholder of a DIP-15 address's size (D3).
+    draft_set_contact_recipient: ({ draft, recipient }, { world }) => {
+      const d = draftOf(world, draft);
+      checkContact(world, d.walletId, recipient, "draft", () => {
+        if (recipient.amount <= 0 || recipient.amount > MAX_MONEY) throw fail("send.invalid_amount", "invalid amount", { kind: "recipient", index: 0 });
+        if (recipient.amount < DUST) throw fail("send.dust_amount", "dust amount", { kind: "recipient", index: 0 });
+      });
+      const placeholder: Recipient = {
+        address: contactAddress(d.walletId, recipient, -1),
+        amount: recipient.amount,
+        subtractFeeFromAmount: recipient.subtractFee,
+        label: null,
+        message: recipient.note,
+      };
+      return set(world, draft, { recipients: [placeholder], contact: recipient });
+    },
     draft_set_source: ({ draft, source }, { world }) => set(world, draft, { source }),
     draft_set_fee: ({ draft, fee }, { world }) => set(world, draft, { fee }),
     draft_set_change: ({ draft, change }, { world }) => set(world, draft, { change }),
     draft_estimate: ({ draft }, { world }) => {
       const d = draftOf(world, draft);
+      if (d.contact) checkContact(world, d.walletId, d.contact, "draft");
       const { inputs: _, ...estimate } = build(world, wallet(world, d.walletId), d);
       return estimate;
     },
@@ -552,27 +625,40 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
 
     // The `spend` grant caps what leaves the wallet: the outputs it does not own (recipients, a
     // foreign change address) plus the fee. The plan is checked before the grant, as the engine.
-    draft_prepare: ({ draft, grantId }, { world }) => {
+    // A contact payment (DP3-01 D4) checks the contact again first, takes a lease id too, and
+    // only once the grant is charged reserves the contact's address (reused until handed out).
+    draft_prepare: ({ draft, grantId }, ctx) => {
+      const { world } = ctx;
       const d = draftOf(world, draft);
       const w = wallet(world, d.walletId);
       // The engine refuses a wallet without keys when signing, not before: its estimate and
       // Create Unsigned work (dw-engine `prepare_inner`).
       if (w.summary.watchOnly) throw fail("send.watch_only", "the wallet has no keys");
+      if (d.contact) checkContact(world, d.walletId, d.contact, "prepare");
       const built = build(world, w, d);
-      const grant = spendGrant(world, grantId, d.walletId);
-      if (!grant) throw fail("send.grant_invalid", "grant invalid");
       const h = world.send.handles + 1;
       const recipient = d.recipients[0];
       const changeAddress = d.change.kind === "address" ? d.change.address : receiveAddress(w, 1000 + h, null).address;
       const outputs = [
-        ...d.recipients.map((r) => ({ address: r.address, amount: r === recipient ? built.totalSent : r.amount, isChange: false, label: r.label, isMine: owns(w, r.address) })),
+        ...d.recipients.map((r) => ({ address: r.address, amount: r === recipient ? built.totalSent : r.amount, isChange: false, label: r.label, isMine: !d.contact && owns(w, r.address) })),
         ...(built.change === null ? [] : [{ address: changeAddress, amount: built.change, isChange: true, label: null, isMine: d.change.kind === "auto" || owns(w, changeAddress) }]),
       ];
       const externalSent = outputs.filter((o) => !o.isMine).reduce((n, o) => n + o.amount, 0);
       const debit = externalSent + built.fee;
-      const cap = grant.grant.purpose.kind === "spend" ? grant.grant.purpose.maxDuffs : 0;
-      useGrant(world, grantId);
-      if (debit > cap) throw fail("send.grant_exceeded", "grant exceeded", { kind: "spendCap", maxDuffs: cap, outflow: debit });
+      // A lease is charged here (its refusal thrown); a vault grant is checked below.
+      const leased = d.contact !== null && chargeLease(ctx, d.walletId, grantId, debit);
+      if (!leased) {
+        const grant = spendGrant(world, grantId, d.walletId);
+        if (!grant) throw fail("send.grant_invalid", "grant invalid");
+        const cap = grant.grant.purpose.kind === "spend" ? grant.grant.purpose.maxDuffs : 0;
+        useGrant(world, grantId);
+        if (debit > cap) throw fail("send.grant_exceeded", "grant exceeded", { kind: "spendCap", maxDuffs: cap, outflow: debit });
+      }
+      if (d.contact) {
+        const index = indexesOf(world, d.walletId, d.contact);
+        if (index.reserved === null) index.reserved = index.next++;
+        outputs[0].address = contactAddress(d.walletId, d.contact, index.reserved);
+      }
       for (const u of built.inputs) Object.assign(u, { reserved: true, spendable: false });
       world.send.handles = h;
       const summary: PreparedTxSummary = {
@@ -586,7 +672,8 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
         totalDebit: debit,
         externalSent,
       };
-      world.send.prepared[h] = { draft, walletId: d.walletId, summary, recipient, handedOver: false };
+      const paid = { ...recipient, address: outputs[0].address };
+      world.send.prepared[h] = { draft, walletId: d.walletId, summary, recipient: paid, contact: d.contact, handedOver: false };
       return { handle: h, summary };
     },
 
@@ -597,15 +684,26 @@ export function sendHandlers({ wallet, spendGrant, useGrant }: SendDeps): Handle
       const { world } = ctx;
       const prep = preparedOf(world, draft, prepared);
       const mode = world.send.broadcast;
+      const pay = prep.contact;
+      // A first broadcast to a contact another payment holds is refused (DP3-01 D8, D23).
+      const lock = pay && paymentLock(world, prep.walletId, pay);
+      if (lock && !prep.handedOver && lock.txid !== prep.summary.txid) throw fail("contact.payment_locked", "contact payment locked", { kind: "txid", txid: lock.txid });
       if (mode === "noPeers" || mode === "rejected") {
         if (prep.handedOver) throw fail("send.broadcast_unknown", "no answer from the network");
+        // Never on the network: the contact keeps its reserved address (D7).
         release(world, prepared);
         throw mode === "noPeers"
           ? fail("send.no_peers", "no peers")
           : fail("send.broadcast_rejected", "rejected", { kind: "reason", reason: "bad-txns-inputs-missingorspent" });
       }
       handOver(ctx, prep);
-      if (mode === "unknown") throw fail("send.broadcast_unknown", "no answer from the network");
+      // Handed out: the next payment to the contact takes a new address.
+      if (pay) indexesOf(world, prep.walletId, pay).reserved = null;
+      if (mode === "unknown") {
+        if (pay && !lock) setPaymentLock(ctx, prep.walletId, pay, { txid: prep.summary.txid, since: secs(FIXTURE_NOW) });
+        throw fail("send.broadcast_unknown", "no answer from the network");
+      }
+      if (pay && lock) setPaymentLock(ctx, prep.walletId, pay, null);
       delete world.send.prepared[prepared];
       return { txid: prep.summary.txid };
     },

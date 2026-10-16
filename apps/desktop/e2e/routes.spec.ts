@@ -6,7 +6,7 @@ import type { Route } from "../src/api/generated/Route";
 import type { ShellCommand } from "../src/api/generated/ShellCommand";
 import { FIXTURE_WALLET_ID } from "../src/fixture/scenarios";
 import { seriousAxeViolations } from "./axe";
-import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors } from "./helpers";
+import { artifactPath, fixtureUrl, fontsReady, lateFrames, THEMES, trackPageErrors } from "./helpers";
 
 // U-01: every route of the shell (DASHPAY §4) renders in light and dark with 0 serious axe
 // issues; links, menu commands and the toolbar route as dw-app's shell asks. dw-app's routing of
@@ -222,6 +222,42 @@ test("a route command closes an open dialog and focuses its page", async ({ page
   await command(page, { kind: "tools", tab: "peers" });
   await expect(page.getByTestId("about")).toHaveCount(0);
   await expect(page.getByTestId("page-tools").locator("h1")).toBeFocused();
+});
+
+test("a route command focuses its page even when the closing dialog gives focus back to its opener (BL-165)", async ({ page }) => {
+  await open(page, "funded");
+  await page.getByTestId("sidebar-receive").focus();
+  await command(page, { kind: "about" });
+  await expect(page.getByTestId("about")).toBeVisible();
+  await command(page, { kind: "navigate", route: "activity" });
+  await expect(page.getByTestId("about")).toHaveCount(0);
+  await expect(page.getByTestId("page-activity").locator("h1")).toBeFocused();
+});
+
+test("a key pressed before a page's late landing frame keeps the focus it moved (BL-165)", async ({ page }) => {
+  const frames = await lateFrames(page, 1500);
+  await open(page, "funded");
+  await frames.late(true);
+  // No key: the late frame still lands focus on the page's title.
+  await command(page, { kind: "navigate", route: "activity" });
+  await frames.settled();
+  await expect(page.getByTestId("page-activity").locator("h1")).toBeFocused();
+  // A key before the frame: the focus it moved stays. The command and the count of late frames
+  // run so far are read together, and the count must not move until Tab's focus is read: else
+  // the page's frame came before Tab and the test proves nothing.
+  await frames.late(true);
+  const ran = await page.evaluate(async (c) => {
+    await window.__dwFixture!.shellCommand(c);
+    return (window as unknown as { __lateRan: number }).__lateRan;
+  }, { kind: "navigate", route: "receive" } as ShellCommand);
+  await page.keyboard.press("Tab");
+  // The control Tab focused, held by reference: the check after the frames is for that very node.
+  const moved = await page.evaluateHandle(() => document.activeElement);
+  expect(await page.evaluate(() => (window as unknown as { __lateRan: number }).__lateRan)).toBe(ran);
+  expect(await moved.evaluate((el) => el === document.body)).toBe(false);
+  await frames.settled();
+  await expect(page.getByTestId("page-receive").locator("h1")).not.toBeFocused();
+  expect(await moved.evaluate((el) => el !== null && el === document.activeElement)).toBe(true);
 });
 
 test("in a browser the menus' shortcuts work from the keyboard", async ({ page }) => {

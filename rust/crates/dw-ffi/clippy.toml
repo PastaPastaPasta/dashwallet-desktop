@@ -5,6 +5,19 @@
 # master key or a backup's recovery phrase to the UI layer (the identity-scan
 # key, `open_backup_bundle`; review DW-E0-03 r3). Only dw-engine may call
 # these; `cargo clippy -- -D warnings` enforces it here.
+
+# MG-01: no operator secret or operator signing (rust/clippy.toml, repeated
+# here because clippy reads only the nearest clippy.toml).
+disallowed-types = [
+    { path = "dash_pkc::bls::BlsSecretKey", reason = "BLS secret key: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "dash_pkc::bls::BlsSkShare", reason = "BLS secret key share: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "dash_pkc::bls::BlsSkBytes", reason = "BLS secret key bytes: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "dashcore::bls_sig_utils::BlsSkBytes", reason = "BLS secret key bytes: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "dashcore::bls_sig_utils::BlsSecretKey", reason = "BLS secret key: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "dpp::bls::SecretKey", reason = "BLS secret key: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "key_wallet::derivation_bls_bip32::ExtendedBLSPrivKey", reason = "BLS extended private key: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+]
+
 disallowed-methods = [
     { path = "dw_vault::Vault::dashpay_crypto_signer", reason = "engine-only: the grant-less background DashPay crypto signer (dw-vault vault.rs)" },
     { path = "dw_vault::Vault::scan_key", reason = "engine-only: releases the wallet's master key for platform-wallet's identity scan" },
@@ -13,4 +26,10 @@ disallowed-methods = [
     { path = "dw_vault::Vault::open_backup_bundle", reason = "engine-only: decrypts a backup's recovery phrase and seed; views restore through NetworkSession::restore_backup" },
     { path = "dw_engine::platform::VaultScanKey::resolve", reason = "engine-only: the wallet's master private key" },
     { path = "dw_engine::platform::VaultScanKey::resolver", reason = "engine-only: the wallet's master private key" },
+    # MG-01 (rust/clippy.toml; clippy does not merge it into this file).
+    { path = "platform_wallet::masternode::update_service::prepare_masternode_update_service", reason = "ProUpServTx is operator-signed and out of scope (MG-01 §4)", allow-invalid = true },
+    { path = "platform_wallet::masternode::update_service::execute_masternode_update_service", reason = "ProUpServTx is operator-signed and out of scope (MG-01 §4)", allow-invalid = true },
+    { path = "dpp::bls::BlsModule::sign", reason = "BLS signing with raw secret bytes: the wallet never signs with an operator key (MG-01 §4)", allow-invalid = true },
+    { path = "key_wallet::account::BLSAccount::operator_private_key_at", reason = "operator private key: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
+    { path = "key_wallet::wallet::root_extended_keys::RootExtendedPrivKey::to_bls_extended_priv_key", reason = "BLS extended private key: the wallet holds no operator secret (MG-01 D6)", allow-invalid = true },
 ]

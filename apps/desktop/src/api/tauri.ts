@@ -40,6 +40,9 @@ export class IpcBackend implements Backend {
   checkMnemonic = cmd.checkMnemonic;
   importWallet = cmd.importWallet;
   authorize = cmd.authorize;
+  authorizeSet = cmd.authorizeSet;
+  beginFlow = cmd.beginFlow;
+  endFlow = cmd.endFlow;
   revokeGrant = cmd.revokeGrant;
   revealMnemonic = cmd.revealMnemonic;
   recoverWithMnemonic = cmd.recoverWithMnemonic;
@@ -65,6 +68,7 @@ export class IpcBackend implements Backend {
   newTxDraft = cmd.newTxDraft;
   closeDraft = cmd.closeDraft;
   draftSetRecipients = cmd.draftSetRecipients;
+  draftSetContactRecipient = cmd.draftSetContactRecipient;
   draftSetSource = cmd.draftSetSource;
   draftSetFee = cmd.draftSetFee;
   draftSetChange = cmd.draftSetChange;
@@ -117,6 +121,8 @@ export class IpcBackend implements Backend {
   searchUsers = cmd.searchUsers;
   dashpayContact = cmd.dashpayContact;
   contactActivity = cmd.contactActivity;
+  frequentContacts = cmd.frequentContacts;
+  resolveContactPaymentLock = cmd.resolveContactPaymentLock;
   grantRequest = cmd.grantRequest;
   creditsCostTable = cmd.creditsCostTable;
   dashpayEligibility = cmd.dashpayEligibility;

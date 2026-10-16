@@ -71,8 +71,8 @@ pub use types::{
     SeedDerivation, SystemClock, UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
 };
 pub use vault::{
-    CheckedPassphraseChange, CoreMnemonicCheck, MAX_PASSPHRASE_BYTES, Vault, WalletBackupBundle,
-    reads_bundle_version, throttle_wait_secs,
+    CheckedPassphraseChange, CoreMnemonicCheck, MASTERNODE_KEY_ROLES, MAX_MASTERNODE_KEY_BYTES,
+    MAX_PASSPHRASE_BYTES, Vault, WalletBackupBundle, reads_bundle_version, throttle_wait_secs,
 };
 
 /// Directory of the vault inside a network data directory.

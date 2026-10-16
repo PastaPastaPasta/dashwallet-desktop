@@ -88,6 +88,10 @@ import type { WatchOnlyOptions } from "./generated/WatchOnlyOptions";
 import type { UserHit } from "./generated/UserHit";
 import type { ActivityFilterName } from "./generated/ActivityFilterName";
 import type { ContactActivityPage } from "./generated/ContactActivityPage";
+import type { ContactRecipient } from "./generated/ContactRecipient";
+import type { ContactSummaryInfo } from "./generated/ContactSummaryInfo";
+import type { FlowKindName } from "./generated/FlowKindName";
+import type { LockResolutionName } from "./generated/LockResolutionName";
 import type { ContactDetailInfo } from "./generated/ContactDetailInfo";
 import type { ContactRequestOutcome } from "./generated/ContactRequestOutcome";
 import type { CostTable } from "./generated/CostTable";
@@ -122,6 +126,12 @@ export interface Backend {
   importWallet(mnemonic: string, bip39Passphrase: string | null, options: ImportOptions): Promise<string>;
   /** `walletId` is `null` only for `changeCredential` (vault.rs). */
   authorize(purpose: GrantPurposeSpec, walletId: string | null, credential: CredentialSpec): Promise<AuthGrant>;
+  /** One credential check for several grants, all or none (E0-04: "Accept and pay"). */
+  authorizeSet(purposes: GrantPurposeSpec[], walletId: string | null, credential: CredentialSpec): Promise<AuthGrant[]>;
+  /** Redeems grants into a flow's lease; returns the lease id a write or a prepare takes. */
+  beginFlow(walletId: string, flow: FlowKindName, grants: string[]): Promise<string>;
+  /** Ends a lease (idempotent). */
+  endFlow(lease: string): Promise<null>;
   /** Drops a grant before it expires (unknown ids are ignored). */
   revokeGrant(grantId: string): Promise<null>;
   revealMnemonic(walletId: string, grantId: string): Promise<RevealedMnemonic>;
@@ -156,6 +166,8 @@ export interface Backend {
   newTxDraft(walletId: string): Promise<number>;
   closeDraft(draft: number): Promise<boolean>;
   draftSetRecipients(draft: number, recipients: Recipient[]): Promise<null>;
+  /** A DashPay contact as the only recipient (DP3-01): its address is reserved at prepare. */
+  draftSetContactRecipient(draft: number, recipient: ContactRecipient): Promise<null>;
   draftSetSource(draft: number, source: CoinSource): Promise<null>;
   draftSetFee(draft: number, fee: FeeMode): Promise<null>;
   draftSetChange(draft: number, change: ChangePolicy): Promise<null>;
@@ -223,6 +235,11 @@ export interface Backend {
   // The contact pane and the bell (DP2-09).
   dashpayContact(walletId: string, identity: string, contact: string): Promise<ContactDetailInfo | null>;
   contactActivity(walletId: string, identity: string, contact: string, cursor: string | null, filter: ActivityFilterName): Promise<ContactActivityPage>;
+  // Pay ▸ To a contact (DP3-06).
+  /** The frequent strip (DP3-02): most paid, then most paying, in the last 90 days. */
+  frequentContacts(walletId: string, identity: string, limit: number): Promise<ContactSummaryInfo[]>;
+  /** Looks for the locked payment's outcome; `sent` and `notSent` clear the lock (DP3-01). */
+  resolveContactPaymentLock(walletId: string, identity: string, contact: string): Promise<LockResolutionName>;
   /** The caps of the `platformOp` grant a DashPay write needs. */
   grantRequest(walletId: string, identity: string, action: GrantAction): Promise<GrantRequest>;
   creditsCostTable(walletId: string): Promise<CostTable>;

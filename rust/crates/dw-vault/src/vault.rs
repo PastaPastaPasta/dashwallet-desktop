@@ -15,10 +15,10 @@
 //!   epoch check until its result is released, and every use of a grant
 //!   token's key holds it from the token check until the operation is done
 //!   ([`Vault::gated`]): the secret reads (`reveal_mnemonic`,
-//!   `export_wallet_secret`, `with_revealed_seed`, `open_backup_bundle` of
-//!   this vault's own bundle) and the token-authorized writes (`encrypt`,
-//!   `enroll_quick_unlock`, `set_quick_unlock_spend_limit`), whose file
-//!   write is inside.
+//!   `export_wallet_secret`, `with_revealed_seed`, `masternode_key`,
+//!   `open_backup_bundle` of this vault's own bundle) and the
+//!   token-authorized writes (`encrypt`, `enroll_quick_unlock`,
+//!   `set_quick_unlock_spend_limit`), whose file write is inside.
 //!   `seed_derivation` and `core_mnemonic_check`, which read a secret with
 //!   the vault's own key, are gated too. Every epoch change (lock, unlock,
 //!   scope change, passphrase change, encrypt, recover, destroy) holds it
@@ -30,12 +30,15 @@
 //!   before the records go until they are gone, without ending the epoch
 //!   unless it changes one anyway ([`Vault::drain_ops`]): a signer that read
 //!   a seed has released its result before the seed is deleted, and one
-//!   that starts after finds none (DP2-02). Not gated: `backup_bundle`,
-//!   which takes no grant or epoch and returns only ciphertext,
-//!   `open_backup_bundle` through a bundle's passphrase slot (no vault key),
-//!   and `store_wallet_secret`, a record write under the vault's own key
-//!   that never replaces a seed (a wallet holding different records is
-//!   refused), so no signer can read a seed it changes.
+//!   that starts after finds none (DP2-02). Every change of a key attached
+//!   to a masternode (`store_masternode_key`, `delete_masternode_keys`)
+//!   drains the same way, since it may replace or delete a secret. Not
+//!   gated: `backup_bundle`, which takes no grant or epoch and returns
+//!   only ciphertext, `open_backup_bundle` through a bundle's passphrase
+//!   slot (no vault key), and `store_wallet_secret`, a record write under
+//!   the vault's own key that never replaces a seed (a wallet holding
+//!   different records is refused), so no signer can read a seed it
+//!   changes.
 //!
 //!   A holder must not take the gate again, take `writer`, block on another
 //!   lock or wait on anything outside the process (the OS store, which may
@@ -114,6 +117,7 @@ mod compat;
 mod masternode;
 use compat::BackupKek;
 pub use compat::{CoreMnemonicCheck, WalletBackupBundle, reads_bundle_version};
+pub use masternode::{MASTERNODE_KEY_ROLES, MAX_MASTERNODE_KEY_BYTES};
 
 /// Proof that the caller holds `Shared::writer`.
 type WriteGuard<'a> = MutexGuard<'a, ()>;

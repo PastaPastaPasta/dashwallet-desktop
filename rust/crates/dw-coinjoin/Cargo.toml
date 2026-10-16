@@ -13,8 +13,6 @@ publish.workspace = true
 # `bls`: operator signatures on dsq/dstx (dash-pkc, already in the graph
 # through platform-wallet's `bls` feature).
 dashcore = { workspace = true, features = ["bls"] }
-# The operator key `bls::testing` signs with; dashcore verifies only.
-dash-pkc = { workspace = true, features = ["bls"] }
 dw-p2p = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -22,4 +20,7 @@ tokio = { workspace = true, features = ["sync", "time", "macros"] }
 rand = "0.8"
 
 [dev-dependencies]
+# Only the test operator key (tests/support/operator_key.rs) signs; the
+# library verifies through dashcore and cannot name dash_pkc (MG-01 D21).
+dash-pkc = { workspace = true, features = ["bls"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }

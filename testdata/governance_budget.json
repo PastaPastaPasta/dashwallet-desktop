@@ -1,0 +1,4 @@
+{
+ "source": "regtest dashd v24.0.0-rc.3, gen_masternode_vectors.py",
+ "networks": {"regtest": {"governanceinfo": {"governanceminquorum": 1, "proposalfee": 1.0, "superblockcycle": 20, "superblockmaturitywindow": 10, "lastsuperblock": 2000, "nextsuperblock": 2020, "fundingthreshold": 0, "governancebudget": 7.6318376}, "budgets": {"1499": 0.0, "1500": 10.2652102, "1501": 0.0, "1520": 9.531981, "1540": 9.531981, "1560": 9.531981, "2000": 7.6318376}}}
+}

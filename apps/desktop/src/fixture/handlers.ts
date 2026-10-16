@@ -19,6 +19,7 @@ import type { AppError, AppEvent, CommandArgs, CommandName, CommandResults } fro
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { Budget } from "../api/generated/Budget";
 import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
+import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { FlowKindName } from "../api/generated/FlowKindName";
 import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
@@ -38,7 +39,7 @@ import { scanHandlers } from "./scan";
 import { advance, costs, failRun, fundable, NAME_CREDITS, registrationHandlers } from "./registration";
 import { routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
-import { sendHandlers } from "./send";
+import { sendHandlers, type Pair, type SendDeps } from "./send";
 import { toolsHandlers } from "./tools";
 import { isClosed, settingsHandlers } from "./settings";
 import { emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
@@ -497,13 +498,93 @@ function importWallet(ctx: Ctx, phrase: string, name: string | null): string {
   return walletId;
 }
 
+// Contact payments (DP3-01, DP3-02): what send.ts asks of the DashPay state and the leases.
+
+/** `TxDraft::set_contact_recipient`'s checks (DP3-01 D2) and `prepare`'s (D4), in the engine's
+ * order. `prepare` needs the contact established: a request still waiting is
+ * `contact.ineligible{pendingIncoming}` (accept first). */
+const checkContact: SendDeps["checkContact"] = (w, walletId, r, stage, amount) => {
+  if (!isIdentityId(r.identity) || !isIdentityId(r.contact)) throw fail("invalid_argument", "not an identity id");
+  if (r.contact === r.identity) throw fail("contact.self", "contact is the identity itself");
+  amount?.();
+  const c = dashpay(w, walletId, r.identity).contacts.find((x) => x.summary.contact === r.contact);
+  const relation = c?.summary.relation;
+  if (stage === "prepare" && relation === "pendingIncoming")
+    throw fail("contact.ineligible", "contact ineligible: PendingIncoming", { kind: "ineligible", reason: "pendingIncoming" });
+  if (!c || (relation !== "contact" && relation !== "pendingIncoming")) throw fail("invalid_argument", "not a contact of this identity");
+  if (c.summary.channel === "broken") throw fail("contact.channel_broken", "the payment channel is broken");
+  if (c.paymentLock) throw fail("contact.payment_locked", "contact payment locked", { kind: "txid", txid: c.paymentLock.txid });
+};
+
+/** A contact payment's lease (DP3-01 D5): an `acceptAndPay` or `contactPayment` lease of the
+ * wallet with a Spend budget (else `send.grant_invalid`); revoked is `send.cancelled`; the charge
+ * must fit what is left (`send.grant_exceeded`). */
+const chargeLease: SendDeps["chargeLease"] = (ctx, walletId, id, outflow) => {
+  const key = leaseKey(id);
+  if (key === null) return false;
+  const lease = ctx.world.leases.find((l) => l.id === ctx.world.flowLeases[key] && l.walletId === walletId);
+  const spend = lease?.budgets.find((b) => b.purpose === "spend");
+  if (!lease || !spend || (lease.flow !== "acceptAndPay" && lease.flow !== "contactPayment") || lease.state.kind === "ended") throw fail("send.grant_invalid", "grant invalid");
+  if (lease.state.kind === "revoked") throw fail("send.cancelled", "cancelled");
+  if (lease.state.kind === "needsGrant") throw fail("send.vault_locked", "vault locked");
+  const remaining = Number(spend.ceiling) - Number(spend.spent);
+  if (outflow > remaining) throw fail("send.grant_exceeded", "grant exceeded", { kind: "spendCap", maxDuffs: remaining, outflow });
+  const budgets = lease.budgets.map((b) => (b === spend ? { ...b, spent: String(Number(b.spent) + outflow) } : b));
+  setLease(ctx, { ...lease, budgets });
+  return true;
+};
+
+const pairContact = (w: World, walletId: string, r: Pair) => contact(w, walletId, r.identity, r.contact);
+
+function paymentsChanged(ctx: Ctx, walletId: string, identity: string) {
+  ctx.emit({ kind: "platform", network: ctx.world.launch.network.dirName, walletId, change: { domain: "payments", identity } });
+  contactsChanged(ctx, walletId, identity);
+}
+
+const sendDeps: SendDeps = {
+  wallet,
+  spendGrant: (w, id, walletId) => checkGrant(w, id, walletId, ["spend"]),
+  useGrant,
+  checkContact,
+  chargeLease,
+  paymentLock: (w, walletId, r) => pairContact(w, walletId, r).paymentLock,
+  setPaymentLock: (ctx, walletId, r, lock) => {
+    pairContact(ctx.world, walletId, r).paymentLock = lock;
+    paymentsChanged(ctx, walletId, r.identity);
+  },
+  // DP3-02: the payment is the contact's activity (unmined: no height yet) and its last activity.
+  contactPaid: (ctx, walletId, r, txid, amount) => {
+    const dp = dashpay(ctx.world, walletId, r.identity);
+    const c = pairContact(ctx.world, walletId, r);
+    (dp.activity[r.contact] ??= []).push({ txid, direction: "sent", amount, height: null, timestamp: secs(FIXTURE_NOW) });
+    c.summary = { ...c.summary, lastActivityAt: secs(FIXTURE_NOW) };
+    paymentsChanged(ctx, walletId, r.identity);
+    return { identity: r.contact, username: c.summary.username, displayName: c.summary.displayName, avatarUrl: c.profile?.avatarUrl ?? null };
+  },
+};
+
+/** The frequent strip (DP3-02 D11): established, not hidden, paid or paying in the last 90 days;
+ * the most paid first (count, then the latest payment, then the id), then the most paying. */
+function frequent(dp: DashPayWorld, limit: number): ContactSummaryInfo[] {
+  const since = secs(FIXTURE_NOW) - 90 * 86_400;
+  const ranked = (direction: "sent" | "received") =>
+    dp.contacts
+      .filter((c) => c.summary.relation === "contact" && !c.summary.hidden)
+      .map((c) => {
+        const items = (dp.activity[c.summary.contact] ?? []).filter((i) => i.direction === direction && (i.timestamp ?? secs(FIXTURE_NOW)) >= since);
+        return { c: c.summary, n: items.length, latest: Math.max(...items.map((i) => i.timestamp ?? secs(FIXTURE_NOW))) };
+      })
+      .filter((x) => x.n > 0)
+      .sort((a, b) => b.n - a.n || b.latest - a.latest || (a.c.contact < b.c.contact ? -1 : 1))
+      .map((x) => x.c);
+  const sent = ranked("sent");
+  const rest = ranked("received").filter((c) => !sent.includes(c));
+  return [...sent, ...rest].slice(0, Math.min(20, Math.max(1, limit)));
+}
+
 export const HANDLERS: Handlers = {
   // Pay and Receive (U-03): send.ts.
-  ...sendHandlers({
-    wallet,
-    spendGrant: (w, id, walletId) => checkGrant(w, id, walletId, ["spend"]),
-    useGrant,
-  }),
+  ...sendHandlers(sendDeps),
   // Tools (U-05): tools.ts.
   ...toolsHandlers({ wallet, grant: checkGrant, useGrant }),
   // Settings (U-04): settings.ts.
@@ -890,12 +971,17 @@ export const HANDLERS: Handlers = {
     return save("published");
   },
   contact_payment_lock: ({ walletId, identity, contact: id }, { world }) => contact(world, walletId, identity, id).paymentLock,
-  frequent_contacts: ({ walletId, identity, limit }, { world }) =>
-    dashpay(world, walletId, identity)
-      .contacts.filter((c) => c.summary.relation === "contact" && c.summary.lastActivityAt !== null)
-      .sort((a, b) => b.summary.lastActivityAt! - a.summary.lastActivityAt!)
-      .slice(0, limit)
-      .map((c) => c.summary),
+  // DashPay::resolve_payment_lock (DP3-01 D9): no lock is `invalid_argument`; `World.send.lockEvidence`
+  // answers when set, else a payment the fixture handed over is `sent` and any other `unknown`.
+  // `sent` and `notSent` clear the lock.
+  resolve_contact_payment_lock: ({ walletId, identity, contact: id }, ctx) => {
+    const c = contact(ctx.world, walletId, identity, id);
+    if (!c.paymentLock) throw fail("invalid_argument", "no payment lock for this contact");
+    const found = ctx.world.send.lockEvidence ?? (ctx.world.send.sent[c.paymentLock.txid] ? "sent" : "unknown");
+    if (found !== "unknown") sendDeps.setPaymentLock(ctx, walletId, { identity, contact: id }, null);
+    return found;
+  },
+  frequent_contacts: ({ walletId, identity, limit }, { world }) => frequent(dashpay(world, walletId, identity), limit),
   // DashPay::contact_activity (DP3-02): the ids, itself, the identity's wallet, then the page; a
   // contact never paid is an empty page.
   contact_activity: ({ walletId, identity, contact: id, cursor, filter }, { world }) => {

@@ -32,9 +32,10 @@ test("IOS-074 accepts a request from the pane under a passphrase grant; the cont
   await expect(page.getByTestId("contact-pane-outcome")).toHaveText("You and heidi are now contacts.");
   await expect(names(page, "requests")).toHaveText(["Grace Hopper"]);
   await expect(names(page, "contacts")).toContainText(["heidi"]);
-  // Now a contact: Pay waits for the payment channel, and the private details show.
+  // Now a contact: Pay is offered while the channel finishes its setup (DP3-06 D15), and the
+  // private details show.
   await expect(page.getByTestId("contact-detail-relation")).toHaveText("Contact");
-  await expect(page.getByTestId("contact-pay")).toBeDisabled();
+  await expect(page.getByTestId("contact-pay")).toBeEnabled();
   await expect(page.getByTestId("contact-private")).toBeVisible();
   expect(errors).toEqual([]);
 });

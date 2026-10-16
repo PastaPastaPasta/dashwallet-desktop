@@ -61,6 +61,10 @@ export interface UiState {
   /** Coin Selection's "Pay with these coins" (U-05 D19): the `txid:vout` keys Pay ▸ To an
    * address starts with, under Advanced on "Selected coins". */
   payCoins: string[] | null;
+  /** Pay ▸ To a contact's payee (DP3-06 D2): the contact's identity id, picked on the tab or
+   * handed over by the contact pane, in the wallet it was picked in (another wallet's tab shows
+   * none); `null`: none picked. */
+  payContact: { walletId: string; contact: string } | null;
   toolsTab: ToolsTab;
   /** Pay's Create Unsigned (U-05 D18): the PSBT Tools ▸ PSBT opens with, and whether it reached
    * the clipboard. The tab takes it once. */
@@ -123,6 +127,7 @@ let state: UiState = {
   payLinks: 0,
   contactPrefill: null,
   payCoins: null,
+  payContact: null,
   toolsTab: "information",
   psbtPrefill: null,
   settingsTab: "general",

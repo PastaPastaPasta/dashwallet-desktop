@@ -102,7 +102,7 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
           </>
         )}
       </dl>
-      <PaneButtons contact={c} pane={pane} />
+      <PaneButtons contact={c} pane={pane} locked={!!detail.data?.paymentLock} />
       {c.relation === "contact" && (
         <>
           {detail.data && <PrivateDetails walletId={pane.walletId} contact={c} detail={detail.data} actions={pane.actions} />}
@@ -118,8 +118,9 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
   );
 }
 
-/** The relation's actions (D2) and the last outcome for this contact (D4). */
-function PaneButtons({ contact: c, pane }: { contact: ContactSummaryInfo; pane: PaneContext }) {
+/** The relation's actions (D2) and the last outcome for this contact (D4). Pay and "Accept and
+ * pay" open Pay ▸ To a contact on it (DP3-06 D15); `locked`: a payment to it may have been sent. */
+function PaneButtons({ contact: c, pane, locked }: { contact: ContactSummaryInfo; pane: PaneContext; locked: boolean }) {
   const actions = useModel(pane.actions);
   const offer = paneActions(c, pane.hasKeys);
   const busy = actions.busy;
@@ -133,6 +134,7 @@ function PaneButtons({ contact: c, pane }: { contact: ContactSummaryInfo; pane: 
     toast(o, true);
     if (o?.ok) arm(offer.kind);
   };
+  const pay = () => navigate("pay", { payTab: "contact", payContact: { walletId: pane.walletId, contact: c.contact } });
   let buttons;
   let note: string | null = null;
   switch (offer.kind) {
@@ -149,6 +151,9 @@ function PaneButtons({ contact: c, pane }: { contact: ContactSummaryInfo; pane: 
           >
             {actions.isRunning("accept", c.contact) ? "Accepting…" : "Accept"}
           </DashButton>
+          <DashButton key="acceptPay" variant="tintedBlue" data-testid="contact-accept-pay" disabled={busy || offer.acceptBlocked !== null} onClick={pay}>
+            Accept and pay
+          </DashButton>
           <DashButton key="ignore" variant="tintedGray" data-testid="contact-ignore" disabled={busy} onClick={() => void actions.ignore(c.contact).then(done)}>
             {actions.isRunning("ignore", c.contact) ? "Ignoring…" : "Ignore"}
           </DashButton>
@@ -159,9 +164,10 @@ function PaneButtons({ contact: c, pane }: { contact: ContactSummaryInfo; pane: 
       note = "Contact request sent. You become contacts once they accept it.";
       break;
     case "contact":
-      note = offer.payBlocked;
+      // A lock resolves on the Pay tab, so Pay leads there even on a broken channel.
+      note = locked ? "A payment to this contact may have been sent. Pay shows it and checks it again." : (offer.payBlocked ?? offer.payNote);
       buttons = (
-        <DashButton key="pay" variant="filledBlue" data-testid="contact-pay" disabled={offer.payBlocked !== null} onClick={() => navigate("pay", { payTab: "contact" })}>
+        <DashButton key="pay" variant="filledBlue" data-testid="contact-pay" disabled={offer.payBlocked !== null && !locked} onClick={pay}>
           Pay
         </DashButton>
       );
