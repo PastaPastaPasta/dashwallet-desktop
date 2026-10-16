@@ -75,6 +75,11 @@ pub(crate) const LOCK_DUFFS: u64 = 3_000_000;
 pub(crate) const CONTESTED_LOCK_DUFFS: u64 = 25_000_000;
 /// One duff locked is this many credits on Platform.
 pub(crate) const CREDITS_PER_DUFF: u64 = 1_000;
+/// What a Core-funded registration's grant asks past the lock and its fee:
+/// the funding call charges both, and the identity step's proof signer
+/// ([`Lease::uncounted_funding_signer`]) needs a Funding budget left, as
+/// Finish transfers' one-duff grant does. Never charged (DP1-09 D30).
+pub(crate) const PROOF_AUTHORITY_DUFFS: u64 = 1;
 /// The IdentityCreate fee bound until DP1-06's cost table: the pin's base
 /// cost (2 000 000 credits, rs-platform-version
 /// `state_transition_min_fees/v1.rs`) plus the six keys stored, bounded

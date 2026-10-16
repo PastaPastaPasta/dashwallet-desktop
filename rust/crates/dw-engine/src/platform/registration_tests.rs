@@ -1163,34 +1163,61 @@ fn a_kill_at_any_transition_resumes_to_one_registration() {
     }
 }
 
-/// The wizard asks for exactly the quote's grant (DP1-09): a run under it
-/// funds and finishes, never `grant_exceeded`.
+/// D29/D30: a grant of exactly what the quote asks for funds and finishes,
+/// never `grant_exceeded`: the quote counts the permit's inputs (the fake
+/// counts the wallet's real coins, none) with the permit's own fee bound,
+/// and asks one duff more for the identity step's proof signer.
 #[test]
 fn a_grant_of_the_quote_runs_to_done() {
-    let f = fixture(false);
-    let lib = f.fake();
-    let quote = f
-        .engine
-        .block_on(registration::quote(&*lib, &request(PLAIN)))
-        .unwrap();
-    let grant = f.grant(quote.grant.max_duffs, quote.grant.max_credits, Credential::None);
-    let draft = f
-        .engine
-        .block_on(registration::start(
-            &f.session,
-            f.wallet,
-            Arc::clone(&lib),
-            request(PLAIN),
-            grant,
-        ))
-        .unwrap();
-    let draft: i64 = draft.parse().unwrap();
-    f.settle(draft);
-    let status = f.status(&lib, draft);
-    assert_eq!(
-        (status.phase, status.failure.map(|x| x.code)),
-        (RegistrationPhase::Done, None)
-    );
+    for (headroom, done) in [(flow::PROOF_AUTHORITY_DUFFS, true), (0, false)] {
+        let f = fixture(false);
+        let lib = f.fake();
+        lib.w().spendable.inputs = 0;
+        let quote = f
+            .engine
+            .block_on(registration::quote(&*lib, &request(PLAIN)))
+            .unwrap();
+        assert_eq!(
+            (quote.total_duffs, quote.grant.max_duffs),
+            (
+                quote.lock_duffs + crate::fees::asset_lock_fee_bound(0),
+                quote.total_duffs + flow::PROOF_AUTHORITY_DUFFS
+            )
+        );
+        let grant = f.grant(
+            quote.total_duffs + headroom,
+            quote.grant.max_credits,
+            Credential::None,
+        );
+        let draft = f
+            .engine
+            .block_on(registration::start(
+                &f.session,
+                f.wallet,
+                Arc::clone(&lib),
+                request(PLAIN),
+                grant,
+            ))
+            .unwrap();
+        let draft: i64 = draft.parse().unwrap();
+        f.settle(draft);
+        let status = f.status(&lib, draft);
+        let got = (status.phase, status.waiting, status.failure.map(|x| x.code));
+        if done {
+            assert_eq!(got, (RegistrationPhase::Done, None, None));
+        } else {
+            // The funding emptied the budget: the proof signer is refused
+            // and the paid row waits for a grant.
+            assert_eq!(
+                got,
+                (
+                    RegistrationPhase::FundingSent,
+                    Some(RegistrationWait::Authorize),
+                    None
+                )
+            );
+        }
+    }
 }
 
 #[test]
@@ -1279,7 +1306,10 @@ fn the_funding_cap_and_balance_are_checked_before_a_row_exists() {
     assert_eq!(quote.lock_duffs, flow::LOCK_DUFFS);
     assert_eq!(quote.fee_duffs, flow::fee_bound_worst(2));
     assert_eq!(quote.total_duffs, quote.lock_duffs + quote.fee_duffs);
-    assert_eq!(quote.grant.max_duffs, quote.total_duffs);
+    assert_eq!(
+        quote.grant.max_duffs,
+        quote.total_duffs + flow::PROOF_AUTHORITY_DUFFS
+    );
     assert_eq!(
         quote.grant.max_credits,
         flow::IDENTITY_CREATE_CREDITS + NAME_CREDITS

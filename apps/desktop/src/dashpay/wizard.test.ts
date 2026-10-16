@@ -18,7 +18,7 @@ const quote = (label: string): RegistrationQuote => ({
   totalDuffs: 3_002_260,
   remainingCredits: "1000000000",
   availableDuffs: 10e8,
-  grant: { maxDuffs: 3_002_260, maxCredits: "2000000000" },
+  grant: { maxDuffs: 3_002_261, maxCredits: "2000000000" },
 });
 
 const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
@@ -79,7 +79,7 @@ describe("IOS-067 Confirm & pay", () => {
     const { wiz, calls, vault } = setup();
     atConfirm(wiz, "alice-77");
     await wiz.confirm(quote("alice-77").grant);
-    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 3_002_260, maxCredits: "2000000000" }, walletId: WALLET_A });
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 3_002_261, maxCredits: "2000000000" }, walletId: WALLET_A });
     expect(calls).toEqual(["start alice-77 grant-1"]);
     expect(wiz).toMatchObject({ step: null, draft: "reg-9", running: null, error: null });
   });

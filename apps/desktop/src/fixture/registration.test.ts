@@ -53,7 +53,7 @@ describe("start_registration", () => {
   it("writes a funded row, broadcasts one asset lock and says so; the status is registering", async () => {
     const f = install();
     const quote = await cmd.registrationQuote(W, coreRequest(LABEL));
-    expect(quote).toMatchObject({ contested: false, totalDuffs: 3_002_260 });
+    expect(quote).toMatchObject({ contested: false, totalDuffs: 3_002_260, grant: { maxDuffs: 3_002_261 } });
     expect(quote.availableDuffs).toBeGreaterThan(quote.totalDuffs);
     const draft = await cmd.startRegistration(W, coreRequest(LABEL), await grant());
     expect(await rowOf(draft)).toMatchObject({ phase: "fundingSent", label: LABEL, waiting: "instantSend", holdsKey: false, running: true, fundsCommitted: true });

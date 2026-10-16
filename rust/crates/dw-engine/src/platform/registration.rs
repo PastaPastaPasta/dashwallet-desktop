@@ -90,8 +90,10 @@ pub struct RegistrationQuote {
     /// (`registration.funding_insufficient`). 0 for funding that is not the
     /// Core balance.
     pub available_duffs: u64,
-    /// The grant to ask for: `max_duffs` covers `total_duffs`, and
-    /// `max_credits` the identity creation, name and profile.
+    /// The grant to ask for: `max_duffs` covers `total_duffs` (one duff
+    /// more for a lock, which the identity step's proof signer needs left
+    /// once the funding charged the total), and `max_credits` the identity
+    /// creation, name and profile.
     pub grant: GrantRequest,
 }
 
@@ -451,6 +453,10 @@ pub(crate) async fn quote<L: RegistrationLib>(
 ) -> Result<RegistrationQuote, RegistrationError> {
     let plan = plan(lib, req, "DashPay.registration_quote").await?;
     let total_duffs = plan.lock_duffs.saturating_add(plan.fee_duffs);
+    let proof_authority = match plan.funding {
+        Funding::CoreBalance { .. } => flow::PROOF_AUTHORITY_DUFFS,
+        _ => 0,
+    };
     Ok(RegistrationQuote {
         contested: plan.contested,
         lock_duffs: plan.lock_duffs,
@@ -459,7 +465,7 @@ pub(crate) async fn quote<L: RegistrationLib>(
         remaining_credits: plan.credits_held.saturating_sub(plan.credits),
         available_duffs: plan.available_duffs,
         grant: GrantRequest {
-            max_duffs: total_duffs,
+            max_duffs: total_duffs.saturating_add(proof_authority),
             max_credits: plan.credits,
         },
     })

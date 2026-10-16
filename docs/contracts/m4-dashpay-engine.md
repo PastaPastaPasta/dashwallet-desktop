@@ -225,8 +225,11 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 bodies decided where the rows leave room:
 
 - **Costs.** The lock is 0.03 DASH (3 000 000 duffs) for a plain name and 0.25 DASH for a contested one, as the iOS
-  wallet locks, raised when the credits below need more. The fee is E0-04's `fee_bound_worst` over every spendable
-  coin of the funding sources (n × 149 + 300 bytes at 1 duff/byte), a true upper bound on the library's selection.
+  wallet locks, raised when the credits below need more. The fee is the funding permit's own bound,
+  `fees::asset_lock_fee_bound`, over every spendable coin of the funding sources (200 + n × 149 bytes at 1 duff/byte
+  plus a dust remainder), a true upper bound on the library's selection (D29 of DP1-09). `grant.max_duffs` is the
+  total plus one duff for a Core-funded lock: the funding call charges the total, and the identity step's proof
+  signer needs a Funding budget left (the one duff Finish transfers asks for); it is never charged (D30 of DP1-09).
   `grant.max_credits` is IdentityCreate (bounded at 300 000 000 credits until DP1-06's cost table) plus
   `register_name`'s grant for the label and the temporary label, plus 300 000 000 with an `initial_profile`.
   `start_registration` checks the grant's Funding cap (without redeeming it) and the balance against lock + fee

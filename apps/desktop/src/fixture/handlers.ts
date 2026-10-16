@@ -728,7 +728,8 @@ export const HANDLERS: Handlers = {
       totalDuffs,
       remainingCredits: String(BigInt(lockDuffs * 1000) - credits),
       availableDuffs: funding.kind === "coreBalance" ? fundable(wallet(world, walletId)) : 0,
-      grant: { maxDuffs: totalDuffs, maxCredits: String(credits) },
+      // D30: one duff past the total for a lock, the identity step's proof authority (registration.rs).
+      grant: { maxDuffs: funding.kind === "coreBalance" ? totalDuffs + 1 : totalDuffs, maxCredits: String(credits) },
     };
   },
   search_users: ({ walletId, prefix, limit }, { world }) => {
