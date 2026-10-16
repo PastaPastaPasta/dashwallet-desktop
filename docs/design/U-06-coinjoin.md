@@ -125,3 +125,20 @@ A vault lock needs no rule: the mixing loop sees it within a tick, halts, and th
 | T0 (UI) | every state on Home and the page, Start/Stop/confirm, level, Settings ▸ CoinJoin, a lock during mixing, failures; axe, light and dark, Chromium and WebKit | `e2e/coinjoin.spec.ts` |
 | T0 (visual) | Home card per state, the page (off, mixing, paused, locked), Settings ▸ CoinJoin | `e2e/visual.spec.ts` |
 | T1 | D12 | `e2e-tauri/regtest-coinjoin.ts`; regtest `coinjoin` suite |
+
+## T1 evidence (2026-10-16, head 66f66625)
+
+- **UI on the real engine** (`scripts/e2e-regtest-coinjoin.sh`, tauri-driver on a private X display, dashd
+  24.0.0 regtest with no masternodes, a debug app with the production renderer): PASS, 10 steps.
+  1. Funded with 10 DASH, the page showed Not Started.
+  2. Advanced was picked, and the engine's status then reported "10.00 tDASH / 8 Rounds".
+  3. Start Mixing gave Starting…, then Paused with "Can't mix while sync in progress." (with no
+     masternodes the engine's masternode sync never completes). The Home card showed Paused.
+  4. Lock: with the lock screen still up, the card turned to "Mixing stopped because the wallet was locked.".
+  5. Unlocked for mixing only, the page said "Unlocked for mixing only: …". Start Mixing gave Starting….
+  6. Stop Mixing, confirmed, gave Not Started.
+- **Real mixing rounds** (`regtest/functional/dwd_coinjoin_client.py`, dwcli on the same engine calls, dashd
+  24.0.0-rc.2, 4 masternodes): "Tests successful".
+  - Stop released the reservations (`after_stop … reserved=0`).
+  - Mixing reached 2 rounds with a fully mixed balance.
+  - The stop was `UserRequested`.
