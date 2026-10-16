@@ -7,10 +7,10 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import type { CoinJoinSettings } from "../api/generated/CoinJoinSettings";
 import type { CoinJoinStatus } from "../api/generated/CoinJoinStatus";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { keys, useBackend } from "../api/queries";
+import { keys, useBackend, useBalance } from "../api/queries";
 import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
-import { actionFailureText, coinjoinView, type CoinJoinView } from "./model";
+import { actionFailureText, coinjoinView, sameMarks, type CoinJoinView, type MixerMarks } from "./model";
 
 /** dw-coinjoin's fixed values: they never change while the app runs. */
 export function useCoinJoinLimits() {
@@ -56,12 +56,17 @@ export function useCoinJoinView(walletId: string, network: NetworkInfo): { view:
   const status = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId) });
   const amount = useCoinJoinAmount(network);
   const masked = useMaskedAmount(network);
-  const view = coinjoinView({ status: status.data, readFailed: status.isError, readError: status.error, amount, masked });
-  // Mixing again ends the dismissal of the last stop (D1), whichever surface sees it run.
+  const total = useBalance(walletId).data?.total;
+  const atStart = useSyncExternalStore(subscribe, () => resting.get(walletId));
+  const view = coinjoinView({ status: status.data, readFailed: status.isError, readError: status.error, amount, masked, total, atStart });
+  // Mixing again ends the dismissal of the last stop (D1), whichever surface sees it run; a stopped
+  // mixer's marks are what a start starts from (D16).
   const state = status.data?.state;
+  const balances = status.data?.balances;
   useEffect(() => {
-    if (state !== undefined && state !== "idle") setDismissed(walletId, false);
-  }, [walletId, state]);
+    if (state === "idle" && balances) setResting(walletId, { balances, total });
+    else if (state !== undefined) setDismissed(walletId, false);
+  }, [walletId, state, balances, total]);
   return { view, status: status.data, retry: () => void status.refetch() };
 }
 
@@ -89,11 +94,17 @@ export function useMixingAction(walletId: string, network: NetworkInfo) {
   return { busy, problem, run };
 }
 
+// Window-wide state of the CoinJoin surfaces, so the Home card and the page agree. Replaced, never
+// mutated, so each is its own store snapshot.
 // D1: the wallets whose stopped card the user dismissed. It stays hidden until any CoinJoin surface
-// sees mixing run again (`useCoinJoinView`), or the window reloads. Replaced, never mutated, so it
-// is its own store snapshot.
+// sees mixing run again (`useCoinJoinView`), or the window reloads.
 let dismissed: ReadonlySet<string> = new Set();
+// D16: each wallet's marks when a CoinJoin surface last read its mixer stopped.
+let resting: ReadonlyMap<string, MixerMarks> = new Map();
 const listeners = new Set<() => void>();
+const notify = () => {
+  for (const l of listeners) l();
+};
 
 function setDismissed(walletId: string, on: boolean) {
   if (dismissed.has(walletId) === on) return;
@@ -101,7 +112,14 @@ function setDismissed(walletId: string, on: boolean) {
   if (on) next.add(walletId);
   else next.delete(walletId);
   dismissed = next;
-  for (const l of listeners) l();
+  notify();
+}
+
+function setResting(walletId: string, marks: MixerMarks) {
+  const was = resting.get(walletId);
+  if (was && sameMarks(was, marks)) return;
+  resting = new Map(resting).set(walletId, marks);
+  notify();
 }
 
 function subscribe(l: () => void) {

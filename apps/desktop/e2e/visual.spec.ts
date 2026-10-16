@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { STATES as COINJOIN } from "./coinjoin";
+import { STATES as COINJOIN, pressStart } from "./coinjoin";
 import { CARDS, CHIP_TEXT, CHIPS } from "./dashpay";
 import { fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
 import { showSettingsView, type SettingsView } from "./settings";
@@ -389,10 +389,14 @@ for (const theme of THEMES) {
 const COINJOIN_PAGES = ["off", "mixing", "paused", "locked"] as const;
 
 for (const theme of THEMES) {
-  for (const [state, { scenario, home }] of Object.entries(COINJOIN)) {
+  for (const [state, { scenario, start, home }] of Object.entries(COINJOIN)) {
     if (!home) continue;
     test(`visual coinjoin-card-${state} ${theme}`, async ({ page }) => {
       await page.goto(fixtureUrl(scenario, theme));
+      if (start) {
+        await page.getByTestId("toolbar").waitFor();
+        await pressStart(page);
+      }
       const card = page.getByTestId("coinjoin-card");
       await card.waitFor();
       await fontsReady(page);

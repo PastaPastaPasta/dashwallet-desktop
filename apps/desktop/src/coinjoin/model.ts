@@ -6,6 +6,7 @@
 // `L10n+CoinJoin.swift`).
 
 import { hasCode } from "../api/backend";
+import type { CoinJoinBalances } from "../api/generated/CoinJoinBalances";
 import type { CoinJoinLimits } from "../api/generated/CoinJoinLimits";
 import type { CoinJoinPoolMessage } from "../api/generated/CoinJoinPoolMessage";
 import type { CoinJoinPoolState } from "../api/generated/CoinJoinPoolState";
@@ -209,7 +210,7 @@ export interface CoinJoinView {
   line: string | null;
   /** `progress.overallPercent`, floored; `null` without a status. */
   percent: number | null;
-  /** "X of Y tDASH" (D3), masked in discreet mode; `null` without a status. */
+  /** "X of Y tDASH" (D3), X at most Y; masked in discreet mode; `null` without a status. */
   mixed: string | null;
   action: ViewAction | null;
   /** The Home card shows it (D1). */
@@ -229,7 +230,25 @@ export interface ViewInputs {
   amount: (duffs: number) => string;
   /** Discreet mode: amounts show as this instead. */
   masked: string | null;
+  /** The wallet's total balance; undefined until read. */
+  total?: number;
+  /** The wallet's marks when this window last read its mixer stopped (D16); absent if it never did. */
+  atStart?: MixerMarks;
 }
+
+/** What a mixer's step moves (D16): its balances, and the wallet's total, which a funding
+ * transaction's fee moves even when it spends and makes only coins the four balances leave out. */
+export interface MixerMarks {
+  balances: CoinJoinBalances;
+  total: number | undefined;
+}
+
+export const sameMarks = (a: MixerMarks, b: MixerMarks) =>
+  a.total === b.total &&
+  a.balances.anonymizable === b.balances.anonymizable &&
+  a.balances.denominated === b.balances.denominated &&
+  a.balances.normalizedAnonymized === b.balances.normalizedAnonymized &&
+  a.balances.fullyMixed === b.balances.fullyMixed;
 
 const ACTION_LABEL: Record<ViewActionKind, string> = {
   start: CoinJoinText.start,
@@ -241,17 +260,15 @@ const ACTION_LABEL: Record<ViewActionKind, string> = {
 const action = (kind: ViewActionKind, disabled = false): ViewAction => ({ kind, disabled, label: ACTION_LABEL[kind] });
 
 /** S1–S14: the first row that matches wins. */
-export function coinjoinView({ status, readFailed, readError, amount, masked }: ViewInputs): CoinJoinView {
+export function coinjoinView({ status, readFailed, readError, amount, masked, total, atStart }: ViewInputs): CoinJoinView {
   const base = { line: null, percent: null, mixed: null, onHome: false, dismissable: false, busy: false };
   if (readFailed) return { ...base, state: "readFailed", title: CoinJoinText.readFailed, line: failureText(readError), action: action("retry") };
   if (!status) return { ...base, state: "loading", title: "", action: null };
   const percent = Math.max(0, Math.min(100, Math.floor(status.progress.overallPercent)));
   const shown = (duffs: number) => masked ?? amount(duffs);
-  const facts = {
-    ...base,
-    percent,
-    mixed: CoinJoinText.mixedOf(shown(status.balances.fullyMixed), shown(status.amountAndRounds.amount)),
-  };
+  // The target can be lowered below what is already mixed: X stops at Y, as the percentage does.
+  const target = status.amountAndRounds.amount;
+  const facts = { ...base, percent, mixed: CoinJoinText.mixedOf(shown(Math.min(status.balances.fullyMixed, target)), shown(target)) };
   const line = statusLine(status.status);
   const full = percent >= 100;
   const running = (state: ViewState, title: string, withLine: boolean, act = action("stop")): CoinJoinView => ({
@@ -268,7 +285,12 @@ export function coinjoinView({ status, readFailed, readError, amount, masked }: 
     // A fully mixed mixer waits for new coins: "Not enough funds to mix." below the target, idle
     // above it (dw-engine `auto_denominate` does not rebalance). Neither is a pause or a start.
     if (full) return running("finished", CoinJoinText.fullyMixed, status.status.kind !== "idle");
-    if (status.status.kind === "idle") return running("starting", CoinJoinText.starting, false);
+    // The engine reports `idle` before its first step and again after a funding step (or while it
+    // waits a block after one): Starting… only while nothing has moved since it was stopped (D16).
+    if (status.status.kind === "idle")
+      return atStart && sameMarks(atStart, { balances: status.balances, total })
+        ? running("starting", CoinJoinText.starting, false)
+        : running("mixing", CoinJoinText.mixing, false);
     if (WAITING.has(status.status.kind)) return running("paused", CoinJoinText.paused, true);
     return running("mixing", CoinJoinText.mixing, true);
   }

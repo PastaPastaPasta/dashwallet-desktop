@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_WALLET_ID } from "../src/fixture/scenarios";
 import { seriousAxeViolations } from "./axe";
-import { STATES } from "./coinjoin";
+import { pressStart, STATES } from "./coinjoin";
 import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // U-06: the CoinJoin Home card, the CoinJoin page and Settings ▸ CoinJoin on the fixture backend
@@ -49,9 +49,13 @@ const mixerMoves = (page: Page, patch: Record<string, unknown>) =>
   );
 
 for (const theme of THEMES) {
-  for (const [state, { scenario, extra, title, home }] of Object.entries(STATES)) {
+  for (const [state, { scenario, extra, start, title, home }] of Object.entries(STATES)) {
     test(`U-06 ${state} ${theme}: page and Home card, 0 serious axe issues`, async ({ page }) => {
+      // Pressing Start first adds a page visit to the two axe runs: 11–13 s alone, 25–27 s in six
+      // WebKit workers at load 130, past 30 s once (D14).
+      if (start) test.slow();
       const errors = await open(page, scenario, theme, extra);
+      if (start) await pressStart(page);
       await expect(page.getByTestId("history-header")).toBeVisible();
       if (home) {
         await expect(card(page)).toHaveAttribute("data-state", state);
@@ -89,7 +93,13 @@ test("acceptance: mixing starts and stops from the page", async ({ page }) => {
   await page.getByTestId("coinjoin-action").click();
   await expect(status(page)).toHaveAttribute("data-state", "starting");
   await expect(page.getByTestId("coinjoin-action")).toHaveText("Stop Mixing");
-  // The first step runs, then the mixer joins a queue.
+  // The first step makes denominations and leaves the status idle (then waits a block): it has
+  // begun, so not Starting… any more (D16, review Sol r1 #1).
+  await mixerMoves(page, { progress: { overallPercent: 4, denominatedPercent: 40, partiallyMixedPercent: 0, mixedPercent: 0, averageRounds: 0 } });
+  await expect(status(page)).toHaveAttribute("data-state", "mixing");
+  await expect(page.getByTestId("coinjoin-status-title")).toHaveText("Mixing");
+  await expect(page.getByTestId("coinjoin-status-line")).toHaveCount(0);
+  // Then the mixer joins a queue.
   await mixerMoves(page, { status: { kind: "waitingInQueue" }, progress: { overallPercent: 12.5, denominatedPercent: 40, partiallyMixedPercent: 10, mixedPercent: 5, averageRounds: 0.4 } });
   await expect(status(page)).toHaveAttribute("data-state", "mixing");
   await expect(page.getByTestId("coinjoin-status-percent")).toHaveText("12%");
@@ -122,6 +132,20 @@ test("D1: the Home card shows while mixing, opens the page, and stops with a con
   await expect(page.getByTestId("page-coinJoin")).toBeVisible();
   await expect(status(page)).toHaveAttribute("data-state", "paused");
   await expect(page.getByTestId("coinjoin-status-line")).toHaveText("No Masternodes detected.");
+});
+
+test("D3: a target lowered below the mixed balance shows the target as mixed (review Sol r1 #2)", async ({ page }) => {
+  const errors = await openSettings(page, "coinjoin-finished");
+  await page.getByTestId("settings-coinjoin-targetAmountDash").fill("2");
+  await page.getByTestId("settings-coinjoin-save").click();
+  await expect(page.getByTestId("settings-coinjoin-done")).toHaveText("Saved.");
+  // All 30 DASH stay mixed; mixing aims for 2.
+  await navigate(page, "home");
+  await expect(page.getByTestId("coinjoin-card-percent")).toHaveText("100%");
+  await expect(page.getByTestId("coinjoin-card-mixed")).toHaveText(/^2(\.0+)? tDASH of 2(\.0+)? tDASH$/);
+  await navigate(page, "coinJoin");
+  await expect(page.getByTestId("coinjoin-status-mixed")).toHaveText(/^2(\.0+)? tDASH of 2(\.0+)? tDASH$/);
+  expect(errors).toEqual([]);
 });
 
 test("discreet mode masks mixed of total", async ({ page }) => {
@@ -224,6 +248,40 @@ test("D11: Settings ▸ CoinJoin checks, saves and restores the network's option
   await expect(page.getByTestId("settings-coinjoin-done")).toHaveText("Saved.");
   expect(await settings()).toMatchObject({ enabled: true, rounds: 4, targetAmountDash: 1000 });
   await expect(field("enabled")).toBeChecked();
+  expect(errors).toEqual([]);
+});
+
+test("D11: Parallel sessions typed, then multi-session off: nothing to save (review Sol r1 #3)", async ({ page }) => {
+  const errors = await openSettings(page, "funded");
+  const field = (f: string) => page.getByTestId(`settings-coinjoin-${f}`);
+  const settings = () => page.evaluate(() => window.__dwFixture!.world.coinjoin.settings);
+  await field("multisession").click();
+  await expect(field("maxSessions")).toBeEnabled();
+  await field("maxSessions").fill("6");
+  await expect(field("save")).toBeEnabled();
+  // A refused turn-off keeps multi-session on and what was typed.
+  await page.evaluate(() => window.__dwFixture!.fail("set_coinjoin_settings", "none"));
+  await field("multisession").click();
+  await expect(page.getByTestId("settings-coinjoin-problem")).toBeVisible();
+  await expect(field("multisession")).toBeChecked();
+  await expect(field("maxSessions")).toHaveValue("6");
+  await expect(field("save")).toBeEnabled();
+  await page.evaluate(() => window.__dwFixture!.fail("set_coinjoin_settings", null));
+  // Turning multi-session off drops what was typed: Save has nothing to write.
+  await field("multisession").click();
+  await expect(field("multisession")).not.toBeChecked();
+  await expect(field("maxSessions")).toBeDisabled();
+  await expect(field("maxSessions")).toHaveValue("4");
+  await expect(field("save")).toBeDisabled();
+  await expect(field("revert")).toHaveCount(0);
+  // On again, a typed value saves.
+  await field("multisession").click();
+  await expect(field("maxSessions")).toBeEnabled();
+  await expect(field("maxSessions")).toHaveValue("4");
+  await field("maxSessions").fill("6");
+  await field("save").click();
+  await expect(field("done")).toHaveText("Saved.");
+  expect(await settings()).toMatchObject({ multiSession: true, maxSessions: 6 });
   expect(errors).toEqual([]);
 });
 

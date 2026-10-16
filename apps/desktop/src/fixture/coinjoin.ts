@@ -69,21 +69,22 @@ function unavailableOf(settings: CoinJoinSettings, w: FixtureWallet): CoinJoinSt
   return null;
 }
 
-/** `status_from_view` over the fixture wallet: its confirmed balance is what mixing can use, the
- * mixed part follows the mixer's `mixedPercent` of the target amount. */
+/** `status_from_view` over the fixture wallet: its confirmed balance is what mixing can use; the
+ * denominated and mixed parts are the mixer's percentages of it whatever the target (a lowered
+ * target leaves them above the amount, as the engine's do). */
 export function coinjoinStatusOf(world: World, w: FixtureWallet): CoinJoinStatus {
   const { settings } = world.coinjoin;
   const m = world.coinjoin.mixers[w.summary.walletId] ?? idleMixer();
   const total = w.summary.balances?.confirmed ?? 0;
   const target = settings.targetAmountDash * DUFFS_PER_DASH;
   const amount = Math.min(total, target);
-  const fullyMixed = Math.floor((amount * m.progress.mixedPercent) / 100);
+  const fullyMixed = Math.floor((total * m.progress.mixedPercent) / 100);
   return {
     walletId: w.summary.walletId,
     state: m.state,
     stopReason: m.state === "idle" ? m.stopReason : null,
     unavailable: unavailableOf(settings, w),
-    balances: { anonymizable: total - fullyMixed, denominated: Math.floor((amount * m.progress.denominatedPercent) / 100), normalizedAnonymized: fullyMixed, fullyMixed },
+    balances: { anonymizable: total - fullyMixed, denominated: Math.floor((total * m.progress.denominatedPercent) / 100), normalizedAnonymized: fullyMixed, fullyMixed },
     progress: m.progress,
     amountAndRounds: { amount: amount === 0 ? target : amount, rounds: settings.rounds, insufficientInputs: total > 0 && total < target },
     submittedDenominations: m.sessions.flatMap((s) => (s.denomination === null ? [] : [s.denomination])),
@@ -181,8 +182,6 @@ type Base = (theme: ThemeName | null) => World;
 
 export function coinjoinScenarios(base: Base) {
   return {
-    /** S4: Start was pressed; the first step has not run. */
-    "coinjoin-starting": (t: ThemeName | null) => mixing(base(t), {}),
     /** S7: 42 %, one session waiting in a masternode's queue. */
     "coinjoin-mixing": (t: ThemeName | null) => mixing(base(t), { status: { kind: "waitingInQueue" }, progress: PROGRESS_42, sessions: [SESSION], queueSize: 3 }),
     /** S5: running, but no masternode list yet. */

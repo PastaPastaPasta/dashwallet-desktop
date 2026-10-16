@@ -74,7 +74,27 @@ describe("coinjoinView", () => {
   });
 
   it("S4 starting: mixing whose first step has not run", () => {
-    expect(view(status({ state: "mixing" }))).toMatchObject({ state: "starting", title: CoinJoinText.starting, action: { kind: "stop", disabled: false }, busy: true, onHome: true });
+    const atStart = { balances: status().balances, total: 300_000_000 };
+    expect(view(status({ state: "mixing" }), { atStart, total: 300_000_000 })).toMatchObject({
+      state: "starting",
+      title: CoinJoinText.starting,
+      action: { kind: "stop", disabled: false },
+      busy: true,
+      onHome: true,
+    });
+  });
+
+  it("S4 ends with the first step: idle after a funding step is Mixing (D16, review Sol r1 #1)", () => {
+    const b = status().balances;
+    const atStart = { balances: b, total: 300_000_000 };
+    // The step made denominations and reported nothing; the engine then waits a block, still idle.
+    const funded = status({ state: "mixing", balances: { ...b, anonymizable: b.anonymizable - 1_000, denominated: b.denominated + 40_000_000 } });
+    expect(view(funded, { atStart, total: 299_999_000 })).toMatchObject({ state: "mixing", title: CoinJoinText.mixing, line: null, busy: false, action: { kind: "stop" } });
+    // A collateral step from change below the smallest denomination moves none of the four
+    // balances: its fee moves the wallet's total.
+    expect(view(status({ state: "mixing" }), { atStart, total: 299_999_000 }).state).toBe("mixing");
+    // A window that never read the mixer stopped cannot tell: the mixer runs.
+    expect(view(status({ state: "mixing" }))).toMatchObject({ state: "mixing", line: null });
   });
 
   it("S5 paused: a waiting code shows Paused with Core's line (D4)", () => {
@@ -103,6 +123,18 @@ describe("coinjoinView", () => {
     expect(v).toMatchObject({ state: "mixing", title: CoinJoinText.mixing, percent: 42, line: "Submitted to masternode, waiting in queue ." });
     expect(v.mixed).toBe("0.25000000 tDASH of 1.00000000 tDASH");
     expect(view(status({ state: "mixing", status: { kind: "masternode", message: "queueFull" } })).line).toBe("Masternode: Masternode queue is full.");
+  });
+
+  it("D3: a target lowered below the mixed balance shows the target as mixed (review Sol r1 #2)", () => {
+    // 10 DASH mixed, the target lowered to 2: the engine's amount is the target, its percent 100.
+    const lowered = status({
+      state: "mixing",
+      balances: { ...status().balances, fullyMixed: 1_000_000_000 },
+      amountAndRounds: { amount: 200_000_000, rounds: 4, insufficientInputs: false },
+      progress: { ...status().progress, overallPercent: 100 },
+    });
+    expect(view(lowered)).toMatchObject({ state: "finished", mixed: "2.00000000 tDASH of 2.00000000 tDASH" });
+    expect(view({ ...lowered, state: "idle" }).mixed).toBe("2.00000000 tDASH of 2.00000000 tDASH");
   });
 
   it("masks the amounts in discreet mode", () => {
