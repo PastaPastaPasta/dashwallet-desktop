@@ -1,5 +1,6 @@
-// The contact actions one surface runs (DP2-09 D3, D16): Accept, Ignore, Unignore, saving the
-// private details and enabling DashPay's keys, for the window's wallet and its main identity.
+// The contact actions one surface runs (DP2-09 D3, D16): Send (DP2-08 D5), Accept, Ignore,
+// Unignore, saving the private details and enabling DashPay's keys, for the window's wallet and
+// its main identity.
 // Each Platform write sizes its `platformOp` grant with `grant_request` and gets it through
 // U-05's GrantModel (the passphrase sheet when needed). One action runs at a time; the screens
 // read `running` to disable their buttons and show the outcome where the action was (D4).
@@ -10,15 +11,16 @@ import type { GrantAction } from "../api/generated/GrantAction";
 import type { PrivateContactDetails } from "../api/generated/PrivateContactDetails";
 import type { PublishStateName } from "../api/generated/PublishStateName";
 import { Model } from "../onboarding/model";
+import { eligibilityLine, SCAN_EXPIRED } from "./add";
 import { ENABLE_FIRST } from "./pane";
 import type { GrantModel } from "../tools/grant";
 
 export type ActionApi = Pick<
   Backend,
-  "grantRequest" | "dashpayAcceptRequest" | "dashpayIgnoreContact" | "dashpayUnignoreContact" | "dashpaySetPrivateDetails" | "dashpayEnableKeys"
+  "grantRequest" | "dashpaySendRequest" | "dashpayAcceptRequest" | "dashpayIgnoreContact" | "dashpayUnignoreContact" | "dashpaySetPrivateDetails" | "dashpayEnableKeys"
 >;
 
-export type ActionKind = "accept" | "ignore" | "unignore" | "details" | "enable";
+export type ActionKind = "send" | "accept" | "ignore" | "unignore" | "details" | "enable";
 
 /** What an action did, said where it ran; `contact` is `null` for Enable. */
 export interface ActionOutcome {
@@ -34,6 +36,13 @@ export type Refresh = "contacts" | "identities" | "search";
 
 /** D4: the copy of a refusal. */
 export function actionError(e: unknown): string {
+  if (hasCode(e, "contact.ineligible") && e.data?.kind === "ineligible" && e.data.reason !== "noDashPayKeys")
+    return eligibilityLine(e.data.reason).text ?? e.message;
+  if (hasCode(e, "contact.request_pending")) return "A contact request to this user is already being sent.";
+  if (hasCode(e, "contact.scan_expired")) return SCAN_EXPIRED;
+  if (hasCode(e, "contact.self")) return "This is you.";
+  // A scanned code's sender confirms only once Platform's context is trusted (requests.rs).
+  if (hasCode(e, "platform.context_unavailable")) return "You can send this request once the wallet has synced.";
   if (hasCode(e, "platform.insufficient_credits")) return "Not enough credits. Top up your credits and try again.";
   if (hasCode(e, "contact.ineligible")) return ENABLE_FIRST;
   if (hasCode(e, "contact.already_contact")) return "You are already contacts.";
@@ -79,6 +88,16 @@ export class ContactActions extends Model {
   /** Whether `kind` runs for `contact` now. */
   isRunning(kind: ActionKind, contact: string | null): boolean {
     return this.running?.kind === kind && this.running.contact === contact;
+  }
+
+  /** Sends a contact request to `contact` (DP2-08 D5), with the auto-accept `scan` it answers
+   * (D7). Their request was already in: they are contacts now. */
+  send(contact: string, name: string, scan: string | null): Promise<ActionOutcome | null> {
+    return this.#run("send", contact, ["contacts", "search"], async () => {
+      const done = await this.#withPlatformGrant({ kind: "sendRequest" }, (grant) => this.api.dashpaySendRequest(this.walletId, this.identity, contact, scan, grant.id));
+      if (!done) return null;
+      return done.kind === "established" ? `You and ${name} are now contacts.` : `Contact request sent to ${name}.`;
+    });
   }
 
   /** Accepts `contact`'s request (D3): it sends the reverse request under a grant. Already

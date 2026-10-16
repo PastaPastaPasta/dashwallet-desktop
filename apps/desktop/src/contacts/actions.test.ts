@@ -20,6 +20,7 @@ function setup(overrides: Partial<ActionApi> = {}) {
   const { api: vault, calls } = fakeVault();
   const api: ActionApi = {
     grantRequest: vi.fn(async (_w: string, _i: string, a: GrantAction) => ({ maxDuffs: 0, maxCredits: a.kind === "acceptRequest" ? "150000000" : "300000000" })),
+    dashpaySendRequest: vi.fn(async () => ({ kind: "pending" as const, request: "1" })),
     dashpayAcceptRequest: vi.fn(async () => ({ kind: "established" as const, request: "1" })),
     dashpayIgnoreContact: vi.fn(async () => null),
     dashpayUnignoreContact: vi.fn(async () => null),
@@ -39,6 +40,48 @@ function setup(overrides: Partial<ActionApi> = {}) {
 }
 
 describe("ContactActions", () => {
+  it("IOS-073 sends a request under a sendRequest grant, with the scan it answers", async () => {
+    const { api, calls, actions, refreshed, authorize } = setup();
+    const done = actions.send(GRACE, "Grace Hopper", "scan-1");
+    expect(actions.isRunning("send", GRACE)).toBe(true);
+    await authorize();
+    expect(await done).toEqual({ kind: "send", contact: GRACE, ok: true, text: "Contact request sent to Grace Hopper." });
+    expect(api.grantRequest).toHaveBeenCalledWith(WALLET_A, ME, { kind: "sendRequest" });
+    expect(calls.authorize[0].purpose).toEqual({ kind: "platformOp", maxDuffs: 0, maxCredits: "300000000" });
+    expect(api.dashpaySendRequest).toHaveBeenCalledWith(WALLET_A, ME, GRACE, "scan-1", "grant-1");
+    // The contacts and the cached search show the new request (DP2-08 D5).
+    expect(refreshed).toEqual([["contacts", "search"]]);
+  });
+
+  it("IOS-073 a send that meets their request says they are contacts", async () => {
+    const { actions, authorize } = setup({ dashpaySendRequest: vi.fn(async () => ({ kind: "established" as const, request: "2" })) });
+    const done = actions.send(GRACE, "Grace", null);
+    await authorize();
+    expect(await done).toMatchObject({ ok: true, text: "You and Grace are now contacts." });
+  });
+
+  it("DP2-08 D5 says the send's refusals in the user's words", async () => {
+    const cases: [ReturnType<typeof appError>, string][] = [
+      [appError("contact.request_pending"), "A contact request to this user is already being sent."],
+      [appError("contact.scan_expired"), "This QR code has expired. Ask for a new one."],
+      [appError("contact.self"), "This is you."],
+      [appError("platform.context_unavailable"), "You can send this request once the wallet has synced."],
+      [appError("contact.ineligible", { kind: "ineligible", reason: "alreadyContact" }), "Already in your contacts."],
+      [appError("contact.ineligible", { kind: "ineligible", reason: "contactCannotReceive" }), "This user cannot receive contact requests yet."],
+      [appError("contact.ineligible", { kind: "ineligible", reason: "noDashPayKeys" }), "Enable DashPay first."],
+    ];
+    for (const [e, text] of cases) {
+      const { actions, authorize } = setup({
+        dashpaySendRequest: vi.fn(async () => {
+          throw e;
+        }),
+      });
+      const done = actions.send(GRACE, "Grace", null);
+      await authorize();
+      expect(await done).toMatchObject({ ok: false, text });
+    }
+  });
+
   it("IOS-075 accepts under a platformOp grant sized by grant_request", async () => {
     const { api, calls, actions, refreshed, authorize } = setup();
     const done = actions.accept(GRACE, "Grace Hopper");

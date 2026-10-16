@@ -36,16 +36,7 @@ commands! {
     /// cannot be read.
     #[facade()]
     fn open_file(state, purpose: FilePurpose) -> Option<OpenedFile> {
-        let Some(path) = choose(&state, purpose, false, None).await? else {
-            return Ok(None);
-        };
-        let max = purpose.spec().max_bytes;
-        let data = tauri::async_runtime::spawn_blocking(move || read_capped(&path, max).map(|d| (path, d)))
-            .await
-            .map_err(|e| AppError::app(AppCode::FileRead, e.to_string()))?;
-        let (path, data) = data?;
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        Ok(Some(OpenedFile { name, data }))
+        open(&state, purpose).await
     }
 
     /// Shows the save dialog for `purpose`, offering `suggested_name`, and
@@ -77,6 +68,21 @@ commands! {
     fn choose_file_path(state, purpose: FilePurpose, save: bool, suggested_name: Option<String>) -> Option<String> {
         choose(&state, purpose, save, suggested_name).await?.map(utf8).transpose()
     }
+}
+
+/// `open_file`'s dialog and read, for the commands that read a file the
+/// user picks (`scan_qr_file`).
+pub(crate) async fn open(state: &AppState, purpose: FilePurpose) -> Result<Option<OpenedFile>, AppError> {
+    let Some(path) = choose(state, purpose, false, None).await? else {
+        return Ok(None);
+    };
+    let max = purpose.spec().max_bytes;
+    let data = tauri::async_runtime::spawn_blocking(move || read_capped(&path, max).map(|d| (path, d)))
+        .await
+        .map_err(|e| AppError::app(AppCode::FileRead, e.to_string()))?;
+    let (path, data) = data?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(Some(OpenedFile { name, data }))
 }
 
 async fn choose(

@@ -13,6 +13,9 @@ import type { ContactList } from "./generated/ContactList";
 import type { ContactQueryArgs } from "./generated/ContactQueryArgs";
 import type { CredentialSpec } from "./generated/CredentialSpec";
 import type { DashPayStatus } from "./generated/DashPayStatus";
+import type { EligibilityName } from "./generated/EligibilityName";
+import type { ScannedContactInfo } from "./generated/ScannedContactInfo";
+import type { ScreenScanMode } from "./generated/ScreenScanMode";
 import type { IdentitySummary } from "./generated/IdentitySummary";
 import type { LinkRoute } from "./generated/LinkRoute";
 import type { ShellEvent } from "./generated/ShellEvent";
@@ -219,6 +222,21 @@ export interface Backend {
   /** The caps of the `platformOp` grant a DashPay write needs. */
   grantRequest(walletId: string, identity: string, action: GrantAction): Promise<GrantRequest>;
   creditsCostTable(walletId: string): Promise<CostTable>;
+  // Add Contact (DP2-08).
+  dashpayEligibility(walletId: string, identity: string, contact: string): Promise<EligibilityName>;
+  /** `scan` is `dashpayVerifyScanned`'s claim id when the request answers an auto-accept code. */
+  dashpaySendRequest(walletId: string, identity: string, to: string, scan: string | null, grant: string): Promise<ContactRequestOutcome>;
+  dashpayMyUserLink(walletId: string, identity: string): Promise<string>;
+  /** `text` may carry a bearer key: never in a query key, the store or a log. */
+  dashpayVerifyScanned(walletId: string, text: string): Promise<ScannedContactInfo>;
+  screenScanMode(): Promise<ScreenScanMode>;
+  /** The QR texts of an image the open dialog chose; `null` when cancelled. */
+  scanQrFile(): Promise<string[] | null>;
+  /** The QR texts of an image (base64). */
+  scanQrImage(data: string): Promise<string[]>;
+  /** The QR texts of a screen region the user picks; `null` when cancelled. */
+  scanQrScreen(): Promise<string[] | null>;
+  cancelScreenScan(): Promise<null>;
   dashpayAcceptRequest(walletId: string, identity: string, from: string, grant: string): Promise<ContactRequestOutcome>;
   dashpayIgnoreContact(walletId: string, identity: string, contact: string): Promise<null>;
   dashpayUnignoreContact(walletId: string, identity: string, contact: string): Promise<null>;

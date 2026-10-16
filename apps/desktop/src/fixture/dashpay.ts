@@ -41,10 +41,32 @@ export interface DashPayWorld {
   /** A sync pass holds the wallet's state: `dashpay_contacts` answers the last snapshot with
    * `updating`, or empty sections if none was read yet (m4 §2.4 item 37). */
   contactsUpdating: false | "snapshot" | "noSnapshot";
-  /** `search_users` fails as with DAPI unreachable (`platform.unavailable`). */
+  /** User lookups fail as with DAPI unreachable (`platform.unavailable`): `search_users`,
+   * `resolve_user`, `verify_scanned` and a stranger's `eligibility`. */
   searchOffline: boolean;
   /** `contact_activity`'s payments by contact id, in any order (DP2-09). */
   activity: Record<string, ContactActivityItem[]>;
+  /** Users on the network whose identity has no DashPay keys: `eligibility` answers
+   * `contactCannotReceive` (DP2-08). */
+  cannotReceive: string[];
+  /** The `dapk` scans `verify_scanned` kept, as the engine's `Scans` (DP2-03): spent once sent. */
+  scans: FixtureScan[];
+}
+
+/** A kept `dapk` scan: its id, whom it reaches, and when it expires (UNIX seconds). */
+export interface FixtureScan {
+  id: string;
+  recipient: string;
+  expiresAt: number;
+  spent: boolean;
+}
+
+/** How the main identity relates to `id` now (the engine's `relation`, computed per call): itself,
+ * its contacts' relation, else a stranger. */
+export function relationOf(d: DashPayWorld, id: string): UserRelation {
+  const main = d.identities.find((i) => i.isMain)?.identity;
+  if (id === main) return "isSelf";
+  return d.contacts.find((c) => c.summary.contact === id)?.summary.relation ?? "stranger";
 }
 
 /** Items one `contact_activity` page holds (DP3-02 D8). */
@@ -344,6 +366,8 @@ export function noIdentity(): DashPayWorld {
     contactsUpdating: false,
     searchOffline: false,
     activity: {},
+    cannotReceive: [],
+    scans: [],
   };
 }
 
@@ -450,6 +474,9 @@ export function registered(): DashPayWorld {
     contactsUpdating: false,
     searchOffline: false,
     activity: activity(),
+    // Mayumi registered a name but never added DashPay's keys (DP2-08 D4).
+    cannotReceive: [IDENTITY.mayumi],
+    scans: [],
     directory: [
       ...contacts.map(hit),
       { identity: IDENTITY.mallory, username: "mallory", displayName: "Mallory", avatarUrl: null, relation: "stranger", unverified: false },

@@ -103,8 +103,9 @@ test("a payment link opens Pay ▸ To an address, prefilled", async ({ page }) =
 test("dashpay and dashwallet links open their routes; refused ones say why", async ({ page }) => {
   await open(page, "dashpay-registered");
   await deliver(page, [{ kind: "addContact", identity: IDENTITY, username: "bob" }]);
+  // Add Contact verifies the link (DP2-08 D13): no one on the fixture's network holds this id.
   await expect(page.getByTestId("add-contact-username")).toHaveText("@bob");
-  await expect(page.getByTestId("add-contact-identity")).toHaveText(IDENTITY);
+  await expect(page.getByTestId("add-contact-link-error")).toHaveText("This link couldn't be verified on the Dash network.");
 
   await deliver(page, [{ kind: "scanQr" }]);
   await expect(page.getByTestId("pay-tabs-address")).toHaveAttribute("aria-selected", "true");

@@ -18,6 +18,7 @@
 //! - [`qr`]: every QR code in a PNG/JPEG/BMP image (IOS-043).
 //! - [`logs`]: zips the log files for a support request (IOS-112).
 //! - [`capture`]: Windows screen-capture exclusion (IOS-006).
+//! - [`screen`]: a screen region the user picks, for its QR code (IOS-043).
 //!
 //! There is no tray icon here: a StatusNotifierItem needs a D-Bus stack
 //! (`ksni`/`zbus`) and `Shell_NotifyIcon` a Win32 message loop; neither is
@@ -33,6 +34,7 @@ pub mod instance;
 pub mod logs;
 pub mod notify;
 pub mod qr;
+pub mod screen;
 pub mod uri_schemes;
 
 /// Errors of this crate. Variants mirror the `desktop.*` codes of

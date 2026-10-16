@@ -22,7 +22,7 @@ type RowActions = (c: ContactSummaryInfo) => ReactNode;
 
 /** One row: avatar, name, `@username` under it, and what trails it; `after` sits beside the
  * row's button, as buttons do not nest (DP2-09 D15). */
-function Row({
+export function Row({
   letters,
   name,
   sub,

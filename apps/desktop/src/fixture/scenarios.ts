@@ -24,6 +24,7 @@ import type { Utxo } from "../api/generated/Utxo";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
+import { scanWorld, type ScanWorld } from "./scan";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FUNDED_BALANCES, makeIds, prng, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
@@ -81,6 +82,8 @@ export interface World {
   tools: ToolsWorld;
   /** The settings file, load states, backups and files (settings.ts, U-04). */
   settings: SettingsWorld;
+  /** The QR scan commands' screen picker (scan.ts, DP2-08). */
+  scan: ScanWorld;
 }
 
 /** A vault grant: single use (`used` once redeemed or revoked); `ownKey` when it was issued
@@ -171,6 +174,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     send: newSendWorld(),
     tools: newToolsWorld(main),
     settings: withAutomaticBackups(newSettingsWorld(), FIXTURE_WALLET_ID, MAIN_PHRASE, FIXTURE_PASSPHRASE),
+    scan: scanWorld(),
   };
 }
 
@@ -484,7 +488,7 @@ const SCENARIOS = {
   },
   /** "alice" contested, the vote's end not read yet. */
   "dashpay-contest-pending-no-end": (t) => contestPending(base(t), null),
-  /** Alice's identity without a username (its name step failed): Finish username registration. */
+  /** Alice without a username (its name step failed): Finish username registration; My QR has no link (DP2-08 D12). */
   "dashpay-no-username": (t) => {
     const w = base(t);
     const world = registered();
@@ -596,6 +600,13 @@ const SCENARIOS = {
   "dashpay-search-offline": (t) => {
     const w = base(t);
     w.dashpay = { ...registered(), searchOffline: true };
+    return w;
+  },
+  /** macOS: no screen picker; Add Contact points to the system's copy-a-region shortcut (D10). */
+  "dashpay-screen-shortcut": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    w.scan.mode = "copyShortcut";
     return w;
   },
   /** Locking cuts more flows than the report lists, some pending (E0-13 D3): unresolved for good. */

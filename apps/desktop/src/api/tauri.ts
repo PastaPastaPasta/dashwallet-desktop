@@ -119,6 +119,15 @@ export class IpcBackend implements Backend {
   contactActivity = cmd.contactActivity;
   grantRequest = cmd.grantRequest;
   creditsCostTable = cmd.creditsCostTable;
+  dashpayEligibility = cmd.dashpayEligibility;
+  dashpaySendRequest = cmd.dashpaySendRequest;
+  dashpayMyUserLink = cmd.dashpayMyUserLink;
+  dashpayVerifyScanned = cmd.dashpayVerifyScanned;
+  screenScanMode = cmd.screenScanMode;
+  scanQrFile = cmd.scanQrFile;
+  scanQrImage = cmd.scanQrImage;
+  scanQrScreen = cmd.scanQrScreen;
+  cancelScreenScan = cmd.cancelScreenScan;
   dashpayAcceptRequest = cmd.dashpayAcceptRequest;
   dashpayIgnoreContact = cmd.dashpayIgnoreContact;
   dashpayUnignoreContact = cmd.dashpayUnignoreContact;
