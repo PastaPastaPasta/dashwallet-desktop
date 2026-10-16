@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 27
+Contract-Version: 28
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -71,7 +71,7 @@ type is `pub(crate)`.
 | `payments.rs` | DP3-01, DP3-02 | `payment_lock`, `resolve_payment_lock`, `contact_activity`, `frequent_contacts` |
 | `notifications.rs` | DP2-05 | `events`, `unread_count`, `mark_read` |
 | `profile.rs` | DP4-01, DP4-02 | `profile`, `profile_limits`, `prepare_avatar`, `avatar_upload_available`, `upload_avatar`, `update_profile`, `avatar` |
-| `credits.rs` | DP1-06, DP6-02 | `cost_table`, `top_up_quote`, `top_up`, `pending_top_ups`, `resume_top_up`, `resolve_top_up`, `withdraw_quote`, `withdraw` |
+| `credits.rs` | DP1-06, DP6-02 | `cost_table`, `top_up_quote`, `top_up`, `pending_top_ups`, `stuck_top_up_fundings`, `resume_top_up`, `resolve_top_up`, `withdraw_quote`, `withdraw` |
 | `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
 | `errors.rs` | E0-05 (the mapping, §6) and each domain's owner | the error enums of §4 |
@@ -189,7 +189,7 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 `discover_identities` (§2.1), DP1-03's names calls in §2.3 (`check_username`, `name_availability`,
 `register_name`, `set_main_name`, `main_name`), DP2-01's contacts read model in §2.4 (`contacts`, `contact`,
 `pending_setup_count`), and DP2-03's user search, links and scans (`search_users` and `resolve_user` in §2.3,
-`my_user_link` and `verify_scanned` in §2.4), DP1-02's registration calls in §2.2, and DP1-06's `refresh_balance` (§2.1) and credits calls in §2.8 (not the withdrawals). Each row says whether its call is implemented. Kind is `sync`, `async` or `free, pure` (§1).
+`my_user_link` and `verify_scanned` in §2.4), DP1-02's registration calls in §2.2, and DP1-06's `refresh_balance` (§2.1) and credits calls in §2.8 (not the withdrawals), with DP1-10's `stuck_top_up_fundings`. Each row says whether its call is implemented. Kind is `sync`, `async` or `free, pure` (§1).
 
 ### 2.1 Status and identity
 
@@ -508,6 +508,7 @@ bodies decided where the rows leave room:
 | `top_up_quote(identity, duffs)` | async | The fee bound and total in duffs, the credits a top-up of `duffs` buys, an estimate that errs low as far as measured (`duffs × credits_per_duff` less the table's `top_up_fee`; Platform's metered charge was far below it on testnet, §7 item 46), and the `grant` to ask for (`max_duffs` = the total, no credits). Refuses an identity that is not the wallet's (`identity.not_found`), below `top_up_min_duffs` (`credits.below_minimum{min}`), an identity with a top-up not applied yet (`credits.top_up_pending{txid}`), above the spendable balance (`credits.funding_insufficient{needed, available}`), and a held-back coin the asset-lock builder would select (`credits.coins_locked`). Until the dispatch journal is read it is `platform.unavailable` (retry). **Implemented (DP1-06).** | `CreditsError` |
 | `top_up(identity, duffs, grant)` | async | Funds the identity from the Core balance: an asset lock of `duffs`, then Platform's IdentityTopUp from it (§7 item 44). The quote's refusals and the funding step's (below), checked under the identity's write lock before the grant is redeemed, so a refusal keeps the grant. Held back as a registration is: SPV not caught up is `platform.context_unavailable`; the bring-up running, not run, or its identity discovery incomplete or failed is `platform.unavailable`, and the call has it run again (§7 item 46); identities waiting for an unlock is `platform.signer_unavailable`. A grant whose funding cap is below the quote's total is `platform.grant_exceeded` before it is redeemed, so a smaller top-up can still use it. Until the dispatch journal is read the call is `platform.unavailable` (retry). Once the lock is funded the call returns `TopUpOutcome{txid, state}`: `Applied{credits_added, balance}`, `ConsumptionUnknown{balance}` (Platform answered "already consumed", which nothing proves: nothing added now, and the lock stays pending), `ProofWaiting` (no InstantSend lock in its window), or `NotApplied{error}` (the apply failed); nothing is lost in the last three (`pending_top_ups`, `resume_top_up`). A funding whose outcome is unknown is `platform.broadcast_unknown{artifact}` with the funding step `topup/<index>-<k>/funding` (`dispatch_status`), and every later top-up of the identity is refused the same until that step settles. `grant` may be a `TopUp` lease id. **Implemented (DP1-06).** | `CreditsError` |
 | `pending_top_ups()` | async | The wallet's top-up locks Platform has not taken as far as the wallet can prove (in flight, proved and not applied, or funded by a top-up of this wallet and final with its consumption unknown), by identity index: txid, identity, duffs, whether the lock has its proof, and `consumption_unknown` (§7 item 44). Until the dispatch journal is read it is `platform.unavailable` (retry), never a list that cannot tell the wallet's own locks apart. **Implemented (DP1-06).** | `CreditsError` |
+| `stuck_top_up_fundings()` | async | The wallet's top-up funding steps whose outcome is unknown (`MaybeSent`) or still being recorded (`WillBeSent`), the steps `top_up` refuses with `platform.broadcast_unknown` or `platform.will_be_sent`, ordered by identity index then attempt: the step `topup/<index>-<k>/funding`, the identity index, the identity id when the wallet holds that index, and the state (§7 item 54). A step leaves the list once its outcome settles, which for Repair's `resolve_stuck_funding` is when its self-spend is ChainLocked (`DispatchResolved`); until then it stays listed. Until the dispatch journal is read, or while a top-up step's marker cannot be read by this build, it is `platform.unavailable` (retry): a list without that step would hide what refuses the top-up. **Implemented (DP1-10).** | `CreditsError` |
 | `resume_top_up(txid, grant)` | async | Applies the tracked top-up lock `txid`, waiting up to 30 s for its proof first (a lock not yet sent is sent again; one a funding call of this process is still recording is `platform.will_be_sent`); the outcome as `top_up`'s. A lock the library holds applied (Platform's proved apply) reads `AlreadyApplied` with the balance read again; any other, a resolved or historical one too, is applied again (Platform takes a lock once). The grant is redeemed only for the apply, so `AlreadyApplied`, `ProofWaiting` and `platform.will_be_sent` keep it. The apply signs with the lock's one-time funding key, which only a grant with a funding budget unlocks: the grant needs `max_duffs` ≥ 1, none of which is spent. Tools ▸ Repair "Finish transfers" (`finish_asset_locks`) also applies every proved top-up lock, under its grant. **Implemented (DP1-06).** | `CreditsError` |
 | `resolve_top_up(txid)` | async | The user's resolution of the pending top-up lock `txid` that has its proof (they saw its credits arrive): a `consumption_unknown` one, or one a resume answered `ConsumptionUnknown` before its ChainLock let the library mark it final. Recorded in the dispatch journal, so it no longer pends nor blocks the identity's top-ups, across restarts, a removal and import of the wallet, and whatever status the library moves the lock to. `resume_top_up` and Finish still apply it, so a lock Platform had not taken is not lost. Any other txid (unknown, without a proof, applied or resolved) is `invalid_argument`; until the journal is read, or when its write fails, `platform.unavailable`. Needs no grant. **Implemented (DP1-06, Sol r1).** | `CreditsError` |
 | `withdraw_quote(identity, amount)` | async | The credits taken, the fee in credits, the duffs expected at `to`, and the `grant` to ask for; `All` leaves the fee reserve (DP6-02). | `CreditsError` |
@@ -551,7 +552,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: aec371e90131eb7a26bff447f396c85b4223e24ac03399f46d2673e81228b34e version: 27 -->
+<!-- surface-sha256: 189b99973eabc5e95cab2c7ba799b6b9005f140614ef4196829e6c507aba8a49 version: 28 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -740,6 +741,13 @@ pub struct PendingTopUp {
     pub proved: bool,
     pub consumption_unknown: bool,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StuckTopUpFunding {
+    pub step: String,
+    pub identity_index: u32,
+    pub identity: Option<String>,
+    pub state: DispatchState,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WithdrawAmount {
@@ -764,6 +772,7 @@ impl DashPay {
     pub async fn top_up_quote(&self, identity: String, duffs: u64) -> Result<TopUpQuote, CreditsError>;
     pub async fn top_up(&self, identity: String, duffs: u64, grant: String) -> Result<TopUpOutcome, CreditsError>;
     pub async fn pending_top_ups(&self) -> Result<Vec<PendingTopUp>, CreditsError>;
+    pub async fn stuck_top_up_fundings(&self) -> Result<Vec<StuckTopUpFunding>, CreditsError>;
     pub async fn resume_top_up(&self, txid: String, grant: String) -> Result<TopUpOutcome, CreditsError>;
     pub async fn resolve_top_up(&self, txid: String) -> Result<(), CreditsError>;
     pub async fn withdraw_quote(&self, identity: String, amount: WithdrawAmount) -> Result<WithdrawQuote, CreditsError>;
@@ -1965,7 +1974,9 @@ The shapes are in §3. What they mean, where the name does not say:
   lock applied before this call, so the call added nothing; `ConsumptionUnknown` means Platform answered "already
   consumed" without proof, so the call added nothing and the lock stays pending. **`PendingTopUp`**: a lock
   `pending_top_ups` lists; `proved` means `resume_top_up` applies it at once; `consumption_unknown` means a lock a
-  top-up of this wallet funded is final and Platform's consumption of it unknown (`resolve_top_up`). **`WithdrawQuote`**:
+  top-up of this wallet funded is final and Platform's consumption of it unknown (`resolve_top_up`).
+  **`StuckTopUpFunding`**: a step `stuck_top_up_fundings` lists; `identity_index` is `u32::MAX` for a step name it
+  cannot parse and `identity` is `None` when the wallet holds no identity at that index. **`WithdrawQuote`**:
   the credits taken, the fee in credits and the duffs expected.
 - **`Counterparty`** is the record history and transaction records gain as `counterparty` (DP3-02, item 47); here
   it is also the inviter in `InvitationStatus::Valid`. In a history record its `username` comes from the contacts'
@@ -2793,3 +2804,13 @@ renames or reshapes them takes the next version bump:
     vault's key and never holds one of its own, and a run past the InstantSend window has dropped its own. Hosts
     offer Continue for `Authorize`, and for `ChainLock` or `Network` only when `running` is false. An orphan funding
     step (empty `label`) reads false and takes no resume.
+
+**From DP1-10** (version 28):
+
+54. **Stuck top-up fundings (DP1-10 D3, version 28).** `stuck_top_up_fundings` is new (§2.8): the `topup/` funding
+    steps whose dispatch state is `MaybeSent` or `WillBeSent` and that have not settled. `top_up` refuses every later
+    top-up of such an identity with `platform.broadcast_unknown{artifact}` (`platform.will_be_sent` for `WillBeSent`),
+    but nothing listed the steps,
+    so after a restart a host could not show what blocks the identity nor offer Tools ▸ Repair for it without
+    guessing step names. `resolve_stuck_funding` already accepts these steps (DP1-06). No error code and no other
+    record changes.

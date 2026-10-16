@@ -474,12 +474,15 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
     },
     resolve_stuck_funding: ({ walletId, step, grant: grantId }, { world }) => {
       wallet(world, walletId);
+      // A top-up's step (DP1-10 D16) leaves the stuck list; a registration's row stops waiting.
+      const topUp = world.dashpay.credits?.stuck.find((x) => x.step === step);
       const draft = /^registration\/(.+)\/funding$/.exec(step)?.[1];
       const r = world.dashpay.registrations.find((x) => x.draft === draft);
-      if (!r || r.waiting !== "fundingUnknown") throw fail("stuck_funding", "funding state is known", { kind: "stuckFunding", refusal: { kind: "notStuck", status: null }, retryLater: false });
+      if (!topUp && (!r || r.waiting !== "fundingUnknown")) throw fail("stuck_funding", "funding state is known", { kind: "stuckFunding", refusal: { kind: "notStuck", status: null }, retryLater: false });
       if (!grant(world, grantId, walletId, ["spend"])) throw fail("vault.grant_invalid", "grant invalid");
       useGrant(world, grantId);
-      r.waiting = null;
+      if (topUp) world.dashpay.credits!.stuck = world.dashpay.credits!.stuck.filter((x) => x !== topUp);
+      else r!.waiting = null;
       return { txid: txidOf(step) };
     },
 

@@ -55,11 +55,14 @@ function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string
   const label = wiz.label.trim();
   const { check, availability, pending } = useNameChecks(walletId, label);
   const line = availabilityLine(check, availability, pending);
-  const ok = canChoose(check, availability, pending);
+  // An instant username (DP1-10 D13) is never one the network votes on.
+  const instant = wiz.mode.kind === "credits" && wiz.mode.instant === true;
+  const refused = instant && check?.contested === true;
+  const ok = canChoose(check, availability, pending) && !refused;
   const passed = (rule: keyof typeof RULE_TEXT) => check?.rules.find((r) => r.rule === rule)?.passed;
   return (
     <section className="registration card-l1" data-testid="registration-name" aria-labelledby={`${id}-title`}>
-      <StepHeader n={1} step={REG_COPY.name.step} title={REG_COPY.name.title} id={`${id}-title`} />
+      <StepHeader n={1} step={REG_COPY.name.step} title={instant ? REG_COPY.name.instantTitle : REG_COPY.name.title} id={`${id}-title`} />
       <form
         className="registration-form"
         onSubmit={(e) => {
@@ -92,7 +95,12 @@ function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string
         <p className="registration-availability" role="status" data-testid="registration-availability" data-tone={line?.tone}>
           {line?.text}
         </p>
-        {check?.contested && (
+        {refused && (
+          <p className="registration-line registration-problem" role="alert" data-testid="registration-instant-only">
+            {REG_COPY.name.instantOnly}
+          </p>
+        )}
+        {check?.contested && !refused && (
           <div className="registration-contested" data-testid="registration-contested">
             <p className="registration-line">{REG_COPY.name.contested}</p>
             <DashButton variant="plainBlue" size="small" data-testid="registration-voting-info" onClick={() => setVotingInfo(true)}>
