@@ -27,7 +27,7 @@
 use dashcore::hashes::{Hash, HashEngine, Hmac, HmacEngine, sha256};
 use zeroize::Zeroizing;
 
-use super::{REC_SEED, Vault, WriteGuard, decode_seed, record_id};
+use super::{KEY_LOAD_ATTEMPTS, REC_SEED, Vault, WriteGuard, decode_seed, record_id};
 use crate::VaultError;
 use crate::crypto::Key32;
 use crate::types::{GrantKind, WalletId};
@@ -126,28 +126,43 @@ impl Vault {
     /// unencrypted vault's comes from the OS store, which may block), then
     /// read again from memory once the gate is drained, in the epoch the
     /// call began in: a `lock()` (or any epoch change) before then fails
-    /// `Locked`, and none can end the epoch until `body` returns.
+    /// `Locked`, and none can end the epoch until `body` returns. An
+    /// unencrypted vault needs no prompt for its key, so there the load and
+    /// the drain are tried again, at most [`KEY_LOAD_ATTEMPTS`] times in all,
+    /// as [`Vault::with_loaded_key`] does.
     fn with_drained_key<T>(
         &self,
         body: impl FnOnce(&WriteGuard<'_>, &Key32) -> Result<T, VaultError>,
     ) -> Result<T, VaultError> {
-        let epoch = self.inner().epoch;
-        // Loads the key only; the one used is read again below.
-        self.full_dek()?;
-        #[cfg(test)]
-        crate::signer::test_hook::checked();
-        let writer = self.writer();
-        let _drained = self.drain_ops(&writer);
-        let dek = {
-            let inner = self.inner();
-            if inner.epoch != epoch {
-                return Err(VaultError::Locked);
+        let mut attempt = 1;
+        loop {
+            let epoch = self.inner().epoch;
+            // Loads the key only; the one used is read again below.
+            self.full_dek()?;
+            #[cfg(test)]
+            crate::signer::test_hook::checked();
+            let writer = self.writer();
+            let _drained = self.drain_ops(&writer);
+            let dek = {
+                let inner = self.inner();
+                if inner.epoch == epoch {
+                    Self::memory_dek(&inner)
+                } else {
+                    Err(VaultError::Locked)
+                }
+            };
+            match dek {
+                Err(VaultError::Locked) if attempt < KEY_LOAD_ATTEMPTS && self.unencrypted() => {
+                    attempt += 1;
+                }
+                dek => {
+                    let dek = dek?;
+                    #[cfg(test)]
+                    crate::signer::test_hook::opened();
+                    return body(&writer, &dek);
+                }
             }
-            Self::memory_dek(&inner)?
-        };
-        #[cfg(test)]
-        crate::signer::test_hook::opened();
-        body(&writer, &dek)
+        }
     }
 
     /// The key attached for `role` of `pro_tx_hash`, read under a redeemed

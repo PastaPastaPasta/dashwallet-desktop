@@ -2,8 +2,9 @@
 //!
 //! Test-only (MG-01 D9, D21): the unit tests include this file with
 //! `#[cfg(test)] #[path]` from `src/lib.rs`, and `tests/session.rs` with
-//! `mod`. `dash-pkc` is a dev-dependency, so no production build of the
-//! crate can name a BLS secret. It stands in for a masternode in the
+//! `mod`. `dash-pkc` is a dev-dependency, so no library build can name
+//! `dash_pkc`; dashcore's BLS secret types are behind clippy's
+//! `disallowed-types`. It stands in for a masternode in the
 //! CoinJoin tests and signs no wallet transaction; `rust/clippy.toml` and
 //! dw-protx's `no_operator_signing` guard allow it here and nowhere else.
 #![expect(clippy::disallowed_types)]

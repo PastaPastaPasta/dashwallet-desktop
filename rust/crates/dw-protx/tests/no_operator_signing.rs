@@ -72,6 +72,7 @@ const FORBIDDEN: &[&str] = &[
     "operator_private_key_at",
     "to_bls_extended_priv_key",
     "OperatorKey",
+    "bls::testing",
     "operator_key.rs",
     "test_operator_key",
     "include!(",
@@ -81,7 +82,8 @@ const FORBIDDEN: &[&str] = &[
 /// tests that use it, which play a masternode signing CoinJoin queue
 /// messages (MG-01 D9); they sign no wallet transaction. None of it is in a
 /// library build (D21): `dash-pkc` is a dev-dependency only
-/// ([`dash_pkc_stays_a_dev_dependency`]).
+/// ([`dash_pkc_stays_a_dev_dependency`]), and [`region_escapes`] closes the
+/// ways around a region that name no forbidden token.
 enum Allowed {
     /// The whole file: an integration-test file, which only `cargo test`
     /// builds compile (a library can include it only with a `#[path]` or
@@ -334,6 +336,28 @@ fn without_allowed(code: &str, allowed: &Allowed) -> Result<String, String> {
     Ok(format!("{}{blank}{}", &code[..start], &code[end..]))
 }
 
+/// Ways around the allowed regions that name no forbidden token (MG-01
+/// D21): a `path` attribute in dw-coinjoin's library outside the allowed
+/// include (written over several lines, in a `cfg_attr`, or to a `mod.rs`
+/// that declares the key's module), and `rustfmt::skip` in a file whose
+/// test module's end is found by rustfmt's layout. `code` is the file as
+/// scanned, `blanked` with its allowed region removed.
+fn region_escapes(rel: &str, code: &str, blanked: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let squeezed: String = blanked.chars().filter(|c| !c.is_whitespace()).collect();
+    if rel.starts_with("rust/crates/dw-coinjoin/src/")
+        && ["[path=", ",path=", "(path="]
+            .iter()
+            .any(|p| squeezed.contains(p))
+    {
+        found.push("a `path` attribute outside the allowed include".to_string());
+    }
+    if code.contains("rustfmt::skip") {
+        found.push("`rustfmt::skip` beside an allowed region".to_string());
+    }
+    found
+}
+
 /// What the scan reads of one file: Rust without comments, the rest as is,
 /// with CRLF line ends normalised (the allow-list markers span lines).
 fn scanned(src: &str, ext: &str) -> String {
@@ -375,7 +399,16 @@ fn no_operator_key_signing_path_remains() {
         let mut code = scanned(&src, ext);
         if let Some(k) = ALLOWED.iter().position(|(p, _)| rel == *p) {
             allowed_seen[k] = true;
-            code = without_allowed(&code, &ALLOWED[k].1).unwrap_or_else(|e| panic!("{rel}: {e}"));
+            let blanked =
+                without_allowed(&code, &ALLOWED[k].1).unwrap_or_else(|e| panic!("{rel}: {e}"));
+            if !matches!(ALLOWED[k].1, Allowed::File) {
+                let escapes = region_escapes(&rel, &code, &blanked);
+                violations.extend(escapes.into_iter().map(|e| format!("{rel}: {e}")));
+            }
+            code = blanked;
+        } else if rel.starts_with("rust/crates/dw-coinjoin/src/") {
+            let escapes = region_escapes(&rel, "", &code);
+            violations.extend(escapes.into_iter().map(|e| format!("{rel}: {e}")));
         }
         violations.extend(hits(&code).into_iter().map(|h| format!("{rel}: {h}")));
     }
@@ -536,11 +569,31 @@ fn dash_pkc_uses(manifest: &str) -> (Vec<String>, usize) {
     (outside, dev)
 }
 
-/// The library cannot name a BLS secret through dash-pkc: every member
-/// crate lists it under `[dev-dependencies]` only (MG-01 D21). Its other
-/// secret types are behind clippy's `disallowed-types`.
+/// Lines of the workspace manifest that name dash-pkc under another key
+/// (`pkc = { package = "dash-pkc", … }`): a member's `pkc.workspace = true`
+/// would then not say `dash-pkc`.
+fn dash_pkc_aliases(root: &str) -> Vec<String> {
+    root.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#') && l.contains("dash-pkc"))
+        .filter(|l| !l.starts_with("dash-pkc") && *l != "[workspace.dependencies.dash-pkc]")
+        .map(str::to_string)
+        .collect()
+}
+
+/// No library build can name `dash_pkc`: every member crate lists it under
+/// `[dev-dependencies]` only, and the workspace names it by its own name
+/// (MG-01 D21). dashcore's BLS secret types are behind clippy's
+/// `disallowed-types`.
 #[test]
 fn dash_pkc_stays_a_dev_dependency() {
+    let root = fs::read_to_string(repo_root().join("rust/Cargo.toml")).unwrap();
+    assert_eq!(dash_pkc_aliases(&root), Vec::<String>::new());
+    assert!(!dash_pkc_aliases("pkc = { package = \"dash-pkc\", git = \"x\" }").is_empty());
+    assert!(
+        dash_pkc_aliases("dash-pkc = { git = \"x\" }\n[workspace.dependencies.dash-pkc]")
+            .is_empty()
+    );
     let manifests = rust_files_named(&["Cargo.toml"]);
     assert!(manifests.len() > 10, "too few member manifests");
     let mut dev_uses = 0;
@@ -618,4 +671,17 @@ fn allowed_regions_are_exact() {
         assert!(!hits(&strip_comments(bad)).is_empty(), "missed: {bad}");
     }
     assert!(hits("#[path = \"names_tests.rs\"]\nmod tests;").is_empty());
+    // A `path` attribute in dw-coinjoin's library outside the allowed
+    // include, however it is written, and `rustfmt::skip` beside a region.
+    let lib = "rust/crates/dw-coinjoin/src/lib.rs";
+    for bad in [
+        "#[cfg_attr(all(), path = \"../tests/support/k.rs\")]\nmod k;",
+        "#[path\n    = \"../tests/support/mod.rs\"]\nmod support;",
+    ] {
+        assert!(!region_escapes(lib, "", bad).is_empty(), "missed: {bad}");
+    }
+    assert!(!region_escapes(lib, "#![rustfmt::skip]\n", "").is_empty());
+    assert!(region_escapes(lib, "", "let path = here();").is_empty());
+    let engine = "rust/crates/dw-engine/src/platform/names.rs";
+    assert!(region_escapes(engine, "", "#[path = \"names_net.rs\"]\nmod net;").is_empty());
 }

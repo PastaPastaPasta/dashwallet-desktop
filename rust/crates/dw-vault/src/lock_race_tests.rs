@@ -1611,14 +1611,11 @@ fn mn_vault(dir: &tempfile::TempDir) -> Vault {
     v
 }
 
-/// `MN`'s voting key, read on the unlocked vault under a reveal grant.
-fn mn_voting_key(v: &Vault) -> Option<Vec<u8>> {
+/// `MN`'s voting key, read under a reveal grant: with the passphrase, or
+/// on an unencrypted vault with `credential` `None`.
+fn mn_voting_key(v: &Vault, credential: Credential<'_>) -> Option<Vec<u8>> {
     let grant = v
-        .authorize(
-            GrantPurpose::RevealSecret,
-            Some(&W),
-            Credential::Passphrase(PASS),
-        )
+        .authorize(GrantPurpose::RevealSecret, Some(&W), credential)
         .unwrap();
     v.masternode_key(&W, &grant.id, &MN, "voting")
         .unwrap()
@@ -1654,12 +1651,91 @@ fn a_lock_before_the_drain_refuses_each_masternode_key_change() {
             assert_eq!(result, expected, "{name} after {between}");
             v.unlock(PASS, UnlockScope::Full).unwrap();
             assert_eq!(
-                mn_voting_key(&v).as_deref(),
+                mn_voting_key(&v, Credential::Passphrase(PASS)).as_deref(),
                 Some(&b"key-1"[..]),
                 "{name} after {between} changed the key"
             );
         }
     }
+}
+
+/// MG-01 D22: an unencrypted vault has no passphrase to unlock it with, so
+/// a lock between a change's key load and its drain makes the change load
+/// the key again and go on, as `with_loaded_key` does for a read.
+#[test]
+fn an_unencrypted_vault_reloads_the_key_for_a_masternode_key_change() {
+    for (name, call) in MN_CALLS {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir, None);
+        v.store_masternode_key(&MN, "voting", b"key-1").unwrap();
+        let (v2, epoch) = (v.clone(), v.epoch());
+        let mut first = true;
+        test_hook::set_checked(move || {
+            if std::mem::take(&mut first) {
+                lock(&v2);
+            }
+        });
+        let result = call(&v);
+        test_hook::set_checked(|| {});
+        assert_eq!(result, Ok(()), "{name}");
+        assert_ne!(v.epoch(), epoch, "{name}: no lock came between");
+        let expected: Option<&[u8]> = match name {
+            "store" => Some(b"key-2"),
+            "delete" => None,
+            _ => Some(b"key-1"),
+        };
+        assert_eq!(
+            mn_voting_key(&v, Credential::None).as_deref(),
+            expected,
+            "{name}"
+        );
+    }
+}
+
+/// Holds `call` on another thread at its `opened` hook, starts a `lock()`
+/// and, once that lock has been called (`GateEvent::LockCalled`), checks
+/// for 200 ms that it has not ended the epoch; then lets `call` finish,
+/// which must succeed, and the lock with it. The window opens with the
+/// lock already under way, not when its thread was spawned.
+fn lock_waits_for(v: &Vault, call: impl FnOnce() -> Result<(), VaultError> + Send + 'static) {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let worker = thread::spawn(move || {
+        test_hook::set(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        call()
+    });
+    entered_rx
+        .recv_timeout(NO_HANG)
+        .expect("the call did not reach its hold");
+    let epoch = v.epoch();
+    v.start_gate_log();
+    let locker = {
+        let v = v.clone();
+        thread::spawn(move || lock(&v))
+    };
+    let called_by = Instant::now() + NO_HANG;
+    while !v.gate_logged(GateEvent::LockCalled) {
+        assert!(Instant::now() < called_by, "the lock was never called");
+        thread::yield_now();
+    }
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        v.epoch(),
+        epoch,
+        "the lock returned while the call was held"
+    );
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        worker.join().unwrap(),
+        Ok(()),
+        "the call began before the lock"
+    );
+    locker.join().unwrap();
+    assert_ne!(v.epoch(), epoch);
+    v.take_gate_log();
 }
 
 /// MG-01 D22: a lock that starts while a masternode-key call is inside
@@ -1671,14 +1747,18 @@ fn lock_waits_for_each_masternode_key_call() {
         let dir = tempfile::tempdir().unwrap();
         let v = mn_vault(&dir);
         let w = v.clone();
-        epoch_change_waits_for(&v, lock, move || call(&w));
+        lock_waits_for(&v, move || call(&w));
         v.unlock(PASS, UnlockScope::Full).unwrap();
         let expected: Option<&[u8]> = match name {
             "store" => Some(b"key-2"),
             "delete" => None,
             _ => Some(b"key-1"),
         };
-        assert_eq!(mn_voting_key(&v).as_deref(), expected, "{name}");
+        assert_eq!(
+            mn_voting_key(&v, Credential::Passphrase(PASS)).as_deref(),
+            expected,
+            "{name}"
+        );
     }
 }
 
