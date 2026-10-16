@@ -42,6 +42,7 @@ handles may exist. After `close_network` every call returns `network_not_open`.
 | Hashes | Object hashes, proTxHashes and txids are 64-character lower-case hex in Core's display order (byte-reversed), as `gobject list` prints them. An outpoint is `"<txid>-<n>"` (Core's `ToStringShort`). |
 | Amounts | Duffs, `u64`. Weights and vote counts `u32`. |
 | Times | Unix seconds, `u64`. Every governance ETA uses 157.2 s per block from the tip's time (D9). |
+| Transport | govsync runs over `dw_p2p::Session` (`dw-governance::peer`); dw-p2p gains `Session::bytes_received()` for the byte counters, outside the m3 §6 surface CoinJoin uses. |
 | Sync and async | A sync call reads memory only. An async call touches the wallet keychain, app.sqlite or the network, on the engine runtime. |
 | Records | `serde` `Serialize` and `Deserialize`, plus `Debug`, `Clone` and `PartialEq`. Unit enums are snake-case strings; enums with data are tagged with `kind`. |
 | Errors | `GovernanceError` (§4); `code()` is a stable string, `engine()` returns a wrapped `EngineError`. |
@@ -152,7 +153,7 @@ pub struct VoteTally {
     pub ranged_votes: u32,             // votes whose weight is not exact (D2)
 }
 
-pub enum ProposalStatus { Passing, Funded, NotFunded, Failing, Voting, Pending, Expired, Closed }  // MG-01 tally::Status
+pub enum ProposalStatus { Funded, Lapsed, Confirming, Pending, Passing, Failing, Voting, Unfunded }  // dash-qt, tally::Status
 
 pub struct ProposalRow {
     pub hash: String,

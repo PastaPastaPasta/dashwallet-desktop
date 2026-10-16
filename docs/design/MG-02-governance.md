@@ -69,11 +69,15 @@ wallet keeps the same rule in `Requests`:
 - `pending`: hash → (peer, sent at). A `getdata` goes to one announcer at a time, at most 1,000 entries per message
   (Core `MAX_GETDATA_SZ`).
 - An item is accepted only when it answers a pending request **to that peer**. Anything else is unsolicited: it is
-  dropped without decoding beyond the hash, and counted; a peer with more than `MAX_UNSOLICITED` = 1,000 is closed
-  (D10).
+  dropped after decoding its hash. Unsolicited, undecodable and invalid items (a refused object, a vote whose
+  signature recovers nothing) count as misbehaviour; a peer past 1,000 is closed (D10).
 - A request ends when its item arrives, when the peer answers `notfound` for it, when the item does not decode or
   does not validate, when the peer closes, or after `REQUEST_TIMEOUT` = 30 s. Then the next peer that announced the
-  hash is asked, if any (MG-01 D17 "clear a pending hash").
+  hash is asked, if any (MG-01 D17 "clear a pending hash"). A vote's hash leaves out its signature, so a refused
+  signature is retried with the next announcer too.
+- Every peer that announced an object counts towards its confirmation (§3), whether or not it was the one asked.
+- An orphan vote makes the wallet ask its sender for the object (`govsync <hash>` with the empty filter), once per
+  object and peer, as Core does.
 
 ### 2.3 Phases
 
@@ -101,6 +105,10 @@ wallet keeps the same rule in `Requests`:
 - **SyncingVotes**: `govsync(hash, filter)` per current proposal (end epoch in the future), spread over the fresh
   peers, with the non-empty match-nothing filter (Core reads an empty filter as an object fetch,
   `net_governance.cpp:116`; MG-01 §7). Votes on triggers are not asked for (D7 of MG-01: not tallied).
+- An object confirmed after the objects phase (a second announcer relayed it) that is a current proposal gets its
+  vote `govsync` then, from a peer not asked for that object within the window.
+- A run with no fresh peer reaches Synced only if an earlier run of the session did (the store is kept); otherwise it
+  fails and retries, so a retry within the window never reports a store that was never filled.
 - **Synced**: only after both phases completed. A phase that idles out (nothing for 20 s while counts are short) or
   loses every peer ends the run as **Failed** with the reason, and the store keeps what arrived (MG-01 D17 "no
   `Synced` after a failed phase"). The next run starts after a backoff (30 s, doubling to 5 min).
@@ -219,9 +227,9 @@ runtime. The contract lists the calls, records and codes.
 - **Reads.** `clock`, `info`, `proposals`, `proposal`, `current_votes` and `sync_state` read the store, the list
   snapshot and the sync tracker's tip. Proposal rows and tallies are answered only once a run reached Synced
   (`governance.not_synced{phase}` before; MG-00 D21: no partial tally). The clock and the budget need only the tip.
-- **Estimates of time.** Every ETA and the proposal epochs use Core's trigger estimate of 157.2 s per block
-  (`2.62 * 60`, `signing.cpp:59`; MG-01 D18), so a proposal's end epoch and the trigger builder agree (D9). The
-  cutoff is named the **estimated cutoff** (`voting_cutoff_estimate`, MG-00 D19).
+- **Estimates of time.** Every ETA uses Core's trigger estimate of 157.2 s per block (`2.62 * 60`,
+  `signing.cpp:59`; MG-01 D18, D9). The cutoff is named the **estimated cutoff** (`voting_cutoff_estimate`, MG-00
+  D19).
 - **Superblock budget.** `superblock_budget(network, height)` is MG-01's `GetPaymentsLimit` port, a free function;
   the vectors of `governance_budget.json` and `governance_live.json` check it.
 - **Event.** `EngineEvent::Governance { network }`, coalesced to at most one a second with the trailing edge kept,
@@ -288,11 +296,13 @@ ranged votes, the bytes, the times and the peers.
 | D6 | `vote` is a contract stub until MG-05; `relay_vote` and `voting_masternodes` are implemented. | Signing needs the `Governance` grant purpose and the `MasternodeVoting` scope, MG-05's row; no existing purpose fits (`RevealSecret` would hand the key out). Relaying a vote signed outside needs no grant, and it exercises the whole relay path on regtest. |
 | D7 | Add `EngineEvent::Governance { network }`; dw-ffi drops it (the M3 FFI is out, MG-01); dw-app maps it to `AppEvent::Governance` and the generated TS gains it. | MG-01 D3 left the event to this contract. dw-app's `From<EngineEvent>` is total, so the variant needs an AppEvent; binding the facade's calls is E0-13's. |
 | D8 | `GovernanceError` is the facade's own enum and wraps `EngineError`; `EngineError` gains no variant. | As m4's domain errors; it keeps the m1–m3 §4 tables and the Swift codes unchanged. |
-| D9 | 157.2 s per block for every governance ETA and the proposal epochs; `getgovernanceinfo.targetSpacing` stays 150. | Core's trigger builder decides payability with `now + blocks × 2.62 × 60` (`signing.cpp:59`); a different estimate puts end epochs on the wrong side of it. |
-| D10 | Unsolicited objects and votes are dropped; more than 1,000 from one peer close it. | Core ignores them (no penalty). Ignoring still costs a decode for the hash, so a bound stops a peer from making the wallet decode forever. |
+| D9 | 157.2 s per block for every governance ETA (superblock, cutoff); the proposal epochs of the Create Proposal form and `getgovernanceinfo.targetSpacing` keep 150 s. | Core's trigger builder estimates superblock times with `now + blocks × 2.62 × 60` (`signing.cpp:59`), and the ETAs should agree with it. dash-qt's form sets epochs at 150 s a block (`proposalcreate.cpp`) and counts payments with 150 s (`Proposal::paymentsRequested`); epochs at 157.2 s would make a proposal of `n` payments read as `n + 1` there. |
+| D10 | Unsolicited objects and votes are dropped. Unsolicited, undecodable or invalid items count as misbehaviour, and a peer past 1,000 is closed. | Core ignores unsolicited items and penalizes invalid ones (a peer is banned after a few). The wallet's bound is looser, because a vote signed by a key its list does not know yet is not misbehaviour: the list may lag. It still stops a peer from making the wallet decode and recover signatures without end. |
 | D11 | At most `2 × n_K + 2` outpoints per (object, voting key). | The store's memory per key holder is bounded; honest keys never come close (`c ≤ n_K`). |
 | D12 | Requests time out after 30 s and move to the next announcer; the governance session idles out after 5 minutes. | MG-01 D17: stuck pending hashes and undetected dead peers. Core's per-type request interval is of that order; dw-p2p pings every 60 s here, so a live peer is never idle. |
 | D13 | A run that does not complete both phases is Failed, keeps what it stored, and retries with a 30 s → 5 min backoff. | MG-01 D17 "do not report Synced after a failed phase". |
 | D14 | G7's reference is DashCentral's budget API. | The program's mainnet oracle is in IBD at block 2,094,670 (2026-10-16) and serves no governance data; DashCentral reads a mainnet Core node, as in r2's G7. |
 | D15 | `GOVERNANCE_UPDATE_MIN` is not mirrored. | MG-01 D13: Core times it with its own receive clock. |
 | D16 | Votes of PoSe-banned masternodes count; the threshold uses valid weight only. | Core: `CountMatchingVotes` uses `GetMNByCollateral` (all entries), `UpdateSentinelVariables` uses `m_valid_weighted`. |
+| D17 | A trigger whose height is at or below the tip counts as paid: its proposals are funded until one cycle after its height. | Core keeps an executed trigger for a cycle and an unpaid one for 576 blocks (`CSuperblock::IsExpired`); which one paid is known only from the block, which the wallet does not check. The best-voted trigger is the one paid, and trigger votes are not synced (MG-01 D7). |
+| D18 | Fields outside the object hash (the collateral txid, the wire type) are as the first sender gave them. | Core's object hash leaves them out. The type is read from the data (D5); the collateral txid is shown for information only. |
