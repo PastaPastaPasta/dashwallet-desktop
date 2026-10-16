@@ -14,8 +14,9 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
-import { HANDLERS, type Ctx } from "./handlers";
-import { buildWorld, DEFAULT_SCENARIO, isScenario, type ScenarioName, type World } from "./scenarios";
+import { HANDLERS, registrationRun, type Ctx } from "./handlers";
+import { restarted } from "./registration";
+import { buildWorld, DEFAULT_SCENARIO, FIXTURE_WALLET_ID, isScenario, type ScenarioName, type World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
 
 /** Present in every fixture build and in no production build (scripts/check-bundle.mjs). */
@@ -49,6 +50,15 @@ export interface FixtureHandle {
   hold(command: CommandName): () => void;
   /** Every command called so far, in order. */
   readonly calls: string[];
+  /** One step of `draft`'s registration run, where the network would answer (DP1-09);
+   * `false` when it has no run. */
+  advanceRegistration(draft: string, walletId?: string): boolean;
+  /** `draft`'s run fails with `code`: `retryable` keeps it for Continue; a `name.*` code ends it
+   * with the identity but no name. */
+  failRegistration(draft: string, code: string, retryable: boolean, walletId?: string): boolean;
+  /** Quits and relaunches the app (DP1-09): the world as the engine left it on disk, without
+   * its grants, leases and runs, and the vault locked. Reloads the page. */
+  relaunch(): void;
   /** The renderer's clock (`Backend.now`). A test may move it; the handlers keep FIXTURE_NOW. */
   now: Date;
   readonly locale: string;
@@ -60,8 +70,20 @@ const notImplemented = (call: string): AppError => ({
   data: { kind: "call", call },
 });
 
+/** Where `relaunch` leaves the world for the next page load (one tab's session). */
+const RELAUNCH_KEY = "dw-fixture-relaunch";
+
+/** The world `relaunch` left, if this load is one; consumed. */
+function relaunchedWorld(): World | null {
+  if (typeof sessionStorage === "undefined") return null;
+  const saved = sessionStorage.getItem(RELAUNCH_KEY);
+  if (saved === null) return null;
+  sessionStorage.removeItem(RELAUNCH_KEY);
+  return restarted(JSON.parse(saved) as World);
+}
+
 export function installFixture(opts: FixtureOptions): FixtureHandle {
-  const world = buildWorld(opts.scenario, opts.theme ?? null);
+  const world = relaunchedWorld() ?? buildWorld(opts.scenario, opts.theme ?? null);
   const failures = new Map(Object.entries(opts.failures ?? {}) as [CommandName, ErrorClass][]);
   const calls: string[] = [];
   const held = new Map<string, Promise<void>>();
@@ -103,6 +125,12 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
       let release = () => {};
       held.set(command, new Promise<void>((r) => (release = r)));
       return () => release();
+    },
+    advanceRegistration: (draft, walletId = FIXTURE_WALLET_ID) => registrationRun.advance(ctx, walletId, draft),
+    failRegistration: (draft, code, retryable, walletId = FIXTURE_WALLET_ID) => registrationRun.fail(ctx, walletId, draft, code, retryable),
+    relaunch: () => {
+      sessionStorage.setItem(RELAUNCH_KEY, JSON.stringify(world));
+      location.reload();
     },
     calls,
     now: FIXTURE_NOW,
