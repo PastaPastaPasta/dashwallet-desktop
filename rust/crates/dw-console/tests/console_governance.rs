@@ -654,9 +654,13 @@ fn voteraw_words_the_facades_rejections_as_core() {
             "{reason}"
         );
     }
-    // Core's manager leaves the exception empty for these.
+    // Core's manager leaves the exception default-built for these.
     for reason in ["duplicate", "expired"] {
-        assert_eq!(text(reason), (-32603, "Error voting : ".into()), "{reason}");
+        assert_eq!(
+            text(reason),
+            (-32603, "Error voting : GOVERNANCE_EXCEPTION_NONE:".into()),
+            "{reason}"
+        );
     }
     assert_eq!(
         text("obsolete").1,

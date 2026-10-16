@@ -467,8 +467,8 @@ pub fn vote_rejection(
         "bad_signature" | "wrong_voting_key" | "unknown_voting_key" | "malformed"
         | "too_far_ahead" => internal("Failure to verify vote."),
         // The manager's known-vote and expired-object checks leave the
-        // exception empty.
-        "duplicate" | "expired" => internal("Error voting : "),
+        // exception default-built, which still prints its type.
+        "duplicate" | "expired" => internal("Error voting : GOVERNANCE_EXCEPTION_NONE:"),
         "obsolete" => process_vote("GOVERNANCE_EXCEPTION_NONE", "Obsolete vote"),
         "same_timestamp" => process_vote(
             "GOVERNANCE_EXCEPTION_NONE",
