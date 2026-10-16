@@ -149,9 +149,14 @@ test("a lock while mixing stops it; mixing-only unlock lets it start again (S10,
   await expect(page.getByTestId("coinjoin-lock-line")).toHaveText("Unlocked for mixing only: mixing runs, sending stays locked.");
   await page.getByTestId("coinjoin-action").click();
   await expect(status(page)).toHaveAttribute("data-state", "starting");
-  // Mixing again brings the card back.
+  // Mixing again ends that dismissal, though Home did not see it run: the next lock is news again.
+  await page.getByTestId("toolbar-lock").click();
+  await page.getByTestId("lock-field").fill("demo");
+  await page.getByTestId("lock-mixing-only").check();
+  await page.getByTestId("lock-submit").click();
+  await expect(page.getByTestId("lock-screen")).toHaveCount(0);
   await navigate(page, "home");
-  await expect(card(page)).toHaveAttribute("data-state", "starting");
+  await expect(card(page)).toHaveAttribute("data-state", "locked");
   expect(errors).toEqual([]);
 });
 

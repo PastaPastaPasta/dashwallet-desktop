@@ -61,6 +61,14 @@ const idleMixer = (): FixtureMixer => ({ state: "idle", stopReason: null, status
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
 
+function unavailableOf(settings: CoinJoinSettings, w: FixtureWallet): CoinJoinStatus["unavailable"] {
+  if (!settings.enabled) return { kind: "disabled" };
+  if (w.summary.watchOnly) return { kind: "watchOnly" };
+  const total = w.summary.balances?.confirmed ?? 0;
+  if (total < COINJOIN_LIMITS.minMixingBalance) return { kind: "insufficientFunds", minDuffs: COINJOIN_LIMITS.minMixingBalance };
+  return null;
+}
+
 /** `status_from_view` over the fixture wallet: its confirmed balance is what mixing can use, the
  * mixed part follows the mixer's `mixedPercent` of the target amount. */
 export function coinjoinStatusOf(world: World, w: FixtureWallet): CoinJoinStatus {
@@ -70,18 +78,11 @@ export function coinjoinStatusOf(world: World, w: FixtureWallet): CoinJoinStatus
   const target = settings.targetAmountDash * DUFFS_PER_DASH;
   const amount = Math.min(total, target);
   const fullyMixed = Math.floor((amount * m.progress.mixedPercent) / 100);
-  const unavailable = !settings.enabled
-    ? ({ kind: "disabled" } as const)
-    : w.summary.watchOnly
-      ? ({ kind: "watchOnly" } as const)
-      : total < COINJOIN_LIMITS.minMixingBalance
-        ? ({ kind: "insufficientFunds", minDuffs: COINJOIN_LIMITS.minMixingBalance } as const)
-        : null;
   return {
     walletId: w.summary.walletId,
     state: m.state,
     stopReason: m.state === "idle" ? m.stopReason : null,
-    unavailable,
+    unavailable: unavailableOf(settings, w),
     balances: { anonymizable: total - fullyMixed, denominated: Math.floor((amount * m.progress.denominatedPercent) / 100), normalizedAnonymized: fullyMixed, fullyMixed },
     progress: m.progress,
     amountAndRounds: { amount: amount === 0 ? target : amount, rounds: settings.rounds, insufficientInputs: total > 0 && total < target },
@@ -104,25 +105,27 @@ export function haltAll(ctx: Ctx, reason: CoinJoinStopReason) {
   }
 }
 
-const RANGES: [keyof CoinJoinSettings, number, number][] = [
-  ["maxSessions", COINJOIN_LIMITS.minSessions, COINJOIN_LIMITS.maxSessions],
-  ["rounds", COINJOIN_LIMITS.minRounds, COINJOIN_LIMITS.maxRounds],
-  ["targetAmountDash", COINJOIN_LIMITS.minAmountDash, COINJOIN_LIMITS.maxAmountDash],
-  ["denomsGoal", COINJOIN_LIMITS.minDenoms, COINJOIN_LIMITS.maxDenoms],
-  ["denomsHardCap", COINJOIN_LIMITS.minDenoms, COINJOIN_LIMITS.maxDenoms],
+/** dw-coinjoin `CoinJoinSettings::validate`, in its order and with its names; the goal's maximum
+ * is the hard cap. */
+const RANGES: [keyof CoinJoinSettings, string, number, (s: CoinJoinSettings) => number][] = [
+  ["maxSessions", "max_sessions", COINJOIN_LIMITS.minSessions, () => COINJOIN_LIMITS.maxSessions],
+  ["rounds", "rounds", COINJOIN_LIMITS.minRounds, () => COINJOIN_LIMITS.maxRounds],
+  ["targetAmountDash", "target_amount_dash", COINJOIN_LIMITS.minAmountDash, () => COINJOIN_LIMITS.maxAmountDash],
+  ["denomsHardCap", "denoms_hard_cap", COINJOIN_LIMITS.minDenoms, () => COINJOIN_LIMITS.maxDenoms],
+  ["denomsGoal", "denoms_goal", COINJOIN_LIMITS.minDenoms, (s) => s.denomsHardCap],
 ];
 
 export function coinjoinHandlers({ wallet }: { wallet: (w: World, walletId: string) => FixtureWallet }): Handlers {
   return {
     coinjoin_limits: () => COINJOIN_LIMITS,
     coinjoin_settings: (_, { world }) => world.coinjoin.settings,
-    // dw-coinjoin `CoinJoinSettings::validate`: the message names the field.
+    // The engine's `invalid_argument` carries `SettingOutOfRange`'s text, naming the field.
     set_coinjoin_settings: ({ settings }, ctx) => {
-      for (const [field, min, max] of RANGES) {
+      for (const [field, name, min, maxOf] of RANGES) {
         const v = settings[field] as number;
-        if (!Number.isInteger(v) || v < min || v > max) throw fail("invalid_argument", `coinjoin setting ${field} = ${v} outside ${min}..=${max}`);
+        const max = maxOf(settings);
+        if (!Number.isInteger(v) || v < min || v > max) throw fail("invalid_argument", `${name} = ${v} is outside ${min}..=${max}`);
       }
-      if (settings.denomsGoal > settings.denomsHardCap) throw fail("invalid_argument", "coinjoin setting denomsGoal above denomsHardCap");
       ctx.world.coinjoin.settings = { ...settings };
       if (!settings.enabled) haltAll(ctx, "disabled");
       for (const w of ctx.world.wallets) changed(ctx, w.summary.walletId);

@@ -10,9 +10,8 @@ import { useLockStatus } from "../../api/queries";
 import { navigate, useUi } from "../../app/ui";
 import { DashButton, Icon } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
-import { CoinJoinText, LEVELS, levelOf, lockLine, poolMessageText, POOL_STATE_TEXT } from "../../coinjoin/model";
-import { useCoinJoinAmount, useCoinJoinSettings, useCoinJoinView, useSaveCoinJoinSettings } from "../../coinjoin/queries";
-import { useDisplay } from "../../format/display";
+import { CoinJoinText, LEVELS, levelOf, lockLine, poolMessageText, POOL_STATE_TEXT, settingsFailureText } from "../../coinjoin/model";
+import { useCoinJoinAmount, useCoinJoinSettings, useCoinJoinView, useMaskedAmount, useSaveCoinJoinSettings } from "../../coinjoin/queries";
 import { failureText } from "../../onboarding/model";
 import { AUTO_LOCK_CHOICES, SecurityText } from "../../settings/security";
 import { Page } from "../Routes";
@@ -34,7 +33,7 @@ export function CoinJoinPage({ walletId, network }: { walletId: string; network:
       <section className="coinjoin-status card-l1" data-testid="coinjoin-status" data-state={view.state} aria-labelledby={`${id}-title`}>
         <Icon id="coinjoin" size={56} className="coinjoin-status-icon" />
         <div className="coinjoin-card-body">
-          <div role="status" className="coinjoin-card-live">
+          <div className="coinjoin-card-live">
             <h2 className="coinjoin-status-title" id={`${id}-title`} data-testid="coinjoin-status-title">
               {view.state === "loading" ? "Loading…" : view.title}
               {view.busy && <span className="spinner coinjoin-spinner" aria-hidden="true" />}
@@ -92,7 +91,7 @@ function LevelCard({ mixing }: { mixing: boolean }) {
     try {
       await save({ ...current, rounds: n });
     } catch (e) {
-      setProblem(failureText(e));
+      setProblem(settingsFailureText(e));
     } finally {
       setChosen(null);
     }
@@ -117,7 +116,9 @@ function LevelCard({ mixing }: { mixing: boolean }) {
                 type="radio"
                 name={`${id}-level`}
                 checked={rounds === l.rounds}
-                disabled={chosen !== null}
+                // Not `disabled` while a level saves: that would drop the keyboard focus out of
+                // the group; `pick` takes one write at a time.
+                aria-disabled={chosen !== null || undefined}
                 onChange={() => void pick(l.rounds)}
               />
               <Icon id={l.id === "intermediate" ? "coinjoinShuffle" : "coinjoinProtected"} size={24} className="coinjoin-level-icon" />
@@ -154,9 +155,8 @@ function LevelCard({ mixing }: { mixing: boolean }) {
 /** dash-qt's panel, its progress tooltip and the advanced view's session table (QT-042, QT-047). */
 function SessionDetails({ status, network }: { status: CoinJoinStatus; network: NetworkInfo }) {
   const amount = useCoinJoinAmount(network);
-  const discreet = useUi((s) => s.discreet);
-  const display = useDisplay(network);
-  const shown = (duffs: number) => (discreet ? `${display.masked()} ${display.name}` : amount(duffs));
+  const masked = useMaskedAmount(network);
+  const shown = (duffs: number) => masked ?? amount(duffs);
   const { progress, amountAndRounds: ar } = status;
   const pct = (n: number) => `${Math.floor(n)}%`;
   return (

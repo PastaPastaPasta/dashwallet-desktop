@@ -5,7 +5,19 @@ import { describe, expect, it } from "vitest";
 import type { AppError } from "../api/generated/commands";
 import type { CoinJoinLimits } from "../api/generated/CoinJoinLimits";
 import type { CoinJoinStatus } from "../api/generated/CoinJoinStatus";
-import { actionFailureText, checkSettings, CoinJoinText, coinjoinView, formOf, levelOf, lockLine, statusLine, type ViewInputs } from "./model";
+import {
+  actionFailureText,
+  announcement,
+  checkSettings,
+  CoinJoinText,
+  coinjoinView,
+  formOf,
+  levelOf,
+  lockLine,
+  settingsFailureText,
+  statusLine,
+  type ViewInputs,
+} from "./model";
 
 const amount = (duffs: number) => `${(duffs / 1e8).toFixed(8)} tDASH`;
 
@@ -82,6 +94,8 @@ describe("coinjoinView", () => {
       action: { kind: "stop" },
     });
     expect(view(status({ state: "mixing", status: { kind: "notEnoughFunds" }, progress: full })).state).toBe("finished");
+    // Above the target the engine's step does nothing and reports idle: not "Starting…" (review r1 #1).
+    expect(view(status({ state: "mixing", status: { kind: "idle" }, progress: full }))).toMatchObject({ state: "finished", busy: false, line: null });
   });
 
   it("S7 mixing: percent floored, mixed of total, Core's line", () => {
@@ -148,6 +162,8 @@ describe("checkSettings (D11)", () => {
     expect(checkSettings({ ...formOf(current), rounds: "1" }, current, LIMITS)).toEqual({ field: "rounds", text: "Mixing rounds must be a whole number from 2 to 16." });
     expect(checkSettings({ ...formOf(current), targetAmountDash: "1.5" }, current, LIMITS)).toMatchObject({ field: "targetAmountDash" });
     expect(checkSettings({ ...formOf(current), maxSessions: "" }, current, LIMITS)).toMatchObject({ field: "maxSessions" });
+    // A comma only as a thousands separator.
+    expect(checkSettings({ ...formOf(current), targetAmountDash: "2,5,00" }, current, LIMITS)).toMatchObject({ field: "targetAmountDash" });
     expect(checkSettings({ ...formOf(current), denomsHardCap: "100001" }, current, LIMITS)).toEqual({
       field: "denomsHardCap",
       text: "Inputs per denomination: Maximum must be a whole number from 10 to 100,000.",
@@ -167,6 +183,18 @@ describe("texts", () => {
     expect(actionFailureText(appError("coinjoin.insufficient_funds", { kind: "limit", duffs: 140_001 }), amount)).toBe(
       "CoinJoin requires at least 0.00140001 tDASH to use.",
     );
+  });
+
+  it("D11: the engine's refusal of a setting names it", () => {
+    expect(settingsFailureText({ code: "invalid_argument", message: "rounds = 1 is outside 2..=16", data: null })).toBe(
+      "The settings were not saved: rounds = 1 is outside 2..=16",
+    );
+  });
+
+  it("announces the state, and a stop's reason, not the moving status line", () => {
+    expect(announcement(view(status({ state: "mixing", status: { kind: "signing" } })))).toBe(CoinJoinText.mixing);
+    expect(announcement(view(status({ stopReason: "vaultLocked" })))).toBe(`${CoinJoinText.stopped}. ${CoinJoinText.stoppedLocked}`);
+    expect(announcement(view(status({ unavailable: { kind: "insufficientFunds", minDuffs: 140_001 } })))).toContain("requires at least");
   });
 
   it("the lock line follows the vault", () => {

@@ -101,13 +101,14 @@ async function main() {
     await poll(TIMEOUT_MS, "Advanced to be saved", async () =>
       (await wd.script<boolean>(`return document.querySelector('${tid("coinjoin-level-advanced")} input').checked`)) ? true : undefined,
     );
-    // The level is the network's `rounds`: a re-read of the page shows what the engine kept.
-    await wd.press(tid("sidebar-home"));
-    await wd.press(tid("sidebar-coinJoin"));
-    await poll(TIMEOUT_MS, "Advanced from the engine", async () =>
-      (await wd.script<boolean>(`return !!document.querySelector('${tid("coinjoin-level-advanced")} input')?.checked`)) ? true : undefined,
-    );
-    step("level: Advanced (8 rounds), kept by the engine");
+    // The radio follows the settings the write's refetch read back from the engine, and the
+    // status's rounds are the engine's.
+    await wd.press(`${tid("coinjoin-details")} summary`);
+    evidence.amountAndRounds = await poll(TIMEOUT_MS, "8 rounds in the engine's status", async () => {
+      const t = await textOf("coinjoin-detail-amount");
+      return t.includes("8 Rounds") ? t : undefined;
+    });
+    step(`level: Advanced; the engine's status says "${evidence.amountAndRounds}"`);
 
     // Start: the engine runs a mixer, which waits for masternodes.
     await wd.press(tid("coinjoin-action"));
@@ -125,6 +126,9 @@ async function main() {
     // A lock stops mixing (S10); mixing-only unlock lets it start again (D6).
     await wd.press(tid("toolbar-lock"));
     await wd.waitFor(tid("lock-screen"), "the lock screen");
+    // The shell stays under the lock screen: wait for the mixing loop's halt (its next tick, after
+    // any step in progress) before unlocking, or it would never see the vault locked.
+    await poll(LOAD_WAIT_MS, "mixing to stop on the lock", stateIs("coinjoin-card", "locked"));
     await unlock(true);
     await poll(TIMEOUT_MS, "the stopped card", stateIs("coinjoin-card", "locked"));
     evidence.lockedLine = await textOf("coinjoin-card-line");
@@ -138,6 +142,12 @@ async function main() {
     evidence.restarted = await poll(TIMEOUT_MS, "mixing again", stateIs("coinjoin-status", ...RUNNING));
     step(`Start Mixing unlocked for mixing only ("${evidence.lockLine}"): ${evidence.restarted}`);
 
+    // Start's own call may still be out (the button is busy): Stop once it can be pressed.
+    await poll(TIMEOUT_MS, "Stop Mixing", async () =>
+      (await wd.script<boolean>(`const b = document.querySelector('${tid("coinjoin-action")}'); return !!b && !b.disabled && b.textContent === "Stop Mixing"`))
+        ? true
+        : undefined,
+    );
     await wd.press(tid("coinjoin-action"));
     await wd.press(tid("coinjoin-stop-confirm"));
     await poll(LOAD_WAIT_MS, "mixing to stop", stateIs("coinjoin-status", "off"));

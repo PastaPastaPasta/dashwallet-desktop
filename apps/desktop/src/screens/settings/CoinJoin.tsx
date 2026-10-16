@@ -2,14 +2,13 @@
 // boxes apply as they change, the numbers with one Save (checked against `coinjoin_limits`
 // first), Restore defaults after a confirmation. The ranges and defaults are the engine's.
 
-import { useId, useState } from "react";
+import { useId, useState, type FormEvent } from "react";
 import type { CoinJoinLimits } from "../../api/generated/CoinJoinLimits";
 import type { CoinJoinSettings } from "../../api/generated/CoinJoinSettings";
 import { DashButton } from "../../components/basics";
-import { Sheet } from "../../components/sheet";
-import { checkSettings, CoinJoinText, formOf, type FormField, type SettingsForm } from "../../coinjoin/model";
+import { QuestionSheet } from "../../components/sheet";
+import { checkSettings, CoinJoinText, formOf, settingsFailureText, type FormField, type SettingsForm } from "../../coinjoin/model";
 import { useCoinJoinLimits, useCoinJoinSettings, useSaveCoinJoinSettings } from "../../coinjoin/queries";
-import { failureText } from "../../onboarding/model";
 import { Done, Hint, pendingText, Problem, SettingsCard } from "./parts";
 
 const FIELDS: { field: FormField; label: string; hint?: string }[] = [
@@ -43,6 +42,9 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
   /** One write at a time: a second answer could arrive first (U-04 D36). */
   const [saving, setSaving] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  /** A box as clicked, until the engine has answered (U-04 D36). */
+  const [turning, setTurning] = useState<Partial<CoinJoinSettings>>({});
+  const shown = { ...current, ...turning };
   const form = { ...formOf(current), ...edits };
   const changed = Object.keys(edits).length > 0;
 
@@ -55,12 +57,36 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
       await save(next);
       return true;
     } catch (e) {
-      setProblem(failureText(e));
+      setProblem(settingsFailureText(e));
       return false;
     } finally {
       setSaving(false);
     }
   };
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    // Parallel sessions is off without multi-session: what was typed there is not saved.
+    const checked = checkSettings(current.multiSession ? form : { ...form, maxSessions: String(current.maxSessions) }, current, limits);
+    if ("field" in checked) {
+      setWrong(checked.field);
+      setDone(null);
+      return setProblem(checked.text);
+    }
+    void write(checked.ok).then((ok) => {
+      if (!ok) return;
+      setEdits({});
+      setDone(CoinJoinText.saved);
+    });
+  };
+
+  const restore = () =>
+    void write(limits.defaults).then((ok) => {
+      if (!ok) return;
+      setEdits({});
+      setWrong(null);
+      setDone(CoinJoinText.saved);
+    });
 
   const box = (testId: string, label: string, hint: string, checked: boolean, patch: (on: boolean) => Partial<CoinJoinSettings>) => (
     <div className="coinjoin-setting">
@@ -71,7 +97,11 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
           checked={checked}
           disabled={saving}
           aria-describedby={`${id}-${testId}`}
-          onChange={(e) => void write({ ...current, ...patch(e.target.checked) })}
+          onChange={(e) => {
+            const p = patch(e.target.checked);
+            setTurning(p);
+            void write({ ...current, ...p }).finally(() => setTurning({}));
+          }}
         />
         {label}
       </label>
@@ -82,29 +112,12 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
   return (
     <>
       <SettingsCard title="CoinJoin" testId="settings-coinjoin">
-        {box("settings-coinjoin-enabled", CoinJoinText.enableFeatures, CoinJoinText.enableFeaturesTip, current.enabled, (enabled) => ({ enabled }))}
-        {box("settings-coinjoin-multisession", CoinJoinText.multiSession, CoinJoinText.multiSessionTip, current.multiSession, (multiSession) => ({ multiSession }))}
+        {box("settings-coinjoin-enabled", CoinJoinText.enableFeatures, CoinJoinText.enableFeaturesTip, shown.enabled, (enabled) => ({ enabled }))}
+        {box("settings-coinjoin-multisession", CoinJoinText.multiSession, CoinJoinText.multiSessionTip, shown.multiSession, (multiSession) => ({ multiSession }))}
         <Hint>{CoinJoinText.persists}</Hint>
       </SettingsCard>
       <SettingsCard title="Mixing" testId="settings-coinjoin-mixing">
-        <form
-          className="coinjoin-settings-form"
-          noValidate
-          onSubmit={(e) => {
-            e.preventDefault();
-            const checked = checkSettings(form, current, limits);
-            if ("field" in checked) {
-              setWrong(checked.field);
-              setDone(null);
-              return setProblem(checked.text);
-            }
-            void write(checked.ok).then((ok) => {
-              if (!ok) return;
-              setEdits({});
-              setDone(CoinJoinText.saved);
-            });
-          }}
-        >
+        <form className="coinjoin-settings-form" noValidate onSubmit={submit}>
           {FIELDS.map(({ field, label, hint }) => (
             <div className="form-field" key={field}>
               <label htmlFor={`${id}-${field}`}>{label}</label>
@@ -114,7 +127,7 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
                 inputMode="numeric"
                 autoComplete="off"
                 value={form[field]}
-                disabled={field === "maxSessions" && !current.multiSession}
+                disabled={field === "maxSessions" && !shown.multiSession}
                 aria-invalid={wrong === field ? true : undefined}
                 aria-describedby={hint ? `${id}-${field}-hint` : undefined}
                 onChange={(e) => {
@@ -153,29 +166,15 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
         </DashButton>
       </SettingsCard>
       {restoring && (
-        <Sheet title={CoinJoinText.restoreTitle} width="small" testId="settings-coinjoin-restore-sheet" onClose={() => setRestoring(false)}>
-          <p className="sheet-text">{CoinJoinText.restoreMessage}</p>
-          <div className="sheet-actions">
-            <DashButton variant="tintedGray" data-autofocus onClick={() => setRestoring(false)}>
-              Cancel
-            </DashButton>
-            <DashButton
-              variant="filledBlue"
-              data-testid="settings-coinjoin-restore-confirm"
-              onClick={() => {
-                setRestoring(false);
-                void write(limits.defaults).then((ok) => {
-                  if (!ok) return;
-                  setEdits({});
-                  setWrong(null);
-                  setDone(CoinJoinText.saved);
-                });
-              }}
-            >
-              Restore
-            </DashButton>
-          </div>
-        </Sheet>
+        <QuestionSheet
+          title={CoinJoinText.restoreTitle}
+          text={CoinJoinText.restoreMessage}
+          confirm="Restore"
+          testId="settings-coinjoin-restore-sheet"
+          confirmTestId="settings-coinjoin-restore-confirm"
+          onConfirm={restore}
+          onClose={() => setRestoring(false)}
+        />
       )}
     </>
   );

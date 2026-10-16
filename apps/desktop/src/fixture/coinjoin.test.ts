@@ -79,6 +79,8 @@ describe("fixture CoinJoin", () => {
     const current = await cmd.coinjoinSettings();
     for (const bad of [{ rounds: 1 }, { rounds: 17 }, { maxSessions: 0 }, { targetAmountDash: 1 }, { denomsGoal: 301 }, { denomsHardCap: 9 }])
       await expect(cmd.setCoinjoinSettings({ ...current, ...bad })).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(cmd.setCoinjoinSettings({ ...current, maxSessions: 0 })).rejects.toMatchObject({ message: "max_sessions = 0 is outside 1..=10" });
+    await expect(cmd.setCoinjoinSettings({ ...current, denomsGoal: 301 })).rejects.toMatchObject({ message: "denoms_goal = 301 is outside 10..=300" });
     expect(await cmd.coinjoinSettings()).toEqual(current);
     const seen = await events();
     await cmd.setCoinjoinSettings({ ...current, rounds: 8 });

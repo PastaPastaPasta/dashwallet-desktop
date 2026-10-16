@@ -43,20 +43,25 @@ export function useCoinJoinAmount(network: NetworkInfo) {
   return (duffs: number) => `${display.compact(duffs)} ${display.name}`;
 }
 
+/** What discreet mode shows in place of an amount; `null` while amounts show. */
+export function useMaskedAmount(network: NetworkInfo): string | null {
+  const discreet = useUi((s) => s.discreet);
+  const display = useDisplay(network);
+  return discreet ? `${display.masked()} ${display.name}` : null;
+}
+
 /** The wallet's mixing status and its view (S1–S14); `retry` reads it again. */
 export function useCoinJoinView(walletId: string, network: NetworkInfo): { view: CoinJoinView; status: CoinJoinStatus | undefined; retry: () => void } {
   const b = useBackend();
   const status = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId) });
-  const discreet = useUi((s) => s.discreet);
-  const display = useDisplay(network);
   const amount = useCoinJoinAmount(network);
-  const view = coinjoinView({
-    status: status.data,
-    readFailed: status.isError,
-    readError: status.error,
-    amount,
-    masked: discreet ? `${display.masked()} ${display.name}` : null,
-  });
+  const masked = useMaskedAmount(network);
+  const view = coinjoinView({ status: status.data, readFailed: status.isError, readError: status.error, amount, masked });
+  // Mixing again ends the dismissal of the last stop (D1), whichever surface sees it run.
+  const state = status.data?.state;
+  useEffect(() => {
+    if (state !== undefined && state !== "idle") setDismissed(walletId, false);
+  }, [walletId, state]);
   return { view, status: status.data, retry: () => void status.refetch() };
 }
 
@@ -84,31 +89,28 @@ export function useMixingAction(walletId: string, network: NetworkInfo) {
   return { busy, problem, run };
 }
 
-// D1: the wallets whose stopped card the user dismissed. It stays hidden until mixing runs again,
-// or the window reloads.
-const dismissed = new Set<string>();
+// D1: the wallets whose stopped card the user dismissed. It stays hidden until any CoinJoin surface
+// sees mixing run again (`useCoinJoinView`), or the window reloads. Replaced, never mutated, so it
+// is its own store snapshot.
+let dismissed: ReadonlySet<string> = new Set();
 const listeners = new Set<() => void>();
-let version = 0;
 
 function setDismissed(walletId: string, on: boolean) {
   if (dismissed.has(walletId) === on) return;
-  if (on) dismissed.add(walletId);
-  else dismissed.delete(walletId);
-  version++;
+  const next = new Set(dismissed);
+  if (on) next.add(walletId);
+  else next.delete(walletId);
+  dismissed = next;
   for (const l of listeners) l();
 }
 
-/** Whether the Home card's stop notice was dismissed, and the dismiss. Mixing again clears it. */
-export function useDismissedStop(walletId: string, state: CoinJoinStatus["state"] | undefined) {
-  useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => void listeners.delete(l);
-    },
-    () => version,
-  );
-  useEffect(() => {
-    if (state !== undefined && state !== "idle") setDismissed(walletId, false);
-  }, [walletId, state]);
-  return { isDismissed: dismissed.has(walletId), dismiss: () => setDismissed(walletId, true) };
+function subscribe(l: () => void) {
+  listeners.add(l);
+  return () => void listeners.delete(l);
+}
+
+/** Whether the Home card's stop notice was dismissed, and the dismiss. */
+export function useDismissedStop(walletId: string) {
+  const wallets = useSyncExternalStore(subscribe, () => dismissed);
+  return { isDismissed: wallets.has(walletId), dismiss: () => setDismissed(walletId, true) };
 }

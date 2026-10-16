@@ -81,9 +81,12 @@ function contactsChanged({ world, emit }: Ctx, walletId: string, identity: strin
   emit({ kind: "platform", network: world.launch.network.dirName, walletId, change: { domain: "contacts", identity } });
 }
 
-function setLock({ world, emit }: Ctx, state: World["lock"]["state"]) {
+function setLock(ctx: Ctx, state: World["lock"]["state"]) {
+  const { world, emit } = ctx;
   world.lock = { ...world.lock, state };
   emit({ kind: "vaultLockState", network: world.launch.network.dirName, state });
+  // A vault that locks stops mixing (dw-engine `mixing_loop`, QT-112), whichever call locked it.
+  if (state === "locked" || state === "noVault") haltAll(ctx, "vaultLocked");
 }
 
 // Grants and leases (E0-04), as dw-vault and the engine's lease table answer them.
@@ -619,8 +622,6 @@ export const HANDLERS: Handlers = {
     for (const lease of world.leases.filter(live)) setLease(ctx, { ...lease, state: { kind: "revoked", cause: "lock" }, keyExpiresInSecs: null });
     revokeGrants(world);
     setLock(ctx, "locked");
-    // A vault that locks stops mixing (dw-engine `mixing_loop`, QT-112).
-    haltAll(ctx, "vaultLocked");
     const inFlight = world.leases.reduce((n, l) => n + l.inFlight, 0);
     if (inFlight > 0) emit({ kind: "lockProgress", network, progress: { kind: "draining", inFlight, deadlineInMs: 30_000 } });
     // As dw-app's bridge: the first 16 wallets with secrets, and how many more.

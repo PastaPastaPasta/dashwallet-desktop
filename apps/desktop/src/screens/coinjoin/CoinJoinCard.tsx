@@ -1,58 +1,54 @@
 // The CoinJoin Home card (U-06 D1), Android's `MixingStatusCard`: only while mixing does something
-// or stopped without being asked to. The model is coinjoin/model.ts `coinjoinView`; the stop
-// confirmation and the button's dispatch are shared with the page.
+// or stopped without being asked to. The model is coinjoin/model.ts `coinjoinView`; the button's
+// dispatch and the stop confirmation are shared with the page.
 
 import { useId, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { navigate } from "../../app/ui";
 import { DashButton, Icon } from "../../components/basics";
-import { Sheet } from "../../components/sheet";
-import { CoinJoinText, type CoinJoinView, type ViewActionKind } from "../../coinjoin/model";
+import { QuestionSheet } from "../../components/sheet";
+import { announcement, CoinJoinText, type CoinJoinView, type ViewActionKind } from "../../coinjoin/model";
 import { useCoinJoinView, useDismissedStop, useMixingAction } from "../../coinjoin/queries";
 
-/** The stop confirmation (D8). */
-export function StopSheet({ onStop, onClose }: { onStop: () => void; onClose: () => void }) {
-  return (
-    <Sheet title={CoinJoinText.stopTitle} width="small" testId="coinjoin-stop-sheet" onClose={onClose}>
-      <p className="sheet-text">{CoinJoinText.stopMessage}</p>
-      <div className="sheet-actions">
-        <DashButton variant="tintedGray" data-autofocus onClick={onClose}>
-          Cancel
-        </DashButton>
-        <DashButton
-          variant="filledBlue"
-          data-testid="coinjoin-stop-confirm"
-          onClick={() => {
-            onClose();
-            onStop();
-          }}
-        >
-          {CoinJoinText.stop}
-        </DashButton>
-      </div>
-    </Sheet>
-  );
-}
-
-/** What the view's button does, the stop sheet it may open, and the call's busy state and
- * failure (D9). */
+/** What the view's button does, the stop confirmation it may open (D8), and the call's busy state
+ * and failure (D9). */
 export function useViewAction(walletId: string, network: NetworkInfo, retry: () => void) {
   const mixing = useMixingAction(walletId, network);
   const [confirming, setConfirming] = useState(false);
   const press = (kind: ViewActionKind) => {
-    if (kind === "start") return void mixing.run("start");
-    if (kind === "stop") return setConfirming(true);
-    if (kind === "retry") return retry();
-    navigate("settings", { settingsTab: "coinjoin" });
+    switch (kind) {
+      case "start":
+        return void mixing.run("start");
+      case "stop":
+        return setConfirming(true);
+      case "retry":
+        return retry();
+      case "settings":
+        return navigate("settings", { settingsTab: "coinjoin" });
+    }
   };
-  const sheet = confirming && <StopSheet onStop={() => void mixing.run("stop")} onClose={() => setConfirming(false)} />;
+  const sheet = confirming && (
+    <QuestionSheet
+      title={CoinJoinText.stopTitle}
+      text={CoinJoinText.stopMessage}
+      confirm={CoinJoinText.stop}
+      testId="coinjoin-stop-sheet"
+      confirmTestId="coinjoin-stop-confirm"
+      onConfirm={() => void mixing.run("stop")}
+      onClose={() => setConfirming(false)}
+    />
+  );
   return { press, sheet, busy: mixing.busy, problem: mixing.problem };
 }
 
-/** The view's percent bar, "X of Y" and status line; the card and the page show the same. */
+/** The view's percent bar, "X of Y" and status line; the card and the page show the same. The
+ * live region says only the state and a stop's reason (`announcement`). */
 export function ViewFacts({ view, testId }: { view: CoinJoinView; testId: string }) {
   return (
     <>
+      <p className="sr-only" role="status">
+        {announcement(view)}
+      </p>
       {view.percent !== null && (
         <div className="coinjoin-progress-row">
           <progress className="coinjoin-progress" max={100} value={view.percent} aria-label="Mixing progress" />
@@ -75,8 +71,8 @@ export function ViewFacts({ view, testId }: { view: CoinJoinView; testId: string
 
 export function CoinJoinCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const id = useId();
-  const { view, status, retry } = useCoinJoinView(walletId, network);
-  const { isDismissed, dismiss } = useDismissedStop(walletId, status?.state);
+  const { view, retry } = useCoinJoinView(walletId, network);
+  const { isDismissed, dismiss } = useDismissedStop(walletId);
   const act = useViewAction(walletId, network, retry);
   if (!view.onHome || (view.dismissable && isDismissed)) return null;
   const { action } = view;
@@ -84,7 +80,7 @@ export function CoinJoinCard({ walletId, network }: { walletId: string; network:
     <section className="coinjoin-card card-l1" data-testid="coinjoin-card" data-state={view.state} aria-labelledby={`${id}-title`}>
       <Icon id="coinjoinMixing" size={40} className="coinjoin-card-icon" />
       <div className="coinjoin-card-body">
-        <div role="status" className="coinjoin-card-live">
+        <div className="coinjoin-card-live">
           <h2 className="coinjoin-card-title" id={`${id}-title`}>
             {/* The card opens the CoinJoin page (D1). */}
             <button type="button" className="coinjoin-card-open" data-testid="coinjoin-card-open" onClick={() => navigate("coinJoin")}>

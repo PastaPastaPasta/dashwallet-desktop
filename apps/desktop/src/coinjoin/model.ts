@@ -73,6 +73,7 @@ export const CoinJoinText = {
   restoreTitle: "Restore the CoinJoin defaults?",
   restoreMessage: "Every value on this tab goes back to Dash Core's default. Mixing that runs keeps running.",
   saved: "Saved.",
+  notSaved: (why: string) => `The settings were not saved: ${why}`,
   // QT-042's tooltip and the panel's rows, for Session details.
   details: "Session details",
   overallProgress: "Overall progress",
@@ -230,11 +231,14 @@ export interface ViewInputs {
   masked: string | null;
 }
 
-const action = (kind: ViewActionKind, disabled = false): ViewAction => ({
-  kind,
-  disabled,
-  label: { start: CoinJoinText.start, stop: CoinJoinText.stop, retry: CoinJoinText.retry, settings: CoinJoinText.openSettings }[kind],
-});
+const ACTION_LABEL: Record<ViewActionKind, string> = {
+  start: CoinJoinText.start,
+  stop: CoinJoinText.stop,
+  retry: CoinJoinText.retry,
+  settings: CoinJoinText.openSettings,
+};
+
+const action = (kind: ViewActionKind, disabled = false): ViewAction => ({ kind, disabled, label: ACTION_LABEL[kind] });
 
 /** S1–S14: the first row that matches wins. */
 export function coinjoinView({ status, readFailed, readError, amount, masked }: ViewInputs): CoinJoinView {
@@ -261,9 +265,10 @@ export function coinjoinView({ status, readFailed, readError, amount, masked }: 
   });
   if (status.state === "stopping") return running("stopping", CoinJoinText.stopping, false, action("stop", true));
   if (status.state === "mixing") {
+    // A fully mixed mixer waits for new coins: "Not enough funds to mix." below the target, idle
+    // above it (dw-engine `auto_denominate` does not rebalance). Neither is a pause or a start.
+    if (full) return running("finished", CoinJoinText.fullyMixed, status.status.kind !== "idle");
     if (status.status.kind === "idle") return running("starting", CoinJoinText.starting, false);
-    // A fully mixed mixer waits for new coins ("Not enough funds to mix."): that is not a pause.
-    if (full) return running("finished", CoinJoinText.fullyMixed, true);
     if (WAITING.has(status.status.kind)) return running("paused", CoinJoinText.paused, true);
     return running("mixing", CoinJoinText.mixing, true);
   }
@@ -288,6 +293,19 @@ export function coinjoinView({ status, readFailed, readError, amount, masked }: 
   return { ...facts, state: "off", title: CoinJoinText.notStarted, action: action("start") };
 }
 
+/** What a screen reader hears when the view changes: the state, and why for a stop or a refusal.
+ * A running mixer's status line moves up to once a second: it is shown, not announced. */
+export function announcement(view: CoinJoinView): string {
+  const running = view.onHome && !view.dismissable;
+  return running || !view.line ? view.title : `${view.title}. ${view.line}`;
+}
+
+/** What a refused settings write says (D11): the engine's `invalid_argument` names the field. */
+export function settingsFailureText(e: unknown): string {
+  if (hasCode(e, "invalid_argument")) return CoinJoinText.notSaved(e.message);
+  return failureText(e);
+}
+
 /** What a failed Start or Stop says (D9). */
 export function actionFailureText(e: unknown, amount: (duffs: number) => string): string {
   if (hasCode(e, "coinjoin.vault_locked")) return CoinJoinText.vaultLocked;
@@ -301,8 +319,16 @@ export function actionFailureText(e: unknown, amount: (duffs: number) => string)
 }
 
 /** The lock state's line on the page (the design's "Lock and passphrase"). */
-export const lockLine = (lock: LockStateName | undefined): string | null =>
-  lock === "unlockedMixingOnly" ? CoinJoinText.mixingOnly : lock === "unlocked" ? CoinJoinText.mixingOnlyHow : null;
+export function lockLine(lock: LockStateName | undefined): string | null {
+  switch (lock) {
+    case "unlockedMixingOnly":
+      return CoinJoinText.mixingOnly;
+    case "unlocked":
+      return CoinJoinText.mixingOnlyHow;
+    default:
+      return null;
+  }
+}
 
 // Mixing levels (D2): Android's `CoinJoinMode`, as engine rounds.
 
@@ -361,8 +387,8 @@ const LABELS: Record<FormField, string> = {
   rounds: CoinJoinText.mixingRounds,
   targetAmountDash: "Target balance",
   maxSessions: CoinJoinText.parallelSessions,
-  denomsGoal: "Inputs per denomination: Target",
-  denomsHardCap: "Inputs per denomination: Maximum",
+  denomsGoal: `${CoinJoinText.inputsPerDenomination}: ${CoinJoinText.denomsTarget}`,
+  denomsHardCap: `${CoinJoinText.inputsPerDenomination}: ${CoinJoinText.denomsMaximum}`,
 };
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -383,7 +409,9 @@ export function checkSettings(
   };
   const values = {} as Record<FormField, number>;
   for (const field of Object.keys(ranges) as FormField[]) {
-    const text = form[field].trim().replaceAll(",", "");
+    // Commas only as thousands separators ("2,500"; not "2,5,00").
+    const typed = form[field].trim();
+    const text = /^\d{1,3}(,\d{3})+$/.test(typed) ? typed.replaceAll(",", "") : typed;
     const [min, max] = ranges[field];
     const n = /^\d+$/.test(text) ? Number(text) : NaN;
     if (!Number.isSafeInteger(n) || n < min || n > max)
