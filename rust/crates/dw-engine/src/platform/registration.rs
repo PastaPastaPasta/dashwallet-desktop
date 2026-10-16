@@ -85,6 +85,11 @@ pub struct RegistrationQuote {
     pub total_duffs: u64,
     /// Credits the identity keeps after the name and profile.
     pub remaining_credits: u64,
+    /// What the funding can spend now: the funding account's auto-selectable
+    /// coins, the set `start_registration` checks `total_duffs` against
+    /// (`registration.funding_insufficient`). 0 for funding that is not the
+    /// Core balance.
+    pub available_duffs: u64,
     /// The grant to ask for: `max_duffs` covers `total_duffs`, and
     /// `max_credits` the identity creation, name and profile.
     pub grant: GrantRequest,
@@ -447,6 +452,7 @@ pub(crate) async fn quote<L: RegistrationLib>(
         fee_duffs: plan.fee_duffs,
         total_duffs,
         remaining_credits: plan.credits_held.saturating_sub(plan.credits),
+        available_duffs: plan.available_duffs,
         grant: GrantRequest {
             max_duffs: total_duffs,
             max_credits: plan.credits,

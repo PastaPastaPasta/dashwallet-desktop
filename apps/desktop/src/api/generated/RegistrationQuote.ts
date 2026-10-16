@@ -15,6 +15,11 @@ totalDuffs: number,
  */
 remainingCredits: string,
 /**
+ * What the funding can spend now (the set the start checks the total
+ * against); 0 for funding that is not the Core balance.
+ */
+availableDuffs: number,
+/**
  * The grant to ask for.
  */
 grant: GrantRequest, };

@@ -1292,6 +1292,13 @@ fn the_funding_cap_and_balance_are_checked_before_a_row_exists() {
         .unwrap_err();
     assert_eq!(err.code(), "registration.funding_insufficient");
     assert!(f.rows().is_empty());
+    // The quote reports the same spendable set the start checks (DP1-09 D5).
+    let short = f
+        .engine
+        .block_on(registration::quote(&*lib, &request(PLAIN)))
+        .unwrap();
+    assert_eq!(short.available_duffs, quote.total_duffs - 1);
+    assert!(short.available_duffs < short.total_duffs);
     // An avatar candidate waits for DP4-02.
     let mut req = request(PLAIN);
     req.initial_profile = Some(InitialProfile {

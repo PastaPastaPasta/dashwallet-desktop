@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 25
+Contract-Version: 26
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -208,7 +208,7 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. | `RegistrationError` |
+| `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, what the funding can spend now (`available_duffs`, item 52), and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. | `RegistrationError` |
 | `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. | `RegistrationError` |
 | `start_registration_past_unknown_funding(req, grant, past)` | async | `start_registration` past earlier registrations whose funding is unknown (DEC-197, "In progress" below). `past` names each blocker the user confirmed, as `registration.in_progress` names it. Call it only after the user confirmed the wedge copy. A named blocker passes only if every funding step it waits on is wedged; anything else still returns `registration.in_progress`. SPV must be synced (`registration.not_synced`), and each passed step's funding must have been released at least an hour ago (`registration.funding_unknown_recent { draft, wait_secs }`). A malformed name is `invalid_argument`; a well-formed one that blocks nothing is ignored. | `RegistrationError` |
 | `registrations()` | async | Every `dp_registration` row of the wallet, with what each waits for (§5), and, read-only, every outstanding funding step whose row is gone (draft `registration/<n>/funding`; §2.2 "The registration ledger"). | `RegistrationError` |
@@ -548,7 +548,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 401696e4cfed597b76411407d5ed5b4855d201fcfca9400a8efef3e73c241678 version: 25 -->
+<!-- surface-sha256: 1abdd32de8c8d7ac71b77c5f3872f82b1cf76ad0d39fdb6e3c54d63bab7026da version: 26 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1428,6 +1428,7 @@ pub struct RegistrationQuote {
     pub fee_duffs: u64,
     pub total_duffs: u64,
     pub remaining_credits: u64,
+    pub available_duffs: u64,
     pub grant: GrantRequest,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2768,3 +2769,12 @@ renames or reshapes them takes the next version bump:
     - Set only while `main_name` is `None`: a name is evidence on its own. `names_updating` (the older snapshot) is
       unchanged and independent. `my_user_link` is `platform.unavailable` while it is set.
     - **`Platform{Names}`** is sent when an identity's check changes, as an answer writes no changeset.
+
+**From DP1-09** (version 26):
+
+52. **The quote's available amount (DP1-09 D5, version 26).** `RegistrationQuote` gains `available_duffs`: for
+    `CoreBalance` funding, the funding account's auto-selectable coins (`spendable_of`, the coin snapshot's set),
+    which `start_registration` compares with `total_duffs` before it writes a row
+    (`registration.funding_insufficient{needed, available}` carries the same figure); 0 for other funding. Read when
+    quoted, so it may differ at the start; the start's check decides. Hosts show "You need at least N" only when it is
+    below `total_duffs` (DP1-08 D18's follow-up). The quote's other fields are unchanged.

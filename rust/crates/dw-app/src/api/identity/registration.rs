@@ -124,6 +124,9 @@ pub struct RegistrationQuote {
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub remaining_credits: u64,
+    /// What the funding can spend now (the set the start checks the total
+    /// against); 0 for funding that is not the Core balance.
+    pub available_duffs: u64,
     /// The grant to ask for.
     pub grant: GrantRequest,
 }
@@ -136,6 +139,7 @@ impl From<engine::RegistrationQuote> for RegistrationQuote {
             fee_duffs,
             total_duffs,
             remaining_credits,
+            available_duffs,
             grant,
         } = q;
         RegistrationQuote {
@@ -144,6 +148,7 @@ impl From<engine::RegistrationQuote> for RegistrationQuote {
             fee_duffs,
             total_duffs,
             remaining_credits,
+            available_duffs,
             grant: grant.into(),
         }
     }
