@@ -127,6 +127,8 @@ pub(crate) struct PlatformRuntime {
     /// The timers that signal a relied-on proof of no identity's expiry
     /// (BL-153 D21, D23).
     pub(crate) absence_expiries: super::banner::AbsenceExpiries,
+    /// The money-move trust gate's waits (DP3-04, `money_gate.rs`).
+    pub(crate) money_gate: super::money_gate::MoneyGate,
     /// Tests: holds the next bring-up between building its keys and
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
@@ -363,6 +365,7 @@ impl PlatformRuntime {
             balances: Default::default(),
             payments: Default::default(),
             absence_expiries: Default::default(),
+            money_gate: Default::default(),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
         }

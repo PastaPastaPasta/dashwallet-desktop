@@ -1368,3 +1368,444 @@ fn t2_testnet_pays_a_contact() {
     eprintln!("T2 done: {sent}");
     engine.block_on(engine.shutdown()).unwrap();
 }
+
+// DP3-04: the money-move trust gate (`platform/money_gate.rs`) in
+// `prepare`, with the fallback latch set and Platform faked.
+
+use crate::platform::money_gate_tests::{FakePlatform, Proof, gate_session, show_username};
+use crate::platform::trust::TrustMode;
+
+impl Fixture {
+    /// The latch set, the provider in `mode`, and a Platform that holds
+    /// Bob's two requests as the library does, its proofs `proof`.
+    fn gated(&self, mode: TrustMode, proof: Proof) -> Arc<FakePlatform> {
+        let platform = FakePlatform::new(proof);
+        platform.answer_requests(vec![
+            request(ME, BOB, 1_000_000),
+            request(BOB, ME, 2_000_000),
+        ]);
+        gate_session(&self.session, mode, Arc::clone(&platform));
+        platform
+    }
+
+    /// Bob's request to us replaced, as a sync pass leaves a rotation.
+    fn replace_bobs_request(&self, created_at: u64) {
+        let manager = self.session.manager().unwrap();
+        let wallet = self.wallet;
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let (_, info) = wm.get_wallet_mut_and_info_mut(&wallet.0).unwrap();
+            let me = (info.identity_manager)
+                .managed_identity_mut(&id(ME))
+                .unwrap();
+            let mut c = EstablishedContact::new(
+                id(BOB),
+                request(ME, BOB, 1_000_000),
+                request(BOB, ME, created_at),
+            );
+            c.external_account_reference = Some(c.incoming_request.account_reference);
+            me.apply_established_contact(c);
+        });
+    }
+
+    fn bob_unverified(&self) -> bool {
+        (self.session.dashpay(self.wallet))
+            .contact(b58(ME), b58(BOB))
+            .unwrap()
+            .unwrap()
+            .summary
+            .unverified
+    }
+}
+
+fn platform_error<T: std::fmt::Debug>(r: Result<T, EngineError>) -> &'static str {
+    match contact_error(r) {
+        ContactError::Platform(e) => e.code(),
+        other => panic!("expected a Platform refusal, got {other:?}"),
+    }
+}
+
+/// Rule 5: an unverified payee that does not verify in time moves nothing:
+/// no grant redeemed, no address reserved, nothing broadcast. Once it
+/// verifies, the same grant pays it, and the records it wrote let the next
+/// payment through without a fetch.
+#[test]
+fn an_unverified_payee_moves_nothing() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Unverified);
+    let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Accept);
+    let grant = f.spend(AMOUNT + FEE_ROOM);
+    assert_eq!(
+        platform_error(f.engine.block_on(d.prepare(grant.clone()))),
+        "platform.context_unavailable"
+    );
+    assert!(platform.fetches() > 2, "it re-fetched while it waited");
+    assert!(f.reserved(BOB).is_none(), "no address taken");
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 0);
+
+    platform.set_proof(Proof::Verified);
+    let p = f
+        .engine
+        .block_on(d.prepare(grant))
+        .expect("the grant was kept");
+    assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
+    let spent = p.summary().inputs[0].outpoint;
+    f.engine.block_on(d.broadcast(p)).unwrap();
+    let fetched = platform.fetches();
+    f.see_spent(spent);
+    f.credit(2, COIN);
+    let again = f.draft(BOB);
+    Seam::install(&again, Net::Accept);
+    f.engine
+        .block_on(again.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    assert_eq!(platform.fetches(), fetched, "recorded: no fetch");
+}
+
+/// Rule 4 under the gate: a re-fetch SPV and the trusted service disagree
+/// on refuses the payment, in the enforcing and in the degraded mode.
+#[test]
+fn a_mismatched_payee_moves_nothing_in_either_mode() {
+    for mode in [TrustMode::Enforcing, TrustMode::Degraded] {
+        let f = fixture(false);
+        f.gated(mode, Proof::Mismatch);
+        let d = f.draft(BOB);
+        let seam = Seam::install(&d, Net::Accept);
+        assert_eq!(
+            platform_error(f.engine.block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))),
+            "platform.trust_mismatch",
+            "{mode:?}"
+        );
+        assert!(f.reserved(BOB).is_none());
+        assert_eq!(seam.entered.load(Ordering::SeqCst), 0);
+    }
+}
+
+/// The degraded mode suspends rule 5: an unverified payee is paid on the
+/// trusted provider's word, and so is one with the trusted-only toggle.
+#[test]
+fn the_degraded_mode_and_the_toggle_pay_an_unverified_payee() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
+    let d = f.draft(BOB);
+    let p = (f.engine)
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
+    assert_eq!(platform.fetches(), 2, "one probe of each request");
+    assert!(f.bob_unverified());
+
+    f.engine.block_on(d.abandon(p)).unwrap();
+    f.session.trust.set_mode(TrustMode::Enforcing);
+    f.session.trust.set_trusted_only(true);
+    let p = (f.engine)
+        .block_on(f.draft(BOB).prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
+    assert_eq!(platform.fetches(), 2, "the toggle fetches nothing");
+}
+
+/// D1: what the gate waits on is what the contacts row shows unverified;
+/// the gate's records clear the row's flag.
+#[test]
+fn the_gate_and_the_contacts_row_agree() {
+    let f = fixture(false);
+    assert!(!f.bob_unverified(), "no latch");
+    f.gated(TrustMode::Enforcing, Proof::Verified);
+    assert!(f.bob_unverified());
+    f.engine
+        .block_on(f.draft(BOB).prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    assert!(!f.bob_unverified(), "the gate recorded both requests");
+    f.replace_bobs_request(2_500_000);
+    assert!(f.bob_unverified(), "a replacement is unverified again");
+}
+
+/// D1: a username the contacts row shows is part of the payee: until
+/// Platform's proof-verified domain gives that spelling to the contact, the
+/// payment waits.
+#[test]
+fn a_shown_username_must_verify_too() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    show_username(&f.session, id(BOB), "Bob");
+    let d = f.draft(BOB);
+    assert_eq!(
+        platform_error(f.engine.block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))),
+        "platform.context_unavailable",
+        "the name is not on Platform"
+    );
+    assert!(
+        f.bob_unverified(),
+        "the requests verified, the name did not"
+    );
+    platform.answer_domain("Bob", id(BOB));
+    f.engine
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    assert!(!f.bob_unverified());
+}
+
+/// Race: a payment lock written while the gate waits (another payment to
+/// the contact ended unknown) refuses the payment once the wait ends.
+#[test]
+fn a_payment_lock_during_the_gate_wait_refuses() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Unverified);
+    let d = f.draft(BOB);
+    let prepare = f.session.rt.spawn({
+        let (d, grant) = (Arc::clone(&d), f.spend(AMOUNT + FEE_ROOM));
+        async move { d.prepare(grant).await.map(|_| ()) }
+    });
+    wait_until(|| platform.fetches() > 0);
+    let txid = Txid::from_byte_array([9; 32]);
+    (f.engine).block_on(
+        f.session
+            .lock_payment(f.wallet, (id(ME), id(BOB)), txid, vec![]),
+    );
+    platform.set_proof(Proof::Verified);
+    let refused = f.engine.block_on(prepare).unwrap();
+    assert!(matches!(
+        contact_error(refused),
+        ContactError::PaymentLocked { txid: t } if t == txid.to_string()
+    ));
+    assert!(f.reserved(BOB).is_none());
+}
+
+/// Race: a vault Lock while the gate waits ends the wait at once; nothing
+/// is taken, and the payment is `send.vault_locked`.
+#[test]
+fn a_lock_during_the_gate_wait_moves_nothing() {
+    let f = fixture(true);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Unverified);
+    let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Accept);
+    let prepare = f.session.rt.spawn({
+        let (d, grant) = (Arc::clone(&d), f.spend(AMOUNT + FEE_ROOM));
+        async move { d.prepare(grant).await.map(|_| ()) }
+    });
+    wait_until(|| platform.fetches() > 0);
+    let started = std::time::Instant::now();
+    f.session.lock_vault_sync().unwrap();
+    let refused = f.engine.block_on(prepare).unwrap();
+    assert_eq!(send_failure(refused), SendFailure::VaultLocked);
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert!(f.reserved(BOB).is_none());
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 0);
+}
+
+/// §4 step 5: the payee replaced by unverified content after the gate
+/// passed and before the reservation: the payment is refused, and the
+/// address taken from it is not kept for the next payment.
+#[test]
+fn a_payee_replaced_before_the_reservation_is_refused() {
+    let f = fixture(false);
+    f.gated(TrustMode::Enforcing, Proof::Verified);
+    let pause = Arc::new(crate::coins::TestPause::default());
+    f.session
+        .platform
+        .money_gate
+        .pause_after(Arc::clone(&pause));
+    let d = f.draft(BOB);
+    let prepare = f.session.rt.spawn({
+        let (d, grant) = (Arc::clone(&d), f.spend(AMOUNT + FEE_ROOM));
+        async move { d.prepare(grant).await.map(|_| ()) }
+    });
+    wait_until(|| pause.reached.load(Ordering::SeqCst));
+    f.replace_bobs_request(2_500_000);
+    pause.release.notify_one();
+    assert_eq!(
+        platform_error(f.engine.block_on(prepare).unwrap()),
+        "platform.context_unavailable"
+    );
+    assert!(f.reserved(BOB).is_none(), "the address is not kept");
+}
+
+/// "Accept and pay" under the gate: the request the accept wrote is
+/// verified before the payment moves.
+#[test]
+fn accept_and_pay_waits_for_the_new_request() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    f.establish(CAROL, false);
+    let d = f.draft(CAROL);
+    assert_eq!(
+        platform_error(f.engine.block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))),
+        "platform.context_unavailable",
+        "Platform has not got Carol's requests"
+    );
+    assert!(f.reserved(CAROL).is_none());
+    platform.answer_requests(vec![
+        request(ME, CAROL, 1_000_000),
+        request(CAROL, ME, 2_000_000),
+    ]);
+    let p = (f.engine)
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    assert_eq!(paid(&p), f.contact_address(CAROL, 0).to_string());
+}
+
+/// T2 for DP3-04 on the testnet fixture (`DW_DP304_TESTNET_FIXTURE`, wallet
+/// A with its contact B), read-mostly: nothing is broadcast. A restored on
+/// a fresh data root; once SPV's masternode state has synced, the
+/// money-move gate runs against Platform's real proofs: in the degraded
+/// mode (the default), then in `Enforcing`, where it must verify B's
+/// requests (and name) through SPV-verified quorum keys and record them.
+/// Then a full `prepare` of A→B under `Enforcing` passes the gate and is
+/// abandoned.
+#[test]
+#[ignore = "public testnet; set DW_DP304_TESTNET_FIXTURE"]
+fn t2_testnet_the_money_gate_verifies_a_contact() {
+    use std::time::{Duration, Instant};
+
+    use crate::platform::money_gate::Subject;
+
+    const PAY: u64 = 100_000;
+    let fixture = std::path::PathBuf::from(
+        std::env::var("DW_DP304_TESTNET_FIXTURE").expect("DW_DP304_TESTNET_FIXTURE"),
+    );
+    let meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.join("fixture.json")).unwrap()).unwrap();
+    let birth = meta["funding"]["birth_height_hint"].as_u64().unwrap() as u32;
+    let identity = |w: &str| meta[w]["identity_id"].as_str().unwrap().to_owned();
+    let (a_id, b_id) = (identity("A"), identity("B"));
+    let pair = (
+        Identifier::from_string(&a_id, Encoding::Base58).unwrap(),
+        Identifier::from_string(&b_id, Encoding::Base58).unwrap(),
+    );
+
+    let dir = dw_testutil::private_tempdir();
+    let engine = Engine::new(
+        EngineConfig {
+            data_root: dir.path().join("data"),
+            worker_threads: Some(4),
+            vault: VaultConfig {
+                kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                os_store: Arc::new(MemoryOsStore::new()),
+                ..VaultConfig::default()
+            },
+        },
+        Arc::new(NullSink),
+    )
+    .unwrap();
+    let s = engine
+        .block_on(engine.open_network(DashNetwork::Testnet, crate::SessionOptions::default()))
+        .unwrap();
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let phrase = std::fs::read_to_string(fixture.join("A.mnemonic")).unwrap();
+    let a = engine
+        .block_on(s.import_wallet(
+            Zeroizing::new(phrase.trim().as_bytes().to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(birth),
+                ..ImportOptions::default()
+            },
+        ))
+        .unwrap();
+    drop(phrase);
+    let t0 = Instant::now();
+    engine.block_on(s.start_spv()).unwrap();
+    let wait = |what: &str, secs: u64, done: &mut dyn FnMut() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        eprintln!("{what} after {:?}", t0.elapsed());
+    };
+    wait("A at the tip, masternodes synced", 3600, &mut || {
+        let snap = s.sync_snapshot().unwrap();
+        s.trust.masternodes_synced()
+            && snap.caught_up
+            && snap
+                .tip_height
+                .is_some_and(|tip| s.wallet_scan_height(&a).is_some_and(|h| h >= tip))
+    });
+    wait("B as A's contact, its channel ready", 900, &mut || {
+        let detail = s.dashpay(a).contact(a_id.clone(), b_id.clone());
+        detail.ok().flatten().is_some_and(|d| {
+            d.summary.relation == crate::platform::Relation::Contact
+                && d.summary.channel == crate::platform::ChannelState::Ready
+        })
+    });
+    let unverified = || {
+        (s.dashpay(a).contact(a_id.clone(), b_id.clone()))
+            .unwrap()
+            .unwrap()
+            .summary
+            .unverified
+    };
+    let latched = engine
+        .block_on(s.appdb_op(|db| {
+            db.setting(
+                dw_appdb::GLOBAL_SCOPE,
+                crate::platform::provenance::TRUST_FALLBACK_USED_KEY,
+            )
+        }))
+        .unwrap()
+        .is_some();
+    eprintln!(
+        "latch set: {latched}; B unverified before the gate: {}",
+        unverified()
+    );
+
+    let gate = |what: &str| {
+        let started = Instant::now();
+        let gated = engine.block_on(s.on_runtime({
+            let s = Arc::clone(&s);
+            async move { Ok(s.money_gate(Subject::Payee(a, pair)).await) }
+        }));
+        eprintln!(
+            "{what}: {gated:?} in {:?}; B unverified after: {}",
+            started.elapsed(),
+            unverified()
+        );
+        gated.unwrap()
+    };
+    gate("degraded gate").expect("the degraded gate passes");
+    s.trust
+        .set_mode(crate::platform::trust::TrustMode::Enforcing);
+    assert_eq!(s.trust.rule_5(), crate::platform::trust::Rule5::Enforce);
+    gate("enforcing gate").expect("B verifies against SPV");
+    assert!(!unverified(), "B's data is on record as SPV-verified");
+    let identity_gate = engine.block_on(s.on_runtime({
+        let s = Arc::clone(&s);
+        async move { Ok(s.money_gate(Subject::Identity(a, pair.0)).await) }
+    }));
+    eprintln!("enforcing gate on A's identity: {identity_gate:?}");
+
+    let draft = s.new_tx_draft(a).unwrap();
+    draft
+        .set_contact_recipient(ContactRecipient {
+            identity: a_id.clone(),
+            contact: b_id.clone(),
+            amount: PAY,
+            subtract_fee: false,
+            note: Some("DP3-04 T2 (never broadcast)".into()),
+        })
+        .unwrap();
+    let estimate = engine.block_on(draft.estimate()).unwrap();
+    let grant = (s.vault())
+        .authorize(
+            GrantPurpose::Spend {
+                max_duffs: PAY + estimate.fee,
+            },
+            Some(&a.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    let prepared = engine.block_on(draft.prepare(grant)).unwrap();
+    eprintln!(
+        "enforcing prepare passed the gate: pays {} (txid {}, never broadcast)",
+        paid(&prepared),
+        prepared.summary().txid
+    );
+    engine.block_on(draft.abandon(prepared)).unwrap();
+    engine
+        .block_on(engine.close_network(DashNetwork::Testnet))
+        .ok();
+}

@@ -23,6 +23,7 @@ use super::{
 };
 use crate::platform::contacts_model::Payee;
 use crate::platform::lease::Lease;
+use crate::platform::money_gate::{Refusal, Subject};
 use crate::platform::payment_locks::{ClaimRefused, InFlight, Pair, pair_of};
 use crate::platform::signers::LockedContactCrypto;
 use crate::platform::{
@@ -49,6 +50,15 @@ fn placeholder(network: dashcore::Network) -> Address {
         network,
         Payload::PubkeyHash(PubkeyHash::from_byte_array([0; 20])),
     )
+}
+
+/// A refusal of the money-move gate (DP3-04 §6): a Lock during its wait
+/// is the vault's, the others the contact's Platform refusal.
+fn gate_refusal(refusal: Refusal) -> EngineError {
+    match refusal {
+        Refusal::Locked => SendFailure::VaultLocked.into(),
+        refusal => ContactError::Platform(refusal.platform()).into(),
+    }
 }
 
 /// Refuses a payment to a payee its relation or channel does not allow
@@ -98,7 +108,8 @@ impl TxDraft {
 
     /// `prepare` of a contact payment (D4–D7). Every refusal before the
     /// reservation leaves the contact's addresses alone. The relation is
-    /// read live; the lock is checked by `resolve`.
+    /// read live; the lock is checked before the trust gate's wait and
+    /// again by `resolve` (DP3-04 §4).
     pub(super) async fn prepare_contact(
         self: &Arc<Self>,
         grant_id: String,
@@ -110,6 +121,13 @@ impl TxDraft {
             return Err(SendFailure::WatchOnly.into());
         }
         check_payee(session.payee_state_live(wallet_id, &pair).await?, false)?;
+        session.check_payment_lock(wallet_id, &pair, None)?;
+        // Rule 5 (DP3-04): before anything is taken, so a refusal keeps the
+        // grant and the coin fence is not held across the wait.
+        let payee = Subject::Payee(wallet_id, pair);
+        session.money_gate(payee).await.map_err(gate_refusal)?;
+        #[cfg(test)]
+        session.platform.money_gate.after_gate().await;
         let fence = session.coin_fence(wallet_id).await?;
         let given = (session.lease_for(&wallet_id, &grant_id))
             .transpose()
@@ -166,7 +184,14 @@ impl TxDraft {
             charge: Some(charge),
         };
         // Nothing refused so far took an address; from here one is taken.
-        r.recipients[0].address = self.payout_address(&wallet, pair, crypto).await?;
+        let address = self.payout_address(&wallet, pair, crypto).await?;
+        // The payee may have changed since the gate (DP3-04 §4 step 5): an
+        // address taken from content that did not verify is not kept.
+        if let Err(refusal) = session.money_gate_now(payee).await {
+            (session.platform.payments).drop_reserved(wallet_id, pair, &address);
+            return Err(gate_refusal(refusal));
+        }
+        r.recipients[0].address = address;
         self.sign_and_reserve(
             r,
             wallet,

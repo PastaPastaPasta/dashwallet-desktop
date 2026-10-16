@@ -89,6 +89,15 @@ impl PaymentLocks {
     pub(crate) fn keep(&self, id: WalletId, pair: Pair, address: Address) {
         guard(&self.reserved).entry((id, pair)).or_insert(address);
     }
+
+    /// Drops `address` as the pair's reserved one (DP3-04: it was taken
+    /// from payee data that did not verify), so no later `prepare` pays it.
+    pub(crate) fn drop_reserved(&self, id: WalletId, pair: Pair, address: &Address) {
+        let mut reserved = guard(&self.reserved);
+        if reserved.get(&(id, pair)) == Some(address) {
+            reserved.remove(&(id, pair));
+        }
+    }
 }
 
 /// A pair's first broadcast under way (D20): no other payment to the pair

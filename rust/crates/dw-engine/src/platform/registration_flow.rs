@@ -2751,7 +2751,9 @@ impl RegistrationLib for PwLib {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .caught_up();
-        if !synced {
+        // DP3-04: no funding while Platform writes wait for masternode sync
+        // (`Enforcing`); SPV caught up is another reading (§3).
+        if !synced || self.session.trust.writes_wait() {
             return Some(RegistrationWait::Sync);
         }
         match self.session.dashpay_startup(&self.wallet_id) {

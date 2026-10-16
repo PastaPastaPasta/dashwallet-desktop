@@ -1873,3 +1873,118 @@ fn every_top_up_call_waits_for_the_journal() {
         .block_on(topup::pending(&f.session, f.wallet, &*lib));
     assert!(matches!(listed, Err(PlatformError::Unavailable)));
 }
+
+// DP3-04: the money-move gate on a top-up's identity, and the funding hold
+// while Platform writes wait.
+
+use super::money_gate_tests::{FakePlatform, Proof, gate_session};
+use super::trust::TrustMode;
+
+impl Fixture {
+    /// The wallet's library holds identity [`identity`] (no keys).
+    fn hold_identity(&self) {
+        let (session, wallet) = (Arc::clone(&self.session), self.wallet);
+        let inner = Arc::clone(&session);
+        self.engine
+            .block_on(session.on_runtime(async move {
+                let w = inner.wallet(&wallet).await?;
+                (w.state_mut().await.identity_manager)
+                    .add_identity(
+                        dpp::identity::Identity::V0(dpp::identity::v0::IdentityV0 {
+                            id: identity(),
+                            public_keys: Default::default(),
+                            balance: 0,
+                            revision: 0,
+                        }),
+                        0,
+                        wallet.0,
+                        w.persister(),
+                    )
+                    .unwrap();
+                Ok(())
+            }))
+            .unwrap();
+    }
+}
+
+/// Rule 5: a top-up of an identity that is unverified (or that the
+/// library does not hold) funds nothing and keeps its grant; once Platform
+/// verifies the identity, the same grant funds and applies it.
+#[test]
+fn an_unverified_identity_is_not_topped_up() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let platform = FakePlatform::new(Proof::Verified);
+    gate_session(&f.session, TrustMode::Enforcing, Arc::clone(&platform));
+    let grant = f.grant(DUFFS + f.fee_bound());
+    let refused = f.top_up_with(&lib, DUFFS, &grant).unwrap_err();
+    assert_eq!(refused.code(), "platform.context_unavailable", "not held");
+    assert_eq!(platform.fetches(), 0);
+
+    f.hold_identity();
+    let refused = f.top_up_with(&lib, DUFFS, &grant).unwrap_err();
+    assert_eq!(
+        refused.code(),
+        "platform.context_unavailable",
+        "not on Platform"
+    );
+    assert!(platform.fetches() > 0);
+    platform.set_proof(Proof::Mismatch);
+    let refused = f.top_up_with(&lib, DUFFS, &grant).unwrap_err();
+    assert_eq!(refused.code(), "platform.trust_mismatch");
+    assert_eq!(lib.counts(), (0, 0), "nothing funded");
+
+    platform.set_proof(Proof::Verified);
+    platform.answer_identity(identity(), BTreeMap::new());
+    let out = f.top_up_with(&lib, DUFFS, &grant).unwrap();
+    assert_eq!(
+        out.state,
+        applied(Some(credited(DUFFS)), START_BALANCE + credited(DUFFS))
+    );
+    assert_eq!(lib.counts(), (1, 1));
+}
+
+/// The degraded mode tops up an unverified identity (rule 5 suspended).
+#[test]
+fn the_degraded_mode_tops_up_an_unverified_identity() {
+    let f = fixture(false);
+    let lib = f.fake();
+    f.hold_identity();
+    gate_session(
+        &f.session,
+        TrustMode::Degraded,
+        FakePlatform::new(Proof::Unverified),
+    );
+    f.top_up(&lib, DUFFS).unwrap();
+    assert_eq!(lib.counts(), (1, 1));
+}
+
+/// §3: a registration's or top-up's funding is held while Platform writes
+/// wait for masternode sync (`Enforcing`), even when SPV's own reading is
+/// caught up; masternode sync releases it.
+#[test]
+fn the_funding_hold_waits_for_platform_writes() {
+    use dash_spv::sync::{BlockHeadersProgress, SyncProgress, SyncState};
+
+    let f = fixture(false);
+    let session = Arc::clone(&f.session);
+    let mut headers = BlockHeadersProgress::default();
+    headers.update_target_height(1000);
+    headers.update_tip_height(1000);
+    headers.set_state(SyncState::Synced);
+    let mut progress = SyncProgress::default();
+    progress.update_headers(headers);
+    {
+        let mut tracker = session.hub.tracker.lock().unwrap();
+        tracker.set_running(true);
+        tracker.on_progress(&progress);
+        assert!(tracker.caught_up(), "SPV's own reading is caught up");
+    }
+    let (_, lib) = f.engine.block_on(PwLib::open(&session, f.wallet)).unwrap();
+    let hold = || TopUpLib::funding_hold(&lib);
+    assert_ne!(hold(), Some(RegistrationWait::Sync), "degraded");
+    session.trust.set_mode(TrustMode::Enforcing);
+    assert_eq!(hold(), Some(RegistrationWait::Sync));
+    session.trust.note_masternodes_synced();
+    assert_ne!(hold(), Some(RegistrationWait::Sync));
+}
