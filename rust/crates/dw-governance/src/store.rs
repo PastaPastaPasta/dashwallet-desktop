@@ -1037,7 +1037,9 @@ mod tests {
         let data = format!(
             r#"{{"event_block_height":{height},"payment_addresses":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amounts":"1","proposal_hashes":"{HASH}","type":2}}"#
         );
-        GovernanceObject::new_proposal(1, NOW, data.into_bytes())
+        let mut t = GovernanceObject::new_proposal(1, NOW, data.into_bytes());
+        t.object_type = crate::object::OBJECT_TYPE_TRIGGER;
+        t
     }
 
     const HASH: &str = "4f6e2b3e7d8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b";

@@ -451,7 +451,9 @@ fn trigger() -> GovernanceObject {
         r#"{{"event_block_height":100,"payment_addresses":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amounts":"1","proposal_hashes":"{}","type":2}}"#,
         "ab".repeat(32)
     );
-    GovernanceObject::new_proposal(1, unix_now(), data.into_bytes())
+    let mut t = GovernanceObject::new_proposal(1, unix_now(), data.into_bytes());
+    t.object_type = crate::object::OBJECT_TYPE_TRIGGER;
+    t
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

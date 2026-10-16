@@ -5,8 +5,9 @@
 //! outpoints). Those are replaced by the two-peer rule of the store (MG-02
 //! D3, D4).
 //!
-//! - The type is the data's `type` (`CGovernanceObject::LoadData`), not the
-//!   wire field (D5).
+//! - The wire type picks the checks, as `IsValidLocally` does (a received
+//!   object never runs `LoadData`), and the data's `type` must equal it:
+//!   `ValidateProposal` wants 1, the `CSuperblock` constructor 2 (D5).
 //! - Proposals: `governance::ValidateProposal(hex, fCheckExpiration=false,
 //!   fAllowScript=true)`, `governance/object.cpp`.
 //! - Triggers: the `CSuperblock` constructor and `ParsePaymentSchedule`
@@ -51,10 +52,9 @@ pub enum ValidObject {
 /// Why an object was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectRejection {
-    /// Not JSON UniValue reads into an object, or no integer `type` (Core
-    /// `fUnparsable`).
+    /// Not JSON UniValue reads into an object.
     Unparsable,
-    /// A `type` other than proposal or trigger.
+    /// A wire type other than proposal or trigger.
     UnknownType,
     /// A rule of `ValidateProposal`; the field it failed on.
     InvalidProposal(&'static str),
@@ -254,13 +254,27 @@ pub fn check_object(
     network: Network,
     now: i64,
 ) -> Result<ValidObject, ObjectRejection> {
-    let (o, top_level) = json_object(&object.data).ok_or(ObjectRejection::Unparsable)?;
-    match o.int::<i32>("type").ok_or(ObjectRejection::Unparsable)? {
-        OBJECT_TYPE_PROPOSAL if !top_level => Err(ObjectRejection::InvalidProposal("json")),
+    let typed = |kind: i32| {
+        let (o, top_level) = json_object(&object.data).ok_or(ObjectRejection::Unparsable)?;
+        let data_kind = o.int::<i32>("type");
+        Ok::<_, ObjectRejection>((o, top_level, data_kind == Some(kind)))
+    };
+    match object.object_type {
         OBJECT_TYPE_PROPOSAL => {
+            let (o, top_level, typed) = typed(OBJECT_TYPE_PROPOSAL)?;
+            if !top_level {
+                return Err(ObjectRejection::InvalidProposal("json"));
+            }
+            if !typed {
+                return Err(ObjectRejection::InvalidProposal("type"));
+            }
             check_proposal(&object.data, &o, network).map(ValidObject::Proposal)
         }
         OBJECT_TYPE_TRIGGER => {
+            let (o, _, typed) = typed(OBJECT_TYPE_TRIGGER)?;
+            if !typed {
+                return Err(ObjectRejection::InvalidTrigger("type"));
+            }
             let trigger = check_trigger(&o, network)?;
             let p = governance_params(network);
             let cycle_secs = i64::from(p.superblock_cycle) * i64::from(p.target_spacing_secs);
@@ -394,8 +408,13 @@ mod tests {
     const ADDR: &str = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
     const HASH: &str = "4f6e2b3e7d8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b";
 
+    /// An object whose wire type is the data's, as on every valid object.
     fn object(data: &str, time: i64) -> GovernanceObject {
-        GovernanceObject::new_proposal(1, time, data.as_bytes().to_vec())
+        let mut o = GovernanceObject::new_proposal(1, time, data.as_bytes().to_vec());
+        if data.contains(r#""type":2"#) {
+            o.object_type = OBJECT_TYPE_TRIGGER;
+        }
+        o
     }
 
     fn proposal(fields: &str) -> String {
@@ -462,16 +481,34 @@ mod tests {
         bad("http://x.y", "http://[x", "url");
         bad("http://x.y", "http:// x", "url");
 
-        // Type comes from the data; a proposal labelled a trigger on the
-        // wire is still checked as a proposal.
+        // The wire type picks the checks and the data's type must equal it
+        // (D5): a proposal labelled a trigger fails as a trigger, and data
+        // of any other type fails as a proposal.
         let mut wire = object(&proposal(GOOD), 1_000);
         wire.object_type = OBJECT_TYPE_TRIGGER;
-        assert!(matches!(
+        assert_eq!(
             check_object(&wire, Network::Testnet, 1_000),
-            Ok(ValidObject::Proposal(_))
-        ));
-        assert_eq!(check(r#"{"type":"1"}"#), Err(ObjectRejection::Unparsable));
-        assert_eq!(check(r#"{"type":3}"#), Err(ObjectRejection::UnknownType));
+            Err(ObjectRejection::InvalidTrigger("type"))
+        );
+        let mut as_proposal = object(&trigger("4224", ADDR, "1", HASH), 1_000);
+        as_proposal.object_type = OBJECT_TYPE_PROPOSAL;
+        assert_eq!(
+            check_object(&as_proposal, Network::Testnet, 1_000),
+            Err(ObjectRejection::InvalidProposal("type"))
+        );
+        for data in [r#"{"type":"1"}"#, r#"{"type":3}"#, "{}"] {
+            assert_eq!(
+                check(data),
+                Err(ObjectRejection::InvalidProposal("type")),
+                "{data}"
+            );
+        }
+        let mut unknown = object(&proposal(GOOD), 1_000);
+        unknown.object_type = 3;
+        assert_eq!(
+            check_object(&unknown, Network::Testnet, 1_000),
+            Err(ObjectRejection::UnknownType)
+        );
         let long = proposal(&format!("{GOOD}\"pad\":\"{}\",", "x".repeat(400)));
         assert_eq!(check(&long), Err(ObjectRejection::InvalidProposal("size")));
     }
