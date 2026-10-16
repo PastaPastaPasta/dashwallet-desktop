@@ -79,6 +79,7 @@ Swift T0 run (D17). Copy follows the mobile wallets (iOS `SendPaymentViewControl
 | D22 | Send's re-entry guard is a ref set before the first await, besides the `busy` state. | The accept cannot be undone and costs credits: a second Send in the same frame must not run it twice. |
 | D23 | GL load flake: the first testnet run's broadcast ended "Payment status unknown" (load ~130, 3 peers) and its data root went with the run, so its transaction could not be tried again. B, restored and synced to 1573388, had received nothing from it: the ledger moved aside as `DP3-06.failed-1.json` and the GL now presses Try again (the same signed transaction) up to three times on an unknown result. The rerun's broadcast answered at once. | The app did what U-03 D10 says (unknown, locked, never "not sent"); only the harness gave up too early. |
 | D24 | The payee card shows the picked row's names until the contact's detail is read (the GL saw the bare id under load); a pane hand-off, with no row, shows the short id meanwhile. | The pick already had the names; the detail is the authority once it lands. |
+| D25 | Gate load flakes, none in a spec this task touched: `e0_05_bringup::close_reports_a_key_read_it_could_not_wait_for` (wall-clock, passed alone on try 1); Playwright `errors.spec.ts` error-profileConflict (Chromium) and two WebKit `onboarding.spec.ts` axe runs (30 s timeouts at load 140–166), which passed in a rerun of both specs (82/82). | Box rule: rerun alone before blaming the code. |
 
 ## Deferred
 
@@ -114,5 +115,9 @@ Swift T0 run (D17). Copy follows the mobile wallets (iOS `SendPaymentViewControl
   `ed06259d96654f51c934e7bcf9dba13579a03caa9a2b43038682c7b366d05ad2` (InstantSend, height 1573389); Activity's detail
   "Sent to contact @dwrecoverb2"; B's `dwcli contact activity --filter received` lists it (100,000 duffs; 3 before);
   no phrase or passphrase in the output or logs. Ledger `<fixture>/DP3-06.json` "sent"; D23 for the first run.
+- **Gate** (copies of dw-gate.sh; no Rust change on the branch, so its Rust half ran on ca9762dd and the UI half on
+  c0ce19da): fmt, clippy, clippy `selftest` OK; Rust tests 1937 passed, 1 wall-clock flake passed alone (D25); tokens,
+  typecheck, vitest 753/753, build, fixture build, guard negative control, selftest judge OK; Playwright 949 passed,
+  316 skipped, 3 load flakes passed on rerun (D25).
 - **Reviews:** code-simplifier (Sonnet) and code-review-validator (Opus): no critical or high finding; M1–M3, L1, L2,
   L4, L6, L7 (tests), L8 (this document), L9 fixed; L3 → F7; M3's same-wallet case → D21/F6.
