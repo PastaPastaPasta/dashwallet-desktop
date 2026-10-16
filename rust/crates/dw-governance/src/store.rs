@@ -7,8 +7,11 @@
 //! Core `CGovernanceVote::IsValid`), as MG-00 D45 assumes: without the list
 //! every vote is refused. Only funding votes on proposals are kept: Core
 //! checks votes on triggers against the operator key, which this wallet
-//! does not handle. Votes whose object has not arrived yet wait (bounded)
-//! until it does. Core's per-masternode minimum between vote updates
+//! does not handle. A vote whose object has not arrived yet waits (bounded,
+//! once per vote hash) until it does, after the checks it can have without
+//! the object: its masternode's voting key, the time bound and the
+//! signature, as Core checks a vote for an unknown parent before it keeps
+//! it as an orphan (MG-01 D23). Core's per-masternode minimum between vote updates
 //! (`GOVERNANCE_UPDATE_MIN`, timed by the node's own receive clock) is not
 //! mirrored (MG-01 D13).
 
@@ -70,7 +73,8 @@ pub enum VoteRejection {
     /// time with a lower outcome (Core keeps the higher one). Not
     /// remembered, as in Core: its signature was never checked.
     Obsolete,
-    /// Kept until its object arrives.
+    /// Valid for its masternode, but its object has not arrived: kept
+    /// until it does, unless the orphan queue is full.
     Orphan,
 }
 
@@ -82,6 +86,8 @@ pub struct GovernanceStore {
     votes: HashMap<[u8; 32], HashMap<OutPoint, CurrentVote>>,
     seen_votes: HashSet<[u8; 32]>,
     orphans: HashMap<[u8; 32], Vec<GovernanceVote>>,
+    /// Hashes of the votes in `orphans`: each is queued once.
+    orphan_hashes: HashSet<[u8; 32]>,
     orphan_count: usize,
     vote_count: u64,
     /// Collateral outpoint → voting key id, from the masternode list.
@@ -106,8 +112,9 @@ impl GovernanceStore {
         self.objects.contains_key(hash)
     }
 
+    /// Whether the vote `hash` is counted, or waits for its object.
     pub fn has_vote(&self, hash: &[u8; 32]) -> bool {
-        self.seen_votes.contains(hash)
+        self.seen_votes.contains(hash) || self.orphan_hashes.contains(hash)
     }
 
     pub fn object(&self, hash: &[u8; 32]) -> Option<&StoredObject> {
@@ -150,6 +157,7 @@ impl GovernanceStore {
         if let Some(waiting) = self.orphans.remove(&hash) {
             self.orphan_count -= waiting.len();
             for v in waiting {
+                self.orphan_hashes.remove(&v.hash());
                 let _ = self.add_vote(v, network);
             }
         }
@@ -178,14 +186,20 @@ impl GovernanceStore {
         self.voting_keys = keys;
     }
 
-    /// Stores `vote` as its masternode's current funding vote on its object.
+    /// Stores `vote` as its masternode's current funding vote on its object,
+    /// or queues it until the object arrives. A vote for an unknown object
+    /// is checked first against what is known without the object (MG-01
+    /// D23), as Core's `CGovernanceVote::IsValidForUnknownParent` checks a
+    /// funding vote against the list's voting key, the time bound and the
+    /// signature before it keeps the vote as an orphan, so votes that could
+    /// never count cannot fill the queue.
     pub fn add_vote(
         &mut self,
         vote: GovernanceVote,
         network: Network,
     ) -> Result<(), VoteRejection> {
         let hash = vote.hash();
-        if self.seen_votes.contains(&hash) {
+        if self.seen_votes.contains(&hash) || self.orphan_hashes.contains(&hash) {
             return Err(VoteRejection::Duplicate);
         }
         let Some(outcome) = vote.vote_outcome() else {
@@ -194,24 +208,22 @@ impl GovernanceStore {
         if vote.signal != SIGNAL_FUNDING {
             return Err(VoteRejection::NotTallied);
         }
-        if !self.objects.contains_key(&vote.parent_hash) {
-            if self.orphan_count < MAX_ORPHAN_VOTES {
-                self.orphan_count += 1;
-                self.orphans.entry(vote.parent_hash).or_default().push(vote);
+        let parent_known = match self.objects.get(&vote.parent_hash) {
+            Some(o) if o.object.object_type != OBJECT_TYPE_PROPOSAL => {
+                return Err(VoteRejection::NotTallied);
             }
-            return Err(VoteRejection::Orphan);
-        }
-        if self.objects[&vote.parent_hash].object.object_type != OBJECT_TYPE_PROPOSAL {
-            return Err(VoteRejection::NotTallied);
-        }
+            parent => parent.is_some(),
+        };
         let Some(&key_id) = self.voting_keys.get(&vote.masternode_outpoint) else {
             return Err(VoteRejection::UnknownMasternode);
         };
         if vote.time > unix_now() + MAX_VOTE_TIME_AHEAD {
             return Err(VoteRejection::TooNew);
         }
-        let per_object = self.votes.entry(vote.parent_hash).or_default();
-        if let Some(current) = per_object.get(&vote.masternode_outpoint)
+        if let Some(current) = self
+            .votes
+            .get(&vote.parent_hash)
+            .and_then(|per_object| per_object.get(&vote.masternode_outpoint))
             && (current.time > vote.time
                 || (current.time == vote.time && current.outcome.code() > outcome.code()))
         {
@@ -223,6 +235,15 @@ impl GovernanceStore {
         if vote.signer_key_id(network) != Some(key_id) {
             return Err(VoteRejection::BadSignature);
         }
+        if !parent_known {
+            if self.orphan_count < MAX_ORPHAN_VOTES {
+                self.orphan_count += 1;
+                self.orphan_hashes.insert(hash);
+                self.orphans.entry(vote.parent_hash).or_default().push(vote);
+            }
+            return Err(VoteRejection::Orphan);
+        }
+        let per_object = self.votes.entry(vote.parent_hash).or_default();
         let replaced = per_object
             .insert(
                 vote.masternode_outpoint,
@@ -273,6 +294,11 @@ impl GovernanceStore {
 
     /// The highest superblock height ≤ `tip` whose synced trigger pays
     /// `hash_hex` (dash-qt `getProposalFundedHeight`).
+    ///
+    /// Trusts every stored trigger as decoded: MG-01 does not check an
+    /// object's collateral or signatures. MG-02 must validate objects
+    /// before they are stored (MG-01 §7) before any caller uses this;
+    /// nothing does in MG-01.
     pub fn funded_height(&self, hash_hex: &str, tip: u32) -> Option<u32> {
         self.objects
             .values()
@@ -393,6 +419,68 @@ mod tests {
         assert!(s.add_object(obj.clone(), Network::Regtest));
         s.set_voting_keys(keys.iter().copied().collect());
         s
+    }
+
+    /// MG-01 D23 (Sol r1): a vote for an unknown object is queued only once
+    /// it is valid for its masternode, and once per hash, so copies of a
+    /// malformed or forged vote cannot fill `MAX_ORPHAN_VOTES` ahead of the
+    /// genuine ones.
+    #[test]
+    fn test_qt_128_orphan_votes_are_checked_before_they_wait() {
+        let obj = GovernanceObject::new_proposal(1, 1, br#"{"name":"a","type":1}"#.to_vec());
+        let h = obj.hash();
+        let (vote, key) = signed_vote(h, 1, VoteOutcome::Yes, 10);
+        let mut s = GovernanceStore::new();
+        s.set_voting_keys(HashMap::from([(vote.masternode_outpoint, key)]));
+
+        let mut malformed = vote.clone();
+        malformed.signature.truncate(10);
+        // Signed by another key, claiming the masternode's outpoint.
+        let (mut forged, _) = signed_vote(h, 2, VoteOutcome::No, 10);
+        forged.masternode_outpoint = vote.masternode_outpoint;
+        for _ in 0..MAX_ORPHAN_VOTES {
+            assert_eq!(
+                s.add_vote(malformed.clone(), Network::Regtest),
+                Err(VoteRejection::BadSignature)
+            );
+        }
+        assert_eq!(
+            s.add_vote(forged, Network::Regtest),
+            Err(VoteRejection::BadSignature)
+        );
+        let (unknown, _) = signed_vote(h, 3, VoteOutcome::Yes, 10);
+        assert_eq!(
+            s.add_vote(unknown, Network::Regtest),
+            Err(VoteRejection::UnknownMasternode)
+        );
+        let (too_new, _) = signed_vote(h, 1, VoteOutcome::No, unix_now() + 2 * MAX_VOTE_TIME_AHEAD);
+        assert_eq!(
+            s.add_vote(too_new, Network::Regtest),
+            Err(VoteRejection::TooNew)
+        );
+        assert_eq!((s.orphan_count, s.orphan_hashes.len()), (0, 0));
+        assert!(!s.has_vote(&malformed.hash()));
+
+        // The genuine vote waits once, however often it arrives.
+        for expected in [VoteRejection::Orphan, VoteRejection::Duplicate] {
+            assert_eq!(s.add_vote(vote.clone(), Network::Regtest), Err(expected));
+        }
+        for _ in 0..MAX_ORPHAN_VOTES {
+            assert_eq!(
+                s.add_vote(vote.clone(), Network::Regtest),
+                Err(VoteRejection::Duplicate)
+            );
+        }
+        assert_eq!(s.orphan_count, 1);
+        assert!(s.has_vote(&vote.hash()));
+
+        assert!(s.add_object(obj, Network::Regtest));
+        assert_eq!((s.orphan_count, s.orphan_hashes.len()), (0, 0));
+        assert_eq!(
+            s.outcome_of(&h, &vote.masternode_outpoint),
+            Some(VoteOutcome::Yes)
+        );
+        assert!(s.has_vote(&vote.hash()));
     }
 
     #[test]
