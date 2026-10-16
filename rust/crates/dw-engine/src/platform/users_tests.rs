@@ -653,6 +653,106 @@ fn the_username_opt_out_gives_plain_core_uris() {
     assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
 }
 
+/// Sol r1 #2 (DP3-03b D20): a request read that has read the setting as on
+/// and is still reading the name holds the wallet's username gate, so
+/// turning it off waits for it: no URI with the name is made after the
+/// turn-off has returned.
+#[test]
+fn turning_the_username_off_waits_for_a_request_read_under_way() {
+    use crate::coins::TestPause;
+    use crate::held_writes::ReleaseOnDrop;
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let f = Fixture::new();
+    let (s, w) = (Arc::clone(&f.s), f.wallet);
+    let stored = (f.engine)
+        .block_on(s.create_receive_request(w, None, Some("Rent".into()), None))
+        .unwrap();
+    assert_eq!(stored.username.as_deref(), Some("me1"));
+    let pause = Arc::new(TestPause::default());
+    *s.username_gate.pause_name_read.lock().unwrap() = Some(Arc::clone(&pause));
+    let _release = ReleaseOnDrop(Arc::clone(&pause));
+    let read = s.rt.spawn({
+        let s = Arc::clone(&s);
+        async move { s.receive_requests(w).await }
+    });
+    super::requests::tests::wait_until("the read's pause", Duration::from_secs(60), || {
+        pause.reached.load(SeqCst)
+    });
+    let off = s.rt.spawn({
+        let s = Arc::clone(&s);
+        async move { s.set_username_in_requests(w, false).await }
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        !off.is_finished(),
+        "turning it off waits for the read that has the setting as on"
+    );
+    pause.release.notify_one();
+    let listed = f.engine.block_on(read).unwrap().unwrap();
+    assert_eq!(listed[0], stored, "the read made its URI before the change");
+    f.engine.block_on(off).unwrap().unwrap();
+    let listed = f.engine.block_on(s.receive_requests(w)).unwrap();
+    assert_eq!(listed[0].uri, format!("dash:{}?label=Rent", stored.address));
+}
+
+/// Sol r1 #3 (DP3-03b D21): turning it off, held in its app.sqlite write,
+/// keeps the wallet's lifecycle: a removal waits for it, so the late write
+/// never reaches the wallet a re-import brings back, which starts on (D17).
+#[test]
+fn a_held_turn_off_never_reaches_a_reimported_wallet() {
+    use crate::held_writes::{ReleaseOnDrop, hold_first_job};
+    use dw_vault::{Credential, GrantPurpose};
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let f = Fixture::new();
+    let (s, w) = (Arc::clone(&f.s), f.wallet);
+    let wipe = (s
+        .vault()
+        .authorize(GrantPurpose::Wipe, Some(&w.0), Credential::None))
+    .unwrap()
+    .id;
+    let (pause, off) = hold_first_job(&s, {
+        let s = Arc::clone(&s);
+        async move { s.set_username_in_requests(w, false).await.unwrap() }
+    });
+    let _release = ReleaseOnDrop(Arc::clone(&pause));
+    super::requests::tests::wait_until("the held write", Duration::from_secs(60), || {
+        pause.reached.load(SeqCst)
+    });
+    let reimport = || {
+        let again = (f.engine).block_on(s.import_wallet(
+            Zeroizing::new(super::journal_tests::ABANDON_12.to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions::default(),
+        ));
+        assert_eq!(again.unwrap(), w);
+    };
+    let removal = s.rt.spawn({
+        let s = Arc::clone(&s);
+        async move { s.remove_wallet(w, wipe).await }
+    });
+    super::requests::tests::wait_until("the removal", Duration::from_secs(60), || {
+        removal.is_finished() || s.wallet_lifecycle.waiting() == 1
+    });
+    // Without the lifecycle the removal and the re-import pass the held write.
+    let passed = removal.is_finished();
+    if passed {
+        reimport();
+    }
+    pause.release.notify_one();
+    f.engine.block_on(off).unwrap();
+    f.engine.block_on(removal).unwrap().unwrap();
+    if !passed {
+        reimport();
+    }
+    assert!(
+        f.engine.block_on(s.username_in_requests(w)).unwrap(),
+        "the re-imported wallet starts on"
+    );
+    assert!(!passed, "the removal waited for the held write");
+}
+
 /// The iOS-made links (`testdata/dashpay_user_links.json`), as iOS verifies
 /// a scan: the link's username must belong to the link's identity now.
 #[test]

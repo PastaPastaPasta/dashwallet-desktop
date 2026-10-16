@@ -29,6 +29,26 @@ const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 /// else is corrupt, which the URIs read as off.
 pub(crate) const USERNAME_IN_REQUESTS_KEY: &str = "dashpay.username_in_requests";
 
+/// One lock per wallet between "Include my username in payment requests"
+/// and the URIs that carry the username (DP3-03b D20): a URI is made under
+/// the read side, from the setting's read through the name's to the URI;
+/// a change of the setting takes the write side. So no URI with the name
+/// is made once turning it off has returned.
+#[derive(Default)]
+pub(crate) struct UsernameGate {
+    locks: std::sync::Mutex<HashMap<WalletId, Arc<tokio::sync::RwLock<()>>>>,
+    /// Tests: holds the next username read after its setting read.
+    #[cfg(test)]
+    pub(crate) pause_name_read: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+}
+
+impl UsernameGate {
+    fn lock(&self, wallet: WalletId) -> Arc<tokio::sync::RwLock<()>> {
+        let mut locks = self.locks.lock().unwrap_or_else(|p| p.into_inner());
+        Arc::clone(locks.entry(wallet).or_default())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddressInfo {
     pub address: String,
@@ -348,24 +368,26 @@ impl NetworkSession {
             })
             .await?
             .map_err(|e| EngineError::Storage(e.to_string()))?;
-            let username = this.username_of(wallet).await;
-            Ok(ReceiveRequest {
-                id: u64::try_from(id)
-                    .map_err(|_| EngineError::Internal(format!("request id {id}")))?,
-                created_at,
-                uri: request_uri(
-                    &issued.address,
+            let id =
+                u64::try_from(id).map_err(|_| EngineError::Internal(format!("request id {id}")))?;
+            Ok(this
+                .with_username(wallet, |username| ReceiveRequest {
+                    id,
+                    created_at,
+                    uri: request_uri(
+                        &issued.address,
+                        amount,
+                        label.as_deref(),
+                        message.as_deref(),
+                        username,
+                    ),
+                    address: issued.address,
                     amount,
-                    label.as_deref(),
-                    message.as_deref(),
-                    username.as_deref(),
-                ),
-                address: issued.address,
-                amount,
-                label,
-                message,
-                username,
-            })
+                    label,
+                    message,
+                    username: username.map(str::to_owned),
+                })
+                .await)
         })
         .await
     }
@@ -384,28 +406,30 @@ impl NetworkSession {
                 tokio::task::spawn_blocking(move || appdb.receive_requests(&wallet.to_string()))
                     .await?
                     .map_err(|e| EngineError::Storage(e.to_string()))?;
-            let username = this.username_of(wallet).await;
-            Ok(rows
-                .into_iter()
-                .filter_map(|r| {
-                    Some(ReceiveRequest {
-                        id: u64::try_from(r.id).ok()?,
-                        created_at: r.created_at,
-                        uri: request_uri(
-                            &r.address,
-                            r.amount,
-                            r.label.as_deref(),
-                            r.message.as_deref(),
-                            username.as_deref(),
-                        ),
-                        address: r.address,
-                        amount: r.amount,
-                        label: r.label,
-                        message: r.message,
-                        username: username.clone(),
-                    })
+            Ok(this
+                .with_username(wallet, |username| {
+                    (rows.into_iter())
+                        .filter_map(|r| {
+                            Some(ReceiveRequest {
+                                id: u64::try_from(r.id).ok()?,
+                                created_at: r.created_at,
+                                uri: request_uri(
+                                    &r.address,
+                                    r.amount,
+                                    r.label.as_deref(),
+                                    r.message.as_deref(),
+                                    username,
+                                ),
+                                address: r.address,
+                                amount: r.amount,
+                                label: r.label,
+                                message: r.message,
+                                username: username.map(str::to_owned),
+                            })
+                        })
+                        .collect()
                 })
-                .collect())
+                .await)
         })
         .await
     }
@@ -423,19 +447,36 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             this.require_wallet(&wallet)?;
-            Ok(this.username_of(wallet).await)
+            Ok(this
+                .with_username(wallet, |username| username.map(str::to_owned))
+                .await)
         })
         .await
     }
 
-    /// [`Self::receive_username`] inside an operation: the identity read
-    /// touches the database, so it runs off the runtime's threads. Never an
-    /// error: without the name the URI is a plain Core one. `None` while
-    /// [`Self::username_in_requests`] is off, or cannot be read.
+    /// `make` given the username the wallet's URIs carry, under the read
+    /// side of its [`UsernameGate`] (D20). The name is [`Self::receive_username`]'s:
+    /// `None` while [`Self::username_in_requests`] is off or cannot be read,
+    /// and never an error, as without it the URI is a plain Core one. The
+    /// identity read touches the database, so it runs off the runtime's
+    /// threads.
+    async fn with_username<R>(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        make: impl FnOnce(Option<&str>) -> R,
+    ) -> R {
+        let gate = self.username_gate.lock(wallet);
+        let _read = gate.read().await;
+        let username = self.username_of(wallet).await;
+        make(username.as_deref())
+    }
+
     async fn username_of(self: &Arc<Self>, wallet: WalletId) -> Option<String> {
         if !self.username_in_requests_of(wallet).await.ok()? {
             return None;
         }
+        #[cfg(test)]
+        crate::coins::pause_at(&self.username_gate.pause_name_read).await;
         let this = Arc::clone(self);
         (tokio::task::spawn_blocking(move || this.main_username(wallet)).await).ok()?
     }
@@ -458,7 +499,8 @@ impl NetworkSession {
         .await
     }
 
-    /// Turns [`Self::username_in_requests`] on or off for one wallet.
+    /// Turns [`Self::username_in_requests`] on or off for one wallet. Waits
+    /// for the URIs being made for it (D20): once it returns, every URI follows.
     pub async fn set_username_in_requests(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -467,7 +509,12 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            // A removal waits for the write, so it never lands on the wallet
+            // a re-import brings back, which starts on (D21).
+            let _lifecycle = this.wallet_lifecycle.hold().await;
             this.require_wallet(&wallet)?;
+            let gate = this.username_gate.lock(wallet);
+            let _write = gate.write().await;
             let scope = wallet.to_string();
             this.appdb_op(move |db| {
                 db.set_setting(&scope, USERNAME_IN_REQUESTS_KEY, (!on).then_some("0"))
