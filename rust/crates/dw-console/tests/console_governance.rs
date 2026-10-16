@@ -607,6 +607,26 @@ fn voteraw_checks_its_arguments_like_core() {
 }
 
 #[test]
+fn getcurrentvotes_reads_the_vout_as_cores_atoi() {
+    use dw_console::governance::atoi_u32;
+    for (text, vout) in [
+        ("7", 7),
+        (" 7\t", 7),
+        ("+7", 7),
+        ("7abc", 7),
+        ("abc", 0),
+        ("", 0),
+        ("-1", 0),
+        ("+-1", 0),
+        ("+", 0),
+        ("4294967295", u32::MAX),
+        ("99999999999", u32::MAX),
+    ] {
+        assert_eq!(atoi_u32(text), vout, "{text:?}");
+    }
+}
+
+#[test]
 fn voteraw_words_the_facades_rejections_as_core() {
     let o = "ab".repeat(32) + "-1";
     let h = hash(0, 1);

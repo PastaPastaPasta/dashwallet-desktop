@@ -80,7 +80,7 @@ Kind is `sync`, `async` or `free, pure`. Each row says whether the call is imple
 |---|---|---|---|
 | `proposals(query: ProposalQuery)` | sync | Confirmed proposals (D3) as `ProposalRow`, sorted by MG-00's status groups then net yes. `query.scope`: `current` (end epoch not past), `all`. `query.text`: a case-folded substring of the name or URL. `governance.not_synced{phase}` until a run reached `synced`. **Implemented.** | `GovernanceError` |
 | `proposal(hash: String)` | sync | `ProposalDetail`: the row, the object's fields, the raw data JSON, the funded height. `governance.not_synced{phase}` until a run reached `synced`, then `invalid_argument` for a hash that is not 64-character hex, then `governance.proposal_not_found{hash}` for an unknown, unconfirmed or non-proposal hash. **Implemented.** | `GovernanceError` |
-| `current_votes(hash: String, outpoint: Option<String>)` | sync | Core's `gobject getcurrentvotes`: each current funding vote with its outpoint, time, outcome and weight range. Refuses like `proposal`: `governance.not_synced{phase}`, `invalid_argument` for a malformed hash, `governance.proposal_not_found{hash}`. **Implemented.** | `GovernanceError` |
+| `current_votes(hash: String, outpoint: Option<String>)` | sync | Core's `gobject getcurrentvotes`: each current funding vote with its outpoint, time, outcome and weight range, ordered by outpoint as Core's `COutPoint` compares (the txid's internal bytes, then the index). Refuses like `proposal`: `governance.not_synced{phase}`, `invalid_argument` for a malformed hash, `governance.proposal_not_found{hash}`. **Implemented.** | `GovernanceError` |
 
 ### 2.4 Voting
 

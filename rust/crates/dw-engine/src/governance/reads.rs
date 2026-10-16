@@ -231,23 +231,25 @@ impl Governance {
         {
             return Err(GovernanceError::ProposalNotFound { hash });
         }
-        let mut rows: Vec<CurrentVoteRow> = tally::attribute(
+        let mut votes = tally::attribute(
             store.votes_on(&key),
             |k| store.key_weights(k),
             |o| store.resolved(o).map(|r| r.weight),
-        )
-        .into_iter()
-        .map(|(v, c)| CurrentVoteRow {
-            outpoint: outpoint_short(&v.outpoint),
-            time: v.time,
-            outcome: v.outcome.into(),
-            weight: c.weight.into(),
-            exact: c.exact,
-        })
-        .filter(|r| outpoint.as_ref().is_none_or(|o| &r.outpoint == o))
-        .collect();
-        rows.sort_by(|a, b| a.outpoint.cmp(&b.outpoint).then(a.time.cmp(&b.time)));
-        Ok(rows)
+        );
+        // Core's order: by outpoint as `COutPoint` compares (the txid's
+        // internal bytes, then the index).
+        votes.sort_by(|(a, _), (b, _)| a.outpoint.cmp(&b.outpoint).then(a.time.cmp(&b.time)));
+        Ok(votes
+            .into_iter()
+            .map(|(v, c)| CurrentVoteRow {
+                outpoint: outpoint_short(&v.outpoint),
+                time: v.time,
+                outcome: v.outcome.into(),
+                weight: c.weight.into(),
+                exact: c.exact,
+            })
+            .filter(|r| outpoint.as_ref().is_none_or(|o| &r.outpoint == o))
+            .collect())
     }
 }
 

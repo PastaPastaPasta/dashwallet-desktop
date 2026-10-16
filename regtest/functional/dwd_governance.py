@@ -190,6 +190,7 @@ class DwdGovernance(DashTestFramework):
             "--console", f"getsuperblockbudget {FIRST_SUPERBLOCK}",
             "--console", "gobject count",
             "--console", f"gobject get {p0}",
+            "--console", f"gobject getcurrentvotes {p0}",
         )
         # With sync off the reads already follow the list; no counts yet.
         off = out["offinfo"][0]
@@ -235,6 +236,11 @@ class DwdGovernance(DashTestFramework):
         got = json.loads(get_text)
         assert_equal(got["FundingResult"]["YesCount"], self.core_counts(p0)[0])
         assert_equal(got["Hash"], p0)
+        # Every vote, keyed by its hash, in Core's outpoint order.
+        kind, votes_text = console[f"gobject getcurrentvotes {p0}"]
+        assert_equal(kind, "result")
+        ours, core = json.loads(votes_text), node.gobject("getcurrentvotes", p0)
+        assert_equal(list(ours.items()), list(core.items()))
 
         self.log.info("3. voteraw: a vote signed outside, relayed by the wallet, reaches Core")
         voter = regular[1]

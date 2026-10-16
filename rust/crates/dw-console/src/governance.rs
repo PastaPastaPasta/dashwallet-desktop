@@ -378,6 +378,23 @@ fn get_int<T: TryFrom<i64>>(v: &serde_json::Value) -> Result<T, ConsoleFailure> 
         .ok_or_else(|| rpc(code::MISC_ERROR, "JSON integer out of range"))
 }
 
+/// Core's `LocaleIndependentAtoi<uint32_t>`: whitespace trimmed, one `+`
+/// allowed, the leading digits read, saturating at `u32::MAX`; anything
+/// else is 0.
+pub fn atoi_u32(text: &str) -> u32 {
+    let s = text.trim_matches([' ', '\x0c', '\n', '\r', '\t', '\x0b']);
+    let s = match s.strip_prefix('+') {
+        Some(rest) if rest.starts_with('-') => return 0,
+        Some(rest) => rest,
+        None => s,
+    };
+    let digits = s.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return 0;
+    }
+    s[..digits].parse().unwrap_or(u32::MAX)
+}
+
 /// The error of a governance command while governance sync is off. Core has
 /// no such RPC error (`-disablegovernance` leaves an empty manager); the
 /// console says so instead of answering from an empty one.
@@ -599,8 +616,7 @@ impl ConsoleContext {
                 let outpoint = match (arg(rest, 1), arg(rest, 2)) {
                     (Some(txid), Some(vout)) => {
                         let txid = parse_hash_v(txid, "Masternode Collateral hash")?;
-                        // `LocaleIndependentAtoi<uint32_t>`: no digits read as 0.
-                        let vout = vout.trim().parse::<u32>().unwrap_or(0);
+                        let vout = atoi_u32(vout);
                         Some(format!("{txid}-{vout}"))
                     }
                     _ => None,

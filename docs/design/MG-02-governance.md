@@ -326,7 +326,7 @@ The console answers these with Core's result shapes (`rpc/governance.cpp` at the
 | `gobject count [json\|all]` | Core's `ToJson` keys or `ToString` text; proposals only, `triggers`, `other` and `erased` are 0 (D33) |
 | `gobject list [valid\|funding\|delete\|endorsed\|all] [proposals\|triggers\|all]` | Core's object per hash, in Core's map order; vote counts are the estimates; `fBlockchainValidity` is the local validity (D3) |
 | `gobject get <hash>` | Core's object, with `FundingResult` from the tally; `fCachedFunding` is `net yes >= passing threshold` (Core's rule) |
-| `gobject getcurrentvotes <hash> [txid vout]` | Core's vote hash → `"outpoint:time:outcome:signal:weight"` (MG-01 D10); the filter needs both txid and vout, as in Core |
+| `gobject getcurrentvotes <hash> [txid vout]` | Core's vote hash → `"outpoint:time:outcome:signal:weight"` (MG-01 D10); in Core's order (by outpoint as `COutPoint` compares); the filter needs both txid and vout, the vout read as `LocaleIndependentAtoi<uint32_t>` reads it, as in Core |
 | `voteraw <txid> <n> <hash> funding <outcome> <time> <sig>` | `relay_vote`, with Core's argument checks and order; Core's "Voted successfully" or its error (D30, D31) |
 
 `gobject vote-many`, `vote-alias`, `prepare`, `list-prepared`, `submit`, `check`, `deserialize` and `diff` stay
