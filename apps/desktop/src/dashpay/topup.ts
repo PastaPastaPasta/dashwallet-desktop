@@ -183,9 +183,10 @@ export class TopUpFlow extends Model {
     this.grants.subscribe(() => this.changed());
   }
 
-  /** A result that came while the sheet was hidden, not yet seen (D14): the page offers it. */
-  get unseen(): boolean {
-    return !this.open && !this.running && (this.step === "done" || this.step === "refused");
+  /** A result for `identity` that came while the sheet was hidden, not yet seen (D14): its page offers it.
+   *  The flow is per wallet, so another main identity's page does not (D31): its Show would discard it. */
+  unseenFor(identity: string): boolean {
+    return !this.open && !this.running && this.identity === identity && (this.step === "done" || this.step === "refused");
   }
 
   /** Opens the sheet for `identity`: at T1, or where a running or unseen call is (D14). */

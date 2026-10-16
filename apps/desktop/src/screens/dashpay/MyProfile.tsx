@@ -273,7 +273,7 @@ function Ready({ walletId, network, main, contest, inputs }: { walletId: string;
     pending: pending.data ?? [],
     stuck: stuck.data ?? [],
     toppingUp: flow.running || flow.rowRunning !== null,
-    unseen: flow.unseen,
+    unseen: flow.unseenFor(main.identity),
     answeredUnknown: flow.answeredUnknown,
     amount: inputs.amount,
     masked: shown.masked(),

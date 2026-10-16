@@ -60,12 +60,12 @@ describe("the top-up sheet (IOS-069, AND-078)", () => {
     expect(calls).toEqual(["topUp A 5000000 grant-1"]);
     // Closed while it runs, reopened to its result, which the page offers meanwhile.
     flow.close();
-    expect([flow.open, flow.unseen]).toEqual([false, false]);
+    expect([flow.open, flow.unseenFor("A")]).toEqual([false, false]);
     finishTopUp(applied);
     await paying;
-    expect(flow.unseen).toBe(true);
+    expect(flow.unseenFor("A")).toBe(true);
     flow.begin("A");
-    expect(flow.unseen).toBe(false);
+    expect(flow.unseenFor("A")).toBe(false);
     expect([flow.open, flow.step, flow.outcome]).toEqual([true, "done", applied]);
     flow.close();
     flow.begin("A");
@@ -130,9 +130,9 @@ describe("the top-up sheet (IOS-069, AND-078)", () => {
     flow.close();
     finishTopUp({ txid: "bb", state: { kind: "proofWaiting" } });
     await paying;
-    expect(flow.unseen).toBe(true);
+    expect(flow.unseenFor("A")).toBe(true);
     await flow.finish(pending);
-    expect(flow.unseen).toBe(false);
+    expect(flow.unseenFor("A")).toBe(false);
     flow.begin("A");
     expect(flow.step).toBe("amount");
     flow.close();
@@ -144,6 +144,24 @@ describe("the top-up sheet (IOS-069, AND-078)", () => {
     flow.step = "done";
     flow.forget();
     expect(flow.step).toBe("done");
+  });
+
+  it("D31: a result is offered only on the page of the identity it belongs to", async () => {
+    const { flow, finishTopUp } = setup();
+    flow.begin("A");
+    flow.next(5_000_000);
+    const paying = flow.pay({ maxDuffs: 5_002_260, maxCredits: "0" });
+    await vi.waitFor(() => expect(flow.step).toBe("running"));
+    flow.close();
+    finishTopUp(applied);
+    await paying;
+    // The main identity changes to B while the sheet is closed: B's page does not offer A's result.
+    expect([flow.unseenFor("A"), flow.unseenFor("B")]).toEqual([true, false]);
+    // B's Top up starts afresh (and drops A's result, which B's page never offered).
+    flow.begin("B");
+    expect([flow.identity, flow.step]).toEqual(["B", "amount"]);
+    flow.close();
+    expect(flow.unseenFor("A")).toBe(false);
   });
 
   it("D22: every call that ends tells the settle listeners", async () => {
