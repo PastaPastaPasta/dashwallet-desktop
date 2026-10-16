@@ -106,12 +106,18 @@ const SELFTEST_USAGE: &str = "
   --selftest-link-trace <file>
                          append each deep link's scheme and route to <file>";
 
-/// [`USAGE`], plus the self-test's options in a `selftest` build.
+/// The environment, after every option.
+const ENV_USAGE: &str = "
+environment:
+  DW_LOG=<filter>        log to stderr, EnvFilter syntax (e.g. info,dw_engine=debug)";
+
+/// [`USAGE`], plus the self-test's options in a `selftest` build, then the
+/// environment.
 pub fn usage() -> String {
     #[cfg(feature = "selftest")]
-    return format!("{USAGE}{SELFTEST_USAGE}");
+    return format!("{USAGE}{SELFTEST_USAGE}{ENV_USAGE}");
     #[cfg(not(feature = "selftest"))]
-    USAGE.to_string()
+    format!("{USAGE}{ENV_USAGE}")
 }
 
 #[derive(Debug, PartialEq, Eq)]
