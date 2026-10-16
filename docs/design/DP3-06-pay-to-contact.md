@@ -77,6 +77,8 @@ Swift T0 run (D17). Copy follows the mobile wallets (iOS `SendPaymentViewControl
 | D20 | The accept's outcome is also a toast (`useActionToast`, DP2-09 D23), so it is said even if the user left the sheet's view while it ran. | The accept is an outward action that stays done whatever the payment does (C8). |
 | D21 | The promise check also refuses a contact payment to the estimate's placeholder (P2PKH of 20 zero bytes, `send/contact.rs`; mainnet and testnet forms) or to an output without an address. A contact whose DIP-15 account belongs to this wallet (two identities in one wallet paying each other) pays an output the wallet owns, which the check refuses ("The payment changed. Review it again."): such a payment cannot be made from the tab (F6). | Defence in depth against an engine regression that signs the estimate's plan; refusing is the safe failure for the same-wallet case. |
 | D22 | Send's re-entry guard is a ref set before the first await, besides the `busy` state. | The accept cannot be undone and costs credits: a second Send in the same frame must not run it twice. |
+| D23 | GL load flake: the first testnet run's broadcast ended "Payment status unknown" (load ~130, 3 peers) and its data root went with the run, so its transaction could not be tried again. B, restored and synced to 1573388, had received nothing from it: the ledger moved aside as `DP3-06.failed-1.json` and the GL now presses Try again (the same signed transaction) up to three times on an unknown result. The rerun's broadcast answered at once. | The app did what U-03 D10 says (unknown, locked, never "not sent"); only the harness gave up too early. |
+| D24 | The payee card shows the picked row's names until the contact's detail is read (the GL saw the bare id under load); a pane hand-off, with no row, shows the short id meanwhile. | The pick already had the names; the detail is the authority once it lands. |
 
 ## Deferred
 
@@ -101,4 +103,16 @@ Swift T0 run (D17). Copy follows the mobile wallets (iOS `SendPaymentViewControl
 
 ## Evidence
 
-(Filled in as the slices land.)
+- **T0 (fixture):** `tsc` clean; vitest 753/753 (53 files; `contact.test.ts` 20, `payContact.test.ts` 8); Playwright
+  458/458 on the affected specs (`pay-contact`, `contacts`, `contact-pane`, `wallet`, `notifications`, `a11y`, `routes`,
+  `screens`, `tools`; Chromium and WebKit, light and dark, axe), in the pinned image.
+- **Visual:** 140/140 in the pinned image; new baselines `pay-contact`, `pay-contact-form`, `pay-contact-accept`
+  (light, dark); `contacts` re-baselined for D15 (Carol's Pay enabled with the longer note); no other baseline moved.
+- **GL (testnet, D16):** `scripts/e2e-tauri-pay-contact.sh` PASS 2026-10-16 05:20 UTC on agent-gui :66. Wallet A
+  restored at birth 1568806 and synced; B from the frequent strip; the confirm sheet "Pay to D dwrecoverb2, Note DP3-06
+  GL, Amount 0.00100000 tDASH, fee 0.00000226"; "Payment sent", txid
+  `ed06259d96654f51c934e7bcf9dba13579a03caa9a2b43038682c7b366d05ad2` (InstantSend, height 1573389); Activity's detail
+  "Sent to contact @dwrecoverb2"; B's `dwcli contact activity --filter received` lists it (100,000 duffs; 3 before);
+  no phrase or passphrase in the output or logs. Ledger `<fixture>/DP3-06.json` "sent"; D23 for the first run.
+- **Reviews:** code-simplifier (Sonnet) and code-review-validator (Opus): no critical or high finding; M1–M3, L1, L2,
+  L4, L6, L7 (tests), L8 (this document), L9 fixed; L3 → F7; M3's same-wallet case → D21/F6.
