@@ -94,9 +94,7 @@ usage: dash-wallet [options] [link]
   --no-platform          the chain has no Platform (a plain dashd regtest)
   --theme light|dark     force an appearance
   --window-size <WxH>    the window's inner size in logical pixels (default 1280x820)
-  --help                 print this text
-environment:
-  DW_LOG=<filter>        engine log on stderr, EnvFilter syntax (e.g. info,dw_engine=debug)";
+  --help                 print this text";
 
 /// The self-test's options: a build with the `selftest` feature only.
 #[cfg(feature = "selftest")]
@@ -108,12 +106,18 @@ const SELFTEST_USAGE: &str = "
   --selftest-link-trace <file>
                          append each deep link's scheme and route to <file>";
 
-/// [`USAGE`], plus the self-test's options in a `selftest` build.
+/// The environment, after every option.
+const ENV_USAGE: &str = "
+environment:
+  DW_LOG=<filter>        log to stderr, EnvFilter syntax (e.g. info,dw_engine=debug)";
+
+/// [`USAGE`], plus the self-test's options in a `selftest` build, then the
+/// environment.
 pub fn usage() -> String {
     #[cfg(feature = "selftest")]
-    return format!("{USAGE}{SELFTEST_USAGE}");
+    return format!("{USAGE}{SELFTEST_USAGE}{ENV_USAGE}");
     #[cfg(not(feature = "selftest"))]
-    USAGE.to_string()
+    format!("{USAGE}{ENV_USAGE}")
 }
 
 #[derive(Debug, PartialEq, Eq)]

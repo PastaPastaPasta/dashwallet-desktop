@@ -22,6 +22,7 @@ pub mod settings;
 pub mod shell;
 pub mod state;
 
+use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -142,13 +143,18 @@ fn ms_since_process_start(stat: &str, uptime: &str) -> Option<u64> {
 /// Entry point of the `dash-wallet` binary.
 pub fn run() {
     let started = Instant::now();
-    // `DW_LOG=info,dw_engine=debug` (EnvFilter syntax) logs the engine to
-    // stderr, as dwcli's `DWCLI_LOG` does (BL-162). Off by default.
+    // `DW_LOG=info,dw_engine=debug` (EnvFilter syntax) logs to stderr, as
+    // dwcli's `DWCLI_LOG` does (BL-162). Off by default; colour on a terminal
+    // only, and a logger already set is reported, not a panic.
     if let Ok(filter) = std::env::var("DW_LOG") {
-        tracing_subscriber::fmt()
+        let set = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .with_ansi(std::io::stderr().is_terminal())
             .with_writer(std::io::stderr)
-            .init();
+            .try_init();
+        if let Err(e) = set {
+            eprintln!("DW_LOG ignored: {e}");
+        }
     }
     // U5 measures cold start from spawn: harnesses add this to the marks.
     #[cfg(target_os = "linux")]
