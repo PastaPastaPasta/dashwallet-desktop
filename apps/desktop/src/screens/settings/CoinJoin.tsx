@@ -50,10 +50,10 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
   /** What Save writes: Parallel sessions is not saved while multi-session is off (D11). */
   const effective = current.multiSession ? form : { ...form, maxSessions: saved.maxSessions };
   const checked = checkSettings(effective, current, limits);
-  /** Save: a value that would change, or text it would refuse (so it can say why). "04" for 4 is
-   * no change. Cancel: any text typed. */
-  const changed = "field" in checked || FIELDS.some(({ field }) => checked.ok[field] !== current[field]);
+  /** Cancel: text that differs from the saved values. Save: such text that would change a value,
+   * or that it would refuse (so it can say why); "04" for 4 is no change. */
   const edited = FIELDS.some(({ field }) => effective[field] !== saved[field]);
+  const changed = edited && ("field" in checked || FIELDS.some(({ field }) => checked.ok[field] !== current[field]));
 
   /** Resolves to whether the engine took `next`; a refusal shows its message. */
   const write = async (next: CoinJoinSettings) => {
@@ -93,13 +93,13 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
       setDone(CoinJoinText.saved);
     });
 
-  const box = (testId: string, label: string, hint: string, checked: boolean, patch: (on: boolean) => Partial<CoinJoinSettings>) => (
+  const box = (testId: string, label: string, hint: string, on: boolean, patch: (on: boolean) => Partial<CoinJoinSettings>) => (
     <div className="coinjoin-setting">
       <label className="checkbox-row">
         <input
           type="checkbox"
           data-testid={testId}
-          checked={checked}
+          checked={on}
           disabled={saving}
           aria-describedby={`${id}-${testId}`}
           onChange={(e) => {
