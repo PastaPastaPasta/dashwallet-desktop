@@ -37,8 +37,10 @@ const PAYLOAD_TYPES: &[&str] = &[
 
 /// Builders, IPC commands and console commands of the operator-signed
 /// transactions (the r3 names and their camelCase / Swift forms), BLS
-/// secret material and signers (dash-pkc, dashcore, dpp, key-wallet), and
-/// the CoinJoin test operator key.
+/// secret material and signers (dash-pkc, dashcore, dpp, key-wallet), the
+/// CoinJoin test operator key and the file and module that hold it, and
+/// `include!` (no crate includes code that way; it could pull the test key
+/// into a library from a generated or renamed file).
 const FORBIDDEN: &[&str] = &[
     "update_service_placeholder",
     "finalize_update_service",
@@ -66,25 +68,46 @@ const FORBIDDEN: &[&str] = &[
     "operator_private_key_at",
     "to_bls_extended_priv_key",
     "OperatorKey",
-    "bls::testing",
+    "operator_key.rs",
+    "test_operator_key",
+    "include!(",
 ];
 
-/// `(path or directory prefix, marker)`: from the marker on (the whole file
-/// when `None`) hits are allowed; the marker must occur exactly once, so an
-/// earlier copy cannot widen the region. dw-coinjoin's test operator key
-/// and the tests that use it play a masternode signing CoinJoin queue
-/// messages (MG-01 D9); they sign no wallet transaction. Everything above
-/// the marker is still checked.
-const ALLOWED_FROM: &[(&str, Option<&str>)] = &[
+/// Where hits are allowed. Only dw-coinjoin's test operator key and the
+/// tests that use it, which play a masternode signing CoinJoin queue
+/// messages (MG-01 D9); they sign no wallet transaction. None of it is in a
+/// library build (D21): `dash-pkc` is a dev-dependency only
+/// ([`dash_pkc_stays_a_dev_dependency`]).
+enum Allowed {
+    /// The whole file: an integration-test file, which only `cargo test`
+    /// builds compile (a library can include it only with a `#[path]` or
+    /// `include!` the scan catches).
+    File,
+    /// One inline `#[cfg(test)] mod tests`: from the marker, which must open
+    /// a line and occur exactly once, through the module's closing `}` at
+    /// column 0. Every line between must be blank or indented, so code after
+    /// the module (rustfmt puts its `}` at column 0) is read.
+    TestModule,
+    /// Exactly this text, which must open a line and occur once.
+    Text(&'static str),
+}
+
+const TEST_MODULE: &str = "#[cfg(test)]\nmod tests {\n";
+
+const ALLOWED: &[(&str, Allowed)] = &[
     (
-        "rust/crates/dw-coinjoin/src/bls.rs",
-        Some("pub mod testing"),
+        "rust/crates/dw-coinjoin/src/lib.rs",
+        Allowed::Text(
+            "#[cfg(test)]\n#[path = \"../tests/support/operator_key.rs\"]\nmod test_operator_key;\n",
+        ),
     ),
+    ("rust/crates/dw-coinjoin/src/bls.rs", Allowed::TestModule),
+    ("rust/crates/dw-coinjoin/src/queue.rs", Allowed::TestModule),
     (
-        "rust/crates/dw-coinjoin/src/queue.rs",
-        Some("#[cfg(test)]\nmod tests"),
+        "rust/crates/dw-coinjoin/tests/support/operator_key.rs",
+        Allowed::File,
     ),
-    ("rust/crates/dw-coinjoin/tests/", None),
+    ("rust/crates/dw-coinjoin/tests/session.rs", Allowed::File),
 ];
 
 const THIS_FILE: &str = "rust/crates/dw-protx/tests/no_operator_signing.rs";
@@ -246,8 +269,55 @@ fn hits(code: &str) -> Vec<String> {
                 found.push(format!("{name}: line {}", n + 1));
             }
         }
+        // A `#[path]` whose file name is escaped (`operat\x6fr_key.rs`) or
+        // built by a macro hides which file it includes.
+        if line.contains("#[path") && (line.contains('\\') || line.contains('!')) {
+            found.push(format!("#[path] with an escape or macro: line {}", n + 1));
+        }
     }
     found
+}
+
+/// `code` with the allowed region blanked (newlines kept, so line numbers
+/// stay right), or why the region is not where it must be.
+fn without_allowed(code: &str, allowed: &Allowed) -> Result<String, String> {
+    let marker = match allowed {
+        Allowed::File => return Ok(String::new()),
+        Allowed::TestModule => TEST_MODULE,
+        Allowed::Text(text) => text,
+    };
+    let starts: Vec<usize> = code
+        .match_indices(marker)
+        .map(|(at, _)| at)
+        .filter(|&at| at == 0 || code.as_bytes()[at - 1] == b'\n')
+        .collect();
+    if starts.len() != 1 || code.matches(marker).count() != 1 {
+        return Err(format!("must hold `{marker}` exactly once, opening a line"));
+    }
+    let start = starts[0];
+    let mut end = start + marker.len();
+    if let Allowed::TestModule = allowed {
+        loop {
+            let line_end = code[end..].find('\n').map_or(code.len(), |p| end + p + 1);
+            let line = &code[end..line_end];
+            end = line_end;
+            if line.trim_end() == "}" {
+                break;
+            }
+            if line.is_empty() || !(line.trim().is_empty() || line.starts_with([' ', '\t'])) {
+                return Err(format!(
+                    "the `#[cfg(test)] mod tests` must end with a `}}` line before any \
+                     unindented line (line {})",
+                    code[..end].lines().count()
+                ));
+            }
+        }
+    }
+    let blank: String = code[start..end]
+        .chars()
+        .map(|c| if c == '\n' { c } else { ' ' })
+        .collect();
+    Ok(format!("{}{blank}{}", &code[..start], &code[end..]))
 }
 
 /// What the scan reads of one file: Rust without comments, the rest as is,
@@ -276,7 +346,7 @@ fn no_operator_key_signing_path_remains() {
     );
 
     let mut violations = Vec::new();
-    let mut allowed_seen = vec![false; ALLOWED_FROM.len()];
+    let mut allowed_seen = vec![false; ALLOWED.len()];
     for path in &paths {
         let rel = path
             .strip_prefix(&root)
@@ -289,25 +359,16 @@ fn no_operator_key_signing_path_remains() {
         let src = fs::read_to_string(path).unwrap_or_else(|e| panic!("{rel}: {e}"));
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let mut code = scanned(&src, ext);
-        if let Some(k) = ALLOWED_FROM.iter().position(|(p, _)| rel.starts_with(p)) {
+        if let Some(k) = ALLOWED.iter().position(|(p, _)| rel == *p) {
             allowed_seen[k] = true;
-            match ALLOWED_FROM[k].1 {
-                None => continue,
-                Some(marker) => {
-                    assert_eq!(
-                        code.matches(marker).count(),
-                        1,
-                        "{rel} must hold `{marker}` exactly once"
-                    );
-                    code.truncate(code.find(marker).unwrap());
-                }
-            }
+            code = without_allowed(&code, &ALLOWED[k].1).unwrap_or_else(|e| panic!("{rel}: {e}"));
         }
         violations.extend(hits(&code).into_iter().map(|h| format!("{rel}: {h}")));
     }
     assert!(
         allowed_seen.iter().all(|&seen| seen),
-        "an allow-listed path moved: {ALLOWED_FROM:?}"
+        "an allow-listed path moved: {:?}",
+        ALLOWED.iter().map(|(p, _)| p).collect::<Vec<_>>()
     );
     assert!(
         violations.is_empty(),
@@ -439,4 +500,84 @@ fn the_scanner_finds_what_it_must() {
         rust("/* a\nb */\nfinalize_revoke();"),
         ["finalize_revoke: line 3"]
     );
+}
+
+/// The library cannot name a BLS secret through dash-pkc: every member
+/// crate lists it under `[dev-dependencies]` only (MG-01 D21). Its other
+/// secret types are behind clippy's `disallowed-types`.
+#[test]
+fn dash_pkc_stays_a_dev_dependency() {
+    let rust = repo_root().join("rust");
+    let mut manifests = Vec::new();
+    files(&rust.join("crates"), &["toml"], &mut manifests);
+    files(&rust.join("bin"), &["toml"], &mut manifests);
+    manifests.retain(|p| p.file_name().is_some_and(|n| n == "Cargo.toml"));
+    assert!(manifests.len() > 10, "too few member manifests");
+    let mut dev_uses = 0;
+    for manifest in manifests {
+        let mut section = String::new();
+        for line in fs::read_to_string(&manifest)
+            .unwrap()
+            .lines()
+            .map(str::trim)
+        {
+            if line.starts_with('[') {
+                section = line.to_string();
+            } else if !line.starts_with('#') && line.contains("dash-pkc") {
+                assert!(
+                    section.ends_with("dev-dependencies]"),
+                    "{} names dash-pkc under {section}",
+                    manifest.display()
+                );
+                dev_uses += 1;
+            }
+        }
+    }
+    assert!(dev_uses > 0, "dw-coinjoin's test key needs dash-pkc");
+}
+
+#[test]
+fn allowed_regions_are_exact() {
+    let module = "fn a() {}\n#[cfg(test)]\nmod tests {\n    use x::OperatorKey;\n\n    fn t() {\n        k();\n    }\n}\n";
+    let blanked = without_allowed(module, &Allowed::TestModule).unwrap();
+    assert!(hits(&blanked).is_empty());
+    assert_eq!(blanked.lines().count(), module.lines().count());
+    // Code after the module is read, whether appended or re-exported.
+    for after in [
+        "pub fn sign_any(s: &[u8], d: &[u8; 32]) -> Vec<u8> {\n    OperatorKey::from_seed(s).sign(d)\n}\n",
+        "pub use crate::test_operator_key::OperatorKey as Signer;\n",
+    ] {
+        let code = without_allowed(&format!("{module}{after}"), &Allowed::TestModule).unwrap();
+        assert!(!hits(&code).is_empty(), "missed after the module: {after}");
+    }
+    // A module closed on its marker line, or a second marker, cannot stretch
+    // the region over later code.
+    for bad in [
+        "#[cfg(test)]\nmod tests {}\npub fn s() {\n    OperatorKey::x()\n}\n".to_string(),
+        format!("{module}{module}"),
+        "#[cfg(test)]\nmod tests {\n    fn t() {}\n".to_string(),
+        // Not at the start of a line (inside a string, say).
+        "let s = \"x#[cfg(test)]\nmod tests {\n\";\n}\n".to_string(),
+    ] {
+        assert!(
+            without_allowed(&bad, &Allowed::TestModule).is_err(),
+            "accepted: {bad}"
+        );
+    }
+    // Losing `#[cfg(test)]` on the included key loses the allowance.
+    let text = Allowed::Text("#[cfg(test)]\nmod k;\n");
+    assert!(without_allowed("#[cfg(test)]\nmod k;\n", &text).is_ok());
+    assert!(without_allowed("mod k;\n", &text).is_err());
+    let tail = without_allowed("#[cfg(test)]\nmod k;\npub use k::OperatorKey;\n", &text).unwrap();
+    assert_eq!(hits(&tail), ["OperatorKey: line 3"]);
+    // Includes that could pull the key into a library.
+    for bad in [
+        "#[path = \"../tests/support/operator_key.rs\"]\nmod k;",
+        "#[path = \"../tests/support/operat\\x6fr_key.rs\"]\nmod k;",
+        "#[path = concat!(env!(\"OUT_DIR\"), \"/k.rs\")]\nmod k;",
+        "include!(concat!(env!(\"OUT_DIR\"), \"/k.rs\"));",
+    ] {
+        assert!(!hits(&strip_comments(bad)).is_empty(), "missed: {bad}");
+    }
+    assert!(hits("#[path = \"names_tests.rs\"]\nmod tests;").is_empty());
 }

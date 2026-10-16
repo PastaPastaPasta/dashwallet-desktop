@@ -12,7 +12,6 @@ use dashcore::hashes::Hash;
 use dashcore::secp256k1::{Message, SecretKey, ecdsa};
 use dashcore::sighash::SighashCache;
 use dashcore::{Network, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, Txid};
-use dw_coinjoin::bls::testing::OperatorKey;
 use dw_coinjoin::client::{
     MIXING_SIGHASH, MixCoin, MixingWallet, SessionFailure, SessionOutcome, SessionParams,
     WalletError, run_session,
@@ -24,6 +23,10 @@ use dw_coinjoin::status::{PoolMessage, PoolState};
 use dw_p2p::PeerEntry;
 use dw_p2p::testing::{MockConn, MockPeer};
 use tokio::sync::watch;
+
+#[path = "support/operator_key.rs"]
+mod operator_key;
+use operator_key::OperatorKey;
 
 const DENOM: u32 = 4; // 0.100001 DASH
 const AMOUNT: u64 = 10_000_100;
