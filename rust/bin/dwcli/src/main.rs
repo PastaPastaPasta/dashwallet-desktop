@@ -4,6 +4,7 @@
 mod coinjoin;
 mod compat;
 mod dashpay;
+mod governance;
 mod pay;
 mod teardown;
 #[cfg(test)]
@@ -158,6 +159,10 @@ enum Command {
     CoinJoin(coinjoin::CoinJoinCommand),
     #[command(flatten)]
     DashPay(dashpay::DashPayCommand),
+    /// MG-02: turn governance sync on, wait until it is synced, print the
+    /// state, info, proposals and votes as JSON lines; optionally relay a
+    /// vote and run console lines.
+    Governance(governance::GovernanceArgs),
 }
 
 fn parse_network(s: &str) -> Result<DashNetwork, String> {
@@ -507,6 +512,10 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Compat(cmd) => {
             unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             let result = compat::run(&engine, &session, passphrase.as_ref(), cmd);
+            return finish(engine, &session, passphrase, result);
+        }
+        Command::Governance(args) => {
+            let result = governance::run(&engine, &session, args);
             return finish(engine, &session, passphrase, result);
         }
         Command::CoinJoin(cmd) => {
