@@ -52,9 +52,9 @@ catch-up is not built; m4 §2.2 "On E0-04.P2b"). A row no run drives reports a w
 
 ## Screens
 
-All on the Join DashPay page (route `joinDashPay`, `page-joinDashPay`), under one header (`WizardHeader`, UX-SPEC
-C29: "Step n of 3 · title" with a segmented bar) for the three choosing steps; the progress and result screens have
-none. Width `formMaxWidth` (640).
+All on the Join DashPay page (route `joinDashPay`, `page-joinDashPay`). The two choosing steps carry a header line
+"Step n of 2 · title" (`registration-step`, after UX-SPEC C29's wizard header, without its segmented bar for two
+steps); the progress and result screens have none. Width `formMaxWidth` (640).
 
 1. **Choose** (`registration-name`): title "Choose your Dash username" (Android `choose_your_username`); the field
    (`registration-name-field`, `autocapitalize=off`, `spellcheck=false`, max 23 characters typed); the rule checklist
@@ -144,6 +144,10 @@ re-reads the registrations (D14).
 | D14 | A `leaseChanged` event for a `registration` lease re-reads the registrations (events.ts, additive). This fixes DP1-08's follow-up: a passphrase change revokes the flow's lease (`passphraseChange`) and parks the row without a `vaultLockState`. | The lease event is what the engine sends; no engine change. |
 | D15 | While the progress screen shows a running row it re-reads `registrations` every 5 s, on top of the signals. | A run's `waiting` changes (InstantSend to ChainLock, a park) write no row, so no `Platform{Registration}` says so (engine research, `registration_flow.rs` `Step::Wait`/`Park`). The read is local (app.sqlite and memory). An engine signal on those changes is a follow-up (F6). |
 | D16 | The availability check runs before Confirm, and the wizard does not offer Confirm on a `taken` or `locked` label; `start_registration` itself does not check (a taken name ends `done` with `nameFailure: name.taken`, R10). | The identity and its credits are then kept and the name is chosen again from credits (D6), so nothing is lost; but the user should not pay for an identity whose name they cannot have when the check could have said so. |
+| D17 | The GL run is on public testnet, not T2. `scripts/e2e-tauri-registration.sh` creates wallet E in the app, funds it from fixture wallet A's Core coins with dwcli, registers a non-contested name (a digit 2–9), closes the app once the row has its lock's txid in `fundingSent`/`proofWaiting`, and resumes after the relaunch. A ledger (`DP1-09.json`, written exclusively, then per step) and a kept data root let a stopped run go on without a second wallet, payment or lock. | agentbox runs no dashmate devnet (no containers, nothing listening), as for DP2-07/08/09. Testnet writes are allowed for this acceptance only; E's phrase is kept 0600 in the fixture before any coin moves (BL-163). |
+| D18 | The fixture models a run as `runs` (drafts with a run this session) and the registration lease: a row is advanced only while its run is there and its lease is live, or (a scenario's run) no registration lease exists; `relaunch()` keeps the world through `sessionStorage`, drops runs, grants and leases, and locks an encrypted vault. No proof, credit or coin is modelled: `availableDuffs` is the confirmed balance less CoinJoin coins, and a run debits nothing. Reads answer copies of the world's rows. | The flows to prove are the UI's (step, park, Continue, no second start); the engine's own accounting has its tests. A read answering the world's object, changed in place by `advance`, looked unchanged to the query cache (found in the e2e run). |
+| D19 | A relaunch on step 1 or 2 lands on the Join card (D13); a relaunch after Confirm lands on Home with the card paused (`creatingPaused`), whose action opens the row's screen. | Home is the app's start; the card already leads to the Join page (DP1-08 D12). |
+| D20 | The two steps' header is the line "Step n of 2 · title", without C29's segmented bar. | A bar of two segments says no more than the line; the progress screen keeps DP1-08's three-step bar (D11). |
 
 ## Deferred
 
