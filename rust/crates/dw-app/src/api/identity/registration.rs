@@ -124,6 +124,9 @@ pub struct RegistrationQuote {
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub remaining_credits: u64,
+    /// What the funding can spend now (the set the start checks the total
+    /// against); 0 for funding that is not the Core balance.
+    pub available_duffs: u64,
     /// The grant to ask for.
     pub grant: GrantRequest,
 }
@@ -136,6 +139,7 @@ impl From<engine::RegistrationQuote> for RegistrationQuote {
             fee_duffs,
             total_duffs,
             remaining_credits,
+            available_duffs,
             grant,
         } = q;
         RegistrationQuote {
@@ -144,6 +148,7 @@ impl From<engine::RegistrationQuote> for RegistrationQuote {
             fee_duffs,
             total_duffs,
             remaining_credits,
+            available_duffs,
             grant: grant.into(),
         }
     }
@@ -254,6 +259,9 @@ pub struct RegistrationStatus {
     pub waiting: Option<RegistrationWaitName>,
     /// A lease holds a key for this flow ("Lock to cancel").
     pub holds_key: bool,
+    /// A driver runs the flow now, and `waiting` is what it waits for;
+    /// otherwise nothing moves the row until `resumeRegistration`.
+    pub running: bool,
     /// A funding of the flow has committed and is not definitely unsent.
     pub funds_committed: bool,
     /// While `phase` is `contested`.
@@ -280,6 +288,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             txid,
             waiting,
             holds_key,
+            running,
             funds_committed,
             contest_ends_at,
             failure,
@@ -297,6 +306,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             txid,
             waiting: waiting.map(Into::into),
             holds_key,
+            running,
             funds_committed,
             contest_ends_at,
             failure: failure.map(Into::into),

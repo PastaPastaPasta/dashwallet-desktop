@@ -39,6 +39,9 @@ import type { AddressClass } from "./generated/AddressClass";
 import type { AddressInfo } from "./generated/AddressInfo";
 import type { BroadcastOutcome } from "./generated/BroadcastOutcome";
 import type { ChangePolicy } from "./generated/ChangePolicy";
+import type { CoinJoinLimits } from "./generated/CoinJoinLimits";
+import type { CoinJoinSettings } from "./generated/CoinJoinSettings";
+import type { CoinJoinStatus } from "./generated/CoinJoinStatus";
 import type { CoinSelectionSummary } from "./generated/CoinSelectionSummary";
 import type { CoinSource } from "./generated/CoinSource";
 import type { FeeMode } from "./generated/FeeMode";
@@ -65,6 +68,10 @@ import type { PsbtAnalysis } from "./generated/PsbtAnalysis";
 import type { RegistrationQuote } from "./generated/RegistrationQuote";
 import type { RegistrationRequest } from "./generated/RegistrationRequest";
 import type { RegistrationStatus } from "./generated/RegistrationStatus";
+import type { UsernameCheck } from "./generated/UsernameCheck";
+import type { NameAvailability } from "./generated/NameAvailability";
+import type { FinishReport } from "./generated/FinishReport";
+import type { NameOutcome } from "./generated/NameOutcome";
 import type { RescanStart } from "./generated/RescanStart";
 import type { RescanStatus } from "./generated/RescanStatus";
 import type { VerifyMessageResult } from "./generated/VerifyMessageResult";
@@ -218,6 +225,14 @@ export interface Backend {
   dustProtection(): Promise<number | null>;
   setDustProtection(threshold: number | null): Promise<null>;
   nodeInfo(): Promise<NodeSummary>;
+  // CoinJoin (U-06): the network's options, and mixing per wallet.
+  coinjoinLimits(): Promise<CoinJoinLimits>;
+  coinjoinSettings(): Promise<CoinJoinSettings>;
+  /** Applies them live and stores them for the network; `enabled: false` stops every wallet. */
+  setCoinjoinSettings(settings: CoinJoinSettings): Promise<null>;
+  coinjoinStatus(walletId: string): Promise<CoinJoinStatus>;
+  startMixing(walletId: string): Promise<null>;
+  stopMixing(walletId: string): Promise<null>;
   dashpayStatus(walletId: string): Promise<DashPayStatus>;
   identities(walletId: string): Promise<IdentitySummary[]>;
   dashpayUnreadCount(walletId: string, identity: string): Promise<number>;
@@ -291,6 +306,23 @@ export interface Backend {
   /** The costs of registering `request` (DP1-02); local for a non-contested name. */
   registrationQuote(walletId: string, request: RegistrationRequest): Promise<RegistrationQuote>;
   resolveStuckFunding(walletId: string, step: string, grant: string): Promise<BroadcastOutcome>;
+  // The registration wizard (DP1-09).
+  /** The label's rule checklist; offline, needs no wallet. */
+  checkUsername(label: string): Promise<UsernameCheck>;
+  /** The label's checklist verdict, then the network's. */
+  nameAvailability(walletId: string, label: string): Promise<NameAvailability>;
+  /** Starts a registration under `grant`; the draft id. Progress is `registrations`. */
+  startRegistration(walletId: string, request: RegistrationRequest, grant: string): Promise<string>;
+  /** `startRegistration` past the earlier registrations `past` whose funding is unknown, once the
+   * user confirmed the wedge copy (m4 §2.2 "In progress"). */
+  startRegistrationPastUnknownFunding(walletId: string, request: RegistrationRequest, grant: string, past: string[]): Promise<string>;
+  /** `grant` is needed exactly when the row waits `unlock` or `authorize`. */
+  resumeRegistration(walletId: string, draft: string, grant: string | null): Promise<null>;
+  discardRegistration(walletId: string, draft: string): Promise<null>;
+  /** Tools ▸ Repair "Finish transfers". */
+  finishAssetLocks(walletId: string, grant: string): Promise<FinishReport>;
+  /** A name for `identity`, paid from its credits. */
+  registerName(walletId: string, identity: string, label: string, grant: string): Promise<NameOutcome>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;
   saveAddressBookEntry(walletId: string, address: string, label: string, purpose: AddressPurposeName, replace: boolean): Promise<AddressBookEntry>;
   deleteAddressBookEntry(walletId: string, address: string): Promise<null>;

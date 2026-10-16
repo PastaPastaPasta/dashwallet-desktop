@@ -1833,6 +1833,37 @@ button {
   white-space: nowrap;
 }
 
+/* The transaction detail's contact row (DP3-07 D6): avatar, names, View contact. */
+.tx-detail-contact {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.tx-detail-contact-names {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tx-detail-contact-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Home's frequent strip (DP3-07 D7): DP3-06's strip in a card above History. */
+.home-frequent {
+  margin-bottom: var(--dw-layout-section-gap);
+  padding-bottom: var(--dw-space-s);
+  border-radius: var(--dw-radius-card);
+}
+
+.home-frequent .pay-frequent-chips {
+  padding: 0 var(--dw-space-s);
+}
+
 .pay-payee-card {
   flex-direction: row;
   align-items: center;
@@ -3507,6 +3538,151 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-m);
 }
 
+/* DP1-09: the registration wizard and a registration's screens, on the Join page. */
+.registration {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  max-width: var(--dw-layout-form-max-width);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.registration-header,
+.registration-live,
+.registration-form,
+.registration-cost,
+.registration-contested {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+}
+
+.registration-form {
+  gap: var(--dw-space-m);
+}
+
+.registration-step {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.registration-title {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  margin: 0;
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+  overflow-wrap: anywhere;
+}
+
+.registration-spinner {
+  flex: none;
+  width: var(--dw-space-m);
+  height: var(--dw-space-m);
+}
+
+.registration-line,
+.registration-availability {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  overflow-wrap: anywhere;
+}
+
+.registration-availability {
+  min-height: var(--dw-type-footnote-line);
+}
+
+.registration-availability[data-tone="ok"] {
+  color: var(--dw-role-text-primary);
+}
+
+.registration-availability[data-tone="problem"],
+.registration-problem,
+.registration-error {
+  color: var(--dw-role-danger);
+}
+
+.registration-error {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.registration-rules {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.registration-rules li::before {
+  display: inline-block;
+  width: 1.25em;
+  content: "•";
+}
+
+.registration-rules li[data-passed="true"] {
+  color: var(--dw-role-text-primary);
+}
+
+.registration-rules li[data-passed="true"]::before {
+  content: "✓";
+}
+
+.registration-rules li[data-passed="false"] {
+  color: var(--dw-role-danger);
+}
+
+.registration-rules li[data-passed="false"]::before {
+  content: "✗";
+}
+
+.registration-contested .dash-button {
+  align-self: flex-start;
+}
+
+.registration-fee {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin: 0;
+  font-size: var(--dw-type-body-size);
+  line-height: var(--dw-type-body-line);
+}
+
+.registration-fee-amount {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.registration-accept {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.registration-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--dw-space-s);
+}
+
 .about-dashpay-headline {
   margin: 0;
   font-size: var(--dw-type-headline-size);
@@ -3534,4 +3710,201 @@ button.bell-row-open:focus-visible {
 
 .about-dashpay-question .about-dashpay-item-text {
   margin-top: var(--dw-space-xs);
+}
+
+/* ------------------------------------------------------------------ CoinJoin (U-06) */
+
+.coinjoin-card,
+.coinjoin-status {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.coinjoin-card-body,
+.coinjoin-card-live {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+}
+
+.coinjoin-card-title,
+.coinjoin-status-title {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.coinjoin-status-title {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.coinjoin-card-open {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.coinjoin-card-open:hover {
+  color: var(--dw-role-text-link);
+}
+
+.coinjoin-spinner {
+  flex: none;
+  width: var(--dw-space-m);
+  height: var(--dw-space-m);
+}
+
+.coinjoin-progress-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+  font-variant-numeric: tabular-nums;
+}
+
+.coinjoin-progress {
+  width: var(--dw-layout-status-progress-width);
+  height: 4px;
+  accent-color: var(--dw-role-accent);
+}
+
+.coinjoin-mixed,
+.coinjoin-line {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.coinjoin-line {
+  color: var(--dw-role-text-secondary);
+}
+
+.coinjoin-card-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--dw-space-xxs);
+  align-self: center;
+}
+
+.coinjoin-status-action {
+  align-self: center;
+}
+
+.coinjoin-subtitle {
+  margin: 0 0 var(--dw-space-l);
+  color: var(--dw-role-text-secondary);
+}
+
+.coinjoin-notes,
+.coinjoin-levels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.coinjoin-notes p {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.coinjoin-level-group {
+  gap: var(--dw-space-xs);
+}
+
+.coinjoin-level {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: start;
+  gap: var(--dw-space-sm);
+  padding: var(--dw-space-sm) 0;
+  cursor: pointer;
+}
+
+.coinjoin-level + .coinjoin-level {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.coinjoin-level input {
+  margin: var(--dw-space-xxs) 0 0;
+  accent-color: var(--dw-role-accent);
+}
+
+.coinjoin-level-icon {
+  object-fit: contain;
+}
+
+.coinjoin-level-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+  grid-column: 3;
+}
+
+.coinjoin-level-title {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.coinjoin-level-time {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.coinjoin-details {
+  margin-bottom: var(--dw-space-l);
+}
+
+.coinjoin-details-list {
+  margin: 0;
+  padding: 0 var(--dw-layout-card-padding);
+}
+
+.coinjoin-detail-note {
+  display: block;
+}
+
+.coinjoin-sessions {
+  padding: var(--dw-space-s) var(--dw-layout-card-padding) var(--dw-space-m);
+}
+
+.coinjoin-setting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+}
+
+.coinjoin-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  width: 100%;
+}
+
+/* Whole numbers of a few digits: no full-width field. */
+.coinjoin-settings-form .form-field input {
+  max-width: 240px;
 }

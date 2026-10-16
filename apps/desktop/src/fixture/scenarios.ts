@@ -25,6 +25,7 @@ import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type Send
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
 import { scanWorld, type ScanWorld } from "./scan";
+import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FUNDED_BALANCES, makeIds, prng, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
@@ -84,6 +85,8 @@ export interface World {
   settings: SettingsWorld;
   /** The QR scan commands' screen picker (scan.ts, DP2-08). */
   scan: ScanWorld;
+  /** CoinJoin's options and each wallet's mixer (coinjoin.ts, U-06). */
+  coinjoin: CoinJoinWorld;
 }
 
 /** A vault grant: single use (`used` once redeemed or revoked); `ownKey` when it was issued
@@ -175,6 +178,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     tools: newToolsWorld(main),
     settings: withAutomaticBackups(newSettingsWorld(), FIXTURE_WALLET_ID, MAIN_PHRASE, FIXTURE_PASSPHRASE),
     scan: scanWorld(),
+    coinjoin: newCoinJoinWorld(),
   };
 }
 
@@ -310,6 +314,25 @@ function attributePayments(w: World) {
   attribute(first("sendToAddress")!, "dave", "sent");
 }
 
+/** DP3-07 D10: besides Bob's and Dave's, the newest payment from Marta (no relation to the main
+ * identity), "Coffee refund" from Bob (a label over the contact), an older payment whose
+ * counterparty's names have not landed yet, and the oldest payment, to Judy (hidden). */
+function attributeMore(w: World) {
+  attributePayments(w);
+  const rows = w.wallets[0].rows;
+  rows[0].counterparty = { identity: IDENTITY.marta, username: "marta", displayName: "Marta", avatarUrl: null };
+  // The newest labelled receipt, "Coffee refund" (its text stays wallet.ts's sentinel).
+  const refund = rows.find((r) => r.label && r.amount > 0)!;
+  refund.counterparty = { identity: IDENTITY.bob, username: "bob", displayName: "Bob Builder", avatarUrl: null };
+  w.dashpay.activity[IDENTITY.bob].unshift({ txid: refund.txid, direction: "received", amount: refund.amount, height: refund.blockHeight, timestamp: refund.timestamp });
+  const nameless = rows.find((r) => r.txType === "recvWithAddress" && r.category === "received" && !r.label && !r.counterparty && r.status.kind === "confirmed")!;
+  nameless.counterparty = { identity: IDENTITY.mateo, username: null, displayName: null, avatarUrl: null };
+  // The oldest plain payment went to Judy, a contact the user hid: listed, in the collapsed Hidden section.
+  const hidden = rows.findLast((r) => r.txType === "sendToAddress" && !r.label && !r.counterparty && r.status.kind === "confirmed")!;
+  hidden.counterparty = { identity: IDENTITY.judy, username: "judy", displayName: "Judy", avatarUrl: null };
+  (w.dashpay.activity[IDENTITY.judy] ??= []).push({ txid: hidden.txid, direction: "sent", amount: Math.abs(hidden.amount) - (hidden.fee ?? 0), height: hidden.blockHeight, timestamp: hidden.timestamp });
+}
+
 function twoWallets(w: World): World {
   w.wallets.push(emptyWallet(SECOND_WALLET_ID, "Savings"));
   w.lock = unlocked([FIXTURE_WALLET_ID, SECOND_WALLET_ID]);
@@ -429,6 +452,13 @@ const SCENARIOS = {
     attributePayments(w);
     return w;
   },
+  /** DP3-07: `dashpay-registered` with more attributed payments among the newest rows (D10). */
+  "dashpay-history-contacts": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    attributeMore(w);
+    return w;
+  },
   /** "alice" contested: her identity holds the temporary "alice007" while masternodes vote. The
    * chip says "@alice · Pending"; Contacts, the bell and the badge stay (BL-153 D11). */
   "dashpay-contest-pending": (t) => contestPending(base(t), 1_900_000_000),
@@ -467,7 +497,8 @@ const SCENARIOS = {
   "dashpay-registering-unlock": (t) => {
     const w = base(t);
     w.dashpay = registering();
-    w.dashpay.registrations[0] = { ...w.dashpay.registrations[0], phase: "draft", waiting: "unlock", txid: null, holdsKey: false, fundsCommitted: false };
+    w.dashpay.registrations[0] = { ...w.dashpay.registrations[0], phase: "draft", waiting: "unlock", txid: null, holdsKey: false, running: false, fundsCommitted: false };
+    w.dashpay.runs = [];
     w.lock = { ...w.lock, state: "unlockedMixingOnly" };
     return w;
   },
@@ -481,8 +512,56 @@ const SCENARIOS = {
       waiting: null,
       txid: null,
       holdsKey: false,
+      running: false,
       fundsCommitted: false,
       failure: { phase: "keysPrepared", code: "registration.funding_insufficient", retryable: true, needed: "3002260", available: "1000000" },
+    };
+    w.dashpay.runs = [];
+    return w;
+  },
+  // DP1-09: a registration's screens (R2, R5, R8). Its run ended with the last launch.
+  /** Funded, after a relaunch: no proof yet, so it reads `chainLock` with no key held, and waits for Continue (R2, D21). */
+  "dashpay-registration-paused": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registering(), runs: [] };
+    return w;
+  },
+  /** Its asset lock is proved but no flow finished it: Finish transfers (R5). */
+  "dashpay-registration-needs-finish": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registering(), runs: [] };
+    w.dashpay.registrations[0].waiting = "needsFinish";
+    return w;
+  },
+  /** Failed for good after its funding went out: the recovery copy and Repair (R8). The status no
+   * longer names it (banner.rs `in_progress`); the Join page finds it (D22). */
+  "dashpay-registration-stopped": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registering(), runs: [], status: { kind: "noIdentity", reason: null } };
+    w.dashpay.registrations[0] = {
+      ...w.dashpay.registrations[0],
+      phase: "failed",
+      waiting: null,
+      holdsKey: false,
+      running: false,
+      failure: { phase: "fundingSent", code: "registration.islock_timeout", retryable: false, needed: null, available: null },
+    };
+    return w;
+  },
+  /** Failed (a retryable timeout) while its funding's outcome is unknown: the engine keeps the
+   * wait of the step it still owns (`Awaiting`), so the page, Home and Tools ▸ Repair send it to
+   * Resolve stuck funding (f1, Sol r1 P2). */
+  "dashpay-registration-failed-unknown": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registering(), runs: [] };
+    w.dashpay.registrations[0] = {
+      ...w.dashpay.registrations[0],
+      phase: "failed",
+      waiting: "fundingUnknown",
+      holdsKey: false,
+      running: false,
+      fundsCommitted: true,
+      failure: { phase: "keysPrepared", code: "platform.timeout", retryable: true, needed: null, available: null },
     };
     return w;
   },
@@ -619,6 +698,8 @@ const SCENARIOS = {
   "lock-report-resolved": (t) => resolvedFlows(base(t)),
   /** A cut call reported under its label (no id to check): unresolved for good. */
   "lock-report-call": (t) => unnamedCall(base(t)),
+  // CoinJoin (U-06): coinjoin.ts.
+  ...coinjoinScenarios(base),
 } satisfies Record<string, (theme: ThemeName | null) => World>;
 
 export type ScenarioName = keyof typeof SCENARIOS;

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { STATES as COINJOIN, pressStart } from "./coinjoin";
 import { CARDS, CHIP_TEXT, CHIPS } from "./dashpay";
 import { fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
 import { showSettingsView, type SettingsView } from "./settings";
@@ -181,6 +182,33 @@ const JOIN: Record<string, { scenario: string; ready: string }> = {
   "join-voting": { scenario: "dashpay-contest-pending", ready: "dashpay-card" },
 };
 
+// DP1-09: the registration wizard's two steps and a registration's screens on the Join page.
+const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Promise<unknown> }> = {
+  name: {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await page.getByTestId("join-create").click();
+      await page.getByTestId("registration-name-field").fill("alice");
+      await expect(page.getByTestId("registration-availability")).toHaveText("Username available");
+    },
+  },
+  confirm: {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await page.getByTestId("join-create").click();
+      await page.getByTestId("registration-name-field").fill("alice-77");
+      await expect(page.getByTestId("registration-next")).toBeEnabled();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-fee").waitFor();
+    },
+  },
+  progress: { scenario: "dashpay-registering", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=progress]").waitFor() },
+  paused: { scenario: "dashpay-registration-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=paused]").waitFor() },
+  retry: { scenario: "dashpay-registering-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=retry]").waitFor() },
+  repair: { scenario: "dashpay-registration-needs-finish", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=repair]").waitFor() },
+  stopped: { scenario: "dashpay-registration-stopped", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=stopped]").waitFor() },
+};
+
 async function openJoin(page: Page, scenario: string, theme: Theme) {
   await page.goto(fixtureUrl(scenario, theme));
   await page.getByTestId("toolbar").waitFor();
@@ -229,6 +257,13 @@ for (const theme of THEMES) {
     await page.mouse.move(0, 0);
     await shoot(page, "dashpay-faq", theme);
   });
+  for (const [name, { scenario, reach }] of Object.entries(REGISTRATION)) {
+    test(`visual dashpay-registration-${name} ${theme}`, async ({ page }) => {
+      await openJoin(page, scenario, theme);
+      await reach(page);
+      await shoot(page, `dashpay-registration-${name}`, theme);
+    });
+  }
 }
 
 // DP2-08: Add Contact with a search hit's card (Send), and My QR.
@@ -262,6 +297,8 @@ for (const theme of THEMES) {
   test(`visual bell ${theme}`, async ({ page }) => {
     await page.goto(fixtureUrl("dashpay-registered", theme));
     await page.getByTestId("hero").waitFor();
+    // DP3-07: Home's frequent strip lands after the hero; the popover covers part of it.
+    await page.getByTestId("home-frequent").waitFor();
     await page.getByTestId("toolbar-bell").click();
     await page.getByTestId("bell-new").waitFor();
     await page.mouse.move(0, 0);
@@ -314,5 +351,74 @@ for (const theme of THEMES) {
     await page.getByTestId("pay-continue").click();
     await page.getByTestId("pay-confirm-passphrase").waitFor();
     await shoot(page, "pay-contact-accept", theme);
+  });
+}
+
+// DP3-07: Home with the frequent strip and contact rows, Activity's list with them, and the
+// detail naming the contact (View contact), on `dashpay-history-contacts`.
+async function openHistoryContacts(page: Page, theme: Theme) {
+  await page.goto(fixtureUrl("dashpay-history-contacts", theme));
+  await page.getByTestId("home-frequent-chip").first().waitFor();
+}
+
+for (const theme of THEMES) {
+  test(`visual home-contacts ${theme}`, async ({ page }) => {
+    await openHistoryContacts(page, theme);
+    await page.mouse.move(0, 0);
+    await shoot(page, "home-contacts", theme);
+  });
+
+  test(`visual activity-contacts ${theme}`, async ({ page }) => {
+    await openHistoryContacts(page, theme);
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "activity-contacts", theme);
+  });
+
+  test(`visual tx-detail-contact ${theme}`, async ({ page }) => {
+    await openHistoryContacts(page, theme);
+    await page.locator(".tx-row").filter({ hasText: "Coffee refund" }).click();
+    await page.getByTestId("tx-detail-view-contact").waitFor();
+    await shoot(page, "tx-detail-contact", theme);
+  });
+}
+
+// U-06: the CoinJoin Home card in each state it shows, the page (off, mixing, paused, locked) and
+// Settings ▸ CoinJoin.
+const COINJOIN_PAGES = ["off", "mixing", "paused", "locked"] as const;
+
+for (const theme of THEMES) {
+  for (const [state, { scenario, start, home }] of Object.entries(COINJOIN)) {
+    if (!home) continue;
+    test(`visual coinjoin-card-${state} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(scenario, theme));
+      if (start) {
+        await page.getByTestId("toolbar").waitFor();
+        await pressStart(page);
+      }
+      const card = page.getByTestId("coinjoin-card");
+      await card.waitFor();
+      await fontsReady(page);
+      await expect(card).toHaveScreenshot(`${theme}-coinjoin-card-${state}.png`, SHOT);
+    });
+  }
+  for (const state of COINJOIN_PAGES) {
+    test(`visual coinjoin-page-${state} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(COINJOIN[state].scenario, theme));
+      await page.getByTestId("toolbar").waitFor();
+      await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
+      await page.locator(`[data-testid=coinjoin-status][data-state=${state}]`).waitFor();
+      await page.getByTestId("coinjoin-levels").locator("fieldset").waitFor();
+      await shoot(page, `coinjoin-page-${state}`, theme);
+    });
+  }
+  test(`visual settings-coinjoin ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("funded", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+    await page.getByTestId("settings-tabs-coinjoin").click();
+    await page.getByTestId("settings-coinjoin-mixing").waitFor();
+    await shoot(page, "settings-coinjoin", theme);
   });
 }

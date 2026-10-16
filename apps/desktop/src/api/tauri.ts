@@ -112,6 +112,12 @@ export class IpcBackend implements Backend {
   dustProtection = () => cmd.dustProtection();
   setDustProtection = cmd.setDustProtection;
   nodeInfo = () => cmd.nodeInfo();
+  coinjoinLimits = () => cmd.coinjoinLimits();
+  coinjoinSettings = () => cmd.coinjoinSettings();
+  setCoinjoinSettings = cmd.setCoinjoinSettings;
+  coinjoinStatus = cmd.coinjoinStatus;
+  startMixing = cmd.startMixing;
+  stopMixing = cmd.stopMixing;
   dashpayStatus = cmd.dashpayStatus;
   identities = cmd.identities;
   dashpayUnreadCount = cmd.dashpayUnreadCount;
@@ -161,6 +167,14 @@ export class IpcBackend implements Backend {
   registrations = cmd.registrations;
   registrationQuote = cmd.registrationQuote;
   resolveStuckFunding = cmd.resolveStuckFunding;
+  checkUsername = cmd.checkUsername;
+  nameAvailability = cmd.nameAvailability;
+  startRegistration = cmd.startRegistration;
+  startRegistrationPastUnknownFunding = cmd.startRegistrationPastUnknownFunding;
+  resumeRegistration = cmd.resumeRegistration;
+  discardRegistration = cmd.discardRegistration;
+  finishAssetLocks = cmd.finishAssetLocks;
+  registerName = cmd.registerName;
   // The search is the renderer's (U-05 D13): dash-qt's wildcards over label and address.
   addressBook = (walletId: string, purpose: AddressPurposeName | null) => cmd.addressBook(walletId, purpose, null);
   saveAddressBookEntry = cmd.saveAddressBookEntry;

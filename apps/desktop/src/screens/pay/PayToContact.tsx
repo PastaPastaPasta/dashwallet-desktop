@@ -21,6 +21,7 @@ import { Outcome as ActionLine } from "../tools/common";
 import { Avatar } from "../contacts/Avatar";
 import { Row } from "../contacts/ContactList";
 import { CoinControl } from "./CoinControl";
+import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, resolveText, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
@@ -143,26 +144,7 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
   const strip = text === "" ? (frequent.data ?? []) : [];
   return (
     <div className="pay-form pay-contact-chooser" data-testid="pay-contact">
-      {strip.length > 0 && (
-        <section className="pay-frequent" aria-labelledby={`${id}-frequent`} data-testid="pay-frequent">
-          <h2 className="contacts-group-title" id={`${id}-frequent`}>
-            Frequent contacts
-          </h2>
-          <ul className="pay-frequent-chips">
-            {strip.map((c) => {
-              const p = payeeOf(c);
-              return (
-                <li key={c.contact}>
-                  <button type="button" className="pay-frequent-chip" data-testid="pay-frequent-chip" data-contact={c.contact} onClick={() => onPick(p)}>
-                    <Avatar letters={p.letters} size="pane" />
-                    <span className="pay-frequent-name">{p.name}</span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      )}
+      <FrequentStrip contacts={strip} onPick={onPick} testId="pay-frequent" />
       <label className="search-field" data-testid="pay-contact-search">
         <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
         <input

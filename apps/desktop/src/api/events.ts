@@ -12,6 +12,11 @@ import type { PlatformChangeName } from "./generated/PlatformChangeName";
 import { dashpayKeys } from "../dashpay/queries";
 import { keys } from "./queries";
 
+/** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
+ * engine's identity read was not live, so it proves nothing), and no Platform signal follows when
+ * the bring-up has nothing to report: sync re-reads it like `noIdentity`'s. */
+const withoutIdentity = (kind: DashPayStatus["kind"] | undefined) => kind === "noIdentity" || kind === "startupIncomplete";
+
 /** The query keys an event makes stale; `"all"` means every query but the network itself. */
 export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
   switch (event.kind) {
@@ -28,13 +33,14 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     case "walletLoadChanged":
       return [keys.wallets, keys.dashpayStatus(event.walletId)];
     // Sync ends `noIdentity`'s `waitingForSync` and sends no Platform signal (BL-153 D9); only
-    // statuses without an identity are re-read (bridgeEvents).
+    // statuses without an identity are re-read (bridgeEvents), `startupIncomplete` too (DP1-09 D28).
     case "spvStateChanged":
     case "sync":
       return [keys.sync, keys.dashpayStatusAll];
     // The username quote's fee grows with the wallet's coins (DP1-08).
     case "balances":
-      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId)];
+      // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7).
+      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId), keys.coinjoinStatus(event.walletId)];
     case "historyChanged":
       return [
         keys.historyAll(event.walletId),
@@ -52,7 +58,10 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       return event.progress.kind === "done" ? [keys.lockStatus, keys.lockReconcile] : [];
     // The lock report's reconciliation reads leases and dispatch states (lockReport.ts); its
     // invalidations are coalesced (RECONCILE_COALESCE_MS).
+    // A registration lease revoked or parked moves its row's `waiting` without a Platform
+    // signal; a passphrase change revokes it without a `vaultLockState` (DP1-09 D14).
     case "leaseChanged":
+      return event.lease.flow === "registration" ? [keys.lockReconcile, dashpayKeys.registrationsAll] : [keys.lockReconcile];
     case "dispatchResolved":
       return [keys.lockReconcile];
     // The shell's chip, bell and Contacts badge (the DashPay screens come with their tasks).
@@ -74,9 +83,10 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
         default:
           return [keys.dashpayAll];
       }
-    // No screen reads these yet (the CoinJoin, notice and governance views come with their tasks).
-    case "newTransactions":
     case "coinJoin":
+      return [keys.coinjoinStatus(event.walletId)];
+    // No screen reads these yet (the notice and governance views come with their tasks).
+    case "newTransactions":
     case "notice":
     case "governance":
       return [];
@@ -134,7 +144,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
     } else
       for (const queryKey of stale) {
         if (queryKey === keys.dashpayStatusAll)
-          void client.invalidateQueries({ queryKey, predicate: (q) => (q.state.data as DashPayStatus | undefined)?.kind === "noIdentity" });
+          void client.invalidateQueries({ queryKey, predicate: (q) => withoutIdentity((q.state.data as DashPayStatus | undefined)?.kind) });
         else if (queryKey !== keys.lockReconcile) void client.invalidateQueries({ queryKey });
         else {
           const now = Date.now();

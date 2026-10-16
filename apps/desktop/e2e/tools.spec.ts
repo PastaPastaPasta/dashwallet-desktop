@@ -212,7 +212,15 @@ test.describe("Repair", () => {
     await page.getByTestId("repair-confirm-ok").click();
     await authorize(page);
     await expect(page.getByTestId("repair-outcome")).toBeVisible();
-    await expect(page.getByTestId("repair-asset-locks-not-yet")).toContainText("Not yet (DP1-09, DP1-02).");
+    await expect(page.getByTestId("repair-asset-locks-not-yet")).toContainText("Not yet (DP1-02).");
+  });
+
+  test("DP109_D10: Finish transfers resumes stranded asset locks under a platformOp grant and reports them", async ({ page }) => {
+    await open(page, "tools-stuck-funding");
+    await tools(page, "repair");
+    await page.getByTestId("repair-finish-transfers").click();
+    await authorize(page);
+    await expect(page.getByTestId("repair-outcome")).toHaveText("0 resumed, 0 completed, 0 still pending.");
   });
 });
 

@@ -132,8 +132,9 @@ export function stepOf(phase: RegistrationPhaseName, failure: RegistrationFailur
   }
 }
 
-/** What a running registration waits for, as a line under its step. */
-const WAITS = {
+/** What a running registration waits for, as a line under its step (the wizard's progress
+ * screen shows the same lines, DP1-09 D11). */
+export const WAITS = {
   instantSend: "Waiting for the network to confirm the payment.",
   chainLock: "Waiting for the network to confirm the payment.",
   network: "Waiting for the Dash network. It tries again on its own.",
@@ -145,6 +146,17 @@ const WAITS = {
   fundingUnknown: null,
   needsFinish: null,
 } as const satisfies Record<RegistrationWaitName, string | null>;
+
+/** DP1-09 D21/D26: the row waits for Continue's grant. It says `authorize`, or nothing runs it
+ * (`running`) and it waits for a proof or the network: the engine reports an idle row's first
+ * missing piece (`idle_wait`) whether or not a run waits for it, and nothing resumes such a row
+ * alone (D12). An idle row held for sync or the DashPay start shows progress: once the hold
+ * lifts it reads `authorize` or `unlock` and pauses, which D15's poll sees. */
+export function awaitsContinue(r: RegistrationStatus): boolean {
+  if (r.phase === "done" || r.phase === "failed" || r.phase === "contested" || r.failure) return false;
+  return r.waiting === "authorize" || (!r.running && (r.waiting === "chainLock" || r.waiting === "network"));
+}
+
 
 /** D5: why a registration stopped, by its failure's code. */
 export function failureText(failure: RegistrationFailure, amount: (duffs: number) => string, discreet = false): string {
@@ -225,7 +237,7 @@ function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): Ca
     const what = r.waiting === "fundingUnknown" ? COPY.repair.unknown : COPY.repair.finish;
     return card("creatingRepair", "problem", title, [what, COPY.repair.message], { step, action: action("repair", COPY.repair.action) });
   }
-  if (r.failure || r.waiting === "authorize") {
+  if (r.failure || awaitsContinue(r)) {
     const why = r.failure ? failureText(r.failure, i.amount, i.discreet) : WAITS.authorize;
     return card("creatingPaused", "problem", title, [COPY.paused, why], { step, action: action("continue", COPY.continue) });
   }
@@ -316,8 +328,6 @@ export const JOIN_COPY = {
   joined: (name: string | null) => (name ? `You have joined DashPay as @${name}.` : "You have joined DashPay."),
   votingLink: "What is username voting?",
   faqLink: "About DashPay",
-  wizard: "Choosing and registering a username is not available yet.",
-  back: "Back",
 } as const;
 
 /** What the Join page shows under its intro (J1–J7). */
@@ -335,8 +345,9 @@ export function joinModel(
   i: StatusInputs,
   /** The quote's total (duffs), `null` while unread or when it failed. */
   costDuffs: number | null,
-  /** Everything the wallet holds (duffs, `Balances.total`), `null` while unread (D18). */
-  total: number | null,
+  /** What the funding can spend now (duffs, the quote's `availableDuffs`, DP1-09 D5), `null`
+   * while unread. */
+  available: number | null,
 ): JoinModel {
   const s = i.status;
   if (!i.statusError && s?.kind === "noIdentity") {
@@ -347,9 +358,9 @@ export function joinModel(
     return {
       kind: "join",
       cost: JOIN_COPY.cost(price),
-      // D18: only a shortfall no coin of the wallet could cover, and none while the balance is
-      // still syncing in.
-      shortfall: !waiting && total !== null && total < costDuffs ? JOIN_COPY.shortfall(price) : null,
+      // D18, as DP1-09 D5 measures it: the coins a start can spend, and no shortfall while the
+      // balance is still syncing in.
+      shortfall: !waiting && available !== null && available < costDuffs ? JOIN_COPY.shortfall(price) : null,
       waiting,
     };
   }
