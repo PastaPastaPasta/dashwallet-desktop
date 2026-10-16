@@ -33,6 +33,7 @@ mod journal_tests;
 pub mod keys_policy;
 pub mod lease;
 mod names;
+mod names_check;
 mod notifications;
 #[cfg(test)]
 mod notifications_tests;
@@ -96,7 +97,8 @@ pub use flows::{
     GrantAction, GrantRequest, LeaseStateView, LeaseView, ParkReason, RevokeCause,
 };
 pub use identity::{
-    IdentityDetail, IdentityKeyInfo, IdentitySummary, KeyPurpose, KeyType, SecurityLevel,
+    IdentityDetail, IdentityKeyInfo, IdentitySummary, KeyPurpose, KeyType, NamesCheck,
+    SecurityLevel,
 };
 pub use invitations::{InvitationInvalidReason, InvitationStatus};
 pub use lease::{FlowOutcome, FlowReport, LeaseError, LockPhase, LockReport};

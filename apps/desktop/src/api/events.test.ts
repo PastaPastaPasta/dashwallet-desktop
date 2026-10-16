@@ -9,6 +9,7 @@ import type { HistoryRows } from "./generated/HistoryRows";
 import type { LockOutcome } from "./generated/LockOutcome";
 import { installFixture } from "../fixture";
 import { FIXTURE_WALLET_ID } from "../fixture/scenarios";
+import { dashpayKeys } from "../dashpay/queries";
 import { keys } from "./queries";
 import { IpcBackend } from "./tauri";
 
@@ -34,8 +35,8 @@ describe("event bridge", () => {
       ["coins", "w"],
       ["dashpay", "contacts", "w"],
     ]);
-    expect(invalidationsFor({ kind: "balances", network: "testnet", walletId: "w", balances: null })).toEqual([keys.balance("w"), keys.wallets, keys.coinsAll("w")]);
-    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile]);
+    expect(invalidationsFor({ kind: "balances", network: "testnet", walletId: "w", balances: null })).toEqual([keys.balance("w"), keys.wallets, keys.coinsAll("w"), dashpayKeys.quote("w")]);
+    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll]);
     expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: {} as never })).toEqual([keys.lockReconcile]);
     expect(invalidationsFor({ kind: "sessionOpened", network: "testnet" })).toBe("all");
     expect(invalidationsFor({ kind: "eventsOverflowed" })).toBe("all");
