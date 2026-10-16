@@ -120,9 +120,13 @@ describe("coinjoinView", () => {
 
   it("S4 with the balance read late: no marks, only the window (D16, review Sol r2 P3)", () => {
     // Started before the wallet's balance was read: the balance arriving is not mixer activity.
-    const late = { start: { since: T }, total: 300_000_000 };
+    const late = { start: { marks: { balances: marks.balances }, since: T }, total: 300_000_000 };
     expect(view(status({ state: "mixing" }), { ...late, now: T + 5_000 }).state).toBe("starting");
     expect(view(status({ state: "mixing" }), { ...late, now: T + START_WINDOW_MS })).toMatchObject({ state: "mixing", line: CoinJoinText.nextStep });
+    // The status balances still tell a later step.
+    const b = marks.balances;
+    const stepped = status({ state: "mixing", balances: { ...b, denominated: b.denominated + 40_000_000 } });
+    expect(view(stepped, { ...late, now: T + START_WINDOW_MS })).toMatchObject({ state: "mixing", line: null });
   });
 
   it("S5 paused: a waiting code shows Paused with Core's line (D4)", () => {

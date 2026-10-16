@@ -243,11 +243,10 @@ export interface ViewInputs {
  * s after Start (dw-coinjoin `AUTO_TIMEOUT_MIN/MAX`), and takes a few seconds. */
 export const START_WINDOW_MS = 20_000;
 
-/** A start this window saw (D16): the marks it last read with the mixer stopped, taken only once
- * the status and the wallet's balance had both been read, and when it first read the mixer running
- * after that (absent until then). */
+/** A start this window saw (D16): the marks it last read with the mixer stopped, and when it first
+ * read the mixer running after that (absent until then). */
 export interface SeenStart {
-  marks?: MixerMarks;
+  marks: MixerMarks;
   since?: number;
 }
 
@@ -255,15 +254,17 @@ export interface SeenStart {
  * transaction's fee moves even when it spends and makes only coins the four balances leave out. */
 export interface MixerMarks {
   balances: CoinJoinBalances;
-  total: number;
+  /** Absent when the balance had not been read by then: one read later is not the mixer's step. */
+  total?: number;
 }
 
-export const sameMarks = (a: MixerMarks, b: { balances: CoinJoinBalances; total: number | undefined }) =>
-  a.total === b.total &&
-  a.balances.anonymizable === b.balances.anonymizable &&
-  a.balances.denominated === b.balances.denominated &&
-  a.balances.normalizedAnonymized === b.balances.normalizedAnonymized &&
-  a.balances.fullyMixed === b.balances.fullyMixed;
+const sameBalances = (a: CoinJoinBalances, b: CoinJoinBalances) =>
+  a.anonymizable === b.anonymizable && a.denominated === b.denominated && a.normalizedAnonymized === b.normalizedAnonymized && a.fullyMixed === b.fullyMixed;
+
+export const sameMarks = (a: MixerMarks, b: MixerMarks) => a.total === b.total && sameBalances(a.balances, b.balances);
+
+/** Whether a step moved anything since `marks`: a total read only since then does not count. */
+const movedSince = (marks: MixerMarks, now: MixerMarks) => !sameBalances(marks.balances, now.balances) || (marks.total !== undefined && marks.total !== now.total);
 
 const ACTION_LABEL: Record<ViewActionKind, string> = {
   start: CoinJoinText.start,
@@ -304,7 +305,7 @@ export function coinjoinView({ status, readFailed, readError, amount, masked, to
     // a block after one (also across Stop and Start): Starting… only for a start this window saw,
     // for a bounded time, while nothing has moved since it read the mixer stopped (D16).
     if (status.status.kind === "idle") {
-      const moved = start?.marks !== undefined && !sameMarks(start.marks, { balances: status.balances, total });
+      const moved = start !== undefined && movedSince(start.marks, { balances: status.balances, total });
       if (start && !moved && now - (start.since ?? now) < START_WINDOW_MS) return running("starting", CoinJoinText.starting, false);
       return { ...running("mixing", CoinJoinText.mixing, false), line: start && !moved ? CoinJoinText.nextStep : null };
     }

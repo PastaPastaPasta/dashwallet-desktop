@@ -65,7 +65,7 @@ export function useCoinJoinView(walletId: string, network: NetworkInfo): { view:
   const state = status.data?.state;
   const balances = status.data?.balances;
   useEffect(() => {
-    if (state === "idle" && balances) setStopped(walletId, total === undefined ? undefined : { balances, total });
+    if (state === "idle" && balances) setStopped(walletId, { balances, total });
     else if (state !== undefined) {
       setDismissed(walletId, false);
       setStarted(walletId);
@@ -126,10 +126,10 @@ function setDismissed(walletId: string, on: boolean) {
   notify();
 }
 
-/** The mixer was read stopped; `marks` once the wallet's balance has been read as well. */
-function setStopped(walletId: string, marks: MixerMarks | undefined) {
+/** The mixer was read stopped, with the wallet's total once it has been read too. */
+function setStopped(walletId: string, marks: MixerMarks) {
   const was = starts.get(walletId);
-  if (was && was.since === undefined && (was.marks === marks || (was.marks && marks && sameMarks(was.marks, marks)))) return;
+  if (was && was.since === undefined && sameMarks(was.marks, marks)) return;
   starts = new Map(starts).set(walletId, { marks });
   notify();
 }

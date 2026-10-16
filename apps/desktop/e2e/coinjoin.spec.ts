@@ -50,7 +50,7 @@ const mixerMoves = (page: Page, patch: Record<string, unknown>) =>
 
 /** A funding step: denominations made, the status left idle (D16). */
 const FUNDING_STEP = { progress: { overallPercent: 4, denominatedPercent: 40, partiallyMixedPercent: 0, mixedPercent: 0, averageRounds: 0 } };
-/** Past D16's START_WINDOW_MS (20 s). */
+/** Past D16's START_WINDOW_MS (20 s; src/coinjoin/model.ts, whose imports the e2e runner does not load). */
 const PAST_START_WINDOW_MS = 21_000;
 
 for (const theme of THEMES) {
@@ -185,18 +185,19 @@ test("D16: a balance read only after Start is not the mixer's step (review Sol r
   await expect(status(page)).toHaveAttribute("data-state", "off");
   await page.getByTestId("coinjoin-action").click();
   await expect(status(page)).toHaveAttribute("data-state", "starting");
-  // The balance arrives late.
+  // The balance arrives late: Home shows it, and the card still says Starting….
   await page.evaluate((walletId) => {
     const f = window.__dwFixture!;
     f.fail("balance", null);
     f.emit({ kind: "balances", network: f.world.launch.network.dirName, walletId, balances: null });
   }, FIXTURE_WALLET_ID);
-  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "balance").length)).toBeGreaterThan(1);
-  await expect(status(page)).toHaveAttribute("data-state", "starting");
+  await navigate(page, "home");
+  await expect(page.getByTestId("hero-amount")).not.toHaveClass(/hero-unknown/);
+  await expect(card(page)).toHaveAttribute("data-state", "starting");
   // Only the window ends it.
   await page.clock.runFor(PAST_START_WINDOW_MS);
-  await expect(status(page)).toHaveAttribute("data-state", "mixing");
-  await expect(page.getByTestId("coinjoin-status-line")).toHaveText("Waiting for the next mixing step");
+  await expect(card(page)).toHaveAttribute("data-state", "mixing");
+  await expect(page.getByTestId("coinjoin-card-line")).toHaveText("Waiting for the next mixing step");
   expect(errors).toEqual([]);
 });
 
