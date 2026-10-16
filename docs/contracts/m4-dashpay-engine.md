@@ -2787,7 +2787,8 @@ renames or reshapes them takes the next version bump:
 53. **Whether a run drives the row (DP1-09 D26, version 27).** `RegistrationStatus` gains `running`: a driver runs
     the flow now (its task, or "Finish transfers"; `FlowState::running`), and `waiting` is what that run waits for.
     When false, nothing moves the row until `resume_registration` or "Finish transfers" claims it, and an unfinished
-    row's `waiting` is `idle_wait`'s first missing piece (a done or failed row reads `None`, as before). A parked
+    row's `waiting` is `idle_wait`'s first missing piece. A done row reads `None`, and so does a failed one unless it
+    is `Awaiting` (§2.2 `waiting`: it keeps `FundingUnknown`, `Network` or `ChainLock` for its outstanding step). A parked
     run has ended, so it reads false. `holds_key` cannot tell the two apart: a run on an unlocked vault signs with the
     vault's key and never holds one of its own, and a run past the InstantSend window has dropped its own. Hosts
     offer Continue for `Authorize`, and for `ChainLock` or `Network` only when `running` is false. An orphan funding
