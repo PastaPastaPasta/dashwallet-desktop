@@ -104,6 +104,35 @@ test("back on Receive after turning it off, no cached name shows while the usern
   expect(errors).toEqual([]);
 });
 
+test("leaving Settings before the engine answers, Receive already shows no name (D7)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered", "light");
+  const { address } = await receiveLink(page);
+  await generalSettings(page);
+  const held: CommandName = "set_username_in_requests";
+  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), held);
+  await box(page).uncheck();
+  await expect(box(page)).toBeDisabled();
+  expect((await receiveLink(page)).link).toBe(`dash:${address}`);
+  await release.evaluate((r) => r());
+  expect(await optedIn(page)).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test("an unreadable setting shows off with the problem, and a click writes it again (D6)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered", "light");
+  await page.evaluate(() => window.__dwFixture!.fail("username_in_requests", "none"));
+  await generalSettings(page);
+  await expect(page.getByTestId("settings-username-error")).toBeVisible();
+  await expect(box(page)).not.toBeChecked();
+  await page.evaluate(() => window.__dwFixture!.fail("username_in_requests", null));
+  await box(page).check();
+  await expect(box(page)).toBeChecked();
+  await expect(box(page)).toBeEnabled();
+  await expect(page.getByTestId("settings-username-error")).toHaveCount(0);
+  expect(await optedIn(page)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 test("Receive drops the name it holds once the toggle reads off (DP3-02 D25)", async ({ page }) => {
   const errors = await open(page, "dashpay-registered", "light");
   const { address, link } = await receiveLink(page);

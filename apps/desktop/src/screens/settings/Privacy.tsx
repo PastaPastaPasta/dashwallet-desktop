@@ -30,36 +30,38 @@ function UsernameInRequests({ wallet }: { wallet: WalletSummary }) {
   const turn = async (on: boolean) => {
     setProblem(null);
     setTurning(on);
+    // Off counts at once, before the engine answers: Receive, opened meanwhile, must not draw a
+    // cached name (D7). On waits for the engine.
+    if (!on) client.setQueryData(keys.usernameInRequests(wallet.walletId), false);
     try {
       await backend.setUsernameInRequests(wallet.walletId, on);
-      // The Receive QR's username, the requests and the setting are all receive reads. Receive is
-      // not mounted here, so its cached reads are refetched too, not only marked stale: a cached
-      // name must not show while Receive refetches on its way back.
-      await client.invalidateQueries({ queryKey: keys.receiveAll(wallet.walletId), refetchType: "all" });
     } catch (e) {
       setProblem(failureText(e));
-    } finally {
-      setTurning(null);
     }
+    // The Receive QR's username, the requests and the setting are all receive reads. Receive is
+    // not mounted here, so its cached reads are refetched too, not only marked stale: a cached
+    // name must not show while Receive refetches on its way back. After a refusal this puts the
+    // engine's value back.
+    await client.invalidateQueries({ queryKey: keys.receiveAll(wallet.walletId), refetchType: "all" });
+    setTurning(null);
   };
   return (
     <SettingsCard title="Privacy" testId="settings-privacy">
-      {setting.isError ? (
-        <Problem text={failureText(setting.error)} testId="settings-username-error" />
-      ) : (
-        <label className="checkbox-row">
-          <input
-            type="checkbox"
-            data-testid="settings-username-in-requests"
-            checked={turning ?? setting.data}
-            // One save at a time: a second click's answer could arrive first (U-04 D36).
-            disabled={turning !== null}
-            aria-describedby={hint}
-            onChange={(e) => void turn(e.target.checked)}
-          />
-          Include my username in payment requests
-        </label>
-      )}
+      {/* Unreadable, the requests carry no name (D6), so the box shows off; a click writes a
+          value the engine reads again. */}
+      {setting.isError && <Problem text={failureText(setting.error)} testId="settings-username-error" />}
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          data-testid="settings-username-in-requests"
+          checked={turning ?? setting.data ?? false}
+          // One save at a time: a second click's answer could arrive first (U-04 D36).
+          disabled={turning !== null}
+          aria-describedby={hint}
+          onChange={(e) => void turn(e.target.checked)}
+        />
+        Include my username in payment requests
+      </label>
       <Hint id={hint}>
         The Receive QR code and the payment requests of “{wallet.name}” show its DashPay username, once it has one, so whoever sees them knows the Dash
         address is yours. Turned off, they hold only the address and what you enter.

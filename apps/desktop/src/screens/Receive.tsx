@@ -63,8 +63,10 @@ function AddressCard({ walletId }: { walletId: string }) {
     enabled: !!shown && user !== undefined,
     staleTime: Infinity,
     // While the username changes the QR keeps the address's previous link, not a loading
-    // state; a new address never shows the old one's.
-    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === shown?.address ? prev : undefined),
+    // state; a new address never shows the old one's, and a link without a name never shows
+    // one with it (DP3-03b D18).
+    placeholderData: (prev, prevQuery) =>
+      prevQuery?.queryKey[1] === shown?.address && (user !== null || prevQuery?.queryKey[2] === null) ? prev : undefined,
   });
   const newAddress = async () => {
     setProblem(null);
