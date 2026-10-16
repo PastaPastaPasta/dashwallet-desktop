@@ -85,8 +85,15 @@ pub struct RegistrationQuote {
     pub total_duffs: u64,
     /// Credits the identity keeps after the name and profile.
     pub remaining_credits: u64,
-    /// The grant to ask for: `max_duffs` covers `total_duffs`, and
-    /// `max_credits` the identity creation, name and profile.
+    /// What the funding can spend now: the funding account's auto-selectable
+    /// coins, the set `start_registration` checks `total_duffs` against
+    /// (`registration.funding_insufficient`). 0 for funding that is not the
+    /// Core balance.
+    pub available_duffs: u64,
+    /// The grant to ask for: `max_duffs` covers `total_duffs` (one duff
+    /// more for a lock, which the identity step's proof signer needs left
+    /// once the funding charged the total), and `max_credits` the identity
+    /// creation, name and profile.
     pub grant: GrantRequest,
 }
 
@@ -106,6 +113,11 @@ pub struct RegistrationStatus {
     /// A lease holds a key for this flow ("Registration in progress — Lock
     /// to cancel").
     pub holds_key: bool,
+    /// A driver runs the flow now (its task, or "Finish transfers"), and
+    /// `waiting` is what that run waits for. Otherwise nothing moves the
+    /// row until `resume_registration` claims it, and `waiting` is what the
+    /// resumed run would wait for first (DP1-09 D26).
+    pub running: bool,
     /// True once a funding of the flow has committed and is not definitely
     /// unsent (E0-04 §16.5, copied in the contract's §4.1). A live `Unsent`
     /// entry is not committed. "Funds committed — finishing".
@@ -441,14 +453,19 @@ pub(crate) async fn quote<L: RegistrationLib>(
 ) -> Result<RegistrationQuote, RegistrationError> {
     let plan = plan(lib, req, "DashPay.registration_quote").await?;
     let total_duffs = plan.lock_duffs.saturating_add(plan.fee_duffs);
+    let proof_authority = match plan.funding {
+        Funding::CoreBalance { .. } => flow::PROOF_AUTHORITY_DUFFS,
+        _ => 0,
+    };
     Ok(RegistrationQuote {
         contested: plan.contested,
         lock_duffs: plan.lock_duffs,
         fee_duffs: plan.fee_duffs,
         total_duffs,
         remaining_credits: plan.credits_held.saturating_sub(plan.credits),
+        available_duffs: plan.available_duffs,
         grant: GrantRequest {
-            max_duffs: total_duffs,
+            max_duffs: total_duffs.saturating_add(proof_authority),
             max_credits: plan.credits,
         },
     })
@@ -742,6 +759,7 @@ pub(crate) async fn statuses<L: RegistrationLib>(
                 .lease
                 .as_ref()
                 .is_some_and(|held| flow::holds_own_key(&held.0)),
+            running: state.running(),
             funds_committed: ledger.funds_committed(row),
             contest_ends_at: match (&failure, phase, &row.identity) {
                 (None, Some(Phase::Contested), Some(identity)) => {
@@ -777,6 +795,7 @@ pub(crate) async fn statuses<L: RegistrationLib>(
                 RegistrationWait::ChainLock
             }),
             holds_key: false,
+            running: false,
             funds_committed: true,
             contest_ends_at: None,
             failure: None,

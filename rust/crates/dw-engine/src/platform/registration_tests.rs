@@ -1163,6 +1163,81 @@ fn a_kill_at_any_transition_resumes_to_one_registration() {
     }
 }
 
+/// D29/D30: a grant of exactly what the quote asks for funds and finishes,
+/// never `grant_exceeded`: the quote counts the permit's inputs (the fake
+/// counts the wallet's real coins, none) with the permit's own fee bound,
+/// and asks one duff more for the identity step's proof signer.
+#[test]
+fn a_grant_of_the_quote_runs_to_done() {
+    for (headroom, done) in [(flow::PROOF_AUTHORITY_DUFFS, true), (0, false)] {
+        let f = fixture(false);
+        let lib = f.fake();
+        lib.w().spendable.inputs = 0;
+        let wallet = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
+        assert_eq!(
+            f.engine.block_on(crate::coins::funding_coin_count(&wallet)),
+            0,
+            "the permit counts the fixture wallet's real coins"
+        );
+        let quote = f
+            .engine
+            .block_on(registration::quote(&*lib, &request(PLAIN)))
+            .unwrap();
+        assert_eq!(
+            (quote.total_duffs, quote.grant.max_duffs),
+            (
+                quote.lock_duffs + crate::fees::asset_lock_fee_bound(0),
+                quote.total_duffs + flow::PROOF_AUTHORITY_DUFFS
+            )
+        );
+        let grant = f.grant(
+            quote.total_duffs + headroom,
+            quote.grant.max_credits,
+            Credential::None,
+        );
+        let draft = f
+            .engine
+            .block_on(registration::start(
+                &f.session,
+                f.wallet,
+                Arc::clone(&lib),
+                request(PLAIN),
+                grant,
+            ))
+            .unwrap();
+        let draft: i64 = draft.parse().unwrap();
+        f.settle(draft);
+        let status = f.status(&lib, draft);
+        let got = (status.phase, status.waiting, status.failure.map(|x| x.code));
+        // The funding charged the total and never the extra duff.
+        let funding: Vec<_> = f
+            .session
+            .leases()
+            .unwrap()
+            .into_iter()
+            .filter(|l| l.flow == FlowKind::Registration)
+            .flat_map(|l| l.budgets)
+            .filter(|b| b.purpose == super::flows::BudgetPurpose::Funding)
+            .map(|b| (b.ceiling, b.spent))
+            .collect();
+        assert_eq!(funding, [(quote.total_duffs + headroom, quote.total_duffs)]);
+        if done {
+            assert_eq!(got, (RegistrationPhase::Done, None, None));
+        } else {
+            // The funding emptied the budget: the proof signer is refused
+            // and the paid row waits for a grant.
+            assert_eq!(
+                got,
+                (
+                    RegistrationPhase::FundingSent,
+                    Some(RegistrationWait::Authorize),
+                    None
+                )
+            );
+        }
+    }
+}
+
 #[test]
 fn start_runs_to_done_and_reports_the_flow() {
     let f = fixture(false);
@@ -1249,7 +1324,10 @@ fn the_funding_cap_and_balance_are_checked_before_a_row_exists() {
     assert_eq!(quote.lock_duffs, flow::LOCK_DUFFS);
     assert_eq!(quote.fee_duffs, flow::fee_bound_worst(2));
     assert_eq!(quote.total_duffs, quote.lock_duffs + quote.fee_duffs);
-    assert_eq!(quote.grant.max_duffs, quote.total_duffs);
+    assert_eq!(
+        quote.grant.max_duffs,
+        quote.total_duffs + flow::PROOF_AUTHORITY_DUFFS
+    );
     assert_eq!(
         quote.grant.max_credits,
         flow::IDENTITY_CREATE_CREDITS + NAME_CREDITS
@@ -1292,6 +1370,13 @@ fn the_funding_cap_and_balance_are_checked_before_a_row_exists() {
         .unwrap_err();
     assert_eq!(err.code(), "registration.funding_insufficient");
     assert!(f.rows().is_empty());
+    // The quote reports the same spendable set the start checks (DP1-09 D5).
+    let short = f
+        .engine
+        .block_on(registration::quote(&*lib, &request(PLAIN)))
+        .unwrap();
+    assert_eq!(short.available_duffs, quote.total_duffs - 1);
+    assert!(short.available_duffs < short.total_duffs);
     // An avatar candidate waits for DP4-02.
     let mut req = request(PLAIN);
     req.initial_profile = Some(InitialProfile {
@@ -1467,6 +1552,8 @@ fn an_islock_timeout_parks_keyless_until_the_chainlock() {
     let status = f.status(&lib, draft);
     assert_eq!(status.waiting, Some(RegistrationWait::ChainLock));
     assert!(status.funds_committed && !status.holds_key);
+    // The drive's claim is gone: nothing runs the row (DP1-09 D26).
+    assert!(!status.running);
     // Discard is refused: the funds are committed.
     let err = f.discard(&lib, draft).unwrap_err();
     assert_eq!(err.code(), "invalid_argument");
@@ -1865,6 +1952,9 @@ fn the_chainlock_wait_is_bounded_and_survives_a_refused_discard() {
     assert!(lib.w().waits.iter().all(|w| *w == flow::CHAINLOCK_POLL));
     let status = f.status(&lib, draft);
     assert_eq!(status.waiting, Some(RegistrationWait::ChainLock));
+    // A run on an unlocked vault holds no key of its own, yet runs (DP1-09
+    // D26): `holds_key` never tells a running row from an idle one.
+    assert!(status.running && !status.holds_key);
     let discard = f.discard(&lib, draft);
     assert_eq!(discard.unwrap_err().code(), "invalid_argument");
     assert!(f.running(draft), "the refused discard stopped the flow");

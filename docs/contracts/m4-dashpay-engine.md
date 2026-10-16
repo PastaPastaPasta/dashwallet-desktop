@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 26
+Contract-Version: 28
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -208,7 +208,7 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. | `RegistrationError` |
+| `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, what the funding can spend now (`available_duffs`, item 52), and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. | `RegistrationError` |
 | `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. | `RegistrationError` |
 | `start_registration_past_unknown_funding(req, grant, past)` | async | `start_registration` past earlier registrations whose funding is unknown (DEC-197, "In progress" below). `past` names each blocker the user confirmed, as `registration.in_progress` names it. Call it only after the user confirmed the wedge copy. A named blocker passes only if every funding step it waits on is wedged; anything else still returns `registration.in_progress`. SPV must be synced (`registration.not_synced`), and each passed step's funding must have been released at least an hour ago (`registration.funding_unknown_recent { draft, wait_secs }`). A malformed name is `invalid_argument`; a well-formed one that blocks nothing is ignored. | `RegistrationError` |
 | `registrations()` | async | Every `dp_registration` row of the wallet, with what each waits for (§5), and, read-only, every outstanding funding step whose row is gone (draft `registration/<n>/funding`; §2.2 "The registration ledger"). | `RegistrationError` |
@@ -225,8 +225,11 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 bodies decided where the rows leave room:
 
 - **Costs.** The lock is 0.03 DASH (3 000 000 duffs) for a plain name and 0.25 DASH for a contested one, as the iOS
-  wallet locks, raised when the credits below need more. The fee is E0-04's `fee_bound_worst` over every spendable
-  coin of the funding sources (n × 149 + 300 bytes at 1 duff/byte), a true upper bound on the library's selection.
+  wallet locks, raised when the credits below need more. The fee is the funding permit's own bound,
+  `fees::asset_lock_fee_bound`, over every spendable coin of the funding sources (200 + n × 149 bytes at 1 duff/byte
+  plus a dust remainder), a true upper bound on the library's selection (D29 of DP1-09). `grant.max_duffs` is the
+  total plus one duff for a Core-funded lock: the funding call charges the total, and the identity step's proof
+  signer needs a Funding budget left (the one duff Finish transfers asks for); it is never charged (D30 of DP1-09).
   `grant.max_credits` is IdentityCreate (bounded at 300 000 000 credits until DP1-06's cost table) plus
   `register_name`'s grant for the label and the temporary label, plus 300 000 000 with an `initial_profile`.
   `start_registration` checks the grant's Funding cap (without redeeming it) and the balance against lock + fee
@@ -503,7 +506,7 @@ bodies decided where the rows leave room:
 |---|---|---|---|
 | `cost_table()` | sync | The credit costs of the DashPay actions at the network's protocol version, for "≈ N contact requests" and the low-credit warnings (§5 `CostTable`, §7 item 44). The table is the network's: it reads no wallet. Refused only when the SDK's protocol version is one this build does not know (`internal`). **Implemented (DP1-06).** | `CreditsError` |
 | `top_up_quote(identity, duffs)` | async | The fee bound and total in duffs, the credits a top-up of `duffs` buys, an estimate that errs low as far as measured (`duffs × credits_per_duff` less the table's `top_up_fee`; Platform's metered charge was far below it on testnet, §7 item 46), and the `grant` to ask for (`max_duffs` = the total, no credits). Refuses an identity that is not the wallet's (`identity.not_found`), below `top_up_min_duffs` (`credits.below_minimum{min}`), an identity with a top-up not applied yet (`credits.top_up_pending{txid}`), above the spendable balance (`credits.funding_insufficient{needed, available}`), and a held-back coin the asset-lock builder would select (`credits.coins_locked`). Until the dispatch journal is read it is `platform.unavailable` (retry). **Implemented (DP1-06).** | `CreditsError` |
-| `top_up(identity, duffs, grant)` | async | Funds the identity from the Core balance: an asset lock of `duffs`, then Platform's IdentityTopUp from it (§7 item 44). The quote's refusals and the funding step's (below), checked under the identity's write lock before the grant is redeemed, so a refusal keeps the grant. Held back as a registration is: SPV not caught up is `platform.context_unavailable`; the bring-up running, not run, or its identity discovery incomplete or failed is `platform.unavailable`, and the call has it run again (§7 item 46); identities waiting for an unlock is `platform.signer_unavailable`. A grant whose funding cap is below the quote's total is `platform.grant_exceeded` before it is redeemed, so a smaller top-up can still use it. Until the dispatch journal is read the call is `platform.unavailable` (retry). Then the money-move gate (item 52): with the fallback latch set, an identity whose record does not match waits to verify, or is `platform.context_unavailable` (`platform.trust_mismatch` on a mismatch), the grant left unused. Once the lock is funded the call returns `TopUpOutcome{txid, state}`: `Applied{credits_added, balance}`, `ConsumptionUnknown{balance}` (Platform answered "already consumed", which nothing proves: nothing added now, and the lock stays pending), `ProofWaiting` (no InstantSend lock in its window), or `NotApplied{error}` (the apply failed); nothing is lost in the last three (`pending_top_ups`, `resume_top_up`). A funding whose outcome is unknown is `platform.broadcast_unknown{artifact}` with the funding step `topup/<index>-<k>/funding` (`dispatch_status`), and every later top-up of the identity is refused the same until that step settles. `grant` may be a `TopUp` lease id. **Implemented (DP1-06).** | `CreditsError` |
+| `top_up(identity, duffs, grant)` | async | Funds the identity from the Core balance: an asset lock of `duffs`, then Platform's IdentityTopUp from it (§7 item 44). The quote's refusals and the funding step's (below), checked under the identity's write lock before the grant is redeemed, so a refusal keeps the grant. Held back as a registration is: SPV not caught up is `platform.context_unavailable`; the bring-up running, not run, or its identity discovery incomplete or failed is `platform.unavailable`, and the call has it run again (§7 item 46); identities waiting for an unlock is `platform.signer_unavailable`. A grant whose funding cap is below the quote's total is `platform.grant_exceeded` before it is redeemed, so a smaller top-up can still use it. Until the dispatch journal is read the call is `platform.unavailable` (retry). Then the money-move gate (item 54): with the fallback latch set, an identity whose record does not match waits to verify, or is `platform.context_unavailable` (`platform.trust_mismatch` on a mismatch), the grant left unused. Once the lock is funded the call returns `TopUpOutcome{txid, state}`: `Applied{credits_added, balance}`, `ConsumptionUnknown{balance}` (Platform answered "already consumed", which nothing proves: nothing added now, and the lock stays pending), `ProofWaiting` (no InstantSend lock in its window), or `NotApplied{error}` (the apply failed); nothing is lost in the last three (`pending_top_ups`, `resume_top_up`). A funding whose outcome is unknown is `platform.broadcast_unknown{artifact}` with the funding step `topup/<index>-<k>/funding` (`dispatch_status`), and every later top-up of the identity is refused the same until that step settles. `grant` may be a `TopUp` lease id. **Implemented (DP1-06).** | `CreditsError` |
 | `pending_top_ups()` | async | The wallet's top-up locks Platform has not taken as far as the wallet can prove (in flight, proved and not applied, or funded by a top-up of this wallet and final with its consumption unknown), by identity index: txid, identity, duffs, whether the lock has its proof, and `consumption_unknown` (§7 item 44). Until the dispatch journal is read it is `platform.unavailable` (retry), never a list that cannot tell the wallet's own locks apart. **Implemented (DP1-06).** | `CreditsError` |
 | `resume_top_up(txid, grant)` | async | Applies the tracked top-up lock `txid`, waiting up to 30 s for its proof first (a lock not yet sent is sent again; one a funding call of this process is still recording is `platform.will_be_sent`); the outcome as `top_up`'s. A lock the library holds applied (Platform's proved apply) reads `AlreadyApplied` with the balance read again; any other, a resolved or historical one too, is applied again (Platform takes a lock once). The grant is redeemed only for the apply, so `AlreadyApplied`, `ProofWaiting` and `platform.will_be_sent` keep it. The apply signs with the lock's one-time funding key, which only a grant with a funding budget unlocks: the grant needs `max_duffs` ≥ 1, none of which is spent. Tools ▸ Repair "Finish transfers" (`finish_asset_locks`) also applies every proved top-up lock, under its grant. **Implemented (DP1-06).** | `CreditsError` |
 | `resolve_top_up(txid)` | async | The user's resolution of the pending top-up lock `txid` that has its proof (they saw its credits arrive): a `consumption_unknown` one, or one a resume answered `ConsumptionUnknown` before its ChainLock let the library mark it final. Recorded in the dispatch journal, so it no longer pends nor blocks the identity's top-ups, across restarts, a removal and import of the wallet, and whatever status the library moves the lock to. `resume_top_up` and Finish still apply it, so a lock Platform had not taken is not lost. Any other txid (unknown, without a proof, applied or resolved) is `invalid_argument`; until the journal is read, or when its write fails, `platform.unavailable`. Needs no grant. **Implemented (DP1-06, Sol r1).** | `CreditsError` |
@@ -548,7 +551,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 401696e4cfed597b76411407d5ed5b4855d201fcfca9400a8efef3e73c241678 version: 26 -->
+<!-- surface-sha256: aec371e90131eb7a26bff447f396c85b4223e24ac03399f46d2673e81228b34e version: 28 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1428,6 +1431,7 @@ pub struct RegistrationQuote {
     pub fee_duffs: u64,
     pub total_duffs: u64,
     pub remaining_credits: u64,
+    pub available_duffs: u64,
     pub grant: GrantRequest,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1440,6 +1444,7 @@ pub struct RegistrationStatus {
     pub txid: Option<String>,
     pub waiting: Option<RegistrationWait>,
     pub holds_key: bool,
+    pub running: bool,
     pub funds_committed: bool,
     pub contest_ends_at: Option<u64>,
     pub failure: Option<RegistrationFailure>,
@@ -1671,7 +1676,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   - a write from a watch-only wallet, or with a locked vault and no lease: `platform.signer_unavailable`;
   - a Platform write before SPV's masternode state has synced ("Waiting for the network to sync", §3.7), and money
     that would move on data verified only through the fallback (§2.2 rule 5): `platform.context_unavailable`
-    (DP3-04's gate, item 52; a re-fetch it makes that SPV and the trusted service disagree on is
+    (DP3-04's gate, item 54; a re-fetch it makes that SPV and the trusted service disagree on is
     `platform.trust_mismatch`);
   - `discard_registration` unless its funding reads `NotSent` or `None` (§4.1; the journal decides, not the
     phase), an unknown draft, candidate or faucet key id, an
@@ -1786,7 +1791,7 @@ The shapes are in §3. What they mean, where the name does not say:
   does not count); a `ContactSummary` as §2.4 `contacts` lists. Before the latch is set nothing is unverified. Builds before E0-10b served the trusted service's
   keys without setting it, so an installation that already holds wallets starts latched (dw-appdb migration
   `trust_digest`): its data reads as unverified until re-fetched. "As of" times for offline data come from `sync_status().last_pass`. `Counterparty` and the inviter in
-  `InvitationStatus::Valid` carry no flag: they are display data, and DP3-04's money-move gate (item 52) checks
+  `InvitationStatus::Valid` carry no flag: they are display data, and DP3-04's money-move gate (item 54) checks
   `dp_trust_verified` (with the latch) itself before any payment, whatever the record says.
 - **`QuorumSource`.** `Spv`; `TrustedFallback` (before masternode sync, reads only, results unverified); `Trusted`
   (the developer toggle, or the degraded mode of §2.2). E0-10a failed, so 1.0 reports `Trusted` (DEC-168) until H-09
@@ -1810,6 +1815,8 @@ The shapes are in §3. What they mean, where the name does not say:
     row moves to `Unlock` (vault locked or mixing-only) or `Authorize` (unlocked), so the host never prompts during
     the wait and never has to guess. A rebind with "require authentication for every payment" on also moves the row
     to `Authorize` or `Unlock` (E0-04 DEC-67). There is no separate `needs_grant` field.
+  - `running`: a driver runs the flow (item 53); `waiting` is then that run's wait, else what a resume waits for
+    first.
   - `holds_key`: `LeaseView.own_key && state ∈ {Active, AwaitingProof}` (E0-04 §16.5). The copy is E0-04
     §16.10's, chosen in its order: C2 ("Lock stops new signatures; a transaction already signed may still be sent")
     while a library call of the flow runs; otherwise C3 ("Funds committed — finishing. Lock to stop; you'll finish
@@ -2771,9 +2778,27 @@ renames or reshapes them takes the next version bump:
       unchanged and independent. `my_user_link` is `platform.unavailable` while it is set.
     - **`Platform{Names}`** is sent when an identity's check changes, as an answer writes no changeset.
 
-**From DP3-04** (version 26, no surface change):
+**From DP1-09** (versions 26 and 27):
 
-52. **The money-move trust gate (DASHPAY §2.2 rule 5; `docs/design/DP3-04-trust-gate.md`).** Once the fallback latch
+52. **The quote's available amount (DP1-09 D5, version 26).** `RegistrationQuote` gains `available_duffs`: for
+    `CoreBalance` funding, the funding account's auto-selectable coins (`spendable_of`, the coin snapshot's set),
+    which `start_registration` compares with `total_duffs` before it writes a row
+    (`registration.funding_insufficient{needed, available}` carries the same figure); 0 for other funding. Read when
+    quoted, so it may differ at the start; the start's check decides. Hosts show "You need at least N" only when it is
+    below `total_duffs` (DP1-08 D18's follow-up). The quote's other fields are unchanged.
+53. **Whether a run drives the row (DP1-09 D26, version 27).** `RegistrationStatus` gains `running`: a driver runs
+    the flow now (its task, or "Finish transfers"; `FlowState::running`), and `waiting` is what that run waits for.
+    When false, nothing moves the row until `resume_registration` or "Finish transfers" claims it, and an unfinished
+    row's `waiting` is `idle_wait`'s first missing piece. A done row reads `None`, and so does a failed one unless it
+    is `Awaiting` (§2.2 `waiting`: it keeps `FundingUnknown`, `Network` or `ChainLock` for its outstanding step). A parked
+    run has ended, so it reads false. `holds_key` cannot tell the two apart: a run on an unlocked vault signs with the
+    vault's key and never holds one of its own, and a run past the InstantSend window has dropped its own. Hosts
+    offer Continue for `Authorize`, and for `ChainLock` or `Network` only when `running` is false. An orphan funding
+    step (empty `label`) reads false and takes no resume.
+
+**From DP3-04** (version 28, no surface change):
+
+54. **The money-move trust gate (DASHPAY §2.2 rule 5; `docs/design/DP3-04-trust-gate.md`).** Once the fallback latch
     is set, money waits for its payee's data to verify against SPV. No signature, record or code changes.
     - **Subjects.** A contact payment's `prepare` (its "Accept and pay" too): what the contacts row of the payee
       shows unverified (§2.4 `contacts`: the cached profile, each request the relation rests on, the shown

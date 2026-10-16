@@ -7,6 +7,7 @@ import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import type { TxRow } from "../api/generated/TxRow";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import type { TxTypeName } from "../api/generated/TxTypeName";
+import { initials } from "../contacts/model";
 
 export const TxTitle = {
   received: "Received",
@@ -73,10 +74,27 @@ export function contactName(c: TxCounterparty | undefined): string | null {
   return c.displayName?.trim() || (c.username ? `@${c.username}` : null);
 }
 
+/** The initials avatar's letters for a counterparty (DP3-07 D1): those of the name `contactName`
+ * shows; `null` while it has none, or a name with no letter, so the row keeps its type icon. */
+export function contactLetters(c: TxCounterparty | undefined): string | null {
+  const name = contactName(c);
+  const letters = name === null ? null : initials(name);
+  return letters === "?" ? null : letters;
+}
+
 /** Label first, then the DashPay contact's name (DP3-02), then the type title. Never the raw
  * address. A row's title comes only from here (U-03 D14). */
 export function txTitle(row: Pick<TxRow, "txType" | "category" | "amount" | "label" | "counterparty">): string {
   return row.label || contactName(row.counterparty) || typeTitle(row.txType, row.category, row.amount);
+}
+
+/** What a row says aloud about its contact when the title is something else, a label
+ * (DP3-07 D13): the avatar is decoration, so "from Bob Builder" / "to Bob Builder"; `null` when the
+ * title already names the contact or the row has no named contact. */
+export function contactAside(row: Pick<TxRow, "amount" | "counterparty">, title: string): string | null {
+  const name = contactName(row.counterparty);
+  if (name === null || title === name) return null;
+  return `${row.amount < 0 ? "to" : "from"} ${name}`;
 }
 
 /** dash-qt `TransactionTableModel::formatTxType`: the Type column of table mode. */
