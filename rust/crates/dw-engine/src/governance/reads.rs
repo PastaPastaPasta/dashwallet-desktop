@@ -18,7 +18,7 @@ use super::{Governance, GovernanceError, superblock_budget};
 use crate::events::unix_now;
 
 /// Now in the store's seconds.
-fn now() -> i64 {
+pub(super) fn now() -> i64 {
     i64::try_from(unix_now()).unwrap_or(i64::MAX)
 }
 
@@ -99,9 +99,10 @@ impl Governance {
         let list = rt.list();
         let (valid_masternodes, valid_evonodes, valid_weight) = valid_counts(&list);
         let synced = rt.shared.progress().last_synced_at.is_some();
+        let now = now();
         let table = {
             let store = rt.shared.store();
-            build_table(&self.session.network, &store, tip.height, now())
+            build_table(&self.session.network, &store, tip.height, now)
         };
         let (proposals, allocated, unallocated) = if synced {
             let mut c = ProposalCounts {
@@ -111,7 +112,6 @@ impl Governance {
                 total: 0,
                 close_call: 0,
             };
-            let now = now();
             for r in table.rows.iter().filter(|r| r.end_epoch > now) {
                 c.total += 1;
                 match r.status {
@@ -205,7 +205,7 @@ impl Governance {
             .rows
             .into_iter()
             .find(|r| r.hash == o.hash_hex)
-            .ok_or_else(|| GovernanceError::ProposalNotFound { hash: hash.clone() })?;
+            .ok_or(GovernanceError::ProposalNotFound { hash })?;
         Ok(ProposalDetail {
             row,
             collateral_txid: display_hex(&o.object.collateral_hash),

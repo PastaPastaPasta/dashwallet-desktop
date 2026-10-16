@@ -98,6 +98,12 @@ pub fn run(
         }
     }
     let gov = session.governance();
+    let all_proposals = || {
+        gov.proposals(ProposalQuery {
+            scope: ProposalScope::All,
+            text: None,
+        })
+    };
     engine.block_on(gov.set_sync_enabled(true)).map_err(e)?;
 
     // Synced, with the proposals and voters asked for.
@@ -109,12 +115,7 @@ pub fn run(
             line("govstate", &state);
         }
         if state.phase == GovernanceSyncPhase::Synced {
-            let rows = gov
-                .proposals(ProposalQuery {
-                    scope: ProposalScope::All,
-                    text: None,
-                })
-                .map_err(e)?;
+            let rows = all_proposals().map_err(e)?;
             let voters: u32 = rows.iter().map(|r| r.tally.voters).sum();
             if rows.len() >= args.min_proposals && voters >= args.min_voters {
                 break;
@@ -128,13 +129,7 @@ pub fn run(
     }
 
     line("govinfo", &gov.info().map_err(e)?);
-    for row in gov
-        .proposals(ProposalQuery {
-            scope: ProposalScope::All,
-            text: None,
-        })
-        .map_err(e)?
-    {
+    for row in all_proposals().map_err(e)? {
         line("proposal", &row);
     }
     for hash in &args.votes {

@@ -14,7 +14,8 @@ use std::sync::Arc;
 use dw_engine::EngineError;
 use dw_engine::governance::{
     CurrentVoteRow, Governance, GovernanceError, GovernanceInfo, GovernanceSyncPhase,
-    ProposalDetail, ProposalQuery, ProposalScope, RawVote, VoteOutcome, superblock_budget,
+    ProposalDetail, ProposalQuery, ProposalRow, ProposalScope, RawVote, VoteOutcome,
+    superblock_budget,
 };
 use dw_governance::object::{display_hex, parse_display_hex};
 use dw_governance::params::governance_params;
@@ -331,15 +332,19 @@ fn parse_hash_v(text: &str, name: &str) -> Result<String, ConsoleFailure> {
     Ok(text.to_ascii_lowercase())
 }
 
-/// `UniValue::getInt<int>` of a typed argument.
-fn get_int(text: &str) -> Result<i32, ConsoleFailure> {
-    let n: i64 = text.trim().parse().map_err(|_| {
+/// `UniValue::getInt<int64_t>` of a typed argument.
+fn get_int64(text: &str) -> Result<i64, ConsoleFailure> {
+    text.trim().parse().map_err(|_| {
         rpc(
             code::TYPE_ERROR,
             format!("JSON value is not an integer as expected: {text}"),
         )
-    })?;
-    i32::try_from(n).map_err(|_| rpc(code::TYPE_ERROR, "JSON integer out of range"))
+    })
+}
+
+/// `UniValue::getInt<int>` of a typed argument.
+fn get_int(text: &str) -> Result<i32, ConsoleFailure> {
+    i32::try_from(get_int64(text)?).map_err(|_| rpc(code::TYPE_ERROR, "JSON integer out of range"))
 }
 
 /// The error of a governance command while governance sync is off. Core has
@@ -377,16 +382,12 @@ fn failure(e: GovernanceError, unknown_object: &str) -> ConsoleFailure {
         ),
         GovernanceError::NotImplemented { call } => ConsoleFailure::NotAvailable(call),
         GovernanceError::VoteRejected { reason } => vote_rejection(&reason),
-        GovernanceError::NoPeers => no_peers(),
+        GovernanceError::NoPeers => rpc(
+            code::CLIENT_NOT_CONNECTED,
+            "The vote is stored, but no governance peer is connected. It will be relayed when a peer connects.",
+        ),
         GovernanceError::Engine(e) => crate::exec::engine_failure(e),
     }
-}
-
-fn no_peers() -> ConsoleFailure {
-    rpc(
-        code::CLIENT_NOT_CONNECTED,
-        "The vote is stored, but no governance peer is connected. It will be relayed when a peer connects.",
-    )
 }
 
 /// Core's `voteraw` error for a vote the facade refused (`reason` is the
@@ -474,13 +475,7 @@ impl ConsoleContext {
                     return Err(rpc(code::INVALID_PARAMETER, "mode can be 'json' or 'all'"));
                 }
                 require_enabled(g)?;
-                let proposals = g
-                    .proposals(ProposalQuery {
-                        scope: ProposalScope::All,
-                        text: None,
-                    })
-                    .map_err(|e| failure(e, ""))?
-                    .len();
+                let proposals = all_proposals(g)?.len();
                 let votes = g.sync_state().map_err(|e| failure(e, ""))?.votes;
                 Ok(if mode == "json" {
                     count_json(proposals, votes)
@@ -502,12 +497,7 @@ impl ConsoleContext {
                     ));
                 };
                 require_enabled(g)?;
-                let rows = g
-                    .proposals(ProposalQuery {
-                        scope: ProposalScope::All,
-                        text: None,
-                    })
-                    .map_err(|e| failure(e, ""))?;
+                let rows = all_proposals(g)?;
                 let threshold = g.info().map_err(|e| failure(e, ""))?.passing_threshold;
                 let mut details = Vec::new();
                 for row in rows {
@@ -596,19 +586,7 @@ impl ConsoleContext {
                 "voteraw with signal {signal}"
             )));
         }
-        let time: i64 = arg(args, 5)
-            .unwrap_or_default()
-            .trim()
-            .parse()
-            .map_err(|_| {
-                rpc(
-                    code::TYPE_ERROR,
-                    format!(
-                        "JSON value is not an integer as expected: {}",
-                        arg(args, 5).unwrap_or_default()
-                    ),
-                )
-            })?;
+        let time = get_int64(arg(args, 5).unwrap_or_default())?;
         require_enabled(g)?;
         g.relay_vote(RawVote {
             // Core's `COutPoint(hash, int)` reads the index as unsigned.
@@ -628,6 +606,15 @@ impl ConsoleContext {
         })?;
         Ok(Json::str("Voted successfully"))
     }
+}
+
+/// Every confirmed proposal, as `count` and `list` read them.
+fn all_proposals(g: &Governance) -> Result<Vec<ProposalRow>, ConsoleFailure> {
+    g.proposals(ProposalQuery {
+        scope: ProposalScope::All,
+        text: None,
+    })
+    .map_err(|e| failure(e, ""))
 }
 
 fn require_enabled(g: &Governance) -> Result<(), ConsoleFailure> {

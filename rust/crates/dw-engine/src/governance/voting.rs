@@ -12,11 +12,10 @@ use dw_governance::store::{GovernanceStore, ObjectKind, VoteRejection};
 use dw_governance::tally::CurrentVote;
 use dw_governance::vote::{COMPACT_SIG_SIZE, GovernanceVote};
 
-use super::reads::parse_hash;
+use super::reads::{now, parse_hash};
 use super::records::{MasternodeType, RawVote, VoteOutcome, VoteRelayed, VotingMasternode};
 use super::sync::ListSnapshot;
 use super::{Governance, GovernanceError, stub};
-use crate::events::unix_now;
 use crate::masternode_keys::MasternodeKeyRole;
 use crate::{EngineError, WalletId};
 
@@ -119,11 +118,7 @@ impl Governance {
             let mut store = rt.shared.store();
             known(&store)?;
             store
-                .add_vote(
-                    v.clone(),
-                    None,
-                    i64::try_from(unix_now()).unwrap_or(i64::MAX),
-                )
+                .add_vote(v.clone(), None, now())
                 .map_err(|r| rejected(rejection_reason(r)))?;
         }
         (rt.shared.on_change)();

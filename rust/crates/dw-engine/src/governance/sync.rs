@@ -24,6 +24,7 @@ use crate::{DashNetwork, NetworkSession};
 /// `governance.sync_enabled` in app.sqlite (global scope per network
 /// session's own database).
 pub(crate) const SYNC_ENABLED_KEY: &str = "governance.sync_enabled";
+
 /// The stored setting; off when absent or unreadable.
 pub(crate) fn load_enabled(db: &dw_appdb::AppDb) -> bool {
     match db.setting(dw_appdb::GLOBAL_SCOPE, SYNC_ENABLED_KEY) {
