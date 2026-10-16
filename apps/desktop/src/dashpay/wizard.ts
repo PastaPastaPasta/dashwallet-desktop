@@ -36,8 +36,8 @@ export type WizardApi = Pick<
 >;
 
 /** `core`: a new identity funded from the wallet; `credits`: a name for an identity the wallet
- * has, paid from its credits (D6). */
-export type WizardMode = { kind: "core" } | { kind: "credits"; identity: string };
+ * has, paid from its credits (D6); `instant` refuses a contested label (DP1-10 D13). */
+export type WizardMode = { kind: "core" } | { kind: "credits"; identity: string; instant?: boolean };
 
 export type WizardStep = "name" | "confirm";
 

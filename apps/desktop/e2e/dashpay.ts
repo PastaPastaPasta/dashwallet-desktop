@@ -1,6 +1,7 @@
 // DP1-08 fixture states shared by dashpay.spec.ts and visual.spec.ts.
 
-/** Each Home card state (docs/design/DP1-08-status-card.md S2–S17), its scenario, title and chip. */
+/** Each Home card state (docs/design/DP1-08-status-card.md S2–S17, DP1-10-my-profile.md S19–S20),
+ * its scenario, title and chip. */
 export const CARDS: Record<string, { scenario: string; extra?: string; title: string; chip: string | null }> = {
   error: { scenario: "dashpay-no-identity", extra: "&fail=dashpay_status:none", title: "Could not read DashPay's state", chip: null },
   looking: { scenario: "dashpay-starting", title: "Looking for your DashPay identity…", chip: null },
@@ -18,6 +19,9 @@ export const CARDS: Record<string, { scenario: string; extra?: string; title: st
   voting: { scenario: "dashpay-contest-pending", title: "Voting – @alice", chip: "@alice · Pending" },
   votingNoEnd: { scenario: "dashpay-contest-pending-no-end", title: "Voting – @alice", chip: "@alice · Pending" },
   noUsername: { scenario: "dashpay-no-username", title: "Finish username registration", chip: "No username" },
+  // DP1-10 S19, S20.
+  lowCredits: { scenario: "dashpay-credits-low", title: "Your credit balance is low", chip: "@alice" },
+  emptyCredits: { scenario: "dashpay-low-credits", title: "Your credit balance is fully depleted", chip: "@alice" },
 };
 
 /** Each identity chip (DASHPAY §4, DP1-08 S9–S18) and a scenario that shows it. */

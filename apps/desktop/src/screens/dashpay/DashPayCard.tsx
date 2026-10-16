@@ -49,6 +49,9 @@ export function defaultCardAction(kind: CardActionKind, retry: () => void) {
       return ui.set({ dialog: "unlock" });
     case "repair":
       return navigate("tools", { toolsTab: "repair" });
+    // Home opens the top-up sheet before it navigates (Overview.tsx); elsewhere, My Profile.
+    case "buyCredits":
+      return navigate("profile");
     // The card opens its own sheet.
     case "votingInfo":
       return;

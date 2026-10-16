@@ -9,6 +9,7 @@ import type { HistoryRows } from "./generated/HistoryRows";
 import type { LockOutcome } from "./generated/LockOutcome";
 import { installFixture } from "../fixture";
 import { FIXTURE_WALLET_ID } from "../fixture/scenarios";
+import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
 import { keys } from "./queries";
 import { IpcBackend } from "./tauri";
@@ -47,6 +48,8 @@ describe("event bridge", () => {
     // DP1-09 D14: a registration lease's change re-reads the rows, whose `waiting` moved.
     const registration = { flow: "registration" } as never;
     expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: registration })).toEqual([keys.lockReconcile, dashpayKeys.registrationsAll]);
+    // A settled funding step re-reads the stuck top-up list (DP1-10 D3).
+    expect(invalidationsFor({ kind: "dispatchResolved", network: "testnet", settled: {} as never })).toEqual([keys.lockReconcile, profileKeys.stuckTopUpsAll]);
     expect(invalidationsFor({ kind: "sessionOpened", network: "testnet" })).toBe("all");
     expect(invalidationsFor({ kind: "eventsOverflowed" })).toBe("all");
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } })).toEqual([]);
