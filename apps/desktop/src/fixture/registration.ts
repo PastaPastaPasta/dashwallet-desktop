@@ -130,7 +130,7 @@ const awaitingWait = (w: RegistrationStatus["waiting"]): RegistrationWaitName | 
 const runningWait = (phase: RegistrationStatus["phase"]): RegistrationWaitName | null =>
   phase === "fundingSent" || phase === "proofWaiting" ? "instantSend" : null;
 
-/** The engine after a relaunch: no grant, no lease and no run survive, and an encrypted vault
+/** The engine after a relaunch: no grant, no lease, no run and no mixer survive, and an encrypted vault
  * opens locked. The rows and the asset-lock count are on disk, so they stay. */
 export function restarted(world: World): World {
   world.grants = [];
@@ -138,6 +138,8 @@ export function restarted(world: World): World {
   world.flowLeases = {};
   if (world.lock.encrypted && world.lock.state !== "noVault") world.lock = { ...world.lock, state: "locked" };
   for (const dp of [world.dashpay, ...Object.values(world.dashpayOf ?? {})]) dp.runs = [];
+  // Mixing is memory too: nothing resumes it (U-06 D5).
+  world.coinjoin.mixers = {};
   return world;
 }
 

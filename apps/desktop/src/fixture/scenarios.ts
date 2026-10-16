@@ -25,6 +25,7 @@ import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type Send
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
 import { scanWorld, type ScanWorld } from "./scan";
+import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FUNDED_BALANCES, makeIds, prng, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
@@ -84,6 +85,8 @@ export interface World {
   settings: SettingsWorld;
   /** The QR scan commands' screen picker (scan.ts, DP2-08). */
   scan: ScanWorld;
+  /** CoinJoin's options and each wallet's mixer (coinjoin.ts, U-06). */
+  coinjoin: CoinJoinWorld;
 }
 
 /** A vault grant: single use (`used` once redeemed or revoked); `ownKey` when it was issued
@@ -175,6 +178,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     tools: newToolsWorld(main),
     settings: withAutomaticBackups(newSettingsWorld(), FIXTURE_WALLET_ID, MAIN_PHRASE, FIXTURE_PASSPHRASE),
     scan: scanWorld(),
+    coinjoin: newCoinJoinWorld(),
   };
 }
 
@@ -694,6 +698,8 @@ const SCENARIOS = {
   "lock-report-resolved": (t) => resolvedFlows(base(t)),
   /** A cut call reported under its label (no id to check): unresolved for good. */
   "lock-report-call": (t) => unnamedCall(base(t)),
+  // CoinJoin (U-06): coinjoin.ts.
+  ...coinjoinScenarios(base),
 } satisfies Record<string, (theme: ThemeName | null) => World>;
 
 export type ScenarioName = keyof typeof SCENARIOS;

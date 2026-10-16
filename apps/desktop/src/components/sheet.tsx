@@ -9,6 +9,7 @@
 
 import { createContext, useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { DashButton } from "./basics";
 
 /** App's layer for sheets opened inside the shell; `null` renders a sheet in place. */
 export const SheetLayer = createContext<HTMLElement | null>(null);
@@ -133,4 +134,44 @@ export function Sheet({
     </div>
   );
   return layer ? createPortal(sheet, layer) : sheet;
+}
+
+/** A question with Cancel and one confirming button; `onConfirm` runs after the sheet has closed. */
+export function QuestionSheet({
+  title,
+  text,
+  confirm,
+  testId,
+  confirmTestId,
+  onConfirm,
+  onClose,
+}: {
+  title: string;
+  text: string;
+  confirm: string;
+  testId: string;
+  confirmTestId: string;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Sheet title={title} width="small" testId={testId} onClose={onClose}>
+      <p className="sheet-text">{text}</p>
+      <div className="sheet-actions">
+        <DashButton variant="tintedGray" data-autofocus onClick={onClose}>
+          Cancel
+        </DashButton>
+        <DashButton
+          variant="filledBlue"
+          data-testid={confirmTestId}
+          onClick={() => {
+            onClose();
+            onConfirm();
+          }}
+        >
+          {confirm}
+        </DashButton>
+      </div>
+    </Sheet>
+  );
 }
