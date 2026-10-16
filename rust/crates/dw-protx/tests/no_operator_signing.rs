@@ -339,8 +339,9 @@ fn without_allowed(code: &str, allowed: &Allowed) -> Result<String, String> {
 /// Ways around the allowed regions that name no forbidden token (MG-01
 /// D21): a `path` attribute in dw-coinjoin's library outside the allowed
 /// include (written over several lines, in a `cfg_attr`, or to a `mod.rs`
-/// that declares the key's module), and `rustfmt::skip` in a file whose
-/// test module's end is found by rustfmt's layout. `code` is the file as
+/// that declares the key's module), and a rustfmt skip (`rustfmt::skip`,
+/// with or without spaces, or the old `rustfmt_skip`) in a file with an
+/// allowed region, whose end rustfmt's layout keeps honest. `code` is the file as
 /// scanned, `blanked` with its allowed region removed.
 fn region_escapes(rel: &str, code: &str, blanked: &str) -> Vec<String> {
     let mut found = Vec::new();
@@ -352,8 +353,9 @@ fn region_escapes(rel: &str, code: &str, blanked: &str) -> Vec<String> {
     {
         found.push("a `path` attribute outside the allowed include".to_string());
     }
-    if code.contains("rustfmt::skip") {
-        found.push("`rustfmt::skip` beside an allowed region".to_string());
+    let squeezed_code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    if squeezed_code.contains("rustfmt::skip") || squeezed_code.contains("rustfmt_skip") {
+        found.push("a rustfmt skip beside an allowed region".to_string());
     }
     found
 }
@@ -411,6 +413,18 @@ fn no_operator_key_signing_path_remains() {
             violations.extend(escapes.into_iter().map(|e| format!("{rel}: {e}")));
         }
         violations.extend(hits(&code).into_iter().map(|h| format!("{rel}: {h}")));
+    }
+    // No rustfmt config may switch formatting off where the allowed regions
+    // are (rustfmt reads the nearest one up from each file).
+    for dir in ["", "rust", "rust/crates", "rust/crates/dw-coinjoin"] {
+        for name in ["rustfmt.toml", ".rustfmt.toml"] {
+            if let Ok(config) = fs::read_to_string(root.join(dir).join(name)) {
+                assert!(
+                    !config.contains("ignore") && !config.contains("disable_all_formatting"),
+                    "{dir}/{name} turns rustfmt off near the allowed regions"
+                );
+            }
+        }
     }
     assert!(
         allowed_seen.iter().all(|&seen| seen),
@@ -680,7 +694,13 @@ fn allowed_regions_are_exact() {
     ] {
         assert!(!region_escapes(lib, "", bad).is_empty(), "missed: {bad}");
     }
-    assert!(!region_escapes(lib, "#![rustfmt::skip]\n", "").is_empty());
+    for skip in [
+        "#![rustfmt::skip]\n",
+        "#![cfg_attr(rustfmt, rustfmt_skip)]\n",
+        "#[rustfmt :: skip]\nmod bls;\n",
+    ] {
+        assert!(!region_escapes(lib, skip, "").is_empty(), "missed: {skip}");
+    }
     assert!(region_escapes(lib, "", "let path = here();").is_empty());
     let engine = "rust/crates/dw-engine/src/platform/names.rs";
     assert!(region_escapes(engine, "", "#[path = \"names_net.rs\"]\nmod net;").is_empty());
