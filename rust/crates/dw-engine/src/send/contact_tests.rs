@@ -1770,7 +1770,8 @@ fn a_stale_account_the_drain_leaves_is_not_paid() {
     let f = fixture(false);
     f.gated(TrustMode::Enforcing, Proof::Verified);
     f.bobs_account_built_from(Some(77));
-    // Ciphertext no key decrypts: the drain cannot rebuild from it.
+    // The drain cannot rebuild from it (our identity has no key at the
+    // op's index, a fault the library keeps queued for a retry).
     f.queue_for_bob(PendingContactCryptoOp::RegisterExternal {
         encrypted_public_key: vec![0; 96],
         our_decryption_key_index: 0,
@@ -1786,6 +1787,23 @@ fn a_stale_account_the_drain_leaves_is_not_paid() {
     assert!(
         f.reserved(BOB).is_none(),
         "the old account's address is not kept"
+    );
+    let queued = Arc::new(AtomicU32::new(0));
+    let count = Arc::clone(&queued);
+    f.with_me(move |me| {
+        let ops = me.dashpay().pending_contact_crypto.iter();
+        let n = ops
+            .filter(|p| {
+                p.contact_id == id(BOB)
+                    && matches!(p.op, PendingContactCryptoOp::RegisterExternal { .. })
+            })
+            .count();
+        count.store(n as u32, Ordering::SeqCst);
+    });
+    assert_eq!(
+        queued.load(Ordering::SeqCst),
+        1,
+        "the drain left its op queued"
     );
 }
 
@@ -1815,11 +1833,11 @@ fn a_name_landing_before_the_recheck_is_verified_there() {
     assert!(!f.bob_unverified());
 }
 
-/// A reused address another payment's broadcast claimed while the
-/// re-check ran is not kept again: the payment is refused as spent and
-/// no later payment reuses the address.
+/// A reused address another payment's broadcast claimed between its
+/// reservation and its keep (here before the re-check starts) is not kept
+/// again: the payment is refused as spent and no later payment reuses it.
 #[test]
-fn an_address_claimed_during_the_recheck_is_not_kept_again() {
+fn an_address_claimed_before_it_is_kept_is_not_kept_again() {
     let f = fixture(false);
     f.gated(TrustMode::Enforcing, Proof::Verified);
     let first = f.draft(BOB);

@@ -246,11 +246,14 @@ impl TxDraft {
         };
         if fresh {
             payments.keep(self.wallet_id, pair, address.clone(), checked);
-        } else if payments
+        }
+        // Meanwhile another payment's broadcast claimed a reused address, or
+        // gave its own back before a fresh one was kept: the claim would
+        // refuse this payment, so `prepare` does.
+        if payments
             .reserved_checked(self.wallet_id, pair)
             .is_none_or(|(a, _)| a != address)
         {
-            // Another payment's broadcast claimed it during the re-check.
             return Err(SendFailure::PreparedTxSpent.into());
         }
         Ok(address)
