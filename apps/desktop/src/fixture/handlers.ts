@@ -41,6 +41,7 @@ import { routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
 import { toolsHandlers } from "./tools";
+import { topUpHandlers } from "./topup";
 import { isClosed, settingsHandlers } from "./settings";
 import { emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
@@ -592,6 +593,7 @@ export const HANDLERS: Handlers = {
   ...scanHandlers(),
   // Username registration (DP1-09): registration.ts.
   ...registrationHandlers({ wallet, dashpay, grant: checkGrant, newLease, setLease, writeLease }),
+  ...topUpHandlers({ wallet, dashpay, grant: checkGrant, useGrant, costs: COST_TABLE }),
 
   // App and network
   launch_info: (_, { world }) => world.launch,

@@ -4,7 +4,10 @@
 // `installFixture({ scenario })` (vitest).
 
 import type { AuthGrant } from "../api/generated/AuthGrant";
+import type { ContestStatus } from "../api/generated/ContestStatus";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
+import type { IdentitySummary } from "../api/generated/IdentitySummary";
+import type { PendingTopUp } from "../api/generated/PendingTopUp";
 import type { DispatchStateName } from "../api/generated/DispatchStateName";
 import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
@@ -20,6 +23,7 @@ import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
+import { newCreditsWorld, topUpStep, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
@@ -366,6 +370,50 @@ function contestPending(w: World, endsAt: number | null): World {
   return w;
 }
 
+/** "alice" registered, her summary patched (DP1-10). */
+function withAlice(w: World, patch: Partial<IdentitySummary>): World {
+  w.dashpay = registered();
+  w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, ...patch }));
+  return w;
+}
+
+/** "alice" registered with this credits state (DP1-10). */
+function withCredits(w: World, patch: Partial<CreditsWorld>): World {
+  w.dashpay = { ...registered(), credits: newCreditsWorld(patch) };
+  return w;
+}
+
+/** A top-up lock of 0.05 Dash for "alice" (DP1-10). */
+const topUpLock = (patch: Partial<PendingTopUp>): PendingTopUp => ({
+  txid: "a1".repeat(32),
+  identity: IDENTITY.alice,
+  identityIndex: 0,
+  duffs: 5_000_000,
+  proved: false,
+  consumptionUnknown: false,
+  ...patch,
+});
+
+/** The contested world with `contest_status` reading `state` (DP1-10 R3–R5). */
+function withContest(w: World, state: ContestStatus["state"]): World {
+  const s = w.dashpay.status;
+  if (s.kind !== "contestPending") return w;
+  const contest: ContestStatus = {
+    label: s.label,
+    state,
+    endsAt: s.endsAt,
+    contenders: [
+      { identity: IDENTITY.alice, votes: 31, isSelf: true },
+      { identity: IDENTITY.mallory, votes: 40, isSelf: false },
+    ],
+    lockVotes: state.kind === "locked" ? 55 : 3,
+    abstainVotes: 2,
+    temporaryName: "alice007",
+  };
+  w.dashpay.credits = newCreditsWorld({ contest });
+  return w;
+}
+
 /** The wallet's DashPay status set to `status`, no identity on file (DP1-08). */
 function withStatus(w: World, status: DashPayStatus): World {
   w.dashpay = { ...noIdentity(), status };
@@ -656,6 +704,32 @@ const SCENARIOS = {
     w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, balance: "4000000", creditLevel: "empty" }));
     return w;
   },
+  // DP1-10: My Profile's credits block, top-ups and the request card.
+  /** "alice" at or below the low threshold: the low warning and Home's card (C2, S19). */
+  "dashpay-credits-low": (t) => withAlice(base(t), { balance: "1000000000", creditLevel: "low" }),
+  /** The balance not read yet (C4). */
+  "dashpay-credits-unknown": (t) => withAlice(base(t), { balance: null, balanceAsOf: null, balanceStale: true, creditLevel: null }),
+  /** The balance may be behind (C5). */
+  "dashpay-credits-stale": (t) => withAlice(base(t), { balanceStale: true }),
+  /** A top-up of 0.05 Dash waiting for its proof (C6). */
+  "dashpay-top-up-pending": (t) => withCredits(base(t), { pending: [topUpLock({ proved: false })] }),
+  /** A top-up lock Platform answered "already consumed" for, proved (C6). */
+  "dashpay-top-up-unknown": (t) => withCredits(base(t), { pending: [topUpLock({ proved: true, consumptionUnknown: true })] }),
+  /** A top-up funding whose outcome is unknown: Repair resolves it (C7, D16). */
+  "dashpay-top-up-stuck": (t) =>
+    withCredits(base(t), { stuck: [{ step: topUpStep(0, 1), identityIndex: 0, identity: IDENTITY.alice, state: "maybeSent" }] }),
+  /** The next top-up's funding outcome is unknown: the sheet routes to Repair (T8, D16, D22). */
+  "dashpay-top-up-lost": (t) => withCredits(base(t), { next: "broadcastUnknown" }),
+  /** "alice" contested with no temporary name: Create instant username (R1, D13). */
+  "dashpay-contest-no-temporary": (t) => {
+    const w = contestPending(base(t), 1_900_000_000);
+    w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, names: [], mainName: null }));
+    return w;
+  },
+  /** The contest read before the status moved on: won (R3), lost to another user (R4), blocked (R5). */
+  "dashpay-contest-won": (t) => withContest(contestPending(base(t), 1_900_000_000), { kind: "won" }),
+  "dashpay-contest-lost": (t) => withContest(contestPending(base(t), 1_900_000_000), { kind: "lost", winner: IDENTITY.mallory }),
+  "dashpay-contest-locked": (t) => withContest(contestPending(base(t), 1_900_000_000), { kind: "locked" }),
   /** "alice" with nothing in the bell: no request waiting, no event (DP2-09 D12). */
   "dashpay-bell-empty": (t) => {
     const w = base(t);
