@@ -37,6 +37,10 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: superseded by `lock` (`lock_vault`, async, awaits the lease drain); dw-ffi's synchronous `Vault::lock` maps to it for the frozen Swift shells, and the console and the relock timer use it",
     ),
     (
+        "NetworkSession::governance",
+        "deferred (MG): the governance facade (mg-engine.md) is bound with the Masternodes domain (MG-02 D7)",
+    ),
+    (
         "NetworkSession::masternode_keys",
         "deferred (MG): masternode key export is bound with the Masternodes domain",
     ),

@@ -74,10 +74,11 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
         default:
           return [keys.dashpayAll];
       }
-    // No screen reads these yet (the CoinJoin and notice views come with their tasks).
+    // No screen reads these yet (the CoinJoin, notice and governance views come with their tasks).
     case "newTransactions":
     case "coinJoin":
     case "notice":
+    case "governance":
       return [];
     default:
       return unreachable(event);
