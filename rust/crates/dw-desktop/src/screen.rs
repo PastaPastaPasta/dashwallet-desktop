@@ -105,18 +105,26 @@ fn file_uri_path(uri: &str) -> Option<std::path::PathBuf> {
     }
 }
 
-/// The regular file at `path`, at most [`MAX_CAPTURE_BYTES`].
+/// The regular file at `path`, at most [`MAX_CAPTURE_BYTES`]. The path is
+/// checked before it is opened (Windows refuses to open a directory as a
+/// file, so every OS says `ImageUnreadable` for one, BL-164), and the open
+/// file again (it may have been replaced in between).
 #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
 fn read_image(path: &std::path::Path) -> Result<Vec<u8>, DesktopError> {
     use std::io::Read as _;
     let os = |e: std::io::Error| DesktopError::OsError(format!("reading the capture: {e}"));
+    let regular = |meta: &std::fs::Metadata| {
+        if meta.is_file() && meta.len() <= MAX_CAPTURE_BYTES {
+            return Ok(());
+        }
+        Err(DesktopError::ImageUnreadable(
+            "the capture is not a regular file of at most 32 MiB".into(),
+        ))
+    };
+    regular(&std::fs::metadata(path).map_err(os)?)?;
     let file = std::fs::File::open(path).map_err(os)?;
     let meta = file.metadata().map_err(os)?;
-    if !meta.is_file() || meta.len() > MAX_CAPTURE_BYTES {
-        return Err(DesktopError::ImageUnreadable(
-            "the capture is not a regular file of at most 32 MiB".into(),
-        ));
-    }
+    regular(&meta)?;
     let mut data = Vec::with_capacity(meta.len() as usize);
     file.take(MAX_CAPTURE_BYTES + 1)
         .read_to_end(&mut data)
@@ -620,6 +628,8 @@ mod tests {
     #[test]
     fn test_IOS_043_captures_are_regular_files_of_at_most_32_mib() {
         let dir = tempfile::tempdir().unwrap();
+        // A directory is refused as unreadable on every OS (Windows cannot open
+        // one as a file, BL-164).
         assert!(matches!(
             read_image(dir.path()),
             Err(DesktopError::ImageUnreadable(_))

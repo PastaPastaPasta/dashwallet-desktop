@@ -3,7 +3,7 @@
 // files as they are (type stripping); no other dependency.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { closeSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 export const env = (name: string, fallback?: string): string => {
@@ -71,6 +71,9 @@ export class WebDriver {
     return found[0]?.[ELEMENT] ?? null;
   }
 
+  /** The first match of `css` once WebKitWebDriver calls it displayed. That check calls an element
+   * with `overflow: hidden` and only text in it hidden (the row ellipsis style), however it looks:
+   * wait for its container and read the text with a script (BL-164). */
   waitFor(css: string, what = css, ms = TIMEOUT_MS): Promise<string> {
     return poll(ms, what, async () => {
       const el = await this.find(css);
@@ -158,21 +161,5 @@ export function dwcli(dataRoot: string, passFile: string, ...args: string[]): st
   return r.stdout;
 }
 
-/** Every file under `dir` (the data root, OUT) that holds one of `secrets` as plain text. */
-export function leaks(dir: string, secrets: string[]): string[] {
-  const found: string[] = [];
-  const walk = (d: string) => {
-    for (const name of readdirSync(d)) {
-      const p = join(d, name);
-      const st = statSync(p, { throwIfNoEntry: false });
-      if (!st) continue;
-      if (st.isDirectory()) walk(p);
-      else if (st.isFile()) {
-        const text = readFileSync(p).toString("latin1");
-        for (const s of secrets) if (text.includes(Buffer.from(s, "utf8").toString("latin1"))) found.push(`${p} (${secrets.indexOf(s)})`);
-      }
-    }
-  };
-  walk(dir);
-  return found;
-}
+/** The leak scan: it skips symlinks (BL-162). */
+export { leaks } from "./scratch.ts";
