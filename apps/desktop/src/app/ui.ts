@@ -13,7 +13,7 @@ export type { Route, ToolsTab };
 export type ThemeChoice = ThemeName | null;
 
 /** Settings' tabs (U-04 D1). */
-export type SettingsTab = "general" | "security" | "wallets" | "backups" | "about";
+export type SettingsTab = "general" | "security" | "wallets" | "coinjoin" | "backups" | "about";
 
 /** Pay's two ways (DASHPAY §4): to a contact, or to an address. */
 export type PayTab = "contact" | "address";

@@ -36,6 +36,7 @@ import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
 import { userLinkText } from "../contacts/add";
 import { activityPage, contactList, eventOf, relationOf, type DashPayWorld, type FixtureScan } from "./dashpay";
 import { scanHandlers } from "./scan";
+import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { advance, costs, failRun, fundable, NAME_CREDITS, registrationHandlers } from "./registration";
 import { routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
@@ -81,9 +82,12 @@ function contactsChanged({ world, emit }: Ctx, walletId: string, identity: strin
   emit({ kind: "platform", network: world.launch.network.dirName, walletId, change: { domain: "contacts", identity } });
 }
 
-function setLock({ world, emit }: Ctx, state: World["lock"]["state"]) {
+function setLock(ctx: Ctx, state: World["lock"]["state"]) {
+  const { world, emit } = ctx;
   world.lock = { ...world.lock, state };
   emit({ kind: "vaultLockState", network: world.launch.network.dirName, state });
+  // A vault that locks stops mixing (dw-engine `mixing_loop`, QT-112), whichever call locked it.
+  if (state === "locked" || state === "noVault") haltAll(ctx, "vaultLocked");
 }
 
 // Grants and leases (E0-04), as dw-vault and the engine's lease table answer them.
@@ -591,6 +595,8 @@ export const HANDLERS: Handlers = {
   // Settings (U-04): settings.ts.
   ...settingsHandlers({ wallet, grant: checkGrant, useGrant }),
   ...scanHandlers(),
+  // CoinJoin (U-06): coinjoin.ts.
+  ...coinjoinHandlers({ wallet }),
   // Username registration (DP1-09): registration.ts.
   ...registrationHandlers({ wallet, dashpay, grant: checkGrant, newLease, setLease, writeLease }),
   ...topUpHandlers({ wallet, dashpay, grant: checkGrant, useGrant, costs: COST_TABLE }),

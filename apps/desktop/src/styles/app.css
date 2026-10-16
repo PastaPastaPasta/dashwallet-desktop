@@ -3712,6 +3712,203 @@ button.bell-row-open:focus-visible {
   margin-top: var(--dw-space-xs);
 }
 
+/* ------------------------------------------------------------------ CoinJoin (U-06) */
+
+.coinjoin-card,
+.coinjoin-status {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.coinjoin-card-body,
+.coinjoin-card-live {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+}
+
+.coinjoin-card-title,
+.coinjoin-status-title {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.coinjoin-status-title {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.coinjoin-card-open {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.coinjoin-card-open:hover {
+  color: var(--dw-role-text-link);
+}
+
+.coinjoin-spinner {
+  flex: none;
+  width: var(--dw-space-m);
+  height: var(--dw-space-m);
+}
+
+.coinjoin-progress-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+  font-variant-numeric: tabular-nums;
+}
+
+.coinjoin-progress {
+  width: var(--dw-layout-status-progress-width);
+  height: 4px;
+  accent-color: var(--dw-role-accent);
+}
+
+.coinjoin-mixed,
+.coinjoin-line {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.coinjoin-line {
+  color: var(--dw-role-text-secondary);
+}
+
+.coinjoin-card-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--dw-space-xxs);
+  align-self: center;
+}
+
+.coinjoin-status-action {
+  align-self: center;
+}
+
+.coinjoin-subtitle {
+  margin: 0 0 var(--dw-space-l);
+  color: var(--dw-role-text-secondary);
+}
+
+.coinjoin-notes,
+.coinjoin-levels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.coinjoin-notes p {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.coinjoin-level-group {
+  gap: var(--dw-space-xs);
+}
+
+.coinjoin-level {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: start;
+  gap: var(--dw-space-sm);
+  padding: var(--dw-space-sm) 0;
+  cursor: pointer;
+}
+
+.coinjoin-level + .coinjoin-level {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.coinjoin-level input {
+  margin: var(--dw-space-xxs) 0 0;
+  accent-color: var(--dw-role-accent);
+}
+
+.coinjoin-level-icon {
+  object-fit: contain;
+}
+
+.coinjoin-level-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+  grid-column: 3;
+}
+
+.coinjoin-level-title {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.coinjoin-level-time {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.coinjoin-details {
+  margin-bottom: var(--dw-space-l);
+}
+
+.coinjoin-details-list {
+  margin: 0;
+  padding: 0 var(--dw-layout-card-padding);
+}
+
+.coinjoin-detail-note {
+  display: block;
+}
+
+.coinjoin-sessions {
+  padding: var(--dw-space-s) var(--dw-layout-card-padding) var(--dw-space-m);
+}
+
+.coinjoin-setting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+}
+
+.coinjoin-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  width: 100%;
+}
+
+/* Whole numbers of a few digits: no full-width field. */
+.coinjoin-settings-form .form-field input {
+  max-width: 240px;
+}
+
 /* My Profile and the top-up sheet (DP1-10) */
 
 .profile-body {

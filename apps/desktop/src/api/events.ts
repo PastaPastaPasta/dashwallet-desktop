@@ -41,7 +41,8 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       return [keys.sync, keys.dashpayStatusAll];
     // The username quote's fee grows with the wallet's coins (DP1-08).
     case "balances":
-      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId)];
+      // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7).
+      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId), keys.coinjoinStatus(event.walletId)];
     case "historyChanged":
       return [
         keys.historyAll(event.walletId),
@@ -85,9 +86,10 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
         default:
           return [keys.dashpayAll];
       }
-    // No screen reads these yet (the CoinJoin and notice views come with their tasks).
-    case "newTransactions":
     case "coinJoin":
+      return [keys.coinjoinStatus(event.walletId)];
+    // No screen reads these yet (the notice views come with their task).
+    case "newTransactions":
     case "notice":
       return [];
     default:
