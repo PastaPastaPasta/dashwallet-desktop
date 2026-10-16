@@ -10,6 +10,7 @@ import type { IdentitySummary } from "./generated/IdentitySummary";
 import type { LockOutcome } from "./generated/LockOutcome";
 import type { LockProgress } from "./generated/LockProgress";
 import { reconcileLockReport } from "./lockReport";
+import { isChangingUsernameInRequests } from "./username";
 
 /** A history query without its paging fields. */
 export type HistoryFilter = Omit<HistoryRequest, "cursor" | "limit">;
@@ -144,10 +145,22 @@ export function useReceiveUsername(walletId: string) {
   return useQuery({ queryKey: keys.receiveUsername(walletId), queryFn: () => b.receiveUsername(walletId) });
 }
 
-/** "Include my username in payment requests" for the wallet (DP3-03b); on by default. */
+/** "Include my username in payment requests" for the wallet (DP3-03b); on by default. Off while a change of it is under way (D22). */
 export function useUsernameInRequests(walletId: string) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.usernameInRequests(walletId), queryFn: () => b.usernameInRequests(walletId) });
+  return useQuery({
+    queryKey: keys.usernameInRequests(walletId),
+    queryFn: async () => (await b.usernameInRequests(walletId)) && !isChangingUsernameInRequests(walletId),
+  });
+}
+
+/**
+ * Whether the wallet's request URIs may show its username now (DP3-03b D22): only once the
+ * setting has read on. A failed read is off; `undefined` until it first answers.
+ */
+export function useUsernameAllowed(walletId: string): boolean | undefined {
+  const setting = useUsernameInRequests(walletId);
+  return setting.isError ? false : setting.data;
 }
 
 export function useReceiveRequests(walletId: string) {

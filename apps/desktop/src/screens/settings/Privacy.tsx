@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { keys, useBackend, useUsernameInRequests, useWallets } from "../../api/queries";
+import { changingUsernameInRequests } from "../../api/username";
 import { useUi } from "../../app/ui";
 import { failureText } from "../../onboarding/model";
 import { Hint, Problem, SettingsCard } from "./parts";
@@ -30,17 +31,18 @@ function UsernameInRequests({ wallet }: { wallet: WalletSummary }) {
   const turn = async (on: boolean) => {
     setProblem(null);
     setTurning(on);
-    // Off counts at once, before the engine answers: Receive, opened meanwhile, must not draw a
-    // cached name (D7). A read already under way would put the old value back, so it is
-    // dropped first. On waits for the engine.
-    if (!on) {
-      await client.cancelQueries({ queryKey: keys.usernameInRequests(wallet.walletId) });
-      client.setQueryData(keys.usernameInRequests(wallet.walletId), false);
-    }
+    // While the change is under way the setting reads off, either way: Receive, opened
+    // meanwhile, shows no name (D7, D22). A read already under way would put the old value
+    // back, so it is dropped first.
+    const done = changingUsernameInRequests(wallet.walletId);
+    await client.cancelQueries({ queryKey: keys.usernameInRequests(wallet.walletId) });
+    client.setQueryData(keys.usernameInRequests(wallet.walletId), false);
     try {
       await backend.setUsernameInRequests(wallet.walletId, on);
     } catch (e) {
       setProblem(failureText(e));
+    } finally {
+      done();
     }
     // The Receive QR's username, the requests and the setting are all receive reads. Receive is
     // not mounted here, so its cached reads are refetched too, not only marked stale: a cached

@@ -155,6 +155,81 @@ test("Receive drops the name it holds once the toggle reads off, never showing i
   expect(errors).toEqual([]);
 });
 
+test("while turning it off is under way, a stored or a new request shows and copies no name (D22)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered", "light");
+  await page.getByTestId("sidebar-receive").click();
+  await page.getByTestId("request-label").fill("Rent");
+  await page.getByTestId("request-create").click();
+  await expect(page.getByTestId("request-uri")).toContainText("?label=Rent&user=alice");
+  await page.keyboard.press("Escape");
+
+  await generalSettings(page);
+  const held: CommandName = "set_username_in_requests";
+  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), held);
+  await box(page).uncheck();
+  await expect(box(page)).toBeDisabled();
+  // Back on Receive before the engine answers: the cached request still has the name.
+  await page.getByTestId("sidebar-receive").click();
+  await page.getByTestId("requests-table").locator('[data-testid^="request-show-"]').click();
+  const link = page.getByTestId("request-uri");
+  await expect(link).toContainText("?label=Rent");
+  await expect(link).not.toContainText("user=");
+  await expect(page.getByTestId("request-username")).toHaveCount(0);
+  await link.getByRole("button", { name: "Copy payment link" }).click();
+  expect(await copied(page)).toMatch(/^dash:\w+\?label=Rent$/);
+  await page.keyboard.press("Escape");
+  await page.getByTestId("request-label").fill("Gas");
+  await page.getByTestId("request-create").click();
+  await expect(link).toContainText("?label=Gas");
+  await expect(link).not.toContainText("user=");
+  await page.keyboard.press("Escape");
+  await release.evaluate((r) => r());
+  expect(errors).toEqual([]);
+});
+
+test("while turning it on is under way, a re-read of the setting still shows no name (D22)", async ({ page }) => {
+  const errors = await open(page, "dashpay-username-off", "light");
+  await generalSettings(page);
+  const held: CommandName = "set_username_in_requests";
+  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), held);
+  await box(page).check();
+  await expect(box(page)).toBeDisabled();
+  const { address, link } = await receiveLink(page);
+  expect(link).toBe(`dash:${address}`);
+  // A names change re-reads the receive side, the setting with it, before the engine has answered.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+  });
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "username_in_requests").length)).toBeGreaterThan(1);
+  await page.waitForTimeout(500);
+  await page.getByTestId("receive-copy-uri").click();
+  expect(await copied(page)).toBe(`dash:${address}`);
+  await release.evaluate((r) => r());
+  await expect(async () => {
+    await page.getByTestId("receive-copy-uri").click();
+    expect(await copied(page)).toBe(`dash:${address}?user=alice`);
+  }).toPass();
+  expect(errors).toEqual([]);
+});
+
+test("the QR uses no name before the setting has answered (D22)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered", "light");
+  const held: CommandName = "username_in_requests";
+  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), held);
+  await page.getByTestId("sidebar-receive").click();
+  await expect(page.getByTestId("receive-address")).toBeVisible();
+  // The username is there; the setting is not.
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("receive_username"))).toBe(true);
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId("receive-copy-uri")).toBeDisabled();
+  expect(await page.evaluate(() => window.__dwFixture!.calls.includes("build_payment_uri"))).toBe(false);
+  await release.evaluate((r) => r());
+  const { address, link } = await receiveLink(page);
+  expect(link).toBe(`dash:${address}?user=alice`);
+  expect(errors).toEqual([]);
+});
+
 test("the box shows the choice until the engine answers, and a refusal keeps the setting", async ({ page }) => {
   const errors = await open(page, "dashpay-registered", "light");
   await generalSettings(page);

@@ -8,7 +8,8 @@ import { errorMessage, hasCode } from "../api/backend";
 import type { AddressInfo } from "../api/generated/AddressInfo";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ReceiveRequest } from "../api/generated/ReceiveRequest";
-import { keys, useBackend, useQrMatrix, useReceiveAddress, useReceiveRequests, useReceiveUsername, useUsernameInRequests } from "../api/queries";
+import { keys, useBackend, useQrMatrix, useReceiveAddress, useReceiveRequests, useReceiveUsername, useUsernameAllowed } from "../api/queries";
+import { withoutUsername } from "../api/username";
 import { useDebounced } from "../app/useDebounced";
 import { AmountText, DashButton } from "../components/basics";
 import { CopyValue, DetailRow } from "../components/detail";
@@ -47,17 +48,15 @@ function AddressCard({ walletId }: { walletId: string }) {
   // The QR carries the wallet's DashPay username as `user=` (DP3-03). The engine reads none
   // while names are updating (a busy identity store during sync), so the card keeps the last
   // name it showed for this wallet rather than dropping it (DP3-02 D25); a failed read is none.
-  // With "Include my username in payment requests" off, or not known to be on, it holds none
-  // (DP3-03b): the engine's none is then the answer, not a busy store.
+  // "Include my username in payment requests" decides first (DP3-03b D22): until it has read on,
+  // no name is used, held or read; off, the engine's none is the answer, not a busy store.
   const username = useReceiveUsername(walletId);
-  const setting = useUsernameInRequests(walletId);
-  // Only a read that answered `true` counts as on: a failed one is off (D6), even with a cached value.
-  const included = setting.isError ? false : setting.data;
+  const included = useUsernameAllowed(walletId);
   const held = useRef<{ walletId: string; name: string } | null>(null);
   if (username.data) held.current = { walletId, name: username.data };
   const last = included === true && held.current?.walletId === walletId ? held.current.name : null;
   const user =
-    included === false ? null : username.isError ? last : username.data === undefined ? undefined : (username.data ?? last);
+    included !== true ? (included === undefined ? undefined : null) : username.isError ? last : username.data === undefined ? undefined : (username.data ?? last);
   const uri = useQuery({
     // Its own prefix: Tools ▸ Address book's `paymentUri` key takes a label in the same place.
     queryKey: ["receiveUri", shown?.address ?? "", user ?? null] as const,
@@ -219,8 +218,11 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
   );
 }
 
-function RequestSheet({ request, network, onClose }: { request: ReceiveRequest; network: NetworkInfo; onClose: () => void }) {
+function RequestSheet({ walletId, network, onClose, ...props }: { walletId: string; request: ReceiveRequest; network: NetworkInfo; onClose: () => void }) {
   const shown = useDisplay(network);
+  // A stored or new request shows and copies its name only while the setting reads on: a change
+  // under way, a failed read or a request read before the change all show none (DP3-03b D22).
+  const request = useUsernameAllowed(walletId) === true ? props.request : withoutUsername(props.request);
   const title = `Request payment to ${request.label || shortAddress(request.address)}`;
   return (
     <Sheet title={title} width="medium" testId="request-sheet" onClose={onClose}>
@@ -333,7 +335,7 @@ export function ReceivePage({ walletId, network }: { walletId: string; network: 
         <RequestForm walletId={walletId} network={network} onCreated={setShown} />
       </div>
       <RequestList walletId={walletId} network={network} onShow={setShown} />
-      {shown && <RequestSheet request={shown} network={network} onClose={() => setShown(null)} />}
+      {shown && <RequestSheet walletId={walletId} request={shown} network={network} onClose={() => setShown(null)} />}
     </Page>
   );
 }
