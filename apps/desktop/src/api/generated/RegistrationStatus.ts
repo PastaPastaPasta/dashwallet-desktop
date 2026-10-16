@@ -17,6 +17,11 @@ waiting: RegistrationWaitName | null,
  */
 holdsKey: boolean,
 /**
+ * A driver runs the flow now, and `waiting` is what it waits for;
+ * otherwise nothing moves the row until `resumeRegistration`.
+ */
+running: boolean,
+/**
  * A funding of the flow has committed and is not definitely unsent.
  */
 fundsCommitted: boolean,

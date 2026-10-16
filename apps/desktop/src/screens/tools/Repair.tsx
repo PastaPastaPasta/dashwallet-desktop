@@ -1,7 +1,7 @@
 // Tools ▸ Repair (QT-117, QT-148, IOS-034, IOS-113, E0-04 C9): rescans with progress and Cancel
 // (D10), the wallet's birth height, removing unconfirmed transactions and resetting chain data
-// (each asks first, D11), and resolving a registration's stuck funding (D12). Finishing stranded
-// asset locks waits on DP1-09 and DP1-02's facade call.
+// (each asks first, D11), resolving a registration's stuck funding (D12), and finishing stranded
+// asset locks (DP1-09 D10). Unrecorded asset locks wait on DP1-02's facade call.
 
 import { useEffect, useId, useState } from "react";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
@@ -118,7 +118,7 @@ export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: Wall
           <ul className="tool-list">
             {model.stuck.map((r) => (
               <li key={r.draft} data-testid={`repair-stuck-${r.draft}`}>
-                <span>{r.label}</span>
+                <span>{r.label || RepairText.unnamedRegistration}</span>
                 <DashButton variant="tintedBlue" size="small" data-testid={`repair-resolve-${r.draft}`} disabled={model.busy} onClick={() => model.ask("resolveStuck", r)}>
                   Resolve stuck funding: send all coins to yourself
                 </DashButton>
@@ -132,8 +132,18 @@ export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: Wall
           {RepairText.stuckUnreadable}
         </p>
       )}
-      <NotYet title="Asset locks" owner="DP1-09, DP1-02" testId="repair-asset-locks-not-yet">
-        Finishing stranded transfers and sending or cancelling unrecorded asset locks.
+      <ToolCard title="Finish transfers" testId="repair-finish">
+        <p className="placeholder-note">
+          Finishes username registrations and credit top-ups whose payment was sent but never completed. Nothing more is paid.
+        </p>
+        <div className="tool-actions">
+          <DashButton variant="tintedBlue" size="small" data-testid="repair-finish-transfers" disabled={model.busy} onClick={() => void model.finishTransfers()}>
+            Finish transfers
+          </DashButton>
+        </div>
+      </ToolCard>
+      <NotYet title="Asset locks" owner="DP1-02" testId="repair-asset-locks-not-yet">
+        Sending or cancelling unrecorded asset locks.
       </NotYet>
       {question && (
         <Sheet title={question.title} width="small" testId="repair-confirm" onClose={() => model.dismiss()}>

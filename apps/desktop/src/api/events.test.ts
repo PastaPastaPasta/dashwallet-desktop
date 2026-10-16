@@ -38,6 +38,9 @@ describe("event bridge", () => {
     expect(invalidationsFor({ kind: "balances", network: "testnet", walletId: "w", balances: null })).toEqual([keys.balance("w"), keys.wallets, keys.coinsAll("w"), dashpayKeys.quote("w")]);
     expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll]);
     expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: {} as never })).toEqual([keys.lockReconcile]);
+    // DP1-09 D14: a registration lease's change re-reads the rows, whose `waiting` moved.
+    const registration = { flow: "registration" } as never;
+    expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: registration })).toEqual([keys.lockReconcile, dashpayKeys.registrationsAll]);
     expect(invalidationsFor({ kind: "sessionOpened", network: "testnet" })).toBe("all");
     expect(invalidationsFor({ kind: "eventsOverflowed" })).toBe("all");
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } })).toEqual([]);
@@ -172,10 +175,11 @@ describe("event bridge", () => {
     expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
   });
 
-  it("sync re-reads only the DashPay statuses without an identity (BL-153 D9)", async () => {
+  it("sync re-reads only the DashPay statuses without an identity (BL-153 D9, DP1-09 D28)", async () => {
     const client = new QueryClient();
     client.setQueryData(keys.dashpayStatus("a"), { kind: "noIdentity", reason: "waitingForSync" });
     client.setQueryData(keys.dashpayStatus("b"), { kind: "ready", main: "x" });
+    client.setQueryData(keys.dashpayStatus("c"), { kind: "startupIncomplete", startup: "notRun" });
     client.setQueryData(keys.identities("a"), []);
     let emit: (e: AppEvent) => void = () => undefined;
     const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
@@ -183,6 +187,7 @@ describe("event bridge", () => {
     emit({ kind: "spvStateChanged", network: "testnet", running: true });
     expect(client.getQueryState(keys.dashpayStatus("a"))?.isInvalidated).toBe(true);
     expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
+    expect(client.getQueryState(keys.dashpayStatus("c"))?.isInvalidated).toBe(true);
     expect(client.getQueryState(keys.identities("a"))?.isInvalidated).toBe(false);
   });
 });

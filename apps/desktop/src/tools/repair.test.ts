@@ -3,6 +3,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { FeePolicy } from "../api/generated/FeePolicy";
+import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RescanStart } from "../api/generated/RescanStart";
 import type { RescanStatus } from "../api/generated/RescanStatus";
@@ -20,6 +21,7 @@ const reg = (draft: string, waiting: RegistrationStatus["waiting"]): Registratio
   txid: null,
   waiting,
   holdsKey: false,
+  running: false,
   fundsCommitted: true,
   contestEndsAt: null,
   failure: null,
@@ -28,6 +30,16 @@ const reg = (draft: string, waiting: RegistrationStatus["waiting"]): Registratio
   createdAt: 0,
   updatedAt: 0,
 });
+
+const QUOTE: RegistrationQuote = {
+  contested: false,
+  lockDuffs: 3_000_000,
+  feeDuffs: 2_260,
+  totalDuffs: 3_002_260,
+  remainingCredits: "1000000000",
+  availableDuffs: 10e8,
+  grant: { maxDuffs: 3_002_261, maxCredits: "2000000000" },
+};
 
 function setup(lock = {}) {
   const calls: string[] = [];
@@ -59,6 +71,11 @@ function setup(lock = {}) {
       return { txid: "ab".repeat(32) };
     }),
     feePolicy: vi.fn(async () => ({ maxTxFee: 10_000_000 }) as FeePolicy),
+    registrationQuote: vi.fn(async () => QUOTE),
+    finishAssetLocks: vi.fn(async (walletId: string, grant: string) => {
+      calls.push(`finish ${walletId.slice(0, 2)} ${grant}`);
+      return { resumed: 2, completed: 1, stillPending: 1 };
+    }),
   };
   const grants = new GrantModel(vault.api);
   return { model: new RepairModel(api, grants, WALLET_A), api, calls, vault, grants };
@@ -180,6 +197,17 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     expect(model.state).toMatchObject({ kind: "done" });
   });
 
+  it("an orphan funding step (its row gone) is resolved by the step registrations names (Sol r1 P1)", async () => {
+    const { model, api, calls } = setup({ encrypted: false });
+    // registration.rs reports an orphan with the step itself as its draft and no label.
+    api.registrations.mockResolvedValueOnce([{ ...reg("registration/7/funding", "fundingUnknown"), phase: "keysPrepared", label: "" }]);
+    await model.refresh();
+    expect(model.stuck.map((r) => r.draft)).toEqual(["registration/7/funding"]);
+    await model.resolveStuck(model.stuck[0]);
+    expect(calls).toEqual([`resolve a1 registration/7/funding grant-1`]);
+    expect(model.state).toMatchObject({ kind: "done" });
+  });
+
   it("a refusal names why, and the unspent grant is revoked", async () => {
     const { model, api, vault } = setup({ encrypted: false });
     api.resolveStuckFunding.mockRejectedValueOnce(appError("stuck_funding", { kind: "stuckFunding", refusal: { kind: "callRunning" }, retryLater: true }));
@@ -211,5 +239,13 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     await running;
     expect(calls).toEqual([]);
     expect(model.state).toEqual({ kind: "idle" });
+  });
+
+  it("DP109_D10: Finish transfers asks for a platformOp grant of one duff and the quote's credits, and reports", async () => {
+    const { model, calls, vault } = setup({ encrypted: false });
+    await model.finishTransfers();
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 1, maxCredits: "2000000000" }, walletId: WALLET_A });
+    expect(calls).toEqual(["finish a1 grant-1"]);
+    expect(model.state).toEqual({ kind: "done", text: "2 resumed, 1 completed, 1 still pending." });
   });
 });

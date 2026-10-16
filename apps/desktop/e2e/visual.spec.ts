@@ -181,6 +181,33 @@ const JOIN: Record<string, { scenario: string; ready: string }> = {
   "join-voting": { scenario: "dashpay-contest-pending", ready: "dashpay-card" },
 };
 
+// DP1-09: the registration wizard's two steps and a registration's screens on the Join page.
+const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Promise<unknown> }> = {
+  name: {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await page.getByTestId("join-create").click();
+      await page.getByTestId("registration-name-field").fill("alice");
+      await expect(page.getByTestId("registration-availability")).toHaveText("Username available");
+    },
+  },
+  confirm: {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await page.getByTestId("join-create").click();
+      await page.getByTestId("registration-name-field").fill("alice-77");
+      await expect(page.getByTestId("registration-next")).toBeEnabled();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-fee").waitFor();
+    },
+  },
+  progress: { scenario: "dashpay-registering", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=progress]").waitFor() },
+  paused: { scenario: "dashpay-registration-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=paused]").waitFor() },
+  retry: { scenario: "dashpay-registering-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=retry]").waitFor() },
+  repair: { scenario: "dashpay-registration-needs-finish", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=repair]").waitFor() },
+  stopped: { scenario: "dashpay-registration-stopped", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=stopped]").waitFor() },
+};
+
 async function openJoin(page: Page, scenario: string, theme: Theme) {
   await page.goto(fixtureUrl(scenario, theme));
   await page.getByTestId("toolbar").waitFor();
@@ -229,6 +256,13 @@ for (const theme of THEMES) {
     await page.mouse.move(0, 0);
     await shoot(page, "dashpay-faq", theme);
   });
+  for (const [name, { scenario, reach }] of Object.entries(REGISTRATION)) {
+    test(`visual dashpay-registration-${name} ${theme}`, async ({ page }) => {
+      await openJoin(page, scenario, theme);
+      await reach(page);
+      await shoot(page, `dashpay-registration-${name}`, theme);
+    });
+  }
 }
 
 // DP2-08: Add Contact with a search hit's card (Send), and My QR.

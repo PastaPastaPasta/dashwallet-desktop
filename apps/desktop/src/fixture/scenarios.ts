@@ -467,7 +467,8 @@ const SCENARIOS = {
   "dashpay-registering-unlock": (t) => {
     const w = base(t);
     w.dashpay = registering();
-    w.dashpay.registrations[0] = { ...w.dashpay.registrations[0], phase: "draft", waiting: "unlock", txid: null, holdsKey: false, fundsCommitted: false };
+    w.dashpay.registrations[0] = { ...w.dashpay.registrations[0], phase: "draft", waiting: "unlock", txid: null, holdsKey: false, running: false, fundsCommitted: false };
+    w.dashpay.runs = [];
     w.lock = { ...w.lock, state: "unlockedMixingOnly" };
     return w;
   },
@@ -481,8 +482,56 @@ const SCENARIOS = {
       waiting: null,
       txid: null,
       holdsKey: false,
+      running: false,
       fundsCommitted: false,
       failure: { phase: "keysPrepared", code: "registration.funding_insufficient", retryable: true, needed: "3002260", available: "1000000" },
+    };
+    w.dashpay.runs = [];
+    return w;
+  },
+  // DP1-09: a registration's screens (R2, R5, R8). Its run ended with the last launch.
+  /** Funded, after a relaunch: no proof yet, so it reads `chainLock` with no key held, and waits for Continue (R2, D21). */
+  "dashpay-registration-paused": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registering(), runs: [] };
+    return w;
+  },
+  /** Its asset lock is proved but no flow finished it: Finish transfers (R5). */
+  "dashpay-registration-needs-finish": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registering(), runs: [] };
+    w.dashpay.registrations[0].waiting = "needsFinish";
+    return w;
+  },
+  /** Failed for good after its funding went out: the recovery copy and Repair (R8). The status no
+   * longer names it (banner.rs `in_progress`); the Join page finds it (D22). */
+  "dashpay-registration-stopped": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registering(), runs: [], status: { kind: "noIdentity", reason: null } };
+    w.dashpay.registrations[0] = {
+      ...w.dashpay.registrations[0],
+      phase: "failed",
+      waiting: null,
+      holdsKey: false,
+      running: false,
+      failure: { phase: "fundingSent", code: "registration.islock_timeout", retryable: false, needed: null, available: null },
+    };
+    return w;
+  },
+  /** Failed (a retryable timeout) while its funding's outcome is unknown: the engine keeps the
+   * wait of the step it still owns (`Awaiting`), so the page, Home and Tools ▸ Repair send it to
+   * Resolve stuck funding (f1, Sol r1 P2). */
+  "dashpay-registration-failed-unknown": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registering(), runs: [] };
+    w.dashpay.registrations[0] = {
+      ...w.dashpay.registrations[0],
+      phase: "failed",
+      waiting: "fundingUnknown",
+      holdsKey: false,
+      running: false,
+      fundsCommitted: true,
+      failure: { phase: "keysPrepared", code: "platform.timeout", retryable: true, needed: null, available: null },
     };
     return w;
   },

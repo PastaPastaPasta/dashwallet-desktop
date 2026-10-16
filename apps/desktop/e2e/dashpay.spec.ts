@@ -212,7 +212,7 @@ test("AND-069–071 / IOS-134 What is username voting? opens the voting info and
   await expect(sheet).toHaveCount(0);
 });
 
-test("IOS-065 J1: the intro and the cost; Create username leads to the wizard placeholder and back", async ({ page }) => {
+test("IOS-065 J1: the intro and the cost; Create username opens the wizard's first step, Cancel comes back", async ({ page }) => {
   const errors = await openJoin(page, "dashpay-no-identity");
   await expect(page.getByTestId("join-intro").locator("h2")).toHaveText("Create username");
   await expect(page.getByTestId("join-readiness")).toHaveAttribute("data-kind", "join");
@@ -221,8 +221,8 @@ test("IOS-065 J1: the intro and the cost; Create username leads to the wizard pl
   );
   await expect(page.getByTestId("join-shortfall")).toHaveCount(0);
   await page.getByTestId("join-create").click();
-  await expect(page.getByTestId("placeholder-registration")).toHaveText("Choosing and registering a username is not available yet.");
-  await page.getByTestId("join-wizard-back").click();
+  await expect(page.getByTestId("registration-step")).toHaveText("Step 1 of 2 · Choose a username");
+  await page.getByTestId("registration-cancel").click();
   await expect(page.getByTestId("join-create")).toBeVisible();
   expect(errors).toEqual([]);
 });
@@ -244,11 +244,10 @@ test("IOS-065 J1 a shortfall, J3 watch-only, J2 held until synced, J7 a failed q
   await expect(page.getByTestId("join-create")).toBeEnabled();
 });
 
-test("IOS-065 J4–J6: a registration's card on the Join page continues into the wizard; a joined wallet says so", async ({ page }) => {
+test("IOS-065 J4–J6: a registration in flight shows its screen on the Join page (DP1-09 D12); a joined wallet says so", async ({ page }) => {
   await openJoin(page, "dashpay-registering-paused");
-  await expect(page.getByTestId("join-readiness")).toHaveAttribute("data-kind", "card");
-  await page.getByTestId("join-readiness").getByTestId("dashpay-card-action").click();
-  await expect(page.getByTestId("placeholder-registration")).toBeVisible();
+  await expect(page.getByTestId("registration-screen")).toHaveAttribute("data-kind", "retry");
+  await expect(page.getByTestId("registration-continue")).toBeVisible();
 
   await openJoin(page, "dashpay-registered");
   await expect(page.getByTestId("join-joined")).toHaveText("You have joined DashPay as @alice.");

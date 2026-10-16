@@ -35,7 +35,8 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   identity: null,
   txid: null,
   waiting: "instantSend",
-  holdsKey: false,
+  holdsKey: true,
+  running: true,
   fundsCommitted: true,
   contestEndsAt: null,
   failure: null,
@@ -145,6 +146,22 @@ describe("IOS-065 / AND-024 Home card: one per banner state", () => {
     expect(homeCard(inputs(REGISTERING, { registration: r }))!.action).toBeNull();
   });
 
+  it("D21, D26: an idle row waiting for a proof or the network (after a relaunch) is paused, not running", () => {
+    for (const waiting of ["chainLock", "network"] as const) {
+      expect(homeCard(inputs(REGISTERING, { registration: row({ waiting, holdsKey: false, running: false }) }))).toMatchObject({
+        state: "creatingPaused",
+        lines: ["Registration paused", "Waiting for your approval to continue."],
+        action: { kind: "continue" },
+      });
+    }
+    // A run on an unlocked vault holds no key of its own and still runs (review r2 H1).
+    for (const waiting of ["instantSend", "chainLock", "network", null] as const) {
+      expect(homeCard(inputs(REGISTERING, { registration: row({ waiting, holdsKey: false, running: true }) }))!.state).toBe("creating");
+    }
+    // An idle row held for sync or the DashPay start shows progress until the hold lifts.
+    expect(homeCard(inputs(REGISTERING, { registration: row({ waiting: "sync", holdsKey: false, running: false }) }))!.state).toBe("creating");
+  });
+
   it("S13: a failure or an authorization wait pauses it, with Continue into the Join page", () => {
     const failed = row({ phase: "failed", waiting: null, failure: failure("registration.funding_insufficient", { needed: "3002260", available: "1000000" }) });
     expect(homeCard(inputs(REGISTERING, { registration: failed }))).toMatchObject({
@@ -247,7 +264,7 @@ describe("IOS-065 Join page readiness (J1–J7)", () => {
     expect(roundedCost(3_100_000)).toBe(3_100_000);
   });
 
-  it("J1: the cost, rounded up, and a shortfall only when the whole wallet cannot cover it (D18)", () => {
+  it("J1: the cost, rounded up, and a shortfall only when what the funding can spend does not cover it (D18, DP1-09 D5)", () => {
     expect(joinModel(inputs(noIdentity()), 3_002_260, 10e8)).toEqual({
       kind: "join",
       cost: JOIN_COPY.cost("0.031 tDASH"),

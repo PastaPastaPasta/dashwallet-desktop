@@ -3507,6 +3507,151 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-m);
 }
 
+/* DP1-09: the registration wizard and a registration's screens, on the Join page. */
+.registration {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  max-width: var(--dw-layout-form-max-width);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.registration-header,
+.registration-live,
+.registration-form,
+.registration-cost,
+.registration-contested {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+}
+
+.registration-form {
+  gap: var(--dw-space-m);
+}
+
+.registration-step {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.registration-title {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  margin: 0;
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+  overflow-wrap: anywhere;
+}
+
+.registration-spinner {
+  flex: none;
+  width: var(--dw-space-m);
+  height: var(--dw-space-m);
+}
+
+.registration-line,
+.registration-availability {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  overflow-wrap: anywhere;
+}
+
+.registration-availability {
+  min-height: var(--dw-type-footnote-line);
+}
+
+.registration-availability[data-tone="ok"] {
+  color: var(--dw-role-text-primary);
+}
+
+.registration-availability[data-tone="problem"],
+.registration-problem,
+.registration-error {
+  color: var(--dw-role-danger);
+}
+
+.registration-error {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.registration-rules {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.registration-rules li::before {
+  display: inline-block;
+  width: 1.25em;
+  content: "•";
+}
+
+.registration-rules li[data-passed="true"] {
+  color: var(--dw-role-text-primary);
+}
+
+.registration-rules li[data-passed="true"]::before {
+  content: "✓";
+}
+
+.registration-rules li[data-passed="false"] {
+  color: var(--dw-role-danger);
+}
+
+.registration-rules li[data-passed="false"]::before {
+  content: "✗";
+}
+
+.registration-contested .dash-button {
+  align-self: flex-start;
+}
+
+.registration-fee {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin: 0;
+  font-size: var(--dw-type-body-size);
+  line-height: var(--dw-type-body-line);
+}
+
+.registration-fee-amount {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.registration-accept {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.registration-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--dw-space-s);
+}
+
 .about-dashpay-headline {
   margin: 0;
   font-size: var(--dw-type-headline-size);

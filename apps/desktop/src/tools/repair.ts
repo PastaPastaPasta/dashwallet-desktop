@@ -2,7 +2,7 @@
 // ported. Rescan from the wallet's birth, genesis or a height with progress and Cancel (U-05 D10);
 // reset chain data, which asks first and stops and restarts sync around it (D11); remove
 // unconfirmed transactions; the birth height; and "send all coins to yourself" for a registration
-// whose funding is unknown (D12).
+// whose funding is unknown (D12); Finish transfers (DP1-09 D10).
 
 import { hasCode, isAppError, type Backend } from "../api/backend";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
@@ -10,6 +10,8 @@ import type { RescanStart } from "../api/generated/RescanStart";
 import type { RescanStatus } from "../api/generated/RescanStatus";
 import type { StuckFundingRefusalName } from "../api/generated/StuckFundingRefusalName";
 import { failureText, Model } from "../onboarding/model";
+import { REG_COPY } from "../dashpay/registration";
+import { finishGrant } from "../dashpay/wizard";
 import type { GrantModel } from "./grant";
 
 export const RepairText = {
@@ -26,6 +28,8 @@ export const RepairText = {
   birthHeightSaved: (h: number) => `The wallet's birth height is now ${h}.`,
   resetDone: "The chain data was deleted; syncing again.",
   resolveStuck: "Resolve stuck funding",
+  /** An orphan funding step's line: its registration's row, and so its username, is gone. */
+  unnamedRegistration: "A registration's funding (its username is no longer known)",
   stuckUnreadable: "This wallet's username registrations could not be read, so stuck funding cannot be checked here.",
   resolveStuckQuestion:
     "Send every coin of this wallet to yourself? Whether the registration's funding reached the network is settled either way; the payment costs only its fee.",
@@ -93,8 +97,12 @@ export function parseHeight(text: string): number | null {
 /** A registration whose funding may or may not have gone out: Repair can settle it. */
 export const isStuck = (r: RegistrationStatus) => r.waiting === "fundingUnknown";
 
-/** The funding step a registration's Repair names (`dispatchStatus`'s id). */
-export const fundingStep = (r: RegistrationStatus) => `registration/${r.draft}/funding`;
+const ORPHAN_STEP = /^registration\/[^/]+\/funding$/;
+
+/** The funding step a registration's Repair names (`dispatchStatus`'s id). An orphan step (its
+ * row gone) is reported with the step itself as its `draft` (m4 §2.2), so it is taken as it is
+ * (f1, Sol r1 P1). */
+export const fundingStep = (r: RegistrationStatus) => (ORPHAN_STEP.test(r.draft) ? r.draft : `registration/${r.draft}/funding`);
 
 export type Confirmation = "resetChainData" | "dropUnconfirmed" | "resolveStuck";
 
@@ -107,7 +115,19 @@ export type RepairState =
 
 type Api = Pick<
   Backend,
-  "rescan" | "rescanProgress" | "cancelRescan" | "stopSpv" | "startSpv" | "resetChainData" | "setBirthHeight" | "dropUnconfirmed" | "registrations" | "resolveStuckFunding" | "feePolicy"
+  | "rescan"
+  | "rescanProgress"
+  | "cancelRescan"
+  | "stopSpv"
+  | "startSpv"
+  | "resetChainData"
+  | "setBirthHeight"
+  | "dropUnconfirmed"
+  | "registrations"
+  | "resolveStuckFunding"
+  | "feePolicy"
+  | "registrationQuote"
+  | "finishAssetLocks"
 >;
 
 export class RepairModel extends Model {
@@ -250,6 +270,23 @@ export class RepairModel extends Model {
         since,
       );
       return sent ? { kind: "done", text: RepairText.resolved(sent.value.txid) } : { kind: "idle" };
+    });
+  }
+
+  /** "Finish transfers" (DP1-09 D10): resumes the asset locks no flow finished, registrations' and
+   * top-ups', and says what came of them. */
+  async finishTransfers() {
+    if (this.busy) return;
+    const since = this.grants.epoch;
+    await this.#run(async () => {
+      const caps = await finishGrant(this.api, this.walletId);
+      const report = await this.grants.withGrant(
+        { kind: "platformOp", maxDuffs: caps.maxDuffs, maxCredits: caps.maxCredits },
+        this.walletId,
+        (grant) => this.api.finishAssetLocks(this.walletId, grant.id),
+        since,
+      );
+      return report ? { kind: "done", text: REG_COPY.finished(report.value) } : { kind: "idle" };
     });
   }
 
