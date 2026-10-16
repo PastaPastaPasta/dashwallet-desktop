@@ -1590,3 +1590,111 @@ fn a_store_does_not_replace_the_seed_a_signer_read() {
     assert_eq!(sign(&after).unwrap(), old, "a signer read the new seed");
     assert!(std::fs::read(&file).unwrap() == on_disk);
 }
+
+/// A tracked masternode the tests attach keys to.
+const MN: [u8; 32] = [7; 32];
+
+/// One masternode-key call (MG-01 D22): `store` replaces the voting key,
+/// `delete` removes every key, `roles` lists them.
+type MnCall = Box<dyn FnOnce(&Vault) -> Result<(), VaultError> + Send>;
+
+fn mn_call(name: &str) -> MnCall {
+    match name {
+        "store" => Box::new(|v| v.store_masternode_key(&MN, "voting", b"key-2")),
+        "delete" => Box::new(|v| v.delete_masternode_keys(&MN, None).map(drop)),
+        "roles" => Box::new(|v| v.masternode_key_roles(&MN).map(drop)),
+        _ => unreachable!(),
+    }
+}
+
+const MN_CALLS: [&str; 3] = ["store", "delete", "roles"];
+
+/// An unlocked vault with `key-1` attached as `MN`'s voting key.
+fn mn_vault(dir: &tempfile::TempDir) -> Vault {
+    let v = vault(dir, Some(PASS));
+    v.store_masternode_key(&MN, "voting", b"key-1").unwrap();
+    v
+}
+
+/// `MN`'s voting key, read on the unlocked vault under a reveal grant.
+fn mn_voting_key(v: &Vault) -> Option<Vec<u8>> {
+    let grant = v
+        .authorize(
+            GrantPurpose::RevealSecret,
+            Some(&W),
+            Credential::Passphrase(PASS),
+        )
+        .unwrap();
+    v.masternode_key(&W, &grant.id, &MN, "voting")
+        .unwrap()
+        .map(|k| k.to_vec())
+}
+
+/// MG-01 D22 (Sol r1): a lock after a masternode-key call loaded the key
+/// and before it drained the gate (held there by the `checked` hook)
+/// refuses the call, which changes nothing. So does a lock and unlock in
+/// that window for the changes, which keep to the epoch they began in; a
+/// list started then is made in the new epoch, and stands.
+#[test]
+fn a_lock_before_the_drain_refuses_each_masternode_key_change() {
+    let lock_unlock = |v: &Vault| {
+        v.lock();
+        v.unlock(PASS, UnlockScope::Full).unwrap();
+    };
+    for name in MN_CALLS {
+        for (between, relock) in [("lock", false), ("lock+unlock", true)] {
+            let dir = tempfile::tempdir().unwrap();
+            let v = mn_vault(&dir);
+            let v2 = v.clone();
+            test_hook::set_checked(move || if relock { lock_unlock(&v2) } else { lock(&v2) });
+            let result = mn_call(name)(&v);
+            test_hook::set_checked(|| {});
+            let expected = if name == "roles" && relock {
+                Ok(())
+            } else {
+                Err(VaultError::Locked)
+            };
+            assert_eq!(result, expected, "{name} after {between}");
+            v.unlock(PASS, UnlockScope::Full).unwrap();
+            assert_eq!(
+                mn_voting_key(&v).as_deref(),
+                Some(&b"key-1"[..]),
+                "{name} after {between} changed the key"
+            );
+        }
+    }
+}
+
+/// MG-01 D22: a lock that starts while a masternode-key call is inside
+/// (held by the `opened` hook, past the drain or inside the gate) waits
+/// until the call has made its result, which stands.
+#[test]
+fn lock_waits_for_each_masternode_key_call() {
+    for name in MN_CALLS {
+        let dir = tempfile::tempdir().unwrap();
+        let v = mn_vault(&dir);
+        let (w, call) = (v.clone(), mn_call(name));
+        epoch_change_waits_for(&v, lock, move || call(&w));
+        v.unlock(PASS, UnlockScope::Full).unwrap();
+        let expected: Option<&[u8]> = match name {
+            "store" => Some(b"key-2"),
+            "delete" => None,
+            _ => Some(b"key-1"),
+        };
+        assert_eq!(mn_voting_key(&v).as_deref(), expected, "{name}");
+    }
+}
+
+/// MG-01 D22: a masternode-key list made in an epoch that ended before it
+/// was released is refused, like any gated result.
+#[test]
+fn a_masternode_key_list_of_an_ended_epoch_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = mn_vault(&dir);
+    let v2 = v.clone();
+    test_hook::set(move || v2.bump_epoch_ungated());
+    let roles = v.masternode_key_roles(&MN);
+    test_hook::set(|| {});
+    assert_eq!(roles, Err(VaultError::Locked));
+    assert_eq!(v.masternode_key_roles(&MN), Ok(vec!["voting".to_string()]));
+}

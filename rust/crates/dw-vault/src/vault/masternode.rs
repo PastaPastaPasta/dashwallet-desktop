@@ -16,7 +16,10 @@
 //! which masternodes the user controls, while the AEAD's associated data
 //! still binds each record to its id. Replacing or deleting a key drains
 //! the gate first ([`Vault::drain_ops`]), as a seed deletion does: a read
-//! that started before has returned, one after sees the change.
+//! that started before has returned, one after sees the change. The key
+//! the change is made with is the one in memory once the gate is drained,
+//! in the epoch the call began in, so a `lock()` before that refuses the
+//! change and one after waits for it (D22); listing is a gated operation.
 //!
 //! The records are vault-wide (a tracked masternode belongs to no wallet):
 //! removing a wallet leaves them, and `recover_with_mnemonic` drops them
@@ -25,7 +28,7 @@
 use dashcore::hashes::{Hash, HashEngine, Hmac, HmacEngine, sha256};
 use zeroize::Zeroizing;
 
-use super::{REC_SEED, Vault, decode_seed, record_id};
+use super::{REC_SEED, Vault, WriteGuard, decode_seed, record_id};
 use crate::VaultError;
 use crate::crypto::Key32;
 use crate::types::{GrantKind, WalletId};
@@ -96,7 +99,8 @@ impl Vault {
     /// Stores `key` for `role` of the tracked masternode `pro_tx_hash`,
     /// replacing an earlier one, then checks the write by reading the file
     /// back. Needs the data key with full scope (an unlocked or unencrypted
-    /// vault); drains the gate before the write.
+    /// vault); drains the gate before the write
+    /// ([`Self::with_drained_key`]).
     pub fn store_masternode_key(
         &self,
         pro_tx_hash: &[u8; 32],
@@ -109,14 +113,41 @@ impl Vault {
                 "a masternode key has 1..={MAX_MASTERNODE_KEY_BYTES} bytes"
             )));
         }
-        let dek = self.full_dek()?;
+        self.with_drained_key(|writer, dek| {
+            self.commit_records_under(
+                writer,
+                dek,
+                &[(mn_record_id(dek, pro_tx_hash, role), Some(key))],
+            )
+        })
+    }
+
+    /// Runs `body` under `writer` with the gate drained and the full-scope
+    /// data key (MG-01 D22). The key is loaded first, outside both (an
+    /// unencrypted vault's comes from the OS store, which may block), then
+    /// read again from memory once the gate is drained, in the epoch the
+    /// call began in: a `lock()` (or any epoch change) before then fails
+    /// `Locked`, and none can end the epoch until `body` returns.
+    fn with_drained_key<T>(
+        &self,
+        body: impl FnOnce(&WriteGuard<'_>, &Key32) -> Result<T, VaultError>,
+    ) -> Result<T, VaultError> {
+        let epoch = self.inner().epoch;
+        self.full_dek()?;
+        #[cfg(test)]
+        crate::signer::test_hook::checked();
         let writer = self.writer();
         let _drained = self.drain_ops(&writer);
-        self.commit_records_under(
-            &writer,
-            &dek,
-            &[(mn_record_id(&dek, pro_tx_hash, role), Some(key))],
-        )
+        let dek = {
+            let inner = self.inner();
+            if inner.epoch != epoch {
+                return Err(VaultError::Locked);
+            }
+            Self::memory_dek(&inner)?
+        };
+        #[cfg(test)]
+        crate::signer::test_hook::opened();
+        body(&writer, &dek)
     }
 
     /// The key attached for `role` of `pro_tx_hash`, read under a redeemed
@@ -140,10 +171,14 @@ impl Vault {
 
     /// Roles with a key attached to `pro_tx_hash`, in name order. Needs
     /// the data key with full scope (`Locked` otherwise): the record ids
-    /// are keyed from it. Nothing is decrypted.
+    /// are keyed from it. Nothing is decrypted. One gated operation: a
+    /// `lock()` waits for it, and a list made in an ended epoch is refused.
     pub fn masternode_key_roles(&self, pro_tx_hash: &[u8; 32]) -> Result<Vec<String>, VaultError> {
-        let dek = self.full_dek()?;
-        Ok(self.roles_under(&dek, pro_tx_hash))
+        self.with_loaded_key(|dek| {
+            #[cfg(test)]
+            crate::signer::test_hook::opened();
+            Ok(self.roles_under(dek, pro_tx_hash))
+        })
     }
 
     fn roles_under(&self, dek: &Key32, pro_tx_hash: &[u8; 32]) -> Vec<String> {
@@ -160,7 +195,8 @@ impl Vault {
 
     /// Deletes the attached key of `role`, or every key of `pro_tx_hash`
     /// when `role` is `None`. Needs the data key with full scope; the ids
-    /// are listed and deleted under `writer`, after draining the gate.
+    /// are listed and deleted under `writer`, after draining the gate
+    /// ([`Self::with_drained_key`]).
     /// Returns how many were deleted.
     pub fn delete_masternode_keys(
         &self,
@@ -170,19 +206,17 @@ impl Vault {
         if let Some(r) = role {
             valid_role(r)?;
         }
-        let dek = self.full_dek()?;
-        let writer = self.writer();
-        let changes: Vec<(String, Option<&[u8]>)> = self
-            .roles_under(&dek, pro_tx_hash)
-            .into_iter()
-            .filter(|have| role.is_none_or(|r| r == have))
-            .map(|r| (mn_record_id(&dek, pro_tx_hash, &r), None))
-            .collect();
-        if changes.is_empty() {
-            return Ok(0);
-        }
-        let _drained = self.drain_ops(&writer);
-        self.commit_records_under(&writer, &dek, &changes)?;
-        Ok(changes.len())
+        self.with_drained_key(|writer, dek| {
+            let changes: Vec<(String, Option<&[u8]>)> = self
+                .roles_under(dek, pro_tx_hash)
+                .into_iter()
+                .filter(|have| role.is_none_or(|r| r == have))
+                .map(|r| (mn_record_id(dek, pro_tx_hash, &r), None))
+                .collect();
+            if !changes.is_empty() {
+                self.commit_records_under(writer, dek, &changes)?;
+            }
+            Ok(changes.len())
+        })
     }
 }
