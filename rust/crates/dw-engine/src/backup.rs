@@ -698,8 +698,10 @@ impl NetworkSession {
                     let live = self.live()?;
                     self.platform.remove_from_manager(&live.manager, id).await?;
                     // Again, now that it is out of the manager: a scan begun
-                    // since the first forget passed the wallet check.
+                    // since the first forget passed the wallet check, and a
+                    // names check begun since read the wallet (D33).
                     self.platform.users.scans.forget(&id);
+                    self.platform.recovery.fence_names(&id);
                     self.hub.forget_wallet(&id);
                     self.coin_fences.forget(&id);
                     let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));

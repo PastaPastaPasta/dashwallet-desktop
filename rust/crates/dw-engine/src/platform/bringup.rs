@@ -93,8 +93,8 @@ enum Job {
     Retry,
     Unlock,
     /// The names pass after a bring-up that discovered identities
-    /// (`recovery.rs`).
-    Names,
+    /// (`recovery.rs`), with the supervisor's names-check epoch (D32).
+    Names(u64),
     /// A contest watch pass (`contest_watch.rs`).
     Contests,
 }
@@ -225,6 +225,8 @@ impl NetworkSession {
         // event before that is skipped: the pass saw it. Signals arriving
         // while a pass runs make one follow-up pass (review r4 M4-R4).
         let mut admitted: HashMap<WalletId, u64> = wallets.iter().map(|id| (*id, listed)).collect();
+        // Its names checks start only while it runs (D32).
+        let epoch = self.platform.recovery.names_runs.arm();
         if !self
             .for_wallets(&manager, wallets.clone(), Job::BringUp, since, &mut cancel)
             .await
@@ -246,10 +248,13 @@ impl NetworkSession {
         }
         self.apply_cadence(&manager);
         let mut loops_pending = !self.start_loops(&manager).await;
-        if !self.names_passes(&manager, wallets, &mut cancel).await {
+        if !self
+            .names_passes(&manager, wallets, epoch, &mut cancel)
+            .await
+        {
             return;
         }
-        self.start_names_retry();
+        self.start_names_retry(epoch);
         // A contest that ended while the app was closed shows at once.
         let mut contests_at = Some(Instant::now());
         // No pass before this, whatever asks for one: one a second at most.
@@ -355,7 +360,11 @@ impl NetworkSession {
             if matches!(job, Job::Unlock) {
                 this.kick_dashpay_sync(&manager);
             }
-            if !done || !this.names_passes(&manager, wallets, &mut cancel).await {
+            if !done
+                || !this
+                    .names_passes(&manager, wallets, epoch, &mut cancel)
+                    .await
+            {
                 return;
             }
         }
@@ -370,6 +379,7 @@ impl NetworkSession {
         self: &Arc<Self>,
         manager: &Arc<Manager>,
         checked: Vec<WalletId>,
+        epoch: u64,
         cancel: &mut watch::Receiver<bool>,
     ) -> bool {
         let due = self.platform.recovery.take_names_due();
@@ -377,7 +387,13 @@ impl NetworkSession {
         let checked: Vec<_> = checked.into_iter().filter(|id| !due.contains(id)).collect();
         if !due.is_empty()
             && !self
-                .for_wallets(manager, due.clone(), Job::Names, Instant::now(), cancel)
+                .for_wallets(
+                    manager,
+                    due.clone(),
+                    Job::Names(epoch),
+                    Instant::now(),
+                    cancel,
+                )
                 .await
         {
             // Cut off: the next start runs them, the identities on file then.
@@ -387,7 +403,7 @@ impl NetworkSession {
             return false;
         }
         for id in checked {
-            self.kick_names_check(id);
+            self.kick_names_check(id, epoch);
         }
         true
     }
@@ -445,7 +461,7 @@ impl NetworkSession {
                     Job::BringUp => this.bring_up_wallet(&manager, id, since, false).await,
                     Job::Retry => this.bring_up_wallet(&manager, id, since, true).await,
                     Job::Unlock => this.after_unlock(&manager, id).await,
-                    Job::Names => this.names_pass(&manager, id).await,
+                    Job::Names(epoch) => this.names_pass(&manager, id, epoch).await,
                     Job::Contests => {
                         let pass = this.contest_pass(&manager, id);
                         if tokio::time::timeout(contest_watch::PASS_BUDGET, pass)

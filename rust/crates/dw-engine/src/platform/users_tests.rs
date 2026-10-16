@@ -503,7 +503,7 @@ fn my_user_link_uses_the_main_name() {
     assert_eq!(link.unwrap_err().code(), "platform.unavailable");
     let checks = &nameless.s.platform.recovery.names_checks;
     let asked = checks.begin(&nameless.wallet).unwrap();
-    checks.answered(nameless.wallet, asked, vec![(b58(ME), true)]);
+    checks.answered(nameless.wallet, asked, vec![(b58(ME), Some(true))]);
     let link = nameless.dp().my_user_link(b58(ME));
     assert_eq!(link.unwrap_err().code(), "contact.no_username");
 

@@ -168,6 +168,16 @@ pub(crate) struct Recovery {
     pub(super) pause_after_choice: Mutex<Option<Arc<Pause>>>,
     /// Tests: blocks the next names check just before it applies its
     /// answers: it says so on the first, then waits on the second.
+    /// Tests: blocks the minute's retry before its second kick (D32).
+    #[cfg(test)]
+    pub(super) pause_between_kicks:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// Tests: the names retry's period and a check's budget, if not the
+    /// real ones.
+    #[cfg(test)]
+    pub(super) retry_every: Mutex<Option<Duration>>,
+    #[cfg(test)]
+    pub(super) check_budget: Mutex<Option<Duration>>,
     #[cfg(test)]
     pub(super) pause_before_answer:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -313,6 +323,14 @@ impl Recovery {
         self.names_runs.forget(id);
         self.names_checks.forget(id);
         guard(&self.discovered).remove(id);
+    }
+
+    /// Fences the names checks of `id` again: a failed restore's rollback,
+    /// once the wallet is out of the manager (D33). A check begun since its
+    /// [`Self::forget`] read the wallet still there; its answer is dropped.
+    pub(crate) fn fence_names(&self, id: &WalletId) {
+        self.names_runs.forget(id);
+        self.names_checks.forget(id);
     }
 
     #[cfg(test)]
@@ -707,7 +725,12 @@ impl NetworkSession {
     /// wallet's identities, within [`NAMES_PASS_BUDGET`]. Failures are
     /// logged; `dpns_sync` repairs them on its next pass.
     /// A recovery phase: it advances the catch-up boundary (DEC-125).
-    pub(super) async fn names_pass(self: &Arc<Self>, manager: &Arc<Manager>, id: WalletId) {
+    pub(super) async fn names_pass(
+        self: &Arc<Self>,
+        manager: &Arc<Manager>,
+        id: WalletId,
+        epoch: u64,
+    ) {
         let generation = self.platform.recovery.names_checks.generation(&id);
         self.advance_catch_up(id).await;
         self.run_names_pass(manager, id).await;
@@ -716,7 +739,7 @@ impl NetworkSession {
         // one that fetched nothing new writes nothing: only Platform's
         // answer per identity settles them (D23), in the background (D27).
         self.platform.recovery.names_pass_ended(id, generation);
-        self.kick_names_check(id);
+        self.kick_names_check(id, epoch);
     }
 
     async fn run_names_pass(&self, manager: &Arc<Manager>, id: WalletId) {

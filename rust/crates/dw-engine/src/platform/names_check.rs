@@ -5,9 +5,12 @@
 //! The checks run in the background, never in the Platform supervisor (D27):
 //! one at a time per wallet, a trigger while one runs makes one more follow,
 //! the identities are asked [`CONCURRENCY`] at a time within one
-//! [`CHECK_BUDGET`], and the minute's retry has its own task. An answer
-//! applies only to the wallet generation it was asked for (D28): a removal
-//! drops the answers in flight.
+//! [`CHECK_BUDGET`], and the minute's retry has its own task. Each check
+//! asks first the identities whose last question ended longest ago, or never
+//! did, so a slow few cannot starve the rest (D31). A supervisor's stop ends
+//! its checks and its retry, and none starts again until the next start
+//! (D32). An answer applies only to the wallet generation it was asked for
+//! (D28): a removal drops the answers in flight.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -60,6 +63,11 @@ struct Checks {
     /// Raised by each removal or unload (D28): an answer asked for an
     /// earlier generation is dropped.
     generations: HashMap<WalletId, u64>,
+    /// Identity (Base58) → when its last question ended on its own (it was
+    /// answered, failed or ran out of [`QUESTION_BUDGET`]), on [`Self::clock`]
+    /// (D31). Not one cut off by [`CHECK_BUDGET`].
+    ended: HashMap<WalletId, HashMap<String, u64>>,
+    clock: u64,
 }
 
 impl NamesChecks {
@@ -105,6 +113,15 @@ impl NamesChecks {
         guard(&self.0).generation(id)
     }
 
+    /// Orders `asked`, `id`'s identities to ask, as a check asks them: those
+    /// whose last question never ended first, then the longest ago (D31).
+    /// Ties keep the library's order.
+    fn order<T>(&self, id: &WalletId, asked: &mut [(String, T)]) {
+        let checks = guard(&self.0);
+        let ended = checks.ended.get(id);
+        asked.sort_by_key(|(identity, _)| ended.and_then(|e| e.get(identity)).copied());
+    }
+
     /// Whether Platform has said `identity` owns no name.
     fn is_nameless(&self, id: &WalletId, identity: &str) -> bool {
         guard(&self.0).answers.get(id).and_then(|a| a.get(identity)) == Some(&true)
@@ -112,13 +129,16 @@ impl NamesChecks {
 
     /// Records Platform's `answers` for `id`'s identities, asked as
     /// `asked` says, and ends the pass owed if the check began after it
-    /// ended. Nothing for an earlier generation (D28). Whether a check
-    /// changed.
+    /// ended. Each answer is `Some(nameless)` when its question ended on its
+    /// own (`Some(false)` too when it failed or ran out of time), `None` when
+    /// the check's budget cut it off or never reached it: unknown either way
+    /// unless nameless. Nothing for an earlier generation (D28). Whether a
+    /// check changed.
     pub(super) fn answered(
         &self,
         id: WalletId,
         asked: Asked,
-        answers: Vec<(String, bool)>,
+        answers: Vec<(String, Option<bool>)>,
     ) -> bool {
         let mut checks = guard(&self.0);
         if checks.generation(&id) != asked.generation {
@@ -130,8 +150,18 @@ impl NamesChecks {
             checks.owed.remove(&id);
             changed = true;
         }
-        let known = checks.answers.entry(id).or_default();
-        for (identity, nameless) in answers {
+        for (identity, answer) in answers {
+            if answer.is_some() {
+                checks.clock += 1;
+                let at = checks.clock;
+                checks
+                    .ended
+                    .entry(id)
+                    .or_default()
+                    .insert(identity.clone(), at);
+            }
+            let nameless = answer == Some(true);
+            let known = checks.answers.entry(id).or_default();
             changed |= known.insert(identity, nameless) != Some(nameless);
         }
         changed
@@ -142,6 +172,7 @@ impl NamesChecks {
         let mut checks = guard(&self.0);
         checks.owed.remove(id);
         checks.answers.remove(id);
+        checks.ended.remove(id);
         *checks.generations.entry(*id).or_default() += 1;
     }
 }
@@ -160,14 +191,20 @@ impl Checks {
     }
 }
 
-/// The checks running in the background, and the minute's retry. None
-/// starts once closed.
+/// The checks running in the background, and the minute's retry. They
+/// start only while a supervisor runs, and only from it (D32): its start
+/// arms them with an epoch its kicks carry, and its stop disarms them and
+/// moves the epoch on, so a kick of a stopped supervisor (its retry past
+/// the abort, before its next yield) starts nothing. None starts once
+/// closed.
 #[derive(Default)]
 pub(super) struct NamesRuns(Mutex<Runs>);
 
 #[derive(Default)]
 struct Runs {
     closed: bool,
+    active: bool,
+    epoch: u64,
     set: JoinSet<()>,
     running: HashMap<WalletId, Run>,
     tokens: u64,
@@ -183,15 +220,29 @@ struct Run {
 }
 
 impl NamesRuns {
+    /// A supervisor starts: checks may start, kicked with the epoch this
+    /// returns.
+    pub(super) fn arm(&self) -> u64 {
+        let mut runs = guard(&self.0);
+        runs.active = !runs.closed;
+        runs.epoch
+    }
+
+    /// The epoch of the supervisor running, for a test's kicks.
+    #[cfg(test)]
+    pub(super) fn epoch(&self) -> u64 {
+        guard(&self.0).epoch
+    }
+
     /// Starts `run(token)` for `id` on `rt`, unless one of `id`'s runs:
     /// then that one runs once more when it ends, however many triggers
-    /// came.
-    fn start<F>(&self, rt: &Handle, id: WalletId, run: impl FnOnce(u64) -> F)
+    /// came. Nothing unless the supervisor of `epoch` runs.
+    fn start<F>(&self, rt: &Handle, id: WalletId, epoch: u64, run: impl FnOnce(u64) -> F)
     where
         F: Future<Output = ()> + Send + 'static,
     {
         let mut runs = guard(&self.0);
-        if runs.closed {
+        if !runs.active || runs.epoch != epoch {
             return;
         }
         while runs.set.try_join_next().is_some() {}
@@ -229,19 +280,29 @@ impl NamesRuns {
         false
     }
 
-    fn set_retry(&self, retry: AbortHandle) {
+    fn set_retry(&self, retry: AbortHandle, epoch: u64) {
         let mut runs = guard(&self.0);
-        if runs.closed {
+        if !runs.active || runs.epoch != epoch {
             retry.abort();
         } else if let Some(old) = runs.retry.replace(retry) {
             old.abort();
         }
     }
 
+    /// The checks alive, for a test.
+    #[cfg(test)]
+    pub(super) fn alive(&self) -> usize {
+        let mut runs = guard(&self.0);
+        while runs.set.try_join_next().is_some() {}
+        runs.set.len()
+    }
+
     /// Stops the retry and every check: the supervisor stopped, and its
     /// start kicks them again.
     pub(super) fn stop(&self) {
         let mut runs = guard(&self.0);
+        runs.active = false;
+        runs.epoch += 1;
         if let Some(retry) = runs.retry.take() {
             retry.abort();
         }
@@ -263,6 +324,8 @@ impl NamesRuns {
         let mut set = {
             let mut runs = guard(&self.0);
             runs.closed = true;
+            runs.active = false;
+            runs.epoch += 1;
             if let Some(retry) = runs.retry.take() {
                 retry.abort();
             }
@@ -276,11 +339,11 @@ impl NamesRuns {
 
 impl NetworkSession {
     /// Checks `id`'s names in the background (D27): now, or once more after
-    /// the check that runs.
-    pub(super) fn kick_names_check(self: &Arc<Self>, id: WalletId) {
+    /// the check that runs. `epoch`: the kicking supervisor's (D32).
+    pub(super) fn kick_names_check(self: &Arc<Self>, id: WalletId, epoch: u64) {
         let session = Arc::downgrade(self);
         let runs = &self.platform.recovery.names_runs;
-        runs.start(&self.rt, id, move |token| async move {
+        runs.start(&self.rt, id, epoch, move |token| async move {
             loop {
                 let Some(this) = session.upgrade() else {
                     return;
@@ -296,12 +359,17 @@ impl NetworkSession {
     }
 
     /// Checks every wallet's names every minute, on a task of its own so no
-    /// supervisor pass delays it (D27), until the supervisor stops.
-    pub(super) fn start_names_retry(self: &Arc<Self>) {
+    /// supervisor pass delays it (D27), until the supervisor of `epoch`
+    /// stops.
+    pub(super) fn start_names_retry(self: &Arc<Self>, epoch: u64) {
         let session = Arc::downgrade(self);
+        #[cfg(not(test))]
+        let period = RETRY_EVERY;
+        #[cfg(test)]
+        let period = (*guard(&self.platform.recovery.retry_every)).unwrap_or(RETRY_EVERY);
         let retry = self.rt.spawn(async move {
-            let first = tokio::time::Instant::now() + RETRY_EVERY;
-            let mut every = tokio::time::interval_at(first, RETRY_EVERY);
+            let first = tokio::time::Instant::now() + period;
+            let mut every = tokio::time::interval_at(first, period);
             loop {
                 every.tick().await;
                 let Some(this) = session.upgrade() else {
@@ -310,12 +378,29 @@ impl NetworkSession {
                 let Ok(manager) = this.manager() else {
                     return;
                 };
-                for id in manager.wallet_ids().await {
-                    this.kick_names_check(WalletId(id));
+                for (n, id) in manager.wallet_ids().await.into_iter().enumerate() {
+                    this.between_kicks(n);
+                    this.kick_names_check(WalletId(id), epoch);
                 }
             }
         });
-        (self.platform.recovery.names_runs).set_retry(retry.abort_handle());
+        (self.platform.recovery.names_runs).set_retry(retry.abort_handle(), epoch);
+    }
+
+    #[cfg(not(test))]
+    fn between_kicks(&self, _: usize) {}
+
+    /// Tests: holds the retry before its second kick, blocking, so the abort
+    /// of a stop cannot land in between (no yield).
+    #[cfg(test)]
+    fn between_kicks(&self, n: usize) {
+        if n == 1
+            && let Some((reached, release)) =
+                guard(&self.platform.recovery.pause_between_kicks).take()
+        {
+            let _ = reached.send(());
+            let _ = release.recv();
+        }
     }
 
     /// Asks Platform whether `id`'s identities that show no main name own
@@ -344,10 +429,12 @@ impl NetworkSession {
 
     /// Platform's answer for each identity of `id` that shows no main name
     /// (as `identities()` would: a refused or contested label is none) and
-    /// that it has not said is nameless: `true` when it owns no DPNS name.
-    /// Its questions within [`CHECK_BUDGET`]; one unanswered by then is `false`. Nothing
-    /// when the main-name rows cannot be read: the next check asks.
-    async fn ask_names(&self, manager: &Manager, id: WalletId) -> Vec<(String, bool)> {
+    /// that it has not said is nameless, in [`NamesChecks::order`]'s order:
+    /// `Some(true)` when it owns no DPNS name, `Some(false)` when it owns
+    /// one or its question failed, `None` when [`CHECK_BUDGET`] ran out
+    /// before its question ended. Nothing when the main-name rows cannot be
+    /// read: the next check asks.
+    async fn ask_names(&self, manager: &Manager, id: WalletId) -> Vec<(String, Option<bool>)> {
         let checks = &self.platform.recovery.names_checks;
         let prefs = match self.appdb_op(move |db| read_name_prefs(db, id)).await {
             Ok(prefs) => prefs,
@@ -356,7 +443,7 @@ impl NetworkSession {
                 return Vec::new();
             }
         };
-        let asked: Vec<(String, Identifier)> = {
+        let mut asked: Vec<(String, Identifier)> = {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
             let Some(info) = wm.get_wallet_info(&id.0) else {
@@ -371,25 +458,30 @@ impl NetworkSession {
                 .map(|o| (o.identity, o.owner))
                 .collect()
         };
+        checks.order(&id, &mut asked);
+        #[cfg(not(test))]
+        let budget = CHECK_BUDGET;
+        #[cfg(test)]
+        let budget = (*guard(&self.platform.recovery.check_budget)).unwrap_or(CHECK_BUDGET);
         // In this task, so an abort of the check drops every question.
         let mut answers = Vec::with_capacity(asked.len());
         let questions = stream::iter(asked.iter().cloned())
             .map(|(identity, owner)| async move {
                 let owns = self.owns_a_name(manager, id, &identity, &owner).await;
-                (identity, owns == Some(false))
+                (identity, Some(owns == Some(false)))
             })
             .buffer_unordered(CONCURRENCY)
             .for_each(|answer| {
                 answers.push(answer);
                 std::future::ready(())
             });
-        if tokio::time::timeout(CHECK_BUDGET, questions).await.is_err() {
+        if tokio::time::timeout(budget, questions).await.is_err() {
             tracing::warn!(wallet_id = %id, "the names check ran out of time");
         }
         let answered: HashSet<String> = answers.iter().map(|(i, _)| i.clone()).collect();
         for (identity, _) in asked {
             if !answered.contains(&identity) {
-                answers.push((identity, false));
+                answers.push((identity, None));
             }
         }
         answers
