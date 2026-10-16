@@ -56,6 +56,7 @@ use crate::peer::{
     SSC_GOVOBJ_VOTE, empty_vote_filter, object_fetch_filter,
 };
 use crate::store::{GovernanceStore, VoteRejection, recover};
+use crate::validate::ObjectRejection;
 use crate::vote::GovernanceVote;
 
 /// Where a sync is.
@@ -849,6 +850,12 @@ impl Run {
                     self.ask_votes(vec![hash]);
                 }
             }
+            // Honest peers send their stored objects, so never mistyped;
+            // another announcer's copy may be the genuine one (D42).
+            Err(ObjectRejection::WireTypeMismatch) => {
+                self.misbehaved(from, "mistyped governance object");
+                self.refused(hash, INV_GOVERNANCE_OBJECT, from, taken);
+            }
             // Core relays only objects it accepted, so an honest peer may
             // send one the wallet is stricter about: no penalty (D35).
             Err(e) if e.is_invalid() => {
@@ -1015,10 +1022,12 @@ impl Run {
         // Its vote syncs go to another peer unless it both announced and
         // delivered every vote: its `ssc` may have come before its invs, and
         // votes it announced but did not send may have no other announcer.
+        // Once synced, its pending votes are relays, which other announcers
+        // cover; the phase it served is over.
         let votes_owed = pending
             .iter()
             .any(|h| self.requests.pending[h].kind == INV_GOVERNANCE_VOTE);
-        let reask = if gone.votes_done() && !votes_owed {
+        let reask = if self.announce_open || (gone.votes_done() && !votes_owed) {
             Vec::new()
         } else {
             gone.vote_asked.clone()
@@ -1303,6 +1312,10 @@ async fn run_inner(
     let base_bytes = shared.progress().bytes_received;
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (peers, errors) = connect_peers(&candidates, &cfg, &history, &tx).await;
+    // A stop while connecting must not spend the peers' repeat windows.
+    if *stop.borrow() {
+        return Ok(());
+    }
     drop(tx);
     if peers.is_empty() {
         return Err(SyncError::NoPeers(if errors.is_empty() {

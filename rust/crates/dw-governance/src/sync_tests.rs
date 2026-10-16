@@ -50,6 +50,8 @@ struct Node {
     relays: Vec<GovernanceVote>,
     /// Wait this long before answering a `getdata` for votes.
     vote_delay: Option<Duration>,
+    /// Wait this long before answering the full sync.
+    object_delay: Option<Duration>,
     /// Close the connection right after the `ssc(11)` of a vote sync.
     close_after_vote_ssc: bool,
     /// Close the connection on a `getdata` for votes (after its invs).
@@ -126,6 +128,9 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
                     continue;
                 }
                 if hash == [0; 32] {
+                    if let Some(d) = node.object_delay {
+                        tokio::time::sleep(d).await;
+                    }
                     let mut ssc = SSC_GOVOBJ.to_le_bytes().to_vec();
                     ssc.extend_from_slice(
                         &(node.objects.len() as i32 + node.missing).to_le_bytes(),
@@ -605,6 +610,53 @@ async fn votes_relayed_before_their_sync_are_credited_to_its_count() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_relay_fetched_before_its_sync_is_asked_is_credited_when_asked() {
+    let obj = proposal("a");
+    let h = obj.hash();
+    // The slow peer holds the objects phase open, so the fast peer's relay
+    // is fetched before any peer is asked for the proposal's votes (D36).
+    let fast = Node {
+        objects: vec![obj],
+        votes: vec![vote(h, 2, VoteOutcome::No)],
+        relays: vec![vote(h, 1, VoteOutcome::Yes)],
+        ..Node::default()
+    };
+    let slow = Node {
+        object_delay: Some(Duration::from_millis(1500)),
+        ..fast.clone()
+    };
+    let hx = start(vec![fast, slow], |_| {}).await;
+    let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
+    assert_eq!((p.votes, p.peers), (2, 2));
+    hx.stop.send(true).unwrap();
+    assert_eq!(hx.task.await.unwrap(), Ok(()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_synced_run_turns_the_trigger_time_window_on() {
+    let mut old = trigger();
+    old.time = unix_now() - 30 * 86_400;
+    // Before any sync, Core skips the window (`MasternodeRateCheck`).
+    assert!(
+        GovernanceStore::new(Network::Regtest)
+            .add_object(old.clone(), None, unix_now())
+            .is_ok()
+    );
+    let node = Node {
+        objects: vec![proposal("a")],
+        ..Node::default()
+    };
+    let hx = start(vec![node], |_| {}).await;
+    wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
+    assert_eq!(
+        hx.shared.store().add_object(old, None, unix_now()),
+        Err(crate::validate::ObjectRejection::TriggerTimeOutOfRange)
+    );
+    hx.stop.send(true).unwrap();
+    assert_eq!(hx.task.await.unwrap(), Ok(()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_object_the_wallet_refuses_neither_fails_the_sync_nor_costs_a_penalty() {
     let good = proposal("a");
     // Core keeps what `UniValue::read` parsed before trailing bytes; the
@@ -627,6 +679,30 @@ async fn an_object_the_wallet_refuses_neither_fails_the_sync_nor_costs_a_penalty
         assert!(store.object(&refused.hash()).is_none());
         // Not fetched again; its votes are ignored.
         assert!(store.has_object(&refused.hash()));
+    }
+    hx.stop.send(true).unwrap();
+    assert_eq!(hx.task.await.unwrap(), Ok(()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mistyped_copy_is_not_remembered_so_the_genuine_one_still_comes() {
+    // The wire type is outside the hash: a peer relabelling a proposal a
+    // trigger must not make the wallet refuse its hash for good (D42).
+    let good = proposal("a");
+    let mut mistyped = good.clone();
+    mistyped.object_type = crate::object::OBJECT_TYPE_TRIGGER;
+    assert_eq!(mistyped.hash(), good.hash());
+    let node = Node {
+        objects: vec![mistyped],
+        ..Node::default()
+    };
+    let hx = start(vec![node], |_| {}).await;
+    let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
+    assert_eq!(p.objects, 0);
+    {
+        let mut store = hx.shared.store();
+        assert!(!store.has_object(&good.hash()));
+        assert_eq!(store.add_object(good.clone(), None, unix_now()), Ok(true));
     }
     hx.stop.send(true).unwrap();
     assert_eq!(hx.task.await.unwrap(), Ok(()));

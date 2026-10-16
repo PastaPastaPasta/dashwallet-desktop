@@ -79,6 +79,11 @@ pub const MAX_IGNORED_VOTES: usize = 100_000;
 /// Hashes of objects every announcer's copy of was refused, oldest
 /// forgotten first (MG-02 D35).
 pub const MAX_REFUSED_OBJECTS: usize = 10_000;
+/// Votes whose key the list does not hold yet, kept per (vote, key) for a
+/// later list (MG-02 D43); oldest forgotten first.
+pub const MAX_SUSPECT_VOTES: usize = 10_000;
+/// How long such a vote waits for its key.
+pub const SUSPECT_TTL_SECS: i64 = 60 * 60;
 /// Core `GOVERNANCE_DELETION_DELAY`.
 pub const DELETION_DELAY_SECS: i64 = 10 * 60;
 /// Signal and outcome ranges Core accepts (`VOTE_SIGNAL_UNKNOWN`,
@@ -265,6 +270,9 @@ pub struct GovernanceStore {
     valid_weight: u32,
     list_size: u32,
     resolved: HashMap<OutPoint, ResolvedMasternode>,
+    /// (vote, recovered key) → a vote refused for a key the list lacks.
+    suspects: HashMap<([u8; 32], [u8; 20]), Orphan>,
+    suspect_order: VecDeque<([u8; 32], [u8; 20])>,
     /// Whether a sync has completed, after which triggers outside their
     /// creation-time window are ignored (Core's `MasternodeRateCheck`).
     synced: bool,
@@ -314,6 +322,8 @@ impl GovernanceStore {
             valid_weight: 0,
             list_size: 0,
             resolved: HashMap::new(),
+            suspects: HashMap::new(),
+            suspect_order: VecDeque::new(),
             synced: false,
         }
     }
@@ -521,6 +531,7 @@ impl GovernanceStore {
     /// objects unconfirmed for [`UNCONFIRMED_TTL_SECS`] and orphans past
     /// their expiry, and forgets erased hashes whose time passed.
     pub fn prune(&mut self, now: i64) {
+        self.suspects.retain(|_, o| o.at + SUSPECT_TTL_SECS > now);
         let p = governance_params(self.network);
         let cycle = i64::from(p.superblock_cycle);
         let cycle_secs = cycle * i64::from(p.target_spacing_secs);
@@ -652,6 +663,7 @@ impl GovernanceStore {
         self.valid_weight = valid_weight;
         self.list_size = entries.len() as u32;
         self.drop_unbacked_votes();
+        self.place_suspects();
     }
 
     /// Sets the outpoints the wallet resolved to masternodes (MG-03); their
@@ -811,7 +823,52 @@ impl GovernanceStore {
         from: Option<SocketAddr>,
         now: i64,
     ) -> Result<(), VoteRejection> {
+        self.precheck(&v.vote, now)?;
+        if self.key_ok(&v.vote.masternode_outpoint, &v.key_id)
+            == Err(VoteRejection::UnknownVotingKey)
+        {
+            self.keep_suspect(v, from, now);
+            return Err(VoteRejection::UnknownVotingKey);
+        }
         self.place(v, from, now, false)
+    }
+
+    /// Keeps a vote whose key the list may not hold yet: peers announce a
+    /// vote once, so it is placed when a later list holds the key (D43).
+    /// Per recovered key, so a forged copy cannot stand in for the real one.
+    fn keep_suspect(&mut self, vote: CheckedVote, from: Option<SocketAddr>, at: i64) {
+        let slot = (vote.vote.hash(), vote.key_id);
+        if self.suspects.contains_key(&slot) {
+            return;
+        }
+        while self.suspects.len() >= MAX_SUSPECT_VOTES {
+            let Some(old) = self.suspect_order.pop_front() else {
+                break;
+            };
+            self.suspects.remove(&old);
+        }
+        self.suspects.insert(slot, Orphan { vote, from, at });
+        self.suspect_order.push_back(slot);
+        // Entries placed or expired leave stale order slots; compact them.
+        if self.suspect_order.len() > 2 * MAX_SUSPECT_VOTES {
+            let suspects = &self.suspects;
+            self.suspect_order.retain(|s| suspects.contains_key(s));
+        }
+    }
+
+    /// Places the kept votes whose key the list now holds.
+    fn place_suspects(&mut self) {
+        let ready: Vec<_> = self
+            .suspects
+            .iter()
+            .filter(|(_, o)| self.keys.contains_key(&o.vote.key_id))
+            .map(|(slot, _)| *slot)
+            .collect();
+        for slot in ready {
+            if let Some(o) = self.suspects.remove(&slot) {
+                let _ = self.place(o.vote, o.from, o.at, false);
+            }
+        }
     }
 
     /// A funding vote the wallet relays for a caller (Core `voteraw`), with
@@ -1356,6 +1413,27 @@ mod tests {
         );
         assert_eq!((t.no.min, t.no.max, t.no.estimate), (0, 1, 0));
         assert_eq!((t.yes.min, t.yes.max, t.yes.estimate), (0, 1, 1));
+    }
+
+    #[test]
+    fn a_vote_waits_for_a_list_holding_its_key() {
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 1)]);
+        let late = vote(h, 3, 3, VoteOutcome::No, 10);
+        let r = s.add_vote(late.clone(), None, NOW);
+        assert_eq!(r, Err(VoteRejection::UnknownVotingKey));
+        assert_eq!(s.vote_count(), 0);
+        // The list catching up places it: peers announce a vote once (D43).
+        s.set_masternode_list(&[entry(1, 1), entry(3, 1)]);
+        assert_eq!(s.vote_count(), 1);
+        assert!(s.has_vote(&late.hash()));
+        // Kept votes expire.
+        let other = vote(h, 4, 4, VoteOutcome::No, 10);
+        let _ = s.add_vote(other.clone(), None, NOW);
+        s.prune(NOW + SUSPECT_TTL_SECS);
+        s.set_masternode_list(&[entry(1, 1), entry(3, 1), entry(4, 1)]);
+        assert!(!s.has_vote(&other.hash()));
     }
 
     #[test]

@@ -56,6 +56,9 @@ pub enum ObjectRejection {
     Unparsable,
     /// A wire type other than proposal or trigger.
     UnknownType,
+    /// The data names the other object type than the wire's. The wire type
+    /// is outside the hash, so this copy says nothing about the object.
+    WireTypeMismatch,
     /// A rule of `ValidateProposal`; the field it failed on.
     InvalidProposal(&'static str),
     /// A rule of the `CSuperblock` constructor; the field it failed on.
@@ -257,37 +260,40 @@ pub fn check_object(
     now: i64,
     rate_checked: bool,
 ) -> Result<ValidObject, ObjectRejection> {
-    let parse = || json_object(&object.data).ok_or(ObjectRejection::Unparsable);
-    let data_type_is = |o: &Members, kind: i32| o.int::<i32>("type") == Some(kind);
-    match object.object_type {
-        OBJECT_TYPE_PROPOSAL => {
-            let (o, top_level) = parse()?;
-            if !top_level {
-                return Err(ObjectRejection::InvalidProposal("json"));
-            }
-            if !data_type_is(&o, OBJECT_TYPE_PROPOSAL) {
-                return Err(ObjectRejection::InvalidProposal("type"));
-            }
-            check_proposal(&object.data, &o, network).map(ValidObject::Proposal)
-        }
-        OBJECT_TYPE_TRIGGER => {
-            let (o, _) = parse()?;
-            if !data_type_is(&o, OBJECT_TYPE_TRIGGER) {
-                return Err(ObjectRejection::InvalidTrigger("type"));
-            }
-            let trigger = check_trigger(&o, network)?;
-            let p = governance_params(network);
-            let cycle_secs = i64::from(p.superblock_cycle) * i64::from(p.target_spacing_secs);
-            if rate_checked
-                && (object.time < now - 2 * cycle_secs
-                    || object.time > now + MAX_TIME_FUTURE_DEVIATION)
-            {
-                return Err(ObjectRejection::TriggerTimeOutOfRange);
-            }
-            Ok(ValidObject::Trigger(trigger))
-        }
-        _ => Err(ObjectRejection::UnknownType),
+    let parsed = json_object(&object.data);
+    let named = parsed.as_ref().and_then(|(o, _)| o.int::<i32>("type"));
+    // The wire type is outside the object's hash, so any peer can change
+    // it: data naming the other type was sent mistyped (D42).
+    if let Some(t @ (OBJECT_TYPE_PROPOSAL | OBJECT_TYPE_TRIGGER)) = named
+        && t != object.object_type
+    {
+        return Err(ObjectRejection::WireTypeMismatch);
     }
+    let (o, top_level) = match object.object_type {
+        OBJECT_TYPE_PROPOSAL | OBJECT_TYPE_TRIGGER => parsed.ok_or(ObjectRejection::Unparsable)?,
+        _ => return Err(ObjectRejection::UnknownType),
+    };
+    if object.object_type == OBJECT_TYPE_PROPOSAL {
+        if !top_level {
+            return Err(ObjectRejection::InvalidProposal("json"));
+        }
+        if named != Some(OBJECT_TYPE_PROPOSAL) {
+            return Err(ObjectRejection::InvalidProposal("type"));
+        }
+        return check_proposal(&object.data, &o, network).map(ValidObject::Proposal);
+    }
+    if named != Some(OBJECT_TYPE_TRIGGER) {
+        return Err(ObjectRejection::InvalidTrigger("type"));
+    }
+    let trigger = check_trigger(&o, network)?;
+    let p = governance_params(network);
+    let cycle_secs = i64::from(p.superblock_cycle) * i64::from(p.target_spacing_secs);
+    if rate_checked
+        && (object.time < now - 2 * cycle_secs || object.time > now + MAX_TIME_FUTURE_DEVIATION)
+    {
+        return Err(ObjectRejection::TriggerTimeOutOfRange);
+    }
+    Ok(ValidObject::Trigger(trigger))
 }
 
 /// `governance::ValidateProposal` with scripts allowed and no expiry check.
@@ -485,28 +491,40 @@ mod tests {
         bad("http://x.y", "http:// x", "url");
 
         // The wire type picks the checks and the data's type must equal it
-        // (D5): a proposal labelled a trigger fails as a trigger, and data
-        // of any other type fails as a proposal.
-        let mut wire = object(&proposal(GOOD), 1_000);
-        wire.object_type = OBJECT_TYPE_TRIGGER;
-        assert_eq!(
-            check_object(&wire, Network::Testnet, 1_000, true),
-            Err(ObjectRejection::InvalidTrigger("type"))
-        );
-        let mut as_proposal = object(&trigger("4224", ADDR, "1", HASH), 1_000);
-        as_proposal.object_type = OBJECT_TYPE_PROPOSAL;
-        assert_eq!(
-            check_object(&as_proposal, Network::Testnet, 1_000, true),
-            Err(ObjectRejection::InvalidProposal("type"))
-        );
+        // (D5). A copy whose data names the other type was mistyped by its
+        // sender (D42): any wire type, the legacy trigger form included.
+        let legacy = format!(r#"[["trigger",{}]]"#, trigger("4224", ADDR, "1", HASH));
+        for (data, wire) in [
+            (proposal(GOOD), OBJECT_TYPE_TRIGGER),
+            (proposal(GOOD), 3),
+            (trigger("4224", ADDR, "1", HASH), OBJECT_TYPE_PROPOSAL),
+            (legacy, OBJECT_TYPE_PROPOSAL),
+        ] {
+            let mut o = object(&data, 1_000);
+            o.object_type = wire;
+            let r = check_object(&o, Network::Testnet, 1_000, true);
+            assert_eq!(
+                r,
+                Err(ObjectRejection::WireTypeMismatch),
+                "{data} as {wire}"
+            );
+            assert!(r.unwrap_err().is_invalid());
+        }
+        // Data naming neither type fails by the wire type's rules.
         for data in [r#"{"type":"1"}"#, r#"{"type":3}"#, "{}"] {
             assert_eq!(
                 check(data),
                 Err(ObjectRejection::InvalidProposal("type")),
                 "{data}"
             );
+            let mut t = object(data, 1_000);
+            t.object_type = OBJECT_TYPE_TRIGGER;
+            assert_eq!(
+                check_object(&t, Network::Testnet, 1_000, true),
+                Err(ObjectRejection::InvalidTrigger("type"))
+            );
         }
-        let mut unknown = object(&proposal(GOOD), 1_000);
+        let mut unknown = object(r#"{"type":3}"#, 1_000);
         unknown.object_type = 3;
         assert_eq!(
             check_object(&unknown, Network::Testnet, 1_000, true),
