@@ -16,6 +16,10 @@
 //!   read as they are (comments included), so no lexing can hide a name
 //!   there.
 //!
+//! The one BLS secret allowed, dw-coinjoin's test operator key, is kept out
+//! of every library build: [`dash_pkc_stays_a_dev_dependency`] checks the
+//! manifests (MG-01 D21).
+//!
 //! Rerun: `cd rust && cargo test -p dw-protx --test no_operator_signing`.
 //!
 //! Reading those payloads off the chain stays possible without naming
@@ -129,6 +133,16 @@ const SKIPPED_DIRS: &[&str] = &["target", "node_modules", ".build"];
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
+}
+
+/// The files under `rust/crates` and `rust/bin` with one of `names`.
+fn rust_files_named(names: &[&str]) -> Vec<PathBuf> {
+    let rust = repo_root().join("rust");
+    let mut found = Vec::new();
+    files(&rust.join("crates"), &["toml"], &mut found);
+    files(&rust.join("bin"), &["toml"], &mut found);
+    found.retain(|p| p.file_name().is_some_and(|n| names.iter().any(|m| n == *m)));
+    found
 }
 
 fn files(dir: &Path, exts: &[&str], out: &mut Vec<PathBuf>) {
@@ -286,17 +300,15 @@ fn without_allowed(code: &str, allowed: &Allowed) -> Result<String, String> {
         Allowed::TestModule => TEST_MODULE,
         Allowed::Text(text) => text,
     };
-    let starts: Vec<usize> = code
-        .match_indices(marker)
-        .map(|(at, _)| at)
-        .filter(|&at| at == 0 || code.as_bytes()[at - 1] == b'\n')
-        .collect();
-    if starts.len() != 1 || code.matches(marker).count() != 1 {
-        return Err(format!("must hold `{marker}` exactly once, opening a line"));
+    let starts: Vec<usize> = code.match_indices(marker).map(|(at, _)| at).collect();
+    let [start] = starts[..] else {
+        return Err(format!("must hold `{marker}` exactly once"));
+    };
+    if start > 0 && code.as_bytes()[start - 1] != b'\n' {
+        return Err(format!("`{marker}` must open a line"));
     }
-    let start = starts[0];
     let mut end = start + marker.len();
-    if let Allowed::TestModule = allowed {
+    if matches!(allowed, Allowed::TestModule) {
         loop {
             let line_end = code[end..].find('\n').map_or(code.len(), |p| end + p + 1);
             let line = &code[end..line_end];
@@ -304,7 +316,9 @@ fn without_allowed(code: &str, allowed: &Allowed) -> Result<String, String> {
             if line.trim_end() == "}" {
                 break;
             }
-            if line.is_empty() || !(line.trim().is_empty() || line.starts_with([' ', '\t'])) {
+            let at_eof = line.is_empty();
+            let blank_or_indented = line.trim().is_empty() || line.starts_with([' ', '\t']);
+            if at_eof || !blank_or_indented {
                 return Err(format!(
                     "the `#[cfg(test)] mod tests` must end with a `}}` line before any \
                      unindented line (line {})",
@@ -408,13 +422,7 @@ fn every_clippy_toml_carries_the_mg01_rules() {
         root[0].len() >= 7 && root[1].len() >= 5,
         "rust/clippy.toml lost its rules"
     );
-    let mut tomls = Vec::new();
-    files(&rust.join("crates"), &["toml"], &mut tomls);
-    files(&rust.join("bin"), &["toml"], &mut tomls);
-    tomls.retain(|p| {
-        p.file_name()
-            .is_some_and(|n| n == "clippy.toml" || n == ".clippy.toml")
-    });
+    let tomls = rust_files_named(&["clippy.toml", ".clippy.toml"]);
     assert!(!tomls.is_empty(), "dw-ffi's clippy.toml is expected");
     for toml in tomls {
         let have = clippy_rules(&fs::read_to_string(&toml).unwrap());
@@ -502,38 +510,68 @@ fn the_scanner_finds_what_it_must() {
     );
 }
 
+/// The lines of a manifest that name dash-pkc outside a dev-dependency
+/// table, and how many name it inside one. A `[dependencies.dash-pkc]`
+/// header counts as naming it under its own table.
+fn dash_pkc_uses(manifest: &str) -> (Vec<String>, usize) {
+    let (mut outside, mut dev) = (Vec::new(), 0);
+    let mut section = "";
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            section = line;
+        }
+        if line.starts_with('#') || !line.contains("dash-pkc") {
+            continue;
+        }
+        let table = section.trim_matches(['[', ']']);
+        if table == "dev-dependencies"
+            || table.starts_with("dev-dependencies.")
+            || table.contains(".dev-dependencies")
+        {
+            dev += 1;
+        } else {
+            outside.push(format!("{line} (under [{table}])"));
+        }
+    }
+    (outside, dev)
+}
+
 /// The library cannot name a BLS secret through dash-pkc: every member
 /// crate lists it under `[dev-dependencies]` only (MG-01 D21). Its other
 /// secret types are behind clippy's `disallowed-types`.
 #[test]
 fn dash_pkc_stays_a_dev_dependency() {
-    let rust = repo_root().join("rust");
-    let mut manifests = Vec::new();
-    files(&rust.join("crates"), &["toml"], &mut manifests);
-    files(&rust.join("bin"), &["toml"], &mut manifests);
-    manifests.retain(|p| p.file_name().is_some_and(|n| n == "Cargo.toml"));
+    let manifests = rust_files_named(&["Cargo.toml"]);
     assert!(manifests.len() > 10, "too few member manifests");
     let mut dev_uses = 0;
     for manifest in manifests {
-        let mut section = String::new();
-        for line in fs::read_to_string(&manifest)
-            .unwrap()
-            .lines()
-            .map(str::trim)
-        {
-            if line.starts_with('[') {
-                section = line.to_string();
-            } else if !line.starts_with('#') && line.contains("dash-pkc") {
-                assert!(
-                    section.ends_with("dev-dependencies]"),
-                    "{} names dash-pkc under {section}",
-                    manifest.display()
-                );
-                dev_uses += 1;
-            }
-        }
+        let (outside, dev) = dash_pkc_uses(&fs::read_to_string(&manifest).unwrap());
+        assert!(
+            outside.is_empty(),
+            "{} names dash-pkc outside dev-dependencies: {outside:?}",
+            manifest.display()
+        );
+        dev_uses += dev;
     }
     assert!(dev_uses > 0, "dw-coinjoin's test key needs dash-pkc");
+    // Every form a normal dependency can take is caught.
+    for bad in [
+        "[dependencies]\ndash-pkc = { workspace = true }",
+        "[dependencies.dash-pkc]\nworkspace = true",
+        "[target.'cfg(unix)'.dependencies]\ndash-pkc = \"1\"",
+        "[build-dependencies]\ndash-pkc.workspace = true",
+        "[dependencies]\npkc = { package = \"dash-pkc\" }",
+        "dependencies.dash-pkc.workspace = true\n[package]",
+    ] {
+        assert!(!dash_pkc_uses(bad).0.is_empty(), "missed: {bad}");
+    }
+    for ok in [
+        "[dev-dependencies]\ndash-pkc = { workspace = true }",
+        "[dev-dependencies.dash-pkc]\nworkspace = true",
+        "[target.'cfg(unix)'.dev-dependencies]\ndash-pkc = \"1\"",
+    ] {
+        assert_eq!(dash_pkc_uses(ok), (vec![], 1), "{ok}");
+    }
 }
 
 #[test]

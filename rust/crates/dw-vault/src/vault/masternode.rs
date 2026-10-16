@@ -16,10 +16,9 @@
 //! which masternodes the user controls, while the AEAD's associated data
 //! still binds each record to its id. Replacing or deleting a key drains
 //! the gate first ([`Vault::drain_ops`]), as a seed deletion does: a read
-//! that started before has returned, one after sees the change. The key
-//! the change is made with is the one in memory once the gate is drained,
-//! in the epoch the call began in, so a `lock()` before that refuses the
-//! change and one after waits for it (D22); listing is a gated operation.
+//! that started before has returned, one after sees the change. A `lock()`
+//! racing a change either refuses it or waits for it
+//! ([`Vault::with_drained_key`], D22); listing is a gated operation.
 //!
 //! The records are vault-wide (a tracked masternode belongs to no wallet):
 //! removing a wallet leaves them, and `recover_with_mnemonic` drops them
@@ -133,6 +132,7 @@ impl Vault {
         body: impl FnOnce(&WriteGuard<'_>, &Key32) -> Result<T, VaultError>,
     ) -> Result<T, VaultError> {
         let epoch = self.inner().epoch;
+        // Loads the key only; the one used is read again below.
         self.full_dek()?;
         #[cfg(test)]
         crate::signer::test_hook::checked();

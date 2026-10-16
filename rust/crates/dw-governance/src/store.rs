@@ -11,9 +11,9 @@
 //! once per vote hash) until it does, after the checks it can have without
 //! the object: its masternode's voting key, the time bound and the
 //! signature, as Core checks a vote for an unknown parent before it keeps
-//! it as an orphan (MG-01 D23). Core's per-masternode minimum between vote updates
-//! (`GOVERNANCE_UPDATE_MIN`, timed by the node's own receive clock) is not
-//! mirrored (MG-01 D13).
+//! it as an orphan (MG-01 D23). Core's per-masternode minimum between vote
+//! updates (`GOVERNANCE_UPDATE_MIN`, timed by the node's own receive clock)
+//! is not mirrored (MG-01 D13).
 
 use std::collections::{HashMap, HashSet};
 
@@ -88,7 +88,6 @@ pub struct GovernanceStore {
     orphans: HashMap<[u8; 32], Vec<GovernanceVote>>,
     /// Hashes of the votes in `orphans`: each is queued once.
     orphan_hashes: HashSet<[u8; 32]>,
-    orphan_count: usize,
     vote_count: u64,
     /// Collateral outpoint → voting key id, from the masternode list.
     voting_keys: HashMap<OutPoint, [u8; 20]>,
@@ -155,7 +154,6 @@ impl GovernanceStore {
             },
         );
         if let Some(waiting) = self.orphans.remove(&hash) {
-            self.orphan_count -= waiting.len();
             for v in waiting {
                 self.orphan_hashes.remove(&v.hash());
                 let _ = self.add_vote(v, network);
@@ -187,19 +185,16 @@ impl GovernanceStore {
     }
 
     /// Stores `vote` as its masternode's current funding vote on its object,
-    /// or queues it until the object arrives. A vote for an unknown object
-    /// is checked first against what is known without the object (MG-01
-    /// D23), as Core's `CGovernanceVote::IsValidForUnknownParent` checks a
-    /// funding vote against the list's voting key, the time bound and the
-    /// signature before it keeps the vote as an orphan, so votes that could
-    /// never count cannot fill the queue.
+    /// or, once its voting key, time bound and signature check out, queues
+    /// it until the object arrives (MG-01 D23; Core's
+    /// `CGovernanceVote::IsValidForUnknownParent`).
     pub fn add_vote(
         &mut self,
         vote: GovernanceVote,
         network: Network,
     ) -> Result<(), VoteRejection> {
         let hash = vote.hash();
-        if self.seen_votes.contains(&hash) || self.orphan_hashes.contains(&hash) {
+        if self.has_vote(&hash) {
             return Err(VoteRejection::Duplicate);
         }
         let Some(outcome) = vote.vote_outcome() else {
@@ -208,12 +203,11 @@ impl GovernanceStore {
         if vote.signal != SIGNAL_FUNDING {
             return Err(VoteRejection::NotTallied);
         }
-        let parent_known = match self.objects.get(&vote.parent_hash) {
-            Some(o) if o.object.object_type != OBJECT_TYPE_PROPOSAL => {
-                return Err(VoteRejection::NotTallied);
-            }
-            parent => parent.is_some(),
-        };
+        let parent = self.objects.get(&vote.parent_hash);
+        if parent.is_some_and(|o| o.object.object_type != OBJECT_TYPE_PROPOSAL) {
+            return Err(VoteRejection::NotTallied);
+        }
+        let parent_known = parent.is_some();
         let Some(&key_id) = self.voting_keys.get(&vote.masternode_outpoint) else {
             return Err(VoteRejection::UnknownMasternode);
         };
@@ -236,8 +230,7 @@ impl GovernanceStore {
             return Err(VoteRejection::BadSignature);
         }
         if !parent_known {
-            if self.orphan_count < MAX_ORPHAN_VOTES {
-                self.orphan_count += 1;
+            if self.orphan_hashes.len() < MAX_ORPHAN_VOTES {
                 self.orphan_hashes.insert(hash);
                 self.orphans.entry(vote.parent_hash).or_default().push(vote);
             }
@@ -295,10 +288,9 @@ impl GovernanceStore {
     /// The highest superblock height ≤ `tip` whose synced trigger pays
     /// `hash_hex` (dash-qt `getProposalFundedHeight`).
     ///
-    /// Trusts every stored trigger as decoded: MG-01 does not check an
-    /// object's collateral or signatures. MG-02 must validate objects
-    /// before they are stored (MG-01 §7) before any caller uses this;
-    /// nothing does in MG-01.
+    /// Trusts stored triggers as decoded: MG-01 checks no object's
+    /// collateral or signatures, so MG-02 must validate objects before it
+    /// stores them (MG-01 §7) before anything calls this.
     pub fn funded_height(&self, hash_hex: &str, tip: u32) -> Option<u32> {
         self.objects
             .values()
@@ -458,24 +450,25 @@ mod tests {
             s.add_vote(too_new, Network::Regtest),
             Err(VoteRejection::TooNew)
         );
-        assert_eq!((s.orphan_count, s.orphan_hashes.len()), (0, 0));
+        assert!(s.orphan_hashes.is_empty());
         assert!(!s.has_vote(&malformed.hash()));
 
         // The genuine vote waits once, however often it arrives.
-        for expected in [VoteRejection::Orphan, VoteRejection::Duplicate] {
-            assert_eq!(s.add_vote(vote.clone(), Network::Regtest), Err(expected));
-        }
+        assert_eq!(
+            s.add_vote(vote.clone(), Network::Regtest),
+            Err(VoteRejection::Orphan)
+        );
         for _ in 0..MAX_ORPHAN_VOTES {
             assert_eq!(
                 s.add_vote(vote.clone(), Network::Regtest),
                 Err(VoteRejection::Duplicate)
             );
         }
-        assert_eq!(s.orphan_count, 1);
+        assert_eq!(s.orphan_hashes.len(), 1);
         assert!(s.has_vote(&vote.hash()));
 
         assert!(s.add_object(obj, Network::Regtest));
-        assert_eq!((s.orphan_count, s.orphan_hashes.len()), (0, 0));
+        assert!(s.orphan_hashes.is_empty());
         assert_eq!(
             s.outcome_of(&h, &vote.masternode_outpoint),
             Some(VoteOutcome::Yes)

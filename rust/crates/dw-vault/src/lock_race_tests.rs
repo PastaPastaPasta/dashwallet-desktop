@@ -1594,20 +1594,15 @@ fn a_store_does_not_replace_the_seed_a_signer_read() {
 /// A tracked masternode the tests attach keys to.
 const MN: [u8; 32] = [7; 32];
 
-/// One masternode-key call (MG-01 D22): `store` replaces the voting key,
+/// The masternode-key calls (MG-01 D22): `store` replaces the voting key,
 /// `delete` removes every key, `roles` lists them.
-type MnCall = Box<dyn FnOnce(&Vault) -> Result<(), VaultError> + Send>;
+type MnCall = fn(&Vault) -> Result<(), VaultError>;
 
-fn mn_call(name: &str) -> MnCall {
-    match name {
-        "store" => Box::new(|v| v.store_masternode_key(&MN, "voting", b"key-2")),
-        "delete" => Box::new(|v| v.delete_masternode_keys(&MN, None).map(drop)),
-        "roles" => Box::new(|v| v.masternode_key_roles(&MN).map(drop)),
-        _ => unreachable!(),
-    }
-}
-
-const MN_CALLS: [&str; 3] = ["store", "delete", "roles"];
+const MN_CALLS: [(&str, MnCall); 3] = [
+    ("store", |v| v.store_masternode_key(&MN, "voting", b"key-2")),
+    ("delete", |v| v.delete_masternode_keys(&MN, None).map(drop)),
+    ("roles", |v| v.masternode_key_roles(&MN).map(drop)),
+];
 
 /// An unlocked vault with `key-1` attached as `MN`'s voting key.
 fn mn_vault(dir: &tempfile::TempDir) -> Vault {
@@ -1637,17 +1632,19 @@ fn mn_voting_key(v: &Vault) -> Option<Vec<u8>> {
 /// list started then is made in the new epoch, and stands.
 #[test]
 fn a_lock_before_the_drain_refuses_each_masternode_key_change() {
-    let lock_unlock = |v: &Vault| {
-        v.lock();
-        v.unlock(PASS, UnlockScope::Full).unwrap();
-    };
-    for name in MN_CALLS {
-        for (between, relock) in [("lock", false), ("lock+unlock", true)] {
+    for (name, call) in MN_CALLS {
+        for relock in [false, true] {
+            let between = if relock { "lock+unlock" } else { "lock" };
             let dir = tempfile::tempdir().unwrap();
             let v = mn_vault(&dir);
             let v2 = v.clone();
-            test_hook::set_checked(move || if relock { lock_unlock(&v2) } else { lock(&v2) });
-            let result = mn_call(name)(&v);
+            test_hook::set_checked(move || {
+                v2.lock();
+                if relock {
+                    v2.unlock(PASS, UnlockScope::Full).unwrap();
+                }
+            });
+            let result = call(&v);
             test_hook::set_checked(|| {});
             let expected = if name == "roles" && relock {
                 Ok(())
@@ -1670,10 +1667,10 @@ fn a_lock_before_the_drain_refuses_each_masternode_key_change() {
 /// until the call has made its result, which stands.
 #[test]
 fn lock_waits_for_each_masternode_key_call() {
-    for name in MN_CALLS {
+    for (name, call) in MN_CALLS {
         let dir = tempfile::tempdir().unwrap();
         let v = mn_vault(&dir);
-        let (w, call) = (v.clone(), mn_call(name));
+        let w = v.clone();
         epoch_change_waits_for(&v, lock, move || call(&w));
         v.unlock(PASS, UnlockScope::Full).unwrap();
         let expected: Option<&[u8]> = match name {
