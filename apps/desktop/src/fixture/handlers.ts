@@ -36,6 +36,7 @@ import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
 import { userLinkText } from "../contacts/add";
 import { activityPage, contactList, eventOf, relationOf, type DashPayWorld, type FixtureScan } from "./dashpay";
 import { scanHandlers } from "./scan";
+import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { advance, costs, failRun, fundable, NAME_CREDITS, registrationHandlers } from "./registration";
 import { routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
@@ -590,6 +591,8 @@ export const HANDLERS: Handlers = {
   // Settings (U-04): settings.ts.
   ...settingsHandlers({ wallet, grant: checkGrant, useGrant }),
   ...scanHandlers(),
+  // CoinJoin (U-06): coinjoin.ts.
+  ...coinjoinHandlers({ wallet }),
   // Username registration (DP1-09): registration.ts.
   ...registrationHandlers({ wallet, dashpay, grant: checkGrant, newLease, setLease, writeLease }),
 
@@ -616,6 +619,8 @@ export const HANDLERS: Handlers = {
     for (const lease of world.leases.filter(live)) setLease(ctx, { ...lease, state: { kind: "revoked", cause: "lock" }, keyExpiresInSecs: null });
     revokeGrants(world);
     setLock(ctx, "locked");
+    // A vault that locks stops mixing (dw-engine `mixing_loop`, QT-112).
+    haltAll(ctx, "vaultLocked");
     const inFlight = world.leases.reduce((n, l) => n + l.inFlight, 0);
     if (inFlight > 0) emit({ kind: "lockProgress", network, progress: { kind: "draining", inFlight, deadlineInMs: 30_000 } });
     // As dw-app's bridge: the first 16 wallets with secrets, and how many more.
