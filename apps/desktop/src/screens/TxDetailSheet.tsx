@@ -1,21 +1,25 @@
 // Transaction detail sheet (UX-SPEC §4.9, C23 medium): iOS TxDetail header with the dash-qt
 // facts (research 02 §4.6), the label editor, and Abandon / Resend where they apply (U-03 D15).
 
-import { useId, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useId, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../api/backend";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import type { TxDetails } from "../api/generated/TxDetails";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import { keys, useBackend, useTxDetail, useTxDetailExtras } from "../api/queries";
-import { ui } from "../app/ui";
+import { navigate, ui, useUi } from "../app/ui";
 import { AmountText, Chip, DashButton, Icon } from "../components/basics";
 import type { UsedIcon } from "../components/icons";
 import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
 import { CopyValue, DetailRow } from "../components/detail";
+import { findContact, subtitle } from "../contacts/model";
+import { contactListQuery, useContactsOwner } from "../contacts/queries";
 import { useDisplay } from "../format/display";
-import { contactName, detailDate, isProblem, rowDate, shownAmount, txChip, txIcon, txTitle } from "../format/tx";
+import { Avatar } from "./contacts/Avatar";
+import { contactLetters, contactName, detailDate, isProblem, rowDate, shownAmount, txChip, txIcon, txTitle } from "../format/tx";
 
 /** dash-qt `TransactionDesc::FormatTxStatus`, for the states the engine reports. */
 function statusText(s: TxStatusInfo): string {
@@ -154,7 +158,73 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
   );
 }
 
-function Body({ d, network, walletId }: { d: TxDetails; network: NetworkInfo; walletId: string }) {
+/** Whether the main identity's Contacts lists `contact` (DP3-07 D4), in any section, from the
+ * query Contacts' unfiltered list reads: only then does its pane open on it. */
+function useListed(walletId: string, contact: string): boolean {
+  const b = useBackend();
+  const { owner } = useContactsOwner(walletId);
+  const identity = owner.kind === "identity" ? owner.identity : null;
+  const sort = useUi((s) => s.contactSort);
+  const list = useQuery({ ...contactListQuery(b, walletId, identity ?? "", sort, ""), enabled: identity !== null });
+  return identity !== null && findContact(list.data, contact) !== null;
+}
+
+/** Where focus goes once View contact closed the sheet, whose opener left with its page (D4): the
+ * contact's row, else the Contacts heading. */
+function contactsFocus(): HTMLElement | null {
+  const page = document.querySelector<HTMLElement>(".app-body > main");
+  const row = page?.querySelector<HTMLElement>('[aria-current="true"]');
+  if (row) return row;
+  const heading = page?.querySelector<HTMLElement>("h1") ?? null;
+  if (heading && !heading.hasAttribute("tabindex")) heading.tabIndex = -1;
+  return heading;
+}
+
+/** The DashPay contact of the record the sheet shows (DP3-02 D24): its avatar, name and
+ * `@username` (D6), and View contact, which opens its pane, when Contacts lists it (D4). */
+function ContactFact({
+  walletId,
+  counterparty: c,
+  name,
+  sent,
+  onView,
+}: {
+  walletId: string;
+  counterparty: TxCounterparty;
+  name: string;
+  sent: boolean;
+  onView: () => void;
+}) {
+  const listed = useListed(walletId, c.identity);
+  const sub = subtitle({ alias: null, displayName: c.displayName, username: c.username, contact: c.identity });
+  const letters = contactLetters(c);
+  return (
+    <DetailRow label={sent ? "Sent to contact" : "Received from contact"} testId="tx-detail-contact">
+      <span className="tx-detail-contact">
+        {letters !== null && <Avatar letters={letters} />}
+        <span className="tx-detail-contact-names">
+          <span className="tx-detail-contact-name">{name}</span>
+          {sub && <span className="contact-row-username">{sub}</span>}
+        </span>
+        {listed && (
+          <DashButton
+            variant="tintedBlue"
+            size="small"
+            data-testid="tx-detail-view-contact"
+            onClick={() => {
+              onView();
+              navigate("contacts", { contact: c.identity, addContact: null, contactPrefill: null });
+            }}
+          >
+            View contact
+          </DashButton>
+        )}
+      </span>
+    </DetailRow>
+  );
+}
+
+function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: NetworkInfo; walletId: string; onViewContact: () => void }) {
   const backend = useBackend();
   const row = d.rows[0];
   const amount = d.rows.reduce((sum, r) => sum + r.amount, 0);
@@ -183,11 +253,7 @@ function Body({ d, network, walletId }: { d: TxDetails; network: NetworkInfo; wa
         </div>
       </div>
       <dl className="detail-list card-l1" data-testid="tx-detail-facts">
-        {contact && (
-          <DetailRow label={amount < 0 ? "Sent to contact" : "Received from contact"} testId="tx-detail-contact">
-            {contact}
-          </DetailRow>
-        )}
+        {contact && row?.counterparty && <ContactFact walletId={walletId} counterparty={row.counterparty} name={contact} sent={amount < 0} onView={onViewContact} />}
         {counterparty && (
           <DetailRow label={amount < 0 ? "To" : "Received with"}>
             <CopyValue value={counterparty} label="address" />
@@ -242,10 +308,18 @@ function Body({ d, network, walletId }: { d: TxDetails; network: NetworkInfo; wa
 
 export function TxDetailSheet({ walletId, txid, network }: { walletId: string; txid: string; network: NetworkInfo }) {
   const detail = useTxDetail(walletId, txid);
+  // View contact closed the sheet: its opener (a row) went with the page (D4).
+  const viewed = useRef(false);
   return (
-    <Sheet title="Transaction details" width="medium" testId="tx-detail" onClose={() => ui.set({ detail: null })}>
+    <Sheet
+      title="Transaction details"
+      width="medium"
+      testId="tx-detail"
+      onClose={() => ui.set({ detail: null })}
+      returnFocus={() => (viewed.current ? contactsFocus() : null)}
+    >
       {detail.data ? (
-        <Body d={detail.data} network={network} walletId={walletId} />
+        <Body d={detail.data} network={network} walletId={walletId} onViewContact={() => (viewed.current = true)} />
       ) : detail.isError ? (
         <p role="alert">{errorMessage(detail.error)}</p>
       ) : (

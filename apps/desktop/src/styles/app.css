@@ -1833,6 +1833,37 @@ button {
   white-space: nowrap;
 }
 
+/* The transaction detail's contact row (DP3-07 D6): avatar, names, View contact. */
+.tx-detail-contact {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.tx-detail-contact-names {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tx-detail-contact-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Home's frequent strip (DP3-07 D7): DP3-06's strip in a card above History. */
+.home-frequent {
+  margin-bottom: var(--dw-layout-section-gap);
+  padding-bottom: var(--dw-space-s);
+  border-radius: var(--dw-radius-card);
+}
+
+.home-frequent .pay-frequent-chips {
+  padding: 0 var(--dw-space-s);
+}
+
 .pay-payee-card {
   flex-direction: row;
   align-items: center;

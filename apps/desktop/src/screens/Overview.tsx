@@ -1,5 +1,6 @@
 // Overview (Home), UX-SPEC §4.5: hero band with the balance and breakdown strip, the shortcut
-// card straddling its edge, then the recent history in day-group cards.
+// card straddling its edge, the frequent contacts (DP3-07), then the recent history in day-group
+// cards.
 
 import { useEffect } from "react";
 import type { Balances } from "../api/generated/Balances";
@@ -11,11 +12,14 @@ import { useBalance, useHistory, useSyncStatus, type HistoryFilter } from "../ap
 import { AmountText, DashButton, Icon, NetworkCapsule } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
+import { useContactsOwner } from "../contacts/queries";
 import { useStatusInputs } from "../dashpay/queries";
 import { homeCard } from "../dashpay/status";
 import { useDisplay } from "../format/display";
 import { isSyncing, syncPercent } from "../format/sync";
 import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
+import { useFrequentContacts } from "./pay/contactQueries";
+import { FrequentStrip } from "./pay/FrequentStrip";
 
 /** dash-qt's overview shows this many recent transactions. */
 const RECENT_COUNT = 5;
@@ -128,6 +132,25 @@ function HomeDashPayCard({ walletId, network }: { walletId: string; network: Net
   return card && <DashPayCard card={card} onAction={(kind) => defaultCardAction(kind, retry)} />;
 }
 
+/** DP3-07 D7: the main identity's frequent contacts (DP3-06's strip); a pick opens Pay ▸ To a
+ * contact on them, as the contact pane's Pay does. Nothing without an owner. */
+function HomeFrequent({ walletId }: { walletId: string }) {
+  const { owner } = useContactsOwner(walletId);
+  return owner.kind === "identity" && <HomeFrequentOf key={owner.identity} walletId={walletId} identity={owner.identity} />;
+}
+
+function HomeFrequentOf({ walletId, identity }: { walletId: string; identity: string }) {
+  const frequent = useFrequentContacts(walletId, identity);
+  return (
+    <FrequentStrip
+      contacts={frequent.data ?? []}
+      testId="home-frequent"
+      className="home-frequent card-l1"
+      onPick={(p) => navigate("pay", { payTab: "contact", payContact: { walletId, contact: p.contact } })}
+    />
+  );
+}
+
 export function Overview({ walletId, network, onOpen }: { walletId: string; network: NetworkInfo; onOpen: (row: TxRow) => void }) {
   const balance = useBalance(walletId);
   const sync = useSyncStatus();
@@ -151,6 +174,8 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
       </div>
       <div className="page-column">
         <HomeDashPayCard walletId={walletId} network={network} />
+        {/* Who the wallet pays most is payment history: discreet mode hides it too (D8). */}
+        {!discreet && <HomeFrequent walletId={walletId} />}
         <div className="history-header" data-testid="history-header">
           <h2 className="history-title">History</h2>
           <span className="history-actions">
