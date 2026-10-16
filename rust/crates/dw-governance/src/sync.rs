@@ -320,6 +320,10 @@ struct PeerState {
     vote_answers: usize,
     vote_expected: i64,
     vote_announced: i64,
+    /// Votes it announced while no `ssc(11)` count was open → how many
+    /// objects it had been asked votes for then. Core leaves them out of
+    /// later vote syncs on the connection but counts them (D36).
+    relayed: HashMap<[u8; 32], usize>,
     /// When its next `ssc` is due, while one is outstanding.
     answer_due: Option<Instant>,
     /// When it last delivered an item.
@@ -357,6 +361,7 @@ impl PeerState {
             vote_answers: 0,
             vote_expected: 0,
             vote_announced: 0,
+            relayed: HashMap::new(),
             answer_due: None,
             last_delivery: Instant::now(),
             queue: VecDeque::new(),
@@ -499,6 +504,8 @@ struct Run {
     lost: usize,
     /// Fresh peers whose object sync completed.
     full_syncs_done: usize,
+    /// Vote → its object, for the votes decoded this run (D36).
+    vote_parents: HashMap<[u8; 32], [u8; 32]>,
     last_progress: Instant,
 }
 
@@ -751,9 +758,13 @@ impl Run {
                         confirmed.push(i.hash);
                     }
                 } else if votes_phase {
-                    // Relays before the peer was asked for votes do not
-                    // count towards its `ssc(11)` totals.
                     state.vote_announced += 1;
+                } else if state.relayed.len() < MAX_LATE {
+                    // Relays outside a vote sync do not count towards its
+                    // `ssc(11)` totals, unless a later sync is asked for
+                    // their object (D36).
+                    let asked = state.vote_asked.len();
+                    state.relayed.entry(i.hash).or_insert(asked);
                 }
                 let known = if object {
                     store.has_object(&i.hash)
@@ -855,6 +866,24 @@ impl Run {
         }
     }
 
+    /// Learns a vote's object. A peer that relayed the vote before it was
+    /// asked for the object's votes has it counted in that sync's `ssc(11)`
+    /// but leaves it out of the sync's invs, as Core does: credit it (D36).
+    fn credit_relays(&mut self, vote: [u8; 32], parent: [u8; 32]) {
+        if self.vote_parents.len() >= MAX_LATE {
+            self.vote_parents.clear();
+        }
+        self.vote_parents.insert(vote, parent);
+        for p in &mut self.peers {
+            if let Some(&asked) = p.relayed.get(&vote)
+                && p.vote_asked[asked..].contains(&parent)
+            {
+                p.relayed.remove(&vote);
+                p.vote_announced += 1;
+            }
+        }
+    }
+
     fn on_vote(&mut self, from: usize, payload: Vec<u8>) {
         let Ok(vote) = GovernanceVote::decode(&payload) else {
             self.misbehaved(from, "undecodable vote");
@@ -864,6 +893,7 @@ impl Run {
         let Some(taken) = self.take(from, &hash) else {
             return;
         };
+        self.credit_relays(hash, vote.parent_hash);
         let now = unix_now();
         // The hash leaves the signature out: when this copy's signature is
         // the problem, another peer's copy may be the genuine one.
@@ -1137,6 +1167,10 @@ impl Run {
                 .insert((addr, hash), Instant::now());
             let p = &mut self.peers[i];
             p.vote_asked.push(hash);
+            let parents = &self.vote_parents;
+            let before = p.relayed.len();
+            p.relayed.retain(|v, _| parents.get(v) != Some(&hash));
+            p.vote_announced += (before - p.relayed.len()) as i64;
             p.peer.send_govsync(hash, &filter);
             if p.answer_due.is_none() {
                 p.rearm_answer(timeout);
@@ -1289,6 +1323,7 @@ async fn run_inner(
         unassigned: Vec::new(),
         lost: 0,
         full_syncs_done: 0,
+        vote_parents: HashMap::new(),
         last_progress: Instant::now(),
     };
     run.changed();

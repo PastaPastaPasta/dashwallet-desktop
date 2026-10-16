@@ -40,7 +40,8 @@ fn proposal(name: &str) -> GovernanceObject {
 }
 
 /// How a fake full node behaves. Like Core it leaves out of vote invs the
-/// votes the wallet announced on the connection, but counts them in `ssc`.
+/// votes already announced on the connection, by either side, but counts
+/// them in `ssc`.
 #[derive(Clone, Default)]
 struct Node {
     objects: Vec<GovernanceObject>,
@@ -146,6 +147,7 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
                             kind: INV_GOVERNANCE_VOTE,
                             hash: v.hash(),
                         })
+                        .filter(|i| known.insert(i.hash))
                         .collect();
                     if !relays.is_empty() {
                         conn.send("inv", &encode_inv(&relays)).await.unwrap();
@@ -166,10 +168,8 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
                         conn.shutdown().await;
                         return;
                     }
-                    let items: Vec<InvItem> = all
-                        .into_iter()
-                        .filter(|i| !known.contains(&i.hash))
-                        .collect();
+                    let items: Vec<InvItem> =
+                        all.into_iter().filter(|i| known.insert(i.hash)).collect();
                     if !items.is_empty() {
                         conn.send("inv", &encode_inv(&items)).await.unwrap();
                     }
@@ -581,6 +581,25 @@ async fn a_peer_closing_after_its_vote_invs_is_replaced() {
     let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
     assert_eq!((p.votes, p.peers), (2, 1));
     hx.stop.send(true).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn votes_relayed_before_their_sync_are_credited_to_its_count() {
+    let obj = proposal("a");
+    let h = obj.hash();
+    // The relay reaches the wallet before it asks for the proposal's votes:
+    // the sync counts both votes but announces only the other one (D36).
+    let node = Node {
+        objects: vec![obj],
+        votes: vec![vote(h, 2, VoteOutcome::No)],
+        relays: vec![vote(h, 1, VoteOutcome::Yes)],
+        ..Node::default()
+    };
+    let hx = start(vec![node.clone(), node], |_| {}).await;
+    let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
+    assert_eq!((p.votes, p.peers), (2, 2));
+    hx.stop.send(true).unwrap();
+    assert_eq!(hx.task.await.unwrap(), Ok(()));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
