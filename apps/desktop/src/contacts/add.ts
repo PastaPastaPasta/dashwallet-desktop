@@ -86,8 +86,9 @@ export function currentRelation(c: Pick<Candidate, "identity" | "relation" | "re
 /** The contact list for `currentRelation`, read at `at`; `undefined` while a pass holds a list with
  * no rows yet (an empty snapshot says nothing about who relates how). */
 export function listedNow<R>(list: { sections: { contacts: R[] }[]; updating: boolean } | undefined, at: number): Listed<R> | undefined {
-  const rows = list?.sections.flatMap((s) => s.contacts);
-  return !rows || (list?.updating && !rows.length) ? undefined : { rows, at };
+  if (!list) return undefined;
+  const rows = list.sections.flatMap((s) => s.contacts);
+  return list.updating && !rows.length ? undefined : { rows, at };
 }
 
 /** What the card offers next (D4, D13). */
@@ -151,7 +152,7 @@ const SCAN_MARGIN_SECS = 60;
 const claimEnds = (claim: NonNullable<Candidate["claim"]>) => (claim.expiresAt - SCAN_MARGIN_SECS) * 1000;
 
 /** Whether a send can no longer carry `claim` at `now` (ms). */
-export const claimExpired = (claim: Candidate["claim"], now: number) => claim !== null && now >= claimEnds(claim);
+const claimExpired = (claim: Candidate["claim"], now: number) => claim !== null && now >= claimEnds(claim);
 
 /** The auto-accept note (D7); none once the claim has expired (the card's line says so, D36). */
 export function claimNote(claim: Candidate["claim"], now: number): string | null {
@@ -209,13 +210,15 @@ export function verifyError(e: unknown): { text: string; retry: boolean } {
 }
 
 const IMAGE_TOO_LARGE = "The image is too large.";
+/** `fileErrorText`'s `app.file_read`: a dropped file the webview could not read (D35). */
+const FILE_UNREADABLE = "The file could not be read.";
 
-/** A file read larger than `MAX_IMAGE_BYTES` (its size said less). */
-class TooLarge extends Error {}
+/** A dropped or pasted file's refusal, said as its message. */
+class Refused extends Error {}
 
-/** An image refusal (D9): the decoder's, the screen capture's, the file's (U-05). */
+/** An image refusal (D9): the decoder's, the screen capture's, the file's (U-05, D35). */
 export function imageError(e: unknown): string {
-  if (e instanceof TooLarge) return IMAGE_TOO_LARGE;
+  if (e instanceof Refused) return e.message;
   if (hasCode(e, "app.image_unreadable")) return "This image could not be read. Use a PNG, JPEG or BMP file.";
   if (hasCode(e, "app.no_qr_code")) return "No QR code was found in this image.";
   if (hasCode(e, "app.screen_capture_unavailable")) return SCREEN_UNAVAILABLE;
@@ -309,26 +312,21 @@ export class AddContactModel extends Model {
     return this.#image("reading", () => this.api.scanQrFile());
   }
 
-  /** A dropped or pasted image file (D9): one too large is refused unread (D35). */
+  /** A dropped or pasted image file (D9): one too large is refused unread, and its bytes are
+   * checked again once read (D35). */
   imageFile(file: Pick<Blob, "size" | "arrayBuffer">): Promise<void> {
-    if (file.size > MAX_IMAGE_BYTES) return this.#tooLarge();
+    if (file.size > MAX_IMAGE_BYTES) {
+      this.#begin();
+      this.#refuse("scan", IMAGE_TOO_LARGE);
+      return Promise.resolve();
+    }
     return this.#image("reading", async () => {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      if (bytes.length > MAX_IMAGE_BYTES) throw new TooLarge();
-      return this.api.scanQrImage(bytesToBase64(bytes));
+      const buffer = await file.arrayBuffer().catch(() => {
+        throw new Refused(FILE_UNREADABLE);
+      });
+      if (buffer.byteLength > MAX_IMAGE_BYTES) throw new Refused(IMAGE_TOO_LARGE);
+      return this.api.scanQrImage(bytesToBase64(new Uint8Array(buffer)));
     });
-  }
-
-  /** A dropped or pasted image's bytes (D9). */
-  imageBytes(bytes: Uint8Array): Promise<void> {
-    if (bytes.length > MAX_IMAGE_BYTES) return this.#tooLarge();
-    return this.#image("reading", () => this.api.scanQrImage(bytesToBase64(bytes)));
-  }
-
-  #tooLarge(): Promise<void> {
-    this.#begin();
-    this.#refuse("scan", IMAGE_TOO_LARGE);
-    return Promise.resolve();
   }
 
   /** Scan a Screen Region (D10); the user's cancel changes nothing. */

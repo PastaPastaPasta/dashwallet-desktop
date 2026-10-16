@@ -279,9 +279,9 @@ function useClaimClock(claim: Candidate["claim"]): number {
   const [now, setNow] = useState(() => backend.now().getTime());
   useEffect(() => {
     if (!claim) return;
-    const read = () => setNow(backend.now().getTime());
-    read();
-    return watchClaim(claim, () => backend.now().getTime(), read);
+    const read = () => backend.now().getTime();
+    setNow(read());
+    return watchClaim(claim, read, () => setNow(read()));
   }, [backend, claim]);
   return now;
 }
@@ -304,6 +304,7 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
   // Clearing the field hides the hits at once.
   const prefix = typed === null ? null : debounced;
   const search = useNetworkSearch(ctx.walletId, identity, prefix);
+  const readAt = search.dataUpdatedAt;
   const results = (): ReactNode => {
     if (prefix === null)
       return (
@@ -336,7 +337,7 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
       <ul className="tx-group-rows" aria-label="Usernames">
         {search.data.map((h) => {
           const displayName = h.displayName?.trim();
-          const relation = currentRelation({ ...h, readAt: search.dataUpdatedAt }, ctx.listed);
+          const relation = currentRelation({ ...h, readAt }, ctx.listed);
           return (
             <Row
               key={h.identity}
@@ -350,7 +351,7 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
                 </>
               }
               data-testid="add-contact-hit"
-              onClick={() => onPick(h, search.dataUpdatedAt)}
+              onClick={() => onPick(h, readAt)}
             />
           );
         })}
@@ -382,9 +383,7 @@ function ScanTab({ model }: { model: AddContactModel }) {
   const [typed, setTyped] = useState("");
   const scan = model.scan;
   const busy = scan.kind === "reading" || scan.kind === "capturing" || scan.kind === "verifying";
-  const take = async ({ file, text }: { file: File | null; text: string }) => {
-    await (file ? model.imageFile(file) : model.verifyText(text));
-  };
+  const take = ({ file, text }: { file: File | null; text: string }) => (file ? model.imageFile(file) : model.verifyText(text));
   const onDrop = (e: DragEvent) => {
     // The document's guard (D11) leaves a drop the area took alone.
     e.preventDefault();

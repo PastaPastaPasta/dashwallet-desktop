@@ -196,7 +196,8 @@ describe("an open claim (D36)", () => {
     vi.useFakeTimers();
     const start = 1_000_000_000_000;
     vi.setSystemTime(start);
-    const claim = { scan: "scan-1", expiresAt: start / 1000 + 30 * 60 };
+    // 30 min 10 s: the margin (29 min 10 s in) falls between two ticks.
+    const claim = { scan: "scan-1", expiresAt: start / 1000 + 30 * 60 + 10 };
     const send = { text: null, next: "send" as const };
     // What the card renders on each tick.
     const shown: (string | null)[] = [];
@@ -206,10 +207,10 @@ describe("an open claim (D36)", () => {
     expect(shown).toEqual(["This code asks them to accept you automatically. They confirm it when your request arrives. It expires in 30 min."]);
     vi.advanceTimersByTime(15 * 60_000 - CLAIM_TICK_MS);
     expect(shown.at(-1)).toMatch(/expires in 15 min\.$/);
-    // The margin (29 min in) falls between ticks: the 28.5 min tick still offers Send, and the card
-    // hears the expiry at once, not at the next tick.
-    vi.advanceTimersByTime(14 * 60_000 - 1);
-    expect(shown.at(-1)).toMatch(/expires in 2 min\.$/);
+    // The 29 min tick still offers Send; the card hears the expiry the moment it comes, not at the
+    // next tick (29 min 30 s).
+    vi.advanceTimersByTime(14 * 60_000 + 10_000 - 1);
+    expect(shown.at(-1)).toMatch(/expires in 1 min\.$/);
     vi.advanceTimersByTime(1);
     expect(shown.at(-1)).toBe(SCAN_EXPIRED);
     // Nothing changes after that: the timer is done.
@@ -278,7 +279,7 @@ describe("AddContactModel", () => {
       return info();
     });
     const { api, model } = setup({ scanQrImage: vi.fn(async () => ["dash:XpayRequest", LINK, "dashpay://user?id=other"]), dashpayVerifyScanned: verify });
-    await model.imageBytes(new TextEncoder().encode("img"));
+    await model.imageFile(new File(["img"], "qr.png"));
     expect(api.scanQrImage).toHaveBeenCalledWith("aW1n");
     expect(verify.mock.calls.map((c) => c[1])).toEqual(["dash:XpayRequest", LINK]);
     expect(model.candidate?.source).toBe("scan");
@@ -286,18 +287,20 @@ describe("AddContactModel", () => {
 
   it("D35 refuses a file too large before reading it, and a read that turns out too large", async () => {
     const { api, model } = setup();
+    const tooLarge = { kind: "failed", source: "scan", text: "The image is too large.", retry: false };
     const arrayBuffer = vi.fn(() => Promise.reject(new Error("read a huge file")));
     await model.imageFile({ size: MAX_IMAGE_BYTES + 1, arrayBuffer });
     expect(arrayBuffer).not.toHaveBeenCalled();
-    expect(model.scan).toEqual({ kind: "failed", source: "scan", text: "The image is too large.", retry: false });
+    expect(model.scan).toEqual(tooLarge);
     // Its size said less than it holds: the bytes are checked too, nothing crosses IPC.
     await model.imageFile({ size: 3, arrayBuffer: async () => new ArrayBuffer(MAX_IMAGE_BYTES + 1) });
-    expect(model.scan).toEqual({ kind: "failed", source: "scan", text: "The image is too large.", retry: false });
-    await model.imageBytes(new Uint8Array(MAX_IMAGE_BYTES + 1));
-    expect(model.scan).toMatchObject({ kind: "failed", text: "The image is too large." });
+    expect(model.scan).toEqual(tooLarge);
     expect(api.scanQrImage).not.toHaveBeenCalled();
+    // A read the webview refuses (a folder, a file gone) is the file's refusal.
+    await model.imageFile({ size: 3, arrayBuffer: () => Promise.reject(new DOMException("gone", "NotReadableError")) });
+    expect(model.scan).toEqual({ kind: "failed", source: "scan", text: "The file could not be read.", retry: false });
     // At the limit the file is read and decoded.
-    await model.imageFile({ size: 3, arrayBuffer: async () => new TextEncoder().encode("img").buffer as ArrayBuffer });
+    await model.imageFile({ size: MAX_IMAGE_BYTES, arrayBuffer: async () => new TextEncoder().encode("img").buffer as ArrayBuffer });
     expect(api.scanQrImage).toHaveBeenCalledWith("aW1n");
     expect(model.candidate?.source).toBe("scan");
   });
