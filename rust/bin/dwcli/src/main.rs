@@ -4,6 +4,7 @@
 mod coinjoin;
 mod compat;
 mod dashpay;
+mod masternodes;
 mod pay;
 mod teardown;
 #[cfg(test)]
@@ -158,6 +159,8 @@ enum Command {
     CoinJoin(coinjoin::CoinJoinCommand),
     #[command(flatten)]
     DashPay(dashpay::DashPayCommand),
+    /// Masternodes (MG-03): one JSON line per command.
+    Mn(masternodes::MnArgs),
 }
 
 fn parse_network(s: &str) -> Result<DashNetwork, String> {
@@ -515,6 +518,11 @@ fn run(cli: Cli) -> Result<(), String> {
                 unlock_if_needed(&engine, &session, passphrase.as_ref())?;
             }
             let result = coinjoin::run(&engine, &session, passphrase.as_ref(), cmd);
+            return finish(engine, &session, passphrase, result);
+        }
+        Command::Mn(args) => {
+            unlock_if_needed(&engine, &session, passphrase.as_ref())?;
+            let result = masternodes::run(&engine, &session, args);
             return finish(engine, &session, passphrase, result);
         }
         Command::DashPay(cmd) => {
