@@ -17,6 +17,7 @@ import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
 import { ContactsPage, PayPage, Placeholder } from "../screens/Routes";
 import { JoinDashPayPage } from "../screens/dashpay/JoinDashPay";
+import { MyProfilePage } from "../screens/dashpay/MyProfile";
 import { NotificationsPage, NotificationsPopover } from "../screens/notifications/Notifications";
 import { ToolsPage } from "../screens/tools/ToolsPage";
 import { SettingsPage } from "../screens/settings/SettingsPage";
@@ -160,7 +161,7 @@ function Shell() {
   };
 
   let content;
-  if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts" || route === "notifications" || route === "joinDashPay") {
+  if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts" || route === "notifications" || route === "joinDashPay" || route === "profile") {
     if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
     else if (wallets.isError)
       content = (
@@ -186,6 +187,7 @@ function Shell() {
     else if (route === "contacts") content = <ContactsPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "notifications") content = <NotificationsPage key={wallet.walletId} walletId={wallet.walletId} />;
     else if (route === "joinDashPay") content = <JoinDashPayPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
+    else if (route === "profile") content = <MyProfilePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
   } else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} />;
   else if (route === "settings") content = <SettingsPage />;

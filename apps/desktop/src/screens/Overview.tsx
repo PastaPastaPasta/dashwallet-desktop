@@ -8,16 +8,17 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
-import { useBalance, useHistory, useSyncStatus, type HistoryFilter } from "../api/queries";
+import { useBackend, useBalance, useHistory, useSyncStatus, type HistoryFilter } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
 import { useContactsOwner } from "../contacts/queries";
 import { useStatusInputs } from "../dashpay/queries";
-import { homeCard } from "../dashpay/status";
+import { homeCard, type CardActionKind } from "../dashpay/status";
 import { useDisplay } from "../format/display";
 import { isSyncing, syncPercent } from "../format/sync";
 import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
+import { buyCredits } from "./dashpay/MyProfile";
 import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
 
@@ -127,9 +128,12 @@ function ShortcutCard() {
 
 /** DP1-08: the DashPay status card (D13), none in the steady state (D2). */
 function HomeDashPayCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const b = useBackend();
   const { inputs, retry } = useStatusInputs(walletId, network);
   const card = homeCard(inputs);
-  return card && <DashPayCard card={card} onAction={(kind) => defaultCardAction(kind, retry)} />;
+  // DP1-10 D8: "Buy credits" opens My Profile with the top-up sheet.
+  const onAction = (kind: CardActionKind) => (kind === "buyCredits" && inputs.main ? buyCredits(b, walletId, inputs.main.identity) : defaultCardAction(kind, retry));
+  return card && <DashPayCard card={card} onAction={onAction} />;
 }
 
 /** DP3-07 D7: the main identity's frequent contacts (DP3-06's strip); a pick opens Pay ▸ To a

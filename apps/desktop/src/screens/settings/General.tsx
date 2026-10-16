@@ -15,6 +15,7 @@ import { Sheet } from "../../components/sheet";
 import { failureText } from "../../onboarding/model";
 import { DEFAULT_DUST, DIGIT_CHOICES, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
 import { savePrefs, settledPending } from "../../settings/prefs";
+import { SettingsDashPayCard } from "../dashpay/MyProfile";
 import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
 
 const THEMES: { theme: ThemeName | null; label: string; id: string }[] = [
@@ -130,6 +131,7 @@ export function GeneralTab() {
       </SettingsCard>
       <DustCard />
       <NetworkCard />
+      <SettingsDashPayCard />
       <SettingsCard title="Coming later" testId="settings-not-yet">
         <NotYetRow testId="settings-language" title="User interface language" why="Dash Wallet is in English only until the translations (MP-14)." />
         <NotYetRow testId="settings-currency" title="Local currency" why="exchange rates come with MP-01." />

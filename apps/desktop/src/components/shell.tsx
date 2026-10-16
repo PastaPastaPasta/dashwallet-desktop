@@ -173,7 +173,8 @@ function IdentityChip({ chip }: { chip: ChipState }) {
   if (chip === null) return null;
   if (chip.kind !== "identity") {
     return (
-      <button type="button" className="identity-chip" data-testid="toolbar-chip" onClick={() => navigate("joinDashPay")}>
+      // A contested name's identity has My Profile (DP1-10 D21); the others join or register.
+      <button type="button" className="identity-chip" data-testid="toolbar-chip" onClick={() => navigate(chip.kind === "contest" ? "profile" : "joinDashPay")}>
         {chipText(chip)}
       </button>
     );
