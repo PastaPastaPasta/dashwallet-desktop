@@ -39,7 +39,7 @@ describe("while the wipe sheet is open", () => {
 });
 
 // The page a link or a menu opens takes the focus one frame later, unless the user moved it
-// meanwhile (BL-165).
+// with a key or a pointer meanwhile (BL-165).
 describe("focus after a link or a menu opens a page", () => {
   /** A document whose page has an `h1`, the frames asked for (run by hand), and its key and
    * pointer listeners (fired by hand). */
@@ -91,6 +91,16 @@ describe("focus after a link or a menu opens a page", () => {
       expect(listening()).toBe(false);
     });
   }
+
+  it("goes to the heading after a key that moved no focus (a modifier over a sheet's opener)", () => {
+    const { doc, heading, nextFrame, fire } = shell();
+    doc.activeElement = { name: "open-uri-input" };
+    applyLink({ kind: "invitation" });
+    doc.activeElement = { name: "sidebar-pay" };
+    fire("keydown");
+    nextFrame();
+    expect(doc.activeElement).toBe(heading);
+  });
 
   it("goes to the heading after a key that left focus on the body", () => {
     const { doc, heading, nextFrame, fire } = shell();

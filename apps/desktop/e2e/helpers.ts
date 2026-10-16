@@ -69,23 +69,28 @@ export async function authorize(page: Page, passphrase = "demo") {
 }
 
 /** Frames that come late, on demand: once `late(true)` runs, each `requestAnimationFrame`
- * callback waits `ms` first, as WebKit's frames do under load (BL-165); `settled()` waits until
- * none is pending. Install before the page loads. */
+ * callback waits `ms` first, as WebKit's frames do under load (BL-165). `settled()` switches it
+ * off and waits until none is pending (a late frame may ask for another: that one is not late);
+ * `window.__lateRan` counts the late callbacks run so far. Install before the page loads. */
 export async function lateFrames(page: Page, ms = 500) {
   await page.addInitScript((ms) => {
-    const w = window as unknown as { __late: boolean; __latePending: number };
+    const w = window as unknown as { __late: boolean; __latePending: number; __lateRan: number };
     const raf = window.requestAnimationFrame.bind(window);
     w.__late = false;
     w.__latePending = 0;
+    w.__lateRan = 0;
     window.requestAnimationFrame = (f) => {
       if (!w.__late) return raf(f);
       w.__latePending += 1;
-      window.setTimeout(() => raf((t) => (w.__latePending -= 1, f(t))), ms);
+      window.setTimeout(() => raf((t) => (w.__latePending -= 1, (w.__lateRan += 1), f(t))), ms);
       return 0;
     };
   }, ms);
   return {
     late: (on: boolean) => page.evaluate((on) => void ((window as unknown as { __late: boolean }).__late = on), on),
-    settled: () => expect.poll(() => page.evaluate(() => (window as unknown as { __latePending: number }).__latePending)).toBe(0),
+    settled: async () => {
+      await page.evaluate(() => void ((window as unknown as { __late: boolean }).__late = false));
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __latePending: number }).__latePending)).toBe(0);
+    },
   };
 }

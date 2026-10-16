@@ -235,21 +235,29 @@ test("a route command focuses its page even when the closing dialog gives focus 
 });
 
 test("a key pressed before a page's late landing frame keeps the focus it moved (BL-165)", async ({ page }) => {
-  const frames = await lateFrames(page);
+  const frames = await lateFrames(page, 1500);
   await open(page, "funded");
   await frames.late(true);
   // No key: the late frame still lands focus on the page's title.
   await command(page, { kind: "navigate", route: "activity" });
   await frames.settled();
   await expect(page.getByTestId("page-activity").locator("h1")).toBeFocused();
-  // A key before the frame: the focus it moved stays.
-  await command(page, { kind: "navigate", route: "receive" });
+  // A key before the frame: the focus it moved stays. The command and the count of late frames
+  // run so far are read together, and the count must not move until Tab's focus is read: else
+  // the page's frame came before Tab and the test proves nothing.
+  await frames.late(true);
+  const ran = await page.evaluate(async (c) => {
+    await window.__dwFixture!.shellCommand(c);
+    return (window as unknown as { __lateRan: number }).__lateRan;
+  }, { kind: "navigate", route: "receive" } as ShellCommand);
   await page.keyboard.press("Tab");
-  const moved = await page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? document.activeElement?.tagName);
+  const focused = () => page.evaluate(() => [document.activeElement?.getAttribute("data-testid") ?? document.activeElement?.tagName, (window as unknown as { __lateRan: number }).__lateRan] as const);
+  const [moved, ranAtTab] = await focused();
+  expect(ranAtTab).toBe(ran);
   expect(moved).not.toBe("BODY");
   await frames.settled();
   await expect(page.getByTestId("page-receive").locator("h1")).not.toBeFocused();
-  expect(await page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? document.activeElement?.tagName)).toBe(moved);
+  expect((await focused())[0]).toBe(moved);
 });
 
 test("in a browser the menus' shortcuts work from the keyboard", async ({ page }) => {
