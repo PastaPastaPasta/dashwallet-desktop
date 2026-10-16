@@ -3,6 +3,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { FeePolicy } from "../api/generated/FeePolicy";
+import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RescanStart } from "../api/generated/RescanStart";
 import type { RescanStatus } from "../api/generated/RescanStatus";
@@ -28,6 +29,16 @@ const reg = (draft: string, waiting: RegistrationStatus["waiting"]): Registratio
   createdAt: 0,
   updatedAt: 0,
 });
+
+const QUOTE: RegistrationQuote = {
+  contested: false,
+  lockDuffs: 3_000_000,
+  feeDuffs: 2_260,
+  totalDuffs: 3_002_260,
+  remainingCredits: "1000000000",
+  availableDuffs: 10e8,
+  grant: { maxDuffs: 3_002_260, maxCredits: "2000000000" },
+};
 
 function setup(lock = {}) {
   const calls: string[] = [];
@@ -59,6 +70,11 @@ function setup(lock = {}) {
       return { txid: "ab".repeat(32) };
     }),
     feePolicy: vi.fn(async () => ({ maxTxFee: 10_000_000 }) as FeePolicy),
+    registrationQuote: vi.fn(async () => QUOTE),
+    finishAssetLocks: vi.fn(async (walletId: string, grant: string) => {
+      calls.push(`finish ${walletId.slice(0, 2)} ${grant}`);
+      return { resumed: 2, completed: 1, stillPending: 1 };
+    }),
   };
   const grants = new GrantModel(vault.api);
   return { model: new RepairModel(api, grants, WALLET_A), api, calls, vault, grants };
@@ -211,5 +227,13 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     await running;
     expect(calls).toEqual([]);
     expect(model.state).toEqual({ kind: "idle" });
+  });
+
+  it("DP109_D10: Finish transfers asks for a platformOp grant of one duff and the quote's credits, and reports", async () => {
+    const { model, calls, vault } = setup({ encrypted: false });
+    await model.finishTransfers();
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 1, maxCredits: "2000000000" }, walletId: WALLET_A });
+    expect(calls).toEqual(["finish a1 grant-1"]);
+    expect(model.state).toEqual({ kind: "done", text: "2 resumed, 1 completed, 1 still pending." });
   });
 });

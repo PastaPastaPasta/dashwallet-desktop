@@ -1,18 +1,23 @@
 // Join DashPay (DASHPAY §4 `JoinDashPayViewModel`, F1; DP1-08): the intro (iOS
 // `JoinDashPayScreen`), the readiness under it by status (J1–J7), the voting info and the FAQ.
-// Create username leads to the registration wizard, DP1-09's: a placeholder until then (D7).
+// Create username opens the registration wizard (DP1-09, Registration.tsx); while a registration
+// goes on, or this session's has a result to show, the page is its screen instead (D1, D12).
 // Routes.tsx re-exports the other pages; this one is imported directly, as it uses Routes' `Page`.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useBalance } from "../../api/queries";
+import { useBackend } from "../../api/queries";
 import { useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
-import { useStatusInputs, useUsernameCost } from "../../dashpay/queries";
+import { useRegistrations, useStatusInputs, useUsernameQuote } from "../../dashpay/queries";
+import { namedModel, screenModel, type ScreenActionKind } from "../../dashpay/registration";
 import { JOIN_COPY, joinModel, type CardActionKind } from "../../dashpay/status";
-import { NotYet, Page } from "../Routes";
+import { wizardFor } from "../../dashpay/wizard";
+import { useModel } from "../../onboarding/model";
+import { Page } from "../Routes";
 import { DashPayFaqSheet, VotingInfoSheet } from "./AboutDashPay";
 import { DashPayCard, defaultCardAction } from "./DashPayCard";
+import { leaveAction, RegistrationScreen, WizardSteps } from "./Registration";
 
 function Intro() {
   return (
@@ -33,25 +38,62 @@ function Intro() {
 
 export function JoinDashPayPage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const invitation = useUi((s) => s.invitation);
+  const b = useBackend();
+  const wiz = useModel(wizardFor(b, walletId));
   const { inputs, retry } = useStatusInputs(walletId, network);
-  const joining = inputs.status?.kind === "noIdentity" && inputs.status.reason !== "watchOnly";
-  const cost = useUsernameCost(walletId, joining);
-  const balance = useBalance(walletId);
-  const model = joinModel(inputs, cost, balance.data?.total ?? null);
-  const [wizard, setWizard] = useState(false);
+  const { status } = inputs;
+  const joining = status?.kind === "noIdentity" && status.reason !== "watchOnly";
+  const quote = useUsernameQuote(walletId, joining);
+  const model = joinModel(inputs, quote?.totalDuffs ?? null, quote?.availableDuffs ?? null);
   const [sheet, setSheet] = useState<"voting" | "faq" | null>(null);
+  // The row shown: this session's (until Done), else the one the status says goes on (D12).
+  const draft = wiz.draft ?? (status?.kind === "registering" ? status.draft : null);
+  const rows = useRegistrations(walletId, draft !== null);
+  const row = draft === null ? undefined : rows.data?.find((r) => r.draft === draft);
+  const shown = row?.draft;
+  useEffect(() => {
+    if (shown !== undefined) wiz.adopt(shown);
+  }, [wiz, shown]);
 
-  const onAction = (kind: CardActionKind) => (kind === "continue" || kind === "chooseName" ? setWizard(true) : defaultCardAction(kind, retry));
+  const onAction = (kind: CardActionKind) => {
+    if (kind === "chooseName" && inputs.main) return wiz.begin({ kind: "credits", identity: inputs.main.identity });
+    return defaultCardAction(kind, retry);
+  };
+  const onScreenAction = (kind: ScreenActionKind) => {
+    if (leaveAction(kind)) return;
+    switch (kind) {
+      case "continue":
+        return void (row && wiz.resume(row));
+      case "finish":
+        return void wiz.finish();
+      case "another":
+        return void wiz.another(row ?? null);
+      case "done":
+        return wiz.close();
+    }
+  };
 
-  if (wizard)
+  if (wiz.step !== null)
     return (
       <Page route="joinDashPay">
-        <NotYet testId="placeholder-registration">{JOIN_COPY.wizard}</NotYet>
-        <DashButton variant="plainBlue" data-testid="join-wizard-back" onClick={() => setWizard(false)}>
-          {JOIN_COPY.back}
-        </DashButton>
+        <WizardSteps wiz={wiz} walletId={walletId} inputs={inputs} />
       </Page>
     );
+  if (wiz.named)
+    return (
+      <Page route="joinDashPay">
+        <RegistrationScreen wiz={wiz} model={namedModel(wiz.named.label, wiz.named.result, inputs.date)} onAction={onScreenAction} inputs={inputs} />
+      </Page>
+    );
+  if (row) {
+    const contest = status?.kind === "contestPending" && status.label === row.label ? status : null;
+    const screen = screenModel(row, { contestPending: contest !== null, contestEndsAt: contest?.endsAt ?? null, date: inputs.date, amount: inputs.amount, discreet: inputs.discreet });
+    return (
+      <Page route="joinDashPay">
+        <RegistrationScreen wiz={wiz} model={screen} phase={row.phase} waiting={row.waiting} onAction={onScreenAction} inputs={inputs} />
+      </Page>
+    );
+  }
 
   return (
     <Page route="joinDashPay">
@@ -74,7 +116,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
               </p>
             )}
             <div className="join-actions">
-              <DashButton variant="filledBlue" data-testid="join-create" disabled={model.waiting} onClick={() => setWizard(true)}>
+              <DashButton variant="filledBlue" data-testid="join-create" disabled={model.waiting} onClick={() => wiz.begin({ kind: "core" })}>
                 {JOIN_COPY.create}
               </DashButton>
               {model.waiting && inputs.status && (
