@@ -224,6 +224,16 @@ test("a route command closes an open dialog and focuses its page", async ({ page
   await expect(page.getByTestId("page-tools").locator("h1")).toBeFocused();
 });
 
+test("a route command focuses its page even when the closing dialog gives focus back to its opener (BL-165)", async ({ page }) => {
+  await open(page, "funded");
+  await page.getByTestId("sidebar-receive").focus();
+  await command(page, { kind: "about" });
+  await expect(page.getByTestId("about")).toBeVisible();
+  await command(page, { kind: "navigate", route: "activity" });
+  await expect(page.getByTestId("about")).toHaveCount(0);
+  await expect(page.getByTestId("page-activity").locator("h1")).toBeFocused();
+});
+
 test("in a browser the menus' shortcuts work from the keyboard", async ({ page }) => {
   await open(page, "funded");
   await page.keyboard.press("Control+5");

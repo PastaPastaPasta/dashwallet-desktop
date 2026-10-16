@@ -64,13 +64,18 @@ export function traceName(route: LinkRoute): string {
 
 /** Moves focus to the page a link or a menu opened (its title, else the page), so keyboard and
  * screen reader users land on it. Sidebar clicks keep their focus. The move waits a frame for
- * the page, and a frame can come late: focus moved meanwhile, by the user or the page, stays
- * (BL-165). */
+ * the page, and a frame can come late: if the user pressed a key or a pointer meanwhile, the focus
+ * they moved stays (BL-165). A closing sheet's return to its opener is not theirs: it yields. */
 function focusPage() {
-  const before = document.activeElement;
+  let acted = false;
+  const act = () => void (acted = true);
+  document.addEventListener("keydown", act, true);
+  document.addEventListener("pointerdown", act, true);
   requestAnimationFrame(() => {
+    document.removeEventListener("keydown", act, true);
+    document.removeEventListener("pointerdown", act, true);
     const active = document.activeElement;
-    if (active && active !== before && active !== document.body) return;
+    if (acted && active && active !== document.body) return;
     const page = document.querySelector<HTMLElement>(".app-body > main");
     const target = page?.querySelector<HTMLElement>("h1") ?? page;
     if (!target) return;

@@ -14,7 +14,7 @@ afterEach(() => {
 describe("while the wipe sheet is open", () => {
   it("IOS109_aMenuCommandLeavesThePageInPlace", () => {
     vi.stubGlobal("requestAnimationFrame", () => 0);
-    vi.stubGlobal("document", { activeElement: null });
+    vi.stubGlobal("document", { activeElement: null, addEventListener: () => undefined, removeEventListener: () => undefined });
     ui.set({ route: "settings", wiping: true });
     const lock = vi.fn();
     runCommand({ kind: "navigate", route: "pay" }, lock);
@@ -38,21 +38,28 @@ describe("while the wipe sheet is open", () => {
   });
 });
 
-// The page a link or a menu opens takes the focus one frame later, unless it moved meanwhile (BL-165).
+// The page a link or a menu opens takes the focus one frame later, unless the user moved it
+// meanwhile (BL-165).
 describe("focus after a link or a menu opens a page", () => {
-  /** A document whose page has an `h1`, and the frames asked for, run by hand. */
+  /** A document whose page has an `h1`, the frames asked for (run by hand), and its key and
+   * pointer listeners (fired by hand). */
   function shell() {
     const frames: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (f: FrameRequestCallback) => frames.push(f));
-    const doc: { activeElement: unknown; body: unknown; querySelector: () => unknown } = { activeElement: null, body: null, querySelector: () => null };
+    const listeners = new Map<string, Set<() => void>>();
     const body = { name: "body" };
+    const doc = {
+      body,
+      activeElement: body as unknown,
+      querySelector: () => ({ querySelector: () => heading }),
+      addEventListener: (type: string, f: () => void) => void (listeners.get(type) ?? listeners.set(type, new Set()).get(type)!).add(f),
+      removeEventListener: (type: string, f: () => void) => void listeners.get(type)?.delete(f),
+    };
     const heading = { name: "h1", hasAttribute: () => true, focus: () => void (doc.activeElement = heading) };
-    doc.body = body;
-    doc.activeElement = body;
-    doc.querySelector = () => ({ querySelector: () => heading });
     vi.stubGlobal("document", doc);
     const nextFrame = () => frames.splice(0).forEach((f) => f(0));
-    return { doc, heading, nextFrame };
+    const fire = (type: string) => listeners.get(type)?.forEach((f) => f());
+    return { doc, heading, nextFrame, fire, listening: () => [...listeners.values()].some((l) => l.size > 0) };
   }
 
   it("goes to the page's heading when focus is on the body", () => {
@@ -62,21 +69,34 @@ describe("focus after a link or a menu opens a page", () => {
     expect(doc.activeElement).toBe(heading);
   });
 
-  it("goes to the heading when focus is still where it was", () => {
-    const { doc, heading, nextFrame } = shell();
-    const toolbar = { name: "toolbar" };
-    doc.activeElement = toolbar;
+  it("goes to the heading when a closing sheet gave focus back to its opener", () => {
+    const { doc, heading, nextFrame, listening } = shell();
+    doc.activeElement = { name: "open-uri-input" };
     applyLink({ kind: "invitation" });
+    doc.activeElement = { name: "sidebar-pay" };
     nextFrame();
     expect(doc.activeElement).toBe(heading);
+    expect(listening()).toBe(false);
   });
 
-  it("leaves focus the user moved before the frame came", () => {
-    const { doc, nextFrame } = shell();
+  for (const input of ["keydown", "pointerdown"]) {
+    it(`leaves focus the user moved with a ${input} before the frame came`, () => {
+      const { doc, nextFrame, fire, listening } = shell();
+      runCommand({ kind: "navigate", route: "notifications" }, () => undefined);
+      fire(input);
+      const row = { name: "row" };
+      doc.activeElement = row;
+      nextFrame();
+      expect(doc.activeElement).toBe(row);
+      expect(listening()).toBe(false);
+    });
+  }
+
+  it("goes to the heading after a key that left focus on the body", () => {
+    const { doc, heading, nextFrame, fire } = shell();
     runCommand({ kind: "navigate", route: "notifications" }, () => undefined);
-    const row = { name: "row" };
-    doc.activeElement = row;
+    fire("keydown");
     nextFrame();
-    expect(doc.activeElement).toBe(row);
+    expect(doc.activeElement).toBe(heading);
   });
 });
