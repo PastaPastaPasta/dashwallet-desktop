@@ -1,6 +1,6 @@
 // Overview (Home), UX-SPEC §4.5: hero band with the balance and breakdown strip, the shortcut
-// card straddling its edge, the frequent contacts (DP3-07), then the recent history in day-group
-// cards.
+// card straddling its edge, the DashPay and CoinJoin cards (DP1-08, U-06), the frequent contacts
+// (DP3-07), then the recent history in day-group cards.
 
 import { useEffect } from "react";
 import type { Balances } from "../api/generated/Balances";
@@ -17,6 +17,7 @@ import { useStatusInputs } from "../dashpay/queries";
 import { homeCard } from "../dashpay/status";
 import { useDisplay } from "../format/display";
 import { isSyncing, syncPercent } from "../format/sync";
+import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
 import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
@@ -174,6 +175,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
       </div>
       <div className="page-column">
         <HomeDashPayCard walletId={walletId} network={network} />
+        <CoinJoinCard walletId={walletId} network={network} />
         {/* Who the wallet pays most is payment history: discreet mode hides it too (D8). */}
         {!discreet && <HomeFrequent walletId={walletId} />}
         <div className="history-header" data-testid="history-header">

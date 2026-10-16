@@ -114,6 +114,12 @@ export class IpcBackend implements Backend {
   dustProtection = () => cmd.dustProtection();
   setDustProtection = cmd.setDustProtection;
   nodeInfo = () => cmd.nodeInfo();
+  coinjoinLimits = () => cmd.coinjoinLimits();
+  coinjoinSettings = () => cmd.coinjoinSettings();
+  setCoinjoinSettings = cmd.setCoinjoinSettings;
+  coinjoinStatus = cmd.coinjoinStatus;
+  startMixing = cmd.startMixing;
+  stopMixing = cmd.stopMixing;
   dashpayStatus = cmd.dashpayStatus;
   identities = cmd.identities;
   dashpayUnreadCount = cmd.dashpayUnreadCount;

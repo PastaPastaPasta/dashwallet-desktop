@@ -39,6 +39,9 @@ import type { AddressClass } from "./generated/AddressClass";
 import type { AddressInfo } from "./generated/AddressInfo";
 import type { BroadcastOutcome } from "./generated/BroadcastOutcome";
 import type { ChangePolicy } from "./generated/ChangePolicy";
+import type { CoinJoinLimits } from "./generated/CoinJoinLimits";
+import type { CoinJoinSettings } from "./generated/CoinJoinSettings";
+import type { CoinJoinStatus } from "./generated/CoinJoinStatus";
 import type { CoinSelectionSummary } from "./generated/CoinSelectionSummary";
 import type { CoinSource } from "./generated/CoinSource";
 import type { FeeMode } from "./generated/FeeMode";
@@ -226,6 +229,14 @@ export interface Backend {
   dustProtection(): Promise<number | null>;
   setDustProtection(threshold: number | null): Promise<null>;
   nodeInfo(): Promise<NodeSummary>;
+  // CoinJoin (U-06): the network's options, and mixing per wallet.
+  coinjoinLimits(): Promise<CoinJoinLimits>;
+  coinjoinSettings(): Promise<CoinJoinSettings>;
+  /** Applies them live and stores them for the network; `enabled: false` stops every wallet. */
+  setCoinjoinSettings(settings: CoinJoinSettings): Promise<null>;
+  coinjoinStatus(walletId: string): Promise<CoinJoinStatus>;
+  startMixing(walletId: string): Promise<null>;
+  stopMixing(walletId: string): Promise<null>;
   dashpayStatus(walletId: string): Promise<DashPayStatus>;
   identities(walletId: string): Promise<IdentitySummary[]>;
   dashpayUnreadCount(walletId: string, identity: string): Promise<number>;

@@ -57,6 +57,10 @@ export const keys = {
   dust: ["dust"] as const,
   nodeInfo: ["nodeInfo"] as const,
   paymentAuth: ["paymentAuth"] as const,
+  /** Every CoinJoin read (U-06): a settings write re-reads them all. */
+  coinjoinAll: ["coinjoin"] as const,
+  coinjoinStatus: (walletId: string) => ["coinjoin", "status", walletId] as const,
+  coinjoinSettings: ["coinjoin", "settings"] as const,
   /** Every DashPay read below: a `platform` or `dashPayNews` signal makes them all stale. */
   dashpayAll: ["dashpay"] as const,
   /** Every wallet's DashPay status: sync moves `noIdentity`'s `waitingForSync` (BL-153 D9). */
