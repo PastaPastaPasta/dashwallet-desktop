@@ -4,7 +4,6 @@
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type DragEvent, type ReactNode } from "react";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
-import type { UserHit } from "../../api/generated/UserHit";
 import { useBackend, useQrMatrix } from "../../api/queries";
 import { navigate, ui, type AddContactIntent, type ContactPrefill } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
@@ -29,6 +28,7 @@ import {
   type AddTab,
   type Candidate,
   type CardLine,
+  type HitFields,
   type Listed,
   watchClaim,
 } from "../../contacts/add";
@@ -79,9 +79,8 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
     setTab("search");
     const h = intent?.hit;
     if (!h) return model.clear();
-    const full = searchHits.data?.find((x) => x.identity === h.identity);
-    model.pick(full ?? { ...h, displayName: null, relation: "stranger", unverified: true }, full ? searchHits.dataUpdatedAt : 0);
-  }, [model, link, intent, searchHits.data, searchHits.dataUpdatedAt]);
+    model.pick(searchHits.data?.find((x) => x.identity === h.identity) ?? { ...h, displayName: null, relation: "stranger", unverified: true, readSeq: 0 });
+  }, [model, link, intent, searchHits.data]);
   // Leaving stops a screen capture still waiting.
   useEffect(() => () => model.cancelScreen(), [model]);
 
@@ -115,7 +114,7 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
       )}
       {identity !== null && (
         <Tabs label="Add a contact by" tabs={ADD_TABS} current={tab} onSelect={setTab} testId="add-contact-tabs">
-          {tab === "search" && <SearchTab ctx={ctx} identity={identity} query={intent?.query ?? ""} onPick={(h, readAt) => model.pick(h, readAt)} />}
+          {tab === "search" && <SearchTab ctx={ctx} identity={identity} query={intent?.query ?? ""} onPick={(h) => model.pick(h)} />}
           {tab === "scan" && <ScanTab model={model} />}
           {tab === "myQr" && <MyQrTab walletId={ctx.walletId} identity={identity} />}
         </Tabs>
@@ -295,7 +294,7 @@ function useOptionalModel<M extends ContactActions>(model: M | null): M | null {
 }
 
 /** Search (D3): every hit of the prefix, with how it relates to the identity. */
-function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity: string; query: string; onPick: (hit: UserHit, readAt: number) => void }) {
+function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity: string; query: string; onPick: (hit: HitFields) => void }) {
   const [text, setText] = useState(query);
   // Another intent's search text (Show more on another search).
   useEffect(() => setText(query), [query]);
@@ -304,7 +303,6 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
   // Clearing the field hides the hits at once.
   const prefix = typed === null ? null : debounced;
   const search = useNetworkSearch(ctx.walletId, identity, prefix);
-  const readAt = search.dataUpdatedAt;
   const results = (): ReactNode => {
     if (prefix === null)
       return (
@@ -337,7 +335,7 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
       <ul className="tx-group-rows" aria-label="Usernames">
         {search.data.map((h) => {
           const displayName = h.displayName?.trim();
-          const relation = currentRelation({ ...h, readAt }, ctx.listed);
+          const relation = currentRelation(h, ctx.listed);
           return (
             <Row
               key={h.identity}
@@ -351,7 +349,7 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
                 </>
               }
               data-testid="add-contact-hit"
-              onClick={() => onPick(h, readAt)}
+              onClick={() => onPick(h)}
             />
           );
         })}

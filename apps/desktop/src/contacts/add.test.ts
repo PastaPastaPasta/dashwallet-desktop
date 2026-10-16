@@ -82,40 +82,40 @@ describe("eligibility (D4, D13)", () => {
   });
 
   it("D14 goes by the contact list once it is read", () => {
-    const c = candidateOfHit({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false }, 100);
+    const c = candidateOfHit({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false, readSeq: 100 });
     expect(currentRelation(c, undefined)).toBe("stranger");
-    expect(currentRelation(c, { rows: [{ contact: GRACE, relation: "pendingOutgoing" }], at: 50 })).toBe("pendingOutgoing");
-    expect(currentRelation(c, { rows: [{ contact: GRACE, relation: "ignored" }], at: 50 })).toBe("ignored");
-    expect(currentRelation({ ...c, relation: "isSelf" }, { rows: [], at: 200 })).toBe("isSelf");
+    expect(currentRelation(c, { rows: [{ contact: GRACE, relation: "pendingOutgoing" }], seq: 50 })).toBe("pendingOutgoing");
+    expect(currentRelation(c, { rows: [{ contact: GRACE, relation: "ignored" }], seq: 50 })).toBe("ignored");
+    expect(currentRelation({ ...c, relation: "isSelf" }, { rows: [], seq: 200 })).toBe("isSelf");
   });
 
-  it("D34 an ignore sticks until a list read after it says otherwise", () => {
-    const ignored = candidateOfHit({ identity: GRACE, username: "grace", displayName: null, relation: "ignored", unverified: false }, 100);
-    const stale = (rows: { contact: string; relation: "pendingIncoming" }[], at: number) => ({ rows, at });
+  it("D34 D38 an ignore sticks until a list read begun after it says otherwise", () => {
+    const ignored = candidateOfHit({ identity: GRACE, username: "grace", displayName: null, relation: "ignored", unverified: false, readSeq: 100 });
+    const stale = (rows: { contact: string; relation: "pendingIncoming" }[], seq: number) => ({ rows, seq });
     const incoming = [{ contact: GRACE, relation: "pendingIncoming" as const }];
-    // A list read before (or with) the hit: still ignored, so the card answers at once, no Send.
-    for (const at of [0, 99, 100]) {
+    // A list read begun before the hit arrived: still ignored, so the card answers at once, no Send.
+    for (const seq of [0, 99, 100]) {
       for (const rows of [[], incoming]) {
-        const relation = currentRelation(ignored, stale(rows, at));
+        const relation = currentRelation(ignored, stale(rows, seq));
         expect(relation).toBe("ignored");
         expect(answersAtOnce(relation)).toBe(true);
         expect(cardLine(relation, { data: "ok", failed: false })?.next).toBe("showHidden");
       }
     }
-    // A list read after it: unignored (their request shows again) or gone.
+    // A list read begun after it: unignored (their request shows again) or gone.
     expect(currentRelation(ignored, stale(incoming, 101))).toBe("pendingIncoming");
     expect(currentRelation(ignored, stale([], 101))).toBe("stranger");
   });
 
   it("D14 an empty list a pass still holds says nothing: the candidate's relation stands", () => {
     const rows = [{ contact: GRACE, relation: "ignored" as const }];
-    const list = (contacts: typeof rows, updating: boolean) => ({ sections: [{ contacts }], updating });
-    expect(listedNow(undefined, 5)).toBeUndefined();
-    expect(listedNow(list([], true), 5)).toBeUndefined();
-    expect(listedNow(list([], false), 5)).toEqual({ rows: [], at: 5 });
-    expect(listedNow(list(rows, true), 5)).toEqual({ rows, at: 5 });
-    const c = candidateOfHit({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false }, 1);
-    expect(currentRelation(c, listedNow(list([], true), 5))).toBe("stranger");
+    const list = (contacts: typeof rows, updating: boolean) => ({ sections: [{ contacts }], updating, seq: 5 });
+    expect(listedNow(undefined)).toBeUndefined();
+    expect(listedNow(list([], true))).toBeUndefined();
+    expect(listedNow(list([], false))).toEqual({ rows: [], seq: 5 });
+    expect(listedNow(list(rows, true))).toEqual({ rows, seq: 5 });
+    const c = candidateOfHit({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false, readSeq: 1 });
+    expect(currentRelation(c, listedNow(list([], true)))).toBe("stranger");
   });
 
   it("names the candidate by display name, username, then id", () => {
@@ -236,7 +236,7 @@ describe("an open claim (D36)", () => {
 describe("AddContactModel", () => {
   it("IOS-073 a search hit is a candidate without verification", () => {
     const { api, model } = setup();
-    model.pick({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false }, 1);
+    model.pick({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false, readSeq: 1 });
     expect(model.candidate).toMatchObject({ identity: GRACE, source: "search", claim: null });
     expect(api.dashpayVerifyScanned).not.toHaveBeenCalled();
   });
@@ -323,7 +323,7 @@ describe("AddContactModel", () => {
         throw appError("app.no_qr_code");
       }),
     });
-    model.pick({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false }, 1);
+    model.pick({ identity: GRACE, username: "grace", displayName: null, relation: "stranger", unverified: false, readSeq: 1 });
     await model.openImage();
     expect(model.scan).toEqual({ kind: "idle" });
     expect(model.candidate?.identity).toBe(GRACE);

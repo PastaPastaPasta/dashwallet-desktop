@@ -36,21 +36,26 @@ export interface Candidate {
   /** The auto-accept claim the request answers (D7); its id is no secret. */
   claim: { scan: string; expiresAt: number } | null;
   source: CandidateSource;
-  /** When `relation` was read, on the renderer's `Date.now()` clock (TanStack's `dataUpdatedAt`'s),
-   * for `currentRelation`. */
-  readAt: number;
+  /** The `nextRead` number taken when `relation` arrived, for `currentRelation` (D38). */
+  readSeq: number;
 }
 
-/** A search hit's fields the card reads. */
-export type HitFields = Pick<UserHit, "identity" | "username" | "displayName" | "relation" | "unverified">;
+/** The renderer's read order (D38): a contact-list read takes the next number when it begins, a
+ * search hit or a verified code when its relation arrives. Unlike the wall clock and TanStack's
+ * `dataUpdatedAt` (when an answer lands), a later number is a later read. */
+let reads = 0;
+export const nextRead = () => ++reads;
 
-export function candidateOfHit(hit: HitFields, readAt: number): Candidate {
-  return { ...hitFields(hit), claim: null, source: "search", readAt };
+/** A search hit's fields the card reads, with its `nextRead` number (`networkSearchQuery`). */
+export type HitFields = Pick<UserHit, "identity" | "username" | "displayName" | "relation" | "unverified"> & { readSeq: number };
+
+export function candidateOfHit(hit: HitFields): Candidate {
+  return { ...hitFields(hit), claim: null, source: "search", readSeq: hit.readSeq };
 }
 
-export function candidateOfScan(info: ScannedContactInfo, source: CandidateSource, readAt: number): Candidate {
+export function candidateOfScan(info: ScannedContactInfo, source: CandidateSource, readSeq: number): Candidate {
   const claim = info.code.kind === "autoAcceptClaim" ? { scan: info.code.scan, expiresAt: info.code.expiresAt } : null;
-  return { ...hitFields(info), claim, source, readAt };
+  return { ...hitFields(info), claim, source, readSeq };
 }
 
 const hitFields = (h: Pick<UserHit, "identity" | "displayName" | "relation" | "unverified"> & { username: string | null }) => ({
@@ -66,29 +71,30 @@ export function candidateName(c: Pick<Candidate, "displayName" | "username" | "i
   return c.displayName || (c.username ? `@${c.username}` : c.identity);
 }
 
-/** The identity's unfiltered contact list (D14): its rows and when they were read (`dataUpdatedAt`). */
+/** The identity's unfiltered contact list (D14): its rows and the `nextRead` number its read took
+ * when it began. */
 export interface Listed<R = { contact: string; relation: UserRelation }> {
   rows: R[];
-  at: number;
+  seq: number;
 }
 
 /** The relation the card goes by (D14): the one the identity's unfiltered contact list holds once
  * it is read (a request may have come or gone since the hit or the scan), else the candidate's.
- * An ignore sticks (D34): the engine's eligibility takes an ignored sender for a stranger, so
- * only a list read after the candidate's relation may say they are no longer ignored. `listed` is
- * `undefined` until read (`listedNow`). */
-export function currentRelation(c: Pick<Candidate, "identity" | "relation" | "readAt">, listed: Listed | undefined): UserRelation {
+ * An ignore sticks (D34, D38): the engine's eligibility takes an ignored sender for a stranger, so
+ * only a list read begun after the candidate's relation arrived may say they are no longer
+ * ignored. `listed` is `undefined` until read (`listedNow`). */
+export function currentRelation(c: Pick<Candidate, "identity" | "relation" | "readSeq">, listed: Listed | undefined): UserRelation {
   if (listed === undefined || c.relation === "isSelf") return c.relation;
-  if (c.relation === "ignored" && listed.at <= c.readAt) return "ignored";
+  if (c.relation === "ignored" && listed.seq <= c.readSeq) return "ignored";
   return listed.rows.find((l) => l.contact === c.identity)?.relation ?? "stranger";
 }
 
-/** The contact list for `currentRelation`, read at `at`; `undefined` while a pass holds a list with
- * no rows yet (an empty snapshot says nothing about who relates how). */
-export function listedNow<R>(list: { sections: { contacts: R[] }[]; updating: boolean } | undefined, at: number): Listed<R> | undefined {
+/** The contact list for `currentRelation` (`contactListQuery`'s answer); `undefined` while a pass
+ * holds a list with no rows yet (an empty snapshot says nothing about who relates how). */
+export function listedNow<R>(list: { sections: { contacts: R[] }[]; updating: boolean; seq: number } | undefined): Listed<R> | undefined {
   if (!list) return undefined;
   const rows = list.sections.flatMap((s) => s.contacts);
-  return list.updating && !rows.length ? undefined : { rows, at };
+  return list.updating && !rows.length ? undefined : { rows, seq: list.seq };
 }
 
 /** What the card offers next (D4, D13). */
@@ -282,10 +288,10 @@ export class AddContactModel extends Model {
     super();
   }
 
-  /** A search hit read at `readAt`: Platform's answer already, nothing to verify. */
-  pick(hit: HitFields, readAt: number) {
+  /** A search hit: Platform's answer already, nothing to verify. */
+  pick(hit: HitFields) {
     this.#begin();
-    this.candidate = candidateOfHit(hit, readAt);
+    this.candidate = candidateOfHit(hit);
     this.changed();
   }
 
@@ -404,7 +410,7 @@ export class AddContactModel extends Model {
       try {
         const info = await this.api.dashpayVerifyScanned(this.walletId, texts[i]);
         if (seq !== this.#seq) return;
-        this.candidate = candidateOfScan(info, source, Date.now());
+        this.candidate = candidateOfScan(info, source, nextRead());
         this.scan = { kind: "idle" };
         this.changed();
         return;

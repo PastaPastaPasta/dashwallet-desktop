@@ -302,7 +302,7 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
             (prefill || add) && (
               <AddContact
                 key={walletId}
-                ctx={{ walletId, owner: { kind: "identity", identity }, actions, listed: listedNow(all.data, all.dataUpdatedAt) }}
+                ctx={{ walletId, owner: { kind: "identity", identity }, actions, listed: listedNow(all.data) }}
                 intent={add}
                 link={prefill}
               />

@@ -5,12 +5,14 @@
 // repeat a DAPI query.
 
 import { useEffect, useMemo } from "react";
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { ActivityFilterName } from "../api/generated/ActivityFilterName";
 import type { ContactSortName } from "../api/generated/ContactSortName";
+import type { Backend } from "../api/backend";
 import { keys, useBackend } from "../api/queries";
 import { GrantModel } from "../tools/grant";
 import { ContactActions, type Refresh } from "./actions";
+import { nextRead } from "./add";
 import { contactsOwner, NETWORK_LIMIT, type ContactsOwner } from "./model";
 import { enableBanner, type EnableBanner } from "./pane";
 
@@ -23,13 +25,23 @@ export function useContactsOwner(walletId: string): { owner: ContactsOwner; retr
   return { owner, retry: () => void status.refetch() };
 }
 
-/** Every section of `identity`'s contacts, sorted and filtered by the engine. The last answer
- * stays on screen while a new sort or search loads; another identity's never does. */
+/** Every section of `identity`'s contacts, sorted and filtered by the engine, with the `nextRead`
+ * number the read took when it began (DP2-08 D38). */
+export const contactListQuery = (b: Pick<Backend, "dashpayContacts">, walletId: string, identity: string, sort: ContactSortName, text: string) =>
+  queryOptions({
+    queryKey: [...keys.contactsAll(walletId), identity, sort, text] as const,
+    queryFn: async () => {
+      const seq = nextRead();
+      return { ...(await b.dashpayContacts(walletId, identity, { sections: [], sort, text: text || null })), seq };
+    },
+  });
+
+/** `contactListQuery`'s answer. The last answer stays on screen while a new sort or search loads;
+ * another identity's never does. */
 export function useContactList(walletId: string, identity: string, sort: ContactSortName, text: string) {
   const b = useBackend();
   return useQuery({
-    queryKey: [...keys.contactsAll(walletId), identity, sort, text] as const,
-    queryFn: () => b.dashpayContacts(walletId, identity, { sections: [], sort, text: text || null }),
+    ...contactListQuery(b, walletId, identity, sort, text),
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[3] === identity ? prev : undefined),
   });
 }
@@ -43,14 +55,24 @@ export function usePendingSetup(walletId: string) {
 /** The network search's queries of `identity`: Unignore drops them (DP2-09 D6). */
 const searchKey = (walletId: string, identity: string) => ["userSearch", walletId, identity] as const;
 
-/** DPNS usernames starting with `prefix` (D6); idle while `prefix` is `null`. A failure is shown
- * with Try again, not retried behind the user's back. The hits' relations are the main identity's,
- * so it is part of the key (D21). */
+/** DPNS usernames starting with `prefix` (D6), each with the `nextRead` number taken when they
+ * arrived (DP2-08 D38). The hits' relations are the main identity's, so it is part of the key (D21). */
+export const networkSearchQuery = (b: Pick<Backend, "searchUsers">, walletId: string, identity: string, prefix: string | null) =>
+  queryOptions({
+    queryKey: [...searchKey(walletId, identity), prefix] as const,
+    queryFn: async () => {
+      const hits = await b.searchUsers(walletId, prefix!, NETWORK_LIMIT);
+      const readSeq = nextRead();
+      return hits.map((h) => ({ ...h, readSeq }));
+    },
+  });
+
+/** `networkSearchQuery`; idle while `prefix` is `null`. A failure is shown with Try again, not
+ * retried behind the user's back. */
 export function useNetworkSearch(walletId: string, identity: string, prefix: string | null) {
   const b = useBackend();
   return useQuery({
-    queryKey: [...searchKey(walletId, identity), prefix] as const,
-    queryFn: () => b.searchUsers(walletId, prefix!, NETWORK_LIMIT),
+    ...networkSearchQuery(b, walletId, identity, prefix),
     enabled: prefix !== null,
     retry: false,
     staleTime: 60_000,
@@ -80,20 +102,28 @@ export function useContactActivity(walletId: string, identity: string, contact: 
   });
 }
 
+/** Reads again what an action changed (DP2-09 D16). A contacts read still on its first answer is
+ * reset, so one begun after the action follows: TanStack 5.104.1 cancels a running read on
+ * invalidation only once its query holds data, else hands back that read, which may predate the
+ * action (DP2-08 D38). */
+export function refreshAfter(client: QueryClient, walletId: string, identity: string, what: Refresh[]) {
+  for (const w of what) {
+    if (w === "contacts") void client.resetQueries({ queryKey: keys.contactsAll(walletId), predicate: (q) => q.state.data === undefined && q.state.fetchStatus !== "idle" });
+    void client.invalidateQueries({
+      queryKey: w === "contacts" ? keys.dashpayAll : w === "identities" ? keys.identities(walletId) : searchKey(walletId, identity),
+    });
+  }
+}
+
 /** The actions one surface runs for `identity` (DP2-09 D16): one model and grant prompt per
  * mount, cancelled when the surface goes or names another identity. */
 export function useContactActions(walletId: string, identity: string): ContactActions {
   const b = useBackend();
   const client = useQueryClient();
-  const actions = useMemo(() => {
-    const refresh = (what: Refresh[]) => {
-      for (const w of what)
-        void client.invalidateQueries({
-          queryKey: w === "contacts" ? keys.dashpayAll : w === "identities" ? keys.identities(walletId) : searchKey(walletId, identity),
-        });
-    };
-    return new ContactActions(b, new GrantModel(b), walletId, identity, refresh);
-  }, [b, client, walletId, identity]);
+  const actions = useMemo(
+    () => new ContactActions(b, new GrantModel(b), walletId, identity, (what) => refreshAfter(client, walletId, identity, what)),
+    [b, client, walletId, identity],
+  );
   useEffect(() => () => actions.cancel(), [actions]);
   return actions;
 }
