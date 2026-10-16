@@ -21,12 +21,12 @@ export function inside(dir: string, p: string): boolean {
   return r !== "" && r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r);
 }
 
-/** The scratch root, canonicalized, refused inside `checkout` (before anything is created), and
- * created 0700 if new. */
+/** The scratch root, canonicalized, refused if it overlaps `checkout` (is it, lies inside it or
+ * holds it; before anything is created), and created 0700 if new. */
 export function scratchRoot(wanted: string, checkout: string): string {
   const root = canonical(wanted);
   const repo = canonical(checkout);
-  if (root === repo || inside(repo, root)) throw new Error(`${wanted}: the scratch root may not be inside the checkout ${repo}`);
+  if (root === repo || inside(repo, root) || inside(root, repo)) throw new Error(`${wanted}: the scratch root may not overlap the checkout ${repo}`);
   mkdirSync(root, { recursive: true, mode: 0o700 });
   return root;
 }

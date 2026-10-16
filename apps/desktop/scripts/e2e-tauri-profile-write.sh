@@ -20,7 +20,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [[ -n "${DW_TESTNET_FIXTURE:-}" ]] || { echo "e2e-tauri-profile-write: set DW_TESTNET_FIXTURE" >&2; exit 2; }
-skip=${DW_E2E_SKIP_BUILD:-1}
+# Only an explicit 0 builds.
+skip=1
+[[ "${DW_E2E_SKIP_BUILD:-1}" == 0 ]] && skip=0
 if [[ "$skip" == 1 ]]; then
   target=${CARGO_TARGET_DIR:-$(cd ../.. && pwd)/rust/target}
   for bin in dash-wallet dwcli; do

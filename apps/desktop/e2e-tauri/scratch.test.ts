@@ -21,11 +21,13 @@ describe("the probe's scratch boundary (BL-162)", () => {
     expect(inside("/a/b", "/a/b/../c")).toBe(false);
   });
 
-  it("refuses a root inside the checkout, and a path through a symlink out of the root", () => {
+  it("refuses a root overlapping the checkout, and a path through a symlink out of the root", () => {
     const checkout = join(base, "repo");
     mkdirSync(checkout);
-    expect(() => scratchRoot(join(checkout, "scratch"), checkout)).toThrow(/inside the checkout/);
+    expect(() => scratchRoot(join(checkout, "scratch"), checkout)).toThrow(/overlap the checkout/);
     expect(existsSync(join(checkout, "scratch")), "refused before it is created").toBe(false);
+    expect(() => scratchRoot(checkout, checkout)).toThrow(/overlap the checkout/);
+    expect(() => scratchRoot(base, checkout), "a root holding the checkout").toThrow(/overlap the checkout/);
     const root = scratchRoot(join(base, "root"), checkout);
     const outside = join(base, "elsewhere");
     mkdirSync(outside);

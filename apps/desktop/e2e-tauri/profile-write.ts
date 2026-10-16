@@ -16,12 +16,13 @@
 // (display name and public message DW_PROFILE_LABEL). Reads otherwise. Phrases go to dwcli on
 // stdin, never argv. Set DW_LOG (EnvFilter) for the engine's log in OUT/tauri-driver.log.
 //
-// Files: every runtime file (data root, passphrase file, the app's XDG dirs and TMPDIR, OUT) lies
-// in a new run directory under one scratch root, DW_PROFILE_ROOT (default $TMPDIR/dw-profile-write;
-// never inside the checkout). DW_E2E_OUT, if set, must be a new directory under that root. Every
-// mode ends the same way: result.json, then a scan of OUT and the app's XDG dirs and TMPDIR, whose
-// leaked files are deleted, and of DW_E2E_SCAN_EXTRA (another log directory), which is only read.
-// The data root and passphrase are deleted; OUT stays. `scripts/e2e-tauri-profile-write.sh` runs
+// Files: every runtime file (data root, passphrase file, the app's XDG dirs, XDG_RUNTIME_DIR and
+// TMPDIR, OUT) lies in a new run directory under one scratch root, DW_PROFILE_ROOT (default
+// $TMPDIR/dw-profile-write; it may not overlap the checkout). DW_E2E_OUT, if set, must be a new
+// directory under that root. Every mode ends the same way: result.json, then a scan of OUT and the
+// app's XDG dirs and TMPDIR, whose leaked files are deleted, and of DW_E2E_SCAN_EXTRA (another log
+// directory, not holding the root), which is only read. The data root and passphrase are deleted;
+// OUT stays. `scripts/e2e-tauri-profile-write.sh` runs
 // this file under a private session bus, on the private X display in $DISPLAY.
 
 import { spawnSync, type ChildProcess } from "node:child_process";
@@ -34,7 +35,7 @@ import type { DashPayProfile } from "../src/api/generated/DashPayProfile";
 import type { SyncStatus } from "../src/api/generated/SyncStatus";
 import type { WalletSummary } from "../src/api/generated/WalletSummary";
 import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, WebDriver } from "./driver.ts";
-import { canonical, newDirIn, removeOwned, scratchRoot } from "./scratch.ts";
+import { canonical, inside, newDirIn, removeOwned, scratchRoot } from "./scratch.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
 const WALLET = env("DW_PROFILE_WALLET", "A");
@@ -64,12 +65,16 @@ const secrets: string[] = [];
 function layout() {
   const checkout = resolve(import.meta.dirname, "../../..");
   const root = scratchRoot(process.env.DW_PROFILE_ROOT ?? join(tmpdir(), "dw-profile-write"), checkout);
+  // Its own passphrase file would be a leak.
+  if (SCAN_EXTRA && (SCAN_EXTRA === root || inside(SCAN_EXTRA, root))) throw new Error(`DW_E2E_SCAN_EXTRA=${SCAN_EXTRA} holds the scratch root ${root}`);
   run = mkdtempSync(join(root, "run-")); // mode 0700
   OUT = newDirIn(root, process.env.DW_E2E_OUT ?? join(run, "out"));
   for (const [name, dir] of [
     ["XDG_DATA_HOME", "home/data"],
     ["XDG_CACHE_HOME", "home/cache"],
     ["XDG_CONFIG_HOME", "home/config"],
+    // The single-instance lock and socket (dw-desktop `instance`).
+    ["XDG_RUNTIME_DIR", "runtime"],
     ["TMPDIR", "tmp"],
   ]) {
     process.env[name] = join(run, dir);
@@ -78,13 +83,29 @@ function layout() {
 }
 
 /** Every file of OUT and the app's XDG dirs and TMPDIR holding a secret is deleted; one under
- * DW_E2E_SCAN_EXTRA is reported and left. Returns all of them. */
-function sweep(): string[] {
-  if (!run) return [];
+ * DW_E2E_SCAN_EXTRA is reported and left. Returns both lists. */
+function sweep(): { deleted: string[]; kept: string[] } {
+  if (!run) return { deleted: [], kept: [] };
   const owned = [OUT, join(run, "home"), join(run, "tmp")].filter((d) => existsSync(d));
   const found = [...owned.flatMap((d) => leaks(d, secrets)), ...(SCAN_EXTRA && existsSync(SCAN_EXTRA) ? leaks(SCAN_EXTRA, secrets) : [])];
-  removeOwned(found, [run, OUT]);
-  return found;
+  const kept = removeOwned(found, [run, OUT]);
+  return { deleted: found.filter((f) => !kept.includes(f)), kept };
+}
+
+/** The sweep's findings as one message, or "" when there are none. */
+function leakReport({ deleted, kept }: { deleted: string[]; kept: string[] }): string {
+  return [deleted.length ? `secrets in plain text, deleted: ${deleted.join(", ")}` : "", kept.length ? `secrets in plain text, left in place (clean up by hand): ${kept.join(", ")}` : ""]
+    .filter(Boolean)
+    .join("; ");
+}
+
+/** dropRuntime, reporting a failure instead of throwing: the verdict stands either way. */
+function dropRuntimeOrSay() {
+  try {
+    dropRuntime();
+  } catch (e) {
+    console.error(`profile-write: could not remove the run's runtime files in ${run}: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /** Deletes the run's runtime files (data root, passphrase, XDG dirs, TMPDIR); OUT stays. */
@@ -220,13 +241,10 @@ async function main() {
     driver = undefined;
   }
   // Every mode ends here. result.json first: the scan covers it.
-  writeFileSync(join(OUT, "result.json"), JSON.stringify({ wallet: WALLET, identity, writeAt: WRITE_AT, write: write ?? null, failure: failure ? mask(String(failure)) : null, steps }, null, 2));
-  const found = sweep();
-  dropRuntime();
-  if (found.length > 0) {
-    const leak = `secrets in plain text: ${found.join(", ")}`;
-    throw new Error(failure ? `${failure instanceof Error ? failure.message : String(failure)}; ${leak}` : leak);
-  }
+  writeFileSync(join(OUT, "result.json"), JSON.stringify({ wallet: WALLET, identity, writeAt: WRITE_AT, write: write ?? null, failure: failure ? mask(String(failure)) : null, steps }, null, 2), { flag: "wx" });
+  const leak = leakReport(sweep());
+  dropRuntimeOrSay();
+  if (leak) throw new Error(failure ? `${failure instanceof Error ? failure.message : String(failure)}; ${leak}` : leak);
   if (failure) throw failure;
   step(`no phrase or passphrase in OUT, the app's XDG dirs or TMPDIR${SCAN_EXTRA ? `, or ${SCAN_EXTRA}` : ""}`);
   if (WRITE_AT !== "never" && !write?.ok) throw new Error("the write failed");
@@ -266,8 +284,9 @@ async function interrupted(signal: NodeJS.Signals) {
   console.error(`profile-write: FAIL: ${signal}`);
   stopDriver(driver);
   await driverGone(driver);
-  sweep();
-  dropRuntime();
+  const leak = leakReport(sweep());
+  if (leak) console.error(`profile-write: ${leak}`);
+  dropRuntimeOrSay();
   process.exit(1);
 }
 process.once("SIGINT", (s) => void interrupted(s));
@@ -280,5 +299,5 @@ main()
   })
   .finally(() => {
     stopDriver(driver);
-    dropRuntime();
+    dropRuntimeOrSay();
   });
