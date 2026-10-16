@@ -2390,6 +2390,7 @@ dependencies = [
  "dunce",
  "dw-coinjoin",
  "dw-console",
+ "dw-desktop",
  "dw-engine",
  "dw-fs",
  "dw-message",
@@ -2399,7 +2400,9 @@ dependencies = [
  "dw-uri",
  "dw-vault",
  "hex",
+ "image",
  "libloading 0.8.9",
+ "qrcode",
  "serde",
  "serde_json",
  "tauri",
@@ -2488,6 +2491,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "windows-sys 0.59.0",
+ "zbus",
  "zip",
 ]
 

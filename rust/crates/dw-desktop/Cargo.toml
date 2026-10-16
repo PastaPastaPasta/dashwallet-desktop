@@ -20,16 +20,31 @@ zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Screen-region capture through the XDG desktop portal (screen.rs); dw-app
+# already links zbus 5 for its session-bus probe.
+zbus = "5"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_IO",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
     "Win32_System_Pipes",
     "Win32_System_Threading",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]
 qrcode = { version = "0.14", default-features = false }
 tempfile = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# A fake portal on a socket pair (screen.rs tests).
+zbus = { version = "5", features = ["p2p"] }

@@ -29,7 +29,12 @@ import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
 import type { CostTable } from "../api/generated/CostTable";
 import type { GrantAction } from "../api/generated/GrantAction";
 import type { PrivateContactDetails } from "../api/generated/PrivateContactDetails";
-import { activityPage, contactList, eventOf, type DashPayWorld } from "./dashpay";
+import type { EligibilityName } from "../api/generated/EligibilityName";
+import type { UserHit } from "../api/generated/UserHit";
+import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
+import { userLinkText } from "../contacts/add";
+import { activityPage, contactList, eventOf, relationOf, type DashPayWorld, type FixtureScan } from "./dashpay";
+import { scanHandlers } from "./scan";
 import { routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers } from "./send";
@@ -82,6 +87,8 @@ function setLock({ world, emit }: Ctx, state: World["lock"]["state"]) {
 
 /** The quote of a contact request or its acceptance (dw-engine flows.rs `CONTACT_REQUEST_CREDITS`). */
 const CONTACT_REQUEST_CREDITS = 150_000_000n;
+/** requests.rs: an auto-accept claim needs this long left when its request goes out. */
+const SCAN_MARGIN_SECS = 60;
 /** flows.rs `DOCUMENT_10K_CREDITS` (a profile or `contactInfo`) and `KEY_UPDATE_CREDITS`. */
 const DOCUMENT_10K_CREDITS = 300_000_000n;
 const KEY_UPDATE_CREDITS = 100_000_000n;
@@ -313,6 +320,82 @@ function isIdentityId(s: string): boolean {
   return zeros + (n === 0n ? 0 : Math.ceil(n.toString(16).length / 2)) === 32;
 }
 
+// User lookups and contact requests (DP2-02, DP2-03).
+
+/** `resolve_user`: the label trimmed, one `.dash` dropped in any case, lower-cased; the hit with
+ * its relation now. */
+function lookup(dp: DashPayWorld, username: string): UserHit | null {
+  if (dp.searchOffline) throw fail("platform.unavailable", "DAPI did not answer");
+  const label = username.trim().replace(/\.dash$/i, "").toLowerCase();
+  const hit = dp.directory.find((u) => u.username === label);
+  return hit ? { ...hit, relation: relationOf(dp, hit.identity) } : null;
+}
+
+/** `verify_scanned`'s answer for the user `hit`, verified by `code`. */
+const scanned = (hit: UserHit, code: ScannedContactInfo["code"]): ScannedContactInfo => ({
+  identity: hit.identity,
+  username: hit.username,
+  displayName: hit.displayName,
+  code,
+  relation: hit.relation,
+  unverified: hit.unverified,
+});
+
+/** DashPay::eligibility (requests.rs): the wallet's own state first, in the engine's order after
+ * `isSelf` (a contact, our request out, theirs in), then the identity's own DashPay keys; only
+ * then is the contact fetched: unknown is `identity.not_found`, one without DashPay keys
+ * `contactCannotReceive`. */
+function eligibility(dp: DashPayWorld, identity: string, id: string): EligibilityName {
+  if (!isIdentityId(id)) throw fail("invalid_argument", `not an identity id: ${id}`);
+  if (id === identity) return "isSelf";
+  const relation = dp.contacts.find((c) => c.summary.contact === id)?.summary.relation;
+  if (relation === "contact") return "alreadyContact";
+  if (relation === "pendingOutgoing" || relation === "pendingIncoming") return relation;
+  if (!dp.identities.find((i) => i.identity === identity)!.hasDashpayKeys) return "noDashPayKeys";
+  if (dp.searchOffline) throw fail("platform.unavailable", "DAPI did not answer");
+  if (!dp.directory.some((u) => u.identity === id)) throw fail("identity.not_found", `identity not found: ${id}`);
+  return dp.cannotReceive.includes(id) ? "contactCannotReceive" : "ok";
+}
+
+/** `?name=value` pairs of a link's query; `null` when a name repeats (names case-insensitive). */
+function queryOf(query: string): Map<string, string> | null {
+  const out = new Map<string, string>();
+  for (const part of query.split("&")) {
+    const eq = part.indexOf("=");
+    const name = (eq < 0 ? part : part.slice(0, eq)).toLowerCase();
+    if (out.has(name)) return null;
+    let value: string;
+    try {
+      value = decodeURIComponent(eq < 0 ? "" : part.slice(eq + 1));
+    } catch {
+      return null;
+    }
+    out.set(name, value);
+  }
+  return out;
+}
+
+/** dw-uri `DashPayUserLink::parse`: `dashpay://user?id=&username=`, scheme, host and names in any
+ * case, each once and nothing else; the username trimmed, one `.dash` dropped (as iOS: this case). */
+function parseUserLink(text: string): { identity: string; username: string } | null {
+  const m = /^dashpay:\/\/user\?([^#]*)$/i.exec(text.trim());
+  const q = m && queryOf(m[1]);
+  if (!q || q.size !== 2 || !q.has("id") || !q.has("username")) return null;
+  const identity = q.get("id")!;
+  const username = q.get("username")!.trim().replace(/\.dash$/, "");
+  return isIdentityId(identity) && username ? { identity, username } : null;
+}
+
+/** dw-uri `DashPayContactCode::parse`: `dash:?du=&dapk=`, each once and nothing else. */
+function parseContactCode(text: string): { username: string; expiresAt: number } | null {
+  const m = /^dash:\?([^#]*)$/i.exec(text.trim());
+  const q = m && queryOf(m[1]);
+  if (!q || q.size !== 2) return null;
+  const du = q.get("du")?.trim().replace(/\.dash$/i, "");
+  const dapk = q.get("dapk");
+  return du && dapk && /^\d{1,10}$/.test(dapk) ? { username: du, expiresAt: Number(dapk) } : null;
+}
+
 // The bell (platform/notifications.rs), as vectors/notifications.json records the engine's, which
 // notifications.test.ts replays: each call looks the wallet up, then refuses an id that is not
 // Base58 (`invalid_argument`). Only `events` asks whether the identity is the wallet's
@@ -424,6 +507,7 @@ export const HANDLERS: Handlers = {
   ...toolsHandlers({ wallet, grant: checkGrant, useGrant }),
   // Settings (U-04): settings.ts.
   ...settingsHandlers({ wallet, grant: checkGrant, useGrant }),
+  ...scanHandlers(),
 
   // App and network
   launch_info: (_, { world }) => world.launch,
@@ -627,10 +711,12 @@ export const HANDLERS: Handlers = {
   search_users: ({ walletId, prefix, limit }, { world }) => {
     const dp = dashpay(world, walletId);
     if (dp.searchOffline) throw fail("platform.unavailable", "DAPI did not answer");
-    return dp.directory.filter((u) => u.username.startsWith(prefix.trim().toLowerCase())).slice(0, limit);
+    return dp.directory
+      .filter((u) => u.username.startsWith(prefix.trim().toLowerCase()))
+      .slice(0, limit)
+      .map((u) => ({ ...u, relation: relationOf(dp, u.identity) }));
   },
-  resolve_user: ({ walletId, username }, { world }) =>
-    dashpay(world, walletId).directory.find((u) => u.username === username.toLowerCase()) ?? null,
+  resolve_user: ({ walletId, username }, { world }) => lookup(dashpay(world, walletId), username),
 
   // DashPay: contacts
   dashpay_contacts: ({ walletId, identity, query }, { world }) => contactList(dashpay(world, walletId, identity), query),
@@ -638,12 +724,67 @@ export const HANDLERS: Handlers = {
     dashpay(world, walletId, identity).contacts.find((c) => c.summary.contact === id) ?? null,
   dashpay_pending_setup_count: ({ walletId }, { world }) =>
     dashpay(world, walletId).contacts.filter((c) => c.summary.channel === "setupPending").length,
-  dashpay_eligibility: ({ walletId, identity, contact: id }, { world }) => {
-    if (id === identity) return "isSelf";
-    const relation = dashpay(world, walletId, identity).contacts.find((c) => c.summary.contact === id)?.summary.relation;
-    if (relation === "contact") return "alreadyContact";
-    if (relation === "pendingOutgoing" || relation === "pendingIncoming") return relation;
-    return "ok";
+  dashpay_eligibility: ({ walletId, identity, contact: id }, { world }) => eligibility(dashpay(world, walletId, identity), identity, id),
+  // DashPay::send_request (requests.rs `send`), in the engine's order: the ids, the scan's claim,
+  // the identity, eligibility, its credits, then the grant (`writeLease`), consumed only once the
+  // write goes out; from there the scan is spent. The request is a new outgoing one, `pending`.
+  dashpay_send_request: ({ walletId, identity, to, scan, grant }, ctx) => {
+    const { world } = ctx;
+    const dp0 = dashpay(world, walletId);
+    if (!isIdentityId(identity) || !isIdentityId(to)) throw fail("invalid_argument", "not an identity id");
+    let claim: FixtureScan | undefined;
+    if (scan !== null) {
+      claim = dp0.scans.find((x) => x.id === scan && !x.spent);
+      if (!claim) throw fail("contact.scan_expired", "scan expired");
+      if (claim.recipient !== to) throw fail("invalid_argument", "the scan is for another identity");
+    }
+    const dp = dashpay(world, walletId, identity);
+    const reason = eligibility(dp, identity, to);
+    if (reason !== "ok") throw fail("contact.ineligible", `contact ineligible: ${reason}`, { kind: "ineligible", reason });
+    const me = dp.identities.find((i) => i.identity === identity)!;
+    const available = me.balance ?? "0";
+    if (BigInt(available) < CONTACT_REQUEST_CREDITS)
+      throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(CONTACT_REQUEST_CREDITS), available });
+    // The claim needs a minute left once the grant is in (`SCAN_MARGIN_SECS`).
+    const consume = writeLease(ctx, walletId, grant, ["contactRequest"], CONTACT_REQUEST_CREDITS);
+    if (claim && claim.expiresAt <= secs(FIXTURE_NOW) + SCAN_MARGIN_SECS) throw fail("contact.scan_expired", "scan expired");
+    consume();
+    if (claim) claim.spent = true;
+    const hit = dp.directory.find((u) => u.identity === to)!;
+    const createdAt = FIXTURE_NOW.getTime();
+    const since = Math.floor(createdAt / 1000);
+    // An ignored sender's request is in: the library joins the two (`established`).
+    const ignored = dp.contacts.find((c) => c.summary.contact === to);
+    if (ignored) {
+      dp.requestTimes[to] = { incoming: dp.requestTimes[to]?.incoming ?? null, outgoing: createdAt };
+      Object.assign(ignored.summary, { relation: "contact", hidden: false, channel: "ready", lastActivityAt: since });
+      ignored.requestSentAt = since;
+      contactsChanged(ctx, walletId, identity);
+      return { kind: "established", request: String(createdAt) };
+    }
+    dp.requestTimes[to] = { incoming: null, outgoing: createdAt };
+    dp.contacts.push({
+      summary: {
+        contact: to,
+        username: hit.username,
+        displayName: hit.displayName,
+        alias: null,
+        relation: "pendingOutgoing",
+        hidden: false,
+        channel: "notEstablished",
+        since,
+        lastActivityAt: since,
+        unverified: hit.unverified,
+      },
+      profile: null,
+      privateDetails: { alias: null, note: null, hidden: false },
+      publishState: "local",
+      requestSentAt: since,
+      requestReceivedAt: null,
+      paymentLock: null,
+    });
+    contactsChanged(ctx, walletId, identity);
+    return { kind: "pending", request: String(createdAt) };
   },
   // DashPay::accept_request (requests.rs `accept`), in the engine's order: the ids, itself, the
   // identity, a contact already, their request, its DashPay keys, its credits, then the grant
@@ -767,6 +908,35 @@ export const HANDLERS: Handlers = {
   credits_cost_table: ({ walletId }, { world }) => {
     wallet(world, walletId);
     return COST_TABLE;
+  },
+  // DashPay::my_user_link (users.rs): the identity's main name as iOS's link; none is
+  // `contact.no_username`, names being updated `platform.unavailable`.
+  dashpay_my_user_link: ({ walletId, identity }, { world }) => {
+    const me = dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!;
+    if (me.namesUpdating) throw fail("platform.unavailable", "names are being updated");
+    if (!me.mainName) throw fail("contact.no_username", "the identity has no username");
+    return userLinkText(identity, me.mainName);
+  },
+  // DashPay::verify_scanned (users.rs): a user link must name the identity that owns its username
+  // now; a DIP-15 code must not have expired (checked before any query), and its username must
+  // exist. Anything else is `invalid_argument`, which never quotes the text. The fixture's `dapk`
+  // is its expiry in UNIX seconds, not the 38-byte key blob.
+  dashpay_verify_scanned: ({ walletId, text }, { world }) => {
+    const dp = dashpay(world, walletId);
+    const link = parseUserLink(text);
+    if (link) {
+      const hit = lookup(dp, link.username);
+      if (hit?.identity !== link.identity) throw fail("contact.scan_unverified", "the scanned code could not be verified");
+      return scanned(hit, { kind: "userLink" });
+    }
+    const code = parseContactCode(text);
+    if (!code) throw fail("invalid_argument", "text: no contact code");
+    if (code.expiresAt <= secs(FIXTURE_NOW)) throw fail("contact.scan_expired", "scan expired");
+    const hit = lookup(dp, code.username);
+    if (!hit) throw fail("contact.scan_unverified", "the scanned code could not be verified");
+    const id = `scan-${dp.scans.length + 1}`;
+    dp.scans.push({ id, recipient: hit.identity, expiresAt: code.expiresAt, spent: false });
+    return scanned(hit, { kind: "autoAcceptClaim", scan: id, expiresAt: code.expiresAt });
   },
   dashpay_profile: ({ walletId, identity }, { world }) =>
     dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!.profile,

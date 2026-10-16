@@ -3,4 +3,4 @@
 /**
  * The binding's own refusals (`app.*`).
  */
-export type AppCode = "app.not_selftest" | "app.not_developer_build" | "app.selftest" | "app.selftest_passphrase_file" | "app.data_dir" | "app.already_running" | "app.unknown_handle" | "app.too_many_handles" | "app.screen_protection" | "app.file_dialog" | "app.file_too_large" | "app.file_read" | "app.file_write";
+export type AppCode = "app.not_selftest" | "app.not_developer_build" | "app.selftest" | "app.selftest_passphrase_file" | "app.data_dir" | "app.already_running" | "app.unknown_handle" | "app.too_many_handles" | "app.screen_protection" | "app.file_dialog" | "app.file_too_large" | "app.file_read" | "app.file_write" | "app.image_unreadable" | "app.no_qr_code" | "app.screen_capture_unavailable" | "app.screen_capture";
