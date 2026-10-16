@@ -262,6 +262,8 @@ for (const theme of THEMES) {
   test(`visual bell ${theme}`, async ({ page }) => {
     await page.goto(fixtureUrl("dashpay-registered", theme));
     await page.getByTestId("hero").waitFor();
+    // DP3-07: Home's frequent strip lands after the hero; the popover covers part of it.
+    await page.getByTestId("home-frequent").waitFor();
     await page.getByTestId("toolbar-bell").click();
     await page.getByTestId("bell-new").waitFor();
     await page.mouse.move(0, 0);
@@ -314,5 +316,35 @@ for (const theme of THEMES) {
     await page.getByTestId("pay-continue").click();
     await page.getByTestId("pay-confirm-passphrase").waitFor();
     await shoot(page, "pay-contact-accept", theme);
+  });
+}
+
+// DP3-07: Home with the frequent strip and contact rows, Activity's list with them, and the
+// detail naming the contact (View contact), on `dashpay-history-contacts`.
+async function openHistoryContacts(page: Page, theme: Theme) {
+  await page.goto(fixtureUrl("dashpay-history-contacts", theme));
+  await page.getByTestId("home-frequent-chip").first().waitFor();
+}
+
+for (const theme of THEMES) {
+  test(`visual home-contacts ${theme}`, async ({ page }) => {
+    await openHistoryContacts(page, theme);
+    await page.mouse.move(0, 0);
+    await shoot(page, "home-contacts", theme);
+  });
+
+  test(`visual activity-contacts ${theme}`, async ({ page }) => {
+    await openHistoryContacts(page, theme);
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "activity-contacts", theme);
+  });
+
+  test(`visual tx-detail-contact ${theme}`, async ({ page }) => {
+    await openHistoryContacts(page, theme);
+    await page.locator(".tx-row").filter({ hasText: "Coffee refund" }).click();
+    await page.getByTestId("tx-detail-view-contact").waitFor();
+    await shoot(page, "tx-detail-contact", theme);
   });
 }
