@@ -18,6 +18,7 @@ import {
   MAX_IMAGE_BYTES,
   imageError,
   myQr,
+  nextRead,
   NO_CODE_IN_IMAGE,
   NOT_A_CODE,
   ownerLine,
@@ -249,6 +250,18 @@ describe("AddContactModel", () => {
     expect(api.dashpayVerifyScanned).toHaveBeenCalledWith(WALLET_A, LINK);
     expect(model.candidate).toMatchObject({ username: "Grace", source: "scan", claim: { scan: "scan-1", expiresAt: 99 } });
     expect(model.scan).toEqual({ kind: "idle" });
+  });
+
+  it("D38 a verified code is numbered when its answer arrives, not when it was asked", async () => {
+    let answer!: (i: ScannedContactInfo) => void;
+    const { model } = setup({ dashpayVerifyScanned: vi.fn(() => new Promise<ScannedContactInfo>((resolve) => (answer = resolve))) });
+    const done = model.verifyText(LINK);
+    // A list read begins while the code is checked (perhaps before the ignore).
+    const listSeq = nextRead();
+    answer(info({ relation: "ignored" }));
+    await done;
+    expect(model.candidate!.readSeq).toBeGreaterThan(listSeq);
+    expect(currentRelation(model.candidate!, { rows: [], seq: listSeq })).toBe("ignored");
   });
 
   it("IOS-073 an unverifiable code is an error state with no candidate", async () => {

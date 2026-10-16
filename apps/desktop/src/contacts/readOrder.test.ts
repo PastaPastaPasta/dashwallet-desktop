@@ -6,6 +6,7 @@ import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ContactList } from "../api/generated/ContactList";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
+import type { UserHit } from "../api/generated/UserHit";
 import type { UserRelation } from "../api/generated/UserRelation";
 import { WALLET_A } from "../onboarding/testWorld";
 import { candidateOfHit, cardLine, currentRelation, listedNow } from "./add";
@@ -28,12 +29,15 @@ const row = (relation: UserRelation): ContactSummaryInfo => ({
 });
 const list = (...rows: ContactSummaryInfo[]): ContactList => ({ sections: [{ section: "requests", contacts: rows }], updating: false });
 
-/** A contacts backend whose reads answer when the test says. */
-function world() {
+const hit = (relation: UserRelation): UserHit => ({ identity: GRACE, username: "grace", displayName: null, avatarUrl: null, relation, unverified: false });
+
+/** A contacts backend whose list reads answer when the test says; searches too with `held`. */
+function world(held = false) {
   const reads: ((l: ContactList) => void)[] = [];
+  const searches: ((h: UserHit[]) => void)[] = [];
   const b = {
     dashpayContacts: vi.fn(() => new Promise<ContactList>((resolve) => reads.push(resolve))),
-    searchUsers: vi.fn(async () => [{ identity: GRACE, username: "grace", displayName: null, avatarUrl: null, relation: "ignored" as const, unverified: false }]),
+    searchUsers: vi.fn(() => (held ? new Promise<UserHit[]>((resolve) => searches.push(resolve)) : Promise.resolve([hit("ignored")]))),
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // The Contacts page's unfiltered list, observed as `ContactsPage` does.
@@ -48,7 +52,7 @@ function world() {
       return { relation, line: cardLine(relation, { data: "ok", failed: false }) };
     };
   };
-  return { b, client, observer, stop, reads, settle, card };
+  return { b, client, observer, stop, reads, searches, settle, card };
 }
 
 describe("the contacts list's read order (D38)", () => {
@@ -96,6 +100,39 @@ describe("the contacts list's read order (D38)", () => {
     w.reads[2]!(list(row("pendingIncoming")));
     await w.settle();
     expect(line().relation).toBe("pendingIncoming");
+  });
+
+  it("a hit is numbered when it arrives: a list read begun while the search ran cannot clear its ignore", async () => {
+    const w = world(true);
+    stop = w.stop;
+    w.reads[0]!(list());
+    await w.settle();
+    // The search begins, then a list read (perhaps from before the ignore) while it runs.
+    const searched = w.client.fetchQuery(networkSearchQuery(w.b, WALLET_A, ALICE, "gra"));
+    void w.observer.refetch();
+    await w.settle();
+    expect(w.b.dashpayContacts).toHaveBeenCalledTimes(2);
+    w.searches[0]!([hit("ignored")]);
+    const hits = await searched;
+    w.reads[1]!(list());
+    await w.settle();
+    expect(currentRelation(candidateOfHit(hits[0]!), listedNow(w.observer.getCurrentResult().data))).toBe("ignored");
+  });
+
+  it("a search still on its first read is read again after an unignore", async () => {
+    const w = world(true);
+    stop = w.stop;
+    const search = new QueryObserver(w.client, networkSearchQuery(w.b, WALLET_A, ALICE, "gra"));
+    const unwatch = search.subscribe(() => undefined);
+    // The search that began before the unignore is dropped; the one after it answers.
+    refreshAfter(w.client, WALLET_A, ALICE, ["contacts", "search"]);
+    await w.settle();
+    expect(w.b.searchUsers).toHaveBeenCalledTimes(2);
+    w.searches[0]!([hit("ignored")]);
+    w.searches[1]!([hit("pendingIncoming")]);
+    await w.settle();
+    expect(search.getCurrentResult().data?.map((h) => h.relation)).toEqual(["pendingIncoming"]);
+    unwatch();
   });
 
   it("a list that already holds data is read again by invalidation alone, and keeps its rows meanwhile", async () => {

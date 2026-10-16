@@ -5,7 +5,7 @@
 // repeat a DAPI query.
 
 import { useEffect, useMemo } from "react";
-import { queryOptions, useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { queryOptions, useInfiniteQuery, useQuery, useQueryClient, type Query, type QueryClient } from "@tanstack/react-query";
 import type { ActivityFilterName } from "../api/generated/ActivityFilterName";
 import type { ContactSortName } from "../api/generated/ContactSortName";
 import type { Backend } from "../api/backend";
@@ -102,16 +102,17 @@ export function useContactActivity(walletId: string, identity: string, contact: 
   });
 }
 
-/** Reads again what an action changed (DP2-09 D16). A contacts read still on its first answer is
- * reset, so one begun after the action follows: TanStack 5.104.1 cancels a running read on
- * invalidation only once its query holds data, else hands back that read, which may predate the
- * action (DP2-08 D38). */
+/** A query still on its first read: invalidation hands that read back (TanStack 5.104.1 cancels a
+ * running read only once its query holds data), and it may predate the action (DP2-08 D38). */
+const firstRead = (q: Query) => q.state.data === undefined && q.state.fetchStatus !== "idle";
+
+/** Reads again what an action changed (DP2-09 D16). A contacts list or search still on its first
+ * read is reset, so one begun after the action follows (DP2-08 D38). */
 export function refreshAfter(client: QueryClient, walletId: string, identity: string, what: Refresh[]) {
   for (const w of what) {
-    if (w === "contacts") void client.resetQueries({ queryKey: keys.contactsAll(walletId), predicate: (q) => q.state.data === undefined && q.state.fetchStatus !== "idle" });
-    void client.invalidateQueries({
-      queryKey: w === "contacts" ? keys.dashpayAll : w === "identities" ? keys.identities(walletId) : searchKey(walletId, identity),
-    });
+    const search = searchKey(walletId, identity);
+    if (w !== "identities") void client.resetQueries({ queryKey: w === "contacts" ? keys.contactsAll(walletId) : search, predicate: firstRead });
+    void client.invalidateQueries({ queryKey: w === "contacts" ? keys.dashpayAll : w === "identities" ? keys.identities(walletId) : search });
   }
 }
 
