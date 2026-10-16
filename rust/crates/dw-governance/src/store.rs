@@ -82,6 +82,8 @@ pub const MAX_REFUSED_OBJECTS: usize = 10_000;
 /// Votes whose key the list does not hold yet, kept per (vote, key) for a
 /// later list (MG-02 D43); oldest forgotten first.
 pub const MAX_SUSPECT_VOTES: usize = 10_000;
+/// Of them, at most this many from one peer.
+pub const MAX_SUSPECTS_PER_PEER: u32 = 1_000;
 /// How long such a vote waits for its key.
 pub const SUSPECT_TTL_SECS: i64 = 60 * 60;
 /// Core `GOVERNANCE_DELETION_DELAY`.
@@ -273,6 +275,7 @@ pub struct GovernanceStore {
     /// (vote, recovered key) → a vote refused for a key the list lacks.
     suspects: HashMap<([u8; 32], [u8; 20]), Orphan>,
     suspect_order: VecDeque<([u8; 32], [u8; 20])>,
+    suspects_per_peer: HashMap<SocketAddr, u32>,
     /// Whether a sync has completed, after which triggers outside their
     /// creation-time window are ignored (Core's `MasternodeRateCheck`).
     synced: bool,
@@ -324,6 +327,7 @@ impl GovernanceStore {
             resolved: HashMap::new(),
             suspects: HashMap::new(),
             suspect_order: VecDeque::new(),
+            suspects_per_peer: HashMap::new(),
             synced: false,
         }
     }
@@ -531,7 +535,15 @@ impl GovernanceStore {
     /// objects unconfirmed for [`UNCONFIRMED_TTL_SECS`] and orphans past
     /// their expiry, and forgets erased hashes whose time passed.
     pub fn prune(&mut self, now: i64) {
-        self.suspects.retain(|_, o| o.at + SUSPECT_TTL_SECS > now);
+        let expired: Vec<_> = self
+            .suspects
+            .iter()
+            .filter(|(_, o)| o.at + SUSPECT_TTL_SECS <= now)
+            .map(|(slot, _)| *slot)
+            .collect();
+        for slot in expired {
+            self.remove_suspect(&slot);
+        }
         let p = governance_params(self.network);
         let cycle = i64::from(p.superblock_cycle);
         let cycle_secs = cycle * i64::from(p.target_spacing_secs);
@@ -827,7 +839,9 @@ impl GovernanceStore {
         if self.key_ok(&v.vote.masternode_outpoint, &v.key_id)
             == Err(VoteRejection::UnknownVotingKey)
         {
-            self.keep_suspect(v, from, now);
+            if self.is_current_proposal(&v.vote.parent_hash, now) {
+                self.keep_suspect(v, from, now);
+            }
             return Err(VoteRejection::UnknownVotingKey);
         }
         self.place(v, from, now, false)
@@ -838,14 +852,18 @@ impl GovernanceStore {
     /// Per recovered key, so a forged copy cannot stand in for the real one.
     fn keep_suspect(&mut self, vote: CheckedVote, from: Option<SocketAddr>, at: i64) {
         let slot = (vote.vote.hash(), vote.key_id);
-        if self.suspects.contains_key(&slot) {
+        let from_peer = from.map_or(0, |p| self.suspects_per_peer.get(&p).copied().unwrap_or(0));
+        if self.suspects.contains_key(&slot) || from_peer >= MAX_SUSPECTS_PER_PEER {
             return;
         }
         while self.suspects.len() >= MAX_SUSPECT_VOTES {
             let Some(old) = self.suspect_order.pop_front() else {
                 break;
             };
-            self.suspects.remove(&old);
+            self.remove_suspect(&old);
+        }
+        if let Some(p) = from {
+            *self.suspects_per_peer.entry(p).or_default() += 1;
         }
         self.suspects.insert(slot, Orphan { vote, from, at });
         self.suspect_order.push_back(slot);
@@ -854,6 +872,19 @@ impl GovernanceStore {
             let suspects = &self.suspects;
             self.suspect_order.retain(|s| suspects.contains_key(s));
         }
+    }
+
+    fn remove_suspect(&mut self, slot: &([u8; 32], [u8; 20])) -> Option<Orphan> {
+        let o = self.suspects.remove(slot)?;
+        if let Some(p) = o.from
+            && let Some(n) = self.suspects_per_peer.get_mut(&p)
+        {
+            *n -= 1;
+            if *n == 0 {
+                self.suspects_per_peer.remove(&p);
+            }
+        }
+        Some(o)
     }
 
     /// Places the kept votes whose key the list now holds.
@@ -865,7 +896,7 @@ impl GovernanceStore {
             .map(|(slot, _)| *slot)
             .collect();
         for slot in ready {
-            if let Some(o) = self.suspects.remove(&slot) {
+            if let Some(o) = self.remove_suspect(&slot) {
                 let _ = self.place(o.vote, o.from, o.at, false);
             }
         }
@@ -1428,6 +1459,21 @@ mod tests {
         s.set_masternode_list(&[entry(1, 1), entry(3, 1)]);
         assert_eq!(s.vote_count(), 1);
         assert!(s.has_vote(&late.hash()));
+        // Only votes on a current proposal wait: an unknown parent adds
+        // nothing to keep.
+        let stray = vote([9; 32], 5, 5, VoteOutcome::No, 10);
+        let _ = s.add_vote(stray, None, NOW);
+        assert!(s.suspects.is_empty());
+        // One peer fills at most its share, so it cannot evict others'.
+        for t in 0..=MAX_SUSPECTS_PER_PEER {
+            let _ = s.add_vote(vote(h, 6, 6, VoteOutcome::No, i64::from(t)), peer(1), NOW);
+        }
+        assert_eq!(s.suspects.len(), MAX_SUSPECTS_PER_PEER as usize);
+        let last = i64::from(MAX_SUSPECTS_PER_PEER) + 1;
+        let _ = s.add_vote(vote(h, 6, 6, VoteOutcome::No, last), peer(2), NOW);
+        assert_eq!(s.suspects.len(), MAX_SUSPECTS_PER_PEER as usize + 1);
+        s.prune(NOW + SUSPECT_TTL_SECS);
+        assert!(s.suspects.is_empty() && s.suspects_per_peer.is_empty());
         // Kept votes expire.
         let other = vote(h, 4, 4, VoteOutcome::No, 10);
         let _ = s.add_vote(other.clone(), None, NOW);
