@@ -22,7 +22,7 @@ import { Avatar } from "../contacts/Avatar";
 import { Row } from "../contacts/ContactList";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
-import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, resolveText, type Banner } from "./contact";
+import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, resolveText, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
 import { AmountFields, draftSpec, FormField, PayFooter, useAmountField, useEstimate, useMax, type Phase } from "./form";
 import { confirmedOf, DEFAULT_ADVANCED, type Advanced, type Outcome } from "./model";
@@ -64,16 +64,28 @@ export function PayToContact({ walletId, network }: { walletId: string; network:
 function ContactTab({ walletId, identity, network }: { walletId: string; identity: string; network: NetworkInfo }) {
   const picked = useUi((s) => s.payContact);
   const payee = picked?.walletId === walletId ? picked.contact : null;
-  const pick = (contact: string) => ui.set({ payContact: { walletId, contact } });
+  // How the chooser showed the pick: the card's names until the payee's detail is read.
+  const [shownAs, setShownAs] = useState<Payee | null>(null);
+  const pick = (p: Payee) => {
+    setShownAs(p);
+    ui.set({ payContact: { walletId, contact: p.contact } });
+  };
   return payee === null ? (
     <Chooser walletId={walletId} identity={identity} onPick={pick} />
   ) : (
-    <ContactForm key={payee} walletId={walletId} identity={identity} network={network} contact={payee} />
+    <ContactForm
+      key={payee}
+      walletId={walletId}
+      identity={identity}
+      network={network}
+      contact={payee}
+      shownAs={shownAs?.contact === payee ? shownAs : null}
+    />
   );
 }
 
 /** The frequent strip (D3) and the picker (D4). */
-function Chooser({ walletId, identity, onPick }: { walletId: string; identity: string; onPick: (contact: string) => void }) {
+function Chooser({ walletId, identity, onPick }: { walletId: string; identity: string; onPick: (payee: Payee) => void }) {
   const id = useId();
   const [search, setSearch] = useState("");
   const text = useDebounced(search.trim(), SEARCH_DEBOUNCE_MS);
@@ -122,7 +134,7 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
               trailing={r.reason && <span className="contact-row-note">{r.reason}</span>}
               data-testid="pay-picker-row"
               data-contact={r.contact}
-              onClick={() => onPick(r.contact)}
+              onClick={() => onPick(r)}
             />
           ))}
         </ul>
@@ -141,7 +153,7 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
               const p = payeeOf(c);
               return (
                 <li key={c.contact}>
-                  <button type="button" className="pay-frequent-chip" data-testid="pay-frequent-chip" data-contact={c.contact} onClick={() => onPick(c.contact)}>
+                  <button type="button" className="pay-frequent-chip" data-testid="pay-frequent-chip" data-contact={c.contact} onClick={() => onPick(p)}>
                     <Avatar letters={p.letters} size="pane" />
                     <span className="pay-frequent-name">{p.name}</span>
                   </button>
@@ -184,7 +196,19 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
 }
 
 /** The chosen payee: its card, the banner (D6), the form, the sheets. */
-function ContactForm({ walletId, identity, network, contact }: { walletId: string; identity: string; network: NetworkInfo; contact: string }) {
+function ContactForm({
+  walletId,
+  identity,
+  network,
+  contact,
+  shownAs,
+}: {
+  walletId: string;
+  identity: string;
+  network: NetworkInfo;
+  contact: string;
+  shownAs: Payee | null;
+}) {
   const client = useQueryClient();
   const shown = useDisplay(network);
   const lockState = useLockStatus().data?.state;
@@ -216,7 +240,8 @@ function ContactForm({ walletId, identity, network, contact }: { walletId: strin
     resolve.mutate();
   };
   const found = !current ? null : resolve.isError ? { text: errorMessage(resolve.error), resolved: false } : resolve.data ? resolveText(resolve.data) : null;
-  const payee = payeeOf(detail.data?.summary ?? { contact, alias: null, displayName: null, username: null });
+  const summary = detail.data?.summary;
+  const payee = summary ? payeeOf(summary) : (shownAs ?? payeeOf({ contact, alias: null, displayName: null, username: null }));
 
   const amount = useAmountField(shown, "");
   const subtractFeeByDefault = () => ui.get().prefs.subtractFeeByDefault;
