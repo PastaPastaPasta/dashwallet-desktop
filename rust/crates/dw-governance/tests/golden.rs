@@ -56,3 +56,36 @@ fn test_qt_132_amounts_round_trip_through_core_format_money() {
         );
     }
 }
+
+/// Every object dashd's `gobject check` accepted passes the wallet's object
+/// rules (MG-02 §3), and so does every live testnet proposal of
+/// testdata/governance_live.json (relayed by dashd v24 nodes).
+#[test]
+fn objects_dashd_accepts_validate() {
+    use dw_governance::validate::{ValidObject, check_object};
+    for c in cases() {
+        assert_eq!(c["check"]["Object status"], "OK");
+        let obj = GovernanceObject::new_proposal(
+            1,
+            c["time"].as_i64().unwrap(),
+            hex::decode(c["data_hex"].as_str().unwrap()).unwrap(),
+        );
+        let r = check_object(&obj, dashcore::Network::Regtest, 1_900_000_000);
+        assert!(matches!(r, Ok(ValidObject::Proposal(_))), "{r:?} {}", c["data"]);
+    }
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../testdata/governance_live.json");
+    let live: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("live file")).unwrap();
+    let proposals = live["networks"]["testnet"]["proposals"].as_array().unwrap();
+    assert!(!proposals.is_empty());
+    for p in proposals {
+        let obj = GovernanceObject::new_proposal(
+            1,
+            p["creation_time"].as_i64().unwrap(),
+            hex::decode(p["data_hex"].as_str().unwrap()).unwrap(),
+        );
+        assert_eq!(display_hex(&obj.hash()), p["object_hash"].as_str().unwrap());
+        let r = check_object(&obj, dashcore::Network::Testnet, 1_900_000_000);
+        assert!(matches!(r, Ok(ValidObject::Proposal(_))), "{r:?}");
+    }
+}

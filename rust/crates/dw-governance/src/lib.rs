@@ -22,7 +22,9 @@
 //!   budget (QT-026, QT-134).
 //! - [`tally`]: the passing threshold `max(min_quorum, weighted_valid / 10)`,
 //!   the fundable set, the eight dash-qt statuses in dash-qt's evaluation
-//!   order. Matching votes to masternodes is MG-02's.
+//!   order, and the tally of votes attributed by voting key with weight
+//!   ranges (MG-02 §4.2).
+//! - [`validate`]: Core's object rules for what peers send.
 //! - [`store`]: synced objects and current votes in memory.
 //! - [`net`]: the P2P session governance uses until MG-02 moves govsync
 //!   onto `dw_p2p::Session`.
@@ -40,4 +42,5 @@ pub mod proposal;
 pub mod store;
 pub mod sync;
 pub mod tally;
+pub mod validate;
 pub mod vote;

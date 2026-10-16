@@ -37,6 +37,12 @@ pub const PROPOSAL_NAME_MAX_LEN: usize = 40;
 pub const PROPOSAL_MAX_PAYLOAD_BYTES: usize = 512;
 /// Payments a proposal may request in the wizard.
 pub const PROPOSAL_MAX_PAYMENTS: u32 = 12;
+/// Seconds per block of the governance ETAs, in tenths: Core's trigger
+/// builder estimates a superblock's time as `now + blocks × 2.62 × 60`
+/// (`governance/signing.cpp`), so the ETAs use the same 157.2 s (MG-01 D18,
+/// MG-02 D9). Proposal epochs keep the consensus target spacing (150 s) of
+/// [`GovernanceParams`], as dash-qt's form does.
+pub const ETA_BLOCK_TENTHS: i64 = 1_572;
 /// Vote weight of an EvoNode (`voting_weight`, `evo/dmn_types.h`); a
 /// regular masternode weighs 1.
 pub const EVONODE_VOTE_WEIGHT: u32 = 4;

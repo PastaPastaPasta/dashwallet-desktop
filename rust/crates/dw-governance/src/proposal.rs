@@ -11,7 +11,7 @@ use std::str::FromStr;
 use dashcore::address::Payload;
 use dashcore::{Address, Network};
 
-use crate::clock::{estimated_time, upcoming_superblocks};
+use crate::clock::upcoming_superblocks;
 use crate::object::{GovernanceObject, MAX_DATA_SIZE, OBJECT_TYPE_PROPOSAL};
 use crate::params::{
     GovernanceParams, PROPOSAL_MAX_PAYMENTS, PROPOSAL_NAME_MAX_LEN, governance_params,
@@ -19,7 +19,7 @@ use crate::params::{
 
 const COIN: u64 = 100_000_000;
 /// Dash Core `MAX_MONEY`.
-const MAX_MONEY: u64 = 21_000_000 * COIN;
+pub const MAX_MONEY: u64 = 21_000_000 * COIN;
 
 /// The proposal field a validation failure concerns, in wizard order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -128,13 +128,22 @@ pub fn payment_address_valid(address: &str, network: Network) -> bool {
 /// (dash-qt ignores the choice and counts from "now"; the engine honours
 /// it): half a cycle before the first payment's superblock and half a
 /// cycle after the last one's, in estimated wall time.
+///
+/// Times count the consensus target spacing per block, as dash-qt's form
+/// (`proposalcreate.cpp`, `m_target_spacing`) and its `paymentsRequested`
+/// do, not the 157.2 s of the ETAs (MG-02 D9): with it, a proposal of `n`
+/// payments would read as `n + 1`.
 pub fn epochs(p: &GovernanceParams, draft: &Draft, at: ChainPoint) -> (i64, i64) {
-    let cycle_secs = i64::from(p.superblock_cycle) * i64::from(p.target_spacing_secs);
+    let spacing = i64::from(p.target_spacing_secs);
+    let cycle_secs = i64::from(p.superblock_cycle) * spacing;
+    let time_of =
+        |height: u32| at.time as i64 + (i64::from(height) - i64::from(at.height)) * spacing;
     let first = draft.first_superblock_height;
     let last = first + draft.payment_count.saturating_sub(1) * p.superblock_cycle;
-    let start = estimated_time(p, at.height, at.time, first) as i64 - cycle_secs / 2;
-    let end = estimated_time(p, at.height, at.time, last) as i64 + cycle_secs / 2;
-    (start, end)
+    (
+        time_of(first) - cycle_secs / 2,
+        time_of(last) + cycle_secs / 2,
+    )
 }
 
 /// The data JSON in dash-qt's key order
@@ -260,7 +269,7 @@ impl ProposalData {
     }
 }
 
-fn json_amount(v: &serde_json::Value) -> Option<u64> {
+pub fn json_amount(v: &serde_json::Value) -> Option<u64> {
     match v {
         serde_json::Value::Number(n) => parse_amount(&n.to_string()).or_else(|| {
             let f = n.as_f64()?;

@@ -16,6 +16,7 @@ dashcore = { workspace = true, features = ["secp-recovery"] }
 dw-message = { workspace = true }
 dw-p2p = { workspace = true }
 hex = { workspace = true }
+serde = "1"
 serde_json = "1"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "io-util"] }
