@@ -80,6 +80,7 @@ use super::errors::{IdentityError, PlatformError};
 use super::identity::IdentitySummary;
 use super::keys_policy::missing_dashpay_purposes;
 use super::names::{MainNamePrefs, evident_names, resolve_main_name, shown_names};
+use super::names_check::{NamesChecks, NamesRuns};
 use super::profile::Profile;
 use super::provenance::Entity;
 use super::reverify::{Held, identity_and_profile};
@@ -141,6 +142,11 @@ pub(crate) struct Recovery {
     choice_writer: tokio::sync::Mutex<()>,
     pub(super) snapshots: Mutex<HashMap<WalletId, Vec<OwnedIdentity>>>,
     names_due: Mutex<HashSet<WalletId>>,
+    /// What Platform said of the names of the identities showing none
+    /// (DP1-08 D23).
+    pub(super) names_checks: NamesChecks,
+    /// The names checks running in the background (D27).
+    pub(super) names_runs: NamesRuns,
     /// Wallets with identities a discovery stored that no bring-up has
     /// replayed yet: the next bring-up to reach its Platform pass starts a
     /// recovery phase and then consumes it (DEC-139, DEC-143). Dropped with
@@ -160,6 +166,22 @@ pub(crate) struct Recovery {
     /// and its cache update.
     #[cfg(test)]
     pub(super) pause_after_choice: Mutex<Option<Arc<Pause>>>,
+    /// Tests: blocks the minute's retry before its second kick (D32): it
+    /// says so on the first, waits on the second, and says on the third
+    /// once that kick has returned.
+    #[cfg(test)]
+    pub(super) pause_between_kicks: Mutex<Option<KickPause>>,
+    /// Tests: the names retry's period and a check's budget, if not the
+    /// real ones.
+    #[cfg(test)]
+    pub(super) retry_every: Mutex<Option<Duration>>,
+    #[cfg(test)]
+    pub(super) check_budget: Mutex<Option<Duration>>,
+    /// Tests: blocks the next names check just before it applies its
+    /// answers: it says so on the first, then waits on the second.
+    #[cfg(test)]
+    pub(super) pause_before_answer:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 /// A wallet's explicit discoveries: the channel that ends them, the wallet
@@ -192,6 +214,14 @@ impl Drop for DiscoveriesClosed<'_> {
         }
     }
 }
+
+/// A test's hold on the minute's retry: reached, release, kicked.
+#[cfg(test)]
+pub(super) type KickPause = (
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+);
 
 /// A test's hold on one call at a known point.
 #[cfg(test)]
@@ -263,7 +293,20 @@ impl Recovery {
     /// Identities were discovered for `id`: a names pass follows (again, if
     /// the one taken was cut off).
     pub(super) fn names_due(&self, id: WalletId) {
-        guard(&self.names_due).insert(id);
+        // Both under `names_due`, as `names_pass_ended` reads them.
+        let mut due = guard(&self.names_due);
+        due.insert(id);
+        self.names_checks.owe(id);
+    }
+
+    /// A names pass of `id`, begun at wallet `generation`, ended: the pass
+    /// owed ends too, unless another came due meanwhile (a discovery stored
+    /// more). The check that follows settles it.
+    fn names_pass_ended(&self, id: WalletId, generation: u64) {
+        let due = guard(&self.names_due);
+        if !due.contains(&id) {
+            self.names_checks.pass_ended(id, generation);
+        }
     }
 
     pub(super) fn take_names_due(&self) -> Vec<WalletId> {
@@ -286,7 +329,17 @@ impl Recovery {
         guard(&self.choices).remove(id);
         guard(&self.snapshots).remove(id);
         guard(&self.names_due).remove(id);
+        self.names_runs.forget(id);
+        self.names_checks.forget(id);
         guard(&self.discovered).remove(id);
+    }
+
+    /// Fences the names checks of `id` again: a failed restore's rollback,
+    /// once the wallet is out of the manager (D33). A check begun since its
+    /// [`Self::forget`] read the wallet still there; its answer is dropped.
+    pub(crate) fn fence_names(&self, id: &WalletId) {
+        self.names_runs.forget(id);
+        self.names_checks.forget(id);
     }
 
     #[cfg(test)]
@@ -307,6 +360,11 @@ pub(super) trait MockPlatform: Send + Sync {
     ) -> BoxedFuture<Result<platform_wallet::manager::startup::WalletStartupOutcome, EngineError>>;
     /// The names pass.
     fn names_pass(&self, manager: Arc<Manager>, id: WalletId) -> BoxedFuture<()>;
+    /// Whether `identity` owns a DPNS name; `None` when Platform did not
+    /// answer. By default it owns none.
+    fn owns_a_name(&self, _id: WalletId, _identity: String) -> BoxedFuture<Option<bool>> {
+        Box::pin(async { Some(false) })
+    }
     /// `discover_from_master`: the number of identities found.
     fn discover(
         &self,
@@ -317,6 +375,15 @@ pub(super) trait MockPlatform: Send + Sync {
 
 #[cfg(test)]
 pub(super) type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
+
+/// The names `o` owns by Platform's evidence on a live read: the rule of
+/// `summaries`, whose main name `resolve_main_name` picks from them.
+pub(super) fn evident(o: &OwnedIdentity, prefs: &MainNamePrefs) -> Vec<(String, Option<u64>)> {
+    evident_names(o.names.clone(), prefs, |label| {
+        o.row_owned
+            .contains(&convert_to_homograph_safe_chars(label))
+    })
+}
 
 /// The read model: identities by index, the main identity marked, each with
 /// the names Platform evidence shows it owns and its main name.
@@ -350,10 +417,7 @@ pub(super) fn summaries(
         .map(|(i, o)| {
             let prefs = choices.names.get(&o.identity).cloned().unwrap_or_default();
             let names = if current {
-                evident_names(o.names, &prefs, |label| {
-                    o.row_owned
-                        .contains(&convert_to_homograph_safe_chars(label))
-                })
+                evident(&o, &prefs)
             } else {
                 Vec::new()
             };
@@ -365,6 +429,7 @@ pub(super) fn summaries(
                 is_main: i == main,
                 names: shown,
                 names_updating: !current,
+                names_check: None,
                 identity: o.identity,
                 index: o.index,
                 balance: o.balance,
@@ -424,7 +489,7 @@ pub(super) fn row_owned(
 }
 
 /// The wallet's identities from the library's state.
-fn owned_identities(info: &PlatformWalletInfo, id: &WalletId) -> Vec<OwnedIdentity> {
+pub(super) fn owned_identities(info: &PlatformWalletInfo, id: &WalletId) -> Vec<OwnedIdentity> {
     info.identity_manager
         .wallet_managed_identities(&id.0)
         .filter_map(|m| {
@@ -530,6 +595,11 @@ impl NetworkSession {
             }
         }
         for s in &mut summaries {
+            // Only Platform's answer makes an identity without a name
+            // nameless (D23).
+            if s.main_name.is_none() {
+                s.names_check = recovery.names_checks.of(&id, &s.identity);
+            }
             s.balance_stale = Identifier::from_string(&s.identity, Encoding::Base58)
                 .map_or(true, |i| {
                     (self.platform.balances).stale(id, i, s.balance_as_of)
@@ -664,10 +734,21 @@ impl NetworkSession {
     /// wallet's identities, within [`NAMES_PASS_BUDGET`]. Failures are
     /// logged; `dpns_sync` repairs them on its next pass.
     /// A recovery phase: it advances the catch-up boundary (DEC-125).
-    pub(super) async fn names_pass(&self, manager: &Arc<Manager>, id: WalletId) {
+    pub(super) async fn names_pass(
+        self: &Arc<Self>,
+        manager: &Arc<Manager>,
+        id: WalletId,
+        epoch: u64,
+    ) {
+        let generation = self.platform.recovery.names_checks.generation(&id);
         self.advance_catch_up(id).await;
         self.run_names_pass(manager, id).await;
         self.refresh_identities(manager, id).await;
+        // The pass skips an identity whose names it could not fetch, and
+        // one that fetched nothing new writes nothing: only Platform's
+        // answer per identity settles them (D23), in the background (D27).
+        self.platform.recovery.names_pass_ended(id, generation);
+        self.kick_names_check(id, epoch);
     }
 
     async fn run_names_pass(&self, manager: &Arc<Manager>, id: WalletId) {
@@ -813,8 +894,9 @@ impl NetworkSession {
             .filter(|identity| !before.contains(identity))
             .count();
         if stored > 0 {
-            self.refresh_identities(manager, id).await;
+            // Before the snapshot: no read shows them as having no name.
             self.platform.recovery.names_due(id);
+            self.refresh_identities(manager, id).await;
             guard(&self.platform.recovery.discovered).insert(id);
             self.platform.signal(PlatformSignal::Readmit(id));
         }
@@ -843,7 +925,7 @@ fn scan_key_for(
 
 /// The wallet's main-name rows, identity → rows, from one SELECT (DEC-129):
 /// one snapshot of every row, never assembled from several reads.
-fn read_name_prefs(
+pub(super) fn read_name_prefs(
     db: &dw_appdb::AppDb,
     id: WalletId,
 ) -> Result<HashMap<String, MainNamePrefs>, dw_appdb::AppDbError> {

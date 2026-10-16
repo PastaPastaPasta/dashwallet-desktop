@@ -56,6 +56,7 @@ const fixture: Fixture = {
       names: ["alice"],
       mainName: "alice",
       namesUpdating: false,
+      namesCheck: null,
       isMain: walletId === WALLET,
       balance: "123456789012345678",
       balanceAsOf: 1_760_000_000_000,
