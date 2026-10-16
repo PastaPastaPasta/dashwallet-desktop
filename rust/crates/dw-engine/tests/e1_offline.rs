@@ -501,6 +501,48 @@ fn receive_addresses_requests_and_lookahead() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+/// "Include my username in payment requests" (DP3-03b) is per wallet, kept
+/// across a restart, and goes with the wallet when it is removed.
+#[test]
+fn username_in_requests_survives_a_restart() {
+    let dir = dw_testutil::private_tempdir();
+    let root = dir.path().join("data");
+    let store = Arc::new(MemoryOsStore::new());
+    let engine = new_engine_with(&root, Arc::new(Recorder::default()), Arc::clone(&store));
+    let s = open(&engine);
+    unencrypted_vault(&engine, &s);
+    let a = import(&engine, &s, ABANDON_12, genesis()).unwrap();
+    let b = import(&engine, &s, LEGAL_12, genesis()).unwrap();
+    let on = |engine: &Engine, s: &Arc<NetworkSession>, w| {
+        engine.block_on(s.username_in_requests(w)).unwrap()
+    };
+    assert!(on(&engine, &s, a) && on(&engine, &s, b), "on by default");
+    engine
+        .block_on(s.set_username_in_requests(a, false))
+        .unwrap();
+    assert!(!on(&engine, &s, a));
+    assert!(on(&engine, &s, b), "one wallet's setting is its own");
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(s);
+    drop(engine);
+
+    let engine = new_engine_with(&root, Arc::new(Recorder::default()), Arc::clone(&store));
+    let s = open(&engine);
+    assert!(!on(&engine, &s, a), "off after a restart");
+    assert!(on(&engine, &s, b));
+
+    // A removed wallet's setting goes with it: imported again, it is on.
+    let wipe = engine
+        .block_on(
+            s.vault_op(move |v| v.authorize(GrantPurpose::Wipe, Some(&a.0), Credential::None)),
+        )
+        .unwrap();
+    engine.block_on(s.remove_wallet(a, wipe.id)).unwrap();
+    assert_eq!(import(&engine, &s, ABANDON_12, genesis()).unwrap(), a);
+    assert!(on(&engine, &s, a));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 #[test]
 fn empty_history_and_query_errors() {
     let dir = dw_testutil::private_tempdir();

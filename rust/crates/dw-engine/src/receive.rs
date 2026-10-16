@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dashcore::Address;
-use dw_appdb::{BookPurpose, LabelKind};
+use dw_appdb::{AppDbError, BookPurpose, LabelKind};
 use dw_uri::core::{SendCoinsRecipient, format_request_uri};
 use key_wallet::managed_account::address_pool::{AddressPool, AddressState};
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
@@ -23,6 +23,11 @@ use crate::{EngineError, NetworkSession, WalletId};
 
 /// Dash Core `MAX_MONEY` (21 million DASH) in duffs.
 const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
+
+/// dw-appdb setting (wallet scope) of "Include my username in payment
+/// requests" (DP3-03b): `"0"` is off, absent (the default) is on; anything
+/// else is corrupt, which the URIs read as off.
+pub(crate) const USERNAME_IN_REQUESTS_KEY: &str = "dashpay.username_in_requests";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddressInfo {
@@ -407,8 +412,9 @@ impl NetworkSession {
 
     /// The username the Receive screen's QR carries as `user=` (IOS-055,
     /// DP3-03): the main name of the wallet's main DashPay identity. `None`
-    /// without one, while a sync pass holds the names, or while Platform's
-    /// state cannot be read: the QR is then a plain Core one.
+    /// without one, while a sync pass holds the names, while Platform's
+    /// state cannot be read, or while [`Self::username_in_requests`] is off:
+    /// the QR is then a plain Core one.
     pub async fn receive_username(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -424,10 +430,65 @@ impl NetworkSession {
 
     /// [`Self::receive_username`] inside an operation: the identity read
     /// touches the database, so it runs off the runtime's threads. Never an
-    /// error: without the name the URI is a plain Core one.
+    /// error: without the name the URI is a plain Core one. `None` while
+    /// [`Self::username_in_requests`] is off, or cannot be read.
     async fn username_of(self: &Arc<Self>, wallet: WalletId) -> Option<String> {
+        if !self.username_in_requests_of(wallet).await.ok()? {
+            return None;
+        }
         let this = Arc::clone(self);
         (tokio::task::spawn_blocking(move || this.main_username(wallet)).await).ok()?
+    }
+
+    /// "Include my username in payment requests" (DP3-03b, DP3-02 D21):
+    /// while on (the default), [`Self::receive_username`] and the requests'
+    /// `username` and `uri` carry the main name; off, they are plain Core
+    /// ones. Stored in this network's app.sqlite under the wallet, so a
+    /// stored request follows it when it is read.
+    pub async fn username_in_requests(
+        self: &Arc<Self>,
+        wallet: WalletId,
+    ) -> Result<bool, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.require_wallet(&wallet)?;
+            this.username_in_requests_of(wallet).await
+        })
+        .await
+    }
+
+    /// Turns [`Self::username_in_requests`] on or off for one wallet.
+    pub async fn set_username_in_requests(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        on: bool,
+    ) -> Result<(), EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.require_wallet(&wallet)?;
+            let scope = wallet.to_string();
+            this.appdb_op(move |db| {
+                db.set_setting(&scope, USERNAME_IN_REQUESTS_KEY, (!on).then_some("0"))
+            })
+            .await
+        })
+        .await
+    }
+
+    async fn username_in_requests_of(&self, wallet: WalletId) -> Result<bool, EngineError> {
+        let scope = wallet.to_string();
+        self.appdb_op(
+            move |db| match db.setting(&scope, USERNAME_IN_REQUESTS_KEY)? {
+                None => Ok(true),
+                Some(v) if v == "0" => Ok(false),
+                Some(v) => Err(AppDbError::Corrupt(format!(
+                    "{USERNAME_IN_REQUESTS_KEY} {v:?}"
+                ))),
+            },
+        )
+        .await
     }
 
     pub async fn delete_receive_request(

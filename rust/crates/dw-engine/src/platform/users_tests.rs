@@ -563,6 +563,96 @@ fn receive_carries_the_main_name() {
     assert_eq!(stranger.unwrap_err().code(), "wallet_not_found");
 }
 
+/// "Include my username in payment requests" (DP3-03b): on by default; off,
+/// the Receive QR and every request, stored ones too, are dash-qt's
+/// `formatBitcoinURI` byte for byte; on again, they carry the name again.
+#[test]
+fn the_username_opt_out_gives_plain_core_uris() {
+    let f = Fixture::new();
+    let s = &f.s;
+    let on = || f.engine.block_on(s.username_in_requests(f.wallet)).unwrap();
+    let set = |to| {
+        (f.engine)
+            .block_on(s.set_username_in_requests(f.wallet, to))
+            .unwrap()
+    };
+    let username = || f.engine.block_on(s.receive_username(f.wallet)).unwrap();
+    let core = |r: &crate::ReceiveRequest| {
+        dw_uri::core::format_bitcoin_uri(&dw_uri::core::SendCoinsRecipient {
+            address: r.address.clone(),
+            label: r.label.clone().unwrap_or_default(),
+            message: r.message.clone().unwrap_or_default(),
+            amount: r.amount.map_or(0, |a| a as i64),
+        })
+    };
+    assert!(on());
+    let stored = (f.engine)
+        .block_on(s.create_receive_request(
+            f.wallet,
+            Some(150_000_000),
+            Some("Rent & co".into()),
+            Some("May/June".into()),
+        ))
+        .unwrap();
+    assert_eq!(stored.username.as_deref(), Some("me1"));
+    assert_eq!(stored.uri, format!("{}&user=me1", core(&stored)));
+
+    set(false);
+    assert!(!on());
+    assert_eq!(username(), None);
+    let fresh = (f.engine)
+        .block_on(s.create_receive_request(f.wallet, None, None, None))
+        .unwrap();
+    assert_eq!(
+        (fresh.username.as_deref(), fresh.uri.as_str()),
+        (None, format!("dash:{}", fresh.address).as_str())
+    );
+    let listed = f.engine.block_on(s.receive_requests(f.wallet)).unwrap();
+    assert_eq!(listed.len(), 2);
+    for r in &listed {
+        assert_eq!((r.username.as_deref(), r.uri.clone()), (None, core(r)));
+    }
+    assert_eq!(
+        listed[1].uri,
+        format!(
+            "dash:{}?amount=1.50000000&label=Rent%20%26%20co&message=May%2FJune",
+            stored.address
+        )
+    );
+    // Turning it off twice, or reading it while off, changes nothing.
+    set(false);
+    assert!(!on());
+
+    set(true);
+    assert_eq!(username(), Some("me1".into()));
+    let listed = f.engine.block_on(s.receive_requests(f.wallet)).unwrap();
+    assert_eq!(listed[1], stored, "a stored request follows the setting");
+
+    // A value the engine never writes fails closed: no name, and the read
+    // says why (DP3-03b D6).
+    let (appdb, scope) = (s.live().unwrap().appdb, f.wallet.to_string());
+    let key = crate::receive::USERNAME_IN_REQUESTS_KEY;
+    appdb.set_setting(&scope, key, Some("off")).unwrap();
+    assert_eq!(username(), None);
+    let listed = f.engine.block_on(s.receive_requests(f.wallet)).unwrap();
+    assert_eq!(
+        (listed[1].username.as_deref(), listed[1].uri.clone()),
+        (None, core(&listed[1]))
+    );
+    let corrupt = f.engine.block_on(s.username_in_requests(f.wallet));
+    assert_eq!(corrupt.unwrap_err().code(), "storage");
+    set(true);
+    assert_eq!(username(), Some("me1".into()));
+
+    let stranger = WalletId([9; 32]);
+    let refused = f.engine.block_on(s.username_in_requests(stranger));
+    assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+    let refused = f
+        .engine
+        .block_on(s.set_username_in_requests(stranger, false));
+    assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+}
+
 /// The iOS-made links (`testdata/dashpay_user_links.json`), as iOS verifies
 /// a scan: the link's username must belong to the link's identity now.
 #[test]
