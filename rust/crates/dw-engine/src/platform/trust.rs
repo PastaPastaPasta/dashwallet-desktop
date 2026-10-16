@@ -412,11 +412,8 @@ impl TrustProvider {
             return Err(unknown());
         }
         let spv = Arc::clone(&attached.spv);
-        let (wait, poll, limit) = (
-            self.unknown_quorum_wait,
-            self.spv_poll,
-            self.spv_lookup_timeout,
-        );
+        let (wait, poll) = (self.unknown_quorum_wait, self.spv_poll);
+        let limit = self.spv_lookup_timeout;
         let verified = block_on(async move {
             let deadline = tokio::time::Instant::now() + wait;
             loop {

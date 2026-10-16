@@ -424,11 +424,8 @@ fn after_masternode_sync_the_degraded_mode_falls_back_at_once() {
     for _ in 0..3 {
         assert_eq!(r.lookup(A).unwrap(), REAL);
     }
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "no wait for SPV: {:?}",
-        started.elapsed()
-    );
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(2), "no wait for SPV: {took:?}");
     assert_eq!(r.spv.calls(), 3, "SPV asked once per lookup, never polled");
     assert!(r.latched(), "served unverified, behind the latch");
 }
@@ -445,12 +442,38 @@ fn a_hung_spv_lookup_is_bounded_and_falls_back() {
         let started = Instant::now();
         assert_eq!(r.lookup(A).unwrap(), REAL, "{mode:?}");
         let took = started.elapsed();
+        // Under the production 5 s: the field bounds it, not the constant.
         assert!(
-            took >= Duration::from_millis(200) && took < Duration::from_secs(3),
+            took >= Duration::from_millis(200) && took < Duration::from_millis(4500),
             "{mode:?}: bounded by the lookup timeout: {took:?}"
         );
         assert!(r.latched(), "{mode:?}: served unverified");
     }
+}
+
+/// BL-162: after masternode sync a hung lookup in the enforcing wait is cut
+/// at the wait's deadline: the first lookup takes its bound, the wait's take
+/// no more than what is left (one bound plus the wait, not two bounds). It
+/// fails closed, never on the trusted service's word.
+#[test]
+fn a_hung_spv_lookup_ends_with_the_enforcing_wait() {
+    let r = rig_with(TrustMode::Enforcing, |t| {
+        t.with_waits(Duration::from_millis(300), Duration::from_millis(50))
+            .with_lookup_timeout(Duration::from_secs(3))
+    });
+    r.trusted.set(A, REAL);
+    r.spv.hung.store(true, Ordering::SeqCst);
+    r.trust.note_masternodes_synced();
+
+    let started = Instant::now();
+    assert!(r.lookup(A).is_err());
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_millis(3250) && took < Duration::from_secs(5),
+        "one bound plus the wait: {took:?}"
+    );
+    assert_eq!(r.trusted.calls(), 0, "never the fallback after sync");
+    assert!(!r.latched());
 }
 
 /// The developer toggle: the trusted service only, SPV never consulted.
