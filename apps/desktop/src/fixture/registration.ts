@@ -109,18 +109,15 @@ export function reported(world: World, walletId: string, dp: DashPayWorld, r: Re
   // A copy: `advance` changes the world's row in place, and a read answering the same object
   // would look unchanged to the query cache. A parked run has ended, as the engine's does (D26).
   const running = active(world, walletId, dp, r.draft);
-  if (r.phase === "done" || active(world, walletId, dp, r.draft)) return { ...r, running };
-  if (r.phase === "failed") return { ...r, waiting: null, holdsKey: false, running };
+  if (r.phase === "done" || running) return { ...r, running };
+  if (r.phase === "failed") return { ...r, waiting: null, holdsKey: false, running: false };
   const kept = r.waiting === "needsFinish" || r.waiting === "fundingUnknown";
   // A parked run (its lease revoked or parked, D14) says what it parks for; an idle row its proof.
   const proofless = !dp.runs.includes(r.draft) && (r.phase === "fundingSent" || r.phase === "proofWaiting");
-  const waiting: RegistrationWaitName = kept ? r.waiting! : proofless ? "chainLock" : keyless(world) ? "unlock" : "authorize";
-  return { ...r, waiting, holdsKey: false, running };
+  const keyless = world.lock.state === "locked" || world.lock.state === "unlockedMixingOnly";
+  const waiting: RegistrationWaitName = kept ? r.waiting! : proofless ? "chainLock" : keyless ? "unlock" : "authorize";
+  return { ...r, waiting, holdsKey: false, running: false };
 }
-
-/** The vault holds no full-scope key, so a passphrase grant carries its own (vault.rs): only then
- * does a run hold a key (`holdsKey`); on an unlocked vault it signs with the vault's (D26). */
-const keyless = (world: World) => world.lock.state === "locked" || world.lock.state === "unlockedMixingOnly";
 
 /** What a running row waits for in `phase`: the funding's InstantSend lock, else nothing. */
 const runningWait = (phase: RegistrationStatus["phase"]): RegistrationWaitName | null =>
@@ -219,7 +216,9 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         identity: null,
         txid: dp.assetLocks.toString(16).padStart(2, "0").repeat(32),
         waiting: "instantSend",
-        holdsKey: keyless(world),
+        // D26: a run holds a key of its own only under a passphrase grant (`ownKey`); on an
+        // unlocked vault it signs with the vault's.
+        holdsKey: g.ownKey,
         running: true,
         fundsCommitted: true,
         contestEndsAt: null,
@@ -265,7 +264,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       // A parked run takes the grant (a new lease); an idle row runs again.
       d.newLease(ctx, walletId, "registration", [g]);
       const phase = row.phase === "failed" ? row.failure!.phase : row.phase;
-      Object.assign(row, { phase, failure: null, waiting: runningWait(phase), holdsKey: keyless(world), running: true, updatedAt: secs(FIXTURE_NOW) });
+      Object.assign(row, { phase, failure: null, waiting: runningWait(phase), holdsKey: g.ownKey, running: true, updatedAt: secs(FIXTURE_NOW) });
       dp.runs = [...dp.runs.filter((x) => x !== draft), draft];
       settleStatus(dp);
       changed(ctx, walletId, draft);
@@ -292,7 +291,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       const stranded = dp.registrations.filter((r) => !dp.runs.includes(r.draft) && r.waiting === "needsFinish");
       d.newLease(ctx, walletId, "registration", [g]);
       for (const row of stranded) {
-        Object.assign(row, { waiting: runningWait(row.phase), holdsKey: keyless(world), running: true });
+        Object.assign(row, { waiting: runningWait(row.phase), holdsKey: g.ownKey, running: true });
         dp.runs = [...dp.runs, row.draft];
         changed(ctx, walletId, row.draft);
       }
