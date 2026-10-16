@@ -63,9 +63,14 @@ export function traceName(route: LinkRoute): string {
 }
 
 /** Moves focus to the page a link or a menu opened (its title, else the page), so keyboard and
- * screen reader users land on it. Sidebar clicks keep their focus. */
+ * screen reader users land on it. Sidebar clicks keep their focus. The move waits a frame for
+ * the page, and a frame can come late: focus moved meanwhile, by the user or the page, stays
+ * (BL-165). */
 function focusPage() {
+  const before = document.activeElement;
   requestAnimationFrame(() => {
+    const active = document.activeElement;
+    if (active && active !== before && active !== document.body) return;
     const page = document.querySelector<HTMLElement>(".app-body > main");
     const target = page?.querySelector<HTMLElement>("h1") ?? page;
     if (!target) return;
