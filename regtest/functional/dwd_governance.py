@@ -225,9 +225,8 @@ class DwdGovernance(DashTestFramework):
         core_info = node.getgovernanceinfo()
         for k in ("governanceminquorum", "proposalfee", "superblockcycle", "superblockmaturitywindow",
                   "lastsuperblock", "nextsuperblock", "fundingthreshold", "governancebudget"):
-            if k in info:
-                assert_equal(Decimal(str(info[k])), Decimal(str(core_info[k])))
-        assert "fundingthreshold" in info and "nextsuperblock" in info, info
+            assert k in info, (k, info)
+            assert_equal(Decimal(str(info[k])), Decimal(str(core_info[k])))
         kind, budget_text = console[f"getsuperblockbudget {FIRST_SUPERBLOCK}"]
         assert_equal(kind, "result")
         assert_equal(Decimal(budget_text), budget)

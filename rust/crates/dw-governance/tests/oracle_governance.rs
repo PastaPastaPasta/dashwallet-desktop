@@ -160,8 +160,11 @@ fn test_QT_131_testnet_current_votes_equal_dashd() {
 }
 
 /// Testnet signs a vote's `GetSignatureHash` (MG-01 D12): each raw vote
-/// round-trips byte for byte, hashes to dashd's vote hash, and recovers its
-/// voting key only under the testnet digest.
+/// round-trips byte for byte and hashes to a vote dashd lists for the
+/// object (the check independent of this crate). The recorded voting key
+/// ids are this crate's own recovery at capture, so the key checks guard
+/// against regressions only: the key recovers under the testnet digest,
+/// and differs under mainnet's.
 #[test]
 fn test_QT_131_testnet_raw_votes_recover_their_voting_keys() {
     let doc = load("governance_votes_testnet.json");
