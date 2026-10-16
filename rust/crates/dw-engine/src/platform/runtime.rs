@@ -379,6 +379,11 @@ impl PlatformRuntime {
         }
     }
 
+    /// The session runs with Platform (not `SessionOptions::no_platform`).
+    pub(crate) fn enabled(&self) -> bool {
+        self.enabled
+    }
+
     /// SPV runs under a supervisor, and with it the Platform loops.
     pub(super) fn is_running(&self) -> bool {
         self.enabled && guard(&self.supervisor).as_ref().is_some_and(|s| s.running)

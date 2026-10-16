@@ -85,9 +85,10 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       }
     case "coinJoin":
       return [keys.coinjoinStatus(event.walletId)];
-    // No screen reads these yet (the notice views come with their task).
+    // No screen reads these yet (the notice and masternode views come with their tasks).
     case "newTransactions":
     case "notice":
+    case "masternodes":
       return [];
     default:
       return unreachable(event);

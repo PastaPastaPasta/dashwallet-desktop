@@ -34,6 +34,7 @@ mod history_ops;
 mod keys;
 mod labels;
 pub mod masternode_keys;
+pub mod masternodes;
 mod multiwallet;
 mod network;
 pub mod platform;

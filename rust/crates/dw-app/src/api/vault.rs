@@ -45,12 +45,16 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "deferred (MG): masternode key reveal is bound with the Masternodes domain",
     ),
     (
+        "NetworkSession::masternodes",
+        "deferred (MG): the masternodes facade (mn-engine.md) is bound with the Masternodes domain (MG-03 D8)",
+    ),
+    (
         "Vault::with_revealed_seed",
         "internal: a closure over the seed for the engine's own key derivations (masternode keys, MG), never a host call",
     ),
     (
         "Vault::store_masternode_key",
-        "deferred (MG-03): attaching a key to a tracked masternode is bound with the Masternodes domain (MG-01 D7)",
+        "internal: reached through `Masternodes::attach_key`, which checks the key first (MG-03 D8, MG-01 D7)",
     ),
     (
         "Vault::masternode_key",
@@ -58,11 +62,11 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         "Vault::masternode_key_roles",
-        "deferred (MG-03): listing attached roles is bound with the Masternodes domain (MG-01 D15)",
+        "internal: reached through the masternodes facade's rows (`MasternodeRoles::attached`, MG-03 D8, MG-01 D15)",
     ),
     (
         "Vault::delete_masternode_keys",
-        "deferred (MG-03): Stop tracking deletes attached keys through the Masternodes domain (MG-00 D22)",
+        "internal: reached through `Masternodes::untrack` and `detach_key` (MG-03 D8, MG-00 D22)",
     ),
     (
         "Vault::grant_identity_key_matches",

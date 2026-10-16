@@ -2514,6 +2514,7 @@ dependencies = [
  "dw-fs",
  "dw-message",
  "dw-p2p",
+ "dw-protx",
  "dw-psbt",
  "dw-testutil",
  "dw-units",

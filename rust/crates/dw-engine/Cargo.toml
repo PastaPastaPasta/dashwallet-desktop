@@ -38,6 +38,8 @@ dw-appdb = { workspace = true }
 # M3 (docs/contracts/m3-engine.md): CoinJoin over dw-coinjoin/dw-p2p.
 dw-coinjoin = { workspace = true }
 dw-p2p = { workspace = true }
+# MG-03 (docs/contracts/mn-engine.md): collateral resolution and amounts.
+dw-protx = { workspace = true }
 dw-units = { workspace = true }
 dw-compat = { workspace = true }
 dw-psbt = { workspace = true }

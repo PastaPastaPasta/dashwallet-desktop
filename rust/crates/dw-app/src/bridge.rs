@@ -178,6 +178,11 @@ pub enum AppEvent {
         wallet_id: String,
         change: PlatformChangeName,
     },
+    /// A masternode of interest or a track, label or key changed (MG-03,
+    /// ≤ 1 Hz): re-read what is shown.
+    Masternodes {
+        network: String,
+    },
     LeaseChanged {
         network: String,
         lease: Lease,
@@ -396,6 +401,9 @@ impl From<EngineEvent> for AppEvent {
                 network: net(network),
                 wallet_id: wallet_id.to_string(),
                 change: change.into(),
+            },
+            EngineEvent::Masternodes { network } => AppEvent::Masternodes {
+                network: net(network),
             },
             EngineEvent::LeaseChanged { network, lease } => AppEvent::LeaseChanged {
                 network: net(network),
@@ -902,6 +910,7 @@ mod tests {
                         identity: text(MAX_ID_BYTES),
                     },
                 },
+                EngineEvent::Masternodes { network: network() },
                 // More than the engine sends: the bridge cuts too.
                 EngineEvent::DashPayNews {
                     network: network(),
@@ -950,9 +959,10 @@ mod tests {
                 AppEvent::LockProgress { .. } => 16,
                 AppEvent::DispatchResolved { .. } => 17,
                 AppEvent::DashPayNews { .. } => 18,
+                AppEvent::Masternodes { .. } => 19,
             };
             let seen: std::collections::BTreeSet<_> = events.iter().map(variant).collect();
-            assert_eq!(seen, (0..19).collect());
+            assert_eq!(seen, (0..20).collect());
 
             let mut largest = (0, None);
             for event in &events {
