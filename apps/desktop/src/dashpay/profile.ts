@@ -181,7 +181,7 @@ export interface CreditsModel {
   pending: PendingRow[];
   stuck: StuckRow[];
   topUp: { disabled: boolean; reason: string | null; primary: boolean };
-  /** D14: the sheet holds a result not yet seen. */
+  /** D14, D31: the sheet holds a result for this identity not yet seen. */
   unseen: boolean;
 }
 
@@ -192,7 +192,7 @@ export interface CreditsInputs {
   stuck: StuckTopUpFunding[];
   /** This wallet's top-up runs now (D14). */
   toppingUp: boolean;
-  /** The flow holds a result that came while the sheet was hidden (D14). */
+  /** The flow holds a result for this identity that came while the sheet was hidden (D14, D31). */
   unseen: boolean;
   /** Locks a call answered `consumptionUnknown` this session (D15). */
   answeredUnknown: ReadonlySet<string>;
