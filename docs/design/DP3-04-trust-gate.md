@@ -124,8 +124,8 @@ refusals (DP3-01 D16); a top-up as `CreditsError::Platform(..)`.
 
 The gate never takes, writes or clears a payment lock. It runs after the lock check and before the claim: a locked
 or in-flight contact refuses before the wait (`contact.payment_locked`), one locked during the wait refuses in
-`resolve`, and the first broadcast's claim (D20) and pre-hand-off row (D23) are unchanged. A gate refusal is before
-any hand-off, so it never locks a contact. The dropped reservation of §4 step 5 is the reservation D7 keeps; it is
+`resolve`, and the first broadcast's claim (DP3-01 D20) and pre-hand-off row (DP3-01 D23) are unchanged. A gate refusal is before
+any hand-off, so it never locks a contact. The dropped reservation of §4 step 5 is the reservation DP3-01 D7 keeps; it is
 dropped only when the payee's current content is unverified.
 
 ## 8. Decisions
@@ -149,6 +149,9 @@ dropped only when the payee's current content is unverified.
 | D15 | Correct the bound instead of moving each fetch into its own task. | Review r1 #7: a spawned fetch timed out on its join handle would leave blocked fetches running detached. Fails closed either way; the bound is documented as "plus one fetch's blocking lookups". |
 | D16 | Review r1 #2 (a `prepare` dropped between reservation and re-check keeps the address) is not reachable: `TxDraft::prepare` runs in its own task (`on_runtime`), which a host dropping its future does not cancel. Keeping the address only after the re-check closes it anyway. | Checked with a test that aborted the caller: the inner task ran on (and held the coin fence). |
 | D17 | `payee_held` keeps its own copy of the contacts read model's precedence. | Sharing one helper means restructuring `owner_contacts` (a shared file DP3-07 and MG-02 also touch); `the_gate_and_the_contacts_row_agree` and `an_unverified_profile_holds_the_payment` pin the two together, and the payee-without-profile/label mutations are caught. |
+| D18 | T2 is read-mostly: `t2_testnet_the_money_gate_verifies_a_contact` (`#[ignore]`, public testnet, fixture wallets A and B) syncs A to the tip, latches the fallback, runs the degraded and the enforcing gate on B and on A's identity, then an enforcing `prepare` to B. Nothing is broadcast, so no A→B payment was needed. | The acceptance rests on the gate and `prepare`, not on the broadcast DP3-01/DP3-06 already cover; evidence below. |
+| D19 | No Swift `engineCodes` or Swift T0 change. | No m4 §4 table changed and no code was added (D2); m4 item 54 is behaviour only (Contract-Version 28, surface unchanged). |
+| D20 | Gate load flake, outside this task: `lease::call_tests::a_call_steps_marker_is_durable_before_its_permit_returns` and `…::a_call_step_dropped_during_its_marker_write_resolves_after_it` failed in the full dw-engine run (1022 s at load 120–200) and passed 20 of 20 rerun alone from the same binary. | This branch does not touch `platform/lease`; both wait on wall-clock windows. |
 
 ## 9. Tests (T0)
 
@@ -189,3 +192,26 @@ dropped only when the payee's current content is unverified.
 | degraded top-up proceeds | `topup_tests::the_degraded_mode_tops_up_an_unverified_identity` |
 | funding hold reads `writes_wait` | `topup_tests::the_funding_hold_waits_for_platform_writes` |
 | mutation | each gate call removed or weakened in turn makes at least one of the above fail (`mutate.sh`, recorded in the evidence) |
+
+## 10. Evidence (2026-10-16)
+
+- **Gate** (head 1aa8beda, then the UI-only follow-merge 975a4fa8): fmt, clippy (workspace and dw-app
+  `selftest`) clean; tests passed 2048, failed 2 (D20, each 20/20 alone); tsc clean; vitest 58 files /
+  823 tests on 1aa8beda and 60 / 855 on 975a4fa8. The merge changes no file under `rust/`. No Playwright
+  spec is affected: this task changes no UI.
+- **Mutations** (`mutate.sh` on 1aa8beda): 19 of 19 caught. Each removes or weakens one gate call or
+  check (prepare gate, reservation re-check, tainted or unchecked kept address, stale paying account and its
+  latch, the claimed slot, the re-check round, payee profile and label, top-up gate, `writes_wait` hold,
+  probe, mismatch, `Enforce`, scoped tally, lock). One first draft of the claimed-slot mutation could not
+  fail by construction and was replaced.
+- **T2** (D18, public testnet, `t2_testnet_the_money_gate_verifies_a_contact`):
+
+  | Head | B unverified before | Degraded probe | Enforcing gate | Enforcing `prepare` |
+  |---|---|---|---|---|
+  | b988c88b | no | 0.3 ms | pass, attempt 1 | 66 ms, pass |
+  | b988c88b | yes | 134 ms, verified B | pass, attempt 1 | 132 ms, pass |
+  | 5bbfb646 | yes | 155 ms, verified B | pass, attempt 1 | 171 ms, pass |
+
+  Each `prepare` paid B's contact address yYyXvcRUyj12iqbpvWsAtXgenAM9YKzax9 (txid cbe51e9a…, never
+  broadcast). An earlier head (dc87f1ca) refused at `prepare` because B's name landed between the gate and
+  the reservation (D13). Another run right after masternode sync waited 119 s and moved nothing (§5, D15).
