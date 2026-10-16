@@ -58,8 +58,8 @@ function mask(text: string): string {
 }
 
 /** dwcli on a testnet data root; its stdout (JSON, no secrets), shown masked when it fails. */
-function dwcli(root: string, passFile: string, args: string[], input?: string): string {
-  const r = spawnSync(DWCLI, ["--datadir", root, ...NETWORK, "--passphrase-file", passFile, ...args], { encoding: "utf8", input, timeout: 900_000 });
+function dwcli(root: string, passFile: string, args: string[], input?: string, timeout = 900_000): string {
+  const r = spawnSync(DWCLI, ["--datadir", root, ...NETWORK, "--passphrase-file", passFile, ...args], { encoding: "utf8", input, timeout });
   if (r.status === 0) return r.stdout;
   throw new Error(`dwcli ${args.slice(0, 3).join(" ")} failed (${r.status}): ${mask(`${r.stderr}${r.stdout}`).slice(-800)}`);
 }
@@ -88,7 +88,14 @@ interface Item {
   amount: number;
 }
 
-/** What `identity` received from `from`, as dwcli reads it (`--spv`: after a sync and a pass). */
+/** SPV caught up on `root` (DashPay's bring-up runs with it, so the receival accounts are
+ * watched), or until `txid` is in its history. `--spv` alone returns before the chain is synced. */
+function sync(root: string, passFile: string, txid?: string): void {
+  const secs = Math.round(SEND_TIMEOUT_MS / 1000);
+  dwcli(root, passFile, ["sync", "--timeout-secs", String(secs), ...(txid ? ["--txid", txid] : [])], undefined, SEND_TIMEOUT_MS + 60_000);
+}
+
+/** What `identity` received from `from`, as dwcli reads it after a sync. */
 function received(root: string, passFile: string, identity: string, from: string): Item[] {
   const items: Item[] = [];
   let cursor: string | null = null;
@@ -151,6 +158,9 @@ async function run(
   await wd.waitGone(tid("lock-screen"), "the lock screen");
   if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
   step(`unlocked the restored wallet ${PAYER}`);
+  // The strip ranks the wallet's history: wait for the chain, as a user returning to the wallet.
+  await poll(SEND_TIMEOUT_MS, "the wallet to sync", async () => ((await textOf(tid("status-bar"))).includes("Synced") ? true : undefined));
+  step("the status bar says Synced");
 
   if (ledgerIn) {
     step(`the payment ${PAYER}→${PAYEE} was sent before (${ledgerIn.at}, ${ledgerIn.txid}); not paying again`);
@@ -163,17 +173,20 @@ async function run(
     // The strip and the picker fill once DashPay's bring-up has run.
     const chip = `${tid("pay-frequent-chip")}[data-contact="${payee}"]`;
     const row = `${tid("pay-picker-row")}[data-contact="${payee}"]`;
-    const via = await poll(DASHPAY_TIMEOUT_MS, `Pay ▸ To a contact to list ${USERNAME}`, async () =>
-      (await wd.find(chip)) ? "the frequent strip" : (await wd.find(row)) ? "the picker" : undefined,
-    );
+    const named = (css: string) => wd.script<boolean>(`return !!document.querySelector('${css}')?.innerText.includes('${USERNAME}')`);
+    await poll(DASHPAY_TIMEOUT_MS, `Pay ▸ To a contact to list ${USERNAME}`, async () => ((await named(chip)) || (await named(row)) ? true : undefined));
+    // The strip follows the picker once DashPay's payments are read: give it a moment.
+    const via = await poll(TIMEOUT_MS, "the frequent strip", async () => ((await named(chip)) ? "the frequent strip" : undefined)).catch(() => "the picker");
     out.frequent = await wd.script<string[]>(`return [...document.querySelectorAll('${tid("pay-frequent-chip")}')].map((c) => c.innerText.replace(/\\s+/g, " ").trim())`);
     out.via = via;
     await wd.screenshot("1-chooser");
     step(`To a contact lists ${USERNAME} in ${via}; strip: ${JSON.stringify(out.frequent)}`);
     await wd.press(via === "the frequent strip" ? chip : row);
 
-    const payeeName = await poll(TIMEOUT_MS, "the payee card", async () => (await textOf(tid("pay-payee-name"))) || undefined);
-    if (!payeeName.includes(USERNAME)) throw new Error(`the payee card names ${payeeName}, not ${USERNAME}`);
+    const payeeName = await poll(TIMEOUT_MS, `the payee card to name ${USERNAME}`, async () => {
+      const t = await textOf(tid("pay-payee-name"));
+      return t.includes(USERNAME) ? t : undefined;
+    });
     const banner = await wd.script<{ kind: string; text: string } | null>(
       `const b = document.querySelector('${tid("pay-banner")}'); return b ? { kind: b.dataset.kind, text: b.innerText } : null`,
     );
@@ -268,6 +281,8 @@ async function main() {
   try {
     ledger = earlier(payer, payee);
     restore(payeeRoot, passFile, PAYEE);
+    dwcli(payeeRoot, passFile, ["contact", "--spv", "list", "--identity", payee]);
+    sync(payeeRoot, passFile);
     before = received(payeeRoot, passFile, payee, payer);
     step(`payee ${PAYEE} received from ${PAYER} before: ${before.length} payments`);
     restore(appRoot, passFile, PAYER);
@@ -290,6 +305,7 @@ async function main() {
     // The payee's side: the payment arrives on its receival account for the payer.
     const txid = ledger?.txid;
     if (!failure && txid) {
+      sync(payeeRoot, passFile, txid);
       arrived = await poll(DASHPAY_TIMEOUT_MS, `${PAYEE} to receive ${txid}`, async () => received(payeeRoot, passFile, payee, payer).find((i) => i.txid === txid));
       if (Math.abs(arrived.amount) !== DUFFS) throw new Error(`${PAYEE} received ${arrived.amount} duffs in ${txid}, not ${DUFFS}`);
       step(`payee ${PAYEE} received ${arrived.amount} duffs from ${PAYER} in ${txid} (${arrived.direction})`);
