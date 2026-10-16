@@ -40,6 +40,7 @@ from decimal import Decimal
 from test_framework.governance import prepare_object
 from test_framework.messages import uint256_to_string
 from test_framework.test_framework import EVONODE_COLLATERAL, DashTestFramework
+from test_framework.authproxy import JSONRPCException
 from test_framework.util import assert_equal, assert_greater_than, p2p_port
 
 SPORK_OFF = 4070908800  # 2099-01-01: a spork time that never comes
@@ -238,17 +239,41 @@ class DwdGovernance(DashTestFramework):
         self.log.info("3. voteraw: a vote signed outside, relayed by the wallet, reaches Core")
         voter = regular[1]
         vote_time = int(time.time())
-        message = f"{voter.collateral_txid}-{voter.collateral_vout}|{p1}|1|{OUTCOME_CODES['abstain']}|{vote_time}"
-        sig = node.signmessage(voter.votingAddr, message)
+        collateral = (voter.collateral_txid, voter.collateral_vout)
+
+        def signed(outcome, when):
+            message = f"{collateral[0]}-{collateral[1]}|{p1}|1|{OUTCOME_CODES[outcome]}|{when}"
+            return [*collateral, p1, "funding", outcome, when, node.signmessage(voter.votingAddr, message)]
+
+        relayed = signed("abstain", vote_time)
+        # Then through the console: the same vote again, an older one, and a
+        # newer one within the hour; Core must answer them alike.
+        refused = [relayed, signed("no", vote_time - 1), signed("no", vote_time + 1)]
+        lines = ["voteraw " + " ".join(str(a) for a in args) for args in refused]
         out = dwcli.governance(
             "--min-proposals", "2",
-            "--relay", f"{voter.collateral_txid}-{voter.collateral_vout}:{p1}:abstain:{vote_time}:{sig}",
+            "--relay", f"{collateral[0]}-{collateral[1]}:{p1}:abstain:{vote_time}:{relayed[-1]}",
+            *[a for line in lines for a in ("--console", line)],
             "--linger-secs", "20",
         )
         assert_equal(out["relay_error"], [])
         assert_equal(len(out["relayed"]), 1)
         assert_greater_than(out["relayed"][0]["peers"], 0)
         self.wait_until(lambda: self.core_counts(p1) == (1, 4, 1), timeout=30)
+        console = dict(out["console"])
+        for line, args in zip(lines, refused):
+            try:
+                node.voteraw(*args)
+                raise AssertionError(f"Core accepted {line}")
+            except JSONRPCException as e:
+                core = f"{e.error['message']} (code {e.error['code']})"
+            kind, ours = console[line]
+            assert_equal(kind, "error")
+            # Core's rate message ends with its own clock readings (D37).
+            cut = core.find(", last update =")
+            if cut >= 0:
+                core, ours = core[:cut], ours[:cut]
+            assert_equal(ours, core)
 
         self.log.info("4. the superblock pays p0; the wallet shows it funded")
         self.mine_to(FIRST_SUPERBLOCK - MATURITY_WINDOW)

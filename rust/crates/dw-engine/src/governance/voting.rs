@@ -10,7 +10,7 @@ use dashcore::{OutPoint, Txid};
 use dw_governance::object::display_hex;
 use dw_governance::store::{GovernanceStore, ObjectKind, VoteRejection};
 use dw_governance::tally::CurrentVote;
-use dw_governance::vote::{COMPACT_SIG_SIZE, GovernanceVote};
+use dw_governance::vote::GovernanceVote;
 
 use super::reads::{now, parse_hash};
 use super::records::{MasternodeType, RawVote, VoteOutcome, VoteRelayed, VotingMasternode};
@@ -98,19 +98,19 @@ impl Governance {
         let parent = parse_hash(&vote.proposal)?;
         let outpoint = parse_outpoint(&vote.collateral)?;
         // Core's `voteraw` order: the object, the base64, then the vote's
-        // validity, where a signature of the wrong length fails to verify.
+        // checks (`GovernanceStore::add_own_vote`). Votes on triggers are
+        // refused where Core would check them (D31).
         let known = |store: &GovernanceStore| match store.object(&parent).map(|o| &o.kind) {
             None => Err(rejected("unknown_object")),
             Some(ObjectKind::Trigger(_)) => Err(rejected("not_a_proposal")),
             Some(ObjectKind::Proposal(_)) => Ok(()),
         };
-        known(&rt.shared.store())?;
+        if rt.shared.store().object(&parent).is_none() {
+            return Err(rejected("unknown_object"));
+        }
         let signature = base64::engine::general_purpose::STANDARD
             .decode(vote.signature.as_bytes())
             .map_err(|_| EngineError::InvalidArgument("signature is not base64".into()))?;
-        if signature.len() != COMPACT_SIG_SIZE {
-            return Err(rejected("bad_signature"));
-        }
         let mut v = GovernanceVote::funding(outpoint, parent, vote.outcome.into(), vote.time);
         v.signature = signature;
         let hash = v.hash();
@@ -118,7 +118,7 @@ impl Governance {
             let mut store = rt.shared.store();
             known(&store)?;
             store
-                .add_vote(v.clone(), None, now())
+                .add_own_vote(v.clone(), now())
                 .map_err(|r| rejected(rejection_reason(r)))?;
         }
         (rt.shared.on_change)();
@@ -168,6 +168,9 @@ fn rejection_reason(r: VoteRejection) -> &'static str {
         VoteRejection::WrongVotingKey => "wrong_voting_key",
         VoteRejection::TooNew => "too_far_ahead",
         VoteRejection::Obsolete => "obsolete",
+        VoteRejection::SameTimestamp => "same_timestamp",
+        VoteRejection::TooOften => "too_often",
+        VoteRejection::Banned => "masternode_not_found",
         VoteRejection::KeyLimit => "key_limit",
     }
 }

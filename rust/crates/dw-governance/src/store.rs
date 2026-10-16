@@ -71,6 +71,9 @@ pub const MAX_UNCONFIRMED_PER_PEER: usize = 500;
 pub const MAX_UNCONFIRMED_BYTES: usize = 32 << 20;
 /// How long an object waits for its confirmations.
 pub const UNCONFIRMED_TTL_SECS: i64 = 60 * 60;
+/// Core's `GOVERNANCE_UPDATE_MIN`: a masternode's vote on an object is not
+/// replaced within the hour.
+pub const VOTE_UPDATE_MIN_SECS: i64 = 60 * 60;
 /// Hashes of ignored votes remembered, oldest forgotten first.
 pub const MAX_IGNORED_VOTES: usize = 100_000;
 /// Hashes of objects every announcer's copy of was refused, oldest
@@ -131,10 +134,18 @@ pub enum VoteRejection {
     WrongVotingKey,
     /// Timed more than an hour ahead of the local clock.
     TooNew,
-    /// An older vote than the (outpoint, key)'s current one, or one of the
-    /// same time with a lower outcome (Core keeps the higher one). Not
+    /// An older vote than the (outpoint, key)'s current one. Not
     /// remembered, as in Core.
     Obsolete,
+    /// Of the same time as the current one with a lower outcome (Core keeps
+    /// the higher one). Not remembered.
+    SameTimestamp,
+    /// The wallet's own vote replaces a current one timed less than an hour
+    /// ago (Core `GOVERNANCE_UPDATE_MIN`, D37).
+    TooOften,
+    /// The wallet's own vote's key is held only by banned masternodes (Core
+    /// `GetValidMNByCollateral`).
+    Banned,
     /// The key already votes for `2·n + 2` unresolved outpoints on this
     /// object (D11).
     KeyLimit,
@@ -249,6 +260,8 @@ pub struct GovernanceStore {
     orphans_per_peer: HashMap<SocketAddr, u32>,
     /// Voting key → the masternodes of the tip list holding it.
     keys: HashMap<[u8; 20], KeyWeights>,
+    /// Keys held by at least one valid (not banned) masternode.
+    valid_keys: HashSet<[u8; 20]>,
     valid_weight: u32,
     list_size: u32,
     resolved: HashMap<OutPoint, ResolvedMasternode>,
@@ -276,6 +289,7 @@ impl GovernanceStore {
             orphans_by_parent: HashMap::new(),
             orphans_per_peer: HashMap::new(),
             keys: HashMap::new(),
+            valid_keys: HashSet::new(),
             valid_weight: 0,
             list_size: 0,
             resolved: HashMap::new(),
@@ -594,6 +608,7 @@ impl GovernanceStore {
     /// can be fetched again.
     pub fn set_masternode_list(&mut self, entries: &[ListEntry]) {
         let mut keys: HashMap<[u8; 20], KeyWeights> = HashMap::new();
+        let mut valid_keys = HashSet::new();
         let mut valid_weight = 0u32;
         for e in entries {
             keys.entry(e.voting_key_id)
@@ -602,9 +617,11 @@ impl GovernanceStore {
             // Revoked entries are banned, so `None` never counts here.
             if e.valid {
                 valid_weight = valid_weight.saturating_add(e.weight.unwrap_or(1));
+                valid_keys.insert(e.voting_key_id);
             }
         }
         self.keys = keys;
+        self.valid_keys = valid_keys;
         self.valid_weight = valid_weight;
         self.list_size = entries.len() as u32;
         self.drop_unbacked_votes();
@@ -770,24 +787,69 @@ impl GovernanceStore {
         from: Option<SocketAddr>,
         now: i64,
     ) -> Result<(), VoteRejection> {
+        self.place(v, from, now, false)
+    }
+
+    /// A funding vote the wallet relays for a caller (Core `voteraw`), with
+    /// Core's checks in its order: the signature, the masternode (here its
+    /// key: the list carries no collateral, D31), the time, then the
+    /// object's (duplicate, expired, obsolete, same timestamp, the hourly
+    /// update limit), then the per-key limit (D11).
+    pub fn add_own_vote(&mut self, vote: GovernanceVote, now: i64) -> Result<(), VoteRejection> {
+        let outcome = vote.vote_outcome().ok_or(VoteRejection::Malformed)?;
+        if vote.signature.len() != COMPACT_SIG_SIZE {
+            return Err(VoteRejection::BadSignature);
+        }
+        let checked = recover(vote, outcome, self.network)?;
+        self.key_ok(&checked.vote.masternode_outpoint, &checked.key_id)?;
+        if !self
+            .resolved
+            .contains_key(&checked.vote.masternode_outpoint)
+            && !self.valid_keys.contains(&checked.key_id)
+        {
+            return Err(VoteRejection::Banned);
+        }
+        if checked.vote.time > now + MAX_TIME_FUTURE_DEVIATION {
+            return Err(VoteRejection::TooNew);
+        }
+        self.place(checked, None, now, true)
+    }
+
+    fn place(
+        &mut self,
+        v: CheckedVote,
+        from: Option<SocketAddr>,
+        now: i64,
+        rate_checked: bool,
+    ) -> Result<(), VoteRejection> {
         let outcome = self.precheck(&v.vote, now)?;
         let (parent, outpoint, key) = (v.vote.parent_hash, v.vote.masternode_outpoint, v.key_id);
-        let newer_than = |t: i64, o: VoteOutcome| {
-            v.vote.time > t || (v.vote.time == t && outcome.code() > o.code())
+        // Core keeps the higher outcome of two votes of the same time.
+        let replaces = |t: i64, o: VoteOutcome| match v.vote.time.cmp(&t) {
+            std::cmp::Ordering::Less => Err(VoteRejection::Obsolete),
+            std::cmp::Ordering::Equal if outcome.code() <= o.code() => {
+                Err(VoteRejection::SameTimestamp)
+            }
+            _ => Ok(()),
         };
         let current = self
             .votes
             .get(&parent)
             .and_then(|m| m.get(&(outpoint, key)));
-        if current.is_some_and(|c| !newer_than(c.time, c.outcome)) {
-            return Err(VoteRejection::Obsolete);
+        if let Some(c) = current {
+            replaces(c.time, c.outcome)?;
+            // Core's last update is when the node accepted the current
+            // vote; its own time stands in for it (D37).
+            if rate_checked && c.time > now - VOTE_UPDATE_MIN_SECS {
+                return Err(VoteRejection::TooOften);
+            }
         }
         let waiting = self
             .orphan_slots
             .get(&(parent, outpoint, key))
             .and_then(|h| self.orphans.get(h));
-        if waiting.is_some_and(|w| !newer_than(w.vote.vote.time, w.vote.outcome)) {
-            return Err(VoteRejection::Obsolete);
+        if let Some(w) = waiting {
+            replaces(w.vote.vote.time, w.vote.outcome)?;
         }
         self.key_ok(&outpoint, &key)?;
         let resolved = self.resolved.contains_key(&outpoint);
@@ -1142,6 +1204,61 @@ mod tests {
     }
 
     #[test]
+    fn own_votes_follow_cores_voteraw_checks_in_order() {
+        let obj = proposal("a");
+        let h = obj.hash();
+        let banned = ListEntry {
+            valid: false,
+            ..entry(2, 1)
+        };
+        let mut s = store(&obj, &[entry(1, 1), banned]);
+        let mut unsigned = vote(h, 1, 1, VoteOutcome::Yes, NOW);
+        unsigned.signature[1] ^= 1;
+        assert!(matches!(
+            s.add_own_vote(unsigned, NOW),
+            Err(VoteRejection::BadSignature | VoteRejection::UnknownVotingKey)
+        ));
+        assert_eq!(
+            s.add_own_vote(vote(h, 3, 3, VoteOutcome::Yes, NOW), NOW),
+            Err(VoteRejection::UnknownVotingKey)
+        );
+        // The banned masternode is reported before the time (Core finds the
+        // masternode before `IsValid`).
+        assert_eq!(
+            s.add_own_vote(vote(h, 2, 2, VoteOutcome::Yes, NOW + 7200), NOW),
+            Err(VoteRejection::Banned)
+        );
+        assert_eq!(
+            s.add_own_vote(vote(h, 1, 1, VoteOutcome::Yes, NOW + 7200), NOW),
+            Err(VoteRejection::TooNew)
+        );
+        let first = vote(h, 1, 1, VoteOutcome::Yes, NOW - 4000);
+        assert_eq!(s.add_own_vote(first.clone(), NOW), Ok(()));
+        assert_eq!(s.add_own_vote(first, NOW), Err(VoteRejection::Duplicate));
+        assert_eq!(
+            s.add_own_vote(vote(h, 1, 1, VoteOutcome::No, NOW - 5000), NOW),
+            Err(VoteRejection::Obsolete)
+        );
+        // A peer's vote of the same time and a lower outcome: rejected.
+        let peers = vote(h, 1, 1, VoteOutcome::Abstain, NOW - 100);
+        assert_eq!(s.add_vote(peers, peer(1), NOW), Ok(()));
+        assert_eq!(
+            s.add_own_vote(vote(h, 1, 1, VoteOutcome::No, NOW - 100), NOW),
+            Err(VoteRejection::SameTimestamp)
+        );
+        // Newer, but the current vote is less than an hour old.
+        assert_eq!(
+            s.add_own_vote(vote(h, 1, 1, VoteOutcome::No, NOW), NOW),
+            Err(VoteRejection::TooOften)
+        );
+        assert_eq!(
+            s.add_own_vote(vote(h, 1, 1, VoteOutcome::No, NOW + 3500), NOW + 3500),
+            Ok(())
+        );
+        assert_eq!(current(&s, &h, 1), vec![(VoteOutcome::No, key_id(1))]);
+    }
+
+    #[test]
     fn same_time_votes_keep_the_higher_outcome() {
         let obj = proposal("a");
         let h = obj.hash();
@@ -1152,7 +1269,7 @@ mod tests {
         );
         assert_eq!(
             s.add_vote(vote(h, 1, 1, VoteOutcome::Yes, 10), None, NOW),
-            Err(VoteRejection::Obsolete)
+            Err(VoteRejection::SameTimestamp)
         );
         assert_eq!(
             s.add_vote(vote(h, 1, 1, VoteOutcome::Abstain, 10), None, NOW),

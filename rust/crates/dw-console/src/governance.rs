@@ -332,19 +332,50 @@ fn parse_hash_v(text: &str, name: &str) -> Result<String, ConsoleFailure> {
     Ok(text.to_ascii_lowercase())
 }
 
-/// `UniValue::getInt<int64_t>` of a typed argument.
-fn get_int64(text: &str) -> Result<i64, ConsoleFailure> {
-    text.trim().parse().map_err(|_| {
-        rpc(
-            code::TYPE_ERROR,
-            format!("JSON value is not an integer as expected: {text}"),
-        )
-    })
+/// A numeric argument as dash-qt sends it: converted as JSON on the client
+/// (`RPCConvertValues`), so text that is not JSON never reaches Core.
+fn json_arg(text: &str) -> Result<serde_json::Value, ConsoleFailure> {
+    serde_json::from_str(text)
+        .map_err(|_| ConsoleFailure::Parse(format!("Error parsing JSON: {text}")))
 }
 
-/// `UniValue::getInt<int>` of a typed argument.
-fn get_int(text: &str) -> Result<i32, ConsoleFailure> {
-    i32::try_from(get_int64(text)?).map_err(|_| rpc(code::TYPE_ERROR, "JSON integer out of range"))
+/// `RPCHelpMan`'s check of the numeric arguments' JSON types, before the
+/// command runs: every mismatch, as `Position <n> (<name>)`, in one error.
+fn check_numbers(args: &[(usize, &str, &serde_json::Value)]) -> Result<(), ConsoleFailure> {
+    use serde_json::Value;
+    let mismatches: Vec<(String, Json)> = args
+        .iter()
+        .filter_map(|(position, name, v)| {
+            let kind = match v {
+                Value::Number(_) => return None,
+                Value::Null => "null",
+                Value::Bool(_) => "bool",
+                Value::String(_) => "string",
+                Value::Array(_) => "array",
+                Value::Object(_) => "object",
+            };
+            Some((
+                format!("Position {position} ({name})"),
+                Json::str(format!(
+                    "JSON value of type {kind} is not of expected type number"
+                )),
+            ))
+        })
+        .collect();
+    if mismatches.is_empty() {
+        return Ok(());
+    }
+    Err(rpc(
+        code::TYPE_ERROR,
+        format!("Wrong type passed:\n{}", Json::Obj(mismatches).write(4)),
+    ))
+}
+
+/// `UniValue::getInt<T>` of a number: its text must parse as a `T`.
+fn get_int<T: TryFrom<i64>>(v: &serde_json::Value) -> Result<T, ConsoleFailure> {
+    v.as_i64()
+        .and_then(|n| T::try_from(n).ok())
+        .ok_or_else(|| rpc(code::MISC_ERROR, "JSON integer out of range"))
 }
 
 /// The error of a governance command while governance sync is off. Core has
@@ -381,7 +412,10 @@ fn failure(e: GovernanceError, unknown_object: &str) -> ConsoleFailure {
             "The masternode list is not available yet. Try again in a minute or so.",
         ),
         GovernanceError::NotImplemented { call } => ConsoleFailure::NotAvailable(call),
-        GovernanceError::VoteRejected { reason } => vote_rejection(&reason),
+        // Only `voteraw` relays, and it words its rejections itself.
+        GovernanceError::VoteRejected { reason } => {
+            rpc(code::INTERNAL_ERROR, format!("Error voting : {reason}"))
+        }
         GovernanceError::NoPeers => rpc(
             code::CLIENT_NOT_CONNECTED,
             "The vote is stored, but no governance peer is connected. It will be relayed when a peer connects.",
@@ -391,21 +425,52 @@ fn failure(e: GovernanceError, unknown_object: &str) -> ConsoleFailure {
 }
 
 /// Core's `voteraw` error for a vote the facade refused (`reason` is the
-/// facade's snake-case rejection).
-fn vote_rejection(reason: &str) -> ConsoleFailure {
+/// facade's snake-case rejection; MG-02 D31). Core's governance exceptions
+/// read `<type>:<message>`. `last_update` gives the current vote's time for
+/// `too_often`.
+pub fn vote_rejection(
+    reason: &str,
+    collateral: &str,
+    proposal: &str,
+    last_update: impl FnOnce() -> i64,
+) -> ConsoleFailure {
     let internal = |msg: &str| rpc(code::INTERNAL_ERROR, msg);
+    let process_vote = |kind: &str, msg: &str| {
+        internal(&format!(
+            "Error voting : {kind}:CGovernanceObject::ProcessVote -- {msg}"
+        ))
+    };
     match reason {
         "unknown_object" => rpc(code::INVALID_PARAMETER, "Governance object not found"),
+        "masternode_not_found" => internal(&format!(
+            "Failure to find masternode in list : {collateral}"
+        )),
         // `IsValid` failed: the signature does not recover the voting key,
         // or the time is over an hour ahead.
         "bad_signature" | "wrong_voting_key" | "unknown_voting_key" | "malformed"
         | "too_far_ahead" => internal("Failure to verify vote."),
-        "duplicate" => {
-            internal("Error voting : CGovernanceObject::ProcessVote -- Already known valid vote")
+        // The manager's known-vote and expired-object checks leave the
+        // exception empty.
+        "duplicate" | "expired" => internal("Error voting : "),
+        "obsolete" => process_vote("GOVERNANCE_EXCEPTION_NONE", "Obsolete vote"),
+        "same_timestamp" => process_vote(
+            "GOVERNANCE_EXCEPTION_NONE",
+            "Invalid vote, same timestamp for the different outcome, rejected",
+        ),
+        "too_often" => {
+            // Core's last update is when it accepted the current vote; the
+            // facade takes the vote's own time (D37).
+            let last = last_update();
+            process_vote(
+                "GOVERNANCE_EXCEPTION_TEMPORARY_ERROR",
+                &format!(
+                    "Masternode voting too often, MN outpoint = {collateral}, governance object hash = {proposal}, last update = {last}, current time = {}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs())
+                ),
+            )
         }
-        "obsolete" => internal("Error voting : CGovernanceObject::ProcessVote -- Obsolete vote"),
-        // Core logs this one and leaves the exception empty.
-        "expired" => internal("Error voting : "),
         "key_limit" => internal("Error voting : too many votes seen for this voting key"),
         "not_a_proposal" => {
             internal("Error voting : only votes on proposals are supported in SPV mode")
@@ -445,9 +510,11 @@ impl ConsoleContext {
                 Ok(governance_info_json(&info, quorum))
             }
             "getsuperblockbudget" => {
+                let index = args.first().map(|a| json_arg(a)).transpose()?;
                 crate::exec::arity(method, args, 1, 1)?;
-                let height = get_int(arg(args, 0).unwrap_or_default())?;
-                let height = u32::try_from(height)
+                let index = index.unwrap_or_default();
+                check_numbers(&[(1, "index", &index)])?;
+                let height = u32::try_from(get_int::<i32>(&index)?)
                     .map_err(|_| rpc(code::INVALID_PARAMETER, "Block height out of range"))?;
                 // Core reads the chain only, not the governance manager, so
                 // this answers with governance sync off too.
@@ -556,9 +623,13 @@ impl ConsoleContext {
         g: &Governance,
         args: &[Zeroizing<String>],
     ) -> Result<Json, ConsoleFailure> {
+        let index = args.get(1).map(|a| json_arg(a)).transpose()?;
+        let time = args.get(5).map(|a| json_arg(a)).transpose()?;
         crate::exec::arity("voteraw", args, 7, 7)?;
+        let (index, time) = (index.unwrap_or_default(), time.unwrap_or_default());
+        check_numbers(&[(2, "mn-collateral-tx-index", &index), (6, "time", &time)])?;
         let txid = parse_hash_v(arg(args, 0).unwrap_or_default(), "mn collateral tx hash")?;
-        let index = get_int(arg(args, 1).unwrap_or_default())?;
+        let index: i32 = get_int(&index)?;
         let proposal = parse_hash_v(arg(args, 2).unwrap_or_default(), "Governance hash")?;
         let signal = arg(args, 3).unwrap_or_default();
         let outcome = arg(args, 4).unwrap_or_default();
@@ -586,25 +657,37 @@ impl ConsoleContext {
                 "voteraw with signal {signal}"
             )));
         }
-        let time = get_int64(arg(args, 5).unwrap_or_default())?;
+        // Core reads the time after finding the object (D38).
+        let time: i64 = get_int(&time)?;
         require_enabled(g)?;
-        g.relay_vote(RawVote {
-            // Core's `COutPoint(hash, int)` reads the index as unsigned.
-            collateral: format!("{txid}-{}", index as u32),
-            proposal,
-            outcome,
-            time,
-            signature: arg(args, 6).unwrap_or_default().to_string(),
-        })
-        .await
-        .map_err(|e| match e {
+        // Core's `COutPoint(hash, int)` reads the index as unsigned.
+        let collateral = format!("{txid}-{}", index as u32);
+        let result = g
+            .relay_vote(RawVote {
+                collateral: collateral.clone(),
+                proposal: proposal.clone(),
+                outcome,
+                time,
+                signature: arg(args, 6).unwrap_or_default().to_string(),
+            })
+            .await;
+        match result {
+            Ok(_) => Ok(Json::str("Voted successfully")),
             // The signature is the only argument the facade parses itself.
-            GovernanceError::Engine(EngineError::InvalidArgument(_)) => {
-                rpc(code::INVALID_ADDRESS_OR_KEY, "Malformed base64 encoding")
+            Err(GovernanceError::Engine(EngineError::InvalidArgument(_))) => Err(rpc(
+                code::INVALID_ADDRESS_OR_KEY,
+                "Malformed base64 encoding",
+            )),
+            Err(GovernanceError::VoteRejected { reason }) => {
+                Err(vote_rejection(&reason, &collateral, &proposal, || {
+                    g.current_votes(proposal.clone(), Some(collateral.clone()))
+                        .ok()
+                        .and_then(|rows| rows.iter().map(|r| r.time).max())
+                        .unwrap_or(0)
+                }))
             }
-            other => failure(other, "Governance object not found"),
-        })?;
-        Ok(Json::str("Voted successfully"))
+            Err(other) => Err(failure(other, "Governance object not found")),
+        }
     }
 }
 

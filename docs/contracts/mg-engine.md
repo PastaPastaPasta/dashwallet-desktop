@@ -343,9 +343,11 @@ impl Governance {
 - `governance.not_synced{phase}`: no run reached `synced` yet (or no tip, for the clock); `phase` is the current one.
 - `governance.proposal_not_found{hash}`: unknown, unconfirmed (D3) or not a proposal.
 - `governance.vote_rejected{reason}`: `reason` is one of `unknown_object`, `not_a_proposal`, `expired`, `duplicate`,
-  `malformed`, `bad_signature`, `unknown_voting_key`, `wrong_voting_key`, `obsolete`, `too_far_ahead`, `key_limit`.
-  `unknown_object` is an unknown parent or a vote the store could not verify or place; `expired` is a vote on a
-  proposal past its end epoch. A `RawVote` carries an outcome enum and always votes on funding, so there is no
+  `malformed`, `bad_signature`, `unknown_voting_key`, `wrong_voting_key`, `masternode_not_found`, `obsolete`,
+  `same_timestamp`, `too_often`, `too_far_ahead`, `key_limit`. `unknown_object` is an unknown parent or a vote the
+  store could not verify or place; `expired` is a vote on a proposal past its end epoch; `masternode_not_found` a
+  key held only by banned masternodes; `same_timestamp` a vote of the current one's time with a lower outcome;
+  `too_often` a vote replacing one less than an hour old (Core `GOVERNANCE_UPDATE_MIN`). A `RawVote` carries an outcome enum and always votes on funding, so there is no
   bad-signal or bad-outcome reason.
 - `governance.no_peers`: no full node to talk to.
 - `governance.list_unavailable`: the call needs the masternode list and SPV has none yet.

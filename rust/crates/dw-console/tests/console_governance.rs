@@ -443,8 +443,26 @@ fn getsuperblockbudget_answers_from_the_network_alone() {
     );
     assert_eq!(o.rpc_error("getsuperblockbudget").0, -1);
     assert_eq!(o.rpc_error("getsuperblockbudget 1 2").0, -1);
-    assert_eq!(o.rpc_error("getsuperblockbudget abc").0, -3);
-    assert_eq!(o.rpc_error("getsuperblockbudget 4294967296").0, -3);
+    // The console converts the index as JSON before Core sees it, then Core
+    // checks its type and its range.
+    assert!(matches!(
+        o.run("getsuperblockbudget abc"),
+        Err(ConsoleFailure::Parse(m)) if m == "Error parsing JSON: abc"
+    ));
+    assert_eq!(
+        o.rpc_error("getsuperblockbudget true"),
+        (
+            -3,
+            "Wrong type passed:\n{\n    \"Position 1 (index)\": \"JSON value of type bool is not of expected type number\"\n}".into()
+        )
+    );
+    for out_of_range in ["4294967296", "1.5", "1e3"] {
+        assert_eq!(
+            o.rpc_error(&format!("getsuperblockbudget {out_of_range}")),
+            (-1, "JSON integer out of range".into()),
+            "{out_of_range}"
+        );
+    }
 }
 
 #[test]
@@ -536,10 +554,23 @@ fn voteraw_checks_its_arguments_like_core() {
             "mn collateral tx hash must be of length 64 (not 3, for 'abc')".into()
         )
     );
+    assert!(matches!(
+        o.run(&format!("voteraw {txid} x {gov} funding yes 1 AAAA")),
+        Err(ConsoleFailure::Parse(m)) if m == "Error parsing JSON: x"
+    ));
+    // Both numeric arguments are type-checked before the command runs.
     assert_eq!(
-        o.rpc_error(&format!("voteraw {txid} x {gov} funding yes 1 AAAA"))
-            .0,
-        -3
+        o.rpc_error(&format!("voteraw abc null {gov} funding yes true AAAA")),
+        (
+            -3,
+            "Wrong type passed:\n{\n    \"Position 2 (mn-collateral-tx-index)\": \"JSON value of type null is not of expected type number\",\n    \"Position 6 (time)\": \"JSON value of type bool is not of expected type number\"\n}".into()
+        )
+    );
+    assert_eq!(
+        o.rpc_error(&format!(
+            "voteraw {txid} 2147483648 {gov} funding yes 1 AAAA"
+        )),
+        (-1, "JSON integer out of range".into())
     );
     assert_eq!(
         o.rpc_error(&format!("voteraw {txid} 0 {gov} nosuch yes 1 AAAA")),
@@ -569,10 +600,58 @@ fn voteraw_checks_its_arguments_like_core() {
             other => panic!("{signal}: {other:?}"),
         }
     }
+    assert!(matches!(
+        o.run(&format!("voteraw {txid} 0 {gov} funding yes soon AAAA")),
+        Err(ConsoleFailure::Parse(m)) if m == "Error parsing JSON: soon"
+    ));
+}
+
+#[test]
+fn voteraw_words_the_facades_rejections_as_core() {
+    let o = "ab".repeat(32) + "-1";
+    let h = hash(0, 1);
+    let text = |reason: &str| match dw_console::governance::vote_rejection(reason, &o, &h, || 77) {
+        ConsoleFailure::Rpc { code, message } => (code, message),
+        other => panic!("{reason}: {other:?}"),
+    };
     assert_eq!(
-        o.rpc_error(&format!("voteraw {txid} 0 {gov} funding yes soon AAAA"))
-            .0,
-        -3
+        text("unknown_object"),
+        (-8, "Governance object not found".into())
+    );
+    assert_eq!(
+        text("masternode_not_found"),
+        (-32603, format!("Failure to find masternode in list : {o}"))
+    );
+    for reason in [
+        "bad_signature",
+        "unknown_voting_key",
+        "wrong_voting_key",
+        "too_far_ahead",
+    ] {
+        assert_eq!(
+            text(reason),
+            (-32603, "Failure to verify vote.".into()),
+            "{reason}"
+        );
+    }
+    // Core's manager leaves the exception empty for these.
+    for reason in ["duplicate", "expired"] {
+        assert_eq!(text(reason), (-32603, "Error voting : ".into()), "{reason}");
+    }
+    assert_eq!(
+        text("obsolete").1,
+        "Error voting : GOVERNANCE_EXCEPTION_NONE:CGovernanceObject::ProcessVote -- Obsolete vote"
+    );
+    assert_eq!(
+        text("same_timestamp").1,
+        "Error voting : GOVERNANCE_EXCEPTION_NONE:CGovernanceObject::ProcessVote -- Invalid vote, same timestamp for the different outcome, rejected"
+    );
+    let often = text("too_often").1;
+    assert!(
+        often.starts_with(&format!(
+            "Error voting : GOVERNANCE_EXCEPTION_TEMPORARY_ERROR:CGovernanceObject::ProcessVote -- Masternode voting too often, MN outpoint = {o}, governance object hash = {h}, last update = 77, current time = "
+        )),
+        "{often}"
     );
 }
 
