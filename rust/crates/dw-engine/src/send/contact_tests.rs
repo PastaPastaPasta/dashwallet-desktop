@@ -1900,9 +1900,9 @@ fn an_address_from_a_replaced_account_is_not_paid() {
     let f = fixture(false);
     let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
     let d = f.draft(BOB);
-    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[7; 32]).unwrap();
-    let rotated = ExtendedPubKey::from_priv(&master);
-    let refused = f.prepare_held_at(&d, Point::Reserved, || f.rotate_bob(&platform, rotated));
+    let refused = f.prepare_held_at(&d, Point::Reserved, || {
+        f.rotate_bob(&platform, contact_xpub(CAROL))
+    });
     assert_eq!(platform_error(refused), "platform.context_unavailable");
     assert!(
         f.reserved(BOB).is_none(),
