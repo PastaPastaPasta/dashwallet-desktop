@@ -6,8 +6,9 @@
 //! dash-qt `src/qt/proposal*.cpp`.
 //!
 //! Salvaged from the parked branch `m3/r2-governance` by MG-01
-//! (docs/design/MG-01-salvage.md). The engine integration (sync lifecycle,
-//! the `Governance` event, the facade calls) is MG-02's.
+//! (docs/design/MG-01-salvage.md); MG-02 moved govsync onto `dw-p2p` and
+//! added object validation and the ranged tally. The facade is
+//! `dw_engine::governance`.
 //!
 //! Module layout:
 //! - [`params`]: superblock cycle, maturity window, quorum floor, fees per
@@ -25,19 +26,20 @@
 //!   order, and the tally of votes attributed by voting key with weight
 //!   ranges (MG-02 §4.2).
 //! - [`validate`]: Core's object rules for what peers send.
-//! - [`store`]: synced objects and current votes in memory.
-//! - [`net`]: the P2P session governance uses until MG-02 moves govsync
-//!   onto `dw_p2p::Session`.
-//! - [`sync`]: `govsync` objects then current-proposal votes, following
-//!   relays, the G7 counters; relaying the wallet's own objects and votes.
+//! - [`store`]: synced objects (counted once two peers announced them) and
+//!   current votes checked against the whole tip list, in memory.
+//! - [`peer`]: one full-node peer for govsync over `dw_p2p::Session`.
+//! - [`sync`]: `govsync` objects from every fresh peer, then current-proposal
+//!   votes, following relays, the G7 counters; relaying the wallet's own
+//!   votes (docs/design/MG-02-governance.md §2).
 //!
 //! The engine builds the collateral transaction, keeps pending proposals and
 //! signs votes with the vault (MG-02, MG-06).
 
 pub mod clock;
-pub mod net;
 pub mod object;
 pub mod params;
+pub mod peer;
 pub mod proposal;
 pub mod store;
 pub mod sync;
