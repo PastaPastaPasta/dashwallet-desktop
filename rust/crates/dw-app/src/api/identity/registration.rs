@@ -259,6 +259,9 @@ pub struct RegistrationStatus {
     pub waiting: Option<RegistrationWaitName>,
     /// A lease holds a key for this flow ("Lock to cancel").
     pub holds_key: bool,
+    /// A driver runs the flow now, and `waiting` is what it waits for;
+    /// otherwise nothing moves the row until `resumeRegistration`.
+    pub running: bool,
     /// A funding of the flow has committed and is not definitely unsent.
     pub funds_committed: bool,
     /// While `phase` is `contested`.
@@ -285,6 +288,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             txid,
             waiting,
             holds_key,
+            running,
             funds_committed,
             contest_ends_at,
             failure,
@@ -302,6 +306,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             txid,
             waiting: waiting.map(Into::into),
             holds_key,
+            running,
             funds_committed,
             contest_ends_at,
             failure: failure.map(Into::into),

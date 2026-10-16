@@ -1474,6 +1474,8 @@ fn an_islock_timeout_parks_keyless_until_the_chainlock() {
     let status = f.status(&lib, draft);
     assert_eq!(status.waiting, Some(RegistrationWait::ChainLock));
     assert!(status.funds_committed && !status.holds_key);
+    // The drive's claim is gone: nothing runs the row (DP1-09 D26).
+    assert!(!status.running);
     // Discard is refused: the funds are committed.
     let err = f.discard(&lib, draft).unwrap_err();
     assert_eq!(err.code(), "invalid_argument");
@@ -1872,6 +1874,9 @@ fn the_chainlock_wait_is_bounded_and_survives_a_refused_discard() {
     assert!(lib.w().waits.iter().all(|w| *w == flow::CHAINLOCK_POLL));
     let status = f.status(&lib, draft);
     assert_eq!(status.waiting, Some(RegistrationWait::ChainLock));
+    // A run on an unlocked vault holds no key of its own, yet runs (DP1-09
+    // D26): `holds_key` never tells a running row from an idle one.
+    assert!(status.running && !status.holds_key);
     let discard = f.discard(&lib, draft);
     assert_eq!(discard.unwrap_err().code(), "invalid_argument");
     assert!(f.running(draft), "the refused discard stopped the flow");

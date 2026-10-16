@@ -111,6 +111,11 @@ pub struct RegistrationStatus {
     /// A lease holds a key for this flow ("Registration in progress — Lock
     /// to cancel").
     pub holds_key: bool,
+    /// A driver runs the flow now (its task, or "Finish transfers"), and
+    /// `waiting` is what that run waits for. Otherwise nothing moves the
+    /// row until `resume_registration` claims it, and `waiting` is what the
+    /// resumed run would wait for first (DP1-09 D26).
+    pub running: bool,
     /// True once a funding of the flow has committed and is not definitely
     /// unsent (E0-04 §16.5, copied in the contract's §4.1). A live `Unsent`
     /// entry is not committed. "Funds committed — finishing".
@@ -748,6 +753,7 @@ pub(crate) async fn statuses<L: RegistrationLib>(
                 .lease
                 .as_ref()
                 .is_some_and(|held| flow::holds_own_key(&held.0)),
+            running: state.running(),
             funds_committed: ledger.funds_committed(row),
             contest_ends_at: match (&failure, phase, &row.identity) {
                 (None, Some(Phase::Contested), Some(identity)) => {
@@ -783,6 +789,7 @@ pub(crate) async fn statuses<L: RegistrationLib>(
                 RegistrationWait::ChainLock
             }),
             holds_key: false,
+            running: false,
             funds_committed: true,
             contest_ends_at: None,
             failure: None,

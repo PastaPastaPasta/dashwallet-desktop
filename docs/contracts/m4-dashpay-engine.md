@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 26
+Contract-Version: 27
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -548,7 +548,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 1abdd32de8c8d7ac71b77c5f3872f82b1cf76ad0d39fdb6e3c54d63bab7026da version: 26 -->
+<!-- surface-sha256: aec371e90131eb7a26bff447f396c85b4223e24ac03399f46d2673e81228b34e version: 27 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1441,6 +1441,7 @@ pub struct RegistrationStatus {
     pub txid: Option<String>,
     pub waiting: Option<RegistrationWait>,
     pub holds_key: bool,
+    pub running: bool,
     pub funds_committed: bool,
     pub contest_ends_at: Option<u64>,
     pub failure: Option<RegistrationFailure>,
@@ -1809,6 +1810,8 @@ The shapes are in §3. What they mean, where the name does not say:
     row moves to `Unlock` (vault locked or mixing-only) or `Authorize` (unlocked), so the host never prompts during
     the wait and never has to guess. A rebind with "require authentication for every payment" on also moves the row
     to `Authorize` or `Unlock` (E0-04 DEC-67). There is no separate `needs_grant` field.
+  - `running`: a driver runs the flow (item 53); `waiting` is then that run's wait, else what a resume waits for
+    first.
   - `holds_key`: `LeaseView.own_key && state ∈ {Active, AwaitingProof}` (E0-04 §16.5). The copy is E0-04
     §16.10's, chosen in its order: C2 ("Lock stops new signatures; a transaction already signed may still be sent")
     while a library call of the flow runs; otherwise C3 ("Funds committed — finishing. Lock to stop; you'll finish
@@ -2770,7 +2773,7 @@ renames or reshapes them takes the next version bump:
       unchanged and independent. `my_user_link` is `platform.unavailable` while it is set.
     - **`Platform{Names}`** is sent when an identity's check changes, as an answer writes no changeset.
 
-**From DP1-09** (version 26):
+**From DP1-09** (versions 26 and 27):
 
 52. **The quote's available amount (DP1-09 D5, version 26).** `RegistrationQuote` gains `available_duffs`: for
     `CoreBalance` funding, the funding account's auto-selectable coins (`spendable_of`, the coin snapshot's set),
@@ -2778,3 +2781,9 @@ renames or reshapes them takes the next version bump:
     (`registration.funding_insufficient{needed, available}` carries the same figure); 0 for other funding. Read when
     quoted, so it may differ at the start; the start's check decides. Hosts show "You need at least N" only when it is
     below `total_duffs` (DP1-08 D18's follow-up). The quote's other fields are unchanged.
+53. **Whether a run drives the row (DP1-09 D26, version 27).** `RegistrationStatus` gains `running`: a driver runs
+    the flow now (its task, or "Finish transfers"; `FlowState::running`), and `waiting` is what that run waits for.
+    When false, nothing moves the row until `resume_registration` claims it, and `waiting` is `idle_wait`'s first
+    missing piece. `holds_key` cannot tell the two apart: a run on an unlocked vault signs with the vault's key and
+    never holds one of its own, and a run past the InstantSend window has dropped its own. Hosts offer Continue for
+    `Authorize`, and for `ChainLock` or `Network` only when `running` is false. An orphan funding step reads false.
