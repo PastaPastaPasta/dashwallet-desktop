@@ -108,7 +108,9 @@ fn file_uri_path(uri: &str) -> Option<std::path::PathBuf> {
 /// The regular file at `path`, at most [`MAX_CAPTURE_BYTES`]. The path is
 /// checked before it is opened (Windows refuses to open a directory as a
 /// file, so every OS says `ImageUnreadable` for one, BL-164), and the open
-/// file again (it may have been replaced in between).
+/// file again, so no bytes are read from anything else put there in between.
+/// That second check validates what was opened; it cannot make the open
+/// itself race-free (a FIFO swapped in after the first check blocks it).
 #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
 fn read_image(path: &std::path::Path) -> Result<Vec<u8>, DesktopError> {
     use std::io::Read as _;
