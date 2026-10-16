@@ -1,0 +1,271 @@
+# MG-03: the `Masternodes` facade
+
+ROADMAP MG-03 (release 1.1, size M, engine, tiers T1 and T2, stack-independent): the `Masternodes` facade and its
+contract. It covers:
+- my masternodes: those whose collateral, owner, voting or payout key is in the wallet;
+- tracking any masternode and attaching keys (IOS-082, the library's tracked masternodes);
+- status from the SPV list;
+- payouts attributed in history;
+- evonode status and claimable credits (IOS-080).
+
+The contract is [`docs/contracts/mn-engine.md`](../contracts/mn-engine.md).
+
+Acceptance:
+- a regtest masternode funded from the wallet shows its status and payouts;
+- an evonode on T2 (testnet) shows claimable credits.
+
+Inputs:
+- MG-01's crates and its §7 hand-over ([`MG-01-salvage.md`](MG-01-salvage.md));
+- MG-00's UX rows ([`MG-00-masternodes-ux.md`](MG-00-masternodes-ux.md) D1, D4, D5, D9, D10, D13, D22, D28, D42, D43,
+  D46, and the MG-03 follow-up);
+- UX-SPEC §4.25.2;
+- the pinned platform-wallet (`ebe37f8a`) and rust-dashcore (`d3d50520a`);
+- Dash Core v24 (`~/workspace/dash`, `src/evo/{deterministicmns,dmnstate,dmn_types}.*`, `src/rpc/masternode.cpp`).
+
+D-numbers in this file are MG-03's (D1 and up). MG-00, MG-01 and MG-02 rows are cited as "MG-00 D42" and so on.
+
+| Part | Where |
+|---|---|
+| The facade, records, errors, list follower | `rust/crates/dw-engine/src/masternodes/` |
+| The coalesced event | `EngineEvent::Masternodes` (`dw-engine/src/events.rs`), `AppEvent::Masternodes` (`dw-app/src/bridge.rs`) |
+| Contract test | `rust/crates/dw-engine/tests/mn_masternodes_contract.rs` |
+| dwcli `mn` commands | `rust/bin/dwcli/src/masternodes.rs` |
+| Regtest suite | `regtest/functional/dwd_masternodes.py` |
+| T2 (testnet) check | `rust/crates/dw-engine/tests/mg03_testnet_credits.rs` (ignored; `DW_MG03_TESTNET=1`) |
+
+## 1. What each source can prove
+
+The wallet has four sources. Each field the facade returns comes from exactly one of them, and the records say which
+(MG-00's MG-03 follow-up: "report where each masternode field comes from").
+
+| Source | Fields | Trust |
+|---|---|---|
+| **SPV list** (dash-spv's simplified masternode list at its tip, through platform-wallet's `SpvRuntime::masternode_list_summaries`) | ProTx hash, service address, operator public key, voting key id, type (regular or evonode), platform node id and HTTP port, valid (Core: not PoSe-banned) | Verified by dash-spv against the chain (DIP-4 merkle roots in coinbase payloads). It carries **no owner key, payout script or collateral** (MG-01 §5, MG-02 §1). |
+| **Provider transactions the wallet holds** (`provider_masternode_txs_blocking`: every special transaction one of the wallet's accounts matched, with block height and in-block position) | Registration height, collateral outpoint, owner key id, payout script, operator's share, revocation; the latest ProUpRegTx's payout and keys | Each transaction was in a block of the verified chain (or the mempool, height 0). The set holds only what **matched this wallet** (§3), so a later update that doesn't name a wallet key or script can be missing (D5). |
+| **Wallet history** (the engine's dash-qt records) | Payouts: coinbase outputs to a payout script | The wallet's own transactions. |
+| **Platform** (dash-sdk, proved reads through the trusted context provider) | An evonode's claimable credits: the balance of its owner identity (id = ProTx hash) | A proof-checked `IdentityBalance` fetch. |
+
+The tracked-masternode registry's `refresh` in platform-wallet also learns a ProRegTx through DAPI's
+`getTransaction`. That answer has no proof and no header check, so MG-03 neither calls `refresh` nor reads its
+`registration` snapshot (D6).
+
+## 2. Status
+
+The status mirrors Core's names where Core has them (`masternodelist status` prints `ENABLED` or `POSE_BANNED`,
+`rpc/masternode.cpp:648`; a list entry is valid iff `!IsBanned()`, `deterministicmns.h:274`). Three states come from
+the wallet's side, since Core has no name for them (D2):
+
+| `MasternodeStatus` | When | UX chip (MG-00 D5) |
+|---|---|---|
+| `enabled` | In the SPV list, valid. | Active |
+| `pose_banned` | In the SPV list, not valid. `banned_seen_at` is the wallet's first sighting (MG-00 D9), kept until the list shows it valid again. | PoSe banned |
+| `removed` | Not in a synced list, and the wallet saw it listed before or holds its ProRegTx confirmed at or below the list height. Core removes a masternode when its collateral is spent; that is the only way out of the list. | Retired |
+| `unconfirmed` | The wallet holds its ProRegTx but it isn't in a block yet. | Registering |
+| `unknown` | The SPV list isn't synced (no list, or the headers or masternode phase is still running), or a tracked masternode was never seen listed. | Unknown |
+
+"Synced" is the tracker's `masternodes_synced()` (headers and masternode phases done; DASHPAY §2.2). The list height
+is the masternode phase's reported height (`MasternodeListState.height`). platform-wallet's summaries drop
+`MasternodeList::known_height` (D3).
+
+## 3. My masternodes and their roles
+
+A wallet's masternodes are aggregated from its provider transactions with platform-wallet's `aggregate_masternodes`
+(Core's `block.vtx` order, latest-wins keys and payout, per-type numbering), fed the transactions that
+`provider_masternode_txs_blocking` returns with their heights and positions. The engine then reads each held ProRegTx
+again for what the library's record leaves out (D1):
+- the collateral outpoint per Core (`dw_protx::payloads::resolve_collateral`: a null payload hash names an output of
+  the ProRegTx, MG-01 §7);
+- that internal output's amount, which must be 1,000 or 4,000 Dash for the type, or the collateral stays unresolved
+  (MG-00 D43);
+- the operator's share (`operatorReward`).
+
+The wallet's provider transactions are matched by key-wallet's router: a ProRegTx by owner, voting, operator or
+platform key and by payout script, and a ProUpRegTx by voting or operator key and payout script
+(`transaction_router/mod.rs:111+`). So a masternode registered with a wallet key, or paying a wallet address, shows
+up after a sync or rescan.
+
+Roles (`MasternodeRoles`), each answering "is this in **this** wallet":
+
+| Role | Test |
+|---|---|
+| `collateral` | The resolved collateral outpoint is an unspent output of the wallet. |
+| `owner` | The owner key id is the hash160 of one of the wallet's derived owner keys (indexes 0–19, as MG-02's voting keys), or an owner key is attached to it (tracked). |
+| `voting` | The **list's** voting key id (always live, MG-00 D42) is one of the wallet's derived voting keys (0–19), or a voting key is attached. |
+| `payout` | The payout script is one of the wallet's own scripts. |
+| `operator` | The operator public key is one of the wallet's derived operator keys (platform-wallet's derive-and-compare, a self-operator). Shown, never used to sign (MG-01 §4). |
+
+A masternode is "mine" for a wallet when any role holds. A collateral held by the wallet but registered with no wallet
+key and no wallet payout is not found, because key-wallet doesn't match a ProRegTx by an external collateral outpoint
+it only references (D4). The regtest suite checks the owner-key path and the payout path separately (§8).
+
+**Collateral-shaped coins** (MG-00 D1): unspent outputs of exactly 1,000 or 4,000 Dash that are not a known
+masternode's collateral are listed in `MasternodeOverview.collateral_coins`. The sidebar uses them to show the item, and
+the empty page uses them for its intro.
+
+## 4. Tracking and attached keys
+
+Tracking uses platform-wallet's registry (`tracked_masternodes_service`), which the engine's `WalletStore` already
+persists in `wallet.sqlite` (`tracked_masternodes`, V006). A tracked masternode belongs to the network, not to a
+wallet: every wallet's overview lists it under `tracked` (UX §4.25.2's Tracked group).
+
+- `find(query)` searches the SPV list by ProTx hash (64 hex) or service address (`ip:port`, or `ip` alone for any
+  port; every match is returned), using platform-wallet's `find_in_summaries`. No private key is accepted: MG-00 D13
+  attaches keys only after the masternode is found.
+- `track(pro_tx_hash, label)` needs the masternode in the list at the time (D7). It refuses one already tracked.
+- `untrack` deletes the attached keys **first**, then the registry row (MG-00 D22). If the deletion fails (for
+  example, the vault is locked), nothing is untracked.
+- `attach_key(pro_tx_hash, role, key)` takes a WIF or 64-hex secp256k1 secret for `owner`, `voting` or `payout`. These
+  are the vault's roles; an operator or platform secret is refused by type (MG-01 D7). The check is the one the list
+  allows (MG-00 D13):
+  - `voting`: the key's hash160 must equal the list's voting key id, else `masternodes.key_mismatch`;
+  - `owner`: the list doesn't carry the owner key, so it is stored unchecked unless the wallet holds the ProRegTx (then
+    it is checked against its owner key id);
+  - `payout`: checked against the payout script when the wallet holds one, otherwise stored unchecked.
+
+  The secret is stored with `Vault::store_masternode_key`, which needs the full-scope data key (an unlocked or
+  unencrypted vault). The returned `KeyCheck` says `matched` or `unchecked`. Attaching a key to an untracked masternode
+  is refused (`masternodes.not_tracked`).
+- `detach_key(pro_tx_hash, role)` removes one role.
+- Labels: a tracked masternode's label lives in the registry. A wallet masternode's label lives in app.sqlite
+  (`settings_kv`, `masternodes.label:<hash>`). The default name is the library's per-type numbering ("Masternode 1",
+  "Evonode 1"), reported as `type_index`.
+
+The four `Vault` masternode-key methods stay internal and are reached through this facade, which adds the checks above
+(D8).
+
+## 5. Payouts in history
+
+A payout is a wallet history record of a coinbase transaction (`TxType::Generated`) whose address is the masternode's
+payout address. Only the owner's payout is attributed: the operator's payout address is set by a ProUpServTx, which
+the wallet sees only when it pays a wallet script (D9). `payouts(wallet, pro_tx_hash, since)` returns these records,
+newest first, as `MasternodePayout` (txid, record index, amount, height, time, matured). Each overview row carries
+the total of the last 30 days (D10's "Payouts, 30 days") and the newest payout.
+
+Matching by script is MG-00 D10's rule. The engine doesn't recompute Core's payee for the block: an SPV wallet can't
+(no full list per height). Two masternodes with one payout address share their payouts, and both rows list them (D9).
+
+## 6. Evonode credits
+
+`evonode_credits(pro_tx_hash)` fetches the balance of the evonode's owner identity, whose id is the ProTx hash in
+display order (platform-wallet `tracked.rs` `learn`). It uses dash-sdk's proved `IdentityBalance` fetch. The answer is
+`EvonodeCredits { pro_tx_hash, credits, duffs, fetched_at }`. One duff is 1,000 credits (dpp's
+`CREDITS_PER_DUFF`).
+
+Refusals, in order:
+- `invalid_argument` for a malformed hash;
+- `masternodes.list_unavailable` while the list isn't synced;
+- `masternodes.not_found` when the hash isn't in the list;
+- `masternodes.not_evonode` for a regular masternode;
+- `masternodes.platform_unavailable` when the session runs without Platform or DAPI fails;
+- `masternodes.no_identity` when Platform has no identity for it (an evonode registered before Platform).
+
+Platform node status (IOS-081's "Platform status") and the withdrawal are MG-13's.
+
+## 7. What waits for an upstream API
+
+Two MG-00 rows need data that dash-spv and platform-wallet don't expose at the pin. MG-03 reports the gap and doesn't
+work around it:
+
+| Row | Needs | At the pin | MG-03 |
+|---|---|---|---|
+| MG-00 D43 (backfill a tracked masternode's collateral: the block at `confirmedHash`'s height − `nMasternodeMinimumConfirmations`, checked against the verified header) | a header lookup by hash and a block download from dash-spv | `DashSpvClient::storage()` is public in dash-spv, but platform-wallet's `SpvRuntime` keeps the client private and exposes neither. The list summaries also drop `confirmedHash`. | `resolve_collateral` returns `masternodes.unsupported{feature: "collateral_lookup"}`. A tracked masternode's `collateral` is `CollateralState::Unresolved` (D11). |
+| MG-00 D42 (watch every known ProTx hash through compact filters from the registration height, so updates that don't name a wallet key are applied) | a filter watch on raw elements | the SPV filter matcher takes the wallet's scripts and outpoints only | Payout and payees come from the wallet's own provider transactions. `payout_checked_height` is always `None` ("checking", MG-00 D42), so the UI never offers a fixed withdrawal destination yet (D5). |
+
+Both are follow-ups (§10). Nothing in MG-03 depends on them for its acceptance.
+
+## 8. The event and the follower
+
+`EngineEvent::Masternodes { network }` means "re-read what you show". It fires at most once a second, keeping the
+trailing edge (MG-02's coalescer). It is sent:
+- when the list's entry for a masternode of interest changes (status, service, voting key or type);
+- when a masternode of interest appears in or leaves the list;
+- when the tracked set, a label or an attached key changes;
+- when the wallets' set of masternodes changes.
+
+A masternode is of interest when any loaded wallet has it or it is tracked.
+
+The follower runs for the session's life. On each new masternode-list height (the tracker's reading, polled every 5
+s) it reads the summaries once, refreshes the interest set, and writes the first sighting of each newly banned
+masternode of interest (`masternodes.banned_seen:<hash>`). It deletes that record once the masternode is valid again
+(MG-00 D9: "the notice stays until the list shows it valid"). It also writes `masternodes.listed_seen:<hash>`, so
+`removed` can be told from "never seen" (§2). The event is engine-side for dw-ffi (the frozen Swift shells don't carry
+it, MG-02 D7), and dw-app maps it to `AppEvent::Masternodes`.
+
+## 9. dwcli `mn`
+
+`dwcli mn <cmd>` drives the facade only. Each command prints JSON lines like `dashpay`:
+`{"ok":true,"result":…}` or `{"ok":false,"error":{"code","message"}}` with exit status 1.
+
+| Command | Facade call |
+|---|---|
+| `mn list [--wallet W]` | `list` |
+| `mn status <hash> [--wallet W]` | `masternode` |
+| `mn find <query>` | `find` |
+| `mn track <hash> [--label L]` | `track` |
+| `mn untrack <hash>` | `untrack` |
+| `mn label <hash> [--label L]` | `set_label` |
+| `mn attach <hash> --role R` (key on stdin, never argv) | `attach_key` |
+| `mn detach <hash> --role R` | `detach_key` |
+| `mn payouts <hash> [--wallet W] [--since T]` | `payouts` |
+| `mn credits <hash>` | `evonode_credits` |
+
+`--spv` starts SPV and waits for the masternode list (`--sync-timeout`, default 120 s) before the read. Without
+`--spv`, a list read answers from what the session has, which is `list_unavailable` on a cold start.
+
+## 10. Slices and follow-ups
+
+| Slice | Content |
+|---|---|
+| 1 | This doc, the contract, the facade skeleton with every call (stubs where not yet implemented), errors, records, `EngineEvent::Masternodes`, the contract test; `list` and `masternode` for wallet masternodes with status and roles; `dwcli mn list/status`. |
+| 2 | Tracking: `find`, `track`, `untrack`, `set_label`, `attach_key`, `detach_key`, the follower (first-banned, listed-seen, the event); `dwcli mn find/track/untrack/label/attach/detach`. |
+| 3 | Payouts and evonode credits; `dwcli mn payouts/credits`; the T2 check. |
+| 4 | The regtest suite (§11). |
+
+Follow-ups for later rows:
+- **D43/D42 upstream:** a platform-wallet `SpvRuntime` accessor for header-by-hash and a block fetch (dash-spv has
+  both internally), and a raw-element filter watch. MG-03b, or MG-13 before the fixed withdrawal destination.
+- **MG-10:** the Activity filter by masternode. It uses `payouts()` txids, or a `HistoryFilter` extension (D10).
+- **MG-04:** `Registering`/`Needs signature` for the wallet's own pending registrations, which MG-04 persists.
+- **E0-13 (MG binding):** bind the facade for the UI.
+- **MG-12:** review the attached-key flow (key deletion on untrack).
+
+## 11. Tests and evidence
+
+- T0:
+  - the contract test (generated surface, call rows, codes, and the refusal order on a session without a list);
+  - unit tests of aggregation (collateral resolution, internal-collateral amount check, operator share,
+    latest-wins), status mapping, the follower's banned and listed bookkeeping, key checks and the parser of `find`.
+- T1, `regtest/functional/dwd_masternodes.py`, on Core's functional framework with 4 masternodes:
+  1. a dwcli wallet receives 1,000 Dash;
+  2. the controller registers a masternode with that output as external collateral, signed by dwcli's `sign`
+     (`protx register_prepare`, then `register_submit`). The owner and voting keys are dwcli's keychain keys 0 and the
+     payout a dwcli receive address;
+  3. a masternode node starts with a Core-generated operator key (the harness plays the operator; the wallet never
+     touches it);
+  4. `dwcli mn list` shows the masternode `enabled` with all four roles;
+  5. after blocks are mined, `mn payouts` lists coinbase payouts equal to Core's payment to that address;
+  6. the wallet spends the collateral; the masternode is `removed`.
+
+  A second masternode is registered from Core's own collateral with dwcli's owner key 1 and an outside payout (the
+  owner-key match, §3). A third pays a dwcli address and uses Core's keys (the payout match). Tracking is exercised on
+  one of the controller's masternodes (track, attach its voting key from Core, `key_mismatch` for a wrong one, untrack).
+- T2 (testnet, reads only, concurrency 1): `evonode_credits` of a testnet evonode chosen from the synced list.
+
+## D-rows
+
+| # | Decision | Why |
+|---|---|---|
+| D1 | Aggregate with the library's `aggregate_masternodes` over `provider_masternode_txs_blocking`'s transactions, then re-read each held ProRegTx for the collateral (resolved and amount-checked) and the operator's share (`masternodes/aggregate.rs`). The record's own `collateral` and `status` are not used. | The library's `MasternodeRecord.collateral` copies the payload outpoint, which is null for internal collateral (MG-01 §5 "dw-protx" row), and it drops the operator's share; its `status` needs a list the engine reads itself (§2). Reusing the aggregation keeps the library's ordering, latest-wins rules and numbering instead of a second copy of them. |
+| D2 | Status names: `enabled` and `pose_banned` mirror Core (`ENABLED`, `POSE_BANNED`). `removed`, `unconfirmed` and `unknown` are the wallet's own. | Core names only list members. A removed masternode is gone from Core's list with no state, and an unconfirmed registration is not in it yet. The UX maps them to Retired, Registering and Unknown (MG-00 D5). |
+| D3 | The list height is the tracker's masternode-phase height, not `MasternodeList::known_height`. | platform-wallet's summaries drop `known_height`, and the SPV client isn't reachable from the engine. The phase height is the height dash-spv reports the list synced to. The tracker already keeps it. |
+| D4 | A collateral-only masternode (external collateral in this wallet, no wallet key or payout) isn't found. | key-wallet's router matches a ProRegTx by keys, payout and spent or created outputs, not by a referenced outpoint. Matching every ProRegTx's outpoint against the UTXO set needs every ProRegTx, which BIP158 filters don't deliver for an outpoint the wallet doesn't spend. The UX case (a holder registering with keys elsewhere) is rare. MG-04's registrations always use a wallet owner key (MG-00 D25). |
+| D5 | Payout and payees come from the wallet's own provider transactions. `payout_checked_height` is `None` until MG-00 D42's ProTx-hash watch exists. | A filter watch on raw ProTx hashes is not in the pinned dash-spv. Reporting "checking" is MG-00 D42's honest state, and no withdrawal destination is offered from it (MG-13 is out of scope here). |
+| D6 | Do not call the registry's `refresh` or use its `registration` snapshot. | It fetches the ProRegTx through DAPI `getTransaction`, unproved and not header-checked. MG-00 D43 rejected that path for collateral. The owner-identity balance it also reads comes from a proved fetch, which `evonode_credits` does directly. |
+| D7 | `track` needs the masternode in the current list. | It is how `find` located it, and it means the voting key check has a list entry to compare against. A ProTx hash that isn't listed (removed, or not registered yet) has nothing to show but `unknown`. |
+| D8 | The vault's four masternode-key methods stay unbound. Their dw-app `EXCLUDED` reasons now say they are reached through `Masternodes` (`attach_key`, `detach_key`, `untrack`, `masternode`). | MG-01 §7 asked MG-03 to bind them. Binding them as IPC would let a host store a voting key without the list check (MG-00 D13), or delete keys without untracking. The facade calls them after its checks. |
+| D9 | Attribute only the owner's payouts, by payout script. A shared payout address attributes the same records to each masternode that uses it. | The operator payout script is set by a ProUpServTx the wallet sees only when it pays a wallet script. An SPV wallet can't recompute Core's payee per block. MG-00 D10 defines attribution as "this wallet's history". |
+| D10 | Payouts are returned by reference (txid, record index) from a facade call, rather than adding a masternode field to `TxRecord`. | `TxRecord` is shared by every history consumer (dw-app DTO, dw-ffi, TS types, Swift T0). The UI's filter by masternode (MG-10) can take the txids. A `HistoryFilter` field can come with MG-10 if it needs one. |
+| D11 | `resolve_collateral` exists in the contract and refuses `masternodes.unsupported{feature}`. | The brief: a missing upstream API is a typed refusal, not an invented workaround. Voting for a tracked masternode (MG-02/MG-05) needs the outpoint. The call fixes where it will come from. |
+| D12 | Labels of wallet masternodes and the follower's first-banned and listed-seen times live in app.sqlite's `settings_kv` (global scope, `masternodes.` keys), not a new table. They are not in `.dwbackup` exports. | The set is small and per network (app.sqlite is per network). Siblings in flight add migrations, and refinery refuses divergent version histories, so a migration here risks a merge-time clash for no gain. A first-banned date after a restore is a new first sighting, as MG-00 D9 defines it. |
+| D13 | The facade is `NetworkSession::masternodes()`, one handle per session, with the wallet passed per call. | Tracked masternodes belong to the network (platform-wallet's registry is per network), and one overview mixes them with each wallet's own. It matches MG-02's `governance()`. |
+| D14 | The contract is its own file, `mn-engine.md`, with its own generated surface and test, instead of a section of MG-02's `mg-engine.md`. | The brief, and MG-02 is in flight with that file. The two tests are near copies; one shared harness is a follow-up once both have merged. |
