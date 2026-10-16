@@ -14,7 +14,8 @@ import { relationTitle, shownName } from "./model";
 export type PaneActions =
   | { kind: "request"; acceptBlocked: string | null }
   | { kind: "sent" }
-  | { kind: "contact"; payBlocked: string | null }
+  /** `payNote`: why a payment may not go through yet, Pay still offered (DP3-06 D15). */
+  | { kind: "contact"; payBlocked: string | null; payNote: string | null }
   | { kind: "ignored" }
   | { kind: "none" };
 
@@ -29,7 +30,7 @@ export function paneActions(c: Pick<ContactSummaryInfo, "relation" | "channel">,
     case "pendingOutgoing":
       return { kind: "sent" };
     case "contact":
-      return { kind: "contact", payBlocked: payBlocked(c.channel) };
+      return { kind: "contact", payBlocked: c.channel === "broken" ? BROKEN : null, payNote: payNote(c.channel) };
     case "ignored":
       return { kind: "ignored" };
     default:
@@ -37,17 +38,19 @@ export function paneActions(c: Pick<ContactSummaryInfo, "relation" | "channel">,
   }
 }
 
-/** D9: why Pay is held back, by the DIP-15 channel; `null` when it is ready. */
-function payBlocked(channel: ContactSummaryInfo["channel"]): string | null {
+const BROKEN = "Payments to this contact cannot be sent right now.";
+
+/** D9, by the DIP-15 channel: only a broken one holds Pay back (DP3-01 D19: a payment finishes a
+ * channel's setup); the others say why a payment may not go through yet. */
+export function payNote(channel: ContactSummaryInfo["channel"]): string | null {
   switch (channel) {
     case "ready":
+    case "broken":
       return null;
     case "setupPending":
-      return "Payments with this contact are still being set up.";
-    case "broken":
-      return "Payments to this contact cannot be sent right now.";
+      return "Payments with this contact are still being set up. The payment finishes the setup.";
     case "notEstablished":
-      return "Payments with this contact are not set up yet.";
+      return "Payments with this contact are not set up yet, so a payment may not go through.";
   }
 }
 

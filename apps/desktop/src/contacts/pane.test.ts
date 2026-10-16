@@ -27,10 +27,15 @@ describe("paneActions", () => {
   });
 
   it("IOS-074 offers Pay to a contact whose channel is ready, and says why not otherwise", () => {
-    expect(paneActions(row({}), true)).toEqual({ kind: "contact", payBlocked: null });
-    expect(paneActions(row({ channel: "setupPending" }), true)).toEqual({ kind: "contact", payBlocked: "Payments with this contact are still being set up." });
-    expect(paneActions(row({ channel: "broken" }), true)).toEqual({ kind: "contact", payBlocked: "Payments to this contact cannot be sent right now." });
-    expect(paneActions(row({ channel: "notEstablished" }), true)).toMatchObject({ kind: "contact" });
+    expect(paneActions(row({}), true)).toEqual({ kind: "contact", payBlocked: null, payNote: null });
+    // Only a broken channel holds Pay back (DP3-06 D15, DP3-01 D19).
+    expect(paneActions(row({ channel: "setupPending" }), true)).toEqual({
+      kind: "contact",
+      payBlocked: null,
+      payNote: "Payments with this contact are still being set up. The payment finishes the setup.",
+    });
+    expect(paneActions(row({ channel: "broken" }), true)).toEqual({ kind: "contact", payBlocked: "Payments to this contact cannot be sent right now.", payNote: null });
+    expect(paneActions(row({ channel: "notEstablished" }), true)).toMatchObject({ kind: "contact", payBlocked: null, payNote: expect.stringContaining("not set up yet") });
   });
 
   it("names a sent request and an ignored sender", () => {

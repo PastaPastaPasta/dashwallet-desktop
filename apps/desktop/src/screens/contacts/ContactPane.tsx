@@ -159,7 +159,7 @@ function PaneButtons({ contact: c, pane }: { contact: ContactSummaryInfo; pane: 
       note = "Contact request sent. You become contacts once they accept it.";
       break;
     case "contact":
-      note = offer.payBlocked;
+      note = offer.payBlocked ?? offer.payNote;
       buttons = (
         <DashButton key="pay" variant="filledBlue" data-testid="contact-pay" disabled={offer.payBlocked !== null} onClick={() => navigate("pay", { payTab: "contact" })}>
           Pay
