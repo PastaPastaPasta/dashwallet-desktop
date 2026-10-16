@@ -16,12 +16,17 @@ use zeroize::Zeroizing;
 
 #[derive(Args)]
 pub struct MnArgs {
-    /// Start SPV and wait for the masternode list before the command.
+    /// Start SPV and wait for the masternode list before the command; SPV
+    /// stops after it.
     #[arg(long, global = true)]
     spv: bool,
     /// Seconds `--spv` waits for the list.
     #[arg(long, global = true, default_value_t = 120)]
     sync_timeout: u64,
+    /// With `--spv`, also wait until every loaded wallet scanned this
+    /// height (implies `--spv`).
+    #[arg(long, global = true)]
+    sync_height: Option<u32>,
     #[command(subcommand)]
     command: MnCommand,
 }
@@ -128,19 +133,29 @@ fn wallet(session: &Arc<NetworkSession>, arg: Option<String>) -> Result<WalletId
     }
 }
 
-/// Starts SPV, then waits until the list is synced.
+/// Starts SPV, then waits until the list is synced and every loaded wallet
+/// scanned `height`.
 fn wait_for_list(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     mn: &Masternodes,
     timeout: Duration,
+    height: Option<u32>,
 ) -> Result<(), Failure> {
     let deadline = Instant::now() + timeout;
     crate::pay::ensure_spv_running(engine, session, timeout).map_err(|message| Failure {
         code: "spv".into(),
         message,
     })?;
-    while !mn.list_state()?.synced {
+    let scanned = || -> Result<bool, Failure> {
+        let Some(h) = height else { return Ok(true) };
+        Ok(session.wallet_infos()?.iter().all(|w| {
+            session
+                .wallet_scan_height(&w.wallet_id)
+                .is_some_and(|s| s >= h)
+        }))
+    };
+    while !(mn.list_state()?.synced && scanned()?) {
         if Instant::now() >= deadline {
             return Err(MasternodesError::ListUnavailable.into());
         }
@@ -151,8 +166,9 @@ fn wait_for_list(
 
 fn command(engine: &Engine, session: &Arc<NetworkSession>, args: MnArgs) -> Result<Value, Failure> {
     let mn = session.masternodes();
-    if args.spv {
-        wait_for_list(engine, session, &mn, Duration::from_secs(args.sync_timeout))?;
+    if args.spv || args.sync_height.is_some() {
+        let timeout = Duration::from_secs(args.sync_timeout);
+        wait_for_list(engine, session, &mn, timeout, args.sync_height)?;
     }
     match args.command {
         MnCommand::ListState => value(mn.list_state()?),
@@ -207,7 +223,7 @@ fn command(engine: &Engine, session: &Arc<NetworkSession>, args: MnArgs) -> Resu
 /// Runs one `mn` command and prints its JSON line. `Err` (exit status 1)
 /// carries the message for stderr.
 pub fn run(engine: &Engine, session: &Arc<NetworkSession>, args: MnArgs) -> Result<(), String> {
-    let started_spv = args.spv;
+    let started_spv = args.spv || args.sync_height.is_some();
     let result = command(engine, session, args);
     if started_spv {
         crate::teardown::stop_spv(session, false).map_err(|e| e.to_string())?;
