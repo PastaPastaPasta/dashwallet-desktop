@@ -18,8 +18,8 @@ mod startup;
 use dw_engine::platform::{BearerSecret, FlowKind};
 
 use self::credits::{
-    CostTable, PendingTopUp, TopUpOutcome, TopUpQuote, WithdrawAmount, WithdrawOutcome,
-    WithdrawQuote,
+    CostTable, PendingTopUp, StuckTopUpFunding, TopUpOutcome, TopUpQuote, WithdrawAmount,
+    WithdrawOutcome, WithdrawQuote,
 };
 use self::flows::{GrantAction, GrantRequest};
 use self::invitations::InvitationStatus;
@@ -305,6 +305,14 @@ commands! {
     fn credits_pending_top_ups(state, wallet_id: String) -> Vec<PendingTopUp> {
         let pending = state.dashpay(&wallet_id).await?.pending_top_ups().await?;
         Ok(pending.into_iter().map(Into::into).collect())
+    }
+
+    /// The wallet's top-up fundings whose outcome is unknown: Tools ▸ Repair
+    /// resolves each by its `step`.
+    #[facade("DashPay::stuck_top_up_fundings")]
+    fn credits_stuck_top_up_fundings(state, wallet_id: String) -> Vec<StuckTopUpFunding> {
+        let stuck = state.dashpay(&wallet_id).await?.stuck_top_up_fundings().await?;
+        Ok(stuck.into_iter().map(Into::into).collect())
     }
 
     /// Applies the pending top-up lock `txid` under `grant`.

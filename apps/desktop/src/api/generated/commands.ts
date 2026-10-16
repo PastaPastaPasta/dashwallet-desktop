@@ -124,6 +124,7 @@ import type { SessionSettings } from "./SessionSettings";
 import type { ShellEvent } from "./ShellEvent";
 import type { ShellSync } from "./ShellSync";
 import type { SpvStateName } from "./SpvStateName";
+import type { StuckTopUpFunding } from "./StuckTopUpFunding";
 import type { SyncLoopStatus } from "./SyncLoopStatus";
 import type { SyncPassReport } from "./SyncPassReport";
 import type { SyncStatus } from "./SyncStatus";
@@ -1546,6 +1547,14 @@ export function creditsPendingTopUps(walletId: string): Promise<Array<PendingTop
 }
 
 /**
+ * The wallet's top-up fundings whose outcome is unknown: Tools ▸ Repair
+ * resolves each by its `step`.
+ */
+export function creditsStuckTopUpFundings(walletId: string): Promise<Array<StuckTopUpFunding>> {
+  return invoke<Array<StuckTopUpFunding>>("credits_stuck_top_up_fundings", { walletId });
+}
+
+/**
  * Applies the pending top-up lock `txid` under `grant`.
  */
 export function creditsResumeTopUp(walletId: string, txid: string, grant: string): Promise<TopUpOutcome> {
@@ -2282,6 +2291,7 @@ export type CommandArgs = {
   credits_top_up_quote: { walletId: string; identity: string; duffs: number };
   credits_top_up: { walletId: string; identity: string; duffs: number; grant: string };
   credits_pending_top_ups: { walletId: string };
+  credits_stuck_top_up_fundings: { walletId: string };
   credits_resume_top_up: { walletId: string; txid: string; grant: string };
   credits_resolve_top_up: { walletId: string; txid: string };
   credits_withdraw_quote: { walletId: string; identity: string; amount: WithdrawAmount };
@@ -2526,6 +2536,7 @@ export type CommandResults = {
   credits_top_up_quote: TopUpQuote;
   credits_top_up: TopUpOutcome;
   credits_pending_top_ups: Array<PendingTopUp>;
+  credits_stuck_top_up_fundings: Array<StuckTopUpFunding>;
   credits_resume_top_up: TopUpOutcome;
   credits_resolve_top_up: null;
   credits_withdraw_quote: WithdrawQuote;
@@ -2772,6 +2783,7 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_top_up_quote: "identity",
   credits_top_up: "identity",
   credits_pending_top_ups: "identity",
+  credits_stuck_top_up_fundings: "identity",
   credits_resume_top_up: "identity",
   credits_resolve_top_up: "identity",
   credits_withdraw_quote: "identity",

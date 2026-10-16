@@ -1650,6 +1650,11 @@ async fn a_recorded_self_spend_resolves_only_once_chain_locked() {
     );
     assert_eq!(t.funding_status(W, TOPUP), Some(MaybeSent));
     assert!(t.awaits_self_spend_lock(W));
+    // DP1-10 D3: still listed for Repair until the self-spend is ChainLocked.
+    assert_eq!(
+        t.stuck_top_up_steps(W).unwrap(),
+        vec![(TOPUP.to_owned(), MaybeSent)]
+    );
 
     // Never confirmed: MaybeSent, refresh after refresh.
     t.refresh_funding(W).await;
@@ -1674,6 +1679,7 @@ async fn a_recorded_self_spend_resolves_only_once_chain_locked() {
     src.locked.lock().unwrap().insert([0xef; 32]);
     t2.refresh_funding(W).await;
     assert_eq!(t2.funding_status(W, TOPUP), Some(NotSent));
+    assert!(t2.stuck_top_up_steps(W).unwrap().is_empty());
     assert_eq!(
         rec2.resolved(),
         vec![(TOPUP.to_owned(), DispatchResolution::NotSent)]
@@ -1706,6 +1712,10 @@ async fn a_will_be_sent_funding_resolves_by_its_self_spend() {
     t.refresh_funding(W).await;
     assert_eq!(t.funding_status(W, TOPUP), Some(WillBeSent));
     assert_eq!(
+        t.stuck_top_up_steps(W).unwrap(),
+        vec![(TOPUP.to_owned(), WillBeSent)]
+    );
+    assert_eq!(
         t.check_stuck_funding(W, TOPUP).unwrap(),
         vec![(txid(1), vec![OutPoint::new(txid(101), 0)])]
     );
@@ -1716,6 +1726,7 @@ async fn a_will_be_sent_funding_resolves_by_its_self_spend() {
     src.locked.lock().unwrap().insert([0xee; 32]);
     t.refresh_funding(W).await;
     assert_eq!(t.funding_status(W, TOPUP), Some(NotSent));
+    assert!(t.stuck_top_up_steps(W).unwrap().is_empty());
     assert_eq!(
         rec.resolved(),
         vec![(TOPUP.to_owned(), DispatchResolution::NotSent)]
@@ -3628,6 +3639,7 @@ async fn the_funding_view_reads_the_journal_alone_and_refuses_a_closed_one() {
         t.registration_funding_steps(W),
         Err(FundingStepsUnavailable)
     );
+    assert_eq!(t.stuck_top_up_steps(W), Err(FundingStepsUnavailable));
 }
 
 /// DP1-02 C4 and C5 on a real `dispatch.sqlite` (ownership r2 Sol item
