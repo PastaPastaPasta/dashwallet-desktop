@@ -76,7 +76,10 @@ test("IOS-074 the detail names the contact and View contact opens its pane", asy
   await expect(page.getByTestId("tx-detail")).toHaveCount(0);
   await expect(page.getByTestId("page-contacts")).toBeVisible();
   await expect(page.getByTestId("contact-detail").getByRole("heading", { name: "Bob Builder" })).toBeVisible();
-  await expect(page.getByTestId("contacts-list").locator('[aria-current="true"]')).toContainText("Bob Builder");
+  const selected = page.getByTestId("contacts-list").locator('[aria-current="true"]');
+  await expect(selected).toContainText("Bob Builder");
+  // The row that opened the sheet went with Home: focus lands on the contact's row.
+  await expect(selected).toBeFocused();
   expect(errors).toEqual([]);
 });
 
@@ -92,8 +95,7 @@ test("IOS-074 a username-only contact shows one name line; a stranger has no Vie
   await expect(page.getByTestId("tx-detail")).toHaveCount(0);
   fact = await detailOf(page, "Marta");
   await expect(fact.locator(".tx-detail-contact-name")).toHaveText("Marta");
-  // Wait for the contacts read the button depends on, then check it stayed away.
-  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "dashpay_contacts").length)).toBeGreaterThan(0);
+  // Dave's View contact above came from the same contacts read, so its answer is here already.
   await expect(fact.getByTestId("tx-detail-view-contact")).toHaveCount(0);
 });
 

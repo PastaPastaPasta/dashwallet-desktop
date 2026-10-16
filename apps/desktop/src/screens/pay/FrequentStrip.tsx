@@ -1,6 +1,6 @@
 // The frequent-contacts strip (DP3-06 D3, DP3-07 D7): the contacts the main identity pays most,
-// each an initials avatar and its name. Pay ▸ To a contact and Home show it; each says what a pick
-// does.
+// each an initials avatar and its name. Pay ▸ To a contact and Home show it; the caller decides
+// what a pick does (`onPick`).
 
 import { useId } from "react";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
@@ -22,7 +22,7 @@ export function FrequentStrip({
   const id = useId();
   if (contacts.length === 0) return null;
   return (
-    <section className={`pay-frequent ${className ?? ""}`} aria-labelledby={id} data-testid={testId}>
+    <section className={["pay-frequent", className].filter(Boolean).join(" ")} aria-labelledby={id} data-testid={testId}>
       <h2 className="contacts-group-title" id={id}>
         Frequent contacts
       </h2>

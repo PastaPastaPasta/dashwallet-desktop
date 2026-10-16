@@ -42,6 +42,8 @@ describe("titles", () => {
     expect(contactLetters({ ...bob, displayName: null, username: null })).toBeNull();
     expect(contactLetters({ ...bob, displayName: "", username: null })).toBeNull();
     expect(contactLetters(undefined)).toBeNull();
+    // A name without a letter says less than the type icon.
+    expect(contactLetters({ ...bob, displayName: "🚀 123" })).toBeNull();
   });
 
   it("maps dash-qt types to iOS titles", () => {

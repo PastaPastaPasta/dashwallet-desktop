@@ -523,7 +523,9 @@ test.describe("DashPay attribution and username", () => {
     await expect(page.getByTestId(`tx-row-${bob}-0`).locator(".tx-row-title")).toHaveText("Bob Builder");
     await expect(page.getByTestId(`tx-row-${dave}-0`).locator(".tx-row-title")).toHaveText("@dave");
     await page.getByTestId(`tx-row-${bob}-0`).click();
-    await expect(page.getByTestId("tx-detail-contact")).toHaveText(/Received from contact\s*Bob Builder/);
+    const contact = page.getByTestId("tx-detail-contact");
+    await expect(contact.locator(".detail-label")).toHaveText("Received from contact");
+    await expect(contact.locator(".tx-detail-contact-name")).toHaveText("Bob Builder");
     await expect(page.getByTestId("tx-detail-summary")).toContainText("Bob Builder");
     expect(await seriousAxeViolations(page)).toEqual([]);
     await page.keyboard.press("Escape");
