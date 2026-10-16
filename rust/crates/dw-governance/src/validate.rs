@@ -13,25 +13,33 @@
 //!   (`governance/superblock.cpp`), and the time window of
 //!   `CGovernanceManager::MasternodeRateCheck`.
 //!
-//! JSON is read as UniValue reads it: the first of duplicate keys wins
-//! (`UniValue::operator[]`), integers are JSON integers that fit, and a
-//! `VNUM` is any JSON number.
-
-use std::fmt;
+//! JSON is read as UniValue reads it: nesting up to 512 deep
+//! (`MAX_JSON_DEPTH`), numbers kept as their text, the first of duplicate
+//! keys wins (`UniValue::operator[]`), integers are number tokens that
+//! `std::from_chars` reads whole within the type (so `-0` is 0 and `1.0` is
+//! no integer), and a `VNUM` is any number token. A top-level array is the
+//! legacy form `[[name, {…}]]`, whose object is the second value of the
+//! first element (`CGovernanceObject::GetJSONObject`); only triggers can be
+//! valid in it, since `ValidateProposal` wants an object.
 
 use dashcore::Network;
-use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
-use serde_json::Value;
+use serde::de::{Deserialize, DeserializeOwned, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde_json::value::RawValue;
+use std::fmt;
 
 use crate::object::{GovernanceObject, MAX_DATA_SIZE, OBJECT_TYPE_PROPOSAL, OBJECT_TYPE_TRIGGER};
 use crate::params::governance_params;
 use crate::proposal::{
-    MAX_MONEY, ProposalData, TriggerData, json_amount, name_valid, payment_address_valid, url_valid,
+    MAX_MONEY, ProposalData, TriggerData, amount_from_number, name_valid, payment_address_valid,
+    url_valid,
 };
 
 /// How far ahead of the local clock an object may be timed (Core
 /// `MAX_TIME_FUTURE_DEVIATION`, one hour).
 pub const MAX_TIME_FUTURE_DEVIATION: i64 = 60 * 60;
+
+/// UniValue's `MAX_JSON_DEPTH`: containers nested deeper fail to read.
+pub const MAX_JSON_DEPTH: usize = 512;
 
 /// What a valid object's data says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +51,8 @@ pub enum ValidObject {
 /// Why an object was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectRejection {
-    /// Not a JSON object, or no integer `type` (Core `fUnparsable`).
+    /// Not JSON UniValue reads into an object, or no integer `type` (Core
+    /// `fUnparsable`).
     Unparsable,
     /// A `type` other than proposal or trigger.
     UnknownType,
@@ -51,46 +60,191 @@ pub enum ObjectRejection {
     InvalidProposal(&'static str),
     /// A rule of the `CSuperblock` constructor; the field it failed on.
     InvalidTrigger(&'static str),
-    /// A trigger created more than an hour ahead or two cycles ago.
+    /// A trigger created more than an hour ahead or two cycles ago: Core's
+    /// rate check ignores it without a penalty.
     TriggerTimeOutOfRange,
+    /// Not a rule: the store holds as many unconfirmed objects as it keeps
+    /// (from this peer or in all).
+    StoreFull,
 }
 
-/// A JSON object whose first occurrence of a key wins, as UniValue's
-/// lookup does (serde_json's map keeps the last).
-struct FirstWins(serde_json::Map<String, Value>);
-
-impl<'de> Deserialize<'de> for FirstWins {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        struct V;
-        impl<'de> Visitor<'de> for V {
-            type Value = FirstWins;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a JSON object")
-            }
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<FirstWins, A::Error> {
-                let mut out = serde_json::Map::new();
-                while let Some((k, v)) = map.next_entry::<String, Value>()? {
-                    out.entry(k).or_insert(v);
-                }
-                Ok(FirstWins(out))
-            }
-        }
-        d.deserialize_map(V)
+impl ObjectRejection {
+    /// Whether the sender misbehaved: Core's rules refuse the object
+    /// outright (the time window and the store bound do not).
+    pub fn is_invalid(self) -> bool {
+        !matches!(self, Self::TriggerTimeOutOfRange | Self::StoreFull)
     }
 }
 
-/// The data as a JSON object, or `None` (not JSON, not an object).
-fn json_object(data: &[u8]) -> Option<serde_json::Map<String, Value>> {
-    serde_json::from_slice::<FirstWins>(data).ok().map(|o| o.0)
+/// Whether no container in `data` nests deeper than [`MAX_JSON_DEPTH`]
+/// (brackets inside strings do not count). Checked before parsing, which
+/// then runs without serde_json's own limit of 128.
+fn depth_ok(data: &[u8]) -> bool {
+    let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
+    for &b in data {
+        if in_string {
+            match (escaped, b) {
+                (true, _) => escaped = false,
+                (false, b'\\') => escaped = true,
+                (false, b'"') => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > MAX_JSON_DEPTH {
+                    return false;
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    true
 }
 
-/// `getInt<T>`: a JSON integer within `T`'s range.
-fn int<T: TryFrom<i64>>(o: &serde_json::Map<String, Value>, key: &str) -> Option<T> {
-    o.get(key)?.as_i64().and_then(|v| T::try_from(v).ok())
+/// Parses `data` as one JSON value of type `T`, nothing after it.
+fn parse<T: DeserializeOwned>(data: &[u8]) -> Option<T> {
+    if !depth_ok(data) {
+        return None;
+    }
+    let mut de = serde_json::Deserializer::from_slice(data);
+    de.disable_recursion_limit();
+    let v = T::deserialize(&mut de).ok()?;
+    de.end().ok()?;
+    Some(v)
 }
 
-fn text<'a>(o: &'a serde_json::Map<String, Value>, key: &str) -> Option<&'a str> {
-    o.get(key)?.as_str()
+/// A JSON object's members in order, duplicates kept, values as their text.
+struct Members(Vec<(String, Box<RawValue>)>);
+
+/// The values of a JSON array, or of an object in member order
+/// (`UniValue::getValues`).
+struct Values(Vec<Box<RawValue>>);
+
+/// A top-level object or array.
+enum Top {
+    Object(Members),
+    Array(Values),
+}
+
+struct MembersVisitor;
+
+impl<'de> Visitor<'de> for MembersVisitor {
+    type Value = Vec<(String, Box<RawValue>)>;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a JSON object")
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut out = Vec::new();
+        while let Some(entry) = map.next_entry::<String, Box<RawValue>>()? {
+            out.push(entry);
+        }
+        Ok(out)
+    }
+}
+
+fn seq_values<'de, A: SeqAccess<'de>>(mut seq: A) -> Result<Vec<Box<RawValue>>, A::Error> {
+    let mut out = Vec::new();
+    while let Some(v) = seq.next_element::<Box<RawValue>>()? {
+        out.push(v);
+    }
+    Ok(out)
+}
+
+impl<'de> Deserialize<'de> for Members {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_map(MembersVisitor).map(Members)
+    }
+}
+
+impl<'de> Deserialize<'de> for Values {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Values;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a JSON array or object")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Values, A::Error> {
+                seq_values(seq).map(Values)
+            }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Values, A::Error> {
+                let members = MembersVisitor.visit_map(map)?;
+                Ok(Values(members.into_iter().map(|(_, v)| v).collect()))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+impl<'de> Deserialize<'de> for Top {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Top;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a JSON array or object")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Top, A::Error> {
+                seq_values(seq).map(|v| Top::Array(Values(v)))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Top, A::Error> {
+                MembersVisitor
+                    .visit_map(map)
+                    .map(|m| Top::Object(Members(m)))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+impl Members {
+    /// The first value under `key`, as text.
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v.get())
+    }
+
+    /// `getInt<T>`: a number token that is all digits after an optional
+    /// `-`, within `T`'s range.
+    fn int<T: std::str::FromStr>(&self, key: &str) -> Option<T> {
+        let t = self.get(key)?;
+        let digits = t.strip_prefix('-').unwrap_or(t);
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        t.parse().ok()
+    }
+
+    /// `get_str`: a JSON string.
+    fn text(&self, key: &str) -> Option<String> {
+        let t = self.get(key)?;
+        if !t.starts_with('"') {
+            return None;
+        }
+        serde_json::from_str(t).ok()
+    }
+
+    /// `isNum`: a number token, as its text.
+    fn number(&self, key: &str) -> Option<&str> {
+        self.get(key)
+            .filter(|t| t.starts_with(|c: char| c == '-' || c.is_ascii_digit()))
+    }
+}
+
+/// The data's object (`GetJSONObject`), and whether it was the top level.
+fn json_object(data: &[u8]) -> Option<(Members, bool)> {
+    match parse::<Top>(data)? {
+        Top::Object(m) => Some((m, true)),
+        Top::Array(Values(outer)) => {
+            let Values(inner) = parse(outer.first()?.get().as_bytes())?;
+            let m = parse(inner.get(1)?.get().as_bytes())?;
+            Some((m, false))
+        }
+    }
 }
 
 /// Checks `object` as Core would before storing it from a peer; `now` is
@@ -100,8 +254,9 @@ pub fn check_object(
     network: Network,
     now: i64,
 ) -> Result<ValidObject, ObjectRejection> {
-    let o = json_object(&object.data).ok_or(ObjectRejection::Unparsable)?;
-    match int::<i32>(&o, "type").ok_or(ObjectRejection::Unparsable)? {
+    let (o, top_level) = json_object(&object.data).ok_or(ObjectRejection::Unparsable)?;
+    match o.int::<i32>("type").ok_or(ObjectRejection::Unparsable)? {
+        OBJECT_TYPE_PROPOSAL if !top_level => Err(ObjectRejection::InvalidProposal("json")),
         OBJECT_TYPE_PROPOSAL => {
             check_proposal(&object.data, &o, network).map(ValidObject::Proposal)
         }
@@ -121,52 +276,56 @@ pub fn check_object(
 /// `governance::ValidateProposal` with scripts allowed and no expiry check.
 fn check_proposal(
     data: &[u8],
-    o: &serde_json::Map<String, Value>,
+    o: &Members,
     network: Network,
 ) -> Result<ProposalData, ObjectRejection> {
     use ObjectRejection::InvalidProposal as Bad;
     if data.len() > MAX_DATA_SIZE {
         return Err(Bad("size"));
     }
-    let name = text(o, "name")
+    let name = o
+        .text("name")
         .filter(|n| name_valid(n))
         .ok_or(Bad("name"))?;
-    let start = int::<i64>(o, "start_epoch").ok_or(Bad("start_epoch"))?;
-    let end = int::<i64>(o, "end_epoch").ok_or(Bad("end_epoch"))?;
+    let start = o.int::<i64>("start_epoch").ok_or(Bad("start_epoch"))?;
+    let end = o.int::<i64>("end_epoch").ok_or(Bad("end_epoch"))?;
     if end <= start {
         return Err(Bad("end_epoch"));
     }
     // `get_real() > 0`; the duffs are read from the number's text.
-    let amount = o.get("payment_amount").ok_or(Bad("payment_amount"))?;
-    if !amount.as_f64().is_some_and(|a| a > 0.0) {
+    let amount = o.number("payment_amount").ok_or(Bad("payment_amount"))?;
+    if !amount.parse::<f64>().is_ok_and(|a| a > 0.0) {
         return Err(Bad("payment_amount"));
     }
-    let address = text(o, "payment_address")
+    let address = o
+        .text("payment_address")
         .filter(|a| payment_address_valid(a, network))
         .ok_or(Bad("payment_address"))?;
-    let url = text(o, "url").filter(|u| url_valid(u)).ok_or(Bad("url"))?;
+    let url = o.text("url").filter(|u| url_valid(u)).ok_or(Bad("url"))?;
     Ok(ProposalData {
-        name: Some(name.to_string()),
-        url: Some(url.to_string()),
-        payment_address: Some(address.to_string()),
-        payment_amount: json_amount(amount),
+        name: Some(name),
+        url: Some(url),
+        payment_address: Some(address),
+        payment_amount: amount_from_number(amount),
         start_epoch: Some(start),
         end_epoch: Some(end),
     })
 }
 
-/// The `CSuperblock` constructor: integer `event_block_height`, and the
+/// The `CSuperblock` constructor: integer `event_block_height` (any `int`,
+/// negative ones too: such a trigger never comes due), and the
 /// `|`-separated addresses, amounts and proposal hashes in equal, non-empty
 /// lists of valid entries.
-fn check_trigger(
-    o: &serde_json::Map<String, Value>,
-    network: Network,
-) -> Result<TriggerData, ObjectRejection> {
+fn check_trigger(o: &Members, network: Network) -> Result<TriggerData, ObjectRejection> {
     use ObjectRejection::InvalidTrigger as Bad;
-    let height = int::<i32>(o, "event_block_height").ok_or(Bad("event_block_height"))?;
-    let addresses = text(o, "payment_addresses").ok_or(Bad("payment_addresses"))?;
-    let amounts = text(o, "payment_amounts").ok_or(Bad("payment_amounts"))?;
-    let hashes = text(o, "proposal_hashes").ok_or(Bad("proposal_hashes"))?;
+    let height = o
+        .int::<i32>("event_block_height")
+        .ok_or(Bad("event_block_height"))?;
+    let addresses = o
+        .text("payment_addresses")
+        .ok_or(Bad("payment_addresses"))?;
+    let amounts = o.text("payment_amounts").ok_or(Bad("payment_amounts"))?;
+    let hashes = o.text("proposal_hashes").ok_or(Bad("proposal_hashes"))?;
     // Core's `SplitString` gives one empty entry for an empty string, which
     // then fails as an address: no payments is refused either way.
     let addresses: Vec<&str> = addresses.split('|').collect();
@@ -187,7 +346,7 @@ fn check_trigger(
         proposal_hashes.push(hash.to_ascii_lowercase());
     }
     Ok(TriggerData {
-        event_block_height: u32::try_from(height).map_err(|_| Bad("event_block_height"))?,
+        event_block_height: height,
         proposal_hashes,
     })
 }
@@ -297,7 +456,6 @@ mod tests {
             check_object(&wire, Network::Testnet, 1_000),
             Ok(ValidObject::Proposal(_))
         ));
-        assert_eq!(check("[]"), Err(ObjectRejection::Unparsable));
         assert_eq!(check(r#"{"type":"1"}"#), Err(ObjectRejection::Unparsable));
         assert_eq!(check(r#"{"type":3}"#), Err(ObjectRejection::UnknownType));
         let long = proposal(&format!("{GOOD}\"pad\":\"{}\",", "x".repeat(400)));
@@ -346,7 +504,16 @@ mod tests {
         bad(trigger("4224", ADDR, ".5", HASH), "payment_amounts");
         bad(trigger("4224", ADDR, "1", &HASH[1..]), "proposal_hashes");
         bad(trigger("\"4224\"", ADDR, "1", HASH), "event_block_height");
-        bad(trigger("-1", ADDR, "1", HASH), "event_block_height");
+        bad(trigger("4224.0", ADDR, "1", HASH), "event_block_height");
+        bad(trigger("2147483648", ADDR, "1", HASH), "event_block_height");
+        // Any int, as `getInt<int>`: a negative height is relayed by Core.
+        assert!(matches!(
+            check(&trigger("-1", ADDR, "1", HASH)),
+            Ok(ValidObject::Trigger(TriggerData {
+                event_block_height: -1,
+                ..
+            }))
+        ));
 
         // Created more than two cycles ago or an hour ahead.
         let p = governance_params(Network::Testnet);
@@ -360,7 +527,102 @@ mod tests {
         ] {
             let r = check_object(&object(&d, time), Network::Testnet, 1_000_000);
             assert_eq!(r.is_ok(), ok, "{time}");
+            // Core's rate check ignores such an object without a penalty.
+            if let Err(e) = r {
+                assert_eq!(e, ObjectRejection::TriggerTimeOutOfRange);
+                assert!(!e.is_invalid());
+            }
         }
+    }
+
+    #[test]
+    fn the_legacy_array_form_holds_triggers_only() {
+        let t = trigger("4224", ADDR, "1", HASH);
+        let legacy = format!(r#"[["trigger",{t}]]"#);
+        assert!(matches!(check(&legacy), Ok(ValidObject::Trigger(_))));
+        // The first element's values may come from an object too.
+        let legacy = format!(r#"[{{"a":"trigger","b":{t}}}]"#);
+        assert!(matches!(check(&legacy), Ok(ValidObject::Trigger(_))));
+        // A proposal in it has its type, but `ValidateProposal` wants an
+        // object.
+        let p = proposal(GOOD);
+        assert_eq!(
+            check(&format!(r#"[["proposal",{p}]]"#)),
+            Err(ObjectRejection::InvalidProposal("json"))
+        );
+        for unparsable in [r#"[]"#, r#"[["trigger"]]"#, r#"[[1,2]]"#, r#"[5]"#, "5"] {
+            assert_eq!(
+                check(unparsable),
+                Err(ObjectRejection::Unparsable),
+                "{unparsable}"
+            );
+        }
+    }
+
+    #[test]
+    fn integers_are_read_from_their_text_as_from_chars_does() {
+        // `-0` is the integer 0; serde_json alone would make it a float.
+        let d = proposal(&GOOD.replace(r#""start_epoch":100"#, r#""start_epoch":-0"#));
+        let Ok(ValidObject::Proposal(p)) = check(&d) else {
+            panic!("refused: {d}")
+        };
+        assert_eq!(p.start_epoch, Some(0));
+        let refused = proposal(&GOOD.replace(r#""start_epoch":100"#, r#""start_epoch":1e2"#));
+        assert_eq!(
+            check(&refused),
+            Err(ObjectRejection::InvalidProposal("start_epoch"))
+        );
+        // An exponent is still a number for the amount.
+        let d = proposal(&GOOD.replace("12.5", "1.25e1"));
+        let Ok(ValidObject::Proposal(p)) = check(&d) else {
+            panic!("refused: {d}")
+        };
+        assert_eq!(p.payment_amount, Some(1_250_000_000));
+    }
+
+    /// A trigger with an extra member nested so that the deepest container
+    /// is `depth` deep, counting the top-level object.
+    fn nested_trigger(depth: usize) -> String {
+        let t = trigger("4224", ADDR, "1", HASH);
+        let inner = depth - 1;
+        format!(
+            r#"{{"deep":{}{},{}"#,
+            "[".repeat(inner),
+            "]".repeat(inner),
+            &t[1..]
+        )
+    }
+
+    #[test]
+    fn nesting_is_bounded_at_univalues_depth() {
+        assert!(check(&nested_trigger(MAX_JSON_DEPTH)).is_ok());
+        assert_eq!(
+            check(&nested_trigger(MAX_JSON_DEPTH + 1)),
+            Err(ObjectRejection::Unparsable)
+        );
+        // Brackets in strings do not nest.
+        let quoted = trigger("4224", ADDR, "1", HASH).replacen(
+            '{',
+            &format!(r#"{{"s":"{}\"{}","#, "[".repeat(600), "{"),
+            1,
+        );
+        assert!(check(&quoted).is_ok(), "{quoted}");
+    }
+
+    /// The parse runs without serde_json's recursion limit, so its stack
+    /// use grows with the nesting `depth_ok` allows: a 512-deep object
+    /// parses on a 256 KiB stack, an eighth of a tokio worker's 2 MiB.
+    #[test]
+    fn the_deepest_object_parses_on_a_small_stack() {
+        const STACK_BOUND: usize = 256 * 1024;
+        let data = nested_trigger(MAX_JSON_DEPTH);
+        let ok = std::thread::Builder::new()
+            .stack_size(STACK_BOUND)
+            .spawn(move || check(&data).is_ok())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(ok);
     }
 
     #[test]

@@ -6,7 +6,9 @@
 //!
 //! The session answers pings, closes after its idle timeout (5 minutes here,
 //! with a ping every minute, so a dead peer ends its stream; MG-01 D17) and
-//! counts the bytes it reads.
+//! counts the bytes it reads. Sends never wait: one that finds the session's
+//! queue full closes the session (the peer stopped reading), so a stuck
+//! peer cannot hold up the sync task.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -26,6 +28,10 @@ pub const SSC_GOVOBJ: i32 = 10;
 pub const SSC_GOVOBJ_VOTE: i32 = 11;
 /// Most entries in one `inv`, `getdata` or `notfound` (Core `MAX_INV_SZ`).
 pub const MAX_INV: usize = 50_000;
+
+/// Frames queued per session: a vote sync of every current proposal plus
+/// the `getdata`s in flight fit with room to spare.
+const SEND_QUEUE: usize = 4096;
 
 const INV: &str = "inv";
 const GETDATA: &str = "getdata";
@@ -76,6 +82,7 @@ impl PeerConfig {
                 start_height: i32::try_from(start_height).unwrap_or(i32::MAX),
                 ping_interval: Duration::from_secs(60),
                 idle_timeout: Duration::from_secs(5 * 60),
+                send_queue: SEND_QUEUE,
                 ..SessionConfig::default()
             },
         }
@@ -223,8 +230,8 @@ impl Peer {
         self.session.close();
     }
 
-    async fn send(&self, command: &str, payload: Vec<u8>) {
-        if let Err(e) = self.session.send(command, payload).await {
+    fn send(&self, command: &str, payload: Vec<u8>) {
+        if let Err(e) = self.session.try_send(command, payload) {
             tracing::debug!(peer = %self.addr, error = %e, "governance send failed");
         }
     }
@@ -232,31 +239,31 @@ impl Peer {
     /// `govsync` for every object (`hash` zero, [`object_fetch_filter`]),
     /// for the votes of one object (`hash`, [`empty_vote_filter`]), or for
     /// one object (`hash`, [`object_fetch_filter`]).
-    pub async fn send_govsync(&self, hash: [u8; 32], filter: &[u8]) {
+    pub fn send_govsync(&self, hash: [u8; 32], filter: &[u8]) {
         let mut payload = Vec::with_capacity(32 + filter.len());
         payload.extend_from_slice(&hash);
         payload.extend_from_slice(filter);
-        self.send(commands::MNGOVERNANCESYNC, payload).await;
+        self.send(commands::MNGOVERNANCESYNC, payload);
     }
 
-    pub async fn send_getdata(&self, items: &[InvItem]) {
+    pub fn send_getdata(&self, items: &[InvItem]) {
         for chunk in items.chunks(MAX_INV) {
-            self.send(GETDATA, encode_inv(chunk)).await;
+            self.send(GETDATA, encode_inv(chunk));
         }
     }
 
-    pub async fn send_inv(&self, items: &[InvItem]) {
+    pub fn send_inv(&self, items: &[InvItem]) {
         for chunk in items.chunks(MAX_INV) {
-            self.send(INV, encode_inv(chunk)).await;
+            self.send(INV, encode_inv(chunk));
         }
     }
 
-    pub async fn send_object(&self, payload: Vec<u8>) {
-        self.send(commands::MNGOVERNANCEOBJECT, payload).await;
+    pub fn send_object(&self, payload: Vec<u8>) {
+        self.send(commands::MNGOVERNANCEOBJECT, payload);
     }
 
-    pub async fn send_vote(&self, payload: Vec<u8>) {
-        self.send(commands::MNGOVERNANCEOBJECTVOTE, payload).await;
+    pub fn send_vote(&self, payload: Vec<u8>) {
+        self.send(commands::MNGOVERNANCEOBJECTVOTE, payload);
     }
 }
 
@@ -322,7 +329,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let cfg = PeerConfig::new(Network::Regtest, "/t/", 1);
         let peer = Peer::connect(4, addr, &cfg, tx).await.unwrap();
-        peer.send_govsync([0; 32], &object_fetch_filter()).await;
+        peer.send_govsync([0; 32], &object_fetch_filter());
         let mut got = Vec::new();
         for _ in 0..4 {
             got.push(rx.recv().await.unwrap());

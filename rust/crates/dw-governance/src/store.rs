@@ -5,22 +5,41 @@
 //! tallied, used for funded heights) once enough distinct peers announced
 //! it, two by default (MG-02 D3): the wallet cannot see the collateral or a
 //! trigger's operator signature, which each relaying full node checked.
+//! Objects waiting for confirmation are bounded per first sender and in all,
+//! by count and bytes, and dropped after [`UNCONFIRMED_TTL_SECS`]. Objects
+//! leave as Core's `UpdateCachesAndClean` erases them: a proposal
+//! [`DELETION_DELAY_SECS`] after its end epoch, a trigger a superblock cycle
+//! after its height (one paid is kept that long, `CSuperblock::IsExpired`;
+//! MG-02 D17). Their hashes are kept so they are not fetched again: a
+//! proposal's for the session, a trigger's until two cycles after its
+//! creation (`mapErasedGovernanceObjects`).
 //!
-//! For each proposal only the latest funding vote of every collateral
-//! outpoint is kept (Core `mapCurrentMNVotes`). The SPV list has no
-//! outpoints, so a vote counts when its signature recovers a voting key
-//! that a masternode of the tip list holds, PoSe-banned ones included (Core
-//! `GetMNByCollateral` finds them), or, for an outpoint the wallet resolved
-//! itself, that masternode's key (D1). One key gets at most `2·n + 2`
-//! outpoints per object, `n` being the masternodes holding it (D11).
-//! Votes on triggers are not kept: Core checks them against the operator
-//! key and the wallet does not tally them.
+//! Votes are checked in two steps so the signature recovery runs without
+//! the store's lock: [`GovernanceStore::precheck`] (cheap, `&mut` to
+//! remember ignored hashes), [`recover`], then
+//! [`GovernanceStore::add_checked`]. Core relays votes the wallet does not
+//! tally (other signals, `NONE` outcomes, votes on triggers or on expired
+//! proposals): those are ignored and their hashes remembered (the hash
+//! covers what made them ignored), with no penalty for the sender.
+//!
+//! For each proposal the latest funding vote of every (collateral outpoint,
+//! voting key) pair is kept. Core keeps one per outpoint
+//! (`mapCurrentMNVotes`), but the SPV list has no outpoints: a vote counts
+//! when its signature recovers a voting key that a masternode of the tip
+//! list holds, PoSe-banned ones included (Core `GetMNByCollateral` finds
+//! them), or, for an outpoint the wallet resolved itself, that masternode's
+//! key. Keyed by the pair, a key holder who signs for another masternode's
+//! outpoint adds a competing claim the tally ranges over, and cannot
+//! replace or block that masternode's own votes (MG-02 D1, D19). One key
+//! gets at most `2·n + 2` unresolved outpoints per object, `n` being the
+//! masternodes holding it (D11); resolved outpoints are exact and not
+//! limited.
 //!
 //! A vote whose object has not arrived waits as an orphan once it passed the
 //! checks that need no object (Core `IsValidForUnknownParent`, MG-01 D23):
 //! for 10 minutes (`GOVERNANCE_ORPHAN_EXPIRATION_TIME`), at most
 //! [`MAX_ORPHAN_VOTES`] in all with the oldest evicted, at most
-//! [`MAX_ORPHANS_PER_PEER`] from one peer, one per (object, outpoint).
+//! [`MAX_ORPHANS_PER_PEER`] from one peer, one per (object, outpoint, key).
 //! Core's per-masternode minimum between vote updates
 //! (`GOVERNANCE_UPDATE_MIN`, timed by the node's own receive clock) is not
 //! mirrored (MG-01 D13).
@@ -35,7 +54,7 @@ use crate::params::governance_params;
 use crate::proposal::{ProposalData, TriggerData};
 use crate::tally::{CurrentVote, KeyWeights};
 use crate::validate::{MAX_TIME_FUTURE_DEVIATION, ObjectRejection, ValidObject, check_object};
-use crate::vote::{GovernanceVote, SIGNAL_FUNDING};
+use crate::vote::{BLS_SIG_SIZE, COMPACT_SIG_SIZE, GovernanceVote, SIGNAL_FUNDING, VoteOutcome};
 
 /// Votes kept for objects that have not arrived, in all.
 pub const MAX_ORPHAN_VOTES: usize = 50_000;
@@ -45,6 +64,21 @@ pub const MAX_ORPHANS_PER_PEER: u32 = 2_000;
 pub const ORPHAN_EXPIRY_SECS: i64 = 10 * 60;
 /// Distinct peers that must announce an object before it counts (D3).
 pub const DEFAULT_CONFIRMATIONS: usize = 2;
+/// Unconfirmed objects kept in all, first sent by one peer, and their data
+/// bytes in all (triggers have no size rule of their own).
+pub const MAX_UNCONFIRMED_OBJECTS: usize = 2_000;
+pub const MAX_UNCONFIRMED_PER_PEER: usize = 500;
+pub const MAX_UNCONFIRMED_BYTES: usize = 32 << 20;
+/// How long an object waits for its confirmations.
+pub const UNCONFIRMED_TTL_SECS: i64 = 60 * 60;
+/// Hashes of ignored votes remembered, oldest forgotten first.
+pub const MAX_IGNORED_VOTES: usize = 100_000;
+/// Core `GOVERNANCE_DELETION_DELAY`.
+pub const DELETION_DELAY_SECS: i64 = 10 * 60;
+/// Signal and outcome ranges Core accepts (`VOTE_SIGNAL_UNKNOWN`,
+/// `VOTE_OUTCOME_UNKNOWN` exclusive).
+const MAX_SIGNAL: i32 = 4;
+const MAX_OUTCOME: i32 = 3;
 
 /// What an object's data says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,20 +95,31 @@ pub struct StoredObject {
     /// Display-order hash.
     pub hash_hex: String,
     /// Distinct peers that announced or sent it (up to the confirmations
-    /// needed).
+    /// needed); the first sent it.
     pub announcers: Vec<SocketAddr>,
     /// Announced by enough peers to count.
     pub confirmed: bool,
+    /// When it arrived (local clock).
+    pub stored_at: i64,
 }
 
 /// Why a vote was not stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VoteRejection {
-    /// Already stored or waiting.
+    /// Already stored, waiting or ignored.
     Duplicate,
-    /// Not a funding vote with a yes / no / abstain outcome on a proposal.
-    NotTallied,
-    /// The signature recovers no key.
+    /// A vote Core relays that the wallet does not tally: another signal, a
+    /// `NONE` outcome, or a vote on a trigger or an expired proposal.
+    /// Remembered.
+    Ignored,
+    /// BLS-signed (an operator's trigger vote) for an object that has not
+    /// arrived: the wallet cannot check it. Dropped, not remembered (the
+    /// hash leaves the signature out).
+    Unverifiable,
+    /// A signal or outcome outside Core's ranges, or a signature of neither
+    /// size; a BLS signature on a proposal vote.
+    Malformed,
+    /// The compact signature recovers no key.
     BadSignature,
     /// The recovered key is no voting key of the tip list.
     UnknownVotingKey,
@@ -83,11 +128,12 @@ pub enum VoteRejection {
     WrongVotingKey,
     /// Timed more than an hour ahead of the local clock.
     TooNew,
-    /// An older vote than the outpoint's current one, or one of the same
-    /// time with a lower outcome (Core keeps the higher one). Not
+    /// An older vote than the (outpoint, key)'s current one, or one of the
+    /// same time with a lower outcome (Core keeps the higher one). Not
     /// remembered, as in Core.
     Obsolete,
-    /// The key already votes for `2·n + 2` outpoints on this object (D11).
+    /// The key already votes for `2·n + 2` unresolved outpoints on this
+    /// object (D11).
     KeyLimit,
     /// Valid, but its object has not arrived: waits, unless the orphan
     /// bounds refused it.
@@ -95,11 +141,44 @@ pub enum VoteRejection {
 }
 
 impl VoteRejection {
-    /// Whether the peer that sent it misbehaved (the vote cannot be from an
-    /// honest node with the same list).
+    /// Whether the peer that sent it misbehaved: no honest node relays it.
     pub fn is_invalid(self) -> bool {
-        matches!(self, Self::BadSignature | Self::NotTallied)
+        matches!(self, Self::Malformed | Self::BadSignature)
     }
+
+    /// Whether it may be honest under a different masternode list (the
+    /// peer's tip may differ), but costs a signature recovery: counted
+    /// against a looser bound (D10).
+    pub fn is_suspect(self) -> bool {
+        matches!(self, Self::UnknownVotingKey | Self::WrongVotingKey)
+    }
+}
+
+/// A vote that passed [`GovernanceStore::precheck`], with the key its
+/// signature recovers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedVote {
+    pub vote: GovernanceVote,
+    pub hash: [u8; 32],
+    pub outcome: VoteOutcome,
+    pub key_id: [u8; 20],
+}
+
+/// Recovers the signer of a prechecked vote; run without the store's lock.
+pub fn recover(
+    vote: GovernanceVote,
+    outcome: VoteOutcome,
+    network: Network,
+) -> Result<CheckedVote, VoteRejection> {
+    let key_id = vote
+        .signer_key_id(network)
+        .ok_or(VoteRejection::BadSignature)?;
+    Ok(CheckedVote {
+        hash: vote.hash(),
+        vote,
+        outcome,
+        key_id,
+    })
 }
 
 /// A masternode of the tip list as the store needs it.
@@ -120,9 +199,22 @@ pub struct ResolvedMasternode {
 
 #[derive(Debug, Clone)]
 struct Orphan {
-    vote: GovernanceVote,
+    vote: CheckedVote,
     from: Option<SocketAddr>,
     at: i64,
+}
+
+/// (object, outpoint, key): the unit of a current vote.
+type Slot = ([u8; 32], OutPoint, [u8; 20]);
+/// (outpoint, key) → current funding vote, for one object.
+type ObjectVotes = HashMap<(OutPoint, [u8; 20]), CurrentVote>;
+
+/// What a vote's object is to the store.
+enum Parent {
+    Proposal,
+    Expired,
+    Trigger,
+    Unknown,
 }
 
 /// Synced objects and current votes.
@@ -130,18 +222,24 @@ struct Orphan {
 pub struct GovernanceStore {
     network: Network,
     confirmations: usize,
+    tip: Option<u32>,
     objects: HashMap<[u8; 32], StoredObject>,
-    /// object hash → outpoint → current funding vote.
-    votes: HashMap<[u8; 32], HashMap<OutPoint, CurrentVote>>,
-    /// (object, key) → outpoints voting with the key.
+    /// Erased objects → until when their hash is kept.
+    erased: HashMap<[u8; 32], i64>,
+    /// object hash → (outpoint, key) → current funding vote.
+    votes: HashMap<[u8; 32], ObjectVotes>,
+    /// (object, key) → unresolved outpoints voting with the key.
     per_key: HashMap<([u8; 32], [u8; 20]), u32>,
     seen_votes: HashSet<[u8; 32]>,
     vote_count: u64,
+    ignored: HashSet<[u8; 32]>,
+    ignored_order: VecDeque<[u8; 32]>,
     orphans: HashMap<[u8; 32], Orphan>,
-    /// Orphan hashes in arrival order (lazily pruned).
-    orphan_order: VecDeque<[u8; 32]>,
-    /// (object, outpoint) → its waiting vote.
-    orphan_slots: HashMap<([u8; 32], OutPoint), [u8; 32]>,
+    /// (arrival, hash) in arrival order; entries whose orphan left or was
+    /// re-queued are skipped, and compacted when they pile up.
+    orphan_order: VecDeque<(i64, [u8; 32])>,
+    orphan_slots: HashMap<Slot, [u8; 32]>,
+    orphans_by_parent: HashMap<[u8; 32], HashSet<[u8; 32]>>,
     orphans_per_peer: HashMap<SocketAddr, u32>,
     /// Voting key → the masternodes of the tip list holding it.
     keys: HashMap<[u8; 20], KeyWeights>,
@@ -155,14 +253,19 @@ impl GovernanceStore {
         Self {
             network,
             confirmations: DEFAULT_CONFIRMATIONS,
+            tip: None,
             objects: HashMap::new(),
+            erased: HashMap::new(),
             votes: HashMap::new(),
             per_key: HashMap::new(),
             seen_votes: HashSet::new(),
             vote_count: 0,
+            ignored: HashSet::new(),
+            ignored_order: VecDeque::new(),
             orphans: HashMap::new(),
             orphan_order: VecDeque::new(),
             orphan_slots: HashMap::new(),
+            orphans_by_parent: HashMap::new(),
             orphans_per_peer: HashMap::new(),
             keys: HashMap::new(),
             valid_weight: 0,
@@ -176,12 +279,17 @@ impl GovernanceStore {
         self.confirmations = n.max(1);
         let n = self.confirmations;
         for o in self.objects.values_mut() {
-            o.confirmed = o.announcers.len() >= n;
+            o.confirmed = o.confirmed || o.announcers.len() >= n;
         }
     }
 
     pub fn network(&self) -> Network {
         self.network
+    }
+
+    /// Sets the chain tip height (triggers are erased against it).
+    pub fn set_tip(&mut self, height: u32) {
+        self.tip = Some(height);
     }
 
     /// Objects stored, confirmed or not.
@@ -202,13 +310,18 @@ impl GovernanceStore {
         self.orphans.len()
     }
 
+    /// Whether `hash` is stored or was erased (either way it is not
+    /// fetched).
     pub fn has_object(&self, hash: &[u8; 32]) -> bool {
-        self.objects.contains_key(hash)
+        self.objects.contains_key(hash) || self.erased.contains_key(hash)
     }
 
-    /// Whether the vote `hash` is counted, or waits for its object.
+    /// Whether the vote `hash` is counted, waits for its object, or was
+    /// ignored.
     pub fn has_vote(&self, hash: &[u8; 32]) -> bool {
-        self.seen_votes.contains(hash) || self.orphans.contains_key(hash)
+        self.seen_votes.contains(hash)
+            || self.orphans.contains_key(hash)
+            || self.ignored.contains(hash)
     }
 
     /// A confirmed object.
@@ -221,14 +334,24 @@ impl GovernanceStore {
         self.objects.values().filter(|o| o.confirmed)
     }
 
+    /// The objects waiting for confirmations.
+    pub fn unconfirmed(&self) -> impl Iterator<Item = &StoredObject> {
+        self.objects.values().filter(|o| !o.confirmed)
+    }
+
     /// The current funding votes on `hash`.
     pub fn votes_on(&self, hash: &[u8; 32]) -> impl Iterator<Item = &CurrentVote> {
         self.votes.get(hash).into_iter().flat_map(|m| m.values())
     }
 
-    /// The current vote of `outpoint` on `hash`.
-    pub fn current_vote(&self, hash: &[u8; 32], outpoint: &OutPoint) -> Option<&CurrentVote> {
-        self.votes.get(hash)?.get(outpoint)
+    /// The current votes claiming `outpoint` on `hash`: one per key (more
+    /// than one only when a key holder signs for an outpoint not theirs).
+    pub fn votes_of(
+        &self,
+        hash: &[u8; 32],
+        outpoint: &OutPoint,
+    ) -> impl Iterator<Item = &CurrentVote> {
+        self.votes_on(hash).filter(move |v| &v.outpoint == outpoint)
     }
 
     /// The masternodes holding `key`, if any.
@@ -277,7 +400,7 @@ impl GovernanceStore {
         now: i64,
     ) -> Result<bool, ObjectRejection> {
         let hash = object.hash();
-        if self.objects.contains_key(&hash) {
+        if self.has_object(&hash) {
             if let Some(peer) = from {
                 self.note_announcer(&hash, peer);
             }
@@ -289,6 +412,9 @@ impl GovernanceStore {
         };
         let announcers: Vec<SocketAddr> = from.into_iter().collect();
         let confirmed = from.is_none() || announcers.len() >= self.confirmations;
+        if !confirmed {
+            self.room_for_unconfirmed(from, object.data.len())?;
+        }
         self.objects.insert(
             hash,
             StoredObject {
@@ -297,30 +423,108 @@ impl GovernanceStore {
                 hash_hex: display_hex(&hash),
                 announcers,
                 confirmed,
+                stored_at: now,
             },
         );
         self.adopt_orphans(&hash, now);
         Ok(true)
     }
 
+    fn room_for_unconfirmed(
+        &self,
+        from: Option<SocketAddr>,
+        bytes: usize,
+    ) -> Result<(), ObjectRejection> {
+        let (mut count, mut from_peer, mut total) = (0usize, 0usize, bytes);
+        for o in self.objects.values().filter(|o| !o.confirmed) {
+            count += 1;
+            total += o.object.data.len();
+            if from.is_some() && o.announcers.first() == from.as_ref() {
+                from_peer += 1;
+            }
+        }
+        if count >= MAX_UNCONFIRMED_OBJECTS
+            || from_peer >= MAX_UNCONFIRMED_PER_PEER
+            || total > MAX_UNCONFIRMED_BYTES
+        {
+            return Err(ObjectRejection::StoreFull);
+        }
+        Ok(())
+    }
+
+    /// Erases what Core's cleanup would by `now` (and the tip set), drops
+    /// objects unconfirmed for [`UNCONFIRMED_TTL_SECS`] and orphans past
+    /// their expiry, and forgets erased hashes whose time passed.
+    pub fn prune(&mut self, now: i64) {
+        let p = governance_params(self.network);
+        let cycle = i64::from(p.superblock_cycle);
+        let cycle_secs = cycle * i64::from(p.target_spacing_secs);
+        let tip = self.tip.map(i64::from);
+        let mut erase = Vec::new();
+        let mut drop = Vec::new();
+        for (hash, o) in &self.objects {
+            let gone = match &o.kind {
+                ObjectKind::Proposal(d) => d
+                    .end_epoch
+                    .is_some_and(|e| e.saturating_add(DELETION_DELAY_SECS) <= now),
+                ObjectKind::Trigger(t) => tip.is_some_and(|tip| {
+                    let h = i64::from(t.event_block_height);
+                    tip > h + cycle || (self.network != Network::Mainnet && tip + 2 * cycle < h)
+                }),
+            };
+            if !o.confirmed && (gone || o.stored_at + UNCONFIRMED_TTL_SECS <= now) {
+                drop.push(*hash);
+            } else if gone {
+                let until = match o.kind {
+                    ObjectKind::Proposal(_) => i64::MAX,
+                    ObjectKind::Trigger(_) => o
+                        .object
+                        .time
+                        .saturating_add(2 * cycle_secs + DELETION_DELAY_SECS),
+                };
+                erase.push((*hash, until));
+            }
+        }
+        for hash in drop {
+            self.remove_object(&hash);
+        }
+        for (hash, until) in erase {
+            self.remove_object(&hash);
+            self.erased.insert(hash, until);
+        }
+        self.erased.retain(|_, until| *until >= now);
+        self.expire_orphans(now);
+    }
+
+    fn remove_object(&mut self, hash: &[u8; 32]) {
+        self.objects.remove(hash);
+        for (_, v) in self.votes.remove(hash).unwrap_or_default() {
+            self.seen_votes.remove(&v.vote_hash);
+            self.vote_count -= 1;
+        }
+        self.per_key.retain(|(object, _), _| object != hash);
+    }
+
     fn adopt_orphans(&mut self, parent: &[u8; 32], now: i64) {
-        let waiting: Vec<[u8; 32]> = self
-            .orphans
-            .iter()
-            .filter(|(_, o)| &o.vote.parent_hash == parent)
-            .map(|(h, _)| *h)
-            .collect();
+        let waiting = self.orphans_by_parent.remove(parent).unwrap_or_default();
         for h in waiting {
             if let Some(o) = self.remove_orphan(&h) {
-                let _ = self.add_vote(o.vote, o.from, now);
+                let _ = self.add_checked(o.vote, o.from, now);
             }
         }
     }
 
     fn remove_orphan(&mut self, hash: &[u8; 32]) -> Option<Orphan> {
         let o = self.orphans.remove(hash)?;
+        let v = &o.vote.vote;
         self.orphan_slots
-            .remove(&(o.vote.parent_hash, o.vote.masternode_outpoint));
+            .remove(&(v.parent_hash, v.masternode_outpoint, o.vote.key_id));
+        if let Some(set) = self.orphans_by_parent.get_mut(&v.parent_hash) {
+            set.remove(hash);
+            if set.is_empty() {
+                self.orphans_by_parent.remove(&v.parent_hash);
+            }
+        }
         if let Some(peer) = o.from
             && let Some(n) = self.orphans_per_peer.get_mut(&peer)
         {
@@ -332,25 +536,29 @@ impl GovernanceStore {
         Some(o)
     }
 
+    /// Whether an `orphan_order` entry is still the orphan's own.
+    fn live_entry(&self, at: i64, hash: &[u8; 32]) -> bool {
+        self.orphans.get(hash).is_some_and(|o| o.at == at)
+    }
+
     /// Drops orphans older than [`ORPHAN_EXPIRY_SECS`].
     pub fn expire_orphans(&mut self, now: i64) {
-        while let Some(h) = self.orphan_order.front().copied() {
-            match self.orphans.get(&h) {
-                None => {
-                    self.orphan_order.pop_front();
-                }
-                Some(o) if o.at + ORPHAN_EXPIRY_SECS < now => {
-                    self.orphan_order.pop_front();
-                    self.remove_orphan(&h);
-                }
-                Some(_) => break,
+        while let Some(&(at, h)) = self.orphan_order.front() {
+            if !self.live_entry(at, &h) {
+                self.orphan_order.pop_front();
+            } else if at + ORPHAN_EXPIRY_SECS < now {
+                self.orphan_order.pop_front();
+                self.remove_orphan(&h);
+            } else {
+                break;
             }
         }
     }
 
     fn evict_oldest_orphan(&mut self) {
-        while let Some(h) = self.orphan_order.pop_front() {
-            if self.remove_orphan(&h).is_some() {
+        while let Some((at, h)) = self.orphan_order.pop_front() {
+            if self.live_entry(at, &h) {
+                self.remove_orphan(&h);
                 return;
             }
         }
@@ -382,6 +590,15 @@ impl GovernanceStore {
     pub fn set_resolved(&mut self, resolved: HashMap<OutPoint, ResolvedMasternode>) {
         self.resolved = resolved;
         self.drop_unbacked_votes();
+        let mut per_key: HashMap<([u8; 32], [u8; 20]), u32> = HashMap::new();
+        for (object, m) in &self.votes {
+            for (outpoint, key) in m.keys() {
+                if !self.resolved.contains_key(outpoint) {
+                    *per_key.entry((*object, *key)).or_default() += 1;
+                }
+            }
+        }
+        self.per_key = per_key;
     }
 
     fn key_ok(&self, outpoint: &OutPoint, key: &[u8; 20]) -> Result<(), VoteRejection> {
@@ -396,22 +613,21 @@ impl GovernanceStore {
     fn drop_unbacked_votes(&mut self) {
         let mut dropped = Vec::new();
         for (object, per_object) in &self.votes {
-            for (outpoint, v) in per_object {
-                if self.key_ok(outpoint, &v.key_id).is_err() {
-                    dropped.push((*object, *outpoint));
+            for (outpoint, key) in per_object.keys() {
+                if self.key_ok(outpoint, key).is_err() {
+                    dropped.push((*object, *outpoint, *key));
                 }
             }
         }
-        for (object, outpoint) in dropped {
-            self.remove_vote(&object, &outpoint);
+        for slot in dropped {
+            self.remove_vote(&slot);
         }
         let stale: Vec<[u8; 32]> = self
             .orphans
             .iter()
             .filter(|(_, o)| {
-                o.vote
-                    .signer_key_id(self.network)
-                    .is_none_or(|k| self.key_ok(&o.vote.masternode_outpoint, &k).is_err())
+                self.key_ok(&o.vote.vote.masternode_outpoint, &o.vote.key_id)
+                    .is_err()
             })
             .map(|(h, _)| *h)
             .collect();
@@ -420,112 +636,167 @@ impl GovernanceStore {
         }
     }
 
-    fn remove_vote(&mut self, object: &[u8; 32], outpoint: &OutPoint) {
-        let Some(v) = self.votes.get_mut(object).and_then(|m| m.remove(outpoint)) else {
+    fn remove_vote(&mut self, (object, outpoint, key): &Slot) {
+        let Some(v) = self
+            .votes
+            .get_mut(object)
+            .and_then(|m| m.remove(&(*outpoint, *key)))
+        else {
             return;
         };
         self.seen_votes.remove(&v.vote_hash);
         self.vote_count -= 1;
-        if let Some(n) = self.per_key.get_mut(&(*object, v.key_id)) {
+        if !self.resolved.contains_key(outpoint)
+            && let Some(n) = self.per_key.get_mut(&(*object, *key))
+        {
             *n -= 1;
             if *n == 0 {
-                self.per_key.remove(&(*object, v.key_id));
+                self.per_key.remove(&(*object, *key));
             }
         }
     }
 
-    /// Checks `vote` from `from` (`None`: relayed by the wallet itself) and
-    /// stores it as its outpoint's current funding vote, or queues it until
-    /// its object arrives.
+    fn remember_ignored(&mut self, hash: [u8; 32]) {
+        if !self.ignored.insert(hash) {
+            return;
+        }
+        self.ignored_order.push_back(hash);
+        if self.ignored_order.len() > MAX_IGNORED_VOTES
+            && let Some(old) = self.ignored_order.pop_front()
+        {
+            self.ignored.remove(&old);
+        }
+    }
+
+    fn parent(&self, hash: &[u8; 32], now: i64) -> Parent {
+        if self.erased.contains_key(hash) {
+            return Parent::Expired;
+        }
+        match self.objects.get(hash).map(|o| &o.kind) {
+            None => Parent::Unknown,
+            Some(ObjectKind::Trigger(_)) => Parent::Trigger,
+            Some(ObjectKind::Proposal(p)) if p.end_epoch.is_some_and(|e| e <= now) => {
+                Parent::Expired
+            }
+            Some(ObjectKind::Proposal(_)) => Parent::Proposal,
+        }
+    }
+
+    /// The checks that need no signature recovery, in Core's order where it
+    /// has one (`CGovernanceVote::IsValid`, then the object's state).
+    /// Remembers ignored votes. Returns the outcome to tally.
+    pub fn precheck(
+        &mut self,
+        vote: &GovernanceVote,
+        now: i64,
+    ) -> Result<VoteOutcome, VoteRejection> {
+        let hash = vote.hash();
+        if self.has_vote(&hash) {
+            return Err(VoteRejection::Duplicate);
+        }
+        if vote.time > now + MAX_TIME_FUTURE_DEVIATION {
+            return Err(VoteRejection::TooNew);
+        }
+        if !(0..=MAX_SIGNAL).contains(&vote.signal)
+            || !(0..=MAX_OUTCOME).contains(&vote.outcome)
+            || !matches!(vote.signature.len(), COMPACT_SIG_SIZE | BLS_SIG_SIZE)
+        {
+            return Err(VoteRejection::Malformed);
+        }
+        let parent = self.parent(&vote.parent_hash, now);
+        let outcome = vote.vote_outcome();
+        if matches!(parent, Parent::Trigger | Parent::Expired)
+            || vote.signal != SIGNAL_FUNDING
+            || outcome.is_none()
+        {
+            self.remember_ignored(hash);
+            return Err(VoteRejection::Ignored);
+        }
+        if vote.signature.len() == BLS_SIG_SIZE {
+            return Err(match parent {
+                Parent::Proposal => VoteRejection::Malformed,
+                _ => VoteRejection::Unverifiable,
+            });
+        }
+        Ok(outcome.expect("checked above"))
+    }
+
+    /// [`Self::precheck`], [`recover`] and [`Self::add_checked`] in one (the
+    /// recovery under the caller's borrow).
     pub fn add_vote(
         &mut self,
         vote: GovernanceVote,
         from: Option<SocketAddr>,
         now: i64,
     ) -> Result<(), VoteRejection> {
-        let hash = vote.hash();
-        if self.has_vote(&hash) {
-            return Err(VoteRejection::Duplicate);
-        }
-        let Some(outcome) = vote.vote_outcome() else {
-            return Err(VoteRejection::NotTallied);
+        let outcome = self.precheck(&vote, now)?;
+        let checked = recover(vote, outcome, self.network)?;
+        self.add_checked(checked, from, now)
+    }
+
+    /// Stores a recovered vote from `from` (`None`: relayed by the wallet
+    /// itself) as its (outpoint, key)'s current funding vote, or queues it
+    /// until its object arrives. Repeats the precheck: the store may have
+    /// changed since.
+    pub fn add_checked(
+        &mut self,
+        v: CheckedVote,
+        from: Option<SocketAddr>,
+        now: i64,
+    ) -> Result<(), VoteRejection> {
+        let outcome = self.precheck(&v.vote, now)?;
+        let (parent, outpoint, key) = (v.vote.parent_hash, v.vote.masternode_outpoint, v.key_id);
+        let newer_than = |t: i64, o: VoteOutcome| {
+            v.vote.time > t || (v.vote.time == t && outcome.code() > o.code())
         };
-        if vote.signal != SIGNAL_FUNDING {
-            return Err(VoteRejection::NotTallied);
-        }
-        let parent = self.objects.get(&vote.parent_hash);
-        if parent.is_some_and(|o| !matches!(o.kind, ObjectKind::Proposal(_))) {
-            return Err(VoteRejection::NotTallied);
-        }
-        let parent_known = parent.is_some();
-        if vote.time > now + MAX_TIME_FUTURE_DEVIATION {
-            return Err(VoteRejection::TooNew);
-        }
-        let outpoint = vote.masternode_outpoint;
-        let newer_than = |t: i64, o: i32| vote.time > t || (vote.time == t && outcome.code() > o);
         let current = self
             .votes
-            .get(&vote.parent_hash)
-            .and_then(|m| m.get(&outpoint));
-        if current.is_some_and(|c| !newer_than(c.time, c.outcome.code())) {
+            .get(&parent)
+            .and_then(|m| m.get(&(outpoint, key)));
+        if current.is_some_and(|c| !newer_than(c.time, c.outcome)) {
             return Err(VoteRejection::Obsolete);
         }
         let waiting = self
             .orphan_slots
-            .get(&(vote.parent_hash, outpoint))
+            .get(&(parent, outpoint, key))
             .and_then(|h| self.orphans.get(h));
-        if waiting.is_some_and(|w| {
-            let o = w.vote.vote_outcome().map_or(0, |o| o.code());
-            !newer_than(w.vote.time, o)
-        }) {
+        if waiting.is_some_and(|w| !newer_than(w.vote.vote.time, w.vote.outcome)) {
             return Err(VoteRejection::Obsolete);
         }
-        // Checked last, as Core does (the cost of recovery). A refused
-        // signature leaves the hash unseen, so the vote can still arrive
-        // from another peer.
-        let key_id = vote
-            .signer_key_id(self.network)
-            .ok_or(VoteRejection::BadSignature)?;
-        self.key_ok(&outpoint, &key_id)?;
-        let replaces_same_key = current.is_some_and(|c| c.key_id == key_id);
-        if !replaces_same_key {
-            let n = self
-                .resolved
-                .get(&outpoint)
-                .map_or_else(|| self.keys.get(&key_id).map_or(0, |k| k.count), |_| 1);
-            let used = self
-                .per_key
-                .get(&(vote.parent_hash, key_id))
-                .copied()
-                .unwrap_or(0);
+        self.key_ok(&outpoint, &key)?;
+        let resolved = self.resolved.contains_key(&outpoint);
+        if current.is_none() && !resolved {
+            let n = self.keys.get(&key).map_or(0, |k| k.count);
+            let used = self.per_key.get(&(parent, key)).copied().unwrap_or(0);
             if used >= 2 * n + 2 {
                 return Err(VoteRejection::KeyLimit);
             }
         }
-        if !parent_known {
-            return Err(self.queue_orphan(hash, vote, from, now));
+        if !self.objects.contains_key(&parent) {
+            return Err(self.queue_orphan(v, from, now));
         }
-        self.remove_vote(&vote.parent_hash, &outpoint);
-        self.votes.entry(vote.parent_hash).or_default().insert(
-            outpoint,
+        self.remove_vote(&(parent, outpoint, key));
+        self.votes.entry(parent).or_default().insert(
+            (outpoint, key),
             CurrentVote {
                 outpoint,
                 outcome,
-                time: vote.time,
-                key_id,
-                vote_hash: hash,
+                time: v.vote.time,
+                key_id: key,
+                vote_hash: v.hash,
             },
         );
-        *self.per_key.entry((vote.parent_hash, key_id)).or_default() += 1;
+        if !resolved {
+            *self.per_key.entry((parent, key)).or_default() += 1;
+        }
         self.vote_count += 1;
-        self.seen_votes.insert(hash);
+        self.seen_votes.insert(v.hash);
         Ok(())
     }
 
     fn queue_orphan(
         &mut self,
-        hash: [u8; 32],
-        vote: GovernanceVote,
+        v: CheckedVote,
         from: Option<SocketAddr>,
         now: i64,
     ) -> VoteRejection {
@@ -535,7 +806,8 @@ impl GovernanceStore {
         {
             return VoteRejection::Orphan;
         }
-        let slot = (vote.parent_hash, vote.masternode_outpoint);
+        let parent = v.vote.parent_hash;
+        let slot = (parent, v.vote.masternode_outpoint, v.key_id);
         if let Some(older) = self.orphan_slots.get(&slot).copied() {
             self.remove_orphan(&older);
         }
@@ -545,36 +817,50 @@ impl GovernanceStore {
         if let Some(peer) = from {
             *self.orphans_per_peer.entry(peer).or_default() += 1;
         }
+        let hash = v.hash;
         self.orphan_slots.insert(slot, hash);
-        self.orphan_order.push_back(hash);
+        self.orphans_by_parent
+            .entry(parent)
+            .or_default()
+            .insert(hash);
+        self.orphan_order.push_back((now, hash));
         self.orphans.insert(
             hash,
             Orphan {
-                vote,
+                vote: v,
                 from,
                 at: now,
             },
         );
+        if self.orphan_order.len() > 2 * self.orphans.len() + 1024 {
+            let order = std::mem::take(&mut self.orphan_order);
+            self.orphan_order = order
+                .into_iter()
+                .filter(|(at, h)| self.live_entry(*at, h))
+                .collect();
+        }
         VoteRejection::Orphan
     }
 
-    /// The highest superblock height ≤ `tip` paid by a confirmed,
-    /// unexpired trigger that lists `hash_hex` (node
-    /// `getProposalFundedHeight` over Core's active triggers). A trigger at
-    /// or below the tip is taken as executed: Core keeps those for a cycle
-    /// (`CSuperblock::IsExpired`).
+    /// The highest superblock height ≤ `tip` paid by a confirmed trigger
+    /// that lists `hash_hex` (node `getProposalFundedHeight` over Core's
+    /// active triggers). A trigger at or below the tip is taken as
+    /// executed: Core keeps those for a cycle (`CSuperblock::IsExpired`;
+    /// MG-02 D17).
     pub fn funded_height(&self, hash_hex: &str, tip: u32) -> Option<u32> {
-        let cycle = governance_params(self.network).superblock_cycle;
+        let cycle = i64::from(governance_params(self.network).superblock_cycle);
+        let tip = i64::from(tip);
         self.objects()
             .filter_map(|o| match &o.kind {
-                ObjectKind::Trigger(t)
-                    if t.event_block_height <= tip
-                        && tip <= t.event_block_height.saturating_add(cycle)
-                        && t.proposal_hashes.iter().any(|h| h == hash_hex) =>
-                {
-                    Some(t.event_block_height)
+                ObjectKind::Trigger(t) => {
+                    let h = i64::from(t.event_block_height);
+                    (h >= 0
+                        && h <= tip
+                        && tip <= h + cycle
+                        && t.proposal_hashes.iter().any(|x| x == hash_hex))
+                    .then_some(h as u32)
                 }
-                _ => None,
+                ObjectKind::Proposal(_) => None,
             })
             .max()
     }
@@ -598,12 +884,21 @@ impl GovernanceStore {
         out.sort();
         out
     }
+
+    /// Whether `hash` is a confirmed proposal whose end epoch is after
+    /// `now`.
+    pub fn is_current_proposal(&self, hash: &[u8; 32], now: i64) -> bool {
+        matches!(
+            self.object(hash).map(|o| &o.kind),
+            Some(ObjectKind::Proposal(p)) if p.end_epoch.is_none_or(|e| e > now)
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vote::{VoteOutcome, to_recoverable_compact};
+    use crate::vote::to_recoverable_compact;
     use dashcore::hashes::{Hash, hash160};
     use dashcore::secp256k1::{Message, PublicKey, SecretKey};
 
@@ -618,31 +913,46 @@ mod tests {
         hash160::Hash::hash(&PublicKey::from_secret_key(&sk).serialize()).to_byte_array()
     }
 
-    /// A funding vote by voting key `key` for outpoint `(op, 0)`.
-    fn vote(parent: [u8; 32], key: u8, op: u8, outcome: VoteOutcome, time: i64) -> GovernanceVote {
+    fn outpoint(op: u8) -> OutPoint {
+        OutPoint::new(dashcore::Txid::from_byte_array([op; 32]), 0)
+    }
+
+    fn sign(v: &mut GovernanceVote, key: u8) {
         let sk = SecretKey::from_secret_bytes([key; 32]).unwrap();
         let pk = PublicKey::from_secret_key(&sk);
-        let mut v = GovernanceVote::funding(
-            OutPoint::new(dashcore::Txid::from_byte_array([op; 32]), 0),
-            parent,
-            outcome,
-            time,
-        );
         let d = v.signing_digest(Network::Regtest);
         let s = dashcore::secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
         v.signature = to_recoverable_compact(&s.serialize_compact(), &pk, &d)
             .unwrap()
             .to_vec();
+    }
+
+    /// A funding vote by voting key `key` for outpoint `(op, 0)`.
+    fn vote(parent: [u8; 32], key: u8, op: u8, outcome: VoteOutcome, time: i64) -> GovernanceVote {
+        let mut v = GovernanceVote::funding(outpoint(op), parent, outcome, time);
+        sign(&mut v, key);
         v
     }
 
-    fn proposal(name: &str) -> GovernanceObject {
+    fn proposal_ending(name: &str, end: i64) -> GovernanceObject {
         let data = format!(
-            r#"{{"end_epoch":{},"name":"{name}","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}}"#,
-            NOW + 10_000
+            r#"{{"end_epoch":{end},"name":"{name}","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}}"#
         );
         GovernanceObject::new_proposal(1, NOW, data.into_bytes())
     }
+
+    fn proposal(name: &str) -> GovernanceObject {
+        proposal_ending(name, NOW + 10_000)
+    }
+
+    fn trigger(height: i32) -> GovernanceObject {
+        let data = format!(
+            r#"{{"event_block_height":{height},"payment_addresses":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amounts":"1","proposal_hashes":"{HASH}","type":2}}"#
+        );
+        GovernanceObject::new_proposal(1, NOW, data.into_bytes())
+    }
+
+    const HASH: &str = "4f6e2b3e7d8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b";
 
     fn entry(key: u8, weight: u32) -> ListEntry {
         ListEntry {
@@ -661,6 +971,15 @@ mod tests {
         s
     }
 
+    fn current(s: &GovernanceStore, h: &[u8; 32], op: u8) -> Vec<(VoteOutcome, [u8; 20])> {
+        let mut v: Vec<_> = s
+            .votes_of(h, &outpoint(op))
+            .map(|c| (c.outcome, c.key_id))
+            .collect();
+        v.sort();
+        v
+    }
+
     #[test]
     fn objects_count_after_two_announcers() {
         let obj = proposal("a");
@@ -674,6 +993,7 @@ mod tests {
         assert!(s.note_announcer(&h, peer(2).unwrap()));
         assert!(s.object(&h).is_some());
         assert_eq!(s.current_proposals(NOW), vec![h]);
+        assert!(s.is_current_proposal(&h, NOW));
         // The wallet's own objects count at once.
         let own = proposal("b");
         assert_eq!(s.add_object(own.clone(), None, NOW), Ok(true));
@@ -681,6 +1001,88 @@ mod tests {
         // Invalid data is refused.
         let bad = GovernanceObject::new_proposal(1, NOW, br#"{"type":1}"#.to_vec());
         assert!(s.add_object(bad, peer(1), NOW).is_err());
+    }
+
+    #[test]
+    fn unconfirmed_objects_are_bounded_and_expire() {
+        let mut s = GovernanceStore::new(Network::Regtest);
+        for i in 0..MAX_UNCONFIRMED_PER_PEER {
+            let o = proposal(&format!("p{i}"));
+            assert_eq!(s.add_object(o, peer(1), NOW), Ok(true));
+        }
+        let one_more = proposal("extra");
+        assert_eq!(
+            s.add_object(one_more.clone(), peer(1), NOW),
+            Err(ObjectRejection::StoreFull)
+        );
+        assert!(!ObjectRejection::StoreFull.is_invalid());
+        // Another peer still has room; the wallet's own objects always do.
+        assert_eq!(s.add_object(one_more, peer(2), NOW), Ok(true));
+        assert_eq!(s.add_object(proposal("own"), None, NOW), Ok(true));
+        // Unconfirmed ones go after the TTL; confirmed ones stay.
+        let kept = proposal("p0").hash();
+        assert!(s.note_announcer(&kept, peer(3).unwrap()));
+        s.prune(NOW + UNCONFIRMED_TTL_SECS - 1);
+        assert_eq!(s.unconfirmed_count(), MAX_UNCONFIRMED_PER_PEER);
+        s.prune(NOW + UNCONFIRMED_TTL_SECS);
+        assert_eq!(s.unconfirmed_count(), 0);
+        assert_eq!(s.object_count(), 2);
+        assert!(s.object(&kept).is_some());
+        // Dropped unconfirmed objects can come again.
+        assert!(!s.has_object(&proposal("p1").hash()));
+    }
+
+    #[test]
+    fn expired_objects_are_erased_and_not_fetched_again() {
+        let end = NOW + 100;
+        let obj = proposal_ending("a", end);
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 1)]);
+        assert_eq!(
+            s.add_vote(vote(h, 1, 1, VoteOutcome::Yes, 10), None, NOW),
+            Ok(())
+        );
+        // From its end epoch on, votes on it are ignored, not penalized.
+        let late = vote(h, 1, 2, VoteOutcome::Yes, 11);
+        assert_eq!(
+            s.add_vote(late.clone(), peer(1), end),
+            Err(VoteRejection::Ignored)
+        );
+        assert!(s.has_vote(&late.hash()));
+        assert!(!s.is_current_proposal(&h, end));
+        // Erased after Core's deletion delay, votes with it; the hash stays
+        // known for the session.
+        s.prune(end + DELETION_DELAY_SECS - 1);
+        assert!(s.object(&h).is_some());
+        s.prune(end + DELETION_DELAY_SECS);
+        assert!(s.object(&h).is_none());
+        assert_eq!(s.vote_count(), 0);
+        assert!(s.has_object(&h));
+        assert_eq!(
+            s.add_object(obj, peer(2), end + DELETION_DELAY_SECS),
+            Ok(false)
+        );
+        s.prune(i64::MAX / 2);
+        assert!(s.has_object(&h));
+
+        // A trigger goes a cycle after its height (regtest: 20 blocks), and
+        // its hash two cycles after its creation.
+        let t = trigger(100);
+        let th = t.hash();
+        let mut s = store(&t, &[]);
+        s.set_tip(120);
+        s.prune(NOW);
+        assert!(s.object(&th).is_some());
+        s.set_tip(121);
+        s.prune(NOW);
+        assert!(s.object(&th).is_none() && s.has_object(&th));
+        let p = governance_params(Network::Regtest);
+        let keep = 2 * i64::from(p.superblock_cycle) * i64::from(p.target_spacing_secs)
+            + DELETION_DELAY_SECS;
+        s.prune(NOW + keep);
+        assert!(s.has_object(&th));
+        s.prune(NOW + keep + 1);
+        assert!(!s.has_object(&th));
     }
 
     #[test]
@@ -705,11 +1107,10 @@ mod tests {
         assert_eq!(s.add_object(obj, peer(1), NOW), Ok(true));
         assert_eq!(s.orphan_count(), 0);
         assert_eq!(s.vote_count(), 1);
-        let op = v1.masternode_outpoint;
-        assert_eq!(s.current_vote(&h, &op).unwrap().outcome, VoteOutcome::Yes);
+        assert_eq!(current(&s, &h, 1), vec![(VoteOutcome::Yes, key_id(1))]);
         let v2 = vote(h, 1, 1, VoteOutcome::No, 20);
         assert_eq!(s.add_vote(v2, peer(1), NOW), Ok(()));
-        assert_eq!(s.current_vote(&h, &op).unwrap().outcome, VoteOutcome::No);
+        assert_eq!(current(&s, &h, 1), vec![(VoteOutcome::No, key_id(1))]);
         assert_eq!(s.vote_count(), 1);
         assert!(!s.has_vote(&v1.hash()));
     }
@@ -734,6 +1135,61 @@ mod tests {
     }
 
     #[test]
+    fn a_key_holder_cannot_replace_another_masternodes_vote() {
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 4), entry(2, 1)]);
+        // The evonode of key 1 votes yes for its outpoint 1; the masternode
+        // of key 2 votes yes for its outpoint 2.
+        assert_eq!(
+            s.add_vote(vote(h, 1, 1, VoteOutcome::Yes, 10), peer(1), NOW),
+            Ok(())
+        );
+        assert_eq!(
+            s.add_vote(vote(h, 2, 2, VoteOutcome::Yes, 10), peer(2), NOW),
+            Ok(())
+        );
+        // Key 2 signs a newer no for outpoint 1: a second claim, not a
+        // replacement.
+        assert_eq!(
+            s.add_vote(vote(h, 2, 1, VoteOutcome::No, NOW + 3600), peer(2), NOW),
+            Ok(())
+        );
+        assert_eq!(
+            current(&s, &h, 1),
+            vec![(VoteOutcome::Yes, key_id(1)), (VoteOutcome::No, key_id(2))]
+        );
+        // The evonode's own later votes still land.
+        assert_eq!(
+            s.add_vote(vote(h, 1, 1, VoteOutcome::Abstain, 20), peer(1), NOW),
+            Ok(())
+        );
+        assert_eq!(
+            current(&s, &h, 1),
+            vec![
+                (VoteOutcome::No, key_id(2)),
+                (VoteOutcome::Abstain, key_id(1))
+            ]
+        );
+        // The tally ranges over the contested outpoint. Key 1 claims one
+        // outpoint with one masternode and carries the estimate; key 2
+        // claims two with one, so each of its votes weighs 0..1 and only the
+        // newest uncontested one is estimated.
+        let t = crate::tally::ranged_tally(
+            s.votes_on(&h),
+            |k| s.key_weights(k),
+            |op| s.resolved(op).map(|r| r.weight),
+        );
+        assert_eq!(t.voters, 2);
+        assert_eq!(
+            (t.abstain.min, t.abstain.max, t.abstain.estimate),
+            (0, 4, 4)
+        );
+        assert_eq!((t.no.min, t.no.max, t.no.estimate), (0, 1, 0));
+        assert_eq!((t.yes.min, t.yes.max, t.yes.estimate), (0, 1, 1));
+    }
+
+    #[test]
     fn keys_come_from_the_whole_list() {
         let obj = proposal("a");
         let h = obj.hash();
@@ -749,14 +1205,14 @@ mod tests {
             s.add_vote(vote(h, 2, 2, VoteOutcome::Yes, 10), None, NOW),
             Ok(())
         );
-        // A key outside the list does not.
-        assert_eq!(
-            s.add_vote(vote(h, 3, 3, VoteOutcome::Yes, 10), None, NOW),
-            Err(VoteRejection::UnknownVotingKey)
-        );
-        // Junk signatures are refused and left unseen.
+        // A key outside the list does not; that is suspect, not invalid.
+        let r = s.add_vote(vote(h, 3, 3, VoteOutcome::Yes, 10), None, NOW);
+        assert_eq!(r, Err(VoteRejection::UnknownVotingKey));
+        assert!(r.unwrap_err().is_suspect() && !r.unwrap_err().is_invalid());
+        // Compact signatures that recover nothing are invalid and left
+        // unseen.
         let mut junk = vote(h, 1, 1, VoteOutcome::Yes, 10);
-        junk.signature.truncate(10);
+        junk.signature = vec![0; COMPACT_SIG_SIZE];
         assert_eq!(
             s.add_vote(junk.clone(), None, NOW),
             Err(VoteRejection::BadSignature)
@@ -777,7 +1233,58 @@ mod tests {
     }
 
     #[test]
-    fn resolved_outpoints_need_their_own_key() {
+    fn votes_core_relays_but_the_wallet_does_not_tally_are_ignored() {
+        let obj = proposal("a");
+        let h = obj.hash();
+        let t = trigger(100);
+        let mut s = store(&obj, &[entry(1, 1)]);
+        assert_eq!(s.add_object(t.clone(), peer(1), NOW), Ok(true));
+        let ignored = |s: &mut GovernanceStore, v: GovernanceVote| {
+            assert_eq!(
+                s.add_vote(v.clone(), peer(1), NOW),
+                Err(VoteRejection::Ignored)
+            );
+            assert!(s.has_vote(&v.hash()), "remembered");
+            assert!(!VoteRejection::Ignored.is_invalid());
+        };
+        // On a trigger (signed by the operator key in Core).
+        let mut on_trigger = vote(t.hash(), 1, 1, VoteOutcome::Yes, 10);
+        on_trigger.signature = vec![7; BLS_SIG_SIZE];
+        ignored(&mut s, on_trigger);
+        // Other signals and the NONE outcome.
+        for (signal, outcome) in [(2, 1), (3, 1), (4, 2), (0, 1), (1, 0)] {
+            let mut v = vote(h, 1, 1, VoteOutcome::Yes, 10);
+            v.signal = signal;
+            v.outcome = outcome;
+            sign(&mut v, 1);
+            ignored(&mut s, v);
+        }
+        // Outside Core's ranges, or a signature of neither size.
+        for (signal, outcome, sig) in [(5, 1, 65), (1, 4, 65), (-1, 1, 65), (1, 1, 64)] {
+            let mut v = vote(h, 1, 1, VoteOutcome::Yes, 11);
+            v.signal = signal;
+            v.outcome = outcome;
+            v.signature.resize(sig, 0);
+            let r = s.add_vote(v, peer(1), NOW);
+            assert_eq!(r, Err(VoteRejection::Malformed));
+            assert!(r.unwrap_err().is_invalid());
+        }
+        // A BLS signature: unverifiable for an unknown object (dropped, not
+        // remembered), invalid on a proposal.
+        let mut bls = vote([9; 32], 1, 1, VoteOutcome::Yes, 12);
+        bls.signature = vec![7; BLS_SIG_SIZE];
+        assert_eq!(
+            s.add_vote(bls.clone(), peer(1), NOW),
+            Err(VoteRejection::Unverifiable)
+        );
+        assert!(!s.has_vote(&bls.hash()));
+        bls.parent_hash = h;
+        assert_eq!(s.add_vote(bls, peer(1), NOW), Err(VoteRejection::Malformed));
+        assert_eq!(s.vote_count(), 0);
+    }
+
+    #[test]
+    fn resolved_outpoints_need_their_own_key_and_are_not_limited() {
         let obj = proposal("a");
         let h = obj.hash();
         let mut s = store(&obj, &[entry(1, 1), entry(2, 1)]);
@@ -789,7 +1296,21 @@ mod tests {
                 weight: 1,
             },
         )]));
-        assert_eq!(s.add_vote(v, None, NOW), Err(VoteRejection::WrongVotingKey));
+        let r = s.add_vote(v, None, NOW);
+        assert_eq!(r, Err(VoteRejection::WrongVotingKey));
+        assert!(r.unwrap_err().is_suspect());
+        // Key 1 (one masternode) fills its 2·1 + 2 unresolved outpoints...
+        for op in 2..=5 {
+            assert_eq!(
+                s.add_vote(vote(h, 1, op, VoteOutcome::Yes, 10), None, NOW),
+                Ok(())
+            );
+        }
+        assert_eq!(
+            s.add_vote(vote(h, 1, 6, VoteOutcome::Yes, 10), None, NOW),
+            Err(VoteRejection::KeyLimit)
+        );
+        // ...and its resolved masternode's own vote still counts.
         assert_eq!(
             s.add_vote(vote(h, 1, 1, VoteOutcome::Yes, 10), None, NOW),
             Ok(())
@@ -819,31 +1340,29 @@ mod tests {
     }
 
     #[test]
-    fn votes_on_triggers_are_not_tallied() {
-        let hash = "4f6e2b3e7d8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b";
-        let data = format!(
-            r#"{{"event_block_height":1520,"payment_addresses":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amounts":"1","proposal_hashes":"{hash}","type":2}}"#
-        );
-        let t = GovernanceObject::new_proposal(1, NOW, data.into_bytes());
-        let mut s = store(&t, &[entry(1, 1)]);
-        let v = vote(t.hash(), 1, 1, VoteOutcome::Yes, 10);
-        assert_eq!(s.add_vote(v, None, NOW), Err(VoteRejection::NotTallied));
-        assert_eq!(s.funded_height(hash, 1519), None);
-        assert_eq!(s.funded_height(hash, 1520), Some(1520));
+    fn triggers_give_funded_heights() {
+        let t = trigger(1520);
+        let s = store(&t, &[entry(1, 1)]);
+        assert_eq!(s.funded_height(HASH, 1519), None);
+        assert_eq!(s.funded_height(HASH, 1520), Some(1520));
         // Kept for one cycle (regtest 20 blocks) after its height.
-        assert_eq!(s.funded_height(hash, 1540), Some(1520));
-        assert_eq!(s.funded_height(hash, 1541), None);
+        assert_eq!(s.funded_height(HASH, 1540), Some(1520));
+        assert_eq!(s.funded_height(HASH, 1541), None);
+        // A negative height never comes due.
+        let s = store(&trigger(-1), &[]);
+        assert_eq!(s.funded_height(HASH, 0), None);
+    }
+
+    fn parent(i: u32) -> [u8; 32] {
+        let mut p = [0u8; 32];
+        p[..4].copy_from_slice(&i.to_le_bytes());
+        p
     }
 
     #[test]
     fn orphans_expire_are_bounded_per_peer_and_evict_the_oldest() {
         let mut s = GovernanceStore::new(Network::Regtest);
         s.set_masternode_list(&[entry(1, 1)]);
-        let parent = |i: u32| {
-            let mut p = [0u8; 32];
-            p[..4].copy_from_slice(&i.to_le_bytes());
-            p
-        };
         let first = vote(parent(0), 1, 1, VoteOutcome::Yes, 10);
         assert_eq!(
             s.add_vote(first.clone(), peer(1), NOW),
@@ -869,30 +1388,63 @@ mod tests {
         assert!(s.has_vote(&other.hash()));
     }
 
+    fn filler(i: u32) -> CheckedVote {
+        let vote = GovernanceVote::funding(OutPoint::null(), parent(i), VoteOutcome::Yes, 10);
+        CheckedVote {
+            hash: vote.hash(),
+            vote,
+            outcome: VoteOutcome::Yes,
+            key_id: [0; 20],
+        }
+    }
+
     #[test]
     fn a_full_orphan_queue_evicts_the_oldest() {
         let mut s = GovernanceStore::new(Network::Regtest);
         s.set_masternode_list(&[entry(1, 1)]);
-        let v = |i: u32| {
-            let mut p = [0u8; 32];
-            p[..4].copy_from_slice(&i.to_le_bytes());
-            vote(p, 1, 1, VoteOutcome::Yes, 10)
-        };
         // The wallet's own relays have no per-peer bound; fill with them
         // (unsigned: the queue itself checks nothing).
-        let oldest = v(0);
+        let oldest = vote(parent(0), 1, 1, VoteOutcome::Yes, 10);
         let _ = s.add_vote(oldest.clone(), None, NOW);
         for i in 1..MAX_ORPHAN_VOTES as u32 {
-            let mut p = [0u8; 32];
-            p[..4].copy_from_slice(&i.to_le_bytes());
-            let filler = GovernanceVote::funding(OutPoint::null(), p, VoteOutcome::Yes, 10);
-            s.queue_orphan(filler.hash(), filler, None, NOW);
+            s.queue_orphan(filler(i), None, NOW);
         }
         assert_eq!(s.orphan_count(), MAX_ORPHAN_VOTES);
-        let newest = v(MAX_ORPHAN_VOTES as u32);
+        let newest = vote(parent(MAX_ORPHAN_VOTES as u32), 1, 1, VoteOutcome::Yes, 10);
         let _ = s.add_vote(newest.clone(), None, NOW);
         assert_eq!(s.orphan_count(), MAX_ORPHAN_VOTES);
         assert!(!s.has_vote(&oldest.hash()));
         assert!(s.has_vote(&newest.hash()));
+    }
+
+    #[test]
+    fn replaced_orphans_neither_grow_the_queue_nor_block_expiry() {
+        let mut s = GovernanceStore::new(Network::Regtest);
+        s.set_masternode_list(&[entry(1, 1)]);
+        // One orphan stays at the front while another slot is replaced by
+        // ever newer votes.
+        let front = vote(parent(0), 1, 1, VoteOutcome::Yes, 10);
+        let _ = s.add_vote(front.clone(), peer(1), NOW);
+        for t in 0..10_000 {
+            let r = s.add_vote(
+                vote(parent(1), 1, 1, VoteOutcome::Yes, 11 + t),
+                peer(2),
+                NOW,
+            );
+            assert_eq!(r, Err(VoteRejection::Orphan));
+        }
+        assert_eq!(s.orphan_count(), 2);
+        assert!(s.orphan_order.len() <= 2 * 2 + 1024 + 1);
+        // A hash queued again after it left leaves a stale entry ahead of
+        // the live one; expiry skips it.
+        let again = filler(7);
+        s.queue_orphan(again.clone(), None, NOW);
+        s.remove_orphan(&again.hash);
+        s.queue_orphan(again.clone(), None, NOW + 500);
+        s.expire_orphans(NOW + ORPHAN_EXPIRY_SECS + 1);
+        assert!(!s.has_vote(&front.hash()));
+        assert!(s.has_vote(&again.hash));
+        s.expire_orphans(NOW + 500 + ORPHAN_EXPIRY_SECS + 1);
+        assert_eq!(s.orphan_count(), 0);
     }
 }

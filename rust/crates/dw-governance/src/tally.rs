@@ -5,12 +5,13 @@
 //!
 //! Core counts the latest funding vote of every collateral outpoint that is
 //! a masternode of the tip list, weighted 1 (regular) or 4 (evonode). The
-//! SPV list carries no outpoints, so the store keeps votes by the voting
-//! key their signature recovers, and [`ranged_tally`] attributes them to
-//! that key's masternodes: exactly when the key's masternodes share one
-//! weight and no more outpoints vote with it than it has masternodes, as a
-//! range otherwise (MG-02 D1, D2; MG-00 D45). Outpoints the wallet resolved
-//! (MG-03) count exactly.
+//! SPV list carries no outpoints, so the store keeps votes by (outpoint,
+//! voting key their signature recovers), and [`ranged_tally`] attributes
+//! them to that key's masternodes: exactly when the key's masternodes share
+//! one weight and no more outpoints vote with it than it has masternodes,
+//! as a range otherwise (MG-02 D1, D2; MG-00 D45). An outpoint claimed by
+//! more than one key weighs between 0 and the highest weight for each claim
+//! (MG-02 D19). Outpoints the wallet resolved (MG-03) count exactly.
 
 use std::collections::HashMap;
 
@@ -141,14 +142,17 @@ pub struct RangedTally {
 }
 
 impl RangedTally {
-    fn count(&mut self, outcome: VoteOutcome, min: u32, max: u32, estimate: u32) {
+    /// Counts one claim; `new_voter` when it is its outpoint's first.
+    fn count(&mut self, outcome: VoteOutcome, min: u32, max: u32, estimate: u32, new_voter: bool) {
         let r = match outcome {
             VoteOutcome::Yes => &mut self.yes,
             VoteOutcome::No => &mut self.no,
             VoteOutcome::Abstain => &mut self.abstain,
         };
         r.add(min, max, estimate);
-        self.voters += 1;
+        if new_voter {
+            self.voters += 1;
+        }
         if min != max {
             self.ranged_votes += 1;
         }
@@ -171,41 +175,83 @@ impl RangedTally {
 /// Attributes `votes` to masternodes: `resolved` gives the exact weight of
 /// an outpoint the wallet resolved, `holders` the masternodes of a voting
 /// key. Per key with `n` masternodes not otherwise accounted for and `c`
-/// outpoints voting: if `c ≤ n` each vote weighs between the key's lowest
-/// and highest weight, estimated at its most common one; if `c > n` each
-/// weighs between 0 and the highest, and only the `n` newest are
-/// estimated (at the common weight).
+/// unresolved outpoints claimed with it: if `c ≤ n` each vote weighs
+/// between the key's lowest and highest weight, estimated at its most
+/// common one; if `c > n` each weighs between 0 and the highest, and only
+/// the `n` newest are estimated (at the common weight). An outpoint claimed
+/// by several keys (a key holder signing for an outpoint not theirs) counts
+/// once as a voter; each claim weighs between 0 and its key's highest
+/// weight, and the estimate goes to the one claim whose key has `c ≤ n`, if
+/// exactly one has, else to none.
 pub fn ranged_tally<'a>(
     votes: impl IntoIterator<Item = &'a CurrentVote>,
     holders: impl Fn(&[u8; 20]) -> Option<KeyWeights>,
     resolved: impl Fn(&OutPoint) -> Option<u32>,
 ) -> RangedTally {
     let mut t = RangedTally::default();
-    let mut by_key: HashMap<[u8; 20], Vec<&CurrentVote>> = HashMap::new();
+    let mut claims: HashMap<OutPoint, Vec<&CurrentVote>> = HashMap::new();
     let mut resolved_per_key: HashMap<[u8; 20], u32> = HashMap::new();
+    let mut claimed_per_key: HashMap<[u8; 20], u32> = HashMap::new();
     for v in votes {
         match resolved(&v.outpoint) {
             Some(w) => {
-                t.count(v.outcome, w, w, w);
+                t.count(v.outcome, w, w, w, true);
                 *resolved_per_key.entry(v.key_id).or_default() += 1;
             }
-            None => by_key.entry(v.key_id).or_default().push(v),
+            None => {
+                *claimed_per_key.entry(v.key_id).or_default() += 1;
+                claims.entry(v.outpoint).or_default().push(v);
+            }
+        }
+    }
+    // Masternodes of the key not taken by a resolved outpoint, and whether
+    // the key claims no more outpoints than that.
+    let free = |key: &[u8; 20], k: &KeyWeights| {
+        k.count
+            .saturating_sub(resolved_per_key.get(key).copied().unwrap_or(0))
+    };
+    let fits = |key: &[u8; 20], k: &KeyWeights| {
+        claimed_per_key.get(key).copied().unwrap_or(0) <= free(key, k)
+    };
+    let mut by_key: HashMap<[u8; 20], Vec<&CurrentVote>> = HashMap::new();
+    for (_, group) in claims {
+        if let [v] = group[..] {
+            by_key.entry(v.key_id).or_default().push(v);
+            continue;
+        }
+        let known: Vec<(&CurrentVote, KeyWeights)> = group
+            .iter()
+            .filter_map(|v| holders(&v.key_id).map(|k| (*v, k)))
+            .collect();
+        let fitting: Vec<usize> = (0..known.len())
+            .filter(|&i| fits(&known[i].0.key_id, &known[i].1))
+            .collect();
+        let chosen = match fitting[..] {
+            [i] => Some(i),
+            _ => None,
+        };
+        for (i, (v, k)) in known.iter().enumerate() {
+            let estimate = if chosen == Some(i) { k.common() } else { 0 };
+            t.count(v.outcome, 0, k.max(), estimate, i == 0);
         }
     }
     for (key, mut group) in by_key {
         let Some(k) = holders(&key) else { continue };
-        let n = k
-            .count
-            .saturating_sub(resolved_per_key.get(&key).copied().unwrap_or(0))
-            as usize;
-        if group.len() <= n {
+        if fits(&key, &k) {
             for v in group {
-                t.count(v.outcome, k.min(), k.max(), k.common());
+                t.count(v.outcome, k.min(), k.max(), k.common(), true);
             }
         } else {
+            let n = free(&key, &k) as usize;
             group.sort_by(|a, b| b.time.cmp(&a.time).then(a.vote_hash.cmp(&b.vote_hash)));
             for (i, v) in group.into_iter().enumerate() {
-                t.count(v.outcome, 0, k.max(), if i < n { k.common() } else { 0 });
+                t.count(
+                    v.outcome,
+                    0,
+                    k.max(),
+                    if i < n { k.common() } else { 0 },
+                    true,
+                );
             }
         }
     }
@@ -425,6 +471,45 @@ mod tests {
                 estimate: 1
             }
         );
+    }
+
+    #[test]
+    fn a_contested_outpoint_ranges_and_estimates_the_fitting_claim() {
+        let keys: HashMap<[u8; 20], KeyWeights> =
+            HashMap::from([([1; 20], weights(0, 1)), ([2; 20], weights(1, 0))]);
+        // Key 1 (one evonode) votes yes for outpoint 1; key 2 (one regular
+        // masternode) votes no for its own outpoint 2 and, newer, claims
+        // outpoint 1 with no as well.
+        let mut forged = cv(2, 1, VoteOutcome::No, 30);
+        forged.vote_hash = [9; 32];
+        let votes = [
+            cv(1, 1, VoteOutcome::Yes, 10),
+            cv(2, 2, VoteOutcome::No, 10),
+            forged,
+        ];
+        let t = ranged_tally(&votes, |k| keys.get(k).copied(), |_| None);
+        // Outpoint 1 counts once; key 1 fits (1 claim, 1 masternode), so its
+        // claim is the estimate; key 2 claims two outpoints with one
+        // masternode, so each of its votes weighs 0..1.
+        assert_eq!(t.voters, 2);
+        assert_eq!(
+            t.yes,
+            WeightRange {
+                min: 0,
+                max: 4,
+                estimate: 4
+            }
+        );
+        assert_eq!(
+            t.no,
+            WeightRange {
+                min: 0,
+                max: 2,
+                estimate: 1
+            }
+        );
+        assert_eq!(t.estimate.absolute_yes(), 3);
+        assert_eq!(t.ranged_votes, 3);
     }
 
     #[test]

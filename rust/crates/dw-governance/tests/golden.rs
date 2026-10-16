@@ -71,9 +71,16 @@ fn objects_dashd_accepts_validate() {
             hex::decode(c["data_hex"].as_str().unwrap()).unwrap(),
         );
         let r = check_object(&obj, dashcore::Network::Regtest, 1_900_000_000);
-        assert!(matches!(r, Ok(ValidObject::Proposal(_))), "{r:?} {}", c["data"]);
+        assert!(
+            matches!(r, Ok(ValidObject::Proposal(_))),
+            "{r:?} {}",
+            c["data"]
+        );
     }
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../testdata/governance_live.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../testdata/governance_live.json"
+    );
     let live: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).expect("live file")).unwrap();
     let proposals = live["networks"]["testnet"]["proposals"].as_array().unwrap();

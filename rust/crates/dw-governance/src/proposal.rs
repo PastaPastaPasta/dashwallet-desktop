@@ -271,14 +271,19 @@ impl ProposalData {
 
 pub fn json_amount(v: &serde_json::Value) -> Option<u64> {
     match v {
-        serde_json::Value::Number(n) => parse_amount(&n.to_string()).or_else(|| {
-            let f = n.as_f64()?;
-            (f > 0.0 && f * (COIN as f64) < MAX_MONEY as f64)
-                .then(|| (f * COIN as f64).round() as u64)
-        }),
+        serde_json::Value::Number(n) => amount_from_number(&n.to_string()),
         serde_json::Value::String(s) => parse_amount(s),
         _ => None,
     }
+}
+
+/// Duffs from a JSON number's text: exact when it is plain decimal,
+/// rounded from the double otherwise (an exponent).
+pub fn amount_from_number(text: &str) -> Option<u64> {
+    parse_amount(text).or_else(|| {
+        let f: f64 = text.parse().ok()?;
+        (f > 0.0 && f * (COIN as f64) < MAX_MONEY as f64).then(|| (f * COIN as f64).round() as u64)
+    })
 }
 
 /// Reads a proposal object's data JSON.
@@ -301,7 +306,8 @@ pub fn parse_proposal(data: &[u8]) -> Option<ProposalData> {
 /// proposals it pays.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TriggerData {
-    pub event_block_height: u32,
+    /// Core reads any `int`; a negative height never comes due.
+    pub event_block_height: i32,
     /// Display-order hashes.
     pub proposal_hashes: Vec<String>,
 }
@@ -310,7 +316,7 @@ pub struct TriggerData {
 pub fn parse_trigger(data: &[u8]) -> Option<TriggerData> {
     let v: serde_json::Value = serde_json::from_slice(data).ok()?;
     let o = v.as_object()?;
-    let height = o.get("event_block_height")?.as_u64()?;
+    let height = o.get("event_block_height")?.as_i64()?;
     let hashes = o
         .get("proposal_hashes")
         .and_then(|x| x.as_str())
@@ -320,7 +326,7 @@ pub fn parse_trigger(data: &[u8]) -> Option<TriggerData> {
         .map(|h| h.to_ascii_lowercase())
         .collect();
     Some(TriggerData {
-        event_block_height: u32::try_from(height).ok()?,
+        event_block_height: i32::try_from(height).ok()?,
         proposal_hashes: hashes,
     })
 }

@@ -14,16 +14,35 @@
 //! peer's `getdata`.
 //!
 //! The wallet keeps the same request rules: an item is accepted only from
-//! the peer it was asked of; anything else is unsolicited and counted, as
-//! are undecodable and invalid items, and a peer past
-//! [`SyncConfig::max_misbehaviour`] is closed (D10). A request ends with the
-//! item, `notfound`, an item that does not decode or validate, the peer
-//! closing, or [`SyncConfig::request_timeout`]; the next peer that announced
-//! the hash is then asked (MG-01 D17). Objects are full-synced from every
-//! fresh peer, so the store's two-peer rule (D3) is met at once. A run that
-//! does not complete both phases ends `Failed` (D13).
+//! a peer it was asked of (the one asked now, or one asked before whose
+//! request timed out); anything else is unsolicited and counted, as are
+//! undecodable and invalid items, and a peer past
+//! [`SyncConfig::max_misbehaviour`] is closed (D10). Votes Core relays but
+//! the wallet does not tally are ignored without a penalty; votes whose key
+//! the list lacks may be honest under the peer's list and count against the
+//! looser [`SyncConfig::max_suspect`]. At most
+//! [`SyncConfig::max_in_flight`] items are asked of one peer at a time. A
+//! request ends with the item, `notfound`, an item that does not decode or
+//! validate, or the peer closing, and the next peer that announced the hash
+//! is asked (MG-01 D17). One that got nothing from its peer for
+//! [`SyncConfig::request_timeout`] since that peer's last delivery moves to
+//! the next announcer, or with none is asked again once and then given up;
+//! a sync item given up on fails the phase unless it still arrives (D13).
+//!
+//! Objects are full-synced from every fresh peer, so the store's two-peer
+//! rule (D3) is met at once; objects one peer announced are then asked of
+//! the peers that did not full-sync this run. A phase completes when every
+//! peer's `ssc` count arrived and the phase's requests are done; it fails
+//! when it made no progress for [`SyncConfig::idle_timeout`], ran past
+//! [`SyncConfig::phase_deadline`], or no peer completed the object sync. A
+//! peer that leaves an `ssc` unanswered for [`SyncConfig::answer_timeout`]
+//! is closed, and the vote syncs it had not finished go to another peer.
+//! The wallet's own votes are announced only once the run is synced: Core
+//! leaves out of its vote invs the ones the wallet announced on that
+//! connection but still counts them in `ssc`. A run that does not complete
+//! both phases ends `Failed` (D13).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque, hash_map::Entry};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -36,7 +55,7 @@ use crate::peer::{
     INV_GOVERNANCE_OBJECT, INV_GOVERNANCE_VOTE, InvItem, Peer, PeerConfig, PeerEvent, SSC_GOVOBJ,
     SSC_GOVOBJ_VOTE, empty_vote_filter, object_fetch_filter,
 };
-use crate::store::{GovernanceStore, VoteRejection};
+use crate::store::{GovernanceStore, VoteRejection, recover};
 use crate::vote::GovernanceVote;
 
 /// Where a sync is.
@@ -146,7 +165,8 @@ impl Shared {
     }
 
     /// Queues the wallet's own vote for relay: announced to the connected
-    /// peers now (and to peers of later runs) and served on `getdata`.
+    /// peers once the run is synced (at once if it is), to the peers of
+    /// later runs once those are, and served on `getdata`.
     /// Returns how many peers are connected. The caller stored the vote.
     pub fn relay_vote(&self, vote: &GovernanceVote) -> u32 {
         let item = InvItem {
@@ -189,18 +209,29 @@ pub struct SyncConfig {
     pub peer: PeerConfig,
     /// How many peers to sync from.
     pub max_peers: usize,
-    /// A phase fails when nothing arrived for this long.
+    /// A phase fails when it made no progress for this long.
     pub idle_timeout: Duration,
+    /// A phase fails when it has not completed in this long.
+    pub phase_deadline: Duration,
     /// Most items asked for in one `getdata` (Core `MAX_GETDATA_SZ`).
     pub getdata_batch: usize,
-    /// A request moves to the next announcer after this long (D12).
+    /// Most items asked of one peer at a time.
+    pub max_in_flight: usize,
+    /// A request moves on when its peer delivered nothing for this long
+    /// (D12).
     pub request_timeout: Duration,
+    /// A peer asked to sync that sends no `ssc` for this long is closed.
+    pub answer_timeout: Duration,
     /// Unsolicited, undecodable or invalid items before a peer is closed
     /// (D10).
     pub max_misbehaviour: u32,
+    /// Votes whose key the list lacks before a peer is closed (D10).
+    pub max_suspect: u32,
     /// Hashes one peer may announce that the wallet has not fetched (Core
     /// `MAX_PEER_OBJECT_ANNOUNCEMENTS`).
     pub max_announcements: usize,
+    /// Parent objects asked of one peer per run after orphan votes.
+    pub max_parent_fetches: usize,
     /// Core's fulfilled-request window for `govsync`.
     pub repeat_window: Duration,
 }
@@ -215,10 +246,15 @@ impl SyncConfig {
             peer,
             max_peers: 3,
             idle_timeout: Duration::from_secs(20),
+            phase_deadline: Duration::from_secs(30 * 60),
             getdata_batch: 1000,
+            max_in_flight: 5000,
             request_timeout: Duration::from_secs(30),
+            answer_timeout: Duration::from_secs(60),
             max_misbehaviour: 1000,
+            max_suspect: 10_000,
             max_announcements: 100_000,
+            max_parent_fetches: 100,
             repeat_window,
         }
     }
@@ -264,11 +300,17 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// Unconfirmed objects asked of peers that did not full-sync, per run.
+const MAX_CONFIRMATION_ASKS: usize = 200;
+/// Given-up requests whose peers may still deliver, remembered per run.
+const MAX_LATE: usize = 100_000;
+
 /// One connected peer and what the run asked of it.
 struct PeerState {
     peer: Peer,
     misbehaviour: u32,
-    /// Hashes it announced that are not fetched yet.
+    suspect: u32,
+    /// Hashes it announced that are not fetched or given up yet.
     announced: usize,
     /// Objects phase: `ssc(10)`'s count and the object invs since.
     full_sync: Option<FullSync>,
@@ -278,14 +320,29 @@ struct PeerState {
     vote_answers: usize,
     vote_expected: i64,
     vote_announced: i64,
+    /// When its next `ssc` is due, while one is outstanding.
+    answer_due: Option<Instant>,
+    /// When it last delivered an item.
+    last_delivery: Instant,
+    /// Hashes assigned to it, not asked yet ([`SyncConfig::max_in_flight`]).
+    queue: VecDeque<[u8; 32]>,
+    in_flight: usize,
     /// Parents it was asked for after it sent an orphan vote.
-    object_fetches: HashSet<[u8; 32]>,
+    parent_fetches: HashSet<[u8; 32]>,
 }
 
 #[derive(Default)]
 struct FullSync {
     expected: Option<i32>,
     announced: i32,
+    /// Counted in [`Run::full_syncs_done`].
+    counted: bool,
+}
+
+impl FullSync {
+    fn complete(&self) -> bool {
+        self.expected.is_some_and(|n| self.announced >= n)
+    }
 }
 
 impl PeerState {
@@ -293,43 +350,86 @@ impl PeerState {
         Self {
             peer,
             misbehaviour: 0,
+            suspect: 0,
             announced: 0,
             full_sync: None,
             vote_asked: Vec::new(),
             vote_answers: 0,
             vote_expected: 0,
             vote_announced: 0,
-            object_fetches: HashSet::new(),
+            answer_due: None,
+            last_delivery: Instant::now(),
+            queue: VecDeque::new(),
+            in_flight: 0,
+            parent_fetches: HashSet::new(),
         }
     }
 
     fn objects_done(&self) -> bool {
-        self.full_sync
-            .as_ref()
-            .is_none_or(|f| f.expected.is_some_and(|n| f.announced >= n))
+        self.full_sync.as_ref().is_none_or(FullSync::complete)
     }
 
     fn votes_done(&self) -> bool {
         self.vote_answers >= self.vote_asked.len() && self.vote_announced >= self.vote_expected
+    }
+
+    fn answers_outstanding(&self) -> bool {
+        self.full_sync
+            .as_ref()
+            .is_some_and(|f| f.expected.is_none())
+            || self.vote_answers < self.vote_asked.len()
+    }
+
+    /// Restarts the `ssc` deadline after an ask or an answer.
+    fn rearm_answer(&mut self, timeout: Duration) {
+        self.answer_due = self.answers_outstanding().then(|| Instant::now() + timeout);
     }
 }
 
 struct Pending {
     peer: usize,
     kind: u32,
-    sent: Instant,
+    /// When the `getdata` went out; `None` while queued.
+    sent: Option<Instant>,
+    /// Asked of the same peer again after a timeout.
+    asked_again: bool,
+    /// An item of the running phase: giving up on it fails the phase.
+    phase: bool,
+    /// Peers asked before, whose late delivery is still accepted.
+    asked: Vec<usize>,
+}
+
+/// Who announced a hash not fetched yet.
+#[derive(Default)]
+struct Announced {
+    /// Not asked yet, in order: who to ask next.
+    untried: Vec<usize>,
+    /// Every peer whose announcement counts against its limit.
+    all: Vec<usize>,
+}
+
+/// A request given up on: its peers may still deliver.
+struct Late {
+    asked: Vec<usize>,
+    /// Counted in [`Run::lost`].
+    lost: bool,
+}
+
+/// What [`Run::take`] accepted an item as.
+struct Taken {
+    phase: bool,
+    asked: Vec<usize>,
 }
 
 /// Requests in flight and who announced what.
 #[derive(Default)]
 struct Requests {
     pending: HashMap<[u8; 32], Pending>,
-    /// Peers that announced a hash not fetched yet and were not tried, in
-    /// order: who to ask next.
-    announcers: HashMap<[u8; 32], Vec<usize>>,
+    announced: HashMap<[u8; 32], Announced>,
     /// Every peer that announced an object not stored yet, tried or not:
     /// they count towards its confirmation once it arrives (D3).
     object_announcers: HashMap<[u8; 32], Vec<SocketAddr>>,
+    late: HashMap<[u8; 32], Late>,
 }
 
 /// Connects to up to `max` of `candidates`, peers not full-synced recently
@@ -385,8 +485,15 @@ struct Run {
     /// Whether the votes of newly confirmed proposals are asked for at
     /// once (after the objects phase).
     votes_open: bool,
-    /// Votes phase: proposals whose vote sync failed with every peer.
+    /// Whether the wallet's own items are announced (once synced).
+    announce_open: bool,
+    /// Votes phase: proposals whose vote sync no peer may be asked for.
     unassigned: Vec<[u8; 32]>,
+    /// Phase items given up on.
+    lost: usize,
+    /// Fresh peers whose object sync completed.
+    full_syncs_done: usize,
+    last_progress: Instant,
 }
 
 impl Run {
@@ -403,6 +510,10 @@ impl Run {
         (self.shared.on_change)();
     }
 
+    fn progressed(&mut self) {
+        self.last_progress = Instant::now();
+    }
+
     fn misbehaved(&mut self, id: usize, why: &str) {
         let max = self.cfg.max_misbehaviour;
         if let Some(p) = self.peer_mut(id) {
@@ -414,7 +525,21 @@ impl Run {
         }
     }
 
-    async fn announce_outbox(&self, only_new: bool) {
+    fn suspected(&mut self, id: usize) {
+        let max = self.cfg.max_suspect;
+        if let Some(p) = self.peer_mut(id) {
+            p.suspect += 1;
+            if p.suspect == max + 1 {
+                tracing::info!(peer = %p.peer.addr, "closing a governance peer that sends votes of unknown keys");
+                p.peer.close();
+            }
+        }
+    }
+
+    fn announce_outbox(&self, only_new: bool) {
+        if !self.announce_open {
+            return;
+        }
         let items: Vec<InvItem> = {
             let mut o = self.shared.outbox();
             if only_new {
@@ -431,147 +556,253 @@ impl Run {
             return;
         }
         for p in &self.peers {
-            p.peer.send_inv(&items).await;
+            p.peer.send_inv(&items);
         }
     }
 
-    /// Asks `id` for `items` (already recorded as pending).
-    async fn get(&self, id: usize, items: &[InvItem]) {
-        if items.is_empty() {
-            return;
-        }
-        if let Some(p) = self.peer(id) {
-            for chunk in items.chunks(self.cfg.getdata_batch.max(1)) {
-                p.peer.send_getdata(chunk).await;
-            }
-        }
-    }
-
-    /// Asks the next peer that announced `hash`, other than the ones tried.
-    async fn retry(&mut self, hash: [u8; 32], kind: u32, tried: usize) {
-        let next = self.requests.announcers.get_mut(&hash).and_then(|a| {
-            a.retain(|p| *p != tried);
-            a.first().copied()
-        });
-        let Some(next) = next.filter(|n| self.peer(*n).is_some()) else {
-            self.requests.announcers.remove(&hash);
-            self.requests.object_announcers.remove(&hash);
-            return;
-        };
+    /// Assigns `hash` to peer `id` and queues it there.
+    fn assign(&mut self, hash: [u8; 32], kind: u32, id: usize, phase: bool, asked: Vec<usize>) {
         self.requests.pending.insert(
             hash,
             Pending {
-                peer: next,
+                peer: id,
                 kind,
-                sent: Instant::now(),
+                sent: None,
+                asked_again: false,
+                phase,
+                asked,
             },
         );
-        self.get(next, &[InvItem { kind, hash }]).await;
+        if let Some(p) = self.peer_mut(id) {
+            p.queue.push_back(hash);
+        }
     }
 
-    async fn on_inv(&mut self, from: usize, items: Vec<InvItem>) {
-        let Some(addr) = self.peer(from).map(|p| p.peer.addr) else {
+    /// Asks peer `id` for queued items up to its in-flight limit.
+    fn pump(&mut self, id: usize) {
+        let (max, batch) = (self.cfg.max_in_flight, self.cfg.getdata_batch.max(1));
+        let Some(pos) = self.peers.iter().position(|p| p.peer.id == id) else {
             return;
         };
-        let (objects, votes) = items.iter().fold((0, 0), |(o, v), i| match i.kind {
-            INV_GOVERNANCE_OBJECT => (o + 1, v),
-            _ => (o, v + 1),
+        let now = Instant::now();
+        let mut items = Vec::new();
+        let p = &mut self.peers[pos];
+        while p.in_flight < max {
+            let Some(h) = p.queue.pop_front() else { break };
+            if let Some(r) = self.requests.pending.get_mut(&h)
+                && r.peer == id
+                && r.sent.is_none()
+            {
+                r.sent = Some(now);
+                p.in_flight += 1;
+                items.push(InvItem {
+                    kind: r.kind,
+                    hash: h,
+                });
+            }
+        }
+        for chunk in items.chunks(batch) {
+            p.peer.send_getdata(chunk);
+        }
+    }
+
+    /// Removes the request for `hash`, freeing its peer's slot.
+    fn release(&mut self, hash: &[u8; 32]) -> Option<Pending> {
+        let r = self.requests.pending.remove(hash)?;
+        if r.sent.is_some()
+            && let Some(p) = self.peer_mut(r.peer)
+        {
+            p.in_flight = p.in_flight.saturating_sub(1);
+        }
+        Some(r)
+    }
+
+    /// Done with `hash`: its announcements stop counting against their
+    /// peers' limits.
+    fn finish(&mut self, hash: &[u8; 32]) {
+        let Some(a) = self.requests.announced.remove(hash) else {
+            return;
+        };
+        for id in a.all {
+            if let Some(p) = self.peer_mut(id) {
+                p.announced = p.announced.saturating_sub(1);
+            }
+        }
+    }
+
+    /// Accepts the item `hash` from `from` if it was asked of `from` now or
+    /// before; counts misbehaviour otherwise.
+    fn take(&mut self, from: usize, hash: &[u8; 32]) -> Option<Taken> {
+        if let Some(r) = self.requests.pending.get(hash)
+            && (r.peer == from || r.asked.contains(&from))
+        {
+            let r = self.release(hash).expect("looked up");
+            if let Some(p) = self.peer_mut(from) {
+                p.last_delivery = Instant::now();
+            }
+            if r.peer != from || r.asked_again {
+                // The peer asked now (or asked twice) may still deliver.
+                self.remember_late(*hash, vec![r.peer], false);
+            }
+            return Some(Taken {
+                phase: r.phase,
+                asked: r.asked,
+            });
+        }
+        if let Some(l) = self.requests.late.get_mut(hash)
+            && l.asked.contains(&from)
+        {
+            // Kept: a request asked twice may be answered twice.
+            let was_lost = std::mem::replace(&mut l.lost, false);
+            let asked = l.asked.clone();
+            if was_lost {
+                self.lost -= 1;
+            }
+            if let Some(p) = self.peer_mut(from) {
+                p.last_delivery = Instant::now();
+            }
+            return Some(Taken {
+                phase: was_lost,
+                asked,
+            });
+        }
+        self.misbehaved(from, "unsolicited item");
+        None
+    }
+
+    fn remember_late(&mut self, hash: [u8; 32], asked: Vec<usize>, lost: bool) {
+        if self.requests.late.len() >= MAX_LATE {
+            self.requests.late.retain(|_, l| l.lost);
+        }
+        if let Some(old) = self.requests.late.insert(hash, Late { asked, lost })
+            && old.lost
+        {
+            self.lost -= 1;
+        }
+        if lost {
+            self.lost += 1;
+        }
+    }
+
+    /// Asks the next peer that announced `hash` and was not asked; with
+    /// none, gives up on it (failing the phase if `phase` and `count`).
+    fn retry(&mut self, hash: [u8; 32], kind: u32, tried: usize, t: Taken, count: bool) {
+        let mut asked = t.asked;
+        if !asked.contains(&tried) {
+            asked.push(tried);
+        }
+        let live: Vec<usize> = self.peers.iter().map(|p| p.peer.id).collect();
+        let next = self.requests.announced.get_mut(&hash).and_then(|a| {
+            a.untried.retain(|p| !asked.contains(p) && live.contains(p));
+            a.untried.first().copied()
         });
-        let mut wanted = Vec::new();
-        let mut confirmed = Vec::new();
+        match next {
+            Some(next) => {
+                self.assign(hash, kind, next, t.phase, asked);
+                self.pump(next);
+            }
+            None => {
+                // Who announced an object still counts if another peer
+                // delivers it later.
+                self.remember_late(hash, asked, t.phase && count);
+                self.finish(&hash);
+            }
+        }
+    }
+
+    fn on_inv(&mut self, from: usize, items: Vec<InvItem>) {
+        let Some(pos) = self.peers.iter().position(|p| p.peer.id == from) else {
+            return;
+        };
+        let addr = self.peers[pos].peer.addr;
+        let now = unix_now();
         let max_announced = self.cfg.max_announcements;
+        let state = &mut self.peers[pos];
+        // Items announced while the peer's sync is still answering belong to
+        // the phase.
+        let objects_phase = state.full_sync.as_ref().is_some_and(|f| !f.complete());
+        let votes_phase = !state.votes_done();
+        let mut confirmed = Vec::new();
+        let mut wanted = Vec::new();
         {
             let mut store = self.shared.store();
-            let state = self
-                .peers
-                .iter_mut()
-                .find(|p| p.peer.id == from)
-                .expect("looked up");
-            if let Some(f) = state.full_sync.as_mut() {
-                f.announced += objects;
-            }
-            state.vote_announced += votes;
             for i in items {
-                let known = match i.kind {
-                    INV_GOVERNANCE_OBJECT => {
-                        if store.note_announcer(&i.hash, addr) {
-                            confirmed.push(i.hash);
-                        }
-                        store.has_object(&i.hash)
+                let object = i.kind == INV_GOVERNANCE_OBJECT;
+                if object {
+                    if let Some(f) = state.full_sync.as_mut() {
+                        f.announced += 1;
                     }
-                    _ => store.has_vote(&i.hash),
+                    if store.note_announcer(&i.hash, addr) {
+                        confirmed.push(i.hash);
+                    }
+                } else if votes_phase {
+                    // Relays before the peer was asked for votes do not
+                    // count towards its `ssc(11)` totals.
+                    state.vote_announced += 1;
+                }
+                let known = if object {
+                    store.has_object(&i.hash)
+                } else {
+                    store.has_vote(&i.hash)
                 };
                 if known || state.announced >= max_announced {
                     continue;
                 }
-                if i.kind == INV_GOVERNANCE_OBJECT {
+                if object {
+                    if self.requests.object_announcers.len() >= MAX_LATE {
+                        self.requests.object_announcers.clear();
+                    }
                     let by = self.requests.object_announcers.entry(i.hash).or_default();
                     if !by.contains(&addr) {
                         by.push(addr);
                     }
                 }
-                let announcers = self.requests.announcers.entry(i.hash).or_default();
-                if announcers.contains(&from) {
+                let a = self.requests.announced.entry(i.hash).or_default();
+                if a.all.contains(&from) {
                     continue;
                 }
-                announcers.push(from);
+                a.all.push(from);
+                a.untried.push(from);
                 state.announced += 1;
-                if let std::collections::hash_map::Entry::Vacant(e) =
-                    self.requests.pending.entry(i.hash)
-                {
-                    e.insert(Pending {
-                        peer: from,
-                        kind: i.kind,
-                        sent: Instant::now(),
-                    });
-                    wanted.push(i);
+                let phase = if object { objects_phase } else { votes_phase };
+                match self.requests.pending.entry(i.hash) {
+                    Entry::Vacant(_) => wanted.push((i, phase)),
+                    Entry::Occupied(mut e) => e.get_mut().phase |= phase,
                 }
             }
+            confirmed.retain(|h| store.is_current_proposal(h, now));
         }
-        self.get(from, &wanted).await;
+        if wanted.iter().any(|(_, phase)| *phase) || !confirmed.is_empty() {
+            self.progressed();
+        }
+        for (i, phase) in wanted {
+            self.assign(i.hash, i.kind, from, phase, Vec::new());
+        }
+        self.pump(from);
         if !confirmed.is_empty() {
             self.changed();
             if self.votes_open {
-                self.ask_votes(confirmed).await;
+                self.ask_votes(confirmed);
             }
         }
     }
 
-    /// Takes the item `hash` from `from` if it was asked of `from`; counts
-    /// misbehaviour otherwise.
-    fn take_request(&mut self, from: usize, hash: &[u8; 32]) -> bool {
-        match self.requests.pending.get(hash) {
-            Some(p) if p.peer == from => {
-                self.requests.pending.remove(hash);
-                if let Some(p) = self.peer_mut(from) {
-                    p.announced = p.announced.saturating_sub(1);
-                }
-                true
-            }
-            _ => {
-                self.misbehaved(from, "unsolicited item");
-                false
-            }
-        }
-    }
-
-    async fn on_object(&mut self, from: usize, payload: Vec<u8>) {
+    fn on_object(&mut self, from: usize, payload: Vec<u8>) {
         let Ok(object) = GovernanceObject::decode(&payload) else {
             // The pending hash is unknown; its request times out.
             self.misbehaved(from, "undecodable object");
             return;
         };
         let hash = object.hash();
-        if !self.take_request(from, &hash) {
+        let Some(taken) = self.take(from, &hash) else {
             return;
-        }
+        };
         let addr = self.peer(from).map(|p| p.peer.addr);
         let now = unix_now();
         let result = {
             let mut store = self.shared.store();
             let r = store.add_object(object, addr, now);
             if r.is_ok() {
-                self.requests.announcers.remove(&hash);
                 for addr in self
                     .requests
                     .object_announcers
@@ -581,72 +812,110 @@ impl Run {
                     store.note_announcer(&hash, addr);
                 }
             }
-            r
+            r.map(|_| store.is_current_proposal(&hash, now))
         };
         match result {
-            Ok(_) => {
+            Ok(current) => {
+                self.finish(&hash);
+                self.progressed();
                 self.changed();
-                let current = self.shared.store().current_proposals(now).contains(&hash);
                 if self.votes_open && current {
-                    self.ask_votes(vec![hash]).await;
+                    self.ask_votes(vec![hash]);
                 }
             }
-            Err(e) => {
+            Err(e) if e.is_invalid() => {
                 tracing::debug!(?e, "governance object refused");
                 self.misbehaved(from, "invalid object");
-                self.retry(hash, INV_GOVERNANCE_OBJECT, from).await;
+                self.retry(hash, INV_GOVERNANCE_OBJECT, from, taken, true);
+            }
+            Err(e) => {
+                tracing::debug!(?e, "governance object not kept");
+                self.finish(&hash);
+                self.requests.object_announcers.remove(&hash);
+                self.progressed();
             }
         }
     }
 
-    async fn on_vote(&mut self, from: usize, payload: Vec<u8>) {
+    fn on_vote(&mut self, from: usize, payload: Vec<u8>) {
         let Ok(vote) = GovernanceVote::decode(&payload) else {
             self.misbehaved(from, "undecodable vote");
             return;
         };
         let hash = vote.hash();
-        if !self.take_request(from, &hash) {
+        let Some(taken) = self.take(from, &hash) else {
             return;
-        }
-        let parent = vote.parent_hash;
+        };
+        let now = unix_now();
+        // The hash leaves the signature out: when this copy's signature is
+        // the problem, another peer's copy may be the genuine one.
+        let prechecked = self.shared.store().precheck(&vote, now);
+        let outcome = match prechecked {
+            Ok(o) => o,
+            Err(r) if r.is_invalid() => {
+                self.misbehaved(from, "invalid vote");
+                self.retry(hash, INV_GOVERNANCE_VOTE, from, taken, true);
+                return;
+            }
+            Err(_) => {
+                self.finish(&hash);
+                self.progressed();
+                return;
+            }
+        };
+        // Recovered without the store's lock.
+        let checked = match recover(vote, outcome, self.shared.network) {
+            Ok(c) => c,
+            Err(_) => {
+                self.misbehaved(from, "vote signature recovers no key");
+                self.retry(hash, INV_GOVERNANCE_VOTE, from, taken, true);
+                return;
+            }
+        };
+        let parent = checked.vote.parent_hash;
         let addr = self.peer(from).map(|p| p.peer.addr);
-        let result = self.shared.store().add_vote(vote, addr, unix_now());
+        let result = self.shared.store().add_checked(checked, addr, now);
         match result {
             Ok(()) => {
-                self.requests.announcers.remove(&hash);
+                self.finish(&hash);
+                self.progressed();
                 self.changed();
             }
             Err(VoteRejection::Orphan) => {
-                self.requests.announcers.remove(&hash);
-                self.fetch_parent(from, parent).await;
+                self.finish(&hash);
+                self.progressed();
+                self.fetch_parent(from, parent);
             }
-            Err(r @ (VoteRejection::BadSignature | VoteRejection::NotTallied)) => {
-                // The vote hash leaves out the signature: another peer's
-                // copy may be the genuine one.
-                tracing::debug!(?r, "governance vote refused");
-                self.misbehaved(from, "invalid vote");
-                self.retry(hash, INV_GOVERNANCE_VOTE, from).await;
+            Err(r) if r.is_suspect() || r.is_invalid() => {
+                if r.is_suspect() {
+                    self.suspected(from);
+                } else {
+                    self.misbehaved(from, "invalid vote");
+                }
+                self.retry(hash, INV_GOVERNANCE_VOTE, from, taken, true);
             }
             Err(_) => {
-                self.requests.announcers.remove(&hash);
+                self.finish(&hash);
+                self.progressed();
             }
         }
     }
 
     /// Core answers an orphan vote by asking its sender for the object
-    /// (`govsync <hash>` with an empty filter); once per parent and peer.
-    async fn fetch_parent(&mut self, from: usize, parent: [u8; 32]) {
+    /// (`govsync <hash>` with an empty filter); once per parent and peer,
+    /// [`SyncConfig::max_parent_fetches`] per peer.
+    fn fetch_parent(&mut self, from: usize, parent: [u8; 32]) {
         let known =
             self.shared.store().has_object(&parent) || self.requests.pending.contains_key(&parent);
+        let max = self.cfg.max_parent_fetches;
         let Some(p) = self.peer_mut(from) else { return };
-        if known || !p.object_fetches.insert(parent) {
+        if known || p.parent_fetches.len() >= max || !p.parent_fetches.insert(parent) {
             return;
         }
-        let p = self.peer(from).expect("looked up");
-        p.peer.send_govsync(parent, &object_fetch_filter()).await;
+        p.peer.send_govsync(parent, &object_fetch_filter());
     }
 
-    async fn on_not_found(&mut self, from: usize, items: Vec<InvItem>) {
+    fn on_not_found(&mut self, from: usize, items: Vec<InvItem>) {
         for i in items {
             if self
                 .requests
@@ -654,13 +923,19 @@ impl Run {
                 .get(&i.hash)
                 .is_some_and(|p| p.peer == from)
             {
-                self.requests.pending.remove(&i.hash);
-                self.retry(i.hash, i.kind, from).await;
+                let r = self.release(&i.hash).expect("looked up");
+                let taken = Taken {
+                    phase: r.phase,
+                    asked: r.asked,
+                };
+                // A peer that no longer has an item it announced (a vote
+                // dropped with a list change) is not a lost sync item.
+                self.retry(i.hash, i.kind, from, taken, false);
             }
         }
     }
 
-    async fn on_get_data(&self, from: usize, items: Vec<InvItem>) {
+    fn on_get_data(&self, from: usize, items: Vec<InvItem>) {
         let answers: Vec<(u32, Vec<u8>)> = {
             let o = self.shared.outbox();
             items
@@ -671,98 +946,153 @@ impl Run {
         let Some(p) = self.peer(from) else { return };
         for (kind, payload) in answers {
             match kind {
-                INV_GOVERNANCE_OBJECT => p.peer.send_object(payload).await,
-                _ => p.peer.send_vote(payload).await,
+                INV_GOVERNANCE_OBJECT => p.peer.send_object(payload),
+                _ => p.peer.send_vote(payload),
             }
         }
     }
 
-    async fn on_closed(&mut self, id: usize) {
+    fn on_closed(&mut self, id: usize) {
         let Some(pos) = self.peers.iter().position(|p| p.peer.id == id) else {
             return;
         };
         let gone = self.peers.remove(pos);
-        let pending: Vec<([u8; 32], u32)> = self
+        // Every vote sync it had not completed goes to another peer: its
+        // `ssc` may have come before its invs, so which proposals it
+        // finished is unknown.
+        let reask = if gone.votes_done() {
+            Vec::new()
+        } else {
+            gone.vote_asked.clone()
+        };
+        let pending: Vec<[u8; 32]> = self
             .requests
             .pending
             .iter()
             .filter(|(_, p)| p.peer == id)
-            .map(|(h, p)| (*h, p.kind))
+            .map(|(h, _)| *h)
             .collect();
-        for (h, kind) in pending {
-            self.requests.pending.remove(&h);
-            self.retry(h, kind, id).await;
+        for h in pending {
+            let r = self.requests.pending.remove(&h).expect("listed");
+            let taken = Taken {
+                phase: r.phase,
+                asked: r.asked,
+            };
+            // Votes come again from the re-asked syncs; objects it alone
+            // announced are not sync items another fresh peer has.
+            self.retry(h, r.kind, id, taken, false);
         }
-        self.requests.announcers.retain(|_, a| {
-            a.retain(|p| *p != id);
-            !a.is_empty()
-        });
-        // Vote syncs it had not answered go to another peer.
-        let unanswered: Vec<[u8; 32]> = gone
-            .vote_asked
-            .iter()
-            .skip(gone.vote_answers)
-            .copied()
-            .collect();
-        if !unanswered.is_empty() {
-            self.ask_votes(unanswered).await;
+        for a in self.requests.announced.values_mut() {
+            a.untried.retain(|p| *p != id);
+            a.all.retain(|p| *p != id);
+        }
+        self.requests.announced.retain(|_, a| !a.all.is_empty());
+        if !reask.is_empty() {
+            self.ask_votes(reask);
         }
         self.changed();
     }
 
-    async fn handle(&mut self, from: usize, ev: PeerEvent) {
-        match ev {
-            PeerEvent::Inv(items) => self.on_inv(from, items).await,
-            PeerEvent::GetData(items) => self.on_get_data(from, items).await,
-            PeerEvent::NotFound(items) => self.on_not_found(from, items).await,
-            PeerEvent::Object(payload) => self.on_object(from, payload).await,
-            PeerEvent::Vote(payload) => self.on_vote(from, payload).await,
-            PeerEvent::SyncCount { item, count } => {
-                if let Some(p) = self.peer_mut(from) {
-                    match item {
-                        SSC_GOVOBJ => {
-                            if let Some(f) = p.full_sync.as_mut() {
-                                f.expected = Some(count);
-                            }
-                        }
-                        SSC_GOVOBJ_VOTE => {
-                            p.vote_answers += 1;
-                            p.vote_expected += i64::from(count);
-                        }
-                        _ => {}
-                    }
-                }
+    fn on_sync_count(&mut self, from: usize, item: i32, count: i32) {
+        let timeout = self.cfg.answer_timeout;
+        let Some(p) = self.peer_mut(from) else { return };
+        match item {
+            SSC_GOVOBJ => match p.full_sync.as_mut() {
+                Some(f) if f.expected.is_none() => f.expected = Some(count),
+                _ => return,
+            },
+            SSC_GOVOBJ_VOTE if p.vote_answers < p.vote_asked.len() => {
+                p.vote_answers += 1;
+                p.vote_expected += i64::from(count);
             }
+            _ => return,
+        }
+        p.rearm_answer(timeout);
+        self.progressed();
+    }
+
+    fn handle(&mut self, from: usize, ev: PeerEvent) {
+        match ev {
+            PeerEvent::Inv(items) => self.on_inv(from, items),
+            PeerEvent::GetData(items) => self.on_get_data(from, items),
+            PeerEvent::NotFound(items) => self.on_not_found(from, items),
+            PeerEvent::Object(payload) => self.on_object(from, payload),
+            PeerEvent::Vote(payload) => self.on_vote(from, payload),
+            PeerEvent::SyncCount { item, count } => self.on_sync_count(from, item, count),
             PeerEvent::Malformed => self.misbehaved(from, "malformed message"),
-            PeerEvent::Closed => self.on_closed(from).await,
+            PeerEvent::Closed => self.on_closed(from),
         }
     }
 
-    /// Requests that waited past the timeout move to the next announcer.
-    async fn expire_requests(&mut self) {
+    /// Requests whose peer delivered nothing for the timeout move to the
+    /// next announcer, or are asked again once, or given up; peers past
+    /// their `ssc` deadline are closed; the store is pruned.
+    fn expire(&mut self) {
         let timeout = self.cfg.request_timeout;
-        let late: Vec<([u8; 32], usize, u32)> = self
+        let now = Instant::now();
+        let late: Vec<[u8; 32]> = self
             .requests
             .pending
             .iter()
-            .filter(|(_, p)| p.sent.elapsed() >= timeout)
-            .map(|(h, p)| (*h, p.peer, p.kind))
+            .filter(|(_, r)| {
+                let Some(sent) = r.sent else { return false };
+                let since = self
+                    .peer(r.peer)
+                    .map_or(sent, |p| p.last_delivery.max(sent));
+                now.duration_since(since) >= timeout
+            })
+            .map(|(h, _)| *h)
             .collect();
-        for (h, peer, kind) in late {
-            self.requests.pending.remove(&h);
-            if let Some(p) = self.peer_mut(peer) {
-                p.announced = p.announced.saturating_sub(1);
+        for h in late {
+            let (peer, kind, again) = {
+                let r = &self.requests.pending[&h];
+                (r.peer, r.kind, r.asked_again)
+            };
+            let others = self.requests.announced.get(&h).is_some_and(|a| {
+                let asked = &self.requests.pending[&h].asked;
+                a.untried
+                    .iter()
+                    .any(|p| *p != peer && !asked.contains(p) && self.peer(*p).is_some())
+            });
+            if !others && !again {
+                let r = self.requests.pending.get_mut(&h).expect("listed");
+                r.asked_again = true;
+                r.sent = Some(now);
+                if let Some(p) = self.peer(peer) {
+                    p.peer.send_getdata(&[InvItem { kind, hash: h }]);
+                }
+                continue;
             }
-            self.retry(h, kind, peer).await;
+            let r = self.release(&h).expect("listed");
+            let taken = Taken {
+                phase: r.phase,
+                asked: r.asked,
+            };
+            self.retry(h, kind, peer, taken, true);
         }
-        self.shared.store().expire_orphans(unix_now());
+        for p in &self.peers {
+            if p.answer_due.is_some_and(|due| due <= now) {
+                tracing::info!(peer = %p.peer.addr, "closing a governance peer that did not answer its sync");
+                p.peer.close();
+            }
+        }
+        self.shared.store().prune(unix_now());
     }
 
-    /// Asks peers for the votes of `hashes`, spread over the peers that did
-    /// not vote-sync each within the window; hashes no peer may be asked
-    /// for are kept in `unassigned`.
-    async fn ask_votes(&mut self, hashes: Vec<[u8; 32]>) {
+    /// Asks peers for the votes of the current proposals among `hashes`,
+    /// spread over the peers that did not vote-sync each within the window;
+    /// hashes no peer may be asked for are kept in `unassigned`.
+    fn ask_votes(&mut self, hashes: Vec<[u8; 32]>) {
         let window = self.cfg.repeat_window;
+        let timeout = self.cfg.answer_timeout;
+        let now = unix_now();
+        let hashes: Vec<[u8; 32]> = {
+            let store = self.shared.store();
+            hashes
+                .into_iter()
+                .filter(|h| store.is_current_proposal(h, now))
+                .collect()
+        };
         let filter = empty_vote_filter();
         let mut turn = 0usize;
         for hash in hashes {
@@ -784,34 +1114,85 @@ impl Run {
                 .unwrap_or_else(|p| p.into_inner())
                 .vote_synced
                 .insert((addr, hash), Instant::now());
-            self.peers[i].vote_asked.push(hash);
-            self.peers[i].peer.send_govsync(hash, &filter).await;
+            let p = &mut self.peers[i];
+            p.vote_asked.push(hash);
+            p.peer.send_govsync(hash, &filter);
+            if p.answer_due.is_none() {
+                p.rearm_answer(timeout);
+            }
         }
     }
 
-    fn requests_done(&self) -> bool {
-        self.requests.pending.is_empty()
+    /// Asks the peers that did not full-sync this run to announce the
+    /// objects only one peer announced (Core answers `govsync <hash>` with
+    /// an empty filter by an inv of the object), so they can confirm them.
+    fn ask_confirmations(&mut self) {
+        let wanted: Vec<([u8; 32], Vec<SocketAddr>)> = self
+            .shared
+            .store()
+            .unconfirmed()
+            .map(|o| (o.object.hash(), o.announcers.clone()))
+            .collect();
+        for (hash, by) in wanted.into_iter().take(MAX_CONFIRMATION_ASKS) {
+            for p in self
+                .peers
+                .iter()
+                .filter(|p| p.full_sync.is_none() && !by.contains(&p.peer.addr))
+            {
+                p.peer.send_govsync(hash, &object_fetch_filter());
+            }
+        }
     }
 
-    /// Processes events until `done` holds and nothing is pending (`Ok`),
-    /// nothing arrived for the idle timeout, every peer is gone (`Err`), or
-    /// `stop` (`Ok(false)`).
+    fn phase_requests_done(&self) -> bool {
+        !self.requests.pending.values().any(|r| r.phase)
+    }
+
+    fn note_full_syncs(&mut self) {
+        for p in &mut self.peers {
+            if let Some(f) = p.full_sync.as_mut()
+                && f.complete()
+                && !f.counted
+            {
+                f.counted = true;
+                self.full_syncs_done += 1;
+            }
+        }
+    }
+
+    /// Processes events until `done` holds and the phase's requests are
+    /// done (`Ok(true)`), or `stop` (`Ok(false)`); fails when items were
+    /// given up on, nothing progressed for the idle timeout, the phase ran
+    /// past its deadline, or every peer is gone.
     async fn drain(
         &mut self,
         rx: &mut mpsc::UnboundedReceiver<(usize, PeerEvent)>,
         stop: &mut watch::Receiver<bool>,
-        done: impl Fn(&Run) -> bool,
+        done: impl Fn(&Run) -> Result<bool, SyncError>,
     ) -> Result<bool, SyncError> {
-        let mut last_event = Instant::now();
+        let started = Instant::now();
+        self.last_progress = started;
+        self.lost = 0;
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         loop {
-            if done(self) && self.requests_done() {
+            self.note_full_syncs();
+            if done(self)? && self.phase_requests_done() {
+                if self.lost > 0 {
+                    return Err(SyncError::Incomplete(format!(
+                        "{} items could not be fetched",
+                        self.lost
+                    )));
+                }
                 return Ok(true);
             }
             if self.peers.is_empty() {
                 return Err(SyncError::PeersLost);
             }
-            let idle = self.cfg.idle_timeout.saturating_sub(last_event.elapsed());
+            let idle = self
+                .cfg
+                .idle_timeout
+                .saturating_sub(self.last_progress.elapsed());
+            let deadline = self.cfg.phase_deadline.saturating_sub(started.elapsed());
             tokio::select! {
                 r = stop.changed() => {
                     if r.is_err() || *stop.borrow() { return Ok(false); }
@@ -819,12 +1200,13 @@ impl Run {
                 _ = tokio::time::sleep(idle) => {
                     return Err(SyncError::Incomplete("no progress within the idle timeout".into()));
                 }
-                _ = tick.tick() => self.expire_requests().await,
-                _ = self.shared.relay.notified() => self.announce_outbox(true).await,
+                _ = tokio::time::sleep(deadline) => {
+                    return Err(SyncError::Incomplete("the phase ran past its deadline".into()));
+                }
+                _ = tick.tick() => self.expire(),
                 ev = rx.recv() => {
                     let Some((from, ev)) = ev else { return Err(SyncError::PeersLost) };
-                    last_event = Instant::now();
-                    self.handle(from, ev).await;
+                    self.handle(from, ev);
                     self.shared.refresh(&self.peers, self.base_bytes);
                 }
             }
@@ -882,10 +1264,13 @@ async fn run_inner(
         requests: Requests::default(),
         base_bytes,
         votes_open: false,
+        announce_open: false,
         unassigned: Vec::new(),
+        lost: 0,
+        full_syncs_done: 0,
+        last_progress: Instant::now(),
     };
     run.changed();
-    run.announce_outbox(false).await;
 
     let window = run.cfg.repeat_window;
     let fresh: Vec<usize> = {
@@ -908,6 +1293,7 @@ async fn run_inner(
         shared.set_phase(Phase::SyncingObjects);
         let started = Instant::now();
         let filter = object_fetch_filter();
+        let timeout = run.cfg.answer_timeout;
         for p in run.peers.iter_mut().filter(|p| fresh.contains(&p.peer.id)) {
             p.full_sync = Some(FullSync::default());
             run.history
@@ -915,26 +1301,33 @@ async fn run_inner(
                 .unwrap_or_else(|p| p.into_inner())
                 .full_synced
                 .insert(p.peer.addr, Instant::now());
-            p.peer.send_govsync([0; 32], &filter).await;
+            p.peer.send_govsync([0; 32], &filter);
+            p.rearm_answer(timeout);
         }
-        if !run
-            .drain(&mut rx, stop, |r| {
-                r.peers.iter().all(PeerState::objects_done)
-            })
-            .await?
-        {
+        let objects_done = |r: &Run| {
+            if r.full_syncs_done == 0 && !r.peers.iter().any(|p| p.full_sync.is_some()) {
+                return Err(SyncError::Incomplete(
+                    "no peer completed the object sync".into(),
+                ));
+            }
+            Ok(r.full_syncs_done > 0 && r.peers.iter().all(PeerState::objects_done))
+        };
+        if !run.drain(&mut rx, stop, objects_done).await? {
             return Ok(());
         }
         shared.progress().objects_secs = Some(started.elapsed().as_secs_f64());
+        run.ask_confirmations();
 
         // Votes of the current proposals, spread over the peers.
         shared.set_phase(Phase::SyncingVotes);
         let started = Instant::now();
         let current = shared.store().current_proposals(unix_now());
         run.votes_open = true;
-        run.ask_votes(current).await;
+        run.ask_votes(current);
         if !run
-            .drain(&mut rx, stop, |r| r.peers.iter().all(PeerState::votes_done))
+            .drain(&mut rx, stop, |r| {
+                Ok(r.peers.iter().all(PeerState::votes_done))
+            })
             .await?
         {
             return Ok(());
@@ -957,6 +1350,8 @@ async fn run_inner(
         p.next_retry_at = None;
     }
     run.changed();
+    run.announce_open = true;
+    run.announce_outbox(false);
 
     // Follow relays until stopped or every peer is gone.
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -968,11 +1363,11 @@ async fn run_inner(
             r = stop.changed() => {
                 if r.is_err() || *stop.borrow() { return Ok(()); }
             }
-            _ = tick.tick() => run.expire_requests().await,
-            _ = shared.relay.notified() => run.announce_outbox(true).await,
+            _ = tick.tick() => run.expire(),
+            _ = shared.relay.notified() => run.announce_outbox(true),
             ev = rx.recv() => {
                 let Some((from, ev)) = ev else { return Err(SyncError::PeersLost) };
-                run.handle(from, ev).await;
+                run.handle(from, ev);
                 shared.refresh(&run.peers, run.base_bytes);
             }
         }

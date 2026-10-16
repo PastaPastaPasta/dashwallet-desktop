@@ -17,7 +17,10 @@ dw-message = { workspace = true }
 dw-p2p = { workspace = true }
 hex = { workspace = true }
 serde = "1"
-serde_json = "1"
+# `raw_value`: numbers are read from their text as UniValue does;
+# `unbounded_depth`: UniValue nests 512 deep, serde_json stops at 128
+# (`validate::depth_ok` bounds it instead).
+serde_json = { version = "1", features = ["raw_value", "unbounded_depth"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "io-util", "rt", "sync", "time", "macros"] }
 tracing = { workspace = true }
