@@ -416,7 +416,10 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
   rules, with these differences. `estimate` plans a P2PKH placeholder (the length of every DIP-15 address), so its
   fee is the payment's, and the payment always counts as leaving the wallet: the host authorizes `amount +
   estimate.fee` after Confirm (`amount` with subtract-fee). `prepare` checks the contact again (now established:
-  a pending request is `contact.ineligible{PendingIncoming}`), then the grant, plans, redeems the grant into a
+  a pending request is `contact.ineligible{PendingIncoming}`) and its payment lock, then passes m4's money-move
+  trust gate (item 52: once the fallback latch is set, the contact's data must verify against SPV; it may wait up
+  to a minute, then `platform.context_unavailable`, or `platform.trust_mismatch`, with nothing taken), then the
+  grant, plans, redeems the grant into a
   lease and charges it (`send.grant_exceeded` for a fee grown since), and **only then** reserves the contact's
   next address, swaps it into the planned output and signs: a refusal before the reservation takes no address.
   The session keeps that address for the contact's later `prepare`s, of any draft (after `send.no_peers`,
