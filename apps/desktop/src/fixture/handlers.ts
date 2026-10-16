@@ -19,7 +19,6 @@ import type { AppError, AppEvent, CommandArgs, CommandName, CommandResults } fro
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { Budget } from "../api/generated/Budget";
 import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
-import type { ContactRecipient } from "../api/generated/ContactRecipient";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { FlowKindName } from "../api/generated/FlowKindName";
@@ -39,7 +38,7 @@ import { activityPage, contactList, eventOf, relationOf, type DashPayWorld, type
 import { scanHandlers } from "./scan";
 import { routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
-import { sendHandlers, type SendDeps } from "./send";
+import { sendHandlers, type Pair, type SendDeps } from "./send";
 import { toolsHandlers } from "./tools";
 import { isClosed, settingsHandlers } from "./settings";
 import { emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
@@ -533,7 +532,7 @@ const chargeLease: SendDeps["chargeLease"] = (ctx, walletId, id, outflow) => {
   return true;
 };
 
-const pairContact = (w: World, walletId: string, r: ContactRecipient) => contact(w, walletId, r.identity, r.contact);
+const pairContact = (w: World, walletId: string, r: Pair) => contact(w, walletId, r.identity, r.contact);
 
 function paymentsChanged(ctx: Ctx, walletId: string, identity: string) {
   ctx.emit({ kind: "platform", network: ctx.world.launch.network.dirName, walletId, change: { domain: "payments", identity } });
@@ -570,7 +569,7 @@ function frequent(dp: DashPayWorld, limit: number): ContactSummaryInfo[] {
     dp.contacts
       .filter((c) => c.summary.relation === "contact" && !c.summary.hidden)
       .map((c) => {
-        const items = (dp.activity[c.summary.contact] ?? []).filter((i) => i.direction === direction && (i.timestamp ?? Infinity) >= since);
+        const items = (dp.activity[c.summary.contact] ?? []).filter((i) => i.direction === direction && (i.timestamp ?? secs(FIXTURE_NOW)) >= since);
         return { c: c.summary, n: items.length, latest: Math.max(...items.map((i) => i.timestamp ?? secs(FIXTURE_NOW))) };
       })
       .filter((x) => x.n > 0)
@@ -977,7 +976,7 @@ export const HANDLERS: Handlers = {
     const c = contact(ctx.world, walletId, identity, id);
     if (!c.paymentLock) throw fail("invalid_argument", "no payment lock for this contact");
     const found = ctx.world.send.sent[c.paymentLock.txid] ? "sent" : ctx.world.send.lockEvidence;
-    if (found !== "unknown") sendDeps.setPaymentLock(ctx, walletId, { identity, contact: id, amount: 0, subtractFee: false, note: null }, null);
+    if (found !== "unknown") sendDeps.setPaymentLock(ctx, walletId, { identity, contact: id }, null);
     return found;
   },
   frequent_contacts: ({ walletId, identity, limit }, { world }) => frequent(dashpay(world, walletId, identity), limit),

@@ -9,13 +9,16 @@ import { keys, useBackend } from "../../api/queries";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton } from "../../components/basics";
 import type { useDisplay } from "../../format/display";
-import { changePolicy, coinSource, feeMode, sendErrorText, type Advanced, type PayRecipient } from "./model";
+import { changePolicy, coinSource, feeMode, sendErrorText, type Advanced, type Confirmed, type Outcome, type PayRecipient } from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 /** How long a field stays unchanged before it is checked and the draft estimated (U-03 D5). */
 export const SETTLE_MS = 300;
 
 type Shown = ReturnType<typeof useDisplay>;
+
+/** Where a form is: editing, confirming, or showing the result. */
+export type Phase = { kind: "editing" } | { kind: "confirm"; confirmed: Confirmed; spec: DraftSpec } | { kind: "result"; outcome: Outcome };
 
 export function FormField({
   label,
@@ -114,6 +117,59 @@ export function useMax(walletId: string, advanced: Advanced, shown: Shown, set: 
     }
   };
   return { run, error, disabled: !fee };
+}
+
+/** The amount with Max, then Subtract fee (U-03). `error`: the estimate's refusal of the amount. */
+export function AmountFields({
+  shown,
+  amount,
+  max,
+  error,
+  available,
+  subtractFee,
+  onSubtractFee,
+  inputRef,
+}: {
+  shown: Shown;
+  amount: ReturnType<typeof useAmountField>;
+  max: ReturnType<typeof useMax>;
+  error: string | null;
+  available: number | undefined;
+  subtractFee: boolean;
+  onSubtractFee: (on: boolean) => void;
+  inputRef?: Ref<HTMLInputElement>;
+}) {
+  return (
+    <>
+      <FormField
+        label={`Amount (${shown.name})`}
+        error={amount.error ?? error ?? max.error}
+        hint={available !== undefined && <>Available: {shown.full(available)} {shown.name}</>}
+      >
+        {(p) => (
+          <span className="amount-entry">
+            <input
+              {...p}
+              ref={inputRef}
+              data-testid="pay-amount"
+              value={amount.text}
+              inputMode="decimal"
+              autoComplete="off"
+              placeholder={shown.placeholder}
+              onChange={(e) => amount.setText(e.target.value)}
+            />
+            <DashButton variant="tintedBlue" size="small" data-testid="pay-max" onClick={() => void max.run()} disabled={max.disabled}>
+              Max
+            </DashButton>
+          </span>
+        )}
+      </FormField>
+      <label className="checkbox-row">
+        <input type="checkbox" data-testid="pay-subtract-fee" checked={subtractFee} onChange={(e) => onSubtractFee(e.target.checked)} />
+        Subtract fee from amount
+      </label>
+    </>
+  );
 }
 
 /** The fee line, or what holds the payment back; then Review. */

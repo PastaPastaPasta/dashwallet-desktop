@@ -103,7 +103,10 @@ export const newSendWorld = (): SendWorld => ({
 });
 
 /** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
-export const pairKey = (walletId: string, r: Pick<ContactRecipient, "identity" | "contact">) => `${walletId}:${r.identity}:${r.contact}`;
+/** A payer identity and its contact. */
+export type Pair = Pick<ContactRecipient, "identity" | "contact">;
+
+const pairKey = (walletId: string, r: Pair) => `${walletId}:${r.identity}:${r.contact}`;
 
 /** The DIP-15 address of index `index` of the wallet's account for paying `r`'s contact: the
  * same one for a contact and index every run. */
@@ -383,9 +386,9 @@ export interface SendDeps {
    * engine's refusal; `false` when `id` is not a lease id (a vault grant). */
   chargeLease(ctx: Ctx, walletId: string, id: string, outflow: number): boolean;
   /** The pair's payment lock (DP3-01 D8); `null` when none. */
-  paymentLock(w: World, walletId: string, r: ContactRecipient): PaymentLockInfo | null;
+  paymentLock(w: World, walletId: string, r: Pair): PaymentLockInfo | null;
   /** Sets or (`null`) clears the pair's payment lock, signalled. */
-  setPaymentLock(ctx: Ctx, walletId: string, r: ContactRecipient, lock: PaymentLockInfo | null): void;
+  setPaymentLock(ctx: Ctx, walletId: string, r: Pair, lock: PaymentLockInfo | null): void;
   /** A payment to `r`'s contact reached the wallet's history: its activity and last activity
    * (DP3-02), signalled; returns the history's counterparty. */
   contactPaid(ctx: Ctx, walletId: string, r: ContactRecipient, txid: string, amount: number): TxCounterparty;
@@ -507,7 +510,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     return null;
   };
   /** The pair's DIP-15 indexes. */
-  const indexOf = (w: World, walletId: string, r: ContactRecipient) => (w.send.contactIndex[pairKey(walletId, r)] ??= { next: 0, reserved: null });
+  const indexesOf = (w: World, walletId: string, r: Pair) => (w.send.contactIndex[pairKey(walletId, r)] ??= { next: 0, reserved: null });
 
   return {
     fee_policy: () => feePolicy(),
@@ -640,7 +643,9 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       ];
       const externalSent = outputs.filter((o) => !o.isMine).reduce((n, o) => n + o.amount, 0);
       const debit = externalSent + built.fee;
-      if (!(d.contact && chargeLease(ctx, d.walletId, grantId, debit))) {
+      // A lease is charged here (its refusal thrown); a vault grant is checked below.
+      const leased = d.contact !== null && chargeLease(ctx, d.walletId, grantId, debit);
+      if (!leased) {
         const grant = spendGrant(world, grantId, d.walletId);
         if (!grant) throw fail("send.grant_invalid", "grant invalid");
         const cap = grant.grant.purpose.kind === "spend" ? grant.grant.purpose.maxDuffs : 0;
@@ -648,7 +653,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         if (debit > cap) throw fail("send.grant_exceeded", "grant exceeded", { kind: "spendCap", maxDuffs: cap, outflow: debit });
       }
       if (d.contact) {
-        const index = indexOf(world, d.walletId, d.contact);
+        const index = indexesOf(world, d.walletId, d.contact);
         if (index.reserved === null) index.reserved = index.next++;
         outputs[0].address = contactAddress(d.walletId, d.contact, index.reserved);
       }
@@ -691,7 +696,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       }
       handOver(ctx, prep);
       // Handed out: the next payment to the contact takes a new address.
-      if (pay) indexOf(world, prep.walletId, pay).reserved = null;
+      if (pay) indexesOf(world, prep.walletId, pay).reserved = null;
       if (mode === "unknown") {
         if (pay && !lock) setPaymentLock(ctx, prep.walletId, pay, { txid: prep.summary.txid, since: secs(FIXTURE_NOW) });
         throw fail("send.broadcast_unknown", "no answer from the network");

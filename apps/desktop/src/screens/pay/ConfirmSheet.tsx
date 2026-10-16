@@ -45,7 +45,7 @@ const USING: Record<Advanced["coins"], string> = {
 };
 
 /** The contact a payment pays (DP3-06): who it is, and whether Send accepts their request too. */
-export interface ConfirmPayee {
+export interface ConfirmContact {
   identity: string;
   payee: Payee;
   acceptsToo: boolean;
@@ -67,9 +67,9 @@ export function ConfirmSheet({
   returnFocus,
   onCancel,
   onOutcome,
-  contact = null,
+  contact,
 }: {
-  contact?: ConfirmPayee | null;
+  contact?: ConfirmContact;
   confirmed: Confirmed;
   spec: DraftSpec;
   coins: Advanced;
@@ -170,6 +170,10 @@ export function ConfirmSheet({
     // Accept and pay (DP3-06 D10): the accept runs first, under the lease the prepare takes.
     let grant: AuthGrant | null = null;
     let lease: string | null = null;
+    // An accept that went through stays so whatever the payment does (E0-04 C8, D12).
+    let accepted: string | null = null;
+    /** The grant, or the lease, the prepare takes. */
+    let authId: string;
     if (contact?.acceptsToo) {
       try {
         lease = await acceptUnderLease(b, { walletId, identity: contact.identity, from: contact.payee.contact, spendCap: total, credential });
@@ -180,24 +184,25 @@ export function ConfirmSheet({
         onOutcome({ kind: "failed", text });
         return;
       }
+      authId = lease;
       contact.onAccepted();
+      accepted = acceptedText(contact.payee.name);
       // Said where the user is if the sheet's view went meanwhile (DP2-09 D23).
-      toast({ kind: "accept", contact: contact.payee.contact, ok: true, text: acceptedText(contact.payee.name) }, true);
+      toast({ kind: "accept", contact: contact.payee.contact, ok: true, text: accepted }, true);
     } else {
       try {
         grant = await b.authorize({ kind: "spend", maxDuffs: total }, walletId, credential);
+        authId = grant.id;
       } catch (e) {
         return refused(e);
       }
     }
-    // An accept that went through stays so whatever the payment does (E0-04 C8, D12).
-    const accepted = lease === null || !contact ? null : acceptedText(contact.payee.name);
     const notSent = (text: string) => onOutcome({ kind: "failed", text: accepted ? `${accepted} The payment was not sent: ${text}` : text });
     const endLease = () => lease !== null && void b.endFlow(lease).catch(() => null);
 
     let held;
     try {
-      held = await draft.prepare(spec, lease ?? grant!.id);
+      held = await draft.prepare(spec, authId);
     } catch (e) {
       if (grant) void b.revokeGrant(grant.id).catch(() => null);
       endLease();

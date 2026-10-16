@@ -17,6 +17,7 @@ import type { Recipient } from "../../api/generated/Recipient";
 import type { TxEstimate } from "../../api/generated/TxEstimate";
 import type { OutPoint } from "../../api/generated/OutPoint";
 import type { Utxo } from "../../api/generated/Utxo";
+import { BROKEN } from "../../contacts/pane";
 import { formatWithUnit, type Chain, type Unit } from "../../format/amount";
 
 /** The coins a payment may use (coin control, U-03 D7). */
@@ -203,7 +204,7 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH"): { 
     case "contact.payment_locked":
       return { text: "Another payment to this contact is still being sent or may have been sent. Pay again once it is settled.", field: null };
     case "contact.channel_broken":
-      return { text: "Payments to this contact cannot be sent right now.", field: null };
+      return { text: BROKEN, field: null };
     case "contact.ineligible":
       return {
         text: e.data?.kind === "ineligible" && e.data.reason === "pendingIncoming" ? "Accept the contact request first, or use Accept and pay." : "This contact cannot be paid now.",
@@ -350,7 +351,7 @@ const RELEASED = ["send.no_peers", "send.broadcast_rejected", "send.prepared_tx_
 /** A contact payment's first broadcast refused before its hand-off, its transaction still held
  * (DP3-01 D20, D23): another payment to the contact is locked or under way, or its lock row could
  * not be written. Nothing was sent; the sheet abandons it. */
-export const CONTACT_HELD = ["contact.payment_locked", "storage"] as const;
+const CONTACT_HELD = ["contact.payment_locked", "storage"] as const;
 
 /** The outcome of a failed broadcast of `prepared` (U-03 D10). Only a first attempt the engine
  * released, or one whose handle was already gone (never dispatched), is "not sent". Anything

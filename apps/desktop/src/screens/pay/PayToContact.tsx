@@ -15,7 +15,7 @@ import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon } from "../../components/basics";
 import { EmptyState, LoadingState } from "../../components/history";
 import { useDisplay } from "../../format/display";
-import { SEARCH_DEBOUNCE_MS, shortId } from "../../contacts/model";
+import { SEARCH_DEBOUNCE_MS } from "../../contacts/model";
 import { refreshAfter, useContactDetail, useContactsOwner, useHasKeys } from "../../contacts/queries";
 import { Outcome as ActionLine } from "../tools/common";
 import { Avatar } from "../contacts/Avatar";
@@ -24,17 +24,16 @@ import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, resolveText, type Banner } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
-import { draftSpec, FormField, PayFooter, useAmountField, useEstimate, useMax } from "./form";
+import { AmountFields, draftSpec, FormField, PayFooter, useAmountField, useEstimate, useMax, type Phase } from "./form";
 import { confirmedOf, DEFAULT_ADVANCED, type Advanced, type Outcome } from "./model";
-import type { Phase } from "./PayToAddress";
 import { ResultSheet } from "./ResultSheet";
 import { useDraft } from "./useDraft";
 
 export function PayToContact({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const { owner, retry } = useContactsOwner(walletId);
   if (owner.kind === "identity") return <ContactTab key={`${walletId}:${owner.identity}`} walletId={walletId} identity={owner.identity} network={network} />;
+  if (owner.kind === "starting") return <LoadingState testId="pay-contact-starting" text="Starting DashPay…" />;
   const none = noOwner(owner);
-  if (!none) return <LoadingState testId="pay-contact-starting" text="Starting DashPay…" />;
   return (
     <EmptyState
       testId="pay-contact-none"
@@ -207,9 +206,8 @@ function ContactForm({ walletId, identity, network, contact }: { walletId: strin
   const held = blocks(banner);
   // What Check again found (D7), kept once the lock it resolved (and the banner) went.
   const resolve = useResolveLock(walletId, identity, contact);
-  const found = resolve.data ? resolveText(resolve.data) : resolve.isError ? { text: errorMessage(resolve.error), resolved: false } : null;
-  const summary = detail.data?.summary;
-  const payee = summary ? payeeOf(summary) : { contact, name: shortId(contact), sub: null, letters: "?" };
+  const found = resolve.isError ? { text: errorMessage(resolve.error), resolved: false } : resolve.data ? resolveText(resolve.data) : null;
+  const payee = payeeOf(detail.data?.summary ?? { contact, alias: null, displayName: null, username: null });
 
   const amount = useAmountField(shown, "");
   const subtractFeeByDefault = () => ui.get().prefs.subtractFeeByDefault;
@@ -250,7 +248,6 @@ function ContactForm({ walletId, identity, network, contact }: { walletId: strin
     if (show && outcome.kind === "sent") navigate("activity", { detail: outcome.txid });
   };
 
-  const available = balance.data?.confirmed;
   return (
     <>
       <form
@@ -276,38 +273,21 @@ function ContactForm({ walletId, identity, network, contact }: { walletId: strin
             Change
           </DashButton>
         </section>
-        {banner && <PayBanner banner={banner} contact={contact} resolve={resolve} retry={() => void detail.refetch()} />}
+        {banner && <PayBanner banner={banner} contact={contact} checking={resolve.isPending} onCheck={() => resolve.mutate()} retry={() => void detail.refetch()} />}
         <ActionLine ok={found?.resolved ?? true} text={found?.text ?? null} testId="pay-lock-resolve" />
         {!held && (
           <>
             <section className="pay-card card-l1">
-              <FormField
-                label={`Amount (${shown.name})`}
-                error={amount.error ?? fieldError("amount") ?? max.error}
-                hint={available !== undefined && <>Available: {shown.full(available)} {shown.name}</>}
-              >
-                {(p) => (
-                  <span className="amount-entry">
-                    <input
-                      {...p}
-                      ref={amountField}
-                      data-testid="pay-amount"
-                      value={amount.text}
-                      inputMode="decimal"
-                      autoComplete="off"
-                      placeholder={shown.placeholder}
-                      onChange={(e) => amount.setText(e.target.value)}
-                    />
-                    <DashButton variant="tintedBlue" size="small" data-testid="pay-max" onClick={() => void max.run()} disabled={max.disabled}>
-                      Max
-                    </DashButton>
-                  </span>
-                )}
-              </FormField>
-              <label className="checkbox-row">
-                <input type="checkbox" data-testid="pay-subtract-fee" checked={subtractFee} onChange={(e) => setSubtractFee(e.target.checked)} />
-                Subtract fee from amount
-              </label>
+              <AmountFields
+                shown={shown}
+                amount={amount}
+                max={max}
+                error={fieldError("amount")}
+                available={balance.data?.confirmed}
+                subtractFee={subtractFee}
+                onSubtractFee={setSubtractFee}
+                inputRef={amountField}
+              />
               <FormField label="Note" hint="Kept with the transaction in this wallet; not sent to the contact.">
                 {(p) => <input {...p} data-testid="pay-note" value={note} autoComplete="off" onChange={(e) => setNote(e.target.value)} />}
               </FormField>
@@ -354,7 +334,7 @@ function ContactForm({ walletId, identity, network, contact }: { walletId: strin
 }
 
 /** Why the payee cannot be paid now, and what to do (D6, D7). */
-function PayBanner({ banner, contact, resolve, retry }: { banner: Banner; contact: string; resolve: ReturnType<typeof useResolveLock>; retry: () => void }) {
+function PayBanner({ banner, contact, checking, onCheck, retry }: { banner: Banner; contact: string; checking: boolean; onCheck: () => void; retry: () => void }) {
   if (banner.kind === "loading") return <LoadingState testId="pay-contact-loading" text="Reading the contact…" />;
   let action = null;
   switch (banner.kind) {
@@ -378,8 +358,8 @@ function PayBanner({ banner, contact, resolve, retry }: { banner: Banner; contac
           <DashButton key="show" variant="tintedGray" size="small" data-testid="pay-banner-show" onClick={() => navigate("activity", { detail: banner.txid })}>
             Show transaction
           </DashButton>
-          <DashButton key="check" variant="tintedBlue" size="small" data-testid="pay-banner-check" disabled={resolve.isPending} onClick={() => resolve.mutate()}>
-            {resolve.isPending ? "Checking…" : "Check again"}
+          <DashButton key="check" variant="tintedBlue" size="small" data-testid="pay-banner-check" disabled={checking} onClick={onCheck}>
+            {checking ? "Checking…" : "Check again"}
           </DashButton>
         </span>
       );

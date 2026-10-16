@@ -13,12 +13,10 @@ import { AddressBookPicker } from "../tools/AddressBook";
 import { useDisplay } from "../../format/display";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
-import { draftSpec, FormField, PayFooter, SETTLE_MS, useAmountField, useEstimate, useMax } from "./form";
-import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, type Advanced, type Confirmed, type Outcome } from "./model";
+import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAmountField, useEstimate, useMax, type Phase } from "./form";
+import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, type Advanced, type Outcome } from "./model";
 import { ResultSheet } from "./ResultSheet";
-import { useDraft, type DraftSpec } from "./useDraft";
-
-export type Phase = { kind: "editing" } | { kind: "confirm"; confirmed: Confirmed; spec: DraftSpec } | { kind: "result"; outcome: Outcome };
+import { useDraft } from "./useDraft";
 
 export function PayToAddress({
   prefill,
@@ -111,7 +109,6 @@ export function PayToAddress({
     if (show && outcome.kind === "sent") navigate("activity", { detail: outcome.txid });
   };
 
-  const available = balance.data?.confirmed;
   return (
     <>
       <form
@@ -148,32 +145,15 @@ export function PayToAddress({
               </span>
             )}
           </FormField>
-          <FormField
-            label={`Amount (${shown.name})`}
-            error={amount.error ?? fieldError("amount") ?? max.error}
-            hint={available !== undefined && <>Available: {shown.full(available)} {shown.name}</>}
-          >
-            {(p) => (
-              <span className="amount-entry">
-                <input
-                  {...p}
-                  data-testid="pay-amount"
-                  value={amount.text}
-                  inputMode="decimal"
-                  autoComplete="off"
-                  placeholder={shown.placeholder}
-                  onChange={(e) => amount.setText(e.target.value)}
-                />
-                <DashButton variant="tintedBlue" size="small" data-testid="pay-max" onClick={() => void max.run()} disabled={max.disabled}>
-                  Max
-                </DashButton>
-              </span>
-            )}
-          </FormField>
-          <label className="checkbox-row">
-            <input type="checkbox" data-testid="pay-subtract-fee" checked={subtractFee} onChange={(e) => setSubtractFee(e.target.checked)} />
-            Subtract fee from amount
-          </label>
+          <AmountFields
+            shown={shown}
+            amount={amount}
+            max={max}
+            error={fieldError("amount")}
+            available={balance.data?.confirmed}
+            subtractFee={subtractFee}
+            onSubtractFee={setSubtractFee}
+          />
           <FormField label="Label" hint="Saved to your address book with the address.">
             {(p) => <input {...p} data-testid="pay-label" value={label} autoComplete="off" onChange={(e) => setLabel(e.target.value)} />}
           </FormField>

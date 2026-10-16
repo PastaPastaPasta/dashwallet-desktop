@@ -13,10 +13,7 @@ import type { LockResolutionName } from "../../api/generated/LockResolutionName"
 import type { LockStateName } from "../../api/generated/LockStateName";
 import { actionError } from "../../contacts/actions";
 import { avatarLetters, shownName, subtitle, type ContactsOwner } from "../../contacts/model";
-import { ENABLE_FIRST, payNote } from "../../contacts/pane";
-
-/** The frequent strip's length (D3; the engine clamps to 1–20). */
-export const FREQUENT_LIMIT = 8;
+import { BROKEN, ENABLE_FIRST, payNote } from "../../contacts/pane";
 
 type Named = Pick<ContactSummaryInfo, "contact" | "alias" | "displayName" | "username">;
 
@@ -40,16 +37,16 @@ export interface NoOwner {
   next: "join" | "retry" | null;
 }
 
-export function noOwner(owner: Exclude<ContactsOwner, { kind: "identity" }>): NoOwner | null {
+const WATCH_ONLY = "A watch-only wallet cannot pay contacts.";
+
+export function noOwner(owner: Exclude<ContactsOwner, { kind: "identity" | "starting" }>): NoOwner {
   switch (owner.kind) {
-    case "starting":
-      return null;
     case "error":
       return { title: "Could not read DashPay's state", message: null, next: "retry" };
     case "registering":
       return { title: "Your username is being registered", message: "You can pay your contacts once Dash Platform confirms it.", next: null };
     case "join":
-      if (owner.reason === "watchOnly") return { title: "No DashPay contacts", message: "A watch-only wallet cannot pay contacts.", next: null };
+      if (owner.reason === "watchOnly") return { title: "No DashPay contacts", message: WATCH_ONLY, next: null };
       if (owner.reason === "waitingForSync") return { title: "Join DashPay", message: "You can join DashPay once the wallet has synced.", next: null };
       return { title: "Join DashPay", message: "Create a username to add contacts and pay them by name.", next: "join" };
   }
@@ -114,19 +111,19 @@ export interface BannerInput {
   accepted: boolean;
 }
 
-export const LOCK_TEXT = "A payment to this contact may have been sent. Check it again before you pay again.";
+export const PAYMENT_LOCK_TEXT = "A payment to this contact may have been sent. Check it again before you pay again.";
 
 /** First match wins (D6). A locked vault never reaches the tab: the lock screen covers it. */
 export function payBanner(i: BannerInput): Banner | null {
   if (i.detail === undefined) return i.readError ? { kind: "readFailed", text: `Could not read this contact: ${i.readError}` } : { kind: "loading" };
   if (i.detail === null) return { kind: "gone", text: "This user is no longer in your contacts." };
   const { relation, channel } = i.detail.summary;
-  const request = relation === "pendingIncoming" && !i.accepted;
+  const request = acceptsToo(i.detail, i.accepted);
   if (relation !== "contact" && !request && !i.accepted) return { kind: "gone", text: "You can pay this user once you are contacts." };
-  if (i.watchOnly) return { kind: "watchOnly", text: "A watch-only wallet cannot pay contacts." };
+  if (i.watchOnly) return { kind: "watchOnly", text: WATCH_ONLY };
   if (request && i.hasKeys === false) return { kind: "enable", text: `${ENABLE_FIRST} Then you can accept and pay.` };
-  if (i.detail.paymentLock) return { kind: "paymentLock", text: LOCK_TEXT, txid: i.detail.paymentLock.txid };
-  if (channel === "broken") return { kind: "broken", text: "Payments to this contact cannot be sent right now." };
+  if (i.detail.paymentLock) return { kind: "paymentLock", text: PAYMENT_LOCK_TEXT, txid: i.detail.paymentLock.txid };
+  if (channel === "broken") return { kind: "broken", text: BROKEN };
   if (i.lock === "unlockedMixingOnly") return { kind: "mixingOnly", text: "The wallet is unlocked for mixing only. Unlock it fully to pay." };
   if (request) return { kind: "note", text: "This user sent you a contact request. Accept and pay accepts it and pays in one step." };
   const note = payNote(channel);

@@ -6,7 +6,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { keys, useBackend } from "../../api/queries";
 import { refreshAfter } from "../../contacts/queries";
-import { FREQUENT_LIMIT } from "./contact";
+
+/** The frequent strip's length (D3; the engine clamps to 1–20). */
+const FREQUENT_LIMIT = 8;
 
 export function useFrequentContacts(walletId: string, identity: string) {
   const b = useBackend();

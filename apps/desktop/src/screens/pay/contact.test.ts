@@ -8,7 +8,7 @@ import type { ContactRecipient } from "../../api/generated/ContactRecipient";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { GrantPurposeSpec } from "../../api/generated/GrantPurposeSpec";
 import type { PreparedTxSummary } from "../../api/generated/PreparedTxSummary";
-import { AcceptFailed, acceptsToo, acceptUnderLease, blocks, LOCK_TEXT, noOwner, payBanner, payeeOf, pickerGroups, resolveText, type AcceptApi, type BannerInput } from "./contact";
+import { AcceptFailed, acceptsToo, acceptUnderLease, blocks, noOwner, PAYMENT_LOCK_TEXT, payBanner, payeeOf, pickerGroups, resolveText, type AcceptApi, type BannerInput } from "./contact";
 import { broadcastFailure, confirmedOf, isContact, keepsPromise, sendErrorText, subtractsFee, unsignedKeepsPromise } from "./model";
 
 const ME = "8tvHgfq4BLx3bRBcxSs7ZsjaTnAZDSmLhNpAgXyNomeR";
@@ -56,7 +56,6 @@ describe("IOS-050 the payee and the tab's owner (D1, D5)", () => {
   });
 
   it("says why there is no one to pay without a main identity", () => {
-    expect(noOwner({ kind: "starting" })).toBeNull();
     expect(noOwner({ kind: "join", reason: null })).toMatchObject({ title: "Join DashPay", next: "join" });
     expect(noOwner({ kind: "join", reason: "watchOnly" })).toMatchObject({ message: "A watch-only wallet cannot pay contacts.", next: null });
     expect(noOwner({ kind: "error" })).toMatchObject({ next: "retry" });
@@ -106,7 +105,7 @@ describe("IOS-050 the banner (D6)", () => {
 
   it("shows the payment lock with its txid before the channel, and only then mixing-only", () => {
     const locked = detail({ channel: "broken" }, { paymentLock: { txid: "d4".repeat(32), since: 5 } });
-    expect(payBanner(input({ detail: locked, lock: "unlockedMixingOnly" }))).toEqual({ kind: "paymentLock", text: LOCK_TEXT, txid: "d4".repeat(32) });
+    expect(payBanner(input({ detail: locked, lock: "unlockedMixingOnly" }))).toEqual({ kind: "paymentLock", text: PAYMENT_LOCK_TEXT, txid: "d4".repeat(32) });
     expect(payBanner(input({ detail: detail({ channel: "broken" }), lock: "unlockedMixingOnly" }))).toMatchObject({ kind: "broken" });
     expect(payBanner(input({ lock: "unlockedMixingOnly" }))).toMatchObject({ kind: "mixingOnly" });
     expect(payBanner(input({ watchOnly: true, detail: locked }))).toMatchObject({ kind: "watchOnly" });

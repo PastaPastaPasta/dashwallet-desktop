@@ -38,7 +38,7 @@ export function paneActions(c: Pick<ContactSummaryInfo, "relation" | "channel">,
   }
 }
 
-const BROKEN = "Payments to this contact cannot be sent right now.";
+export const BROKEN = "Payments to this contact cannot be sent right now.";
 
 /** D9, by the DIP-15 channel: only a broken one holds Pay back (DP3-01 D19: a payment finishes a
  * channel's setup); the others say why a payment may not go through yet. */
