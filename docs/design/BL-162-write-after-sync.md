@@ -10,14 +10,15 @@ premise was wrong: both failed sends were made while SPV was still syncing, and 
 failure surfaced 2 min later. Profile writes from the real app succeed before and after masternode sync, and with the
 app starved of CPU. After masternode sync the pinned dash-spv holds and verifies testnet's Platform quorums, so every
 key is served SPV-verified. No desktop, dash-spv or platform-wallet defect was found, so there is no behavioural fix.
+The 123 s both failures took is the SDK's DAPI budget, most simply a transition Platform accepted and never committed.
 What changed is diagnosability: the app logs when asked (`DW_LOG`), the provider logs where each key came from, there
-is a GL probe for timed writes, and two tests pin the cleared behaviour.
+is a GL probe for timed writes, and three tests pin the cleared behaviour.
 
 | Part | Where |
 |---|---|
 | `DW_LOG` (EnvFilter, stderr, off by default), and the usage line | `rust/crates/dw-app/src/lib.rs` (`run`), `launch.rs` (`USAGE`), `Cargo.toml` |
 | "quorum key served `verified=`" / "quorum key refused" debug lines | `rust/crates/dw-engine/src/platform/trust.rs` (`quorum_public_key`) |
-| Tests | `trust_tests.rs`: `after_masternode_sync_the_degraded_mode_falls_back_at_once`, `a_hung_spv_lookup_is_bounded_and_falls_back` |
+| Tests | `trust_tests.rs`: `after_masternode_sync_the_degraded_mode_falls_back_at_once`, `a_hung_spv_lookup_is_bounded_and_falls_back`, `a_hung_spv_lookup_ends_with_the_enforcing_wait` |
 | GL probe: one profile edit from the real app at a chosen sync phase, or reads only | `apps/desktop/e2e-tauri/profile-write.ts`, `scripts/e2e-tauri-profile-write.sh` |
 
 ## Evidence
@@ -30,7 +31,7 @@ The failed runs left no engine log: the app had no subscriber. Their screenshots
 | Run | App launched | Send pressed | Status bar at Send | Ended | Status bar then | Result |
 |---|---|---|---|---|---|---|
 | gl-2 | 21:40:16 | 21:40:23 | "Synchronizing… 72.8 %", Syncing | 21:42:26 | Up to date, Synced | `platform.unavailable`/`timeout`, nothing on Platform |
-| gl-3 | ~21:45:36 | 21:45:43 | (same flow) | 21:47:46 | Synced | same |
+| gl-3 | ~21:45:36 | 21:45:43 | "73.2 %", Syncing | 21:47:46 | Synced | same |
 | dwcli probe B → D | | 21:49:23 | (one-shot `--spv`) | +6 s | | sent |
 | gl-4 (log subscriber) | 21:58:02 | 21:58:08 | Syncing | +~6 s | | sent |
 
@@ -44,9 +45,25 @@ The other facts at the time: `sar` puts agentbox's load at 110 (run queue 134) a
 two later sends went through. The renderer shows "Could not reach Dash Platform. Try again." only for
 `platform.unavailable` or `platform.timeout` (`contacts/actions.ts`): DAPI transport outcomes (`DapiClientError`,
 `StaleNode`, `TimeoutReached`, an exhausted retry), never a trust refusal, which maps to `platform.context_unavailable`
-or `platform.trust_mismatch` (`errors.rs`). The 2 min fits rs-dapi-client's defaults: 10 s per attempt and 5 retries,
-so about 60 s per DAPI call that never answers, for two calls (the write, then its wait or the engine's read-back of
-Platform). Which two can't be recovered without a log.
+or `platform.trust_mismatch` (`errors.rs`).
+
+Both failures took exactly 123 s (21:40:23 → 21:42:26, 21:45:43 → 21:47:46): a fixed budget, not a flaky network. The
+engine passes no settings, so the SDK's apply (platform fork at ebe37f8a):
+
+| DAPI call | Per attempt | Attempts | Worst case |
+|---|---|---|---|
+| reads, nonce fetch, broadcast (`rs-sdk` `DEFAULT_REQUEST_SETTINGS.retries = 3`, rs-dapi-client's 10 s) | 10 s | 4 | 40 s |
+| `waitForStateTransitionResult` (its own `RequestSettings` in `rs-dapi-client` `transport/grpc.rs`) | 30 s | 4 | 120 s |
+
+Two readings fit 123 s:
+
+- (a) the broadcast was accepted (check_tx passed), the wait got no result in 4 × 30 s, and the engine's read-back
+  (`requests.rs` `read_back`) found nothing at once;
+- (b) the broadcast failed after 40 s, the SDK refreshed the identity nonce for 40 s more (`broadcast.rs`, on a failed
+  broadcast), and the read-back took the last 40 s.
+
+(a) is the simpler: reads answered moments before, and it is "reads through, writes time out" (D5), a transition
+Platform accepted and never committed. Without a log neither can be proven.
 
 ### The trust provider before and after masternode sync
 
@@ -82,28 +99,28 @@ The record with times is `/work/scratch/dw-bl162/writes.md`. Logs: `/work/scratc
 
 | # | Decision | Why |
 |---|---|---|
-| D1 | `DW_LOG` stays: an env var in EnvFilter syntax, stderr only, off by default, the twin of dwcli's `DWCLI_LOG`, listed in `--help`. No file sink. | Small and safe: nothing logs unless a developer asks, nothing is kept at rest, and the GL scans its logs for phrases and passphrases (none in w2–w4, ro1). Without it D32 had no evidence. |
+| D1 | `DW_LOG` stays: an env var in EnvFilter syntax, stderr only, off by default, the twin of dwcli's `DWCLI_LOG`, listed in `--help`. Colour only on a terminal; a logger already installed is reported (`DW_LOG ignored: …`), never a panic. No file sink. | Small and safe: nothing logs unless a developer asks. The app writes no log file, but a desktop session may keep stderr (journald, `~/.xsession-errors`), and the log names identities, addresses and contacts, so it is a developer switch, not a user setting. No crate on the path logs phrases, seeds, keys or passphrases at any level (Opus review); the GL scans its logs for them (none in w2–w4, ro1). Without it D32 had no evidence. |
 | D2 | The reproduction writes are profile edits sent through the app's own IPC from the renderer context (tauri-driver, `authorize` + `dashpay_update_profile`). | The renderer has no profile editor at 8276bf62. The command, its capability and the engine path are the ones a screen would use. Contact requests are excluded: the fixture has no unrelated pair left. |
 | D3 | Every probe uses a fresh data root, as DP2-08's GL did. | The fresh root is what made SPV miss the Platform quorum for the first minute: the condition D32 blamed. |
 | D4 | CPU starvation: the app's unit pinned to two CPUs, with four busy loops on them (memory: busy hogs, not `taskset` alone). The app was checked to run with `Cpus_allowed_list: 30-31`. | It imitates D32's load of 110 on 32 CPUs and a small laptop, without touching the code. |
 | D5 | The cause is recorded as outside the desktop and unproven: a testnet DAPI/Platform episode during 21:40–21:48 UTC that let reads through and made writes time out, at high box load. No upstream patch is proposed. | The trust layer is ruled out by code (the codes, the modes) and by measurement. Nothing in dash-spv or platform-wallet misbehaved in any run. The two failures sit in one 8-minute window that writes outside it never hit. The public explorer (testnet.platform-explorer.pshenmic.dev) was down (503), so a stall couldn't be checked. |
-| D6 | No behavioural change to the trust provider. The two new tests pin what was cleared (degraded mode after masternode sync falls back at once; a hung SPV lookup is bounded) and pass before and after this branch. | The brief's "tests that fail before the fix" has no fix to fail against. A test that failed would mean inventing a defect. |
+| D6 | No behavioural change to the trust provider. The three new tests pin what was cleared (degraded mode after masternode sync falls back at once; a hung SPV lookup is bounded in both modes; in the enforcing wait it ends at the wait's deadline) and hold for the base's behaviour; the two hung-lookup tests need D7's setter to build. Dropping the wait's `limit.min(left)` fails the third. | The brief's "tests that fail before the fix" has no fix to fail against. A test that failed would mean inventing a defect. |
 | D7 | The SPV lookup bound becomes a field (`spv_lookup_timeout`) with a test-only setter, next to `with_waits`. Production keeps 5 s. | The hung-lookup test would otherwise take 5 s per mode. |
 | D8 | The "quorum key served/refused" lines are `debug`, and their fields are formatted only when enabled. | One line per proof is too many at `info`. D32's question, verified or trusted, needs exactly this line. |
 | D9 | The probe has a `never` mode: the same run, reads only. | The before/after-sync measurement needs no write budget. |
-| D10 | "Could not reach Dash Platform. Try again." stays the message for these failures. | It is what happened (no DAPI attempt succeeded). The engine reads Platform back before it reports a failure (`requests.rs` `read_back`), so a retry is offered only on positive evidence that the write isn't there. |
+| D10 | "Could not reach Dash Platform. Try again." stays the message for these failures. | The last DAPI outcome was a transport failure, and the engine reads Platform back before it reports one (`requests.rs` `read_back`): a request found there is reported sent. It is not proof the write is absent: under reading (a) the broadcast was accepted, and when the read-back fails too the original error is returned. A retry is then safe for these writes (a second request to the same contact breaks the contract's unique index on owner, recipient and account reference; a profile edit is idempotent), so a message that admits the outcome is unknown belongs to E0-04's `platform.broadcast_unknown` (P3), not here. |
 
 ## Follow-ups
 
 | # | What | Owner |
 |---|---|---|
 | F1 | Correct DP2-08's D32 and F6: the failed sends went out during sync ("Syncing 72.8 %"), not after Synced. F6 is closed by BL-162 (trust layer cleared, not reproduced). | DP2-08 doc owner |
-| F2 | If a write fails like this again: rerun with `DW_LOG=info,dw_engine=debug,dash_sdk=debug,rs_dapi_client=debug` (each failed DAPI attempt and ban is logged), or `scripts/e2e-tauri-profile-write.sh` with `DW_PROFILE_WRITE_AT=early`. | whoever sees it |
+| F2 | If a write fails like this again: rerun with `DW_LOG=info,dw_engine=debug,dash_sdk=debug,dash_sdk::platform::transition=trace,rs_dapi_client=debug` (each failed DAPI attempt and ban is logged; broadcast success is only at `trace`, which tells reading (a) from (b)), or `scripts/e2e-tauri-profile-write.sh` with `DW_PROFILE_WRITE_AT=early`. dw_engine prints a quorum hash in display order (`00000000c9…`), dash-spv's `Quorum not found` in byte order (`…00000000`): reverse one to match. | whoever sees it |
 | F3 | A log file a user can send. A Windows release build has no console, so `DW_LOG` writes nowhere there. | packaging / support |
-| F4 | A long write shows nothing for 2 min before failing. A progress or "still trying" state on the card (or an SDK `wait_timeout`) would help. | DashPay UX |
+| F4 | A long write shows nothing for 2 min before failing. A progress or "still trying" state on the card, or a `PutSettings::wait_timeout` shorter than the 4 × 30 s wait, would help. | DashPay UX |
 
 ## Tests
 
-- `cargo test -p dw-engine --lib trust_tests`: the two new tests, alongside the existing per-rule tests.
+- `cargo test -p dw-engine --lib trust_tests`: the three new tests, alongside the existing per-rule tests.
 - GL: `DW_TESTNET_FIXTURE=<dir> DW_PROFILE_WRITE_AT=synced scripts/e2e-tauri-profile-write.sh` (one profile edit of
   fixture wallet A after masternode sync, read back; `never` for reads only; `early` for the headers phase).
