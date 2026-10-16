@@ -214,13 +214,28 @@ async function run(
     writeLedger(ledger);
     try {
       await wd.press(tid("pay-confirm-send"));
-      const kind = await poll(SEND_TIMEOUT_MS, "the payment's result", async () => {
+      let kind = await poll(SEND_TIMEOUT_MS, "the payment's result", async () => {
         for (const k of ["sent", "unknown", "failed"]) if (await wd.find(tid(`pay-result-${k}`))) return k;
         const error = await textOf(tid("pay-confirm-error"));
         if (error) throw new Error(`the confirm sheet refused: ${error}`);
         return undefined;
       });
       await wd.screenshot("4-result");
+      // "Status unknown" (the network did not answer in time) offers Try again, which broadcasts the
+      // same signed transaction again: as a user would, up to three times, never a new payment.
+      for (let attempt = 1; kind === "unknown" && attempt <= 3 && (await wd.find(tid("pay-result-retry"))); attempt++) {
+        step(`result: status unknown; Try again (${attempt})`);
+        await new Promise((r) => setTimeout(r, 30_000));
+        await wd.press(tid("pay-result-retry"));
+        const retry = tid("pay-result-retry");
+        // Busy first (the button disables while the broadcast runs), then its answer.
+        await poll(TIMEOUT_MS, "the retry to start", async () => ((await wd.find(`${retry}[disabled], ${tid("pay-result-sent")}`)) ? true : undefined));
+        kind = await poll(SEND_TIMEOUT_MS, "the retry's result", async () => {
+          if (await wd.find(tid("pay-result-sent"))) return "sent";
+          return (await wd.script<boolean>(`return !document.querySelector('${retry}[disabled]')`)) ? "unknown" : undefined;
+        });
+        await wd.screenshot(`4-result-retry-${attempt}`);
+      }
       ledger.outcome = kind;
       if (kind !== "sent") throw new Error(`the payment's result is ${kind}: ${await textOf(tid("pay-result-text"))}`);
       ledger.txid = (await textOf(tid("pay-result-txid"))).match(/[0-9a-f]{64}/)?.[0];
