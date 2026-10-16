@@ -38,6 +38,9 @@ describe("event bridge", () => {
     expect(invalidationsFor({ kind: "balances", network: "testnet", walletId: "w", balances: null })).toEqual([keys.balance("w"), keys.wallets, keys.coinsAll("w"), dashpayKeys.quote("w")]);
     expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll]);
     expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: {} as never })).toEqual([keys.lockReconcile]);
+    // DP1-09 D14: a registration lease's change re-reads the rows, whose `waiting` moved.
+    const registration = { flow: "registration" } as never;
+    expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: registration })).toEqual([keys.lockReconcile, dashpayKeys.registrationsAll]);
     expect(invalidationsFor({ kind: "sessionOpened", network: "testnet" })).toBe("all");
     expect(invalidationsFor({ kind: "eventsOverflowed" })).toBe("all");
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } })).toEqual([]);

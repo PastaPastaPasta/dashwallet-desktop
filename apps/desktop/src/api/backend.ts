@@ -65,6 +65,10 @@ import type { PsbtAnalysis } from "./generated/PsbtAnalysis";
 import type { RegistrationQuote } from "./generated/RegistrationQuote";
 import type { RegistrationRequest } from "./generated/RegistrationRequest";
 import type { RegistrationStatus } from "./generated/RegistrationStatus";
+import type { UsernameCheck } from "./generated/UsernameCheck";
+import type { NameAvailability } from "./generated/NameAvailability";
+import type { FinishReport } from "./generated/FinishReport";
+import type { NameOutcome } from "./generated/NameOutcome";
 import type { RescanStart } from "./generated/RescanStart";
 import type { RescanStatus } from "./generated/RescanStatus";
 import type { VerifyMessageResult } from "./generated/VerifyMessageResult";
@@ -274,6 +278,23 @@ export interface Backend {
   /** The costs of registering `request` (DP1-02); local for a non-contested name. */
   registrationQuote(walletId: string, request: RegistrationRequest): Promise<RegistrationQuote>;
   resolveStuckFunding(walletId: string, step: string, grant: string): Promise<BroadcastOutcome>;
+  // The registration wizard (DP1-09).
+  /** The label's rule checklist; offline, needs no wallet. */
+  checkUsername(label: string): Promise<UsernameCheck>;
+  /** The label's checklist verdict, then the network's. */
+  nameAvailability(walletId: string, label: string): Promise<NameAvailability>;
+  /** Starts a registration under `grant`; the draft id. Progress is `registrations`. */
+  startRegistration(walletId: string, request: RegistrationRequest, grant: string): Promise<string>;
+  /** `startRegistration` past the earlier registrations `past` whose funding is unknown, once the
+   * user confirmed the wedge copy (m4 §2.2 "In progress"). */
+  startRegistrationPastUnknownFunding(walletId: string, request: RegistrationRequest, grant: string, past: string[]): Promise<string>;
+  /** `grant` is needed exactly when the row waits `unlock` or `authorize`. */
+  resumeRegistration(walletId: string, draft: string, grant: string | null): Promise<null>;
+  discardRegistration(walletId: string, draft: string): Promise<null>;
+  /** Tools ▸ Repair "Finish transfers". */
+  finishAssetLocks(walletId: string, grant: string): Promise<FinishReport>;
+  /** A name for `identity`, paid from its credits. */
+  registerName(walletId: string, identity: string, label: string, grant: string): Promise<NameOutcome>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;
   saveAddressBookEntry(walletId: string, address: string, label: string, purpose: AddressPurposeName, replace: boolean): Promise<AddressBookEntry>;
   deleteAddressBookEntry(walletId: string, address: string): Promise<null>;

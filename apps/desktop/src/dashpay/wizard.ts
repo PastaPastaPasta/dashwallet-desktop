@@ -1,0 +1,273 @@
+// The registration wizard's flow state (DP1-09): which step the user is on, the label, the
+// running call, and the draft this session started or resumed. One per wallet, kept while the app
+// runs, so leaving the Join page and coming back finds the wizard where it was (D1); a relaunch
+// starts empty and the engine's rows decide (the design's resume rules). Every grant goes through
+// U-05's GrantModel: the passphrase sheet when one is needed.
+
+import type { Backend } from "../api/backend";
+import { hasCode } from "../api/backend";
+import type { AuthGrant } from "../api/generated/AuthGrant";
+import type { FinishReport } from "../api/generated/FinishReport";
+import type { GrantRequest } from "../api/generated/GrantRequest";
+import type { NameOutcome } from "../api/generated/NameOutcome";
+import type { RegistrationRequest } from "../api/generated/RegistrationRequest";
+import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
+import { Model } from "../onboarding/model";
+import { GrantModel } from "../tools/grant";
+import { QUOTE_REQUEST } from "./status";
+
+export type WizardApi = Pick<
+  Backend,
+  | "registrationQuote"
+  | "startRegistration"
+  | "startRegistrationPastUnknownFunding"
+  | "resumeRegistration"
+  | "discardRegistration"
+  | "finishAssetLocks"
+  | "registrations"
+  | "grantRequest"
+  | "registerName"
+  | "authorize"
+  | "revokeGrant"
+  | "lockStatus"
+  | "paymentAuthentication"
+  | "unlock"
+  | "unlockMixingOnly"
+>;
+
+/** `core`: a new identity funded from the wallet; `credits`: a name for an identity the wallet
+ * has, paid from its credits (D6). */
+export type WizardMode = { kind: "core" } | { kind: "credits"; identity: string };
+
+export type WizardStep = "name" | "confirm";
+
+export type RunningCall = "start" | "resume" | "discard" | "finish" | "name";
+
+/** A Core-funded request for `label` (DP1-02's `CoreBalance` funding; no profile, D4/F2). */
+export const coreRequest = (label: string): RegistrationRequest => ({
+  label,
+  temporaryLabel: null,
+  funding: { kind: "coreBalance" },
+  initialProfile: null,
+});
+
+/** D10: Finish transfers' grant: one duff, as a top-up lock's apply needs a funding budget (none
+ * is spent), and the credits DP1-02's quote bounds. */
+export async function finishGrant(api: Pick<Backend, "registrationQuote">, walletId: string): Promise<GrantRequest> {
+  const quote = await api.registrationQuote(walletId, QUOTE_REQUEST);
+  return { maxDuffs: 1, maxCredits: quote.grant.maxCredits };
+}
+
+const platformOp = (g: GrantRequest) => ({ kind: "platformOp" as const, maxDuffs: g.maxDuffs, maxCredits: g.maxCredits });
+
+export class RegistrationWizard extends Model {
+  /** `null` while the wizard is not open: the Join page shows its intro or a row's screen. */
+  step: WizardStep | null = null;
+  mode: WizardMode = { kind: "core" };
+  label = "";
+  /** The draft this session started or resumed: its result screen shows until Done. */
+  draft: string | null = null;
+  /** A name registered from credits this session (D6): its result shows until Done. */
+  named: { label: string; result: NameOutcome } | null = null;
+  running: RunningCall | null = null;
+  /** The last call's refusal, as the screen says it (`startErrorText`); cleared by the next call. */
+  error: unknown = null;
+  /** `registration.in_progress` past a wedged funding (m4 §2.2): the blocker the user is asked
+   * to start past. */
+  wedge: string | null = null;
+  /** Finish transfers' report, once it ran. */
+  finished: FinishReport | null = null;
+  readonly grants: GrantModel;
+
+  constructor(
+    private readonly api: WizardApi,
+    readonly walletId: string,
+  ) {
+    super();
+    this.grants = new GrantModel(api);
+    this.grants.subscribe(() => this.changed());
+  }
+
+  /** Opens step 1. */
+  begin(mode: WizardMode) {
+    this.mode = mode;
+    this.step = "name";
+    this.label = "";
+    this.draft = null;
+    this.named = null;
+    this.error = null;
+    this.wedge = null;
+    this.changed();
+  }
+
+  setLabel(label: string) {
+    this.label = label;
+    this.changed();
+  }
+
+  /** Step 1 → 2, for the label the screen has checked (`canChoose`). */
+  next() {
+    this.step = "confirm";
+    this.error = null;
+    this.changed();
+  }
+
+  back() {
+    this.step = this.step === "confirm" ? "name" : null;
+    this.error = null;
+    this.wedge = null;
+    this.grants.cancel();
+    this.changed();
+  }
+
+  /** The page shows `draft`, the registration the status says goes on: its result then stays
+   * shown until Done, as this session's own does. */
+  adopt(draft: string) {
+    if (this.draft !== null || this.step !== null) return;
+    this.draft = draft;
+    this.changed();
+  }
+
+  /** Back to the Join page's own state: the result was seen, or the wizard was left. */
+  close() {
+    this.step = null;
+    this.draft = null;
+    this.named = null;
+    this.error = null;
+    this.wedge = null;
+    this.finished = null;
+    this.grants.cancel();
+    this.changed();
+  }
+
+  /** Confirm & pay (D8: one start per Confirm). The quote's grant, then `start_registration`. A
+   * refusal naming another registration shows that one; one past a wedged funding asks first. */
+  async confirm(grant: GrantRequest): Promise<void> {
+    const label = this.label;
+    await this.#call("start", async () => {
+      const draft = await this.#withGrant(grant, (g) => this.api.startRegistration(this.walletId, coreRequest(label), g.id));
+      if (draft !== null) this.#started(draft);
+    });
+  }
+
+  /** The wedge copy was confirmed: start past the blocker. */
+  async confirmWedge(grant: GrantRequest): Promise<void> {
+    const past = this.wedge;
+    if (past === null) return;
+    const label = this.label;
+    await this.#call("start", async () => {
+      const draft = await this.#withGrant(grant, (g) => this.api.startRegistrationPastUnknownFunding(this.walletId, coreRequest(label), g.id, [past]));
+      if (draft !== null) this.#started(draft);
+    });
+  }
+
+  dismissWedge() {
+    this.wedge = null;
+    this.changed();
+  }
+
+  /** Continue (R2, R6): the row's label quoted again for the grant (no call sizes a resume's),
+   * then `resume_registration`. */
+  async resume(row: RegistrationStatus): Promise<void> {
+    await this.#call("resume", async () => {
+      const quote = await this.api.registrationQuote(this.walletId, { ...coreRequest(row.label), temporaryLabel: row.temporaryLabel });
+      const done = await this.#withGrant(quote.grant, (g) => this.api.resumeRegistration(this.walletId, row.draft, g.id).then(() => true));
+      if (done) this.draft = row.draft;
+    });
+  }
+
+  /** Choose another username (R6, R7, R10): an unfinished row is discarded first, and only while
+   * nothing is committed (D7); after a refused name the identity pays from its credits. */
+  async another(row: RegistrationStatus | null): Promise<void> {
+    if (row && row.phase !== "done" && row.fundsCommitted) return;
+    await this.#call("discard", async () => {
+      if (row && row.phase !== "done") await this.api.discardRegistration(this.walletId, row.draft);
+      const identity = row?.phase === "done" ? row.identity : null;
+      this.begin(identity ? { kind: "credits", identity } : { kind: "core" });
+    });
+  }
+
+  /** Finish transfers (R5, D10). */
+  async finish(): Promise<void> {
+    await this.#call("finish", async () => {
+      const report = await this.#withGrant(await finishGrant(this.api, this.walletId), (g) => this.api.finishAssetLocks(this.walletId, g.id));
+      if (report) this.finished = report;
+    });
+  }
+
+  /** The credits path's Confirm (D6): `register_name` under the grant `grant_request` sizes. */
+  async registerName(identity: string): Promise<void> {
+    const label = this.label;
+    await this.#call("name", async () => {
+      const grant = await this.api.grantRequest(this.walletId, identity, { kind: "registerName", label });
+      const outcome = await this.#withGrant(grant, (g) => this.api.registerName(this.walletId, identity, label, g.id));
+      if (outcome) {
+        this.named = { label, result: outcome };
+        this.step = null;
+      }
+    });
+  }
+
+  #started(draft: string) {
+    this.draft = draft;
+    this.step = null;
+  }
+
+  /** `run` under a `platformOp` grant of `caps`; `null` when the user cancelled the passphrase. */
+  async #withGrant<T>(caps: GrantRequest, run: (g: AuthGrant) => Promise<T>): Promise<T | null> {
+    const got = await this.grants.withGrant(platformOp(caps), this.walletId, run);
+    return got ? got.value : null;
+  }
+
+  /** One call at a time; its refusal is kept for the screen. */
+  async #call(kind: RunningCall, run: () => Promise<void>) {
+    if (this.running) return;
+    this.running = kind;
+    this.error = null;
+    this.changed();
+    try {
+      await run();
+    } catch (e) {
+      const draft = hasCode(e, "registration.in_progress") && e.data?.kind === "draft" ? e.data.draft : null;
+      if (draft !== null && kind === "start") await this.#inProgress(draft, e);
+      else this.error = e;
+    } finally {
+      this.running = null;
+      this.changed();
+    }
+  }
+
+  /** `registration.in_progress{draft}` at a start: a registration of the wallet goes on. If its
+   * funding is unknown and wedged, the user may start past it (the wedge copy); otherwise the
+   * wizard shows it instead of starting a second one. */
+  async #inProgress(draft: string, e: unknown) {
+    const rows = await this.api.registrations(this.walletId).catch(() => [] as RegistrationStatus[]);
+    const row = rows.find((r) => r.draft === draft);
+    if (row?.waiting === "fundingUnknown") {
+      this.wedge = draft;
+      return;
+    }
+    if (row) {
+      this.#started(draft);
+      return;
+    }
+    this.error = e;
+  }
+}
+
+const wizards = new Map<string, RegistrationWizard>();
+
+/** The wallet's wizard, created on first use and kept while the app runs. */
+export function wizardFor(api: WizardApi, walletId: string): RegistrationWizard {
+  let w = wizards.get(walletId);
+  if (!w) {
+    w = new RegistrationWizard(api, walletId);
+    wizards.set(walletId, w);
+  }
+  return w;
+}
+
+/** Tests: forget every wizard (a fresh app). */
+export function resetWizards() {
+  wizards.clear();
+}

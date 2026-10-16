@@ -247,7 +247,7 @@ describe("IOS-065 Join page readiness (J1–J7)", () => {
     expect(roundedCost(3_100_000)).toBe(3_100_000);
   });
 
-  it("J1: the cost, rounded up, and a shortfall only when the whole wallet cannot cover it (D18)", () => {
+  it("J1: the cost, rounded up, and a shortfall only when what the funding can spend does not cover it (D18, DP1-09 D5)", () => {
     expect(joinModel(inputs(noIdentity()), 3_002_260, 10e8)).toEqual({
       kind: "join",
       cost: JOIN_COPY.cost("0.031 tDASH"),

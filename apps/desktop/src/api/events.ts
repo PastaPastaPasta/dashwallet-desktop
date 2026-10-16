@@ -52,7 +52,10 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       return event.progress.kind === "done" ? [keys.lockStatus, keys.lockReconcile] : [];
     // The lock report's reconciliation reads leases and dispatch states (lockReport.ts); its
     // invalidations are coalesced (RECONCILE_COALESCE_MS).
+    // A registration lease revoked or parked moves its row's `waiting` without a Platform
+    // signal; a passphrase change revokes it without a `vaultLockState` (DP1-09 D14).
     case "leaseChanged":
+      return event.lease.flow === "registration" ? [keys.lockReconcile, dashpayKeys.registrationsAll] : [keys.lockReconcile];
     case "dispatchResolved":
       return [keys.lockReconcile];
     // The shell's chip, bell and Contacts badge (the DashPay screens come with their tasks).

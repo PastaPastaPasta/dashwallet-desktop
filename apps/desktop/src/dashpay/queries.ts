@@ -5,17 +5,73 @@
 import { useQuery } from "@tanstack/react-query";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
+import { useDebounced } from "../app/useDebounced";
 import { keys, mainIdentityOf, mainSummaryOf, useBackend, useLockStatus, useSyncStatus } from "../api/queries";
 import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
 import { isSyncing, syncPercent } from "../format/sync";
+import { AVAILABILITY_DEBOUNCE_MS, isRunning } from "./registration";
 import { QUOTE_REQUEST, type StatusInputs } from "./status";
+import { coreRequest } from "./wizard";
 
 export const dashpayKeys = {
   registrationsAll: ["dashpay", "registrations"] as const,
   registrations: (walletId: string) => ["dashpay", "registrations", walletId] as const,
   quote: (walletId: string) => ["dashpay", "quote", walletId] as const,
+  /** DP1-09: the quote of one label, under `quote`, so a balance change re-reads it too. */
+  labelQuote: (walletId: string, label: string) => ["dashpay", "quote", walletId, label] as const,
+  availability: (walletId: string, label: string) => ["dashpay", "availability", walletId, label] as const,
+  /** Pure and offline (`check_username`): no signal changes it, so it is not under `dashpay`. */
+  usernameCheck: (label: string) => ["usernameCheck", label] as const,
 };
+
+/** DP1-09 D15: a running registration's `waiting` changes without a Platform signal, so its
+ * rows are read again this often while one runs. */
+export const REGISTRATION_POLL_MS = 5_000;
+
+const pollWhileRunning = (rows: RegistrationStatus[] | undefined) => (rows?.some(isRunning) ? REGISTRATION_POLL_MS : false);
+
+/** The wallet's registrations, read again while one runs (D15). */
+export function useRegistrations(walletId: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: dashpayKeys.registrations(walletId),
+    queryFn: () => b.registrations(walletId),
+    enabled,
+    refetchInterval: (q) => pollWhileRunning(q.state.data),
+  });
+}
+
+/** Step 1's reads (F4): the offline checklist at once, the network's availability once the
+ * typing settled and the label is valid. `pending` until the availability answers for the label
+ * as typed now. */
+export function useNameChecks(walletId: string, label: string) {
+  const b = useBackend();
+  const settled = useDebounced(label, AVAILABILITY_DEBOUNCE_MS);
+  const check = useQuery({ queryKey: dashpayKeys.usernameCheck(label), queryFn: () => b.checkUsername(label), enabled: label !== "", staleTime: Infinity });
+  const settledCheck = useQuery({ queryKey: dashpayKeys.usernameCheck(settled), queryFn: () => b.checkUsername(settled), enabled: settled !== "", staleTime: Infinity });
+  const availability = useQuery({
+    queryKey: dashpayKeys.availability(walletId, settled),
+    queryFn: () => b.nameAvailability(walletId, settled),
+    enabled: settled === label && settledCheck.data?.valid === true,
+    retry: false,
+  });
+  // A failed lookup is "could not check": the start decides (D3).
+  const answer = availability.isError ? ({ kind: "unknown" } as const) : availability.data;
+  return { check: check.data, availability: settled === label ? answer : undefined, pending: settled !== label || availability.isFetching };
+}
+
+/** Step 2's quote for `label` (Core funding). */
+export function useLabelQuote(walletId: string, label: string, enabled: boolean) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: dashpayKeys.labelQuote(walletId, label),
+    queryFn: () => b.registrationQuote(walletId, coreRequest(label)),
+    enabled,
+    retry: false,
+  });
+}
 
 /** The registration a `registering` status names (S10–S14); `undefined` otherwise, while unread,
  * or when the read fails (the card then says only that a username is being created). */
@@ -26,13 +82,15 @@ export function useStatusRegistration(walletId: string | undefined, status: Dash
     queryKey: dashpayKeys.registrations(walletId ?? ""),
     queryFn: () => b.registrations(walletId!),
     enabled: !!walletId && draft !== null,
+    refetchInterval: (q) => pollWhileRunning(q.state.data),
   });
   return draft === null ? undefined : rows.data?.find((r) => r.draft === draft);
 }
 
-/** D6: what a non-contested username costs this wallet (the quote's total, duffs); `null` while
- * unread or when the quote fails (J7). */
-export function useUsernameCost(walletId: string, enabled: boolean): number | null {
+/** D6: the quote of a non-contested username for this wallet: its total is what one costs, its
+ * `availableDuffs` what the funding can spend now (DP1-09 D5); `undefined` while unread or when
+ * the quote fails (J7). */
+export function useUsernameQuote(walletId: string, enabled: boolean) {
   const b = useBackend();
   const quote = useQuery({
     queryKey: dashpayKeys.quote(walletId),
@@ -40,7 +98,7 @@ export function useUsernameCost(walletId: string, enabled: boolean): number | nu
     enabled,
     retry: false,
   });
-  return quote.data?.totalDuffs ?? null;
+  return quote.data;
 }
 
 /** Everything the Home card and the Join page derive from (`homeCard`, `joinModel`), under the

@@ -132,8 +132,9 @@ export function stepOf(phase: RegistrationPhaseName, failure: RegistrationFailur
   }
 }
 
-/** What a running registration waits for, as a line under its step. */
-const WAITS = {
+/** What a running registration waits for, as a line under its step (the wizard's progress
+ * screen shows the same lines, DP1-09 D11). */
+export const WAITS = {
   instantSend: "Waiting for the network to confirm the payment.",
   chainLock: "Waiting for the network to confirm the payment.",
   network: "Waiting for the Dash network. It tries again on its own.",
@@ -316,8 +317,6 @@ export const JOIN_COPY = {
   joined: (name: string | null) => (name ? `You have joined DashPay as @${name}.` : "You have joined DashPay."),
   votingLink: "What is username voting?",
   faqLink: "About DashPay",
-  wizard: "Choosing and registering a username is not available yet.",
-  back: "Back",
 } as const;
 
 /** What the Join page shows under its intro (J1–J7). */
@@ -335,8 +334,9 @@ export function joinModel(
   i: StatusInputs,
   /** The quote's total (duffs), `null` while unread or when it failed. */
   costDuffs: number | null,
-  /** Everything the wallet holds (duffs, `Balances.total`), `null` while unread (D18). */
-  total: number | null,
+  /** What the funding can spend now (duffs, the quote's `availableDuffs`, DP1-09 D5), `null`
+   * while unread. */
+  available: number | null,
 ): JoinModel {
   const s = i.status;
   if (!i.statusError && s?.kind === "noIdentity") {
@@ -347,9 +347,9 @@ export function joinModel(
     return {
       kind: "join",
       cost: JOIN_COPY.cost(price),
-      // D18: only a shortfall no coin of the wallet could cover, and none while the balance is
-      // still syncing in.
-      shortfall: !waiting && total !== null && total < costDuffs ? JOIN_COPY.shortfall(price) : null,
+      // D18, as DP1-09 D5 measures it: the coins a start can spend, and no shortfall while the
+      // balance is still syncing in.
+      shortfall: !waiting && available !== null && available < costDuffs ? JOIN_COPY.shortfall(price) : null,
       waiting,
     };
   }
