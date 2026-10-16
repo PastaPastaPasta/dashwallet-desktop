@@ -17,7 +17,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 
 use super::errors::PlatformError;
-use super::money_gate::{GateEnv, Refusal, Signals, Waits, run};
+use super::money_gate::{GateEnv, Refusal, Signals, Waits, recheck, run};
 use super::provenance::Provenance;
 use super::reverify::{self, Held, Refetcher, ShownProfile};
 use super::runtime::{LockView, guard};
@@ -170,6 +170,18 @@ impl FakePlatform {
     /// `owner`.
     pub(crate) fn answer_domain(&self, spelling: &str, owner: Identifier) {
         self.answer(&[Held::label(spelling, owner)]);
+    }
+
+    /// Platform holds `id`'s DashPay profile as `profile`.
+    pub(crate) fn answer_profile(
+        &self,
+        id: Identifier,
+        profile: &platform_wallet::wallet::identity::DashPayProfile,
+    ) {
+        self.answer(&[Held::Profile {
+            id,
+            shown: ShownProfile::of(profile),
+        }]);
     }
 }
 
@@ -396,6 +408,47 @@ async fn enforcing_refuses_when_nothing_verifies_in_time() {
         "{waited:?}"
     );
     assert_eq!(world.unverified().unwrap().len(), 3, "nothing recorded");
+}
+
+/// The re-check after the reservation verifies what appeared since the
+/// gate (here the shown name, landed meanwhile) in one bounded round.
+#[tokio::test(start_paused = true)]
+async fn the_recheck_verifies_what_appeared_since_the_gate() {
+    let world = World::new(payee(), true);
+    let platform = platform_holding(&payee(), Proof::Verified);
+    let fetch = Arc::clone(&platform) as Arc<dyn Refetcher>;
+    assert_eq!(recheck(&world, move || Ok(fetch), waits()).await, Ok(()));
+    assert!(world.verified());
+    assert_eq!(platform.fetches(), 3);
+}
+
+/// What does not verify in the re-check's one round refuses: it does not
+/// wait like the gate (the address is reserved and the coins fenced).
+#[tokio::test(start_paused = true)]
+async fn the_recheck_refuses_what_does_not_verify_in_its_round() {
+    for (proof, refusal) in [
+        (Proof::Unverified, Refusal::Unverified),
+        (Proof::Mismatch, Refusal::Mismatch),
+    ] {
+        let world = World::new(payee(), true);
+        let platform = platform_holding(&payee(), proof);
+        let fetch = Arc::clone(&platform) as Arc<dyn Refetcher>;
+        let started = Instant::now();
+        assert_eq!(
+            recheck(&world, move || Ok(fetch), waits()).await,
+            Err(refusal)
+        );
+        assert!(started.elapsed() <= waits().probe, "{proof:?}");
+    }
+    let world = World::new(payee(), true);
+    *guard(&world.held) = None;
+    let platform = platform_holding(&payee(), Proof::Verified);
+    let fetch = Arc::clone(&platform) as Arc<dyn Refetcher>;
+    assert_eq!(
+        recheck(&world, move || Ok(fetch), waits()).await,
+        Err(Refusal::Unverified),
+        "the subject gone"
+    );
 }
 
 /// A re-fetch SPV and the trusted service disagree on refuses at once, in

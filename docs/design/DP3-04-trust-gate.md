@@ -21,7 +21,7 @@ the latch nothing is unverified, so the gate passes.
 
 | Path | Where Core money moves | Platform-sourced data that decides where it goes | Gate |
 |---|---|---|---|
-| Contact payment (`TxDraft::prepare` of a `ContactRecipient`, DP3-01) | the signed payment to the contact's DIP-15 address | the contact requests the relation rests on (the incoming one carries the xpub the address derives from; both bind the key indices), the contact's DPNS name the read models show, its cached profile (the name and picture the user picks the payee by) | `prepare_contact`: the wait before the coin fence and the grant; a no-wait re-check after the reservation (§4) |
+| Contact payment (`TxDraft::prepare` of a `ContactRecipient`, DP3-01) | the signed payment to the contact's DIP-15 address | the contact requests the relation rests on (the incoming one carries the xpub the address derives from; both bind the key indices), the contact's DPNS name the read models show, its cached profile (the name and picture the user picks the payee by) | `prepare_contact`: the wait before the coin fence and the grant; a re-check after the reservation (§4) |
 | "Accept and pay" (`accept_request` then `prepare`, DP3-01 D14) | the payment after the accept | as above; the outgoing request is the one the accept just wrote | the same `prepare_contact` gate (the accept itself moves no Core money) |
 | Top-up (`top_up`, DP1-06) | the asset lock's funding | the target identity (an own identity: its id and keys as the library holds them) | `top_up`: the funding hold (§3) and the wait before the identity's write lock and the grant |
 | Registration (`start_registration`, `resume_registration`, `start_registration_past_unknown_funding`, DP1-02) | the asset lock's funding | none: the new identity does not exist yet | the funding hold (§3): no funding while Platform writes wait for masternode sync |
@@ -61,10 +61,22 @@ A contact payment, in `prepare_contact` (DP3-01 D4's order, with the gate added)
    (`DEFAULT_GRANT_TTL_SECS`, 120 s), so a grant authorized just before `prepare` outlives the wait;
 4. the coin fence, the grant or lease checks, contact crypto, the plan (`resolve`, which checks the payment lock
    again), the lease, the Spend charge, the reservation, as before;
-5. **a no-wait re-check after the reservation**, under the coin fence: if a sync pass replaced the payee's data
-   between the wait and the reservation and the new content is unverified, `platform.context_unavailable`, and the
-   reserved address is dropped, so no later `prepare` pays an address taken from unverified data (one DIP-15 index
-   skipped). The lease and its charge end with the refusal, as for any refusal after the reservation (DP3-01 D4).
+5. **a re-check after the reservation** (`payout_address`), under the coin fence (D13): what became unverified
+   since the wait (a sync pass replaced the payee's data, or the contact's DPNS name landed and is now shown) gets
+   one round of re-fetches bounded like the probe (10 s); anything still unverified, or a mismatch, refuses
+   (`platform.context_unavailable`, `platform.trust_mismatch`) and the address is not kept, so no later `prepare`
+   pays an address taken from unverified data (one DIP-15 index skipped). The address is kept only once the
+   re-check passed, marked checked (D14). The lease and its charge end with the refusal, as for any refusal after
+   the reservation (DP3-01 D4).
+
+Under `Enforce` the payee is also not payable while its paying account was built from an older request than the
+one the gate verifies and no queued op rebuilds it at the reservation (D12): `platform.context_unavailable` at
+once, at the wait and at the re-check.
+
+The broadcast does not run the gate again: the signed transaction pays the address the re-check passed, which
+the payee's later changes do not move. The contact's identity key the reservation's drain may fetch to build the
+paying account is not a gate entity: the verified request binds it through its encryption (a wrong key does not
+decrypt the request's xpub), so a forged key fails the build rather than redirecting money.
 
 The wait ends early, and the rest of `prepare` then refuses as it would have: on a vault Lock (`send.vault_locked`
 from the grant check, the lease's revocation for a lease), and when the session closes. A payment lock written
@@ -86,9 +98,10 @@ and shows "Waiting for the network to sync".
 | Retry interval | 3 s | a re-fetch is a few DAPI calls; the background task (`reverify.rs`) may record first, and the next round sees it |
 | Probe (`Probe`) | 10 s for the whole round | rule 5 is suspended: the probe only looks for a mismatch, and a slow Platform must not hold a Core payment long |
 
-Each re-fetch runs under the remaining time. A quorum lookup inside it may block its task for the provider's rule-3
-wait (E0-10b §3, up to 2 minutes), which a timeout around the fetch cannot cut short; so the gate's wait is bounded
-by 60 s plus one lookup's wait.
+Each re-fetch runs under the remaining time. A quorum lookup inside it may block its task (the provider's rule-3
+wait under `Enforcing`, E0-10b §3, up to 2 minutes; the trusted service's HTTPS call under `Degraded`), which a
+timeout around the fetch cannot cut short; so the gate's wait is bounded by 60 s, the probe and the re-check by
+10 s, each plus one fetch's blocking lookups (D15). T2 saw a 60 s wait end at 119 s for that reason.
 
 ## 6. Refusal codes and wording
 
@@ -125,6 +138,11 @@ dropped only when the payee's current content is unverified.
 | D9 | The gate records verified re-fetches itself, under the wallet manager's read lock, only for content the library still holds unchanged. | E0-10b §5's record step, scoped to the subject: waiting for the 10-minute background task would not fit the wait. |
 | D10 | No facade call to verify ahead of the passphrase. | The gate in `prepare` is the choke point and cannot be bypassed. A host-side "verify before Confirm" read is a follow-up for H-09 or the UI (the contact row's `unverified` already tells the host when the step will show). |
 | D11 | `kind::PAYMENT` stays without a consumer. | The gate checks the entities that decide where money goes; a record that a payment's txid verified says nothing about that. |
+| D12 | Under `Enforce`, a payee whose paying account is stale (`external_account_reference` is not the current incoming request's, and no `RegisterReceiving`/`RegisterExternal` op is queued) is not payable: the gate and the re-check treat it as gone. | The address derives from the account's stored xpub, not from the request the gate verifies. A rebuild deferred before a restart is lost with its in-memory queue, and the account would pay the old (possibly forged) xpub until a DashPay sweep rebuilds it (review r1 #1). With an op queued, the reservation's drain rebuilds it first. The degraded mode keeps DP3-01's behaviour (rule 5 suspended). |
+| D13 | The re-check verifies in one bounded round instead of refusing on anything unverified. | T2: the contact's DPNS name lands in the background after the first contacts read, often between the wait and the reservation, and a no-wait re-check refused every first payment of a session. One round (10 s) verifies it; the coin fence is held across it, the long wait stays before the fence. |
+| D14 | A kept reserved address records whether rule 5's re-check passed for it. Under `Enforce`, an unchecked one (kept while rule 5 was off, or given back by a failed hand-off) is dropped and a new one reserved. | An address taken while the toggle or the degraded mode let unverified data through must not be paid once rule 5 applies (review r1 #3). A given-back address is marked unchecked because the hand-off does not carry how it was kept; under `Enforce` this skips one index after a failed hand-off. |
+| D15 | Correct the bound instead of moving each fetch into its own task. | Review r1 #7: a spawned fetch timed out on its join handle would leave blocked fetches running detached. Fails closed either way; the bound is documented as "plus one fetch's blocking lookups". |
+| D16 | Review r1 #2 (a `prepare` dropped between reservation and re-check keeps the address) is not reachable: `TxDraft::prepare` runs in its own task (`on_runtime`), which a host dropping its future does not cancel. Keeping the address only after the re-check closes it anyway. | Checked with a test that aborted the caller: the inner task ran on (and held the coin fence). |
 
 ## 9. Tests (T0)
 
@@ -154,6 +172,11 @@ dropped only when the payee's current content is unverified.
 | accept and pay waits for the new request | `contact_tests::accept_and_pay_waits_for_the_new_request` |
 | a payment lock during the wait | `contact_tests::a_payment_lock_during_the_gate_wait_refuses` |
 | replaced after the wait: refused, address dropped | `contact_tests::a_payee_replaced_before_the_reservation_is_refused` |
+| replaced after the reservation: refused, not kept | `contact_tests::a_payee_replaced_after_the_reservation_is_refused` |
+| the re-check verifies in one round, refuses what does not verify | `money_gate_tests::the_recheck_verifies_what_appeared_since_the_gate`, `…::the_recheck_refuses_what_does_not_verify_in_its_round` |
+| D12 stale paying account | `contact_tests::a_stale_paying_account_is_not_paid` |
+| D14 unchecked kept address | `contact_tests::an_address_kept_without_rule_5_is_not_paid_under_it` |
+| D1 cached profile | `contact_tests::an_unverified_profile_holds_the_payment` |
 | top-up of an unverified identity moves nothing | `topup_tests::an_unverified_identity_is_not_topped_up` |
 | degraded top-up proceeds | `topup_tests::the_degraded_mode_tops_up_an_unverified_identity` |
 | funding hold reads `writes_wait` | `topup_tests::the_funding_hold_waits_for_platform_writes` |

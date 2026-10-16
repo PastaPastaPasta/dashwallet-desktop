@@ -23,6 +23,7 @@ use platform_wallet::{ManagedIdentity, PlatformWalletInfo};
 use tokio::sync::watch;
 use tokio::time::Instant;
 
+use super::contacts_model::ACCOUNT_OPS;
 use super::errors::PlatformError;
 use super::payment_locks::Pair;
 use super::provenance::Provenance;
@@ -64,9 +65,19 @@ pub(crate) struct MoneyGate {
     /// Tests: Platform's answers, instead of the SDK's.
     #[cfg(test)]
     refetcher: Mutex<Option<Arc<dyn Refetcher>>>,
-    /// Tests: holds a contact payment right after its gate passed.
+    /// Tests: where the next contact payment is held.
     #[cfg(test)]
-    after: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    pauses: Mutex<Vec<(Point, Arc<crate::coins::TestPause>)>>,
+}
+
+/// Tests: where a contact payment can be held.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Point {
+    /// Right after its gate passed.
+    Gated,
+    /// After its address was reserved, before the re-check.
+    Reserved,
 }
 
 impl MoneyGate {
@@ -81,14 +92,18 @@ impl MoneyGate {
     }
 
     #[cfg(test)]
-    pub(crate) fn pause_after(&self, pause: Arc<crate::coins::TestPause>) {
-        *guard(&self.after) = Some(pause);
+    pub(crate) fn pause_at(&self, point: Point, pause: Arc<crate::coins::TestPause>) {
+        guard(&self.pauses).push((point, pause));
     }
 
-    /// Tests: the pause point after a contact payment's gate.
+    /// Tests: a contact payment at `point`; held there once if asked.
     #[cfg(test)]
-    pub(crate) async fn after_gate(&self) {
-        let pause = guard(&self.after).take();
+    pub(crate) async fn reached(&self, point: Point) {
+        let pause = {
+            let mut pauses = guard(&self.pauses);
+            let at = pauses.iter().position(|(p, _)| *p == point);
+            at.map(|i| pauses.remove(i).1)
+        };
         if let Some(pause) = pause {
             (pause.reached).store(true, std::sync::atomic::Ordering::SeqCst);
             pause.release.notified().await;
@@ -215,6 +230,27 @@ pub(super) async fn run<E: GateEnv>(
     }
 }
 
+/// The re-check after the reservation (design §4 step 5), under
+/// `Enforce`: what became unverified since the gate (the payee replaced, a
+/// shown name landed) gets one round of re-fetches, bounded like the
+/// probe; anything still unverified then, or the subject gone, refuses.
+pub(super) async fn recheck<E: GateEnv>(
+    env: &E,
+    fetch: impl FnOnce() -> Result<Arc<dyn Refetcher>, Refusal>,
+    waits: Waits,
+) -> Result<(), Refusal> {
+    let pending = env.pending().await?.ok_or(Refusal::Unverified)?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+    round(env, &*fetch()?, &pending, Instant::now() + waits.probe).await?;
+    env.open()?;
+    match env.pending().await?.ok_or(Refusal::Unverified)?.is_empty() {
+        true => Ok(()),
+        false => Err(Refusal::Unverified),
+    }
+}
+
 /// One re-fetch of each of `pending`, each under the time left; records
 /// what verified. A mismatch refuses at once.
 async fn round<E: GateEnv>(
@@ -276,6 +312,21 @@ pub(super) fn payee_held(
     )
 }
 
+/// Design D12: the account a payment to `contact` derives its address
+/// from was built from an older request than the one the gate verifies
+/// (a rebuild deferred before a restart is lost with its queue), and no
+/// queued op rebuilds it at the reservation. Until a DashPay sweep does,
+/// the payee is not payable on verified data.
+fn paying_account_stale(m: &ManagedIdentity, contact: &Identifier) -> bool {
+    let dp = m.dashpay();
+    let Some(c) = dp.established_contacts().get(contact) else {
+        return false;
+    };
+    let rebuild_queued = (dp.pending_contact_crypto.iter())
+        .any(|p| p.contact_id == *contact && ACCOUNT_OPS.contains(&p.op.kind()));
+    c.external_account_reference != Some(c.incoming_request.account_reference) && !rebuild_queued
+}
+
 /// The gate's subject in the library: every entity it rests on.
 struct SessionEnv<'a> {
     session: &'a NetworkSession,
@@ -292,6 +343,7 @@ impl SessionEnv<'_> {
         let m = (info.identity_manager.wallet_managed_identities(&wallet.0))
             .find(|m| m.identity.id() == owner)?;
         match self.subject {
+            Subject::Payee(_, (_, contact)) if paying_account_stale(m, &contact) => None,
             Subject::Payee(_, (_, contact)) => {
                 let username = self.session.platform.contacts.names.label(&contact);
                 payee_held(m, &contact, username.as_deref())
@@ -355,31 +407,33 @@ impl NetworkSession {
             session: self,
             subject,
         };
-        let fetch = || {
-            let sdk = self.live()?.manager.sdk_arc();
-            Ok(self.platform.money_gate.refetcher(sdk))
-        };
-        let gated = run(&env, fetch, signals, waits).await;
+        let gated = run(&env, || self.gate_refetcher(), signals, waits).await;
         if let Err(refusal) = &gated {
             tracing::info!(?subject, ?refusal, "the money gate refused");
         }
         gated
     }
 
-    /// The gate's no-wait re-check (design §4 step 5): under `Enforce`,
-    /// anything `subject` rests on unverified now, or the subject gone, is
-    /// `Unverified`.
-    pub(crate) async fn money_gate_now(&self, subject: Subject) -> Result<(), Refusal> {
+    fn gate_refetcher(&self) -> Result<Arc<dyn Refetcher>, Refusal> {
+        let sdk = self.live()?.manager.sdk_arc();
+        Ok(self.platform.money_gate.refetcher(sdk))
+    }
+
+    /// The gate's re-check (design §4 step 5): `Ok(true)` once it checked
+    /// `subject` under `Enforce`, `Ok(false)` when rule 5 does not apply.
+    pub(crate) async fn money_recheck(&self, subject: Subject) -> Result<bool, Refusal> {
         if self.trust.rule_5() != Rule5::Enforce {
-            return Ok(());
+            return Ok(false);
         }
+        let waits = *guard(&self.platform.money_gate.waits);
         let env = SessionEnv {
             session: self,
             subject,
         };
-        match env.pending().await? {
-            Some(pending) if pending.is_empty() => Ok(()),
-            _ => Err(Refusal::Unverified),
+        let checked = recheck(&env, || self.gate_refetcher(), waits).await;
+        if let Err(refusal) = &checked {
+            tracing::info!(?subject, ?refusal, "the money gate's re-check refused");
         }
+        checked.map(|()| true)
     }
 }

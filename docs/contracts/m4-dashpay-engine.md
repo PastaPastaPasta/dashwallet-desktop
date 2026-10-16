@@ -2779,18 +2779,21 @@ renames or reshapes them takes the next version bump:
       shows unverified (§2.4 `contacts`: the cached profile, each request the relation rests on, the shown
       username). A `top_up`: the identity and its keys. A registration has no subject.
     - **`Enforcing`** (tests and H-09; the trusted-only toggle off): every unverified entity is re-fetched in its own
-      trust scope, every 3 s for up to 60 s; a fetch that used only SPV-verified quorum keys and equals what the
+      trust scope, every 3 s for up to 60 s (plus one fetch's blocking lookups); a fetch that used only SPV-verified quorum keys and equals what the
       library holds is recorded (`dp_trust_verified`), and the money moves once nothing is unverified. Otherwise
       `platform.context_unavailable`. A re-fetch refused as a quorum-key mismatch is `platform.trust_mismatch` at
-      once. A registration's or top-up's funding is held while `TrustProvider::writes_wait` (masternode sync not
+      once. A payee whose paying account was built from an older request than its current one, with no rebuild
+      queued, is `platform.context_unavailable` at once (design D12). A registration's or top-up's funding is held while `TrustProvider::writes_wait` (masternode sync not
       done): a registration waits `Sync`, a top-up is `platform.context_unavailable`, as while SPV is behind.
-    - **Degraded** (the default, DEC-168): one round of re-fetches of the unverified entities, at most 10 s,
-      records what verifies; a mismatch is `platform.trust_mismatch`; otherwise the money moves (rule 5 suspended).
+    - **Degraded** (the default, DEC-168): one round of re-fetches of the unverified entities, 10 s (plus one
+      fetch's blocking lookups), records what verifies; a mismatch is `platform.trust_mismatch`; otherwise the money moves (rule 5 suspended).
       The trusted-only toggle moves the money with no re-fetch.
     - **Where.** `prepare` checks the contact's payment lock, then runs the gate, both before the coin fence and the
       grant: a refusal redeems no grant, takes no address and holds no other send of the wallet. A vault Lock during
       the wait ends it (`send.vault_locked`); a payment lock written during it is found by the plan
-      (`contact.payment_locked{txid}`). After the reservation, under `Enforcing`, a no-wait re-check refuses a payee
-      whose data changed to unverified meanwhile (`platform.context_unavailable`) and drops the reserved address, so
-      no later `prepare` pays it. `top_up` runs the gate after its journal check and before the identity's write
+      (`contact.payment_locked{txid}`). After the reservation, under `Enforcing`, a re-check gives what became unverified
+      meanwhile (the payee replaced, its name landed) one 10 s round of re-fetches and refuses what still does not
+      verify (`platform.context_unavailable`, `platform.trust_mismatch`); the address is kept only once it passed,
+      so no later `prepare` pays one taken from unverified data, and an address kept while rule 5 did not apply is
+      not paid under `Enforcing` (a new one is reserved). `top_up` runs the gate after its journal check and before the identity's write
       lock, an identity the wallet lacks refused first (`identity.not_found`).
