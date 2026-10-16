@@ -116,13 +116,13 @@ test("IOS-072 searches the network from two characters: three new usernames, Sho
   await expect(network.getByTestId("network-row").locator(".contact-row-name")).toHaveText(["Mallory", "Marta", "mateo"]);
   await expect(network.getByTestId("network-row").nth(2).locator(".chip")).toHaveText("Unverified");
 
+  // Add Contact (DP2-08) takes the search, or the row's hit.
   await page.getByTestId("contacts-network-more").click();
-  await expect(page.getByTestId("placeholder-add-contact")).toBeVisible();
-  await expect(page.getByTestId("add-contact-query")).toHaveText("Usernames starting with “ma”");
+  await expect(page.getByRole("searchbox", { name: "Search username" })).toHaveValue("ma");
 
   await network.getByTestId("network-row").filter({ hasText: "Marta" }).click();
-  await expect(page.getByTestId("add-contact-hit-username")).toHaveText("@marta");
-  await expect(page.getByTestId("placeholder-add-contact")).toContainText(IDENTITY.marta);
+  await expect(page.getByTestId("add-contact-name")).toHaveText("Marta");
+  await expect(page.getByTestId("add-contact")).toContainText(IDENTITY.marta);
 
   // Clearing the field drops the network rows at once.
   await search(page).fill("");
@@ -278,19 +278,20 @@ test("IOS-072 a network hit that becomes a request leaves On the Dash network (D
   expect(errors).toEqual([]);
 });
 
-test("Add contact opens its placeholder in the slot, in place of a dashpay: link's card; a row replaces either", async ({ page }) => {
+test("Add contact opens in the slot, in place of a dashpay: link's card; a row replaces either", async ({ page }) => {
   await openContacts(page);
   await page.getByTestId("contacts-add").click();
-  const add = page.getByTestId("placeholder-add-contact");
-  await expect(add).toContainText("Searching for users and sending contact requests are not available yet.");
+  const add = page.getByTestId("add-contact");
+  await expect(add.getByRole("heading", { level: 2 })).toHaveText("Add a New Contact");
   await add.getByRole("button", { name: "Close" }).click();
   await expect(page.getByTestId("contact-pane-empty")).toBeVisible();
 
   await deliver(page, [{ kind: "addContact", identity: IDENTITY.bob, username: "bob" }]);
   await expect(page.getByTestId("add-contact-username")).toHaveText("@bob");
+  // Add contact starts afresh: the link's candidate goes.
   await page.getByTestId("contacts-add").click();
   await expect(add).toBeVisible();
-  await expect(page.getByTestId("add-contact")).toHaveCount(0);
+  await expect(page.getByTestId("add-contact-candidate")).toHaveCount(0);
   await row(page, "Bob Builder").click();
   await expect(page.getByTestId("contact-detail")).toBeVisible();
   await expect(add).toHaveCount(0);
@@ -300,7 +301,7 @@ test("IOS-072 no contacts: the empty state offers Search for a User; a pass befo
   await openContacts(page, "dashpay-contacts-empty");
   await expect(page.getByTestId("contacts-empty")).toContainText("No contacts yet");
   await page.getByTestId("contacts-empty-search").click();
-  await expect(page.getByTestId("placeholder-add-contact")).toBeVisible();
+  await expect(page.getByTestId("add-contact")).toBeVisible();
 
   await openContacts(page, "dashpay-contacts-updating");
   await expect(page.getByTestId("contacts-updating")).toHaveText("Updating contacts…");
@@ -365,7 +366,7 @@ const STATES: Record<string, { scenario: string; go: (page: Page) => Promise<voi
     go: async (page) => {
       await search(page).fill("ma");
       await page.getByTestId("contacts-network-more").click();
-      await page.getByTestId("placeholder-add-contact").waitFor();
+      await page.getByTestId("add-contact-hit").first().waitFor();
     },
   },
   "mixing-only": { scenario: "dashpay-contacts-mixing-only", go: (page) => page.getByTestId("contacts-setup-unlock").waitFor() },

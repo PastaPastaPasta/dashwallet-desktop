@@ -44,6 +44,8 @@ dunce = "1"
 dashcore = { workspace = true }
 dw-coinjoin = { workspace = true }
 dw-console = { workspace = true }
+# QR codes in images and the screen-region picker (api/scan.rs, DP2-08).
+dw-desktop = { workspace = true }
 dw-engine = { workspace = true }
 # create_private_dir: the data root, made before its instance lock (src/instance.rs);
 # open_owner_only: the self-test's passphrase file must be the user's alone.
@@ -81,6 +83,9 @@ tauri-plugin-single-instance = "2.5"
 
 [dev-dependencies]
 tauri = { version = "2.12", features = ["test", "tray-icon"] }
+# QR images for api/scan.rs's tests (as dw-desktop's).
+image = { version = "0.25", default-features = false, features = ["png"] }
+qrcode = { version = "0.14", default-features = false }
 tempfile = { workspace = true }
 # Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
 dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
