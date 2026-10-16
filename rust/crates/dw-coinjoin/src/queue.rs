@@ -157,7 +157,7 @@ impl QueueManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bls::testing::OperatorKey;
+    use crate::test_operator_key::OperatorKey;
 
     fn signed(key: &OperatorKey, mn: u8, denom: u32, time: i64, ready: bool) -> Queue {
         let mut q = Queue {

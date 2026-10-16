@@ -32,35 +32,10 @@ pub fn verify_basic(operator_public_key: &[u8; 48], signature: &[u8], msg: &[u8;
         })
 }
 
-/// Test helpers: a deterministic operator key that signs like a masternode.
-pub mod testing {
-    use dash_pkc::bls::{BlsScIetf, BlsSecretKey, BlsSigId};
-    use dashcore::hashes::{Hash, sha256};
-
-    pub struct OperatorKey(BlsSecretKey<BlsScIetf>);
-
-    impl OperatorKey {
-        pub fn from_seed(seed: &[u8]) -> Self {
-            let ikm = sha256::Hash::hash(seed).to_byte_array();
-            Self(BlsSecretKey::from_ikm(&ikm).expect("32 bytes of key material"))
-        }
-
-        /// Basic-form public key, as a v2 list entry carries it.
-        pub fn public_key(&self) -> [u8; 48] {
-            self.0.public_key().to_bytes()
-        }
-
-        /// Basic-scheme signature, 96 bytes.
-        pub fn sign(&self, msg: &[u8; 32]) -> Vec<u8> {
-            self.0.sign_with(msg, BlsSigId::Basic).to_bytes().to_vec()
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::testing::OperatorKey;
     use super::*;
+    use crate::test_operator_key::OperatorKey;
 
     #[test]
     fn verifies_basic_signatures_only_from_the_operator() {

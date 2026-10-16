@@ -38,3 +38,9 @@ pub mod recovery;
 pub mod rounds;
 pub mod settings;
 pub mod status;
+
+/// The masternode stand-in that signs `dsq`/`dstx` in tests (MG-01 D21):
+/// compiled into unit tests only, never into the library.
+#[cfg(test)]
+#[path = "../tests/support/operator_key.rs"]
+mod test_operator_key;
