@@ -198,6 +198,7 @@ it, MG-02 D7), and dw-app maps it to `AppEvent::Masternodes`.
 
 | Command | Facade call |
 |---|---|
+| `mn list-state` | `list_state` |
 | `mn list [--wallet W]` | `list` |
 | `mn status <hash> [--wallet W]` | `masternode` |
 | `mn find <query>` | `find` |
@@ -211,6 +212,8 @@ it, MG-02 D7), and dw-app maps it to `AppEvent::Masternodes`.
 
 `--spv` starts SPV and waits for the masternode list (`--sync-timeout`, default 120 s) before the read. Without
 `--spv`, a list read answers from what the session has, which is `list_unavailable` on a cold start.
+`--sync-height H` (implies `--spv`) also waits until every loaded wallet has scanned height `H`, so a test reads
+after the block it just mined (D18).
 
 ## 10. Slices and follow-ups
 
@@ -220,6 +223,10 @@ it, MG-02 D7), and dw-app maps it to `AppEvent::Masternodes`.
 | 2 | Tracking: `find`, `track`, `untrack`, `set_label`, `attach_key`, `detach_key`, the follower (first-banned, listed-seen, the event); `dwcli mn find/track/untrack/label/attach/detach`. |
 | 3 | Payouts and evonode credits; `dwcli mn payouts/credits`; the T2 check. |
 | 4 | The regtest suite (§11). |
+
+As built, slices 1–3 landed as one engine commit and one dwcli commit, with every call implemented (no stubs left;
+`resolve_collateral` is the D11 refusal). Slice 4 added `list_state` (D17), `--sync-height` (D18), and the history
+fix that the restart in the suite exposed (D15).
 
 Follow-ups for later rows:
 - **D43/D42 upstream:** a platform-wallet `SpvRuntime` accessor for header-by-hash and a block fetch (dash-spv has
@@ -235,20 +242,25 @@ Follow-ups for later rows:
   - the contract test (generated surface, call rows, codes, and the refusal order on a session without a list);
   - unit tests of aggregation (collateral resolution, internal-collateral amount check, operator share,
     latest-wins), status mapping, the follower's banned and listed bookkeeping, key checks and the parser of `find`.
-- T1, `regtest/functional/dwd_masternodes.py`, on Core's functional framework with 4 masternodes:
-  1. a dwcli wallet receives 1,000 Dash;
-  2. the controller registers a masternode with that output as external collateral, signed by dwcli's `sign`
-     (`protx register_prepare`, then `register_submit`). The owner and voting keys are dwcli's keychain keys 0 and the
-     payout a dwcli receive address;
-  3. a masternode node starts with a Core-generated operator key (the harness plays the operator; the wallet never
-     touches it);
-  4. `dwcli mn list` shows the masternode `enabled` with all four roles;
-  5. after blocks are mined, `mn payouts` lists coinbase payouts equal to Core's payment to that address;
-  6. the wallet spends the collateral; the masternode is `removed`.
-
-  A second masternode is registered from Core's own collateral with dwcli's owner key 1 and an outside payout (the
-  owner-key match, §3). A third pays a dwcli address and uses Core's keys (the payout match). Tracking is exercised on
-  one of the controller's masternodes (track, attach its voting key from Core, `key_mismatch` for a wrong one, untrack).
+- T1, `regtest/functional/dwd_masternodes.py`, on Core's functional framework (dashd v24.0.0-rc.2): a controller, which
+  is dwcli's SPV peer, and the framework's 2 static masternodes. DKG, InstantSend and ChainLocks stay off, so the
+  masternodes the test registers run no node and are never PoSe-punished. The wallet's DIP3 keys are derived in Python
+  from the mnemonic, an oracle independent of the engine. Every `dwcli mn` call is a fresh process, so each read also
+  covers reopening the wallet (D15). Before dwcli syncs, the test mines whole DIP24 cycles until Core answers
+  `quorum rotationinfo` (D16).
+  1. a dwcli wallet receives 1,000 Dash, listed as a collateral-shaped coin;
+  2. the controller registers A with that output as external collateral, signed by dwcli's `sign`
+     (`protx register_prepare`, then `register_submit`), with the wallet's owner and voting keys 0 and a wallet payout.
+     B uses Core's collateral and the wallet's owner key 1 (the owner-key match, §3). C uses Core's keys and a wallet
+     payout (the payout match). `dwcli mn list` shows all three `enabled` with the expected roles, collateral and
+     registration facts; the coin is no longer offered;
+  3. tracking: `find` a static masternode by service address, `track`, `already_tracked`, `not_found`, `not_tracked`,
+     labels, C's voting and owner keys attached (`matched`) and a wrong key refused (`key_mismatch`), `untrack`
+     deleting the keys;
+  4. after blocks are mined, `mn payouts` of A and C equal Core's coinbase payments to their payout addresses, newest
+     first, and mature after 100 blocks;
+  5. `protx revoke` of A makes it `pose_banned` (Core bans a revoked masternode); the wallet spending the collateral
+     makes it `removed`.
 - T2 (testnet, reads only, concurrency 1): `evonode_credits` of a testnet evonode chosen from the synced list.
 
 ## D-rows
@@ -269,3 +281,7 @@ Follow-ups for later rows:
 | D12 | Labels of wallet masternodes and the follower's first-banned and listed-seen times live in app.sqlite's `settings_kv` (global scope, `masternodes.` keys), not a new table. They are not in `.dwbackup` exports. | The set is small and per network (app.sqlite is per network). Siblings in flight add migrations, and refinery refuses divergent version histories, so a migration here risks a merge-time clash for no gain. A first-banned date after a restore is a new first sighting, as MG-00 D9 defines it. |
 | D13 | The facade is `NetworkSession::masternodes()`, one handle per session, with the wallet passed per call. | Tracked masternodes belong to the network (platform-wallet's registry is per network), and one overview mixes them with each wallet's own. It matches MG-02's `governance()`. |
 | D14 | The contract is its own file, `mn-engine.md`, with its own generated surface and test, instead of a section of MG-02's `mg-engine.md`. | The brief, and MG-02 is in flight with that file. The two tests are near copies; one shared harness is a follow-up once both have merged. |
+| D15 | `wallet_masternodes` adds the provider transactions of the session's history store to the library's before aggregating (`aggregate::add_history`). | platform-wallet's `provider_masternode_txs_blocking` reads only the records it holds in memory, and its storage doesn't replay persisted records at open (`INTENTIONAL(tx-record-rehydration-gap)` in platform-wallet-storage). After a restart the wallet's own masternodes vanished until a rescan. The engine's history store already loads the persisted records at open (`load_history`). Upstream: rehydrate them, or take them as an argument. |
+| D16 | The regtest suite mines whole DIP24 cycles (`llmq_test_dip0024`, 24 blocks) until Core answers `quorum rotationinfo` at the tip, instead of running DKG. | dash-spv's list sync starts with QRInfo, and Core answers it only with a stored quorum snapshot for each cycle it covers. Core stores one per cycle when it connects the cycle's block, without DKG, once there are enabled masternodes. With DKG on, the test's node-less masternodes would be PoSe-punished. |
+| D17 | `list_state()` reports whether the SPV list is synced and its height, without a wallet. | dwcli and the UI need to wait for the list without picking a wallet, and the refusal `list_unavailable` alone can't say when to retry. |
+| D18 | `dwcli mn --sync-height H` waits for every loaded wallet's scan height as well as the list. | A synced list doesn't mean the wallet has scanned the block the test just mined, so a read could miss a transaction it just made. Scan heights are already in the session's wallet state. |
