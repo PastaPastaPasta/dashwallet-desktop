@@ -251,13 +251,13 @@ test("a key pressed before a page's late landing frame keeps the focus it moved 
     return (window as unknown as { __lateRan: number }).__lateRan;
   }, { kind: "navigate", route: "receive" } as ShellCommand);
   await page.keyboard.press("Tab");
-  const focused = () => page.evaluate(() => [document.activeElement?.getAttribute("data-testid") ?? document.activeElement?.tagName, (window as unknown as { __lateRan: number }).__lateRan] as const);
-  const [moved, ranAtTab] = await focused();
-  expect(ranAtTab).toBe(ran);
-  expect(moved).not.toBe("BODY");
+  // The control Tab focused, held by reference: the check after the frames is for that very node.
+  const moved = await page.evaluateHandle(() => document.activeElement);
+  expect(await page.evaluate(() => (window as unknown as { __lateRan: number }).__lateRan)).toBe(ran);
+  expect(await moved.evaluate((el) => el === document.body)).toBe(false);
   await frames.settled();
   await expect(page.getByTestId("page-receive").locator("h1")).not.toBeFocused();
-  expect((await focused())[0]).toBe(moved);
+  expect(await moved.evaluate((el) => el !== null && el === document.activeElement)).toBe(true);
 });
 
 test("in a browser the menus' shortcuts work from the keyboard", async ({ page }) => {

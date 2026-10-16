@@ -40,17 +40,19 @@ so Enter opens no passphrase sheet. The race has been there since `focusPage` (5
 most, which is why only WebKit shows it.
 
 **D2. App: focus that moved after a key or a pointer before the frame stays.** The race is not test-only: a link or menu
-command can arrive while the user is tabbing or clicking, and the app's WebKitGTK window drops frames under load as
-Playwright's WebKit does, so the heading would take focus from where the user had just put it. The heading is a landing
-place for focus that has none, not an override. `focusPage` now listens for `keydown` and `pointerdown` (capture, on the
-document) from the call until its frame and notes where focus was at the first one. In the frame it leaves focus alone
-only if an input came and focus has since moved from that element to another one (not the body). Otherwise the heading
-takes it, as before: when a closing sheet returns focus to its opener (a script move, D5), and after a key that moved
-nothing, such as a modifier or Escape (D7). The listeners are removed in the frame; while frames are paused (a hidden
-window) each call's pair waits for its frame, holding no element. The key that triggers the command is not counted where
-the order is known: a browser shortcut runs in the window's bubble phase, after the document's capture phase, and Open
-URI calls `applyLink` only after awaiting the route, past its keydown or pointerdown. For native menu accelerators the
-order (the page sees the key before the menu event, if at all) is assumed, not tested.
+command can arrive while the user is tabbing or clicking. That the app's WebKitGTK window delays frames under load as
+Playwright's WebKit does is an inference from the Playwright runs, not a native measurement; if it does, the heading
+would take focus from where the user had just put it. The heading is a landing place for focus that has none, not an
+override. `focusPage` now listens for `keydown` and `pointerdown` (capture, on the document) from the call until its
+frame and notes where focus was at the first one. In the frame it leaves focus alone only if an input came and focus has
+since moved from that element to another one (not the body). Otherwise the heading takes it, as before: when a closing
+sheet returns focus to its opener (a script move, D5), and after a key that moved nothing, such as a modifier or Escape
+(D7). The listeners are removed in the frame. A newer call replaces a pending one (its frame cancelled, its listeners
+removed), so while frames are paused (a hidden window) one wait is held, not one per link or command (D8); a key before
+the newer call does not count for it, as it would not have had the frames come on time. The key that triggers the
+command is not counted where the order is known: a browser shortcut runs in the window's bubble phase, after the
+document's capture phase, and Open URI calls `applyLink` only after awaiting the route, past its keydown or pointerdown.
+For native menu accelerators the order (the page sees the key before the menu event, if at all) is assumed, not tested.
 
 **D3. Evidence.** Repeated runs, one command (`--project=webkit -g "D28 on the page" --workers 4`), load 75–170:
 
@@ -69,14 +71,14 @@ Mutation checks: with the D2 guard removed, the unit tests for a key and a point
 opener unit test and the new routes e2e opener test fail (Chromium and WebKit, 2/2). Gate on 800de647 (fixture rebuilt):
 `tsc`; vitest 51 files, 730 tests; Playwright for every spec that asserts focus after a page opens or after a contact
 action (`notifications`, `routes`, `contacts`, `add-contact`, `contact-pane`, with their axe checks): Chromium 133/133,
-WebKit 133/133 at 2 workers. A copied routes axe test that timed out once in `analyze()` inside a 15-minute probe run
-at load ~150 passed 3/3 alone (load rule). On the final rule (D7, 8eebb00d): `tsc`; vitest 51 files, 731 tests; the same
+WebKit 133/133 at 2 workers. A copied routes axe test that timed out once in `analyze()` inside a 15-minute probe run at
+load ~150 passed 3/3 alone (load rule). On the final rule (D7, 8eebb00d): `tsc`; vitest 51 files, 731 tests; the same
 Playwright set at load 240–340 ran Chromium 134/134, WebKit 132/134. The two WebKit failures were frames over 5 s late:
 `contact-pane.spec.ts:24` (untouched) waiting for its `h1` focus, and the D6 test's `settled()` before it switched the
 delay off. Rerun at load 105–134 (`/work/scratch/dw-bl165/verify.sh`, which waits for load < 150): both BL-165 routes
 tests 5× per browser 20/20, the D28 page test in WebKit 30/30, `contact-pane.spec.ts:24` 3/3, and with the D2 guard
-removed the D6 test fails 2/2 (both browsers) at its `not.toBeFocused()` on the Receive `h1`. Rust: only `read_image`'s comment changed (BL-164 nit); `cargo fmt --check` and `cargo clippy -p dw-desktop
---all-targets -D warnings` pass.
+removed the D6 test fails 2/2 (both browsers) at its `not.toBeFocused()` on the Receive `h1`. Rust: only `read_image`'s
+comment changed (BL-164 nit); `cargo fmt --check` and `cargo clippy -p dw-desktop --all-targets -D warnings` pass.
 
 **D4. Test: the D28 page test waits for the page's landing focus before it focuses Ignore.** With D2 the unchanged test
 failed once in 100 at `:157`: Enter never ignored, because the late frame moved focus to the `h1` between the test's
@@ -117,4 +119,13 @@ counted, so a modifier, Escape or a scrollbar click over a sheet's restored open
 at the input and yields only if it moved from there (new unit test "a key that moved no focus"; the any-input rule fails
 it). (2) The D6 test's Tab half could pass without the frame pending under load: it now checks the count of late frames
 run. (3) D2's claim on the triggering key is now limited to the paths shown (browser shortcuts, Open URI). (4) Listeners
-waiting on paused frames hold no element: accepted as is.
+waiting on paused frames hold no element: accepted as is, then bounded in D8.
+
+**D8. Review (Sol r1): approve with nits, all applied.** (1) Each pending call kept its listener pair and `atInput`
+until its frame, and frames are paused in a hidden window: a newer call now cancels the pending one's frame and removes
+its listeners, so one wait is held at most. A frame that cannot be cancelled (`lateFrames` delays it with a timer) is a
+no-op once replaced. Unit tests: a newer page before the frame keeps one pair and one frame, and the newer page takes
+the focus; a replaced frame that still runs leaves the newer wait and its input in place. Mutation checks: without the
+replace, both "keeps one wait" tests fail; without the replaced-frame guard, "a frame replaced but not cancelled" fails.
+(2) The D6 routes test holds the node Tab focused by a handle and checks that very node keeps focus, not its test id or
+tag. (3) D2 calls the native WebKitGTK frame delay an inference from the Playwright runs.

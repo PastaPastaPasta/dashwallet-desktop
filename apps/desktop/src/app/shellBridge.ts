@@ -62,20 +62,32 @@ export function traceName(route: LinkRoute): string {
   }
 }
 
+/** Drops the pending `focusPage` wait, if any. */
+let cancelLanding = () => {};
+
 /** Moves focus to the page a link or a menu opened (its title, else the page), so keyboard and
  * screen reader users land on it. Sidebar clicks keep their focus. The move waits a frame for
  * the page, and a frame can come late: focus that moved after the user pressed a key or a pointer
  * meanwhile stays (BL-165). A closing sheet's return to its opener, or a key that moved nothing (a
- * modifier, Escape), is not the user moving focus: the page takes it. */
+ * modifier, Escape), is not the user moving focus: the page takes it. A newer call replaces a
+ * pending one, so a window whose frames are paused (hidden) holds one wait, not one per page. */
 function focusPage() {
+  cancelLanding();
   // Where focus was at the first key or pointer press since the call; `undefined` before one.
   let atInput: Element | null | undefined;
+  let waiting = true;
   const act = () => void (atInput ??= document.activeElement);
-  document.addEventListener("keydown", act, true);
-  document.addEventListener("pointerdown", act, true);
-  requestAnimationFrame(() => {
+  const stop = () => {
+    waiting = false;
+    cancelLanding = () => {};
     document.removeEventListener("keydown", act, true);
     document.removeEventListener("pointerdown", act, true);
+  };
+  document.addEventListener("keydown", act, true);
+  document.addEventListener("pointerdown", act, true);
+  const frame = requestAnimationFrame(() => {
+    if (!waiting) return; // replaced by a newer call, its frame not cancelled in time
+    stop();
     const active = document.activeElement;
     if (atInput !== undefined && active && active !== atInput && active !== document.body) return;
     const page = document.querySelector<HTMLElement>(".app-body > main");
@@ -84,6 +96,10 @@ function focusPage() {
     if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
     target.focus({ preventScroll: true });
   });
+  cancelLanding = () => {
+    cancelAnimationFrame(frame);
+    stop();
+  };
 }
 
 /** Said when a link arrives while the wipe sheet is open (D38). */

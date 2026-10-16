@@ -14,6 +14,7 @@ afterEach(() => {
 describe("while the wipe sheet is open", () => {
   it("IOS109_aMenuCommandLeavesThePageInPlace", () => {
     vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => undefined);
     vi.stubGlobal("document", { activeElement: null, addEventListener: () => undefined, removeEventListener: () => undefined });
     ui.set({ route: "settings", wiping: true });
     const lock = vi.fn();
@@ -41,11 +42,14 @@ describe("while the wipe sheet is open", () => {
 // The page a link or a menu opens takes the focus one frame later, unless the user moved it
 // with a key or a pointer meanwhile (BL-165).
 describe("focus after a link or a menu opens a page", () => {
-  /** A document whose page has an `h1`, the frames asked for (run by hand), and its key and
-   * pointer listeners (fired by hand). */
-  function shell() {
-    const frames: FrameRequestCallback[] = [];
-    vi.stubGlobal("requestAnimationFrame", (f: FrameRequestCallback) => frames.push(f));
+  /** A document whose page has an `h1`, the frames asked for (run by hand; `cancels: false`
+   * keeps cancelled ones, as a late frame's timer does), and its key and pointer listeners (fired
+   * by hand). */
+  function shell({ cancels = true } = {}) {
+    const frames = new Map<number, FrameRequestCallback>();
+    let id = 0;
+    vi.stubGlobal("requestAnimationFrame", (f: FrameRequestCallback) => (frames.set(++id, f), id));
+    vi.stubGlobal("cancelAnimationFrame", (n: number) => void (cancels && frames.delete(n)));
     const listeners = new Map<string, Set<() => void>>();
     const body = { name: "body" };
     const doc = {
@@ -57,9 +61,14 @@ describe("focus after a link or a menu opens a page", () => {
     };
     const heading = { name: "h1", hasAttribute: () => true, focus: () => void (doc.activeElement = heading) };
     vi.stubGlobal("document", doc);
-    const nextFrame = () => frames.splice(0).forEach((f) => f(0));
+    const nextFrame = () => {
+      const due = [...frames.values()];
+      frames.clear();
+      due.forEach((f) => f(0));
+    };
     const fire = (type: string) => listeners.get(type)?.forEach((f) => f());
-    return { doc, heading, nextFrame, fire, listening: () => [...listeners.values()].some((l) => l.size > 0) };
+    const listening = (type?: string) => [...listeners].reduce((n, [t, l]) => n + (type === undefined || t === type ? l.size : 0), 0);
+    return { doc, heading, nextFrame, fire, frames, listening };
   }
 
   it("goes to the page's heading when focus is on the body", () => {
@@ -76,7 +85,7 @@ describe("focus after a link or a menu opens a page", () => {
     doc.activeElement = { name: "sidebar-pay" };
     nextFrame();
     expect(doc.activeElement).toBe(heading);
-    expect(listening()).toBe(false);
+    expect(listening()).toBe(0);
   });
 
   for (const input of ["keydown", "pointerdown"]) {
@@ -88,7 +97,7 @@ describe("focus after a link or a menu opens a page", () => {
       doc.activeElement = row;
       nextFrame();
       expect(doc.activeElement).toBe(row);
-      expect(listening()).toBe(false);
+      expect(listening()).toBe(0);
     });
   }
 
@@ -108,5 +117,38 @@ describe("focus after a link or a menu opens a page", () => {
     fire("keydown");
     nextFrame();
     expect(doc.activeElement).toBe(heading);
+  });
+
+  for (const cancels of [true, false]) {
+    it(`keeps one wait when a newer page opens before the frame${cancels ? "" : " (a frame that cannot be cancelled)"}`, () => {
+      const { doc, heading, nextFrame, fire, frames, listening } = shell({ cancels });
+      runCommand({ kind: "navigate", route: "notifications" }, () => undefined);
+      fire("keydown");
+      doc.activeElement = { name: "row" };
+      applyLink({ kind: "invitation" });
+      runCommand({ kind: "navigate", route: "contacts" }, () => undefined);
+      expect(listening("keydown")).toBe(1);
+      expect(listening("pointerdown")).toBe(1);
+      if (cancels) expect(frames.size).toBe(1);
+      // A key before the newer page opened is not one since: that page takes the focus, as it
+      // would have had every frame come on time.
+      nextFrame();
+      expect(doc.activeElement).toBe(heading);
+      expect(listening()).toBe(0);
+    });
+  }
+
+  it("a frame replaced but not cancelled leaves the newer wait in place", () => {
+    const { doc, nextFrame, fire, listening } = shell({ cancels: false });
+    runCommand({ kind: "navigate", route: "notifications" }, () => undefined);
+    nextFrame(); // the first page lands
+    runCommand({ kind: "navigate", route: "contacts" }, () => undefined);
+    runCommand({ kind: "navigate", route: "activity" }, () => undefined);
+    fire("pointerdown");
+    const row = { name: "row" };
+    doc.activeElement = row;
+    nextFrame(); // the replaced frame runs first and must not drop the newer one's input
+    expect(doc.activeElement).toBe(row);
+    expect(listening()).toBe(0);
   });
 });
