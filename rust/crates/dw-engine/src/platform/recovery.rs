@@ -166,18 +166,25 @@ pub(crate) struct Recovery {
     /// and its cache update.
     #[cfg(test)]
     pub(super) pause_after_choice: Mutex<Option<Arc<Pause>>>,
-    /// Tests: blocks the next names check just before it applies its
-    /// answers: it says so on the first, then waits on the second.
-    /// Tests: blocks the minute's retry before its second kick (D32).
+    /// Tests: blocks the minute's retry before its second kick (D32): it
+    /// says so on the first, waits on the second, and says on the third
+    /// once that kick has returned.
     #[cfg(test)]
-    pub(super) pause_between_kicks:
-        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    pub(super) pause_between_kicks: Mutex<
+        Option<(
+            std::sync::mpsc::Sender<()>,
+            std::sync::mpsc::Receiver<()>,
+            std::sync::mpsc::Sender<()>,
+        )>,
+    >,
     /// Tests: the names retry's period and a check's budget, if not the
     /// real ones.
     #[cfg(test)]
     pub(super) retry_every: Mutex<Option<Duration>>,
     #[cfg(test)]
     pub(super) check_budget: Mutex<Option<Duration>>,
+    /// Tests: blocks the next names check just before it applies its
+    /// answers: it says so on the first, then waits on the second.
     #[cfg(test)]
     pub(super) pause_before_answer:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,

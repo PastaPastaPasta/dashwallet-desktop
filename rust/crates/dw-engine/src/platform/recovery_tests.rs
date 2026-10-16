@@ -1750,8 +1750,8 @@ fn names_check_of(s: &Arc<NetworkSession>, id: WalletId, identity: [u8; 32]) -> 
 /// at once. The first check's budget runs out before the ninth is asked; the
 /// next ones ask first what has not been asked (or longest ago), so within
 /// two retries the ninth has its answer and no longer reads "Username not
-/// loaded". The times are the real ones scaled down (1 s per question, 2 s
-/// per check, as 10 s and 20 s).
+/// loaded". The times are scaled down (1 s per question, 1.5 s per check,
+/// against the real 10 s and 20 s).
 #[test]
 fn a_slow_prefix_starves_no_identity() {
     let dir = dw_testutil::private_tempdir();
@@ -1772,7 +1772,9 @@ fn a_slow_prefix_starves_no_identity() {
     engine
         .block_on(platform.bring_up(Arc::clone(&manager), id))
         .unwrap();
-    *guard(&s.platform.recovery.check_budget) = Some(Duration::from_secs(2));
+    // Off the boundary where the second four would end (2 s), which a
+    // loaded scheduler can cross either way.
+    *guard(&s.platform.recovery.check_budget) = Some(Duration::from_millis(1500));
 
     engine.block_on(s.check_names(&manager, id));
     assert_eq!(
@@ -1833,8 +1835,12 @@ fn a_retry_held_across_a_stop_starts_no_check() {
     wait_until("both wallets' checks", || {
         questions(&platform, first) >= 1 && questions(&platform, second) >= 1
     });
-    let (reached, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel());
-    *guard(&s.platform.recovery.pause_between_kicks) = Some((reached.0, release.1));
+    let (reached, release, kicked) = (
+        std::sync::mpsc::channel(),
+        std::sync::mpsc::channel(),
+        std::sync::mpsc::channel(),
+    );
+    *guard(&s.platform.recovery.pause_between_kicks) = Some((reached.0, release.1, kicked.0));
     reached
         .1
         .recv_timeout(Duration::from_secs(20))
@@ -1847,7 +1853,10 @@ fn a_retry_held_across_a_stop_starts_no_check() {
         s.platform.recovery.names_runs.alive() == 0
     });
     release.0.send(()).unwrap();
-    std::thread::sleep(Duration::from_secs(1));
+    kicked
+        .1
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the retry's second kick");
     assert_eq!(
         s.platform.recovery.names_runs.alive(),
         0,

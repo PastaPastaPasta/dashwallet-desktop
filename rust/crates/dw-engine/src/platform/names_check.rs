@@ -363,10 +363,7 @@ impl NetworkSession {
     /// stops.
     pub(super) fn start_names_retry(self: &Arc<Self>, epoch: u64) {
         let session = Arc::downgrade(self);
-        #[cfg(not(test))]
-        let period = RETRY_EVERY;
-        #[cfg(test)]
-        let period = (*guard(&self.platform.recovery.retry_every)).unwrap_or(RETRY_EVERY);
+        let period = self.retry_period();
         let retry = self.rt.spawn(async move {
             let first = tokio::time::Instant::now() + period;
             let mut every = tokio::time::interval_at(first, period);
@@ -379,8 +376,7 @@ impl NetworkSession {
                     return;
                 };
                 for (n, id) in manager.wallet_ids().await.into_iter().enumerate() {
-                    this.between_kicks(n);
-                    this.kick_names_check(WalletId(id), epoch);
+                    this.around_kick(n, || this.kick_names_check(WalletId(id), epoch));
                 }
             }
         });
@@ -388,19 +384,45 @@ impl NetworkSession {
     }
 
     #[cfg(not(test))]
-    fn between_kicks(&self, _: usize) {}
+    fn retry_period(&self) -> Duration {
+        RETRY_EVERY
+    }
+
+    #[cfg(test)]
+    fn retry_period(&self) -> Duration {
+        (*guard(&self.platform.recovery.retry_every)).unwrap_or(RETRY_EVERY)
+    }
+
+    #[cfg(not(test))]
+    fn check_budget(&self) -> Duration {
+        CHECK_BUDGET
+    }
+
+    #[cfg(test)]
+    fn check_budget(&self) -> Duration {
+        (*guard(&self.platform.recovery.check_budget)).unwrap_or(CHECK_BUDGET)
+    }
+
+    #[cfg(not(test))]
+    fn around_kick(&self, _: usize, kick: impl FnOnce()) {
+        kick();
+    }
 
     /// Tests: holds the retry before its second kick, blocking, so the abort
-    /// of a stop cannot land in between (no yield).
+    /// of a stop cannot land in between (no yield), and says when that kick
+    /// has returned.
     #[cfg(test)]
-    fn between_kicks(&self, n: usize) {
-        if n == 1
-            && let Some((reached, release)) =
-                guard(&self.platform.recovery.pause_between_kicks).take()
-        {
-            let _ = reached.send(());
-            let _ = release.recv();
-        }
+    fn around_kick(&self, n: usize, kick: impl FnOnce()) {
+        let pause = (n == 1)
+            .then(|| guard(&self.platform.recovery.pause_between_kicks).take())
+            .flatten();
+        let Some((reached, release, kicked)) = pause else {
+            return kick();
+        };
+        let _ = reached.send(());
+        let _ = release.recv();
+        kick();
+        let _ = kicked.send(());
     }
 
     /// Asks Platform whether `id`'s identities that show no main name own
@@ -459,10 +481,7 @@ impl NetworkSession {
                 .collect()
         };
         checks.order(&id, &mut asked);
-        #[cfg(not(test))]
-        let budget = CHECK_BUDGET;
-        #[cfg(test)]
-        let budget = (*guard(&self.platform.recovery.check_budget)).unwrap_or(CHECK_BUDGET);
+        let budget = self.check_budget();
         // In this task, so an abort of the check drops every question.
         let mut answers = Vec::with_capacity(asked.len());
         let questions = stream::iter(asked.iter().cloned())
