@@ -4,6 +4,7 @@
 // `installFixture({ scenario })` (vitest).
 
 import type { AuthGrant } from "../api/generated/AuthGrant";
+import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { DispatchStateName } from "../api/generated/DispatchStateName";
 import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
@@ -335,6 +336,38 @@ function withCoinJoinCoins(w: World): World {
   return w;
 }
 
+/** "alice" contested: her identity holds the temporary "alice007" while masternodes vote. */
+function contestPending(w: World, endsAt: number | null): World {
+  const world = registered();
+  w.dashpay = {
+    ...world,
+    status: { kind: "contestPending", identity: IDENTITY.alice, label: "alice", endsAt },
+    identities: world.identities.map((i) => ({ ...i, names: ["alice007"], mainName: "alice007" })),
+  };
+  return w;
+}
+
+/** The wallet's DashPay status set to `status`, no identity on file (DP1-08). */
+function withStatus(w: World, status: DashPayStatus): World {
+  w.dashpay = { ...noIdentity(), status };
+  return w;
+}
+
+/** Syncing: filters 60% through, the masternode list not started (65% in all). */
+function syncing(): SyncStatus {
+  const s = caughtUp();
+  return {
+    ...s,
+    phases: s.phases.map((p) => {
+      if (p.phase === "filters") return { ...p, currentHeight: Math.round(p.targetHeight! * 0.6), done: false };
+      if (p.phase === "masternodes") return { ...p, currentHeight: 0, done: false };
+      return p;
+    }),
+    activePhase: "filters",
+    caughtUp: false,
+  };
+}
+
 const SCENARIOS = {
   /** The reference wallet: balance, a month of history, caught up, unlocked. */
   funded: (t) => base(t),
@@ -398,14 +431,90 @@ const SCENARIOS = {
   },
   /** "alice" contested: her identity holds the temporary "alice007" while masternodes vote. The
    * chip says "@alice · Pending"; Contacts, the bell and the badge stay (BL-153 D11). */
-  "dashpay-contest-pending": (t) => {
+  "dashpay-contest-pending": (t) => contestPending(base(t), 1_900_000_000),
+  // DP1-08: the Home card's other banner states (the status read failing is `fail=dashpay_status:none`).
+  /** No identity while the wallet syncs: Join DashPay disabled, "Available after sync finishes". */
+  "dashpay-waiting-for-sync": (t) => {
+    const w = withStatus(base(t), { kind: "noIdentity", reason: "waitingForSync" });
+    w.sync = syncing();
+    return w;
+  },
+  /** A watch-only wallet: it cannot join, and the chip is hidden (DP1-08 D3). */
+  "dashpay-watch-only": (t) => {
+    const w = withStatus(base(t), { kind: "noIdentity", reason: "watchOnly" });
+    w.wallets[0].summary = { ...w.wallets[0].summary, watchOnly: true };
+    return w;
+  },
+  /** DashPay's bring-up is looking for the wallet's identity. */
+  "dashpay-starting": (t) => withStatus(base(t), { kind: "startupIncomplete", startup: "starting" }),
+  /** No bring-up ran (a launch without sync). */
+  "dashpay-not-started": (t) => withStatus(base(t), { kind: "startupIncomplete", startup: "notRun" }),
+  /** The bring-up ran locked; unlocked for mixing only, the card offers the full unlock. */
+  "dashpay-identity-unsettled": (t) => {
+    const w = withStatus(base(t), { kind: "startupIncomplete", startup: "identityUnsettled" });
+    w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    return w;
+  },
+  /** The bring-up could not finish its discovery. */
+  "dashpay-look-failed": (t) => withStatus(base(t), { kind: "startupIncomplete", startup: "discoveryFailed" }),
+  /** A registration whose row is not listed (yet): the card's generic line. */
+  "dashpay-registering-unread": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registering(), registrations: [] };
+    return w;
+  },
+  /** The registration waits for the full unlock (unlocked for mixing only). */
+  "dashpay-registering-unlock": (t) => {
+    const w = base(t);
+    w.dashpay = registering();
+    w.dashpay.registrations[0] = { ...w.dashpay.registrations[0], phase: "draft", waiting: "unlock", txid: null, holdsKey: false, fundsCommitted: false };
+    w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    return w;
+  },
+  /** The registration stopped, retryably: not enough Dash for its lock. */
+  "dashpay-registering-paused": (t) => {
+    const w = base(t);
+    w.dashpay = registering();
+    w.dashpay.registrations[0] = {
+      ...w.dashpay.registrations[0],
+      phase: "failed",
+      waiting: null,
+      txid: null,
+      holdsKey: false,
+      fundsCommitted: false,
+      failure: { phase: "keysPrepared", code: "registration.funding_insufficient", retryable: true, needed: "3002260", available: "1000000" },
+    };
+    return w;
+  },
+  /** "alice" contested, the vote's end not read yet. */
+  "dashpay-contest-pending-no-end": (t) => contestPending(base(t), null),
+  /** Alice without a username (its name step failed): Finish username registration; My QR has no link (DP2-08 D12). */
+  "dashpay-no-username": (t) => {
     const w = base(t);
     const world = registered();
-    w.dashpay = {
-      ...world,
-      status: { kind: "contestPending", identity: IDENTITY.alice, label: "alice", endsAt: 1_900_000_000 },
-      identities: world.identities.map((i) => ({ ...i, names: ["alice007"], mainName: "alice007" })),
-    };
+    w.dashpay = { ...world, identities: world.identities.map((i) => ({ ...i, names: [], mainName: null })) };
+    return w;
+  },
+  /** A sync pass holds Alice's names (S18): no card, the chip says "Updating…". */
+  "dashpay-names-updating": (t) => {
+    const w = base(t);
+    const world = registered();
+    w.dashpay = { ...world, identities: world.identities.map((i) => ({ ...i, names: [], mainName: null, namesUpdating: true })) };
+    return w;
+  },
+  /** A restore found Alice; the engine's names pass that fetches her names has not ended (D23):
+   * no card, the chip says "Updating…". */
+  "dashpay-names-pending": (t) => {
+    const w = base(t);
+    const world = registered();
+    w.dashpay = { ...world, identities: world.identities.map((i) => ({ ...i, names: [], mainName: null, namesCheck: "pending" as const })) };
+    return w;
+  },
+  /** That names pass failed (D23): Alice may own a name, so no card and a neutral chip. */
+  "dashpay-names-unknown": (t) => {
+    const w = base(t);
+    const world = registered();
+    w.dashpay = { ...world, identities: world.identities.map((i) => ({ ...i, names: [], mainName: null, namesCheck: "failed" as const })) };
     return w;
   },
   /** Tools ▸ Repair: the registration's funding broadcast's outcome is unknown (E0-04.P2b). */
@@ -491,13 +600,6 @@ const SCENARIOS = {
   "dashpay-search-offline": (t) => {
     const w = base(t);
     w.dashpay = { ...registered(), searchOffline: true };
-    return w;
-  },
-  /** "alice" whose names are not known yet: My QR has no link to show (DP2-08 D12). */
-  "dashpay-no-username": (t) => {
-    const w = base(t);
-    w.dashpay = registered();
-    w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, names: [], mainName: null }));
     return w;
   },
   /** macOS: no screen picker; Add Contact points to the system's copy-a-region shortcut (D10). */

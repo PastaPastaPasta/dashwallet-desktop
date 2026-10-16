@@ -456,10 +456,12 @@ impl PlatformRuntime {
         // Work its tasks started before they saw the cancel.
         self.key_work.teardown(closing);
         self.loops_on.store(false, Ordering::Release);
-        // A background balance refresh holds the wallet: none outlives a
-        // close (DP1-06).
+        // A background balance refresh or names check holds the wallet:
+        // none outlives a close (DP1-06, DP1-08 D27).
+        self.recovery.names_runs.stop();
         if closing {
             self.balances.close().await;
+            self.recovery.names_runs.close().await;
         }
         for entry in self.write_startup().values_mut() {
             if entry.startup == StartupStatus::Starting {

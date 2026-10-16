@@ -140,8 +140,8 @@ const FACADE: &[&str] = &[
 /// and the top-up flow with its tests (DP1-06), the contest watch with
 /// its tests (DP1-04), the contact payment locks (DP3-01), contact
 /// payment attribution with its tests (DP3-02), and the DashPay status's
-/// rules with their tests (BL-153), and the profile reads and writes with
-/// their tests (DP4-01).
+/// rules with their tests (BL-153), the profile reads and writes with
+/// their tests (DP4-01), and the names checks (DP1-08).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "balances.rs",
@@ -160,6 +160,7 @@ const NOT_FACADE: &[&str] = &[
     "keys_policy.rs",
     "lease",
     "mod.rs",
+    "names_check.rs",
     "names_net.rs",
     "notifications_tests.rs",
     "payment_locks.rs",

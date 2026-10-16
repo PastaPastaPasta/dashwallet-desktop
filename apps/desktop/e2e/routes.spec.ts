@@ -263,7 +263,8 @@ test("toolbar: without an identity the chip and the sidebar lead to Join DashPay
 
 test("toolbar: a registration in progress shows on the chip", async ({ page }) => {
   await open(page, "dashpay-registering");
-  await expect(page.getByTestId("toolbar-chip")).toHaveText("Registering…");
+  // DP1-08 S11: the registration's username once its row is read.
+  await expect(page.getByTestId("toolbar-chip")).toHaveText("@alice · Registering");
   await expect(page.getByTestId("sidebar-contacts")).toHaveCount(0);
   await expect(page.getByTestId("sidebar-joinDashPay")).toBeVisible();
 });

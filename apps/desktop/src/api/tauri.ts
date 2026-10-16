@@ -153,6 +153,7 @@ export class IpcBackend implements Backend {
   setBirthHeight = cmd.setBirthHeight;
   dropUnconfirmed = cmd.dropUnconfirmed;
   registrations = cmd.registrations;
+  registrationQuote = cmd.registrationQuote;
   resolveStuckFunding = cmd.resolveStuckFunding;
   // The search is the renderer's (U-05 D13): dash-qt's wildcards over label and address.
   addressBook = (walletId: string, purpose: AddressPurposeName | null) => cmd.addressBook(walletId, purpose, null);

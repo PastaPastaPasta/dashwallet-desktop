@@ -9,6 +9,7 @@ import type { AppEvent } from "./generated/commands";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRows } from "./generated/HistoryRows";
 import type { PlatformChangeName } from "./generated/PlatformChangeName";
+import { dashpayKeys } from "../dashpay/queries";
 import { keys } from "./queries";
 
 /** The query keys an event makes stale; `"all"` means every query but the network itself. */
@@ -31,8 +32,9 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     case "spvStateChanged":
     case "sync":
       return [keys.sync, keys.dashpayStatusAll];
+    // The username quote's fee grows with the wallet's coins (DP1-08).
     case "balances":
-      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId)];
+      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId)];
     case "historyChanged":
       return [
         keys.historyAll(event.walletId),
@@ -41,8 +43,10 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
         keys.coinsAll(event.walletId),
         keys.contactsAll(event.walletId),
       ];
+    // A registration parks for an unlock or an authorization without writing its row, so
+    // without a Platform signal (DP1-08 D19).
     case "vaultLockState":
-      return [keys.lockStatus, keys.wallets, keys.lockReconcile];
+      return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll];
     case "lockProgress":
       // `done` carries the report itself (bridgeEvents sets it).
       return event.progress.kind === "done" ? [keys.lockStatus, keys.lockReconcile] : [];

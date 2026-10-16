@@ -314,8 +314,9 @@ impl NetworkSession {
     }
 
     /// `DashPay::my_user_link`: the identity's main name as iOS's link. No
-    /// name: `contact.no_username`; names not known while a sync pass holds
-    /// the identities: `platform.unavailable`.
+    /// name: `contact.no_username`; names not known (a sync pass holds the
+    /// identities, or Platform has not said it owns none, DP1-08 D23):
+    /// `platform.unavailable`.
     pub(super) fn my_user_link_of(
         &self,
         wallet: WalletId,
@@ -339,7 +340,7 @@ impl NetworkSession {
             }
             .into());
         };
-        if own.names_updating {
+        if own.names_updating || own.names_check.is_some() {
             return Err(PlatformError::Unavailable.into());
         }
         let name = own.main_name.as_deref().ok_or(ContactError::NoUsername)?;

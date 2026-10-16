@@ -4,8 +4,8 @@
 //! at the end).
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dpp::identity::Identity;
@@ -30,6 +30,7 @@ use super::bringup::NO_IDENTITY_KEY;
 use super::contacts::{PrivateDetails, PublishState};
 use super::errors::PlatformError;
 use super::names::{MainNamePrefs, resolve_main_name};
+use super::names_check::NamesChecks;
 use super::private_details::InfoSource;
 use super::private_details_tests::FakeInfos;
 use super::recovery::{
@@ -37,7 +38,7 @@ use super::recovery::{
 };
 use super::reverify::{Held, Recorded, ShownProfile, confirmed, held_unverified, record_step};
 use super::runtime::{TestPause, guard};
-use super::{DashPay, IdentitySummary, SpvState, StartupStatus};
+use super::{DashPay, IdentitySummary, NamesCheck, SpvState, StartupStatus};
 use crate::session::Manager;
 use crate::{
     DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
@@ -297,6 +298,10 @@ impl EventSink for NoEvents {
 const ABANDON_12: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
+/// A second seed (a BIP39 test vector).
+const LEGAL_12: &[u8] =
+    b"legal winner thank year wave sausage worth useful legal winner thank yellow";
+
 const ALICE: [u8; 32] = [7; 32];
 const SECOND: [u8; 32] = [8; 32];
 /// The library's stamp on every name one fetch finds.
@@ -332,6 +337,26 @@ struct Platform {
     bring_ups: Arc<AtomicU32>,
     hold_bring_up: Option<Arc<Notify>>,
     hold_names: Option<Arc<Notify>>,
+    /// While set, Platform answers nothing: the names pass fetches nothing
+    /// and no question about an identity's names is answered.
+    fail_names: AtomicBool,
+    /// The names pass skips every identity (the library logs a page that
+    /// failed and goes on), while Platform still answers questions.
+    skip_names: bool,
+    /// Holds each question about an identity's names (only those of
+    /// `hold_only`'s wallet, once set).
+    hold_check: Option<Arc<Notify>>,
+    hold_only: Mutex<Option<WalletId>>,
+    /// The questions about names asked, per wallet.
+    questions: Mutex<HashMap<WalletId, u32>>,
+    /// Identities whose questions take `slow_for`, then go unanswered (a
+    /// question's budget run out).
+    slow: Vec<[u8; 32]>,
+    slow_for: Duration,
+    /// Identities whose listed labels have no domain document on Platform
+    /// (a refused registration, a contest still open): Platform says they
+    /// own no name.
+    no_documents: Vec<[u8; 32]>,
     hold_discovery: Option<Arc<Notify>>,
     /// Holds the discovery before it stores anything (a network response
     /// still awaited).
@@ -413,9 +438,13 @@ impl MockPlatform for Platform {
 
     fn names_pass(&self, manager: Arc<Manager>, id: WalletId) -> BoxedFuture<()> {
         let (names, hold) = (self.names.clone(), self.hold_names.clone());
+        let fetches = !self.skip_names && !self.fail_names.load(Ordering::SeqCst);
         Box::pin(async move {
             if let Some(hold) = hold {
                 hold.notified().await;
+            }
+            if !fetches {
+                return;
             }
             let wallet = manager.get_wallet(&id.0).await.expect("wallet");
             let wm = manager.wallet_manager_arc();
@@ -459,6 +488,30 @@ impl MockPlatform for Platform {
                     .collect();
                 managed.set_dpns_names(list, wallet.persister());
             }
+        })
+    }
+
+    fn owns_a_name(&self, id: WalletId, identity: String) -> BoxedFuture<Option<bool>> {
+        *guard(&self.questions).entry(id).or_default() += 1;
+        let answer = (!self.fail_names.load(Ordering::SeqCst)).then(|| {
+            (self.names.iter()).any(|(raw, list)| {
+                base58(*raw) == identity && !list.is_empty() && !self.no_documents.contains(raw)
+            })
+        });
+        if self.slow.iter().any(|raw| base58(*raw) == identity) {
+            let slow_for = self.slow_for;
+            return Box::pin(async move {
+                tokio::time::sleep(slow_for).await;
+                None
+            });
+        }
+        let only = *guard(&self.hold_only);
+        let hold = (self.hold_check.clone()).filter(|_| only.is_none_or(|w| w == id));
+        Box::pin(async move {
+            if let Some(hold) = hold {
+                hold.notified().await;
+            }
+            answer
         })
     }
 
@@ -726,8 +779,10 @@ fn a_restore_recovers_identity_names_and_main_name_in_two_passes() {
     wait_until("pass 1", || {
         !shown(&s, id).is_empty() && s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
     });
-    // After pass 1: the identity, as main, without its names yet.
+    // After pass 1: the identity, as main, without its names yet, which
+    // it does not claim to lack (DP1-08 D23).
     assert_eq!(shown(&s, id), vec![(base58(ALICE), vec![], None, true)]);
+    assert_eq!(names_check(&s, id), Some(NamesCheck::Pending));
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1);
 
     hold_names.notify_one();
@@ -741,6 +796,7 @@ fn a_restore_recovers_identity_names_and_main_name_in_two_passes() {
         )]
     };
     assert_shown(&s, id, alice("alice"));
+    assert_eq!(names_check(&s, id), None);
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1);
     assert_eq!(s.platform.recovery.names_passes.load(Ordering::SeqCst), 1);
 
@@ -1361,6 +1417,508 @@ fn a_start_with_the_identity_on_file_runs_no_names_pass() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1);
     assert_eq!(s.platform.recovery.names_passes.load(Ordering::SeqCst), 0);
+    // It shows no name: nameless once Platform says it owns none, with no
+    // names pass (DP1-08 D23).
+    wait_until("the answer", || names_check(&s, id).is_none());
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Each identity's `names_check` on a live read.
+fn names_checks(s: &Arc<NetworkSession>, id: WalletId) -> Vec<(String, Option<NamesCheck>)> {
+    live_identities(&s.dashpay(id))
+        .into_iter()
+        .map(|i| (i.identity, i.names_check))
+        .collect()
+}
+
+/// The main identity's `names_check` on a live read.
+fn names_check(s: &Arc<NetworkSession>, id: WalletId) -> Option<NamesCheck> {
+    let read = live_identities(&s.dashpay(id));
+    read.into_iter()
+        .find(|i| i.is_main)
+        .expect("an identity")
+        .names_check
+}
+
+/// DP1-08 D23 (Sol r1 finding 1): a restored identity that owns no name
+/// reads `Pending`, never nameless, for as long as the names pass that
+/// fetches its names is held: no clock settles it. Once the pass ends and
+/// Platform says it owns none, it is nameless.
+#[test]
+fn a_nameless_identity_reads_pending_until_its_delayed_names_pass_ends() {
+    let dir = dw_testutil::private_tempdir();
+    let hold_names = Arc::new(Notify::new());
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        names: vec![(ALICE, vec![])],
+        hold_names: Some(Arc::clone(&hold_names)),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("pass 1", || {
+        !shown(&s, id).is_empty() && s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
+    });
+    for _ in 0..10 {
+        assert_eq!(names_check(&s, id), Some(NamesCheck::Pending));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    hold_names.notify_one();
+    wait_until("pass 2", || names_check(&s, id).is_none());
+    assert_eq!(shown(&s, id), vec![(base58(ALICE), vec![], None, true)]);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP1-08 D23: while Platform answers nothing, an identity's names are
+/// unknown (`Failed`), not absent, whether it owns a name or not; once it
+/// answers, the nameless one is nameless, and the one that owns a name the
+/// session has not loaded stays unknown.
+#[test]
+fn a_failed_names_pass_leaves_the_names_unknown_until_platform_answers() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0), (SECOND, 1)],
+        names: vec![(ALICE, vec![("alice", Some(100))]), (SECOND, vec![])],
+        fail_names: AtomicBool::new(true),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    let unknown = vec![
+        (base58(ALICE), Some(NamesCheck::Failed)),
+        (base58(SECOND), Some(NamesCheck::Failed)),
+    ];
+    wait_until("the failed names pass", || names_checks(&s, id) == unknown);
+    assert!(
+        shown(&s, id)
+            .iter()
+            .all(|(_, names, _, _)| names.is_empty())
+    );
+
+    platform.fail_names.store(false, Ordering::SeqCst);
+    // The minute's check, now.
+    engine.block_on(s.check_names(&s.manager().unwrap(), id));
+    assert_eq!(
+        names_checks(&s, id),
+        vec![
+            (base58(ALICE), Some(NamesCheck::Failed)),
+            (base58(SECOND), None),
+        ]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP1-08 D23 (Opus delta M1): the library's names pass succeeds while it
+/// skips an identity whose names it could not fetch. Platform's answer
+/// that the identity owns a name keeps it unknown, never nameless.
+#[test]
+fn an_identity_the_names_pass_skipped_is_not_nameless() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        names: vec![(ALICE, vec![("alice", Some(100))])],
+        skip_names: true,
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the names pass", || {
+        s.platform.recovery.names_passes.load(Ordering::SeqCst) == 1
+            && names_check(&s, id) == Some(NamesCheck::Failed)
+    });
+    assert_eq!(shown(&s, id), vec![(base58(ALICE), vec![], None, true)]);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP1-08 D23 (Opus delta r2 M1): an identity whose only listed label was
+/// refused shows no main name though the library lists one: it is asked
+/// about too, and is nameless once Platform says it owns no name.
+#[test]
+fn an_identity_whose_only_label_was_refused_is_asked_and_nameless() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        names: vec![(ALICE, vec![("taken", None)])],
+        no_documents: vec![ALICE],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    let refused = s.set_name_pref(id, base58(ALICE), "refused_name", Some("taken".into()));
+    engine.block_on(refused).unwrap();
+    start(&engine, &s);
+    wait_until("the answer", || {
+        s.platform.recovery.names_passes.load(Ordering::SeqCst) == 1
+            && names_check(&s, id).is_none()
+    });
+    assert_eq!(shown(&s, id), vec![(base58(ALICE), vec![], None, true)]);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP1-08 D23 (Opus delta M2): an identity a bring-up stores without a
+/// names pass (it was on file) is pending, not nameless, until Platform
+/// answers for it; nothing else settles it.
+#[test]
+fn an_identity_on_file_reads_pending_until_platform_answers() {
+    let dir = dw_testutil::private_tempdir();
+    let hold_check = Arc::new(Notify::new());
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        hold_check: Some(Arc::clone(&hold_check)),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    let manager = s.manager().unwrap();
+    engine.block_on(platform.bring_up(manager, id)).unwrap();
+
+    start(&engine, &s);
+    wait_until("the bring-up", || {
+        s.dashpay_startup(&id).unwrap().startup == StartupStatus::Ready
+    });
+    for _ in 0..5 {
+        assert_eq!(names_check(&s, id), Some(NamesCheck::Pending));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    hold_check.notify_one();
+    wait_until("the answer", || names_check(&s, id).is_none());
+    assert_eq!(s.platform.recovery.names_passes.load(Ordering::SeqCst), 0);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP1-08 D23: a pass owed again (a discovery, or a pass cut off before a
+/// restart) keeps an identity Platform said is nameless nameless, and an
+/// unknown one reads pending until that pass ends and a check settles it.
+#[test]
+fn owing_a_names_pass_again_keeps_the_answers() {
+    let checks = NamesChecks::default();
+    let (id, a, b) = (WalletId([1; 32]), base58(ALICE), base58(SECOND));
+    assert_eq!(checks.of(&id, &a), Some(NamesCheck::Pending));
+    let before = checks.begin(&id).expect("no pass owed");
+    checks.owe(id);
+    assert!(checks.begin(&id).is_none(), "the pass asks");
+    assert!(checks.answered(
+        id,
+        before,
+        vec![(a.clone(), Some(true)), (b.clone(), Some(false))]
+    ));
+    assert_eq!(checks.of(&id, &a), None);
+    assert_eq!(checks.of(&id, &b), Some(NamesCheck::Pending));
+    checks.pass_ended(id, checks.generation(&id));
+    // A check begun before the pass ended does not settle it.
+    assert!(!checks.answered(id, before, vec![]));
+    assert_eq!(checks.of(&id, &b), Some(NamesCheck::Pending));
+    let after = checks.begin(&id).expect("the pass ended");
+    assert!(checks.answered(id, after, vec![]));
+    assert_eq!(checks.of(&id, &b), Some(NamesCheck::Failed));
+
+    checks.owe(id);
+    assert_eq!(checks.of(&id, &a), None);
+    assert_eq!(checks.of(&id, &b), Some(NamesCheck::Pending));
+    assert!(!checks.answered(id, after, vec![(a.clone(), Some(true))]));
+}
+
+/// DP1-08 D28: an answer asked before the wallet was forgotten (removed or
+/// unloaded) is dropped, as is the end of a pass begun before it.
+#[test]
+fn an_answer_for_a_forgotten_wallet_is_dropped() {
+    let checks = NamesChecks::default();
+    let (id, a) = (WalletId([1; 32]), base58(ALICE));
+    let asked = checks.begin(&id).expect("no pass owed");
+    let before = checks.generation(&id);
+    checks.forget(&id);
+    checks.owe(id);
+    checks.pass_ended(id, before);
+    assert!(checks.begin(&id).is_none(), "the pass is still owed");
+    assert!(!checks.answered(id, asked, vec![(a.clone(), Some(true))]));
+    assert_eq!(checks.of(&id, &a), Some(NamesCheck::Pending));
+
+    checks.pass_ended(id, checks.generation(&id));
+    let asked = checks.begin(&id).expect("the pass ended");
+    assert!(checks.answered(id, asked, vec![(a.clone(), Some(true))]));
+    assert_eq!(checks.of(&id, &a), None);
+}
+
+/// The names questions asked about `id`'s identities so far.
+fn questions(platform: &Platform, id: WalletId) -> u32 {
+    guard(&platform.questions)
+        .get(&id)
+        .copied()
+        .unwrap_or_default()
+}
+
+/// DP1-08 D27 (Sol r2 finding 1): a names check whose Platform answers are
+/// held stalls nothing else: a wallet added meanwhile is brought up while
+/// it waits. Triggers while it runs make one more run follow, not one each.
+#[test]
+fn a_held_names_check_stalls_no_other_wallet() {
+    let dir = dw_testutil::private_tempdir();
+    let hold_check = Arc::new(Notify::new());
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        // Platform says it owns a name the session has not loaded: asked
+        // again by every check.
+        names: vec![(ALICE, vec![("alice", Some(100))])],
+        hold_check: Some(Arc::clone(&hold_check)),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let first = restore(&engine, &s);
+    let manager = s.manager().unwrap();
+    engine.block_on(platform.bring_up(manager, first)).unwrap();
+    // The second wallet's questions are answered at once.
+    *guard(&platform.hold_only) = Some(first);
+
+    start(&engine, &s);
+    wait_until("the first wallet's question", || {
+        questions(&platform, first) == 1
+    });
+    let second = engine
+        .block_on(s.import_wallet(
+            Zeroizing::new(LEGAL_12.to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions::default(),
+        ))
+        .unwrap();
+    // Unbounded before D27: the supervisor awaited the held check.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while s.dashpay_startup(&second).unwrap().startup != StartupStatus::Ready {
+        assert!(
+            Instant::now() < deadline,
+            "the second wallet's bring-up waited on the check"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(questions(&platform, first), 1);
+    assert_eq!(names_check(&s, first), Some(NamesCheck::Pending));
+
+    // Two triggers while it runs: one more run.
+    let epoch = s.platform.recovery.names_runs.epoch();
+    s.kick_names_check(first, epoch);
+    s.kick_names_check(first, epoch);
+    hold_check.notify_one();
+    wait_until("the rerun's question", || questions(&platform, first) == 2);
+    assert_eq!(names_check(&s, first), Some(NamesCheck::Failed));
+    hold_check.notify_one();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(questions(&platform, first), 2);
+    assert_eq!(names_check(&s, first), Some(NamesCheck::Failed));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP1-08 D28 (Sol r2 finding 2): an answer that comes back after its wallet
+/// was removed is dropped, even with the same wallet imported again
+/// meanwhile: it never inherits a stale "nameless".
+#[test]
+fn an_answer_landing_after_a_removal_is_dropped() {
+    let (_dir, engine, s, id, wipe) = removable();
+    let (reached, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel());
+    *guard(&s.platform.recovery.pause_before_answer) = Some((reached.0, release.1));
+    let (session, manager) = (Arc::clone(&s), s.manager().unwrap());
+    let check =
+        s.rt.spawn(async move { session.check_names(&manager, id).await });
+    reached
+        .1
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the check answered");
+
+    engine.block_on(s.remove_wallet(id, wipe)).unwrap();
+    assert_eq!(restore(&engine, &s), id);
+    let manager = s.manager().unwrap();
+    engine.block_on(add_identities(&manager, id, &[(ALICE, 0)]));
+    release.0.send(()).unwrap();
+    engine.block_on(check).unwrap();
+    assert_eq!(names_check(&s, id), Some(NamesCheck::Pending));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// The names check of `identity`, one of `id`'s, on a live read.
+fn names_check_of(s: &Arc<NetworkSession>, id: WalletId, identity: [u8; 32]) -> Option<NamesCheck> {
+    names_checks(s, id)
+        .into_iter()
+        .find(|(i, _)| *i == base58(identity))
+        .expect("the identity")
+        .1
+}
+
+/// DP1-08 D31 (Sol r3 finding 1): eight identities whose questions each
+/// take a question's whole budget, ahead of a ninth that Platform answers
+/// at once. The first check's budget runs out before the ninth is asked; the
+/// next ones ask first what has not been asked (or longest ago), so within
+/// two retries the ninth has its answer and no longer reads "Username not
+/// loaded". The times are scaled down (1 s per question, 1.5 s per check,
+/// against the real 10 s and 20 s).
+#[test]
+fn a_slow_prefix_starves_no_identity() {
+    let dir = dw_testutil::private_tempdir();
+    let slow: Vec<[u8; 32]> = (0..8u8).map(|n| [20 + n; 32]).collect();
+    const NINTH: [u8; 32] = [40; 32];
+    let mut identities: Vec<([u8; 32], u32)> =
+        slow.iter().zip(0..).map(|(raw, n)| (*raw, n)).collect();
+    identities.push((NINTH, 8));
+    let platform = Arc::new(Platform {
+        identities,
+        slow: slow.clone(),
+        slow_for: Duration::from_secs(1),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    let manager = s.manager().unwrap();
+    engine
+        .block_on(platform.bring_up(Arc::clone(&manager), id))
+        .unwrap();
+    // Off the boundary where the second four would end (2 s), which a
+    // loaded scheduler can cross either way.
+    *guard(&s.platform.recovery.check_budget) = Some(Duration::from_millis(1500));
+
+    engine.block_on(s.check_names(&manager, id));
+    assert_eq!(
+        names_check_of(&s, id, NINTH),
+        Some(NamesCheck::Failed),
+        "not reached"
+    );
+    for _ in 0..2 {
+        engine.block_on(s.check_names(&manager, id));
+        if names_check_of(&s, id, NINTH).is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        names_check_of(&s, id, NINTH),
+        None,
+        "starved behind the slow ones"
+    );
+    assert!(
+        slow.iter()
+            .all(|raw| names_check_of(&s, id, *raw) == Some(NamesCheck::Failed))
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP1-08 D32 (Sol r3 finding 2): the minute's retry held between two kicks
+/// (no yield, so its abort cannot land) while `stop_spv` stops the
+/// supervisor: once released, its second kick starts no check, and none is
+/// alive after `stop_spv` returned.
+#[test]
+fn a_retry_held_across_a_stop_starts_no_check() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        // Asked again by every check, and each question held.
+        names: vec![(ALICE, vec![("alice", Some(100))])],
+        hold_check: Some(Arc::new(Notify::new())),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let first = restore(&engine, &s);
+    let second = engine
+        .block_on(s.import_wallet(
+            Zeroizing::new(LEGAL_12.to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions::default(),
+        ))
+        .unwrap();
+    let manager = s.manager().unwrap();
+    for id in [first, second] {
+        engine
+            .block_on(platform.bring_up(Arc::clone(&manager), id))
+            .unwrap();
+    }
+    *guard(&s.platform.recovery.retry_every) = Some(Duration::from_millis(200));
+
+    start(&engine, &s);
+    wait_until("both wallets' checks", || {
+        questions(&platform, first) >= 1 && questions(&platform, second) >= 1
+    });
+    let (reached, release, kicked) = (
+        std::sync::mpsc::channel(),
+        std::sync::mpsc::channel(),
+        std::sync::mpsc::channel(),
+    );
+    *guard(&s.platform.recovery.pause_between_kicks) = Some((reached.0, release.1, kicked.0));
+    reached
+        .1
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the retry's first kick");
+
+    engine.block_on(s.stop_spv()).unwrap();
+    let asked = questions(&platform, first) + questions(&platform, second);
+    // Aborted: gone at their next poll.
+    wait_until("the stop's aborts", || {
+        s.platform.recovery.names_runs.alive() == 0
+    });
+    release.0.send(()).unwrap();
+    kicked
+        .1
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the retry's second kick");
+    assert_eq!(
+        s.platform.recovery.names_runs.alive(),
+        0,
+        "the held retry started a check"
+    );
+    assert_eq!(
+        questions(&platform, first) + questions(&platform, second),
+        asked
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// DP1-08 D33 (Sol r3 finding 3): a failed restore's rollback forgets the
+/// wallet before it leaves the manager. A check begun in between (as the
+/// minute's retry would) reads the wallet still there, at its new
+/// generation; its answer, held until the same wallet is imported again,
+/// is dropped: the identity reads pending, not a stale "nameless".
+#[test]
+fn a_check_begun_during_a_rollback_leaves_nothing() {
+    let dir = dw_testutil::private_tempdir();
+    let platform = Arc::new(Platform {
+        identities: vec![(ALICE, 0)],
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    let manager = s.manager().unwrap();
+    engine.block_on(add_identities(&manager, id, &[(ALICE, 0)]));
+    let wallet = engine.block_on(manager.get_wallet(&id.0)).unwrap();
+    let checks = &s.platform.recovery.names_checks;
+    let before = checks.generation(&id);
+    std::thread::scope(|scope| {
+        let restoring = s.platform.restoring(vec![id]);
+        // Holds the rollback before the wallet leaves the manager.
+        let payment = engine.block_on(wallet.generation().payment_guard());
+        let rollback = scope.spawn(|| {
+            engine.block_on(async {
+                let held = s.wallet_lifecycle.hold().await;
+                s.roll_back_restore(&held, &[(id, true)]).await
+            })
+        });
+        wait_until("the rollback's forget", || checks.generation(&id) > before);
+        let (reached, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel());
+        *guard(&s.platform.recovery.pause_before_answer) = Some((reached.0, release.1));
+        let (session, manager) = (Arc::clone(&s), Arc::clone(&manager));
+        let check =
+            s.rt.spawn(async move { session.check_names(&manager, id).await });
+        reached
+            .1
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the check answered");
+
+        drop(payment);
+        rollback.join().unwrap();
+        drop(restoring);
+        assert_eq!(restore(&engine, &s), id);
+        let manager = s.manager().unwrap();
+        engine.block_on(add_identities(&manager, id, &[(ALICE, 0)]));
+        release.0.send(()).unwrap();
+        engine.block_on(check).unwrap();
+    });
+    assert_eq!(names_check(&s, id), Some(NamesCheck::Pending));
     engine.block_on(engine.shutdown()).unwrap();
 }
 

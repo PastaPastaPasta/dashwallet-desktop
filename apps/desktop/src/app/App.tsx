@@ -16,6 +16,7 @@ import { Overview } from "../screens/Overview";
 import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
 import { ContactsPage, PayPage, Placeholder } from "../screens/Routes";
+import { JoinDashPayPage } from "../screens/dashpay/JoinDashPay";
 import { NotificationsPage, NotificationsPopover } from "../screens/notifications/Notifications";
 import { ToolsPage } from "../screens/tools/ToolsPage";
 import { SettingsPage } from "../screens/settings/SettingsPage";
@@ -25,6 +26,7 @@ import { TxDetailSheet } from "../screens/TxDetailSheet";
 import { ACTIVITY_EVENTS, armedFor, AutoLockTimer } from "../settings/autoLock";
 import { useDisplay } from "../format/display";
 import { SecurityText } from "../settings/security";
+import { useStatusRegistration } from "../dashpay/queries";
 import { useShellBridge } from "./shellBridge";
 import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
@@ -105,6 +107,7 @@ function Shell() {
   const wallets = useWallets();
   const wallet = wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0];
   const dashpay = useDashPayShell(wallet?.walletId);
+  const registration = useStatusRegistration(wallet?.walletId, dashpay.status);
   const locked = lock.data?.state === "locked";
   const open = (row: TxRow) => ui.set({ detail: row.txid });
 
@@ -157,7 +160,7 @@ function Shell() {
   };
 
   let content;
-  if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts" || route === "notifications") {
+  if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts" || route === "notifications" || route === "joinDashPay") {
     if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
     else if (wallets.isError)
       content = (
@@ -182,6 +185,7 @@ function Shell() {
     else if (route === "receive") content = <ReceivePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "contacts") content = <ContactsPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "notifications") content = <NotificationsPage key={wallet.walletId} walletId={wallet.walletId} />;
+    else if (route === "joinDashPay") content = <JoinDashPayPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
   } else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} />;
   else if (route === "settings") content = <SettingsPage />;
@@ -212,7 +216,7 @@ function Shell() {
         <Toolbar
           wallets={wallets.data ?? []}
           wallet={wallet}
-          chip={chipState(dashpay.status, dashpay.main)}
+          chip={chipState(dashpay.status, dashpay.main, registration)}
           unread={dashpay.unread}
           canLock={canLock}
           onLock={lockNow}
