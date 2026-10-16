@@ -2747,9 +2747,13 @@ renames or reshapes them takes the next version bump:
     - **In the background** (DP1-08 D27): a wallet's check is a task of its own, never awaited by the Platform
       supervisor, so a slow Platform delays no bring-up, unlock or readmission. One check per wallet runs at a time;
       triggers while it runs make exactly one more follow. It asks four identities at a time, all its questions within
-      20 seconds; an identity unanswered by then is `Failed`, never nameless.
+      20 seconds; an identity unanswered by then is `Failed`, never nameless. Each check asks first the identities
+      whose last question never ended, then those whose last one ended longest ago (D31), so a few slow identities
+      cannot keep the rest unanswered. Checks start only while the supervisor runs: none starts after `stop_spv` or a
+      close has stopped it (D32).
     - **An answer for a removed or unloaded wallet is dropped** (D28): each check asks for the wallet's generation,
-      which a removal or an unload raises, so a wallet imported again starts `Pending`.
+      which a removal or an unload raises, so a wallet imported again starts `Pending`. A failed restore's rollback
+      raises it again once the wallet is out of the manager (D33).
     - **Nameless** (`None`) once Platform answered that it owns none. The answer lasts for the session; a wallet
       closed and opened again asks again. A name registered elsewhere after that answer shows when the DPNS loop
       loads it (its 600-second interval); until then the identity reads nameless.
