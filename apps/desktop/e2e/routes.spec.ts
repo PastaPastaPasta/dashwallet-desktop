@@ -6,7 +6,7 @@ import type { Route } from "../src/api/generated/Route";
 import type { ShellCommand } from "../src/api/generated/ShellCommand";
 import { FIXTURE_WALLET_ID } from "../src/fixture/scenarios";
 import { seriousAxeViolations } from "./axe";
-import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors } from "./helpers";
+import { artifactPath, fixtureUrl, fontsReady, lateFrames, THEMES, trackPageErrors } from "./helpers";
 
 // U-01: every route of the shell (DASHPAY §4) renders in light and dark with 0 serious axe
 // issues; links, menu commands and the toolbar route as dw-app's shell asks. dw-app's routing of
@@ -232,6 +232,24 @@ test("a route command focuses its page even when the closing dialog gives focus 
   await command(page, { kind: "navigate", route: "activity" });
   await expect(page.getByTestId("about")).toHaveCount(0);
   await expect(page.getByTestId("page-activity").locator("h1")).toBeFocused();
+});
+
+test("a key pressed before a page's late landing frame keeps the focus it moved (BL-165)", async ({ page }) => {
+  const frames = await lateFrames(page);
+  await open(page, "funded");
+  await frames.late(true);
+  // No key: the late frame still lands focus on the page's title.
+  await command(page, { kind: "navigate", route: "activity" });
+  await frames.settled();
+  await expect(page.getByTestId("page-activity").locator("h1")).toBeFocused();
+  // A key before the frame: the focus it moved stays.
+  await command(page, { kind: "navigate", route: "receive" });
+  await page.keyboard.press("Tab");
+  const moved = await page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? document.activeElement?.tagName);
+  expect(moved).not.toBe("BODY");
+  await frames.settled();
+  await expect(page.getByTestId("page-receive").locator("h1")).not.toBeFocused();
+  expect(await page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? document.activeElement?.tagName)).toBe(moved);
 });
 
 test("in a browser the menus' shortcuts work from the keyboard", async ({ page }) => {

@@ -67,3 +67,25 @@ export async function authorize(page: Page, passphrase = "demo") {
   await sheet.locator("input[type=password]").press("Enter");
   await expect(sheet).toHaveCount(0);
 }
+
+/** Frames that come late, on demand: once `late(true)` runs, each `requestAnimationFrame`
+ * callback waits `ms` first, as WebKit's frames do under load (BL-165); `settled()` waits until
+ * none is pending. Install before the page loads. */
+export async function lateFrames(page: Page, ms = 500) {
+  await page.addInitScript((ms) => {
+    const w = window as unknown as { __late: boolean; __latePending: number };
+    const raf = window.requestAnimationFrame.bind(window);
+    w.__late = false;
+    w.__latePending = 0;
+    window.requestAnimationFrame = (f) => {
+      if (!w.__late) return raf(f);
+      w.__latePending += 1;
+      window.setTimeout(() => raf((t) => (w.__latePending -= 1, f(t))), ms);
+      return 0;
+    };
+  }, ms);
+  return {
+    late: (on: boolean) => page.evaluate((on) => void ((window as unknown as { __late: boolean }).__late = on), on),
+    settled: () => expect.poll(() => page.evaluate(() => (window as unknown as { __latePending: number }).__latePending)).toBe(0),
+  };
+}
