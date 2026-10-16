@@ -98,6 +98,11 @@ import type { LockResolutionName } from "./generated/LockResolutionName";
 import type { ContactDetailInfo } from "./generated/ContactDetailInfo";
 import type { ContactRequestOutcome } from "./generated/ContactRequestOutcome";
 import type { CostTable } from "./generated/CostTable";
+import type { ContestStatus } from "./generated/ContestStatus";
+import type { PendingTopUp } from "./generated/PendingTopUp";
+import type { StuckTopUpFunding } from "./generated/StuckTopUpFunding";
+import type { TopUpOutcome } from "./generated/TopUpOutcome";
+import type { TopUpQuote } from "./generated/TopUpQuote";
 import type { DashPayEventPage } from "./generated/DashPayEventPage";
 import type { GrantAction } from "./generated/GrantAction";
 import type { GrantRequest } from "./generated/GrantRequest";
@@ -327,6 +332,17 @@ export interface Backend {
   finishAssetLocks(walletId: string, grant: string): Promise<FinishReport>;
   /** A name for `identity`, paid from its credits. */
   registerName(walletId: string, identity: string, label: string, grant: string): Promise<NameOutcome>;
+  // My Profile and the top-up (DP1-10).
+  /** Asks Platform for the identity's balance; the answer arrives as `Platform{Identities}`. */
+  identityRefreshBalance(walletId: string, identity: string): Promise<string | null>;
+  contestStatus(walletId: string, identity: string, label: string): Promise<ContestStatus>;
+  creditsTopUpQuote(walletId: string, identity: string, duffs: number): Promise<TopUpQuote>;
+  creditsTopUp(walletId: string, identity: string, duffs: number, grant: string): Promise<TopUpOutcome>;
+  creditsPendingTopUps(walletId: string): Promise<PendingTopUp[]>;
+  /** Top-up fundings whose outcome is unknown: Tools ▸ Repair resolves them. */
+  creditsStuckTopUpFundings(walletId: string): Promise<StuckTopUpFunding[]>;
+  creditsResumeTopUp(walletId: string, txid: string, grant: string): Promise<TopUpOutcome>;
+  creditsResolveTopUp(walletId: string, txid: string): Promise<null>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;
   saveAddressBookEntry(walletId: string, address: string, label: string, purpose: AddressPurposeName, replace: boolean): Promise<AddressBookEntry>;
   deleteAddressBookEntry(walletId: string, address: string): Promise<null>;

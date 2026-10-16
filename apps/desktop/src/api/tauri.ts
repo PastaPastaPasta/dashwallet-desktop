@@ -177,6 +177,14 @@ export class IpcBackend implements Backend {
   discardRegistration = cmd.discardRegistration;
   finishAssetLocks = cmd.finishAssetLocks;
   registerName = cmd.registerName;
+  identityRefreshBalance = cmd.identityRefreshBalance;
+  contestStatus = cmd.contestStatus;
+  creditsTopUpQuote = cmd.creditsTopUpQuote;
+  creditsTopUp = cmd.creditsTopUp;
+  creditsPendingTopUps = cmd.creditsPendingTopUps;
+  creditsStuckTopUpFundings = cmd.creditsStuckTopUpFundings;
+  creditsResumeTopUp = cmd.creditsResumeTopUp;
+  creditsResolveTopUp = cmd.creditsResolveTopUp;
   // The search is the renderer's (U-05 D13): dash-qt's wildcards over label and address.
   addressBook = (walletId: string, purpose: AddressPurposeName | null) => cmd.addressBook(walletId, purpose, null);
   saveAddressBookEntry = cmd.saveAddressBookEntry;

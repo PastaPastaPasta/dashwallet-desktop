@@ -2,15 +2,17 @@
 // ported. Rescan from the wallet's birth, genesis or a height with progress and Cancel (U-05 D10);
 // reset chain data, which asks first and stops and restarts sync around it (D11); remove
 // unconfirmed transactions; the birth height; and "send all coins to yourself" for a registration
-// whose funding is unknown (D12); Finish transfers (DP1-09 D10).
+// or a credits top-up whose funding is unknown (D12, DP1-10 D16); Finish transfers (DP1-09 D10).
 
 import { hasCode, isAppError, type Backend } from "../api/backend";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RescanStart } from "../api/generated/RescanStart";
 import type { RescanStatus } from "../api/generated/RescanStatus";
 import type { StuckFundingRefusalName } from "../api/generated/StuckFundingRefusalName";
+import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
 import { failureText, Model } from "../onboarding/model";
 import { REG_COPY } from "../dashpay/registration";
+import { forgetTopUp } from "../dashpay/topup";
 import { finishGrant } from "../dashpay/wizard";
 import type { GrantModel } from "./grant";
 
@@ -31,9 +33,15 @@ export const RepairText = {
   /** An orphan funding step's line: its registration's row, and so its username, is gone. */
   unnamedRegistration: "A registration's funding (its username is no longer known)",
   stuckUnreadable: "This wallet's username registrations could not be read, so stuck funding cannot be checked here.",
+  stuckTopUpsUnreadable: "This wallet's credit top-ups could not be read, so their stuck funding cannot be checked here.",
   resolveStuckQuestion:
     "Send every coin of this wallet to yourself? Whether the registration's funding reached the network is settled either way; the payment costs only its fee.",
   resolved: (txid: string) => `All coins were sent to yourself (transaction ${txid}). The registration can go on once it is confirmed.`,
+  /** A stuck top-up's line (DP1-10 D16): whose credits it tops up. */
+  topUp: (name: string | null) => (name ? `A top-up of @${name}'s credits` : "A top-up of an identity's credits"),
+  resolveStuckTopUpQuestion:
+    "Send every coin of this wallet to yourself? Whether the top-up's payment reached the network is settled either way; the payment costs only its fee.",
+  resolvedTopUp: (txid: string) => `All coins were sent to yourself (transaction ${txid}). You can top up again once it is confirmed.`,
 };
 
 /** Copy for the engine's Repair refusals (the Swift `L10n.M2Errors`). */
@@ -104,11 +112,22 @@ const ORPHAN_STEP = /^registration\/[^/]+\/funding$/;
  * (f1, Sol r1 P1). */
 export const fundingStep = (r: RegistrationStatus) => (ORPHAN_STEP.test(r.draft) ? r.draft : `registration/${r.draft}/funding`);
 
+/** What "send all coins to yourself" settles: a registration's funding, or a top-up's (D3). */
+export type StuckTarget = RegistrationStatus | StuckTopUpFunding;
+
+export const isTopUp = (t: StuckTarget): t is StuckTopUpFunding => "step" in t;
+
+/** A stuck top-up and the name of the identity it tops up (`null`: none known). */
+export interface StuckTopUp {
+  funding: StuckTopUpFunding;
+  name: string | null;
+}
+
 export type Confirmation = "resetChainData" | "dropUnconfirmed" | "resolveStuck";
 
 export type RepairState =
   | { kind: "idle" }
-  | { kind: "confirming"; what: Confirmation; registration?: RegistrationStatus }
+  | { kind: "confirming"; what: Confirmation; target?: StuckTarget }
   | { kind: "working" }
   | { kind: "done"; text: string }
   | { kind: "failed"; text: string };
@@ -128,6 +147,8 @@ type Api = Pick<
   | "feePolicy"
   | "registrationQuote"
   | "finishAssetLocks"
+  | "creditsStuckTopUpFundings"
+  | "identities"
 >;
 
 export class RepairModel extends Model {
@@ -138,6 +159,10 @@ export class RepairModel extends Model {
   stuck: RegistrationStatus[] = [];
   /** `registrations` failed (no Platform session, D12): the screen says so. */
   stuckUnreadable = false;
+  /** The wallet's top-up fundings whose outcome is unknown (DP1-10 D16). */
+  stuckTopUps: StuckTopUp[] = [];
+  /** `stuck_top_up_fundings` failed while `registrations` read: the screen says so. */
+  stuckTopUpsUnreadable = false;
 
   constructor(
     private readonly api: Api,
@@ -185,6 +210,9 @@ export class RepairModel extends Model {
       this.stuck = [];
       this.stuckUnreadable = true;
     }
+    const topUps = await this.#stuckTopUps();
+    this.stuckTopUps = topUps ?? [];
+    this.stuckTopUpsUnreadable = topUps === null && !this.stuckUnreadable;
     this.changed();
   }
 
@@ -206,9 +234,9 @@ export class RepairModel extends Model {
     await this.refresh();
   }
 
-  /** Each of these asks first (D11, D12); `registration` is the stuck one to resolve. */
-  ask(what: Confirmation, registration?: RegistrationStatus) {
-    if (!this.busy) this.#set({ kind: "confirming", what, registration });
+  /** Each of these asks first (D11, D12); `target` is the stuck funding to resolve. */
+  ask(what: Confirmation, target?: StuckTarget) {
+    if (!this.busy) this.#set({ kind: "confirming", what, target });
   }
 
   dismiss() {
@@ -217,10 +245,10 @@ export class RepairModel extends Model {
 
   async confirm() {
     if (this.state.kind !== "confirming") return;
-    const { what, registration } = this.state;
+    const { what, target } = this.state;
     if (what === "resolveStuck") {
       this.#set({ kind: "idle" });
-      return this.resolveStuck(registration!);
+      return this.resolveStuck(target!);
     }
     await this.#run(async () => {
       if (what === "dropUnconfirmed") return { kind: "done", text: RepairText.dropped(await this.api.dropUnconfirmed(this.walletId)) };
@@ -258,7 +286,7 @@ export class RepairModel extends Model {
 
   /** Sends every coin of the wallet to itself, so the funding is spent either way; the grant
    * covers the fee only, capped at the engine's maximum (U-05 D12). */
-  async resolveStuck(r: RegistrationStatus) {
+  async resolveStuck(t: StuckTarget) {
     if (this.busy) return;
     const since = this.grants.epoch;
     await this.#run(async () => {
@@ -266,10 +294,13 @@ export class RepairModel extends Model {
       const sent = await this.grants.withGrant(
         { kind: "spend", maxDuffs: maxTxFee },
         this.walletId,
-        (grant) => this.api.resolveStuckFunding(this.walletId, fundingStep(r), grant.id),
+        (grant) => this.api.resolveStuckFunding(this.walletId, isTopUp(t) ? t.step : fundingStep(t), grant.id),
         since,
       );
-      return sent ? { kind: "done", text: RepairText.resolved(sent.value.txid) } : { kind: "idle" };
+      if (!sent) return { kind: "idle" };
+      if (!isTopUp(t)) return { kind: "done", text: RepairText.resolved(sent.value.txid) };
+      forgetTopUp(this.walletId);
+      return { kind: "done", text: RepairText.resolvedTopUp(sent.value.txid) };
     });
   }
 
@@ -288,6 +319,18 @@ export class RepairModel extends Model {
       );
       return report ? { kind: "done", text: REG_COPY.finished(report.value) } : { kind: "idle" };
     });
+  }
+
+  /** The stuck top-ups with their identities' names; `null` when the read fails. */
+  async #stuckTopUps(): Promise<StuckTopUp[] | null> {
+    const fundings = await this.api.creditsStuckTopUpFundings(this.walletId).catch(() => null);
+    if (fundings === null) return null;
+    if (fundings.length === 0) return [];
+    const identities = await this.api.identities(this.walletId).catch(() => []);
+    return fundings.map((funding) => ({
+      funding,
+      name: identities.find((i) => i.identity === funding.identity || (funding.identity === null && i.index === funding.identityIndex))?.mainName ?? null,
+    }));
   }
 
   async #run(f: () => Promise<RepairState>) {

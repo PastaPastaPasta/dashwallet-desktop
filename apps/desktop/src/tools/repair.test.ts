@@ -3,10 +3,12 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { FeePolicy } from "../api/generated/FeePolicy";
+import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RescanStart } from "../api/generated/RescanStart";
 import type { RescanStatus } from "../api/generated/RescanStatus";
+import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "./testApi";
 import { GrantModel } from "./grant";
@@ -76,6 +78,8 @@ function setup(lock = {}) {
       calls.push(`finish ${walletId.slice(0, 2)} ${grant}`);
       return { resumed: 2, completed: 1, stillPending: 1 };
     }),
+    creditsStuckTopUpFundings: vi.fn(async (): Promise<StuckTopUpFunding[]> => []),
+    identities: vi.fn(async () => [{ identity: "alice-id", index: 0, mainName: "alice" } as IdentitySummary]),
   };
   const grants = new GrantModel(vault.api);
   return { model: new RepairModel(api, grants, WALLET_A), api, calls, vault, grants };
@@ -228,6 +232,32 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     await model.confirm();
     expect(calls).toEqual([`resolve a1 registration/r1/funding grant-1`]);
     expect(model.state).toMatchObject({ kind: "done" });
+  });
+
+  it("DP110_D16: lists a stuck top-up by its identity's name, asks with the top-up's copy and resolves its step", async () => {
+    const { model, api, calls } = setup({ encrypted: false });
+    const step = "topup/0-1/funding";
+    api.creditsStuckTopUpFundings.mockResolvedValue([{ step, identityIndex: 0, identity: "alice-id", state: "maybeSent" }]);
+    await model.refresh();
+    expect(model.stuckTopUps.map((t) => [t.funding.step, RepairText.topUp(t.name)])).toEqual([[step, "A top-up of @alice's credits"]]);
+    model.ask("resolveStuck", model.stuckTopUps[0].funding);
+    expect(model.state).toMatchObject({ kind: "confirming", what: "resolveStuck", target: { step } });
+    api.creditsStuckTopUpFundings.mockResolvedValue([]);
+    await model.confirm();
+    expect(calls).toEqual([`resolve a1 ${step} grant-1`]);
+    expect(model.state).toEqual({ kind: "done", text: RepairText.resolvedTopUp("ab".repeat(32)) });
+    expect(model.stuckTopUps).toEqual([]);
+  });
+
+  it("DP110_D16: a failed stuck top-up read lists none, says so, and leaves the registrations", async () => {
+    const { model, api } = setup();
+    api.creditsStuckTopUpFundings.mockRejectedValueOnce(appError("platform.unavailable"));
+    await model.refresh();
+    expect([model.stuckTopUps, model.stuckTopUpsUnreadable]).toEqual([[], true]);
+    expect(model.stuck.map((r) => r.draft)).toEqual(["r1"]);
+    expect(api.identities).not.toHaveBeenCalled();
+    await model.refresh();
+    expect(model.stuckTopUpsUnreadable).toBe(false);
   });
 
   it("a cancelled passphrase sends nothing", async () => {

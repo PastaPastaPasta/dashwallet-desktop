@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::dashpay::{DashPay, stub};
 use super::errors::CreditsError;
-use super::flows::GrantRequest;
+use super::flows::{DispatchState, GrantRequest};
 use super::topup;
 
 /// Credit costs of the DashPay actions at the network's protocol version,
@@ -120,6 +120,23 @@ pub struct PendingTopUp {
     pub consumption_unknown: bool,
 }
 
+/// A top-up funding of the wallet whose outcome is unknown: its step reads
+/// `MaybeSent` or `WillBeSent`, so it refuses the identity's next top-up
+/// (`platform.broadcast_unknown`, `platform.will_be_sent`) until it settles
+/// or Repair resolves it (`resolve_stuck_funding`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StuckTopUpFunding {
+    /// The funding step, `topup/<identity_index>-<k>/funding`, as
+    /// `dispatch_status` and `resolve_stuck_funding` name it.
+    pub step: String,
+    pub identity_index: u32,
+    /// The identity it tops up (base58), when the wallet knows the
+    /// identity at its index.
+    pub identity: Option<String>,
+    /// `MaybeSent` or `WillBeSent`.
+    pub state: DispatchState,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WithdrawAmount {
@@ -186,6 +203,16 @@ impl DashPay {
         let wallet = self.wallet_id;
         topup::on_lib(&self.session, wallet, move |session, lib| async move {
             Ok(topup::pending(&session, wallet, &*lib).await?)
+        })
+        .await
+    }
+
+    /// The wallet's top-up fundings whose outcome is unknown, by identity
+    /// index then step (`topup.rs`).
+    pub async fn stuck_top_up_fundings(&self) -> Result<Vec<StuckTopUpFunding>, CreditsError> {
+        let wallet = self.wallet_id;
+        topup::on_lib(&self.session, wallet, move |session, lib| async move {
+            Ok(topup::stuck(&session, wallet, &*lib).await?)
         })
         .await
     }

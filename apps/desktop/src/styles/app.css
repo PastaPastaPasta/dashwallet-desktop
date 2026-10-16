@@ -3908,3 +3908,206 @@ button.bell-row-open:focus-visible {
 .coinjoin-settings-form .form-field input {
   max-width: 240px;
 }
+
+/* My Profile and the top-up sheet (DP1-10) */
+
+.profile-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-layout-section-gap);
+}
+
+.profile-none {
+  margin: 0;
+  font-size: var(--dw-type-title3-medium-size);
+  font-weight: var(--dw-type-title3-medium-weight);
+  line-height: var(--dw-type-title3-medium-line);
+}
+
+.profile-header,
+.profile-details,
+.profile-credits,
+.profile-request,
+.profile-outcomes {
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.profile-header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: var(--dw-space-m);
+}
+
+.profile-header-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+}
+
+.profile-name {
+  margin: 0;
+  font-size: var(--dw-type-title3-medium-size);
+  font-weight: var(--dw-type-title3-medium-weight);
+  line-height: var(--dw-type-title3-medium-line);
+  overflow-wrap: anywhere;
+}
+
+.profile-username,
+.profile-message {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  overflow-wrap: anywhere;
+}
+
+.profile-edit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--dw-space-xxs);
+  max-width: 14rem;
+  text-align: end;
+}
+
+.profile-credits,
+.profile-request,
+.profile-outcomes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+.profile-credits .card-title,
+.profile-request .card-title,
+.profile-outcomes .card-title {
+  margin: 0;
+}
+
+.profile-credits-figure {
+  display: flex;
+  align-items: baseline;
+  gap: var(--dw-space-s);
+  margin: 0;
+  font-size: var(--dw-type-title3-medium-size);
+  font-weight: var(--dw-type-title3-medium-weight);
+  line-height: var(--dw-type-title3-medium-line);
+}
+
+.profile-credits-updating {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: normal;
+}
+
+.profile-credits-line,
+.profile-row-title,
+.profile-warning-title {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.profile-credits-line {
+  color: var(--dw-role-text-secondary);
+}
+
+.profile-row-title,
+.profile-warning-title {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.profile-warning {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-warning-tint);
+}
+
+[data-level="empty"] .profile-warning {
+  background: var(--dw-role-danger-tint);
+}
+
+.profile-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-s);
+  padding-top: var(--dw-space-s);
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.profile-row-actions,
+.profile-credits-actions,
+.profile-request-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.profile-tally {
+  margin: 0;
+}
+
+.topup-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+.topup-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.topup-choice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--dw-space-s);
+  align-items: center;
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border: 1px solid var(--dw-role-separator);
+  border-radius: var(--dw-radius-card);
+  cursor: pointer;
+}
+
+.topup-choice:has(input:checked) {
+  border-color: var(--dw-role-text-link);
+}
+
+.topup-choice-amount {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.topup-choice-buys {
+  grid-column: 2;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.topup-title {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  margin: 0 0 var(--dw-space-xs);
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.topup-total .detail-value {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
