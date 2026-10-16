@@ -135,6 +135,16 @@ codes! {
         FileRead = "app.file_read",
         /// The file could not be written where the user chose.
         FileWrite = "app.file_write",
+        /// Not a PNG, JPEG or BMP image the QR decoder reads, or too large
+        /// (DP2-08 D9).
+        ImageUnreadable = "app.image_unreadable",
+        /// The image holds no QR code that decodes.
+        NoQrCode = "app.no_qr_code",
+        /// This OS or desktop session offers no screen-region picker (macOS;
+        /// Linux without the desktop portal; DP2-08 D10).
+        ScreenCaptureUnavailable = "app.screen_capture_unavailable",
+        /// The screen capture failed.
+        ScreenCapture = "app.screen_capture",
     }
 }
 
