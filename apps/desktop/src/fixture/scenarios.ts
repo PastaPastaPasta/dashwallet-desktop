@@ -310,6 +310,21 @@ function attributePayments(w: World) {
   attribute(first("sendToAddress")!, "dave", "sent");
 }
 
+/** DP3-07 D10: besides Bob's and Dave's, the newest payment from Marta (no relation to the main
+ * identity), "Coffee refund" from Bob (a label over the contact) and an older payment whose
+ * counterparty's names have not landed yet. */
+function attributeMore(w: World) {
+  attributePayments(w);
+  const rows = w.wallets[0].rows;
+  rows[0].counterparty = { identity: IDENTITY.marta, username: "marta", displayName: "Marta", avatarUrl: null };
+  // The newest labelled receipt, "Coffee refund" (its text stays wallet.ts's sentinel).
+  const refund = rows.find((r) => r.label && r.amount > 0)!;
+  refund.counterparty = { identity: IDENTITY.bob, username: "bob", displayName: "Bob Builder", avatarUrl: null };
+  w.dashpay.activity[IDENTITY.bob].unshift({ txid: refund.txid, direction: "received", amount: refund.amount, height: refund.blockHeight, timestamp: refund.timestamp });
+  const nameless = rows.find((r) => r.txType === "recvWithAddress" && r.category === "received" && !r.label && !r.counterparty && r.status.kind === "confirmed")!;
+  nameless.counterparty = { identity: IDENTITY.mateo, username: null, displayName: null, avatarUrl: null };
+}
+
 function twoWallets(w: World): World {
   w.wallets.push(emptyWallet(SECOND_WALLET_ID, "Savings"));
   w.lock = unlocked([FIXTURE_WALLET_ID, SECOND_WALLET_ID]);
@@ -427,6 +442,13 @@ const SCENARIOS = {
     const w = base(t);
     w.dashpay = registered();
     attributePayments(w);
+    return w;
+  },
+  /** DP3-07: `dashpay-registered` with more attributed payments among the newest rows (D10). */
+  "dashpay-history-contacts": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    attributeMore(w);
     return w;
   },
   /** "alice" contested: her identity holds the temporary "alice007" while masternodes vote. The

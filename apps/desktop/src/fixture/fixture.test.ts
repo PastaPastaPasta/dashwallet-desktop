@@ -53,6 +53,7 @@ describe("fixture backend", () => {
       "fixture.test.ts",
       "handlers.ts",
       "history.test.ts",
+      "historyContacts.test.ts",
       "index.ts",
       "links.ts",
       "notifications.test.ts",
