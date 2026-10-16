@@ -197,6 +197,17 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     expect(model.state).toMatchObject({ kind: "done" });
   });
 
+  it("an orphan funding step (its row gone) is resolved by the step registrations names (Sol r1 P1)", async () => {
+    const { model, api, calls } = setup({ encrypted: false });
+    // registration.rs reports an orphan with the step itself as its draft and no label.
+    api.registrations.mockResolvedValueOnce([{ ...reg("registration/7/funding", "fundingUnknown"), phase: "keysPrepared", label: "" }]);
+    await model.refresh();
+    expect(model.stuck.map((r) => r.draft)).toEqual(["registration/7/funding"]);
+    await model.resolveStuck(model.stuck[0]);
+    expect(calls).toEqual([`resolve a1 registration/7/funding grant-1`]);
+    expect(model.state).toMatchObject({ kind: "done" });
+  });
+
   it("a refusal names why, and the unspent grant is revoked", async () => {
     const { model, api, vault } = setup({ encrypted: false });
     api.resolveStuckFunding.mockRejectedValueOnce(appError("stuck_funding", { kind: "stuckFunding", refusal: { kind: "callRunning" }, retryLater: true }));

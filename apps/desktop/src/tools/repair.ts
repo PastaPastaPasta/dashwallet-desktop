@@ -28,6 +28,8 @@ export const RepairText = {
   birthHeightSaved: (h: number) => `The wallet's birth height is now ${h}.`,
   resetDone: "The chain data was deleted; syncing again.",
   resolveStuck: "Resolve stuck funding",
+  /** An orphan funding step's line: its registration's row, and so its username, is gone. */
+  unnamedRegistration: "A registration's funding (its username is no longer known)",
   stuckUnreadable: "This wallet's username registrations could not be read, so stuck funding cannot be checked here.",
   resolveStuckQuestion:
     "Send every coin of this wallet to yourself? Whether the registration's funding reached the network is settled either way; the payment costs only its fee.",
@@ -95,8 +97,12 @@ export function parseHeight(text: string): number | null {
 /** A registration whose funding may or may not have gone out: Repair can settle it. */
 export const isStuck = (r: RegistrationStatus) => r.waiting === "fundingUnknown";
 
-/** The funding step a registration's Repair names (`dispatchStatus`'s id). */
-export const fundingStep = (r: RegistrationStatus) => `registration/${r.draft}/funding`;
+const ORPHAN_STEP = /^registration\/[^/]+\/funding$/;
+
+/** The funding step a registration's Repair names (`dispatchStatus`'s id). An orphan step (its
+ * row gone) is reported with the step itself as its `draft` (m4 §2.2), so it is taken as it is
+ * (f1, Sol r1 P1). */
+export const fundingStep = (r: RegistrationStatus) => (ORPHAN_STEP.test(r.draft) ? r.draft : `registration/${r.draft}/funding`);
 
 export type Confirmation = "resetChainData" | "dropUnconfirmed" | "resolveStuck";
 

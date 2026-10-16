@@ -118,7 +118,7 @@ export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: Wall
           <ul className="tool-list">
             {model.stuck.map((r) => (
               <li key={r.draft} data-testid={`repair-stuck-${r.draft}`}>
-                <span>{r.label}</span>
+                <span>{r.label || RepairText.unnamedRegistration}</span>
                 <DashButton variant="tintedBlue" size="small" data-testid={`repair-resolve-${r.draft}`} disabled={model.busy} onClick={() => model.ask("resolveStuck", r)}>
                   Resolve stuck funding: send all coins to yourself
                 </DashButton>
