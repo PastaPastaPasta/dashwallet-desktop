@@ -170,13 +170,7 @@ pub(crate) struct Recovery {
     /// says so on the first, waits on the second, and says on the third
     /// once that kick has returned.
     #[cfg(test)]
-    pub(super) pause_between_kicks: Mutex<
-        Option<(
-            std::sync::mpsc::Sender<()>,
-            std::sync::mpsc::Receiver<()>,
-            std::sync::mpsc::Sender<()>,
-        )>,
-    >,
+    pub(super) pause_between_kicks: Mutex<Option<KickPause>>,
     /// Tests: the names retry's period and a check's budget, if not the
     /// real ones.
     #[cfg(test)]
@@ -220,6 +214,14 @@ impl Drop for DiscoveriesClosed<'_> {
         }
     }
 }
+
+/// A test's hold on the minute's retry: reached, release, kicked.
+#[cfg(test)]
+pub(super) type KickPause = (
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+);
 
 /// A test's hold on one call at a known point.
 #[cfg(test)]
