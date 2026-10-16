@@ -276,3 +276,43 @@ for (const theme of THEMES) {
     await shoot(page, "notifications", theme);
   });
 }
+
+// DP3-06: Pay ▸ To a contact: the chooser (frequent strip and picker), the form with a payee, and
+// "Accept and pay"'s confirm sheet for a contact request.
+async function openPayContact(page: Page, theme: Theme) {
+  await page.goto(fixtureUrl("dashpay-registered", theme));
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  await page.getByTestId("pay-frequent-chip").first().waitFor();
+  await page.getByTestId("pay-picker-contacts").waitFor();
+}
+
+async function payContactForm(page: Page, name: string) {
+  await page.getByTestId("pay-picker-row").filter({ has: page.locator(".contact-row-name", { hasText: name }) }).click();
+  await page.getByTestId("pay-amount").fill("0.01");
+  await page.getByTestId("pay-fee-line").waitFor();
+  await page.getByTestId("pay-continue").and(page.locator(":enabled")).waitFor();
+}
+
+for (const theme of THEMES) {
+  test(`visual pay-contact ${theme}`, async ({ page }) => {
+    await openPayContact(page, theme);
+    await page.mouse.move(0, 0);
+    await shoot(page, "pay-contact", theme);
+  });
+
+  test(`visual pay-contact-form ${theme}`, async ({ page }) => {
+    await openPayContact(page, theme);
+    await payContactForm(page, "Bob Builder");
+    await page.mouse.move(0, 0);
+    await shoot(page, "pay-contact-form", theme);
+  });
+
+  test(`visual pay-contact-accept ${theme}`, async ({ page }) => {
+    await openPayContact(page, theme);
+    await payContactForm(page, "Grace Hopper");
+    await page.getByTestId("pay-continue").click();
+    await page.getByTestId("pay-confirm-passphrase").waitFor();
+    await shoot(page, "pay-contact-accept", theme);
+  });
+}

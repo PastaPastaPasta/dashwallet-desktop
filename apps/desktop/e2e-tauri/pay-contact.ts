@@ -155,7 +155,8 @@ async function run(
   if (ledgerIn) {
     step(`the payment ${PAYER}→${PAYEE} was sent before (${ledgerIn.at}, ${ledgerIn.txid}); not paying again`);
     await wd.press(tid("sidebar-activity"));
-    await wd.press(`[data-txid="${ledgerIn.txid}"]`);
+    const row = await poll(SEND_TIMEOUT_MS, "the payment in Activity", async () => (await wd.find(`[data-txid="${ledgerIn!.txid}"]`)) ?? undefined);
+    await wd.click(row);
   } else {
     await wd.press(tid("sidebar-pay"));
     await wd.press(tid("pay-tabs-contact"));
