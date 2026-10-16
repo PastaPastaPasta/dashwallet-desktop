@@ -51,6 +51,8 @@ struct Node {
     vote_delay: Option<Duration>,
     /// Close the connection right after the `ssc(11)` of a vote sync.
     close_after_vote_ssc: bool,
+    /// Close the connection on a `getdata` for votes (after its invs).
+    close_on_vote_getdata: bool,
     /// Never answer `govsync` (Core while not synced).
     mute: bool,
     /// Announce a vote it does not have on every ping.
@@ -179,6 +181,11 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
                 if node.notfound {
                     conn.send("notfound", &encode_inv(&items)).await.unwrap();
                     continue;
+                }
+                if node.close_on_vote_getdata && items.iter().any(|i| i.kind == INV_GOVERNANCE_VOTE)
+                {
+                    conn.shutdown().await;
+                    return;
                 }
                 if let Some(d) = node.vote_delay
                     && items.iter().any(|i| i.kind == INV_GOVERNANCE_VOTE)
@@ -550,6 +557,58 @@ async fn a_peer_closing_after_its_vote_count_is_replaced() {
     let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
     assert_eq!((p.votes, p.peers), (2, 1));
     hx.stop.send(true).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peer_closing_after_its_vote_invs_is_replaced() {
+    let obj = proposal("a");
+    let h = obj.hash();
+    let votes = vec![vote(h, 1, VoteOutcome::Yes), vote(h, 2, VoteOutcome::No)];
+    let closing = Node {
+        objects: vec![obj.clone()],
+        votes: votes.clone(),
+        close_on_vote_getdata: true,
+        ..Node::default()
+    };
+    let good = Node {
+        objects: vec![obj],
+        votes,
+        ..Node::default()
+    };
+    // The first peer completes its counts, then closes on the `getdata`:
+    // its votes have no other announcer, so the sync goes to the second.
+    let hx = start(vec![closing, good], |_| {}).await;
+    let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
+    assert_eq!((p.votes, p.peers), (2, 1));
+    hx.stop.send(true).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_object_the_wallet_refuses_neither_fails_the_sync_nor_costs_a_penalty() {
+    let good = proposal("a");
+    // Core keeps what `UniValue::read` parsed before trailing bytes; the
+    // wallet refuses the object (D35).
+    let data = format!(
+        r#"{{"end_epoch":{},"name":"b","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}} x"#,
+        unix_now() + 10_000
+    );
+    let refused = GovernanceObject::new_proposal(1, unix_now(), data.into_bytes());
+    let node = Node {
+        objects: vec![good.clone(), refused.clone()],
+        ..Node::default()
+    };
+    let hx = start(vec![node.clone(), node], |c| c.max_misbehaviour = 0).await;
+    let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
+    assert_eq!((p.objects, p.peers), (1, 2));
+    {
+        let store = hx.shared.store();
+        assert!(store.object(&good.hash()).is_some());
+        assert!(store.object(&refused.hash()).is_none());
+        // Not fetched again; its votes are ignored.
+        assert!(store.has_object(&refused.hash()));
+    }
+    hx.stop.send(true).unwrap();
+    assert_eq!(hx.task.await.unwrap(), Ok(()));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -691,8 +691,9 @@ impl Run {
     }
 
     /// Asks the next peer that announced `hash` and was not asked; with
-    /// none, gives up on it (failing the phase if `phase` and `count`).
-    fn retry(&mut self, hash: [u8; 32], kind: u32, tried: usize, t: Taken, count: bool) {
+    /// none, gives up on it (failing the phase if `phase` and `count`) and
+    /// returns `true`.
+    fn retry(&mut self, hash: [u8; 32], kind: u32, tried: usize, t: Taken, count: bool) -> bool {
         let mut asked = t.asked;
         if !asked.contains(&tried) {
             asked.push(tried);
@@ -706,14 +707,22 @@ impl Run {
             Some(next) => {
                 self.assign(hash, kind, next, t.phase, asked);
                 self.pump(next);
+                false
             }
             None => {
                 // Who announced an object still counts if another peer
                 // delivers it later.
                 self.remember_late(hash, asked, t.phase && count);
                 self.finish(&hash);
+                true
             }
         }
+    }
+
+    /// An item the wallet refused: another announcer's copy may be
+    /// accepted, but a refusal never fails the phase (D35).
+    fn refused(&mut self, hash: [u8; 32], kind: u32, from: usize, taken: Taken) -> bool {
+        self.retry(hash, kind, from, taken, false)
     }
 
     fn on_inv(&mut self, from: usize, items: Vec<InvItem>) {
@@ -829,10 +838,13 @@ impl Run {
                     self.ask_votes(vec![hash]);
                 }
             }
+            // Core relays only objects it accepted, so an honest peer may
+            // send one the wallet is stricter about: no penalty (D35).
             Err(e) if e.is_invalid() => {
                 tracing::debug!(?e, "governance object refused");
-                self.misbehaved(from, "invalid object");
-                self.retry(hash, INV_GOVERNANCE_OBJECT, from, taken, true);
+                if self.refused(hash, INV_GOVERNANCE_OBJECT, from, taken) {
+                    self.shared.store().refuse_object(hash);
+                }
             }
             Err(e) => {
                 tracing::debug!(?e, "governance object not kept");
@@ -860,7 +872,7 @@ impl Run {
             Ok(o) => o,
             Err(r) if r.is_invalid() => {
                 self.misbehaved(from, "invalid vote");
-                self.retry(hash, INV_GOVERNANCE_VOTE, from, taken, true);
+                self.refused(hash, INV_GOVERNANCE_VOTE, from, taken);
                 return;
             }
             Err(_) => {
@@ -874,7 +886,7 @@ impl Run {
             Ok(c) => c,
             Err(_) => {
                 self.misbehaved(from, "vote signature recovers no key");
-                self.retry(hash, INV_GOVERNANCE_VOTE, from, taken, true);
+                self.refused(hash, INV_GOVERNANCE_VOTE, from, taken);
                 return;
             }
         };
@@ -898,7 +910,7 @@ impl Run {
                 } else {
                     self.misbehaved(from, "invalid vote");
                 }
-                self.retry(hash, INV_GOVERNANCE_VOTE, from, taken, true);
+                self.refused(hash, INV_GOVERNANCE_VOTE, from, taken);
             }
             Err(_) => {
                 self.finish(&hash);
@@ -963,14 +975,6 @@ impl Run {
             return;
         };
         let gone = self.peers.remove(pos);
-        // Every vote sync it had not completed goes to another peer: its
-        // `ssc` may have come before its invs, so which proposals it
-        // finished is unknown.
-        let reask = if gone.votes_done() {
-            Vec::new()
-        } else {
-            gone.vote_asked.clone()
-        };
         let pending: Vec<[u8; 32]> = self
             .requests
             .pending
@@ -978,6 +982,17 @@ impl Run {
             .filter(|(_, p)| p.peer == id)
             .map(|(h, _)| *h)
             .collect();
+        // Its vote syncs go to another peer unless it both announced and
+        // delivered every vote: its `ssc` may have come before its invs, and
+        // votes it announced but did not send may have no other announcer.
+        let votes_owed = pending
+            .iter()
+            .any(|h| self.requests.pending[h].kind == INV_GOVERNANCE_VOTE);
+        let reask = if gone.votes_done() && !votes_owed {
+            Vec::new()
+        } else {
+            gone.vote_asked.clone()
+        };
         for h in pending {
             let r = self.requests.pending.remove(&h).expect("listed");
             let taken = Taken {

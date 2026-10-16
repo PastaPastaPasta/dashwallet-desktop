@@ -67,7 +67,7 @@ pub fn format_money(duffs: u64) -> String {
 }
 
 /// Core's `IsSpace`.
-fn is_space(c: char) -> bool {
+pub(crate) fn is_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r')
 }
 

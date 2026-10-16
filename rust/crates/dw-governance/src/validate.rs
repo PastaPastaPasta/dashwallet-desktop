@@ -30,8 +30,8 @@ use std::fmt;
 use crate::object::{GovernanceObject, MAX_DATA_SIZE, OBJECT_TYPE_PROPOSAL, OBJECT_TYPE_TRIGGER};
 use crate::params::governance_params;
 use crate::proposal::{
-    MAX_MONEY, ProposalData, TriggerData, amount_from_number, name_valid, payment_address_valid,
-    url_valid,
+    MAX_MONEY, ProposalData, TriggerData, amount_from_number, is_space, name_valid,
+    payment_address_valid, url_valid,
 };
 
 /// How far ahead of the local clock an object may be timed (Core
@@ -336,7 +336,9 @@ fn check_trigger(o: &Members, network: Network) -> Result<TriggerData, ObjectRej
     }
     let mut proposal_hashes = Vec::with_capacity(hashes.len());
     for ((address, amount), hash) in addresses.iter().zip(&amounts).zip(&hashes) {
-        if !payment_address_valid(address, network) {
+        // Core decodes payees with `DecodeDestination`, whose base58 skips
+        // leading and trailing spaces; proposals refuse any (`ValidatePaymentAddress`).
+        if !payment_address_valid(address.trim_matches(is_space), network) {
             return Err(Bad("payment_addresses"));
         }
         parse_payment_amount(amount).ok_or(Bad("payment_amounts"))?;
@@ -501,6 +503,18 @@ mod tests {
         };
         bad(trigger("4224", ADDR, "1.5|2", HASH), "payment_count");
         bad(trigger("4224", "", "", ""), "payment_addresses");
+        // Core's base58 skips spaces around a payee, not inside it.
+        let spaced = format!("  {ADDR} |{ADDR}");
+        assert!(check(&trigger("4224", &spaced, "1.5|2", &two_hashes)).is_ok());
+        bad(
+            trigger(
+                "4224",
+                &format!("{} {}", &ADDR[..10], &ADDR[10..]),
+                "1",
+                HASH,
+            ),
+            "payment_addresses",
+        );
         bad(trigger("4224", ADDR, ".5", HASH), "payment_amounts");
         bad(trigger("4224", ADDR, "1", &HASH[1..]), "proposal_hashes");
         bad(trigger("\"4224\"", ADDR, "1", HASH), "event_block_height");

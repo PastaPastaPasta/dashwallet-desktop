@@ -72,11 +72,13 @@ wallet keeps the same rule in `Requests`:
   (Core `MAX_GETDATA_SZ`), and at most 5,000 requests are in flight per peer; the rest wait in that peer's queue and
   go out as answers arrive.
 - An item is accepted only when it answers a request **to that peer**, now or earlier (a late delivery, below).
-  Anything else is unsolicited: it is dropped after decoding its hash. Unsolicited, undecodable and invalid items (a
-  refused object, a malformed vote, a vote whose signature does not verify) count as misbehaviour; a peer past
+  Anything else is unsolicited: it is dropped after decoding its hash. Unsolicited, undecodable and invalid votes (a
+  malformed vote, a vote whose signature does not verify) count as misbehaviour, and so do unsolicited and
+  undecodable objects; a peer past
   1,000 is closed (D10). A vote signed by a key the list does not hold is *suspect*, not misbehaviour (the list may
   lag), with its own bound of 10,000 per peer. A vote Core relays but the wallet does not tally (§4.1) is *ignored*:
-  no penalty, and its hash is remembered so it is not fetched again (D20).
+  no penalty, and its hash is remembered so it is not fetched again (D20). An object that decodes but that the wallet refuses is remembered (up to 10,000, oldest
+  forgotten first) and costs no penalty (D35).
 - A request ends when its item arrives, when the peer answers `notfound` for it, when the item does not decode or
   does not validate, when the peer closes, or when it times out. The timeout is `REQUEST_TIMEOUT` = 30 s after the
   peer's **last delivery** (not after the request was sent), so a peer working through a long queue is not timed
@@ -84,10 +86,11 @@ wallet keeps the same rule in `Requests`:
   announced is asked of the same peer once more, then given up (D12). A vote's hash leaves out its signature, so a
   refused signature is retried with the next announcer too.
 - An item that arrives after its request timed out is still accepted from the peer that was asked (Core answers a
-  long queue in order). Items given up during a sync phase are counted, and a phase with a given-up item that never
-  arrived fails (D13).
-- A peer that does not answer a `govsync` with its `ssc` within `ANSWER_TIMEOUT` = 60 s is closed; another peer
-  takes its place.
+  long queue in order). Items given up during a sync phase are counted, and a phase with a given-up item that no
+  peer delivered fails (D13); an item the wallet refused never fails it (D35).
+- A peer that does not answer a `govsync` with its `ssc` within `ANSWER_TIMEOUT` = 60 s is closed. No peer is
+  connected in its place during the run: its object sync is dropped (the other fresh peers' syncs still count),
+  and its vote syncs are asked again of another connected peer unless it announced and delivered every vote.
 - Every peer that announced an object counts towards its confirmation (§3), whether or not it was the one asked.
 - An orphan vote makes the wallet ask its sender for the object (`govsync <hash>` with the empty filter), once per
   object and peer, as Core does, at most 100 per peer and run.
@@ -173,7 +176,8 @@ what §1 says cannot be checked):
   own clean-up.
 - **Trigger** (`CSuperblock` constructor, `superblock.cpp:75`, `ParsePaymentSchedule`): `type` 2; integer
   `event_block_height`; `payment_addresses`, `payment_amounts` and `proposal_hashes` strings split on `|` into equal,
-  non-empty lists of valid destinations, `ParsePaymentAmount` amounts and 64-hex hashes. Its creation time is not
+  non-empty lists of valid destinations (surrounding spaces allowed, as Core's base58 decoder skips them, unlike a
+  proposal's address), `ParsePaymentAmount` amounts and 64-hex hashes. Its creation time is not
   more than an hour ahead and not older than two superblock cycles (`MasternodeRateCheck`, `governance.cpp:747`).
   It expires as `CSuperblock::IsExpired` says for a valid trigger: 576 blocks (or one cycle if shorter) after its
   event height, or one cycle once it has been paid (its event height is at or below the tip); off mainnet, a trigger
@@ -392,3 +396,4 @@ ranged votes, the bytes, the times and the peers.
 | D32 | A vote stored with no peer connected answers `no_peers` (console -9), not success. | The vote is kept and announced to the next peer, but nothing has left the wallet yet; the caller should know. |
 | D33 | `gobject count` reports `triggers`, `other` and `erased` as 0, and `votes` as the store's vote count. | The facade lists proposals only; triggers are kept for the paid check (D17) but not exposed, and erased objects are not counted (D23). The keys stay so that scripts parsing Core's shape keep working. |
 | D34 | A masternode whose list entry has a null operator key (revoked) has an unknown type: its key's votes range between 1 and 4, estimated at 1. | Core's `ResetOperatorFields` (ProUpRevTx) sets the state to the legacy version, whose SML entry serializes no `nType`, so every SPV client decodes a revoked evonode as regular while Core counts its vote at 4 (`dmn->nType`). Found by the testnet vector: 7 of 11 votes on 01934d6d… come from revoked evonodes (dashd's `getcurrentvotes` weight 4). Revoked entries are banned, so the threshold is unaffected. Mainnet has 354 revoked entries and G7 matches Core with them at weight 1, hence the estimate. The wallet's own revoked evonode shows as regular in `voting_masternodes` until MG-03 resolves its outpoint. |
+| D35 | An item the wallet refuses (an object that fails validation, a vote that is malformed or does not verify) is asked of its next announcer but never fails the phase; a refused object costs no penalty and its hash is remembered (up to 10,000, oldest forgotten first) so it is not fetched again. | Core relays only objects it accepted, so an object an honest peer sends and the wallet refuses means the wallet's rules differ from Core's for that object; failing the phase on it would keep the wallet Failed for as long as the object lives, and penalizing it would close honest peers. Core gives an invalid object 20 points; the wallet is looser, never stricter. Votes keep their D10 penalty: a vote's validity does not depend on rules the wallet could get wrong in the same way. |

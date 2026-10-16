@@ -73,6 +73,9 @@ pub const MAX_UNCONFIRMED_BYTES: usize = 32 << 20;
 pub const UNCONFIRMED_TTL_SECS: i64 = 60 * 60;
 /// Hashes of ignored votes remembered, oldest forgotten first.
 pub const MAX_IGNORED_VOTES: usize = 100_000;
+/// Hashes of objects every announcer's copy of was refused, oldest
+/// forgotten first (MG-02 D35).
+pub const MAX_REFUSED_OBJECTS: usize = 10_000;
 /// Core `GOVERNANCE_DELETION_DELAY`.
 pub const DELETION_DELAY_SECS: i64 = 10 * 60;
 /// Signal and outcome ranges Core accepts (`VOTE_SIGNAL_UNKNOWN`,
@@ -235,6 +238,8 @@ pub struct GovernanceStore {
     vote_count: u64,
     ignored: HashSet<[u8; 32]>,
     ignored_order: VecDeque<[u8; 32]>,
+    refused: HashSet<[u8; 32]>,
+    refused_order: VecDeque<[u8; 32]>,
     orphans: HashMap<[u8; 32], Orphan>,
     /// (arrival, hash) in arrival order; entries whose orphan left or was
     /// re-queued are skipped, and compacted when they pile up.
@@ -263,6 +268,8 @@ impl GovernanceStore {
             vote_count: 0,
             ignored: HashSet::new(),
             ignored_order: VecDeque::new(),
+            refused: HashSet::new(),
+            refused_order: VecDeque::new(),
             orphans: HashMap::new(),
             orphan_order: VecDeque::new(),
             orphan_slots: HashMap::new(),
@@ -311,10 +318,26 @@ impl GovernanceStore {
         self.orphans.len()
     }
 
-    /// Whether `hash` is stored or was erased (either way it is not
-    /// fetched).
+    /// Whether `hash` is stored, was erased or was refused (either way it
+    /// is not fetched).
     pub fn has_object(&self, hash: &[u8; 32]) -> bool {
-        self.objects.contains_key(hash) || self.erased.contains_key(hash)
+        self.objects.contains_key(hash)
+            || self.erased.contains_key(hash)
+            || self.refused.contains(hash)
+    }
+
+    /// Remembers an object the wallet refused from every peer that sent
+    /// it, so it is not fetched again and its votes are ignored (D35).
+    pub fn refuse_object(&mut self, hash: [u8; 32]) {
+        if self.objects.contains_key(&hash) || !self.refused.insert(hash) {
+            return;
+        }
+        self.refused_order.push_back(hash);
+        if self.refused_order.len() > MAX_REFUSED_OBJECTS
+            && let Some(old) = self.refused_order.pop_front()
+        {
+            self.refused.remove(&old);
+        }
     }
 
     /// Whether the vote `hash` is counted, waits for its object, or was
@@ -671,7 +694,8 @@ impl GovernanceStore {
     }
 
     fn parent(&self, hash: &[u8; 32], now: i64) -> Parent {
-        if self.erased.contains_key(hash) {
+        // A refused parent's votes are ignored as an erased one's are.
+        if self.erased.contains_key(hash) || self.refused.contains(hash) {
             return Parent::Expired;
         }
         match self.objects.get(hash).map(|o| &o.kind) {
