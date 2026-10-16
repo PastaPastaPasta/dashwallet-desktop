@@ -37,8 +37,8 @@ catch-up is not built; m4 §2.2 "On E0-04.P2b"). A row no run drives reports a w
 
 | # | Row (input) | Screen | Primary action | Secondary |
 |---|---|---|---|---|
-| R1 | running: `waiting` null, `instantSend`, `chainLock`, `network`, `sync`, `startup` | Progress: step 1–3 (DP1-08 D4) + its wait line | "Let me know when it's done" (Home) | — |
-| R2 | `waiting: authorize` (idle: after a relaunch, a revoked lease, a passphrase change) | Progress + "Paused. Confirm to finish creating @x." | Continue (grant, then `resume_registration`) | — |
+| R1 | running: `waiting` null, or `instantSend`, `chainLock`, `network`, `sync`, `startup` with its key held (`holdsKey`) | Progress: step 1–3 (DP1-08 D4) + its wait line | "Let me know when it's done" (Home) | — |
+| R2 | idle: `waiting: authorize` (a revoked lease, a passphrase change), or a keyless wait with no key held (after a relaunch: `chainLock` until a run records the proof; D21) | Progress + "Paused. Confirm to finish creating @x." | Continue (grant, then `resume_registration`) | — |
 | R3 | `waiting: unlock` | Progress + "Unlock the wallet to finish creating @x." | Unlock (mixing only: the unlock sheet; locked: the lock screen covers it) | — |
 | R4 | `waiting: fundingUnknown` | Progress + "The payment may have been sent" + the recovery copy (D9) | Open Repair | — |
 | R5 | `waiting: needsFinish` | Progress + "Funds locked — finishing" + the recovery copy | Finish transfers (D10) | Open Repair |
@@ -97,9 +97,10 @@ confirm that quotes `grant_request(registerName{label})` ("Paid from your identi
   model refuses a second start; D8). A row that waits is moved on with `resume_registration(draft, grant)` only; the
   engine's ledger refuses a second funding anyway (`registration.in_progress`), which the wizard maps to the progress
   screen of the draft it names.
-- **After a relaunch** the row waits `Authorize` (or `Unlock`): Continue, with the passphrase when "Require
-  authentication for every payment" is on or the vault is not fully unlocked (D12). The engine then runs the keyless
-  waits and the signing steps under one grant.
+- **After a relaunch** no run drives the row. The engine reports what it lacks first (`idle_wait`): `chainLock` while
+  its lock has no recorded proof, then `Authorize` (or `Unlock`). Either way, with no key held, the row waits for
+  Continue (D21), with the passphrase when "Require authentication for every payment" is on or the vault is not
+  fully unlocked (D12). The engine then runs the keyless waits and the signing steps under one grant.
 - **Before Confirm** nothing is spent or written: closing the app on step 1 or 2 drops the typed name, and a relaunch
   starts at the Join page (D13).
 - **Done** shows once, in the session that watched the row end: after a relaunch the Join page says "You have joined
@@ -148,6 +149,11 @@ re-reads the registrations (D14).
 | D18 | The fixture models a run as `runs` (drafts with a run this session) and the registration lease: a row is advanced only while its run is there and its lease is live, or (a scenario's run) no registration lease exists; `relaunch()` keeps the world through `sessionStorage`, drops runs, grants and leases, and locks an encrypted vault. No proof, credit or coin is modelled: `availableDuffs` is the confirmed balance less CoinJoin coins, and a run debits nothing. Reads answer copies of the world's rows. | The flows to prove are the UI's (step, park, Continue, no second start); the engine's own accounting has its tests. A read answering the world's object, changed in place by `advance`, looked unchanged to the query cache (found in the e2e run). |
 | D19 | A relaunch on step 1 or 2 lands on the Join card (D13); a relaunch after Confirm lands on Home with the card paused (`creatingPaused`), whose action opens the row's screen. | Home is the app's start; the card already leads to the Join page (DP1-08 D12). |
 | D20 | The two steps' header is the line "Step n of 2 · title", without C29's segmented bar. | A bar of two segments says no more than the line; the progress screen keeps DP1-08's three-step bar (D11). |
+| D21 | A row waits for Continue (`awaitsContinue`, status.ts) when it says `authorize`, or a keyless wait (`instantSend`, `chainLock`, `network`, `sync`, `startup`) while `!holdsKey`. Home's card says `creatingPaused` and the page R2 for it; only other rows are polled (D15). The fixture reports an idle proofless row as `chainLock`, a parked run as `authorize`. | Review r1 H1: the engine's `idle_wait` reports an idle `fundingSent`/`proofWaiting` row with no recorded proof as `ChainLock` whether or not a run waits, and nothing moves the lock's status outside a run, so the old R1 mapping left a relaunched row on "Let me know when it's done" for ever. A run this app starts or resumes always holds a lease, so `!holdsKey` marks an idle row; taking a running row for idle costs one passphrase (resume hands a running flow the grant), the reverse strands the screen. An engine field saying whether a run drives the row would replace the inference (F7). |
+| D22 | When the status is `noIdentity`, the Join page shows the newest row that failed for good with its funds committed (R8) instead of the intro. The fixture's status and start refusal follow the engine: `registering` names a row short of done and not failed for good (banner.rs `in_progress`); a start is refused by such a row or by a failed row with funds committed. | Review r1 M1: such a row is no longer `registering` but still blocks a start, so the funds-are-safe copy and Repair were only reachable after a refused Confirm. |
+| D23 | While the draft this session started has no row in the cache yet, the page shows a busy progress screen, never the Join intro with Create. | Review r1 M2: between the start's answer and the registrations read, Create would have been offered again (the engine's guard still refuses a second lock). |
+| D24 | The wedge keeps every blocker the engine named and starts past all of them; a refusal of that start shows inside the sheet. Step 2 takes the trimmed label. On the credits path step 2 shows `grant_request`'s credits bound and, for a contested label, the "I accept" check. "Choose another username" on a done row needs its identity. | Review r1 M3, M4, L1, L4. |
+| D25 | Load flakes recorded: once each, the Home card `creatingPaused light` (chromium) and `error dark` (webkit) card-state tests timed out on their first read under load (box load 50–190); both pass alone and in the next full runs. In one full vitest run (after the r1 fixes) `files.test.ts` (not touched here) and the every-scenario JSON test failed on time; both pass alone, and the latter has its own 30 s timeout now. | The common brief: rerun alone before blaming the code. |
 
 ## Deferred
 
@@ -159,6 +165,9 @@ re-reads the registrations (D14).
 | F4 | Fiat beside the Dash cost | the price feed task |
 | F5 | (done here: D5) | — |
 | F6 | A `Platform{Registration}` signal when a run's `waiting` changes without a row write, so D15's poll can go | engine follow-up |
+| F7 | A field on `RegistrationStatus` saying whether a run drives the row, so D21 stops inferring it from `holdsKey` | engine follow-up |
+| F8 | Continue's grant on a funded row could be `maxDuffs: 1` (the lock is paid), and a grant a running flow did not take could be revoked; today it expires | engine/contract follow-up (review r1 L2) |
+| F9 | Finish transfers' credits bound is one non-contested registration's; several stranded rows or a contested one may park for another grant | follow-up (review r1 L3) |
 
 ## Slice plan
 
