@@ -288,7 +288,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       const dp = d.dashpay(ctx.world, walletId, identity);
       const check = validLabel(label);
       const known = availability(dp, label);
-      if (known.kind === "taken") throw fail("name.taken", "name taken");
+      if (known.kind === "taken") throw fail("name.taken", "another identity holds the label");
       if (known.kind === "contestOpen") throw fail("name.contest_open", "a contest for the name is open");
       if (known.kind === "locked") throw fail("name.locked", "name locked");
       const me = dp.identities.find((i) => i.identity === identity)!;
