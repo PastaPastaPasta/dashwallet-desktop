@@ -49,7 +49,11 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
   const form = { ...saved, ...edits };
   /** What Save writes: Parallel sessions is not saved while multi-session is off (D11). */
   const effective = current.multiSession ? form : { ...form, maxSessions: saved.maxSessions };
-  const changed = FIELDS.some(({ field }) => effective[field] !== saved[field]);
+  const checked = checkSettings(effective, current, limits);
+  /** Save: a value that would change, or text it would refuse (so it can say why). "04" for 4 is
+   * no change. Cancel: any text typed. */
+  const changed = "field" in checked || FIELDS.some(({ field }) => checked.ok[field] !== current[field]);
+  const edited = FIELDS.some(({ field }) => effective[field] !== saved[field]);
 
   /** Resolves to whether the engine took `next`; a refusal shows its message. */
   const write = async (next: CoinJoinSettings) => {
@@ -69,7 +73,6 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    const checked = checkSettings(effective, current, limits);
     if ("field" in checked) {
       setWrong(checked.field);
       setDone(null);
@@ -159,7 +162,7 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
             <DashButton type="submit" variant="tintedBlue" data-testid="settings-coinjoin-save" disabled={!changed || saving}>
               Save
             </DashButton>
-            {changed && (
+            {edited && (
               <DashButton
                 variant="plainBlue"
                 data-testid="settings-coinjoin-revert"

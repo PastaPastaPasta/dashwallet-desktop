@@ -251,6 +251,22 @@ test("D11: Settings ▸ CoinJoin checks, saves and restores the network's option
   expect(errors).toEqual([]);
 });
 
+test("D11: the same value typed differently is nothing to save (review Sol r2 P3)", async ({ page }) => {
+  const errors = await openSettings(page, "funded");
+  const field = (f: string) => page.getByTestId(`settings-coinjoin-${f}`);
+  const settings = () => page.evaluate(() => window.__dwFixture!.world.coinjoin.settings);
+  await field("rounds").fill("04");
+  await field("targetAmountDash").fill("1,000");
+  await expect(field("save")).toBeDisabled();
+  await expect(field("revert")).toBeVisible();
+  await field("rounds").fill("05");
+  await expect(field("save")).toBeEnabled();
+  await field("save").click();
+  await expect(field("done")).toHaveText("Saved.");
+  expect(await settings()).toMatchObject({ rounds: 5, targetAmountDash: 1000 });
+  expect(errors).toEqual([]);
+});
+
 test("D11: Parallel sessions typed, then multi-session off: nothing to save (review Sol r1 #3)", async ({ page }) => {
   const errors = await openSettings(page, "funded");
   const field = (f: string) => page.getByTestId(`settings-coinjoin-${f}`);
