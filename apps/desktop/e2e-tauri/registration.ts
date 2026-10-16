@@ -178,6 +178,12 @@ async function createWallet(wd: WebDriver, a: App, passphrase: string): Promise<
   return wallets[0]!;
 }
 
+/** The passphrase sheet a grant asks with. */
+async function grantPassphrase(wd: WebDriver, a: App, passphrase: string) {
+  await a.enter("grant-sheet-field", passphrase);
+  await wd.press(tid("grant-sheet-submit"));
+}
+
 async function unlock(wd: WebDriver, a: App, passphrase: string) {
   await wd.waitFor(tid("lock-field"), "the lock screen");
   if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
@@ -204,7 +210,6 @@ const balanceOf = async (a: App, walletId: string) => {
 function fund(address: string, tip: number): string {
   if (!existsSync(FUNDER_ROOT)) {
     const phrase = readFileSync(join(FIXTURE, `${FUNDER}.mnemonic`), "utf8").trim();
-    addPhrase(phrase);
     mkdirSync(FUNDER_ROOT, { mode: 0o700 });
     dwcli(FUNDER_ROOT, ["init-vault"]);
     dwcli(FUNDER_ROOT, ["import", "--birth-height", FUNDER_BIRTH, "--name", `Fixture ${FUNDER}`], `${phrase}\n`);
@@ -270,8 +275,7 @@ async function registerAndClose(wd: WebDriver, a: App, walletId: string, passphr
   step(`step 2: @${label} costs ${fee}`);
   save({ state: "registering" });
   await wd.press(tid("registration-pay"));
-  await a.enter("grant-sheet-field", passphrase);
-  await wd.press(tid("grant-sheet-submit"));
+  await grantPassphrase(wd, a, passphrase);
   const row = await poll(REGISTRATION_TIMEOUT_MS, "the asset lock's txid", async () => {
     const r = (await rowsOf(a, walletId)).find((r) => r.label === label);
     if (r?.failure) throw new Error(`the registration failed: ${r.failure.code} at ${r.failure.phase}`);
@@ -293,16 +297,20 @@ async function resume(wd: WebDriver, a: App, walletId: string, passphrase: strin
     throw new Error(`after the relaunch the engine lists ${after.map((r) => `${r.draft} ${r.phase} ${r.txid}`).join("; ") || "no rows"}`);
   const parked = after[0]!;
   step(`relaunched: the row is ${parked.phase}, waiting ${parked.waiting}, holdsKey ${parked.holdsKey}`);
-  // Nothing resumes alone (D12): Home says paused until Continue.
-  const state = await poll(TIMEOUT_MS, "Home's card", async () => (await a.attr(tid("dashpay-card"), "data-state")) ?? undefined);
+  // Nothing resumes alone (D12): Home says paused until Continue (D21: an idle row with no key).
+  let state: string | null = null;
+  await poll(TIMEOUT_MS, "Home's card to say paused", async () => {
+    state = await a.attr(tid("dashpay-card"), "data-state");
+    return state === "creatingPaused" ? true : undefined;
+  }).catch(() => {
+    throw new Error(`Home's card after the relaunch is ${state}, not creatingPaused`);
+  });
   await wd.screenshot("4-relaunched-home");
-  if (state !== "creatingPaused") throw new Error(`Home's card after the relaunch is ${state}, not creatingPaused`);
   await wd.press(`${tid("dashpay-card")} ${tid("dashpay-card-action")}`);
   await poll(TIMEOUT_MS, "the paused screen", async () => ((await a.attr(tid("registration-screen"), "data-kind")) === "paused" ? true : undefined));
   await wd.screenshot("5-paused");
   await wd.press(tid("registration-continue"));
-  await a.enter("grant-sheet-field", passphrase);
-  await wd.press(tid("grant-sheet-submit"));
+  await grantPassphrase(wd, a, passphrase);
   await wd.waitGone(tid("grant-sheet"), "the passphrase sheet");
   step("Continue: passphrase given");
   const end = await poll(REGISTRATION_TIMEOUT_MS, "the registration to end", async () => {
@@ -326,19 +334,21 @@ async function main() {
   mkdirSync(STATE, { recursive: true, mode: 0o700 });
   if (existsSync(LEDGER)) {
     ledger = JSON.parse(readFileSync(LEDGER, "utf8")) as Ledger;
-    if (ledger.state === "done") throw new Error(`${LEDGER} says done: wallet E is registered; move the ledger aside (and keep E.mnemonic) for a new run`);
+    if (ledger.state === "done") throw new Error(`${LEDGER} says done: wallet E is registered; a new run needs the ledger, E.mnemonic and ${STATE} moved aside`);
     if (ledger.state === "creating" || ledger.state === "funding" || ledger.state === "registering")
       throw new Error(`${LEDGER} says ${ledger.state}: a wallet, a payment or a lock may exist; look before running again`);
     if (!existsSync(PASS_FILE) || !existsSync(ROOT) || !existsSync(MNEMONIC)) throw new Error(`${LEDGER} says ${ledger.state} but ${STATE} or E.mnemonic is gone`);
     step(`going on from ${ledger.state}`);
   } else {
     if (existsSync(MNEMONIC)) throw new Error(`${MNEMONIC} exists without a ledger: pick another fixture or move it aside`);
-    if (existsSync(ROOT)) throw new Error(`${ROOT} exists without a ledger`);
+    // Checked before the ledger is written, so a leftover never leaves a ledger that blocks reruns.
+    for (const left of [ROOT, FUNDER_ROOT, PASS_FILE]) if (existsSync(left)) throw new Error(`${left} exists without a ledger: move it aside`);
     save({ state: "creating" }, true);
     writeFileSync(PASS_FILE, `${randomBytes(18).toString("base64url")}\n`, { flag: "wx", mode: 0o600 });
   }
   const passphrase = readFileSync(PASS_FILE, "utf8").trim();
   secrets.push(passphrase);
+  addPhrase(readFileSync(join(FIXTURE, `${FUNDER}.mnemonic`), "utf8").trim());
   if (existsSync(MNEMONIC)) addPhrase(readFileSync(MNEMONIC, "utf8").trim());
 
   let failure: unknown;
