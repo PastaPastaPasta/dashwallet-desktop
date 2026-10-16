@@ -132,7 +132,7 @@ async function main() {
     // The link's block, not its username line: WebKitWebDriver never calls that line displayed (BL-164).
     await wd.waitFor(tid("add-contact-link"), "Add contact, from the forwarded dashpay: link");
     const shown = Date.now() - forwarded;
-    const username = await wd.script<string | null>(`return document.querySelector('${tid("add-contact-username")}')?.innerText ?? null`);
+    const username = await wd.script<string | null>(`return document.querySelector('${tid("add-contact-link")} ${tid("add-contact-username")}')?.innerText ?? null`);
     if (username !== "@bob") throw new Error(`unexpected contact: ${username}`);
     // Regtest has no Platform: the check must give up on it well inside the budget.
     const gaveUp = await wd.waitFor(tid("add-contact-link-error"), "the link check to give up on the absent Platform", TIMEOUT_MS / 2);
