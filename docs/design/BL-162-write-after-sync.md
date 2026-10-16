@@ -64,7 +64,7 @@ two later sends went through.
 A trust refusal is outside the family (`platform.context_unavailable`, `platform.trust_mismatch`). Which member the two
 failures were is unknown: no log recorded it.
 
-Both failures took exactly 123 s (21:40:23 → 21:42:26, 21:45:43 → 21:47:46): a fixed budget, not a flaky network. The
+Both failures took exactly 123 s (21:40:23 → 21:42:26, 21:45:43 → 21:47:46): consistent with a fixed timeout budget; the cause is unknown. The
 engine passes no settings, so the SDK's apply (platform fork at ebe37f8a):
 
 | DAPI call | Per attempt | Attempts | Worst case |

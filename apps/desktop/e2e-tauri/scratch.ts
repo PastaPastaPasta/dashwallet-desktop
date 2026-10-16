@@ -40,8 +40,9 @@ export function newDirIn(root: string, wanted: string): string {
   return p;
 }
 
-/** Every regular file under `dir` (the data root, OUT) that holds one of `secrets` as plain text, as
- * `<path> (<index of the secret>)`. Symlinks are skipped, so the walk stays below `dir`. */
+/** Every regular file under `dir` (the data root, OUT) that holds one of `secrets` as plain text, once,
+ * as `<path> (<index of the first secret it holds>)`. Symlinks are skipped, so the walk stays below
+ * `dir`. */
 export function leaks(dir: string, secrets: string[]): string[] {
   const found: string[] = [];
   const walk = (d: string) => {
@@ -52,7 +53,8 @@ export function leaks(dir: string, secrets: string[]): string[] {
       if (st.isDirectory()) walk(p);
       else if (st.isFile()) {
         const text = readFileSync(p).toString("latin1");
-        for (const s of secrets) if (text.includes(Buffer.from(s, "utf8").toString("latin1"))) found.push(`${p} (${secrets.indexOf(s)})`);
+        const i = secrets.findIndex((s) => text.includes(Buffer.from(s, "utf8").toString("latin1")));
+        if (i >= 0) found.push(`${p} (${i})`);
       }
     }
   };
@@ -61,13 +63,18 @@ export function leaks(dir: string, secrets: string[]): string[] {
 }
 
 /** Deletes each of `found` (as `leaks` reports them) that is a regular file inside one of `owned`;
- * returns the others, left in place. */
+ * returns the others, left in place. Decided once per path, so a file listed twice is never both. */
 export function removeOwned(found: string[], owned: string[]): string[] {
+  const deleted = new Map<string, boolean>();
   const kept: string[] = [];
   for (const f of found) {
     const p = f.replace(/ \(\d+\)$/, "");
-    if (owned.some((o) => inside(o, p)) && lstatSync(p, { throwIfNoEntry: false })?.isFile()) rmSync(p, { force: true });
-    else kept.push(f);
+    if (!deleted.has(p)) {
+      const ours = owned.some((o) => inside(o, p)) && lstatSync(p, { throwIfNoEntry: false })?.isFile() === true;
+      if (ours) rmSync(p, { force: true });
+      deleted.set(p, ours);
+    }
+    if (!deleted.get(p)) kept.push(f);
   }
   return kept;
 }

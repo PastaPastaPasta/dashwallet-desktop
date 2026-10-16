@@ -64,4 +64,16 @@ describe("the probe's scratch boundary (BL-162)", () => {
     expect(existsSync(join(owned, "log.txt"))).toBe(false);
     expect(readFileSync(join(extra, "A.mnemonic"), "utf8")).toBe(SECRET);
   });
+
+  it("reports and deletes a file that holds several secrets (or one listed twice) once", () => {
+    const owned = join(base, "out");
+    mkdirSync(owned);
+    const log = join(owned, "log.txt");
+    writeFileSync(log, `${SECRET} and the passphrase`);
+    // The phrase as read and as re-joined are often the same string.
+    const found = leaks(owned, [SECRET, SECRET, "the passphrase"]);
+    expect(found).toEqual([`${log} (0)`]);
+    expect(removeOwned([...found, ...found], [owned]), "deleted, not reported as left").toEqual([]);
+    expect(existsSync(log)).toBe(false);
+  });
 });
