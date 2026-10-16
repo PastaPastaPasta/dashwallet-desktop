@@ -71,6 +71,9 @@ export class WebDriver {
     return found[0]?.[ELEMENT] ?? null;
   }
 
+  /** The first match of `css` once WebKitWebDriver calls it displayed. That check calls an element
+   * with `overflow: hidden` and only text in it hidden (the row ellipsis style), however it looks:
+   * wait for its container and read the text with a script (BL-164). */
   waitFor(css: string, what = css, ms = TIMEOUT_MS): Promise<string> {
     return poll(ms, what, async () => {
       const el = await this.find(css);

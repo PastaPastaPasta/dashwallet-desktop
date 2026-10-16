@@ -127,11 +127,18 @@ async function main() {
     await wd.screenshot("4-activity");
     step("Activity page");
 
+    const forwarded = Date.now();
     secondLaunch(dataRoot, `dashpay://user?id=${IDENTITY}&username=bob`);
-    const username = await wd.waitFor(tid("add-contact-username"), "Add contact, from the forwarded dashpay: link");
-    if ((await wd.text(username)) !== "@bob") throw new Error(`unexpected contact: ${await wd.text(username)}`);
+    // The link's block, not its username line: WebKitWebDriver never calls that line displayed (BL-164).
+    await wd.waitFor(tid("add-contact-link"), "Add contact, from the forwarded dashpay: link");
+    const shown = Date.now() - forwarded;
+    const username = await wd.script<string | null>(`return document.querySelector('${tid("add-contact-username")}')?.innerText ?? null`);
+    if (username !== "@bob") throw new Error(`unexpected contact: ${username}`);
+    // Regtest has no Platform: the check must give up on it well inside the budget.
+    const gaveUp = await wd.waitFor(tid("add-contact-link-error"), "the link check to give up on the absent Platform", TIMEOUT_MS / 2);
+    if (!(await wd.text(gaveUp)).includes("Could not reach Dash Platform")) throw new Error(`unexpected link check: ${await wd.text(gaveUp)}`);
     await wd.screenshot("5-add-contact-from-second-launch");
-    step("second launch: dashpay: link forwarded, Contacts ▸ Add contact");
+    step(`second launch: dashpay: link forwarded, Contacts ▸ Add contact (@bob after ${shown} ms, Platform unreachable after ${Date.now() - forwarded} ms)`);
 
     secondLaunch(dataRoot, `pay:${address}?label=Forwarded`);
     await waitValue("pay-label", "Forwarded");
