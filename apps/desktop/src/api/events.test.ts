@@ -175,10 +175,11 @@ describe("event bridge", () => {
     expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
   });
 
-  it("sync re-reads only the DashPay statuses without an identity (BL-153 D9)", async () => {
+  it("sync re-reads only the DashPay statuses without an identity (BL-153 D9, DP1-09 D28)", async () => {
     const client = new QueryClient();
     client.setQueryData(keys.dashpayStatus("a"), { kind: "noIdentity", reason: "waitingForSync" });
     client.setQueryData(keys.dashpayStatus("b"), { kind: "ready", main: "x" });
+    client.setQueryData(keys.dashpayStatus("c"), { kind: "startupIncomplete", startup: "notRun" });
     client.setQueryData(keys.identities("a"), []);
     let emit: (e: AppEvent) => void = () => undefined;
     const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
@@ -186,6 +187,7 @@ describe("event bridge", () => {
     emit({ kind: "spvStateChanged", network: "testnet", running: true });
     expect(client.getQueryState(keys.dashpayStatus("a"))?.isInvalidated).toBe(true);
     expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
+    expect(client.getQueryState(keys.dashpayStatus("c"))?.isInvalidated).toBe(true);
     expect(client.getQueryState(keys.identities("a"))?.isInvalidated).toBe(false);
   });
 });

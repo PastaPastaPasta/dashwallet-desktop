@@ -12,6 +12,11 @@ import type { PlatformChangeName } from "./generated/PlatformChangeName";
 import { dashpayKeys } from "../dashpay/queries";
 import { keys } from "./queries";
 
+/** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
+ * engine's identity read was not live, so it proves nothing), and no Platform signal follows when
+ * the bring-up has nothing to report: sync re-reads it like `noIdentity`'s. */
+const withoutIdentity = (kind: DashPayStatus["kind"] | undefined) => kind === "noIdentity" || kind === "startupIncomplete";
+
 /** The query keys an event makes stale; `"all"` means every query but the network itself. */
 export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
   switch (event.kind) {
@@ -28,7 +33,7 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     case "walletLoadChanged":
       return [keys.wallets, keys.dashpayStatus(event.walletId)];
     // Sync ends `noIdentity`'s `waitingForSync` and sends no Platform signal (BL-153 D9); only
-    // statuses without an identity are re-read (bridgeEvents).
+    // statuses without an identity are re-read (bridgeEvents), `startupIncomplete` too (DP1-09 D28).
     case "spvStateChanged":
     case "sync":
       return [keys.sync, keys.dashpayStatusAll];
@@ -136,7 +141,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
     } else
       for (const queryKey of stale) {
         if (queryKey === keys.dashpayStatusAll)
-          void client.invalidateQueries({ queryKey, predicate: (q) => (q.state.data as DashPayStatus | undefined)?.kind === "noIdentity" });
+          void client.invalidateQueries({ queryKey, predicate: (q) => withoutIdentity((q.state.data as DashPayStatus | undefined)?.kind) });
         else if (queryKey !== keys.lockReconcile) void client.invalidateQueries({ queryKey });
         else {
           const now = Date.now();
