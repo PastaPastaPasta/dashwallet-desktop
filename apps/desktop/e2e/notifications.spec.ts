@@ -150,6 +150,9 @@ test("D28 after a keyboard accept, focus goes to the next request, then to the p
 test("D28 on the page, an ignored request hands focus to the next one, the last to the heading", async ({ page }) => {
   await open(page);
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "notifications" }));
+  // The page takes its landing focus a frame later; `focus()` below is no user input, so it
+  // would not hold against that frame (BL-165 D4).
+  await expect(page.getByTestId("page-notifications").locator("h1")).toBeFocused();
   const requests = page.getByTestId("notifications-requests");
   await requests.getByTestId("bell-request").first().waitFor();
   await requests.getByTestId("bell-ignore").first().focus();
