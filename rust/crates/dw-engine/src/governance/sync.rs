@@ -181,22 +181,33 @@ impl GovernanceRuntime {
         }
     }
 
-    /// Starts the task unless it runs.
+    /// Starts the task unless it runs. A task still stopping is awaited
+    /// first, so two never share the store and its last `Disabled` cannot
+    /// land after the new task's phase.
     pub fn start(&self, session: &Arc<NetworkSession>) {
         let mut slot = self.task.lock().unwrap_or_else(|p| p.into_inner());
-        if slot.as_ref().is_some_and(|t| !t.handle.is_finished()) {
+        if slot
+            .as_ref()
+            .is_some_and(|t| !*t.stop.borrow() && !t.handle.is_finished())
+        {
             return;
         }
+        let previous = slot.take().map(|t| t.handle);
         let (stop, stop_rx) = watch::channel(false);
-        let handle = session
-            .rt
-            .spawn(sync_loop(Arc::downgrade(session), stop_rx));
+        let weak = Arc::downgrade(session);
+        let handle = session.rt.spawn(async move {
+            if let Some(p) = previous {
+                let _ = p.await;
+            }
+            sync_loop(weak, stop_rx).await;
+        });
         *slot = Some(Task { stop, handle });
     }
 
-    /// Stops the task (it ends its run and says `Disabled`).
+    /// Stops the task (it ends its run and says `Disabled`); it stays in
+    /// its slot until it ends or a start replaces it.
     pub fn stop(&self) {
-        if let Some(t) = self.task.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        if let Some(t) = self.task.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
             let _ = t.stop.send(true);
         }
     }

@@ -837,6 +837,34 @@ fn opts() -> SessionOptions {
 }
 
 #[test]
+fn turning_sync_off_and_on_leaves_one_task_with_its_phase() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine(&dir.path().join("data"));
+    let session = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, opts()))
+        .unwrap();
+    let gov = session.governance();
+    engine.block_on(async {
+        gov.set_sync_enabled(true).await.unwrap();
+        // A start right after a stop runs a new task once the stopped one
+        // ends; with no tip it stays `waiting`, never `disabled` (D39).
+        for _ in 0..5 {
+            gov.set_sync_enabled(false).await.unwrap();
+            gov.set_sync_enabled(true).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            assert_eq!(
+                gov.sync_state().unwrap().phase,
+                GovernanceSyncPhase::Waiting
+            );
+        }
+        gov.set_sync_enabled(false).await.unwrap();
+    });
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+}
+
+#[test]
 fn every_unimplemented_call_returns_not_implemented_with_its_name() {
     let dir = dw_testutil::private_tempdir();
     let engine = engine(&dir.path().join("data"));
