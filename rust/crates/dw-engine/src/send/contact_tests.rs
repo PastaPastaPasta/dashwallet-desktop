@@ -277,19 +277,13 @@ impl Fixture {
     /// had: the immutable account carrying the xpub and its managed pool,
     /// as an accept or a rotation's teardown and rebuild leave them.
     fn build_paying_account(&self, n: u8, xpub: ExtendedPubKey) {
+        self.tear_down_paying_account(n);
         let manager = self.session.manager().unwrap();
         let wallet = self.wallet;
         self.engine.block_on(async move {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
             let (w, info) = wm.get_wallet_mut_and_info_mut(&wallet.0).unwrap();
-            let key = DashpayAccountKey {
-                index: 0,
-                user_identity_id: [ME; 32],
-                friend_identity_id: [n; 32],
-            };
-            w.accounts.dashpay_external_accounts.remove(&key);
-            (info.core_wallet.accounts.dashpay_external_accounts).remove(&key);
             let account_type = AccountType::DashpayExternalAccount {
                 index: 0,
                 user_identity_id: [ME; 32],
@@ -306,6 +300,25 @@ impl Fixture {
             (info.core_wallet.accounts)
                 .insert_funds_bearing_account(managed)
                 .unwrap();
+        });
+    }
+
+    /// Contact `n`'s paying account removed, as a rotation's teardown
+    /// leaves it before the rebuild: the immutable account and its pool.
+    fn tear_down_paying_account(&self, n: u8) {
+        let manager = self.session.manager().unwrap();
+        let wallet = self.wallet;
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let (w, info) = wm.get_wallet_mut_and_info_mut(&wallet.0).unwrap();
+            let key = DashpayAccountKey {
+                index: 0,
+                user_identity_id: [ME; 32],
+                friend_identity_id: [n; 32],
+            };
+            w.accounts.dashpay_external_accounts.remove(&key);
+            (info.core_wallet.accounts.dashpay_external_accounts).remove(&key);
         });
     }
 
@@ -1900,14 +1913,33 @@ fn an_address_from_a_replaced_account_is_not_paid() {
     let f = fixture(false);
     let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
     let d = f.draft(BOB);
+    let before = platform.fetches();
     let refused = f.prepare_held_at(&d, Point::Reserved, || {
         f.rotate_bob(&platform, contact_xpub(CAROL))
     });
     assert_eq!(platform_error(refused), "platform.context_unavailable");
+    assert_eq!(
+        platform.fetches(),
+        before + 2,
+        "the gate's two fetches only: the binding refused, not the request"
+    );
     assert!(
         f.reserved(BOB).is_none(),
         "the replaced account's address is not kept"
     );
+}
+
+/// D21 without the latch: under `Enforcing` the re-check runs and binds
+/// the address though nothing came through the fallback, so an address
+/// whose account was torn down meanwhile is neither paid nor kept.
+#[test]
+fn an_address_from_a_torn_down_account_is_not_paid() {
+    let f = fixture(false);
+    f.session.trust.set_mode(TrustMode::Enforcing);
+    let d = f.draft(BOB);
+    let refused = f.prepare_held_at(&d, Point::Reserved, || f.tear_down_paying_account(BOB));
+    assert_eq!(platform_error(refused), "platform.context_unavailable");
+    assert!(f.reserved(BOB).is_none());
 }
 
 /// D21's control: a rotation whose rebuilt account derives from the same
