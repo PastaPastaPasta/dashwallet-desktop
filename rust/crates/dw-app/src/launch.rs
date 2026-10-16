@@ -94,7 +94,9 @@ usage: dash-wallet [options] [link]
   --no-platform          the chain has no Platform (a plain dashd regtest)
   --theme light|dark     force an appearance
   --window-size <WxH>    the window's inner size in logical pixels (default 1280x820)
-  --help                 print this text";
+  --help                 print this text
+environment:
+  DW_LOG=<filter>        engine log on stderr, EnvFilter syntax (e.g. info,dw_engine=debug)";
 
 /// The self-test's options: a build with the `selftest` feature only.
 #[cfg(feature = "selftest")]
