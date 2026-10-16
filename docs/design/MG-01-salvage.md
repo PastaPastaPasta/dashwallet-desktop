@@ -261,6 +261,8 @@ Each commit builds and passes `cargo test` for the crates it touches.
 26. `fix`: Opus delta review: unencrypted vaults retry a raced masternode-key change; the lock-wait check opens its
     window after `LockCalled`; the scan's `path`/`rustfmt::skip`/alias rules.
 27. `docs(design)`: Opus delta review update.
+28. `test(dw-protx)`: Opus re-check: every rustfmt skip (and a formatting-off config) beside an allowed region.
+29. `merge`: follow desktop main `d0fef6b4` (DP2-08) and `913893dd` (DP1-08); only `Cargo.lock` overlaps.
 
 ## 7. What MG-02…MG-05 must change
 
