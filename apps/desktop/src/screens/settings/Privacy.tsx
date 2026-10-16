@@ -31,8 +31,12 @@ function UsernameInRequests({ wallet }: { wallet: WalletSummary }) {
     setProblem(null);
     setTurning(on);
     // Off counts at once, before the engine answers: Receive, opened meanwhile, must not draw a
-    // cached name (D7). On waits for the engine.
-    if (!on) client.setQueryData(keys.usernameInRequests(wallet.walletId), false);
+    // cached name (D7). A read already under way would put the old value back, so it is
+    // dropped first. On waits for the engine.
+    if (!on) {
+      await client.cancelQueries({ queryKey: keys.usernameInRequests(wallet.walletId) });
+      client.setQueryData(keys.usernameInRequests(wallet.walletId), false);
+    }
     try {
       await backend.setUsernameInRequests(wallet.walletId, on);
     } catch (e) {
@@ -54,7 +58,7 @@ function UsernameInRequests({ wallet }: { wallet: WalletSummary }) {
         <input
           type="checkbox"
           data-testid="settings-username-in-requests"
-          checked={turning ?? setting.data ?? false}
+          checked={turning ?? (!setting.isError && setting.data === true)}
           // One save at a time: a second click's answer could arrive first (U-04 D36).
           disabled={turning !== null}
           aria-describedby={hint}

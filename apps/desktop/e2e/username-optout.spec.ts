@@ -133,16 +133,21 @@ test("an unreadable setting shows off with the problem, and a click writes it ag
   expect(errors).toEqual([]);
 });
 
-test("Receive drops the name it holds once the toggle reads off (DP3-02 D25)", async ({ page }) => {
+test("Receive drops the name it holds once the toggle reads off, never showing it meanwhile (DP3-02 D25, D18)", async ({ page }) => {
   const errors = await open(page, "dashpay-registered", "light");
   const { address, link } = await receiveLink(page);
   expect(link).toBe(`dash:${address}?user=alice`);
   // Turned off elsewhere while the page is open, then a names change re-reads the receive side.
+  // While the plain link is being built, the named one is not kept in its place (D18).
+  const held: CommandName = "build_payment_uri";
+  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), held);
   await page.evaluate(() => {
     const f = window.__dwFixture!;
     f.world.wallets[0].receive.usernameInRequests = false;
     f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
   });
+  await expect(page.getByTestId("receive-copy-uri")).toBeDisabled();
+  await release.evaluate((r) => r());
   await expect(async () => {
     await page.getByTestId("receive-copy-uri").click();
     expect(await copied(page)).toBe(`dash:${address}`);

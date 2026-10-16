@@ -50,12 +50,14 @@ function AddressCard({ walletId }: { walletId: string }) {
   // With "Include my username in payment requests" off, or not known to be on, it holds none
   // (DP3-03b): the engine's none is then the answer, not a busy store.
   const username = useReceiveUsername(walletId);
-  const included = useUsernameInRequests(walletId);
+  const setting = useUsernameInRequests(walletId);
+  // Only a read that answered `true` counts as on: a failed one is off (D6), even with a cached value.
+  const included = setting.isError ? false : setting.data;
   const held = useRef<{ walletId: string; name: string } | null>(null);
   if (username.data) held.current = { walletId, name: username.data };
-  const last = included.data === true && held.current?.walletId === walletId ? held.current.name : null;
+  const last = included === true && held.current?.walletId === walletId ? held.current.name : null;
   const user =
-    included.data === false ? null : username.isError ? last : username.data === undefined ? undefined : (username.data ?? last);
+    included === false ? null : username.isError ? last : username.data === undefined ? undefined : (username.data ?? last);
   const uri = useQuery({
     // Its own prefix: Tools ▸ Address book's `paymentUri` key takes a label in the same place.
     queryKey: ["receiveUri", shown?.address ?? "", user ?? null] as const,
@@ -66,7 +68,7 @@ function AddressCard({ walletId }: { walletId: string }) {
     // state; a new address never shows the old one's, and a link without a name never shows
     // one with it (DP3-03b D18).
     placeholderData: (prev, prevQuery) =>
-      prevQuery?.queryKey[1] === shown?.address && (user !== null || prevQuery?.queryKey[2] === null) ? prev : undefined,
+      prevQuery?.queryKey[1] === shown?.address && (typeof user === "string" || prevQuery?.queryKey[2] === null) ? prev : undefined,
   });
   const newAddress = async () => {
     setProblem(null);
