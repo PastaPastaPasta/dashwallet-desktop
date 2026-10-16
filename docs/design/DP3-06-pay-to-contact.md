@@ -121,3 +121,8 @@ Swift T0 run (D17). Copy follows the mobile wallets (iOS `SendPaymentViewControl
   316 skipped, 3 load flakes passed on rerun (D25).
 - **Reviews:** code-simplifier (Sonnet) and code-review-validator (Opus): no critical or high finding; M1–M3, L1, L2,
   L4, L6, L7 (tests), L8 (this document), L9 fixed; L3 → F7; M3's same-wallet case → D21/F6.
+- **Sol r1/r2 and follow-merges:** Sol r1 APPROVE-WITH-NITS (two lows, fixed in b378ec4e), Sol r2 ACCEPT on
+  3bbd9753. After main 6a33c381 (BL-162): vitest 758/758, Playwright 230/230 (`pay-contact`, `contact-pane`,
+  `contacts`, `wallet`), `cargo test -p dw-app -p dw-engine` OK. After main 6c090016 (BL-165): tsc clean, vitest
+  767/767, Playwright 148/148 (`pay-contact`, `contact-pane`, `routes`; Chromium and WebKit; `--cpus 8`,
+  `--workers=6`).
