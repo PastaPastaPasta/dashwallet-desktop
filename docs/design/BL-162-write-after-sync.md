@@ -91,7 +91,7 @@ pin (d3d50520a, #1150) does track LLMQ_25_67 quorums: the quorums it lacks are a
 | 1 | dwcli `dashpay session --spv`, fresh root | ~3 min after masternode sync | ok, 3.8 s |
 | 2 | real app, IPC `dashpay_update_profile`, fresh root | 61 s after Synced and masternodes done | ok, 1.9 s, read back |
 | 3 | real app pinned to 2 CPUs with 4 busy loops on them, fresh root | headers phase, the phase of D32's failures | ok, 2.6 s, read back |
-| 4 | real app at this branch's head, fresh root | after masternode sync | see the report (GL) |
+| 4 | real app at e040ac13, fresh root, `DW_LOG` with `dash_sdk::platform::transition=trace` | 61.5 s after Synced and masternodes done | ok, 1.7 s, read back; broadcast succeeded (trace); keys served 28/32 unverified before masternode sync, 29/29 SPV-verified after, none refused; no ANSI codes in the log |
 
 The record with times is `/work/scratch/dw-bl162/writes.md`. Logs: `/work/scratch/dw-bl162/{t2/r1,w2,w3,ro1,…}`.
 
