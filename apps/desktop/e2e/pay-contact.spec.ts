@@ -116,7 +116,7 @@ test("IOS-050 C8: an accept that went through with a payment that did not says b
   await fillAmount(page, "0.02");
   await send(page);
   await expect(page.getByTestId("pay-result-failed")).toBeVisible();
-  await expect(page.getByTestId("pay-result-text")).toHaveText(`You and ${GRACE} are now contacts. The payment was not sent: No connection to the Dash network. The payment was not sent.`);
+  await expect(page.getByTestId("pay-result-text")).toHaveText(`You and ${GRACE} are now contacts. No connection to the Dash network. The payment was not sent.`);
   expect(await world(page, (w) => w.leases.filter((l) => l.flow === "acceptAndPay").map((l) => l.state.kind))).toEqual(["ended"]);
   await page.getByTestId("pay-result-back").click();
   await world(page, (w) => (w.send.broadcast = "ok"));
@@ -191,6 +191,25 @@ test("IOS-050 the lock banner: an unknown outcome locks the contact until Check 
   await page.getByTestId("pay-result-close").click();
   await expect(page.getByTestId("pay-banner")).toHaveAttribute("data-kind", "paymentLock");
   await expect(page.getByTestId("pay-contact-form")).not.toContainText("The payment was sent.");
+});
+
+test("IOS-050 an unknown contact payment's Try again: an immediate unknown answer is counted, then it is sent", async ({ page }) => {
+  await openPay(page);
+  await page.getByTestId("pay-frequent-chip").first().click();
+  await world(page, (w) => (w.send.broadcast = "unknown"));
+  await fillAmount(page, "0.01");
+  await send(page);
+  const unknown = page.getByTestId("pay-result-unknown");
+  await expect(unknown).toHaveAttribute("data-retries", "0");
+  // The retry answers unknown at once: the sheet's counter (the GL's marker, D23) still moves.
+  for (const n of ["1", "2"]) {
+    await page.getByTestId("pay-result-retry").click();
+    await expect(unknown).toHaveAttribute("data-retries", n);
+    await expect(page.getByTestId("pay-result-retry")).toBeEnabled();
+  }
+  await world(page, (w) => (w.send.broadcast = "ok"));
+  await page.getByTestId("pay-result-retry").click();
+  await expect(page.getByTestId("pay-result-sent")).toHaveAttribute("data-retries", "3");
 });
 
 test("IOS-050 a scenario's lock: Check again says unknown, then not sent; the broken channel shows next", async ({ page }) => {

@@ -209,7 +209,9 @@ export function ConfirmSheet({
         return refused(e);
       }
     }
-    const notSent = (text: string) => onOutcome({ kind: "failed", text: accepted ? `${accepted} The payment was not sent: ${text}` : text });
+    // Two sentences under the "Payment not sent" heading: the refusals that say "not sent" already
+    // must not say it twice (Sol r1 #2).
+    const notSent = (text: string) => onOutcome({ kind: "failed", text: accepted ? `${accepted} ${text}` : text });
     const endLease = () => lease !== null && void b.endFlow(lease).catch(() => null);
 
     let held;

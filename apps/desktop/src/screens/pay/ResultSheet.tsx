@@ -41,6 +41,8 @@ export function ResultSheet({
   onDone: (show: boolean) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  // Finished retries, for a harness that must not miss a fast one's busy state (DP3-06 Sol r1 #1).
+  const [tries, setTries] = useState(0);
   const shown = useDisplay(network);
   const unit = shown.name;
 
@@ -56,6 +58,7 @@ export function ResultSheet({
       onOutcome(broadcastFailure(e, shown.chain, { draft: d, prepared, amount, fee, note }, false, shown.amountUnit));
     } finally {
       setBusy(false);
+      setTries((n) => n + 1);
     }
   };
   // The button was disabled while the retry ran: focus goes back to it, or to Close.
@@ -66,7 +69,7 @@ export function ResultSheet({
 
   return (
     <Sheet title={TITLE[outcome.kind]} width="small" testId="pay-result" returnFocus={returnFocus} onClose={() => !busy && onDone(false)}>
-      <div className={`result result-${outcome.kind}`} data-testid={`pay-result-${outcome.kind}`}>
+      <div className={`result result-${outcome.kind}`} data-testid={`pay-result-${outcome.kind}`} data-retries={tries}>
         <Icon id={ICON[outcome.kind]} size={50} />
         {outcome.kind === "failed" ? (
           <p className="result-text" role="alert" data-testid="pay-result-text">

@@ -221,18 +221,19 @@ async function run(
         return undefined;
       });
       await wd.screenshot("4-result");
+      const retries = () => wd.script<number>(`return Number(document.querySelector('[data-retries]')?.dataset.retries ?? -1)`);
       // "Status unknown" (the network did not answer in time) offers Try again, which broadcasts the
       // same signed transaction again: as a user would, up to three times, never a new payment.
       for (let attempt = 1; kind === "unknown" && attempt <= 3 && (await wd.find(tid("pay-result-retry"))); attempt++) {
         step(`result: status unknown; Try again (${attempt})`);
         await new Promise((r) => setTimeout(r, 30_000));
+        // The sheet counts finished retries: read before the click, so a retry that answers unknown
+        // at once (its busy state never seen) is still waited for, not missed.
+        const before = await retries();
         await wd.press(tid("pay-result-retry"));
-        const retry = tid("pay-result-retry");
-        // Busy first (the button disables while the broadcast runs), then its answer.
-        await poll(TIMEOUT_MS, "the retry to start", async () => ((await wd.find(`${retry}[disabled], ${tid("pay-result-sent")}`)) ? true : undefined));
         kind = await poll(SEND_TIMEOUT_MS, "the retry's result", async () => {
-          if (await wd.find(tid("pay-result-sent"))) return "sent";
-          return (await wd.script<boolean>(`return !document.querySelector('${retry}[disabled]')`)) ? "unknown" : undefined;
+          for (const k of ["sent", "failed"]) if (await wd.find(tid(`pay-result-${k}`))) return k;
+          return (await retries()) > before ? "unknown" : undefined;
         });
         await wd.screenshot(`4-result-retry-${attempt}`);
       }
