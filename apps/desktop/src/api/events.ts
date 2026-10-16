@@ -9,7 +9,9 @@ import type { AppEvent } from "./generated/commands";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRows } from "./generated/HistoryRows";
 import type { PlatformChangeName } from "./generated/PlatformChangeName";
+import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
+import { onTopUpSettled } from "../dashpay/topup";
 import { keys } from "./queries";
 
 /** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
@@ -61,8 +63,9 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // signal; a passphrase change revokes it without a `vaultLockState` (DP1-09 D14).
     case "leaseChanged":
       return event.lease.flow === "registration" ? [keys.lockReconcile, dashpayKeys.registrationsAll] : [keys.lockReconcile];
+    // A top-up's funding step that settled leaves the stuck list (DP1-10 D3).
     case "dispatchResolved":
-      return [keys.lockReconcile];
+      return [keys.lockReconcile, profileKeys.stuckTopUpsAll];
     // The shell's chip, bell and Contacts badge (the DashPay screens come with their tasks).
     case "dashPayNews":
       return [keys.dashpayAll];
@@ -157,8 +160,12 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
         }
       }
   });
+  // DP1-10 D22: a top-up or a pending row's call that ended may have moved the locks, the stuck
+  // fundings and the balance, and a funding left unknown sends no signal: read them again.
+  const stopTopUps = onTopUpSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
   return () => {
     stopReconcile();
+    stopTopUps();
     unsubscribe();
   };
 }
