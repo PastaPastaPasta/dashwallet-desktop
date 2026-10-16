@@ -123,6 +123,14 @@ jobs:
           regtest/functional/run.sh dwd_coinjoin_client.py --portseed=4711 --loglevel=INFO \
             > "$LOGS/coinjoin.log" 2>&1 || { tail -n 200 "$LOGS/coinjoin.log"; exit 1; }
           tail -n 20 "$LOGS/coinjoin.log"
+      - name: masternodes (the masternodes facade against Core's list; host)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          DWD_PYTHON: ${{ github.workspace }}/.func-venv/bin/python
+        run: |
+          regtest/functional/run.sh dwd_masternodes.py --portseed=4731 --loglevel=INFO \
+            > "$LOGS/masternodes.log" 2>&1 || { tail -n 200 "$LOGS/masternodes.log"; exit 1; }
+          tail -n 20 "$LOGS/masternodes.log"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
