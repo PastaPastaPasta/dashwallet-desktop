@@ -160,6 +160,18 @@ re-reads the registrations (D14).
 | D29 | The registration's `fee_bound_worst` (quote, start check, funding step) is the funding permit's bound, `fees::asset_lock_fee_bound` (base 200 B + 149 B an input at 1 duff/B + a dust remainder), no longer its own 300 B + 149 B an input. Regression test `a_grant_of_the_quote_runs_to_done`. | GL run 3: Confirm & pay under the quote's grant failed `platform.grant_exceeded` at `keysPrepared` five seconds after the start (funds not committed, no txid; the screen showed R6 with Continue and "Choose another username"). The funding step's own check passed (3 000 598 of 3 000 598 in the test), but the Mode B call permit charges `lock + asset_lock_fee_bound(funding_coin_count)`, about 450 duffs more, so a grant of exactly the quote could never fund; every engine test used a 10 DASH cap. m4 §2.1 already says the quote's fee is E0-04's `fee_bound_worst`. The failed row was discarded with dwcli and the GL ledger set back to `funded` by hand (noted in its steps). |
 | D30 | A Core-funded quote's `grant.max_duffs` is the total plus one duff (`flow::PROOF_AUTHORITY_DUFFS`, never charged); the fixture's quote matches. `a_grant_of_the_quote_runs_to_done` runs a grant of the quote to done and pins that one of the bare total parks at `fundingSent`/`authorize`. | Review r4's suggested tightening of D29's test (no input slack) showed that the funding call charges the whole total, after which the identity step's proof signer (`Lease::uncounted_funding_signer`, needs `funding.available() > 0`) is refused `needs_grant{funding}`: a registration under exactly its quote paid, then paused for "Confirm to finish" (Continue's `maxDuffs: 1` grant finished it, so the GL, which closes at `fundingSent`, passed). Top-up takes that signer before its funding charge; the registration flow takes it at the identity step, and moving it is a lease-model change (F12). One duff is what Finish transfers already asks for the same signer (D10). |
 
+## GL evidence (public testnet, 2026-10-16)
+
+Run 4 of `scripts/e2e-tauri-registration.sh` passed (runs 1–3 found D28 and D29). Wallet E was created in the app
+(`82fbfbdb…863f`, phrase kept 0600 in the fixture before any coin moved) and funded 0.1 tDASH from A
+(`cb9df3ee…7189`). The wizard quoted 0.03000895 tDASH for `@dwdp109e4427`; Confirm & pay broadcast lock
+`0dc38c1e654e043ec3eeb3ab9fb6176d9cc2f302b8f42e51c5dd4e3823083072`, and the GL closed the app at `fundingSent`
+(waiting `instantSend`, `running` true, progress screen). On relaunch the row read `fundingSent`, waiting `chainLock`,
+`running` false (paused); Continue under the passphrase resumed it, and 31 s later the screen said "Hello
+@dwdp109e4427" with identity `3GM1i41fkWC4gJgWbYa3R5dnsSgPRa6mUppvuJ17LWuf`. One row, one asset lock: E spent
+3 000 263 duffs against the quote's 3 000 895. The leak scan found no phrase or passphrase in the output, the run's
+logs or the fixture's other files. Ledger: the fixture's `DP1-09.json` ("done"); E is in the fixture README (BL-163).
+
 ## Deferred
 
 | # | What | Owner |
