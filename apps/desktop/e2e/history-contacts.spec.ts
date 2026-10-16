@@ -6,7 +6,7 @@ import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors, type The
 // detail naming the contact and opening its pane, and Home's frequent-contacts strip, on the
 // fixture's `dashpay-history-contacts` scenario (D10): Marta (no relation to the main identity),
 // "Coffee refund" from Bob (a label over the contact), Bob, Dave (`@dave`) and a payment whose
-// names have not landed. Tests are named by parity ID: IOS-029 (contact icons on rows), IOS-074
+// names have not landed, and the oldest payment, to Judy (hidden). Tests are named by parity ID: IOS-029 (contact icons on rows), IOS-074
 // (the contact's profile).
 
 async function open(page: Page, scenario = "dashpay-history-contacts", theme: Theme = "light") {
@@ -39,14 +39,17 @@ test("IOS-029 a contact payment's row leads with the contact's avatar; other row
   await expect(row(page, "Alice").locator(".contact-avatar")).toHaveCount(0);
   await expect(row(page, "Alice").locator(".tx-row-icon")).toBeVisible();
   // The avatar is decoration: the row's name is its title, not the letters twice.
-  await expect(row(page, "Marta")).toHaveAccessibleName(/^Marta /);
+  await expect(row(page, "Marta")).toHaveAccessibleName(/^Marta \d/);
+  // A label takes the title, so the row says the contact aloud (D13).
+  await expect(row(page, "Coffee refund")).toHaveAccessibleName(/^Coffee refund from Bob Builder \d/);
   await expect(rows).toHaveCount(5);
   await activity(page);
   await expect(row(page, "@dave").locator(".contact-avatar")).toHaveText("D");
+  await expect(row(page, "Coffee refund")).toHaveAccessibleName(/^Coffee refund from Bob Builder \d/);
   // A counterparty whose names have not landed keeps the type title and icon (D1).
   const received = row(page, "Received").filter({ has: page.locator(".tx-row-icon") });
   expect(await received.count()).toBeGreaterThan(0);
-  await expect(page.getByTestId("tx-list").locator(".contact-avatar")).toHaveCount(4);
+  await expect(page.getByTestId("tx-list").locator(".contact-avatar")).toHaveCount(5);
   expect(errors).toEqual([]);
 });
 
@@ -99,6 +102,48 @@ test("IOS-074 a username-only contact shows one name line; a stranger has no Vie
   await expect(fact.getByTestId("tx-detail-view-contact")).toHaveCount(0);
 });
 
+test("IOS-074 a hidden contact's View contact opens its pane; focus falls back to the heading (D4)", async ({ page }) => {
+  const errors = await open(page);
+  await activity(page);
+  const fact = await detailOf(page, "Judy");
+  await expect(fact.locator(".tx-detail-contact-name")).toHaveText("Judy");
+  await fact.getByTestId("tx-detail-view-contact").click();
+  await expect(page.getByTestId("tx-detail")).toHaveCount(0);
+  // The pane titles the contact by the user's alias (F7).
+  await expect(page.getByTestId("contact-detail").getByRole("heading", { name: "Judy (work)" })).toBeVisible();
+  // Judy's row is in the collapsed Hidden section (F8), so the page's heading takes focus.
+  await expect(page.getByTestId("contacts-list").locator('[aria-current="true"]')).toHaveCount(0);
+  await expect(page.getByTestId("page-contacts").locator("h1")).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test("IOS-074 the keyboard opens the detail from a row and the pane from View contact (D5)", async ({ page }) => {
+  const errors = await open(page);
+  const refund = row(page, "Coffee refund");
+  await refund.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("tx-detail-contact")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("tx-detail")).toHaveCount(0);
+  await expect(refund).toBeFocused();
+  await page.keyboard.press(" ");
+  const view = page.getByTestId("tx-detail-view-contact");
+  await view.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("page-contacts")).toBeVisible();
+  await expect(page.getByTestId("contacts-list").locator('[aria-current="true"]')).toBeFocused();
+  // Back to Home: Space works on View contact too.
+  await page.getByTestId("sidebar-home").click();
+  await expect(page.getByTestId("page-contacts")).toHaveCount(0);
+  await row(page, "Bob Builder").first().focus();
+  await page.keyboard.press(" ");
+  await view.focus();
+  await page.keyboard.press(" ");
+  await expect(page.getByTestId("page-contacts")).toBeVisible();
+  await expect(page.getByTestId("contact-detail").getByRole("heading", { name: "Bob Builder" })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("IOS-029 a row whose counterparty has no name yet shows no contact in the detail", async ({ page }) => {
   await open(page);
   await activity(page);
@@ -132,6 +177,23 @@ test("DP3-07 discreet mode hides the strip with the history (D8); no identity, n
   await open(page, "funded");
   await page.getByTestId("overview-group-0").waitFor();
   await expect(page.getByTestId("home-frequent")).toHaveCount(0);
+});
+
+test("DP3-07 locking puts Home's strip behind the lock screen (D8)", async ({ page }) => {
+  await open(page);
+  await expect(page.getByTestId("home-frequent")).toBeVisible();
+  await page.getByTestId("toolbar-lock").click();
+  await page.getByTestId("lock-screen").waitFor();
+  // The shell stays mounted under the lock screen, inert and covered: no chip takes focus, and
+  // what is drawn where the chip sits is the lock screen.
+  const chip = page.getByTestId("home-frequent-chip").first();
+  const shown = await chip.evaluate((el) => {
+    (el as HTMLElement).focus();
+    const r = el.getBoundingClientRect();
+    const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    return { inert: el.closest("[inert]") !== null, focused: document.activeElement === el, covered: !!top?.closest('[data-testid="lock-screen"]') };
+  });
+  expect(shown).toEqual({ inert: true, focused: false, covered: true });
 });
 
 for (const theme of THEMES) {

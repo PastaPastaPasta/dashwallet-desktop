@@ -311,8 +311,8 @@ function attributePayments(w: World) {
 }
 
 /** DP3-07 D10: besides Bob's and Dave's, the newest payment from Marta (no relation to the main
- * identity), "Coffee refund" from Bob (a label over the contact) and an older payment whose
- * counterparty's names have not landed yet. */
+ * identity), "Coffee refund" from Bob (a label over the contact), an older payment whose
+ * counterparty's names have not landed yet, and the oldest payment, to Judy (hidden). */
 function attributeMore(w: World) {
   attributePayments(w);
   const rows = w.wallets[0].rows;
@@ -323,6 +323,10 @@ function attributeMore(w: World) {
   w.dashpay.activity[IDENTITY.bob].unshift({ txid: refund.txid, direction: "received", amount: refund.amount, height: refund.blockHeight, timestamp: refund.timestamp });
   const nameless = rows.find((r) => r.txType === "recvWithAddress" && r.category === "received" && !r.label && !r.counterparty && r.status.kind === "confirmed")!;
   nameless.counterparty = { identity: IDENTITY.mateo, username: null, displayName: null, avatarUrl: null };
+  // The oldest plain payment went to Judy, a contact the user hid: listed, in the collapsed Hidden section.
+  const hidden = rows.findLast((r) => r.txType === "sendToAddress" && !r.label && !r.counterparty && r.status.kind === "confirmed")!;
+  hidden.counterparty = { identity: IDENTITY.judy, username: "judy", displayName: "Judy", avatarUrl: null };
+  (w.dashpay.activity[IDENTITY.judy] ??= []).push({ txid: hidden.txid, direction: "sent", amount: Math.abs(hidden.amount) - (hidden.fee ?? 0), height: hidden.blockHeight, timestamp: hidden.timestamp });
 }
 
 function twoWallets(w: World): World {

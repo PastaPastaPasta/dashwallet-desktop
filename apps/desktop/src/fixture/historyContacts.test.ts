@@ -33,14 +33,15 @@ describe("fixture history contacts", () => {
     expect(refund.counterparty?.identity).toBe(IDENTITY.bob);
     expect([txTitle(refund), contactLetters(refund.counterparty)]).toEqual(["Coffee refund", "BB"]);
     const named = rows.filter((r) => r.counterparty).map((r) => [txTitle(r), contactLetters(r.counterparty)]);
-    expect(named).toEqual(expect.arrayContaining([["Bob Builder", "BB"], ["@dave", "D"], ["Received", null]]));
-    expect(named).toHaveLength(5);
+    expect(named).toEqual(expect.arrayContaining([["Bob Builder", "BB"], ["@dave", "D"], ["Received", null], ["Judy", "J"]]));
+    expect(named).toHaveLength(6);
   });
 
-  it("lists Bob and Dave in the main identity's contacts, not Marta nor the nameless one (D4)", async () => {
+  it("lists Bob, Dave and hidden Judy in the main identity's contacts, not Marta nor the nameless one (D4)", async () => {
     const list = await cmd.dashpayContacts(W, ME, { sections: [], sort: "displayName", text: null });
     const listed = (id: string) => findContact(list, id) !== null;
-    expect([IDENTITY.bob, IDENTITY.dave].map(listed)).toEqual([true, true]);
+    expect([IDENTITY.bob, IDENTITY.dave, IDENTITY.judy].map(listed)).toEqual([true, true, true]);
+    expect(list.sections.find((s) => s.section === "hidden")?.contacts.map((c) => c.contact)).toContain(IDENTITY.judy);
     expect([IDENTITY.marta, IDENTITY.mateo].map(listed)).toEqual([false, false]);
   });
 
