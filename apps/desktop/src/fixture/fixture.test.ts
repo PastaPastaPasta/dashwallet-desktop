@@ -57,6 +57,7 @@ describe("fixture backend", () => {
       "links.ts",
       "notifications.test.ts",
       "pane.test.ts",
+      "payContact.test.ts",
       "scan.ts",
       "scenarios.ts",
       "send.test.ts",
