@@ -185,8 +185,9 @@ pub fn recover(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListEntry {
     pub voting_key_id: [u8; 20],
-    /// 1 regular, 4 evonode.
-    pub weight: u32,
+    /// 1 regular, 4 evonode; `None` when the list does not carry the type
+    /// (a revoked masternode, D34).
+    pub weight: Option<u32>,
     pub valid: bool,
 }
 
@@ -575,8 +576,9 @@ impl GovernanceStore {
             keys.entry(e.voting_key_id)
                 .and_modify(|k| k.add(e.weight))
                 .or_insert_with(|| KeyWeights::one(e.weight));
+            // Revoked entries are banned, so `None` never counts here.
             if e.valid {
-                valid_weight = valid_weight.saturating_add(e.weight);
+                valid_weight = valid_weight.saturating_add(e.weight.unwrap_or(1));
             }
         }
         self.keys = keys;
@@ -957,7 +959,7 @@ mod tests {
     fn entry(key: u8, weight: u32) -> ListEntry {
         ListEntry {
             voting_key_id: key_id(key),
-            weight,
+            weight: Some(weight),
             valid: true,
         }
     }

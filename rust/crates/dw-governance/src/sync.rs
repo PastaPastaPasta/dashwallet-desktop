@@ -461,9 +461,15 @@ async fn connect_peers(
             .collect();
         for t in tries {
             match t.await {
-                Ok(Ok(p)) if peers.len() < max => peers.push(PeerState::new(p)),
+                Ok(Ok(p)) if peers.len() < max => {
+                    tracing::debug!(peer = %p.addr, "governance peer connected");
+                    peers.push(PeerState::new(p));
+                }
                 Ok(Ok(_)) => {}
-                Ok(Err(e)) => errors.push(e.to_string()),
+                Ok(Err(e)) => {
+                    tracing::debug!(error = %e, "governance peer not reached");
+                    errors.push(e.to_string());
+                }
                 Err(e) => errors.push(e.to_string()),
             }
         }

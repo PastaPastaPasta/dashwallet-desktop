@@ -62,30 +62,35 @@ pub struct KeyWeights {
     pub count: u32,
     pub regular: u32,
     pub evonodes: u32,
+    /// Holders whose type the list does not carry: revoked masternodes
+    /// (MG-02 D34).
+    pub unknown: u32,
 }
 
 impl KeyWeights {
-    pub fn one(weight: u32) -> Self {
+    pub fn one(weight: Option<u32>) -> Self {
         let mut k = Self {
             count: 0,
             regular: 0,
             evonodes: 0,
+            unknown: 0,
         };
         k.add(weight);
         k
     }
 
-    pub fn add(&mut self, weight: u32) {
+    /// Adds a holder of weight 1 or 4, or of an unknown type (`None`).
+    pub fn add(&mut self, weight: Option<u32>) {
         self.count += 1;
-        if weight == EVONODE_VOTE_WEIGHT {
-            self.evonodes += 1;
-        } else {
-            self.regular += 1;
+        match weight {
+            Some(EVONODE_VOTE_WEIGHT) => self.evonodes += 1,
+            Some(_) => self.regular += 1,
+            None => self.unknown += 1,
         }
     }
 
     pub fn min(&self) -> u32 {
-        if self.regular > 0 {
+        if self.regular + self.unknown > 0 {
             1
         } else {
             EVONODE_VOTE_WEIGHT
@@ -93,16 +98,17 @@ impl KeyWeights {
     }
 
     pub fn max(&self) -> u32 {
-        if self.evonodes > 0 {
+        if self.evonodes + self.unknown > 0 {
             EVONODE_VOTE_WEIGHT
         } else {
             1
         }
     }
 
-    /// The most common weight, ties to the lower.
+    /// The most common weight, ties to the lower; a holder of unknown type
+    /// counts as regular (D34).
     pub fn common(&self) -> u32 {
-        if self.evonodes > self.regular {
+        if self.evonodes > self.regular + self.unknown {
             EVONODE_VOTE_WEIGHT
         } else {
             1
@@ -189,13 +195,57 @@ pub fn ranged_tally<'a>(
     resolved: impl Fn(&OutPoint) -> Option<u32>,
 ) -> RangedTally {
     let mut t = RangedTally::default();
+    for (v, c) in attribute(votes, holders, resolved) {
+        t.count(
+            v.outcome,
+            c.weight.min,
+            c.weight.max,
+            c.weight.estimate,
+            c.new_voter,
+        );
+    }
+    t.estimate.yes = t.yes.estimate;
+    t.estimate.no = t.no.estimate;
+    t.estimate.abstain = t.abstain.estimate;
+    t
+}
+
+/// One vote's weight as [`attribute`] sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Claim {
+    pub weight: WeightRange,
+    /// The vote's outpoint was resolved to its masternode.
+    pub exact: bool,
+    /// The first claim counted for its outpoint.
+    pub new_voter: bool,
+}
+
+/// The weight of each vote, by the rules of [`ranged_tally`]. Votes whose
+/// key no masternode holds are left out.
+pub fn attribute<'a>(
+    votes: impl IntoIterator<Item = &'a CurrentVote>,
+    holders: impl Fn(&[u8; 20]) -> Option<KeyWeights>,
+    resolved: impl Fn(&OutPoint) -> Option<u32>,
+) -> Vec<(&'a CurrentVote, Claim)> {
+    let claim = |min, max, estimate, new_voter| Claim {
+        weight: WeightRange { min, max, estimate },
+        exact: false,
+        new_voter,
+    };
+    let mut out = Vec::new();
     let mut claims: HashMap<OutPoint, Vec<&CurrentVote>> = HashMap::new();
     let mut resolved_per_key: HashMap<[u8; 20], u32> = HashMap::new();
     let mut claimed_per_key: HashMap<[u8; 20], u32> = HashMap::new();
     for v in votes {
         match resolved(&v.outpoint) {
             Some(w) => {
-                t.count(v.outcome, w, w, w, true);
+                out.push((
+                    v,
+                    Claim {
+                        exact: true,
+                        ..claim(w, w, w, true)
+                    },
+                ));
                 *resolved_per_key.entry(v.key_id).or_default() += 1;
             }
             None => {
@@ -232,33 +282,25 @@ pub fn ranged_tally<'a>(
         };
         for (i, (v, k)) in known.iter().enumerate() {
             let estimate = if chosen == Some(i) { k.common() } else { 0 };
-            t.count(v.outcome, 0, k.max(), estimate, i == 0);
+            out.push((*v, claim(0, k.max(), estimate, i == 0)));
         }
     }
     for (key, mut group) in by_key {
         let Some(k) = holders(&key) else { continue };
         if fits(&key, &k) {
             for v in group {
-                t.count(v.outcome, k.min(), k.max(), k.common(), true);
+                out.push((v, claim(k.min(), k.max(), k.common(), true)));
             }
         } else {
             let n = free(&key, &k) as usize;
             group.sort_by(|a, b| b.time.cmp(&a.time).then(a.vote_hash.cmp(&b.vote_hash)));
             for (i, v) in group.into_iter().enumerate() {
-                t.count(
-                    v.outcome,
-                    0,
-                    k.max(),
-                    if i < n { k.common() } else { 0 },
-                    true,
-                );
+                let estimate = if i < n { k.common() } else { 0 };
+                out.push((v, claim(0, k.max(), estimate, true)));
             }
         }
     }
-    t.estimate.yes = t.yes.estimate;
-    t.estimate.no = t.no.estimate;
-    t.estimate.abstain = t.abstain.estimate;
-    t
+    out
 }
 
 /// A proposal in the budget computation.
@@ -398,6 +440,7 @@ mod tests {
             count: regular + evonodes,
             regular,
             evonodes,
+            unknown: 0,
         }
     }
 
@@ -510,6 +553,44 @@ mod tests {
         );
         assert_eq!(t.estimate.absolute_yes(), 3);
         assert_eq!(t.ranged_votes, 3);
+    }
+
+    #[test]
+    fn a_revoked_holder_weighs_one_to_four_estimated_regular() {
+        // Key 1: one revoked masternode, whose list entry carries no type;
+        // key 2: a regular masternode and a revoked one (D34).
+        let mut shared = KeyWeights::one(Some(1));
+        shared.add(None);
+        let keys: HashMap<[u8; 20], KeyWeights> =
+            HashMap::from([([1; 20], KeyWeights::one(None)), ([2; 20], shared)]);
+        let votes = [
+            cv(1, 1, VoteOutcome::Yes, 10),
+            cv(2, 2, VoteOutcome::No, 10),
+            cv(2, 3, VoteOutcome::No, 10),
+        ];
+        let t = ranged_tally(&votes, |k| keys.get(k).copied(), |_| None);
+        assert_eq!(
+            t.yes,
+            WeightRange {
+                min: 1,
+                max: 4,
+                estimate: 1
+            }
+        );
+        assert_eq!(
+            t.no,
+            WeightRange {
+                min: 2,
+                max: 8,
+                estimate: 2
+            }
+        );
+        assert_eq!(t.ranged_votes, 3);
+        // An evonode majority still estimates 4.
+        let mut evo = KeyWeights::one(Some(EVONODE_VOTE_WEIGHT));
+        evo.add(Some(EVONODE_VOTE_WEIGHT));
+        evo.add(None);
+        assert_eq!((evo.min(), evo.max(), evo.common()), (1, 4, 4));
     }
 
     #[test]
