@@ -128,4 +128,8 @@ no-op once replaced. Unit tests: a newer page before the frame keeps one pair an
 the focus; a replaced frame that still runs leaves the newer wait and its input in place. Mutation checks: without the
 replace, both "keeps one wait" tests fail; without the replaced-frame guard, "a frame replaced but not cancelled" fails.
 (2) The D6 routes test holds the node Tab focused by a handle and checks that very node keeps focus, not its test id or
-tag. (3) D2 calls the native WebKitGTK frame delay an inference from the Playwright runs.
+tag. (3) D2 calls the native WebKitGTK frame delay an inference from the Playwright runs. Checks on e3fd8b21
+(follow-merged main 6a33c381; `/work/scratch/dw-bl165/verify-r1.sh`, load 111–148): `tsc`; vitest 52 files, 739 tests
+(at load ~200 `files.test.ts` and `fixture.test.ts`, untouched, timed out at 5 s twice, and passed at < 150); Playwright
+`routes`, `notifications` and `contact-pane`, Chromium 67/67 and WebKit 67/67 at 2 workers; both BL-165 routes tests 5×
+per browser 20/20; the D28 page test in WebKit 30/30. No Rust changed since 800de647.
