@@ -257,25 +257,22 @@ pub fn check_object(
     now: i64,
     rate_checked: bool,
 ) -> Result<ValidObject, ObjectRejection> {
-    let typed = |kind: i32| {
-        let (o, top_level) = json_object(&object.data).ok_or(ObjectRejection::Unparsable)?;
-        let data_kind = o.int::<i32>("type");
-        Ok::<_, ObjectRejection>((o, top_level, data_kind == Some(kind)))
-    };
+    let parse = || json_object(&object.data).ok_or(ObjectRejection::Unparsable);
+    let data_type_is = |o: &Members, kind: i32| o.int::<i32>("type") == Some(kind);
     match object.object_type {
         OBJECT_TYPE_PROPOSAL => {
-            let (o, top_level, typed) = typed(OBJECT_TYPE_PROPOSAL)?;
+            let (o, top_level) = parse()?;
             if !top_level {
                 return Err(ObjectRejection::InvalidProposal("json"));
             }
-            if !typed {
+            if !data_type_is(&o, OBJECT_TYPE_PROPOSAL) {
                 return Err(ObjectRejection::InvalidProposal("type"));
             }
             check_proposal(&object.data, &o, network).map(ValidObject::Proposal)
         }
         OBJECT_TYPE_TRIGGER => {
-            let (o, _, typed) = typed(OBJECT_TYPE_TRIGGER)?;
-            if !typed {
+            let (o, _) = parse()?;
+            if !data_type_is(&o, OBJECT_TYPE_TRIGGER) {
                 return Err(ObjectRejection::InvalidTrigger("type"));
             }
             let trigger = check_trigger(&o, network)?;

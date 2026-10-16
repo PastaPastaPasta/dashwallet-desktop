@@ -270,6 +270,24 @@ pub struct GovernanceStore {
     synced: bool,
 }
 
+/// Adds `hash` to a bounded set, forgetting the oldest past `max`.
+fn remember(
+    set: &mut HashSet<[u8; 32]>,
+    order: &mut VecDeque<[u8; 32]>,
+    max: usize,
+    hash: [u8; 32],
+) {
+    if !set.insert(hash) {
+        return;
+    }
+    order.push_back(hash);
+    if order.len() > max
+        && let Some(old) = order.pop_front()
+    {
+        set.remove(&old);
+    }
+}
+
 impl GovernanceStore {
     pub fn new(network: Network) -> Self {
         Self {
@@ -353,14 +371,13 @@ impl GovernanceStore {
     /// Remembers an object the wallet refused from every peer that sent
     /// it, so it is not fetched again and its votes are ignored (D35).
     pub fn refuse_object(&mut self, hash: [u8; 32]) {
-        if self.objects.contains_key(&hash) || !self.refused.insert(hash) {
-            return;
-        }
-        self.refused_order.push_back(hash);
-        if self.refused_order.len() > MAX_REFUSED_OBJECTS
-            && let Some(old) = self.refused_order.pop_front()
-        {
-            self.refused.remove(&old);
+        if !self.objects.contains_key(&hash) {
+            remember(
+                &mut self.refused,
+                &mut self.refused_order,
+                MAX_REFUSED_OBJECTS,
+                hash,
+            );
         }
     }
 
@@ -709,15 +726,12 @@ impl GovernanceStore {
     }
 
     fn remember_ignored(&mut self, hash: [u8; 32]) {
-        if !self.ignored.insert(hash) {
-            return;
-        }
-        self.ignored_order.push_back(hash);
-        if self.ignored_order.len() > MAX_IGNORED_VOTES
-            && let Some(old) = self.ignored_order.pop_front()
-        {
-            self.ignored.remove(&old);
-        }
+        remember(
+            &mut self.ignored,
+            &mut self.ignored_order,
+            MAX_IGNORED_VOTES,
+            hash,
+        );
     }
 
     fn parent(&self, hash: &[u8; 32], now: i64) -> Parent {
