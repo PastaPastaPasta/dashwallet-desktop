@@ -23,7 +23,8 @@ superblock_budget(network, height)                                      (free fu
 ```
 
 `NetworkSession::governance()` is sync and infallible and returns a cheap handle (`Clone`) on the session's
-governance state: the `dw_governance::GovernanceStore`, the sync task and the list snapshot it feeds. Any number of
+governance state: the `dw_governance::GovernanceStore`, the sync task, and the tip list snapshot that a follower
+feeds for the session's life, with sync on or off. Any number of
 handles may exist. After `close_network` every call returns `network_not_open`.
 
 | File | Owner | Contents |

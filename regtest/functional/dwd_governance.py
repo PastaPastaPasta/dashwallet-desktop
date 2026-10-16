@@ -84,11 +84,11 @@ class Dwcli:
 
     def governance(self, *args, timeout=900):
         """Runs `dwcli governance`; returns its lines grouped by kind."""
-        out = {"govstate": [], "govinfo": [], "proposal": [], "votes": {}, "relayed": [],
+        out = {"govstate": [], "govinfo": [], "offinfo": [], "proposal": [], "votes": {}, "relayed": [],
                "relay_error": [], "console": []}
         for line in self.run("governance", *args, timeout=timeout):
             kind, _, rest = line.partition(" ")
-            if kind in ("govstate", "govinfo", "proposal", "relayed"):
+            if kind in ("govstate", "govinfo", "offinfo", "proposal", "relayed"):
                 out[kind].append(json.loads(rest))
             elif kind == "votes":
                 h, _, body = rest.partition(" ")
@@ -183,13 +183,18 @@ class DwdGovernance(DashTestFramework):
         self.log.info("1. govsync: the wallet's tallies equal Core's")
         tip = node.getblockcount()
         out = dwcli.governance(
-            "--sync-height", str(tip), "--min-proposals", "2", "--min-voters", "6",
+            "--sync-height", str(tip), "--offline-info", "--min-proposals", "2", "--min-voters", "6",
             "--votes", p0, "--votes", p1,
             "--console", "getgovernanceinfo",
             "--console", f"getsuperblockbudget {FIRST_SUPERBLOCK}",
             "--console", "gobject count",
             "--console", f"gobject get {p0}",
         )
+        # With sync off the reads already follow the list; no counts yet.
+        off = out["offinfo"][0]
+        assert_equal((off["valid_masternodes"], off["valid_evonodes"]), (4, 1))
+        assert_equal(off["valid_weight"], 3 + 4)
+        assert_equal(off["proposals"], None)
         rows = {r["hash"]: r for r in out["proposal"]}
         assert_equal(set(rows), {p0, p1})
         for h, amount in ((p0, p0_amount), (p1, p1_amount)):

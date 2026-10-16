@@ -22,6 +22,11 @@ pub struct GovernanceArgs {
     /// Wait for this SPV tip before turning governance sync on.
     #[arg(long)]
     sync_height: Option<u32>,
+    /// Before turning sync on, wait for `info` to count the list's
+    /// masternodes and print it (`offinfo`): reads follow the list with sync
+    /// off.
+    #[arg(long)]
+    offline_info: bool,
     /// Done once synced with at least this many proposals listed.
     #[arg(long, default_value_t = 0)]
     min_proposals: usize,
@@ -104,6 +109,19 @@ pub fn run(
             text: None,
         })
     };
+    if args.offline_info {
+        loop {
+            let info = gov.info().map_err(e)?;
+            if info.valid_masternodes > 0 {
+                line("offinfo", &info);
+                break;
+            }
+            if start.elapsed() > timeout {
+                return Err("no masternode list with sync off".into());
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
     engine.block_on(gov.set_sync_enabled(true)).map_err(e)?;
 
     // Synced, with the proposals and voters asked for.

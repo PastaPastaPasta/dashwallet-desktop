@@ -468,6 +468,7 @@ impl NetworkSession {
             flow_leases: Mutex::default(),
             governance,
         });
+        session.governance.follow(&session);
         if session.governance.enabled() {
             session.governance.start(&session);
         }

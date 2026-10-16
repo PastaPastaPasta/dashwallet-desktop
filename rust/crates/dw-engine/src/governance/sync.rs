@@ -1,7 +1,8 @@
 //! The governance sync task and its state (MG-02 §2.3, mg-engine §5; not
 //! facade). One [`GovernanceRuntime`] per session holds the store the
-//! facade reads, the masternode list snapshot it was fed, and the task
-//! running `dw_governance::sync::run` with the backoff of D13.
+//! facade reads, the masternode list snapshot it was fed (by a follower
+//! that runs whether sync is on or off), and the task running
+//! `dw_governance::sync::run` with the backoff of D13.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,7 +40,8 @@ pub(crate) fn load_enabled(db: &dw_appdb::AppDb) -> bool {
 /// The first retry after a failed run; doubles up to [`MAX_BACKOFF`].
 const MIN_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_BACKOFF: Duration = Duration::from_secs(5 * 60);
-/// How often the task looks for a new tip or list while it waits or runs.
+/// How often the follower looks for a new tip or list, and the sync task
+/// for a list to start from.
 const POLL: Duration = Duration::from_secs(2);
 /// Pause before reconnecting after every peer of a synced run was lost.
 const RECONNECT: Duration = Duration::from_secs(5);
@@ -103,6 +105,7 @@ pub(crate) struct GovernanceRuntime {
     resync: Arc<Notify>,
     pub list: RwLock<Arc<ListSnapshot>>,
     coalescer: JoinHandle<()>,
+    follower: Mutex<Option<JoinHandle<()>>>,
     changed: Arc<Notify>,
 }
 
@@ -136,6 +139,7 @@ impl GovernanceRuntime {
             resync: Arc::default(),
             list: RwLock::default(),
             coalescer,
+            follower: Mutex::default(),
             changed,
         }
     }
@@ -150,6 +154,21 @@ impl GovernanceRuntime {
 
     fn changed(&self) {
         self.changed.notify_one();
+    }
+
+    /// Starts feeding the store the tip and list for the session's life,
+    /// so the reads have them with sync off too.
+    pub fn follow(&self, session: &Arc<NetworkSession>) {
+        let weak = Arc::downgrade(session);
+        let handle = session.rt.spawn(async move {
+            loop {
+                let Some(s) = weak.upgrade() else { return };
+                s.governance.refresh(&s).await;
+                drop(s);
+                tokio::time::sleep(POLL).await;
+            }
+        });
+        *self.follower.lock().unwrap_or_else(|p| p.into_inner()) = Some(handle);
     }
 
     /// Starts or stops the task; the store is kept either way.
@@ -199,17 +218,30 @@ impl GovernanceRuntime {
                 tracing::warn!("governance sync task did not stop in 5 s");
             }
         }
+        if let Some(f) = self
+            .follower
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            f.abort();
+        }
         self.coalescer.abort();
     }
 
-    /// Feeds the store the tip and, when it changed, the list. `None` until
-    /// both are known and the list is not empty.
-    async fn refresh(&self, session: &NetworkSession) -> Option<u32> {
-        let tip = session.hub.tracker().tip_height()?;
+    /// Feeds the store the tip and, when it changed, the list.
+    async fn refresh(&self, session: &NetworkSession) {
+        let Some(tip) = session.hub.tracker().tip_height() else {
+            return;
+        };
         let known = self.list();
         if known.height != tip || known.entries.is_empty() {
-            let manager = session.manager().ok()?;
-            let entries = manager.spv().masternode_list_summaries().await?;
+            let Ok(manager) = session.manager() else {
+                return;
+            };
+            let Some(entries) = manager.spv().masternode_list_summaries().await else {
+                return;
+            };
             let snapshot = ListSnapshot {
                 height: tip,
                 entries,
@@ -226,7 +258,12 @@ impl GovernanceRuntime {
             }
         }
         self.shared.store().set_tip(tip);
-        (!self.list().entries.is_empty()).then_some(tip)
+    }
+
+    /// The followed tip, once its list is known and not empty.
+    fn ready(&self) -> Option<u32> {
+        let list = self.list();
+        (!list.entries.is_empty()).then_some(list.height)
     }
 }
 
@@ -254,7 +291,7 @@ async fn sync_loop(session: Weak<NetworkSession>, mut stop: watch::Receiver<bool
             if *stop.borrow() {
                 break 'runs;
             }
-            if let Some(tip) = g.refresh(&s).await {
+            if let Some(tip) = g.ready() {
                 break tip;
             }
             if pause(POLL, &mut stop, &resync).await {
@@ -272,15 +309,10 @@ async fn sync_loop(session: Weak<NetworkSession>, mut stop: watch::Receiver<bool
         let run =
             dw_governance::sync::run(Arc::clone(&shared), cfg, candidates, history, run_stop_rx);
         tokio::pin!(run);
-        let mut tick = tokio::time::interval(POLL);
         let (mut stopped, mut resynced) = (false, false);
         let result = loop {
             tokio::select! {
                 r = &mut run => break r,
-                _ = tick.tick() => {
-                    let Some(s) = session.upgrade() else { return };
-                    s.governance.refresh(&s).await;
-                }
                 _ = resync.notified(), if !resynced => {
                     resynced = true;
                     let _ = run_stop.send(true);

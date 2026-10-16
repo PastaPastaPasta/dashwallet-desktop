@@ -281,10 +281,11 @@ every call returns `Result<_, GovernanceError>`, sync calls read memory only, as
 runtime. The contract lists the calls, records and codes.
 
 - **Sync lifecycle.** `set_sync_enabled(true)` persists `governance.sync_enabled` in app.sqlite and starts the sync
-  task; the session starts it at open when the setting is on. The task waits for the tip and the list, polls both
-  every 2 s (the list is read again only when the tip moved, and fed to the store only when it changed), and runs
-  §2.3. A synced run that loses every peer reconnects after 5 s; a failed one backs off. Disabling stops the task
-  and keeps the store. The session holds this state (`governance/sync.rs`), so the only shared engine edits are the
+  task; the session starts it at open when the setting is on. A follower, running from session open to close
+  whether sync is on or off, polls the tip and the list every 2 s (the list is read again only when the tip moved,
+  and fed to the store only when it changed), so `info`'s counts and threshold and `voting_masternodes` do not
+  depend on the task. The task waits until the followed list is not empty, then runs §2.3. A synced run that
+  loses every peer reconnects after 5 s; a failed one backs off. Disabling stops the task and keeps the store. The session holds this state (`governance/sync.rs`), so the only shared engine edits are the
   session's field, its open and close, and the event variant.
 - **Voting masternodes.** `voting_masternodes` derives voting keys 0–19 through the keychain
   (`masternode_keys`), hashes them to key ids and matches the tip list's `voting_key_id`; each match carries the
