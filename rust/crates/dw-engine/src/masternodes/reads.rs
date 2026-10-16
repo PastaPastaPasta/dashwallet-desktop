@@ -67,9 +67,11 @@ impl WalletView {
         let network = session.network.core_network();
 
         let (m, w) = (std::sync::Arc::clone(&manager), std::sync::Arc::clone(&pw));
+        let hub = std::sync::Arc::clone(&session.hub);
         let (owned, operator_keys, tracked, owner_ids, voting_ids) =
             tokio::task::spawn_blocking(move || {
-                let (owned, operator_index) = wallet_masternodes(&m, &wallet).unwrap_or_default();
+                let (owned, operator_index) =
+                    wallet_masternodes(&m, &hub.history, &wallet).unwrap_or_default();
                 let service = m.tracked_masternodes_service();
                 let mut tracked: Vec<TrackedMasternode> = service
                     .hashes()

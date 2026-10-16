@@ -15,8 +15,9 @@ use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
-use super::aggregate::{OwnedMasternode, aggregate};
+use super::aggregate::{OwnedMasternode, add_history, aggregate};
 use crate::events::{EngineEvent, EventSink};
+use crate::history::HistoryStore;
 use crate::session::Manager;
 use crate::{DashNetwork, EngineError, NetworkSession, WalletId};
 
@@ -66,11 +67,26 @@ pub(crate) type WalletMasternodes = (Vec<OwnedMasternode>, HashMap<[u8; 48], u32
 
 /// The wallet's masternodes, aggregated from its provider transactions.
 /// Blocking. `None` for a wallet the library doesn't manage.
+///
+/// The library reads only the transactions it holds in memory, and it
+/// doesn't restore persisted ones at open (MG-03 D15), so the provider
+/// transactions of the session's history, which does, are added.
 pub(crate) fn wallet_masternodes(
     manager: &Manager,
+    history: &HistoryStore,
     wallet: &WalletId,
 ) -> Option<WalletMasternodes> {
-    let (_, txs, _, operator_index, _) = manager.provider_masternode_txs_blocking(&wallet.0)?;
+    let (_, mut txs, _, operator_index, _) = manager.provider_masternode_txs_blocking(&wallet.0)?;
+    history.read(wallet, |entries| {
+        add_history(
+            &mut txs,
+            entries.values().map(|e| {
+                let block = e.context.block_info();
+                let height = block.map_or(0, |b| b.height());
+                (height, block.and_then(|b| b.position()).unwrap_or(0), &e.tx)
+            }),
+        )
+    });
     Some((aggregate(&txs), operator_index))
 }
 
@@ -208,11 +224,11 @@ impl MasternodesRuntime {
             .into_iter()
             .map(|w| w.wallet_id)
             .collect();
-        let m = Arc::clone(&manager);
+        let (m, hub) = (Arc::clone(&manager), Arc::clone(&session.hub));
         let interest: BTreeSet<[u8; 32]> = tokio::task::spawn_blocking(move || {
             let mut set: BTreeSet<[u8; 32]> = m.tracked_masternode_hashes().into_iter().collect();
             for w in &wallets {
-                if let Some((owned, _)) = wallet_masternodes(&m, w) {
+                if let Some((owned, _)) = wallet_masternodes(&m, &hub.history, w) {
                     set.extend(owned.iter().map(|o| o.record.pro_tx_hash));
                 }
             }

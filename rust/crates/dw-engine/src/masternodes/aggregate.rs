@@ -4,6 +4,8 @@
 //! resolved per Core with the internal output checked (MG-00 D43, MG-01
 //! §7), and the operator's share. Pure; not facade.
 
+use std::collections::HashSet;
+
 use dashcore::hashes::Hash;
 use dashcore::transaction::TransactionPayload;
 use dashcore::{OutPoint, Transaction, Txid};
@@ -44,6 +46,24 @@ pub(crate) fn collateral_amount(evonode: bool) -> u64 {
     } else {
         MASTERNODE_COLLATERAL
     }
+}
+
+/// Adds the provider transactions among `history` that `txs` lacks, then
+/// orders `txs` by txid, as the library hands them over.
+pub(crate) fn add_history<'a>(
+    txs: &mut Vec<(u32, u32, Transaction)>,
+    history: impl IntoIterator<Item = (u32, u32, &'a Transaction)>,
+) {
+    let held: HashSet<Txid> = txs.iter().map(|(_, _, tx)| tx.txid()).collect();
+    txs.extend(
+        history
+            .into_iter()
+            .filter(|(_, _, tx)| {
+                tx.special_transaction_payload.is_some() && !held.contains(&tx.txid())
+            })
+            .map(|(h, p, tx)| (h, p, tx.clone())),
+    );
+    txs.sort_by_key(|(_, _, tx)| tx.txid());
 }
 
 /// Aggregates `(height, in-block position, tx)` provider transactions.
@@ -174,6 +194,27 @@ mod tests {
                 script_pubkey: payout(9),
             })
             .collect()
+    }
+
+    #[test]
+    fn history_adds_the_provider_transactions_the_library_lacks() {
+        let held = registration(null(1), false, 0, coins(&[5, MASTERNODE_COLLATERAL]));
+        let persisted = registration(null(0), false, 0, coins(&[MASTERNODE_COLLATERAL]));
+        let plain = Transaction {
+            special_transaction_payload: None,
+            ..persisted.clone()
+        };
+        let mut txs = vec![(100, 1, held.clone())];
+        // the held one again (another context), the persisted one, a payment
+        add_history(
+            &mut txs,
+            [(0, 0, &held), (120, 2, &persisted), (130, 0, &plain)],
+        );
+        let mut want = vec![(100, 1, held.txid()), (120, 2, persisted.txid())];
+        want.sort_by_key(|(_, _, t)| *t);
+        let got: Vec<_> = txs.iter().map(|(h, p, tx)| (*h, *p, tx.txid())).collect();
+        assert_eq!(got, want);
+        assert_eq!(aggregate(&txs).len(), 2);
     }
 
     #[test]

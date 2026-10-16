@@ -110,9 +110,10 @@ async fn reference(
         .into_iter()
         .map(|w| w.wallet_id)
         .collect();
+    let hub = std::sync::Arc::clone(&session.hub);
     let reference = tokio::task::spawn_blocking(move || {
         let record = wallets.iter().find_map(|w| {
-            let (owned, _) = wallet_masternodes(&manager, w)?;
+            let (owned, _) = wallet_masternodes(&manager, &hub.history, w)?;
             owned.into_iter().find(|o| o.record.pro_tx_hash == hash)
         });
         let record = record.map(|o| o.record);
