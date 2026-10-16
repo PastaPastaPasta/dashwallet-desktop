@@ -32,6 +32,10 @@ import copy from "@icons/action-copy@2x.png";
 import messageWarning from "@icons/message-warning@2x.png";
 import searchMagnifyingGlass from "@icons/form-search@2x.png";
 import searchMagnifyingGlassDark from "@icons/form-search-dark@2x.png";
+import coinjoin from "@icons/coinjoin@2x.png";
+import coinjoinMixing from "@icons/coinjoin-mixing@2x.png";
+import coinjoinShuffle from "@icons/coinjoin-shuffle@2x.png";
+import coinjoinProtected from "@icons/coinjoin-protected@2x.png";
 
 export interface IconFiles {
   light: string;
@@ -58,6 +62,10 @@ export const iconFiles = {
   copy: { light: copy },
   messageWarning: { light: messageWarning },
   searchMagnifyingGlass: { light: searchMagnifyingGlass, dark: searchMagnifyingGlassDark },
+  coinjoin: { light: coinjoin },
+  coinjoinMixing: { light: coinjoinMixing },
+  coinjoinShuffle: { light: coinjoinShuffle },
+  coinjoinProtected: { light: coinjoinProtected },
 } satisfies Partial<Record<IconId, IconFiles>>;
 
 export type UsedIcon = keyof typeof iconFiles;

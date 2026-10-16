@@ -35,7 +35,13 @@ describe("event bridge", () => {
       ["coins", "w"],
       ["dashpay", "contacts", "w"],
     ]);
-    expect(invalidationsFor({ kind: "balances", network: "testnet", walletId: "w", balances: null })).toEqual([keys.balance("w"), keys.wallets, keys.coinsAll("w"), dashpayKeys.quote("w")]);
+    expect(invalidationsFor({ kind: "balances", network: "testnet", walletId: "w", balances: null })).toEqual([
+      keys.balance("w"),
+      keys.wallets,
+      keys.coinsAll("w"),
+      dashpayKeys.quote("w"),
+      keys.coinjoinStatus("w"),
+    ]);
     expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll]);
     expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: {} as never })).toEqual([keys.lockReconcile]);
     // DP1-09 D14: a registration lease's change re-reads the rows, whose `waiting` moved.
@@ -58,7 +64,8 @@ describe("event bridge", () => {
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "startup" } })).toEqual([keys.dashpayAll]);
     expect(invalidationsFor({ kind: "spvStateChanged", network: "testnet", running: true })).toEqual([keys.sync, keys.dashpayStatusAll]);
     expect(invalidationsFor({ kind: "sync", network: "testnet", status: {} as never })).toEqual([keys.sync, keys.dashpayStatusAll]);
-    expect(invalidationsFor({ kind: "coinJoin", network: "testnet", walletId: "w" })).toEqual([]);
+    // U-06: the engine's CoinJoin signal, and a balance change (D7), re-read the wallet's mixing status.
+    expect(invalidationsFor({ kind: "coinJoin", network: "testnet", walletId: "w" })).toEqual([keys.coinjoinStatus("w")]);
     const report = REPORT;
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "done", report } })).toEqual([keys.lockStatus, keys.lockReconcile]);
   });
