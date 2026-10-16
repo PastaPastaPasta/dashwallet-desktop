@@ -3,7 +3,7 @@
 //! status mapping, the scope tally and the post-sync re-fetch.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -41,6 +41,9 @@ type Quorum = (u32, [u8; 32]);
 struct FakeSpv {
     answers: Mutex<HashMap<Quorum, SpvAnswer>>,
     calls: AtomicUsize,
+    /// Lookups never answer, as behind an engine lock held for the whole
+    /// masternode sync.
+    hung: AtomicBool,
 }
 
 impl FakeSpv {
@@ -62,6 +65,9 @@ impl SpvQuorums for FakeSpv {
             .get(&(t, h))
             .copied()
             .unwrap_or(SpvAnswer::Absent);
+        if self.hung.load(Ordering::SeqCst) {
+            return Box::pin(std::future::pending());
+        }
         Box::pin(async move { a })
     }
 }
@@ -401,6 +407,50 @@ fn the_degraded_mode_serves_trusted_keys_and_prefers_verified_spv_ones() {
     r.trusted.set(C, REAL);
     assert_eq!(r.lookup(C).unwrap(), REAL);
     assert!(r.latched(), "an unverified key set the latch");
+}
+
+/// BL-162: masternode sync changes nothing in the degraded mode. A quorum SPV
+/// does not hold (testnet's Platform quorum on a fresh data root) is served
+/// from the trusted service at once, unverified, with no wait for SPV.
+#[test]
+fn after_masternode_sync_the_degraded_mode_falls_back_at_once() {
+    let r = rig(TrustMode::Degraded);
+    r.trusted.set(A, REAL);
+    r.trust.note_masternodes_synced();
+    assert_eq!(r.trust.source(), QuorumSource::Trusted);
+    assert!(!r.trust.writes_wait());
+
+    let started = Instant::now();
+    for _ in 0..3 {
+        assert_eq!(r.lookup(A).unwrap(), REAL);
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "no wait for SPV: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(r.spv.calls(), 3, "SPV asked once per lookup, never polled");
+    assert!(r.latched(), "served unverified, behind the latch");
+}
+
+/// BL-162: a lookup SPV never answers counts as `Absent` once its bound
+/// passes, in both modes before masternode sync: the trusted key is served
+/// and no proof waits longer than the bound.
+#[test]
+fn a_hung_spv_lookup_is_bounded_and_falls_back() {
+    for mode in [TrustMode::Degraded, TrustMode::Enforcing] {
+        let r = rig_with(mode, |t| t.with_lookup_timeout(Duration::from_millis(200)));
+        r.trusted.set(A, REAL);
+        r.spv.hung.store(true, Ordering::SeqCst);
+        let started = Instant::now();
+        assert_eq!(r.lookup(A).unwrap(), REAL, "{mode:?}");
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(200) && took < Duration::from_secs(3),
+            "{mode:?}: bounded by the lookup timeout: {took:?}"
+        );
+        assert!(r.latched(), "{mode:?}: served unverified");
+    }
 }
 
 /// The developer toggle: the trusted service only, SPV never consulted.

@@ -199,6 +199,7 @@ pub(crate) struct TrustProvider {
     synced: watch::Sender<bool>,
     unknown_quorum_wait: Duration,
     spv_poll: Duration,
+    spv_lookup_timeout: Duration,
     cache: Mutex<HashMap<Quorum, [u8; 48]>>,
     failed_closed: Mutex<HashMap<Quorum, Instant>>,
     /// Quorums a mismatch notice was sent for.
@@ -222,6 +223,7 @@ impl TrustProvider {
             synced: watch::Sender::new(false),
             unknown_quorum_wait: UNKNOWN_QUORUM_WAIT,
             spv_poll: SPV_POLL,
+            spv_lookup_timeout: SPV_LOOKUP_TIMEOUT,
             cache: Default::default(),
             failed_closed: Default::default(),
             mismatched: Default::default(),
@@ -234,6 +236,12 @@ impl TrustProvider {
     pub(crate) fn with_waits(mut self, wait: Duration, poll: Duration) -> Self {
         self.unknown_quorum_wait = wait;
         self.spv_poll = poll;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_lookup_timeout(mut self, limit: Duration) -> Self {
+        self.spv_lookup_timeout = limit;
         self
     }
 
@@ -295,6 +303,21 @@ impl TrustProvider {
         height: u32,
     ) -> Result<[u8; 48], ContextProviderError> {
         let served = self.resolve(quorum_type, quorum_hash, height);
+        // BL-162: which source answered, for `DW_LOG`/`DWCLI_LOG` diagnosis.
+        match &served {
+            Ok(s) => tracing::debug!(
+                quorum_type,
+                quorum = %hex::encode(quorum_hash),
+                verified = s.verified,
+                "quorum key served"
+            ),
+            Err(e) => tracing::debug!(
+                quorum_type,
+                quorum = %hex::encode(quorum_hash),
+                error = %e,
+                "quorum key refused"
+            ),
+        }
         tally(served.as_ref().is_ok_and(|s| s.verified));
         served.map(|s| s.key)
     }
@@ -352,7 +375,8 @@ impl TrustProvider {
             return SpvAnswer::Verified(*key);
         }
         let lookup = attached.spv.lookup(quorum.0, quorum.1, height);
-        let answer = block_on(bounded(lookup, SPV_LOOKUP_TIMEOUT)).unwrap_or(SpvAnswer::Absent);
+        let answer =
+            block_on(bounded(lookup, self.spv_lookup_timeout)).unwrap_or(SpvAnswer::Absent);
         if let SpvAnswer::Verified(key) = answer {
             self.remember(quorum, key);
         }
@@ -388,15 +412,17 @@ impl TrustProvider {
             return Err(unknown());
         }
         let spv = Arc::clone(&attached.spv);
-        let (wait, poll) = (self.unknown_quorum_wait, self.spv_poll);
+        let (wait, poll, limit) = (
+            self.unknown_quorum_wait,
+            self.spv_poll,
+            self.spv_lookup_timeout,
+        );
         let verified = block_on(async move {
             let deadline = tokio::time::Instant::now() + wait;
             loop {
                 let left = deadline.saturating_duration_since(tokio::time::Instant::now());
                 let lookup = spv.lookup(quorum.0, quorum.1, height);
-                if let SpvAnswer::Verified(key) =
-                    bounded(lookup, SPV_LOOKUP_TIMEOUT.min(left)).await
-                {
+                if let SpvAnswer::Verified(key) = bounded(lookup, limit.min(left)).await {
                     return Some(key);
                 }
                 if tokio::time::Instant::now() + poll > deadline {
