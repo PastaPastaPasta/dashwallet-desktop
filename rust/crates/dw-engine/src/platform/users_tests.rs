@@ -735,7 +735,8 @@ fn a_held_turn_off_never_reaches_a_reimported_wallet() {
     super::requests::tests::wait_until("the removal", Duration::from_secs(60), || {
         removal.is_finished() || s.wallet_lifecycle.waiting() == 1
     });
-    // Without the lifecycle the removal and the re-import pass the held write.
+    // Without the lifecycle the removal and the re-import pass the held write;
+    // the test then fails on the setting rather than hanging.
     let passed = removal.is_finished();
     if passed {
         reimport();

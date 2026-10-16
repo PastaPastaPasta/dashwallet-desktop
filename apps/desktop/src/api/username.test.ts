@@ -30,10 +30,14 @@ describe("withoutUsername (DP3-03b D22)", () => {
   });
 });
 
-it("a change of the setting is under way until it is done", () => {
-  const done = changingUsernameInRequests("w1");
+it("a change of the setting is under way until every change is done", () => {
+  const first = changingUsernameInRequests("w1");
+  const second = changingUsernameInRequests("w1");
   expect(isChangingUsernameInRequests("w1")).toBe(true);
   expect(isChangingUsernameInRequests("w2")).toBe(false);
-  done();
+  first();
+  first();
+  expect(isChangingUsernameInRequests("w1")).toBe(true);
+  second();
   expect(isChangingUsernameInRequests("w1")).toBe(false);
 });

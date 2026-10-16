@@ -11,6 +11,8 @@ import { fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
 const command = (page: Page, c: ShellCommand) => page.evaluate((c) => window.__dwFixture!.shellCommand(c), c);
 const box = (page: Page) => page.getByTestId("settings-username-in-requests");
 const copied = (page: Page) => page.evaluate(() => (window as unknown as { __copied: string }).__copied);
+/** Holds `command`'s next answer; call the result to let it go. */
+const hold = (page: Page, command: CommandName) => page.evaluateHandle((c) => window.__dwFixture!.hold(c), command);
 
 /** Opens `scenario` with a clipboard the test can read. */
 async function open(page: Page, scenario: string, theme: Theme) {
@@ -97,8 +99,7 @@ test("back on Receive after turning it off, no cached name shows while the usern
   await box(page).uncheck();
   await expect(box(page)).toBeEnabled();
   // The engine is slow to answer Receive's reads: what shows meanwhile comes from the cache.
-  const held: CommandName = "receive_username";
-  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), held);
+  const release = await hold(page, "receive_username");
   expect((await receiveLink(page)).link).toBe(`dash:${address}`);
   await release.evaluate((r) => r());
   expect(errors).toEqual([]);
@@ -108,8 +109,7 @@ test("leaving Settings before the engine answers, Receive already shows no name 
   const errors = await open(page, "dashpay-registered", "light");
   const { address } = await receiveLink(page);
   await generalSettings(page);
-  const held: CommandName = "set_username_in_requests";
-  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), held);
+  const release = await hold(page, "set_username_in_requests");
   await box(page).uncheck();
   await expect(box(page)).toBeDisabled();
   expect((await receiveLink(page)).link).toBe(`dash:${address}`);
@@ -139,8 +139,7 @@ test("Receive drops the name it holds once the toggle reads off, never showing i
   expect(link).toBe(`dash:${address}?user=alice`);
   // Turned off elsewhere while the page is open, then a names change re-reads the receive side.
   // While the plain link is being built, the named one is not kept in its place (D18).
-  const held: CommandName = "build_payment_uri";
-  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), held);
+  const release = await hold(page, "build_payment_uri");
   await page.evaluate(() => {
     const f = window.__dwFixture!;
     f.world.wallets[0].receive.usernameInRequests = false;
@@ -164,8 +163,7 @@ test("while turning it off is under way, a stored or a new request shows and cop
   await page.keyboard.press("Escape");
 
   await generalSettings(page);
-  const held: CommandName = "set_username_in_requests";
-  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), held);
+  const release = await hold(page, "set_username_in_requests");
   await box(page).uncheck();
   await expect(box(page)).toBeDisabled();
   // Back on Receive before the engine answers: the cached request still has the name.
@@ -187,11 +185,10 @@ test("while turning it off is under way, a stored or a new request shows and cop
   expect(errors).toEqual([]);
 });
 
-test("while turning it on is under way, a re-read of the setting still shows no name (D22)", async ({ page }) => {
+test("while turning it on is under way, a re-read of the setting or a new request shows no name (D22)", async ({ page }) => {
   const errors = await open(page, "dashpay-username-off", "light");
   await generalSettings(page);
-  const held: CommandName = "set_username_in_requests";
-  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), held);
+  const release = await hold(page, "set_username_in_requests");
   await box(page).check();
   await expect(box(page)).toBeDisabled();
   const { address, link } = await receiveLink(page);
@@ -205,6 +202,12 @@ test("while turning it on is under way, a re-read of the setting still shows no 
   await page.waitForTimeout(500);
   await page.getByTestId("receive-copy-uri").click();
   expect(await copied(page)).toBe(`dash:${address}`);
+  // A request made meanwhile: the engine (here the fixture) already names it; the sheet does not.
+  await page.getByTestId("request-label").fill("Gas");
+  await page.getByTestId("request-create").click();
+  await expect(page.getByTestId("request-uri")).toContainText("?label=Gas");
+  await expect(page.getByTestId("request-uri")).not.toContainText("user=");
+  await page.keyboard.press("Escape");
   await release.evaluate((r) => r());
   await expect(async () => {
     await page.getByTestId("receive-copy-uri").click();
@@ -215,8 +218,7 @@ test("while turning it on is under way, a re-read of the setting still shows no 
 
 test("the QR uses no name before the setting has answered (D22)", async ({ page }) => {
   const errors = await open(page, "dashpay-registered", "light");
-  const held: CommandName = "username_in_requests";
-  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), held);
+  const release = await hold(page, "username_in_requests");
   await page.getByTestId("sidebar-receive").click();
   await expect(page.getByTestId("receive-address")).toBeVisible();
   // The username is there; the setting is not.
@@ -233,8 +235,7 @@ test("the QR uses no name before the setting has answered (D22)", async ({ page 
 test("the box shows the choice until the engine answers, and a refusal keeps the setting", async ({ page }) => {
   const errors = await open(page, "dashpay-registered", "light");
   await generalSettings(page);
-  const held: CommandName = "set_username_in_requests";
-  const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), held);
+  const release = await hold(page, "set_username_in_requests");
   await box(page).uncheck();
   await expect(box(page)).not.toBeChecked();
   await expect(box(page)).toBeDisabled();

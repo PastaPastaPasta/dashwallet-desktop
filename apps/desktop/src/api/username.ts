@@ -4,13 +4,21 @@
 
 import type { ReceiveRequest } from "./generated/ReceiveRequest";
 
-/** Wallets whose setting is being changed: it reads off until the change is done. */
-const changing = new Set<string>();
+/** Changes under way per wallet: its setting reads off until all are done. A count, as a card
+ * remounted mid-change can start another before the first is done. */
+const changing = new Map<string, number>();
 
 /** Marks the wallet's setting as being changed, until the returned function is called. */
 export function changingUsernameInRequests(walletId: string): () => void {
-  changing.add(walletId);
-  return () => changing.delete(walletId);
+  changing.set(walletId, (changing.get(walletId) ?? 0) + 1);
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    const left = changing.get(walletId)! - 1;
+    if (left === 0) changing.delete(walletId);
+    else changing.set(walletId, left);
+  };
 }
 
 export function isChangingUsernameInRequests(walletId: string): boolean {

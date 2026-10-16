@@ -3,7 +3,7 @@
 // payments list keeps them (dash-qt's Receive tab, QT-081…085).
 
 import { useId, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { errorMessage, hasCode } from "../api/backend";
 import type { AddressInfo } from "../api/generated/AddressInfo";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
@@ -38,6 +38,15 @@ function Qr({ text, label, testId }: { text: string | undefined; label: string; 
   return <div className="qr-placeholder" style={{ width: QR_SIDE, height: QR_SIDE }} aria-hidden="true" />;
 }
 
+/** The name the QR carries: none until the setting has read on (`undefined`: wait). */
+function qrUsername(included: boolean | undefined, username: UseQueryResult<string | null>, last: string | null): string | null | undefined {
+  if (included === undefined) return undefined;
+  if (!included) return null;
+  if (username.isError) return last;
+  if (username.data === undefined) return undefined;
+  return username.data ?? last;
+}
+
 function AddressCard({ walletId }: { walletId: string }) {
   const b = useBackend();
   const current = useReceiveAddress(walletId);
@@ -54,9 +63,8 @@ function AddressCard({ walletId }: { walletId: string }) {
   const included = useUsernameAllowed(walletId);
   const held = useRef<{ walletId: string; name: string } | null>(null);
   if (username.data) held.current = { walletId, name: username.data };
-  const last = included === true && held.current?.walletId === walletId ? held.current.name : null;
-  const user =
-    included !== true ? (included === undefined ? undefined : null) : username.isError ? last : username.data === undefined ? undefined : (username.data ?? last);
+  const last = held.current?.walletId === walletId ? held.current.name : null;
+  const user = qrUsername(included, username, last);
   const uri = useQuery({
     // Its own prefix: Tools ▸ Address book's `paymentUri` key takes a label in the same place.
     queryKey: ["receiveUri", shown?.address ?? "", user ?? null] as const,
@@ -218,11 +226,11 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
   );
 }
 
-function RequestSheet({ walletId, network, onClose, ...props }: { walletId: string; request: ReceiveRequest; network: NetworkInfo; onClose: () => void }) {
+function RequestSheet({ walletId, request: read, network, onClose }: { walletId: string; request: ReceiveRequest; network: NetworkInfo; onClose: () => void }) {
   const shown = useDisplay(network);
   // A stored or new request shows and copies its name only while the setting reads on: a change
   // under way, a failed read or a request read before the change all show none (DP3-03b D22).
-  const request = useUsernameAllowed(walletId) === true ? props.request : withoutUsername(props.request);
+  const request = useUsernameAllowed(walletId) === true ? read : withoutUsername(read);
   const title = `Request payment to ${request.label || shortAddress(request.address)}`;
   return (
     <Sheet title={title} width="medium" testId="request-sheet" onClose={onClose}>
