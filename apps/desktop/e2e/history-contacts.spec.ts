@@ -5,9 +5,9 @@ import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors, type The
 // DP3-07: history rows with the contact's avatar and name (DP3-02's attribution), the transaction
 // detail naming the contact and opening its pane, and Home's frequent-contacts strip, on the
 // fixture's `dashpay-history-contacts` scenario (D10): Marta (no relation to the main identity),
-// "Coffee refund" from Bob (a label over the contact), Bob, Dave (`@dave`) and a payment whose
-// names have not landed, and the oldest payment, to Judy (hidden). Tests are named by parity ID: IOS-029 (contact icons on rows), IOS-074
-// (the contact's profile).
+// "Coffee refund" from Bob (a label over the contact), Bob, Dave (`@dave`), a payment whose names
+// have not landed, and the oldest plain payment, to Judy (hidden). Tests are named by parity ID:
+// IOS-029 (contact icons on rows), IOS-074 (the contact's profile).
 
 async function open(page: Page, scenario = "dashpay-history-contacts", theme: Theme = "light") {
   const errors = trackPageErrors(page);
@@ -180,7 +180,7 @@ test("DP3-07 discreet mode hides the strip with the history (D8); no identity, n
 });
 
 test("DP3-07 locking puts Home's strip behind the lock screen (D8)", async ({ page }) => {
-  await open(page);
+  const errors = await open(page);
   await expect(page.getByTestId("home-frequent")).toBeVisible();
   await page.getByTestId("toolbar-lock").click();
   await page.getByTestId("lock-screen").waitFor();
@@ -194,6 +194,7 @@ test("DP3-07 locking puts Home's strip behind the lock screen (D8)", async ({ pa
     return { inert: el.closest("[inert]") !== null, focused: document.activeElement === el, covered: !!top?.closest('[data-testid="lock-screen"]') };
   });
   expect(shown).toEqual({ inert: true, focused: false, covered: true });
+  expect(errors).toEqual([]);
 });
 
 for (const theme of THEMES) {
