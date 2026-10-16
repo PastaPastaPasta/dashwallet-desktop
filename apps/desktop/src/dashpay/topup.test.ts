@@ -88,13 +88,19 @@ describe("the top-up sheet (IOS-069, AND-078)", () => {
 
   it("a cancelled passphrase returns to the confirm step and pays nothing", async () => {
     const { flow, calls } = setup({ encrypted: true });
+    const settled = vi.fn();
+    const stop = onTopUpSettled(settled);
     flow.begin("A");
     flow.next(5_000_000);
     const paying = flow.pay({ maxDuffs: 1, maxCredits: "0" });
     await vi.waitFor(() => expect(flow.grants.pending).not.toBeNull());
     flow.grants.cancel();
     await paying;
+    await Promise.resolve();
     expect([flow.step, calls]).toEqual(["confirm", []]);
+    // Nothing ran, so nothing is read again.
+    expect(settled).not.toHaveBeenCalled();
+    stop();
   });
 
   it("T4–T7: the outcome screens", () => {
@@ -134,6 +140,10 @@ describe("the top-up sheet (IOS-069, AND-078)", () => {
     flow.step = "refused";
     flow.forget();
     expect(flow.step).toBe("amount");
+    flow.open = true;
+    flow.step = "done";
+    flow.forget();
+    expect(flow.step).toBe("done");
   });
 
   it("D22: every call that ends tells the settle listeners", async () => {
@@ -148,9 +158,10 @@ describe("the top-up sheet (IOS-069, AND-078)", () => {
     finishTopUp(applied);
     await paying;
     await flow.finish(pending);
-    expect(settled).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(settled).toHaveBeenCalledTimes(2));
     stop();
     await flow.finish(pending);
+    await Promise.resolve();
     expect(settled).toHaveBeenCalledTimes(2);
   });
 

@@ -13,7 +13,7 @@ import { mainIdentityOf, useBackend, useDashPayShell, useWallets } from "../../a
 import { navigate, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
-import { creditsModel, headerModel, outcomeRows, pageModel, PROFILE_COPY, requestModel, type ContestRef, type CreditsModel } from "../../dashpay/profile";
+import { creditsModel, headerModel, holdsTopUp, outcomeRows, pageModel, PROFILE_COPY, requestModel, type ContestRef, type CreditsModel } from "../../dashpay/profile";
 import { useContest, useCostTable, useOutcomeEvents, usePendingTopUps, useRefreshBalanceOnVisit, useStuckTopUps } from "../../dashpay/profileQueries";
 import { useStatusInputs } from "../../dashpay/queries";
 import type { CardActionKind, StatusInputs } from "../../dashpay/status";
@@ -35,10 +35,14 @@ function chooseName(b: Backend, walletId: string, identity: string, instant: boo
   navigate("joinDashPay");
 }
 
-/** Home's "Buy credits" (S19, S20): My Profile with the top-up sheet open (D8). */
-export function buyCredits(b: Backend, walletId: string, identity: string) {
-  topUpFor(b, walletId).begin(identity);
+/** Home's "Buy credits" (S19, S20): My Profile, with the top-up sheet open unless a pending or
+ * stuck top-up of the identity holds Top up there (D8); a failed read opens it (the engine refuses). */
+export function buyCredits(b: Backend, walletId: string, main: IdentitySummary) {
   navigate("profile");
+  const open = () => topUpFor(b, walletId).begin(main.identity);
+  void Promise.all([b.creditsPendingTopUps(walletId), b.creditsStuckTopUpFundings(walletId)]).then(([pending, stuck]) => {
+    if (!holdsTopUp(main, pending, stuck)) open();
+  }, open);
 }
 
 function Header({ main, contest, walletId }: { main: IdentitySummary; contest: string | null; walletId: string }) {
@@ -268,7 +272,7 @@ function Ready({ walletId, network, main, contest, inputs }: { walletId: string;
     costs: costs.data,
     pending: pending.data ?? [],
     stuck: stuck.data ?? [],
-    toppingUp: flow.running,
+    toppingUp: flow.running || flow.rowRunning !== null,
     unseen: flow.unseen,
     answeredUnknown: flow.answeredUnknown,
     amount: inputs.amount,
@@ -294,7 +298,7 @@ export function MyProfilePage({ walletId, network }: { walletId: string; network
   const page = pageModel(inputs);
   const onAction = (kind: CardActionKind) => {
     if (kind === "chooseName" && inputs.main) return chooseName(b, walletId, inputs.main.identity, false);
-    if (kind === "buyCredits" && inputs.main) return topUpFor(b, walletId).begin(inputs.main.identity);
+    if (kind === "buyCredits" && inputs.main) return buyCredits(b, walletId, inputs.main);
     return defaultCardAction(kind, retry);
   };
   return (

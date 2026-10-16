@@ -132,7 +132,7 @@ function HomeDashPayCard({ walletId, network }: { walletId: string; network: Net
   const { inputs, retry } = useStatusInputs(walletId, network);
   const card = homeCard(inputs);
   // DP1-10 D8: "Buy credits" opens My Profile with the top-up sheet.
-  const onAction = (kind: CardActionKind) => (kind === "buyCredits" && inputs.main ? buyCredits(b, walletId, inputs.main.identity) : defaultCardAction(kind, retry));
+  const onAction = (kind: CardActionKind) => (kind === "buyCredits" && inputs.main ? buyCredits(b, walletId, inputs.main) : defaultCardAction(kind, retry));
   return card && <DashPayCard card={card} onAction={onAction} />;
 }
 

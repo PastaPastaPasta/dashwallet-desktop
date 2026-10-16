@@ -49,7 +49,7 @@ export const PROFILE_COPY = {
     toppingUp: "Topping up…",
     pendingFirst: "Finish the pending top-up first.",
     /** D14: a top-up that ended while the sheet was hidden. */
-    unseen: "Your top-up has finished.",
+    unseen: "Your top-up has an update.",
     showResult: "Show",
   },
   pending: {
@@ -206,6 +206,10 @@ export interface CreditsInputs {
 const ofIdentity = (main: IdentitySummary) => (r: { identity: string | null; identityIndex: number }) =>
   r.identity === main.identity || (r.identity === null && r.identityIndex === main.index);
 
+/** A pending lock or a stuck funding of `main` refuses its next top-up (m4 §2.8): Top up waits. */
+export const holdsTopUp = (main: IdentitySummary, pending: PendingTopUp[], stuck: StuckTopUpFunding[]) =>
+  pending.some(ofIdentity(main)) || stuck.some(ofIdentity(main));
+
 /** The credits block (C1–C8). */
 export function creditsModel(main: IdentitySummary, i: CreditsInputs): CreditsModel {
   const known = main.balance !== null;
@@ -221,14 +225,16 @@ export function creditsModel(main: IdentitySummary, i: CreditsInputs): CreditsMo
   const warning = level === "low" ? PROFILE_COPY.credits.low : level === "empty" ? PROFILE_COPY.credits.empty : null;
   const pending = i.pending
     .filter(ofIdentity(main))
-    .map(
-      (p): PendingRow => ({
+    .map((p): PendingRow => {
+      // Platform said the lock was used: the row's flag, or a call's answer this session (D15).
+      const unknown = p.proved && (p.consumptionUnknown || i.answeredUnknown.has(p.txid));
+      return {
         txid: p.txid,
         title: PROFILE_COPY.pending.title(i.amount(p.duffs)),
-        line: p.consumptionUnknown ? PROFILE_COPY.pending.unknown : p.proved ? PROFILE_COPY.pending.proved : PROFILE_COPY.pending.unproved,
-        arrived: p.proved && (p.consumptionUnknown || i.answeredUnknown.has(p.txid)),
-      }),
-    );
+        line: unknown ? PROFILE_COPY.pending.unknown : p.proved ? PROFILE_COPY.pending.proved : PROFILE_COPY.pending.unproved,
+        arrived: unknown,
+      };
+    });
   const stuck = i.stuck
     .filter(ofIdentity(main))
     .map((s): StuckRow => ({ step: s.step, title: s.state === "willBeSent" ? PROFILE_COPY.stuck.willBeSent : PROFILE_COPY.stuck.maybeSent, text: PROFILE_COPY.stuck.text }));

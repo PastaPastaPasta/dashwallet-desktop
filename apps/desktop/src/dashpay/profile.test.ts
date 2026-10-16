@@ -8,7 +8,7 @@ import type { CostTable } from "../api/generated/CostTable";
 import type { DashPayEventInfo } from "../api/generated/DashPayEventInfo";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
-import { creditsModel, estimateText, headerModel, outcomeRows, pageModel, PROFILE_COPY, requestModel, tallyRows, type CreditsInputs } from "./profile";
+import { creditsModel, estimateText, headerModel, holdsTopUp, outcomeRows, pageModel, PROFILE_COPY, requestModel, tallyRows, type CreditsInputs } from "./profile";
 import { homeCard, joinModel, type StatusInputs } from "./status";
 
 const COSTS: CostTable = {
@@ -125,7 +125,7 @@ describe("credits (IOS-069, AND-078)", () => {
       ["aa", PROFILE_COPY.pending.unproved, false],
       ["bb", PROFILE_COPY.pending.proved, false],
       ["cc", PROFILE_COPY.pending.unknown, true],
-      ["ee", PROFILE_COPY.pending.proved, true],
+      ["ee", PROFILE_COPY.pending.unknown, true],
     ]);
     expect(m.pending[0].title).toBe("Top-up of 0.05 tDASH pending");
     expect(m.topUp).toEqual({ disabled: true, reason: PROFILE_COPY.credits.pendingFirst, primary: false });
@@ -136,6 +136,14 @@ describe("credits (IOS-069, AND-078)", () => {
     expect(m.stuck).toEqual([{ step: "topup/0-1/funding", title: PROFILE_COPY.stuck.willBeSent, text: PROFILE_COPY.stuck.text }]);
     expect(m.topUp).toMatchObject({ disabled: true, reason: PROFILE_COPY.stuck.willBeSent });
     expect(creditsModel(alice(), credits({ stuck: [{ step: "topup/1-1/funding", identityIndex: 1, identity: "Other", state: "maybeSent" }] })).stuck).toEqual([]);
+  });
+
+  it("D8: a pending or stuck top-up of the identity, not another's, holds Top up (Home's Buy credits too)", () => {
+    const stuck = { step: "topup/0-1/funding", identityIndex: 0, identity: null, state: "maybeSent" as const };
+    expect(holdsTopUp(alice(), [], [])).toBe(false);
+    expect(holdsTopUp(alice(), [lock()], [])).toBe(true);
+    expect(holdsTopUp(alice(), [], [stuck])).toBe(true);
+    expect(holdsTopUp(alice(), [lock({ identity: "Other", identityIndex: 1 })], [{ ...stuck, identityIndex: 1 }])).toBe(false);
   });
 
   it("D14: a running top-up holds Top up; an unseen result is offered", () => {

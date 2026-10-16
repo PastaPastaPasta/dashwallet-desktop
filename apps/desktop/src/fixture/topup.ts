@@ -123,7 +123,8 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
         throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "funding", needed: String(totalDuffs), remaining: String(g.grant.purpose.maxDuffs) });
       d.useGrant(world, grant);
       if (c.next === "broadcastUnknown") {
-        const step = topUpStep(me.index, c.locks + 1);
+        c.locks += 1;
+        const step = topUpStep(me.index, c.locks);
         c.stuck = [...c.stuck, { step, identityIndex: me.index, identity, state: "maybeSent" }];
         throw fail("platform.broadcast_unknown", "funding outcome unknown", { kind: "artifact", artifact: step });
       }

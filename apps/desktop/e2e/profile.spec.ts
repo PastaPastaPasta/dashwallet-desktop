@@ -183,7 +183,7 @@ test("D14: a top-up that ends while the sheet is closed is offered on the page a
   await page.getByTestId("topup-sheet").getByRole("button", { name: "Close" }).click();
   await expect(page.getByTestId("profile-top-up-reason")).toHaveText("Topping up…");
   await release.evaluate((r) => r());
-  await expect(page.getByTestId("profile-top-up-unseen")).toContainText("Your top-up has finished.");
+  await expect(page.getByTestId("profile-top-up-unseen")).toContainText("Your top-up has an update.");
   await page.getByTestId("profile-top-up-show").click();
   await expect(page.getByTestId("topup-outcome-title")).toHaveText("Credits added");
   await page.getByTestId("topup-done").click();

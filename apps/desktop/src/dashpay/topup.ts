@@ -249,18 +249,20 @@ export class TopUpFlow extends Model {
 
   #settled(outcome: TopUpOutcome | null) {
     if (outcome?.state.kind === "consumptionUnknown") this.answeredUnknown.add(outcome.txid);
-    for (const f of settledListeners) f();
+    for (const f of settledListeners) queueMicrotask(f);
   }
 
   /** Confirm & pay: the quote's grant, then `top_up` (one call at a time, D14). */
   async pay(grant: GrantRequest): Promise<void> {
     const { identity, duffs } = this;
-    if (this.running || identity === null || duffs === null) return;
+    if (this.running || this.rowRunning !== null || identity === null || duffs === null) return;
+    let ran = false;
     this.running = true;
     this.error = null;
     this.changed();
     try {
       const got = await this.grants.withGrant(platformOp(grant), this.walletId, (g: AuthGrant) => {
+        ran = true;
         this.step = "running";
         this.changed();
         return this.api.creditsTopUp(this.walletId, identity, duffs, g.id);
@@ -274,7 +276,8 @@ export class TopUpFlow extends Model {
       this.step = "refused";
     } finally {
       this.running = false;
-      this.#settled(this.step === "done" ? this.outcome : null);
+      // A cancelled passphrase ran nothing: nothing to read again.
+      if (ran) this.#settled(this.step === "done" ? this.outcome : null);
       this.changed();
     }
   }
