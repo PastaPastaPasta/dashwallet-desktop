@@ -88,6 +88,15 @@ export function txTitle(row: Pick<TxRow, "txType" | "category" | "amount" | "lab
   return row.label || contactName(row.counterparty) || typeTitle(row.txType, row.category, row.amount);
 }
 
+/** What a row says aloud about its contact when the title is something else, a label
+ * (DP3-07 D13): the avatar is decoration, so "from Bob Builder" / "to Bob Builder"; `null` when the
+ * title already names the contact or the row has no named contact. */
+export function contactAside(row: Pick<TxRow, "amount" | "counterparty">, title: string): string | null {
+  const name = contactName(row.counterparty);
+  if (name === null || title === name) return null;
+  return `${row.amount < 0 ? "to" : "from"} ${name}`;
+}
+
 /** dash-qt `TransactionTableModel::formatTxType`: the Type column of table mode. */
 export function tableTypeTitle(type: TxTypeName): string {
   switch (type) {

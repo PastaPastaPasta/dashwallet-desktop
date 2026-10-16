@@ -9,6 +9,7 @@ import type { HistorySortName } from "../api/generated/HistorySortName";
 import { useDisplay, type Display } from "../format/display";
 import { Avatar } from "../screens/contacts/Avatar";
 import {
+  contactAside,
   contactLetters,
   dayTitle,
   detailDate,
@@ -26,7 +27,7 @@ import {
   weekday,
   type TxIcon,
 } from "../format/tx";
-import { AmountText, Chip, Icon } from "./basics";
+import { AmountText, Chip, Icon, VisuallyHidden } from "./basics";
 import type { UsedIcon } from "./icons";
 
 const TX_ICON: Record<TxIcon, UsedIcon> = {
@@ -69,6 +70,7 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
   const shown = shownAmount(row.amount, row.txType);
   const amount = ctx.display.compact(shown.duffs, shown.signed);
   const letters = contactLetters(row.counterparty);
+  const aside = contactAside(row, title);
   const leading =
     decor?.leading ??
     (letters !== null ? <Avatar letters={letters} /> : <Icon id={TX_ICON[txIcon(row.txType, row.status, row.amount)]} size={30} className="tx-row-icon" />);
@@ -78,6 +80,7 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
         {leading}
         <span className="tx-row-text">
           <span className={`tx-row-title ${isProblem(row.status) ? "is-problem" : ""}`}>{title}</span>
+          {aside && <VisuallyHidden>{aside}</VisuallyHidden>}
           <span className="tx-row-subtitle">
             {date && <span className="tx-row-time">{timeOfDay(date, ctx.locale)}</span>}
             {chip && <Chip tone={isProblem(row.status) ? "danger" : "info"}>{chip}</Chip>}

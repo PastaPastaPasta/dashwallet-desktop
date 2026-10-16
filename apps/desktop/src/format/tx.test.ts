@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
-import { contactLetters, contactName, dateRange, dayTitle, groupByDay, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
+import { contactAside, contactLetters, contactName, dateRange, dayTitle, groupByDay, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
 
 const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
   kind: "confirmed",
@@ -44,6 +44,17 @@ describe("titles", () => {
     expect(contactLetters(undefined)).toBeNull();
     // A name without a letter says less than the type icon.
     expect(contactLetters({ ...bob, displayName: "🚀 123" })).toBeNull();
+  });
+
+  it("names the contact aloud when a label takes the title (DP3-07 D13)", () => {
+    const bob = { identity: "8GopL", username: "bob", displayName: "Bob Builder", avatarUrl: null };
+    expect(contactAside({ amount: 5, counterparty: bob }, "Coffee refund")).toBe("from Bob Builder");
+    expect(contactAside({ amount: -5, counterparty: bob }, "Lunch")).toBe("to Bob Builder");
+    expect(contactAside({ amount: -5, counterparty: { ...bob, displayName: null } }, "Lunch")).toBe("to @bob");
+    // The title already names the contact, or there is no name to say.
+    expect(contactAside({ amount: 5, counterparty: bob }, "Bob Builder")).toBeNull();
+    expect(contactAside({ amount: 5, counterparty: { ...bob, displayName: null, username: null } }, "Received")).toBeNull();
+    expect(contactAside({ amount: 5, counterparty: undefined }, "Coffee refund")).toBeNull();
   });
 
   it("maps dash-qt types to iOS titles", () => {
