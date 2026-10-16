@@ -35,7 +35,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   identity: null,
   txid: null,
   waiting: "instantSend",
-  holdsKey: false,
+  holdsKey: true,
   fundsCommitted: true,
   contestEndsAt: null,
   failure: null,
@@ -143,6 +143,16 @@ describe("IOS-065 / AND-024 Home card: one per banner state", () => {
       action: { kind: "unlock" },
     });
     expect(homeCard(inputs(REGISTERING, { registration: r }))!.action).toBeNull();
+  });
+
+  it("D21: an idle row (a keyless wait, no key held: after a relaunch) is paused, not running", () => {
+    expect(homeCard(inputs(REGISTERING, { registration: row({ waiting: "chainLock", holdsKey: false }) }))).toMatchObject({
+      state: "creatingPaused",
+      lines: ["Registration paused", "Waiting for your approval to continue."],
+      action: { kind: "continue" },
+    });
+    expect(homeCard(inputs(REGISTERING, { registration: row({ waiting: "chainLock", holdsKey: true }) }))!.state).toBe("creating");
+    expect(homeCard(inputs(REGISTERING, { registration: row({ phase: "nameRequested", waiting: null, holdsKey: false }) }))!.state).toBe("creating");
   });
 
   it("S13: a failure or an authorization wait pauses it, with Continue into the Join page", () => {

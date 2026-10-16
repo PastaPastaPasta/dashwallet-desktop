@@ -131,10 +131,12 @@ describe("relaunch and resume (the acceptance: no second asset lock)", () => {
     const g = relaunch(f);
     expect(g.world.lock.state).toBe("locked");
     expect(g.world.leases).toEqual([]);
-    expect(await rowOf(draft)).toMatchObject({ phase: "fundingSent", waiting: "unlock", holdsKey: false, fundsCommitted: true });
+    // No proof was recorded (the fixture models none): the engine's idle_wait says chainLock,
+    // locked or not, and no key is held (D21).
+    expect(await rowOf(draft)).toMatchObject({ phase: "fundingSent", waiting: "chainLock", holdsKey: false, fundsCommitted: true });
     expect(g.advanceRegistration(draft)).toBe(false);
     await cmd.unlock("demo");
-    expect((await rowOf(draft)).waiting).toBe("authorize");
+    expect(await rowOf(draft)).toMatchObject({ waiting: "chainLock", holdsKey: false });
   });
 
   it("Continue resumes the same draft and lock, and the run completes", async () => {
@@ -142,9 +144,9 @@ describe("relaunch and resume (the acceptance: no second asset lock)", () => {
     const draft = await cmd.startRegistration(W, coreRequest(LABEL), await grant());
     const g = relaunch(f);
     await cmd.unlock("demo");
-    // No grant: only keyless waits, so it stays parked.
+    // No grant: only keyless waits, so it stays idle for the fixture (no proof comes).
     await cmd.resumeRegistration(W, draft, null);
-    expect((await rowOf(draft)).waiting).toBe("authorize");
+    expect(await rowOf(draft)).toMatchObject({ waiting: "chainLock", holdsKey: false });
     await cmd.resumeRegistration(W, draft, await grant());
     expect(await rowOf(draft)).toMatchObject({ waiting: "instantSend", holdsKey: true });
     while (g.advanceRegistration(draft));
@@ -153,7 +155,8 @@ describe("relaunch and resume (the acceptance: no second asset lock)", () => {
     expect(g.world.dashpay.registrations).toHaveLength(1);
   });
 
-  it("every scenario's world survives the trip through JSON", () => {
+  // Every scenario's world is built: slow under the box's load, so its own timeout.
+  it("every scenario's world survives the trip through JSON", { timeout: 30_000 }, () => {
     for (const name of SCENARIO_NAMES) {
       const w = buildWorld(name);
       expect(JSON.parse(JSON.stringify(w)), name).toEqual(w);

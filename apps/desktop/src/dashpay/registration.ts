@@ -7,13 +7,14 @@
 
 import { hasCode, isAppError } from "../api/backend";
 import type { NameAvailability } from "../api/generated/NameAvailability";
+import type { FinishReport } from "../api/generated/FinishReport";
 import type { NameOutcome } from "../api/generated/NameOutcome";
 import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { UsernameCheck } from "../api/generated/UsernameCheck";
 import type { UsernameRuleName } from "../api/generated/UsernameRuleName";
 import { waitText } from "../onboarding/model";
-import { COPY, failureText, stepOf, WAITS, type CardStep } from "./status";
+import { awaitsContinue, COPY, failureText, stepOf, WAITS, type CardStep } from "./status";
 
 /** The engine's cap (`check_username`'s `maxLength`); the field takes no more. */
 export const MAX_LABEL = 23;
@@ -44,8 +45,7 @@ export const REG_COPY = {
     quoting: "Working out the cost…",
     quoteFailed: "Could not work out the cost.",
     shortfall: (amount: string) => `You need at least ${amount} to create this username.`,
-    fromCredits: "Paid from your identity's credits",
-    upTo: (amount: string) => `Up to about ${amount}`,
+    fromCredits: (credits: string) => `Paid from your identity's credits: up to ${BigInt(credits).toLocaleString("en-US")} credits`,
     accept: "I accept",
     pay: "Confirm & pay",
     register: "Confirm",
@@ -86,8 +86,7 @@ export const REG_COPY = {
     confirm: "Start a new registration",
     cancel: "Cancel",
   },
-  finished: (resumed: number, completed: number, pending: number) =>
-    `${resumed} resumed, ${completed} completed, ${pending} still pending.`,
+  finished: (r: FinishReport) => `${r.resumed} resumed, ${r.completed} completed, ${r.stillPending} still pending.`,
 } as const;
 
 // ---------------------------------------------------------------------------------------------
@@ -252,25 +251,15 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
     actions,
     ...rest,
   });
-  const voting = (endsAt: number | null): ScreenModel =>
-    base(
-      "voting",
-      REG_COPY.voting.title,
-      [REG_COPY.voting.message(label), endsAt === null ? COPY.voting.notify : COPY.voting.endsOn(i.date(endsAt))],
-      [act("done", REG_COPY.voting.action), act("votingInfo", REG_COPY.voting.info)],
-      { step: null },
-    );
-
   if (row.phase === "done") {
     if (row.nameFailure)
       return base("nameFailed", REG_COPY.nameFailed.title, [REG_COPY.nameFailed.message(label, nameFailureText(row.nameFailure))], [act("another", REG_COPY.nameFailed.another)], {
         step: null,
       });
     // A contested label ends `done` too; its contest is the status's (D4).
-    if (i.contestPending) return voting(i.contestEndsAt);
-    return base("done", REG_COPY.done.title(label), [REG_COPY.done.message], [act("done", REG_COPY.done.action)], { step: null });
+    return i.contestPending ? votingScreen(label, i.contestEndsAt, i.date) : doneScreen(label);
   }
-  if (row.phase === "contested") return voting(row.contestEndsAt ?? i.contestEndsAt);
+  if (row.phase === "contested") return votingScreen(label, row.contestEndsAt ?? i.contestEndsAt, i.date);
 
   // Unknown funding first: a failed row may still wait on it (m4 §2.2 `waiting`).
   if (row.waiting === "fundingUnknown")
@@ -292,7 +281,7 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
     return base("failed", REG_COPY.failed.title, [why], [act("another", REG_COPY.failed.another)], { step: null });
   }
 
-  if (row.waiting === "authorize") return base("paused", progressTitle, [REG_COPY.progress.authorize(label)], [act("continue", REG_COPY.progress.continue)]);
+  if (awaitsContinue(row)) return base("paused", progressTitle, [REG_COPY.progress.authorize(label)], [act("continue", REG_COPY.progress.continue)]);
   if (row.waiting === "unlock") return base("unlock", progressTitle, [REG_COPY.progress.unlock(label)], [act("unlock", REG_COPY.progress.unlockAction)]);
 
   const wait = row.waiting ? WAITS[row.waiting] : null;
@@ -301,24 +290,46 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
   });
 }
 
+/** D23: the page's row while a draft this session started is not read yet. */
+export function pendingModel(): ScreenModel {
+  return {
+    kind: "progress",
+    label: "",
+    title: REG_COPY.progress.title,
+    lines: [],
+    step: null,
+    busy: true,
+    actions: [act("home", REG_COPY.progress.home)],
+  };
+}
+
 /** The result of a name registered from credits (D6): R9, or R11 once its contest started. */
 export function namedModel(label: string, outcome: NameOutcome, date: (secs: number) => string): ScreenModel {
-  const base = { label, step: null, busy: false };
-  if (outcome.kind === "contestStarted")
-    return {
-      ...base,
-      kind: "voting",
-      title: REG_COPY.voting.title,
-      lines: [REG_COPY.voting.message(label), outcome.endsAt === null ? COPY.voting.notify : COPY.voting.endsOn(date(outcome.endsAt))],
-      actions: [act("done", REG_COPY.voting.action), act("votingInfo", REG_COPY.voting.info)],
-    };
-  return { ...base, kind: "done", title: REG_COPY.done.title(label), lines: [REG_COPY.done.message], actions: [act("done", REG_COPY.done.action)] };
+  return outcome.kind === "contestStarted" ? votingScreen(label, outcome.endsAt, date) : doneScreen(label);
+}
+
+/** R11: the vote on `label` began. */
+function votingScreen(label: string, endsAt: number | null, date: (secs: number) => string): ScreenModel {
+  return {
+    kind: "voting",
+    label,
+    title: REG_COPY.voting.title,
+    lines: [REG_COPY.voting.message(label), endsAt === null ? COPY.voting.notify : COPY.voting.endsOn(date(endsAt))],
+    step: null,
+    busy: false,
+    actions: [act("done", REG_COPY.voting.action), act("votingInfo", REG_COPY.voting.info)],
+  };
+}
+
+/** R9: Hello @label. */
+function doneScreen(label: string): ScreenModel {
+  return { kind: "done", label, title: REG_COPY.done.title(label), lines: [REG_COPY.done.message], step: null, busy: false, actions: [act("done", REG_COPY.done.action)] };
 }
 
 /** A row a run drives: the progress screen re-reads it on a timer (D15). */
 export function isRunning(row: RegistrationStatus | undefined): boolean {
-  if (!row || row.failure || row.phase === "done" || row.phase === "contested" || row.phase === "failed") return false;
-  return row.waiting !== "authorize" && row.waiting !== "unlock" && row.waiting !== "fundingUnknown" && row.waiting !== "needsFinish";
+  if (!row || row.failure || row.phase === "done" || row.phase === "contested" || row.phase === "failed" || awaitsContinue(row)) return false;
+  return row.waiting !== "unlock" && row.waiting !== "fundingUnknown" && row.waiting !== "needsFinish";
 }
 
 // ---------------------------------------------------------------------------------------------

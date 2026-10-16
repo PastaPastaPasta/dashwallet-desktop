@@ -489,7 +489,7 @@ const SCENARIOS = {
     return w;
   },
   // DP1-09: a registration's screens (R2, R5, R8). Its run ended with the last launch.
-  /** Funded, after a relaunch: the row waits for Continue's grant (R2). */
+  /** Funded, after a relaunch: no proof yet, so it reads `chainLock` with no key held, and waits for Continue (R2, D21). */
   "dashpay-registration-paused": (t) => {
     const w = base(t);
     w.dashpay = { ...registering(), runs: [] };
@@ -502,10 +502,11 @@ const SCENARIOS = {
     w.dashpay.registrations[0].waiting = "needsFinish";
     return w;
   },
-  /** Failed for good after its funding went out: the recovery copy and Repair (R8). */
+  /** Failed for good after its funding went out: the recovery copy and Repair (R8). The status no
+   * longer names it (banner.rs `in_progress`); the Join page finds it (D22). */
   "dashpay-registration-stopped": (t) => {
     const w = base(t);
-    w.dashpay = { ...registering(), runs: [] };
+    w.dashpay = { ...registering(), runs: [], status: { kind: "noIdentity", reason: null } };
     w.dashpay.registrations[0] = {
       ...w.dashpay.registrations[0],
       phase: "failed",

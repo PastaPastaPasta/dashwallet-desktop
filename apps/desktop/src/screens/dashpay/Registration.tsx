@@ -5,10 +5,9 @@
 
 import { useId, useState } from "react";
 import type { RegistrationQuote } from "../../api/generated/RegistrationQuote";
-import { navigate, ui } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
-import { useLabelQuote, useNameChecks } from "../../dashpay/queries";
+import { useLabelQuote, useNameChecks, useNameCredits, useUsernameCheck } from "../../dashpay/queries";
 import {
   availabilityLine,
   canChoose,
@@ -115,16 +114,24 @@ function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string
   );
 }
 
-/** The wedge (m4 §2.2, DEC-197): a start refused behind a registration whose funding is unknown. */
-function WedgeSheet({ wiz, quote }: { wiz: RegistrationWizard; quote: RegistrationQuote }) {
+/** The wedge (m4 §2.2, DEC-197): a start refused behind a registration whose funding is unknown.
+ * A refusal of the start past it shows here, over the step. */
+function WedgeSheet({ wiz, quote, inputs }: { wiz: RegistrationWizard; quote: RegistrationQuote; inputs: StatusInputs }) {
   return (
     <Sheet title={REG_COPY.wedge.title} width="small" testId="registration-wedge" onClose={() => wiz.dismissWedge()}>
       <p className="sheet-text">{REG_COPY.wedge.text}</p>
+      <ErrorLine wiz={wiz} inputs={inputs} />
       <div className="sheet-actions">
         <DashButton variant="tintedGray" size="large" data-testid="registration-wedge-cancel" onClick={() => wiz.dismissWedge()}>
           {REG_COPY.wedge.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="registration-wedge-ok" onClick={() => void wiz.confirmWedge(quote.grant)}>
+        <DashButton
+          variant="filledBlue"
+          size="large"
+          data-testid="registration-wedge-ok"
+          disabled={wiz.running !== null}
+          onClick={() => void wiz.confirmWedge(quote.grant)}
+        >
           {REG_COPY.wedge.confirm}
         </DashButton>
       </div>
@@ -132,47 +139,59 @@ function WedgeSheet({ wiz, quote }: { wiz: RegistrationWizard; quote: Registrati
   );
 }
 
+/** Step 2's cost: the quote in Dash (D2), or what the identity's credits may pay (D6). */
+function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizard; walletId: string; identity: string | null; inputs: StatusInputs }) {
+  const quote = useLabelQuote(walletId, wiz.label, identity === null);
+  const credits = useNameCredits(walletId, identity, wiz.label);
+  if (identity !== null)
+    return <p className="registration-line">{credits.data ? REG_COPY.confirm.fromCredits(credits.data.maxCredits) : REG_COPY.confirm.quoting}</p>;
+  if (quote.isError) return <p className="registration-line registration-problem">{REG_COPY.confirm.quoteFailed}</p>;
+  if (!quote.data) return <p className="registration-line">{REG_COPY.confirm.quoting}</p>;
+  const model = confirmModel(quote.data, inputs.amount);
+  return (
+    <>
+      <p className="registration-fee">
+        <span>{REG_COPY.confirm.fee}</span>
+        <span className="registration-fee-amount" data-testid="registration-fee">
+          {model.cost}
+        </span>
+      </p>
+      {model.lines.map((line) => (
+        <p key={line} className="registration-line">
+          {line}
+        </p>
+      ))}
+      {model.shortfall && (
+        <p className="registration-line registration-problem" data-testid="registration-shortfall">
+          {model.shortfall}
+        </p>
+      )}
+    </>
+  );
+}
+
 /** Step 2 (IOS-067): the cost in Dash (D2) from the wallet's coins, or the identity's credits (D6). */
 function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs }) {
   const id = useId();
   const [accepted, setAccepted] = useState(false);
-  const credits = wiz.mode.kind === "credits" ? wiz.mode.identity : null;
-  const quote = useLabelQuote(walletId, wiz.label, credits === null);
-  const model = quote.data ? confirmModel(quote.data, inputs.amount) : null;
-  const contested = quote.data?.contested ?? false;
-  const ready = credits !== null || (model !== null && model.shortfall === null);
+  const identity = wiz.mode.kind === "credits" ? wiz.mode.identity : null;
+  // The same reads as CostLines (shared through the query cache).
+  const quote = useLabelQuote(walletId, wiz.label, identity === null);
+  const credits = useNameCredits(walletId, identity, wiz.label);
+  const check = useUsernameCheck(wiz.label);
+  const contested = identity !== null ? (check.data?.contested ?? false) : (quote.data?.contested ?? false);
+  const ready = identity !== null ? credits.data !== undefined : quote.data !== undefined && confirmModel(quote.data, inputs.amount).shortfall === null;
   const disabled = !ready || wiz.running !== null || (contested && !accepted);
+  const pay = () => {
+    if (identity !== null) void wiz.registerName(identity);
+    else if (quote.data) void wiz.confirm(quote.data.grant);
+  };
   return (
     <section className="registration card-l1" data-testid="registration-confirm" aria-labelledby={`${id}-title`}>
       <StepHeader n={2} step={REG_COPY.confirm.step} title={REG_COPY.confirm.title} id={`${id}-title`} />
       <p className="registration-line">{REG_COPY.confirm.message(wiz.label)}</p>
       <div className="registration-cost" data-testid="registration-cost">
-        {credits !== null ? (
-          <p className="registration-line">{REG_COPY.confirm.fromCredits}</p>
-        ) : quote.isError ? (
-          <p className="registration-line registration-problem">{REG_COPY.confirm.quoteFailed}</p>
-        ) : !model ? (
-          <p className="registration-line">{REG_COPY.confirm.quoting}</p>
-        ) : (
-          <>
-            <p className="registration-fee">
-              <span>{REG_COPY.confirm.fee}</span>
-              <span className="registration-fee-amount" data-testid="registration-fee">
-                {model.cost}
-              </span>
-            </p>
-            {model.lines.map((line) => (
-              <p key={line} className="registration-line">
-                {line}
-              </p>
-            ))}
-            {model.shortfall && (
-              <p className="registration-line registration-problem" data-testid="registration-shortfall">
-                {model.shortfall}
-              </p>
-            )}
-          </>
-        )}
+        <CostLines wiz={wiz} walletId={walletId} identity={identity} inputs={inputs} />
       </div>
       {contested && (
         <label className="registration-accept">
@@ -189,13 +208,13 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
           variant="filledBlue"
           data-testid="registration-pay"
           disabled={disabled}
-          onClick={() => void (credits !== null ? wiz.registerName(credits) : quote.data && wiz.confirm(quote.data.grant))}
+          onClick={pay}
         >
           {wiz.running !== null && <span className="spinner" aria-hidden="true" />}
-          {credits !== null ? REG_COPY.confirm.register : REG_COPY.confirm.pay}
+          {identity !== null ? REG_COPY.confirm.register : REG_COPY.confirm.pay}
         </DashButton>
       </div>
-      {wiz.wedge !== null && quote.data && <WedgeSheet wiz={wiz} quote={quote.data} />}
+      {wiz.wedge !== null && quote.data && <WedgeSheet wiz={wiz} quote={quote.data} inputs={inputs} />}
     </section>
   );
 }
@@ -265,7 +284,7 @@ export function RegistrationScreen({
       </div>
       {wiz.finished && (
         <p className="registration-line" role="status" data-testid="registration-finished">
-          {REG_COPY.finished(wiz.finished.resumed, wiz.finished.completed, wiz.finished.stillPending)}
+          {REG_COPY.finished(wiz.finished)}
         </p>
       )}
       <ErrorLine wiz={wiz} inputs={inputs} />
@@ -287,21 +306,4 @@ export function RegistrationScreen({
       {votingInfo && <VotingInfoSheet onClose={() => setVotingInfo(false)} />}
     </section>
   );
-}
-
-/** The screen's buttons that leave it: Home, the unlock sheet, Tools ▸ Repair. */
-export function leaveAction(kind: ScreenActionKind): boolean {
-  switch (kind) {
-    case "home":
-      navigate("home");
-      return true;
-    case "unlock":
-      ui.set({ dialog: "unlock" });
-      return true;
-    case "repair":
-      navigate("tools", { toolsTab: "repair" });
-      return true;
-    default:
-      return false;
-  }
 }

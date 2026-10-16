@@ -149,7 +149,8 @@ test("DP1-09 acceptance: close the app after the asset lock went out, relaunch, 
   await expect(card(page)).toHaveAttribute("data-state", "creatingPaused");
   await card(page).getByTestId("dashpay-card-action").click();
   await expect(screen(page)).toHaveAttribute("data-kind", "paused");
-  await expect(screen(page)).toHaveAttribute("data-waiting", "authorize");
+  // No proof was recorded before the quit: the engine says chainLock, and no key is held (D21).
+  await expect(screen(page)).toHaveAttribute("data-waiting", "chainLock");
   expect(await assetLocks(page)).toBe(1);
   await page.getByTestId("registration-continue").click();
   await authorize(page);
@@ -229,7 +230,7 @@ test("IOS-068 failures: a retryable stop continues the same registration; a refu
   await expect(page.getByTestId("registration-lines")).toHaveText(`@${LABEL} could not be registered. Username was taken by another user.`);
   await page.getByTestId("registration-another").click();
   await chooseName(page, "alice-78");
-  await expect(page.getByTestId("registration-cost")).toHaveText("Paid from your identity's credits");
+  await expect(page.getByTestId("registration-cost")).toHaveText("Paid from your identity's credits: up to 2,000,000,000 credits");
   await page.getByTestId("registration-pay").click();
   await authorize(page);
   await expect(screen(page)).toHaveAttribute("data-kind", "done");
@@ -257,7 +258,9 @@ test("R5 Finish transfers on the page; R8 a stopped funded registration says the
   await expect(page.getByTestId("registration-finished")).toHaveText("1 resumed, 0 completed, 0 still pending.");
   await expect(screen(page)).toHaveAttribute("data-kind", "progress");
 
+  // D22: the status no longer names it (Home offers Join), but the Join page shows it.
   await open(page, "dashpay-registration-stopped");
+  await expect(card(page)).toHaveAttribute("data-state", "join");
   await toJoin(page);
   await expect(screen(page)).toHaveAttribute("data-kind", "stopped");
   await page.getByTestId("registration-repair").click();

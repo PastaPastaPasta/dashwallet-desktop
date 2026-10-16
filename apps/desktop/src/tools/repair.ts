@@ -280,7 +280,7 @@ export class RepairModel extends Model {
         (grant) => this.api.finishAssetLocks(this.walletId, grant.id),
         since,
       );
-      return report ? { kind: "done", text: REG_COPY.finished(report.value.resumed, report.value.completed, report.value.stillPending) } : { kind: "idle" };
+      return report ? { kind: "done", text: REG_COPY.finished(report.value) } : { kind: "idle" };
     });
   }
 

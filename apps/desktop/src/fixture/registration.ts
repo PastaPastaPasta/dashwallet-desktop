@@ -102,16 +102,19 @@ function active(world: World, walletId: string, dp: DashPayWorld, draft: string)
 }
 
 /** The row as `registrations` reports it: an unfinished row without an active run (none this
- * session, or one parked) waits for what the run needs first, the user's unlock or grant, unless
- * its funds need a decision (`needsFinish`, `fundingUnknown`); its key went with the run. */
+ * session, or one parked) says what it lacks first, as the engine's `idle_wait`: its funds' decision
+ * (`needsFinish`, `fundingUnknown`), its lock's proof (`chainLock`: the fixture models none), then
+ * the user's unlock or grant; its key went with the run (D21). */
 export function reported(world: World, walletId: string, dp: DashPayWorld, r: RegistrationStatus): RegistrationStatus {
   // A copy: `advance` changes the world's row in place, and a read answering the same object
   // would look unchanged to the query cache.
   if (r.phase === "done" || active(world, walletId, dp, r.draft)) return { ...r };
   if (r.phase === "failed") return { ...r, waiting: null, holdsKey: false };
   const kept = r.waiting === "needsFinish" || r.waiting === "fundingUnknown";
+  // A parked run (its lease revoked or parked, D14) says what it parks for; an idle row its proof.
+  const proofless = !dp.runs.includes(r.draft) && (r.phase === "fundingSent" || r.phase === "proofWaiting");
   const keyless = world.lock.state === "locked" || world.lock.state === "unlockedMixingOnly";
-  const waiting: RegistrationWaitName = kept ? r.waiting! : keyless ? "unlock" : "authorize";
+  const waiting: RegistrationWaitName = kept ? r.waiting! : proofless ? "chainLock" : keyless ? "unlock" : "authorize";
   return { ...r, waiting, holdsKey: false };
 }
 
@@ -159,10 +162,17 @@ function changed({ world, emit }: Ctx, walletId: string, draft: string | null) {
   emit({ kind: "platform", network, walletId, change: { domain: "registration", draft } } satisfies AppEvent);
 }
 
+/** The engine's `in_progress` (banner.rs): short of done, and not failed for good. */
+const inProgress = (r: RegistrationStatus) => r.phase !== "done" && !(r.failure && !r.failure.retryable);
+
+/** What refuses a start (`registration.in_progress`): a row in progress, or one stopped for good
+ * with its funds committed (D22). */
+const blocks = (r: RegistrationStatus) => inProgress(r) || (r.phase === "failed" && r.fundsCommitted);
+
 /** The status the banner shows once `rows` changed (m4 §2.1): a finished row's identity, else
- * the unfinished row. */
+ * the row in progress. */
 function settleStatus(dp: DashPayWorld) {
-  const open = dp.registrations.find((r) => !finished(r) || (r.phase === "failed" && r.fundsCommitted));
+  const open = dp.registrations.findLast(inProgress);
   if (open) dp.status = { kind: "registering", draft: open.draft };
   else if (dp.identities.length === 0) dp.status = { kind: "noIdentity", reason: null };
 }
@@ -177,7 +187,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
     if (request.funding.kind === "invitation") throw fail("platform.not_implemented", "invitations", { kind: "call", call: "DashPay.start_registration" });
     if (request.funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
     validLabel(request.label);
-    const blocker = dp.registrations.find((r) => !finished(r) && !(past.includes(r.draft) && reported(world, walletId, dp, r).waiting === "fundingUnknown"));
+    const blocker = dp.registrations.find((r) => blocks(r) && !(past.includes(r.draft) && reported(world, walletId, dp, r).waiting === "fundingUnknown"));
     if (blocker) throw fail("registration.in_progress", "a registration is in progress", { kind: "draft", draft: blocker.draft });
     const { totalDuffs, credits } = costs(request.label);
     const g = d.grant(world, grantId, walletId, ["platformOp"]);
@@ -390,6 +400,7 @@ export function failRun(ctx: Ctx, walletId: string, draft: string, code: string,
     const failure: RegistrationFailure = { phase: row.phase, code, retryable, needed: null, available: null };
     Object.assign(row, { phase: "failed", failure });
     end(ctx, walletId, dp, row, d);
+    settleStatus(dp);
   }
   row.updatedAt = secs(FIXTURE_NOW);
   changed(ctx, walletId, draft);

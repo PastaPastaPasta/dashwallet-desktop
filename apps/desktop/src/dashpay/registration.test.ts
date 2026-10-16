@@ -15,6 +15,7 @@ import {
   confirmModel,
   isRunning,
   namedModel,
+  pendingModel,
   REG_COPY,
   screenModel,
   startErrorText,
@@ -127,6 +128,18 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
     expect(kinds(row({ waiting: "unlock", holdsKey: false }))).toEqual(["unlock", "unlock"]);
     expect(isRunning(row({ waiting: "authorize" }))).toBe(false);
     expect(isRunning(row({ waiting: "unlock" }))).toBe(false);
+  });
+
+  it("D21: a keyless wait with no key held is an idle row (after a relaunch): paused, Continue", () => {
+    expect(kinds(row({ waiting: "chainLock", holdsKey: false }))).toEqual(["paused", "continue"]);
+    expect(isRunning(row({ waiting: "chainLock", holdsKey: false }))).toBe(false);
+    // A run holding its key, or one between waits, runs.
+    expect(kinds(row({ waiting: "chainLock", holdsKey: true }))[0]).toBe("progress");
+    expect(kinds(row({ phase: "nameRequested", waiting: null, holdsKey: false }))[0]).toBe("progress");
+  });
+
+  it("D23: a draft started here and not read yet is busy, never the Join page", () => {
+    expect(pendingModel()).toMatchObject({ kind: "progress", busy: true, step: null, actions: [{ kind: "home" }] });
   });
 
   it("R4, R5: funds waiting for a decision say they are safe and point to Repair", () => {

@@ -147,6 +147,18 @@ export const WAITS = {
   needsFinish: null,
 } as const satisfies Record<RegistrationWaitName, string | null>;
 
+const KEYLESS_WAITS: readonly RegistrationWaitName[] = ["instantSend", "chainLock", "network", "sync", "startup"];
+
+/** DP1-09 D21: the row waits for Continue's grant. It says `authorize`, or it names a wait no
+ * key is needed for (a proof, the network, sync) while no lease holds its key: the engine reports
+ * an idle row's first missing piece (`idle_wait`) whether or not a run waits for it, and nothing
+ * resumes a row alone (D12). A run this app started or resumed holds its key. */
+export function awaitsContinue(r: RegistrationStatus): boolean {
+  if (r.phase === "done" || r.phase === "failed" || r.phase === "contested" || r.failure) return false;
+  return r.waiting === "authorize" || (!r.holdsKey && r.waiting !== null && KEYLESS_WAITS.includes(r.waiting));
+}
+
+
 /** D5: why a registration stopped, by its failure's code. */
 export function failureText(failure: RegistrationFailure, amount: (duffs: number) => string, discreet = false): string {
   switch (failure.code) {
@@ -226,7 +238,7 @@ function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): Ca
     const what = r.waiting === "fundingUnknown" ? COPY.repair.unknown : COPY.repair.finish;
     return card("creatingRepair", "problem", title, [what, COPY.repair.message], { step, action: action("repair", COPY.repair.action) });
   }
-  if (r.failure || r.waiting === "authorize") {
+  if (r.failure || awaitsContinue(r)) {
     const why = r.failure ? failureText(r.failure, i.amount, i.discreet) : WAITS.authorize;
     return card("creatingPaused", "problem", title, [COPY.paused, why], { step, action: action("continue", COPY.continue) });
   }

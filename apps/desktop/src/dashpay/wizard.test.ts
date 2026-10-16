@@ -126,10 +126,32 @@ describe("IOS-067 Confirm & pay", () => {
     api.startRegistration.mockRejectedValueOnce(appError("registration.in_progress", { kind: "draft", draft: "reg-1" }));
     atConfirm(wiz, "alice-77");
     await wiz.confirm(quote("x").grant);
-    expect(wiz).toMatchObject({ step: "confirm", wedge: "reg-1", draft: null });
+    expect(wiz).toMatchObject({ step: "confirm", wedge: ["reg-1"], draft: null });
     await wiz.confirmWedge(quote("x").grant);
     expect(calls).toEqual(["start alice-77 grant-2 past reg-1"]);
     expect(wiz).toMatchObject({ step: null, draft: "reg-10" });
+  });
+
+  it("the wedge behind two unknown fundings: the second start passes both (review M4)", async () => {
+    const { wiz, api, calls, setRows } = setup();
+    setRows([row({ draft: "reg-1", waiting: "fundingUnknown" }), row({ draft: "reg-2", waiting: "fundingUnknown" })]);
+    api.startRegistration.mockRejectedValueOnce(appError("registration.in_progress", { kind: "draft", draft: "reg-2" }));
+    api.startRegistrationPastUnknownFunding.mockRejectedValueOnce(appError("registration.in_progress", { kind: "draft", draft: "reg-1" }));
+    atConfirm(wiz, "alice-77");
+    await wiz.confirm(quote("x").grant);
+    await wiz.confirmWedge(quote("x").grant);
+    expect(wiz.wedge).toEqual(["reg-2", "reg-1"]);
+    await wiz.confirmWedge(quote("x").grant);
+    expect(calls.at(-1)).toBe("start alice-77 grant-3 past reg-2,reg-1");
+    expect(wiz.draft).toBe("reg-10");
+  });
+
+  it("review M3: step 2 takes the trimmed label", () => {
+    const { wiz } = setup();
+    wiz.begin({ kind: "core" });
+    wiz.setLabel("  alice-77 ");
+    wiz.next();
+    expect(wiz.label).toBe("alice-77");
   });
 
   it("D6: from credits, the name's own grant, then its outcome", async () => {
@@ -169,6 +191,10 @@ describe("IOS-068 the row's actions", () => {
     await wiz.another(row({ phase: "done", identity: "ID", fundsCommitted: true, nameFailure: "name.taken" }));
     expect(calls).toEqual([]);
     expect(wiz.mode).toEqual({ kind: "credits", identity: "ID" });
+    // Without an identity the next name would need a second lock: nothing opens.
+    wiz.close();
+    await wiz.another(row({ phase: "done", identity: null, nameFailure: "name.taken" }));
+    expect(wiz.step).toBeNull();
   });
 
   it("D10 Finish transfers: one duff and the quote's credits, and its report", async () => {

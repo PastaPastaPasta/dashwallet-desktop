@@ -5,7 +5,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { useDebounced } from "../app/useDebounced";
 import { keys, mainIdentityOf, mainSummaryOf, useBackend, useLockStatus, useSyncStatus } from "../api/queries";
 import { useUi } from "../app/ui";
@@ -22,6 +21,7 @@ export const dashpayKeys = {
   /** DP1-09: the quote of one label, under `quote`, so a balance change re-reads it too. */
   labelQuote: (walletId: string, label: string) => ["dashpay", "quote", walletId, label] as const,
   availability: (walletId: string, label: string) => ["dashpay", "availability", walletId, label] as const,
+  nameCredits: (walletId: string, identity: string, label: string) => ["dashpay", "nameCredits", walletId, identity, label] as const,
   /** Pure and offline (`check_username`): no signal changes it, so it is not under `dashpay`. */
   usernameCheck: (label: string) => ["usernameCheck", label] as const,
 };
@@ -30,8 +30,6 @@ export const dashpayKeys = {
  * rows are read again this often while one runs. */
 export const REGISTRATION_POLL_MS = 5_000;
 
-const pollWhileRunning = (rows: RegistrationStatus[] | undefined) => (rows?.some(isRunning) ? REGISTRATION_POLL_MS : false);
-
 /** The wallet's registrations, read again while one runs (D15). */
 export function useRegistrations(walletId: string, enabled = true) {
   const b = useBackend();
@@ -39,7 +37,7 @@ export function useRegistrations(walletId: string, enabled = true) {
     queryKey: dashpayKeys.registrations(walletId),
     queryFn: () => b.registrations(walletId),
     enabled,
-    refetchInterval: (q) => pollWhileRunning(q.state.data),
+    refetchInterval: (q) => (q.state.data?.some(isRunning) ? REGISTRATION_POLL_MS : false),
   });
 }
 
@@ -49,17 +47,34 @@ export function useRegistrations(walletId: string, enabled = true) {
 export function useNameChecks(walletId: string, label: string) {
   const b = useBackend();
   const settled = useDebounced(label, AVAILABILITY_DEBOUNCE_MS);
-  const check = useQuery({ queryKey: dashpayKeys.usernameCheck(label), queryFn: () => b.checkUsername(label), enabled: label !== "", staleTime: Infinity });
-  const settledCheck = useQuery({ queryKey: dashpayKeys.usernameCheck(settled), queryFn: () => b.checkUsername(settled), enabled: settled !== "", staleTime: Infinity });
+  const check = useUsernameCheck(label);
   const availability = useQuery({
     queryKey: dashpayKeys.availability(walletId, settled),
     queryFn: () => b.nameAvailability(walletId, settled),
-    enabled: settled === label && settledCheck.data?.valid === true,
+    enabled: settled === label && check.data?.valid === true,
     retry: false,
   });
-  // A failed lookup is "could not check": the start decides (D3).
+  // A failed lookup is "could not check": the start decides (D3). While the typing settles the
+  // answer is `pending`, which every reader checks first.
   const answer = availability.isError ? ({ kind: "unknown" } as const) : availability.data;
-  return { check: check.data, availability: settled === label ? answer : undefined, pending: settled !== label || availability.isFetching };
+  return { check: check.data, availability: answer, pending: settled !== label || availability.isFetching };
+}
+
+/** The engine's offline checklist for `label` (`check_username`). */
+export function useUsernameCheck(label: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: dashpayKeys.usernameCheck(label), queryFn: () => b.checkUsername(label), enabled: label !== "", staleTime: Infinity });
+}
+
+/** D6: the credits a name for `identity` may cost (`grant_request(registerName)`), for step 2. */
+export function useNameCredits(walletId: string, identity: string | null, label: string) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: dashpayKeys.nameCredits(walletId, identity ?? "", label),
+    queryFn: () => b.grantRequest(walletId, identity!, { kind: "registerName", label }),
+    enabled: identity !== null,
+    retry: false,
+  });
 }
 
 /** Step 2's quote for `label` (Core funding). */
@@ -76,14 +91,8 @@ export function useLabelQuote(walletId: string, label: string, enabled: boolean)
 /** The registration a `registering` status names (S10–S14); `undefined` otherwise, while unread,
  * or when the read fails (the card then says only that a username is being created). */
 export function useStatusRegistration(walletId: string | undefined, status: DashPayStatus | undefined) {
-  const b = useBackend();
   const draft = status?.kind === "registering" ? status.draft : null;
-  const rows = useQuery({
-    queryKey: dashpayKeys.registrations(walletId ?? ""),
-    queryFn: () => b.registrations(walletId!),
-    enabled: !!walletId && draft !== null,
-    refetchInterval: (q) => pollWhileRunning(q.state.data),
-  });
+  const rows = useRegistrations(walletId ?? "", !!walletId && draft !== null);
   return draft === null ? undefined : rows.data?.find((r) => r.draft === draft);
 }
 

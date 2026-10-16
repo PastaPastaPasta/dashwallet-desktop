@@ -72,9 +72,9 @@ export class RegistrationWizard extends Model {
   running: RunningCall | null = null;
   /** The last call's refusal, as the screen says it (`startErrorText`); cleared by the next call. */
   error: unknown = null;
-  /** `registration.in_progress` past a wedged funding (m4 §2.2): the blocker the user is asked
-   * to start past. */
-  wedge: string | null = null;
+  /** `registration.in_progress` past wedged fundings (m4 §2.2): the blockers the user is asked
+   * to start past, each one the engine named so far. */
+  wedge: string[] | null = null;
   /** Finish transfers' report, once it ran. */
   finished: FinishReport | null = null;
   readonly grants: GrantModel;
@@ -105,8 +105,9 @@ export class RegistrationWizard extends Model {
     this.changed();
   }
 
-  /** Step 1 → 2, for the label the screen has checked (`canChoose`). */
+  /** Step 1 → 2, for the label the screen has checked (`canChoose`, on the trimmed label). */
   next() {
+    this.label = this.label.trim();
     this.step = "confirm";
     this.error = null;
     this.changed();
@@ -142,23 +143,21 @@ export class RegistrationWizard extends Model {
 
   /** Confirm & pay (D8: one start per Confirm). The quote's grant, then `start_registration`. A
    * refusal naming another registration shows that one; one past a wedged funding asks first. */
-  async confirm(grant: GrantRequest): Promise<void> {
-    const label = this.label;
+  async confirm(grant: GrantRequest, past: string[] = []): Promise<void> {
+    const request = coreRequest(this.label);
     await this.#call("start", async () => {
-      const draft = await this.#withGrant(grant, (g) => this.api.startRegistration(this.walletId, coreRequest(label), g.id));
+      const draft = await this.#withGrant(grant, (g) =>
+        past.length === 0
+          ? this.api.startRegistration(this.walletId, request, g.id)
+          : this.api.startRegistrationPastUnknownFunding(this.walletId, request, g.id, past),
+      );
       if (draft !== null) this.#started(draft);
     });
   }
 
-  /** The wedge copy was confirmed: start past the blocker. */
+  /** The wedge copy was confirmed: start past every blocker named so far. */
   async confirmWedge(grant: GrantRequest): Promise<void> {
-    const past = this.wedge;
-    if (past === null) return;
-    const label = this.label;
-    await this.#call("start", async () => {
-      const draft = await this.#withGrant(grant, (g) => this.api.startRegistrationPastUnknownFunding(this.walletId, coreRequest(label), g.id, [past]));
-      if (draft !== null) this.#started(draft);
-    });
+    if (this.wedge !== null) await this.confirm(grant, this.wedge);
   }
 
   dismissWedge() {
@@ -180,6 +179,8 @@ export class RegistrationWizard extends Model {
    * nothing is committed (D7); after a refused name the identity pays from its credits. */
   async another(row: RegistrationStatus | null): Promise<void> {
     if (row && row.phase !== "done" && row.fundsCommitted) return;
+    // A done row's next name is its identity's; without one it would be a second lock.
+    if (row?.phase === "done" && !row.identity) return;
     await this.#call("discard", async () => {
       if (row && row.phase !== "done") await this.api.discardRegistration(this.walletId, row.draft);
       const identity = row?.phase === "done" ? row.identity : null;
@@ -244,10 +245,11 @@ export class RegistrationWizard extends Model {
     const rows = await this.api.registrations(this.walletId).catch(() => [] as RegistrationStatus[]);
     const row = rows.find((r) => r.draft === draft);
     if (row?.waiting === "fundingUnknown") {
-      this.wedge = draft;
+      this.wedge = [...(this.wedge ?? []).filter((d) => d !== draft), draft];
       return;
     }
-    if (row) {
+    // A funding entry with no registration of its own (no label) has no screen to show.
+    if (row && row.label !== "") {
       this.#started(draft);
       return;
     }

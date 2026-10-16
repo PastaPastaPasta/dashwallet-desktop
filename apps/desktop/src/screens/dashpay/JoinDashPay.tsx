@@ -1,23 +1,24 @@
 // Join DashPay (DASHPAY §4 `JoinDashPayViewModel`, F1; DP1-08): the intro (iOS
 // `JoinDashPayScreen`), the readiness under it by status (J1–J7), the voting info and the FAQ.
 // Create username opens the registration wizard (DP1-09, Registration.tsx); while a registration
-// goes on, or this session's has a result to show, the page is its screen instead (D1, D12).
+// goes on, one stopped with its funds committed, or this session's has a result to show, the page
+// is its screen instead (D1, D12, D22).
 // Routes.tsx re-exports the other pages; this one is imported directly, as it uses Routes' `Page`.
 
 import { useEffect, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend } from "../../api/queries";
-import { useUi } from "../../app/ui";
+import { navigate, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { useRegistrations, useStatusInputs, useUsernameQuote } from "../../dashpay/queries";
-import { namedModel, screenModel, type ScreenActionKind } from "../../dashpay/registration";
+import { namedModel, pendingModel, screenModel, type ScreenActionKind } from "../../dashpay/registration";
 import { JOIN_COPY, joinModel, type CardActionKind } from "../../dashpay/status";
 import { wizardFor } from "../../dashpay/wizard";
 import { useModel } from "../../onboarding/model";
 import { Page } from "../Routes";
 import { DashPayFaqSheet, VotingInfoSheet } from "./AboutDashPay";
 import { DashPayCard, defaultCardAction } from "./DashPayCard";
-import { leaveAction, RegistrationScreen, WizardSteps } from "./Registration";
+import { RegistrationScreen, WizardSteps } from "./Registration";
 
 function Intro() {
   return (
@@ -46,9 +47,12 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
   const quote = useUsernameQuote(walletId, joining);
   const model = joinModel(inputs, quote?.totalDuffs ?? null, quote?.availableDuffs ?? null);
   const [sheet, setSheet] = useState<"voting" | "faq" | null>(null);
-  // The row shown: this session's (until Done), else the one the status says goes on (D12).
-  const draft = wiz.draft ?? (status?.kind === "registering" ? status.draft : null);
-  const rows = useRegistrations(walletId, draft !== null);
+  // The row shown: this session's (until Done), else the one the status says goes on (D12), else
+  // one that stopped for good with its funds committed, which the status no longer names but
+  // which still blocks a start (D22).
+  const rows = useRegistrations(walletId);
+  const stopped = rows.data?.findLast((r) => r.phase === "failed" && r.fundsCommitted && r.failure?.retryable === false);
+  const draft = wiz.draft ?? (status?.kind === "registering" ? status.draft : status?.kind === "noIdentity" ? (stopped?.draft ?? null) : null);
   const row = draft === null ? undefined : rows.data?.find((r) => r.draft === draft);
   const shown = row?.draft;
   useEffect(() => {
@@ -60,8 +64,12 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
     return defaultCardAction(kind, retry);
   };
   const onScreenAction = (kind: ScreenActionKind) => {
-    if (leaveAction(kind)) return;
     switch (kind) {
+      case "home":
+        return navigate("home");
+      case "unlock":
+      case "repair":
+        return defaultCardAction(kind, retry);
       case "continue":
         return void (row && wiz.resume(row));
       case "finish":
@@ -83,6 +91,13 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
     return (
       <Page route="joinDashPay">
         <RegistrationScreen wiz={wiz} model={namedModel(wiz.named.label, wiz.named.result, inputs.date)} onAction={onScreenAction} inputs={inputs} />
+      </Page>
+    );
+  // Started this session, its row not read yet (D23): never the Join page, which offers Create.
+  if (wiz.draft !== null && !row)
+    return (
+      <Page route="joinDashPay">
+        <RegistrationScreen wiz={wiz} model={pendingModel()} onAction={onScreenAction} inputs={inputs} />
       </Page>
     );
   if (row) {
