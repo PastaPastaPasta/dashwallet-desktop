@@ -71,7 +71,7 @@ impl Governance {
 
     /// `governance.not_synced{phase}` until a run reached `synced` (MG-00
     /// D21).
-    fn require_synced(&self) -> Result<&GovernanceRuntime, GovernanceError> {
+    pub(super) fn require_synced(&self) -> Result<&GovernanceRuntime, GovernanceError> {
         let rt = self.runtime()?;
         let p = rt.shared.progress();
         if p.last_synced_at.is_none() {

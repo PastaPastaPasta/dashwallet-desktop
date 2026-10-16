@@ -95,6 +95,8 @@ impl Governance {
         if !rt.enabled() {
             return Err(GovernanceError::SyncDisabled);
         }
+        // Its obsolete and hourly checks need every current vote (D40).
+        self.require_synced()?;
         let parent = parse_hash(&vote.proposal)?;
         let outpoint = parse_outpoint(&vote.collateral)?;
         // Core's `voteraw` order: the object, the base64, then the vote's

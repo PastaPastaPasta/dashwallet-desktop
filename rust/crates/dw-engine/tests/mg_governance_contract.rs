@@ -857,6 +857,18 @@ fn turning_sync_off_and_on_leaves_one_task_with_its_phase() {
                 GovernanceSyncPhase::Waiting
             );
         }
+        // A relayed vote waits for a synced run too (D40).
+        let raw = RawVote {
+            collateral: format!("{}-0", "cd".repeat(32)),
+            proposal: "ab".repeat(32),
+            outcome: VoteOutcome::Yes,
+            time: 1,
+            signature: String::new(),
+        };
+        assert_eq!(
+            gov.relay_vote(raw).await.unwrap_err().code(),
+            "governance.not_synced"
+        );
         gov.set_sync_enabled(false).await.unwrap();
     });
     engine
