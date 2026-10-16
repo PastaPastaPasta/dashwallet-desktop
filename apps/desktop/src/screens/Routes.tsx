@@ -8,6 +8,7 @@ import { useId, type ReactNode } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { ui, useUi, type PayTab, type Route } from "../app/ui";
 import { PayToAddress } from "./pay/PayToAddress";
+import { PayToContact } from "./pay/PayToContact";
 
 const TITLES: Record<Route, string> = {
   home: "Home",
@@ -137,7 +138,7 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
           // Keyed by the links that opened Pay and the wallet, so each one starts a fresh form.
           <PayToAddress key={`${links}:${walletId}`} prefill={prefill} coins={coins} walletId={walletId} network={network} />
         ) : (
-          <NotYet testId="pay-contact">Paying a DashPay contact is not available yet.</NotYet>
+          <PayToContact walletId={walletId} network={network} />
         )}
       </Tabs>
     </Page>

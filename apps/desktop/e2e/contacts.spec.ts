@@ -178,9 +178,10 @@ test("selecting a row shows it in the detail slot; a search that filters it out 
   await expect(page.getByTestId("contact-detail-identity")).toHaveText(IDENTITY.carol);
   await expect(page.getByTestId("contact-detail-relation")).toHaveText("Contact");
   await expect(page.getByTestId("contact-detail-channel")).toHaveText("Setting up");
-  // DP2-09 fills the rest of the slot: Carol's payments are still being set up.
-  await expect(page.getByTestId("contact-pay")).toBeDisabled();
-  await expect(page.getByTestId("contact-pane-note")).toHaveText("Payments with this contact are still being set up.");
+  // DP2-09 fills the rest of the slot: Carol's payments are still being set up; a payment
+  // finishes that (DP3-06 D15).
+  await expect(page.getByTestId("contact-pay")).toBeEnabled();
+  await expect(page.getByTestId("contact-pane-note")).toHaveText("Payments with this contact are still being set up. The payment finishes the setup.");
 
   await search(page).fill("grace");
   await expect(names(page, "requests")).toHaveText(["Grace Hopper"]);

@@ -4,6 +4,9 @@
 // transaction keeps the sheet's promise, then the broadcast (U-03 D2). Create Unsigned makes the
 // draft a PSBT instead, copies it and opens Tools ▸ PSBT with it; a watch-only wallet can only do
 // that (U-05 D18).
+// To a DashPay contact (DP3-06 D9–D12): "Pay to" names the contact, there is no Create Unsigned,
+// and "Accept and pay" accepts the contact's request and pays it under one credential and one
+// lease, ended once the first broadcast returned.
 
 import { useEffect, useId, useRef, useState } from "react";
 import { isAppError } from "../../api/backend";
@@ -17,7 +20,22 @@ import { DetailRow } from "../../components/detail";
 import { LoadingState } from "../../components/history";
 import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
-import { authRefusal, broadcastFailure, credentialPrompt, failureText, keepsPromise, unsignedKeepsPromise, type Advanced, type Confirmed, type Outcome } from "./model";
+import { Avatar } from "../contacts/Avatar";
+import { useActionToast } from "../contacts/afterAction";
+import { AcceptFailed, acceptFailedText, acceptUnderLease, acceptedText, type Payee } from "./contact";
+import {
+  authRefusal,
+  broadcastFailure,
+  credentialPrompt,
+  failureText,
+  isContact,
+  keepsPromise,
+  subtractsFee,
+  unsignedKeepsPromise,
+  type Advanced,
+  type Confirmed,
+  type Outcome,
+} from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 const USING: Record<Advanced["coins"], string> = {
@@ -25,6 +43,15 @@ const USING: Record<Advanced["coins"], string> = {
   mixed: "Fully mixed funds only",
   selected: "Selected coins",
 };
+
+/** The contact a payment pays (DP3-06): who it is, and whether Send accepts their request too. */
+export interface ConfirmContact {
+  identity: string;
+  payee: Payee;
+  acceptsToo: boolean;
+  /** The accept went through (D11): the form pays without it from now on. */
+  onAccepted: () => void;
+}
 
 function coinsText(coins: Advanced): string {
   return coins.coins === "selected" ? `${coins.selected.length} selected ${coins.selected.length === 1 ? "coin" : "coins"}` : USING[coins.coins];
@@ -40,7 +67,9 @@ export function ConfirmSheet({
   returnFocus,
   onCancel,
   onOutcome,
+  contact,
 }: {
+  contact?: ConfirmContact;
   confirmed: Confirmed;
   spec: DraftSpec;
   coins: Advanced;
@@ -98,6 +127,7 @@ export function ConfirmSheet({
   const fieldId = useId();
   const unit = shown.name;
   const { recipient, estimate, changeAddress, total } = confirmed;
+  const toast = useActionToast(walletId);
 
   // A failed read of the policy counts as "on" (U-03 D3): the prompt waits only while it loads.
   const policyKnown = !policy.isPending;
@@ -114,7 +144,19 @@ export function ConfirmSheet({
     if (!busy && error) field.current?.focus();
   }, [busy, error]);
 
+  // Set before the first await, so a second Send in the same frame (before `busy` renders) does
+  // not run the accept, which cannot be undone, twice.
+  const inFlight = useRef(false);
   const send = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    try {
+      await sendOnce();
+    } finally {
+      inFlight.current = false;
+    }
+  };
+  const sendOnce = async () => {
     if (busy || !policyKnown || !waitKnown || retryAt !== null) return;
     if (prompt === "passphrase" && passphrase === "") {
       setError("Enter your passphrase to send this payment.");
@@ -124,10 +166,7 @@ export function ConfirmSheet({
     setError(null);
     const credential: CredentialSpec = prompt === "passphrase" ? { kind: "passphrase", passphrase } : { kind: "unencrypted" };
     setPassphrase("");
-    let grant: AuthGrant;
-    try {
-      grant = await b.authorize({ kind: "spend", maxDuffs: total }, walletId, credential);
-    } catch (e) {
+    const refused = (e: unknown) => {
       setBusy(false);
       const refusal = isAppError(e) ? authRefusal(e) : { kind: "other" as const };
       if (refusal.kind === "needsPassphrase") {
@@ -138,30 +177,76 @@ export function ConfirmSheet({
         // The vault refuses every attempt until then: Send waits too (Sol r1).
         if (refusal.waitSecs > 0) setRetryAt(Date.now() + refusal.waitSecs * 1000);
       } else onOutcome({ kind: "failed", text: failureText(e, chain, amountUnit) });
-      return;
+    };
+
+    // Accept and pay (DP3-06 D10): the accept runs first, under the lease the prepare takes.
+    let grant: AuthGrant | null = null;
+    let lease: string | null = null;
+    // An accept that went through stays so whatever the payment does (E0-04 C8, D12).
+    let accepted: string | null = null;
+    /** The grant, or the lease, the prepare takes. */
+    let authId: string;
+    if (contact?.acceptsToo) {
+      try {
+        lease = await acceptUnderLease(b, { walletId, identity: contact.identity, from: contact.payee.contact, spendCap: total, credential });
+      } catch (e) {
+        if (e instanceof AcceptFailed && e.stage === "authorize") return refused(e.cause);
+        const text = acceptFailedText(e instanceof AcceptFailed ? e.cause : e);
+        toast({ kind: "accept", contact: contact.payee.contact, ok: false, text }, true);
+        onOutcome({ kind: "failed", text });
+        return;
+      }
+      authId = lease;
+      contact.onAccepted();
+      accepted = acceptedText(contact.payee.name);
+      // Said where the user is if the sheet's view went meanwhile (DP2-09 D23).
+      toast({ kind: "accept", contact: contact.payee.contact, ok: true, text: accepted }, true);
+    } else {
+      try {
+        grant = await b.authorize({ kind: "spend", maxDuffs: total }, walletId, credential);
+        authId = grant.id;
+      } catch (e) {
+        return refused(e);
+      }
     }
+    // Two sentences under the "Payment not sent" heading: the refusals that say "not sent" already
+    // must not say it twice (Sol r1 #2).
+    const notSent = (text: string) => onOutcome({ kind: "failed", text: accepted ? `${accepted} ${text}` : text });
+    const endLease = () => lease !== null && void b.endFlow(lease).catch(() => null);
 
     let held;
     try {
-      held = await draft.prepare(spec, grant.id);
+      held = await draft.prepare(spec, authId);
     } catch (e) {
-      void b.revokeGrant(grant.id).catch(() => null);
-      onOutcome({ kind: "failed", text: failureText(e, chain, amountUnit) });
+      if (grant) void b.revokeGrant(grant.id).catch(() => null);
+      endLease();
+      notSent(failureText(e, chain, amountUnit));
       return;
     }
     const { draft: d, prepared } = held;
     if (!keepsPromise(confirmed, prepared.summary)) {
       await draft.abandon(d, prepared.handle);
-      onOutcome({ kind: "failed", text: "The payment changed. Review it again." });
+      endLease();
+      notSent("The payment changed. Review it again.");
       return;
     }
-    const sent = { amount: estimate.totalSent, fee: prepared.summary.fee };
+    // An accept that went through is said with whatever outcome the payment gets, a retry's too.
+    const sent = { amount: estimate.totalSent, fee: prepared.summary.fee, ...(accepted && { note: accepted }) };
+    const toContact = isContact(spec.recipient);
     try {
       const { txid } = await draft.broadcast(d, prepared.handle);
       onOutcome({ kind: "sent", txid, ...sent });
     } catch (e) {
-      // "Not sent" only when the engine released it; nothing is abandoned after a broadcast.
-      onOutcome(broadcastFailure(e, chain, { draft: d, prepared: prepared.handle, ...sent }, true, amountUnit));
+      // "Not sent" only when the engine released it, or held a contact payment back before its
+      // hand-off (then it is abandoned here); nothing else is abandoned after a broadcast.
+      const o = broadcastFailure(e, chain, { draft: d, prepared: prepared.handle, ...sent }, true, amountUnit, toContact);
+      if (o.kind === "failed") {
+        if (toContact) await draft.abandon(d, prepared.handle);
+        notSent(o.text);
+      } else onOutcome(accepted && o.kind === "unknown" ? { ...o, text: `${accepted} ${o.text}` } : o);
+    } finally {
+      // The lease ends with the first broadcast (dwcli's point): a retry needs none.
+      endLease();
     }
   };
 
@@ -203,16 +288,38 @@ export function ConfirmSheet({
         <div className="confirm-summary">
           <AmountText className="confirm-amount" text={shown.full(total)} unitName={unit} glyphFactor={0.8} />
           <p className="confirm-question">
-            {watchOnly
+            {contact?.acceptsToo
+              ? `Accept ${contact.payee.name}'s contact request and send this payment?`
+              : watchOnly
               ? "Please, review your transaction proposal. This will produce a Partially Signed Transaction (PSBT) which you can save or copy and then sign with e.g. an offline Dash Core wallet."
               : "Do you want to send this payment?"}
           </p>
         </div>
         <dl className="detail-list card-l1" data-testid="pay-confirm-facts">
-          <DetailRow label="Pay to" testId="pay-confirm-address">
-            {recipient.label && <span className="confirm-label">{recipient.label}</span>}
-            <span className="address-full">{recipient.address}</span>
-          </DetailRow>
+          {isContact(recipient) ? (
+            <DetailRow label="Pay to" testId="pay-confirm-contact">
+              {contact && (
+                <span className="pay-payee">
+                  <Avatar letters={contact.payee.letters} />
+                  <span className="pay-payee-names">
+                    <span className="confirm-label">{contact.payee.name}</span>
+                    {contact.payee.sub && <span className="contact-row-username">{contact.payee.sub}</span>}
+                  </span>
+                </span>
+              )}
+            </DetailRow>
+          ) : (
+            <DetailRow label="Pay to" testId="pay-confirm-address">
+              {recipient.label && <span className="confirm-label">{recipient.label}</span>}
+              <span className="address-full">{recipient.address}</span>
+            </DetailRow>
+          )}
+          {contact?.acceptsToo && (
+            <DetailRow label="Contact request" testId="pay-confirm-accept">
+              Accepted with this payment
+            </DetailRow>
+          )}
+          {isContact(recipient) && recipient.note && <DetailRow label="Note">{recipient.note}</DetailRow>}
           <DetailRow label="Amount" testId="pay-confirm-amount">
             <AmountText text={shown.full(estimate.totalSent)} unitName={unit} glyph={false} />
           </DetailRow>
@@ -230,7 +337,7 @@ export function ConfirmSheet({
             <AmountText text={shown.full(total)} unitName={unit} glyph={false} />
           </DetailRow>
         </dl>
-        {recipient.subtractFeeFromAmount && <p className="placeholder-note">The fee is subtracted from the amount: the payee receives the amount above.</p>}
+        {subtractsFee(recipient) && <p className="placeholder-note">The fee is subtracted from the amount: the payee receives the amount above.</p>}
         {changeAddress !== null && <p className="placeholder-note">The total includes the change: the custom change address may not belong to this wallet.</p>}
         {!policyKnown ? (
           <LoadingState testId="pay-confirm-policy" text="Checking the payment settings" />
@@ -266,25 +373,28 @@ export function ConfirmSheet({
         )}
         {walletUnknown && (
           <p className="placeholder-note" role="status" data-testid="pay-confirm-wallet-unknown">
-            This wallet could not be read, so it cannot send now. Create Unsigned still works.
+            This wallet could not be read, so it cannot send now.{contact ? "" : " Create Unsigned still works."}
           </p>
         )}
         <div className="sheet-actions sheet-actions-fit">
-          <DashButton ref={cancel} variant="tintedGray" size="large" data-testid="pay-confirm-cancel" disabled={busy} onClick={onCancel}>
+          <DashButton key="cancel" ref={cancel} variant="tintedGray" size="large" data-testid="pay-confirm-cancel" disabled={busy} onClick={onCancel}>
             Cancel
           </DashButton>
-          <DashButton
-            variant={watchOnly ? "filledBlue" : "tintedBlue"}
-            size="large"
-            data-testid="pay-confirm-unsigned"
-            disabled={busy}
-            onClick={() => void createUnsigned()}
-          >
-            Create Unsigned
-          </DashButton>
+          {!contact && (
+            <DashButton
+              key="unsigned"
+              variant={watchOnly ? "filledBlue" : "tintedBlue"}
+              size="large"
+              data-testid="pay-confirm-unsigned"
+              disabled={busy}
+              onClick={() => void createUnsigned()}
+            >
+              Create Unsigned
+            </DashButton>
+          )}
           {watchOnlyKnown === false && (
-            <DashButton type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null}>
-              {busy ? "Sending…" : "Send"}
+            <DashButton key="send" type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null}>
+              {busy ? "Sending…" : contact?.acceptsToo ? "Accept and pay" : "Send"}
             </DashButton>
           )}
         </div>

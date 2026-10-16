@@ -18,14 +18,15 @@ import type { CoinSource } from "../../api/generated/CoinSource";
 import type { FeeMode } from "../../api/generated/FeeMode";
 import type { PreparedTxHandle } from "../../api/generated/PreparedTxHandle";
 import type { AppError } from "../../api/generated/AppError";
-import type { Recipient } from "../../api/generated/Recipient";
 import type { TxEstimate } from "../../api/generated/TxEstimate";
 import { closeSendDraft } from "../../api/send";
 import { useBackend } from "../../api/queries";
 import { showToast } from "../../components/toast";
+import { isContact, type PayRecipient } from "./model";
 
 export interface DraftSpec {
-  recipient: Recipient;
+  /** An address, or a DashPay contact (DP3-06 D8). */
+  recipient: PayRecipient;
   source: CoinSource;
   fee: FeeMode;
   change: ChangePolicy;
@@ -100,7 +101,8 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
           throw e;
         }
         try {
-          await b.draftSetRecipients(d, [spec.recipient]);
+          const r = spec.recipient;
+          await (isContact(r) ? b.draftSetContactRecipient(d, r) : b.draftSetRecipients(d, [r]));
           await b.draftSetSource(d, spec.source);
           await b.draftSetFee(d, spec.fee);
           await b.draftSetChange(d, spec.change);

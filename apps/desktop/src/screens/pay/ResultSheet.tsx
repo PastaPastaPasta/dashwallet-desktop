@@ -41,6 +41,8 @@ export function ResultSheet({
   onDone: (show: boolean) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  // Finished retries, for a harness that must not miss a fast one's busy state (DP3-06 Sol r1 #1).
+  const [tries, setTries] = useState(0);
   const shown = useDisplay(network);
   const unit = shown.name;
 
@@ -48,14 +50,15 @@ export function ResultSheet({
   const retry = async () => {
     if (outcome.kind !== "unknown" || !outcome.retry || busy) return;
     setBusy(true);
-    const { draft: d, prepared, amount, fee } = outcome;
+    const { draft: d, prepared, amount, fee, note } = outcome;
     try {
       const { txid } = await draft.broadcast(d, prepared);
-      onOutcome({ kind: "sent", txid, amount, fee });
+      onOutcome({ kind: "sent", txid, amount, fee, note });
     } catch (e) {
-      onOutcome(broadcastFailure(e, shown.chain, { draft: d, prepared, amount, fee }, false, shown.amountUnit));
+      onOutcome(broadcastFailure(e, shown.chain, { draft: d, prepared, amount, fee, note }, false, shown.amountUnit));
     } finally {
       setBusy(false);
+      setTries((n) => n + 1);
     }
   };
   // The button was disabled while the retry ran: focus goes back to it, or to Close.
@@ -66,7 +69,7 @@ export function ResultSheet({
 
   return (
     <Sheet title={TITLE[outcome.kind]} width="small" testId="pay-result" returnFocus={returnFocus} onClose={() => !busy && onDone(false)}>
-      <div className={`result result-${outcome.kind}`} data-testid={`pay-result-${outcome.kind}`}>
+      <div className={`result result-${outcome.kind}`} data-testid={`pay-result-${outcome.kind}`} data-retries={tries}>
         <Icon id={ICON[outcome.kind]} size={50} />
         {outcome.kind === "failed" ? (
           <p className="result-text" role="alert" data-testid="pay-result-text">
@@ -75,6 +78,11 @@ export function ResultSheet({
         ) : (
           <>
             <AmountText className="result-amount" text={shown.full(outcome.amount)} unitName={unit} glyphFactor={0.8} />
+            {outcome.kind === "sent" && outcome.note && (
+              <p className="result-text" data-testid="pay-result-note">
+                {outcome.note}
+              </p>
+            )}
             {outcome.kind === "unknown" && (
               <p className="result-text" role="alert" data-testid="pay-result-text">
                 {outcome.text} Check Activity before you pay again.
