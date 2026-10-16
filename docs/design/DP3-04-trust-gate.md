@@ -65,13 +65,22 @@ A contact payment, in `prepare_contact` (DP3-01 D4's order, with the gate added)
    since the wait (a sync pass replaced the payee's data, or the contact's DPNS name landed and is now shown) gets
    one round of re-fetches bounded like the probe (10 s); anything still unverified, or a mismatch, refuses
    (`platform.context_unavailable`, `platform.trust_mismatch`) and the address is not kept, so no later `prepare`
-   pays an address taken from unverified data (one DIP-15 index skipped). The address is kept only once the
-   re-check passed, marked checked (D14). The lease and its charge end with the refusal, as for any refusal after
+   pays an address taken from unverified data (one DIP-15 index skipped). Each of the re-check's reads also reads
+   the reserved address with the request it checks: an address no longer in the payee's paying account refuses
+   the same way (D21). The address is kept only once the re-check passed, marked checked (D14). The lease and its charge end with the refusal, as for any refusal after
    the reservation (DP3-01 D4).
 
 Under `Enforce`, with the latch set, the payee is also not payable while its paying account was not built from the
 request the gate verifies (D12): `platform.context_unavailable` at once. At the wait a queued `RegisterExternal`
 exempts it (the reservation's drain is to rebuild the account); at the re-check, after the drain, nothing does.
+
+The stamp names the request an account was built from, not the address taken from it. The wallet manager's lock is
+released between the reservation and the re-check, and a sync pass can meanwhile replace the payee's request (a
+rotation), tear the paying account down and the drain rebuild it from the new request: the stamp then matches the
+new request, which may verify, while the reserved address came from the old account. So the re-check's every read
+also checks, under the same wallet-manager read lock as the stamp and the request, that the reserved address is in
+the address pool of the paying account the library holds now (D21). A rebuild from a new xpub holds none of the old
+addresses; one from the same xpub holds them all, and its address is still the one the verified request designates.
 
 A reused reserved address that another payment's broadcast claimed between the reservation and the keep is not kept
 again, and a fresh one that another payment's give-back displaced is not returned: the payment is
@@ -138,7 +147,7 @@ dropped only when the payee's current content is unverified.
 | D4 | Applying a lock already funded (resume, "Finish transfers", the identity-create step) is not gated. | No Core money moves; the lock goes to the wallet's own identity, which the keys derive. E0-10b §6 leaves writes-wait for the other write flows to H-09. |
 | D5 | Address sends are not gated, a URI's `user=` included. | The destination is not Platform-sourced. |
 | D6 | Invitation funding and withdrawals call the same gate when they land. | They are stubs today. |
-| D7 | The degraded mode probes: one bounded round of re-fetches for the unverified entities, refusing only on a mismatch. | "A mismatch with SPV still refuses" has no other hook for a contact payment: the payment fetches nothing from Platform. The probe also records what verifies. |
+| D7 | The degraded mode probes: one bounded round of re-fetches for the unverified entities, refusing only on a mismatch. | "A mismatch with SPV still refuses" has no other hook for a contact payment: the payment fetches nothing from Platform. The probe also records what verifies. It is not protection against a compromised fallback service (the release-decision note below §8's table). |
 | D8 | The trusted-only toggle proceeds without a probe. | SPV is not consulted, so no mismatch can show; the toggle is a developer's choice. |
 | D9 | The gate records verified re-fetches itself, under the wallet manager's read lock, only for content the library still holds unchanged. | E0-10b §5's record step, scoped to the subject: waiting for the 10-minute background task would not fit the wait. |
 | D10 | No facade call to verify ahead of the passphrase. | The gate in `prepare` is the choke point and cannot be bypassed. A host-side "verify before Confirm" read is a follow-up for H-09 or the UI (the contact row's `unverified` already tells the host when the step will show). |
@@ -150,8 +159,21 @@ dropped only when the payee's current content is unverified.
 | D16 | Review r1 #2 (a `prepare` dropped between reservation and re-check keeps the address) is not reachable: `TxDraft::prepare` runs in its own task (`on_runtime`), which a host dropping its future does not cancel. Keeping the address only after the re-check closes it anyway. | Checked with a test that aborted the caller: the inner task ran on (and held the coin fence). |
 | D17 | `payee_held` keeps its own copy of the contacts read model's precedence. | Sharing one helper means restructuring `owner_contacts` (a shared file DP3-07 and MG-02 also touch); `the_gate_and_the_contacts_row_agree` and `an_unverified_profile_holds_the_payment` pin the two together, and the payee-without-profile/label mutations are caught. |
 | D18 | T2 is read-mostly: `t2_testnet_the_money_gate_verifies_a_contact` (`#[ignore]`, public testnet, fixture wallets A and B) syncs A to the tip, latches the fallback, runs the degraded and the enforcing gate on B and on A's identity, then an enforcing `prepare` to B. Nothing is broadcast, so no A→B payment was needed. | The acceptance rests on the gate and `prepare`, not on the broadcast DP3-01/DP3-06 already cover; evidence below. |
-| D19 | No Swift `engineCodes` or Swift T0 change. | No m4 §4 table changed and no code was added (D2); m4 item 54 is behaviour only (Contract-Version 28, surface unchanged). |
+| D19 | No Swift `engineCodes` or Swift T0 change. | No m4 §4 table changed and no error code was added (D2); m4 item 54 is behaviour only (Contract-Version 28, surface unchanged). |
 | D20 | Gate load flake, outside this task: `lease::call_tests::a_call_steps_marker_is_durable_before_its_permit_returns` and `…::a_call_step_dropped_during_its_marker_write_resolves_after_it` failed in the full dw-engine run (1022 s at load 120–200) and passed 20 of 20 rerun alone from the same binary. | This branch does not touch `platform/lease`; both wait on wall-clock windows. |
+
+| D21 | The re-check binds the reserved address to the paying account the library holds now: under the read lock of each of its reads, an address not in that account's address pool makes the payee not payable (`platform.context_unavailable`, the address dropped). Checked in the reads, not in `record`, so what verified is still recorded. Under `Probe` and `Off` the re-check does not run (D7, D8). | Sol r1 #1 (Opus r3 #7): the stamp alone let a verified new request pass an address from the account it replaced. Pool membership is the library's own record of what the current account derives: a rotation removes the immutable account and its pool together and the rebuild installs both (the registration exits early while a pool exists). |
+| D22 | The re-check's last read is a point in time, as the gate is: a rotation after it does not change the signed transaction, which the broadcast does not re-gate (§4). | The output pays the address the verified request designated when it was signed; the payee's later changes do not move it, and re-gating at broadcast would refuse a payment whose destination was checked. |
+| D23 | Sol r1 rules Opus r3 #6 (narrow the queued-`RegisterExternal` exemption to one whose ciphertext matches), r2 #7 (carry the checked bit on `PreparedTx.contact`) and r1 #8 (gate before the cheap refusals) hardening follow-ups, not blockers. | Each fails closed today (Sol r1, "Requested rulings"). |
+| D24 | DP1-10 also claims m4 item 54 / Contract-Version 28; DP1-10 is ahead in review, so this task plans to merge second and renumbers to item 55 / version 29 at that follow-merge. | Manager's ruling on Sol r1. |
+
+**Release decision: the degraded default (D7).** The degraded mode is acceptable only under its trust model: the
+trusted quorum service and proof-bearing Platform responses stay trusted while SPV cannot verify, and a disagreement
+SPV finds is an extra refusal. Its probe proceeds on absence, timeout or an unverified result, so whoever controls the
+trusted responses can withhold or delay the comparison, or supply a false quorum key while SPV holds none, and so
+redirect a contact payment or a top-up. The probe does not protect against a compromised fallback service. Keeping
+`Degraded` as the default (DEC-168) is a product and release decision, raised with pasta; this task does not change
+it.
 
 ## 9. Tests (T0)
 
@@ -186,6 +208,9 @@ dropped only when the payee's current content is unverified.
 | D12 stale paying account | `contact_tests::a_stale_paying_account_is_not_paid` (latch, `RegisterReceiving` queued), `…::a_stale_account_the_drain_leaves_is_not_paid` (strict re-check) |
 | D13 a name landing before the re-check | `contact_tests::a_name_landing_before_the_recheck_is_verified_there` |
 | a reused address claimed during the re-check | `contact_tests::an_address_claimed_before_it_is_kept_is_not_kept_again` |
+| D21 an address from a replaced account | `contact_tests::an_address_from_a_replaced_account_is_not_paid` (rotation and rebuild at the reservation, the new request verifiable) |
+| D21 control: the same xpub rebuilt | `contact_tests::an_address_the_rebuilt_account_still_holds_is_paid` |
+| a fresh address displaced before its keep | `contact_tests::a_fresh_address_displaced_before_it_is_kept_is_not_paid` (the first payment's give-back lands between the second's reservation and keep) |
 | D14 unchecked kept address | `contact_tests::an_address_kept_without_rule_5_is_not_paid_under_it` |
 | D1 cached profile | `contact_tests::an_unverified_profile_holds_the_payment` |
 | top-up of an unverified identity moves nothing | `topup_tests::an_unverified_identity_is_not_topped_up` |
