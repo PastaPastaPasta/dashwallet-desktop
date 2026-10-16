@@ -7,7 +7,9 @@ import type { TxRow } from "../api/generated/TxRow";
 import { useBackend } from "../api/queries";
 import type { HistorySortName } from "../api/generated/HistorySortName";
 import { useDisplay, type Display } from "../format/display";
+import { Avatar } from "../screens/contacts/Avatar";
 import {
+  contactLetters,
   dayTitle,
   detailDate,
   groupByDay,
@@ -52,7 +54,7 @@ export function useRowContext(network: NetworkInfo): RowContext {
 export const rowTestId = (row: TxRow) => `tx-row-${row.txid.slice(0, 10)}-${row.recordIndex}`;
 
 /** What a row shows beyond its record (U-03 D14). Counterparty attribution (DP3-02) names the
- * contact through `txTitle`; the leading avatar is a follow-up (DP3-02 D26). */
+ * contact through `txTitle`, and a named contact's avatar leads the row (DP3-07 D1). */
 export interface RowDecor {
   title?: string;
   leading?: ReactNode;
@@ -66,10 +68,16 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
   const date = rowDate(row);
   const shown = shownAmount(row.amount, row.txType);
   const amount = ctx.display.compact(shown.duffs, shown.signed);
+  const letters = contactLetters(row.counterparty);
   return (
     <li className="tx-row-item">
       <button type="button" className="tx-row" data-testid={rowTestId(row)} data-txid={row.txid} onClick={() => onOpen(row)}>
-        {decor?.leading ?? <Icon id={TX_ICON[txIcon(row.txType, row.status, row.amount)]} size={30} className="tx-row-icon" />}
+        {decor?.leading ??
+          (letters !== null ? (
+            <Avatar letters={letters} />
+          ) : (
+            <Icon id={TX_ICON[txIcon(row.txType, row.status, row.amount)]} size={30} className="tx-row-icon" />
+          ))}
         <span className="tx-row-text">
           <span className={`tx-row-title ${isProblem(row.status) ? "is-problem" : ""}`}>{title}</span>
           <span className="tx-row-subtitle">

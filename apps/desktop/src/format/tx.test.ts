@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
-import { contactName, dateRange, dayTitle, groupByDay, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
+import { contactLetters, contactName, dateRange, dayTitle, groupByDay, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
 
 const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
   kind: "confirmed",
@@ -32,6 +32,16 @@ describe("titles", () => {
     expect(rowParty({ label: null, address: "yAddr", counterparty: { ...bob, displayName: null } })).toBe("@bob");
     expect(rowParty({ label: "Rent", address: "yAddr", counterparty: bob })).toBe("Rent");
     expect(rowParty({ label: null, address: "yAddr", counterparty: { ...bob, displayName: null, username: null } })).toBe("yAddr");
+  });
+
+  it("IOS-029 a named counterparty's avatar letters; none without a name, so the type icon stays (DP3-07 D1)", () => {
+    const bob = { identity: "8GopL", username: "bob", displayName: "Bob Builder", avatarUrl: null };
+    expect(contactLetters(bob)).toBe("BB");
+    expect(contactLetters({ ...bob, displayName: null })).toBe("B");
+    expect(contactLetters({ ...bob, displayName: " \t " })).toBe("B");
+    expect(contactLetters({ ...bob, displayName: null, username: null })).toBeNull();
+    expect(contactLetters({ ...bob, displayName: "", username: null })).toBeNull();
+    expect(contactLetters(undefined)).toBeNull();
   });
 
   it("maps dash-qt types to iOS titles", () => {

@@ -7,6 +7,7 @@ import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import type { TxRow } from "../api/generated/TxRow";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import type { TxTypeName } from "../api/generated/TxTypeName";
+import { avatarLetters } from "../contacts/model";
 
 export const TxTitle = {
   received: "Received",
@@ -71,6 +72,12 @@ export function typeTitle(type: TxTypeName, category: TxCategoryName | null, amo
 export function contactName(c: TxCounterparty | undefined): string | null {
   if (!c) return null;
   return c.displayName?.trim() || (c.username ? `@${c.username}` : null);
+}
+
+/** The initials avatar's letters for a counterparty (DP3-07 D1): those of the name `contactName`
+ * shows; `null` while it has none, so the row keeps its type icon. */
+export function contactLetters(c: TxCounterparty | undefined): string | null {
+  return c && contactName(c) !== null ? avatarLetters({ alias: null, displayName: c.displayName, username: c.username }) : null;
 }
 
 /** Label first, then the DashPay contact's name (DP3-02), then the type title. Never the raw
