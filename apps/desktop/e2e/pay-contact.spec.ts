@@ -117,6 +117,7 @@ test("IOS-050 C8: an accept that went through with a payment that did not says b
   await send(page);
   await expect(page.getByTestId("pay-result-failed")).toBeVisible();
   await expect(page.getByTestId("pay-result-text")).toHaveText(`You and ${GRACE} are now contacts. The payment was not sent: No connection to the Dash network. The payment was not sent.`);
+  expect(await world(page, (w) => w.leases.filter((l) => l.flow === "acceptAndPay").map((l) => l.state.kind))).toEqual(["ended"]);
   await page.getByTestId("pay-result-back").click();
   await world(page, (w) => (w.send.broadcast = "ok"));
   await expect(page.getByTestId("pay-amount")).toHaveValue(/^0\.02/);
@@ -140,12 +141,31 @@ test("IOS-050 an accept refused pays nothing and says why", async ({ page }) => 
   await expect(page.getByTestId("pay-result-text")).toHaveText("Not enough credits. Top up your credits and try again. Nothing was paid.");
   expect(await world(page, (w) => w.wallets[0].rows.length)).toBe(rows);
   expect(await world(page, (w) => w.dashpay.contacts.find((c) => c.summary.username === "grace")?.summary.relation)).toBe("pendingIncoming");
+  expect(await world(page, (w) => w.leases.filter((l) => l.flow === "acceptAndPay").map((l) => l.state.kind))).toEqual(["ended"]);
   // A wrong passphrase stays on the sheet: nothing was accepted.
   await page.getByTestId("pay-result-back").click();
-  await page.getByTestId("pay-continue").click();
+  const review = page.getByTestId("pay-continue");
+  await review.and(page.locator(":enabled")).waitFor();
+  await review.click();
   await page.getByTestId("pay-confirm-passphrase").fill("wrong");
   await page.getByTestId("pay-confirm-send").click();
   await expect(page.getByTestId("pay-confirm-error")).toHaveText("The passphrase you entered was incorrect.");
+});
+
+test("IOS-050 Accept and pay when another device accepted first pays under the same lease", async ({ page }) => {
+  await openPay(page);
+  await pickerRow(page, GRACE).click();
+  await fillAmount(page, "0.02");
+  await expect(page.getByTestId("pay-confirm-send")).toHaveText("Accept and pay");
+  // Accepted elsewhere while the sheet was open: the engine says `contact.already_contact`.
+  await world(page, (w) => {
+    const grace = w.dashpay.contacts.find((c) => c.summary.username === "grace")!;
+    grace.summary = { ...grace.summary, relation: "contact" };
+  });
+  await send(page);
+  await expect(page.getByTestId("pay-result-sent")).toBeVisible();
+  await expect(page.getByTestId("pay-result-note")).toHaveText(`You and ${GRACE} are now contacts.`);
+  expect(await world(page, (w) => w.leases.filter((l) => l.flow === "acceptAndPay").map((l) => l.state.kind))).toEqual(["ended"]);
 });
 
 test("IOS-050 the lock banner: an unknown outcome locks the contact until Check again finds the payment", async ({ page }) => {
@@ -164,6 +184,13 @@ test("IOS-050 the lock banner: an unknown outcome locks the contact until Check 
   await expect(page.getByTestId("pay-lock-resolve")).toHaveText("The payment was sent. You can pay this contact again.");
   await expect(page.getByTestId("pay-banner")).toHaveCount(0);
   await expect(page.getByTestId("pay-amount")).toBeVisible();
+  // A new payment's lock is not answered by the old Check again.
+  await fillAmount(page, "0.01");
+  await send(page);
+  await expect(page.getByTestId("pay-result-unknown")).toBeVisible();
+  await page.getByTestId("pay-result-close").click();
+  await expect(page.getByTestId("pay-banner")).toHaveAttribute("data-kind", "paymentLock");
+  await expect(page.getByTestId("pay-contact-form")).not.toContainText("The payment was sent.");
 });
 
 test("IOS-050 a scenario's lock: Check again says unknown, then not sent; the broken channel shows next", async ({ page }) => {

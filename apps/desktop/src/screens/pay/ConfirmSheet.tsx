@@ -144,7 +144,19 @@ export function ConfirmSheet({
     if (!busy && error) field.current?.focus();
   }, [busy, error]);
 
+  // Set before the first await, so a second Send in the same frame (before `busy` renders) does
+  // not run the accept, which cannot be undone, twice.
+  const inFlight = useRef(false);
   const send = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    try {
+      await sendOnce();
+    } finally {
+      inFlight.current = false;
+    }
+  };
+  const sendOnce = async () => {
     if (busy || !policyKnown || !waitKnown || retryAt !== null) return;
     if (prompt === "passphrase" && passphrase === "") {
       setError("Enter your passphrase to send this payment.");
@@ -216,11 +228,12 @@ export function ConfirmSheet({
       notSent("The payment changed. Review it again.");
       return;
     }
-    const sent = { amount: estimate.totalSent, fee: prepared.summary.fee };
+    // An accept that went through is said with whatever outcome the payment gets, a retry's too.
+    const sent = { amount: estimate.totalSent, fee: prepared.summary.fee, ...(accepted && { note: accepted }) };
     const toContact = isContact(spec.recipient);
     try {
       const { txid } = await draft.broadcast(d, prepared.handle);
-      onOutcome({ kind: "sent", txid, ...sent, ...(accepted && { note: accepted }) });
+      onOutcome({ kind: "sent", txid, ...sent });
     } catch (e) {
       // "Not sent" only when the engine released it, or held a contact payment back before its
       // hand-off (then it is abandoned here); nothing else is abandoned after a broadcast.

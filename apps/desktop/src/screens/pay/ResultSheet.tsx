@@ -48,12 +48,12 @@ export function ResultSheet({
   const retry = async () => {
     if (outcome.kind !== "unknown" || !outcome.retry || busy) return;
     setBusy(true);
-    const { draft: d, prepared, amount, fee } = outcome;
+    const { draft: d, prepared, amount, fee, note } = outcome;
     try {
       const { txid } = await draft.broadcast(d, prepared);
-      onOutcome({ kind: "sent", txid, amount, fee });
+      onOutcome({ kind: "sent", txid, amount, fee, note });
     } catch (e) {
-      onOutcome(broadcastFailure(e, shown.chain, { draft: d, prepared, amount, fee }, false, shown.amountUnit));
+      onOutcome(broadcastFailure(e, shown.chain, { draft: d, prepared, amount, fee, note }, false, shown.amountUnit));
     } finally {
       setBusy(false);
     }

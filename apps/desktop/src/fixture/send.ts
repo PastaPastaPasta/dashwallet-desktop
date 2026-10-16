@@ -88,7 +88,7 @@ export interface SendWorld {
   contactIndex: Record<string, { next: number; reserved: number | null }>;
   /** What `resolve_contact_payment_lock` finds for a lock whose payment the fixture did not hand
    * over itself (a scenario's lock); one it handed over is `sent`. */
-  lockEvidence: LockResolutionName;
+  lockEvidence: LockResolutionName | null;
 }
 
 export const newSendWorld = (): SendWorld => ({
@@ -99,7 +99,7 @@ export const newSendWorld = (): SendWorld => ({
   sent: {},
   announced: {},
   contactIndex: {},
-  lockEvidence: "unknown",
+  lockEvidence: null,
 });
 
 /** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
@@ -380,8 +380,9 @@ export interface SendDeps {
   /** Redeems (or revokes) a grant. */
   useGrant(w: World, grantId: string): void;
   /** DP3-01's contact checks of `r` (D2 for a draft, D4 for `prepare`), in the engine's order;
-   * throws its refusal. */
-  checkContact(w: World, walletId: string, r: ContactRecipient, stage: "draft" | "prepare"): void;
+   * throws its refusal. `amount`: a draft's amount checks, which the engine makes after the ids
+   * and before the payee (`validate_recipients`). */
+  checkContact(w: World, walletId: string, r: ContactRecipient, stage: "draft" | "prepare", amount?: () => void): void;
   /** For a `begin_flow` lease id: charges `outflow` to the lease's Spend budget, or throws the
    * engine's refusal; `false` when `id` is not a lease id (a vault grant). */
   chargeLease(ctx: Ctx, walletId: string, id: string, outflow: number): boolean;
@@ -572,14 +573,15 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       return true;
     },
     draft_set_recipients: ({ draft, recipients }, { world }) => set(world, draft, { recipients, contact: null }),
-    // TxDraft::set_contact_recipient (DP3-01 D1, D2): the contact checks, then the amount as
-    // `set_recipients` checks it; the contact becomes the only recipient, planned with a
+    // TxDraft::set_contact_recipient (DP3-01 D1, D2): the contact checks, the amount among them
+    // as `set_recipients` checks it; the contact becomes the only recipient, planned with a
     // placeholder of a DIP-15 address's size (D3).
     draft_set_contact_recipient: ({ draft, recipient }, { world }) => {
       const d = draftOf(world, draft);
-      checkContact(world, d.walletId, recipient, "draft");
-      if (recipient.amount <= 0 || recipient.amount > MAX_MONEY) throw fail("send.invalid_amount", "invalid amount", { kind: "recipient", index: 0 });
-      if (recipient.amount < DUST) throw fail("send.dust_amount", "dust amount", { kind: "recipient", index: 0 });
+      checkContact(world, d.walletId, recipient, "draft", () => {
+        if (recipient.amount <= 0 || recipient.amount > MAX_MONEY) throw fail("send.invalid_amount", "invalid amount", { kind: "recipient", index: 0 });
+        if (recipient.amount < DUST) throw fail("send.dust_amount", "dust amount", { kind: "recipient", index: 0 });
+      });
       const placeholder: Recipient = {
         address: contactAddress(d.walletId, recipient, -1),
         amount: recipient.amount,

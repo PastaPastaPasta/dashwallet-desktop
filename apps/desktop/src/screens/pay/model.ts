@@ -218,7 +218,7 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH"): { 
     case "platform.timeout":
       return { text: "Could not reach Dash Platform. Try again.", field: null };
     case "platform.lease_revoked":
-      return { text: "The wallet locked before the payment was sent. Nothing was sent.", field: null };
+      return { text: "The wallet locked during the payment.", field: null };
     case "platform.lease_expired":
     case "platform.grant_invalid":
       return { text: "The authorization expired. Send again.", field: null };
@@ -228,7 +228,7 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH"): { 
     case "platform.grant_exceeded":
       return { text: "The payment changed. Review it again.", field: null };
     case "storage":
-      return { text: "The payment could not be recorded, so it was not sent. Try again.", field: null };
+      return { text: "The payment could not be recorded in this wallet.", field: null };
     default:
       return null;
   }
@@ -291,9 +291,14 @@ export function confirmedOf(recipient: PayRecipient, estimate: TxEstimate, chang
  * it owns). Anything else, even within the grant's cap, is a different payment. A contact's
  * address is the one the engine reserved at prepare (DP3-06 D9): its payment is the one output
  * that is neither change nor the wallet's. */
+/** The engine's stand-in for a contact's address in an estimate (`send/contact.rs` `placeholder`:
+ * P2PKH of 20 zero bytes, mainnet and testnet), which a signed payment must never pay. */
+const CONTACT_PLACEHOLDERS = ["XagqqFetxiDb9wbartKDrXgnqLah6SqX2S", "yLKSrCjLQFsfVgX8RjdctZ797d54atPjnV"];
+
 export function keepsPromise(c: Confirmed, s: PreparedTxSummary): boolean {
   const { estimate, recipient: r } = c;
-  const paysPayee = (o: PreparedTxSummary["outputs"][number]) => (isContact(r) ? !o.isMine : o.address === r.address);
+  const paysPayee = (o: PreparedTxSummary["outputs"][number]) =>
+    isContact(r) ? !o.isMine && o.address !== null && !CONTACT_PLACEHOLDERS.includes(o.address) : o.address === r.address;
   const shown =
     s.outputs.every((o) => (o.isChange ? (c.changeAddress === null ? o.isMine : o.address === c.changeAddress) : paysPayee(o))) &&
     (!isContact(r) || s.outputs.filter((o) => !o.isChange).length === 1);
@@ -341,7 +346,7 @@ export type Outcome =
   | { kind: "sent"; txid: string; amount: number; fee: number; note?: string }
   /** The transaction may have reached the network. `retry`: the engine still holds it, so Try
    * again repeats the broadcast. */
-  | { kind: "unknown"; text: string; retry: boolean; draft: number; prepared: number; amount: number; fee: number }
+  | { kind: "unknown"; text: string; retry: boolean; draft: number; prepared: number; amount: number; fee: number; note?: string }
   | { kind: "failed"; text: string };
 
 /** The engine's codes for a first broadcast that released the transaction (E0-13 D8, `released`
@@ -360,7 +365,7 @@ const CONTACT_HELD = ["contact.payment_locked", "storage"] as const;
 export function broadcastFailure(
   e: unknown,
   chain: Chain,
-  held: { draft: number; prepared: number; amount: number; fee: number },
+  held: { draft: number; prepared: number; amount: number; fee: number; note?: string },
   first: boolean,
   unit: Unit = "DASH",
   contact = false,

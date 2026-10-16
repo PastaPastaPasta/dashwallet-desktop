@@ -94,6 +94,9 @@ describe("fixture contact payment", () => {
     expect(await draft(to("dave"))).toMatchObject({ code: "contact.channel_broken" });
     expect(await draft(to("bob", 100))).toMatchObject({ code: "send.dust_amount" });
     expect(await draft(to("bob", 0))).toMatchObject({ code: "send.invalid_amount" });
+    // The amount before the payee, as `validate_recipients` runs first.
+    expect(await draft(to("dave", 100))).toMatchObject({ code: "send.dust_amount" });
+    expect(await draft(to("frank", 0))).toMatchObject({ code: "send.invalid_amount" });
     // A request may be drafted (Accept and pay) but not prepared before the accept.
     const grace = await draftFor(to("grace"));
     const [grant] = await cmd.authorizeSet([{ kind: "spend", maxDuffs: 10_000_000 }], W, PASS);
@@ -163,6 +166,13 @@ describe("fixture contact payment", () => {
     expect(await cmd.resolveContactPaymentLock(W, ME, IDENTITY.bob)).toBe("sent");
     expect(await cmd.contactPaymentLock(W, ME, IDENTITY.bob)).toBeNull();
     expect(await refusal(cmd.resolveContactPaymentLock(W, ME, IDENTITY.bob))).toMatchObject({ code: "invalid_argument" });
+    // Evidence set answers even for a payment handed over: still unknown, the lock stays.
+    const again = await prepared(to("bob"));
+    await refusal(cmd.draftBroadcast(again.d, again.p.handle));
+    fixture.world.send.lockEvidence = "unknown";
+    expect(await cmd.resolveContactPaymentLock(W, ME, IDENTITY.bob)).toBe("unknown");
+    expect(await cmd.contactPaymentLock(W, ME, IDENTITY.bob)).toMatchObject({ txid: again.p.summary.txid });
+    fixture.world.send.lockEvidence = null;
     // Dave's lock is the scenario's: the fixture never saw its transaction.
     expect(await cmd.resolveContactPaymentLock(W, ME, IDENTITY.dave)).toBe("unknown");
     expect(await cmd.contactPaymentLock(W, ME, IDENTITY.dave)).not.toBeNull();

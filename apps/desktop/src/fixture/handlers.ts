@@ -502,9 +502,10 @@ function importWallet(ctx: Ctx, phrase: string, name: string | null): string {
 /** `TxDraft::set_contact_recipient`'s checks (DP3-01 D2) and `prepare`'s (D4), in the engine's
  * order. `prepare` needs the contact established: a request still waiting is
  * `contact.ineligible{pendingIncoming}` (accept first). */
-const checkContact: SendDeps["checkContact"] = (w, walletId, r, stage) => {
+const checkContact: SendDeps["checkContact"] = (w, walletId, r, stage, amount) => {
   if (!isIdentityId(r.identity) || !isIdentityId(r.contact)) throw fail("invalid_argument", "not an identity id");
   if (r.contact === r.identity) throw fail("contact.self", "contact is the identity itself");
+  amount?.();
   const c = dashpay(w, walletId, r.identity).contacts.find((x) => x.summary.contact === r.contact);
   const relation = c?.summary.relation;
   if (stage === "prepare" && relation === "pendingIncoming")
@@ -969,13 +970,13 @@ export const HANDLERS: Handlers = {
     return save("published");
   },
   contact_payment_lock: ({ walletId, identity, contact: id }, { world }) => contact(world, walletId, identity, id).paymentLock,
-  // DashPay::resolve_payment_lock (DP3-01 D9): no lock is `invalid_argument`; a payment the
-  // fixture handed over is `sent`, a scenario's lock answers `World.send.lockEvidence`. `sent`
-  // and `notSent` clear the lock.
+  // DashPay::resolve_payment_lock (DP3-01 D9): no lock is `invalid_argument`; `World.send.lockEvidence`
+  // answers when set, else a payment the fixture handed over is `sent` and any other `unknown`.
+  // `sent` and `notSent` clear the lock.
   resolve_contact_payment_lock: ({ walletId, identity, contact: id }, ctx) => {
     const c = contact(ctx.world, walletId, identity, id);
     if (!c.paymentLock) throw fail("invalid_argument", "no payment lock for this contact");
-    const found = ctx.world.send.sent[c.paymentLock.txid] ? "sent" : ctx.world.send.lockEvidence;
+    const found = ctx.world.send.lockEvidence ?? (ctx.world.send.sent[c.paymentLock.txid] ? "sent" : "unknown");
     if (found !== "unknown") sendDeps.setPaymentLock(ctx, walletId, { identity, contact: id }, null);
     return found;
   },

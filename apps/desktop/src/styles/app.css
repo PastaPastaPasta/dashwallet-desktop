@@ -1792,6 +1792,11 @@ button {
 }
 
 /* Pay ▸ To a contact (DP3-06): the frequent strip, the payee card and the confirm sheet's payee. */
+/* The chooser is a column: the search field keeps its 32 px height instead of growing. */
+.pay-contact-chooser .search-field {
+  flex: none;
+}
+
 .pay-frequent-chips {
   display: flex;
   flex-wrap: wrap;

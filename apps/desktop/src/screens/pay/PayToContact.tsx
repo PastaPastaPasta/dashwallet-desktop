@@ -62,8 +62,9 @@ export function PayToContact({ walletId, network }: { walletId: string; network:
 
 /** The identity's tab: the chooser until a payee is picked (D2). */
 function ContactTab({ walletId, identity, network }: { walletId: string; identity: string; network: NetworkInfo }) {
-  const payee = useUi((s) => s.payContact);
-  const pick = (contact: string) => ui.set({ payContact: contact });
+  const picked = useUi((s) => s.payContact);
+  const payee = picked?.walletId === walletId ? picked.contact : null;
+  const pick = (contact: string) => ui.set({ payContact: { walletId, contact } });
   return payee === null ? (
     <Chooser walletId={walletId} identity={identity} onPick={pick} />
   ) : (
@@ -204,9 +205,17 @@ function ContactForm({ walletId, identity, network, contact }: { walletId: strin
     accepted,
   });
   const held = blocks(banner);
-  // What Check again found (D7), kept once the lock it resolved (and the banner) went.
+  // What Check again found (D7), kept once the lock it resolved (and the banner) went, but not
+  // under a new lock: it spoke of another payment.
   const resolve = useResolveLock(walletId, identity, contact);
-  const found = resolve.isError ? { text: errorMessage(resolve.error), resolved: false } : resolve.data ? resolveText(resolve.data) : null;
+  const lockTxid = detail.data?.paymentLock?.txid ?? null;
+  const [checked, setChecked] = useState<string | null>(null);
+  const current = lockTxid === null || lockTxid === checked;
+  const check = () => {
+    setChecked(lockTxid);
+    resolve.mutate();
+  };
+  const found = !current ? null : resolve.isError ? { text: errorMessage(resolve.error), resolved: false } : resolve.data ? resolveText(resolve.data) : null;
   const payee = payeeOf(detail.data?.summary ?? { contact, alias: null, displayName: null, username: null });
 
   const amount = useAmountField(shown, "");
@@ -273,7 +282,7 @@ function ContactForm({ walletId, identity, network, contact }: { walletId: strin
             Change
           </DashButton>
         </section>
-        {banner && <PayBanner banner={banner} contact={contact} checking={resolve.isPending} onCheck={() => resolve.mutate()} retry={() => void detail.refetch()} />}
+        {banner && <PayBanner banner={banner} contact={contact} checking={resolve.isPending} onCheck={check} retry={() => void detail.refetch()} />}
         <ActionLine ok={found?.resolved ?? true} text={found?.text ?? null} testId="pay-lock-resolve" />
         {!held && (
           <>

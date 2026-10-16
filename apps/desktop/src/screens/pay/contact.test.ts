@@ -230,6 +230,12 @@ describe("IOS-050 U-03's promise and refusals for a contact (D9, D13)", () => {
     expect(keepsPromise(confirmed, prepared([toContact, change], { fee: 300 }))).toBe(false);
   });
 
+  it("fails for the estimate's placeholder, or an output with no address", () => {
+    expect(keepsPromise(confirmed, prepared([{ ...toContact, address: "yLKSrCjLQFsfVgX8RjdctZ797d54atPjnV" }, change]))).toBe(false);
+    expect(keepsPromise(confirmed, prepared([{ ...toContact, address: "XagqqFetxiDb9wbartKDrXgnqLah6SqX2S" }, change]))).toBe(false);
+    expect(keepsPromise(confirmed, prepared([{ ...toContact, address: null }, change]))).toBe(false);
+  });
+
   it("has no unsigned contact payment", () => {
     expect(unsignedKeepsPromise(confirmed, { outputs: [], fee: 226, unsignedInputs: 1 } as never)).toBe(false);
   });
@@ -242,11 +248,11 @@ describe("IOS-050 U-03's promise and refusals for a contact (D9, D13)", () => {
     expect(text(err("contact.self"))).toBe("This is you.");
     expect(text(err("identity.not_found"))).toMatch(/DashPay identity is not available/);
     expect(text(err("platform.unavailable"))).toBe("Could not reach Dash Platform. Try again.");
-    expect(text(err("platform.lease_revoked"))).toMatch(/Nothing was sent/);
+    expect(text(err("platform.lease_revoked"))).toBe("The wallet locked during the payment.");
     expect(text(err("platform.lease_expired"))).toBe("The authorization expired. Send again.");
     expect(text(err("platform.needs_grant"))).toBe("Unlock the wallet and try again.");
     expect(text(err("platform.grant_exceeded"))).toBe("The payment changed. Review it again.");
-    expect(text(err("storage"))).toMatch(/could not be recorded, so it was not sent/);
+    expect(text(err("storage"))).toBe("The payment could not be recorded in this wallet.");
   });
 
   it("a contact's first broadcast held back before its hand-off was not sent (DP3-01 D20, D23)", () => {
