@@ -2362,6 +2362,8 @@ async fn a_copy_past_the_senders_orphan_bound_does_not_end_a_loss() {
         run.lost, 1,
         "a copy the orphan bound refused ended the loss"
     );
+    // Recovered and not kept: the sender pays (D61).
+    assert_eq!(run.peers[0].suspect, 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2517,6 +2519,8 @@ async fn a_copy_past_its_keys_limit_does_not_hide_the_honest_vote() {
     run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
     let key = (item.hash, item.kind);
     assert_eq!(run.requests.pending.get(&key).map(|r| r.peer), Some(1));
+    // Recovered and not kept: the sender pays (D61).
+    assert_eq!(run.peers[0].suspect, 1);
     run.handle(1, PeerEvent::Vote(x.encode()));
     assert!(run.shared.store().has_vote(&x.hash()));
 }
@@ -2631,4 +2635,183 @@ async fn a_late_copy_from_the_timed_out_peer_ends_its_loss() {
     run.handle(0, PeerEvent::Vote(x.encode()));
     assert!(run.shared.store().has_vote(&x.hash()));
     assert_eq!(run.lost, 0);
+}
+
+/// Proposal `p` stored with key 1's current vote on it, and an older vote
+/// of the same (outpoint, key): obsolete.
+async fn obsolete_vote_run(name: &str) -> (Run, GovernanceVote) {
+    let p = proposal(name);
+    let run = two_peer_run(&p).await;
+    let current = vote(p.hash(), 1, VoteOutcome::Yes);
+    run.shared
+        .store()
+        .add_vote(current, None, unix_now())
+        .unwrap();
+    let old = aged_vote(p.hash(), 0);
+    assert_eq!(
+        run.shared.store().add_vote(old.clone(), None, unix_now()),
+        Err(VoteRejection::Obsolete)
+    );
+    (run, old)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reannounced_obsolete_copy_costs_its_sender() {
+    // Validator r10 MJ2: an obsolete copy ends its request (taken), so its
+    // peer could announce it again and be asked again: an `inv` and a copy,
+    // each a signature recovery, without end. Core rejects an obsolete vote
+    // before checking its signature; the wallet recovers first, so the
+    // sender pays a suspect (D61).
+    let (mut run, old) = obsolete_vote_run("p-d61-reannounce").await;
+    let item = vote_inv(&old);
+    for round in 1..=5 {
+        run.handle(0, PeerEvent::Inv(vec![item]));
+        run.handle(0, PeerEvent::Vote(old.encode()));
+        assert!(run.requests.pending.is_empty());
+        assert_eq!(run.peers[0].suspect, round);
+    }
+    assert_eq!(run.peers[0].misbehaviour, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refused_late_copies_do_not_multiply_grants() {
+    // Validator r10 MJ1: a refused copy taken from a late record carried
+    // the record's other grants into the retry, whose give-up merged them
+    // back into the record: each refused copy doubled them, without bound,
+    // and they never ran out (D61).
+    let mut run = one_peer_run(|_, _| {}).await;
+    let x = vote([0x5a; 32], 1, VoteOutcome::Yes);
+    let item = vote_inv(&x);
+    let key = (item.hash, item.kind);
+    // A 96-byte signature on a vote whose object is unknown: refused,
+    // free.
+    let mut junk = x.clone();
+    junk.signature = vec![0x55; 96];
+    run.cfg.request_timeout = Duration::ZERO;
+    for _ in 0..3 {
+        run.handle(0, PeerEvent::Inv(vec![item]));
+        run.expire(); // asked again
+        run.expire(); // given up: one copy owed
+    }
+    let owed = |run: &Run| run.requests.late.get(&key).map_or(0, |l| l.owed.len());
+    assert_eq!(owed(&run), 3);
+    let mut left = Vec::new();
+    for _ in 0..6 {
+        run.handle(0, PeerEvent::Vote(junk.encode()));
+        left.push(owed(&run));
+    }
+    assert_eq!(left, [2, 1, 0, 0, 0, 0]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_copy_for_a_request_not_sent_is_not_taken() {
+    // Validator r10 m1: a copy for a request still queued behind full
+    // slots, with no `getdata` sent, was taken (D61).
+    let p = proposal("p-d61-queued");
+    let mut run = two_peer_run(&p).await;
+    run.cfg.max_in_flight = 1;
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    run.handle(0, PeerEvent::Inv(junk_votes(7, 1)));
+    run.handle(0, PeerEvent::Inv(vec![vote_inv(&x)]));
+    let key = (x.hash(), INV_GOVERNANCE_VOTE);
+    assert!(run.requests.pending[&key].sent.is_none());
+    run.handle(0, PeerEvent::Vote(x.encode()));
+    assert!(!run.shared.store().has_vote(&x.hash()));
+    assert!(run.requests.pending[&key].sent.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_notfound_spends_a_copy_still_owed() {
+    // Validator r10 nit: a peer asked twice whose first copy arrived kept
+    // its grant after a `notfound` answering the second `getdata` (D61).
+    let p = proposal("p-d61-notfound-owed");
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    let item = vote_inv(&x);
+    let key = (item.hash, item.kind);
+    let mut run = two_peer_run(&p).await;
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.cfg.request_timeout = Duration::ZERO;
+    run.expire(); // asked again: two getdatas
+    run.cfg.request_timeout = Duration::from_secs(30);
+    assert!(run.take(0, &key).is_some());
+    run.handle(0, PeerEvent::NotFound(vec![item]));
+    assert!(run.take(0, &key).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn grants_and_losses_stay_consistent_under_random_events() {
+    // Validator r10: random announcements, `notfound`s, copies (genuine
+    // and re-signed) and timeouts from two peers over four phase votes.
+    // `lost` always counts the lost late records, and the copies owed grow
+    // only with what can grant one: a timeout (at most one per request out)
+    // or a copy taken (one for a request it ends or a second `getdata`).
+    let p = proposal("p-d61-random");
+    let xs: Vec<GovernanceVote> = (0..4).map(|a| aged_vote(p.hash(), 10 - a)).collect();
+    for mut seed in [0x9e37_79b9_7f4a_7c15u64, 1, 2, 3, 4, 5, 6, 7] {
+        let mut run = two_peer_run(&p).await;
+        open_vote_sync(&mut run.peers[0], p.hash());
+        open_vote_sync(&mut run.peers[1], p.hash());
+        let mut next = |m: u64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) % m
+        };
+        let mut granting = 0;
+        for step in 0..5_000 {
+            let peer = next(2) as usize;
+            let x = &xs[next(4) as usize];
+            match next(7) {
+                0 | 1 => run.handle(peer, PeerEvent::Inv(vec![vote_inv(x)])),
+                2 => run.handle(peer, PeerEvent::NotFound(vec![vote_inv(x)])),
+                3 => {
+                    granting += 1;
+                    run.handle(peer, PeerEvent::Vote(x.encode()));
+                }
+                4 => run.handle(peer, PeerEvent::Vote(resigned(x, 2).encode())),
+                _ => {
+                    granting += run.requests.pending.len();
+                    let t = std::mem::replace(&mut run.cfg.request_timeout, Duration::ZERO);
+                    run.expire();
+                    run.cfg.request_timeout = t;
+                }
+            }
+            let recorded = run.requests.late.values().filter(|l| l.lost).count();
+            assert_eq!(run.lost, recorded, "step {step}");
+            let owed: usize = run
+                .requests
+                .late
+                .values()
+                .map(|l| l.owed.len())
+                .sum::<usize>()
+                + run
+                    .requests
+                    .pending
+                    .values()
+                    .map(|r| r.owed.len())
+                    .sum::<usize>();
+            assert!(
+                owed <= granting,
+                "step {step}: {owed} copies owed, {granting} granting events"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_that_becomes_a_phase_item_holds_the_phase() {
+    // D61: the count of pending phase requests follows a request that
+    // turns into one when a peer whose vote sync is open announces it too.
+    let p = proposal("p-d61-phase");
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    let item = vote_inv(&x);
+    let mut run = two_peer_run(&p).await;
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    assert!(run.phase_requests_done());
+    open_vote_sync(&mut run.peers[1], p.hash());
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    assert!(run.requests.pending[&(item.hash, item.kind)].phase);
+    assert!(!run.phase_requests_done());
+    run.handle(0, PeerEvent::Vote(x.encode()));
+    assert!(run.phase_requests_done());
 }

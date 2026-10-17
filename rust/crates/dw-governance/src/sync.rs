@@ -21,7 +21,8 @@
 //! and a peer past [`SyncConfig::max_misbehaviour`] is closed (D10). Votes Core relays but
 //! the wallet does not tally are ignored without a penalty; votes whose key
 //! the list lacks may be honest under the peer's list and count against the
-//! looser [`SyncConfig::max_suspect`]. At most
+//! looser [`SyncConfig::max_suspect`], as do votes recovered and then not
+//! kept, which Core rejects before checking a signature (D61). At most
 //! [`SyncConfig::max_in_flight`] items are asked of one peer at a time. A
 //! request ends with the item, `notfound`, an item that does not validate,
 //! or the peer closing, and the next peer that announced the hash is asked
@@ -231,7 +232,8 @@ pub struct SyncConfig {
     pub answer_timeout: Duration,
     /// Undecodable or invalid items before a peer is closed (D10).
     pub max_misbehaviour: u32,
-    /// Votes whose key the list lacks before a peer is closed (D10).
+    /// Votes whose key the list lacks, or recovered and not kept, before a
+    /// peer is closed (D10, D61).
     pub max_suspect: u32,
     /// Hashes one peer may announce that the wallet has not fetched (Core
     /// `MAX_PEER_OBJECT_ANNOUNCEMENTS`).
@@ -528,6 +530,9 @@ struct Requests {
     /// they count towards its confirmation once it arrives (D3).
     object_announcers: HashMap<[u8; 32], Vec<SocketAddr>>,
     late: HashMap<Item, Late>,
+    /// How many of `pending` are phase items, kept as they change: read
+    /// after every event (D61).
+    phase_pending: usize,
 }
 
 /// Spends one of `from`'s unanswered `getdata`s in `owed`, if any (D60).
@@ -688,6 +693,7 @@ impl Run {
     /// there.
     fn assign(&mut self, item: Item, id: usize, t: Taken) {
         debug_assert!(!self.requests.pending.contains_key(&item));
+        self.requests.phase_pending += usize::from(t.phase);
         self.requests.pending.insert(
             item,
             Pending {
@@ -753,6 +759,7 @@ impl Run {
     /// next queued one (D55).
     fn release(&mut self, item: &Item) -> Option<Pending> {
         let r = self.requests.pending.remove(item)?;
+        self.requests.phase_pending -= usize::from(r.phase);
         if r.sent.is_some()
             && let Some(p) = self.peer_mut(r.peer)
         {
@@ -781,6 +788,7 @@ impl Run {
     fn take(&mut self, from: usize, item: &Item) -> Option<Taken> {
         let taken = if let Some(r) = self.requests.pending.get(item)
             && r.peer == from
+            && r.sent.is_some()
         {
             let r = self.release(item).expect("looked up");
             if r.asked_again {
@@ -792,21 +800,23 @@ impl Run {
             && take_owed(&mut r.owed, from)
         {
             // A peer asked before: the request still out stays until the
-            // wallet takes a copy (D59).
+            // wallet takes a copy (D59), and keeps its other grants (D61).
             Taken {
                 phase: r.phase,
                 asked: r.asked.clone(),
-                owed: r.owed.clone(),
+                owed: Vec::new(),
                 unanswered: r.unanswered,
             }
         } else if let Some(l) = self.requests.late.get_mut(item)
             && take_owed(&mut l.owed, from)
         {
             // A lost item stays lost until the wallet accepts a copy (D57).
+            // The record keeps its other grants: a retry giving up merges
+            // into it (D61).
             let taken = Taken {
                 phase: l.lost,
                 asked: l.asked.clone(),
-                owed: l.owed.clone(),
+                owed: Vec::new(),
                 unanswered: false,
             };
             if l.owed.is_empty() && !l.lost {
@@ -881,6 +891,27 @@ impl Run {
             self.lost -= 1;
         }
         self.finish(item);
+    }
+
+    /// Spends one of `from`'s grants for `item`, from the request out for
+    /// it or its late record; a record left with no grant and no loss
+    /// goes (D60).
+    fn spend_owed(&mut self, item: &Item, from: usize) -> bool {
+        if let Some(r) = self.requests.pending.get_mut(item)
+            && take_owed(&mut r.owed, from)
+        {
+            return true;
+        }
+        let Some(l) = self.requests.late.get_mut(item) else {
+            return false;
+        };
+        if !take_owed(&mut l.owed, from) {
+            return false;
+        }
+        if l.owed.is_empty() && !l.lost {
+            self.requests.late.remove(item);
+        }
+        true
     }
 
     /// Asks the next peer that announced `item` and was not asked, after
@@ -1008,7 +1039,13 @@ impl Run {
                 let phase = if object { objects_phase } else { votes_phase };
                 match self.requests.pending.entry(item) {
                     Entry::Vacant(_) => wanted.push((item, phase)),
-                    Entry::Occupied(mut e) => e.get_mut().phase |= phase,
+                    Entry::Occupied(mut e) => {
+                        let r = e.get_mut();
+                        if phase && !r.phase {
+                            r.phase = true;
+                            self.requests.phase_pending += 1;
+                        }
+                    }
                 }
             }
             confirmed.retain(|h| store.is_current_proposal(h, now));
@@ -1177,11 +1214,13 @@ impl Run {
             }
             Err(VoteRejection::Orphan) => {
                 // Not held when the sender's orphan bound is full: another
-                // announcer's copy may be (D58).
+                // announcer's copy may be (D58), and the recovery was the
+                // sender's to pay (D61).
                 if self.shared.store().has_vote(&hash) {
                     self.accepted(&item);
                     self.progressed();
                 } else {
+                    self.suspected(from);
                     self.refused(item, from, taken);
                 }
                 self.fetch_parent(from, parent);
@@ -1197,9 +1236,16 @@ impl Run {
             // The key's limit, met by the key the sender signed with:
             // another announcer's copy may be kept (D59).
             Err(VoteRejection::KeyLimit) => {
+                self.suspected(from);
                 self.refused(item, from, taken);
             }
             Err(_) => {
+                // An obsolete copy, which Core rejects before checking its
+                // signature: the wallet recovered it first, so the sender
+                // pays, as for an unknown key (D61).
+                if !self.shared.store().has_vote(&hash) {
+                    self.suspected(from);
+                }
                 self.accepted(&item);
                 self.progressed();
             }
@@ -1243,6 +1289,12 @@ impl Run {
                     .get(item)
                     .is_some_and(|r| r.peer == from && r.sent.is_some())
             }) else {
+                // An answer to a `getdata` that timed out spends it (D61).
+                for item in named {
+                    if self.spend_owed(&item, from) {
+                        break;
+                    }
+                }
                 continue;
             };
             if item.1 != i.kind {
@@ -1317,6 +1369,7 @@ impl Run {
         }
         for item in pending {
             let r = self.requests.pending.remove(&item).expect("listed");
+            self.requests.phase_pending -= usize::from(r.phase);
             // Votes come again from the re-asked syncs; objects it alone
             // announced are not sync items another fresh peer has.
             self.retry(item, Some(id), r.into(), false);
@@ -1525,7 +1578,11 @@ impl Run {
     }
 
     fn phase_requests_done(&self) -> bool {
-        !self.requests.pending.values().any(|r| r.phase)
+        debug_assert_eq!(
+            self.requests.phase_pending,
+            self.requests.pending.values().filter(|r| r.phase).count()
+        );
+        self.requests.phase_pending == 0
     }
 
     fn note_full_syncs(&mut self) {
