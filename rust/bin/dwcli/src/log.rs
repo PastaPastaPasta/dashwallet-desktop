@@ -4,7 +4,8 @@
 //! no `mn` output may repeat a value (MG-03 D32, D33). Every non-empty value
 //! is, in the forms a library prints it: as given, `{:?}`-quoted, and for a
 //! URL as parsed, with its user name, password, host and path apart; in any
-//! ASCII case, and in one pass, so overlapping values go together.
+//! ASCII case, and in one pass, so overlapping values go together. A list
+//! value is split as its reader splits it, each item a value too (D37).
 
 use std::io::Write;
 use std::sync::Arc;
@@ -23,7 +24,12 @@ pub fn init(cli: &Cli, mn: bool) {
     if mn {
         builder
             .with_ansi(false)
-            .with_writer(Redacting(Arc::new(option_values(cli))))
+            .with_writer(Redacting {
+                values: Arc::new(option_values(cli)),
+                sink: Arc::new(|text: &[u8]| {
+                    let _ = std::io::stderr().write_all(text);
+                }),
+            })
             .init();
     } else {
         builder.with_writer(std::io::stderr).init();
@@ -52,6 +58,17 @@ fn option_values(cli: &Cli) -> Vec<String> {
     if let DashNetwork::Devnet { name } = &cli.network {
         values.push(name.clone());
     }
+    // The engine joins the `--dapi` values with commas, and the SDK splits
+    // the list again (rs-dapi-client `AddressList::from_str`), logging a
+    // failing address alone. The only list option: a `--peer` is one
+    // address, and `--quorum-url` one URL.
+    let items: Vec<String> = cli
+        .dapi
+        .iter()
+        .flat_map(|v| v.split(','))
+        .flat_map(|item| [item.to_string(), item.trim().to_string()])
+        .collect();
+    values.extend(items);
     let forms: Vec<String> = values.iter().flat_map(|v| forms(v)).collect();
     values.extend(forms);
     values.retain(|v| !v.is_empty());
@@ -60,9 +77,14 @@ fn option_values(cli: &Cli) -> Vec<String> {
     values
 }
 
-/// The other forms of `value`: `{:?}`-quoted, and a URL's parts.
+/// The other forms of `value`: `{:?}`-quoted, a URL's parts, and a socket
+/// address as printed (dash-spv prints a `--peer`, `[::1]` for `[0::1]`).
 fn forms(value: &str) -> Vec<String> {
     let mut forms = vec![value.escape_debug().to_string()];
+    if let Ok(addr) = value.trim().parse::<std::net::SocketAddr>() {
+        forms.push(addr.to_string());
+        forms.push(addr.ip().to_string());
+    }
     if let Ok(url) = url::Url::parse(value) {
         forms.push(url.as_str().to_string());
         forms.push(url.as_str().trim_end_matches('/').to_string());
@@ -79,15 +101,22 @@ fn forms(value: &str) -> Vec<String> {
     forms
 }
 
-/// One event's text, written to stderr redacted when dropped.
-struct Redacting(Arc<Vec<String>>);
+/// Where a redacted line goes: stderr, or a test's buffer.
+type Sink = Arc<dyn Fn(&[u8]) + Send + Sync>;
+
+/// One event's text, written to the sink redacted when dropped.
+struct Redacting {
+    values: Arc<Vec<String>>,
+    sink: Sink,
+}
 
 impl<'a> MakeWriter<'a> for Redacting {
     type Writer = Line;
 
     fn make_writer(&'a self) -> Line {
         Line {
-            values: Arc::clone(&self.0),
+            values: Arc::clone(&self.values),
+            sink: Arc::clone(&self.sink),
             text: Vec::new(),
         }
     }
@@ -95,6 +124,7 @@ impl<'a> MakeWriter<'a> for Redacting {
 
 struct Line {
     values: Arc<Vec<String>>,
+    sink: Sink,
     text: Vec<u8>,
 }
 
@@ -112,7 +142,7 @@ impl Write for Line {
 impl Drop for Line {
     fn drop(&mut self) {
         let text = redact(&String::from_utf8_lossy(&self.text), &self.values);
-        let _ = std::io::stderr().write_all(text.as_bytes());
+        (self.sink)(text.as_bytes());
     }
 }
 
@@ -192,5 +222,126 @@ mod tests {
             redact("host EXAMPLE.Com:81, abcd, xyz é", &values),
             "host <redacted>, <redacted>, xyz é"
         );
+    }
+
+    /// A peer's address is redacted as dash-spv prints it (D37).
+    #[test]
+    fn a_socket_address_is_redacted_as_printed() {
+        let values = forms("[0:0:0:0:0:0:0:1]:9999");
+        assert_eq!(
+            redact("peer [::1]:9999 and ::1", &values),
+            "peer <redacted> and <redacted>"
+        );
+    }
+
+    /// The SDK splits a comma-separated `--dapi` into addresses and logs a
+    /// failing one alone ("ban address {address} due to error"): neither
+    /// address, its host nor its path is in the log (Sol r4 Major 1, D37).
+    /// The request is the credits read's (an identity balance), through
+    /// the SDK a session builds from the options, against closed ports.
+    /// It runs in a process of its own with the log global, as dwcli's is:
+    /// tracing's callsite cache is per process, and this binary's other
+    /// tests reach the same SDK callsites with no subscriber.
+    #[cfg(all(test, debug_assertions))]
+    #[test]
+    fn a_failing_address_of_a_dapi_list_is_redacted() {
+        let inner = "log::tests::a_failing_address_of_a_dapi_list_is_redacted_here";
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", inner, "--ignored", "--test-threads", "1"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[cfg(all(test, debug_assertions))]
+    #[test]
+    #[ignore = "run in its own process by a_failing_address_of_a_dapi_list_is_redacted"]
+    fn a_failing_address_of_a_dapi_list_is_redacted_here() {
+        use std::sync::Mutex;
+
+        use clap::Parser;
+        use dw_engine::{Engine, EngineConfig, EngineEvent, EventSink, SessionOptions};
+
+        struct NoEvents;
+        impl EventSink for NoEvents {
+            fn emit(&self, _: EngineEvent) {}
+        }
+
+        let dir = dw_testutil::private_tempdir();
+        let dapi = "http://127.0.0.1:1/pathTOKENa,http://127.0.0.2:1/pathTOKENb";
+        let cli = Cli::try_parse_from([
+            "dwcli",
+            "--datadir",
+            dir.path().to_str().unwrap(),
+            "--dapi",
+            dapi,
+            "--quorum-url",
+            "http://127.0.0.3:1",
+            "--peer",
+            "127.0.0.4:1",
+            "mn",
+            "credits",
+            &"11".repeat(32),
+        ])
+        .unwrap();
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let sink: Sink = {
+            let out = Arc::clone(&out);
+            Arc::new(move |text: &[u8]| out.lock().unwrap().extend_from_slice(text))
+        };
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
+            .with_ansi(false)
+            .with_writer(Redacting {
+                values: Arc::new(option_values(&cli)),
+                sink,
+            })
+            .finish();
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+
+        let engine = Engine::new(
+            EngineConfig {
+                data_root: cli.datadir.clone(),
+                worker_threads: None,
+                vault: dw_vault::VaultConfig::default(),
+            },
+            Arc::new(NoEvents),
+        )
+        .unwrap();
+        let opts = SessionOptions {
+            dapi_addresses: cli.dapi.clone(),
+            quorum_url: cli.quorum_url.clone(),
+            spv_peers: cli.peers.clone(),
+            ..SessionOptions::default()
+        };
+        let session = engine
+            .block_on(engine.open_network(cli.network.clone(), opts))
+            .unwrap();
+        let fetched = engine.block_on(dw_engine::test_support::fetch_identity_balance(
+            &session, [1; 32],
+        ));
+        assert!(!fetched.unwrap(), "a closed port answered");
+        drop(session);
+        engine.block_on(engine.shutdown()).unwrap();
+
+        let log = String::from_utf8(out.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains("ban address"),
+            "the SDK logged no address: {log}"
+        );
+        for leak in [
+            "pathTOKEN",
+            "127.0.0.1",
+            "127.0.0.2",
+            "127.0.0.3",
+            "127.0.0.4",
+        ] {
+            assert!(!log.contains(leak), "{leak} in the log: {log}");
+        }
     }
 }

@@ -44,6 +44,8 @@ pub(crate) mod send;
 mod session;
 mod store;
 pub mod sync;
+#[cfg(all(debug_assertions, feature = "test-support"))]
+pub mod test_support;
 mod tools;
 mod tx_actions;
 mod wallets;

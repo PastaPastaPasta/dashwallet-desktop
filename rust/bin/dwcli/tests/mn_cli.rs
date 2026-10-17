@@ -304,6 +304,21 @@ fn mn_setup_failures_never_quote_a_global_option() {
             ),
             None,
         ),
+        // A list the SDK splits, each address logged alone on a failed
+        // request (D37).
+        (
+            "--dapi list",
+            with(
+                &["--no-platform", "--dapi"],
+                &[
+                    os("--dapi"),
+                    os(&format!(
+                        "http://127.0.0.1:1/{SECRET},http://127.0.0.2:1/x{SECRET}"
+                    )),
+                ],
+            ),
+            None,
+        ),
         ("--network", with(&[], &[os("--network"), os(SECRET)]), None),
         (
             "--network devnet",
