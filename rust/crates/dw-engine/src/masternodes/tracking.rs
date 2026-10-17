@@ -3,6 +3,7 @@
 //! tracked one (MG-03 §4, IOS-082). No operator or platform-node key is
 //! taken: the vault has no such role (MG-01 D7).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashcore::hashes::{Hash, hash160};
@@ -13,7 +14,7 @@ use zeroize::Zeroizing;
 use platform_wallet::masternode::MasternodeListSummary;
 
 use super::aggregate::OwnedMasternode;
-use super::follow::{all_owned, key_id, load_notes, read_list, set_key_id, set_label};
+use super::follow::{Notes, all_owned, load_notes, read_list, set_key_id, set_label};
 use super::reads::{list_facts, not_found};
 use super::records::{AttachedKeyRole, KeyCheck, ListedMasternode, UntrackOutcome};
 use super::{Masternodes, MasternodesError, display_hex, parse_pro_tx_hash};
@@ -158,6 +159,69 @@ async fn references(
         || entry.is_some_and(|e| e.has_extended_net_info)
         || owned.as_ref().is_some_and(|o| o.shared_unsupported);
     Ok(KeyReferences::new(entry, owned.as_ref(), shared))
+}
+
+/// Records the id of each attached key that has none from the key the
+/// vault holds (D31): one whose vault write failed in an earlier session,
+/// or one attached before ids were kept. A write that failed in this
+/// session stays unrecorded, since this session's vault may hold another
+/// key in memory than on disk. Under the tracking lock, so no `attach_key`
+/// interleaves; the notes as they are then.
+pub(super) async fn reconcile_key_ids(
+    session: &NetworkSession,
+    attached: &HashMap<[u8; 32], Vec<AttachedKeyRole>>,
+    notes: Notes,
+) -> Result<Notes, MasternodesError> {
+    let runtime = &session.masternodes;
+    let missing = |notes: &Notes| -> Vec<([u8; 32], AttachedKeyRole)> {
+        attached
+            .iter()
+            .flat_map(|(hash, roles)| roles.iter().map(move |role| (*hash, *role)))
+            .filter(|(hash, role)| {
+                !notes.key_ids.contains_key(&(display_hex(hash), *role))
+                    && !runtime.is_unsettled(*hash, *role)
+            })
+            .collect()
+    };
+    if missing(&notes).is_empty() {
+        return Ok(notes);
+    }
+    let _mutation = runtime.mutation().await;
+    let notes = session.appdb_op(load_notes).await?;
+    let missing = missing(&notes);
+    if missing.is_empty() {
+        return Ok(notes);
+    }
+    let vault = session.vault.clone();
+    let ids = tokio::task::spawn_blocking(move || {
+        missing
+            .into_iter()
+            .map(|(hash, role)| {
+                Ok((
+                    hash,
+                    role,
+                    vault.masternode_key_id(&hash, role.vault_name())?,
+                ))
+            })
+            .collect::<Result<Vec<_>, dw_vault::VaultError>>()
+    })
+    .await?;
+    let ids = match ids {
+        Ok(ids) => ids,
+        Err(dw_vault::VaultError::Locked) => return Ok(notes),
+        Err(e) => return Err(EngineError::from(e).into()),
+    };
+    session
+        .appdb_op(move |db| {
+            for (hash, role, id) in ids {
+                if let Some(id) = id {
+                    set_key_id(db, &display_hex(&hash), role, Some(id))?;
+                }
+            }
+            load_notes(db)
+        })
+        .await
+        .map_err(Into::into)
 }
 
 /// Forgets the recorded ids of `hash`'s keys of `roles`. The keys are gone
@@ -319,47 +383,43 @@ impl Masternodes {
         drop(key);
         let _mutation = self.session.masternodes.mutation().await;
         self.require_tracked(&hash)?;
-        // The id is cleared before the vault write and recorded after it, so
-        // a failure between them leaves a key without an id, which holds no
-        // role, never an id that names a key the vault doesn't hold (D24).
+        // The id is cleared before the vault write and recorded only after
+        // it succeeded, so an interruption leaves a key without an id, which
+        // holds no role, never an id that names a key the vault doesn't hold
+        // (D24). A failed write may have stored the key all the same (a
+        // read-back or directory fsync failing after the rename), so no id
+        // is put back: the next session records the id of what the vault
+        // then holds (D31).
         let key = display_hex(&hash);
-        let (check, previous) = self
+        let check = self
             .op(move |session| async move {
                 let check = references(&session, hash, role).await?.check(role, id);
                 if check == KeyCheck::KeyMismatch {
                     return Err(MasternodesError::KeyMismatch { role });
                 }
-                let previous = session
-                    .appdb_op(move |db| {
-                        let previous = key_id(db, &key, role)?;
-                        set_key_id(db, &key, role, None)?;
-                        Ok(previous)
-                    })
+                session
+                    .appdb_op(move |db| set_key_id(db, &key, role, None))
                     .await?;
-                Ok((check, previous))
+                Ok(check)
             })
             .await?;
+        let runtime = &self.session.masternodes;
         let stored = self
             .session
             .vault_op(move |v| v.store_masternode_key(&hash, role.vault_name(), &secret[..]))
             .await;
-        let key = display_hex(&hash);
-        let (recorded, failed) = match stored {
-            Ok(()) => (Some(id), None),
-            // The vault still holds the key it had, if any.
-            Err(e) => (previous, Some(e)),
-        };
-        let written = self
-            .session
-            .appdb_op(move |db| set_key_id(db, &key, role, recorded))
-            .await;
-        self.session.masternodes.local_change();
-        if let Some(e) = failed {
-            if let Err(e) = written {
-                tracing::warn!(error = %e, "could not restore an attached key's id");
-            }
+        if let Err(e) = stored {
+            runtime.unsettle(hash, role);
+            runtime.local_change();
             return Err(e.into());
         }
+        runtime.settle(hash, role);
+        let key = display_hex(&hash);
+        let written = self
+            .session
+            .appdb_op(move |db| set_key_id(db, &key, role, Some(id)))
+            .await;
+        runtime.local_change();
         written?;
         Ok(check)
     }
@@ -498,5 +558,139 @@ mod tests {
             normalize_label(Some(long)).unwrap_err().code(),
             "invalid_argument"
         );
+    }
+
+    mod ambiguous_writes {
+        use std::path::Path;
+
+        use dw_vault::fault::{Fault, arm};
+        use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VAULT_DIR, VaultConfig};
+
+        use super::super::super::records::AttachedKey;
+        use super::*;
+        use crate::{
+            DashNetwork, Engine, EngineConfig, EngineEvent, EventSink, SessionOptions, WalletId,
+        };
+
+        struct NoEvents;
+
+        impl EventSink for NoEvents {
+            fn emit(&self, _: EngineEvent) {}
+        }
+
+        const HASH: [u8; 32] = [0x5a; 32];
+
+        /// An engine on `dir`; `store` holds an unencrypted vault's data key
+        /// across a restart.
+        fn new_engine(dir: &Path, store: &Arc<MemoryOsStore>) -> Engine {
+            Engine::new(
+                EngineConfig {
+                    data_root: dir.join("data"),
+                    worker_threads: Some(4),
+                    vault: VaultConfig {
+                        kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                        os_store: store.clone(),
+                        ..VaultConfig::default()
+                    },
+                },
+                Arc::new(NoEvents),
+            )
+            .unwrap()
+        }
+
+        fn open(engine: &Engine) -> Arc<NetworkSession> {
+            engine
+                .block_on(engine.open_network(
+                    DashNetwork::Regtest,
+                    SessionOptions {
+                        dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                        quorum_url: Some("http://127.0.0.1:1".into()),
+                        spv_peers: vec!["127.0.0.1:1".into()],
+                        ..Default::default()
+                    },
+                ))
+                .unwrap()
+        }
+
+        fn id_of(secret: [u8; 32]) -> String {
+            let (_, id) = parse_secret(&hex::encode(secret), NET).unwrap();
+            hex::encode(id)
+        }
+
+        fn owner_key(engine: &Engine, s: &Arc<NetworkSession>, wallet: WalletId) -> AttachedKey {
+            let overview = engine.block_on(s.masternodes().list(wallet)).unwrap();
+            let row = overview
+                .masternodes
+                .iter()
+                .find(|r| r.pro_tx_hash == display_hex(&HASH))
+                .expect("the tracked row");
+            let attached = row.roles.attached.clone().expect("an unlocked vault");
+            assert_eq!(attached.len(), 1, "{attached:?}");
+            attached.into_iter().next().unwrap()
+        }
+
+        fn attach(
+            engine: &Engine,
+            s: &Arc<NetworkSession>,
+            secret: [u8; 32],
+        ) -> Result<KeyCheck, MasternodesError> {
+            engine.block_on(s.masternodes().attach_key(
+                display_hex(&HASH),
+                AttachedKeyRole::Owner,
+                Zeroizing::new(hex::encode(secret)),
+            ))
+        }
+
+        /// MG-03 D31: a vault write that fails after its rename (B stored on
+        /// disk, the vault's memory holding A or B) records no id, so the
+        /// key holds no role in this session; the next session records the
+        /// id of the key the vault holds, B.
+        fn an_ambiguous_write_records_the_vaults_key_next_session(fault: Fault) {
+            let (a, b) = ([7u8; 32], [9u8; 32]);
+            let dir = dw_testutil::private_tempdir();
+            let store = Arc::new(MemoryOsStore::new());
+            let engine = new_engine(dir.path(), &store);
+            let s = open(&engine);
+            engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+            let wallet = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+            let service = s.manager().unwrap().tracked_masternodes_service();
+            service.track_blocking(HASH, None).unwrap();
+            drop(service);
+
+            assert_eq!(attach(&engine, &s, a).unwrap(), KeyCheck::Unchecked);
+            let key = owner_key(&engine, &s, wallet);
+            assert_eq!(key.key_id, Some(id_of(a)));
+            assert!(key.holds());
+
+            arm(&s.data_dir().join(VAULT_DIR), fault);
+            assert!(attach(&engine, &s, b).is_err(), "the injected failure");
+            for _ in 0..2 {
+                let key = owner_key(&engine, &s, wallet);
+                assert_eq!(key.key_id, None, "no id after an ambiguous write");
+                assert_eq!(key.check, KeyCheck::Unchecked);
+                assert!(!key.holds());
+            }
+
+            drop(s);
+            engine.block_on(engine.shutdown()).unwrap();
+            drop(engine);
+            let engine = new_engine(dir.path(), &store);
+            let s = open(&engine);
+            let key = owner_key(&engine, &s, wallet);
+            assert_eq!(key.key_id, Some(id_of(b)), "the id of the key on disk");
+            assert!(key.holds());
+            drop(s);
+            engine.block_on(engine.shutdown()).unwrap();
+        }
+
+        #[test]
+        fn a_failed_read_back_records_the_vaults_key_next_session() {
+            an_ambiguous_write_records_the_vaults_key_next_session(Fault::ReadBack);
+        }
+
+        #[test]
+        fn a_failed_directory_fsync_records_the_vaults_key_next_session() {
+            an_ambiguous_write_records_the_vaults_key_next_session(Fault::DirSync);
+        }
     }
 }

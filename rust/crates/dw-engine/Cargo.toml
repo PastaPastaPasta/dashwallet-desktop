@@ -70,7 +70,7 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 [dev-dependencies]
 dw-appdb = { workspace = true, features = ["test-mutations"] }
 # Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
-dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
+dw-vault = { workspace = true, features = ["insecure-test-kdf", "fault-inject"] }
 dw-message = { workspace = true }
 serde_json = "1"
 tempfile = { workspace = true }

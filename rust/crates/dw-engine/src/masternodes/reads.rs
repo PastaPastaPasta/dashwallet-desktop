@@ -24,7 +24,7 @@ use super::records::{
     MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus, MasternodeType,
     RegistrationFacts,
 };
-use super::tracking::KeyReferences;
+use super::tracking::{KeyReferences, reconcile_key_ids};
 use super::{Masternodes, MasternodesError, display_hex, outpoint_string, parse_pro_tx_hash};
 use crate::coins::{CoinSnapshot, read_coins};
 use crate::events::unix_now;
@@ -137,6 +137,10 @@ impl WalletView {
             })
             .await?;
         let notes = session.appdb_op(load_notes).await?;
+        let notes = match &attached {
+            Some(attached) => reconcile_key_ids(session, attached, notes).await?,
+            None => notes,
+        };
         let mut generated: Vec<TxRecord> = session
             .wallet_records(wallet)
             .await?
@@ -190,6 +194,23 @@ impl WalletView {
             || self.notes.shared_seen.contains(&display_hex(hash))
     }
 
+    /// A version-3 entry was ever in the synced list, or a version-3
+    /// provider transaction is known (D30). The pinned library doesn't
+    /// decode a version-3 masternode's share scripts (BL-187), so any one
+    /// of them may pay a script of the wallet's, a version-2 row's payout
+    /// script included: every coinbase output to the wallet is then
+    /// `unattributed`.
+    fn shares_possible(&self) -> bool {
+        self.notes.any_shared_seen
+            || !self.notes.shared_seen.is_empty()
+            || self.list.entries.iter().any(|e| e.has_extended_net_info)
+            || self
+                .owned
+                .iter()
+                .chain(self.tracked_owned.values())
+                .any(|o| o.shared_unsupported)
+    }
+
     fn tracked(&self, hash: &[u8; 32]) -> Option<&TrackedMasternode> {
         self.tracked.iter().find(|t| &t.pro_tx_hash == hash)
     }
@@ -225,10 +246,11 @@ impl WalletView {
         let Some(address) = self.payout_address(hash) else {
             return Vec::new();
         };
+        let unattributed = self.shares_possible();
         self.generated
             .iter()
             .filter(|r| r.address.as_deref() == Some(address.as_str()))
-            .map(payout_of)
+            .map(|r| payout_of(r, unattributed))
             .collect()
     }
 
@@ -359,6 +381,7 @@ impl WalletView {
             .map(kind_of);
         let payouts = self.payouts(hash);
         let since = self.window_start();
+        let windowed = || payouts.iter().filter(|p| at_or_after(p.timestamp, since));
         let (roles, mine) = self.roles(hash);
         let decoded = self.decoded(hash);
         MasternodeRow {
@@ -380,11 +403,11 @@ impl WalletView {
             roles,
             collateral: collateral_state(owned),
             payout_address: self.payout_address(hash),
-            payouts_30d: payouts
-                .iter()
-                .filter(|p| at_or_after(p.timestamp, since))
+            payouts_30d: windowed()
+                .filter(|p| !p.unattributed)
                 .map(|p| p.amount)
                 .sum(),
+            payouts_incomplete: self.shared_unsupported(hash) || windowed().any(|p| p.unattributed),
             last_payout: payouts.into_iter().next(),
             pro_tx_hash: key,
         }
@@ -411,35 +434,32 @@ impl WalletView {
             .iter()
             .filter_map(|r| r.payout_address.as_deref())
             .collect();
-        let payouts_30d = self
-            .generated
-            .iter()
-            .filter(|r| r.address.as_deref().is_some_and(|a| addresses.contains(a)))
-            .filter(|r| at_or_after(r.timestamp, since))
-            .map(|r| r.amount.unsigned_abs())
-            .sum();
+        let windowed = || {
+            self.generated
+                .iter()
+                .filter(|r| at_or_after(r.timestamp, since))
+        };
+        let income: u64 = windowed().map(|r| r.amount.unsigned_abs()).sum();
+        let payouts_30d = if self.shares_possible() {
+            0
+        } else {
+            windowed()
+                .filter(|r| r.address.as_deref().is_some_and(|a| addresses.contains(a)))
+                .map(|r| r.amount.unsigned_abs())
+                .sum()
+        };
         MasternodeOverview {
             list: MasternodeListState {
                 synced: self.list.synced,
                 height: self.list.height,
             },
             collateral_coins: self.collateral_coins(&masternodes),
-            payouts_incomplete: masternodes.iter().any(|r| r.shared_unsupported)
-                || self.unattributed_payouts(&addresses),
+            payouts_incomplete: masternodes.iter().any(|r| r.payouts_incomplete)
+                || (self.shares_possible() && income > 0),
             masternodes,
             payouts_30d,
+            unattributed_30d: income - payouts_30d,
         }
-    }
-
-    /// While the list has a version-3 entry, a coinbase output in the window
-    /// that pays no row may be the wallet's share of one (D29).
-    fn unattributed_payouts(&self, addresses: &HashSet<&str>) -> bool {
-        let since = self.window_start();
-        self.list.entries.iter().any(|e| e.has_extended_net_info)
-            && self.generated.iter().any(|r| {
-                at_or_after(r.timestamp, since)
-                    && !r.address.as_deref().is_some_and(|a| addresses.contains(a))
-            })
     }
 
     /// Unspent outputs of exactly a collateral amount that are no listed
@@ -633,7 +653,7 @@ fn sort_newest_first(records: &mut [TxRecord]) {
     });
 }
 
-fn payout_of(r: &TxRecord) -> MasternodePayout {
+fn payout_of(r: &TxRecord, unattributed: bool) -> MasternodePayout {
     MasternodePayout {
         txid: r.txid.clone(),
         record_index: r.record_index,
@@ -642,6 +662,7 @@ fn payout_of(r: &TxRecord) -> MasternodePayout {
         height: r.block_height,
         timestamp: r.timestamp,
         matured: r.status.kind != TxStatusKind::Immature,
+        unattributed,
     }
 }
 
@@ -949,7 +970,8 @@ mod tests {
     }
 
     /// A version-3 registration stays in Mine, flagged, with no payout and
-    /// none of its payouts in a total (D25).
+    /// none of its payouts in a total (D25); its shares may pay the other
+    /// row's script, so that one's payouts are unattributed too (D30).
     #[test]
     fn a_shared_masternode_is_mine_but_out_of_the_payout_totals() {
         let plain = registration(null(0), false, 0, coins(&[MASTERNODE_COLLATERAL]));
@@ -973,17 +995,18 @@ mod tests {
         };
         let p = row(&plain);
         assert!(!p.shared_unsupported && p.mine && p.roles.payout);
-        assert_eq!(p.payouts_30d, 500);
+        assert_eq!(p.payouts_30d, 0);
+        assert!(p.payouts_incomplete);
+        assert!(p.last_payout.as_ref().unwrap().unattributed);
         let s = row(&shared);
         assert!(s.shared_unsupported);
         assert!(s.mine, "its ProRegTx is in the wallet");
         assert!(!s.roles.payout && !s.roles.owner && !s.roles.voting);
         assert_eq!((s.payouts_30d, s.payout_address.as_ref()), (0, None));
         assert!(s.last_payout.is_none());
-        assert_eq!(
-            overview.payouts_30d, 500,
-            "the shared one's 700 is left out"
-        );
+        assert!(s.payouts_incomplete);
+        assert_eq!(overview.payouts_30d, 0);
+        assert_eq!(overview.unattributed_30d, 1200, "both stay visible");
         assert!(overview.payouts_incomplete);
         let hash = shared.txid().to_byte_array();
         assert!(v.shared_unsupported(&hash) && v.payouts(&hash).is_empty());
@@ -1036,8 +1059,75 @@ mod tests {
             let overview = v.overview();
             assert!(overview.masternodes.is_empty(), "a fee is no role");
             assert_eq!(overview.payouts_30d, 0);
+            assert_eq!(overview.unattributed_30d, 500);
             assert_eq!(overview.payouts_incomplete, shared);
         }
+    }
+
+    /// A synced list of `tx`'s masternode at version 2 and, when `other`,
+    /// another masternode's entry at version 3.
+    fn listed_beside(tx: &Transaction, other: bool) -> ListView {
+        let mut list = listed(tx, false);
+        if other {
+            let mut entry = list.entries[0].clone();
+            entry.pro_tx_hash = [0xee; 32];
+            entry.has_extended_net_info = true;
+            list.entries.push(entry);
+        }
+        list
+    }
+
+    /// The pinned library can't read a version-3 masternode's share
+    /// scripts (BL-187), so once one was in the list, now or before, any
+    /// coinbase output to a version-2 row's payout script may be a share:
+    /// it is unattributed, out of the row's and the wallet's total, and
+    /// counted in `unattributed_30d` (D30).
+    #[test]
+    fn a_version_2_payout_is_unattributed_once_any_version_3_entry_was_seen() {
+        let plain = with_payout(
+            registration(null(0), false, 0, coins(&[MASTERNODE_COLLATERAL])),
+            4,
+        );
+        let check = |v: &WalletView, possible: bool| {
+            let overview = v.overview();
+            let row = &overview.masternodes[0];
+            assert!(!row.shared_unsupported && row.roles.payout);
+            assert!(row.payout_address.is_some());
+            let last = row.last_payout.as_ref().expect("its payout stays listed");
+            assert_eq!(last.unattributed, possible);
+            assert_eq!(row.payouts_30d, if possible { 0 } else { 500 });
+            assert_eq!(row.payouts_incomplete, possible);
+            assert_eq!(overview.payouts_30d, if possible { 0 } else { 500 });
+            assert_eq!(overview.unattributed_30d, if possible { 500 } else { 0 });
+            assert_eq!(overview.payouts_incomplete, possible);
+            let hash = plain.txid().to_byte_array();
+            assert_eq!(v.payouts(&hash).len(), 1);
+        };
+        for other in [false, true] {
+            let v = view(
+                std::slice::from_ref(&plain),
+                listed_beside(&plain, other),
+                vec![reward(4, 500)],
+            );
+            check(&v, other);
+        }
+        // A removed version-3 masternode's shares: the list no longer has
+        // it, the remembered marker still counts (D30).
+        let mut v = view(
+            std::slice::from_ref(&plain),
+            listed_beside(&plain, false),
+            vec![reward(4, 500)],
+        );
+        v.notes.any_shared_seen = true;
+        check(&v, true);
+        // As does a remembered version-3 entry of a followed masternode.
+        let mut v = view(
+            std::slice::from_ref(&plain),
+            listed_beside(&plain, false),
+            vec![reward(4, 500)],
+        );
+        v.notes.shared_seen.insert("ee".repeat(32));
+        check(&v, true);
     }
 
     #[test]

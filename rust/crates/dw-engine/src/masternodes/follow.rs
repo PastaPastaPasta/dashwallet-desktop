@@ -32,6 +32,9 @@ const BANNED_SEEN: &str = "masternodes.banned_seen:";
 const LISTED_SEEN: &str = "masternodes.listed_seen:";
 /// A list entry was seen at version 3; it never goes back (D29).
 const SHARED_SEEN: &str = "masternodes.shared_seen:";
+/// Some entry of the synced list, any masternode's, was seen at version 3;
+/// it never goes back, so a removed one's shares still count (D30).
+const ANY_SHARED_SEEN: &str = "masternodes.any_shared_seen";
 /// `masternodes.key:<hash>:<role>`: the hash160 of an attached key.
 const KEY_ID: &str = "masternodes.key:";
 
@@ -113,6 +116,8 @@ pub(crate) struct Notes {
     pub banned_seen: HashMap<String, u64>,
     pub listed_seen: HashSet<String>,
     pub shared_seen: HashSet<String>,
+    /// The synced list had a version-3 entry once (D30).
+    pub any_shared_seen: bool,
     /// The id of each attached key, recorded at attach (D24).
     pub key_ids: HashMap<(String, AttachedKeyRole), [u8; 20]>,
 }
@@ -130,6 +135,8 @@ pub(crate) fn load_notes(db: &AppDb) -> Result<Notes, AppDbError> {
             notes.listed_seen.insert(hash.into());
         } else if let Some(hash) = key.strip_prefix(SHARED_SEEN) {
             notes.shared_seen.insert(hash.into());
+        } else if key == ANY_SHARED_SEEN {
+            notes.any_shared_seen = true;
         } else if let Some((hash, role)) = key
             .strip_prefix(KEY_ID)
             .and_then(|rest| rest.split_once(':'))
@@ -156,6 +163,7 @@ fn parse_key_id(hex_id: &str) -> Option<[u8; 20]> {
     Some(id)
 }
 
+#[cfg(test)]
 pub(crate) fn key_id(
     db: &AppDb,
     hash: &str,
@@ -238,6 +246,10 @@ pub(crate) struct MasternodesRuntime {
     /// Held across each tracking change, so an `attach_key` can't store a
     /// key for a masternode an `untrack` is removing.
     mutations: tokio::sync::Mutex<()>,
+    /// Keys whose vault write failed in this session: the vault may hold
+    /// the new key on disk and the old one in memory, so their ids are only
+    /// recorded again by the next session (D31).
+    unsettled: Mutex<HashSet<([u8; 32], AttachedKeyRole)>>,
 }
 
 impl MasternodesRuntime {
@@ -261,12 +273,31 @@ impl MasternodesRuntime {
             coalescer,
             follower: Mutex::default(),
             mutations: tokio::sync::Mutex::new(()),
+            unsettled: Mutex::default(),
         }
     }
 
     /// Serialises the tracking changes (see `mutations`).
     pub async fn mutation(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.mutations.lock().await
+    }
+
+    fn unsettled_keys(&self) -> std::sync::MutexGuard<'_, HashSet<([u8; 32], AttachedKeyRole)>> {
+        self.unsettled.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// A vault write of `role`'s key of `hash` failed, its outcome unknown.
+    pub fn unsettle(&self, hash: [u8; 32], role: AttachedKeyRole) {
+        self.unsettled_keys().insert((hash, role));
+    }
+
+    /// A vault write of it succeeded: memory and disk hold that key.
+    pub fn settle(&self, hash: [u8; 32], role: AttachedKeyRole) {
+        self.unsettled_keys().remove(&(hash, role));
+    }
+
+    pub fn is_unsettled(&self, hash: [u8; 32], role: AttachedKeyRole) -> bool {
+        self.unsettled_keys().contains(&(hash, role))
     }
 
     /// Something the facade changed itself (tracked set, a label, a key).
@@ -361,7 +392,9 @@ impl MasternodesRuntime {
         let appdb = session.live()?.appdb;
         let now = crate::events::unix_now();
         let entries = seen.clone();
-        tokio::task::spawn_blocking(move || record_sightings(&appdb, &entries, now)).await??;
+        let any_shared = list.entries.iter().any(|e| e.has_extended_net_info);
+        tokio::task::spawn_blocking(move || record_sightings(&appdb, &entries, any_shared, now))
+            .await??;
         let changed = seen != followed.seen;
         *followed = Followed {
             height: Some(height),
@@ -376,10 +409,14 @@ impl MasternodesRuntime {
 }
 
 /// Writes the first sighting of each ban, of each listing and of a
-/// version-3 entry (D29), and forgets a ban once the masternode is valid
+/// version-3 entry (D29), and of any version-3 entry in the list
+/// (`any_shared`, D30), and forgets a ban once the masternode is valid
 /// again (MG-00 D9).
-fn record_sightings(db: &AppDb, seen: &Seen, now: u64) -> Result<(), AppDbError> {
+fn record_sightings(db: &AppDb, seen: &Seen, any_shared: bool, now: u64) -> Result<(), AppDbError> {
     let notes = load_notes(db)?;
+    if any_shared && !notes.any_shared_seen {
+        db.set_setting(GLOBAL_SCOPE, ANY_SHARED_SEEN, Some(&now.to_string()))?;
+    }
     for (hash, entry) in seen {
         let Some(entry) = entry else { continue };
         let key = super::display_hex(hash);
@@ -432,8 +469,8 @@ mod tests {
         let db = AppDb::open_in_memory().unwrap();
         let key = super::super::display_hex(&[1; 32]);
         let seen: Seen = [([1; 32], Some(summary(1, false))), ([2; 32], None)].into();
-        record_sightings(&db, &seen, 100).unwrap();
-        record_sightings(&db, &seen, 200).unwrap();
+        record_sightings(&db, &seen, false, 100).unwrap();
+        record_sightings(&db, &seen, false, 200).unwrap();
         let notes = load_notes(&db).unwrap();
         assert_eq!(
             notes.banned_seen.get(&key),
@@ -447,14 +484,15 @@ mod tests {
             "an unlisted masternode is not noted"
         );
         assert!(notes.shared_seen.is_empty());
+        assert!(!notes.any_shared_seen);
 
         let valid: Seen = [([1; 32], Some(summary(1, true)))].into();
-        record_sightings(&db, &valid, 300).unwrap();
+        record_sightings(&db, &valid, false, 300).unwrap();
         let notes = load_notes(&db).unwrap();
         assert!(notes.banned_seen.is_empty());
         assert!(notes.listed_seen.contains(&key));
 
-        record_sightings(&db, &seen, 400).unwrap();
+        record_sightings(&db, &seen, false, 400).unwrap();
         assert_eq!(
             load_notes(&db).unwrap().banned_seen.get(&key),
             Some(&400),
@@ -470,9 +508,26 @@ mod tests {
         let key = super::super::display_hex(&[1; 32]);
         let mut shared = summary(1, true);
         shared.has_extended_net_info = true;
-        record_sightings(&db, &[([1; 32], Some(shared))].into(), 100).unwrap();
-        record_sightings(&db, &[([1; 32], None)].into(), 200).unwrap();
-        assert!(load_notes(&db).unwrap().shared_seen.contains(&key));
+        record_sightings(&db, &[([1; 32], Some(shared))].into(), true, 100).unwrap();
+        record_sightings(&db, &[([1; 32], None)].into(), false, 200).unwrap();
+        let notes = load_notes(&db).unwrap();
+        assert!(notes.shared_seen.contains(&key));
+        assert!(notes.any_shared_seen);
+    }
+
+    /// A version-3 entry of a masternode the wallet doesn't follow is
+    /// remembered as well, once the list loses it (D30).
+    #[test]
+    fn any_version_3_entry_is_remembered() {
+        let db = AppDb::open_in_memory().unwrap();
+        let seen: Seen = [([1; 32], Some(summary(1, true)))].into();
+        record_sightings(&db, &seen, false, 100).unwrap();
+        assert!(!load_notes(&db).unwrap().any_shared_seen);
+        record_sightings(&db, &seen, true, 200).unwrap();
+        record_sightings(&db, &seen, false, 300).unwrap();
+        let notes = load_notes(&db).unwrap();
+        assert!(notes.any_shared_seen);
+        assert!(notes.shared_seen.is_empty(), "not a followed masternode");
     }
 
     /// Every wallet-set event reaches the sink and bumps the generation, so

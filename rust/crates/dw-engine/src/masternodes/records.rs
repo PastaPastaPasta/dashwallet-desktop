@@ -194,6 +194,10 @@ pub struct MasternodePayout {
     pub timestamp: Option<u64>,
     /// Past coinbase maturity (spendable).
     pub matured: bool,
+    /// It may be a share of a version-3 masternode paid to the same
+    /// script, so no masternode's `payouts_30d` counts it; the overview's
+    /// `unattributed_30d` does (D30).
+    pub unattributed: bool,
 }
 
 /// One masternode in a wallet's overview.
@@ -223,8 +227,12 @@ pub struct MasternodeRow {
     pub roles: MasternodeRoles,
     pub collateral: CollateralState,
     pub payout_address: Option<String>,
-    /// Payouts to this wallet in the last 30 days (duffs).
+    /// Payouts to this wallet in the last 30 days (duffs), without the
+    /// `unattributed` ones.
     pub payouts_30d: u64,
+    /// `shared_unsupported`, or a payout in the window is `unattributed`:
+    /// `payouts_30d` leaves some of its income out (D30).
+    pub payouts_incomplete: bool,
     pub last_payout: Option<MasternodePayout>,
 }
 
@@ -257,12 +265,15 @@ pub struct MasternodeOverview {
     /// tracked ones not already listed, in the order they were tracked.
     pub masternodes: Vec<MasternodeRow>,
     pub collateral_coins: Vec<CollateralCoin>,
-    /// Payouts to this wallet in the last 30 days, all masternodes.
+    /// Payouts to this wallet in the last 30 days, all masternodes,
+    /// without the `unattributed` ones.
     pub payouts_30d: u64,
-    /// A row is `shared_unsupported`, so its payouts aren't in
-    /// `payouts_30d`; or, while the list has a version-3 entry, a coinbase
-    /// output in the window pays no row, which may be a share the wallet
-    /// can't attribute (D29).
+    /// Coinbase outputs to the wallet in the last 30 days that no row's
+    /// `payouts_30d` counts: possible shares, and income paying no row.
+    pub unattributed_30d: u64,
+    /// A row's `payouts_incomplete`; or, once the list had a version-3
+    /// entry, a coinbase output in the window pays no row, which may be a
+    /// share the wallet can't attribute (D30).
     pub payouts_incomplete: bool,
 }
 
