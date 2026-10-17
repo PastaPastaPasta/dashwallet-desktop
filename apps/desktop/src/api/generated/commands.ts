@@ -1910,6 +1910,22 @@ export function dashpayAvatar(walletId: string, identity: string, size: AvatarSi
 }
 
 /**
+ * "Load contact pictures" for the active network: on unless turned
+ * off.
+ */
+export function loadContactPictures(): Promise<boolean> {
+  return invoke<boolean>("load_contact_pictures");
+}
+
+/**
+ * Turns "Load contact pictures" on or off for the active network.
+ * Off, no other user's avatar is fetched or shown.
+ */
+export function setLoadContactPictures(on: boolean): Promise<null> {
+  return invoke<null>("set_load_contact_pictures", { on });
+}
+
+/**
  * Every console command, sorted by name.
  */
 export function consoleCommands(): Promise<Array<ConsoleCommand>> {
@@ -2338,6 +2354,8 @@ export type CommandArgs = {
   dashpay_avatar_upload_available: { walletId: string };
   dashpay_upload_avatar: { walletId: string; candidate: string };
   dashpay_avatar: { walletId: string; identity: string; size: AvatarSizeName };
+  load_contact_pictures: {  };
+  set_load_contact_pictures: { on: boolean };
   console_commands: {  };
   console_redact: { line: string };
   console_execute: { walletId: string | null; line: string; grantId: string | null };
@@ -2583,6 +2601,8 @@ export type CommandResults = {
   dashpay_avatar_upload_available: boolean;
   dashpay_upload_avatar: string;
   dashpay_avatar: AvatarThumbnail | null;
+  load_contact_pictures: boolean;
+  set_load_contact_pictures: null;
   console_commands: Array<ConsoleCommand>;
   console_redact: string;
   console_execute: ConsoleOutput;
@@ -2830,6 +2850,8 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_avatar_upload_available: "social",
   dashpay_upload_avatar: "social",
   dashpay_avatar: "social",
+  load_contact_pictures: "social",
+  set_load_contact_pictures: "social",
   console_commands: "console",
   console_redact: "console",
   console_execute: "console",

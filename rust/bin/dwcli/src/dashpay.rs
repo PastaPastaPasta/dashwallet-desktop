@@ -539,6 +539,25 @@ pub enum ProfileCmd {
         #[arg(long)]
         force: bool,
     },
+    /// Turn a picture into an avatar candidate (DP4-02): a URL or a
+    /// Gravatar address is fetched now, a file decoded; prints the
+    /// candidate with its preview.
+    #[command(group(clap::ArgGroup::new("source").required(true)))]
+    PrepareAvatar {
+        #[arg(long, group = "source")]
+        url: Option<String>,
+        #[arg(long, group = "source")]
+        file: Option<PathBuf>,
+        /// The e-mail address whose Gravatar to use.
+        #[arg(long, group = "source")]
+        gravatar: Option<String>,
+    },
+    /// "Load contact pictures" for this network: prints it, or sets it
+    /// with `--set on|off`.
+    Pictures {
+        #[arg(long, value_parser = ["on", "off"])]
+        set: Option<String>,
+    },
     /// Any identity's avatar thumbnail (PNG, base64; `null` if none).
     Avatar {
         identity: String,
@@ -1932,6 +1951,31 @@ fn profile_cmd(ctx: &Ctx, cmd: ProfileCmd) -> Result<Value, CliError> {
                 ctx.block_on(dp.update_profile(identity, edit, grant))?,
             )
         }
+        ProfileCmd::PrepareAvatar {
+            url,
+            file,
+            gravatar,
+        } => {
+            let src = match (url, file, gravatar) {
+                (Some(url), _, _) => AvatarSource::Url { url },
+                (_, Some(path), _) => AvatarSource::File {
+                    bytes: std::fs::read(&path)?,
+                    crop: None,
+                },
+                (_, _, Some(email)) => AvatarSource::Gravatar { email },
+                // clap requires one of the three.
+                (None, None, None) => {
+                    return Err(CliError::invalid("give --url, --file or --gravatar"));
+                }
+            };
+            out(ctx.block_on(dp.prepare_avatar(src))?)
+        }
+        ProfileCmd::Pictures { set } => {
+            if let Some(on) = set {
+                ctx.block_on(ctx.session.set_load_contact_pictures(on == "on"))?;
+            }
+            out(ctx.session.load_contact_pictures()?)
+        }
         ProfileCmd::Avatar { identity, size } => out(ctx.block_on(dp.avatar(identity, size))?),
     }
 }
@@ -2134,6 +2178,29 @@ mod tests {
             r#"{"ok":true,"result":{"display_name_max":25,"public_message_max":140}}"#,
         ),
         ("profile set --identity I --display-name Al", NOT_BASE58),
+        // DP4-02: a private address is refused before any connection.
+        (
+            "identity register --label alice --avatar-url https://10.0.0.1/a.png",
+            FETCH_FAILED,
+        ),
+        ("profile upload-available", r#"{"ok":true,"result":false}"#),
+        (
+            "profile set --identity I --avatar-url https://10.0.0.1/a.png",
+            FETCH_FAILED,
+        ),
+        ("profile avatar I --size large", NOT_BASE58),
+        (
+            "profile prepare-avatar --url https://10.0.0.1/a.png",
+            FETCH_FAILED,
+        ),
+        (
+            "profile prepare-avatar --file /nonexistent/a.png",
+            r#"{"ok":false,"error":{"code":"io","message":"io error: No such file or directory (os error 2)","params":{}}}"#,
+        ),
+        (
+            "profile pictures --set off",
+            r#"{"ok":true,"result":false}"#,
+        ),
         ("identity balance --identity I", NOT_IDENTIFIER),
         (
             "identity top-up --identity I --duffs 100000",
@@ -2172,6 +2239,8 @@ mod tests {
     const NO_IDENTITY: &str = r#"{"ok":false,"error":{"code":"identity.not_found","message":"identity: identity not found","params":{}}}"#;
 
     const NO_PLATFORM: &str = r#"{"ok":false,"error":{"code":"platform.unavailable","message":"platform unavailable","params":{}}}"#;
+    /// `avatar.fetch_failed` (DP4-02).
+    const FETCH_FAILED: &str = r#"{"ok":false,"error":{"code":"avatar.fetch_failed","message":"avatar fetch failed","params":{}}}"#;
 
     /// `name check alice`: valid, normalized and contested (DPNS rules).
     const ALICE: &str = r#"{"ok":true,"result":{"valid":true,"normalized":"a11ce","contested":true,"rules":[{"rule":"min_length","passed":true},{"rule":"max_length","passed":true},{"rule":"allowed_characters","passed":true},{"rule":"no_edge_hyphen","passed":true},{"rule":"no_double_hyphen","passed":true}]}}"#;
@@ -2205,7 +2274,7 @@ mod tests {
             "DashPay.registration_quote",
         ),
         (
-            "identity register --label alice --avatar-url https://x/a.png",
+            "identity register --label alice --avatar-url https://10.0.0.1/a.png",
             "DashPay.prepare_avatar",
         ),
         (
@@ -2315,10 +2384,22 @@ mod tests {
             "DashPay.update_profile",
         ),
         (
-            "profile set --identity I --avatar-url https://x/a.png",
+            "profile set --identity I --avatar-url https://10.0.0.1/a.png",
             "DashPay.prepare_avatar",
         ),
         ("profile avatar I --size large", "DashPay.avatar"),
+        (
+            "profile prepare-avatar --url https://10.0.0.1/a.png",
+            "DashPay.prepare_avatar",
+        ),
+        (
+            "profile prepare-avatar --file /nonexistent/a.png",
+            "DashPay.prepare_avatar",
+        ),
+        (
+            "profile pictures --set off",
+            "NetworkSession.set_load_contact_pictures",
+        ),
         (
             "invite claim --label alice",
             "NetworkSession.stash_invitation",
@@ -2452,6 +2533,9 @@ mod tests {
             "profile set --avatar-url u --remove-avatar",
             "profile set --baseline null --force",
             "profile avatar I --size huge",
+            "profile prepare-avatar",
+            "profile prepare-avatar --url https://x/a.png --gravatar a@b.de",
+            "profile pictures --set maybe",
             "pay-contact C",
             "pay-contact C --amount -1",
             "dashpay mark-read",
