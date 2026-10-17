@@ -11,6 +11,7 @@ import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { UriRejected } from "../api/generated/UriRejected";
 import { inTauri, tauriTools } from "../api/tauri";
 import { showToast } from "../components/toast";
+import { SavedLinksText } from "./savedLinks";
 import { navigate, openPayForm, ui } from "./ui";
 
 const PAYMENT_REJECTED: Record<UriRejected["kind"], string> = {
@@ -45,12 +46,15 @@ export function linkProblem(route: LinkRoute): string | null {
           return "This link is too long to open";
         case "payment":
           return PAYMENT_REJECTED[route.reason.reason.kind];
+        case "notSaved":
+          return "This invitation could not be saved. Open the link again once Dash Wallet has started";
       }
   }
   return null;
 }
 
-/** The route's name in the self-test's link trace (never the link's contents). */
+/** The route's name in the self-test's link trace (never the link's contents: an invitation's
+ * stash id stays out too). */
 export function traceName(route: LinkRoute): string {
   switch (route.kind) {
     case "unsupported":
@@ -123,7 +127,16 @@ export function applyLink(route: LinkRoute) {
     case "addContact":
       navigate("contacts", { contactPrefill: { identity: route.identity, username: route.username } });
       break;
+    // Kept in the link stash, offered once a wallet exists (DP5-01 D11).
+    case "saved":
+      showToast(SavedLinksText.saved);
+      return;
     case "invitation":
+      // Saved in the stash either way; during onboarding there is no Join DashPay to show.
+      if (ui.get().onboarding) {
+        showToast(SavedLinksText.invitationSaved);
+        return;
+      }
       navigate("joinDashPay", { invitation: true });
       break;
     default:

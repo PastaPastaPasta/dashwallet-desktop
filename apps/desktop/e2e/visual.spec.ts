@@ -476,3 +476,13 @@ for (const theme of THEMES) {
     await shoot(page, "profile-top-up-done", theme);
   });
 }
+
+// DP5-01: "Links you opened" over Home, as a launch offers it.
+for (const theme of THEMES) {
+  test(`visual saved-links ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("saved-links", theme));
+    await page.getByTestId("saved-links").getByTestId("saved-link").nth(2).waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "saved-links", theme);
+  });
+}

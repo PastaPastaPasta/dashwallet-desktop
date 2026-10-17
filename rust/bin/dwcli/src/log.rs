@@ -1,4 +1,5 @@
-//! `DWCLI_LOG=<EnvFilter>` logs the engine, dash-spv and the SDK to stderr.
+//! `DWCLI_LOG=<EnvFilter>` logs the engine, dash-spv and the SDK to stderr,
+//! with links redacted (dw-uri, DP5-01 D14) for every command.
 //! For an `mn` command every global option's value is replaced in each line
 //! first: a library may quote one (the SDK's quorum fetch logs its URL), and
 //! no `mn` output may repeat a value (MG-03 D32, D33). Every non-empty value
@@ -27,12 +28,17 @@ pub fn init(cli: &Cli, mn: bool) {
             .with_writer(Redacting {
                 values: Arc::new(option_values(cli)),
                 sink: Arc::new(|text: &[u8]| {
-                    let _ = std::io::stderr().write_all(text);
+                    let text = String::from_utf8_lossy(text);
+                    let text = dw_uri::redact::redact_links(&text);
+                    let _ = std::io::stderr().write_all(text.as_bytes());
                 }),
             })
             .init();
     } else {
-        builder.with_writer(std::io::stderr).init();
+        builder
+            .with_ansi(false)
+            .with_writer(|| dw_uri::redact::RedactingWriter::new(std::io::stderr()))
+            .init();
     }
 }
 

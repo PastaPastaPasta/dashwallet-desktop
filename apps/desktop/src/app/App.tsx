@@ -23,12 +23,14 @@ import { NotificationsPage, NotificationsPopover } from "../screens/notification
 import { ToolsPage } from "../screens/tools/ToolsPage";
 import { SettingsPage } from "../screens/settings/SettingsPage";
 import { AboutSheet, OpenUriSheet } from "../screens/ShellDialogs";
+import { SavedLinksSheet } from "../screens/SavedLinks";
 import { Transactions } from "../screens/Transactions";
 import { TxDetailSheet } from "../screens/TxDetailSheet";
 import { ACTIVITY_EVENTS, armedFor, AutoLockTimer } from "../settings/autoLock";
 import { useDisplay } from "../format/display";
 import { SecurityText } from "../settings/security";
 import { useStatusRegistration } from "../dashpay/queries";
+import { useSavedLinksOffer } from "./savedLinksOffer";
 import { useShellBridge } from "./shellBridge";
 import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
@@ -159,6 +161,7 @@ function Shell() {
     await wallets.refetch();
     ui.set({ onboarding: false, ...(id ? { walletId: id } : {}) });
     navigate("home");
+    savedLinks.trigger();
   };
 
   let content;
@@ -206,6 +209,11 @@ function Shell() {
   const joined = !(dashpay.status?.kind === "noIdentity" || dashpay.status?.kind === "registering");
   const sheet = !!(detail && wallet && !locked);
   const layered = useLayeredSheet();
+  const savedLinks = useSavedLinksOffer(backend, {
+    hasWallet: !!wallet,
+    locked,
+    covered: onboarding || wiping || forgot || sheet || layered || dialog !== null,
+  });
   const [layer, setLayer] = useState<HTMLDivElement | null>(null);
   // A dialog asked for while locked, onboarding, or behind a sheet is dropped, not kept for later.
   const shown = locked || onboarding || sheet || layered ? null : dialog;
@@ -248,6 +256,7 @@ function Shell() {
       {shown === "about" && <AboutSheet launch={launch} />}
       {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={recoveryWallet ?? wallet?.walletId ?? null} onClose={closeDialog} />}
       {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
+      {shown === "savedLinks" && <SavedLinksSheet onClose={closeDialog} />}
       {onboarding && <Onboarding network={network} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
       {locked && <LockScreen network={network} covered={forgot} onForgot={() => ui.set({ forgotPassphrase: true })} />}
       {/* Over the lock screen, and still open once the recovery unlocked the vault (U-02 D11). */}

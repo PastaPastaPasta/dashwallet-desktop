@@ -693,6 +693,10 @@ fn abandon(mut passphrase: Option<Zeroizing<Vec<u8>>>, why: &str, last_lines: im
 }
 
 fn main() -> ExitCode {
+    // Links never reach a log or a panic message (DASHPAY §3.8, DP5-01
+    // D14); DashPay commands withhold panic messages altogether. The log
+    // starts once the arguments are parsed (`log::init`).
+    dw_uri::redact::redact_panics();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => return parse_failure(&e),

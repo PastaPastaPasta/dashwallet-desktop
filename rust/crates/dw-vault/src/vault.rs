@@ -114,9 +114,14 @@ use crate::types::{
 use crate::{SignerError, VaultError};
 
 mod compat;
+mod links;
 mod masternode;
 use compat::BackupKek;
 pub use compat::{CoreMnemonicCheck, WalletBackupBundle, reads_bundle_version};
+pub use links::{
+    ALL_LINK_KINDS, MAX_STASHED_LINK_BYTES, MAX_STASHED_LINKS, OTHER_KIND, StashedLinkKind,
+    StashedLinkMeta,
+};
 pub use masternode::{MASTERNODE_KEY_ROLES, MAX_MASTERNODE_KEY_BYTES};
 
 /// Proof that the caller holds `Shared::writer`.
@@ -458,6 +463,12 @@ pub(crate) struct Shared {
     /// The operation gate (see the module doc).
     ops: RwLock<()>,
     inner: Mutex<Inner>,
+    /// The link stash's in-process state (DP5-01, `links.rs`).
+    links: Mutex<links::LinkState>,
+    /// A vault exists and a stash entry beside it is still plaintext, as
+    /// the last stash call found (`VaultStatus::unsealed_links`, DP5-01
+    /// D26).
+    links_unsealed: std::sync::atomic::AtomicBool,
 }
 
 /// A passphrase change whose old passphrase was verified
@@ -511,7 +522,7 @@ impl Vault {
                 f.network
             )));
         }
-        Ok(Self {
+        let vault = Self {
             shared: Arc::new(Shared {
                 instance: crypto::random_array()?,
                 dir,
@@ -532,8 +543,15 @@ impl Vault {
                     #[cfg(test)]
                     gate_log: None,
                 }),
+                links: Mutex::new(links::LinkState::new()?),
+                links_unsealed: std::sync::atomic::AtomicBool::new(false),
             }),
-        })
+        };
+        // App start: expired links and a crash's leftovers go, and
+        // plaintext beside a vault is sealed to `stash.pub` (DP5-01 D26,
+        // D29).
+        vault.sweep_links_at_open();
+        Ok(vault)
     }
 
     pub fn dir(&self) -> &Path {
@@ -672,6 +690,7 @@ impl Vault {
                 failed_attempts: 0,
                 retry_after_secs: None,
                 wallets_with_secrets: Vec::new(),
+                unsealed_links: false,
             };
         };
         VaultStatus {
@@ -685,6 +704,7 @@ impl Vault {
                 .keys()
                 .filter_map(|k| seed_record_wallet(k))
                 .collect(),
+            unsealed_links: self.links_unsealed(),
         }
     }
 
@@ -799,6 +819,7 @@ impl Vault {
         }
         let encrypted = vault_file.slot_p.is_some();
         let now = self.now();
+        let link_dek = Zeroizing::new(*dek);
         let ops = self.epoch_guard();
         let mut inner = self.inner();
         inner.file = Some(vault_file);
@@ -808,8 +829,15 @@ impl Vault {
         if encrypted {
             inner.last_passphrase_at = Some(now);
         }
+        let mut status = self.status_of(&inner);
+        drop(inner);
+        drop(ops);
+        // Links stashed before the vault existed move into it (§2.9),
+        // before the writer goes: no recovery or destroy runs between
+        // (D23). A failure leaves the vault created and says so (D26).
+        status.unsealed_links = self.sync_links_after_key(&link_dek, &vault_id);
         drop(writer);
-        Ok(self.status_of(&inner))
+        Ok(status)
     }
 
     /// dash-qt "Encrypt Wallet" (QT-111): adds slot P and deletes slot O.
@@ -880,11 +908,20 @@ impl Vault {
     pub fn unlock(&self, passphrase: &[u8], scope: UnlockScope) -> Result<VaultStatus, VaultError> {
         let writer = self.writer();
         let (dek, backup_kek) = self.check_passphrase(&writer, passphrase)?;
-        let ops = self.epoch_guard();
-        let mut inner = self.inner();
-        inner.install_key(dek, scope, &ops);
-        inner.backup_kek = Some(backup_kek);
-        Ok(self.status_of(&inner))
+        let link_dek = Zeroizing::new(*dek);
+        let (mut status, vault_id) = {
+            let ops = self.epoch_guard();
+            let mut inner = self.inner();
+            inner.install_key(dek, scope, &ops);
+            inner.backup_kek = Some(backup_kek);
+            let vault_id = inner.file.as_ref().map(|f| f.vault_id.clone());
+            (self.status_of(&inner), vault_id)
+        };
+        if let Some(vault_id) = vault_id {
+            status.unsealed_links = self.sync_links_after_key(&link_dek, &vault_id);
+        }
+        drop(writer);
+        Ok(status)
     }
 
     /// Drops the data key, revokes every grant and invalidates every
@@ -2595,6 +2632,9 @@ impl Vault {
                 )));
             }
         }
+        // A new data key: links sealed to the old one are dropped (D17).
+        // What is left unsealed shows in `status()` (D26).
+        self.sync_links_after_key(&dek, &vault_id);
         drop(writer);
         Ok(lost)
     }
@@ -2609,6 +2649,10 @@ impl Vault {
     pub fn destroy(&self, credential: Credential<'_>) -> Result<VaultStatus, VaultError> {
         let writer = self.writer();
         let Some(current) = self.inner().file.clone() else {
+            // Links kept before any vault go too ("Delete All").
+            let mut links = self.links_guard();
+            self.remove_links(&mut links)?;
+            drop(links);
             drop(writer);
             return Ok(self.status());
         };
@@ -2625,6 +2669,10 @@ impl Vault {
                 }
             }
         }
+        // The links first: a failure leaves the vault, not sealed links of
+        // a vault that is gone (review r1 #4).
+        let mut links = self.links_guard();
+        self.remove_links(&mut links)?;
         file::remove_all(&self.shared.dir)?;
         {
             let ops = self.epoch_guard();
@@ -2634,6 +2682,7 @@ impl Vault {
             inner.last_passphrase_at = None;
             inner.forget_key(&ops);
         }
+        drop(links);
         drop(writer);
         if let Some(o) = current.slot_o
             && let Ok(service) = <[u8; 32]>::try_from(o.service.as_slice())

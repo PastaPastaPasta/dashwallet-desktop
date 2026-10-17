@@ -13,12 +13,16 @@
 //!   queue.
 //! - **Secret-safe.** An invitation link is a bearer secret (DASHPAY §3.8):
 //!   queued links are zeroed when dropped, their text is never logged (the
-//!   self-test trace records the scheme only), and an invitation reaches the
-//!   renderer as a bare [`LinkRoute::Invitation`]. The shell keeps nothing:
-//!   the link is dropped once routed, and DP5-01 adds its intake and stash.
-//!   Zeroing is best effort: the copies `classify_link` makes and the
-//!   forwarded command line (D-Bus, the plugin's buffers) are not zeroed,
-//!   and a link typed into File ▸ Open URI comes from the renderer.
+//!   self-test trace records the scheme only), and an invitation goes into
+//!   the engine's link stash at intake ([`intake`], DP5-01): the renderer
+//!   gets [`LinkRoute::Invitation`] with the stash id only. Zeroing is best
+//!   effort: the copies `classify_link` makes and the forwarded command line
+//!   (D-Bus, the plugin's buffers) are not zeroed, and a link typed into
+//!   File ▸ Open URI comes from the renderer.
+//! - **Kept for after onboarding** (DP5-01 D2). While the window's network
+//!   has no wallet, a payment or contact link goes into the stash too and
+//!   comes back as [`LinkRoute::Saved`]; the renderer offers it once a
+//!   wallet exists (`stashed_links`, `open_stashed_link`).
 //! - **Payment links are Core's.** `dash:` and `pay:` go through dash-qt's
 //!   URI handler (`api::send::uri`) for the window's network, with `pay:`
 //!   read as `dash:` and the iOS `user=` key kept as the DashPay username.
@@ -26,8 +30,10 @@
 //!   way.
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use dw_engine::NetworkSession;
+use dw_engine::platform::{BearerSecret, StashedLink, StashedLinkKind};
 use dw_uri::deeplink::{DeepLink, classify_link as classify_deep_link};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -127,22 +133,65 @@ impl Inbox {
         true
     }
 
-    /// Takes every queued link, routed for `network` (a directory name), in
-    /// arrival order.
-    pub fn take(&self, network: &str) -> Result<Vec<LinkRoute>, AppError> {
-        // Checked first, so a bad name leaves the queue as it was.
+    /// Takes every queued link, in arrival order, for `network` (a
+    /// directory name, checked first so a bad name leaves the queue as it
+    /// was): its text, or `None` for one longer than [`MAX_LINK_BYTES`].
+    pub fn drain(&self, network: &str) -> Result<Vec<Option<Zeroizing<String>>>, AppError> {
         crate::dto::parse_network(network)?;
-        let taken: Vec<Queued> = {
-            let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-            queue.drain(..).collect()
-        };
-        taken
-            .iter()
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(queue
+            .drain(..)
             .map(|q| match q {
-                Queued::Link(text) => route(network, text),
-                Queued::TooLong => Ok(LinkRoute::rejected(LinkRejected::TooLong)),
+                Queued::Link(text) => Some(text),
+                Queued::TooLong => None,
             })
-            .collect()
+            .collect())
+    }
+
+    /// Takes every queued link, routed for `network`, as
+    /// [`Inbox::drain`] and [`intake`] do: `session` is the window's. An
+    /// invitation that arrives with no session of `network` to keep it in
+    /// stays queued, in order, for the next take; a link that fails to
+    /// route is rejected alone, and the batch goes on (review r1 #8).
+    pub async fn take(
+        &self,
+        session: Option<Arc<NetworkSession>>,
+        network: &str,
+    ) -> Result<Vec<LinkRoute>, AppError> {
+        let session = session.filter(|s| s.network().dir_name() == network);
+        let mut routes = Vec::new();
+        let mut waiting = Vec::new();
+        for link in self.drain(network)? {
+            let Some(text) = link else {
+                routes.push(LinkRoute::rejected(LinkRejected::TooLong));
+                continue;
+            };
+            if session.is_none() && matches!(route_text(network, &text), Ok(Routed::Invitation)) {
+                waiting.push(text);
+                continue;
+            }
+            routes.push(match intake(session.clone(), network, &text).await {
+                Ok(route) => route,
+                Err(e) => {
+                    tracing::warn!(code = e.code_str(), "a queued link could not be routed");
+                    LinkRoute::rejected(LinkRejected::NotALink)
+                }
+            });
+        }
+        if !waiting.is_empty() {
+            let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+            for text in waiting.into_iter().rev() {
+                queue.push_front(Queued::Link(text));
+            }
+            // Links delivered meanwhile past the bound go, newest first, as
+            // `deliver` would have dropped them.
+            let over = queue.len().saturating_sub(MAX_QUEUED);
+            if over > 0 {
+                queue.truncate(MAX_QUEUED);
+                tracing::warn!(dropped = over, "link queue full");
+            }
+        }
+        Ok(routes)
     }
 
     pub fn len(&self) -> usize {
@@ -176,9 +225,16 @@ pub enum LinkRoute {
         identity: String,
         username: String,
     },
-    /// A DashPay invitation. The link, a bearer secret, does not cross IPC;
-    /// the shell drops it (zeroed), and DP5-01 adds its intake.
-    Invitation,
+    /// A DashPay invitation, kept in the engine's link stash under
+    /// `link_id`. The link, a bearer secret, does not cross IPC.
+    Invitation {
+        link_id: String,
+    },
+    /// A payment or contact link that arrived while the network has no
+    /// wallet: kept in the link stash and offered once a wallet exists.
+    Saved {
+        link: StashedLinkInfo,
+    },
     /// A link the desktop wallet recognises but does not act on.
     Unsupported {
         what: UnsupportedLink,
@@ -186,6 +242,25 @@ pub enum LinkRoute {
     Rejected {
         reason: LinkRejected,
     },
+}
+
+impl LinkRoute {
+    fn rejected(reason: LinkRejected) -> Self {
+        LinkRoute::Rejected { reason }
+    }
+
+    /// The route's `kind`, as the JSON tags it: for logs.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            LinkRoute::Pay { .. } => "pay",
+            LinkRoute::ScanQr => "scanQr",
+            LinkRoute::AddContact { .. } => "addContact",
+            LinkRoute::Invitation { .. } => "invitation",
+            LinkRoute::Saved { .. } => "saved",
+            LinkRoute::Unsupported { .. } => "unsupported",
+            LinkRoute::Rejected { .. } => "rejected",
+        }
+    }
 }
 
 /// Links the desktop wallet does not act on (D-row "links").
@@ -217,18 +292,117 @@ pub enum LinkRejected {
     TooLong,
     /// A payment link dash-qt's URI handler refused.
     Payment { reason: UriRejected },
+    /// An invitation that could not be kept (no network open, or the stash
+    /// failed): open it again.
+    NotSaved,
 }
 
-impl LinkRoute {
-    fn rejected(reason: LinkRejected) -> Self {
-        LinkRoute::Rejected { reason }
+/// A link in the stash, without its text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StashedLinkInfo {
+    pub id: String,
+    pub kind: StashedLinkKindName,
+    /// UNIX seconds.
+    #[ts(type = "number")]
+    pub stashed_at: u64,
+    /// UNIX seconds: the link is dropped from then on.
+    #[ts(type = "number")]
+    pub expires_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum StashedLinkKindName {
+    Payment,
+    Contact,
+    Invitation,
+}
+
+impl From<StashedLink> for StashedLinkInfo {
+    fn from(l: StashedLink) -> Self {
+        StashedLinkInfo {
+            id: l.id,
+            kind: match l.kind {
+                StashedLinkKind::Payment => StashedLinkKindName::Payment,
+                StashedLinkKind::Contact => StashedLinkKindName::Contact,
+                StashedLinkKind::Invitation => StashedLinkKindName::Invitation,
+            },
+            stashed_at: l.stashed_at,
+            expires_at: l.expires_at,
+        }
     }
 }
 
+/// A link routed before intake: an invitation still needs its stash id.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Routed {
+    Route(LinkRoute),
+    Invitation,
+}
+
+/// Takes one link in (DP5-01 D2, D3): routes it for `network`, then keeps
+/// it in the engine's link stash when it must wait. An invitation always
+/// waits there, and its route names the stash id; without the window's
+/// session it is [`LinkRejected::NotSaved`]. A payment or contact link
+/// waits while the session has no wallet ([`LinkRoute::Saved`]); otherwise,
+/// or when keeping it fails, it routes as before. `session` is the
+/// window's; one of another network counts as none.
+pub async fn intake(
+    session: Option<Arc<NetworkSession>>,
+    network: &str,
+    text: &str,
+) -> Result<LinkRoute, AppError> {
+    let routed = route_text(network, text)?;
+    let session = session.filter(|s| s.network().dir_name() == network);
+    let stash = |s: Arc<NetworkSession>| async move {
+        s.stash_link(BearerSecret::new(text.trim().to_owned()))
+            .await
+    };
+    let route = match (routed, session) {
+        (Routed::Invitation, None) => LinkRoute::rejected(LinkRejected::NotSaved),
+        (Routed::Invitation, Some(s)) => match stash(s).await {
+            Ok(link) => LinkRoute::Invitation { link_id: link.id },
+            Err(e) => {
+                tracing::warn!(code = e.code(), "an invitation link could not be kept");
+                LinkRoute::rejected(LinkRejected::NotSaved)
+            }
+        },
+        (Routed::Route(r @ (LinkRoute::Pay { .. } | LinkRoute::AddContact { .. })), Some(s))
+            if s.wallet_infos().is_ok_and(|w| w.is_empty()) =>
+        {
+            match stash(s).await {
+                Ok(link) => LinkRoute::Saved { link: link.into() },
+                Err(e) => {
+                    tracing::warn!(
+                        code = e.code(),
+                        "a link could not be kept for after onboarding"
+                    );
+                    r
+                }
+            }
+        }
+        (Routed::Route(r), _) => r,
+    };
+    // The route's kind only: never the link or what it carries (D14).
+    tracing::debug!(route = route.kind_name(), "link taken in");
+    Ok(route)
+}
+
+/// Routes one link for `network` without intake, for tests: an invitation
+/// is [`LinkRejected::NotSaved`] here.
+#[cfg(test)]
+pub(crate) fn route(network: &str, text: &str) -> Result<LinkRoute, AppError> {
+    Ok(match route_text(network, text)? {
+        Routed::Route(r) => r,
+        Routed::Invitation => LinkRoute::rejected(LinkRejected::NotSaved),
+    })
+}
+
 /// Routes one link (Open URI, or a queued one) for `network`.
-pub fn route(network: &str, text: &str) -> Result<LinkRoute, AppError> {
+pub(crate) fn route_text(network: &str, text: &str) -> Result<Routed, AppError> {
     if text.len() > MAX_LINK_BYTES {
-        return Ok(LinkRoute::rejected(LinkRejected::TooLong));
+        return Ok(Routed::Route(LinkRoute::rejected(LinkRejected::TooLong)));
     }
     let text = text.trim();
     if let Some("dash" | "pay") = link_scheme(text) {
@@ -236,10 +410,10 @@ pub fn route(network: &str, text: &str) -> Result<LinkRoute, AppError> {
         let username = dw_uri::ext::parse_payment_uri(text)
             .and_then(|r| r.dashpay_username)
             .filter(|u| !u.trim().is_empty());
-        return pay(network, &Zeroizing::new(format!("dash:{rest}")), username);
+        return pay(network, &Zeroizing::new(format!("dash:{rest}")), username).map(Routed::Route);
     }
-    Ok(match classify_deep_link(text) {
-        DeepLink::Payment(req) => return payment_link(network, req),
+    Ok(Routed::Route(match classify_deep_link(text) {
+        DeepLink::Payment(req) => return payment_link(network, req).map(Routed::Route),
         DeepLink::ScanQr => LinkRoute::ScanQr,
         DeepLink::DashPayUser(user) => LinkRoute::AddContact {
             identity: user.identity_base58(),
@@ -247,7 +421,7 @@ pub fn route(network: &str, text: &str) -> Result<LinkRoute, AppError> {
         },
         DeepLink::Invitation(secret) => {
             drop(Zeroizing::new(secret));
-            LinkRoute::Invitation
+            return Ok(Routed::Invitation);
         }
         DeepLink::AddressRequest { .. } => LinkRoute::Unsupported {
             what: UnsupportedLink::AddressRequest,
@@ -259,7 +433,7 @@ pub fn route(network: &str, text: &str) -> Result<LinkRoute, AppError> {
             what: UnsupportedLink::Integration,
         },
         DeepLink::Unknown => LinkRoute::rejected(LinkRejected::NotALink),
-    })
+    }))
 }
 
 /// `dashwallet://pay=…` (or, from Open URI, an https payment string):
@@ -455,12 +629,15 @@ mod tests {
                 reason: LinkRejected::NotALink
             }
         );
+        // An invitation needs the stash (intake); routed alone it names
+        // nothing of the link.
         for invite in [
             "dashpay://invite?du=alice&assetlocktx=00&pk=secret&islock=00",
             "https://invitations.dashpay.io/applink?du=alice&pk=secret",
         ] {
+            assert_eq!(route_text("mainnet", invite).unwrap(), Routed::Invitation);
             let json = serde_json::to_string(&r(invite)).unwrap();
-            assert_eq!(json, r#"{"kind":"invitation"}"#);
+            assert_eq!(json, r#"{"kind":"rejected","reason":{"kind":"notSaved"}}"#);
         }
     }
 
@@ -476,9 +653,17 @@ mod tests {
         assert!(!inbox.deliver("dashwallet://scanqr".into()), "full");
         assert_eq!(inbox.len(), MAX_QUEUED);
         // A bad network leaves the queue as it was.
-        assert!(inbox.take("moon").is_err());
+        assert!(inbox.drain("moon").is_err());
         assert_eq!(inbox.len(), MAX_QUEUED);
-        let routes = inbox.take("mainnet").unwrap();
+        let routes: Vec<LinkRoute> = inbox
+            .drain("mainnet")
+            .unwrap()
+            .into_iter()
+            .map(|l| match l {
+                Some(text) => r(&text),
+                None => LinkRoute::rejected(LinkRejected::TooLong),
+            })
+            .collect();
         assert_eq!(routes.len(), MAX_QUEUED);
         assert_eq!(routes[0], LinkRoute::ScanQr);
         assert_eq!(
