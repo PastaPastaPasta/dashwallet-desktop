@@ -902,3 +902,71 @@ async fn another_proposals_relay_does_not_settle_a_vote_sync() {
     assert_eq!((p.objects, p.votes), (2, 2));
     hx.stop.send(true).unwrap();
 }
+
+/// Validator M1 on D47: honest objects arrive first and carry no vote yet;
+/// two peers then confirm enough fakes to pass the cap. Evicting the honest
+/// ones must not end in `Synced`: the run fails as the store is full.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flood_past_the_object_cap_fails_the_run() {
+    let (a, b) = (proposal("a"), proposal("b"));
+    let honest = Node {
+        votes: vec![vote(a.hash(), 1, VoteOutcome::Yes)],
+        objects: vec![a, b],
+        ..Node::default()
+    };
+    let flooding = Node {
+        objects: (0..4).map(|i| proposal(&format!("fake{i}"))).collect(),
+        object_delay: Some(Duration::from_millis(300)),
+        ..Node::default()
+    };
+    let hx = start_with(
+        vec![honest.clone(), honest, flooding.clone(), flooding],
+        |_| {},
+        |shared, _, _| shared.store().set_max_objects(4),
+    )
+    .await;
+    let p = wait_for(&hx.shared, |p| {
+        matches!(p.phase, Phase::Synced | Phase::Failed)
+    })
+    .await;
+    assert_eq!(p.phase, Phase::Failed, "{p:?}");
+    assert!(p.last_synced_at.is_none());
+    let r = hx.task.await.unwrap();
+    assert!(
+        matches!(&r, Err(SyncError::Incomplete(e)) if e.contains("store is full")),
+        "{r:?}"
+    );
+}
+
+/// Validator M1 on D47: unvoted triggers left from earlier runs, which the
+/// wallet cannot tell from forged ones, make room for this run's objects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_triggers_make_room_for_this_runs_objects() {
+    let honest = Node {
+        objects: vec![proposal("a"), proposal("b")],
+        ..Node::default()
+    };
+    let hx = start_with(
+        vec![honest.clone(), honest],
+        |_| {},
+        |shared, _, _| {
+            let mut store = shared.store();
+            store.set_max_objects(3);
+            for height in 100..103 {
+                let data = format!(
+                    r#"{{"event_block_height":{height},"payment_addresses":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amounts":"1","proposal_hashes":"{}","type":2}}"#,
+                    "ab".repeat(32)
+                );
+                let mut t = GovernanceObject::new_proposal(1, unix_now(), data.into_bytes());
+                t.object_type = crate::object::OBJECT_TYPE_TRIGGER;
+                store.add_object(t, None, unix_now()).unwrap();
+            }
+        },
+    )
+    .await;
+    let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
+    assert_eq!(p.objects, 3);
+    assert_eq!(hx.shared.store().current_proposals(unix_now()).len(), 2);
+    hx.stop.send(true).unwrap();
+    assert_eq!(hx.task.await.unwrap(), Ok(()));
+}

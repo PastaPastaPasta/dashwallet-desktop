@@ -1264,6 +1264,18 @@ impl Run {
         }
     }
 
+    /// Fails the run once the object cap evicted or refused an object
+    /// announced in it: the store no longer holds what the peers have
+    /// (D47).
+    fn check_overflow(&self) -> Result<(), SyncError> {
+        match self.shared.store().take_overflow() {
+            0 => Ok(()),
+            n => Err(SyncError::Incomplete(format!(
+                "the governance store is full: {n} objects of this run did not fit"
+            ))),
+        }
+    }
+
     /// Processes events until `done` holds and the phase's requests are
     /// done (`Ok(true)`), or `stop` (`Ok(false)`); fails when items were
     /// given up on, nothing progressed for the idle timeout, the phase ran
@@ -1313,6 +1325,7 @@ impl Run {
                     // Its credit is held until the event is handled.
                     self.handle(ev.from, ev.event);
                     self.shared.refresh(&self.peers, self.base_bytes);
+                    self.check_overflow()?;
                 }
             }
         }
@@ -1351,6 +1364,7 @@ async fn run_inner(
     stop: &mut watch::Receiver<bool>,
 ) -> Result<(), SyncError> {
     let base_bytes = shared.progress().bytes_received;
+    shared.store().begin_run();
     let (tx, mut rx) = mpsc::channel(EVENTS_QUEUE);
     let (peers, errors) = connect_peers(&candidates, &cfg, &history, &tx).await;
     // A stop while connecting must not spend the peers' repeat windows.
@@ -1480,6 +1494,7 @@ async fn run_inner(
                 let Some(ev) = ev else { return Err(SyncError::PeersLost) };
                 run.handle(ev.from, ev.event);
                 shared.refresh(&run.peers, run.base_bytes);
+                run.check_overflow()?;
             }
         }
     }

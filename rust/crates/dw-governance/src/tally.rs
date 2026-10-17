@@ -377,11 +377,19 @@ pub fn fundable_at(
 /// at its low count and every other candidate at its high, an unfunded one
 /// that the set takes with it high and the others low, and any whose place
 /// differs with every candidate low or every one high (MG-02 D48).
+/// Candidates that cannot reach `threshold` take part in no scenario and
+/// are left out first, so the quadratic part only sees ones that can.
 pub fn budget_close_calls(
     candidates: &[RangedCandidate],
     threshold: u32,
     budget: u64,
 ) -> HashSet<String> {
+    let reachable: Vec<RangedCandidate> = candidates
+        .iter()
+        .filter(|r| r.high >= i64::from(threshold))
+        .cloned()
+        .collect();
+    let candidates = &reachable[..];
     let with =
         |count: fn(&RangedCandidate) -> i64| fundable_at(candidates, threshold, budget, count);
     let estimate = with(|r| r.estimate);
@@ -684,6 +692,10 @@ mod tests {
         // Ranges that cannot reorder them are not close calls.
         let apart = [c("aa", 24, 20, 24), c("bb", 13, 11, 19)];
         assert!(budget_close_calls(&apart, 10, 100).is_empty());
+        // Candidates that cannot pass change nothing (and are skipped).
+        let mut flooded = candidates.to_vec();
+        flooded.extend((0..5_000).map(|i| c(&format!("f{i:04}"), 0, 0, 9)));
+        assert_eq!(budget_close_calls(&flooded, 10, 100), close);
     }
 
     #[test]

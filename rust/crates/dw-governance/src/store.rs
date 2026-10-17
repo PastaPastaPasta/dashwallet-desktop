@@ -70,8 +70,8 @@ pub const MAX_UNCONFIRMED_OBJECTS: usize = 2_000;
 pub const MAX_UNCONFIRMED_PER_PEER: usize = 500;
 pub const MAX_UNCONFIRMED_BYTES: usize = 32 << 20;
 /// Objects kept in all, confirmed or not, and their data bytes: past
-/// either, the oldest proposals no listed key voted on make room (MG-02
-/// D47).
+/// either, objects no listed key voted on make room, those not announced
+/// in the current run first, then the oldest (MG-02 D47).
 pub const MAX_OBJECTS: usize = 5_000;
 pub const MAX_OBJECT_BYTES: usize = 64 << 20;
 /// How long an object waits for its confirmations.
@@ -119,6 +119,8 @@ pub struct StoredObject {
     pub confirmed: bool,
     /// When it arrived (local clock).
     pub stored_at: i64,
+    /// The last [`GovernanceStore::begin_run`] it was announced or sent in.
+    pub seen_in_run: u64,
 }
 
 /// Why a vote was not stored.
@@ -290,6 +292,10 @@ pub struct GovernanceStore {
     synced: bool,
     /// [`MAX_OBJECTS`], lower in tests.
     max_objects: usize,
+    /// The current sync run, and how many objects announced in it the cap
+    /// evicted or refused (D47).
+    run: u64,
+    overflow: u32,
 }
 
 /// Adds `hash` to a bounded map, forgetting the oldest past `max`.
@@ -343,7 +349,27 @@ impl GovernanceStore {
             suspects_per_peer: HashMap::new(),
             synced: false,
             max_objects: MAX_OBJECTS,
+            run: 0,
+            overflow: 0,
         }
+    }
+
+    /// Starts a sync run: objects not announced in it are the first the
+    /// cap evicts, and evicting or refusing one that was is overflow.
+    pub fn begin_run(&mut self) {
+        self.run += 1;
+        self.overflow = 0;
+    }
+
+    /// Objects announced in this run that the cap evicted or refused since
+    /// the last call (D47).
+    pub fn take_overflow(&mut self) -> u32 {
+        std::mem::take(&mut self.overflow)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_max_objects(&mut self, max: usize) {
+        self.max_objects = max;
     }
 
     /// Notes that a sync completed: from now on triggers are checked
@@ -485,6 +511,7 @@ impl GovernanceStore {
         let Some(o) = self.objects.get_mut(hash) else {
             return false;
         };
+        o.seen_in_run = self.run;
         if o.confirmed || o.announcers.contains(&peer) {
             return false;
         }
@@ -528,6 +555,7 @@ impl GovernanceStore {
                 announcers,
                 confirmed,
                 stored_at: now,
+                seen_in_run: self.run,
             },
         );
         self.adopt_orphans(&hash, now);
@@ -556,12 +584,14 @@ impl GovernanceStore {
         Ok(())
     }
 
-    /// Evicts the oldest proposals no key of the list voted on until an
-    /// object of `bytes` data bytes fits [`MAX_OBJECTS`] and
-    /// [`MAX_OBJECT_BYTES`]; `StoreFull` when only voted proposals and
-    /// triggers are left (D47). An evicted hash is not remembered: it is
-    /// fetched again once announced, as its votes arriving as orphans
-    /// make it be.
+    /// Evicts objects no key of the list voted on until an object of
+    /// `bytes` data bytes fits [`MAX_OBJECTS`] and [`MAX_OBJECT_BYTES`]:
+    /// those not announced in this run first, then the oldest (D47).
+    /// Triggers count as unvoted, the wallet tallying no votes on them.
+    /// `StoreFull` when only voted objects are left. Evicting or refusing
+    /// an object announced in this run is overflow, which fails the run.
+    /// An evicted hash is not remembered: it is fetched again once
+    /// announced.
     fn make_room(&mut self, bytes: usize) -> Result<(), ObjectRejection> {
         let max = self.max_objects;
         let mut total: usize = self.objects.values().map(|o| o.object.data.len()).sum();
@@ -570,26 +600,30 @@ impl GovernanceStore {
         if fits(count, total) {
             return Ok(());
         }
-        let mut victims: Vec<(i64, [u8; 32], usize)> = self
+        let mut victims: Vec<(u64, i64, [u8; 32], usize)> = self
             .objects
             .iter()
-            .filter(|(h, o)| matches!(o.kind, ObjectKind::Proposal(_)) && !self.weighted(h))
-            .map(|(h, o)| (o.stored_at, *h, o.object.data.len()))
+            .filter(|(h, _)| !self.weighted(h))
+            .map(|(h, o)| (o.seen_in_run, o.stored_at, *h, o.object.data.len()))
             .collect();
         victims.sort_unstable();
         let mut evict = Vec::new();
-        for (_, h, size) in victims {
+        for (run, _, h, size) in victims {
             if fits(count, total) {
                 break;
             }
-            evict.push(h);
+            evict.push((run, h));
             count -= 1;
             total -= size;
         }
         if !fits(count, total) {
+            self.overflow += 1;
             return Err(ObjectRejection::StoreFull);
         }
-        for h in evict {
+        for (run, h) in evict {
+            if run == self.run {
+                self.overflow += 1;
+            }
             self.remove_object(&h);
         }
         Ok(())
@@ -1289,6 +1323,68 @@ mod tests {
             Err(ObjectRejection::StoreFull)
         );
         assert_eq!(s.object_count(), 3);
+    }
+
+    /// Validator M1 on D47: objects not announced in this run go before
+    /// this run's, however new; evicting one of this run's, or refusing an
+    /// object, is overflow.
+    #[test]
+    fn the_cap_evicts_earlier_runs_objects_first_and_counts_this_runs() {
+        let mut s = GovernanceStore::new(Network::Regtest);
+        s.max_objects = 3;
+        s.begin_run();
+        let (old, renewed) = (proposal("old"), proposal("renewed"));
+        let (ho, hr) = (old.hash(), renewed.hash());
+        s.add_object(renewed, peer(1), NOW).unwrap();
+        s.add_object(old, peer(1), NOW + 10).unwrap();
+        s.begin_run();
+        // Announced again in the new run: kept over the newer `old`.
+        s.note_announcer(&hr, peer(2).unwrap());
+        let honest = proposal("honest");
+        let hh = honest.hash();
+        s.add_object(honest, peer(1), NOW + 20).unwrap();
+        s.add_object(proposal("fake0"), peer(3), NOW + 30).unwrap();
+        assert!(!s.has_object(&ho) && s.has_object(&hr));
+        assert_eq!(s.take_overflow(), 0);
+        // Only this run's objects are left to evict.
+        s.add_object(proposal("fake1"), peer(3), NOW + 40).unwrap();
+        assert!(!s.has_object(&hr) && s.has_object(&hh));
+        assert_eq!(s.take_overflow(), 1);
+        assert_eq!(s.take_overflow(), 0);
+        assert_eq!(s.object_count(), 3);
+    }
+
+    /// Validator M1 on D47: unvoted triggers, which the wallet cannot tell
+    /// from forged ones, are evicted like unvoted proposals, so a store
+    /// full of them takes a new run's proposal; a voted proposal still
+    /// outlives them all, and a store of voted proposals refuses as
+    /// overflow.
+    #[test]
+    fn unvoted_triggers_are_evicted_and_voted_proposals_kept() {
+        let mut s = GovernanceStore::new(Network::Regtest);
+        s.max_objects = 3;
+        s.set_masternode_list(&[entry(1, 1), entry(2, 1), entry(3, 1)]);
+        s.begin_run();
+        for h in 100..103 {
+            s.add_object(trigger(h), peer(1), NOW).unwrap();
+        }
+        s.begin_run();
+        let mut voted = Vec::new();
+        for (i, key) in (1..=3u8).enumerate() {
+            let p = proposal(&format!("p{i}"));
+            let h = p.hash();
+            s.add_object(p, None, NOW + 1 + i as i64).unwrap();
+            s.add_vote(vote(h, key, key, VoteOutcome::Yes, NOW - 10), None, NOW)
+                .unwrap();
+            voted.push(h);
+        }
+        assert_eq!(s.take_overflow(), 0);
+        assert!(voted.iter().all(|h| s.object(h).is_some()));
+        assert_eq!(
+            s.add_object(trigger(103), peer(1), NOW + 9),
+            Err(ObjectRejection::StoreFull)
+        );
+        assert_eq!(s.take_overflow(), 1);
     }
 
     fn entry(key: u8, weight: u32) -> ListEntry {
