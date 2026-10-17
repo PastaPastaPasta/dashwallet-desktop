@@ -6,6 +6,12 @@
 //! helper never becomes API by accident.
 
 pub(crate) mod attribution;
+mod avatar;
+mod avatar_cache;
+mod avatar_fetch;
+mod avatar_image;
+#[cfg(test)]
+mod avatar_tests;
 mod balances;
 mod banner;
 #[cfg(test)]
