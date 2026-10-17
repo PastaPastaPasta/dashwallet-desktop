@@ -22,7 +22,9 @@
 //! the wallet does not tally are ignored without a penalty; votes whose key
 //! the list lacks may be honest under the peer's list and count against the
 //! looser [`SyncConfig::max_suspect`]. A copy recovered and not kept is
-//! remembered, so the same bytes are not recovered again (D62). At most
+//! remembered, so it is not recovered again while remembered (D62, D63),
+//! and past [`SyncConfig::max_unkept`] such copies a peer's votes are
+//! refused before recovery, at no penalty (D63). At most
 //! [`SyncConfig::max_in_flight`] items are asked of one peer at a time. A
 //! request ends with the item, `notfound`, an item that does not validate,
 //! or the peer closing, and the next peer that announced the hash is asked
@@ -234,6 +236,9 @@ pub struct SyncConfig {
     pub max_misbehaviour: u32,
     /// Votes whose key the list lacks before a peer is closed (D10).
     pub max_suspect: u32,
+    /// Votes recovered and not kept, past which a peer's vote copies are
+    /// refused before recovery, at no penalty (D63).
+    pub max_unkept: u32,
     /// Hashes one peer may announce that the wallet has not fetched (Core
     /// `MAX_PEER_OBJECT_ANNOUNCEMENTS`).
     pub max_announcements: usize,
@@ -268,6 +273,7 @@ impl SyncConfig {
             answer_timeout: Duration::from_secs(60),
             max_misbehaviour: 1000,
             max_suspect: 10_000,
+            max_unkept: 25_000,
             max_announcements: 100_000,
             max_parent_fetches: 100,
             max_late_announcers: MAX_LATE,
@@ -345,6 +351,8 @@ struct PeerState {
     peer: Peer,
     misbehaviour: u32,
     suspect: u32,
+    /// Its votes recovered and not kept (D63).
+    unkept: u32,
     /// Hashes it announced that are not fetched or given up yet.
     announced: usize,
     /// Objects phase: `ssc(10)`'s count and the object invs since.
@@ -399,6 +407,7 @@ impl PeerState {
             peer,
             misbehaviour: 0,
             suspect: 0,
+            unkept: 0,
             announced: 0,
             full_sync: None,
             vote_asked: Vec::new(),
@@ -1206,6 +1215,16 @@ impl Run {
                 .orphan_bound_full(&vote.parent_hash, a, now)
         {
             self.refused(item, from, taken);
+            self.fetch_parent(from, vote.parent_hash);
+            return;
+        }
+        // Past its budget of wasted recoveries, the sender's copies go to
+        // the next announcer (D63).
+        if self
+            .peer(from)
+            .is_some_and(|p| p.unkept >= self.cfg.max_unkept)
+        {
+            self.refused(item, from, taken);
             return;
         }
         self.recovered += 1;
@@ -1220,6 +1239,14 @@ impl Run {
         };
         let parent = checked.vote.parent_hash;
         let result = self.shared.store().add_checked(checked, addr, now);
+        if let Err(r) = result
+            && !r.is_suspect()
+            && !r.is_invalid()
+            && !self.shared.store().has_vote(&hash)
+            && let Some(p) = self.peer_mut(from)
+        {
+            p.unkept += 1;
+        }
         match result {
             Ok(()) => {
                 self.accepted(&item);

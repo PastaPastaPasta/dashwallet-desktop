@@ -2240,11 +2240,21 @@ fn vote_inv(v: &GovernanceVote) -> InvItem {
     }
 }
 
-/// A vote of key 1 on `parent` dated `age` + 1 seconds earlier than
-/// `vote`'s: a distinct hash per `age`.
+/// A vote of key 1 on `parent` dated `age` + 1 seconds earlier than the
+/// first `vote` of the run: older than any `vote`, a distinct hash per `age`.
 fn aged_vote(parent: [u8; 32], age: u32) -> GovernanceVote {
+    // From one start time, so votes made a second apart do not collide.
+    static START: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
     let mut x = vote(parent, 1, VoteOutcome::Yes);
-    x.time -= i64::from(age) + 1;
+    x.time = START.get_or_init(unix_now) - 100 - i64::from(age) - 1;
+    resigned(&x, 1)
+}
+
+/// `v` re-timed `by` seconds earlier, signed by key 1: obsolete once `v` is
+/// held, whatever the clock did since `v` was made.
+fn older_than(v: &GovernanceVote, by: i64) -> GovernanceVote {
+    let mut x = v.clone();
+    x.time -= by;
     resigned(&x, 1)
 }
 
@@ -2691,8 +2701,8 @@ async fn a_reannounced_obsolete_copy_is_recovered_once() {
     let mut run = two_peer_run(&p).await;
     let now = unix_now();
     let current = vote(p.hash(), 1, VoteOutcome::Yes);
+    let old = older_than(&current, 1);
     run.shared.store().add_vote(current, None, now).unwrap();
-    let old = aged_vote(p.hash(), 0);
     let item = vote_inv(&old);
     for _ in 0..5 {
         run.handle(0, PeerEvent::Inv(vec![item]));
@@ -3188,4 +3198,109 @@ async fn a_ladder_is_recovered_once_whoever_announces_it() {
         "both honest announcers were charged"
     );
     assert_eq!(run.recovered, 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_keyless_peer_gets_one_recovery_from_one_public_vote() {
+    // Validator r12 MJ1: a peer holding no key re-sent one public obsolete
+    // vote under the 64 signatures that recover the same listed key, each
+    // recovered at no cost (D63).
+    let p = proposal("p-d63-malleate");
+    let mut run = two_peer_run(&p).await;
+    let now = unix_now();
+    let current = vote(p.hash(), 1, VoteOutcome::Yes);
+    let old = older_than(&current, 1);
+    run.shared.store().add_vote(current, None, now).unwrap();
+    let item = vote_inv(&old);
+    for c in crate::vote::malleations(&old) {
+        run.handle(0, PeerEvent::Inv(vec![item]));
+        run.handle(0, PeerEvent::Vote(c.encode()));
+        assert!(run.requests.pending.is_empty());
+    }
+    assert_eq!((run.peers[0].suspect, run.peers[0].misbehaviour), (0, 0));
+    assert_eq!(run.recovered, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peer_past_its_unkept_budget_is_refused_before_recovery() {
+    // Validator r12 MJ1: a key's holder signs more obsolete votes than the
+    // store remembers and replays them in a cycle, each recovered again.
+    // Past `max_unkept` wasted recoveries the peer's copies go to the next
+    // announcer unrecovered, at no penalty (D63).
+    let p = proposal("p-d63-budget");
+    let mut run = two_peer_run(&p).await;
+    run.cfg.max_unkept = 3;
+    let now = unix_now();
+    let current = vote(p.hash(), 1, VoteOutcome::Yes);
+    run.shared
+        .store()
+        .add_vote(current.clone(), None, now)
+        .unwrap();
+    for age in 1..=5 {
+        let old = older_than(&current, age);
+        run.handle(0, PeerEvent::Inv(vec![vote_inv(&old)]));
+        run.handle(0, PeerEvent::Vote(old.encode()));
+    }
+    assert_eq!(run.recovered, 3);
+    assert_eq!((run.peers[0].suspect, run.peers[0].misbehaviour), (0, 0));
+    assert!(run.peers[0].peer.is_open());
+    // A vote the store keeps goes to an announcer within its budget.
+    let x = vote(p.hash(), 2, VoteOutcome::No);
+    list_keys(&run, [1, 2]);
+    let item = vote_inv(&x);
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::Vote(x.encode()));
+    assert_eq!(run.recovered, 3);
+    let key = (item.hash, item.kind);
+    assert_eq!(run.requests.pending.get(&key).map(|r| r.peer), Some(1));
+    run.handle(1, PeerEvent::Vote(x.encode()));
+    assert!(run.shared.store().has_vote(&x.hash()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_vote_past_the_orphan_bound_still_asks_for_its_parent() {
+    // Validator r12 m1: a vote refused at the sender's orphan bound before
+    // recovery skipped `fetch_parent`, the way an evicted object comes
+    // back (D52, D63).
+    let mut run = phase_vote_run().await;
+    let addr = run.peers[0].peer.addr;
+    let now = unix_now();
+    let held = [0x46; 32];
+    for o in 0..crate::store::MAX_ORPHANS_PER_PEER {
+        let v = outpoint_vote(held, o, VoteOutcome::Yes, now - 100);
+        let outcome = run.shared.store().precheck(&v, now).unwrap();
+        let checked = recover(v, outcome, Network::Regtest).unwrap();
+        let r = run.shared.store().add_checked(checked, Some(addr), now);
+        assert_eq!(r, Err(VoteRejection::Orphan));
+    }
+    let parent = [0x47; 32];
+    let x = vote(parent, 1, VoteOutcome::Yes);
+    run.handle(0, PeerEvent::Inv(vec![vote_inv(&x)]));
+    run.handle(0, PeerEvent::Vote(x.encode()));
+    assert_eq!(run.recovered, 0);
+    assert!(run.peers[0].parents_asked.contains(&parent));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kept_votes_do_not_spend_the_unkept_budget() {
+    // D63: only recoveries the store does not keep count.
+    let p = proposal("p-d63-kept");
+    let mut run = two_peer_run(&p).await;
+    run.cfg.max_unkept = 1;
+    list_keys(&run, 1..=4);
+    for key in 1..=4 {
+        let x = vote(p.hash(), key, VoteOutcome::Yes);
+        run.handle(0, PeerEvent::Inv(vec![vote_inv(&x)]));
+        run.handle(0, PeerEvent::Vote(x.encode()));
+        assert!(run.shared.store().has_vote(&x.hash()));
+    }
+    // Nor do orphans held for their object.
+    for i in 0..3u8 {
+        let x = vote([0x90 + i; 32], 1, VoteOutcome::Yes);
+        run.handle(0, PeerEvent::Inv(vec![vote_inv(&x)]));
+        run.handle(0, PeerEvent::Vote(x.encode()));
+        assert!(run.shared.store().has_vote(&x.hash()));
+    }
+    assert_eq!(run.recovered, 7);
 }

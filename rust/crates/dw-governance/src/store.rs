@@ -55,7 +55,9 @@ use crate::params::governance_params;
 use crate::proposal::{ProposalData, TriggerData};
 use crate::tally::{CurrentVote, KeyWeights};
 use crate::validate::{MAX_TIME_FUTURE_DEVIATION, ObjectRejection, ValidObject, check_object};
-use crate::vote::{BLS_SIG_SIZE, COMPACT_SIG_SIZE, GovernanceVote, SIGNAL_FUNDING, VoteOutcome};
+use crate::vote::{
+    BLS_SIG_SIZE, COMPACT_SIG_SIZE, GovernanceVote, SIGNAL_FUNDING, VoteOutcome, canonical_compact,
+};
 
 /// Votes kept for objects that have not arrived, in all.
 pub const MAX_ORPHAN_VOTES: usize = 50_000;
@@ -154,11 +156,10 @@ pub enum VoteRejection {
     WrongVotingKey,
     /// Timed more than an hour ahead of the local clock.
     TooNew,
-    /// An older vote than the (outpoint, key)'s current one. Not
-    /// remembered, as in Core.
+    /// An older vote than the (outpoint, key)'s current one.
     Obsolete,
     /// Of the same time as the current one with a lower outcome (Core keeps
-    /// the higher one). Not remembered.
+    /// the higher one).
     SameTimestamp,
     /// The wallet's own vote replaces a current one timed less than an hour
     /// ago (Core `GOVERNANCE_UPDATE_MIN`, D37).
@@ -312,11 +313,15 @@ pub struct GovernanceStore {
     overflow: u32,
 }
 
-/// A vote copy's identity: its hash leaves the signature out (D62).
+/// A vote copy's identity: its hash leaves the signature out (D62), whose
+/// forms that recover the same key are one (D63).
 fn copy_digest(hash: &[u8; 32], signature: &[u8]) -> [u8; 32] {
     let mut engine = sha256::Hash::engine();
     engine.input(hash);
-    engine.input(signature);
+    match canonical_compact(signature) {
+        Some(c) => engine.input(&c),
+        None => engine.input(signature),
+    }
     sha256::Hash::from_engine(engine).to_byte_array()
 }
 
@@ -914,6 +919,9 @@ impl GovernanceStore {
     /// Sets the outpoints the wallet resolved to masternodes (MG-03); their
     /// votes are checked against that masternode's key and counted exactly.
     pub fn set_resolved(&mut self, resolved: HashMap<OutPoint, ResolvedMasternode>) {
+        // A resolved outpoint is not limited (D11): its verdicts may change.
+        self.dismissed.clear();
+        self.dismissed_order.clear();
         self.resolved = resolved;
         self.drop_unbacked_votes();
         let mut per_key: HashMap<([u8; 32], [u8; 20]), u32> = HashMap::new();
@@ -2154,6 +2162,57 @@ mod tests {
         assert!(s.precheck(&other, NOW).is_ok());
         s.set_masternode_list(&[entry(1, 1)]);
         assert!(s.precheck(&old, NOW).is_ok());
+    }
+
+    #[test]
+    fn malleated_copies_of_a_vote_are_one_copy() {
+        // Validator r12 MJ1: one public vote the wallet does not keep, sent
+        // under the 64 signatures that recover the same listed key, forced
+        // 64 recoveries; they are one copy (D63).
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 1)]);
+        s.add_vote(vote(h, 1, 1, VoteOutcome::Yes, 10), None, NOW)
+            .unwrap();
+        let old = vote(h, 1, 1, VoteOutcome::No, 5);
+        let mut recovered = 0;
+        for c in crate::vote::malleations(&old) {
+            if s.precheck(&c, NOW).is_ok() {
+                recovered += 1;
+                assert_eq!(s.add_vote(c, peer(2), NOW), Err(VoteRejection::Obsolete));
+            }
+        }
+        assert_eq!(
+            recovered, 1,
+            "one public vote forced {recovered} recoveries"
+        );
+    }
+
+    #[test]
+    fn resolving_an_outpoint_forgets_its_key_limit_verdict() {
+        // Validator r12 m2: a resolved outpoint is not limited (D11), but its
+        // remembered `KeyLimit` verdict outlived `set_resolved` (D63).
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 1)]);
+        for op in 10..14 {
+            s.add_vote(vote(h, 1, op, VoteOutcome::No, 10), None, NOW)
+                .unwrap();
+        }
+        let mine = vote(h, 1, 1, VoteOutcome::Yes, 20);
+        assert_eq!(
+            s.add_vote(mine.clone(), peer(2), NOW),
+            Err(VoteRejection::KeyLimit)
+        );
+        s.set_resolved(HashMap::from([(
+            outpoint(1),
+            ResolvedMasternode {
+                pro_tx_hash: [7; 32],
+                voting_key_id: key_id(1),
+                weight: 1,
+            },
+        )]));
+        assert_eq!(s.add_vote(mine, peer(2), NOW), Ok(()));
     }
 
     #[test]
