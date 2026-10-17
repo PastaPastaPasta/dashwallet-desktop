@@ -1785,21 +1785,25 @@ fn an_address_kept_without_rule_5_is_not_paid_under_it() {
 
 /// Design D12 as amended by D25 (Sol r2): a paying account built from an
 /// older request than the current one, with no rebuild queued, is not
-/// paid, with or without the latch; once rebuilt from the current request
-/// it is.
+/// paid, with or without the latch and in every setting; once rebuilt
+/// from the current request it is.
 #[test]
 fn a_stale_paying_account_is_not_paid() {
-    let f = fixture(false);
-    // Before the latch nothing came through the fallback, but the account
-    // is still not the one the request designates.
-    f.session.trust.set_mode(TrustMode::Enforcing);
-    f.bobs_account_built_from(Some(77));
-    assert_eq!(
-        platform_error(f.prepare(&f.draft(BOB))),
-        "platform.context_unavailable"
-    );
-    assert!(f.reserved(BOB).is_none(), "no address taken");
+    for (mode, set) in EVERY_RULE {
+        let f = fixture(false);
+        // Before the latch nothing came through the fallback, but the
+        // account is still not the one the request designates.
+        set(&f);
+        f.bobs_account_built_from(Some(77));
+        assert_eq!(
+            platform_error(f.prepare(&f.draft(BOB))),
+            "platform.context_unavailable",
+            "{mode}"
+        );
+        assert!(f.reserved(BOB).is_none(), "{mode}: no address taken");
+    }
 
+    let f = fixture(false);
     let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
     // A queued op that does not rebuild the paying account changes nothing.
     f.queue_for_bob(PendingContactCryptoOp::RegisterReceiving);
@@ -1825,75 +1829,112 @@ fn a_stale_paying_account_is_not_paid() {
 
 /// Design D25 (Sol r2): a crash between persisting Bob's rotated request
 /// and the library's sweep leaves the marker cleared and his old account
-/// in place, with no latch. In every mode the old account is not paid and
-/// nothing is reserved; once the account is rebuilt from the rotated
+/// in place, with no latch. Under `Enforce` the old account is not paid
+/// and nothing is reserved; once the account is rebuilt from the rotated
 /// request and stamped, its address is.
 #[test]
 fn an_account_a_crash_left_unrebuilt_is_not_paid() {
-    for (mode, set) in EVERY_RULE {
-        let f = fixture(false);
-        set(&f);
-        f.bob_rotated_before_the_sweep();
-        assert_eq!(
-            platform_error(f.prepare(&f.draft(BOB))),
-            "platform.context_unavailable",
-            "{mode}"
-        );
-        assert!(f.reserved(BOB).is_none(), "{mode}: no address taken");
+    let f = fixture(false);
+    f.session.trust.set_mode(TrustMode::Enforcing);
+    f.bob_rotated_before_the_sweep();
+    assert_eq!(
+        platform_error(f.prepare(&f.draft(BOB))),
+        "platform.context_unavailable"
+    );
+    assert!(f.reserved(BOB).is_none(), "no address taken");
 
-        f.build_paying_account(BOB, contact_xpub(CAROL));
-        f.bobs_account_built_from(Some(1));
-        let p = f.prepare(&f.draft(BOB)).unwrap();
-        let rebuilt = address_at(contact_xpub(CAROL), 0);
-        assert_eq!(paid(&p), rebuilt.to_string(), "{mode}");
-        assert_eq!(f.reserved(BOB), Some(rebuilt), "{mode}");
+    f.build_paying_account(BOB, contact_xpub(CAROL));
+    f.bobs_account_built_from(Some(1));
+    let p = f.prepare(&f.draft(BOB)).unwrap();
+    let rebuilt = address_at(contact_xpub(CAROL), 0);
+    assert_eq!(paid(&p), rebuilt.to_string());
+    assert_eq!(f.reserved(BOB), Some(rebuilt));
+}
+
+/// Design D26: the library's store keeps no stamp, so after every launch
+/// each paying account is unstamped until the first DashPay pass rebuilds
+/// it, and that looks the same as the crash above. `Enforce` refuses it
+/// (nothing reserved); `Probe` and `Off` proceed on the absence, as D7
+/// does, so the crash's old account is paid there too.
+#[test]
+fn an_unstamped_account_is_paid_only_where_rule_5_does_not_apply() {
+    for (mode, set) in EVERY_RULE {
+        for rotated in [false, true] {
+            let f = fixture(false);
+            set(&f);
+            if rotated {
+                f.bob_rotated_before_the_sweep();
+            } else {
+                f.bobs_account_built_from(None);
+            }
+            let prepared = f.prepare(&f.draft(BOB));
+            if mode == "enforcing" {
+                assert_eq!(platform_error(prepared), "platform.context_unavailable");
+                assert!(f.reserved(BOB).is_none(), "rotated {rotated}");
+            } else {
+                let p = prepared.unwrap();
+                let held = f.contact_address(BOB, 0);
+                assert_eq!(paid(&p), held.to_string(), "{mode}, rotated {rotated}");
+            }
+        }
     }
 }
 
-/// D12 after the reservation: a queued `RegisterExternal` lets the gate
-/// pass a stale account (the drain is to rebuild it), but a drain that
-/// leaves it queued derives from the old account, and the strict re-check
-/// refuses that address.
+/// D12 after the reservation, in every setting (D25): a queued
+/// `RegisterExternal` lets the gate pass a stale account (the drain is to
+/// rebuild it), but a drain that leaves it queued derives from the old
+/// account, and the strict re-check refuses that address.
 #[test]
 fn a_stale_account_the_drain_leaves_is_not_paid() {
-    let f = fixture(false);
-    f.gated(TrustMode::Enforcing, Proof::Verified);
-    f.bobs_account_built_from(Some(77));
-    // The drain cannot rebuild from it (our identity has no key at the
-    // op's index, a fault the library keeps queued for a retry).
-    f.queue_for_bob(PendingContactCryptoOp::RegisterExternal {
-        encrypted_public_key: vec![0; 96],
-        our_decryption_key_index: 0,
-        contact_encryption_key_index: 0,
-    });
-    let d = f.draft(BOB);
-    let reached = Arc::new(AtomicU32::new(0));
-    let refused = f.prepare_held_at(&d, Point::Reserved, || {
-        reached.fetch_add(1, Ordering::SeqCst);
-    });
-    assert_eq!(reached.load(Ordering::SeqCst), 1, "the gate let it through");
-    assert_eq!(platform_error(refused), "platform.context_unavailable");
-    assert!(
-        f.reserved(BOB).is_none(),
-        "the old account's address is not kept"
-    );
-    let queued = Arc::new(AtomicU32::new(0));
-    let count = Arc::clone(&queued);
-    f.with_me(move |me| {
-        let ops = me.dashpay().pending_contact_crypto.iter();
-        let n = ops
-            .filter(|p| {
-                p.contact_id == id(BOB)
-                    && matches!(p.op, PendingContactCryptoOp::RegisterExternal { .. })
-            })
-            .count();
-        count.store(n as u32, Ordering::SeqCst);
-    });
-    assert_eq!(
-        queued.load(Ordering::SeqCst),
-        1,
-        "the drain left its op queued"
-    );
+    for (mode, set) in EVERY_RULE {
+        let f = fixture(false);
+        f.gated(TrustMode::Enforcing, Proof::Verified);
+        set(&f);
+        f.bobs_account_built_from(Some(77));
+        // The drain cannot rebuild from it (our identity has no key at the
+        // op's index, a fault the library keeps queued for a retry).
+        f.queue_for_bob(PendingContactCryptoOp::RegisterExternal {
+            encrypted_public_key: vec![0; 96],
+            our_decryption_key_index: 0,
+            contact_encryption_key_index: 0,
+        });
+        let d = f.draft(BOB);
+        let reached = Arc::new(AtomicU32::new(0));
+        let refused = f.prepare_held_at(&d, Point::Reserved, || {
+            reached.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(
+            reached.load(Ordering::SeqCst),
+            1,
+            "{mode}: the gate let it through"
+        );
+        assert_eq!(
+            platform_error(refused),
+            "platform.context_unavailable",
+            "{mode}"
+        );
+        assert!(
+            f.reserved(BOB).is_none(),
+            "{mode}: the old account's address is not kept"
+        );
+        let queued = Arc::new(AtomicU32::new(0));
+        let count = Arc::clone(&queued);
+        f.with_me(move |me| {
+            let ops = me.dashpay().pending_contact_crypto.iter();
+            let n = ops
+                .filter(|p| {
+                    p.contact_id == id(BOB)
+                        && matches!(p.op, PendingContactCryptoOp::RegisterExternal { .. })
+                })
+                .count();
+            count.store(n as u32, Ordering::SeqCst);
+        });
+        assert_eq!(
+            queued.load(Ordering::SeqCst),
+            1,
+            "{mode}: the drain left its op queued"
+        );
+    }
 }
 
 /// D13 at the contact level: the contact's name lands while the payment
