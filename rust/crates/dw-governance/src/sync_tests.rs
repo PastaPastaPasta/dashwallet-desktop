@@ -2230,6 +2230,24 @@ fn vote_inv(v: &GovernanceVote) -> InvItem {
     }
 }
 
+/// A vote of key 1 on `parent` dated `age` + 1 seconds earlier than
+/// `vote`'s: a distinct hash per `age`.
+fn aged_vote(parent: [u8; 32], age: u32) -> GovernanceVote {
+    let mut x = vote(parent, 1, VoteOutcome::Yes);
+    x.time -= i64::from(age) + 1;
+    resigned(&x, 1)
+}
+
+/// Peer 0 floods 150,000 junk vote invs, each answered `notfound`: more
+/// late records than the bound keeps.
+fn flood_late_record(run: &mut Run) {
+    for round in 0u8..3 {
+        let junk = junk_votes(round, 50_000);
+        run.handle(0, PeerEvent::Inv(junk.clone()));
+        run.handle(0, PeerEvent::NotFound(junk));
+    }
+}
+
 /// Peer 0 announces `item` and answers `notfound` (a late record of it);
 /// then peer 1 announces it.
 fn late_record_then_second_announcer(run: &mut Run, item: InvItem) {
@@ -2283,9 +2301,7 @@ async fn forged_late_copies_cannot_get_an_honest_peer_closed() {
     let mut run = two_peer_run(&p).await;
     let max = run.cfg.max_misbehaviour;
     for t in 0..=max {
-        let mut x = vote(p.hash(), 1, VoteOutcome::Yes);
-        x.time -= i64::from(t) + 1;
-        let x = resigned(&x, 1);
+        let x = aged_vote(p.hash(), t);
         late_record_then_second_announcer(&mut run, vote_inv(&x));
         run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
         run.handle(1, PeerEvent::Vote(x.encode()));
@@ -2368,9 +2384,7 @@ async fn an_earlier_peers_copy_after_the_next_peers_is_no_offence() {
     run.cfg.request_timeout = Duration::ZERO;
     let max = run.cfg.max_misbehaviour;
     for t in 0..=max {
-        let mut x = vote(p.hash(), 1, VoteOutcome::Yes);
-        x.time -= i64::from(t) + 1;
-        let x = resigned(&x, 1);
+        let x = aged_vote(p.hash(), t);
         let item = vote_inv(&x);
         run.handle(0, PeerEvent::Inv(vec![item]));
         run.handle(1, PeerEvent::Inv(vec![item]));
@@ -2430,11 +2444,7 @@ async fn a_full_late_record_does_not_make_an_honest_copy_an_offence() {
     assert!(run.requests.pending[&(item.hash, item.kind)].asked_again);
     run.handle(1, PeerEvent::Vote(x.encode()));
     assert!(run.shared.store().has_vote(&x.hash()));
-    for round in 0u8..3 {
-        let junk = junk_votes(round, 50_000);
-        run.handle(0, PeerEvent::Inv(junk.clone()));
-        run.handle(0, PeerEvent::NotFound(junk));
-    }
+    flood_late_record(&mut run);
     run.handle(1, PeerEvent::Vote(x.encode()));
     assert_eq!(
         (run.peers[0].misbehaviour, run.peers[1].misbehaviour),
@@ -2453,9 +2463,7 @@ async fn forged_copies_and_a_late_record_flood_cannot_close_an_honest_peer() {
     let max = run.cfg.max_misbehaviour;
     let mut xs = Vec::new();
     for t in 0..=max {
-        let mut x = vote(p.hash(), 1, VoteOutcome::Yes);
-        x.time -= i64::from(t) + 1;
-        let x = resigned(&x, 1);
+        let x = aged_vote(p.hash(), t);
         let item = vote_inv(&x);
         run.handle(0, PeerEvent::Inv(vec![item]));
         run.handle(1, PeerEvent::Inv(vec![item]));
@@ -2463,11 +2471,7 @@ async fn forged_copies_and_a_late_record_flood_cannot_close_an_honest_peer() {
         run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
         xs.push(x);
     }
-    for round in 0u8..3 {
-        let junk = junk_votes(round, 50_000);
-        run.handle(0, PeerEvent::Inv(junk.clone()));
-        run.handle(0, PeerEvent::NotFound(junk));
-    }
+    flood_late_record(&mut run);
     for x in &xs {
         run.handle(1, PeerEvent::Vote(x.encode()));
         run.handle(1, PeerEvent::Vote(x.encode()));
@@ -2498,16 +2502,8 @@ async fn a_copy_past_its_keys_limit_does_not_hide_the_honest_vote() {
     ]);
     let now = unix_now();
     for i in 0..4u8 {
-        let f = GovernanceVote::funding(
-            OutPoint::new(dashcore::Txid::from_byte_array([0x60 + i; 32]), 0),
-            p.hash(),
-            VoteOutcome::No,
-            now - 100,
-        );
-        run.shared
-            .store()
-            .add_vote(resigned(&f, 2), None, now)
-            .unwrap();
+        let f = resigned(&vote(p.hash(), 0x60 + i, VoteOutcome::No), 2);
+        run.shared.store().add_vote(f, None, now).unwrap();
     }
     let x = vote(p.hash(), 1, VoteOutcome::Yes);
     let item = vote_inv(&x);
@@ -2525,13 +2521,15 @@ async fn vote_sync_history_drops_entries_past_the_window() {
     // Validator r8 m3: the session's record of vote syncs gained an entry
     // per (peer, object) asked and was never pruned.
     let mut run = one_peer_run(|c, _| c.repeat_window = Duration::ZERO).await;
+    run.shared.store().set_confirmations(1);
     for round in 0..3 {
         let hashes: Vec<[u8; 32]> = (0..500)
             .map(|i| {
                 let o = proposal(&format!("p-r8-history-{round}-{i}"));
-                let mut s = run.shared.store();
-                s.set_confirmations(1);
-                s.add_object(o.clone(), None, unix_now()).unwrap();
+                run.shared
+                    .store()
+                    .add_object(o.clone(), None, unix_now())
+                    .unwrap();
                 o.hash()
             })
             .collect();
