@@ -867,16 +867,10 @@ impl Run {
         let now = unix_now();
         let result = {
             let mut store = self.shared.store();
-            let r = store.add_object(object, addr, now);
+            let also = self.requests.object_announcers.get(&hash);
+            let r = store.add_object_announced(object, addr, also.map_or(&[], |a| &a[..]), now);
             if r.is_ok() {
-                for addr in self
-                    .requests
-                    .object_announcers
-                    .remove(&hash)
-                    .unwrap_or_default()
-                {
-                    store.note_announcer(&hash, addr);
-                }
+                self.requests.object_announcers.remove(&hash);
             }
             r.map(|_| store.is_current_proposal(&hash, now))
         };
@@ -906,7 +900,11 @@ impl Run {
             Err(e) => {
                 tracing::debug!(?e, "governance object not kept");
                 self.finish(&hash);
-                self.requests.object_announcers.remove(&hash);
+                // A bound refused it: its announcers still count, so a
+                // later announcement can confirm it on arrival (D47).
+                if e != ObjectRejection::StoreFull {
+                    self.requests.object_announcers.remove(&hash);
+                }
                 self.progressed();
             }
         }
@@ -974,7 +972,7 @@ impl Run {
             Err(VoteRejection::Orphan) => {
                 self.finish(&hash);
                 self.progressed();
-                self.fetch_parent(from, parent);
+                self.fetch_parent(parent);
             }
             Err(r) if r.is_suspect() || r.is_invalid() => {
                 if r.is_suspect() {
@@ -991,18 +989,22 @@ impl Run {
         }
     }
 
-    /// Core answers an orphan vote by asking its sender for the object
-    /// (`govsync <hash>` with an empty filter); once per parent and peer,
-    /// [`SyncConfig::max_parent_fetches`] per peer.
-    fn fetch_parent(&mut self, from: usize, parent: [u8; 32]) {
+    /// Core asks every peer for an orphan vote's object (`govsync <hash>`
+    /// with an empty filter, which Core does not rate-limit), so its
+    /// announcers can confirm it; once per parent and peer,
+    /// [`SyncConfig::max_parent_fetches`] per peer (D52).
+    fn fetch_parent(&mut self, parent: [u8; 32]) {
         let known =
             self.shared.store().has_object(&parent) || self.requests.pending.contains_key(&parent);
-        let max = self.cfg.max_parent_fetches;
-        let Some(p) = self.peer_mut(from) else { return };
-        if known || p.parent_fetches.len() >= max || !p.parent_fetches.insert(parent) {
+        if known {
             return;
         }
-        p.peer.send_govsync(parent, &object_fetch_filter());
+        let max = self.cfg.max_parent_fetches;
+        for p in &mut self.peers {
+            if p.parent_fetches.len() < max && p.parent_fetches.insert(parent) {
+                p.peer.send_govsync(parent, &object_fetch_filter());
+            }
+        }
     }
 
     fn on_not_found(&mut self, from: usize, items: Vec<InvItem>) {
@@ -1364,7 +1366,8 @@ async fn run_inner(
     stop: &mut watch::Receiver<bool>,
 ) -> Result<(), SyncError> {
     let base_bytes = shared.progress().bytes_received;
-    shared.store().begin_run();
+    // Overflow before the run is none of its business.
+    shared.store().take_overflow();
     let (tx, mut rx) = mpsc::channel(EVENTS_QUEUE);
     let (peers, errors) = connect_peers(&candidates, &cfg, &history, &tx).await;
     // A stop while connecting must not spend the peers' repeat windows.
@@ -1414,6 +1417,7 @@ async fn run_inner(
 
     if !fresh.is_empty() {
         // Objects, from every fresh peer.
+        shared.store().begin_run();
         shared.set_phase(Phase::SyncingObjects);
         let started = Instant::now();
         let filter = object_fetch_filter();

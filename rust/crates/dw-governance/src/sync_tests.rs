@@ -74,6 +74,12 @@ struct Node {
     notfound_kind: Option<(u32, Duration)>,
     /// Answer one vote sync with invs of other proposals' votes, then close.
     relay_instead: Option<RelayInstead>,
+    /// Announced (and served) on the first inv the wallet sends, which it
+    /// does only once synced: relays in the follow phase.
+    follow_objects: Vec<GovernanceObject>,
+    /// Served and announced on a one-object `govsync`, but left out of the
+    /// full sync.
+    hidden_objects: Vec<GovernanceObject>,
 }
 
 /// A vote sync of `asked` (the first one, over every node sharing `once`)
@@ -102,6 +108,10 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
     let mut chatter = 0u32;
     let mut votes = node.votes.clone();
     votes.extend(node.relays.iter().cloned());
+    let mut served = node.objects.clone();
+    served.extend(node.follow_objects.iter().cloned());
+    served.extend(node.hidden_objects.iter().cloned());
+    let mut followed = false;
     while let Ok(msg) = conn.recv().await {
         match msg.command.as_str() {
             "ping" => {
@@ -123,7 +133,7 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
                 let _ = seen.send(Seen::Govsync(hash));
                 if hash != [0; 32] && msg.payload[32..] == object_fetch_filter()[..] {
                     // One object, by inv.
-                    if node.objects.iter().any(|o| o.hash() == hash) {
+                    if served.iter().any(|o| o.hash() == hash) {
                         let item = InvItem {
                             kind: INV_GOVERNANCE_OBJECT,
                             hash,
@@ -243,7 +253,7 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
                 let mut missing = Vec::new();
                 for i in items {
                     let object = (i.kind == INV_GOVERNANCE_OBJECT)
-                        .then(|| node.objects.iter().find(|o| o.hash() == i.hash))
+                        .then(|| served.iter().find(|o| o.hash() == i.hash))
                         .flatten();
                     let vote = (i.kind == INV_GOVERNANCE_VOTE)
                         .then(|| votes.iter().find(|v| v.hash() == i.hash))
@@ -273,6 +283,18 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
                     known.insert(i.hash);
                 }
                 conn.send("getdata", &msg.payload).await.unwrap();
+                if !followed && !node.follow_objects.is_empty() {
+                    followed = true;
+                    let items: Vec<InvItem> = node
+                        .follow_objects
+                        .iter()
+                        .map(|o| InvItem {
+                            kind: INV_GOVERNANCE_OBJECT,
+                            hash: o.hash(),
+                        })
+                        .collect();
+                    conn.send("inv", &encode_inv(&items)).await.unwrap();
+                }
             }
             commands::MNGOVERNANCEOBJECTVOTE => {
                 let _ = seen.send(Seen::Vote(msg.payload));
@@ -969,4 +991,138 @@ async fn stale_triggers_make_room_for_this_runs_objects() {
     assert_eq!(hx.shared.store().current_proposals(unix_now()).len(), 2);
     hx.stop.send(true).unwrap();
     assert_eq!(hx.task.await.unwrap(), Ok(()));
+}
+
+fn big_trigger(height: i32, payees: usize) -> GovernanceObject {
+    let addresses = vec!["yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf"; payees].join("|");
+    let amounts = vec!["1"; payees].join("|");
+    let hash = "ab".repeat(32);
+    let hashes = vec![hash.as_str(); payees].join("|");
+    let data = format!(
+        r#"{{"event_block_height":{height},"payment_addresses":"{addresses}","payment_amounts":"{amounts}","proposal_hashes":"{hashes}","type":2}}"#
+    );
+    let mut t = GovernanceObject::new_proposal(1, unix_now(), data.into_bytes());
+    t.object_type = crate::object::OBJECT_TYPE_TRIGGER;
+    t
+}
+
+/// Validator r2 MJ1: one peer's forged triggers fill the unconfirmed bound;
+/// proposals two other peers announce are confirmed on arrival and stored
+/// regardless, rather than refused unseen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_peers_unconfirmed_bytes_do_not_hide_what_two_peers_announce() {
+    let honest = Node {
+        objects: vec![proposal("a"), proposal("b")],
+        ..Node::default()
+    };
+    let attacker: SocketAddr = "10.9.9.9:9999".parse().unwrap();
+    let hx = start_with(
+        vec![honest.clone(), honest],
+        |_| {},
+        move |shared, _, _| {
+            let mut store = shared.store();
+            let max = crate::store::MAX_UNCONFIRMED_BYTES;
+            let (mut total, mut height) = (0usize, 100);
+            while max - total > 150 {
+                let payees = ((max - total - 120) / 102).clamp(1, 28_000);
+                let t = big_trigger(height, payees);
+                if total + t.data.len() > max {
+                    break;
+                }
+                total += t.data.len();
+                store.add_object(t, Some(attacker), unix_now()).unwrap();
+                height += 1;
+            }
+        },
+    )
+    .await;
+    let p = wait_for(&hx.shared, |p| {
+        matches!(p.phase, Phase::Synced | Phase::Failed)
+    })
+    .await;
+    assert_eq!(p.phase, Phase::Synced, "{p:?}");
+    assert_eq!(hx.shared.store().current_proposals(unix_now()).len(), 2);
+    hx.stop.send(true).unwrap();
+    assert_eq!(hx.task.await.unwrap(), Ok(()));
+}
+
+/// Two nodes serving `honest` and one that relays `fakes` after the
+/// wallet's first inv; returns once synced, with that inv sent.
+async fn follow_flood(
+    honest: Vec<GovernanceObject>,
+    fakes: usize,
+    prepare: impl FnOnce(&Shared, &mut SyncHistory, &[SocketAddr]),
+) -> Harness {
+    let own = vote(honest[0].hash(), 1, VoteOutcome::Yes);
+    let honest = Node {
+        objects: honest,
+        ..Node::default()
+    };
+    let flooding = Node {
+        follow_objects: (0..fakes).map(|i| proposal(&format!("fake{i}"))).collect(),
+        ..Node::default()
+    };
+    let hx = start_with(vec![honest.clone(), honest, flooding], |_| {}, prepare).await;
+    wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
+    assert_eq!(hx.shared.relay_vote(&own), 3);
+    hx
+}
+
+/// Validator r2 m4: the cap overflowing in the follow phase fails the run
+/// as it does while syncing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flood_after_synced_fails_the_follow_phase() {
+    let hx = follow_flood(vec![proposal("a"), proposal("b")], 3, |shared, _, _| {
+        shared.store().set_max_objects(4)
+    })
+    .await;
+    let p = wait_for(&hx.shared, |p| p.phase != Phase::Synced).await;
+    assert_eq!(p.phase, Phase::Failed, "{p:?}");
+    let r = hx.task.await.unwrap();
+    assert!(
+        matches!(&r, Err(SyncError::Incomplete(e)) if e.contains("store is full")),
+        "{r:?}"
+    );
+}
+
+/// Validator r2 m1: a run with no object phase (every peer full-synced
+/// within its window) keeps the last run's objects current, so a flood in
+/// its follow phase that pushes them out fails the run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_without_an_object_phase_keeps_the_last_runs_objects_current() {
+    let (a, b) = (proposal("a"), proposal("b"));
+    let held = vec![a.clone(), b.clone()];
+    let hx = follow_flood(held, 2, move |shared, history, addrs| {
+        shared.progress().last_synced_at = Some(unix_now() as u64);
+        for addr in addrs {
+            history.full_synced.insert(*addr, Instant::now());
+        }
+        let mut store = shared.store();
+        store.set_max_objects(3);
+        store.add_object(a, None, unix_now()).unwrap();
+        store.add_object(b, None, unix_now()).unwrap();
+    })
+    .await;
+    let p = wait_for(&hx.shared, |p| p.phase != Phase::Synced).await;
+    assert_eq!(p.phase, Phase::Failed, "{p:?}");
+}
+
+/// Validator r2 m2: an orphan vote's object is asked of every peer, as
+/// Core's scheduler does, so it comes back confirmed and shown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_orphan_votes_object_is_asked_of_every_peer() {
+    let x = proposal("x");
+    let hidden = Node {
+        hidden_objects: vec![x.clone()],
+        ..Node::default()
+    };
+    let relaying = Node {
+        relays: vec![vote(x.hash(), 1, VoteOutcome::Yes)],
+        ..hidden.clone()
+    };
+    let hx = start(vec![relaying, hidden], |_| {}).await;
+    let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced && p.objects == 1).await;
+    assert_eq!((p.unconfirmed_objects, p.votes), (0, 1));
+    assert!(hx.shared.store().object(&x.hash()).is_some());
+    hx.stop.send(true).unwrap();
 }

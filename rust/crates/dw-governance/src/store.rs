@@ -354,8 +354,9 @@ impl GovernanceStore {
         }
     }
 
-    /// Starts a sync run: objects not announced in it are the first the
-    /// cap evicts, and evicting or refusing one that was is overflow.
+    /// Starts a sync run's object phase: objects not announced since are
+    /// the first the cap evicts, and evicting or refusing one that was is
+    /// overflow. A run without one keeps the last one's objects current.
     pub fn begin_run(&mut self) {
         self.run += 1;
         self.overflow = 0;
@@ -529,10 +530,23 @@ impl GovernanceStore {
         from: Option<SocketAddr>,
         now: i64,
     ) -> Result<bool, ObjectRejection> {
+        self.add_object_announced(object, from, &[], now)
+    }
+
+    /// [`Self::add_object`], with the other peers that announced it
+    /// counting towards its confirmation at once: an object enough peers
+    /// announced is stored confirmed, outside the unconfirmed bounds.
+    pub fn add_object_announced(
+        &mut self,
+        object: GovernanceObject,
+        from: Option<SocketAddr>,
+        also: &[SocketAddr],
+        now: i64,
+    ) -> Result<bool, ObjectRejection> {
         let hash = object.hash();
         if self.has_object(&hash) {
-            if let Some(peer) = from {
-                self.note_announcer(&hash, peer);
+            for peer in from.iter().chain(also) {
+                self.note_announcer(&hash, *peer);
             }
             return Ok(false);
         }
@@ -540,7 +554,12 @@ impl GovernanceStore {
             ValidObject::Proposal(p) => ObjectKind::Proposal(p),
             ValidObject::Trigger(t) => ObjectKind::Trigger(t),
         };
-        let announcers: Vec<SocketAddr> = from.into_iter().collect();
+        let mut announcers: Vec<SocketAddr> = Vec::new();
+        for peer in from.iter().chain(also) {
+            if announcers.len() < self.confirmations && !announcers.contains(peer) {
+                announcers.push(*peer);
+            }
+        }
         let confirmed = from.is_none() || announcers.len() >= self.confirmations;
         if !confirmed {
             self.room_for_unconfirmed(from, object.data.len())?;
@@ -629,11 +648,12 @@ impl GovernanceStore {
         Ok(())
     }
 
-    /// Whether a key of the list voted on `hash`.
+    /// Whether a key of a valid masternode of the list voted on `hash`
+    /// (Core's tally counts no banned masternode).
     fn weighted(&self, hash: &[u8; 32]) -> bool {
         self.votes
             .get(hash)
-            .is_some_and(|m| m.values().any(|v| self.keys.contains_key(&v.key_id)))
+            .is_some_and(|m| m.values().any(|v| self.valid_keys.contains(&v.key_id)))
     }
 
     /// Erases what Core's cleanup would by `now` (and the tip set), drops
@@ -1385,6 +1405,31 @@ mod tests {
             Err(ObjectRejection::StoreFull)
         );
         assert_eq!(s.take_overflow(), 1);
+    }
+
+    /// Validator r2 m3: a vote by a banned masternode's key, which Core's
+    /// tally leaves out, does not keep an object from eviction.
+    #[test]
+    fn a_banned_keys_vote_does_not_keep_an_object() {
+        let mut s = GovernanceStore::new(Network::Regtest);
+        s.max_objects = 2;
+        s.set_masternode_list(&[
+            entry(1, 1),
+            ListEntry {
+                valid: false,
+                ..entry(2, 1)
+            },
+        ]);
+        let (banned, valid) = (proposal("banned"), proposal("valid"));
+        let (hb, hv) = (banned.hash(), valid.hash());
+        s.add_object(banned, None, NOW).unwrap();
+        s.add_vote(vote(hb, 2, 1, VoteOutcome::Yes, NOW - 10), None, NOW)
+            .unwrap();
+        s.add_object(valid, None, NOW + 1).unwrap();
+        s.add_vote(vote(hv, 1, 2, VoteOutcome::Yes, NOW - 10), None, NOW)
+            .unwrap();
+        s.add_object(proposal("new"), None, NOW + 2).unwrap();
+        assert!(!s.has_object(&hb) && s.object(&hv).is_some());
     }
 
     fn entry(key: u8, weight: u32) -> ListEntry {

@@ -696,6 +696,12 @@ mod tests {
         let mut flooded = candidates.to_vec();
         flooded.extend((0..5_000).map(|i| c(&format!("f{i:04}"), 0, 0, 9)));
         assert_eq!(budget_close_calls(&flooded, 10, 100), close);
+        // A range ending at the threshold can still pass.
+        let edge = [c("cc", 10, 9, 10)];
+        assert_eq!(
+            budget_close_calls(&edge, 10, 100),
+            HashSet::from(["cc".to_string()])
+        );
     }
 
     #[test]
