@@ -420,8 +420,9 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
   a pending request is `contact.ineligible{PendingIncoming}`) and its payment lock, then passes m4's money-move
   trust gate (item 55: once the fallback latch is set, the contact's data must verify against SPV; it may wait up
   to a minute, then `platform.context_unavailable`, or `platform.trust_mismatch`, with nothing taken; in every mode a
-  contact whose paying account is not yet the one their current request designates is
-  `platform.context_unavailable`, and a retry after the library's rebuild pays), then the
+  contact whose paying account was built from another request than their current one, and under `Enforcing` one
+  not yet stamped after a launch, is `platform.context_unavailable`, and a retry after the library's rebuild
+  pays), then the
   grant, plans, redeems the grant into a
   lease and charges it (`send.grant_exceeded` for a fee grown since), and **only then** reserves the contact's
   next address, swaps it into the planned output and signs: a refusal before the reservation takes no address.

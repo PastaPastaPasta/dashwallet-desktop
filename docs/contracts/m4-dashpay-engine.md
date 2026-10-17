@@ -2835,10 +2835,13 @@ renames or reshapes them takes the next version bump:
       fetch's blocking lookups), records what verifies; a mismatch is `platform.trust_mismatch`; otherwise the money moves (rule 5 suspended).
       The trusted-only toggle moves the money with no re-fetch.
     - **The paying account, in every mode.** Whatever the mode, the toggle or the latch, a payee whose paying
-      account was not built from their current request (a rotation the library has not rebuilt yet, a crash
-      before its sweep included) is `platform.context_unavailable`, nothing taken, and a DashPay sync is started so
-      the library queues the rebuild a retry needs (design D12, D25; at the wait a queued rebuild of the account
-      exempts it, not after the reservation).
+      account was built from another request than their current one is `platform.context_unavailable`, and a
+      DashPay sync is started so the library queues the rebuild a retry needs (design D12, D25; at the wait a
+      queued rebuild of the account exempts it, not after the reservation). At the wait nothing is taken; after
+      the reservation the address is dropped. Under `Enforcing` an account with no stamp is refused the same way:
+      the library does not persist the stamp, so after each launch the first contact payment is refused until a
+      DashPay pass rebuilt the account (a rotation the library has not rebuilt yet, a crash before its sweep
+      included). Degraded and the toggle proceed on a missing stamp (design D26).
     - **Where.** `prepare` checks the contact's payment lock, then runs the gate, both before the coin fence and the
       grant: a refusal redeems no grant, takes no address and holds no other send of the wallet. A vault Lock during
       the wait ends it (`send.vault_locked`); a payment lock written during it is found by the plan
