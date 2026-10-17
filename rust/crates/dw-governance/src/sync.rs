@@ -52,8 +52,8 @@ use tokio::sync::{Notify, mpsc, watch};
 
 use crate::object::GovernanceObject;
 use crate::peer::{
-    INV_GOVERNANCE_OBJECT, INV_GOVERNANCE_VOTE, InvItem, Peer, PeerConfig, PeerEvent, SSC_GOVOBJ,
-    SSC_GOVOBJ_VOTE, empty_vote_filter, object_fetch_filter,
+    EVENTS_QUEUE, INV_GOVERNANCE_OBJECT, INV_GOVERNANCE_VOTE, Inbound, InvItem, Peer, PeerConfig,
+    PeerEvent, SSC_GOVOBJ, SSC_GOVOBJ_VOTE, empty_vote_filter, object_fetch_filter,
 };
 use crate::store::{GovernanceStore, VoteRejection, recover};
 use crate::validate::ObjectRejection;
@@ -315,16 +315,21 @@ struct PeerState {
     announced: usize,
     /// Objects phase: `ssc(10)`'s count and the object invs since.
     full_sync: Option<FullSync>,
-    /// Votes phase: the objects whose votes it was asked for, `ssc(11)`
-    /// answers, their counts and the vote invs since.
+    /// Votes phase: the objects whose votes it was asked for and its
+    /// `ssc(11)` counts, in the same order (Core answers in order).
     vote_asked: Vec<[u8; 32]>,
-    vote_answers: usize,
-    vote_expected: i64,
-    vote_announced: i64,
-    /// Votes it announced while no `ssc(11)` count was open → how many
-    /// objects it had been asked votes for then. Core leaves them out of
-    /// later vote syncs on the connection but counts them (D36).
-    relayed: HashMap<[u8; 32], usize>,
+    vote_expected: Vec<i64>,
+    /// Asked object → the votes on it the peer announced (D46).
+    vote_announced: HashMap<[u8; 32], i64>,
+    /// Votes it announced whose object the run does not know yet.
+    unresolved: HashSet<[u8; 32]>,
+    /// Of those, how many the run gave up on, so never learns the object
+    /// of: they may make up a count its invs fall short of.
+    unattributable: i64,
+    /// Votes it announced on objects not asked of it → their object. Core
+    /// counts them in a later vote sync of the object on the connection
+    /// but leaves them out of its invs (D36).
+    relayed: HashMap<[u8; 32], [u8; 32]>,
     /// When its next `ssc` is due, while one is outstanding.
     answer_due: Option<Instant>,
     /// When it last delivered an item.
@@ -359,9 +364,10 @@ impl PeerState {
             announced: 0,
             full_sync: None,
             vote_asked: Vec::new(),
-            vote_answers: 0,
-            vote_expected: 0,
-            vote_announced: 0,
+            vote_expected: Vec::new(),
+            vote_announced: HashMap::new(),
+            unresolved: HashSet::new(),
+            unattributable: 0,
             relayed: HashMap::new(),
             answer_due: None,
             last_delivery: Instant::now(),
@@ -375,15 +381,33 @@ impl PeerState {
         self.full_sync.as_ref().is_none_or(FullSync::complete)
     }
 
+    /// Every vote sync asked of it answered, and each count met by the
+    /// invs of votes on its own object (D46).
     fn votes_done(&self) -> bool {
-        self.vote_answers >= self.vote_asked.len() && self.vote_announced >= self.vote_expected
+        let short: i64 = self
+            .vote_asked
+            .iter()
+            .zip(&self.vote_expected)
+            .map(|(h, n)| (n - self.vote_announced.get(h).copied().unwrap_or(0)).max(0))
+            .sum();
+        self.vote_expected.len() >= self.vote_asked.len() && short <= self.unattributable
     }
 
     fn answers_outstanding(&self) -> bool {
         self.full_sync
             .as_ref()
             .is_some_and(|f| f.expected.is_none())
-            || self.vote_answers < self.vote_asked.len()
+            || self.vote_expected.len() < self.vote_asked.len()
+    }
+
+    /// Counts its inv of `vote`, on `parent`, towards its vote sync of
+    /// `parent`, or keeps it for a later one (D36).
+    fn attribute(&mut self, vote: [u8; 32], parent: [u8; 32]) {
+        if let Some(n) = self.vote_announced.get_mut(&parent) {
+            *n += 1;
+        } else if self.relayed.len() < MAX_LATE {
+            self.relayed.insert(vote, parent);
+        }
     }
 
     /// Restarts the `ssc` deadline after an ask or an answer.
@@ -444,7 +468,7 @@ async fn connect_peers(
     candidates: &[SocketAddr],
     cfg: &SyncConfig,
     history: &Mutex<SyncHistory>,
-    events: &mpsc::UnboundedSender<(usize, PeerEvent)>,
+    events: &mpsc::Sender<Inbound>,
 ) -> (Vec<PeerState>, Vec<String>) {
     let mut ordered = candidates.to_vec();
     {
@@ -722,6 +746,13 @@ impl Run {
                 // delivers it later.
                 self.remember_late(hash, asked, t.phase && count);
                 self.finish(&hash);
+                if kind == INV_GOVERNANCE_VOTE {
+                    for p in &mut self.peers {
+                        if p.unresolved.remove(&hash) {
+                            p.unattributable += 1;
+                        }
+                    }
+                }
                 true
             }
         }
@@ -758,20 +789,29 @@ impl Run {
                     if store.note_announcer(&i.hash, addr) {
                         confirmed.push(i.hash);
                     }
-                } else if votes_phase {
-                    state.vote_announced += 1;
-                } else if state.relayed.len() < MAX_LATE {
-                    // Relays outside a vote sync do not count towards its
-                    // `ssc(11)` totals, unless a later sync is asked for
-                    // their object (D36).
-                    let asked = state.vote_asked.len();
-                    state.relayed.entry(i.hash).or_insert(asked);
                 }
                 let known = if object {
                     store.has_object(&i.hash)
                 } else {
                     store.has_vote(&i.hash)
                 };
+                if !object {
+                    // Only a vote on an object asked of the peer counts
+                    // towards that sync (D46).
+                    let parent = store
+                        .vote_parent(&i.hash)
+                        .or_else(|| self.vote_parents.get(&i.hash).copied());
+                    match parent {
+                        Some(parent) => state.attribute(i.hash, parent),
+                        None if !known
+                            && state.announced < max_announced
+                            && state.unresolved.len() < MAX_LATE =>
+                        {
+                            state.unresolved.insert(i.hash);
+                        }
+                        None => state.unattributable += 1,
+                    }
+                }
                 if known || state.announced >= max_announced {
                     continue;
                 }
@@ -873,20 +913,16 @@ impl Run {
         }
     }
 
-    /// Learns a vote's object. A peer that relayed the vote before it was
-    /// asked for the object's votes has it counted in that sync's `ssc(11)`
-    /// but leaves it out of the sync's invs, as Core does: credit it (D36).
+    /// Learns a vote's object: every peer that announced the vote before
+    /// the run knew it has it counted now (D46).
     fn credit_relays(&mut self, vote: [u8; 32], parent: [u8; 32]) {
         if self.vote_parents.len() >= MAX_LATE {
             self.vote_parents.clear();
         }
         self.vote_parents.insert(vote, parent);
         for p in &mut self.peers {
-            if let Some(&asked) = p.relayed.get(&vote)
-                && p.vote_asked[asked..].contains(&parent)
-            {
-                p.relayed.remove(&vote);
-                p.vote_announced += 1;
+            if p.unresolved.remove(&vote) {
+                p.attribute(vote, parent);
             }
         }
     }
@@ -972,21 +1008,28 @@ impl Run {
 
     fn on_not_found(&mut self, from: usize, items: Vec<InvItem>) {
         for i in items {
-            if self
+            let Some(kind) = self
                 .requests
                 .pending
                 .get(&i.hash)
-                .is_some_and(|p| p.peer == from)
-            {
-                let r = self.release(&i.hash).expect("looked up");
-                let taken = Taken {
-                    phase: r.phase,
-                    asked: r.asked,
-                };
-                // A peer that no longer has an item it announced (a vote
-                // dropped with a list change) is not a lost sync item.
-                self.retry(i.hash, i.kind, from, taken, false);
+                .filter(|r| r.peer == from)
+                .map(|r| r.kind)
+            else {
+                continue;
+            };
+            // The kind is the peer's word: only the request's own is retried
+            // (D50).
+            if i.kind != kind {
+                self.misbehaved(from, "notfound of another kind");
             }
+            let r = self.release(&i.hash).expect("looked up");
+            let taken = Taken {
+                phase: r.phase,
+                asked: r.asked,
+            };
+            // A peer that no longer has an item it announced (a vote
+            // dropped with a list change) is not a lost sync item.
+            self.retry(i.hash, kind, from, taken, false);
         }
     }
 
@@ -1061,9 +1104,8 @@ impl Run {
                 Some(f) if f.expected.is_none() => f.expected = Some(count),
                 _ => return,
             },
-            SSC_GOVOBJ_VOTE if p.vote_answers < p.vote_asked.len() => {
-                p.vote_answers += 1;
-                p.vote_expected += i64::from(count);
+            SSC_GOVOBJ_VOTE if p.vote_expected.len() < p.vote_asked.len() => {
+                p.vote_expected.push(i64::from(count));
             }
             _ => return,
         }
@@ -1176,10 +1218,9 @@ impl Run {
                 .insert((addr, hash), Instant::now());
             let p = &mut self.peers[i];
             p.vote_asked.push(hash);
-            let parents = &self.vote_parents;
             let before = p.relayed.len();
-            p.relayed.retain(|v, _| parents.get(v) != Some(&hash));
-            p.vote_announced += (before - p.relayed.len()) as i64;
+            p.relayed.retain(|_, parent| *parent != hash);
+            *p.vote_announced.entry(hash).or_default() += (before - p.relayed.len()) as i64;
             p.peer.send_govsync(hash, &filter);
             if p.answer_due.is_none() {
                 p.rearm_answer(timeout);
@@ -1230,7 +1271,7 @@ impl Run {
     /// past its deadline, or every peer is gone.
     async fn drain(
         &mut self,
-        rx: &mut mpsc::UnboundedReceiver<(usize, PeerEvent)>,
+        rx: &mut mpsc::Receiver<Inbound>,
         stop: &mut watch::Receiver<bool>,
         done: impl Fn(&Run) -> Result<bool, SyncError>,
     ) -> Result<bool, SyncError> {
@@ -1269,8 +1310,9 @@ impl Run {
                 }
                 _ = tick.tick() => self.expire(),
                 ev = rx.recv() => {
-                    let Some((from, ev)) = ev else { return Err(SyncError::PeersLost) };
-                    self.handle(from, ev);
+                    let Some(ev) = ev else { return Err(SyncError::PeersLost) };
+                    // Its credit is held until the event is handled.
+                    self.handle(ev.from, ev.event);
                     self.shared.refresh(&self.peers, self.base_bytes);
                 }
             }
@@ -1310,7 +1352,7 @@ async fn run_inner(
     stop: &mut watch::Receiver<bool>,
 ) -> Result<(), SyncError> {
     let base_bytes = shared.progress().bytes_received;
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(EVENTS_QUEUE);
     let (peers, errors) = connect_peers(&candidates, &cfg, &history, &tx).await;
     // A stop while connecting must not spend the peers' repeat windows.
     if *stop.borrow() {
@@ -1436,8 +1478,8 @@ async fn run_inner(
             _ = tick.tick() => run.expire(),
             _ = shared.relay.notified() => run.announce_outbox(true),
             ev = rx.recv() => {
-                let Some((from, ev)) = ev else { return Err(SyncError::PeersLost) };
-                run.handle(from, ev);
+                let Some(ev) = ev else { return Err(SyncError::PeersLost) };
+                run.handle(ev.from, ev.event);
                 shared.refresh(&run.peers, run.base_bytes);
             }
         }

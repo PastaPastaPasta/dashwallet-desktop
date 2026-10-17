@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use dashcore::Network;
 use dw_governance::object::{display_hex, outpoint_short, parse_display_hex};
-use dw_governance::peer::{INV_GOVERNANCE_VOTE, Peer, PeerConfig, PeerEvent, empty_vote_filter};
+use dw_governance::peer::{
+    EVENTS_QUEUE, INV_GOVERNANCE_VOTE, Peer, PeerConfig, PeerEvent, empty_vote_filter,
+};
 use dw_governance::vote::GovernanceVote;
 use tokio::sync::mpsc;
 
@@ -30,7 +32,7 @@ async fn main() -> Result<(), String> {
 
     let network = Network::Testnet;
     let cfg = PeerConfig::new(network, "/dw-capture-votes:0.1/", 0);
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(EVENTS_QUEUE);
     let p = Peer::connect(0, addr, &cfg, tx)
         .await
         .map_err(|e| format!("connect: {e}"))?;
@@ -44,8 +46,8 @@ async fn main() -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
         let ev = tokio::time::timeout_at(deadline, rx.recv()).await;
-        let Ok(Some((_, ev))) = ev else { break };
-        match ev {
+        let Ok(Some(ev)) = ev else { break };
+        match ev.event {
             PeerEvent::Inv(items) => {
                 announced.extend(items.into_iter().filter(|i| i.kind == INV_GOVERNANCE_VOTE))
             }

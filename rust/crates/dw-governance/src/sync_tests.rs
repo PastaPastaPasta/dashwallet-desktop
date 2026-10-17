@@ -8,6 +8,7 @@ use dashcore::secp256k1::{Message, PublicKey, SecretKey};
 use dw_p2p::commands;
 use dw_p2p::testing::MockPeer;
 use std::collections::HashSet;
+use std::sync::atomic::AtomicBool;
 
 fn key_id(n: u8) -> [u8; 20] {
     let sk = SecretKey::from_secret_bytes([n; 32]).unwrap();
@@ -68,6 +69,23 @@ struct Node {
     unsolicited: usize,
     /// Stop reading (and answering pings) once synced.
     go_silent: bool,
+    /// Answer every `getdata`, after the delay, with a `notfound` of this
+    /// kind instead.
+    notfound_kind: Option<(u32, Duration)>,
+    /// Answer one vote sync with invs of other proposals' votes, then close.
+    relay_instead: Option<RelayInstead>,
+}
+
+/// A vote sync of `asked` (the first one, over every node sharing `once`)
+/// answered, after `delay`, with its `ssc(11)` and then invs of `votes`
+/// only, as Core relaying other votes on the connection before it trickles
+/// the sync's own; the node then closes.
+#[derive(Clone)]
+struct RelayInstead {
+    asked: [u8; 32],
+    votes: Vec<GovernanceVote>,
+    delay: Duration,
+    once: Arc<AtomicBool>,
 }
 
 /// What the wallet sent a fake node.
@@ -168,6 +186,24 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
                         .collect();
                     let mut ssc = SSC_GOVOBJ_VOTE.to_le_bytes().to_vec();
                     ssc.extend_from_slice(&(all.len() as i32).to_le_bytes());
+                    if let Some(r) = &node.relay_instead
+                        && r.asked == hash
+                        && !r.once.swap(true, std::sync::atomic::Ordering::SeqCst)
+                    {
+                        tokio::time::sleep(r.delay).await;
+                        conn.send(commands::SYNCSTATUSCOUNT, &ssc).await.unwrap();
+                        let items: Vec<InvItem> = r
+                            .votes
+                            .iter()
+                            .map(|v| InvItem {
+                                kind: INV_GOVERNANCE_VOTE,
+                                hash: v.hash(),
+                            })
+                            .collect();
+                        conn.send("inv", &encode_inv(&items)).await.unwrap();
+                        conn.shutdown().await;
+                        return;
+                    }
                     conn.send(commands::SYNCSTATUSCOUNT, &ssc).await.unwrap();
                     if node.close_after_vote_ssc {
                         conn.shutdown().await;
@@ -187,6 +223,13 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
                     conn.send("notfound", &encode_inv(&items)).await.unwrap();
                     continue;
                 }
+                if let Some((kind, delay)) = node.notfound_kind {
+                    tokio::time::sleep(delay).await;
+                    let items: Vec<InvItem> =
+                        items.iter().map(|i| InvItem { kind, ..*i }).collect();
+                    conn.send("notfound", &encode_inv(&items)).await.unwrap();
+                    continue;
+                }
                 if node.close_on_vote_getdata && items.iter().any(|i| i.kind == INV_GOVERNANCE_VOTE)
                 {
                     conn.shutdown().await;
@@ -199,11 +242,17 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
                 }
                 let mut missing = Vec::new();
                 for i in items {
-                    if let Some(o) = node.objects.iter().find(|o| o.hash() == i.hash) {
+                    let object = (i.kind == INV_GOVERNANCE_OBJECT)
+                        .then(|| node.objects.iter().find(|o| o.hash() == i.hash))
+                        .flatten();
+                    let vote = (i.kind == INV_GOVERNANCE_VOTE)
+                        .then(|| votes.iter().find(|v| v.hash() == i.hash))
+                        .flatten();
+                    if let Some(o) = object {
                         conn.send(commands::MNGOVERNANCEOBJECT, &o.encode())
                             .await
                             .unwrap();
-                    } else if let Some(v) = votes.iter().find(|v| v.hash() == i.hash) {
+                    } else if let Some(v) = vote {
                         conn.send(commands::MNGOVERNANCEOBJECTVOTE, &v.encode())
                             .await
                             .unwrap();
@@ -366,7 +415,24 @@ async fn notfound_moves_to_the_next_announcer() {
         notfound: true,
         ..good.clone()
     };
-    let hx = start(vec![refusing, good], |_| {}).await;
+    let hx = start(vec![refusing, good.clone()], |_| {}).await;
+    let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
+    assert_eq!(p.objects, 1);
+    hx.stop.send(true).unwrap();
+
+    // Sol r1 Major 3: a `notfound` naming the hash as a vote neither turns
+    // the object's retry into a vote request nor settles it. The good node
+    // answers its full sync late, so the mistyping one is asked first, and
+    // the mistyping one answers after the good one announced the object.
+    let mistyping = Node {
+        notfound_kind: Some((INV_GOVERNANCE_VOTE, Duration::from_millis(900))),
+        ..good.clone()
+    };
+    let late = Node {
+        object_delay: Some(Duration::from_millis(300)),
+        ..good
+    };
+    let hx = start(vec![mistyping, late], |_| {}).await;
     let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
     assert_eq!(p.objects, 1);
     hx.stop.send(true).unwrap();
@@ -808,5 +874,31 @@ async fn objects_one_peer_announced_are_confirmed_by_the_others() {
         matches!(&asked[..], [Seen::Govsync(x)] if *x == obj.hash()),
         "{asked:?}"
     );
+    hx.stop.send(true).unwrap();
+}
+
+/// Sol r1 Major 4: while a peer's vote sync of A is open, an inv of a vote
+/// on B (already held) does not count towards A's `ssc(11)`; when the peer
+/// then closes, A's vote sync goes to the other peer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn another_proposals_relay_does_not_settle_a_vote_sync() {
+    let (a, b) = (proposal("a"), proposal("b"));
+    let (ha, hb) = (a.hash(), b.hash());
+    let (va, vb) = (vote(ha, 1, VoteOutcome::Yes), vote(hb, 2, VoteOutcome::No));
+    let node = Node {
+        objects: vec![a, b],
+        votes: vec![va, vb.clone()],
+        relay_instead: Some(RelayInstead {
+            asked: ha,
+            votes: vec![vb],
+            // B's vote sync, at the other node, delivers B's vote first.
+            delay: Duration::from_millis(500),
+            once: Arc::new(AtomicBool::new(false)),
+        }),
+        ..Node::default()
+    };
+    let hx = start(vec![node.clone(), node], |_| {}).await;
+    let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
+    assert_eq!((p.objects, p.votes), (2, 2));
     hx.stop.send(true).unwrap();
 }

@@ -13,7 +13,7 @@
 //! more than one key weighs between 0 and the highest weight for each claim
 //! (MG-02 D19). Outpoints the wallet resolved (MG-03) count exactly.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use dashcore::OutPoint;
 
@@ -343,6 +343,60 @@ pub fn fundable(candidates: &[BudgetCandidate], threshold: u32, budget: u64) -> 
     out
 }
 
+/// A budget candidate with the range of its absolute yes count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RangedCandidate {
+    /// Display order, as [`BudgetCandidate::hash`].
+    pub hash: String,
+    pub payment_amount: u64,
+    pub estimate: i64,
+    pub low: i64,
+    pub high: i64,
+}
+
+/// The candidates whose place in the [`fundable`] set the vote ranges
+/// could change (MG-00 D45): a funded one that the set leaves out with it
+/// at its low count and every other candidate at its high, an unfunded one
+/// that the set takes with it high and the others low, and any whose place
+/// differs with every candidate low or every one high (MG-02 D48).
+pub fn budget_close_calls(
+    candidates: &[RangedCandidate],
+    threshold: u32,
+    budget: u64,
+) -> HashSet<String> {
+    let with = |count: &dyn Fn(&RangedCandidate) -> i64| -> HashSet<String> {
+        let c: Vec<BudgetCandidate> = candidates
+            .iter()
+            .map(|r| BudgetCandidate {
+                hash: r.hash.clone(),
+                payment_amount: r.payment_amount,
+                absolute_yes: count(r),
+            })
+            .collect();
+        fundable(&c, threshold, budget).hashes.into_iter().collect()
+    };
+    let estimate = with(&|r| r.estimate);
+    let low = with(&|r| r.low);
+    let high = with(&|r| r.high);
+    candidates
+        .iter()
+        .filter(|me| {
+            let funded = estimate.contains(&me.hash);
+            if low.contains(&me.hash) != funded || high.contains(&me.hash) != funded {
+                return true;
+            }
+            // Its worst case if funded, its best if not.
+            let worst = funded;
+            let at_end = with(&|r| match (r.hash == me.hash, worst) {
+                (true, true) | (false, false) => r.low,
+                (true, false) | (false, true) => r.high,
+            });
+            at_end.contains(&me.hash) != funded
+        })
+        .map(|r| r.hash.clone())
+        .collect()
+}
+
 /// dash-qt `ProposalStatus`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Status {
@@ -598,6 +652,27 @@ mod tests {
         assert_eq!(threshold(6, 1), 1);
         assert_eq!(threshold(6, 10), 10);
         assert_eq!(threshold(4_000, 10), 400);
+    }
+
+    /// Sol r1 Major 6: the budget fits one of two equal proposals; A is
+    /// estimated at 24 (15–24) and B at 23 (14–23). Every candidate low,
+    /// or every one high, still funds A, but A at 15 against B at 23 funds
+    /// B: both are close calls.
+    #[test]
+    fn opposite_ends_of_two_ranges_that_swap_the_budget_are_close_calls() {
+        let c = |hash: &str, estimate, low, high| RangedCandidate {
+            hash: hash.into(),
+            payment_amount: 100,
+            estimate,
+            low,
+            high,
+        };
+        let candidates = [c("aa", 24, 15, 24), c("bb", 23, 14, 23)];
+        let close = budget_close_calls(&candidates, 10, 100);
+        assert_eq!(close, HashSet::from(["aa".to_string(), "bb".to_string()]));
+        // Ranges that cannot reorder them are not close calls.
+        let apart = [c("aa", 24, 20, 24), c("bb", 13, 11, 19)];
+        assert!(budget_close_calls(&apart, 10, 100).is_empty());
     }
 
     #[test]

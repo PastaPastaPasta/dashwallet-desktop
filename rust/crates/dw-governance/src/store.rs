@@ -69,6 +69,11 @@ pub const DEFAULT_CONFIRMATIONS: usize = 2;
 pub const MAX_UNCONFIRMED_OBJECTS: usize = 2_000;
 pub const MAX_UNCONFIRMED_PER_PEER: usize = 500;
 pub const MAX_UNCONFIRMED_BYTES: usize = 32 << 20;
+/// Objects kept in all, confirmed or not, and their data bytes: past
+/// either, the oldest proposals no listed key voted on make room (MG-02
+/// D47).
+pub const MAX_OBJECTS: usize = 5_000;
+pub const MAX_OBJECT_BYTES: usize = 64 << 20;
 /// How long an object waits for its confirmations.
 pub const UNCONFIRMED_TTL_SECS: i64 = 60 * 60;
 /// Core's `GOVERNANCE_UPDATE_MIN`: a masternode's vote on an object is not
@@ -215,6 +220,8 @@ pub struct ListEntry {
 /// An outpoint the wallet resolved to its masternode (MG-03, MG-00 D43).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedMasternode {
+    /// The masternode the outpoint is the collateral of.
+    pub pro_tx_hash: [u8; 32],
     pub voting_key_id: [u8; 20],
     pub weight: u32,
 }
@@ -252,11 +259,13 @@ pub struct GovernanceStore {
     votes: HashMap<[u8; 32], ObjectVotes>,
     /// (object, key) → unresolved outpoints voting with the key.
     per_key: HashMap<([u8; 32], [u8; 20]), u32>,
-    seen_votes: HashSet<[u8; 32]>,
+    /// Stored vote → its object.
+    seen_votes: HashMap<[u8; 32], [u8; 32]>,
     vote_count: u64,
-    ignored: HashSet<[u8; 32]>,
+    /// Ignored vote → its object.
+    ignored: HashMap<[u8; 32], [u8; 32]>,
     ignored_order: VecDeque<[u8; 32]>,
-    refused: HashSet<[u8; 32]>,
+    refused: HashMap<[u8; 32], ()>,
     refused_order: VecDeque<[u8; 32]>,
     orphans: HashMap<[u8; 32], Orphan>,
     /// (arrival, hash) in arrival order; entries whose orphan left or was
@@ -279,23 +288,27 @@ pub struct GovernanceStore {
     /// Whether a sync has completed, after which triggers outside their
     /// creation-time window are ignored (Core's `MasternodeRateCheck`).
     synced: bool,
+    /// [`MAX_OBJECTS`], lower in tests.
+    max_objects: usize,
 }
 
-/// Adds `hash` to a bounded set, forgetting the oldest past `max`.
-fn remember(
-    set: &mut HashSet<[u8; 32]>,
+/// Adds `hash` to a bounded map, forgetting the oldest past `max`.
+fn remember<V>(
+    map: &mut HashMap<[u8; 32], V>,
     order: &mut VecDeque<[u8; 32]>,
     max: usize,
     hash: [u8; 32],
+    value: V,
 ) {
-    if !set.insert(hash) {
+    if map.contains_key(&hash) {
         return;
     }
+    map.insert(hash, value);
     order.push_back(hash);
     if order.len() > max
         && let Some(old) = order.pop_front()
     {
-        set.remove(&old);
+        map.remove(&old);
     }
 }
 
@@ -309,11 +322,11 @@ impl GovernanceStore {
             erased: HashMap::new(),
             votes: HashMap::new(),
             per_key: HashMap::new(),
-            seen_votes: HashSet::new(),
+            seen_votes: HashMap::new(),
             vote_count: 0,
-            ignored: HashSet::new(),
+            ignored: HashMap::new(),
             ignored_order: VecDeque::new(),
-            refused: HashSet::new(),
+            refused: HashMap::new(),
             refused_order: VecDeque::new(),
             orphans: HashMap::new(),
             orphan_order: VecDeque::new(),
@@ -329,6 +342,7 @@ impl GovernanceStore {
             suspect_order: VecDeque::new(),
             suspects_per_peer: HashMap::new(),
             synced: false,
+            max_objects: MAX_OBJECTS,
         }
     }
 
@@ -379,7 +393,7 @@ impl GovernanceStore {
     pub fn has_object(&self, hash: &[u8; 32]) -> bool {
         self.objects.contains_key(hash)
             || self.erased.contains_key(hash)
-            || self.refused.contains(hash)
+            || self.refused.contains_key(hash)
     }
 
     /// Remembers an object the wallet refused from every peer that sent
@@ -391,6 +405,7 @@ impl GovernanceStore {
                 &mut self.refused_order,
                 MAX_REFUSED_OBJECTS,
                 hash,
+                (),
             );
         }
     }
@@ -398,9 +413,18 @@ impl GovernanceStore {
     /// Whether the vote `hash` is counted, waits for its object, or was
     /// ignored.
     pub fn has_vote(&self, hash: &[u8; 32]) -> bool {
-        self.seen_votes.contains(hash)
+        self.seen_votes.contains_key(hash)
             || self.orphans.contains_key(hash)
-            || self.ignored.contains(hash)
+            || self.ignored.contains_key(hash)
+    }
+
+    /// The object of a vote [`Self::has_vote`] holds.
+    pub fn vote_parent(&self, hash: &[u8; 32]) -> Option<[u8; 32]> {
+        self.seen_votes
+            .get(hash)
+            .or_else(|| self.ignored.get(hash))
+            .copied()
+            .or_else(|| self.orphans.get(hash).map(|o| o.vote.vote.parent_hash))
     }
 
     /// A confirmed object.
@@ -494,6 +518,7 @@ impl GovernanceStore {
         if !confirmed {
             self.room_for_unconfirmed(from, object.data.len())?;
         }
+        self.make_room(object.data.len())?;
         self.objects.insert(
             hash,
             StoredObject {
@@ -529,6 +554,52 @@ impl GovernanceStore {
             return Err(ObjectRejection::StoreFull);
         }
         Ok(())
+    }
+
+    /// Evicts the oldest proposals no key of the list voted on until an
+    /// object of `bytes` data bytes fits [`MAX_OBJECTS`] and
+    /// [`MAX_OBJECT_BYTES`]; `StoreFull` when only voted proposals and
+    /// triggers are left (D47). An evicted hash is not remembered: it is
+    /// fetched again once announced, as its votes arriving as orphans
+    /// make it be.
+    fn make_room(&mut self, bytes: usize) -> Result<(), ObjectRejection> {
+        let max = self.max_objects;
+        let mut total: usize = self.objects.values().map(|o| o.object.data.len()).sum();
+        let mut count = self.objects.len();
+        let fits = |count: usize, total: usize| count < max && total + bytes <= MAX_OBJECT_BYTES;
+        if fits(count, total) {
+            return Ok(());
+        }
+        let mut victims: Vec<(i64, [u8; 32], usize)> = self
+            .objects
+            .iter()
+            .filter(|(h, o)| matches!(o.kind, ObjectKind::Proposal(_)) && !self.weighted(h))
+            .map(|(h, o)| (o.stored_at, *h, o.object.data.len()))
+            .collect();
+        victims.sort_unstable();
+        let mut evict = Vec::new();
+        for (_, h, size) in victims {
+            if fits(count, total) {
+                break;
+            }
+            evict.push(h);
+            count -= 1;
+            total -= size;
+        }
+        if !fits(count, total) {
+            return Err(ObjectRejection::StoreFull);
+        }
+        for h in evict {
+            self.remove_object(&h);
+        }
+        Ok(())
+    }
+
+    /// Whether a key of the list voted on `hash`.
+    fn weighted(&self, hash: &[u8; 32]) -> bool {
+        self.votes
+            .get(hash)
+            .is_some_and(|m| m.values().any(|v| self.keys.contains_key(&v.key_id)))
     }
 
     /// Erases what Core's cleanup would by `now` (and the tip set), drops
@@ -749,18 +820,19 @@ impl GovernanceStore {
         }
     }
 
-    fn remember_ignored(&mut self, hash: [u8; 32]) {
+    fn remember_ignored(&mut self, hash: [u8; 32], parent: [u8; 32]) {
         remember(
             &mut self.ignored,
             &mut self.ignored_order,
             MAX_IGNORED_VOTES,
             hash,
+            parent,
         );
     }
 
     fn parent(&self, hash: &[u8; 32], now: i64) -> Parent {
         // A refused parent's votes are ignored as an erased one's are.
-        if self.erased.contains_key(hash) || self.refused.contains(hash) {
+        if self.erased.contains_key(hash) || self.refused.contains_key(hash) {
             return Parent::Expired;
         }
         match self.objects.get(hash).map(|o| &o.kind) {
@@ -800,7 +872,7 @@ impl GovernanceStore {
             || vote.signal != SIGNAL_FUNDING
             || outcome.is_none()
         {
-            self.remember_ignored(hash);
+            self.remember_ignored(hash, vote.parent_hash);
             return Err(VoteRejection::Ignored);
         }
         if vote.signature.len() == BLS_SIG_SIZE {
@@ -990,7 +1062,7 @@ impl GovernanceStore {
             *self.per_key.entry((parent, key)).or_default() += 1;
         }
         self.vote_count += 1;
-        self.seen_votes.insert(v.hash);
+        self.seen_votes.insert(v.hash, parent);
         Ok(())
     }
 
@@ -1155,6 +1227,69 @@ mod tests {
     }
 
     const HASH: &str = "4f6e2b3e7d8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b";
+
+    /// Sol r1 Major 2: two peers confirming one 500-object batch after
+    /// another cannot grow the store past its total cap.
+    #[test]
+    fn confirmed_batches_from_two_peers_stay_within_the_total_cap() {
+        let mut s = GovernanceStore::new(Network::Regtest);
+        let second = peer(2).unwrap();
+        for batch in 0..12i64 {
+            for i in 0..500 {
+                let o = proposal(&format!("p{batch}-{i}"));
+                let h = o.hash();
+                let _ = s.add_object(o, peer(1), NOW + batch);
+                s.note_announcer(&h, second);
+            }
+            assert!(
+                s.object_count() <= MAX_OBJECTS,
+                "batch {batch}: {}",
+                s.object_count()
+            );
+        }
+        assert_eq!(s.object_count(), MAX_OBJECTS);
+    }
+
+    /// D47: past the cap the oldest proposals no listed key voted on go
+    /// first; a voted one never makes room for an unvoted one, and a new
+    /// object finding only voted ones is refused.
+    #[test]
+    fn the_object_cap_evicts_the_oldest_unvoted_proposals() {
+        let mut s = GovernanceStore::new(Network::Regtest);
+        s.max_objects = 3;
+        s.set_masternode_list(&[entry(1, 1), entry(2, 1)]);
+        let voted = proposal("voted");
+        let hv = voted.hash();
+        s.add_object(voted, None, NOW).unwrap();
+        s.add_vote(vote(hv, 1, 1, VoteOutcome::Yes, NOW - 10), None, NOW)
+            .unwrap();
+        let (a, b, c) = (proposal("a"), proposal("b"), proposal("c"));
+        let (ha, hb, hc) = (a.hash(), b.hash(), c.hash());
+        s.add_object(a, None, NOW + 1).unwrap();
+        s.add_object(b, None, NOW + 2).unwrap();
+        s.add_object(c, None, NOW + 3).unwrap();
+        assert!(s.object(&hv).is_some() && s.object(&hc).is_some());
+        assert!(s.object(&ha).is_none() && s.object(&hb).is_some());
+        // An evicted hash is fetched again.
+        assert!(!s.has_object(&ha));
+        // b gains a listed key's vote: c is the only one left to evict.
+        s.add_vote(vote(hb, 2, 2, VoteOutcome::No, NOW - 10), None, NOW)
+            .unwrap();
+        s.add_object(proposal("d"), None, NOW + 4).unwrap();
+        assert!(s.object(&hc).is_none() && s.object(&hb).is_some());
+        // Only voted proposals and the newest unvoted one: d goes for e,
+        // and with every proposal voted on, a new one is refused.
+        let e = proposal("e");
+        let he = e.hash();
+        s.add_object(e, None, NOW + 5).unwrap();
+        s.add_vote(vote(he, 1, 3, VoteOutcome::Yes, NOW - 10), None, NOW)
+            .unwrap();
+        assert_eq!(
+            s.add_object(proposal("f"), None, NOW + 6),
+            Err(ObjectRejection::StoreFull)
+        );
+        assert_eq!(s.object_count(), 3);
+    }
 
     fn entry(key: u8, weight: u32) -> ListEntry {
         ListEntry {
@@ -1585,6 +1720,7 @@ mod tests {
         s.set_resolved(HashMap::from([(
             v.masternode_outpoint,
             ResolvedMasternode {
+                pro_tx_hash: [7; 32],
                 voting_key_id: key_id(1),
                 weight: 1,
             },

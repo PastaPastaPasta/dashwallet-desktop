@@ -4,6 +4,12 @@
 //! `notfound` entries of types 17 and 18, turned into [`PeerEvent`]s on one
 //! channel shared by every peer of a run (MG-02 §2.1).
 //!
+//! What a peer sends is bounded on the way in (D45): its session holds at
+//! most [`INBOUND_FRAMES`] frames for the forwarder and stops reading the
+//! socket while they wait, and every frame's bytes count against the
+//! peer's [`INBOUND_BUDGET`] until the run has handled its event; a peer
+//! past the budget is closed.
+//!
 //! The session answers pings, closes after its idle timeout (5 minutes here,
 //! with a ping every minute, so a dead peer ends its stream; MG-01 D17) and
 //! counts the bytes it reads. Sends never wait: one that finds the session's
@@ -15,7 +21,7 @@ use std::time::Duration;
 
 use dashcore::Network;
 use dashcore::consensus::encode::{Decodable, Encodable, VarInt};
-use dw_p2p::{Message, P2pError, Session, SessionConfig, commands};
+use dw_p2p::{Credit, Message, P2pError, Session, SessionConfig, commands};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -32,6 +38,13 @@ pub const MAX_INV: usize = 50_000;
 /// Frames queued per session: a vote sync of every current proposal plus
 /// the `getdata`s in flight fit with room to spare.
 const SEND_QUEUE: usize = 4096;
+/// Frames a session holds for its forwarder before it stops reading.
+pub const INBOUND_FRAMES: usize = 64;
+/// Bytes (headers included) of a peer's frames read and not yet handled by
+/// the run: an honest peer's whole sync answer stays well below (D45).
+pub const INBOUND_BUDGET: usize = 16 << 20;
+/// Events queued from every peer of a run to the run.
+pub const EVENTS_QUEUE: usize = 1024;
 
 const INV: &str = "inv";
 const GETDATA: &str = "getdata";
@@ -43,6 +56,16 @@ pub struct InvItem {
     pub kind: u32,
     /// Internal order.
     pub hash: [u8; 32],
+}
+
+/// One peer's event on the run's channel; its frame's bytes count against
+/// the peer's [`INBOUND_BUDGET`] until it is dropped.
+#[derive(Debug)]
+pub struct Inbound {
+    pub from: usize,
+    pub event: PeerEvent,
+    /// `None` for [`PeerEvent::Closed`].
+    pub credit: Option<Credit>,
 }
 
 /// What a peer sent that governance cares about.
@@ -184,30 +207,44 @@ fn to_event(msg: Message) -> PeerEvent {
 
 impl Peer {
     /// Connects and runs the handshake; from then on every governance
-    /// message of the peer arrives on `events` as `(id, event)`, ending with
-    /// [`PeerEvent::Closed`].
+    /// message of the peer arrives on `events` as an [`Inbound`] from `id`,
+    /// ending with [`PeerEvent::Closed`].
     pub async fn connect(
         id: usize,
         addr: SocketAddr,
         cfg: &PeerConfig,
-        events: mpsc::UnboundedSender<(usize, PeerEvent)>,
+        events: mpsc::Sender<Inbound>,
     ) -> Result<Peer, P2pError> {
         let session = Session::connect(addr, cfg.network, cfg.session.clone()).await?;
-        let mut rx = session.subscribe(&[
-            INV,
-            GETDATA,
-            NOTFOUND,
-            commands::MNGOVERNANCEOBJECT,
-            commands::MNGOVERNANCEOBJECTVOTE,
-            commands::SYNCSTATUSCOUNT,
-        ]);
+        let mut rx = session.subscribe_bounded(
+            &[
+                INV,
+                GETDATA,
+                NOTFOUND,
+                commands::MNGOVERNANCEOBJECT,
+                commands::MNGOVERNANCEOBJECTVOTE,
+                commands::SYNCSTATUSCOUNT,
+            ],
+            INBOUND_FRAMES,
+            INBOUND_BUDGET,
+        );
         let forwarder = tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                if events.send((id, to_event(msg))).is_err() {
+            while let Some(d) = rx.recv().await {
+                let inbound = Inbound {
+                    from: id,
+                    event: to_event(d.message),
+                    credit: Some(d.credit),
+                };
+                if events.send(inbound).await.is_err() {
                     return;
                 }
             }
-            let _ = events.send((id, PeerEvent::Closed));
+            let closed = Inbound {
+                from: id,
+                event: PeerEvent::Closed,
+                credit: None,
+            };
+            let _ = events.send(closed).await;
         });
         Ok(Peer {
             id,
@@ -303,6 +340,49 @@ mod tests {
         assert_eq!(decode_inv(&huge), None);
     }
 
+    /// Sol r1 Major 1: a peer sending faster than the governance loop reads
+    /// (large `govobj` frames, 50,000-entry `inv`s) is closed once its
+    /// queued payloads pass the inbound budget, instead of queueing them
+    /// without bound.
+    #[tokio::test]
+    async fn a_peer_outrunning_its_reader_is_closed_at_the_inbound_budget() {
+        let mock = MockPeer::bind(Network::Regtest).await.unwrap();
+        let addr = mock.addr();
+        let server = tokio::spawn(async move {
+            let mut conn = mock.accept().await.unwrap();
+            let object = vec![0u8; 2 << 20];
+            let item = InvItem {
+                kind: INV_GOVERNANCE_VOTE,
+                hash: [9; 32],
+            };
+            let inv = encode_inv(&vec![item; MAX_INV]);
+            for i in 0..40 {
+                let sent = if i % 2 == 0 {
+                    conn.send(commands::MNGOVERNANCEOBJECT, &object).await
+                } else {
+                    conn.send(INV, &inv).await
+                };
+                if sent.is_err() {
+                    break;
+                }
+            }
+            conn
+        });
+        let (tx, rx) = mpsc::channel(EVENTS_QUEUE);
+        let cfg = PeerConfig::new(Network::Regtest, "/t/", 1);
+        let peer = Peer::connect(4, addr, &cfg, tx).await.unwrap();
+        // Nothing reads `rx`.
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while peer.is_open() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the peer is closed at its inbound budget");
+        drop(rx);
+        server.abort();
+    }
+
     #[tokio::test]
     async fn events_from_a_session() {
         let mock = MockPeer::bind(Network::Regtest).await.unwrap();
@@ -326,13 +406,14 @@ mod tests {
                 .unwrap();
             conn
         });
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(EVENTS_QUEUE);
         let cfg = PeerConfig::new(Network::Regtest, "/t/", 1);
         let peer = Peer::connect(4, addr, &cfg, tx).await.unwrap();
         peer.send_govsync([0; 32], &object_fetch_filter());
         let mut got = Vec::new();
         for _ in 0..4 {
-            got.push(rx.recv().await.unwrap());
+            let e = rx.recv().await.unwrap();
+            got.push((e.from, e.event));
         }
         assert_eq!(
             got,
@@ -357,7 +438,8 @@ mod tests {
         );
         assert!(peer.bytes_received() > 0);
         server.await.unwrap().shutdown().await;
-        assert_eq!(rx.recv().await.unwrap(), (4, PeerEvent::Closed));
+        let e = rx.recv().await.unwrap();
+        assert_eq!((e.from, e.event), (4, PeerEvent::Closed));
         assert!(!peer.is_open());
     }
 }
