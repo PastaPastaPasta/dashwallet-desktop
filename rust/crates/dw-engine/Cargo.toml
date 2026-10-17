@@ -12,8 +12,9 @@ publish.workspace = true
 # size, prover warm-up; E0-12, docs/research/shielded-cost.md). Enables the
 # platform-wallet shielded wallet and its SqlitePersister tables.
 shielded = ["platform-wallet/shielded", "platform-wallet-storage/shielded"]
-# Debug builds' tests of other crates only (dwcli's log redaction, MG-03
-# D37): a request through a session's own SDK. Never in a release.
+# A request through a session's own SDK for dwcli's log redaction test
+# (MG-03 D37), enabled only by dwcli's dev-dependency. The module also needs
+# `debug_assertions`, so a release or dist build never has it (D40).
 test-support = []
 
 [[example]]

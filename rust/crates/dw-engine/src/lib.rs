@@ -44,7 +44,11 @@ pub(crate) mod send;
 mod session;
 mod store;
 pub mod sync;
+// Present only with the `test-support` feature, which dwcli's
+// dev-dependency alone enables, in a debug build: never in a release or
+// dist build (MG-03 D40).
 #[cfg(all(debug_assertions, feature = "test-support"))]
+#[doc(hidden)]
 pub mod test_support;
 mod tools;
 mod tx_actions;

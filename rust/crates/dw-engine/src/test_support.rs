@@ -1,6 +1,9 @@
-//! Debug builds' tests of other crates only (`test-support`, enabled by
-//! dwcli's dev-dependency): requests through a session's own SDK, built
-//! from its options as every session's is (MG-03 D37). Never in a release.
+//! Requests through a session's own SDK, built from its options as every
+//! session's is, for other crates' tests (MG-03 D37). Compiled only with
+//! the `test-support` feature in a debug build: dwcli's dev-dependency is
+//! all that enables the feature, so any debug build of dw-engine with it
+//! has this read-only API (hidden from its docs), and a release or dist
+//! build, which has no `debug_assertions`, never does (D40).
 
 use dash_sdk::platform::Fetch;
 use dash_sdk::query_types::IdentityBalance;
