@@ -177,6 +177,7 @@ export class IpcBackend implements Backend {
   registerName = cmd.registerName;
   identityRefreshBalance = cmd.identityRefreshBalance;
   contestStatus = cmd.contestStatus;
+  dashpayAvatar = cmd.dashpayAvatar;
   creditsTopUpQuote = cmd.creditsTopUpQuote;
   creditsTopUp = cmd.creditsTopUp;
   creditsPendingTopUps = cmd.creditsPendingTopUps;

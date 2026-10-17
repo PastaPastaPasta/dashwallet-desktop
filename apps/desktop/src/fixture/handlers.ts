@@ -1057,6 +1057,19 @@ export const HANDLERS: Handlers = {
   },
   dashpay_profile: ({ walletId, identity }, { world }) =>
     dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!.profile,
+  // DP4-02: an own identity's picture shows with the toggle off too (from the engine's cache).
+  dashpay_avatar: ({ walletId, identity, size }, { world }) => {
+    const dp = dashpay(world, walletId);
+    const own = dp.identities.some((i) => i.identity === identity);
+    const shown = (world.loadContactPictures ?? true) || own;
+    const png = shown ? dp.avatars?.[identity] : undefined;
+    return png === undefined ? null : { png, size };
+  },
+  load_contact_pictures: (_, { world }) => world.loadContactPictures ?? true,
+  set_load_contact_pictures: ({ on }, { world }) => {
+    world.loadContactPictures = on;
+    return null;
+  },
 
   // DashPay: notifications (the bell, above).
   dashpay_events: ({ walletId, identity, cursor, limit }, { world }) => eventPage(bell(world, walletId, identity), identity, cursor, limit),

@@ -99,6 +99,8 @@ import type { ContactDetailInfo } from "./generated/ContactDetailInfo";
 import type { ContactRequestOutcome } from "./generated/ContactRequestOutcome";
 import type { CostTable } from "./generated/CostTable";
 import type { ContestStatus } from "./generated/ContestStatus";
+import type { AvatarSizeName } from "./generated/AvatarSizeName";
+import type { AvatarThumbnail } from "./generated/AvatarThumbnail";
 import type { PendingTopUp } from "./generated/PendingTopUp";
 import type { StuckTopUpFunding } from "./generated/StuckTopUpFunding";
 import type { TopUpOutcome } from "./generated/TopUpOutcome";
@@ -332,6 +334,9 @@ export interface Backend {
   /** Asks Platform for the identity's balance; the answer arrives as `Platform{Identities}`. */
   identityRefreshBalance(walletId: string, identity: string): Promise<string | null>;
   contestStatus(walletId: string, identity: string, label: string): Promise<ContestStatus>;
+  /** Any identity's avatar thumbnail, verified against its profile (DP4-02); `null` without one or while
+   * "Load contact pictures" is off; `avatar.hash_mismatch` and the fetch errors show initials. */
+  dashpayAvatar(walletId: string, identity: string, size: AvatarSizeName): Promise<AvatarThumbnail | null>;
   creditsTopUpQuote(walletId: string, identity: string, duffs: number): Promise<TopUpQuote>;
   creditsTopUp(walletId: string, identity: string, duffs: number, grant: string): Promise<TopUpOutcome>;
   creditsPendingTopUps(walletId: string): Promise<PendingTopUp[]>;
