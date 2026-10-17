@@ -70,6 +70,20 @@ fn request(sender: u8, recipient: u8, created_at: u64) -> ContactRequest {
     )
 }
 
+/// Bob's request to us after he rotates to his account 1.
+fn bobs_rotated_request() -> ContactRequest {
+    ContactRequest::new(id(BOB), id(ME), 0, 0, 1, vec![2; 96], 1, 2_500_000)
+}
+
+/// The key of the external account paying contact `n`.
+fn paying_account_key(n: u8) -> DashpayAccountKey {
+    DashpayAccountKey {
+        index: 0,
+        user_identity_id: [ME; 32],
+        friend_identity_id: [n; 32],
+    }
+}
+
 /// The external account's xpub paying contact `n` (a test key).
 fn contact_xpub(n: u8) -> ExtendedPubKey {
     let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[100 + n; 32]).unwrap();
@@ -282,27 +296,37 @@ impl Fixture {
     /// Contact `n`'s paying account built from `xpub`, replacing any it
     /// had: the immutable account carrying the xpub and its managed pool,
     /// as an accept or a rotation's teardown and rebuild leave them.
+    /// Contact `n`'s paying account built from `xpub`, with its pool.
+    fn paying_account(
+        &self,
+        n: u8,
+        xpub: ExtendedPubKey,
+    ) -> (AccountType, ManagedCoreFundsAccount) {
+        let account_type = AccountType::DashpayExternalAccount {
+            index: 0,
+            user_identity_id: [ME; 32],
+            friend_identity_id: [n; 32],
+        };
+        let managed = ManagedCoreFundsAccount::from_account(&key_wallet::Account {
+            parent_wallet_id: Some(self.wallet.0),
+            account_type,
+            network: dashcore::Network::Regtest,
+            account_xpub: xpub,
+            is_watch_only: true,
+        });
+        (account_type, managed)
+    }
+
     fn build_paying_account(&self, n: u8, xpub: ExtendedPubKey) {
         self.tear_down_paying_account(n);
         let manager = self.session.manager().unwrap();
         let wallet = self.wallet;
+        let (account_type, managed) = self.paying_account(n, xpub);
         self.engine.block_on(async move {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
             let (w, info) = wm.get_wallet_mut_and_info_mut(&wallet.0).unwrap();
-            let account_type = AccountType::DashpayExternalAccount {
-                index: 0,
-                user_identity_id: [ME; 32],
-                friend_identity_id: [n; 32],
-            };
             w.add_account(account_type, Some(xpub)).unwrap();
-            let managed = ManagedCoreFundsAccount::from_account(&key_wallet::Account {
-                parent_wallet_id: Some(wallet.0),
-                account_type,
-                network: dashcore::Network::Regtest,
-                account_xpub: xpub,
-                is_watch_only: true,
-            });
             (info.core_wallet.accounts)
                 .insert_funds_bearing_account(managed)
                 .unwrap();
@@ -318,11 +342,7 @@ impl Fixture {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
             let (w, info) = wm.get_wallet_mut_and_info_mut(&wallet.0).unwrap();
-            let key = DashpayAccountKey {
-                index: 0,
-                user_identity_id: [ME; 32],
-                friend_identity_id: [n; 32],
-            };
+            let key = paying_account_key(n);
             w.accounts.dashpay_external_accounts.remove(&key);
             (info.core_wallet.accounts.dashpay_external_accounts).remove(&key);
         });
@@ -1503,15 +1523,9 @@ impl Fixture {
 
     /// Bob's request to us replaced, as a sync pass leaves a rotation.
     fn replace_bobs_request(&self, created_at: u64) {
-        self.with_me(move |me| {
-            let mut c = EstablishedContact::new(
-                id(BOB),
-                request(ME, BOB, 1_000_000),
-                request(BOB, ME, created_at),
-            );
-            c.external_account_reference = Some(c.incoming_request.account_reference);
-            me.apply_established_contact(c);
-        });
+        let incoming = request(BOB, ME, created_at);
+        let stamp = Some(incoming.account_reference);
+        self.with_me(move |me| me.apply_established_contact(bobs_contact(incoming, stamp)));
     }
 
     /// Bob rotates, as a sync pass and the drain leave it: his request to
@@ -1519,25 +1533,18 @@ impl Fixture {
     /// from it (its xpub `xpub`) and stamped with it, and Platform holding
     /// the new request.
     fn rotate_bob(&self, platform: &FakePlatform, xpub: ExtendedPubKey) {
-        let rotated = ContactRequest::new(id(BOB), id(ME), 0, 0, 1, vec![2; 96], 1, 2_500_000);
+        let rotated = bobs_rotated_request();
         platform.answer_requests(vec![request(ME, BOB, 1_000_000), rotated.clone()]);
         self.build_paying_account(BOB, xpub);
-        self.with_me(move |me| {
-            let mut c = EstablishedContact::new(id(BOB), request(ME, BOB, 1_000_000), rotated);
-            c.external_account_reference = Some(1);
-            me.apply_established_contact(c);
-        });
+        self.with_me(move |me| me.apply_established_contact(bobs_contact(rotated, Some(1))));
     }
 
     /// Bob's rotated request (naming his account 1) persisted with the
     /// marker cleared, as a crash before the library's sweep leaves it: his
     /// paying account is still the one built from his old request.
     fn bob_rotated_before_the_sweep(&self) {
-        let rotated = ContactRequest::new(id(BOB), id(ME), 0, 0, 1, vec![2; 96], 1, 2_500_000);
-        self.with_me(move |me| {
-            let c = EstablishedContact::new(id(BOB), request(ME, BOB, 1_000_000), rotated);
-            me.apply_established_contact(c);
-        });
+        let rotated = bobs_rotated_request();
+        self.with_me(move |me| me.apply_established_contact(bobs_contact(rotated, None)));
     }
 
     /// The library's paying account for Bob, built from his request
@@ -1863,8 +1870,8 @@ fn an_account_a_crash_left_unrebuilt_is_not_paid() {
 }
 
 /// Design D28: with the stamp kept by the store, a paying account is
-/// unstamped only before its first rebuild after the upgrade, or after
-/// the crash above, when it is the old account. Every setting refuses it,
+/// unstamped before its first rebuild after the upgrade, or after the
+/// crash above, when it is the old account. Every setting refuses it,
 /// nothing reserved.
 #[test]
 fn an_unstamped_account_is_not_paid_in_any_setting() {
@@ -2024,30 +2031,12 @@ fn an_address_from_a_replaced_account_is_not_paid() {
     );
 }
 
-/// Bob's established contact with his request to us `incoming`, its paying
-/// account stamped `stamp`, as the library persists it.
-fn bobs_contact(incoming: ContactRequest, stamp: Option<u32>) -> PlatformWalletChangeSet {
+/// Bob's established contact: his request to us `incoming`, its paying
+/// account stamped `stamp`.
+fn bobs_contact(incoming: ContactRequest, stamp: Option<u32>) -> EstablishedContact {
     let mut c = EstablishedContact::new(id(BOB), request(ME, BOB, 1_000_000), incoming);
     c.external_account_reference = stamp;
-    let key = SentContactRequestKey {
-        owner_id: id(ME),
-        recipient_id: id(BOB),
-    };
-    PlatformWalletChangeSet {
-        contacts: Some(ContactChangeSet {
-            established: [(key, c)].into(),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
-fn bobs_account_key() -> DashpayAccountKey {
-    DashpayAccountKey {
-        index: 0,
-        user_identity_id: [ME; 32],
-        friend_identity_id: [BOB; 32],
-    }
+    c
 }
 
 impl Fixture {
@@ -2057,22 +2046,26 @@ impl Fixture {
         store.store(self.wallet.0, cs).expect("stored");
     }
 
+    /// Bob's contact, as `bobs_contact` describes it, through the persister.
+    fn store_bobs_contact(&self, incoming: ContactRequest, stamp: Option<u32>) {
+        let key = SentContactRequestKey {
+            owner_id: id(ME),
+            recipient_id: id(BOB),
+        };
+        self.store(PlatformWalletChangeSet {
+            contacts: Some(ContactChangeSet {
+                established: [(key, bobs_contact(incoming, stamp))].into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+    }
+
     /// Bob's paying account built from `xpub`, as
     /// `register_external_contact_account` persists it: the registration
     /// and its derived pool.
     fn bobs_account(&self, xpub: ExtendedPubKey) -> PlatformWalletChangeSet {
-        let account_type = AccountType::DashpayExternalAccount {
-            index: 0,
-            user_identity_id: [ME; 32],
-            friend_identity_id: [BOB; 32],
-        };
-        let managed = ManagedCoreFundsAccount::from_account(&key_wallet::Account {
-            parent_wallet_id: Some(self.wallet.0),
-            account_type,
-            network: dashcore::Network::Regtest,
-            account_xpub: xpub,
-            is_watch_only: true,
-        });
+        let (account_type, managed) = self.paying_account(BOB, xpub);
         let pools = managed.managed_account_type().address_pools();
         PlatformWalletChangeSet {
             account_registrations: vec![AccountRegistrationEntry {
@@ -2117,7 +2110,7 @@ impl Fixture {
         self.with_wallet(|w| async move {
             let state = w.state().await;
             (state.wallet().accounts.dashpay_external_accounts)
-                .get(&bobs_account_key())
+                .get(&paying_account_key(BOB))
                 .map(|a| a.account_xpub)
         })
     }
@@ -2126,7 +2119,7 @@ impl Fixture {
         self.with_wallet(move |w| async move {
             let state = w.state().await;
             (state.core_wallet.accounts.dashpay_external_accounts)
-                .get(&bobs_account_key())
+                .get(&paying_account_key(BOB))
                 .is_some_and(|a| a.contains_address(&address))
         })
     }
@@ -2185,7 +2178,7 @@ fn an_address_the_rebuilt_account_still_holds_is_paid() {
     assert!(!f.bob_unverified(), "the new request verified");
 }
 
-/// DP3-04b (Sol r3 High), design D28: Bob rotates to a new xpub through
+/// DP3-04b (Sol r3 High), design D29: Bob rotates to a new xpub through
 /// the library's own store, as its re-key, `register_external_contact_account`
 /// and `note_external_account_registered` write it, and a relaunch reaches
 /// his new paying account and its stamp from SQLite alone (no Platform, so
@@ -2197,16 +2190,16 @@ fn an_address_the_rebuilt_account_still_holds_is_paid() {
 fn a_rotation_the_store_kept_is_what_a_relaunch_pays() {
     let mut f = fixture(false);
     let (old, new) = (contact_xpub(BOB), contact_xpub(CAROL));
-    let rotated = ContactRequest::new(id(BOB), id(ME), 0, 0, 1, vec![2; 96], 1, 2_500_000);
+    let rotated = bobs_rotated_request();
     // The accept the fixture holds in memory: Bob's account built from his
     // first request (account 0) and stamped with it.
     f.store(f.bobs_account(old));
-    f.store(bobs_contact(request(BOB, ME, 2_000_000), Some(0)));
+    f.store_bobs_contact(request(BOB, ME, 2_000_000), Some(0));
     // The rotation: the re-key clears the stamp, the rebuild replaces the
     // account (the store retires its old pool), the stamp names account 1.
-    f.store(bobs_contact(rotated.clone(), None));
+    f.store_bobs_contact(rotated.clone(), None);
     f.store(f.bobs_account(new));
-    f.store(bobs_contact(rotated, Some(1)));
+    f.store_bobs_contact(rotated, Some(1));
 
     f.relaunch();
     assert_eq!(
@@ -2224,10 +2217,11 @@ fn a_rotation_the_store_kept_is_what_a_relaunch_pays() {
     let pair = (id(ME), id(BOB));
     let payments = &f.session.platform.payments;
     // A payment pays the next address of the account it derives from.
-    let of = |xpub, paid: &str| (0..20).any(|i| address_at(xpub, i).to_string() == paid);
+    let derives_from = |xpub, to: &str| (0..20).any(|i| address_at(xpub, i).to_string() == to);
     let pays_the_new_account = |d: &Arc<TxDraft>, p: Arc<PreparedTx>, what: &str| {
-        assert!(of(new, &paid(&p)), "{what}: {}", paid(&p));
-        assert!(!of(old, &paid(&p)), "{what}");
+        let to = paid(&p);
+        assert!(derives_from(new, &to), "{what}: {to}");
+        assert!(!derives_from(old, &to), "{what}");
         f.engine.block_on(d.abandon(p)).unwrap();
         let kept = f.reserved(BOB).expect("the address is kept");
         payments.drop_reserved(f.wallet, pair, &kept);

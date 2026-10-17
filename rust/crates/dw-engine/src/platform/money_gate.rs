@@ -332,8 +332,9 @@ pub(super) fn payee_held(
 ///
 /// No stamp is staleness too, in every mode (D28): the store keeps the
 /// stamp, so an account is unstamped only before its first rebuild after
-/// the upgrade, or when a crash came between its re-key and its rebuild,
-/// and then it is the old account.
+/// the upgrade, after a crash between its re-key and its rebuild (the old
+/// account), or when its stamp's write was lost; the next DashPay pass
+/// rebuilds and stamps each.
 fn paying_account_stale(m: &ManagedIdentity, contact: &Identifier, reserved: bool) -> bool {
     let dp = m.dashpay();
     let Some(c) = dp.established_contacts().get(contact) else {
@@ -344,8 +345,8 @@ fn paying_account_stale(m: &ManagedIdentity, contact: &Identifier, reserved: boo
             p.contact_id == *contact && p.op.kind() == PendingContactCryptoKind::RegisterExternal
         })
     };
-    let stale = c.external_account_reference != Some(c.incoming_request.account_reference);
-    stale && (reserved || !rebuild_queued())
+    c.external_account_reference != Some(c.incoming_request.account_reference)
+        && (reserved || !rebuild_queued())
 }
 
 /// Design D21: `address` is in the address pool of `pair`'s paying
