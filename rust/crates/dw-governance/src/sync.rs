@@ -13,9 +13,10 @@
 //! requested them, so the wallet relays its own by `inv` and answers the
 //! peer's `getdata`.
 //!
-//! The wallet keeps the same request rules: an item is accepted only from
-//! a peer it was asked of (the one asked now, or one asked before whose
-//! request timed out); anything else is unsolicited and dropped with no
+//! The wallet keeps the same request rules: an item is accepted only as
+//! the answer to a `getdata` to its sender still unanswered (the one out
+//! now, or one that timed out), and each answer, a copy or `notfound`,
+//! spends one (D60); anything else is unsolicited and dropped with no
 //! penalty, as Core does (D59). Undecodable and invalid items are counted,
 //! and a peer past [`SyncConfig::max_misbehaviour`] is closed (D10). Votes Core relays but
 //! the wallet does not tally are ignored without a penalty; votes whose key
@@ -464,8 +465,11 @@ struct Pending {
     asked_again: bool,
     /// An item of the running phase: giving up on it fails the phase.
     phase: bool,
-    /// Peers asked before, whose late delivery is still accepted.
+    /// Peers asked before: not asked again.
     asked: Vec<usize>,
+    /// Those of them whose `getdata` went unanswered: each may still send
+    /// one copy (D60).
+    owed: Vec<usize>,
     /// One of them timed out: given up on, the item is lost even after a
     /// later peer's `notfound` (D57).
     unanswered: bool,
@@ -488,6 +492,8 @@ struct Announced {
 /// A request given up on: its peers may still deliver.
 struct Late {
     asked: Vec<usize>,
+    /// Peers that may still send one copy each (D60).
+    owed: Vec<usize>,
     /// Counted in [`Run::lost`].
     lost: bool,
 }
@@ -498,6 +504,7 @@ struct Late {
 struct Taken {
     phase: bool,
     asked: Vec<usize>,
+    owed: Vec<usize>,
     unanswered: bool,
 }
 
@@ -506,6 +513,7 @@ impl From<Pending> for Taken {
         Self {
             phase: r.phase,
             asked: r.asked,
+            owed: r.owed,
             unanswered: r.unanswered,
         }
     }
@@ -520,6 +528,15 @@ struct Requests {
     /// they count towards its confirmation once it arrives (D3).
     object_announcers: HashMap<[u8; 32], Vec<SocketAddr>>,
     late: HashMap<Item, Late>,
+}
+
+/// Spends one of `from`'s unanswered `getdata`s in `owed`, if any (D60).
+fn take_owed(owed: &mut Vec<usize>, from: usize) -> bool {
+    let Some(i) = owed.iter().position(|p| *p == from) else {
+        return false;
+    };
+    owed.swap_remove(i);
+    true
 }
 
 /// The other governance inv kind.
@@ -680,6 +697,7 @@ impl Run {
                 asked_again: false,
                 phase: t.phase,
                 asked: t.asked,
+                owed: t.owed,
                 unanswered: t.unanswered,
             },
         );
@@ -757,35 +775,46 @@ impl Run {
         }
     }
 
-    /// Accepts `item` from `from` if it was asked of `from` now or before;
-    /// drops it otherwise, as Core does, with no penalty (D59).
+    /// Accepts `item` from `from` if a `getdata` of it to `from` is still
+    /// unanswered, which this copy answers (D60); drops it otherwise, as
+    /// Core does, with no penalty (D59).
     fn take(&mut self, from: usize, item: &Item) -> Option<Taken> {
-        let taken = match self.requests.pending.get(item) {
-            Some(r) if r.peer == from => {
-                let r = self.release(item).expect("looked up");
-                if r.asked_again {
-                    // Asked twice: its second copy may still come.
-                    self.remember_late(*item, vec![r.peer], false);
-                }
-                r.into()
+        let taken = if let Some(r) = self.requests.pending.get(item)
+            && r.peer == from
+        {
+            let r = self.release(item).expect("looked up");
+            if r.asked_again {
+                // Asked twice: its second copy may still come.
+                self.remember_late(*item, vec![r.peer], vec![r.peer], false);
             }
+            r.into()
+        } else if let Some(r) = self.requests.pending.get_mut(item)
+            && take_owed(&mut r.owed, from)
+        {
             // A peer asked before: the request still out stays until the
             // wallet takes a copy (D59).
-            Some(r) if r.asked.contains(&from) => Taken {
+            Taken {
                 phase: r.phase,
                 asked: r.asked.clone(),
+                owed: r.owed.clone(),
                 unanswered: r.unanswered,
-            },
-            // Kept: a request asked twice may be answered twice. A lost
-            // item stays lost until the wallet accepts a copy (D57).
-            _ => match self.requests.late.get(item) {
-                Some(l) if l.asked.contains(&from) => Taken {
-                    phase: l.lost,
-                    asked: l.asked.clone(),
-                    unanswered: false,
-                },
-                _ => return None,
-            },
+            }
+        } else if let Some(l) = self.requests.late.get_mut(item)
+            && take_owed(&mut l.owed, from)
+        {
+            // A lost item stays lost until the wallet accepts a copy (D57).
+            let taken = Taken {
+                phase: l.lost,
+                asked: l.asked.clone(),
+                owed: l.owed.clone(),
+                unanswered: false,
+            };
+            if l.owed.is_empty() && !l.lost {
+                self.requests.late.remove(item);
+            }
+            taken
+        } else {
+            return None;
         };
         if let Some(p) = self.peer_mut(from) {
             p.last_delivery = Instant::now();
@@ -797,7 +826,13 @@ impl Run {
     /// record it replaces keeps its peers and its loss: only a copy the
     /// wallet accepts ends a loss (D57). Past the bound, records not lost
     /// make room; a loss with no room is counted all the same.
-    fn remember_late(&mut self, item: Item, mut asked: Vec<usize>, mut lost: bool) {
+    fn remember_late(
+        &mut self,
+        item: Item,
+        mut asked: Vec<usize>,
+        mut owed: Vec<usize>,
+        mut lost: bool,
+    ) {
         let late = &mut self.requests.late;
         if let Some(old) = late.remove(&item) {
             if old.lost {
@@ -809,6 +844,11 @@ impl Run {
                     asked.push(p);
                 }
             }
+            owed.extend(old.owed);
+        }
+        // Owed no copy and no loss: nothing to keep (D60).
+        if owed.is_empty() && !lost {
+            return;
         }
         // More records than losses: some are not lost and can go.
         if late.len() >= MAX_LATE && late.len() > self.lost {
@@ -818,7 +858,7 @@ impl Run {
             self.lost += 1;
         }
         if late.len() < MAX_LATE {
-            late.insert(item, Late { asked, lost });
+            late.insert(item, Late { asked, owed, lost });
         }
     }
 
@@ -828,9 +868,12 @@ impl Run {
     /// limits (D58).
     fn accepted(&mut self, item: &Item) {
         if let Some(r) = self.release(item) {
-            let mut asked = r.asked;
+            let (mut asked, mut owed) = (r.asked, r.owed);
             asked.push(r.peer);
-            self.remember_late(*item, asked, false);
+            if r.sent.is_some() {
+                owed.push(r.peer);
+            }
+            self.remember_late(*item, asked, owed, false);
         }
         if let Some(l) = self.requests.late.get_mut(item)
             && std::mem::take(&mut l.lost)
@@ -870,7 +913,7 @@ impl Run {
             None => {
                 // Who announced an object still counts if another peer
                 // delivers it later.
-                self.remember_late(item, asked, t.phase && (count || t.unanswered));
+                self.remember_late(item, asked, t.owed, t.phase && (count || t.unanswered));
                 self.finish(&item);
                 let (hash, kind) = item;
                 if kind == INV_GOVERNANCE_VOTE {
@@ -1362,10 +1405,11 @@ impl Run {
             if sent {
                 // It may still deliver: given up on, the item is lost
                 // whatever a later peer answers (D57).
-                let t = Taken {
+                let mut t = Taken {
                     unanswered: true,
                     ..Taken::from(r)
                 };
+                t.owed.push(peer);
                 self.retry(item, Some(peer), t, true);
             } else {
                 // Never asked of it: the peer stays askable, after the

@@ -2248,11 +2248,14 @@ fn flood_late_record(run: &mut Run) {
     }
 }
 
-/// Peer 0 announces `item` and answers `notfound` (a late record of it);
-/// then peer 1 announces it.
+/// Peer 0 announces `item`, times out twice and is given up on (a late
+/// record: it may still send one copy, D60); then peer 1 announces it.
 fn late_record_then_second_announcer(run: &mut Run, item: InvItem) {
+    let timeout = std::mem::replace(&mut run.cfg.request_timeout, Duration::ZERO);
     run.handle(0, PeerEvent::Inv(vec![item]));
-    run.handle(0, PeerEvent::NotFound(vec![item]));
+    run.expire(); // asked again
+    run.expire(); // given up
+    run.cfg.request_timeout = timeout;
     run.handle(1, PeerEvent::Inv(vec![item]));
 }
 
@@ -2267,8 +2270,8 @@ fn lose_vote(run: &mut Run, x: &GovernanceVote) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refused_late_copy_leaves_another_peers_request_alone() {
-    // Validator r7 MJ1: A announces X and answers `notfound` (a late
-    // record of A); honest H announces X (a request sent to H); A sends X
+    // Validator r7 MJ1: A announces X and times out (a late record of A);
+    // honest H announces X (a request sent to H); A sends X
     // re-signed by an unlisted key (same hash, refused). The retry
     // reassigned X to H, overwriting its sent request: a leaked slot, a
     // second `getdata` and H charged for its second copy.
@@ -2398,9 +2401,9 @@ async fn an_earlier_peers_copy_after_the_next_peers_is_no_offence() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refused_copy_from_a_peer_asked_before_leaves_the_live_request_alone() {
-    // Validator r8 m2: peer 0 answered `notfound`, so it is in the live
-    // request's `asked`; its re-signed copies released peer 1's request
-    // before being refused, and the retry sent it to peer 1 again.
+    // Validator r8 m2: peer 0 timed out, so it is in the live request's
+    // `asked`; its re-signed copy released peer 1's request before being
+    // refused, and the retry sent it to peer 1 again.
     let p = proposal("p-r8-asked");
     let x = vote(p.hash(), 1, VoteOutcome::Yes);
     let item = vote_inv(&x);
@@ -2408,24 +2411,23 @@ async fn a_refused_copy_from_a_peer_asked_before_leaves_the_live_request_alone()
     let mut run = two_peer_run(&p).await;
     run.handle(0, PeerEvent::Inv(vec![item]));
     run.handle(1, PeerEvent::Inv(vec![item]));
-    run.handle(0, PeerEvent::NotFound(vec![item]));
+    run.cfg.request_timeout = Duration::ZERO;
+    run.expire();
+    run.cfg.request_timeout = Duration::from_secs(30);
     let before = run.requests.pending[&key].sent;
     assert_eq!(
         (run.requests.pending[&key].peer, run.peers[1].in_flight),
         (1, 1)
     );
     std::thread::sleep(Duration::from_millis(2));
-    for _ in 0..5 {
-        run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
-    }
+    run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
     assert_eq!(run.requests.pending.get(&key).and_then(|r| r.sent), before);
     assert_eq!(run.peers[1].in_flight, 1);
-    // Taken from peer 0, the copy ends peer 1's request, whose copy is
-    // then late.
+    // Its one `getdata` answered, peer 0's genuine copy is dropped (D60);
+    // peer 1's request is still out.
     run.handle(0, PeerEvent::Vote(x.encode()));
-    assert!(run.shared.store().has_vote(&x.hash()));
-    assert!(run.requests.pending.is_empty());
-    assert_eq!(run.peers[1].in_flight, 0);
+    assert!(!run.shared.store().has_vote(&x.hash()));
+    assert_eq!(run.requests.pending[&key].peer, 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2540,4 +2542,97 @@ async fn vote_sync_history_drops_entries_past_the_window() {
         n <= MIN_HISTORY_PRUNE,
         "{n} entries kept, all past a zero window"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_earlier_peers_copy_ends_the_request_still_out() {
+    // D59: peer 0's request timed out and moved to peer 1; peer 0's copy,
+    // taken, ends peer 1's request, freeing its slot.
+    let p = proposal("p-d60-earlier");
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    let item = vote_inv(&x);
+    let mut run = two_peer_run(&p).await;
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.cfg.request_timeout = Duration::ZERO;
+    run.expire();
+    assert_eq!(run.requests.pending[&(item.hash, item.kind)].peer, 1);
+    run.handle(0, PeerEvent::Vote(x.encode()));
+    assert!(run.shared.store().has_vote(&x.hash()));
+    assert!(run.requests.pending.is_empty());
+    assert_eq!(run.peers[1].in_flight, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_notfound_answers_the_peers_getdata() {
+    // Validator r9 MJ1: a peer that answered `notfound` was kept in the
+    // item's late record, so it could replay a copy (an old, superseded
+    // vote, refused as `Obsolete` without a penalty) without end, each a
+    // signature recovery. Core spends a request's authorization on its
+    // answer (D60).
+    let p = proposal("p-d60-notfound");
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    let item = vote_inv(&x);
+    let mut run = two_peer_run(&p).await;
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::NotFound(vec![item]));
+    // Owed no copy and not lost: no late record is kept for it.
+    assert!(run.requests.late.is_empty());
+    assert!(run.take(0, &(item.hash, item.kind)).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_copy_answers_one_getdata() {
+    // Validator r9 MJ1: a timed-out peer's late copy left its late record
+    // in place, so the same copy could be replayed without end (D60).
+    let p = proposal("p-d60-late");
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    let key = (x.hash(), INV_GOVERNANCE_VOTE);
+    let mut run = two_peer_run(&p).await;
+    run.cfg.request_timeout = Duration::ZERO;
+    run.handle(0, PeerEvent::Inv(vec![vote_inv(&x)]));
+    run.expire(); // asked again
+    run.expire(); // given up: it may still send a copy
+    assert!(run.take(0, &key).is_some());
+    assert!(run.take(0, &key).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_earlier_peers_copies_answer_one_getdata() {
+    // Validator r9 MJ1, through a request still out: peer 0's request
+    // moved to peer 1, and each copy peer 0 sent cost a signature
+    // recovery while peer 1's request stayed (D60).
+    let p = proposal("p-d60-replay");
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    let item = vote_inv(&x);
+    let mut run = two_peer_run(&p).await;
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.cfg.request_timeout = Duration::ZERO;
+    run.expire();
+    run.cfg.request_timeout = Duration::from_secs(30);
+    for _ in 0..5 {
+        run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
+    }
+    assert_eq!(run.peers[0].suspect, 1, "each replayed copy was recovered");
+    assert_eq!(run.requests.pending[&(item.hash, item.kind)].peer, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_copy_from_the_timed_out_peer_ends_its_loss() {
+    // Validator r9 m1: with no penalty for unsolicited items (D59), a late
+    // copy wrongly dropped no longer shows as misbehaviour; the timed-out
+    // peer's late copy must still be taken and end the loss (D57).
+    let mut run = phase_vote_run().await;
+    let p = proposal("p-d60-loss");
+    {
+        let mut s = run.shared.store();
+        s.set_confirmations(1);
+        s.add_object(p.clone(), None, unix_now()).unwrap();
+    }
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    lose_vote(&mut run, &x);
+    run.handle(0, PeerEvent::Vote(x.encode()));
+    assert!(run.shared.store().has_vote(&x.hash()));
+    assert_eq!(run.lost, 0);
 }

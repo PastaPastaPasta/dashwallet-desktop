@@ -257,6 +257,9 @@ pub struct GovernanceStore {
     confirmations: usize,
     tip: Option<u32>,
     objects: HashMap<[u8; 32], StoredObject>,
+    /// How many of `objects` are unconfirmed, kept as they change: read on
+    /// every sync event (D60).
+    unconfirmed: usize,
     /// Erased objects → until when their hash is kept.
     erased: HashMap<[u8; 32], i64>,
     /// object hash → (outpoint, key) → current funding vote.
@@ -327,6 +330,7 @@ impl GovernanceStore {
             confirmations: DEFAULT_CONFIRMATIONS,
             tip: None,
             objects: HashMap::new(),
+            unconfirmed: 0,
             erased: HashMap::new(),
             votes: HashMap::new(),
             per_key: HashMap::new(),
@@ -386,7 +390,10 @@ impl GovernanceStore {
         self.confirmations = n.max(1);
         let n = self.confirmations;
         for o in self.objects.values_mut() {
-            o.confirmed = o.confirmed || o.announcers.len() >= n;
+            if !o.confirmed && o.announcers.len() >= n {
+                o.confirmed = true;
+                self.unconfirmed -= 1;
+            }
         }
     }
 
@@ -405,7 +412,11 @@ impl GovernanceStore {
     }
 
     pub fn unconfirmed_count(&self) -> usize {
-        self.objects.values().filter(|o| !o.confirmed).count()
+        debug_assert_eq!(
+            self.unconfirmed,
+            self.objects.values().filter(|o| !o.confirmed).count()
+        );
+        self.unconfirmed
     }
 
     /// Current votes stored, all objects.
@@ -549,6 +560,9 @@ impl GovernanceStore {
         }
         o.announcers.push(peer);
         o.confirmed = o.announcers.len() >= n;
+        if o.confirmed {
+            self.unconfirmed -= 1;
+        }
         o.confirmed
     }
 
@@ -596,7 +610,8 @@ impl GovernanceStore {
             self.room_for_unconfirmed(from, object.data.len())?;
         }
         self.make_room(object.data.len())?;
-        self.objects.insert(
+        self.unconfirmed += usize::from(!confirmed);
+        let old = self.objects.insert(
             hash,
             StoredObject {
                 object,
@@ -608,6 +623,9 @@ impl GovernanceStore {
                 seen_in_run: self.run,
             },
         );
+        if old.is_some_and(|o| !o.confirmed) {
+            self.unconfirmed -= 1;
+        }
         self.adopt_orphans(&hash, now);
         Ok(true)
     }
@@ -776,7 +794,9 @@ impl GovernanceStore {
     }
 
     fn remove_object(&mut self, hash: &[u8; 32]) {
-        self.objects.remove(hash);
+        if self.objects.remove(hash).is_some_and(|o| !o.confirmed) {
+            self.unconfirmed -= 1;
+        }
         for (_, v) in self.votes.remove(hash).unwrap_or_default() {
             self.seen_votes.remove(&v.vote_hash);
             self.vote_count -= 1;
