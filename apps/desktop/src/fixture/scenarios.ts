@@ -500,6 +500,14 @@ const SCENARIOS = {
     attributePayments(w);
     return w;
   },
+  /** DP3-03b: `dashpay-registered` with "Include my username in payment requests" off: the
+   * Receive QR and the requests are plain Core URIs. */
+  "dashpay-username-off": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    w.wallets[0].receive.usernameInRequests = false;
+    return w;
+  },
   /** DP3-07: `dashpay-registered` with more attributed payments among the newest rows (D10). */
   "dashpay-history-contacts": (t) => {
     const w = base(t);

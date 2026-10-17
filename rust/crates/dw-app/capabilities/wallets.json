@@ -29,6 +29,8 @@
     "allow-create-receive-request",
     "allow-receive-requests",
     "allow-receive-username",
+    "allow-username-in-requests",
+    "allow-set-username-in-requests",
     "allow-delete-receive-request",
     "allow-address-book",
     "allow-save-address-book-entry",
