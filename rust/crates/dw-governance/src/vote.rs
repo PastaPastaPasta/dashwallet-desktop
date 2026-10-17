@@ -333,6 +333,10 @@ pub(crate) fn malleations(v: &GovernanceVote) -> Vec<GovernanceVote> {
 }
 
 #[cfg(test)]
+#[path = "vote_canonical_tests.rs"]
+mod canonical_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use dashcore::secp256k1::SecretKey;

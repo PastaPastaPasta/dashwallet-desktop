@@ -86,8 +86,8 @@ pub const UNCONFIRMED_TTL_SECS: i64 = 60 * 60;
 pub const VOTE_UPDATE_MIN_SECS: i64 = 60 * 60;
 /// Hashes of ignored votes remembered, oldest forgotten first.
 pub const MAX_IGNORED_VOTES: usize = 100_000;
-/// Copies of votes (hash and signature) recovered and then not kept,
-/// with why, oldest forgotten first (MG-02 D62).
+/// Copies of votes (hash and canonical signature) recovered and then not
+/// kept, with why, oldest forgotten first (MG-02 D62, D63).
 pub const MAX_DISMISSED_VOTES: usize = 100_000;
 /// Hashes of objects every announcer's copy of was refused, oldest
 /// forgotten first (MG-02 D35).
@@ -279,9 +279,9 @@ pub struct GovernanceStore {
     ignored_order: VecDeque<[u8; 32]>,
     refused: HashMap<[u8; 32], ()>,
     refused_order: VecDeque<[u8; 32]>,
-    /// [`copy_digest`] of a vote recovered and not kept → why: the same
-    /// bytes recover to the same key and get the same answer, so they are
-    /// not recovered again (D62).
+    /// [`copy_digest`] of a vote recovered and not kept → why: signatures of
+    /// one canonical form recover the same key and get the same answer, so
+    /// they are not recovered again while remembered (D62, D63).
     dismissed: HashMap<[u8; 32], VoteRejection>,
     dismissed_order: VecDeque<[u8; 32]>,
     orphans: HashMap<[u8; 32], Orphan>,

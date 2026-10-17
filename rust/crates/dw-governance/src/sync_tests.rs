@@ -3306,3 +3306,22 @@ async fn kept_votes_do_not_spend_the_unkept_budget() {
     }
     assert_eq!(run.recovered, 7);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_budget_refusal_after_a_timeout_keeps_the_loss() {
+    // Validator r13: a copy refused for its sender's budget, after an
+    // earlier announcer's request timed out, ends no loss (D57), so the
+    // phase fails (D13); D63 had said "not lost".
+    let p = proposal("p-d63-loss");
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    let item = vote_inv(&x);
+    let mut run = two_peer_run(&p).await;
+    open_vote_sync(&mut run.peers[0], p.hash());
+    open_vote_sync(&mut run.peers[1], p.hash());
+    run.peers[1].unkept = run.cfg.max_unkept;
+    moved_to_peer_1(&mut run, item);
+    run.handle(1, PeerEvent::Vote(x.encode()));
+    assert!(!run.shared.store().has_vote(&x.hash()));
+    assert_eq!(run.recovered, 0);
+    assert_eq!(run.lost, 1);
+}

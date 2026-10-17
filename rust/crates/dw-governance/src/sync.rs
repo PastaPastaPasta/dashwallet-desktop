@@ -1278,7 +1278,7 @@ impl Run {
                 self.refused(item, from, taken);
             }
             // Obsolete or of the same time: the store remembers this copy,
-            // so it is not recovered again (D62).
+            // so it is not recovered again while remembered (D62, D63).
             Err(_) => {
                 self.accepted(&item);
                 self.progressed();
