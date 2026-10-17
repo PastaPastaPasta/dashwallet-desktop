@@ -1,12 +1,15 @@
 //! `DWCLI_LOG=<EnvFilter>` logs the engine, dash-spv and the SDK to stderr,
 //! with links redacted (dw-uri, DP5-01 D14) for every command.
-//! For an `mn` command every global option's value is replaced in each line
-//! first: a library may quote one (the SDK's quorum fetch logs its URL), and
+//! For an `mn` command every global option's value is then replaced in each
+//! line: a library may quote one (the SDK's quorum fetch logs its URL), and
 //! no `mn` output may repeat a value (MG-03 D32, D33). Every non-empty value
 //! is, in the forms a library prints it: as given, `{:?}`-quoted, and for a
 //! URL as parsed, with its user name, password, host and path apart; in any
 //! ASCII case, and in one pass, so overlapping values go together. A list
 //! value is split as its reader splits it, each item a value too (D37).
+//! Links go first, from the event as written: a short value replaced first
+//! could break a link's scheme or marker (`p` in `dashpay:` and `pk=`), and
+//! the value pass leaves the markers alone (D39).
 
 use std::io::Write;
 use std::sync::Arc;
@@ -28,9 +31,7 @@ pub fn init(cli: &Cli, mn: bool) {
             .with_writer(Redacting {
                 values: Arc::new(option_values(cli)),
                 sink: Arc::new(|text: &[u8]| {
-                    let text = String::from_utf8_lossy(text);
-                    let text = dw_uri::redact::redact_links(&text);
-                    let _ = std::io::stderr().write_all(text.as_bytes());
+                    let _ = std::io::stderr().write_all(text);
                 }),
             })
             .init();
@@ -158,15 +159,26 @@ impl Write for Line {
 
 impl Drop for Line {
     fn drop(&mut self) {
-        let text = redact(&String::from_utf8_lossy(&self.text), &self.values);
+        let text = String::from_utf8_lossy(&self.text);
+        let text = redact(&dw_uri::redact::redact_links(&text), &self.values);
         (self.sink)(text.as_bytes());
     }
 }
 
+/// The value pass's marker.
+const MARKER: &str = "<redacted>";
+
 /// `text` with each run of bytes some value covers (ignoring ASCII case)
-/// replaced by one marker.
+/// replaced by one marker, the bytes of a marker already there (a link's
+/// or this pass's) left as they are.
 fn redact(text: &str, values: &[String]) -> String {
     let lower = text.to_ascii_lowercase();
+    let mut kept = vec![false; text.len()];
+    for marker in [dw_uri::redact::REDACTED, MARKER] {
+        for (at, _) in text.match_indices(marker) {
+            kept[at..at + marker.len()].fill(true);
+        }
+    }
     let mut covered = vec![false; text.len()];
     for value in values {
         if value.is_empty() {
@@ -176,7 +188,12 @@ fn redact(text: &str, values: &[String]) -> String {
         let mut from = 0;
         while let Some(at) = lower[from..].find(&value) {
             let start = from + at;
-            covered[start..start + value.len()].fill(true);
+            for (c, k) in covered[start..start + value.len()]
+                .iter_mut()
+                .zip(&kept[start..])
+            {
+                *c |= !k;
+            }
             from = start + lower[start..].chars().next().map_or(1, char::len_utf8);
         }
     }
@@ -187,7 +204,7 @@ fn redact(text: &str, values: &[String]) -> String {
             while at < text.len() && covered[at] {
                 at += 1;
             }
-            out.push_str("<redacted>");
+            out.push_str(MARKER);
         } else {
             out.push(c);
             at += c.len_utf8();
@@ -238,6 +255,63 @@ mod tests {
         assert_eq!(
             redact("host EXAMPLE.Com:81, abcd, xyz é", &values),
             "host <redacted>, <redacted>, xyz é"
+        );
+    }
+
+    /// A short value can't break a link: links go first, from the event
+    /// as written (Sol r5 Major 1, D39). `p`, a devnet name, is in both
+    /// `dashpay:` and `pk=`.
+    #[test]
+    fn a_short_value_does_not_hide_a_link() {
+        use std::sync::Mutex;
+
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from([
+            "dwcli",
+            "--datadir",
+            "/dw-r6",
+            "--network",
+            "devnet:p",
+            "mn",
+            "credits",
+            &"11".repeat(32),
+        ])
+        .unwrap();
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let sink: Sink = {
+            let out = Arc::clone(&out);
+            Arc::new(move |text: &[u8]| out.lock().unwrap().extend_from_slice(text))
+        };
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
+            .with_ansi(false)
+            .with_writer(Redacting {
+                values: Arc::new(option_values(&cli)),
+                sink,
+            })
+            .finish();
+        let status = "status: Unavailable, message: \"see dashpay://invite?pk=SECRET\"";
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(target: "dash_sdk", error = ?status, "request failed");
+        });
+
+        let log = String::from_utf8(out.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains("request failed") && log.contains("<link>"),
+            "{log}"
+        );
+        assert!(!log.contains("SECRET"), "SECRET in the log: {log}");
+    }
+
+    /// A marker's bytes are never redacted: `link` and `e` are values here
+    /// (D39).
+    #[test]
+    fn a_marker_is_left_as_it_is() {
+        let values = ["link", "e"].map(String::from);
+        assert_eq!(
+            redact("<link> <redacted> e link", &values),
+            "<link> <redacted> <redacted> <redacted>"
         );
     }
 
