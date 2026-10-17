@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use dashcore::hashes::{Hash, hash160};
 use dashcore::secp256k1::SecretKey;
@@ -14,7 +15,9 @@ use zeroize::Zeroizing;
 use platform_wallet::masternode::MasternodeListSummary;
 
 use super::aggregate::OwnedMasternode;
-use super::follow::{Notes, all_owned, load_notes, read_list, set_key_id, set_label};
+use super::follow::{
+    Notes, all_owned, clear_key_id_durably, load_notes, read_list, set_key_id, set_label,
+};
 use super::reads::{list_facts, not_found};
 use super::records::{AttachedKeyRole, KeyCheck, ListedMasternode, UntrackOutcome};
 use super::{Masternodes, MasternodesError, display_hex, parse_pro_tx_hash};
@@ -42,9 +45,10 @@ fn normalize_label(label: Option<String>) -> Result<Option<String>, EngineError>
     Ok(Some(label))
 }
 
-/// The secret of a WIF (of the session's network) or of 64 hex characters,
-/// and the hash160 of its public key (compressed unless the WIF says
-/// otherwise).
+/// The secret of a compressed WIF (of the session's network) or of 64 hex
+/// characters, and the hash160 of its compressed public key. An
+/// uncompressed WIF is refused: the vault keeps the bare secret, whose id
+/// is always read back compressed (D36).
 fn parse_secret(
     key: &str,
     network: dashcore::Network,
@@ -60,6 +64,11 @@ fn parse_secret(
         )
     } else {
         let private = PrivateKey::from_wif(key).map_err(|_| invalid())?;
+        if !private.compressed {
+            return Err(EngineError::InvalidArgument(
+                "an uncompressed WIF is not accepted; use its compressed WIF or 64 hex".into(),
+            ));
+        }
         // A WIF's prefix tells mainnet from the test networks only.
         let mainnet = |n| n == dashcore::Network::Mainnet;
         if mainnet(private.network) != mainnet(network) {
@@ -161,42 +170,43 @@ async fn references(
     Ok(KeyReferences::new(entry, owned.as_ref(), shared))
 }
 
-/// Records the id of each attached key that has none from the key the
-/// vault holds (D31): one whose vault write failed in an earlier session,
-/// or one attached before ids were kept. A write that failed in this
-/// session stays unrecorded, since this session's vault may hold another
-/// key in memory than on disk. Under the tracking lock, so no `attach_key`
-/// interleaves; the notes as they are then.
-/// A locked vault records nothing; a key the vault can't read is skipped
-/// (logged), not the read's failure.
+/// Brings the recorded ids in line with the keys the vault holds, under the
+/// tracking lock so no `attach_key` interleaves. Once a session (the first
+/// read with the vault unlocked) every recorded id is compared with the
+/// vault's key: one naming another key (a power loss kept an id the attach
+/// had cleared) is dropped, so the key holds nothing until the next session
+/// records it (D34). On every read a key with no id gets its vault key's
+/// (D31), unless its vault write failed in this session: this session's
+/// vault may hold another key in memory than on disk. A locked vault
+/// changes nothing; a key the vault can't read is logged and skipped, and
+/// the comparison runs again on the next read.
 pub(super) async fn reconcile_key_ids(
     session: &NetworkSession,
     attached: &HashMap<[u8; 32], Vec<AttachedKeyRole>>,
     notes: Notes,
 ) -> Result<Notes, MasternodesError> {
     let runtime = &session.masternodes;
-    let missing = |notes: &Notes| -> Vec<([u8; 32], AttachedKeyRole)> {
+    let pending = |notes: &Notes| -> Vec<([u8; 32], AttachedKeyRole)> {
+        let verify = !runtime.ids_verified.load(Ordering::SeqCst);
         attached
             .iter()
             .flat_map(|(hash, roles)| roles.iter().map(move |role| (*hash, *role)))
             .filter(|(hash, role)| {
-                !notes.key_ids.contains_key(&(display_hex(hash), *role))
-                    && !runtime.is_unsettled(*hash, *role)
+                !runtime.is_unsettled(*hash, *role)
+                    && (verify || !notes.key_ids.contains_key(&(display_hex(hash), *role)))
             })
             .collect()
     };
-    if missing(&notes).is_empty() {
+    if pending(&notes).is_empty() {
+        runtime.ids_verified.store(true, Ordering::SeqCst);
         return Ok(notes);
     }
     let _mutation = runtime.mutation().await;
     let notes = session.appdb_op(load_notes).await?;
-    let missing = missing(&notes);
-    if missing.is_empty() {
-        return Ok(notes);
-    }
+    let pending = pending(&notes);
     let vault = session.vault.clone();
     let read = tokio::task::spawn_blocking(move || {
-        missing
+        pending
             .into_iter()
             .map(|(hash, role)| {
                 (
@@ -208,22 +218,38 @@ pub(super) async fn reconcile_key_ids(
             .collect::<Vec<_>>()
     })
     .await?;
-    let mut ids = Vec::new();
-    for (hash, role, id) in read {
-        match id {
-            Ok(Some(id)) => ids.push((hash, role, id)),
-            Ok(None) => {}
+    let mut changes = Vec::new();
+    let mut verified = true;
+    for (hash, role, held) in read {
+        let held = match held {
+            Ok(held) => held,
             Err(dw_vault::VaultError::Locked) => return Ok(notes),
-            Err(e) => tracing::warn!(error = %e, "could not read an attached key's id"),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read an attached key's id");
+                verified = false;
+                continue;
+            }
+        };
+        match notes.key_ids.get(&(display_hex(&hash), role)) {
+            None => changes.extend(held.map(|id| (hash, role, Some(id)))),
+            Some(recorded) if Some(*recorded) == held => {}
+            Some(_) => {
+                tracing::warn!("an attached key's recorded id names another key; dropped");
+                runtime.unsettle(hash, role);
+                changes.push((hash, role, None));
+            }
         }
     }
-    if ids.is_empty() {
+    if verified {
+        runtime.ids_verified.store(true, Ordering::SeqCst);
+    }
+    if changes.is_empty() {
         return Ok(notes);
     }
     session
         .appdb_op(move |db| {
-            for (hash, role, id) in ids {
-                set_key_id(db, &display_hex(&hash), role, Some(id))?;
+            for (hash, role, id) in changes {
+                set_key_id(db, &display_hex(&hash), role, id)?;
             }
             load_notes(db)
         })
@@ -390,8 +416,8 @@ impl Masternodes {
         drop(key);
         let _mutation = self.session.masternodes.mutation().await;
         self.require_tracked(&hash)?;
-        // The id is cleared before the vault write and recorded only after
-        // it succeeded, so an interruption leaves a key without an id, which
+        // The id is cleared, durably (D34), before the vault write and
+        // recorded only after it succeeded, so an interruption leaves a key without an id, which
         // holds no role, never an id that names a key the vault doesn't hold
         // (D24). A failed write may have stored the key all the same (a
         // read-back or directory fsync failing after the rename), so no id
@@ -405,7 +431,7 @@ impl Masternodes {
                     return Err(MasternodesError::KeyMismatch { role });
                 }
                 session
-                    .appdb_op(move |db| set_key_id(db, &key, role, None))
+                    .appdb_op(move |db| clear_key_id_durably(db, &key, role))
                     .await?;
                 Ok(check)
             })
@@ -485,6 +511,14 @@ mod tests {
                 "invalid_argument"
             );
         }
+        // Refused with fixed text: the vault's bare secret reads back
+        // compressed, another id (D36).
+        let uncompressed =
+            PrivateKey::new_uncompressed(SecretKey::from_secret_bytes([1; 32]).unwrap(), NET)
+                .to_wif();
+        let refused = parse_secret(&uncompressed, NET).unwrap_err();
+        assert_eq!(refused.code(), "invalid_argument");
+        assert!(!refused.to_string().contains(&uncompressed));
     }
 
     #[test]
@@ -688,6 +722,64 @@ mod tests {
             assert!(key.holds());
             drop(s);
             engine.block_on(engine.shutdown()).unwrap();
+        }
+
+        /// The owner key's id and whether it holds after attaching B over A
+        /// and a power loss once the vault made B durable, before app.sqlite
+        /// synced (MG-03 D34). `skip_barrier` skips the sync of the attach's
+        /// clearing of A's id; `!verify` skips the session's comparison of
+        /// the recorded ids with the vault's keys.
+        fn after_power_loss(skip_barrier: bool, verify: bool) -> (Option<String>, bool) {
+            use dw_appdb::durability_sim::{arm, power_loss};
+            let dir = dw_testutil::private_tempdir();
+            let store = Arc::new(MemoryOsStore::new());
+            let engine = new_engine(dir.path(), &store);
+            let s = open(&engine);
+            let appdb = s.data_dir().join(dw_appdb::APP_DB_FILE);
+            engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+            let wallet = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+            let service = s.manager().unwrap().tracked_masternodes_service();
+            service.track_blocking(HASH, None).unwrap();
+            drop(service);
+            attach(&engine, &s, [7; 32]).unwrap();
+            drop(s);
+            engine.block_on(engine.shutdown()).unwrap();
+            drop(engine);
+
+            let session = |engine: &Engine| {
+                let s = open(engine);
+                if !verify {
+                    s.masternodes.ids_verified.store(true, Ordering::SeqCst);
+                }
+                s
+            };
+            arm(&appdb, skip_barrier);
+            let engine = new_engine(dir.path(), &store);
+            let s = session(&engine);
+            attach(&engine, &s, [9; 32]).unwrap();
+            drop(s);
+            engine.block_on(engine.shutdown()).unwrap();
+            drop(engine);
+            power_loss(&appdb);
+
+            let engine = new_engine(dir.path(), &store);
+            let s = session(&engine);
+            let key = owner_key(&engine, &s, wallet);
+            drop(s);
+            engine.block_on(engine.shutdown()).unwrap();
+            (key.key_id.clone(), key.holds())
+        }
+
+        #[test]
+        fn a_power_loss_never_leaves_the_old_keys_id_beside_the_new_key() {
+            // Neither: A's id is back beside B, a held role (`matched` once
+            // the list names A's key, the false role D34 closes).
+            assert_eq!(after_power_loss(true, false), (Some(id_of([7; 32])), true));
+            // The durable clear alone: no id survives, and the read records
+            // the key the vault holds.
+            assert_eq!(after_power_loss(false, false), (Some(id_of([9; 32])), true));
+            // The comparison alone: A's id is dropped, holding nothing.
+            assert_eq!(after_power_loss(true, true), (None, false));
         }
 
         #[test]

@@ -5,7 +5,7 @@
 //! coalesced `EngineEvent::Masternodes`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -174,6 +174,17 @@ pub(crate) fn key_id(
         .and_then(|v| parse_key_id(&v)))
 }
 
+/// Forgets the id recorded for `role`, durable against power loss when it
+/// returns, so no power loss brings it back once the vault holds another
+/// key (D34).
+pub(crate) fn clear_key_id_durably(
+    db: &AppDb,
+    hash: &str,
+    role: AttachedKeyRole,
+) -> Result<(), AppDbError> {
+    db.set_setting_durable(GLOBAL_SCOPE, &key_id_setting(hash, role), None)
+}
+
 /// Records (or with `None` forgets) the id of the key attached for `role`.
 pub(crate) fn set_key_id(
     db: &AppDb,
@@ -250,6 +261,9 @@ pub(crate) struct MasternodesRuntime {
     /// the new key on disk and the old one in memory, so their ids are only
     /// recorded again by the next session (D31).
     unsettled: Mutex<HashSet<([u8; 32], AttachedKeyRole)>>,
+    /// Every recorded id was compared with the key the vault holds, once
+    /// this session (D34).
+    pub(super) ids_verified: AtomicBool,
 }
 
 impl MasternodesRuntime {
@@ -274,6 +288,7 @@ impl MasternodesRuntime {
             follower: Mutex::default(),
             mutations: tokio::sync::Mutex::new(()),
             unsettled: Mutex::default(),
+            ids_verified: AtomicBool::new(false),
         }
     }
 
@@ -423,9 +438,11 @@ fn record_sightings(
     now: u64,
 ) -> Result<bool, AppDbError> {
     let notes = load_notes(db)?;
+    // The version-3 markers are durable before a payout read relies on
+    // them: one a power loss took would count shares as payouts (D35).
     let first_shared = any_shared && !notes.any_shared_seen;
     if first_shared {
-        db.set_setting(GLOBAL_SCOPE, ANY_SHARED_SEEN, Some(&now.to_string()))?;
+        db.set_setting_durable(GLOBAL_SCOPE, ANY_SHARED_SEEN, Some(&now.to_string()))?;
     }
     for (hash, entry) in seen {
         let Some(entry) = entry else { continue };
@@ -441,7 +458,11 @@ fn record_sightings(
             note(LISTED_SEEN)?;
         }
         if entry.has_extended_net_info && !notes.shared_seen.contains(&key) {
-            note(SHARED_SEEN)?;
+            db.set_setting_durable(
+                GLOBAL_SCOPE,
+                &format!("{SHARED_SEEN}{key}"),
+                Some(&now.to_string()),
+            )?;
         }
         match (entry.is_valid, notes.banned_seen.contains_key(&key)) {
             (false, false) => db.set_setting(
@@ -542,6 +563,31 @@ mod tests {
         let notes = load_notes(&db).unwrap();
         assert!(notes.any_shared_seen);
         assert!(notes.shared_seen.is_empty(), "not a followed masternode");
+    }
+
+    /// The version-3 markers survive power loss once written; without the
+    /// durable write's barrier they don't (D35).
+    #[test]
+    fn version_3_markers_survive_power_loss() {
+        use dw_appdb::durability_sim::{arm, power_loss};
+        let dir = dw_testutil::private_tempdir();
+        let path = dir.path().join(dw_appdb::APP_DB_FILE);
+        drop(AppDb::open(&path).unwrap());
+        let key = super::super::display_hex(&[1; 32]);
+        let mut shared = summary(1, true);
+        shared.has_extended_net_info = true;
+        let seen: Seen = [([1; 32], Some(shared))].into();
+        for skip_barriers in [true, false] {
+            arm(&path, skip_barriers);
+            let db = AppDb::open(&path).unwrap();
+            record_sightings(&db, &seen, true, 100).unwrap();
+            drop(db);
+            power_loss(&path);
+            let notes = load_notes(&AppDb::open(&path).unwrap()).unwrap();
+            let kept = !skip_barriers;
+            assert_eq!(notes.any_shared_seen, kept, "skip {skip_barriers}");
+            assert_eq!(notes.shared_seen.contains(&key), kept);
+        }
     }
 
     /// Every wallet-set event reaches the sink and bumps the generation, so
