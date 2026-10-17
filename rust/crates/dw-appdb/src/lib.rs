@@ -21,11 +21,13 @@ use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
+mod avatar;
 mod dashpay_journal;
 pub mod dispatch;
 mod provenance;
 mod registration;
 mod rows;
+pub use avatar::AvatarRow;
 pub use dashpay_journal::{ContestWatch, JournalEntry, JournalPage, JournalRow};
 pub use registration::{
     Adoption, LockOutpoint, NewRegistration, RegistrationChange, RegistrationRow,
