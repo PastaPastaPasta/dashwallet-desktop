@@ -2871,7 +2871,7 @@ renames or reshapes them takes the next version bump:
       once per contact after the upgrade, until a DashPay pass rebuilds and stamps the account (offline: until one
       completes), and after a crash between a rotation's re-key and its rebuild, or a lost stamp write.
     - **A rotated contact is payable.** The pinned `rs-platform-wallet-storage` (PastaPastaPasta/platform
-      `dw/dp3-04b-pool-rotation`, migration V019) retires the old pool's addresses when a contact's xpub changes,
+      `dw/dp3-04b-pool-rotation`, fork migration 1 in its own history, design D32) retires the old pool's addresses when a contact's xpub changes,
       instead of failing the rebuild, and keeps them for history only: they are never paid. The stamp survives a
       relaunch.
     - **One sync per in-flight pass.** A refusal on the paying account starts no DashPay sync while a pass runs.
