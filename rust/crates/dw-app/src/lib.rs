@@ -67,7 +67,11 @@ fn navigation_guard<R: Runtime>() -> TauriPlugin<R> {
         .on_navigation(|_, url| {
             let allowed = is_app_url(url);
             if !allowed {
-                eprintln!("dw-app: navigation refused: {url}");
+                let url = url.to_string();
+                eprintln!(
+                    "dw-app: navigation refused: {}",
+                    dw_uri::redact::redact_links(&url)
+                );
             }
             allowed
         })
@@ -140,21 +144,28 @@ fn ms_since_process_start(stat: &str, uptime: &str) -> Option<u64> {
     Some(now.checked_sub(start)? * 10)
 }
 
+/// Installs the process's logger: `filter` (EnvFilter syntax) to stderr,
+/// every line through [`dw_uri::redact::RedactingWriter`], so no link or
+/// part of one reaches a log (DASHPAY §3.8, DP5-01 D14).
+pub fn install_logging(filter: &str) -> Result<(), String> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+        .with_ansi(std::io::stderr().is_terminal())
+        .with_writer(|| dw_uri::redact::RedactingWriter::new(std::io::stderr()))
+        .try_init()
+        .map_err(|e| e.to_string())
+}
+
 /// Entry point of the `dash-wallet` binary.
 pub fn run() {
     let started = Instant::now();
     // `DW_LOG=info,dw_engine=debug` (EnvFilter syntax) logs to stderr, as
     // dwcli's `DWCLI_LOG` does (BL-162). Off by default; colour on a terminal
     // only, and a logger already set is reported, not a panic.
-    if let Ok(filter) = std::env::var("DW_LOG") {
-        let set = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-            .with_ansi(std::io::stderr().is_terminal())
-            .with_writer(std::io::stderr)
-            .try_init();
-        if let Err(e) = set {
-            eprintln!("DW_LOG ignored: {e}");
-        }
+    if let Ok(filter) = std::env::var("DW_LOG")
+        && let Err(e) = install_logging(&filter)
+    {
+        eprintln!("DW_LOG ignored: {e}");
     }
     // U5 measures cold start from spawn: harnesses add this to the marks.
     #[cfg(target_os = "linux")]
@@ -172,6 +183,8 @@ pub fn run() {
             return;
         }
         Err(e) => {
+            // An option's value may be a link the OS passed after it.
+            let e = dw_uri::redact::redact_links(&e).into_owned();
             eprintln!("dash-wallet: {e}\n{}", launch::usage());
             std::process::exit(2);
         }

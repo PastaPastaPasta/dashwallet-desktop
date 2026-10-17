@@ -4,4 +4,4 @@ import type { UriRejected } from "./UriRejected";
 /**
  * Why a link was not routed.
  */
-export type LinkRejected = { "kind": "notALink" } | { "kind": "tooLong" } | { "kind": "payment", reason: UriRejected, };
+export type LinkRejected = { "kind": "notALink" } | { "kind": "tooLong" } | { "kind": "payment", reason: UriRejected, } | { "kind": "notSaved" };

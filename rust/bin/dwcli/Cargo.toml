@@ -14,6 +14,8 @@ dw-engine = { workspace = true }
 dw-units = { workspace = true }
 dw-message = { workspace = true }
 dw-psbt = { workspace = true }
+# Log lines pass through its link redaction (DP5-01 D14).
+dw-uri = { workspace = true }
 hex = { workspace = true }
 # The DashPay commands print the facade's records as JSON (E0-09).
 serde = { version = "1", features = ["derive"] }

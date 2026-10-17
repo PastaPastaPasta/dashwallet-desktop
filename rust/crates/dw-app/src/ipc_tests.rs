@@ -45,7 +45,13 @@ impl Demo {
     /// A demo whose launch options `edit` changes (given the private data
     /// root), as a command line would: `--selftest <file>`, for one.
     pub(crate) fn launched(edit: impl FnOnce(&mut LaunchOptions, &std::path::Path)) -> Self {
-        let dir = dw_testutil::private_tempdir();
+        Self::launched_in(dw_testutil::private_tempdir(), edit)
+    }
+
+    fn launched_in(
+        dir: tempfile::TempDir,
+        edit: impl FnOnce(&mut LaunchOptions, &std::path::Path),
+    ) -> Self {
         let mut launch = LaunchOptions {
             data_dir: Some(dir.path().join("data")),
             network: DashNetwork::Regtest,
@@ -1143,6 +1149,133 @@ fn handles_belong_to_their_session() {
     );
 }
 
+/// The `.dwl` files of the link stash under `root`, with their text.
+fn stash_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
+    let mut found = Vec::new();
+    let mut dirs = vec![root.to_owned()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "dwl") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                found.push((path, text));
+            }
+        }
+    }
+    found
+}
+
+/// DP5-01's acceptance: links opened before any wallet (or vault) exists
+/// are kept, survive a restart, are sealed when the vault is created, and
+/// are offered after onboarding: a payment once, an invitation by id only,
+/// never its text, until it is dismissed.
+#[test]
+fn links_opened_before_a_wallet_survive_onboarding() {
+    const ADDR: &str = "yMsgnH1xKGa85n4bq2imrZbG2KgrmGttAV";
+    const SECRET: &str = "cPlantedInvitationSecret1";
+    let pay = format!("dash:{ADDR}?amount=0.25&label=Coffee");
+    let invite = format!("dashpay://invite?du=alice&pk={SECRET}&assetlocktx=00");
+    let regtest = json!({ "network": "regtest" });
+    let demo = Demo::launched(|launch, _| launch.links = vec![pay.clone(), invite.clone()]);
+    demo.open();
+    let routes = demo.ok("take_links", regtest.clone());
+    assert_eq!(routes[0]["kind"], "saved", "{routes}");
+    assert_eq!(routes[0]["link"]["kind"], "payment");
+    assert_eq!(routes[1]["kind"], "invitation", "{routes}");
+    let pay_id = routes[0]["link"]["id"].as_str().unwrap().to_owned();
+    let invite_id = routes[1]["linkId"].as_str().unwrap().to_owned();
+    assert!(!routes.to_string().contains(SECRET) && !routes.to_string().contains(ADDR));
+    // The same link again is the same entry.
+    let again = demo.ok("route_link", json!({ "network": "regtest", "text": pay }));
+    assert_eq!(again["link"]["id"], pay_id);
+
+    // Before a vault exists, a 0600 file holds the text (DASHPAY §2.9).
+    let root = demo._dir.path().to_owned();
+    let files = stash_files(&root);
+    assert_eq!(files.len(), 2, "{files:?}");
+    assert!(files.iter().any(|(_, t)| t.contains(ADDR)));
+    #[cfg(unix)]
+    for (path, _) in &files {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "{path:?}");
+    }
+
+    // A restart: a new app on a data root holding only the stash. (A mock
+    // app's state, and with it the instance lock, outlives its drop.)
+    let first = demo;
+    let dir = dw_testutil::private_tempdir();
+    for (path, _) in &files {
+        let to = dir.path().join(path.strip_prefix(&root).unwrap());
+        let mut mkdir = std::fs::DirBuilder::new();
+        mkdir.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut mkdir, 0o700);
+        mkdir.create(to.parent().unwrap()).unwrap();
+        std::fs::copy(path, &to).unwrap();
+    }
+    let root = dir.path().to_owned();
+    let demo = Demo::launched_in(dir, |_, _| {});
+    drop(first);
+    demo.open();
+    let kept = demo.ok("stashed_links", json!({}));
+    assert_eq!(kept.as_array().unwrap().len(), 2, "{kept}");
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    for (path, text) in stash_files(&root) {
+        assert!(
+            !text.contains(ADDR) && !text.contains(SECRET),
+            "{path:?}: {text}"
+        );
+    }
+    demo.ok("create_wallet", json!({ "wordCount": 12 }));
+
+    // Locked, nothing is handed out and nothing is lost.
+    demo.ok("lock", json!({}));
+    assert_eq!(demo.ok("stashed_links", json!({})), kept);
+    demo.err(
+        "open_stashed_link",
+        json!({ "linkId": pay_id }),
+        "platform.signer_unavailable",
+    );
+    demo.ok("unlock", json!({ "passphrase": "pw" }));
+
+    let opened = demo.ok("open_stashed_link", json!({ "linkId": pay_id }));
+    assert_eq!(opened["kind"], "pay", "{opened}");
+    assert_eq!(opened["uri"]["address"], ADDR);
+    assert_eq!(opened["uri"]["amount"], 25_000_000);
+    // Taken once.
+    assert_eq!(
+        demo.ok("open_stashed_link", json!({ "linkId": pay_id })),
+        Value::Null
+    );
+    // An invitation is offered by id and stays.
+    let invitation = json!({ "kind": "invitation", "linkId": invite_id });
+    assert_eq!(
+        demo.ok("open_stashed_link", json!({ "linkId": invite_id })),
+        invitation
+    );
+    assert_eq!(
+        demo.ok("open_stashed_link", json!({ "linkId": invite_id })),
+        invitation
+    );
+    let left = demo.ok("stashed_links", json!({}));
+    assert_eq!(left.as_array().unwrap().len(), 1, "{left}");
+    assert_eq!(left[0]["kind"], "invitation");
+    demo.ok("dismiss_stashed_link", json!({ "linkId": invite_id }));
+    assert_eq!(demo.ok("stashed_links", json!({})), json!([]));
+    assert!(stash_files(&root).is_empty());
+    demo.err(
+        "open_stashed_link",
+        json!({ "linkId": "nope" }),
+        "invalid_argument",
+    );
+    // With a wallet, a payment link routes at once.
+    let routed = demo.ok("route_link", json!({ "network": "regtest", "text": pay }));
+    assert_eq!(routed["kind"], "pay", "{routed}");
+}
+
 /// U-01: links among the launch arguments wait in the shell until the
 /// renderer takes them, routed for its network; `route_link` routes typed
 /// text the same way; `shell_sync` reaches the native menus.
@@ -1169,7 +1302,9 @@ fn launch_links_wait_for_take_links() {
                 "uri": { "address": ADDR, "amount": 50_000_000, "label": "Launch", "message": null },
                 "username": null,
             },
-            { "kind": "invitation" },
+            // No network is open, so there is no stash to keep it in:
+            // an invitation never reaches the renderer bare (DP5-01 D3).
+            { "kind": "rejected", "reason": { "kind": "notSaved" } },
         ])
     );
     assert_eq!(
