@@ -7,7 +7,7 @@ use dw_governance::clock;
 use dw_governance::object::{display_hex, outpoint_short, parse_display_hex};
 use dw_governance::params::{GovernanceParams, PROPOSAL_FEE_CONFIRMATIONS, governance_params};
 use dw_governance::store::{GovernanceStore, ObjectKind};
-use dw_governance::tally::{self, BudgetCandidate, StatusInput};
+use dw_governance::tally::{self, BudgetCandidate, RangedCandidate, StatusInput};
 
 use super::records::{
     CurrentVoteRow, GovernanceClock, GovernanceInfo, ProposalCounts, ProposalDetail, ProposalQuery,
@@ -311,28 +311,37 @@ fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, 
             (o, d, t)
         })
         .collect();
-    let fundable_with = |net: &dyn Fn(&tally::RangedTally) -> i64| -> HashSet<String> {
-        let candidates: Vec<BudgetCandidate> = tallied
-            .iter()
-            .filter(|(_, d, _)| d.end_epoch.is_none_or(|e| e > now))
-            // Core's trigger builder skips an amount `ParsePaymentAmount`
-            // refuses.
-            .filter_map(|(o, d, t)| {
-                Some(BudgetCandidate {
-                    hash: o.hash_hex.clone(),
-                    payment_amount: d.payable_amount?,
-                    absolute_yes: net(t),
-                })
+    // Core's trigger builder skips an amount `ParsePaymentAmount` refuses.
+    let candidates: Vec<RangedCandidate> = tallied
+        .iter()
+        .filter(|(_, d, _)| d.end_epoch.is_none_or(|e| e > now))
+        .filter_map(|(o, d, t)| {
+            let (low, high) = t.net_yes_bounds();
+            Some(RangedCandidate {
+                hash: o.hash_hex.clone(),
+                payment_amount: d.payable_amount?,
+                estimate: t.estimate.absolute_yes(),
+                low,
+                high,
             })
-            .collect();
-        tally::fundable(&candidates, threshold, budget)
-            .hashes
-            .into_iter()
-            .collect()
-    };
-    let estimate = fundable_with(&|t| t.estimate.absolute_yes());
-    let low = fundable_with(&|t| t.net_yes_bounds().0);
-    let high = fundable_with(&|t| t.net_yes_bounds().1);
+        })
+        .collect();
+    let estimate: HashSet<String> = tally::fundable(
+        &candidates
+            .iter()
+            .map(|r| BudgetCandidate {
+                hash: r.hash.clone(),
+                payment_amount: r.payment_amount,
+                absolute_yes: r.estimate,
+            })
+            .collect::<Vec<_>>(),
+        threshold,
+        budget,
+    )
+    .hashes
+    .into_iter()
+    .collect();
+    let budget_close = tally::budget_close_calls(&candidates, threshold, budget);
     let allocated = tallied
         .iter()
         .filter(|(o, _, _)| estimate.contains(&o.hash_hex))
@@ -362,9 +371,7 @@ fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, 
             let thr = i64::from(threshold);
             let close_call = !lapsed
                 && funded_height.is_none()
-                && ((min_net >= thr) != (max_net >= thr)
-                    || low.contains(&o.hash_hex) != fundable
-                    || high.contains(&o.hash_hex) != fundable);
+                && ((min_net >= thr) != (max_net >= thr) || budget_close.contains(&o.hash_hex));
             let row = ProposalRow {
                 hash: o.hash_hex.clone(),
                 name: d.name.clone().unwrap_or_default(),

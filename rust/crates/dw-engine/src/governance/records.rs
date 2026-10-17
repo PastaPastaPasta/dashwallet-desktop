@@ -248,10 +248,19 @@ pub struct VotingMasternode {
     /// PoSe-banned masternodes still vote (MG-02 D16).
     pub valid: bool,
     pub key_index: u32,
-    /// The latest vote seen by this masternode's voting key on the
-    /// proposal; the key may vote for other outpoints too.
+    /// This masternode's own current vote on the proposal: a vote under its
+    /// key whose collateral is resolved to it, or any vote under a key no
+    /// other masternode of the list holds (MG-02 D49).
     pub current_vote: Option<VoteOutcome>,
     pub vote_time: Option<i64>,
+    /// Masternodes of the tip list holding the voting key, this one
+    /// included. Past one, the key's votes are not told apart by
+    /// masternode until their collateral is resolved.
+    pub key_holders: u32,
+    /// A shared key's latest vote seen on the proposal, by whichever of its
+    /// masternodes; `None` for a key one masternode holds.
+    pub key_last_vote: Option<VoteOutcome>,
+    pub key_last_vote_time: Option<i64>,
 }
 
 /// Core `voteraw`'s arguments.
