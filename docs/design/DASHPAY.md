@@ -978,7 +978,7 @@ Notices: `PlatformTrustMismatch`, `DashPayStartupIncomplete`, and the existing `
   - HTTPS only; 5 MiB; 10 s; resolved IPs checked against private ranges before connecting, with no redirects to
     them;
   - decoded with `image` size limits, then re-encoded to PNG;
-  - checked against the profile's `avatarHash` and dHash; a mismatch shows the initials avatar;
+  - checked against the profile's `avatarHash` (the dHash is not compared, DP4-02 D32); a mismatch shows the initials avatar;
   - "Load contact pictures" is on by default and can be turned off;
   - DP4-02 writes thumbnails through descriptors, never by path: `avatars_dir()` was checked once, at session open, and
     a user-chosen symlink may stand in for the directory. Open the directory `O_NOFOLLOW|O_DIRECTORY` (or through
