@@ -1758,8 +1758,9 @@ async fn an_announcer_that_closes_still_confirms_the_object() {
     .await;
     let shown = shared.store().object(&h.hash()).is_some();
     let _ = stop.send(true);
-    // The objects phase completes; the votes phase then has one peer left
-    // of three, too few to settle the proposal's votes (D68).
+    // The objects phase completes. Whether the votes phase settles depends
+    // on how many of the peers left complete a vote sync (two needed, D68),
+    // which is not this test's subject.
     let votes_short = p
         .last_error
         .as_deref()
@@ -3614,4 +3615,50 @@ async fn peers_that_leave_do_not_let_one_withholder_settle_a_proposal() {
     .await;
     let _ = hx.stop.send(true);
     assert_eq!(p.phase, Phase::Failed, "{p:?}");
+    assert!(
+        p.last_error
+            .as_deref()
+            .unwrap_or("")
+            .contains("too few peers"),
+        "{p:?}"
+    );
+}
+
+/// Validator r19 Moderate 2: a reconnect within the window to peers that
+/// all completed A's vote sync, or two of three (the third asked but gone
+/// before completing, so not askable again), reaches Synced on that
+/// history; a peer that cannot be asked again does not keep A short.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reconnect_within_the_window_is_synced_on_completed_vote_syncs() {
+    for completed in [3usize, 2] {
+        let a = proposal(&format!("a-r19-reconnect-{completed}"));
+        let ha = a.hash();
+        let honest = Node {
+            objects: vec![a.clone()],
+            votes: vec![vote(ha, 1, VoteOutcome::Yes)],
+            ..Node::default()
+        };
+        let hx = start_with(
+            vec![honest.clone(), honest.clone(), honest],
+            |_| {},
+            move |shared, history, addrs| {
+                shared.progress().last_synced_at = Some(unix_now() as u64 - 4_000);
+                shared.store().add_object(a, None, unix_now()).unwrap();
+                for (i, addr) in addrs.iter().enumerate() {
+                    history.full_synced.insert(*addr, Instant::now());
+                    history.vote_synced.insert((*addr, ha), Instant::now());
+                    if i < completed {
+                        history.vote_completed.insert((*addr, ha), Instant::now());
+                    }
+                }
+            },
+        )
+        .await;
+        let p = wait_for(&hx.shared, |p| {
+            matches!(p.phase, Phase::Failed | Phase::Synced)
+        })
+        .await;
+        let _ = hx.stop.send(true);
+        assert_eq!(p.phase, Phase::Synced, "{completed}: {p:?}");
+    }
 }

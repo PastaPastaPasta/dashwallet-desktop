@@ -11,7 +11,7 @@ use std::str::FromStr;
 use dashcore::address::Payload;
 use dashcore::{Address, Network};
 
-use crate::clock::{GOVERNANCE_FUDGE_WINDOW_SECS, upcoming_superblocks};
+use crate::clock::upcoming_superblocks;
 use crate::object::{GovernanceObject, MAX_DATA_SIZE, OBJECT_TYPE_PROPOSAL};
 use crate::params::{
     GovernanceParams, PROPOSAL_MAX_PAYMENTS, PROPOSAL_NAME_MAX_LEN, governance_params,
@@ -271,19 +271,6 @@ impl ProposalData {
         let duration = end - start;
         ((duration + cycle - 1) / cycle).max(1) as u32
     }
-
-    /// Whether Core's trigger builder pays it at a superblock it times at
-    /// `superblock_time` ([`trigger_superblock_time`]): within its epochs,
-    /// give or take [`GOVERNANCE_FUDGE_WINDOW_SECS`] (MG-02 D65).
-    ///
-    /// [`trigger_superblock_time`]: crate::clock::trigger_superblock_time
-    pub fn payable_at(&self, superblock_time: i64) -> bool {
-        self.start_epoch
-            .is_none_or(|s| superblock_time >= s.saturating_sub(GOVERNANCE_FUDGE_WINDOW_SECS))
-            && self
-                .end_epoch
-                .is_none_or(|e| superblock_time <= e.saturating_add(GOVERNANCE_FUDGE_WINDOW_SECS))
-    }
 }
 
 pub fn json_amount(v: &serde_json::Value) -> Option<u64> {
@@ -370,24 +357,6 @@ mod tests {
         height: 1505,
         time: 1_800_000_000,
     };
-
-    #[test]
-    fn a_proposal_is_payable_within_its_epochs_and_the_fudge_window() {
-        let p = ProposalData {
-            start_epoch: Some(10_000),
-            end_epoch: Some(20_000),
-            ..ProposalData::default()
-        };
-        let w = GOVERNANCE_FUDGE_WINDOW_SECS;
-        for (t, ok) in [
-            (10_000 - w - 1, false),
-            (10_000 - w, true),
-            (20_000 + w, true),
-            (20_000 + w + 1, false),
-        ] {
-            assert_eq!(p.payable_at(t), ok, "{t}");
-        }
-    }
 
     #[test]
     fn test_qt_132_format_money_matches_core() {

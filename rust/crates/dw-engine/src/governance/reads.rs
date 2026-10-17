@@ -309,36 +309,29 @@ fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, 
             (o, d, t)
         })
         .collect();
-    // Statuses take dash-qt's fundable set (`getFundableProposalHashes`)
-    // over the current proposals: the wallet keeps no lapsed one (MG-02
-    // D65). What the next superblock pays is the trigger builder's set,
-    // which also leaves out a proposal whose payment window misses it
-    // (D69). Both skip an amount `ParsePaymentAmount` refuses.
-    let superblock_time = clock::trigger_superblock_time(now, tip, next);
-    let candidates = |payable_only: bool| -> Vec<RangedCandidate> {
-        tallied
-            .iter()
-            .filter(|(_, d, _)| d.end_epoch.is_none_or(|e| e > now))
-            .filter(|(_, d, _)| !payable_only || d.payable_at(superblock_time))
-            .filter_map(|(o, d, t)| {
-                let (low, high) = t.net_yes_bounds();
-                Some(RangedCandidate {
-                    hash: o.hash_hex.clone(),
-                    payment_amount: d.payable_amount?,
-                    estimate: t.estimate.absolute_yes(),
-                    low,
-                    high,
-                })
+    // The fundable set is dash-qt's (`getFundableProposalHashes`) over the
+    // current proposals: the wallet keeps no lapsed one, which Core's
+    // trigger builder would not pay (MG-02 D65, D69). An amount
+    // `ParsePaymentAmount` refuses is skipped, as the builder does.
+    let candidates: Vec<RangedCandidate> = tallied
+        .iter()
+        .filter(|(_, d, _)| d.end_epoch.is_none_or(|e| e > now))
+        .filter_map(|(o, d, t)| {
+            let (low, high) = t.net_yes_bounds();
+            Some(RangedCandidate {
+                hash: o.hash_hex.clone(),
+                payment_amount: d.payable_amount?,
+                estimate: t.estimate.absolute_yes(),
+                low,
+                high,
             })
-            .collect()
-    };
-    let current = candidates(false);
-    let estimate = tally::fundable_at(&current, threshold, budget, |r| r.estimate);
-    let budget_close = tally::budget_close_calls(&current, threshold, budget);
-    let paid = tally::fundable_at(&candidates(true), threshold, budget, |r| r.estimate);
+        })
+        .collect();
+    let estimate = tally::fundable_at(&candidates, threshold, budget, |r| r.estimate);
+    let budget_close = tally::budget_close_calls(&candidates, threshold, budget);
     let allocated = tallied
         .iter()
-        .filter(|(o, _, _)| paid.contains(&o.hash_hex))
+        .filter(|(o, _, _)| estimate.contains(&o.hash_hex))
         .filter_map(|(_, d, _)| d.payable_amount)
         .sum();
 
@@ -501,31 +494,27 @@ mod tests {
         assert!(after.close_call);
     }
 
-    /// MG-02 D69: what the next superblock pays is the trigger builder's
-    /// set. Of two passing proposals, the one whose payment window opens
-    /// more than 2 h after the next superblock (as the builder times it) is
-    /// not allocated, but its status is dash-qt's: passing.
+    /// MG-02 D65, D69: the fundable set is dash-qt's over the proposals not
+    /// lapsed. One for a later cycle is passing and allocated, as dash-qt
+    /// shows it; one at its end epoch (not pruned yet) is neither, as
+    /// Core's trigger builder would not pay it. `allocated` is the sum of
+    /// the passing rows.
     #[test]
-    fn only_proposals_payable_at_the_next_superblock_are_fundable() {
+    fn the_fundable_set_is_dash_qts_over_proposals_not_lapsed() {
         let mut store = GovernanceStore::new(Network::Regtest);
         store.set_confirmations(1);
-        let tip = 1_505;
-        let p = governance_params(Network::Regtest);
-        let (_, next) = clock::nearest_superblocks(&p, tip);
-        let sb = clock::trigger_superblock_time(NOW, tip, next);
-        let fudge = clock::GOVERNANCE_FUDGE_WINDOW_SECS;
-        let proposal = |store: &mut GovernanceStore, name: &str, start: i64, amount: u32| {
+        let proposal = |store: &mut GovernanceStore, name: &str, start: i64, end: i64| {
             let data = format!(
-                r#"{{"end_epoch":{},"name":"{name}","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":{amount},"start_epoch":{start},"type":1,"url":"http://x.y"}}"#,
-                sb + 100_000
+                r#"{{"end_epoch":{end},"name":"{name}","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":1,"start_epoch":{start},"type":1,"url":"http://x.y"}}"#
             );
             let o = GovernanceObject::new_proposal(1, NOW, data.into_bytes());
             let h = o.hash();
             store.add_object(o, None, NOW).unwrap();
             h
         };
-        let open = proposal(&mut store, "open", sb + fudge, 1);
-        let later = proposal(&mut store, "later", sb + fudge + 1, 2);
+        let open = proposal(&mut store, "open", 1, NOW + 100_000);
+        let later = proposal(&mut store, "later", NOW + 1_000_000, NOW + 2_000_000);
+        let ending = proposal(&mut store, "ending", 1, NOW + 50);
         store.set_masternode_list(
             &(1..=10)
                 .map(|k| ListEntry {
@@ -535,21 +524,16 @@ mod tests {
                 })
                 .collect::<Vec<_>>(),
         );
-        for k in 1..=10 {
-            store.add_vote(yes(open, k, k), None, NOW).unwrap();
-            store.add_vote(yes(later, k, k), None, NOW).unwrap();
+        for h in [open, later, ending] {
+            for k in 1..=10 {
+                store.add_vote(yes(h, k, k), None, NOW).unwrap();
+            }
         }
-        let t = build_table(&crate::DashNetwork::Regtest, &store, tip, NOW);
-        assert!(
-            t.rows
-                .iter()
-                .all(|r| r.tally.net_yes_estimate >= i64::from(t.threshold))
-        );
-        assert_eq!(t.allocated, 100_000_000);
-        assert!(
-            t.rows.iter().all(|r| r.status == ProposalStatus::Passing),
-            "{:?}",
-            t.rows
-        );
+        let t = build_table(&crate::DashNetwork::Regtest, &store, 1_505, NOW + 50);
+        let status = |name: &str| t.rows.iter().find(|r| r.name == name).unwrap().status;
+        assert_eq!(status("open"), ProposalStatus::Passing);
+        assert_eq!(status("later"), ProposalStatus::Passing);
+        assert_eq!(status("ending"), ProposalStatus::Lapsed);
+        assert_eq!(t.allocated, 2 * 100_000_000);
     }
 }

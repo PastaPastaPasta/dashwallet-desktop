@@ -10,10 +10,6 @@ use crate::params::{ETA_BLOCK_TENTHS, GovernanceParams, governance_params};
 
 const COIN: u64 = 100_000_000;
 
-/// Core `GOVERNANCE_FUDGE_WINDOW`: its trigger builder pays a proposal at a
-/// superblock timed up to this long outside the proposal's epochs.
-pub const GOVERNANCE_FUDGE_WINDOW_SECS: i64 = 2 * 60 * 60;
-
 /// The last and next superblock heights around `height` (Core: before the
 /// first superblock, `last` is 0).
 pub fn nearest_superblocks(p: &GovernanceParams, height: u32) -> (u32, u32) {
@@ -41,14 +37,6 @@ pub fn estimated_time(tip_height: u32, tip_time: u64, height: u32) -> u64 {
     let blocks = i64::from(height) - i64::from(tip_height);
     let t = tip_time as i64 + blocks * ETA_BLOCK_TENTHS / 10;
     t.max(0) as u64
-}
-
-/// The time Core's trigger builder gives the next superblock, `next`
-/// (`governance/signing.cpp`): `now` plus 2.62 minutes per block from the
-/// tip, in floating point, truncated.
-pub fn trigger_superblock_time(now: i64, tip_height: u32, next: u32) -> i64 {
-    let blocks = i64::from(next) - i64::from(tip_height);
-    (now as f64 + blocks as f64 * 2.62 * 60.0) as i64
 }
 
 /// The next `count` superblocks after `tip_height` (the Create Proposal
@@ -219,14 +207,6 @@ mod tests {
         assert_eq!(nearest_superblocks(&r, 1505), (1500, 1520));
         assert_eq!(nearest_superblocks(&r, 1500), (1500, 1520));
         assert_eq!(nearest_superblocks(&r, 10), (0, 1500));
-    }
-
-    #[test]
-    fn the_trigger_builder_times_a_superblock_in_floating_point() {
-        // 2.62 · 60 is 157.20000000000002 in a double; the sum truncates.
-        assert_eq!(trigger_superblock_time(1_000_000, 1499, 1500), 1_000_157);
-        assert_eq!(trigger_superblock_time(1_000_000, 1500, 1520), 1_003_144);
-        assert_eq!(trigger_superblock_time(1_000_000, 0, 16_616), 3_612_035);
     }
 
     #[test]
