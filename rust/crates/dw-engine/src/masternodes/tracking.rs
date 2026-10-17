@@ -180,12 +180,39 @@ async fn references(
 /// vault may hold another key in memory than on disk. A locked vault
 /// changes nothing; a key the vault can't read is logged and skipped, and
 /// the comparison runs again on the next read, as it does after a failed
-/// write. A read that finds a change holding the lock leaves out the ids it
-/// would have checked, so those keys hold nothing until a later read.
+/// write. Any id this read couldn't compare is left out, so that key holds
+/// nothing on this read: a change holding the lock, the vault locking
+/// meanwhile, or a key it can't read. A busy lock or a written change makes
+/// the host read again (`local_change`).
 pub(super) async fn reconcile_key_ids(
     session: &NetworkSession,
     attached: &HashMap<[u8; 32], Vec<AttachedKeyRole>>,
     notes: Notes,
+) -> Result<Notes, MasternodesError> {
+    let runtime = &session.masternodes;
+    let mut notes = reconcile(session, attached, notes).await?;
+    // An unsettled key has no id stored, but this read's notes may predate
+    // the write that dropped it.
+    for (hash, roles) in attached {
+        for role in roles {
+            if runtime.is_unsettled(*hash, *role) {
+                notes.key_ids.remove(&(display_hex(hash), *role));
+            }
+        }
+    }
+    Ok(notes)
+}
+
+fn leave_out(notes: &mut Notes, pairs: impl IntoIterator<Item = ([u8; 32], AttachedKeyRole)>) {
+    for (hash, role) in pairs {
+        notes.key_ids.remove(&(display_hex(&hash), role));
+    }
+}
+
+async fn reconcile(
+    session: &NetworkSession,
+    attached: &HashMap<[u8; 32], Vec<AttachedKeyRole>>,
+    mut notes: Notes,
 ) -> Result<Notes, MasternodesError> {
     let runtime = &session.masternodes;
     let pending = |notes: &Notes| -> Vec<([u8; 32], AttachedKeyRole)> {
@@ -203,13 +230,12 @@ pub(super) async fn reconcile_key_ids(
         return Ok(notes);
     }
     let Some(_mutation) = runtime.try_mutation() else {
-        let mut notes = notes;
-        for (hash, role) in pending(&notes) {
-            notes.key_ids.remove(&(display_hex(&hash), role));
-        }
+        let unchecked = pending(&notes);
+        leave_out(&mut notes, unchecked);
+        runtime.local_change();
         return Ok(notes);
     };
-    let notes = session.appdb_op(load_notes).await?;
+    let mut notes = session.appdb_op(load_notes).await?;
     let pending = pending(&notes);
     let vault = session.vault.clone();
     let read = tokio::task::spawn_blocking(move || {
@@ -225,15 +251,25 @@ pub(super) async fn reconcile_key_ids(
             .collect::<Vec<_>>()
     })
     .await?;
+    if read
+        .iter()
+        .any(|(_, _, held)| matches!(held, Err(dw_vault::VaultError::Locked)))
+    {
+        leave_out(
+            &mut notes,
+            read.into_iter().map(|(hash, role, _)| (hash, role)),
+        );
+        return Ok(notes);
+    }
     let mut changes = Vec::new();
     let mut dropped = Vec::new();
     let mut verified = true;
     for (hash, role, held) in read {
         let held = match held {
             Ok(held) => held,
-            Err(dw_vault::VaultError::Locked) => return Ok(notes),
             Err(e) => {
                 tracing::warn!(error = %e, "could not read an attached key's id");
+                leave_out(&mut notes, [(hash, role)]);
                 verified = false;
                 continue;
             }
@@ -251,14 +287,16 @@ pub(super) async fn reconcile_key_ids(
     let notes = if changes.is_empty() {
         notes
     } else {
-        session
+        let written = session
             .appdb_op(move |db| {
                 for (hash, role, id) in changes {
                     set_key_id(db, &display_hex(&hash), role, id)?;
                 }
                 load_notes(db)
             })
-            .await?
+            .await?;
+        runtime.local_change();
+        written
     };
     // Only once the drops are written: a failed write leaves them, and the
     // comparison, to the next read.

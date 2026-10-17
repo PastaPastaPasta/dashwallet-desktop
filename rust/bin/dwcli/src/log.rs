@@ -122,6 +122,9 @@ fn redact(text: &str, values: &[String]) -> String {
     let lower = text.to_ascii_lowercase();
     let mut covered = vec![false; text.len()];
     for value in values {
+        if value.is_empty() {
+            continue;
+        }
         let value = value.to_ascii_lowercase();
         let mut from = 0;
         while let Some(at) = lower[from..].find(&value) {
