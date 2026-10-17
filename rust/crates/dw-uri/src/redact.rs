@@ -160,12 +160,10 @@ pub fn redact_links(text: &str) -> Cow<'_, str> {
     for line in text.split_inclusive(['\n', '\r']) {
         let body = line.trim_end_matches(['\n', '\r']);
         if let Some(at) = link_start(body) {
-            let end = text
-                .trim_end_matches(['\n', '\r'])
-                .len()
-                .max(line_start + at);
-            let mut o = String::with_capacity(line_start + at + REDACTED.len() + 2);
-            o.push_str(&text[..line_start + at]);
+            let cut = line_start + at;
+            let end = text.trim_end_matches(['\n', '\r']).len().max(cut);
+            let mut o = String::with_capacity(cut + REDACTED.len() + text.len() - end);
+            o.push_str(&text[..cut]);
             o.push_str(REDACTED);
             o.push_str(&text[end..]);
             return Cow::Owned(o);

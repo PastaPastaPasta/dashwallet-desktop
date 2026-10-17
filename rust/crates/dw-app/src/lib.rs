@@ -209,7 +209,9 @@ pub fn run() {
             .data_dir
             .as_deref()
             .unwrap_or(Path::new("the app-data directory"));
-        eprintln!("dash-wallet: data directory {}: {e}", dir.display());
+        // The path came from an argument: redacted like one (D30).
+        let line = format!("data directory {}: {e}", dir.display());
+        eprintln!("{}", launch_error(&line));
         std::process::exit(1);
     });
     launch.data_dir = Some(root.clone());

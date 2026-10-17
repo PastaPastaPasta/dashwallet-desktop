@@ -309,6 +309,9 @@ proptest! {
             if cr { "\r" } else { "\n" }
         );
         let redacted = redact_links(&event);
+        // A link whole in the first line is always found.
+        let whole = !head.is_empty() && redacted_whole(&head);
+        prop_assert!(!whole || redacted != event, "{redacted:?}");
         if redacted == event {
             return Ok(());
         }
@@ -317,7 +320,7 @@ proptest! {
         let kept = &body[..body.len() - REDACTED.len()];
         prop_assert!(event.starts_with(kept), "{redacted:?}");
         // A link whole in the first line: nothing of it is kept.
-        if !head.is_empty() && redacted_whole(&head) {
+        if whole {
             prop_assert!(kept.len() <= "unknown option --bad=".len(), "{redacted:?}");
         }
     }

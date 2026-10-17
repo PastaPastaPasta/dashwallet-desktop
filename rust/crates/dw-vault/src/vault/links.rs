@@ -81,8 +81,6 @@ const ENTRY_TMP_EXT: &str = "tmp";
 /// An entry file larger than this is not one of ours: it is deleted
 /// unread and unscrubbed (D27).
 const MAX_ENTRY_FILE_BYTES: u64 = 16 * 1024;
-/// Zeros are written this many bytes at a time (D27).
-const SCRUB_CHUNK: usize = 64 * 1024;
 const ENTRY_VERSION: u32 = 1;
 const DAY: u64 = 24 * 60 * 60;
 
@@ -393,26 +391,33 @@ fn open_entry(
     Ok(Zeroizing::new(text.to_owned()))
 }
 
-/// Overwrites the first `len` bytes of `f` with zeros and syncs it, a
-/// fixed-size chunk at a time; nothing when `len` is over
-/// [`MAX_ENTRY_FILE_BYTES`]: no file this module writes is, so a larger
-/// one holds none of its plaintext, and zeroing it could take any amount
-/// of time and disk (a sparse file, D27). Best effort (D18): a
-/// copy-on-write or journaling file system may keep the old blocks.
+/// Whether `texts` already holds `text` of the same `kind` (constant time
+/// per comparison).
+fn holds_text(
+    texts: &[(StashedLinkKind, Zeroizing<String>)],
+    kind: StashedLinkKind,
+    text: &str,
+) -> bool {
+    texts
+        .iter()
+        .any(|(k, t)| *k == kind && bool::from(t.as_bytes().ct_eq(text.as_bytes())))
+}
+
+/// Overwrites the first `len` bytes of `f` with zeros and syncs it, through
+/// `io::copy`'s small fixed buffer (the length is never allocated); nothing
+/// when `len` is over [`MAX_ENTRY_FILE_BYTES`]: no file this module writes
+/// is, so a larger one holds none of its plaintext, and zeroing it could
+/// take any amount of time and disk (a sparse file, D27). Best effort
+/// (D18): a copy-on-write or journaling file system may keep the old
+/// blocks.
 fn zero_file(f: &mut std::fs::File, len: u64) {
-    static ZEROS: [u8; SCRUB_CHUNK] = [0; SCRUB_CHUNK];
     if len > MAX_ENTRY_FILE_BYTES {
         return;
     }
-    let mut left = len;
-    while left > 0 {
-        let n = left.min(SCRUB_CHUNK as u64) as usize;
-        if f.write_all(&ZEROS[..n]).is_err() {
-            return;
-        }
-        left -= n as u64;
+    let mut zeros = std::io::Read::take(std::io::repeat(0), len);
+    if std::io::copy(&mut zeros, f).is_ok() {
+        let _ = f.sync_all();
     }
-    let _ = f.sync_all();
 }
 
 /// Overwrites the regular file `path` with zeros ([`zero_file`]), before
@@ -488,11 +493,13 @@ fn write_replacing(
     }
     let old = scrub_old.then(|| open_old(path)).flatten();
     std::fs::rename(tmp, path)?;
-    sync_dir(dir)?;
+    // The old file is unlinked once the rename is done: zeroed even when
+    // the directory sync fails, so no plaintext inode is freed whole.
+    let synced = sync_dir(dir);
     if let Some((mut f, len)) = old {
         zero_file(&mut f, len);
     }
-    Ok(())
+    synced
 }
 
 /// Reads one entry; `None` for a file that is not one (wrong name, too
@@ -718,10 +725,7 @@ impl Vault {
                     continue;
                 }
             };
-            let duplicate = texts
-                .iter()
-                .any(|(k, t)| *k == e.kind && bool::from(t.as_bytes().ct_eq(text.as_bytes())));
-            if duplicate {
+            if holds_text(&texts, e.kind, &text) {
                 self.delete_entry(&e)?;
                 dropped += 1;
                 continue;
@@ -836,16 +840,10 @@ impl Vault {
                 continue;
             };
             let kind = e.kind;
-            let duplicate = texts
-                .iter()
-                .any(|(k, t)| *k == kind && bool::from(t.as_bytes().ct_eq(text.as_bytes())));
-            if duplicate {
-                match self.delete_entry(&e) {
-                    Ok(()) => {}
-                    Err(err) => {
-                        tracing::warn!(error = %err, "link stash: a duplicate could not be deleted");
-                        kept.push(e);
-                    }
+            if holds_text(&texts, kind, &text) {
+                if let Err(err) = self.delete_entry(&e) {
+                    tracing::warn!(error = %err, "link stash: a duplicate could not be deleted");
+                    kept.push(e);
                 }
                 continue;
             }

@@ -691,6 +691,48 @@ fn plaintext_beside_a_vault_is_sealed_with_the_public_key() {
     );
 }
 
+/// Review (L2): a seal to `stash.pub` that cannot be written leaves the
+/// entry plaintext, in memory (still listed, still taken whole) and on
+/// disk, and reported; the next call that can write seals it.
+#[cfg(unix)]
+#[test]
+fn a_failed_seal_to_the_public_key_keeps_the_entry() {
+    let f = Fixture::new();
+    let other = Fixture::new();
+    let left = other
+        .open()
+        .stash_link(StashedLinkKind::Invitation, INVITE)
+        .unwrap();
+    let v = f.open();
+    v.create(Some(b"pass")).unwrap();
+    v.lock();
+    let entry = f.links_dir().join(format!("{}.dwl", left.id));
+    std::fs::copy(other.links_dir().join(format!("{}.dwl", left.id)), &entry).unwrap();
+    if !read_only(&f.links_dir()) {
+        eprintln!("skipped: the stash directory stays writable (root)");
+        return;
+    }
+    drop(v);
+    let v = f.open();
+    assert!(v.status().unsealed_links);
+    assert_eq!(v.stashed_links().unwrap(), vec![left.clone()]);
+    assert!(v.status().unsealed_links);
+    assert!(
+        std::fs::read_to_string(&entry)
+            .unwrap()
+            .contains("cPlantedSecretKey")
+    );
+    writable(&f.links_dir());
+    assert_eq!(v.stashed_links().unwrap(), vec![left.clone()]);
+    assert!(!v.status().unsealed_links);
+    assert!(!f.disk_text().contains("cPlantedSecretKey"));
+    v.unlock(b"pass", UnlockScope::Full).unwrap();
+    assert_eq!(
+        take(&v, &left.id),
+        Some((StashedLinkKind::Invitation, INVITE.to_owned()))
+    );
+}
+
 /// Sol r1 (D29): opening the vault (the app's start) sweeps: a
 /// plaintext entry past its time to live goes without any stash call, and
 /// so does a crash's temporary file.
@@ -698,8 +740,8 @@ fn plaintext_beside_a_vault_is_sealed_with_the_public_key() {
 fn opening_sweeps_expired_entries_and_leftovers() {
     let f = Fixture::new();
     let v = f.open();
-    let pay = v.stash_link(StashedLinkKind::Payment, PAY).unwrap();
-    let invite = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    v.stash_link(StashedLinkKind::Payment, PAY).unwrap();
+    v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
     drop(v);
     let tmp = f.links_dir().join(format!("{}.tmp", "e".repeat(32)));
     std::fs::write(&tmp, b"{\"plain\":\"cPlantedPartial\"}").unwrap();
@@ -712,7 +754,6 @@ fn opening_sweeps_expired_entries_and_leftovers() {
     f.advance(23 * DAY);
     let _v = f.open();
     assert_eq!(f.entry_files(), 0, "the invitation expired");
-    let _ = (pay, invite);
 }
 
 /// Sol r1 M2 (D27): a huge entry or temporary file (sparse here, so the
