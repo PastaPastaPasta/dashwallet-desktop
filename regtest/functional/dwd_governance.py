@@ -17,8 +17,9 @@ superblock is Core's regtest default, height 1500, cycle 20, maturity window 10.
 
 Checks, in order:
  1. after govsync, the wallet lists the two proposals with Core's weighted Yes/No counts
-    (`gobject get` FundingResult), exact weights (every voting key is one masternode's), the
-    evonode's vote at weight 4, and the passing/failing statuses;
+    (`gobject get` FundingResult) as the estimates (every voting key is one masternode's),
+    each vote ranged 0..4 as no outpoint is resolved (MG-02 D64), the evonode's vote
+    estimated at weight 4, and the passing/failing statuses;
  2. the console answers `getgovernanceinfo`, `getsuperblockbudget` and `gobject count`/`get`
     as Core does for the same chain;
  3. `voteraw`: a vote signed outside (`signmessage` with the voting key, regtest's message
@@ -205,12 +206,15 @@ class DwdGovernance(DashTestFramework):
             assert_equal((t["yes"]["estimate"], t["no"]["estimate"], t["abstain"]["estimate"]),
                          (yes, no, abstain))
             for k in ("yes", "no", "abstain"):
-                assert_equal(t[k]["min"], t[k]["max"])  # every key is one masternode's
-            assert_equal(t["ranged_votes"], 0)
+                # Unresolved, a vote proves no weight (D64).
+                assert_equal(t[k]["min"], 0)
+                assert t[k]["estimate"] <= t[k]["max"], t
+            assert_equal(t["ranged_votes"], t["voters"])
             assert_equal(r["payment_amount"], duffs(amount))
         assert_equal(rows[p0]["tally"]["voters"], 4)
         assert_equal(rows[p1]["tally"]["voters"], 2)
         assert_equal(rows[p0]["status"], "passing")
+        assert_equal(rows[p0]["close_call"], True)
         assert rows[p1]["status"] in ("voting", "failing"), rows[p1]["status"]
         assert_equal(len(out["votes"][p0]), 4)
         evo_rows = [v for v in out["votes"][p1] if v["outcome"] == "no"]

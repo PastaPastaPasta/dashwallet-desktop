@@ -1895,11 +1895,14 @@ async fn one_peer_run(tune: impl FnOnce(&mut SyncConfig, &mut PeerState)) -> Run
         base_bytes: 0,
         votes_open: true,
         announce_open: false,
-        unassigned: Vec::new(),
+        vote_targets: HashSet::new(),
+        completed: HashSet::new(),
+        vote_given_up: false,
         lost: 0,
         recovered: 0,
         full_syncs_done: 0,
         vote_parents: HashMap::new(),
+        vote_parent_order: VecDeque::new(),
         last_progress: Instant::now(),
     }
 }
@@ -3324,4 +3327,168 @@ async fn a_budget_refusal_after_a_timeout_keeps_the_loss() {
     assert!(!run.shared.store().has_vote(&x.hash()));
     assert_eq!(run.recovered, 0);
     assert_eq!(run.lost, 1);
+}
+
+/// Sol r2 Major 3: a failed run asked H1 and H2 for A's votes, which never
+/// came. Retried within the window, only the fresh M may be asked, and it
+/// withholds them (`ssc(11, 0)`): A's votes were synced with too few peers,
+/// not `Synced`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retry_that_may_only_ask_a_withholder_is_not_synced() {
+    let a = proposal("a-r2-f3-retry");
+    let ha = a.hash();
+    let honest = Node {
+        objects: vec![a.clone()],
+        votes: vec![vote(ha, 1, VoteOutcome::Yes)],
+        ..Node::default()
+    };
+    let withholder = Node {
+        objects: vec![a.clone()],
+        ..Node::default()
+    };
+    let hx = start_with(
+        vec![honest.clone(), honest, withholder],
+        |_| {},
+        move |shared, history, addrs| {
+            // The failed run confirmed A and asked H1 and H2 for its votes.
+            shared.store().add_object(a, None, unix_now()).unwrap();
+            for addr in &addrs[..2] {
+                history.full_synced.insert(*addr, Instant::now());
+                history.vote_synced.insert((*addr, ha), Instant::now());
+            }
+        },
+    )
+    .await;
+    let p = wait_for(&hx.shared, |p| {
+        matches!(p.phase, Phase::Failed | Phase::Synced)
+    })
+    .await;
+    let _ = hx.stop.send(true);
+    assert_eq!(p.phase, Phase::Failed, "{p:?}");
+    assert!(p.last_error.unwrap().contains("too few peers"));
+    assert!(p.last_synced_at.is_none());
+}
+
+/// Serves `a`; asked for its votes, counts one but announces only `v`, a
+/// vote on an object the run does not know, which it then lacks.
+async fn unrelated_notfound_peer(mock: MockPeer, a: GovernanceObject, v: [u8; 32]) {
+    let mut conn = mock.accept().await.unwrap();
+    while let Ok(msg) = conn.recv().await {
+        match msg.command.as_str() {
+            commands::MNGOVERNANCESYNC if msg.payload[..32] == [0; 32] => {
+                send_status(&mut conn, SSC_GOVOBJ, 1).await;
+                let item = InvItem {
+                    kind: INV_GOVERNANCE_OBJECT,
+                    hash: a.hash(),
+                };
+                conn.send("inv", &encode_inv(&[item])).await.unwrap();
+            }
+            commands::MNGOVERNANCESYNC => {
+                send_status(&mut conn, SSC_GOVOBJ_VOTE, 1).await;
+                let item = InvItem {
+                    kind: INV_GOVERNANCE_VOTE,
+                    hash: v,
+                };
+                conn.send("inv", &encode_inv(&[item])).await.unwrap();
+            }
+            "getdata" => {
+                let items = decode_inv(&msg.payload).unwrap();
+                if items.iter().any(|i| i.kind == INV_GOVERNANCE_OBJECT) {
+                    conn.send(commands::MNGOVERNANCEOBJECT, &a.encode())
+                        .await
+                        .unwrap();
+                }
+                let votes: Vec<InvItem> = items
+                    .into_iter()
+                    .filter(|i| i.kind == INV_GOVERNANCE_VOTE)
+                    .collect();
+                if !votes.is_empty() {
+                    conn.send("notfound", &encode_inv(&votes)).await.unwrap();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Sol r2 Major 4: the one peer asked for A's votes counts one, announces
+/// a vote on another object instead and answers its `getdata` with
+/// `notfound`. Given up on, that vote lets the phase end, but completes no
+/// vote sync of A.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unknown_votes_notfound_does_not_settle_another_vote_sync() {
+    let a = proposal("a-r2-f4-unrelated");
+    let (_shared, p, stop) = start_custom(
+        vec![custom(move |mock| {
+            unrelated_notfound_peer(mock, a, [0x5f; 32])
+        })],
+        vec![],
+        |_| {},
+        |shared| shared.store().set_confirmations(1),
+    )
+    .await;
+    let _ = stop.send(true);
+    assert_eq!(p.phase, Phase::Failed, "{p:?}");
+    assert!(p.last_error.unwrap().contains("too few peers"));
+}
+
+/// Sol r2 Major 4: cleared when full, the record of decoded votes' objects
+/// lost the only known object of a vote, whose next inv then counted as
+/// unknown. It forgets its oldest entries only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_vote_parent_record_forgets_only_its_oldest() {
+    let mut run = one_peer_run(|_, _| {}).await;
+    let vote = |i: usize| {
+        let mut h = [0x31; 32];
+        h[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        h
+    };
+    for i in 0..=MAX_LATE {
+        run.credit_relays(vote(i), [0x32; 32]);
+    }
+    assert_eq!(run.vote_parents.len(), MAX_LATE);
+    assert!(!run.vote_parents.contains_key(&vote(0)));
+    assert_eq!(run.vote_parents.get(&vote(MAX_LATE - 1)), Some(&[0x32; 32]));
+}
+
+/// Sol r2 Major 5: a copy of key 2's vote re-signed by key 1 arrives first
+/// and, of the same hash, keeps the honest copy out. Once the outpoint
+/// resolves to key 2, the copy is dropped and the hash asked for again: the
+/// re-signed copy is refused, and the next peer's honest copy is kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resolved_outpoint_brings_back_the_honest_copy() {
+    let p = proposal("p-r2-f5-refetch");
+    let mut run = two_peer_run(&p).await;
+    list_keys(&run, [1, 2]);
+    let honest = vote(p.hash(), 2, VoteOutcome::Yes);
+    let forged = resigned(&honest, 1);
+    let item = vote_inv(&honest);
+    let keys = |run: &Run| -> Vec<[u8; 20]> {
+        run.shared
+            .store()
+            .votes_on(&p.hash())
+            .map(|v| v.key_id)
+            .collect()
+    };
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::Vote(forged.encode()));
+    assert_eq!(keys(&run), vec![key_id(1)]);
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    assert!(run.requests.pending.is_empty());
+
+    run.shared.store().set_resolved(HashMap::from([(
+        honest.masternode_outpoint,
+        crate::store::ResolvedMasternode {
+            pro_tx_hash: [9; 32],
+            voting_key_id: key_id(2),
+            weight: 1,
+        },
+    )]));
+    assert!(keys(&run).is_empty());
+    run.expire();
+    run.handle(0, PeerEvent::Vote(forged.encode()));
+    assert!(keys(&run).is_empty());
+    run.handle(1, PeerEvent::Vote(honest.encode()));
+    assert_eq!(keys(&run), vec![key_id(2)]);
+    assert!(run.requests.pending.is_empty());
 }

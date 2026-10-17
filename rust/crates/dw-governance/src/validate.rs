@@ -39,6 +39,10 @@ use crate::proposal::{
 /// `MAX_TIME_FUTURE_DEVIATION`, one hour).
 pub const MAX_TIME_FUTURE_DEVIATION: i64 = 60 * 60;
 
+/// The highest trigger height the wallet keeps: the wallet bounds heights
+/// (MG-02 D66), far past any chain's (some 200,000 blocks a year).
+pub const MAX_TRIGGER_HEIGHT: i32 = 100_000_000;
+
 /// UniValue's `MAX_JSON_DEPTH`: containers nested deeper fail to read.
 pub const MAX_JSON_DEPTH: usize = 512;
 
@@ -66,16 +70,33 @@ pub enum ObjectRejection {
     /// A trigger created more than an hour ahead or two cycles ago: Core's
     /// rate check ignores it without a penalty.
     TriggerTimeOutOfRange,
+    /// A trigger for a height above [`MAX_TRIGGER_HEIGHT`] (D66).
+    TriggerHeightOutOfRange,
+    /// A proposal whose end epoch is past: the wallet keeps no lapsed
+    /// proposal (D65).
+    ProposalExpired,
     /// Not a rule: the store holds as many unconfirmed objects as it keeps
     /// (from this peer or in all).
     StoreFull,
 }
 
 impl ObjectRejection {
-    /// Whether the sender misbehaved: Core's rules refuse the object
-    /// outright (the time window and the store bound do not).
+    /// Whether Core's rules refuse the object outright (the time window,
+    /// the wallet's own bounds and the store's do not).
     pub fn is_invalid(self) -> bool {
-        !matches!(self, Self::TriggerTimeOutOfRange | Self::StoreFull)
+        !matches!(
+            self,
+            Self::TriggerTimeOutOfRange
+                | Self::TriggerHeightOutOfRange
+                | Self::ProposalExpired
+                | Self::StoreFull
+        )
+    }
+
+    /// Whether every copy of the object, now and later, is refused the same
+    /// way: the wallet remembers it so it is not fetched again.
+    pub fn is_final(self) -> bool {
+        matches!(self, Self::TriggerHeightOutOfRange | Self::ProposalExpired)
     }
 }
 
@@ -250,8 +271,9 @@ fn json_object(data: &[u8]) -> Option<(Members, bool)> {
     }
 }
 
-/// Checks `object` as Core would before storing it from a peer; `now` is
-/// the local clock in Unix seconds. `rate_checked` applies a trigger's
+/// Checks `object` as Core would before storing it from a peer, and against
+/// the wallet's own bounds (D65, D66); `now` is the local clock in Unix
+/// seconds. `rate_checked` applies a trigger's
 /// creation-time window, which Core skips until its governance is synced
 /// (`MasternodeRateCheck`).
 pub fn check_object(
@@ -280,12 +302,19 @@ pub fn check_object(
         if named != Some(OBJECT_TYPE_PROPOSAL) {
             return Err(ObjectRejection::InvalidProposal("type"));
         }
-        return check_proposal(&object.data, &o, network).map(ValidObject::Proposal);
+        let p = check_proposal(&object.data, &o, network)?;
+        if p.end_epoch.is_some_and(|e| e <= now) {
+            return Err(ObjectRejection::ProposalExpired);
+        }
+        return Ok(ValidObject::Proposal(p));
     }
     if named != Some(OBJECT_TYPE_TRIGGER) {
         return Err(ObjectRejection::InvalidTrigger("type"));
     }
     let trigger = check_trigger(&o, network)?;
+    if trigger.event_block_height > MAX_TRIGGER_HEIGHT {
+        return Err(ObjectRejection::TriggerHeightOutOfRange);
+    }
     let p = governance_params(network);
     let cycle_secs = i64::from(p.superblock_cycle) * i64::from(p.target_spacing_secs);
     if rate_checked
@@ -430,7 +459,7 @@ mod tests {
         format!(r#"{{{fields}"type":1}}"#)
     }
 
-    const GOOD: &str = r#""name":"my-prop_1","start_epoch":100,"end_epoch":200,"payment_amount":12.5,"payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","url":"http://x.y","#;
+    const GOOD: &str = r#""name":"my-prop_1","start_epoch":100,"end_epoch":2000,"payment_amount":12.5,"payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","url":"http://x.y","#;
 
     fn check(data: &str) -> Result<ValidObject, ObjectRejection> {
         check_object(&object(data, 1_000), Network::Testnet, 1_000, true)
@@ -456,6 +485,13 @@ mod tests {
             (Some(1_250_000_000), None)
         );
 
+        // Lapsed, it is not kept (D65).
+        let at = |now| check_object(&object(&proposal(GOOD), 1_000), Network::Testnet, now, true);
+        assert!(at(1_999).is_ok());
+        let e = at(2_000).unwrap_err();
+        assert_eq!(e, ObjectRejection::ProposalExpired);
+        assert!(!e.is_invalid() && e.is_final());
+
         let bad = |from: &str, to: &str, field| {
             let d = proposal(&GOOD.replace(from, to));
             assert_eq!(
@@ -471,8 +507,8 @@ mod tests {
             &format!(r#""{}""#, "a".repeat(41)),
             "name",
         );
-        bad(r#""end_epoch":200"#, r#""end_epoch":100"#, "end_epoch");
-        bad(r#""end_epoch":200"#, r#""end_epoch":200.0"#, "end_epoch");
+        bad(r#""end_epoch":2000"#, r#""end_epoch":100"#, "end_epoch");
+        bad(r#""end_epoch":2000"#, r#""end_epoch":2000.0"#, "end_epoch");
         bad(
             r#""start_epoch":100"#,
             r#""start_epoch":"100""#,
@@ -599,6 +635,21 @@ mod tests {
             }))
         ));
 
+        // The wallet bounds heights (D66): refused for good, with no penalty.
+        let top = MAX_TRIGGER_HEIGHT.to_string();
+        assert!(check(&trigger(&top, ADDR, "1", HASH)).is_ok());
+        let over = (MAX_TRIGGER_HEIGHT + 1).to_string();
+        let e = check(&trigger(&over, ADDR, "1", HASH)).unwrap_err();
+        assert_eq!(e, ObjectRejection::TriggerHeightOutOfRange);
+        assert!(!e.is_invalid() && e.is_final());
+        let r = check_object(
+            &object(&trigger(&over, ADDR, "1", HASH), 1_000),
+            Network::Testnet,
+            1_000,
+            false,
+        );
+        assert_eq!(r, Err(ObjectRejection::TriggerHeightOutOfRange));
+
         // Created more than two cycles ago or an hour ahead.
         let p = governance_params(Network::Testnet);
         let window = 2 * i64::from(p.superblock_cycle) * i64::from(p.target_spacing_secs);
@@ -616,7 +667,7 @@ mod tests {
             // Core's rate check ignores such an object without a penalty.
             if let Err(e) = r {
                 assert_eq!(e, ObjectRejection::TriggerTimeOutOfRange);
-                assert!(!e.is_invalid());
+                assert!(!e.is_invalid() && !e.is_final());
             }
         }
     }

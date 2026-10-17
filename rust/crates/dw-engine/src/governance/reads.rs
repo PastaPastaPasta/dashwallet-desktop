@@ -289,8 +289,8 @@ fn valid_counts(list: &ListSnapshot) -> (u32, u32, u32) {
 }
 
 /// Every confirmed proposal's row: the ranged tally, the fundable set on
-/// the estimates (node `getFundableProposalHashes`), dash-qt's status, and
-/// whether the ranges could change it (MG-00 D45).
+/// the estimates, dash-qt's status, and whether the ranges could change it
+/// (MG-00 D45).
 fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, now: i64) -> Table {
     let p = governance_params(network.core_network());
     let threshold = tally::threshold(store.valid_weight(), p.min_quorum);
@@ -309,10 +309,15 @@ fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, 
             (o, d, t)
         })
         .collect();
-    // Core's trigger builder skips an amount `ParsePaymentAmount` refuses.
+    // Fundable membership is Core's trigger builder's, not node
+    // `getFundableProposalHashes` (which counts a lapsed proposal Core still
+    // holds): no lapsed proposal, none outside its payment window at the
+    // next superblock, and no amount `ParsePaymentAmount` refuses (MG-02
+    // D65).
+    let superblock_time = clock::trigger_superblock_time(now, tip, next);
     let candidates: Vec<RangedCandidate> = tallied
         .iter()
-        .filter(|(_, d, _)| d.end_epoch.is_none_or(|e| e > now))
+        .filter(|(_, d, _)| d.end_epoch.is_none_or(|e| e > now) && d.payable_at(superblock_time))
         .filter_map(|(o, d, t)| {
             let (low, high) = t.net_yes_bounds();
             Some(RangedCandidate {
@@ -386,5 +391,154 @@ fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, 
         threshold,
         budget,
         allocated,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dashcore::hashes::{Hash, hash160};
+    use dashcore::secp256k1::{Message, PublicKey, SecretKey};
+    use dashcore::{Network, OutPoint, Txid};
+    use dw_governance::object::GovernanceObject;
+    use dw_governance::store::{ListEntry, ResolvedMasternode};
+    use dw_governance::vote::{GovernanceVote, VoteOutcome, to_recoverable_compact};
+    use std::collections::HashMap;
+
+    const NOW: i64 = 1_000_000;
+
+    fn key_id(n: u8) -> [u8; 20] {
+        let sk = SecretKey::from_secret_bytes([n; 32]).unwrap();
+        hash160::Hash::hash(&PublicKey::from_secret_key(&sk).serialize()).to_byte_array()
+    }
+
+    fn outpoint(op: u8) -> OutPoint {
+        OutPoint::new(Txid::from_byte_array([op; 32]), 0)
+    }
+
+    /// A YES funding vote on `parent` by voting key `key` for outpoint `op`.
+    fn yes(parent: [u8; 32], key: u8, op: u8) -> GovernanceVote {
+        let sk = SecretKey::from_secret_bytes([key; 32]).unwrap();
+        let pk = PublicKey::from_secret_key(&sk);
+        let mut v = GovernanceVote::funding(outpoint(op), parent, VoteOutcome::Yes, NOW - 100);
+        let d = v.signing_digest(Network::Regtest);
+        let s = dashcore::secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
+        v.signature = to_recoverable_compact(&s.serialize_compact(), &pk, &d)
+            .unwrap()
+            .to_vec();
+        v
+    }
+
+    /// Sol r2 Major 5: 99 votes from resolved outpoints, against a threshold
+    /// of 100 (list weight 1,003). The holder of a listed evonode key signs
+    /// a YES for an outpoint that is not its masternode's: Core counts
+    /// nothing for it, and the row must not read as passing. It is a close
+    /// call (D64), which the UI shows as "Too close to call" (MG-00 D45).
+    #[test]
+    fn a_listed_key_signing_for_another_outpoint_makes_no_pass() {
+        let mut store = GovernanceStore::new(Network::Regtest);
+        store.set_confirmations(1);
+        let data = format!(
+            r#"{{"end_epoch":{},"name":"p","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}}"#,
+            NOW + 10_000
+        );
+        let p = GovernanceObject::new_proposal(1, NOW, data.into_bytes());
+        let h = p.hash();
+        store.add_object(p, None, NOW).unwrap();
+        let mut list: Vec<ListEntry> = (1..=99)
+            .map(|k| ListEntry {
+                voting_key_id: key_id(k),
+                weight: Some(1),
+                valid: true,
+            })
+            .collect();
+        list.push(ListEntry {
+            voting_key_id: key_id(150),
+            weight: Some(4),
+            valid: true,
+        });
+        list.extend((0..900).map(|_| ListEntry {
+            voting_key_id: key_id(200),
+            weight: Some(1),
+            valid: true,
+        }));
+        store.set_masternode_list(&list);
+        store.set_resolved(
+            (1..=99)
+                .map(|k| {
+                    let r = ResolvedMasternode {
+                        pro_tx_hash: [k; 32],
+                        voting_key_id: key_id(k),
+                        weight: 1,
+                    };
+                    (outpoint(k), r)
+                })
+                .collect::<HashMap<_, _>>(),
+        );
+        for k in 1..=99 {
+            store.add_vote(yes(h, k, k), None, NOW).unwrap();
+        }
+        let row = |store: &GovernanceStore| {
+            let t = build_table(&crate::DashNetwork::Regtest, store, 1_505, NOW);
+            assert_eq!(t.threshold, 100);
+            t.rows.into_iter().next().unwrap()
+        };
+        let before = row(&store);
+        assert_eq!(before.tally.net_yes_estimate, 99);
+        assert_eq!(before.status, ProposalStatus::Voting);
+        assert!(!before.close_call);
+
+        store.add_vote(yes(h, 150, 250), None, NOW).unwrap();
+        let after = row(&store);
+        assert_eq!(after.tally.net_yes_estimate, 103);
+        assert_eq!((after.tally.yes.min, after.tally.yes.max), (99, 103));
+        assert_eq!(after.tally.ranged_votes, 1);
+        assert!(after.close_call);
+    }
+
+    /// MG-02 D65: fundable membership is the trigger builder's. Of two
+    /// passing proposals, the one whose payment window opens more than 2 h
+    /// after the next superblock (as the builder times it) is not counted.
+    #[test]
+    fn only_proposals_payable_at_the_next_superblock_are_fundable() {
+        let mut store = GovernanceStore::new(Network::Regtest);
+        store.set_confirmations(1);
+        let tip = 1_505;
+        let p = governance_params(Network::Regtest);
+        let (_, next) = clock::nearest_superblocks(&p, tip);
+        let sb = clock::trigger_superblock_time(NOW, tip, next);
+        let fudge = clock::GOVERNANCE_FUDGE_WINDOW_SECS;
+        let proposal = |store: &mut GovernanceStore, name: &str, start: i64, amount: u32| {
+            let data = format!(
+                r#"{{"end_epoch":{},"name":"{name}","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":{amount},"start_epoch":{start},"type":1,"url":"http://x.y"}}"#,
+                sb + 100_000
+            );
+            let o = GovernanceObject::new_proposal(1, NOW, data.into_bytes());
+            let h = o.hash();
+            store.add_object(o, None, NOW).unwrap();
+            h
+        };
+        let open = proposal(&mut store, "open", sb + fudge, 5);
+        let later = proposal(&mut store, "later", sb + fudge + 1, 7);
+        store.set_masternode_list(
+            &(1..=10)
+                .map(|k| ListEntry {
+                    voting_key_id: key_id(k),
+                    weight: Some(1),
+                    valid: true,
+                })
+                .collect::<Vec<_>>(),
+        );
+        for k in 1..=10 {
+            store.add_vote(yes(open, k, k), None, NOW).unwrap();
+            store.add_vote(yes(later, k, k), None, NOW).unwrap();
+        }
+        let t = build_table(&crate::DashNetwork::Regtest, &store, tip, NOW);
+        assert!(
+            t.rows
+                .iter()
+                .all(|r| r.tally.net_yes_estimate >= i64::from(t.threshold))
+        );
+        assert_eq!(t.allocated, 5 * 100_000_000);
     }
 }

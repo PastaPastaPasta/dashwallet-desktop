@@ -6,13 +6,15 @@
 //! it, two by default (MG-02 D3): the wallet cannot see the collateral or a
 //! trigger's operator signature, which each relaying full node checked.
 //! Objects waiting for confirmation are bounded per first sender and in all,
-//! by count and bytes, and dropped after [`UNCONFIRMED_TTL_SECS`]. Objects
-//! leave as Core's `UpdateCachesAndClean` erases them: a proposal
-//! [`DELETION_DELAY_SECS`] after its end epoch, a trigger a superblock cycle
-//! after its height (one paid is kept that long, `CSuperblock::IsExpired`;
-//! MG-02 D17). Their hashes are kept so they are not fetched again: a
-//! proposal's for the session, a trigger's until two cycles after its
-//! creation (`mapErasedGovernanceObjects`).
+//! by count and bytes, and dropped after [`UNCONFIRMED_TTL_SECS`]. The
+//! wallet keeps no lapsed proposal (MG-02 D65): one leaves at its end epoch
+//! and one that arrives lapsed is refused, both remembered among the last
+//! [`MAX_EXPIRED_PROPOSALS`] so they are not fetched again (Core keeps a
+//! lapsed proposal until it is voted deleted). A trigger leaves as Core's
+//! `UpdateCachesAndClean` erases it, a superblock cycle after its height
+//! (one paid is kept that long, `CSuperblock::IsExpired`; D17), and its hash
+//! is kept, among the last [`MAX_ERASED_OBJECTS`], until two cycles after
+//! its creation (`mapErasedGovernanceObjects`).
 //!
 //! Votes are checked in two steps so the signature recovery runs without
 //! the store's lock: [`GovernanceStore::precheck`] (cheap, `&mut` to
@@ -101,6 +103,12 @@ pub const MAX_SUSPECTS_PER_PEER: u32 = 1_000;
 pub const SUSPECT_TTL_SECS: i64 = 60 * 60;
 /// Core `GOVERNANCE_DELETION_DELAY`.
 pub const DELETION_DELAY_SECS: i64 = 10 * 60;
+/// Hashes of erased triggers remembered, oldest forgotten first (MG-02
+/// D65).
+pub const MAX_ERASED_OBJECTS: usize = 10_000;
+/// Hashes of lapsed proposals remembered, oldest forgotten first (MG-02
+/// D65): a forgotten one is refused again if it comes back.
+pub const MAX_EXPIRED_PROPOSALS: usize = 10_000;
 /// Signal and outcome ranges Core accepts (`VOTE_SIGNAL_UNKNOWN`,
 /// `VOTE_OUTCOME_UNKNOWN` exclusive).
 const MAX_SIGNAL: i32 = 4;
@@ -265,8 +273,15 @@ pub struct GovernanceStore {
     /// How many of `objects` are unconfirmed, kept as they change: read on
     /// every sync event (D60).
     unconfirmed: usize,
-    /// Erased objects → until when their hash is kept.
+    /// Erased triggers → until when their hash is kept.
     erased: HashMap<[u8; 32], i64>,
+    erased_order: VecDeque<[u8; 32]>,
+    /// Votes whose stored copy a resolved outpoint showed signed by another
+    /// key: the honest copy, of the same hash, is asked for again (D64).
+    refetch: Vec<[u8; 32]>,
+    /// Lapsed proposals, stored or refused.
+    expired: HashMap<[u8; 32], ()>,
+    expired_order: VecDeque<[u8; 32]>,
     /// object hash → (outpoint, key) → current funding vote.
     votes: HashMap<[u8; 32], ObjectVotes>,
     /// (object, key) → unresolved outpoints voting with the key.
@@ -307,6 +322,10 @@ pub struct GovernanceStore {
     synced: bool,
     /// [`MAX_OBJECTS`], lower in tests.
     max_objects: usize,
+    /// [`MAX_ERASED_OBJECTS`] and [`MAX_EXPIRED_PROPOSALS`], lower in
+    /// tests.
+    max_erased: usize,
+    max_expired: usize,
     /// The current sync run, and how many objects announced in it the cap
     /// evicted or refused (D47).
     run: u64,
@@ -355,6 +374,10 @@ impl GovernanceStore {
             objects: HashMap::new(),
             unconfirmed: 0,
             erased: HashMap::new(),
+            erased_order: VecDeque::new(),
+            refetch: Vec::new(),
+            expired: HashMap::new(),
+            expired_order: VecDeque::new(),
             votes: HashMap::new(),
             per_key: HashMap::new(),
             seen_votes: HashMap::new(),
@@ -380,6 +403,8 @@ impl GovernanceStore {
             suspects_per_peer: HashMap::new(),
             synced: false,
             max_objects: MAX_OBJECTS,
+            max_erased: MAX_ERASED_OBJECTS,
+            max_expired: MAX_EXPIRED_PROPOSALS,
             run: 0,
             overflow: 0,
         }
@@ -453,12 +478,24 @@ impl GovernanceStore {
         self.orphans.len()
     }
 
-    /// Whether `hash` is stored, was erased or was refused (either way it
-    /// is not fetched).
+    /// Whether `hash` is stored, was erased, lapsed or was refused (either
+    /// way it is not fetched).
     pub fn has_object(&self, hash: &[u8; 32]) -> bool {
         self.objects.contains_key(hash)
             || self.erased.contains_key(hash)
+            || self.expired.contains_key(hash)
             || self.refused.contains_key(hash)
+    }
+
+    /// Remembers a lapsed proposal, dropped or refused (D65).
+    fn note_expired(&mut self, hash: [u8; 32]) {
+        remember(
+            &mut self.expired,
+            &mut self.expired_order,
+            self.max_expired,
+            hash,
+            (),
+        );
     }
 
     /// Remembers an object the wallet refused from every peer that sent
@@ -620,9 +657,17 @@ impl GovernanceStore {
             }
             return Ok(false);
         }
-        let kind = match check_object(&object, self.network, now, self.synced)? {
-            ValidObject::Proposal(p) => ObjectKind::Proposal(p),
-            ValidObject::Trigger(t) => ObjectKind::Trigger(t),
+        let kind = match check_object(&object, self.network, now, self.synced) {
+            Ok(ValidObject::Proposal(p)) => ObjectKind::Proposal(p),
+            Ok(ValidObject::Trigger(t)) => ObjectKind::Trigger(t),
+            Err(e) => {
+                match e {
+                    ObjectRejection::ProposalExpired => self.note_expired(hash),
+                    e if e.is_final() => self.refuse_object(hash),
+                    _ => {}
+                }
+                return Err(e);
+            }
         };
         let mut announcers: Vec<SocketAddr> = Vec::new();
         for peer in from.iter().chain(also) {
@@ -765,9 +810,10 @@ impl GovernanceStore {
             .is_some_and(|m| m.values().any(|v| self.valid_keys.contains(&v.key_id)))
     }
 
-    /// Erases what Core's cleanup would by `now` (and the tip set), drops
-    /// objects unconfirmed for [`UNCONFIRMED_TTL_SECS`] and orphans past
-    /// their expiry, and forgets erased hashes whose time passed.
+    /// Drops the proposals lapsed by `now` (D65), erases the triggers
+    /// Core's cleanup would by the tip, drops objects unconfirmed for
+    /// [`UNCONFIRMED_TTL_SECS`] and orphans past their expiry, and forgets
+    /// erased hashes whose time passed.
     pub fn prune(&mut self, now: i64) {
         let expired: Vec<_> = self
             .suspects
@@ -784,37 +830,49 @@ impl GovernanceStore {
         let tip = self.tip.map(i64::from);
         let mut erase = Vec::new();
         let mut drop = Vec::new();
+        let mut lapsed = Vec::new();
         for (hash, o) in &self.objects {
             let gone = match &o.kind {
-                ObjectKind::Proposal(d) => d
-                    .end_epoch
-                    .is_some_and(|e| e.saturating_add(DELETION_DELAY_SECS) <= now),
+                ObjectKind::Proposal(d) => d.end_epoch.is_some_and(|e| e <= now),
                 ObjectKind::Trigger(t) => tip.is_some_and(|tip| {
                     let h = i64::from(t.event_block_height);
                     tip > h + cycle || (self.network != Network::Mainnet && tip + 2 * cycle < h)
                 }),
             };
-            if !o.confirmed && (gone || o.stored_at + UNCONFIRMED_TTL_SECS <= now) {
+            let proposal = matches!(o.kind, ObjectKind::Proposal(_));
+            if gone && proposal {
+                lapsed.push(*hash);
+            } else if !o.confirmed && (gone || o.stored_at + UNCONFIRMED_TTL_SECS <= now) {
                 drop.push(*hash);
             } else if gone {
-                let until = match o.kind {
-                    ObjectKind::Proposal(_) => i64::MAX,
-                    ObjectKind::Trigger(_) => o
-                        .object
-                        .time
-                        .saturating_add(2 * cycle_secs + DELETION_DELAY_SECS),
-                };
+                let until = o
+                    .object
+                    .time
+                    .saturating_add(2 * cycle_secs + DELETION_DELAY_SECS);
                 erase.push((*hash, until));
             }
         }
         for hash in drop {
             self.remove_object(&hash);
         }
+        for hash in lapsed {
+            self.remove_object(&hash);
+            self.note_expired(hash);
+        }
         for (hash, until) in erase {
             self.remove_object(&hash);
-            self.erased.insert(hash, until);
+            remember(
+                &mut self.erased,
+                &mut self.erased_order,
+                self.max_erased,
+                hash,
+                until,
+            );
         }
         self.erased.retain(|_, until| *until >= now);
+        if self.erased_order.len() > self.erased.len() {
+            self.erased_order.retain(|h| self.erased.contains_key(h));
+        }
         self.expire_orphans(now);
     }
 
@@ -928,6 +986,18 @@ impl GovernanceStore {
         // A resolved outpoint is not limited (D11): its verdicts may change.
         self.forget_dismissed();
         self.resolved = resolved;
+        // A copy re-signed by another key has the honest vote's hash, so it
+        // kept the honest copy out: drop it and fetch the hash again.
+        let resolved = &self.resolved;
+        self.refetch.extend(self.votes.values().flat_map(|m| {
+            m.iter()
+                .filter(|((outpoint, key), _)| {
+                    resolved
+                        .get(outpoint)
+                        .is_some_and(|r| &r.voting_key_id != key)
+                })
+                .map(|(_, v)| v.vote_hash)
+        }));
         self.drop_unbacked_votes();
         let mut per_key: HashMap<([u8; 32], [u8; 20]), u32> = HashMap::new();
         for (object, m) in &self.votes {
@@ -938,6 +1008,11 @@ impl GovernanceStore {
             }
         }
         self.per_key = per_key;
+    }
+
+    /// The votes to fetch again since the last call (D64).
+    pub fn take_refetch(&mut self) -> Vec<[u8; 32]> {
+        std::mem::take(&mut self.refetch)
     }
 
     fn key_ok(&self, outpoint: &OutPoint, key: &[u8; 20]) -> Result<(), VoteRejection> {
@@ -1007,7 +1082,10 @@ impl GovernanceStore {
 
     fn parent(&self, hash: &[u8; 32], now: i64) -> Parent {
         // A refused parent's votes are ignored as an erased one's are.
-        if self.erased.contains_key(hash) || self.refused.contains_key(hash) {
+        if self.erased.contains_key(hash)
+            || self.expired.contains_key(hash)
+            || self.refused.contains_key(hash)
+        {
             return Parent::Expired;
         }
         match self.objects.get(hash).map(|o| &o.kind) {
@@ -1704,6 +1782,53 @@ mod tests {
         assert!(!s.has_object(&proposal("p1").hash()));
     }
 
+    /// Sol r2 Major 1: two peers confirm batch after batch of distinct
+    /// proposals that already ended, or that end soon after they arrive;
+    /// what the store keeps of them stays bounded (D65).
+    #[test]
+    fn expired_proposals_from_two_peers_leave_bounded_state() {
+        let mut s = GovernanceStore::new(Network::Regtest);
+        s.max_expired = 50;
+        let second = peer(2).unwrap();
+        let mut now = NOW;
+        for batch in 0..5 {
+            // Lapsed on arrival: refused at no cost, never stored, and
+            // remembered so it is not fetched again.
+            for i in 0..40 {
+                let o = proposal_ending(&format!("old{batch}-{i}"), now);
+                let h = o.hash();
+                assert_eq!(
+                    s.add_object(o, peer(1), now),
+                    Err(ObjectRejection::ProposalExpired)
+                );
+                assert!(s.has_object(&h));
+                s.note_announcer(&h, second);
+            }
+            assert_eq!(s.object_count(), 0);
+            // Current on arrival, dropped at its end epoch.
+            for i in 0..40 {
+                let o = proposal_ending(&format!("soon{batch}-{i}"), now + 1);
+                let h = o.hash();
+                assert_eq!(s.add_object(o, peer(1), now), Ok(true));
+                s.note_announcer(&h, second);
+            }
+            assert_eq!(s.object_count(), 40);
+            now += 1;
+            s.prune(now);
+            assert_eq!(s.object_count(), 0);
+            assert_eq!((s.expired.len(), s.expired_order.len()), (50, 50));
+            assert!(s.erased.is_empty() && s.refused.is_empty());
+        }
+        // Erased triggers are bounded too.
+        s.max_erased = 3;
+        for height in 0..10 {
+            s.add_object(trigger(height), None, NOW).unwrap();
+        }
+        s.set_tip(1_000);
+        s.prune(NOW);
+        assert_eq!((s.erased.len(), s.erased_order.len()), (3, 3));
+    }
+
     #[test]
     fn expired_objects_are_erased_and_not_fetched_again() {
         let end = NOW + 100;
@@ -1722,18 +1847,15 @@ mod tests {
         );
         assert!(s.has_vote(&late.hash()));
         assert!(!s.is_current_proposal(&h, end));
-        // Erased after Core's deletion delay, votes with it; the hash stays
-        // known for the session.
-        s.prune(end + DELETION_DELAY_SECS - 1);
+        // Dropped at its end epoch, votes with it (D65); the hash stays
+        // known.
+        s.prune(end - 1);
         assert!(s.object(&h).is_some());
-        s.prune(end + DELETION_DELAY_SECS);
+        s.prune(end);
         assert!(s.object(&h).is_none());
         assert_eq!(s.vote_count(), 0);
         assert!(s.has_object(&h));
-        assert_eq!(
-            s.add_object(obj, peer(2), end + DELETION_DELAY_SECS),
-            Ok(false)
-        );
+        assert_eq!(s.add_object(obj, peer(2), end), Ok(false));
         s.prune(i64::MAX / 2);
         assert!(s.has_object(&h));
 
@@ -1898,10 +2020,10 @@ mod tests {
                 (VoteOutcome::Abstain, key_id(1))
             ]
         );
-        // The tally ranges over the contested outpoint. Key 1 claims one
-        // outpoint with one masternode and carries the estimate; key 2
-        // claims two with one, so each of its votes weighs 0..1 and only the
-        // newest uncontested one is estimated.
+        // The tally ranges over every unresolved vote, 0..4 (D64). Key 1
+        // claims one outpoint with one masternode and carries the estimate;
+        // key 2 claims two with one, so only its newest uncontested vote is
+        // estimated.
         let t = crate::tally::ranged_tally(
             s.votes_on(&h),
             |k| s.key_weights(k),
@@ -1912,8 +2034,8 @@ mod tests {
             (t.abstain.min, t.abstain.max, t.abstain.estimate),
             (0, 4, 4)
         );
-        assert_eq!((t.no.min, t.no.max, t.no.estimate), (0, 1, 0));
-        assert_eq!((t.yes.min, t.yes.max, t.yes.estimate), (0, 1, 1));
+        assert_eq!((t.no.min, t.no.max, t.no.estimate), (0, 4, 0));
+        assert_eq!((t.yes.min, t.yes.max, t.yes.estimate), (0, 4, 1));
     }
 
     #[test]

@@ -1,17 +1,16 @@
 //! Weighted funding tallies, the passing threshold, the fundable set and
 //! dash-qt's proposal statuses (research 02 §11.1, Core
-//! `CGovernanceObject::CountMatchingVotes`, `GetApprovedProposals`, node
-//! `getFundableProposalHashes`, dash-qt `Proposal::status`).
+//! `CGovernanceObject::CountMatchingVotes`, `GetApprovedProposals`, the
+//! trigger builder's budget loop, dash-qt `Proposal::status`).
 //!
 //! Core counts the latest funding vote of every collateral outpoint that is
 //! a masternode of the tip list, weighted 1 (regular) or 4 (evonode). The
 //! SPV list carries no outpoints, so the store keeps votes by (outpoint,
-//! voting key their signature recovers), and [`ranged_tally`] attributes
-//! them to that key's masternodes: exactly when the key's masternodes share
-//! one weight and no more outpoints vote with it than it has masternodes,
-//! as a range otherwise (MG-02 D1, D2; MG-00 D45). An outpoint claimed by
-//! more than one key weighs between 0 and the highest weight for each claim
-//! (MG-02 D19). Outpoints the wallet resolved (MG-03) count exactly.
+//! voting key their signature recovers). The wallet cannot tell that an
+//! outpoint it did not resolve is a masternode's holding that key, so
+//! [`ranged_tally`] weighs each such vote between 0 and 4 and estimates it
+//! by the key's masternodes (MG-02 D1, D2, D64; MG-00 D45). Outpoints the
+//! wallet resolved (MG-03) count exactly.
 
 use std::collections::{HashMap, HashSet};
 
@@ -86,22 +85,6 @@ impl KeyWeights {
             Some(EVONODE_VOTE_WEIGHT) => self.evonodes += 1,
             Some(_) => self.regular += 1,
             None => self.unknown += 1,
-        }
-    }
-
-    pub fn min(&self) -> u32 {
-        if self.regular + self.unknown > 0 {
-            1
-        } else {
-            EVONODE_VOTE_WEIGHT
-        }
-    }
-
-    pub fn max(&self) -> u32 {
-        if self.evonodes + self.unknown > 0 {
-            EVONODE_VOTE_WEIGHT
-        } else {
-            1
         }
     }
 
@@ -180,15 +163,18 @@ impl RangedTally {
 
 /// Attributes `votes` to masternodes: `resolved` gives the exact weight of
 /// an outpoint the wallet resolved, `holders` the masternodes of a voting
-/// key. Per key with `n` masternodes not otherwise accounted for and `c`
-/// unresolved outpoints claimed with it: if `c ≤ n` each vote weighs
-/// between the key's lowest and highest weight, estimated at its most
-/// common one; if `c > n` each weighs between 0 and the highest, and only
-/// the `n` newest are estimated (at the common weight). An outpoint claimed
-/// by several keys (a key holder signing for an outpoint not theirs) counts
-/// once as a voter; each claim weighs between 0 and its key's highest
-/// weight, and the estimate goes to the one claim whose key has `c ≤ n`, if
-/// exactly one has, else to none.
+/// key. A vote for an outpoint the wallet did not resolve weighs between 0
+/// and an evonode's weight, whatever its key (MG-02 D64): the wallet cannot
+/// tell that the outpoint is a masternode's holding that key, and Core
+/// counts nothing for one that is not, while a re-signed copy of another
+/// masternode's vote (the hash leaves the signature out) stands for a vote
+/// of up to 4. Its estimate, per key with `n` masternodes not otherwise
+/// accounted for and `c` unresolved outpoints claimed with it: if `c ≤ n`
+/// the key's most common weight; if `c > n` that for the `n` newest and 0
+/// for the rest. An outpoint claimed by several keys (a key holder signing
+/// for an outpoint not theirs) counts once as a voter, and its estimate goes
+/// to the one claim whose key has `c ≤ n`, if exactly one has, else to
+/// none.
 pub fn ranged_tally<'a>(
     votes: impl IntoIterator<Item = &'a CurrentVote>,
     holders: impl Fn(&[u8; 20]) -> Option<KeyWeights>,
@@ -227,8 +213,12 @@ pub fn attribute<'a>(
     holders: impl Fn(&[u8; 20]) -> Option<KeyWeights>,
     resolved: impl Fn(&OutPoint) -> Option<u32>,
 ) -> Vec<(&'a CurrentVote, Claim)> {
-    let claim = |min, max, estimate, new_voter| Claim {
-        weight: WeightRange { min, max, estimate },
+    let unverified = |estimate, new_voter| Claim {
+        weight: WeightRange {
+            min: 0,
+            max: EVONODE_VOTE_WEIGHT,
+            estimate,
+        },
         exact: false,
         new_voter,
     };
@@ -242,8 +232,13 @@ pub fn attribute<'a>(
                 out.push((
                     v,
                     Claim {
+                        weight: WeightRange {
+                            min: w,
+                            max: w,
+                            estimate: w,
+                        },
                         exact: true,
-                        ..claim(w, w, w, true)
+                        new_voter: true,
                     },
                 ));
                 *resolved_per_key.entry(v.key_id).or_default() += 1;
@@ -282,22 +277,20 @@ pub fn attribute<'a>(
         };
         for (i, (v, k)) in known.iter().enumerate() {
             let estimate = if chosen == Some(i) { k.common() } else { 0 };
-            out.push((*v, claim(0, k.max(), estimate, i == 0)));
+            out.push((*v, unverified(estimate, i == 0)));
         }
     }
     for (key, mut group) in by_key {
         let Some(k) = holders(&key) else { continue };
-        if fits(&key, &k) {
-            for v in group {
-                out.push((v, claim(k.min(), k.max(), k.common(), true)));
-            }
+        let n = if fits(&key, &k) {
+            usize::MAX
         } else {
-            let n = free(&key, &k) as usize;
-            group.sort_by(|a, b| b.time.cmp(&a.time).then(a.vote_hash.cmp(&b.vote_hash)));
-            for (i, v) in group.into_iter().enumerate() {
-                let estimate = if i < n { k.common() } else { 0 };
-                out.push((v, claim(0, k.max(), estimate, true)));
-            }
+            free(&key, &k) as usize
+        };
+        group.sort_by(|a, b| b.time.cmp(&a.time).then(a.vote_hash.cmp(&b.vote_hash)));
+        for (i, v) in group.into_iter().enumerate() {
+            let estimate = if i < n { k.common() } else { 0 };
+            out.push((v, unverified(estimate, true)));
         }
     }
     out
@@ -312,10 +305,10 @@ pub struct BudgetCandidate {
     pub absolute_yes: i64,
 }
 
-/// The budget the passing proposals fit into: node
-/// `getFundableProposalHashes` over Core `GetApprovedProposals` (absolute
-/// yes ≥ threshold, most yes first, ties by the larger hash), each added
-/// while the running total stays within `budget`.
+/// The budget the passing proposals fit into: Core's trigger builder over
+/// `GetApprovedProposals` (absolute yes ≥ threshold, most yes first, ties by
+/// the larger hash), each added while the running total stays within
+/// `budget`. The caller picks the candidates (MG-02 D65).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Fundable {
     pub hashes: Vec<String>,
@@ -373,47 +366,108 @@ pub fn fundable_at(
 }
 
 /// The candidates whose place in the [`fundable`] set the vote ranges
-/// could change (MG-00 D45): a funded one that the set leaves out with it
-/// at its low count and every other candidate at its high, an unfunded one
-/// that the set takes with it high and the others low, and any whose place
-/// differs with every candidate low or every one high (MG-02 D48).
-/// Candidates that cannot reach `threshold` take part in no scenario and
-/// are left out first, so the quadratic part only sees ones that can.
+/// could change (MG-00 D45): those not shown funded, or shown unfunded, at
+/// every count the ranges allow. The greedy loop skips what does not fit,
+/// so no handful of scenarios bounds a candidate's place (MG-02 D48, D67);
+/// this over-approximates instead, and may mark more than could change.
+/// With candidate X at its low and the others at their highs, those that
+/// may rank above X and are not surely unfunded take at most their cost:
+/// if X still fits, and its low passes, it is surely funded. With X at its
+/// high, the surely funded ones that surely rank above it take at least
+/// theirs: if X no longer fits, it is surely unfunded. Each answer feeds
+/// the others until none changes. Candidates that cannot reach `threshold`
+/// take part in no scenario and are left out.
 pub fn budget_close_calls(
     candidates: &[RangedCandidate],
     threshold: u32,
     budget: u64,
 ) -> HashSet<String> {
-    let reachable: Vec<RangedCandidate> = candidates
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Place {
+        Open,
+        Funded,
+        Unfunded,
+    }
+    let thr = i64::from(threshold);
+    let budget = u128::from(budget);
+    let reachable: Vec<&RangedCandidate> = candidates.iter().filter(|r| r.high >= thr).collect();
+    let mut place: Vec<Place> = reachable
         .iter()
-        .filter(|r| r.high >= i64::from(threshold))
-        .cloned()
-        .collect();
-    let candidates = &reachable[..];
-    let with =
-        |count: fn(&RangedCandidate) -> i64| fundable_at(candidates, threshold, budget, count);
-    let estimate = with(|r| r.estimate);
-    let low = with(|r| r.low);
-    let high = with(|r| r.high);
-    candidates
-        .iter()
-        .filter(|me| {
-            let funded = estimate.contains(&me.hash);
-            if low.contains(&me.hash) != funded || high.contains(&me.hash) != funded {
-                return true;
+        .map(|r| {
+            if u128::from(r.payment_amount) > budget {
+                Place::Unfunded
+            } else {
+                Place::Open
             }
-            // Its worst case if funded, its best if not.
-            let at_end = fundable_at(candidates, threshold, budget, |r| {
-                if (r.hash == me.hash) == funded {
-                    r.low
-                } else {
-                    r.high
-                }
-            });
-            at_end.contains(&me.hash) != funded
         })
-        .map(|r| r.hash.clone())
+        .collect();
+    loop {
+        let costs = |of: fn(Place) -> bool, count: fn(&RangedCandidate) -> i64| {
+            CostsAbove::new(
+                reachable
+                    .iter()
+                    .zip(&place)
+                    .filter(|(_, p)| of(**p))
+                    .map(|(r, _)| ((count(r), r.hash.as_str()), r.payment_amount)),
+            )
+        };
+        let may = costs(|p| p != Place::Unfunded, |r| r.high);
+        let sure = costs(|p| p == Place::Funded, |r| r.low);
+        let mut changed = false;
+        for (r, p) in reachable.iter().zip(&mut place) {
+            if *p != Place::Open {
+                continue;
+            }
+            let cost = u128::from(r.payment_amount);
+            let (low, high) = ((r.low, r.hash.as_str()), (r.high, r.hash.as_str()));
+            // `may` counts the candidate itself unless its range is a point.
+            let itself = if high > low { cost } else { 0 };
+            if r.low >= thr && may.above(low) - itself + cost <= budget {
+                *p = Place::Funded;
+            } else if sure.above(high) + cost > budget {
+                *p = Place::Unfunded;
+            } else {
+                continue;
+            }
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+    reachable
+        .iter()
+        .zip(&place)
+        .filter(|(_, p)| **p == Place::Open)
+        .map(|(r, _)| r.hash.clone())
         .collect()
+}
+
+/// Candidates' costs by their rank (a yes count, ties by the larger hash,
+/// as [`fundable`] orders them), summed over those ranking above a rank.
+struct CostsAbove<'a> {
+    ranks: Vec<(i64, &'a str)>,
+    /// `sums[i]`: the cost of `ranks[i..]`.
+    sums: Vec<u128>,
+}
+
+impl<'a> CostsAbove<'a> {
+    fn new(items: impl Iterator<Item = ((i64, &'a str), u64)>) -> Self {
+        let mut items: Vec<_> = items.collect();
+        items.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let mut sums = vec![0u128; items.len() + 1];
+        for i in (0..items.len()).rev() {
+            sums[i] = sums[i + 1] + u128::from(items[i].1);
+        }
+        Self {
+            ranks: items.into_iter().map(|(rank, _)| rank).collect(),
+            sums,
+        }
+    }
+
+    fn above(&self, rank: (i64, &str)) -> u128 {
+        self.sums[self.ranks.partition_point(|r| *r <= rank)]
+    }
 }
 
 /// dash-qt `ProposalStatus`.
@@ -518,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn ranged_tally_is_exact_for_uniform_keys_and_ranges_the_rest() {
+    fn ranged_tally_ranges_unresolved_votes_and_estimates_by_key() {
         let keys: HashMap<[u8; 20], KeyWeights> = HashMap::from([
             ([1; 20], weights(1, 0)),
             ([2; 20], weights(0, 2)),
@@ -535,38 +589,40 @@ mod tests {
             cv(4, 6, VoteOutcome::No, 10),
         ];
         let t = ranged_tally(&votes, |k| keys.get(k).copied(), |_| None);
+        // Unresolved, each vote weighs 0..4 (D64); the estimates follow the
+        // keys.
         assert_eq!(
             t.yes,
             WeightRange {
-                min: 1 + 4,
-                max: 1 + 4 + 1,
+                min: 0,
+                max: 3 * 4,
                 estimate: 1 + 4 + 1
             }
         );
         assert_eq!(
             t.no,
             WeightRange {
-                min: 4,
-                max: 4 + 1,
+                min: 0,
+                max: 2 * 4,
                 estimate: 4
             }
         );
         assert_eq!(
             t.abstain,
             WeightRange {
-                min: 1,
+                min: 0,
                 max: 4,
                 estimate: 1
             }
         );
         assert_eq!(t.voters, 6);
-        assert_eq!(t.ranged_votes, 3);
+        assert_eq!(t.ranged_votes, 6);
         assert_eq!(t.estimate.absolute_yes(), 2);
         assert_eq!(
             (t.estimate.regular_voters, t.estimate.evonode_voters),
             (3, 2)
         );
-        assert_eq!(t.net_yes_bounds(), (0, 2));
+        assert_eq!(t.net_yes_bounds(), (-8, 12));
 
         // Resolved outpoints are exact and take their masternode out of the
         // key's pool.
@@ -583,7 +639,7 @@ mod tests {
             t.yes,
             WeightRange {
                 min: 1,
-                max: 2,
+                max: 1 + 4,
                 estimate: 1
             }
         );
@@ -606,7 +662,7 @@ mod tests {
         let t = ranged_tally(&votes, |k| keys.get(k).copied(), |_| None);
         // Outpoint 1 counts once; key 1 fits (1 claim, 1 masternode), so its
         // claim is the estimate; key 2 claims two outpoints with one
-        // masternode, so each of its votes weighs 0..1.
+        // masternode, so only its newest outside the contest is estimated.
         assert_eq!(t.voters, 2);
         assert_eq!(
             t.yes,
@@ -620,7 +676,7 @@ mod tests {
             t.no,
             WeightRange {
                 min: 0,
-                max: 2,
+                max: 8,
                 estimate: 1
             }
         );
@@ -629,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn a_revoked_holder_weighs_one_to_four_estimated_regular() {
+    fn a_revoked_holder_is_estimated_regular() {
         // Key 1: one revoked masternode, whose list entry carries no type;
         // key 2: a regular masternode and a revoked one (D34).
         let mut shared = KeyWeights::one(Some(1));
@@ -645,7 +701,7 @@ mod tests {
         assert_eq!(
             t.yes,
             WeightRange {
-                min: 1,
+                min: 0,
                 max: 4,
                 estimate: 1
             }
@@ -653,7 +709,7 @@ mod tests {
         assert_eq!(
             t.no,
             WeightRange {
-                min: 2,
+                min: 0,
                 max: 8,
                 estimate: 2
             }
@@ -663,7 +719,40 @@ mod tests {
         let mut evo = KeyWeights::one(Some(EVONODE_VOTE_WEIGHT));
         evo.add(Some(EVONODE_VOTE_WEIGHT));
         evo.add(None);
-        assert_eq!((evo.min(), evo.max(), evo.common()), (1, 4, 4));
+        assert_eq!(evo.common(), 4);
+    }
+
+    /// Sol r2 Major 5: the holder of one listed key signs a YES for an
+    /// outpoint that is not its masternode's, which Core does not count; or
+    /// a regular masternode's key re-signs an evonode's vote, whose copy
+    /// (same hash) the wallet then never fetches, which Core counts at 4.
+    /// Unresolved, a vote proves neither: it weighs 0..4 and is ranged.
+    #[test]
+    fn an_unresolved_vote_proves_no_weight_whatever_its_key() {
+        let keys: HashMap<[u8; 20], KeyWeights> =
+            HashMap::from([([1; 20], weights(0, 1)), ([2; 20], weights(1, 0))]);
+        let forged = [cv(1, 7, VoteOutcome::Yes, 10)];
+        let t = ranged_tally(&forged, |k| keys.get(k).copied(), |_| None);
+        assert_eq!(
+            t.yes,
+            WeightRange {
+                min: 0,
+                max: 4,
+                estimate: 4
+            }
+        );
+        assert_eq!(t.ranged_votes, 1);
+        let resigned = [cv(2, 8, VoteOutcome::Yes, 10)];
+        let t = ranged_tally(&resigned, |k| keys.get(k).copied(), |_| None);
+        assert_eq!(
+            t.yes,
+            WeightRange {
+                min: 0,
+                max: 4,
+                estimate: 1
+            }
+        );
+        assert_eq!(t.ranged_votes, 1);
     }
 
     #[test]
@@ -702,6 +791,95 @@ mod tests {
             budget_close_calls(&edge, 10, 100),
             HashSet::from(["cc".to_string()])
         );
+    }
+
+    /// Sol r2 Major 2: threshold 10, budget 14. The estimates, every
+    /// candidate low or high, and each one's own extreme against the
+    /// others' fund A and C; but A=14, B=21, C=20 funds B, then skips C and
+    /// A. Each of the three can land on either side.
+    #[test]
+    fn a_greedy_skip_among_three_ranges_is_a_close_call() {
+        let c = |hash: &str, payment_amount, estimate, low, high| RangedCandidate {
+            hash: hash.into(),
+            payment_amount,
+            estimate,
+            low,
+            high,
+        };
+        let candidates = [
+            c("aa", 8, 23, 14, 23),
+            c("bb", 9, 18, 18, 21),
+            c("cc", 6, 20, 20, 23),
+        ];
+        assert_eq!(
+            fundable_at(&candidates, 10, 14, |r| r.estimate),
+            HashSet::from(["aa".to_string(), "cc".to_string()])
+        );
+        assert_eq!(
+            budget_close_calls(&candidates, 10, 14),
+            HashSet::from(["aa".to_string(), "bb".to_string(), "cc".to_string()])
+        );
+    }
+
+    /// Every candidate whose place differs between two counts in the
+    /// ranges is a close call; with no ranges there are none, skips
+    /// included.
+    #[test]
+    fn close_calls_cover_every_count_in_the_ranges() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for round in 0..3_000 {
+            let exact = round % 3 == 0;
+            let threshold = 5 + next(6) as u32;
+            let budget = 5 + next(16);
+            let candidates: Vec<RangedCandidate> = (0..2 + next(3))
+                .map(|i| {
+                    let low = next(13) as i64;
+                    let high = if exact { low } else { low + next(5) as i64 };
+                    RangedCandidate {
+                        hash: format!("{:02x}", next(256) * 4 + i),
+                        payment_amount: 1 + next(10),
+                        estimate: low,
+                        low,
+                        high,
+                    }
+                })
+                .collect();
+            let close = budget_close_calls(&candidates, threshold, budget);
+            // Every combination of counts.
+            let mut funded: HashMap<&str, HashSet<bool>> = HashMap::new();
+            let mut counts: Vec<i64> = candidates.iter().map(|r| r.low).collect();
+            loop {
+                let set = fundable_at(&candidates, threshold, budget, |r| {
+                    counts[candidates.iter().position(|x| x.hash == r.hash).unwrap()]
+                });
+                for r in &candidates {
+                    funded
+                        .entry(&r.hash)
+                        .or_default()
+                        .insert(set.contains(&r.hash));
+                }
+                let Some(i) = (0..counts.len()).find(|&i| counts[i] < candidates[i].high) else {
+                    break;
+                };
+                counts[i] += 1;
+                for (j, r) in candidates.iter().enumerate().take(i) {
+                    counts[j] = r.low;
+                }
+            }
+            for r in &candidates {
+                let both = funded[r.hash.as_str()].len() == 2;
+                assert!(!both || close.contains(&r.hash), "{round}: {candidates:?}");
+            }
+            if exact {
+                assert!(close.is_empty(), "{round}: {candidates:?} {close:?}");
+            }
+        }
     }
 
     #[test]
