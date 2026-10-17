@@ -5,7 +5,8 @@
 //! trace, then takes planted links in the way the app does: queued as launch
 //! arguments, routed and stashed before a vault exists, resealed when the
 //! vault is created, listed, taken and forgotten. It also logs one link on
-//! purpose, as a careless log line would. The parent then greps everything
+//! purpose, as a careless log line would, as a field, and in a panic
+//! message. The parent then greps everything
 //! the child wrote (stderr, stdout and the trace) for each planted secret:
 //! the invitation's key and inviter, the payee address, the amount and
 //! label, and the contact's username.
@@ -99,6 +100,11 @@ fn no_log_sink_carries_a_link() {
         stderr.contains("careless link line: <link>"),
         "no redacted control line in: {stderr}"
     );
+    // A link as a field value, and in a panic message (review r1 #1, #2);
+    // no colour codes at all.
+    assert!(stderr.contains("careless field link=<link>"), "{stderr}");
+    assert!(stderr.contains("careless panic: <link>"), "{stderr}");
+    assert!(!stderr.contains('\x1b'), "{stderr}");
     let queued = planted_links()
         .iter()
         .filter(|l| !l.starts_with("https"))
@@ -122,6 +128,8 @@ impl EventSink for NullSink {
 
 fn child(dir: &Path) {
     dw_app::install_logging("trace").unwrap();
+    // As `dw_app::run` does.
+    dw_uri::redact::redact_panics();
     let shell = Shell::new(Some(dir.join("trace")));
     let engine = Engine::new(
         EngineConfig {
@@ -174,14 +182,18 @@ fn child(dir: &Path) {
             .await
             .unwrap();
         for link in session.stashed_links().await.unwrap() {
-            match session.take_stashed_link(link.id.clone()).await {
-                Ok(_) => {}
-                Err(_) => session.forget_invitation(link.id).await.unwrap(),
+            if let Some(dw_engine::platform::TakenLink::Invitation) =
+                session.take_stashed_link(link.id.clone()).await.unwrap()
+            {
+                session.forget_invitation(link.id).await.unwrap();
             }
         }
         assert_eq!(session.stashed_links().await.unwrap(), vec![]);
     });
     tracing::error!("careless link line: {}", links[2]);
+    tracing::error!(link = %links[0], "careless field");
+    let link = links[2].clone();
+    std::panic::catch_unwind(move || panic!("careless panic: {link}")).unwrap_err();
     engine
         .block_on(engine.close_network(DashNetwork::Regtest))
         .unwrap();

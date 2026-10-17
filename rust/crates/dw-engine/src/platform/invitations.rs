@@ -12,8 +12,8 @@
 
 use std::sync::Arc;
 
-use dw_uri::deeplink::{DeepLink, classify_link};
-use dw_vault::{StashedLinkKind as VaultKind, StashedLinkMeta};
+use dw_uri::deeplink::{DeepLink, classify_link, normalize_invitation};
+use dw_vault::{ALL_LINK_KINDS, StashedLinkKind as VaultKind, StashedLinkMeta};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -72,6 +72,16 @@ pub struct StashedLink {
     pub expires_at: u64,
 }
 
+/// What [`NetworkSession::take_stashed_link`] found.
+#[derive(Debug)]
+pub enum TakenLink {
+    /// A payment or contact link's text, now deleted from the stash.
+    Link(BearerSecret),
+    /// An invitation: never handed back nor opened, and it stays (DP5-02
+    /// claims it by id).
+    Invitation,
+}
+
 impl From<VaultKind> for StashedLinkKind {
     fn from(k: VaultKind) -> Self {
         match k {
@@ -103,11 +113,18 @@ impl From<StashedLinkMeta> for StashedLink {
     }
 }
 
+/// Whether log redaction could miss part of `link` (D14): a kept link is
+/// one line (redaction ends a link there) that the redaction cuts from its
+/// first character on.
+fn unredactable(link: &str) -> bool {
+    let link = link.trim();
+    link.chars().any(char::is_control) || !dw_uri::redact::redacted_whole(link)
+}
+
 /// The kind of `link` the stash keeps, or `None`. Every copy the parser
 /// makes is dropped here; an invitation's normalized copy is zeroed.
 pub(crate) fn stash_kind(link: &str) -> Option<StashedLinkKind> {
-    // A kept link is one line (log redaction ends a link there, D14).
-    if link.trim().chars().any(char::is_control) {
+    if unredactable(link) {
         return None;
     }
     match classify_link(link) {
@@ -121,10 +138,11 @@ pub(crate) fn stash_kind(link: &str) -> Option<StashedLinkKind> {
     }
 }
 
-fn not_stashable() -> PlatformError {
-    PlatformError::InvalidArgument {
-        detail: "not a payment, contact or invitation link".into(),
-    }
+/// Whether `link` is an invitation link, checked without the payment
+/// parser: text handed in as an invitation is a bearer secret, and the
+/// payment parser keeps unzeroed copies of what it reads (D24).
+fn is_invitation(link: &str) -> bool {
+    !unredactable(link) && normalize_invitation(link).map(Zeroizing::new).is_some()
 }
 
 impl NetworkSession {
@@ -137,6 +155,18 @@ impl NetworkSession {
         Ok(self.vault_op(f).await?)
     }
 
+    /// Stashes `link` as `kind`, which the caller classified.
+    async fn stash_as(
+        self: &Arc<Self>,
+        kind: StashedLinkKind,
+        link: BearerSecret,
+    ) -> Result<StashedLink, PlatformError> {
+        let meta = self
+            .stash_call(move |v| v.stash_link(kind.into(), link.expose()))
+            .await?;
+        Ok(meta.into())
+    }
+
     /// Keeps a payment, contact or invitation link for later (DP5-01): the
     /// stash entry it now has, or already had (the same link again). Any
     /// other text is `invalid_argument`, and no error quotes the link.
@@ -144,11 +174,10 @@ impl NetworkSession {
         self: &Arc<Self>,
         link: BearerSecret,
     ) -> Result<StashedLink, PlatformError> {
-        let kind = stash_kind(link.expose()).ok_or_else(not_stashable)?;
-        let meta = self
-            .stash_call(move |v| v.stash_link(kind.into(), link.expose()))
-            .await?;
-        Ok(meta.into())
+        let kind = stash_kind(link.expose()).ok_or_else(|| PlatformError::InvalidArgument {
+            detail: "not a payment, contact or invitation link".into(),
+        })?;
+        self.stash_as(kind, link).await
     }
 
     /// The stashed links, oldest first, without their text. Works locked.
@@ -158,29 +187,37 @@ impl NetworkSession {
     }
 
     /// Takes a stashed payment or contact link: its text, once; `None` when
-    /// there is no such link any more. An invitation is never handed back
-    /// (`invalid_argument`); a locked vault is `platform.signer_unavailable`
-    /// and keeps the link.
+    /// there is no such link any more. An invitation is
+    /// [`TakenLink::Invitation`]: never handed back nor opened, and it
+    /// stays, in every lock state. Otherwise a locked vault is
+    /// `platform.signer_unavailable` and keeps the link.
     pub async fn take_stashed_link(
         self: &Arc<Self>,
         link_id: String,
-    ) -> Result<Option<BearerSecret>, PlatformError> {
-        let taken = self
-            .stash_call(move |v| {
-                // Kinds never change, so a check before the take holds.
-                let invitation = v
-                    .stashed_links()?
-                    .iter()
-                    .any(|m| m.id == link_id && m.kind == VaultKind::Invitation);
-                if invitation {
-                    return Err(dw_vault::VaultError::InvalidArgument(
-                        "an invitation link is never handed back".into(),
-                    ));
-                }
-                v.take_stashed_link(&link_id)
-            })
+    ) -> Result<Option<TakenLink>, PlatformError> {
+        const HANDED_BACK: &[VaultKind] = &[VaultKind::Payment, VaultKind::Contact];
+        self.stash_call(move |v| match v.take_stashed_link(&link_id, HANDED_BACK) {
+            Ok(taken) => {
+                Ok(taken.map(|(_, text)| TakenLink::Link(BearerSecret::new(String::clone(&text)))))
+            }
+            // The one kind not handed back.
+            Err(dw_vault::VaultError::InvalidArgument(d)) if d == dw_vault::OTHER_KIND => {
+                Ok(Some(TakenLink::Invitation))
+            }
+            Err(e) => Err(e),
+        })
+        .await
+    }
+
+    /// Deletes a stashed link of any kind without reading it: dismissed.
+    /// Works locked; an id the stash no longer has is not an error.
+    pub async fn forget_stashed_link(
+        self: &Arc<Self>,
+        link_id: String,
+    ) -> Result<(), PlatformError> {
+        self.stash_call(move |v| v.forget_stashed_link(&link_id, ALL_LINK_KINDS))
             .await?;
-        Ok(taken.map(|(_, text)| BearerSecret::new(String::clone(&text))))
+        Ok(())
     }
 
     /// Stores the link in the vault's link stash, sealed to the vault's key,
@@ -191,10 +228,12 @@ impl NetworkSession {
         self: &Arc<Self>,
         link: BearerSecret,
     ) -> Result<String, InvitationError> {
-        if stash_kind(link.expose()) != Some(StashedLinkKind::Invitation) {
+        // The invitation parser alone proves the kind: the full classifier
+        // copies what it reads unzeroed (D24).
+        if !is_invitation(link.expose()) {
             return Err(InvitationError::Invalid);
         }
-        Ok(self.stash_link(link).await?.id)
+        Ok(self.stash_as(StashedLinkKind::Invitation, link).await?.id)
     }
 
     #[expect(unused_variables, reason = "stub until DP5-02")]
@@ -219,23 +258,17 @@ impl NetworkSession {
 
     /// Deletes a stashed invitation: dismissed, or claimed. An id the stash
     /// no longer has is not an error; one of another kind of link is
-    /// `invitation.invalid`.
+    /// `invitation.invalid`, and stays.
     pub async fn forget_invitation(
         self: &Arc<Self>,
         link_id: String,
     ) -> Result<(), InvitationError> {
-        self.stash_call(move |v| {
-            let other_kind = v
-                .stashed_links()?
-                .iter()
-                .any(|m| m.id == link_id && m.kind != VaultKind::Invitation);
-            if other_kind {
-                return Ok(false);
-            }
-            v.forget_stashed_link(&link_id).map(|_| true)
-        })
-        .await?
-        .then_some(())
-        .ok_or(InvitationError::Invalid)
+        let found = self
+            .stash_call(move |v| v.forget_stashed_link(&link_id, &[VaultKind::Invitation]))
+            .await?;
+        match found {
+            Some(kind) if kind != VaultKind::Invitation => Err(InvitationError::Invalid),
+            _ => Ok(()),
+        }
     }
 }

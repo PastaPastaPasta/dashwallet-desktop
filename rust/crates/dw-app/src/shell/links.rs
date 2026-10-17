@@ -149,18 +149,47 @@ impl Inbox {
     }
 
     /// Takes every queued link, routed for `network`, as
-    /// [`Inbox::drain`] and [`intake`] do: `session` is the window's.
+    /// [`Inbox::drain`] and [`intake`] do: `session` is the window's. An
+    /// invitation that arrives with no session of `network` to keep it in
+    /// stays queued, in order, for the next take; a link that fails to
+    /// route is rejected alone, and the batch goes on (review r1 #8).
     pub async fn take(
         &self,
         session: Option<Arc<NetworkSession>>,
         network: &str,
     ) -> Result<Vec<LinkRoute>, AppError> {
+        let session = session.filter(|s| s.network().dir_name() == network);
         let mut routes = Vec::new();
+        let mut waiting = Vec::new();
         for link in self.drain(network)? {
-            routes.push(match link {
-                Some(text) => intake(session.clone(), network, &text).await?,
-                None => LinkRoute::rejected(LinkRejected::TooLong),
+            let Some(text) = link else {
+                routes.push(LinkRoute::rejected(LinkRejected::TooLong));
+                continue;
+            };
+            if session.is_none() && matches!(route_text(network, &text), Ok(Routed::Invitation)) {
+                waiting.push(text);
+                continue;
+            }
+            routes.push(match intake(session.clone(), network, &text).await {
+                Ok(route) => route,
+                Err(e) => {
+                    tracing::warn!(code = e.code_str(), "a queued link could not be routed");
+                    LinkRoute::rejected(LinkRejected::NotALink)
+                }
             });
+        }
+        if !waiting.is_empty() {
+            let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+            for text in waiting.into_iter().rev() {
+                queue.push_front(Queued::Link(text));
+            }
+            // Links delivered meanwhile past the bound go, newest first, as
+            // `deliver` would have dropped them.
+            let over = queue.len().saturating_sub(MAX_QUEUED);
+            if over > 0 {
+                queue.truncate(MAX_QUEUED);
+                tracing::warn!(dropped = over, "link queue full");
+            }
         }
         Ok(routes)
     }
@@ -216,6 +245,10 @@ pub enum LinkRoute {
 }
 
 impl LinkRoute {
+    fn rejected(reason: LinkRejected) -> Self {
+        LinkRoute::Rejected { reason }
+    }
+
     /// The route's `kind`, as the JSON tags it: for logs.
     pub fn kind_name(&self) -> &'static str {
         match self {
@@ -301,12 +334,6 @@ impl From<StashedLink> for StashedLinkInfo {
     }
 }
 
-impl LinkRoute {
-    fn rejected(reason: LinkRejected) -> Self {
-        LinkRoute::Rejected { reason }
-    }
-}
-
 /// A link routed before intake: an invitation still needs its stash id.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Routed {
@@ -362,10 +389,10 @@ pub async fn intake(
     Ok(route)
 }
 
-/// Routes one link for `network` without intake: an invitation is
-/// [`LinkRejected::NotSaved`] here (tests, and the stash replay of a link
-/// that is not an invitation).
-pub fn route(network: &str, text: &str) -> Result<LinkRoute, AppError> {
+/// Routes one link for `network` without intake, for tests: an invitation
+/// is [`LinkRejected::NotSaved`] here.
+#[cfg(test)]
+pub(crate) fn route(network: &str, text: &str) -> Result<LinkRoute, AppError> {
     Ok(match route_text(network, text)? {
         Routed::Route(r) => r,
         Routed::Invitation => LinkRoute::rejected(LinkRejected::NotSaved),

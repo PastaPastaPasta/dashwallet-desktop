@@ -2,7 +2,7 @@
 //! and the state the native menus mirror. The shell's own events are in
 //! `shell`.
 
-use dw_engine::platform::StashedLinkKind;
+use dw_engine::platform::TakenLink;
 
 use crate::error::{AppCode, AppError};
 use crate::ipc::commands;
@@ -50,16 +50,12 @@ commands! {
     #[facade("NetworkSession::take_stashed_link")]
     fn open_stashed_link(state, link_id: String) -> Option<LinkRoute> {
         let session = state.session().await?;
-        let invitation = session
-            .stashed_links()
-            .await?
-            .iter()
-            .any(|l| l.id == link_id && l.kind == StashedLinkKind::Invitation);
-        if invitation {
-            return Ok(Some(LinkRoute::Invitation { link_id }));
-        }
-        let Some(text) = session.take_stashed_link(link_id).await? else {
-            return Ok(None);
+        // The vault checks the kind under its lock: an invitation is
+        // neither opened nor deleted (review r1 #6).
+        let text = match session.take_stashed_link(link_id.clone()).await? {
+            None => return Ok(None),
+            Some(TakenLink::Invitation) => return Ok(Some(LinkRoute::Invitation { link_id })),
+            Some(TakenLink::Link(text)) => text,
         };
         let network = session.network().dir_name();
         Ok(Some(match links::route_text(&network, text.expose())? {
@@ -69,22 +65,11 @@ commands! {
         }))
     }
 
-    /// Drops a stashed link unread: the user dismissed it. Gone already is
-    /// not an error.
-    #[facade()]
+    /// Drops a stashed link unread: the user dismissed it. Works locked;
+    /// gone already is not an error.
+    #[facade("NetworkSession::forget_stashed_link")]
     fn dismiss_stashed_link(state, link_id: String) -> () {
-        let session = state.session().await?;
-        let invitation = session
-            .stashed_links()
-            .await?
-            .iter()
-            .any(|l| l.id == link_id && l.kind == StashedLinkKind::Invitation);
-        if invitation {
-            session.forget_invitation(link_id).await?;
-        } else {
-            drop(session.take_stashed_link(link_id).await?);
-        }
-        Ok(())
+        Ok(state.session().await?.forget_stashed_link(link_id).await?)
     }
 
     /// What the native menus and the tray mirror: Discreet Mode's check

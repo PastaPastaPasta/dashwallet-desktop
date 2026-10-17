@@ -72,7 +72,7 @@ type is `pub(crate)`.
 | `notifications.rs` | DP2-05 | `events`, `unread_count`, `mark_read` |
 | `profile.rs` | DP4-01, DP4-02 | `profile`, `profile_limits`, `prepare_avatar`, `avatar_upload_available`, `upload_avatar`, `update_profile`, `avatar` |
 | `credits.rs` | DP1-06, DP6-02 | `cost_table`, `top_up_quote`, `top_up`, `pending_top_ups`, `stuck_top_up_fundings`, `resume_top_up`, `resolve_top_up`, `withdraw_quote`, `withdraw` |
-| `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_link`, `stashed_links`, `take_stashed_link`, `stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
+| `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_link`, `stashed_links`, `take_stashed_link`, `forget_stashed_link`, `stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
 | `errors.rs` | E0-05 (the mapping, §6) and each domain's owner | the error enums of §4 |
 
@@ -529,14 +529,15 @@ entry. No call quotes a link in an error.
 |---|---|---|---|
 | `NetworkSession.stash_link(link)` | async | Keeps a payment (with an address), contact or invitation link and returns its `StashedLink` (the existing one for the same link). Any other text, an empty one or one over 4096 bytes is `invalid_argument`. Works in every lock state. | `PlatformError` |
 | `NetworkSession.stashed_links()` | async | The stashed links, oldest first, as `StashedLink`s without their text; expired entries are deleted first. Works locked: the replay after a restart, onboarding or an unlock. | `PlatformError` |
-| `NetworkSession.take_stashed_link(link_id)` | async | A payment or contact link's text, once: the entry is deleted before it returns; `None` when it is gone (taken, expired, unreadable). An invitation is `invalid_argument` (never handed back); a locked vault is `platform.signer_unavailable` and keeps the link; a malformed id is `invalid_argument`. | `PlatformError` |
+| `NetworkSession.take_stashed_link(link_id)` | async | A payment or contact link's text, once, as `TakenLink::Link`: the entry is deleted before it returns; `None` when it is gone (taken, expired, unreadable). An invitation is `TakenLink::Invitation` in every lock state: never handed back nor opened, and it stays. Otherwise a locked vault is `platform.signer_unavailable` and keeps the link; a malformed id is `invalid_argument`. | `PlatformError` |
+| `NetworkSession.forget_stashed_link(link_id)` | async | Deletes a stashed link of any kind without opening it: the user dismissed it. Works locked; an id the stash no longer has is `Ok`; a malformed id is `invalid_argument`. | `PlatformError` |
 | `NetworkSession.stash_invitation(link)` | async | `stash_link` for an invitation link only; returns the id. Anything else is `invitation.invalid`, and the error never quotes it. | `InvitationError` |
 | `NetworkSession.invitation_status(link_id)` | async | `Valid{inviter, funding_duffs, contested_allowed, expires_at}`, `Claimed`, `Invalid{reason}` or `Expired`. | `InvitationError` |
 | `NetworkSession.pending_invitations()` | async | The ids of the stashed invitation links, oldest first: the replay after a restart or after onboarding (DP5-01). | `InvitationError` |
 | `NetworkSession.forget_invitation(link_id)` | async | Deletes a stashed invitation: the user dismissed it, or the claim finished. An id the stash no longer has is `Ok`; one of another kind of link is `invitation.invalid`; a malformed id is `invalid_argument`. | `InvitationError` |
 
 **Done (DP5-01, Contract-Version 29, item 55):** `stash_link`, `stashed_links`, `take_stashed_link`,
-`stash_invitation`, `pending_invitations` and `forget_invitation`. `invitation_status` stays a stub until DP5-02.
+`forget_stashed_link`, `stash_invitation`, `pending_invitations` and `forget_invitation`. `invitation_status` stays a stub until DP5-02.
 
 ### 2.10 Facade
 
@@ -562,7 +563,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 11a6fae6d695237c391275bc577513468a85f15b0965522de5d3ed36ced7423e version: 29 -->
+<!-- surface-sha256: 0f4f84d311bf1e88b5be29fc8818824ac8f23ac417e8725c14f294a1d63b7376 version: 29 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1173,13 +1174,19 @@ pub struct StashedLink {
     pub stashed_at: u64,
     pub expires_at: u64,
 }
+#[derive(Debug)]
+pub enum TakenLink {
+    Link(BearerSecret),
+    Invitation,
+}
 impl From<VaultKind> for StashedLinkKind;
 impl From<StashedLinkKind> for VaultKind;
 impl From<StashedLinkMeta> for StashedLink;
 impl NetworkSession {
     pub async fn stash_link(self: &Arc<Self>, link: BearerSecret) -> Result<StashedLink, PlatformError>;
     pub async fn stashed_links(self: &Arc<Self>) -> Result<Vec<StashedLink>, PlatformError>;
-    pub async fn take_stashed_link(self: &Arc<Self>, link_id: String) -> Result<Option<BearerSecret>, PlatformError>;
+    pub async fn take_stashed_link(self: &Arc<Self>, link_id: String) -> Result<Option<TakenLink>, PlatformError>;
+    pub async fn forget_stashed_link(self: &Arc<Self>, link_id: String) -> Result<(), PlatformError>;
     pub async fn stash_invitation(self: &Arc<Self>, link: BearerSecret) -> Result<String, InvitationError>;
     pub async fn invitation_status(self: &Arc<Self>, link_id: String) -> Result<InvitationStatus, InvitationError>;
     pub async fn pending_invitations(self: &Arc<Self>) -> Result<Vec<String>, InvitationError>;
@@ -2847,9 +2854,10 @@ renames or reshapes them takes the next version bump:
 
 **From DP5-01** (version 29):
 
-55. **The link stash (DP5-01 D1–D19, version 29).** `stash_link`, `stashed_links` and `take_stashed_link` are new
-    (§2.9), with the records `StashedLink {id, kind, stashed_at, expires_at}` and `StashedLinkKind {payment, contact,
-    invitation}`; `stash_invitation`, `pending_invitations` and `forget_invitation` are implemented on the same stash.
+55. **The link stash (DP5-01 D1–D24, version 29).** `stash_link`, `stashed_links`, `take_stashed_link` and
+    `forget_stashed_link` are new
+    (§2.9), with the records `StashedLink {id, kind, stashed_at, expires_at}`, `StashedLinkKind {payment, contact,
+    invitation}` and `TakenLink {Link(BearerSecret), Invitation}`; `stash_invitation`, `pending_invitations` and `forget_invitation` are implemented on the same stash.
     The stash is not a vault record (§2.9 used to say `invitation/<id>`): one sealed file per link beside the
     vault, so a link arriving while the vault is locked is sealed at once and `destroy` and the no-key states are
     unaffected. `pending_invitations` lists invitations only. A payment or contact link is taken once; an invitation

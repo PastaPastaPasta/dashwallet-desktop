@@ -1999,8 +1999,8 @@ export function openStashedLink(linkId: string): Promise<LinkRoute | null> {
 }
 
 /**
- * Drops a stashed link unread: the user dismissed it. Gone already is
- * not an error.
+ * Drops a stashed link unread: the user dismissed it. Works locked;
+ * gone already is not an error.
  */
 export function dismissStashedLink(linkId: string): Promise<null> {
   return invoke<null>("dismiss_stashed_link", { linkId });

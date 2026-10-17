@@ -118,7 +118,10 @@ mod links;
 mod masternode;
 use compat::BackupKek;
 pub use compat::{CoreMnemonicCheck, WalletBackupBundle, reads_bundle_version};
-pub use links::{MAX_STASHED_LINK_BYTES, MAX_STASHED_LINKS, StashedLinkKind, StashedLinkMeta};
+pub use links::{
+    ALL_LINK_KINDS, MAX_STASHED_LINK_BYTES, MAX_STASHED_LINKS, OTHER_KIND, StashedLinkKind,
+    StashedLinkMeta,
+};
 pub use masternode::{MASTERNODE_KEY_ROLES, MAX_MASTERNODE_KEY_BYTES};
 
 /// Proof that the caller holds `Shared::writer`.
@@ -804,6 +807,7 @@ impl Vault {
         }
         let encrypted = vault_file.slot_p.is_some();
         let now = self.now();
+        let link_dek = Zeroizing::new(*dek);
         let ops = self.epoch_guard();
         let mut inner = self.inner();
         inner.file = Some(vault_file);
@@ -813,12 +817,14 @@ impl Vault {
         if encrypted {
             inner.last_passphrase_at = Some(now);
         }
-        drop(writer);
         let status = self.status_of(&inner);
         drop(inner);
         drop(ops);
-        // Links stashed before the vault existed move into it (§2.9).
-        self.sync_links_after_key();
+        // Links stashed before the vault existed move into it (§2.9),
+        // before the writer goes: no recovery or destroy runs between
+        // (D23).
+        self.sync_links_after_key(&link_dek, &vault_id);
+        drop(writer);
         Ok(status)
     }
 
@@ -890,15 +896,19 @@ impl Vault {
     pub fn unlock(&self, passphrase: &[u8], scope: UnlockScope) -> Result<VaultStatus, VaultError> {
         let writer = self.writer();
         let (dek, backup_kek) = self.check_passphrase(&writer, passphrase)?;
-        let status = {
+        let link_dek = Zeroizing::new(*dek);
+        let (status, vault_id) = {
             let ops = self.epoch_guard();
             let mut inner = self.inner();
             inner.install_key(dek, scope, &ops);
             inner.backup_kek = Some(backup_kek);
-            self.status_of(&inner)
+            let vault_id = inner.file.as_ref().map(|f| f.vault_id.clone());
+            (self.status_of(&inner), vault_id)
         };
+        if let Some(vault_id) = vault_id {
+            self.sync_links_after_key(&link_dek, &vault_id);
+        }
         drop(writer);
-        self.sync_links_after_key();
         Ok(status)
     }
 
@@ -2606,9 +2616,9 @@ impl Vault {
                 )));
             }
         }
-        drop(writer);
         // A new data key: links sealed to the old one are dropped (D17).
-        self.sync_links_after_key();
+        self.sync_links_after_key(&dek, &vault_id);
+        drop(writer);
         Ok(lost)
     }
 
@@ -2622,6 +2632,10 @@ impl Vault {
     pub fn destroy(&self, credential: Credential<'_>) -> Result<VaultStatus, VaultError> {
         let writer = self.writer();
         let Some(current) = self.inner().file.clone() else {
+            // Links kept before any vault go too ("Delete All").
+            let mut links = self.links_guard();
+            self.remove_links(&mut links)?;
+            drop(links);
             drop(writer);
             return Ok(self.status());
         };
@@ -2638,8 +2652,11 @@ impl Vault {
                 }
             }
         }
+        // The links first: a failure leaves the vault, not sealed links of
+        // a vault that is gone (review r1 #4).
+        let mut links = self.links_guard();
+        self.remove_links(&mut links)?;
         file::remove_all(&self.shared.dir)?;
-        self.remove_links()?;
         {
             let ops = self.epoch_guard();
             let mut inner = self.inner();
@@ -2648,6 +2665,7 @@ impl Vault {
             inner.last_passphrase_at = None;
             inner.forget_key(&ops);
         }
+        drop(links);
         drop(writer);
         if let Some(o) = current.slot_o
             && let Ok(service) = <[u8; 32]>::try_from(o.service.as_slice())

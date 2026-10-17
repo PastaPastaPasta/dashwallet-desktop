@@ -5,11 +5,11 @@
 #![allow(dead_code)]
 
 /// The command's arguments.
-pub const STUB_ARGS: &[&str] = &["invite", "pending"];
+pub const STUB_ARGS: &[&str] = &["invite", "status", "l"];
 
 /// The facade call it reaches, which its `platform.not_implemented` error
 /// names.
-pub const STUB_CALL: &str = "NetworkSession.pending_invitations";
+pub const STUB_CALL: &str = "NetworkSession.invitation_status";
 
 /// A session request running it, with `id` as raw JSON.
 pub fn stub_request(id: &str) -> String {

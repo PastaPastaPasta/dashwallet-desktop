@@ -42,11 +42,11 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         "Vault::take_stashed_link",
-        "internal: reached through `NetworkSession::take_stashed_link` (`open_stashed_link`, `dismiss_stashed_link`), which refuses invitations",
+        "internal: reached through `NetworkSession::take_stashed_link` (`open_stashed_link`), which passes only the kinds it hands back",
     ),
     (
         "Vault::forget_stashed_link",
-        "internal: reached through `NetworkSession::forget_invitation` (`forget_invitation`, `dismiss_stashed_link`)",
+        "internal: reached through `NetworkSession::forget_invitation` (`forget_invitation`) and `NetworkSession::forget_stashed_link` (`dismiss_stashed_link`)",
     ),
     (
         "NetworkSession::lock_vault_sync",

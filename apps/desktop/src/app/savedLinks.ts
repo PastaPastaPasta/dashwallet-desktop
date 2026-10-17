@@ -17,7 +17,6 @@ export const SavedLinksText = {
   /** The toast for an invitation opened during onboarding. */
   invitationSaved: "Invitation saved. It is waiting for you once your wallet is set up.",
   gone: "This link is no longer saved.",
-  locked: "Unlock the wallet to open this link.",
   loadFailed: "Could not read the saved links.",
 } as const;
 

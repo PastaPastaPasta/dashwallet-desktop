@@ -78,21 +78,76 @@ fn redact_from(token: &str) -> Option<usize> {
         .min()
 }
 
-/// Where the first link in `line` (one line, no terminator) starts.
-fn link_start(line: &str) -> Option<usize> {
-    let mut start = 0;
-    for (i, c) in line.char_indices().chain([(line.len(), ' ')]) {
-        if !is_delimiter(c) {
-            continue;
-        }
-        if start < i
-            && let Some(from) = redact_from(&line[start..i])
-        {
-            return Some(start + from);
-        }
-        start = i + c.len_utf8();
+/// The length of the terminal escape sequence at the start of `rest`
+/// (which starts with ESC): a CSI sequence (`ESC [`, parameters,
+/// intermediates and, with `final_byte`, the final byte), or the ESC
+/// alone. All ASCII.
+fn escape_len(rest: &str, final_byte: bool) -> usize {
+    let b = rest.as_bytes();
+    if b.get(1) != Some(&b'[') {
+        return 1;
     }
-    None
+    let mut i = 2;
+    while b.get(i).is_some_and(|c| (0x30..=0x3f).contains(c)) {
+        i += 1;
+    }
+    while b.get(i).is_some_and(|c| (0x20..=0x2f).contains(c)) {
+        i += 1;
+    }
+    i + usize::from(final_byte && b.get(i).is_some_and(|c| (0x40..=0x7e).contains(c)))
+}
+
+/// Where the first link in `line` (one line, no terminator) starts. A
+/// terminal escape sequence (a coloured log's `ESC[2m`) delimits tokens
+/// whole, so its final letter never hides the scheme after it (review r1
+/// #1); a line with an ESC is also read with the sequence's final byte
+/// left in the next token, so a bare `ESC[` cannot take a scheme's first
+/// letter for its final byte. The earlier start wins.
+fn link_start(line: &str) -> Option<usize> {
+    let whole = scan(line, true);
+    if !line.contains('\x1b') {
+        return whole;
+    }
+    match (whole, scan(line, false)) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// [`link_start`] with escape sequences read with or without their final
+/// byte.
+fn scan(line: &str, final_byte: bool) -> Option<usize> {
+    let mut start = 0;
+    let mut i = 0;
+    loop {
+        let (step, delimits) = match line[i..].chars().next() {
+            None => (0, true),
+            Some('\x1b') => (escape_len(&line[i..], final_byte), true),
+            Some(c) => (c.len_utf8(), is_delimiter(c)),
+        };
+        if delimits {
+            if start < i
+                && let Some(from) = redact_from(&line[start..i])
+            {
+                return Some(start + from);
+            }
+            if i == line.len() {
+                return None;
+            }
+            start = i + step;
+        }
+        i += step;
+    }
+}
+
+/// Whether `link` (one line) reads as a link from its first character
+/// on: what the link stash requires of a link it keeps, so a kept link is
+/// cut whole in a log line wherever a delimiter, an escape sequence or any
+/// character but a letter, digit, `+`, `-` or `.` precedes it (an
+/// invitation's markers match anywhere). `dash::x`, a Rust path to the
+/// redaction, is not one, whatever a parser makes of it.
+pub fn redacted_whole(link: &str) -> bool {
+    link_start(link) == Some(0)
 }
 
 /// `text` with every line that holds a link cut at the link, the rest of
@@ -118,6 +173,25 @@ pub fn redact_links(text: &str) -> Cow<'_, str> {
             Cow::Owned(o)
         }
     }
+}
+
+/// Makes panics print redacted: a panic message may quote a link (an
+/// `expect` on a parse, a formatted assert), and the default hook prints
+/// it as it is (review r1 #2). Prints what the default hook does, the
+/// thread, the location and the message, each line redacted, and the
+/// backtrace when `RUST_BACKTRACE` asks for one.
+pub fn redact_panics() {
+    std::panic::set_hook(Box::new(|info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("<unnamed>");
+        let text = format!("thread '{name}' {info}\n");
+        let backtrace = std::backtrace::Backtrace::capture();
+        let mut err = io::stderr().lock();
+        let _ = err.write_all(redact_links(&text).as_bytes());
+        if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
+            let _ = err.write_all(redact_links(&format!("{backtrace}\n")).as_bytes());
+        }
+    }));
 }
 
 /// A writer that keeps one log event and writes it redacted to `inner`
@@ -218,6 +292,42 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_link_is_cut_from_its_start() {
+        assert!(redacted_whole("dash:yAddr?amount=1"));
+        assert!(redacted_whole(
+            "https://invitations.dashpay.io/applink?du=a"
+        ));
+        assert!(!redacted_whole("dash::yAddr?amount=1"));
+        assert!(!redacted_whole("x dash:yAddr"));
+        assert!(!redacted_whole("https://example.com/pay?amount=1"));
+        assert!(!redacted_whole(""));
+    }
+
+    /// Review r1 #1: a coloured log puts escape sequences around a field's
+    /// `=`, right before the value; the sequence's final letter is no
+    /// word before the scheme.
+    #[test]
+    fn escape_sequences_never_hide_a_link() {
+        assert_eq!(
+            r("link\x1b[2m=\x1b[0mdash:yAddr?label=secret tail"),
+            "link\x1b[2m=\x1b[0m<link>"
+        );
+        assert_eq!(r("\x1b[31mpay:x\x1b[0m"), "\x1b[31m<link>");
+        // A marker redacts its whole token: here from the final byte on.
+        assert_eq!(
+            r("a\x1b[1;32;4mdashpay://invite?pk=s"),
+            "a\x1b[1;32;4<link>"
+        );
+        assert_eq!(r("\x1bdash:x"), "\x1b<link>");
+        assert_eq!(r("\x1b[2m"), "\x1b[2m");
+        assert_eq!(r("x\x1b["), "x\x1b[");
+        assert_eq!(r("\x1b[2mrepay: 3\x1b[0m"), "\x1b[2mrepay: 3\x1b[0m");
+        // A bare `ESC[` would take the scheme's `d` for its final byte.
+        assert_eq!(r("x\x1b[dash:yAddr?label=secret"), "x\x1b[<link>");
+        assert_eq!(r("x\x1b[1;2pay:y"), "x\x1b[1;2<link>");
+    }
+
+    #[test]
     fn the_writer_redacts_each_event() {
         let mut out = Vec::new();
         {
@@ -231,9 +341,15 @@ mod tests {
             w.flush().unwrap();
             w.write_all(b"three pay:x\n").unwrap();
         }
+        {
+            let mut w = RedactingWriter::new(&mut out);
+            w.write_all(b"four \x1b[3mlink\x1b[0m\x1b[2m=\x1b[0mdash:y")
+                .unwrap();
+            w.write_all(b"?label=secret\n").unwrap();
+        }
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "one <link>\ntwo\nthree <link>\n"
+            "one <link>\ntwo\nthree <link>\nfour \x1b[3mlink\x1b[0m\x1b[2m=\x1b[0m<link>\n"
         );
     }
 }

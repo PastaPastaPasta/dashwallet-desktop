@@ -1263,8 +1263,16 @@ fn links_opened_before_a_wallet_survive_onboarding() {
     let left = demo.ok("stashed_links", json!({}));
     assert_eq!(left.as_array().unwrap().len(), 1, "{left}");
     assert_eq!(left[0]["kind"], "invitation");
+    // Locked: an invitation is still offered by id (nothing is opened),
+    // and Remove still works (review r1 #6, #7).
+    demo.ok("lock", json!({}));
+    assert_eq!(
+        demo.ok("open_stashed_link", json!({ "linkId": invite_id })),
+        invitation
+    );
     demo.ok("dismiss_stashed_link", json!({ "linkId": invite_id }));
     assert_eq!(demo.ok("stashed_links", json!({})), json!([]));
+    demo.ok("unlock", json!({ "passphrase": "pw" }));
     assert!(stash_files(&root).is_empty());
     demo.err(
         "open_stashed_link",
@@ -1302,11 +1310,20 @@ fn launch_links_wait_for_take_links() {
                 "uri": { "address": ADDR, "amount": 50_000_000, "label": "Launch", "message": null },
                 "username": null,
             },
-            // No network is open, so there is no stash to keep it in:
-            // an invitation never reaches the renderer bare (DP5-01 D3).
-            { "kind": "rejected", "reason": { "kind": "notSaved" } },
         ])
     );
+    // No network is open, so there is no stash to keep the invitation in:
+    // it never reaches the renderer bare (DP5-01 D3) and waits in the queue
+    // until a take has the network's session (review r1 #8).
+    assert_eq!(
+        demo.ok("take_links", json!({ "network": "regtest" })),
+        json!([])
+    );
+    demo.open();
+    let routes = demo.ok("take_links", json!({ "network": "regtest" }));
+    assert_eq!(routes[0]["kind"], "invitation", "{routes}");
+    assert_eq!(routes[0]["linkId"].as_str().map(str::len), Some(32));
+    assert_eq!(routes.as_array().map(Vec::len), Some(1));
     assert_eq!(
         demo.ok("take_links", json!({ "network": "regtest" })),
         json!([])

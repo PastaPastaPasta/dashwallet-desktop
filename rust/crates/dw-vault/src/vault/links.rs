@@ -54,6 +54,15 @@ pub const MAX_STASHED_LINKS: usize = 16;
 /// The longest link kept, in bytes (U-01's `MAX_LINK_BYTES`).
 pub const MAX_STASHED_LINK_BYTES: usize = 4096;
 
+/// Every kind, for a take or forget that accepts any.
+pub const ALL_LINK_KINDS: &[StashedLinkKind] = &[
+    StashedLinkKind::Payment,
+    StashedLinkKind::Contact,
+    StashedLinkKind::Invitation,
+];
+/// The `InvalidArgument` detail of a take of a kind the caller excluded.
+pub const OTHER_KIND: &str = "the stashed link is of another kind";
+
 /// The stash directory inside the vault directory.
 pub(crate) const LINKS_DIR: &str = "links";
 const PUB_FILE: &str = "stash.pub";
@@ -136,7 +145,17 @@ impl LinkState {
     fn forget(&mut self, id: &str) {
         self.seen.retain(|_, v| v != id);
     }
+
+    /// Keeps only the tags of `entries` (an entry may expire or be deleted
+    /// by another path): `seen` stays as small as the stash.
+    fn keep_only(&mut self, entries: &[EntryFile]) {
+        self.seen
+            .retain(|_, id| entries.iter().any(|e| &e.id == id));
+    }
 }
+
+/// The stash mutex held (see [`Vault::links_guard`]).
+pub(crate) struct LinksGuard<'a>(std::sync::MutexGuard<'a, LinkState>);
 
 impl Drop for LinkState {
     fn drop(&mut self) {
@@ -268,6 +287,7 @@ pub(crate) fn is_link_id(id: &str) -> bool {
 
 fn entry_aad(vault_id: &[u8], network: &str, e: &EntryFile, key_id: &[u8], epk: &[u8]) -> Vec<u8> {
     let mut a = b"dw-vault/link/v1".to_vec();
+    push_field(&mut a, &e.v.to_le_bytes());
     push_field(&mut a, vault_id);
     push_field(&mut a, network.as_bytes());
     push_field(&mut a, e.id.as_bytes());
@@ -384,9 +404,30 @@ fn sync_dir(dir: &Path) -> Result<(), VaultError> {
     Ok(())
 }
 
+/// The file at `path` open for writing, when it is a regular file: kept
+/// across a rename that replaces it, so its old contents can be scrubbed
+/// once the new file is in place.
+fn open_old(path: &Path) -> Option<(std::fs::File, u64)> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let f = std::fs::OpenOptions::new().write(true).open(path).ok()?;
+    Some((f, meta.len()))
+}
+
 /// Writes `bytes` to `tmp` (created new, 0600), syncs it and renames it to
-/// `path`, then syncs the directory.
-fn write_replacing(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), VaultError> {
+/// `path`, then syncs the directory. With `scrub_old`, the file `path`
+/// named before is overwritten with zeros only after that (best effort,
+/// D18): a crash at any point leaves the old file or the new one in place,
+/// never neither (review r1 #3).
+fn write_replacing(
+    dir: &Path,
+    tmp: &Path,
+    path: &Path,
+    bytes: &[u8],
+    scrub_old: bool,
+) -> Result<(), VaultError> {
     match std::fs::remove_file(tmp) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -404,8 +445,14 @@ fn write_replacing(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<
         f.write_all(bytes)?;
         f.sync_all()?;
     }
+    let old = scrub_old.then(|| open_old(path)).flatten();
     std::fs::rename(tmp, path)?;
-    sync_dir(dir)
+    sync_dir(dir)?;
+    if let Some((mut f, len)) = old {
+        let zeros = vec![0u8; len as usize];
+        let _ = f.write_all(&zeros).and_then(|()| f.sync_all());
+    }
+    Ok(())
 }
 
 /// Reads one entry; `None` for a file that is not one (wrong name, too
@@ -442,21 +489,34 @@ impl Vault {
         (self.vault_id(), self.shared.tag.clone())
     }
 
+    /// Loads an unencrypted vault's data key from the OS store, as every
+    /// public stash call does before it takes the stash mutex: the store
+    /// may block (a keyring prompt), and nothing waits on the mutex for it
+    /// (review r1 #5). A failure is logged and the call goes on without
+    /// the key, as if locked: a new link is sealed to `stash.pub`.
+    fn load_stash_key(&self) {
+        if !matches!(
+            self.lock_state(),
+            LockState::NoKeys | LockState::Unencrypted
+        ) {
+            return;
+        }
+        if let Err(e) = self.full_dek() {
+            tracing::warn!(error = %e, "link stash: the data key could not be loaded");
+        }
+    }
+
     /// Runs `body` with the stash key, as one gated operation: `Ok(None)`
-    /// when there is no key at hand (no vault, or locked). A mixing-only
-    /// unlock has the data key, and reading a link signs nothing, so it
-    /// counts (D11). An unencrypted vault's key is loaded from the OS
-    /// store first, outside the gate.
+    /// when there is no key in memory (no vault, locked, or an unencrypted
+    /// vault whose key [`Self::load_stash_key`] could not load). A
+    /// mixing-only unlock has the data key, and reading a link signs
+    /// nothing, so it counts (D11).
     fn with_stash_key<T>(
         &self,
         body: impl FnOnce(&StashKey, &[u8]) -> Result<T, VaultError>,
     ) -> Result<Option<T>, VaultError> {
-        match self.lock_state() {
-            LockState::NoVault | LockState::Locked => return Ok(None),
-            LockState::NoKeys | LockState::Unencrypted => {
-                self.full_dek()?;
-            }
-            LockState::Unlocked | LockState::UnlockedMixingOnly => {}
+        if matches!(self.lock_state(), LockState::NoVault | LockState::Locked) {
+            return Ok(None);
         }
         self.gated(VaultError::Locked, |_op| {
             let (dek, vault_id) = {
@@ -504,7 +564,7 @@ impl Vault {
             public: key.public.serialize().to_vec(),
         })
         .map_err(|e| VaultError::Internal(format!("stash key file: {e}")))?;
-        write_replacing(&dir, &dir.join(PUB_TMP), &dir.join(PUB_FILE), &bytes)
+        write_replacing(&dir, &dir.join(PUB_TMP), &dir.join(PUB_FILE), &bytes, false)
     }
 
     /// Every well-formed entry, oldest first. Expired entries and files that
@@ -523,7 +583,9 @@ impl Vault {
             let name = item.file_name();
             let Some(name) = name.to_str() else { continue };
             let path = item.path();
-            if name == PUB_FILE {
+            // Only regular files are ours: a directory or a link that
+            // takes an entry's name is left alone, never followed.
+            if name == PUB_FILE || !item.file_type()?.is_file() {
                 continue;
             }
             let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
@@ -572,21 +634,24 @@ impl Vault {
                 .map_err(|err| VaultError::Internal(format!("link entry: {err}")))?,
         );
         let path = self.entry_path(&e.id);
-        if e.sealed.is_some() {
-            scrub(&path);
-        }
         let tmp = dir.join(format!("{}.{ENTRY_TMP_EXT}", e.id));
-        write_replacing(&dir, &tmp, &path, &bytes)
+        // A sealed entry may replace its plaintext: scrubbed once replaced.
+        write_replacing(&dir, &tmp, &path, &bytes, e.sealed.is_some())
     }
 
     /// With the stash key: rewrites `stash.pub`, seals plaintext entries,
-    /// drops entries sealed to another key or tampered with, and collapses
-    /// duplicates (oldest kept). Returns what is left, oldest first.
+    /// drops entries sealed to another key and collapses duplicates (oldest
+    /// kept). With `open_sealed` it also opens every sealed entry, to drop
+    /// the tampered ones and collapse duplicates among them; without, a
+    /// sealed entry under this key is kept unopened (the reseal after an
+    /// unlock: nothing is decrypted outside a gated operation, D23).
+    /// Returns what is left, oldest first.
     fn sync_links_with(
         &self,
         key: &StashKey,
         vault_id: &[u8],
         entries: Vec<EntryFile>,
+        open_sealed: bool,
     ) -> Result<Vec<EntryFile>, VaultError> {
         self.write_stash_public(key, vault_id)?;
         let tag = &self.shared.tag;
@@ -594,6 +659,13 @@ impl Vault {
         let mut texts: Vec<(StashedLinkKind, Zeroizing<String>)> = Vec::new();
         let (mut sealed, mut dropped) = (0usize, 0usize);
         for mut e in entries {
+            if !open_sealed
+                && let Some(s) = &e.sealed
+                && s.key_id[..] == key.id[..]
+            {
+                kept.push(e);
+                continue;
+            }
             let text = match open_entry(&e, key, vault_id, tag) {
                 Ok(t) => t,
                 Err(Unreadable::OtherKey | Unreadable::Tampered) => {
@@ -624,36 +696,52 @@ impl Vault {
         Ok(kept)
     }
 
-    /// Seals what waits in plaintext once the vault has its key: after
-    /// `create` (the move into the vault, DASHPAY §2.9), `unlock` and a
-    /// recovery. Best effort: a failure is logged and the next stash call
-    /// tries again.
-    pub(crate) fn sync_links_after_key(&self) {
+    /// Seals what waits in plaintext once the vault has its key `dek`:
+    /// after `create` (the move into the vault, DASHPAY §2.9), `unlock` and
+    /// a recovery, which pass the key they just installed and still hold
+    /// the writer, so no recovery or destroy changes the key meanwhile. Not
+    /// a gated operation: it opens no sealed entry and hands nothing to any
+    /// caller, so a `lock()` meanwhile has nothing to stop (D23). Best
+    /// effort: a failure is logged and the next stash call tries again.
+    pub(crate) fn sync_links_after_key(&self, dek: &[u8; 32], vault_id: &[u8]) {
         let _state = self.links_state();
-        let result = self.with_stash_key(|key, vault_id| {
+        let result = StashKey::derive(dek, vault_id, &self.shared.tag).and_then(|key| {
             let entries = self.load_entries(self.now())?;
-            self.sync_links_with(key, vault_id, entries).map(drop)
+            self.sync_links_with(&key, vault_id, entries, false)
+                .map(drop)
         });
         if let Err(e) = result {
             tracing::warn!(error = %e, "link stash: could not seal pending links");
         }
     }
 
-    /// Removes the stash with every entry (`destroy`).
-    pub(crate) fn remove_links(&self) -> Result<(), VaultError> {
-        let mut state = self.links_state();
-        state.seen.clear();
+    /// The stash mutex, for `destroy`: held from [`Self::remove_links`]
+    /// until the vault is gone from memory, so no stash call seals to the
+    /// destroyed vault's key meanwhile (review r1 #4). Order: writer, then
+    /// this, then the gate.
+    pub(crate) fn links_guard(&self) -> LinksGuard<'_> {
+        LinksGuard(self.links_state())
+    }
+
+    /// Removes the stash with every entry (`destroy`, with or without a
+    /// vault): plaintext entries are scrubbed first.
+    pub(crate) fn remove_links(&self, guard: &mut LinksGuard<'_>) -> Result<(), VaultError> {
+        guard.0.seen.clear();
         let dir = self.links_dir();
-        match std::fs::read_dir(&dir) {
-            Ok(read) => {
-                for item in read {
-                    let path = item?.path();
-                    scrub(&path);
-                    std::fs::remove_file(&path)?;
-                }
-            }
+        let read = match std::fs::read_dir(&dir) {
+            Ok(read) => read,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e.into()),
+        };
+        for item in read {
+            let item = item?;
+            let path = item.path();
+            if item.file_type()?.is_dir() {
+                std::fs::remove_dir_all(&path)?;
+            } else {
+                scrub(&path);
+                std::fs::remove_file(&path)?;
+            }
         }
         std::fs::remove_dir(&dir)?;
         sync_dir(&self.shared.dir)
@@ -682,14 +770,16 @@ impl Vault {
                 "a stashed link has no control characters".into(),
             ));
         }
+        self.load_stash_key();
         let mut state = self.links_state();
         let now = self.now();
         let tag = state.tag(kind, link);
         let mut entries = self.load_entries(now)?;
+        state.keep_only(&entries);
         // With the key at hand: seal what waits and compare in plaintext.
         let (vault_id, network) = self.link_binding();
         let synced = self.with_stash_key(|key, vault_id| {
-            let kept = self.sync_links_with(key, vault_id, std::mem::take(&mut entries))?;
+            let kept = self.sync_links_with(key, vault_id, std::mem::take(&mut entries), true)?;
             let mut same = None;
             for e in &kept {
                 if e.kind == kind
@@ -786,13 +876,17 @@ impl Vault {
     /// expired ones; with the key at hand also seals what waits in
     /// plaintext and collapses duplicates. Works in every lock state.
     pub fn stashed_links(&self) -> Result<Vec<StashedLinkMeta>, VaultError> {
+        self.load_stash_key();
         let _state = self.links_state();
-        let entries = self.load_entries(self.now())?;
+        let now = self.now();
+        let mut entries = self.load_entries(now)?;
         let entries = match self.with_stash_key(|key, vault_id| {
-            self.sync_links_with(key, vault_id, self.load_entries(self.now())?)
+            self.sync_links_with(key, vault_id, std::mem::take(&mut entries), true)
         }) {
             Ok(Some(kept)) => kept,
-            Ok(None) | Err(VaultError::Locked) => entries,
+            Ok(None) => entries,
+            // Locked once the sync ran: what it left is on disk.
+            Err(VaultError::Locked) => self.load_entries(now)?,
             Err(e) => return Err(e),
         };
         Ok(entries.iter().map(EntryFile::meta).collect())
@@ -803,14 +897,18 @@ impl Vault {
     /// or sealed to an older vault's key). Needs the data key unless the
     /// entry is still plaintext: `Locked` otherwise, and the entry stays.
     /// The deletion is on disk before the text is returned; when it fails,
-    /// the error is returned and the text dropped.
+    /// the error is returned and the text dropped. An entry whose kind is
+    /// not one of `kinds` is neither opened nor deleted:
+    /// `InvalidArgument` ([`OTHER_KIND`]).
     pub fn take_stashed_link(
         &self,
         id: &str,
+        kinds: &[StashedLinkKind],
     ) -> Result<Option<(StashedLinkKind, Zeroizing<String>)>, VaultError> {
         if !is_link_id(id) {
             return Err(VaultError::InvalidArgument("not a stashed link id".into()));
         }
+        self.load_stash_key();
         let mut state = self.links_state();
         let now = self.now();
         let Some(entry) = read_entry(&self.entry_path(id), id) else {
@@ -820,6 +918,9 @@ impl Vault {
             self.delete_entry(&entry)?;
             state.forget(id);
             return Ok(None);
+        }
+        if !kinds.contains(&entry.kind) {
+            return Err(VaultError::InvalidArgument(OTHER_KIND.into()));
         }
         let network = self.shared.tag.clone();
         let text = match &entry.plain {
@@ -843,21 +944,28 @@ impl Vault {
         Ok(Some((entry.kind, text)))
     }
 
-    /// Deletes the entry `id` without reading it; `false` when there was
+    /// Deletes the entry `id` without opening it, when its kind is one of
+    /// `kinds`; works in every lock state. Returns the kind of the entry
+    /// found (left in place when not one of `kinds`), `None` when there is
     /// none.
-    pub fn forget_stashed_link(&self, id: &str) -> Result<bool, VaultError> {
+    pub fn forget_stashed_link(
+        &self,
+        id: &str,
+        kinds: &[StashedLinkKind],
+    ) -> Result<Option<StashedLinkKind>, VaultError> {
         if !is_link_id(id) {
             return Err(VaultError::InvalidArgument("not a stashed link id".into()));
         }
         let mut state = self.links_state();
-        let path = self.entry_path(id);
-        let Some(entry) = read_entry(&path, id) else {
+        let Some(entry) = read_entry(&self.entry_path(id), id) else {
             // Not an entry (or none): nothing that is not ours is deleted.
-            return Ok(false);
+            return Ok(None);
         };
-        self.delete_entry(&entry)?;
-        state.forget(id);
-        Ok(true)
+        if kinds.contains(&entry.kind) {
+            self.delete_entry(&entry)?;
+            state.forget(id);
+        }
+        Ok(Some(entry.kind))
     }
 }
 

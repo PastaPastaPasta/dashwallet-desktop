@@ -77,8 +77,12 @@ const TTL_DAYS: Record<StashedLinkKindName, number> = { payment: 7, contact: 30,
 /** dw-vault's MAX_STASHED_LINKS. */
 const MAX_STASHED = 16;
 
-const stashKind = (route: LinkRoute): StashedLinkKindName | null =>
-  route.kind === "pay" ? "payment" : route.kind === "addContact" ? "contact" : route.kind === "invitation" ? "invitation" : null;
+const STASH_KIND: Partial<Record<LinkRoute["kind"], StashedLinkKindName>> = {
+  pay: "payment",
+  addContact: "contact",
+  invitation: "invitation",
+};
+const stashKind = (route: LinkRoute): StashedLinkKindName | null => STASH_KIND[route.kind] ?? null;
 
 /** Puts `route` in `stash` (the same link again keeps its entry; a full stash drops its oldest
  * payment or contact link first) and returns the entry. */

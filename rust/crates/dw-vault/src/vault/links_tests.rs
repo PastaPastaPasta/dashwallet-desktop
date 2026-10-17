@@ -45,9 +45,13 @@ impl Fixture {
     }
 
     fn open_in(&self, root: &Path) -> Vault {
+        self.open_with(root, self.os.clone())
+    }
+
+    fn open_with(&self, root: &Path, os_store: Arc<crate::MemoryOsStore>) -> Vault {
         let config = VaultConfig {
             kdf: crate::KdfPolicy::Fixed(crate::KdfParams::TEST),
-            os_store: self.os.clone(),
+            os_store,
             clock: self.clock.clone(),
             grant_ttl_secs: 120,
         };
@@ -92,7 +96,7 @@ impl Fixture {
 }
 
 fn take(v: &Vault, id: &str) -> Option<(StashedLinkKind, String)> {
-    v.take_stashed_link(id)
+    v.take_stashed_link(id, ALL_LINK_KINDS)
         .unwrap()
         .map(|(k, t)| (k, t.as_str().to_owned()))
 }
@@ -140,7 +144,7 @@ fn a_link_before_the_vault_is_sealed_when_the_vault_is_created() {
     let v = f.open();
     assert_eq!(v.stashed_links().unwrap(), vec![meta.clone()]);
     assert!(matches!(
-        v.take_stashed_link(&meta.id),
+        v.take_stashed_link(&meta.id, ALL_LINK_KINDS),
         Err(VaultError::Locked)
     ));
     assert_eq!(f.entry_files(), 1, "a locked take keeps the entry");
@@ -170,7 +174,7 @@ fn a_link_while_locked_is_sealed_with_the_public_key() {
         "{text}"
     );
     assert!(matches!(
-        v.take_stashed_link(&meta.id),
+        v.take_stashed_link(&meta.id, ALL_LINK_KINDS),
         Err(VaultError::Locked)
     ));
     // A mixing-only unlock reads links: that signs nothing (D11).
@@ -430,14 +434,36 @@ fn another_vaults_key_is_dropped_and_a_swapped_public_key_is_healed() {
     assert!(!f.disk_text().contains("username=bob"));
 }
 
-/// `forget` deletes once; ids are checked before any path is built.
+/// `forget` deletes once; a take or forget limited to other kinds leaves
+/// the entry unopened (review r1 #6); ids are checked before any path is
+/// built.
 #[test]
 fn forget_and_id_checks() {
+    use StashedLinkKind::{Contact, Invitation, Payment};
     let f = Fixture::new();
     let v = f.open();
-    let meta = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
-    assert!(v.forget_stashed_link(&meta.id).unwrap());
-    assert!(!v.forget_stashed_link(&meta.id).unwrap());
+    v.create(Some(b"pass")).unwrap();
+    let meta = v.stash_link(Invitation, INVITE).unwrap();
+    v.lock();
+    assert!(matches!(
+        v.take_stashed_link(&meta.id, &[Payment, Contact]),
+        Err(VaultError::InvalidArgument(d)) if d == OTHER_KIND
+    ));
+    assert_eq!(
+        v.forget_stashed_link(&meta.id, &[Payment]).unwrap(),
+        Some(Invitation)
+    );
+    assert_eq!(f.entry_files(), 1, "another kind is left in place");
+    // Forgetting works locked: nothing is opened (review r1 #7).
+    assert_eq!(
+        v.forget_stashed_link(&meta.id, ALL_LINK_KINDS).unwrap(),
+        Some(Invitation)
+    );
+    assert_eq!(
+        v.forget_stashed_link(&meta.id, ALL_LINK_KINDS).unwrap(),
+        None
+    );
+    assert_eq!(f.entry_files(), 0);
     assert_eq!(take(&v, &"b".repeat(32)), None);
     for bad in [
         "../vault.dwv",
@@ -446,26 +472,104 @@ fn forget_and_id_checks() {
         "stash.pub",
     ] {
         assert!(matches!(
-            v.forget_stashed_link(bad),
+            v.forget_stashed_link(bad, ALL_LINK_KINDS),
             Err(VaultError::InvalidArgument(_))
         ));
         assert!(matches!(
-            v.take_stashed_link(bad),
+            v.take_stashed_link(bad, ALL_LINK_KINDS),
             Err(VaultError::InvalidArgument(_))
         ));
     }
 }
 
-/// `destroy` removes the stash with everything in it.
+/// `destroy` removes the stash with everything in it, a stray directory
+/// included; without a vault it removes the plaintext entries kept before
+/// one (review r1 #4).
 #[test]
 fn destroy_removes_the_stash() {
     let f = Fixture::new();
     let v = f.open();
     v.create(Some(b"pass")).unwrap();
     v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    std::fs::create_dir(f.links_dir().join("stray")).unwrap();
     v.destroy(crate::Credential::Passphrase(b"pass")).unwrap();
     assert!(!f.links_dir().exists());
     assert_eq!(v.stashed_links().unwrap(), vec![]);
+
+    v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    assert!(f.links_dir().exists());
+    v.destroy(crate::Credential::None).unwrap();
+    assert!(!f.links_dir().exists());
+}
+
+/// Review r1 #3: sealing a plaintext entry replaces it atomically. A
+/// failed write leaves the plaintext entry whole (it used to be zeroed
+/// first); once the sealed entry is in place, the old file is zeroed.
+#[test]
+fn sealing_never_loses_the_plaintext_entry() {
+    let f = Fixture::new();
+    let v = f.open();
+    let meta = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    let entry = f.links_dir().join(format!("{}.dwl", meta.id));
+    // The temporary name taken: the write fails, as a crash would stop it.
+    let tmp = f.links_dir().join(format!("{}.tmp", meta.id));
+    std::fs::create_dir(&tmp).unwrap();
+    v.create(Some(b"pass")).unwrap();
+    let kept = String::from_utf8(std::fs::read(&entry).unwrap()).unwrap();
+    assert!(kept.contains("cPlantedSecretKey"), "still whole: {kept}");
+    std::fs::remove_dir(&tmp).unwrap();
+
+    let old = f.root.join("old-entry");
+    std::fs::hard_link(&entry, &old).unwrap();
+    assert_eq!(v.stashed_links().unwrap(), vec![meta.clone()]);
+    assert!(!f.disk_text().contains("cPlantedSecretKey"));
+    let scrubbed = std::fs::read(&old).unwrap();
+    assert!(!scrubbed.is_empty() && scrubbed.iter().all(|b| *b == 0));
+    assert_eq!(
+        take(&v, &meta.id),
+        Some((StashedLinkKind::Invitation, INVITE.to_owned()))
+    );
+}
+
+/// A directory with an entry's name is no entry: left alone, and the stash
+/// works around it.
+#[test]
+fn a_directory_named_like_an_entry_is_skipped() {
+    let f = Fixture::new();
+    let v = f.open();
+    let meta = v.stash_link(StashedLinkKind::Payment, PAY).unwrap();
+    let dir = f.links_dir().join(format!("{}.dwl", "c".repeat(32)));
+    std::fs::create_dir(&dir).unwrap();
+    assert_eq!(v.stashed_links().unwrap(), vec![meta.clone()]);
+    v.create(Some(b"pass")).unwrap();
+    assert_eq!(v.stashed_links().unwrap(), vec![meta.clone()]);
+    assert_eq!(take(&v, &"c".repeat(32)), None);
+    assert!(dir.is_dir());
+}
+
+/// Review r1 #5: an unencrypted vault whose OS store fails still stashes,
+/// sealed to `stash.pub`, and lists; reading waits for the key.
+#[test]
+fn an_unencrypted_vault_without_its_os_store_seals_to_the_public_key() {
+    let f = Fixture::new();
+    let v = f.open();
+    v.create(None).unwrap();
+    v.stashed_links().unwrap();
+    drop(v);
+    let v = f.open_with(&f.root, Arc::new(crate::MemoryOsStore::unavailable()));
+    let meta = v.stash_link(StashedLinkKind::Contact, USER).unwrap();
+    assert!(!f.disk_text().contains("username=bob"));
+    assert_eq!(v.stashed_links().unwrap(), vec![meta.clone()]);
+    assert!(matches!(
+        v.take_stashed_link(&meta.id, ALL_LINK_KINDS),
+        Err(VaultError::Locked)
+    ));
+    drop(v);
+    let v = f.open();
+    assert_eq!(
+        take(&v, &meta.id),
+        Some((StashedLinkKind::Contact, USER.to_owned()))
+    );
 }
 
 /// Nothing a stash call returns or logs quotes the link.

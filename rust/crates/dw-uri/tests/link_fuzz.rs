@@ -13,7 +13,7 @@ use dw_uri::deeplink::{
     DashPayContactCode, DashPayUserLink, DeepLink, classify_link, normalize_invitation,
 };
 use dw_uri::ext::{parse_payment_string, parse_payment_uri, remove_percent_encoding};
-use dw_uri::redact::{REDACTED, redact_links};
+use dw_uri::redact::{REDACTED, redact_links, redacted_whole};
 use proptest::prelude::*;
 
 fn corpus() -> Vec<(String, String)> {
@@ -61,6 +61,16 @@ fn carried(link: &DeepLink, text: &str) -> Vec<String> {
         DeepLink::Invitation(_) => values.push(text.trim().to_owned()),
         _ => {}
     }
+    // Every parameter value as written, and decoded (review r1 #9): `pk`,
+    // `du`, `assetlocktx`, amounts, whatever the parsers read or skip.
+    if let Some((_, query)) = text.split_once(['?', '#']) {
+        for pair in query.split(['&', '#']) {
+            if let Some((_, value)) = pair.split_once('=') {
+                values.push(value.to_owned());
+                values.extend(remove_percent_encoding(value));
+            }
+        }
+    }
     // Short values (`a`, `1`) occur in any text by chance.
     values.retain(|v| v.chars().count() >= 4);
     values
@@ -82,9 +92,10 @@ fn bs58_identity(text: &str) -> String {
 }
 
 /// Whether the stash keeps this link (dw-engine's `stash_kind`): one of
-/// the kept kinds, on one line.
+/// the kept kinds, on one line, which redaction cuts from its start.
 fn kept(link: &DeepLink, text: &str) -> bool {
-    if text.trim().chars().any(char::is_control) {
+    let trimmed = text.trim();
+    if trimmed.chars().any(char::is_control) || !redacted_whole(trimmed) {
         return false;
     }
     match link {
@@ -115,8 +126,10 @@ fn assert_redacted(text: &str, before: &str, after: &str) {
 }
 
 /// Text around a link in a log line: a delimiter, then anything.
-const SURROUNDINGS: [(&str, &str); 6] = [
+const SURROUNDINGS: [(&str, &str); 7] = [
     ("", ""),
+    // A coloured log field (review r1 #1).
+    ("link\x1b[2m=\x1b[0m", "\x1b[0m tail"),
     ("link ", " routed"),
     ("text=\"", "\""),
     ("<", ">"),
