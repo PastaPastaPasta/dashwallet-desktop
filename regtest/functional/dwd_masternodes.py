@@ -26,8 +26,9 @@ Masternodes registered by the test:
 Checks, in order:
  1. the funded 1,000 DASH coin is a collateral-shaped coin before A is registered;
  2. A, B and C are listed `enabled` with the expected roles, collateral and registration facts;
- 3. tracking: `find` by service address, `track`, `already_tracked`, attach and check keys,
-    labels, `untrack` deleting the keys;
+ 3. tracking: `find` by service address, `track`, `already_tracked`, attach and check keys
+    (`matched`, `key_mismatch`, `unchecked`), labels, `untrack` deleting the keys (none attached
+    once tracked again);
  4. payouts: the wallet's payouts of A and C equal Core's coinbase payments to their payout
     addresses, newest first, and mature after 100 blocks;
  5. status transitions of A: `protx revoke` (Core bans a revoked masternode) makes it
@@ -124,7 +125,8 @@ class Dwcli:
     def mn(self, height, *args, stdin=None, error=None):
         """`dwcli mn <args>` once the list is synced and the wallet scanned `height`: the result,
         or, with `error`, checks the refusal's code."""
-        p = self.run("mn", "--sync-height", str(height), *args, stdin=stdin, check=False)
+        p = self.run("mn", "--sync-height", str(height), "--sync-timeout", "600", *args, stdin=stdin,
+                     check=False)
         line = json.loads(p.stdout.strip().splitlines()[-1])
         if error is not None:
             assert not line["ok"], line
@@ -309,19 +311,30 @@ class DwdMasternodes(DashTestFramework):
         dw.mn(registered, "attach", mn_c, "--role", "voting", stdin=wif(owner_c), error="masternodes.key_mismatch")
         assert_equal(dw.mn(registered, "attach", mn_c, "--role", "voting", stdin=wif(voting_c))["check"], "matched")
         assert_equal(dw.mn(registered, "attach", mn_c, "--role", "owner", stdin=wif(owner_c))["check"], "matched")
+        # a key that doesn't pay C's payout script: unchecked, not refused (D19)
+        assert_equal(dw.mn(registered, "attach", mn_c, "--role", "payout", stdin=wif(owner_c))["check"], "unchecked")
+        # nothing to check the static masternode's owner key against
+        stranger = ECKey()
+        stranger.generate()
+        assert_equal(dw.mn(registered, "attach", static.proTxHash, "--role", "owner", stdin=wif(stranger))["check"],
+                     "unchecked")
         dw.mn(registered, "label", mn_a, "--label", "Home node")
         overview = dw.mn(registered, "list")
         assert len(overview["masternodes"]) == 4, "C is listed once though tracked and owned"
         s, c, a = (self.row(overview, h) for h in (static.proTxHash, mn_c, mn_a))
         assert_equal((s["status"], s["mine"], s["tracked"], s["label"], s["type_index"]),
                      ("enabled", False, True, "Static", 0))
-        assert_equal(roles(s), set())
-        assert_equal((c["tracked"], sorted(c["roles"]["attached"])), (True, ["owner", "voting"]))
+        assert_equal((roles(s), s["roles"]["attached"]), ({"owner"}, ["owner"]))
+        assert_equal((c["tracked"], sorted(c["roles"]["attached"])), (True, ["owner", "payout", "voting"]))
         assert_equal(roles(c), {"owner", "voting", "payout"})
         assert_equal(a["label"], "Home node")
-        assert_equal(dw.mn(registered, "untrack", mn_c), {"keys_deleted": 2})
-        assert_equal(dw.mn(registered, "untrack", static.proTxHash), {"keys_deleted": 0})
+        assert_equal(dw.mn(registered, "untrack", mn_c), {"keys_deleted": 3})
+        assert_equal(dw.mn(registered, "untrack", static.proTxHash), {"keys_deleted": 1})
         dw.mn(registered, "untrack", mn_c, error="masternodes.not_tracked")
+        # the keys are gone: tracked again, C has none attached
+        dw.mn(registered, "track", mn_c)
+        assert_equal(self.row(dw.mn(registered, "list"), mn_c)["roles"]["attached"], [])
+        assert_equal(dw.mn(registered, "untrack", mn_c), {"keys_deleted": 0})
 
         self.log.info("4. Payouts equal Core's coinbase payments")
         for _ in range(60):
