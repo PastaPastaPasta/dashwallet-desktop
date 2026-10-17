@@ -396,7 +396,7 @@ async fn test_qt_128_objects_from_every_peer_then_votes() {
     assert!(p.bytes_received > 0);
     assert!(hx.shared.store().object(&h).is_some());
     // Both peers were full-synced; the one proposal's votes were asked of
-    // one of them.
+    // both, as Core asks up to three peers (D56).
     let mut full = 0;
     let mut votes = 0;
     for rx in &mut hx.seen {
@@ -408,7 +408,7 @@ async fn test_qt_128_objects_from_every_peer_then_votes() {
             }
         }
     }
-    assert_eq!((full, votes), (2, 1));
+    assert_eq!((full, votes), (2, 2));
     hx.stop.send(true).unwrap();
     assert_eq!(hx.task.await.unwrap(), Ok(()));
 }
@@ -647,8 +647,9 @@ async fn a_peer_closing_after_its_vote_count_is_replaced() {
         ..Node::default()
     };
     // The first peer is asked for the proposal's votes, counts them and
-    // closes before its invs: the second one is asked instead.
-    let hx = start(vec![closing, good], |_| {}).await;
+    // closes before its invs: the second one is asked instead (one peer per
+    // proposal, so only the replacement asks it).
+    let hx = start(vec![closing, good], |c| c.vote_peers_per_proposal = 1).await;
     let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
     assert_eq!((p.votes, p.peers), (2, 1));
     hx.stop.send(true).unwrap();
@@ -671,8 +672,9 @@ async fn a_peer_closing_after_its_vote_invs_is_replaced() {
         ..Node::default()
     };
     // The first peer completes its counts, then closes on the `getdata`:
-    // its votes have no other announcer, so the sync goes to the second.
-    let hx = start(vec![closing, good], |_| {}).await;
+    // its votes have no other announcer, so the sync goes to the second
+    // (one peer per proposal, so only the replacement asks it).
+    let hx = start(vec![closing, good], |c| c.vote_peers_per_proposal = 1).await;
     let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
     assert_eq!((p.votes, p.peers), (2, 1));
     hx.stop.send(true).unwrap();
@@ -877,7 +879,8 @@ async fn objects_one_peer_announced_are_confirmed_by_the_others() {
         ..Node::default()
     };
     // The second peer was full-synced within the window: it is only asked
-    // about the object one peer announced, and confirms it.
+    // about the object one peer announced, and confirms it, then for its
+    // votes (D56).
     let mut hx = start_with(
         vec![node.clone(), node],
         |_| {},
@@ -893,7 +896,7 @@ async fn objects_one_peer_announced_are_confirmed_by_the_others() {
         asked.push(s);
     }
     assert!(
-        matches!(&asked[..], [Seen::Govsync(x)] if *x == obj.hash()),
+        matches!(&asked[..], [Seen::Govsync(x), Seen::Govsync(y)] if *x == obj.hash() && *y == obj.hash()),
         "{asked:?}"
     );
     hx.stop.send(true).unwrap();
@@ -1591,4 +1594,322 @@ async fn parent_fetches_are_charged_to_the_sender_and_asked_once() {
     }
     assert_eq!(asked, HashMap::from([(gone[0], 1), (gone[1], 1)]));
     hx.stop.send(true).unwrap();
+}
+
+/// Announces `junk` invented vote hashes and then `h` as `h_kind` before
+/// any `govsync`, answers its syncs with nothing, and never answers a
+/// `getdata` (validator r5).
+async fn withholding_peer(mock: MockPeer, junk: u32, h: [u8; 32], h_kind: u32) {
+    let mut conn = mock.accept().await.unwrap();
+    let mut items: Vec<InvItem> = (0..junk)
+        .map(|i| {
+            let mut hash = [0xab; 32];
+            hash[..4].copy_from_slice(&i.to_le_bytes());
+            InvItem {
+                kind: INV_GOVERNANCE_VOTE,
+                hash,
+            }
+        })
+        .collect();
+    items.push(InvItem {
+        kind: h_kind,
+        hash: h,
+    });
+    conn.send("inv", &encode_inv(&items)).await.unwrap();
+    while let Ok(msg) = conn.recv().await {
+        match msg.command.as_str() {
+            commands::MNGOVERNANCESYNC if msg.payload[..32] == [0; 32] => {
+                send_status(&mut conn, SSC_GOVOBJ, 0).await;
+            }
+            commands::MNGOVERNANCESYNC if msg.payload[32..] != object_fetch_filter()[..] => {
+                send_status(&mut conn, SSC_GOVOBJ_VOTE, 0).await;
+            }
+            "ping" => {
+                let _ = conn.send("pong", &msg.payload).await;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Two honest nodes hold `h` and `g` (one vote on `g`); the withholding
+/// peer announces `h` as `h_kind` first.
+async fn withheld_run(
+    junk: u32,
+    h_kind: u32,
+    tune: impl FnOnce(&mut SyncConfig),
+) -> (Arc<Shared>, Progress, watch::Sender<bool>, [u8; 32]) {
+    let (h, g) = (proposal("h-two-honest-announcers"), proposal("g-control"));
+    let honest = Node {
+        objects: vec![h.clone(), g.clone()],
+        votes: vec![vote(g.hash(), 1, VoteOutcome::Yes)],
+        object_delay: Some(Duration::from_millis(300)),
+        ..Node::default()
+    };
+    let held = h.hash();
+    let (shared, p, stop) = start_custom(
+        vec![custom(move |mock| {
+            withholding_peer(mock, junk, held, h_kind)
+        })],
+        vec![honest.clone(), honest],
+        tune,
+        |shared| {
+            shared.store().set_masternode_list(&[ListEntry {
+                voting_key_id: key_id(1),
+                weight: Some(1),
+                valid: true,
+            }]);
+        },
+    )
+    .await;
+    assert!(shared.store().object(&g.hash()).is_some(), "control {p:?}");
+    (shared, p, stop, held)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_vote_announcement_of_an_objects_hash_does_not_hide_it() {
+    // Validator r5 MJ1: announced as a vote first, the hash was asked only
+    // as a vote and the honest object announcements waited behind it.
+    let (shared, p, stop, h) = withheld_run(0, INV_GOVERNANCE_VOTE, |_| {}).await;
+    let shown = shared.store().object(&h).is_some();
+    let _ = stop.send(true);
+    assert_eq!(p.phase, Phase::Synced, "{p:?}");
+    assert!(shown, "Synced without the honest proposal: {p:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_queued_behind_full_slots_moves_to_another_announcer() {
+    // Validator r5 MJ2: a queued request never timed out, so one peer
+    // holding its slots failed every run. Its 20 junk requests hold its one
+    // slot for 20 s of timeouts, past the idle timeout, unless `h` moves.
+    let (shared, p, stop, h) = withheld_run(20, INV_GOVERNANCE_OBJECT, |c| {
+        c.max_in_flight = 1;
+        c.request_timeout = Duration::from_millis(500);
+        c.idle_timeout = Duration::from_secs(5);
+    })
+    .await;
+    let shown = shared.store().object(&h).is_some();
+    let _ = stop.send(true);
+    assert_eq!(p.phase, Phase::Synced, "{p:?}");
+    assert!(shown, "{p:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_peer_cannot_withhold_a_proposals_votes() {
+    // Validator r5 m3: the one peer asked for a proposal's votes answered
+    // `ssc(11, 0)`.
+    let (_shared, p, stop, _h) = withheld_run(0, INV_GOVERNANCE_VOTE, |_| {}).await;
+    let _ = stop.send(true);
+    assert_eq!((p.phase, p.votes), (Phase::Synced, 1), "{p:?}");
+}
+
+/// Answers its full sync with `h` and closes right after.
+async fn announce_and_close(mock: MockPeer, h: [u8; 32]) {
+    let mut conn = mock.accept().await.unwrap();
+    while let Ok(msg) = conn.recv().await {
+        if msg.command == commands::MNGOVERNANCESYNC && msg.payload[..32] == [0; 32] {
+            // After the junk peer's announcements.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            send_status(&mut conn, SSC_GOVOBJ, 1).await;
+            let item = InvItem {
+                kind: INV_GOVERNANCE_OBJECT,
+                hash: h,
+            };
+            conn.send("inv", &encode_inv(&[item])).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            conn.shutdown().await;
+            return;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_announcer_that_closes_still_confirms_the_object() {
+    // Validator r5 m1: with the late-copy record full, a closed
+    // announcer was forgotten and the object arrived unconfirmed.
+    let h = proposal("h");
+    let honest = Node {
+        objects: vec![h.clone()],
+        object_delay: Some(Duration::from_millis(800)),
+        ..Node::default()
+    };
+    let hh = h.hash();
+    let (shared, p, stop) = start_custom(
+        vec![
+            custom(|mock| junk_filler(mock, 50)),
+            custom(move |mock| announce_and_close(mock, hh)),
+        ],
+        vec![honest],
+        |c| c.max_late_announcers = 50,
+        |_| {},
+    )
+    .await;
+    let shown = shared.store().object(&h.hash()).is_some();
+    let _ = stop.send(true);
+    assert_eq!(p.phase, Phase::Synced, "{p:?}");
+    assert!(shown, "two honest peers announced it: {p:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delivery_asks_for_the_items_queued_behind_it() {
+    // Validator r5 MJ2 on an honest network: more items than the in-flight
+    // limit, and a freed slot did not send the next.
+    let obj = proposal("a");
+    let h = obj.hash();
+    let node = Node {
+        objects: vec![obj],
+        votes: vec![vote(h, 1, VoteOutcome::Yes), vote(h, 2, VoteOutcome::No)],
+        ..Node::default()
+    };
+    let hx = start(vec![node.clone(), node], |c| c.max_in_flight = 1).await;
+    let p = wait_for(&hx.shared, |p| {
+        matches!(p.phase, Phase::Synced | Phase::Failed)
+    })
+    .await;
+    let _ = hx.stop.send(true);
+    assert_eq!((p.phase, p.votes), (Phase::Synced, 2), "{p:?}");
+}
+
+/// A proposal that decodes but fails validation (a bad address): refused
+/// without penalty (D35).
+fn bad_proposal(i: u32) -> GovernanceObject {
+    let data = format!(
+        r#"{{"end_epoch":{},"name":"bad{i}","payment_address":"nope","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}}"#,
+        unix_now() + 10_000
+    );
+    GovernanceObject::new_proposal(1, unix_now(), data.into_bytes())
+}
+
+/// Announces `h` as `h_kind`, never answers that `getdata`, and keeps
+/// delivering: every 200 ms it announces and sends a fresh invalid object
+/// (refused without penalty, but a delivery).
+async fn keepalive_peer(mock: MockPeer, h: [u8; 32], h_kind: u32) {
+    let mut conn = mock.accept().await.unwrap();
+    let item = InvItem {
+        kind: h_kind,
+        hash: h,
+    };
+    conn.send("inv", &encode_inv(&[item])).await.unwrap();
+    let mut n = 0u32;
+    let mut tick = tokio::time::interval(Duration::from_millis(200));
+    loop {
+        tokio::select! {
+            m = conn.recv() => {
+                let Ok(msg) = m else { return };
+                match msg.command.as_str() {
+                    commands::MNGOVERNANCESYNC if msg.payload[..32] == [0; 32] => {
+                        send_status(&mut conn, SSC_GOVOBJ, 0).await;
+                    }
+                    commands::MNGOVERNANCESYNC if msg.payload[32..] != object_fetch_filter()[..] => {
+                        send_status(&mut conn, SSC_GOVOBJ_VOTE, 0).await;
+                    }
+                    "ping" => {
+                        let _ = conn.send("pong", &msg.payload).await;
+                    }
+                    "getdata" => {
+                        for i in decode_inv(&msg.payload).unwrap() {
+                            for k in n.saturating_sub(5)..n {
+                                let b = bad_proposal(k);
+                                if b.hash() == i.hash {
+                                    let _ = conn.send(commands::MNGOVERNANCEOBJECT, &b.encode()).await;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ = tick.tick() => {
+                let b = bad_proposal(n);
+                n += 1;
+                let item = InvItem { kind: INV_GOVERNANCE_OBJECT, hash: b.hash() };
+                let _ = conn.send("inv", &encode_inv(&[item])).await;
+            }
+        }
+    }
+}
+
+async fn keepalive_run(h_kind: u32) {
+    let (h, g) = (proposal("h-two-honest-announcers"), proposal("g-control"));
+    let honest = Node {
+        objects: vec![h.clone(), g.clone()],
+        object_delay: Some(Duration::from_millis(300)),
+        ..Node::default()
+    };
+    let held = h.hash();
+    let (shared, p, stop) = start_custom(
+        vec![custom(move |mock| keepalive_peer(mock, held, h_kind))],
+        vec![honest.clone(), honest],
+        |c| {
+            c.request_timeout = Duration::from_millis(500);
+            c.max_request_age = Duration::from_secs(2);
+        },
+        |_| {},
+    )
+    .await;
+    let shown = shared.store().object(&held).is_some();
+    let _ = stop.send(true);
+    assert_eq!(p.phase, Phase::Synced, "{p:?}");
+    assert!(shared.store().object(&g.hash()).is_some(), "control {p:?}");
+    assert!(shown, "{p:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peer_that_keeps_delivering_cannot_hold_a_request() {
+    // Validator r5 MJ1: deliveries of anything restarted the timeout of
+    // every request of the peer, so it held `h` for good.
+    keepalive_run(INV_GOVERNANCE_OBJECT).await;
+    keepalive_run(INV_GOVERNANCE_VOTE).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peers_queue_holds_no_more_than_it_may_have_queued() {
+    // Validator r5 MJ3: inv + notfound pairs for a hash queued behind a
+    // held slot each left a queue entry.
+    let mock = MockPeer::bind(Network::Regtest).await.unwrap();
+    let addr = mock.addr();
+    tokio::spawn(async move {
+        let mut conn = mock.accept().await.unwrap();
+        while conn.recv().await.is_ok() {}
+    });
+    let (tx, _rx) = mpsc::channel(EVENTS_QUEUE);
+    let mut cfg = SyncConfig::new(PeerConfig::new(Network::Regtest, "/t/", 1));
+    cfg.max_in_flight = 1;
+    let peer = Peer::connect(0, addr, &cfg.peer, tx).await.unwrap();
+    let shared = Arc::new(Shared::new(Network::Regtest, Box::new(|| {})));
+    let mut run = Run {
+        shared,
+        cfg,
+        history: Arc::new(Mutex::new(SyncHistory::default())),
+        peers: vec![PeerState::new(peer)],
+        requests: Requests::default(),
+        base_bytes: 0,
+        votes_open: false,
+        announce_open: false,
+        unassigned: Vec::new(),
+        lost: 0,
+        full_syncs_done: 0,
+        vote_parents: HashMap::new(),
+        last_progress: Instant::now(),
+    };
+    let held = InvItem {
+        kind: INV_GOVERNANCE_OBJECT,
+        hash: [0x11; 32],
+    };
+    run.on_inv(0, vec![held]);
+    let x = InvItem {
+        kind: INV_GOVERNANCE_OBJECT,
+        hash: [0x22; 32],
+    };
+    for _ in 0..10_000 {
+        run.on_inv(0, vec![x]);
+        run.on_not_found(0, vec![x]);
+    }
+    let p = &run.peers[0];
+    assert!(
+        p.queue.len() < 100,
+        "queue {} entries, announced {}",
+        p.queue.len(),
+        p.announced
+    );
 }

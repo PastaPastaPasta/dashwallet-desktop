@@ -219,8 +219,12 @@ pub struct SyncConfig {
     /// Most items asked of one peer at a time.
     pub max_in_flight: usize,
     /// A request moves on when its peer delivered nothing for this long
-    /// (D12).
+    /// (D12), or, queued behind the peer's full slots, when another
+    /// announcer can be asked (D55).
     pub request_timeout: Duration,
+    /// A request moves on this long after it was sent, however much else
+    /// its peer delivers (D55).
+    pub max_request_age: Duration,
     /// A peer asked to sync that sends no `ssc` for this long is closed.
     pub answer_timeout: Duration,
     /// Unsolicited, undecodable or invalid items before a peer is closed
@@ -237,6 +241,9 @@ pub struct SyncConfig {
     /// Hashes whose announcers are kept for a late copy; once full, no new
     /// ones (D53).
     pub max_late_announcers: usize,
+    /// Peers asked for one proposal's votes (Core
+    /// `REALNET_PEERS_PER_HASH`, D56).
+    pub vote_peers_per_proposal: usize,
     /// Core's fulfilled-request window for `govsync`.
     pub repeat_window: Duration,
 }
@@ -255,12 +262,14 @@ impl SyncConfig {
             getdata_batch: 1000,
             max_in_flight: 5000,
             request_timeout: Duration::from_secs(30),
+            max_request_age: Duration::from_secs(120),
             answer_timeout: Duration::from_secs(60),
             max_misbehaviour: 1000,
             max_suspect: 10_000,
             max_announcements: 100_000,
             max_parent_fetches: 100,
             max_late_announcers: MAX_LATE,
+            vote_peers_per_proposal: 3,
             repeat_window,
         }
     }
@@ -340,7 +349,7 @@ struct PeerState {
     /// When it last delivered an item.
     last_delivery: Instant,
     /// Hashes assigned to it, not asked yet ([`SyncConfig::max_in_flight`]).
-    queue: VecDeque<[u8; 32]>,
+    queue: VecDeque<Item>,
     in_flight: usize,
     /// Parents its orphan votes had the wallet ask for: its budget.
     parent_fetches: HashSet<[u8; 32]>,
@@ -426,7 +435,8 @@ impl PeerState {
 
 struct Pending {
     peer: usize,
-    kind: u32,
+    /// When it was queued at `peer`.
+    queued: Instant,
     /// When the `getdata` went out; `None` while queued.
     sent: Option<Instant>,
     /// Asked of the same peer again after a timeout.
@@ -437,20 +447,18 @@ struct Pending {
     asked: Vec<usize>,
 }
 
-/// Who announced a hash not fetched yet.
+/// An inventory item, hash and kind: requests are keyed by both, as
+/// Core's `CInv` is, so announcing a hash as the other kind asks for that
+/// besides (D54).
+type Item = ([u8; 32], u32);
+
+/// Who announced an item not fetched yet.
 #[derive(Default)]
 struct Announced {
-    /// The kind it is asked as: the first announcement's.
-    kind: u32,
     /// Not asked yet, in order: who to ask next.
     untried: Vec<usize>,
     /// Every peer whose announcement counts against its limit.
     all: Vec<usize>,
-    /// Peers that announced it as the other kind, asked as that once
-    /// every announcer of `kind` failed (D54), and whether one of them
-    /// did so in its phase.
-    other: Vec<usize>,
-    other_phase: bool,
 }
 
 /// A request given up on: its peers may still deliver.
@@ -469,15 +477,15 @@ struct Taken {
 /// Requests in flight and who announced what.
 #[derive(Default)]
 struct Requests {
-    pending: HashMap<[u8; 32], Pending>,
-    announced: HashMap<[u8; 32], Announced>,
+    pending: HashMap<Item, Pending>,
+    announced: HashMap<Item, Announced>,
     /// Every peer that announced an object not stored yet, tried or not:
     /// they count towards its confirmation once it arrives (D3).
     object_announcers: HashMap<[u8; 32], Vec<SocketAddr>>,
-    late: HashMap<[u8; 32], Late>,
+    late: HashMap<Item, Late>,
 }
 
-/// The inv kind a hash announced as `kind` would otherwise be.
+/// The other governance inv kind.
 fn other_kind(kind: u32) -> u32 {
     if kind == INV_GOVERNANCE_OBJECT {
         INV_GOVERNANCE_VOTE
@@ -622,21 +630,34 @@ impl Run {
         }
     }
 
-    /// Assigns `hash` to peer `id` and queues it there.
-    fn assign(&mut self, hash: [u8; 32], kind: u32, id: usize, phase: bool, asked: Vec<usize>) {
+    /// Assigns `item` to peer `id` and queues it there.
+    fn assign(&mut self, item: Item, id: usize, phase: bool, asked: Vec<usize>) {
         self.requests.pending.insert(
-            hash,
+            item,
             Pending {
                 peer: id,
-                kind,
+                queued: Instant::now(),
                 sent: None,
                 asked_again: false,
                 phase,
                 asked,
             },
         );
-        if let Some(p) = self.peer_mut(id) {
-            p.queue.push_back(hash);
+        let pending = &self.requests.pending;
+        let Some(p) = self.peers.iter_mut().find(|p| p.peer.id == id) else {
+            return;
+        };
+        p.queue.push_back(item);
+        // Entries of requests ended while queued stay until popped: past
+        // twice what the peer may have queued, they go (D55).
+        if p.queue.len() > 2 * p.announced + 64 {
+            let mut seen = HashSet::new();
+            p.queue.retain(|i| {
+                pending
+                    .get(i)
+                    .is_some_and(|r| r.peer == id && r.sent.is_none())
+                    && seen.insert(*i)
+            });
         }
     }
 
@@ -650,17 +671,16 @@ impl Run {
         let mut items = Vec::new();
         let p = &mut self.peers[pos];
         while p.in_flight < max {
-            let Some(h) = p.queue.pop_front() else { break };
-            if let Some(r) = self.requests.pending.get_mut(&h)
+            let Some((hash, kind)) = p.queue.pop_front() else {
+                break;
+            };
+            if let Some(r) = self.requests.pending.get_mut(&(hash, kind))
                 && r.peer == id
                 && r.sent.is_none()
             {
                 r.sent = Some(now);
                 p.in_flight += 1;
-                items.push(InvItem {
-                    kind: r.kind,
-                    hash: h,
-                });
+                items.push(InvItem { kind, hash });
             }
         }
         for chunk in items.chunks(batch) {
@@ -668,21 +688,23 @@ impl Run {
         }
     }
 
-    /// Removes the request for `hash`, freeing its peer's slot.
-    fn release(&mut self, hash: &[u8; 32]) -> Option<Pending> {
-        let r = self.requests.pending.remove(hash)?;
+    /// Removes the request for `item`, freeing its peer's slot for the
+    /// next queued one (D55).
+    fn release(&mut self, item: &Item) -> Option<Pending> {
+        let r = self.requests.pending.remove(item)?;
         if r.sent.is_some()
             && let Some(p) = self.peer_mut(r.peer)
         {
             p.in_flight = p.in_flight.saturating_sub(1);
+            self.pump(r.peer);
         }
         Some(r)
     }
 
-    /// Done with `hash`: its announcements stop counting against their
+    /// Done with `item`: its announcements stop counting against their
     /// peers' limits.
-    fn finish(&mut self, hash: &[u8; 32]) {
-        let Some(a) = self.requests.announced.remove(hash) else {
+    fn finish(&mut self, item: &Item) {
+        let Some(a) = self.requests.announced.remove(item) else {
             return;
         };
         for id in a.all {
@@ -692,26 +714,26 @@ impl Run {
         }
     }
 
-    /// Accepts the item `hash` from `from` if it was asked of `from` now or
-    /// before; counts misbehaviour otherwise.
-    fn take(&mut self, from: usize, hash: &[u8; 32]) -> Option<Taken> {
-        if let Some(r) = self.requests.pending.get(hash)
+    /// Accepts `item` from `from` if it was asked of `from` now or before;
+    /// counts misbehaviour otherwise.
+    fn take(&mut self, from: usize, item: &Item) -> Option<Taken> {
+        if let Some(r) = self.requests.pending.get(item)
             && (r.peer == from || r.asked.contains(&from))
         {
-            let r = self.release(hash).expect("looked up");
+            let r = self.release(item).expect("looked up");
             if let Some(p) = self.peer_mut(from) {
                 p.last_delivery = Instant::now();
             }
             if r.peer != from || r.asked_again {
                 // The peer asked now (or asked twice) may still deliver.
-                self.remember_late(*hash, vec![r.peer], false);
+                self.remember_late(*item, vec![r.peer], false);
             }
             return Some(Taken {
                 phase: r.phase,
                 asked: r.asked,
             });
         }
-        if let Some(l) = self.requests.late.get_mut(hash)
+        if let Some(l) = self.requests.late.get_mut(item)
             && l.asked.contains(&from)
         {
             // Kept: a request asked twice may be answered twice.
@@ -732,11 +754,11 @@ impl Run {
         None
     }
 
-    fn remember_late(&mut self, hash: [u8; 32], asked: Vec<usize>, lost: bool) {
+    fn remember_late(&mut self, item: Item, asked: Vec<usize>, lost: bool) {
         if self.requests.late.len() >= MAX_LATE {
             self.requests.late.retain(|_, l| l.lost);
         }
-        if let Some(old) = self.requests.late.insert(hash, Late { asked, lost })
+        if let Some(old) = self.requests.late.insert(item, Late { asked, lost })
             && old.lost
         {
             self.lost -= 1;
@@ -749,47 +771,28 @@ impl Run {
     /// Asks the next peer that announced `hash` and was not asked; with
     /// none, gives up on it (failing the phase if `phase` and `count`) and
     /// returns `true`.
-    fn retry(&mut self, hash: [u8; 32], kind: u32, tried: usize, t: Taken, count: bool) -> bool {
+    fn retry(&mut self, item: Item, tried: usize, t: Taken, count: bool) -> bool {
         let mut asked = t.asked;
         if !asked.contains(&tried) {
             asked.push(tried);
         }
         let live: Vec<usize> = self.peers.iter().map(|p| p.peer.id).collect();
-        let next = self.requests.announced.get_mut(&hash).and_then(|a| {
+        let next = self.requests.announced.get_mut(&item).and_then(|a| {
             a.untried.retain(|p| !asked.contains(p) && live.contains(p));
             a.untried.first().copied()
         });
-        // Every announcer of this kind failed: ask those that announced
-        // the other kind (D54).
-        let switch = next
-            .is_none()
-            .then(|| {
-                let a = self.requests.announced.get_mut(&hash)?;
-                a.other.retain(|p| live.contains(p));
-                if a.other.is_empty() {
-                    return None;
-                }
-                a.kind = other_kind(a.kind);
-                a.untried = std::mem::take(&mut a.other);
-                Some((a.untried[0], a.kind, std::mem::take(&mut a.other_phase)))
-            })
-            .flatten();
-        if let Some((next, kind, phase)) = switch {
-            self.assign(hash, kind, next, t.phase || phase, Vec::new());
-            self.pump(next);
-            return false;
-        }
         match next {
             Some(next) => {
-                self.assign(hash, kind, next, t.phase, asked);
+                self.assign(item, next, t.phase, asked);
                 self.pump(next);
                 false
             }
             None => {
                 // Who announced an object still counts if another peer
                 // delivers it later.
-                self.remember_late(hash, asked, t.phase && count);
-                self.finish(&hash);
+                self.remember_late(item, asked, t.phase && count);
+                self.finish(&item);
+                let (hash, kind) = item;
                 if kind == INV_GOVERNANCE_VOTE {
                     for p in &mut self.peers {
                         if p.unresolved.remove(&hash) {
@@ -804,8 +807,8 @@ impl Run {
 
     /// An item the wallet refused: another announcer's copy may be
     /// accepted, but a refusal never fails the phase (D35).
-    fn refused(&mut self, hash: [u8; 32], kind: u32, from: usize, taken: Taken) -> bool {
-        self.retry(hash, kind, from, taken, false)
+    fn refused(&mut self, item: Item, from: usize, taken: Taken) -> bool {
+        self.retry(item, from, taken, false)
     }
 
     fn on_inv(&mut self, from: usize, items: Vec<InvItem>) {
@@ -870,35 +873,17 @@ impl Run {
                         by_hash.insert(i.hash, vec![addr]);
                     }
                 }
-                let kind = self
-                    .requests
-                    .pending
-                    .get(&i.hash)
-                    .map_or(i.kind, |r| r.kind);
-                let a = self
-                    .requests
-                    .announced
-                    .entry(i.hash)
-                    .or_insert_with(|| Announced {
-                        kind,
-                        ..Announced::default()
-                    });
+                let item = (i.hash, i.kind);
+                let a = self.requests.announced.entry(item).or_default();
                 if a.all.contains(&from) {
                     continue;
                 }
                 a.all.push(from);
+                a.untried.push(from);
                 state.announced += 1;
                 let phase = if object { objects_phase } else { votes_phase };
-                // A hash is an object's or a vote's, never both: the other
-                // kind waits until this one failed (D54).
-                if a.kind != i.kind {
-                    a.other.push(from);
-                    a.other_phase |= phase;
-                    continue;
-                }
-                a.untried.push(from);
-                match self.requests.pending.entry(i.hash) {
-                    Entry::Vacant(_) => wanted.push((i, phase)),
+                match self.requests.pending.entry(item) {
+                    Entry::Vacant(_) => wanted.push((item, phase)),
                     Entry::Occupied(mut e) => e.get_mut().phase |= phase,
                 }
             }
@@ -907,8 +892,8 @@ impl Run {
         if wanted.iter().any(|(_, phase)| *phase) || !confirmed.is_empty() {
             self.progressed();
         }
-        for (i, phase) in wanted {
-            self.assign(i.hash, i.kind, from, phase, Vec::new());
+        for (item, phase) in wanted {
+            self.assign(item, from, phase, Vec::new());
         }
         self.pump(from);
         if !confirmed.is_empty() {
@@ -926,7 +911,8 @@ impl Run {
             return;
         };
         let hash = object.hash();
-        let Some(taken) = self.take(from, &hash) else {
+        let item = (hash, INV_GOVERNANCE_OBJECT);
+        let Some(taken) = self.take(from, &item) else {
             return;
         };
         let addr = self.peer(from).map(|p| p.peer.addr);
@@ -937,7 +923,7 @@ impl Run {
             let mut also: Vec<SocketAddr> = self
                 .requests
                 .announced
-                .get(&hash)
+                .get(&item)
                 .map(|a| {
                     a.all
                         .iter()
@@ -962,7 +948,7 @@ impl Run {
         };
         match result {
             Ok(current) => {
-                self.finish(&hash);
+                self.finish(&item);
                 self.progressed();
                 self.changed();
                 if self.votes_open && current {
@@ -973,19 +959,19 @@ impl Run {
             // another announcer's copy may be the genuine one (D42).
             Err(ObjectRejection::WireTypeMismatch) => {
                 self.misbehaved(from, "mistyped governance object");
-                self.refused(hash, INV_GOVERNANCE_OBJECT, from, taken);
+                self.refused(item, from, taken);
             }
             // Core relays only objects it accepted, so an honest peer may
             // send one the wallet is stricter about: no penalty (D35).
             Err(e) if e.is_invalid() => {
                 tracing::debug!(?e, "governance object refused");
-                if self.refused(hash, INV_GOVERNANCE_OBJECT, from, taken) {
+                if self.refused(item, from, taken) {
                     self.shared.store().refuse_object(hash);
                 }
             }
             Err(e) => {
                 tracing::debug!(?e, "governance object not kept");
-                self.finish(&hash);
+                self.finish(&item);
                 // A bound refused it: its announcers still count, so a
                 // later announcement can confirm it on arrival (D47).
                 if e != ObjectRejection::StoreFull {
@@ -1016,7 +1002,8 @@ impl Run {
             return;
         };
         let hash = vote.hash();
-        let Some(taken) = self.take(from, &hash) else {
+        let item = (hash, INV_GOVERNANCE_VOTE);
+        let Some(taken) = self.take(from, &item) else {
             return;
         };
         self.credit_relays(hash, vote.parent_hash);
@@ -1028,11 +1015,11 @@ impl Run {
             Ok(o) => o,
             Err(r) if r.is_invalid() => {
                 self.misbehaved(from, "invalid vote");
-                self.refused(hash, INV_GOVERNANCE_VOTE, from, taken);
+                self.refused(item, from, taken);
                 return;
             }
             Err(_) => {
-                self.finish(&hash);
+                self.finish(&item);
                 self.progressed();
                 return;
             }
@@ -1042,7 +1029,7 @@ impl Run {
             Ok(c) => c,
             Err(_) => {
                 self.misbehaved(from, "vote signature recovers no key");
-                self.refused(hash, INV_GOVERNANCE_VOTE, from, taken);
+                self.refused(item, from, taken);
                 return;
             }
         };
@@ -1051,12 +1038,12 @@ impl Run {
         let result = self.shared.store().add_checked(checked, addr, now);
         match result {
             Ok(()) => {
-                self.finish(&hash);
+                self.finish(&item);
                 self.progressed();
                 self.changed();
             }
             Err(VoteRejection::Orphan) => {
-                self.finish(&hash);
+                self.finish(&item);
                 self.progressed();
                 self.fetch_parent(from, parent);
             }
@@ -1066,10 +1053,10 @@ impl Run {
                 } else {
                     self.misbehaved(from, "invalid vote");
                 }
-                self.refused(hash, INV_GOVERNANCE_VOTE, from, taken);
+                self.refused(item, from, taken);
             }
             Err(_) => {
-                self.finish(&hash);
+                self.finish(&item);
                 self.progressed();
             }
         }
@@ -1081,8 +1068,11 @@ impl Run {
     /// sender pays: [`SyncConfig::max_parent_fetches`] parents per sender
     /// (D52).
     fn fetch_parent(&mut self, from: usize, parent: [u8; 32]) {
-        let known =
-            self.shared.store().has_object(&parent) || self.requests.pending.contains_key(&parent);
+        let known = self.shared.store().has_object(&parent)
+            || self
+                .requests
+                .pending
+                .contains_key(&(parent, INV_GOVERNANCE_OBJECT));
         let max = self.cfg.max_parent_fetches;
         let Some(sender) = self.peer_mut(from) else {
             return;
@@ -1099,28 +1089,31 @@ impl Run {
 
     fn on_not_found(&mut self, from: usize, items: Vec<InvItem>) {
         for i in items {
-            let Some(kind) = self
-                .requests
-                .pending
-                .get(&i.hash)
-                .filter(|r| r.peer == from)
-                .map(|r| r.kind)
-            else {
-                continue;
+            let asked = |item: &Item, run: &Self| {
+                run.requests
+                    .pending
+                    .get(item)
+                    .is_some_and(|r| r.peer == from)
             };
-            // The kind is the peer's word: only the request's own is retried
-            // (D50).
-            if i.kind != kind {
+            let mut item = (i.hash, i.kind);
+            if !asked(&item, self) {
+                // Naming a request of the other kind ends it all the same,
+                // as misbehaviour, and the request moves on with its own
+                // kind (D50).
+                item.1 = other_kind(i.kind);
+                if !asked(&item, self) {
+                    continue;
+                }
                 self.misbehaved(from, "notfound of another kind");
             }
-            let r = self.release(&i.hash).expect("looked up");
+            let r = self.release(&item).expect("looked up");
             let taken = Taken {
                 phase: r.phase,
                 asked: r.asked,
             };
             // A peer that no longer has an item it announced (a vote
             // dropped with a list change) is not a lost sync item.
-            self.retry(i.hash, kind, from, taken, false);
+            self.retry(item, from, taken, false);
         }
     }
 
@@ -1146,39 +1139,53 @@ impl Run {
             return;
         };
         let gone = self.peers.remove(pos);
-        let pending: Vec<[u8; 32]> = self
+        let pending: Vec<Item> = self
             .requests
             .pending
             .iter()
             .filter(|(_, p)| p.peer == id)
-            .map(|(h, _)| *h)
+            .map(|(i, _)| *i)
             .collect();
         // Its vote syncs go to another peer unless it both announced and
         // delivered every vote: its `ssc` may have come before its invs, and
         // votes it announced but did not send may have no other announcer.
         // Once synced, its pending votes are relays, which other announcers
         // cover; the phase it served is over.
-        let votes_owed = pending
-            .iter()
-            .any(|h| self.requests.pending[h].kind == INV_GOVERNANCE_VOTE);
+        let votes_owed = pending.iter().any(|(_, kind)| *kind == INV_GOVERNANCE_VOTE);
         let reask = if self.announce_open || (gone.votes_done() && !votes_owed) {
             Vec::new()
         } else {
             gone.vote_asked.clone()
         };
-        for h in pending {
-            let r = self.requests.pending.remove(&h).expect("listed");
+        // Its announcements of objects not fetched yet move to the late-copy
+        // record, past its bound: they still count when another peer
+        // delivers (D53), and there are no more of them than the request
+        // records held for it.
+        let Requests {
+            announced,
+            object_announcers,
+            ..
+        } = &mut self.requests;
+        for ((hash, kind), a) in announced.iter_mut() {
+            a.untried.retain(|p| *p != id);
+            let before = a.all.len();
+            a.all.retain(|p| *p != id);
+            if *kind == INV_GOVERNANCE_OBJECT && a.all.len() < before {
+                let by = object_announcers.entry(*hash).or_default();
+                if !by.contains(&gone.peer.addr) {
+                    by.push(gone.peer.addr);
+                }
+            }
+        }
+        for item in pending {
+            let r = self.requests.pending.remove(&item).expect("listed");
             let taken = Taken {
                 phase: r.phase,
                 asked: r.asked,
             };
             // Votes come again from the re-asked syncs; objects it alone
             // announced are not sync items another fresh peer has.
-            self.retry(h, r.kind, id, taken, false);
-        }
-        for a in self.requests.announced.values_mut() {
-            a.untried.retain(|p| *p != id);
-            a.all.retain(|p| *p != id);
+            self.retry(item, id, taken, false);
         }
         self.requests.announced.retain(|_, a| !a.all.is_empty());
         if !reask.is_empty() {
@@ -1217,51 +1224,55 @@ impl Run {
         }
     }
 
-    /// Requests whose peer delivered nothing for the timeout move to the
-    /// next announcer, or are asked again once, or given up; peers past
-    /// their `ssc` deadline are closed; the store is pruned.
+    /// Requests whose peer delivered nothing for the timeout, or sent
+    /// longer ago than the age cap, move to the next announcer, or are
+    /// asked again once, or given up; a request queued for the timeout
+    /// moves when another announcer can be asked (D55); peers past their
+    /// `ssc` deadline are closed; the store is pruned.
     fn expire(&mut self) {
-        let timeout = self.cfg.request_timeout;
+        let (timeout, max_age) = (self.cfg.request_timeout, self.cfg.max_request_age);
         let now = Instant::now();
-        let late: Vec<[u8; 32]> = self
+        let others = |run: &Self, item: &Item, r: &Pending| {
+            run.requests.announced.get(item).is_some_and(|a| {
+                a.untried
+                    .iter()
+                    .any(|p| *p != r.peer && !r.asked.contains(p) && run.peer(*p).is_some())
+            })
+        };
+        let late: Vec<Item> = self
             .requests
             .pending
             .iter()
-            .filter(|(_, r)| {
-                let Some(sent) = r.sent else { return false };
-                let since = self
-                    .peer(r.peer)
-                    .map_or(sent, |p| p.last_delivery.max(sent));
-                now.duration_since(since) >= timeout
+            .filter(|(item, r)| match r.sent {
+                Some(sent) => {
+                    let since = self
+                        .peer(r.peer)
+                        .map_or(sent, |p| p.last_delivery.max(sent));
+                    now.duration_since(since) >= timeout || now.duration_since(sent) >= max_age
+                }
+                None => now.duration_since(r.queued) >= timeout && others(self, item, r),
             })
-            .map(|(h, _)| *h)
+            .map(|(i, _)| *i)
             .collect();
-        for h in late {
-            let (peer, kind, again) = {
-                let r = &self.requests.pending[&h];
-                (r.peer, r.kind, r.asked_again)
-            };
-            let others = self.requests.announced.get(&h).is_some_and(|a| {
-                let asked = &self.requests.pending[&h].asked;
-                a.untried
-                    .iter()
-                    .any(|p| *p != peer && !asked.contains(p) && self.peer(*p).is_some())
-            });
-            if !others && !again {
-                let r = self.requests.pending.get_mut(&h).expect("listed");
+        for item in late {
+            let r = &self.requests.pending[&item];
+            let (peer, again) = (r.peer, r.asked_again);
+            if r.sent.is_some() && !again && !others(self, &item, r) {
+                let r = self.requests.pending.get_mut(&item).expect("listed");
                 r.asked_again = true;
                 r.sent = Some(now);
                 if let Some(p) = self.peer(peer) {
-                    p.peer.send_getdata(&[InvItem { kind, hash: h }]);
+                    let (hash, kind) = item;
+                    p.peer.send_getdata(&[InvItem { kind, hash }]);
                 }
                 continue;
             }
-            let r = self.release(&h).expect("listed");
+            let r = self.release(&item).expect("listed");
             let taken = Taken {
                 phase: r.phase,
                 asked: r.asked,
             };
-            self.retry(h, kind, peer, taken, true);
+            self.retry(item, peer, taken, true);
         }
         for p in &self.peers {
             if p.answer_due.is_some_and(|due| due <= now) {
@@ -1273,8 +1284,10 @@ impl Run {
     }
 
     /// Asks peers for the votes of the current proposals among `hashes`,
-    /// spread over the peers that did not vote-sync each within the window;
-    /// hashes no peer may be asked for are kept in `unassigned`.
+    /// each of up to [`SyncConfig::vote_peers_per_proposal`] connected
+    /// peers that did not vote-sync it within the window, spread over them,
+    /// so no one peer can withhold a proposal's votes (D56); hashes no peer
+    /// may be asked for are kept in `unassigned`.
     fn ask_votes(&mut self, hashes: Vec<[u8; 32]>) {
         let window = self.cfg.repeat_window;
         let timeout = self.cfg.answer_timeout;
@@ -1287,35 +1300,49 @@ impl Run {
                 .collect()
         };
         let filter = empty_vote_filter();
+        let per_proposal = self.cfg.vote_peers_per_proposal.max(1);
         let mut turn = 0usize;
         for hash in hashes {
             let n = self.peers.len();
-            let pick = {
+            let asked = self
+                .peers
+                .iter()
+                .filter(|p| p.vote_asked.contains(&hash))
+                .count();
+            let picks: Vec<usize> = {
                 let h = self.history.lock().unwrap_or_else(|p| p.into_inner());
                 (0..n)
                     .map(|k| (turn + k) % n)
-                    .find(|&i| !h.votes_recently_synced(&self.peers[i].peer.addr, &hash, window))
+                    .filter(|&i| !h.votes_recently_synced(&self.peers[i].peer.addr, &hash, window))
+                    .take(per_proposal.saturating_sub(asked))
+                    .collect()
             };
-            let Some(i) = pick else {
+            if picks.is_empty() && asked == 0 {
                 self.unassigned.push(hash);
-                continue;
-            };
-            turn = i + 1;
-            let addr = self.peers[i].peer.addr;
-            self.history
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .vote_synced
-                .insert((addr, hash), Instant::now());
-            let p = &mut self.peers[i];
-            p.vote_asked.push(hash);
-            let before = p.relayed.len();
-            p.relayed.retain(|_, parent| *parent != hash);
-            *p.vote_announced.entry(hash).or_default() += (before - p.relayed.len()) as i64;
-            p.peer.send_govsync(hash, &filter);
-            if p.answer_due.is_none() {
-                p.rearm_answer(timeout);
             }
+            for i in picks {
+                turn = i + 1;
+                self.ask_votes_of(i, hash, &filter, timeout);
+            }
+        }
+    }
+
+    /// Asks peer `i` for the votes on `hash`.
+    fn ask_votes_of(&mut self, i: usize, hash: [u8; 32], filter: &[u8], timeout: Duration) {
+        let addr = self.peers[i].peer.addr;
+        self.history
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .vote_synced
+            .insert((addr, hash), Instant::now());
+        let p = &mut self.peers[i];
+        p.vote_asked.push(hash);
+        let before = p.relayed.len();
+        p.relayed.retain(|_, parent| *parent != hash);
+        *p.vote_announced.entry(hash).or_default() += (before - p.relayed.len()) as i64;
+        p.peer.send_govsync(hash, filter);
+        if p.answer_due.is_none() {
+            p.rearm_answer(timeout);
         }
     }
 
