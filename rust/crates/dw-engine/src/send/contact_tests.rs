@@ -1869,7 +1869,13 @@ fn an_unstamped_account_is_paid_only_where_rule_5_does_not_apply() {
             }
             let prepared = f.prepare(&f.draft(BOB));
             if mode == "enforcing" {
-                assert_eq!(platform_error(prepared), "platform.context_unavailable");
+                // No latch, so nothing is unverified: the refusal is the
+                // destination's.
+                assert_eq!(
+                    platform_error(prepared),
+                    "platform.context_unavailable",
+                    "rotated {rotated}"
+                );
                 assert!(f.reserved(BOB).is_none(), "rotated {rotated}");
             } else {
                 let p = prepared.unwrap();
@@ -1883,14 +1889,18 @@ fn an_unstamped_account_is_paid_only_where_rule_5_does_not_apply() {
 /// D12 after the reservation, in every setting (D25): a queued
 /// `RegisterExternal` lets the gate pass a stale account (the drain is to
 /// rebuild it), but a drain that leaves it queued derives from the old
-/// account, and the strict re-check refuses that address.
+/// account, and the strict re-check refuses that address. With no stamp
+/// at all (a launch's state, D26) only `Enforce` refuses it there.
 #[test]
 fn a_stale_account_the_drain_leaves_is_not_paid() {
-    for (mode, set) in EVERY_RULE {
+    for ((mode, set), stamp) in EVERY_RULE
+        .into_iter()
+        .flat_map(|r| [(r, Some(77)), (r, None)])
+    {
         let f = fixture(false);
         f.gated(TrustMode::Enforcing, Proof::Verified);
         set(&f);
-        f.bobs_account_built_from(Some(77));
+        f.bobs_account_built_from(stamp);
         // The drain cannot rebuild from it (our identity has no key at the
         // op's index, a fault the library keeps queued for a retry).
         f.queue_for_bob(PendingContactCryptoOp::RegisterExternal {
@@ -1900,23 +1910,29 @@ fn a_stale_account_the_drain_leaves_is_not_paid() {
         });
         let d = f.draft(BOB);
         let reached = Arc::new(AtomicU32::new(0));
-        let refused = f.prepare_held_at(&d, Point::Reserved, || {
+        let prepared = f.prepare_held_at(&d, Point::Reserved, || {
             reached.fetch_add(1, Ordering::SeqCst);
         });
         assert_eq!(
             reached.load(Ordering::SeqCst),
             1,
-            "{mode}: the gate let it through"
+            "{mode} {stamp:?}: the gate let it through"
         );
-        assert_eq!(
-            platform_error(refused),
-            "platform.context_unavailable",
-            "{mode}"
-        );
-        assert!(
-            f.reserved(BOB).is_none(),
-            "{mode}: the old account's address is not kept"
-        );
+        if stamp.is_none() && mode != "enforcing" {
+            let held = f.contact_address(BOB, 0);
+            prepared.unwrap();
+            assert_eq!(f.reserved(BOB), Some(held), "{mode}: paid and kept");
+        } else {
+            assert_eq!(
+                platform_error(prepared),
+                "platform.context_unavailable",
+                "{mode} {stamp:?}"
+            );
+            assert!(
+                f.reserved(BOB).is_none(),
+                "{mode} {stamp:?}: the old account's address is not kept"
+            );
+        }
         let queued = Arc::new(AtomicU32::new(0));
         let count = Arc::clone(&queued);
         f.with_me(move |me| {
@@ -1932,7 +1948,7 @@ fn a_stale_account_the_drain_leaves_is_not_paid() {
         assert_eq!(
             queued.load(Ordering::SeqCst),
             1,
-            "{mode}: the drain left its op queued"
+            "{mode} {stamp:?}: the drain left its op queued"
         );
     }
 }
