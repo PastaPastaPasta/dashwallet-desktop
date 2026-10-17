@@ -47,6 +47,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 
+use dashcore::hashes::{Hash, HashEngine, sha256};
 use dashcore::{Network, OutPoint};
 
 use crate::object::{GovernanceObject, display_hex};
@@ -83,6 +84,9 @@ pub const UNCONFIRMED_TTL_SECS: i64 = 60 * 60;
 pub const VOTE_UPDATE_MIN_SECS: i64 = 60 * 60;
 /// Hashes of ignored votes remembered, oldest forgotten first.
 pub const MAX_IGNORED_VOTES: usize = 100_000;
+/// Copies of votes (hash and signature) recovered and then not kept,
+/// with why, oldest forgotten first (MG-02 D62).
+pub const MAX_DISMISSED_VOTES: usize = 100_000;
 /// Hashes of objects every announcer's copy of was refused, oldest
 /// forgotten first (MG-02 D35).
 pub const MAX_REFUSED_OBJECTS: usize = 10_000;
@@ -274,6 +278,11 @@ pub struct GovernanceStore {
     ignored_order: VecDeque<[u8; 32]>,
     refused: HashMap<[u8; 32], ()>,
     refused_order: VecDeque<[u8; 32]>,
+    /// [`copy_digest`] of a vote recovered and not kept → why: the same
+    /// bytes recover to the same key and get the same answer, so they are
+    /// not recovered again (D62).
+    dismissed: HashMap<[u8; 32], VoteRejection>,
+    dismissed_order: VecDeque<[u8; 32]>,
     orphans: HashMap<[u8; 32], Orphan>,
     /// (arrival, hash) in arrival order; entries whose orphan left or was
     /// re-queued are skipped, and compacted when they pile up.
@@ -304,6 +313,14 @@ pub struct GovernanceStore {
 }
 
 /// Adds `hash` to a bounded map, forgetting the oldest past `max`.
+/// A vote copy's identity: its hash leaves the signature out (D62).
+fn copy_digest(hash: &[u8; 32], signature: &[u8]) -> [u8; 32] {
+    let mut engine = sha256::Hash::engine();
+    engine.input(hash);
+    engine.input(signature);
+    sha256::Hash::from_engine(engine).to_byte_array()
+}
+
 fn remember<V>(
     map: &mut HashMap<[u8; 32], V>,
     order: &mut VecDeque<[u8; 32]>,
@@ -340,6 +357,8 @@ impl GovernanceStore {
             ignored_order: VecDeque::new(),
             refused: HashMap::new(),
             refused_order: VecDeque::new(),
+            dismissed: HashMap::new(),
+            dismissed_order: VecDeque::new(),
             orphans: HashMap::new(),
             orphan_order: VecDeque::new(),
             orphan_slots: HashMap::new(),
@@ -868,6 +887,9 @@ impl GovernanceStore {
     /// `RemoveInvalidVotes`). Dropped votes become unseen, so a newer one
     /// can be fetched again.
     pub fn set_masternode_list(&mut self, entries: &[ListEntry]) {
+        // A key's limit and resolution follow the list (D62).
+        self.dismissed.clear();
+        self.dismissed_order.clear();
         let mut keys: HashMap<[u8; 20], KeyWeights> = HashMap::new();
         let mut valid_keys = HashSet::new();
         let mut valid_weight = 0u32;
@@ -997,6 +1019,9 @@ impl GovernanceStore {
         if self.has_vote(&hash) {
             return Err(VoteRejection::Duplicate);
         }
+        if let Some(r) = self.dismissed.get(&copy_digest(&hash, &vote.signature)) {
+            return Err(*r);
+        }
         if vote.time > now + MAX_TIME_FUTURE_DEVIATION {
             return Err(VoteRejection::TooNew);
         }
@@ -1056,7 +1081,32 @@ impl GovernanceStore {
             }
             return Err(VoteRejection::UnknownVotingKey);
         }
-        self.place(v, from, now, false)
+        let copy = copy_digest(&v.hash, &v.vote.signature);
+        let placed = self.place(v, from, now, false);
+        if let Err(
+            r @ (VoteRejection::Obsolete | VoteRejection::SameTimestamp | VoteRejection::KeyLimit),
+        ) = placed
+        {
+            remember(
+                &mut self.dismissed,
+                &mut self.dismissed_order,
+                MAX_DISMISSED_VOTES,
+                copy,
+                r,
+            );
+        }
+        placed
+    }
+
+    /// Whether a vote on `parent` from `from` would wait for its object
+    /// past the sender's orphan bound: refused before its signature is
+    /// recovered, as Core does not check an orphan's (D62).
+    pub fn orphan_bound_full(&mut self, parent: &[u8; 32], from: SocketAddr, now: i64) -> bool {
+        if self.objects.contains_key(parent) {
+            return false;
+        }
+        self.expire_orphans(now);
+        self.orphans_per_peer.get(&from).copied().unwrap_or(0) >= MAX_ORPHANS_PER_PEER
     }
 
     /// Keeps a vote whose key the list may not hold yet: peers announce a
@@ -2071,6 +2121,51 @@ mod tests {
         let mut p = [0u8; 32];
         p[..4].copy_from_slice(&i.to_le_bytes());
         p
+    }
+
+    #[test]
+    fn a_copy_not_kept_is_remembered_until_the_list_changes() {
+        // D62: the verdict on a recovered copy is kept by (hash,
+        // signature), so the same bytes are not recovered again; another
+        // signature on the same hash is checked afresh.
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 1)]);
+        assert_eq!(
+            s.add_vote(vote(h, 1, 1, VoteOutcome::Yes, 10), None, NOW),
+            Ok(())
+        );
+        let old = vote(h, 1, 1, VoteOutcome::No, 5);
+        assert_eq!(
+            s.add_vote(old.clone(), None, NOW),
+            Err(VoteRejection::Obsolete)
+        );
+        assert_eq!(
+            s.precheck(&old, NOW).map(|_| ()),
+            Err(VoteRejection::Obsolete)
+        );
+        let mut other = old.clone();
+        sign(&mut other, 2);
+        assert_eq!(other.hash(), old.hash());
+        assert!(s.precheck(&other, NOW).is_ok());
+        s.set_masternode_list(&[entry(1, 1)]);
+        assert!(s.precheck(&old, NOW).is_ok());
+    }
+
+    #[test]
+    fn the_orphan_bound_is_checked_before_recovery() {
+        let obj = proposal("a");
+        let mut s = store(&obj, &[entry(1, 1)]);
+        let addr = peer(1).unwrap();
+        for i in 0..MAX_ORPHANS_PER_PEER {
+            let _ = s.add_vote(vote(parent(i), 1, 1, VoteOutcome::Yes, 10), peer(1), NOW);
+        }
+        assert!(s.orphan_bound_full(&parent(u32::MAX), addr, NOW));
+        assert!(!s.orphan_bound_full(&parent(u32::MAX), peer(2).unwrap(), NOW));
+        // A vote on a held object is no orphan.
+        assert!(!s.orphan_bound_full(&obj.hash(), addr, NOW));
+        // Expired orphans free the bound.
+        assert!(!s.orphan_bound_full(&parent(u32::MAX), addr, NOW + ORPHAN_EXPIRY_SECS + 1));
     }
 
     #[test]

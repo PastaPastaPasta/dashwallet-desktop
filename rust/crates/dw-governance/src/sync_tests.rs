@@ -1897,6 +1897,7 @@ async fn one_peer_run(tune: impl FnOnce(&mut SyncConfig, &mut PeerState)) -> Run
         announce_open: false,
         unassigned: Vec::new(),
         lost: 0,
+        recovered: 0,
         full_syncs_done: 0,
         vote_parents: HashMap::new(),
         last_progress: Instant::now(),
@@ -2367,8 +2368,9 @@ async fn a_copy_past_the_senders_orphan_bound_does_not_end_a_loss() {
         run.lost, 1,
         "a copy the orphan bound refused ended the loss"
     );
-    // Recovered and not kept: the sender pays (D61).
-    assert_eq!(run.peers[0].suspect, 1);
+    // Refused before its signature is recovered, at no cost (D62).
+    assert_eq!(run.recovered, 0);
+    assert_eq!(run.peers[0].suspect, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2521,12 +2523,58 @@ async fn a_copy_past_its_keys_limit_does_not_hide_the_honest_vote() {
     let item = vote_inv(&x);
     run.handle(0, PeerEvent::Inv(vec![item]));
     run.handle(1, PeerEvent::Inv(vec![item]));
-    run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
+    let forged = resigned(&x, 2);
+    run.handle(0, PeerEvent::Vote(forged.encode()));
     let key = (item.hash, item.kind);
     assert_eq!(run.requests.pending.get(&key).map(|r| r.peer), Some(1));
-    // Recovered and not kept: the sender pays (D61).
-    assert_eq!(run.peers[0].suspect, 1);
+    // Not charged, and remembered: not recovered again (D62).
+    assert_eq!(run.peers[0].suspect, 0);
+    assert_eq!(
+        run.shared.store().precheck(&forged, now).map(|_| ()),
+        Err(VoteRejection::KeyLimit)
+    );
     run.handle(1, PeerEvent::Vote(x.encode()));
+    assert!(run.shared.store().has_vote(&x.hash()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remembered_key_limit_copy_is_still_refused() {
+    // D62: a forged copy past its key's limit, sent again by the next
+    // announcer, gets the remembered verdict: refused, so the honest
+    // announcer after it is still asked.
+    let p = proposal("p-d62-limit");
+    let mut run = two_peer_run(&p).await;
+    run.peers.push(sink_peer(2, &run.cfg).await);
+    run.shared.store().set_masternode_list(&[
+        ListEntry {
+            voting_key_id: key_id(1),
+            weight: Some(1),
+            valid: true,
+        },
+        ListEntry {
+            voting_key_id: key_id(2),
+            weight: Some(1),
+            valid: true,
+        },
+    ]);
+    let now = unix_now();
+    for i in 0..4u8 {
+        let f = resigned(&vote(p.hash(), 0x70 + i, VoteOutcome::No), 2);
+        run.shared.store().add_vote(f, None, now).unwrap();
+    }
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    let item = vote_inv(&x);
+    let key = (item.hash, item.kind);
+    for peer in 0..3 {
+        run.handle(peer, PeerEvent::Inv(vec![item]));
+    }
+    let forged = resigned(&x, 2);
+    run.handle(0, PeerEvent::Vote(forged.encode()));
+    let recovered = run.recovered;
+    run.handle(1, PeerEvent::Vote(forged.encode()));
+    assert_eq!(run.recovered, recovered);
+    assert_eq!(run.requests.pending.get(&key).map(|r| r.peer), Some(2));
+    run.handle(2, PeerEvent::Vote(x.encode()));
     assert!(run.shared.store().has_vote(&x.hash()));
 }
 
@@ -2642,40 +2690,33 @@ async fn a_late_copy_from_the_timed_out_peer_ends_its_loss() {
     assert_eq!(run.lost, 0);
 }
 
-/// Proposal `p` stored with key 1's current vote on it, and an older vote
-/// of the same (outpoint, key): obsolete.
-async fn obsolete_vote_run(name: &str) -> (Run, GovernanceVote) {
-    let p = proposal(name);
-    let run = two_peer_run(&p).await;
-    let current = vote(p.hash(), 1, VoteOutcome::Yes);
-    run.shared
-        .store()
-        .add_vote(current, None, unix_now())
-        .unwrap();
-    let old = aged_vote(p.hash(), 0);
-    assert_eq!(
-        run.shared.store().add_vote(old.clone(), None, unix_now()),
-        Err(VoteRejection::Obsolete)
-    );
-    (run, old)
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_reannounced_obsolete_copy_costs_its_sender() {
+async fn a_reannounced_obsolete_copy_is_recovered_once() {
     // Validator r10 MJ2: an obsolete copy ends its request (taken), so its
     // peer could announce it again and be asked again: an `inv` and a copy,
     // each a signature recovery, without end. Core rejects an obsolete vote
-    // before checking its signature; the wallet recovers first, so the
-    // sender pays a suspect (D61).
-    let (mut run, old) = obsolete_vote_run("p-d61-reannounce").await;
+    // before checking its signature; the wallet remembers the copy it
+    // recovered instead, at no charge: honest peers relay such copies
+    // (validator r11 MJ2, D62).
+    let p = proposal("p-d62-reannounce");
+    let mut run = two_peer_run(&p).await;
+    let now = unix_now();
+    let current = vote(p.hash(), 1, VoteOutcome::Yes);
+    run.shared.store().add_vote(current, None, now).unwrap();
+    let old = aged_vote(p.hash(), 0);
     let item = vote_inv(&old);
-    for round in 1..=5 {
+    for _ in 0..5 {
         run.handle(0, PeerEvent::Inv(vec![item]));
         run.handle(0, PeerEvent::Vote(old.encode()));
         assert!(run.requests.pending.is_empty());
-        assert_eq!(run.peers[0].suspect, round);
     }
+    assert_eq!(run.recovered, 1);
+    assert_eq!(run.peers[0].suspect, 0);
     assert_eq!(run.peers[0].misbehaviour, 0);
+    assert_eq!(
+        run.shared.store().precheck(&old, now).map(|_| ()),
+        Err(VoteRejection::Obsolete)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2806,4 +2847,387 @@ async fn a_request_that_becomes_a_phase_item_holds_the_phase() {
     assert!(!run.phase_requests_done());
     run.handle(0, PeerEvent::Vote(x.encode()));
     assert!(run.phase_requests_done());
+}
+
+/// A sink peer that counts the `getdata` items it receives, by (hash, kind).
+async fn counting_peer(
+    id: usize,
+    cfg: &SyncConfig,
+) -> (PeerState, Arc<Mutex<HashMap<Item, usize>>>) {
+    let mock = MockPeer::bind(Network::Regtest).await.unwrap();
+    let addr = mock.addr();
+    let counts: Arc<Mutex<HashMap<Item, usize>>> = Arc::default();
+    let c = Arc::clone(&counts);
+    tokio::spawn(async move {
+        let mut conn = mock.accept().await.unwrap();
+        while let Ok(m) = conn.recv().await {
+            if m.command == "getdata" {
+                for i in decode_inv(&m.payload).unwrap() {
+                    *c.lock().unwrap().entry((i.hash, i.kind)).or_default() += 1;
+                }
+            }
+        }
+    });
+    let (tx, _rx) = mpsc::channel(EVENTS_QUEUE);
+    let state = PeerState::new(Peer::connect(id, addr, &cfg.peer, tx).await.unwrap());
+    (state, counts)
+}
+
+/// Copies `peer` may still send for `item` in the run's records: its live
+/// sent request (two once asked again) and each grant it holds.
+fn capacity(run: &Run, peer: usize, item: &Item) -> usize {
+    let live = run.requests.pending.get(item).map_or(0, |r| {
+        let mine = r.peer == peer && r.sent.is_some();
+        usize::from(mine) * (1 + usize::from(r.asked_again))
+            + r.owed.iter().filter(|p| **p == peer).count()
+    });
+    live + run
+        .requests
+        .late
+        .get(item)
+        .map_or(0, |l| l.owed.iter().filter(|p| **p == peer).count())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn copies_taken_never_exceed_getdatas_sent() {
+    // Validator r11 (property): per peer and item, copies taken + notfounds that spent a grant
+    // never exceed the getdatas sent (counted from the run's state and
+    // cross-checked against the wire), and what the run still accepts is
+    // within what is left.
+    let p = proposal("p-r11-prop");
+    let orphan_parent = [0x6b; 32];
+    let mut xs: Vec<GovernanceVote> = (0..4).map(|a| aged_vote(p.hash(), 6 - a)).collect();
+    xs.push(vote(orphan_parent, 1, VoteOutcome::Yes));
+    xs.push(vote(p.hash(), 2, VoteOutcome::No)); // unlisted key: suspect
+    for mut seed in [0x9e37_79b9_7f4a_7c15u64, 11, 12, 13, 14, 15] {
+        let mut cfg = SyncConfig::new(PeerConfig::new(Network::Regtest, "/t/", 1));
+        cfg.max_in_flight = 3;
+        cfg.max_suspect = u32::MAX - 1;
+        cfg.max_misbehaviour = u32::MAX - 1;
+        let mut peers = Vec::new();
+        let mut wire = Vec::new();
+        for id in 0..3 {
+            let (s, c) = counting_peer(id, &cfg).await;
+            peers.push(s);
+            wire.push(c);
+        }
+        let mut run = Run {
+            shared: Arc::new(Shared::new(Network::Regtest, Box::new(|| {}))),
+            cfg,
+            history: Arc::new(Mutex::new(SyncHistory::default())),
+            peers,
+            requests: Requests::default(),
+            base_bytes: 0,
+            votes_open: true,
+            announce_open: false,
+            unassigned: Vec::new(),
+            lost: 0,
+            recovered: 0,
+            full_syncs_done: 0,
+            vote_parents: HashMap::new(),
+            last_progress: Instant::now(),
+        };
+        list_key_1(&run);
+        {
+            let mut s = run.shared.store();
+            s.set_confirmations(1);
+            s.add_object(p.clone(), None, unix_now()).unwrap();
+        }
+        open_vote_sync(&mut run.peers[0], p.hash());
+        open_vote_sync(&mut run.peers[1], p.hash());
+        let mut next = |m: u64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) % m
+        };
+        let mut items: Vec<Item> = Vec::new();
+        for x in &xs {
+            items.push((x.hash(), INV_GOVERNANCE_VOTE));
+            items.push((x.hash(), INV_GOVERNANCE_OBJECT));
+        }
+        // (peer, item) → getdatas sent, copies taken, notfounds that spent.
+        let mut sent: HashMap<(usize, Item), usize> = HashMap::new();
+        let mut taken: HashMap<(usize, Item), usize> = HashMap::new();
+        let mut spent: HashMap<(usize, Item), usize> = HashMap::new();
+        let long_ago = Instant::now() - Duration::from_secs(10_000);
+        for step in 0..4_000 {
+            let peer = next(3) as usize;
+            let xi = next(xs.len() as u64) as usize;
+            let x = xs[xi].clone();
+            let kind = if next(5) == 0 {
+                INV_GOVERNANCE_OBJECT
+            } else {
+                INV_GOVERNANCE_VOTE
+            };
+            let inv = InvItem {
+                kind,
+                hash: x.hash(),
+            };
+            let before: HashMap<Item, (usize, Option<Instant>)> = run
+                .requests
+                .pending
+                .iter()
+                .map(|(i, r)| (*i, (r.peer, r.sent)))
+                .collect();
+            let cap_before: Vec<usize> = items.iter().map(|i| capacity(&run, peer, i)).collect();
+            let mut copy = false;
+            let mut notfound = false;
+            match next(10) {
+                0..=2 => run.handle(peer, PeerEvent::Inv(vec![inv])),
+                3 => {
+                    notfound = true;
+                    run.handle(peer, PeerEvent::NotFound(vec![inv]));
+                }
+                4..=5 => {
+                    copy = true;
+                    run.peers[peer].last_delivery = long_ago;
+                    run.handle(peer, PeerEvent::Vote(x.encode()));
+                }
+                6 => {
+                    copy = true;
+                    run.peers[peer].last_delivery = long_ago;
+                    run.handle(peer, PeerEvent::Vote(resigned(&x, 3).encode()));
+                }
+                7 => {
+                    copy = true;
+                    run.peers[peer].last_delivery = long_ago;
+                    let mut j = x.clone();
+                    j.signature = vec![0x55; 96];
+                    run.handle(peer, PeerEvent::Vote(j.encode()));
+                }
+                _ => {
+                    let t = std::mem::replace(&mut run.cfg.request_timeout, Duration::ZERO);
+                    run.expire();
+                    run.cfg.request_timeout = t;
+                }
+            }
+            if copy && run.peers[peer].last_delivery != long_ago {
+                *taken
+                    .entry((peer, (x.hash(), INV_GOVERNANCE_VOTE)))
+                    .or_default() += 1;
+            }
+            if notfound {
+                for (k, i) in items.iter().enumerate() {
+                    if i.0 == x.hash() && capacity(&run, peer, i) < cap_before[k] {
+                        *spent.entry((peer, *i)).or_default() += 1;
+                        break;
+                    }
+                }
+            }
+            for (i, r) in &run.requests.pending {
+                if let Some(s) = r.sent
+                    && before.get(i) != Some(&(r.peer, Some(s)))
+                {
+                    *sent.entry((r.peer, *i)).or_default() += 1;
+                }
+            }
+            assert!(run.phase_requests_done() || run.requests.phase_pending > 0);
+            for q in 0..3 {
+                for i in &items {
+                    let g = sent.get(&(q, *i)).copied().unwrap_or(0);
+                    let c = taken.get(&(q, *i)).copied().unwrap_or(0);
+                    let n = spent.get(&(q, *i)).copied().unwrap_or(0);
+                    assert!(
+                        c + n <= g,
+                        "seed {seed} step {step}: peer {q} answered {c}+{n} of {g}"
+                    );
+                    let cap = capacity(&run, q, i);
+                    assert!(
+                        cap + c + n <= g,
+                        "seed {seed} step {step}: peer {q} may send {cap} more after {c}+{n} of {g}"
+                    );
+                }
+            }
+        }
+        // The wire agrees with the state-derived count.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let ok = (0..3).all(|q| {
+                let w = wire[q].lock().unwrap();
+                items.iter().all(|i| {
+                    w.get(i).copied().unwrap_or(0) == sent.get(&(q, *i)).copied().unwrap_or(0)
+                })
+            });
+            if ok {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "wire getdata counts differ from the state's"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let total: usize = taken.values().sum();
+        assert!(total > 0);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_voter_planting_a_newer_vote_gets_no_relayer_charged() {
+    // Validator r11 MJ2: a masternode's own key signs V2 newer than its
+    // vote V1 that Core holds, and hands V2 only to the wallet (as a peer,
+    // once; the store keeps it). Every honest vote sync then serves V1,
+    // obsolete for the wallet: its honest sender paid a suspect each run,
+    // per (outpoint, object) the voter planted (D62).
+    let p = proposal("p-r11-plant");
+    let mut run = two_peer_run(&p).await;
+    run.cfg.max_suspect = 3;
+    // V1: what Core holds and serves; V2: newer, given to the wallet only.
+    let v1s = vec![aged_vote(p.hash(), 100)];
+    let v2 = vote(p.hash(), 1, VoteOutcome::No);
+    run.handle(0, PeerEvent::Inv(vec![vote_inv(&v2)]));
+    run.handle(0, PeerEvent::Vote(v2.encode()));
+    assert!(run.shared.store().has_vote(&v2.hash()));
+    for v1 in &v1s {
+        run.handle(1, PeerEvent::Inv(vec![vote_inv(v1)]));
+        run.handle(1, PeerEvent::Vote(v1.encode()));
+    }
+    assert_eq!(
+        run.peers[1].suspect, 0,
+        "an honest peer relaying Core's current vote was charged"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn key_limit_fillers_charge_no_honest_announcer() {
+    // Validator r11 MJ2: the key's holder fills its 2n + 2 slots on an
+    // object with outpoints Core would never relay (sent by itself as a
+    // peer); its real masternode's vote, which Core relays, then hit the
+    // limit at each honest announcer in turn (refused, so retried), each
+    // charged (D62).
+    let p = proposal("p-r11-fill");
+    let mut run = two_peer_run(&p).await;
+    run.peers.push(sink_peer(2, &run.cfg).await);
+    for o in 0..4u8 {
+        let mut f = GovernanceVote::funding(
+            OutPoint::new(dashcore::Txid::from_byte_array([0xf0 + o; 32]), 0),
+            p.hash(),
+            VoteOutcome::Yes,
+            unix_now() - 50,
+        );
+        f = resigned(&f, 1);
+        run.handle(0, PeerEvent::Inv(vec![vote_inv(&f)]));
+        run.handle(0, PeerEvent::Vote(f.encode()));
+        assert!(run.shared.store().has_vote(&f.hash()));
+    }
+    let real = vote(p.hash(), 1, VoteOutcome::Yes);
+    run.handle(1, PeerEvent::Inv(vec![vote_inv(&real)]));
+    run.handle(2, PeerEvent::Inv(vec![vote_inv(&real)]));
+    run.handle(1, PeerEvent::Vote(real.encode()));
+    run.handle(2, PeerEvent::Vote(real.encode()));
+    assert_eq!(
+        (run.peers[1].suspect, run.peers[2].suspect),
+        (0, 0),
+        "honest announcers of a listed masternode's vote were charged"
+    );
+}
+
+/// Key 1's vote for outpoint `o` on `parent` at `time`.
+fn outpoint_vote(parent: [u8; 32], o: u32, outcome: VoteOutcome, time: i64) -> GovernanceVote {
+    let mut txid = [0xa0; 32];
+    txid[..4].copy_from_slice(&o.to_le_bytes());
+    let v = GovernanceVote::funding(
+        OutPoint::new(dashcore::Txid::from_byte_array(txid), 0),
+        parent,
+        outcome,
+        time,
+    );
+    resigned(&v, 1)
+}
+
+/// Core's vote file after a masternode voted YES, NO then ABSTAIN with
+/// one timestamp, an hour apart (each accepted: same time, higher
+/// outcome; `RemoveOldVotes` drops only older times), in the order Core's
+/// vote sync announces them (`push_front`: newest first).
+fn ladder(parent: [u8; 32], o: u32, time: i64) -> Vec<GovernanceVote> {
+    [VoteOutcome::Abstain, VoteOutcome::No, VoteOutcome::Yes]
+        .into_iter()
+        .map(|out| outpoint_vote(parent, o, out, time))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_honest_vote_sync_of_a_same_time_ladder_costs_no_suspect() {
+    // Validator r11 MJ1: an honest Core peer serving its vote file of one
+    // masternode's same-timestamp ladder: the wallet keeps ABSTAIN and
+    // recovers NO and YES, SameTimestamp. Core sent them as it holds them
+    // (D62).
+    let p = proposal("p-r11-ladder");
+    let mut run = two_peer_run(&p).await;
+    let votes = ladder(p.hash(), 0, unix_now() - 7_200);
+    run.handle(1, PeerEvent::Inv(votes.iter().map(vote_inv).collect()));
+    for v in &votes {
+        run.handle(1, PeerEvent::Vote(v.encode()));
+    }
+    assert!(run.shared.store().has_vote(&votes[0].hash()));
+    assert_eq!(
+        run.peers[1].suspect, 0,
+        "an honest peer serving Core's vote file was charged"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn same_time_ladders_do_not_close_an_honest_peer() {
+    // Validator r11 MJ1 at scale: 100 masternodes of one key, a ladder
+    // each on 51 current proposals, all relayed by the network (no
+    // connection to the wallet). One honest peer's vote syncs cost it 2
+    // suspects per (masternode, proposal): 10,200 > 10,000, closed (D62).
+    let mut run = one_peer_run(|c, _| c.max_in_flight = 5_000).await;
+    run.peers.push(sink_peer(1, &run.cfg).await);
+    let max = run.cfg.max_suspect;
+    let entries: Vec<ListEntry> = (0..100)
+        .map(|_| ListEntry {
+            voting_key_id: key_id(1),
+            weight: Some(1),
+            valid: true,
+        })
+        .collect();
+    run.shared.store().set_masternode_list(&entries);
+    let time = unix_now() - 7_200;
+    let mut all = Vec::new();
+    for i in 0..51 {
+        let p = proposal(&format!("p-r11-ladder-{i}"));
+        {
+            let mut s = run.shared.store();
+            s.set_confirmations(1);
+            s.add_object(p.clone(), None, unix_now()).unwrap();
+        }
+        for o in 0..100 {
+            all.extend(ladder(p.hash(), o, time));
+        }
+    }
+    for chunk in all.chunks(3_000) {
+        run.handle(1, PeerEvent::Inv(chunk.iter().map(vote_inv).collect()));
+        for v in chunk {
+            run.handle(1, PeerEvent::Vote(v.encode()));
+        }
+    }
+    let s = run.peers[1].suspect;
+    assert!(
+        s <= max,
+        "an honest peer reached {s} suspects (bound {max}) serving Core's vote files"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ladder_is_recovered_once_whoever_announces_it() {
+    // Validator r11 MJ1: the not-kept hashes were not remembered, so each
+    // peer whose vote sync announced them was asked for them in turn and
+    // paid. Each copy is now recovered once (D62).
+    let p = proposal("p-r11-ladder-each");
+    let mut run = two_peer_run(&p).await;
+    let votes = ladder(p.hash(), 0, unix_now() - 7_200);
+    for peer in [0, 1] {
+        run.handle(peer, PeerEvent::Inv(votes.iter().map(vote_inv).collect()));
+        for v in &votes {
+            run.handle(peer, PeerEvent::Vote(v.encode()));
+        }
+    }
+    assert_eq!(
+        (run.peers[0].suspect, run.peers[1].suspect),
+        (0, 0),
+        "both honest announcers were charged"
+    );
+    assert_eq!(run.recovered, 3);
 }

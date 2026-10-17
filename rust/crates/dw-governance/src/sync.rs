@@ -21,8 +21,8 @@
 //! and a peer past [`SyncConfig::max_misbehaviour`] is closed (D10). Votes Core relays but
 //! the wallet does not tally are ignored without a penalty; votes whose key
 //! the list lacks may be honest under the peer's list and count against the
-//! looser [`SyncConfig::max_suspect`], as do votes recovered and then not
-//! kept, which Core rejects before checking a signature (D61). At most
+//! looser [`SyncConfig::max_suspect`]. A copy recovered and not kept is
+//! remembered, so the same bytes are not recovered again (D62). At most
 //! [`SyncConfig::max_in_flight`] items are asked of one peer at a time. A
 //! request ends with the item, `notfound`, an item that does not validate,
 //! or the peer closing, and the next peer that announced the hash is asked
@@ -232,8 +232,7 @@ pub struct SyncConfig {
     pub answer_timeout: Duration,
     /// Undecodable or invalid items before a peer is closed (D10).
     pub max_misbehaviour: u32,
-    /// Votes whose key the list lacks, or recovered and not kept, before a
-    /// peer is closed (D10, D61).
+    /// Votes whose key the list lacks before a peer is closed (D10).
     pub max_suspect: u32,
     /// Hashes one peer may announce that the wallet has not fetched (Core
     /// `MAX_PEER_OBJECT_ANNOUNCEMENTS`).
@@ -618,6 +617,8 @@ struct Run {
     unassigned: Vec<[u8; 32]>,
     /// Phase items given up on.
     lost: usize,
+    /// Vote signatures recovered this run.
+    recovered: u64,
     /// Fresh peers whose object sync completed.
     full_syncs_done: usize,
     /// Vote → its object, for the votes decoded this run (D36).
@@ -1188,12 +1189,31 @@ impl Run {
                 self.refused(item, from, taken);
                 return;
             }
+            // This copy was recovered before and met its key's limit
+            // (D62): another announcer's copy may be kept (D59).
+            Err(VoteRejection::KeyLimit) => {
+                self.refused(item, from, taken);
+                return;
+            }
             Err(_) => {
                 self.accepted(&item);
                 self.progressed();
                 return;
             }
         };
+        let addr = self.peer(from).map(|p| p.peer.addr);
+        // Past the sender's orphan bound it would not be kept: not
+        // recovered, as Core does not check an orphan's signature (D62).
+        if let Some(a) = addr
+            && self
+                .shared
+                .store()
+                .orphan_bound_full(&vote.parent_hash, a, now)
+        {
+            self.refused(item, from, taken);
+            return;
+        }
+        self.recovered += 1;
         // Recovered without the store's lock.
         let checked = match recover(vote, outcome, self.shared.network) {
             Ok(c) => c,
@@ -1204,7 +1224,6 @@ impl Run {
             }
         };
         let parent = checked.vote.parent_hash;
-        let addr = self.peer(from).map(|p| p.peer.addr);
         let result = self.shared.store().add_checked(checked, addr, now);
         match result {
             Ok(()) => {
@@ -1214,13 +1233,11 @@ impl Run {
             }
             Err(VoteRejection::Orphan) => {
                 // Not held when the sender's orphan bound is full: another
-                // announcer's copy may be (D58), and the recovery was the
-                // sender's to pay (D61).
+                // announcer's copy may be (D58).
                 if self.shared.store().has_vote(&hash) {
                     self.accepted(&item);
                     self.progressed();
                 } else {
-                    self.suspected(from);
                     self.refused(item, from, taken);
                 }
                 self.fetch_parent(from, parent);
@@ -1236,16 +1253,11 @@ impl Run {
             // The key's limit, met by the key the sender signed with:
             // another announcer's copy may be kept (D59).
             Err(VoteRejection::KeyLimit) => {
-                self.suspected(from);
                 self.refused(item, from, taken);
             }
+            // Obsolete or of the same time: the store remembers this copy,
+            // so it is not recovered again (D62).
             Err(_) => {
-                // An obsolete copy, which Core rejects before checking its
-                // signature: the wallet recovered it first, so the sender
-                // pays, as for an unknown key (D61).
-                if !self.shared.store().has_vote(&hash) {
-                    self.suspected(from);
-                }
                 self.accepted(&item);
                 self.progressed();
             }
@@ -1725,6 +1737,7 @@ async fn run_inner(
         announce_open: false,
         unassigned: Vec::new(),
         lost: 0,
+        recovered: 0,
         full_syncs_done: 0,
         vote_parents: HashMap::new(),
         last_progress: Instant::now(),
