@@ -1518,6 +1518,17 @@ impl Fixture {
         });
     }
 
+    /// Bob's rotated request (naming his account 1) persisted with the
+    /// marker cleared, as a crash before the library's sweep leaves it: his
+    /// paying account is still the one built from his old request.
+    fn bob_rotated_before_the_sweep(&self) {
+        let rotated = ContactRequest::new(id(BOB), id(ME), 0, 0, 1, vec![2; 96], 1, 2_500_000);
+        self.with_me(move |me| {
+            let c = EstablishedContact::new(id(BOB), request(ME, BOB, 1_000_000), rotated);
+            me.apply_established_contact(c);
+        });
+    }
+
     /// The library's paying account for Bob, built from his request
     /// `reference` names (`None`: torn down).
     fn bobs_account_built_from(&self, reference: Option<u32>) {
@@ -1772,19 +1783,22 @@ fn an_address_kept_without_rule_5_is_not_paid_under_it() {
     );
 }
 
-/// Design D12: a paying account built from an older request than the
-/// verified one, with no rebuild queued, is not paid under rule 5; once
-/// rebuilt from the current request it is.
+/// Design D12 as amended by D25 (Sol r2): a paying account built from an
+/// older request than the current one, with no rebuild queued, is not
+/// paid, with or without the latch; once rebuilt from the current request
+/// it is.
 #[test]
 fn a_stale_paying_account_is_not_paid() {
     let f = fixture(false);
-    // Before the latch nothing came through the fallback: DP3-01's rule.
+    // Before the latch nothing came through the fallback, but the account
+    // is still not the one the request designates.
     f.session.trust.set_mode(TrustMode::Enforcing);
     f.bobs_account_built_from(Some(77));
-    let d = f.draft(BOB);
-    let p = f.prepare(&d).unwrap();
-    assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
-    f.engine.block_on(d.abandon(p)).unwrap();
+    assert_eq!(
+        platform_error(f.prepare(&f.draft(BOB))),
+        "platform.context_unavailable"
+    );
+    assert!(f.reserved(BOB).is_none(), "no address taken");
 
     let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
     // A queued op that does not rebuild the paying account changes nothing.
@@ -1807,6 +1821,33 @@ fn a_stale_paying_account_is_not_paid() {
     });
     let p = f.prepare(&f.draft(BOB)).unwrap();
     assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
+}
+
+/// Design D25 (Sol r2): a crash between persisting Bob's rotated request
+/// and the library's sweep leaves the marker cleared and his old account
+/// in place, with no latch. In every mode the old account is not paid and
+/// nothing is reserved; once the account is rebuilt from the rotated
+/// request and stamped, its address is.
+#[test]
+fn an_account_a_crash_left_unrebuilt_is_not_paid() {
+    for (mode, set) in EVERY_RULE {
+        let f = fixture(false);
+        set(&f);
+        f.bob_rotated_before_the_sweep();
+        assert_eq!(
+            platform_error(f.prepare(&f.draft(BOB))),
+            "platform.context_unavailable",
+            "{mode}"
+        );
+        assert!(f.reserved(BOB).is_none(), "{mode}: no address taken");
+
+        f.build_paying_account(BOB, contact_xpub(CAROL));
+        f.bobs_account_built_from(Some(1));
+        let p = f.prepare(&f.draft(BOB)).unwrap();
+        let rebuilt = address_at(contact_xpub(CAROL), 0);
+        assert_eq!(paid(&p), rebuilt.to_string(), "{mode}");
+        assert_eq!(f.reserved(BOB), Some(rebuilt), "{mode}");
+    }
 }
 
 /// D12 after the reservation: a queued `RegisterExternal` lets the gate
@@ -1929,17 +1970,35 @@ fn an_address_from_a_replaced_account_is_not_paid() {
     );
 }
 
-/// D21 without the latch: under `Enforcing` the re-check runs and binds
-/// the address though nothing came through the fallback, so an address
-/// whose account was torn down meanwhile is neither paid nor kept.
+/// Each rule 5 setting by name: `Enforce`, `Probe` (the default) and
+/// `Off` (the trusted-only toggle).
+const EVERY_RULE: [(&str, fn(&Fixture)); 3] = [
+    ("enforcing", |f| {
+        f.session.trust.set_mode(TrustMode::Enforcing)
+    }),
+    ("degraded", |f| {
+        f.session.trust.set_mode(TrustMode::Degraded)
+    }),
+    ("off", |f| f.session.trust.set_trusted_only(true)),
+];
+
+/// D21 without the latch, and (D25) in every mode: the re-check binds the
+/// address though nothing came through the fallback, so an address whose
+/// account was torn down meanwhile is neither paid nor kept.
 #[test]
 fn an_address_from_a_torn_down_account_is_not_paid() {
-    let f = fixture(false);
-    f.session.trust.set_mode(TrustMode::Enforcing);
-    let d = f.draft(BOB);
-    let refused = f.prepare_held_at(&d, Point::Reserved, || f.tear_down_paying_account(BOB));
-    assert_eq!(platform_error(refused), "platform.context_unavailable");
-    assert!(f.reserved(BOB).is_none());
+    for (mode, set) in EVERY_RULE {
+        let f = fixture(false);
+        set(&f);
+        let d = f.draft(BOB);
+        let refused = f.prepare_held_at(&d, Point::Reserved, || f.tear_down_paying_account(BOB));
+        assert_eq!(
+            platform_error(refused),
+            "platform.context_unavailable",
+            "{mode}"
+        );
+        assert!(f.reserved(BOB).is_none(), "{mode}");
+    }
 }
 
 /// D21's control: a rotation whose rebuilt account derives from the same
