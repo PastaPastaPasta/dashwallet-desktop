@@ -208,10 +208,12 @@ impl EventSink for StderrSink {
                 list.join(",")
             );
         }
-        if self.verbose && self.kind_only {
-            eprintln!("event: {}", event_kind(&event));
-        } else if self.verbose {
-            eprintln!("event: {event:?}");
+        if self.verbose {
+            if self.kind_only {
+                eprintln!("event: {}", event_kind(&event));
+            } else {
+                eprintln!("event: {event:?}");
+            }
         }
     }
 }
@@ -787,6 +789,22 @@ fn parse_failure(e: &clap::Error) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_events_kind_is_its_variant_name() {
+        let opened = EngineEvent::SessionOpened {
+            network: DashNetwork::Devnet {
+                name: "secret".into(),
+            },
+        };
+        assert_eq!(event_kind(&opened), "SessionOpened");
+        assert_eq!(
+            event_kind(&EngineEvent::SessionClosed {
+                network: DashNetwork::Regtest
+            }),
+            "SessionClosed"
+        );
+    }
 
     #[test]
     fn parses_networks() {

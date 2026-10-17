@@ -353,7 +353,8 @@ one). A key holds its role when it has a `key_id` and isn't `key_mismatch`, and 
 key, or any voting key while the list isn't synced reports `voting: false` (MG-00 D13). A key with no `key_id` (its
 vault write failed in this session, D31) holds nothing; a later session's read records the id of the key the vault
 holds, with the full-scope data key. Once a session, every recorded id is compared with the vault's key, and one
-naming another key is dropped the same way (D34).
+naming another key is dropped the same way (D34); until then, a read made while a tracking change runs counts those
+keys as holding nothing.
 
 A row is `mine` when the wallet holds one of these roles through its own provider transactions (an attached key
 doesn't count); a provider transaction that gives it none (it paid the fee of someone's ProRegTx) makes no row.

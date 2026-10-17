@@ -297,6 +297,13 @@ impl MasternodesRuntime {
         self.mutations.lock().await
     }
 
+    /// The tracking lock, if no change holds it. A read holds the session
+    /// gate, which a change takes after this lock, so a read never waits
+    /// for it: a close queued on the gate would wait for both (D34).
+    pub fn try_mutation(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        self.mutations.try_lock().ok()
+    }
+
     fn unsettled_keys(&self) -> std::sync::MutexGuard<'_, HashSet<([u8; 32], AttachedKeyRole)>> {
         self.unsettled.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -438,39 +445,26 @@ fn record_sightings(
     now: u64,
 ) -> Result<bool, AppDbError> {
     let notes = load_notes(db)?;
+    let stamp = now.to_string();
     // The version-3 markers are durable before a payout read relies on
     // them: one a power loss took would count shares as payouts (D35).
     let first_shared = any_shared && !notes.any_shared_seen;
     if first_shared {
-        db.set_setting_durable(GLOBAL_SCOPE, ANY_SHARED_SEEN, Some(&now.to_string()))?;
+        db.set_setting_durable(GLOBAL_SCOPE, ANY_SHARED_SEEN, Some(&stamp))?;
     }
     for (hash, entry) in seen {
         let Some(entry) = entry else { continue };
         let key = super::display_hex(hash);
-        let note = |prefix: &str| {
-            db.set_setting(
-                GLOBAL_SCOPE,
-                &format!("{prefix}{key}"),
-                Some(&now.to_string()),
-            )
-        };
+        let name = |prefix: &str| format!("{prefix}{key}");
         if !notes.listed_seen.contains(&key) {
-            note(LISTED_SEEN)?;
+            db.set_setting(GLOBAL_SCOPE, &name(LISTED_SEEN), Some(&stamp))?;
         }
         if entry.has_extended_net_info && !notes.shared_seen.contains(&key) {
-            db.set_setting_durable(
-                GLOBAL_SCOPE,
-                &format!("{SHARED_SEEN}{key}"),
-                Some(&now.to_string()),
-            )?;
+            db.set_setting_durable(GLOBAL_SCOPE, &name(SHARED_SEEN), Some(&stamp))?;
         }
         match (entry.is_valid, notes.banned_seen.contains_key(&key)) {
-            (false, false) => db.set_setting(
-                GLOBAL_SCOPE,
-                &format!("{BANNED_SEEN}{key}"),
-                Some(&now.to_string()),
-            )?,
-            (true, true) => db.set_setting(GLOBAL_SCOPE, &format!("{BANNED_SEEN}{key}"), None)?,
+            (false, false) => db.set_setting(GLOBAL_SCOPE, &name(BANNED_SEEN), Some(&stamp))?,
+            (true, true) => db.set_setting(GLOBAL_SCOPE, &name(BANNED_SEEN), None)?,
             _ => {}
         }
     }

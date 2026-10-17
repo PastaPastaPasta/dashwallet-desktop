@@ -66,7 +66,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         "Vault::masternode_key_id",
-        "internal: the engine records an attached key's id from it after a vault write whose outcome it couldn't tell (MG-03 D31)",
+        "internal: the engine records an attached key's id from it after a vault write whose outcome it couldn't tell, and compares every recorded id with it once a session (MG-03 D31, D34)",
     ),
     (
         "Vault::delete_masternode_keys",

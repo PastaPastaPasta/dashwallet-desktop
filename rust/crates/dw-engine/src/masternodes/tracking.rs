@@ -179,7 +179,9 @@ async fn references(
 /// (D31), unless its vault write failed in this session: this session's
 /// vault may hold another key in memory than on disk. A locked vault
 /// changes nothing; a key the vault can't read is logged and skipped, and
-/// the comparison runs again on the next read.
+/// the comparison runs again on the next read, as it does after a failed
+/// write. A read that finds a change holding the lock leaves out the ids it
+/// would have checked, so those keys hold nothing until a later read.
 pub(super) async fn reconcile_key_ids(
     session: &NetworkSession,
     attached: &HashMap<[u8; 32], Vec<AttachedKeyRole>>,
@@ -198,10 +200,15 @@ pub(super) async fn reconcile_key_ids(
             .collect()
     };
     if pending(&notes).is_empty() {
-        runtime.ids_verified.store(true, Ordering::SeqCst);
         return Ok(notes);
     }
-    let _mutation = runtime.mutation().await;
+    let Some(_mutation) = runtime.try_mutation() else {
+        let mut notes = notes;
+        for (hash, role) in pending(&notes) {
+            notes.key_ids.remove(&(display_hex(&hash), role));
+        }
+        return Ok(notes);
+    };
     let notes = session.appdb_op(load_notes).await?;
     let pending = pending(&notes);
     let vault = session.vault.clone();
@@ -219,6 +226,7 @@ pub(super) async fn reconcile_key_ids(
     })
     .await?;
     let mut changes = Vec::new();
+    let mut dropped = Vec::new();
     let mut verified = true;
     for (hash, role, held) in read {
         let held = match held {
@@ -235,26 +243,32 @@ pub(super) async fn reconcile_key_ids(
             Some(recorded) if Some(*recorded) == held => {}
             Some(_) => {
                 tracing::warn!("an attached key's recorded id names another key; dropped");
-                runtime.unsettle(hash, role);
+                dropped.push((hash, role));
                 changes.push((hash, role, None));
             }
         }
     }
+    let notes = if changes.is_empty() {
+        notes
+    } else {
+        session
+            .appdb_op(move |db| {
+                for (hash, role, id) in changes {
+                    set_key_id(db, &display_hex(&hash), role, id)?;
+                }
+                load_notes(db)
+            })
+            .await?
+    };
+    // Only once the drops are written: a failed write leaves them, and the
+    // comparison, to the next read.
+    for (hash, role) in dropped {
+        runtime.unsettle(hash, role);
+    }
     if verified {
         runtime.ids_verified.store(true, Ordering::SeqCst);
     }
-    if changes.is_empty() {
-        return Ok(notes);
-    }
-    session
-        .appdb_op(move |db| {
-            for (hash, role, id) in changes {
-                set_key_id(db, &display_hex(&hash), role, id)?;
-            }
-            load_notes(db)
-        })
-        .await
-        .map_err(Into::into)
+    Ok(notes)
 }
 
 /// Forgets the recorded ids of `hash`'s keys of `roles`. The keys are gone
@@ -417,9 +431,9 @@ impl Masternodes {
         let _mutation = self.session.masternodes.mutation().await;
         self.require_tracked(&hash)?;
         // The id is cleared, durably (D34), before the vault write and
-        // recorded only after it succeeded, so an interruption leaves a key without an id, which
-        // holds no role, never an id that names a key the vault doesn't hold
-        // (D24). A failed write may have stored the key all the same (a
+        // recorded only after it succeeded, so an interruption leaves a key
+        // without an id, which holds no role, never an id that names a key
+        // the vault doesn't hold (D24). A failed write may have stored the key all the same (a
         // read-back or directory fsync failing after the rename), so no id
         // is put back: the next session records the id of what the vault
         // then holds (D31).
@@ -768,6 +782,40 @@ mod tests {
             drop(s);
             engine.block_on(engine.shutdown()).unwrap();
             (key.key_id.clone(), key.holds())
+        }
+
+        /// A read while a tracking change holds the lock doesn't wait for
+        /// it (a close could hang behind both) and leaves out the ids it
+        /// hasn't compared yet; the next read compares them (D34).
+        #[test]
+        fn a_read_during_a_change_holds_nothing_unverified() {
+            let dir = dw_testutil::private_tempdir();
+            let store = Arc::new(MemoryOsStore::new());
+            let engine = new_engine(dir.path(), &store);
+            let s = open(&engine);
+            engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+            let wallet = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+            let service = s.manager().unwrap().tracked_masternodes_service();
+            service.track_blocking(HASH, None).unwrap();
+            drop(service);
+            attach(&engine, &s, [7; 32]).unwrap();
+            drop(s);
+            engine.block_on(engine.shutdown()).unwrap();
+            drop(engine);
+
+            let engine = new_engine(dir.path(), &store);
+            let s = open(&engine);
+            let change = engine.block_on(s.masternodes.mutation());
+            let key = owner_key(&engine, &s, wallet);
+            assert_eq!((key.key_id.clone(), key.holds()), (None, false));
+            drop(change);
+            let key = owner_key(&engine, &s, wallet);
+            assert_eq!(
+                (key.key_id.clone(), key.holds()),
+                (Some(id_of([7; 32])), true)
+            );
+            drop(s);
+            engine.block_on(engine.shutdown()).unwrap();
         }
 
         #[test]

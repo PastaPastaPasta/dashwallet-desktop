@@ -244,7 +244,7 @@ or excluded with a reason (`rust/crates/dw-app/src/coverage.rs`).
 | `Vault::lock` | dw-vault/src/vault.rs | excluded (vault): internal: `lock` goes through NetworkSession::lock_vault, which revokes the leases around the vault's own lock |
 | `Vault::lock_state` | dw-vault/src/vault.rs | excluded (vault): internal: `Vault::status` carries the state |
 | `Vault::masternode_key` | dw-vault/src/vault/masternode.rs | excluded (vault): deferred (MG-03/MG-05): reading an attached key is bound with the Masternodes domain and its grant purposes (MG-01 D11) |
-| `Vault::masternode_key_id` | dw-vault/src/vault/masternode.rs | excluded (vault): internal: the engine records an attached key's id from it after a vault write whose outcome it couldn't tell (MG-03 D31) |
+| `Vault::masternode_key_id` | dw-vault/src/vault/masternode.rs | excluded (vault): internal: the engine records an attached key's id from it after a vault write whose outcome it couldn't tell, and compares every recorded id with it once a session (MG-03 D31, D34) |
 | `Vault::masternode_key_roles` | dw-vault/src/vault/masternode.rs | excluded (vault): internal: reached through the masternodes facade's rows (`MasternodeRoles::attached`, MG-03 D8, MG-01 D15) |
 | `Vault::mixing_funding_signer` | dw-vault/src/vault.rs | excluded (vault): internal: the CoinJoin session builds its funding signer |
 | `Vault::mixing_signer` | dw-vault/src/vault.rs | excluded (vault): internal: the CoinJoin session builds its mixing signer |

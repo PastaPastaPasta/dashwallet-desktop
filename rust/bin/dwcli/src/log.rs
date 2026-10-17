@@ -3,7 +3,8 @@
 //! first: a library may quote one (the SDK's quorum fetch logs its URL), and
 //! no `mn` output may repeat a value (MG-03 D32, D33). Every non-empty value
 //! is, in the forms a library prints it: as given, `{:?}`-quoted, and for a
-//! URL as parsed, with its user name, password, host and path apart.
+//! URL as parsed, with its user name, password, host and path apart; in any
+//! ASCII case, and in one pass, so overlapping values go together.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -54,8 +55,7 @@ fn option_values(cli: &Cli) -> Vec<String> {
     let forms: Vec<String> = values.iter().flat_map(|v| forms(v)).collect();
     values.extend(forms);
     values.retain(|v| !v.is_empty());
-    // The longest first, so a value inside another goes with it.
-    values.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    values.sort();
     values.dedup();
     values
 }
@@ -116,10 +116,34 @@ impl Drop for Line {
     }
 }
 
+/// `text` with each run of bytes some value covers (ignoring ASCII case)
+/// replaced by one marker.
 fn redact(text: &str, values: &[String]) -> String {
-    values.iter().fold(text.to_string(), |text, v| {
-        text.replace(v.as_str(), "<redacted>")
-    })
+    let lower = text.to_ascii_lowercase();
+    let mut covered = vec![false; text.len()];
+    for value in values {
+        let value = value.to_ascii_lowercase();
+        let mut from = 0;
+        while let Some(at) = lower[from..].find(&value) {
+            let start = from + at;
+            covered[start..start + value.len()].fill(true);
+            from = start + lower[start..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    while let Some(c) = text[at..].chars().next() {
+        if covered[at] {
+            while at < text.len() && covered[at] {
+                at += 1;
+            }
+            out.push_str("<redacted>");
+        } else {
+            out.push(c);
+            at += c.len_utf8();
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -130,8 +154,7 @@ mod tests {
     /// apart or normalised (D33).
     #[test]
     fn a_urls_parts_are_redacted() {
-        let mut values = forms("HTTP://User:Tok@Example.COM:81/p");
-        values.sort_by_key(|v| std::cmp::Reverse(v.len()));
+        let values = forms("HTTP://User:Tok@Example.COM:81/p");
         assert_eq!(
             redact(
                 "url: http://User:Tok@example.com:81/p/quorums, Tok, example.com:81",
@@ -143,18 +166,28 @@ mod tests {
 
     #[test]
     fn every_value_and_its_quoted_form_is_redacted() {
-        let mut values = vec![
+        let values = vec![
             "http://h/a\"b".to_string(),
             "http://h/a\\\"b".to_string(),
             "h/a".to_string(),
         ];
-        values.sort_by_key(|v| std::cmp::Reverse(v.len()));
         assert_eq!(
             redact(
                 "url: \"http://h/a\\\"b\" then http://h/a\"b and h/a",
                 &values
             ),
             "url: \"<redacted>\" then <redacted> and <redacted>"
+        );
+    }
+
+    /// A value in another case, overlapping values and a short value are
+    /// redacted in one pass; a marker is never redacted again (D33).
+    #[test]
+    fn redaction_ignores_case_and_overlaps() {
+        let values = ["example.com:81", "abc", "bcd", "e"].map(String::from);
+        assert_eq!(
+            redact("host EXAMPLE.Com:81, abcd, xyz é", &values),
+            "host <redacted>, <redacted>, xyz é"
         );
     }
 }
