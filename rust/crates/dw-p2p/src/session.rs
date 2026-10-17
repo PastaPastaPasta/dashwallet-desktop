@@ -1,6 +1,7 @@
 //! One outbound P2P session: TCP connect, the `version`/`verack` handshake
 //! (plus `senddsq` when the caller wants CoinJoin queues), ping/pong, a
-//! reader task that fans messages out to subscribers, a rate-limited writer
+//! reader task that fans messages out to subscribers (bounded ones by
+//! frames and bytes, with backpressure on the reads), a rate-limited writer
 //! task, and a clean close.
 //!
 //! Handshake as Dash Core's `PeerManagerImpl::ProcessMessage`
@@ -10,7 +11,7 @@
 //! same nonce, here inside the reader so subscribers never see it.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -120,10 +121,76 @@ pub struct PeerVersion {
     pub start_height: i32,
 }
 
+/// The bytes a bounded subscription holds: frames in its channel, the one
+/// its reader waits to queue, and those taken but not yet dropped.
+#[derive(Debug)]
+struct Budget {
+    max: usize,
+    queued: AtomicUsize,
+}
+
+impl Budget {
+    /// Charges `bytes`; `None` past the budget.
+    fn charge(budget: &Arc<Budget>, bytes: usize) -> Option<Credit> {
+        let before = budget.queued.fetch_add(bytes, Ordering::SeqCst);
+        if before + bytes > budget.max {
+            budget.queued.fetch_sub(bytes, Ordering::SeqCst);
+            return None;
+        }
+        Some(Credit {
+            budget: Arc::clone(budget),
+            bytes,
+        })
+    }
+}
+
+/// A delivered frame's bytes (header included), held against its
+/// subscription's budget until dropped.
+pub struct Credit {
+    budget: Arc<Budget>,
+    bytes: usize,
+}
+
+impl Drop for Credit {
+    fn drop(&mut self) {
+        self.budget.queued.fetch_sub(self.bytes, Ordering::SeqCst);
+    }
+}
+
+impl std::fmt::Debug for Credit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credit")
+            .field("bytes", &self.bytes)
+            .finish()
+    }
+}
+
+/// A message of a [`Session::subscribe_bounded`] stream. Keep `credit`
+/// until the message is handled: its bytes count until then.
+#[derive(Debug)]
+pub struct Delivery {
+    pub message: Message,
+    pub credit: Credit,
+}
+
+enum Tx {
+    Unbounded(mpsc::UnboundedSender<Message>),
+    Bounded(mpsc::Sender<Delivery>, Arc<Budget>),
+}
+
+impl Tx {
+    fn is_closed(&self) -> bool {
+        match self {
+            Tx::Unbounded(tx) => tx.is_closed(),
+            Tx::Bounded(tx, _) => tx.is_closed(),
+        }
+    }
+}
+
 struct Subscriber {
     /// Empty: every command.
     commands: Vec<String>,
-    tx: mpsc::UnboundedSender<Message>,
+    tx: Tx,
 }
 
 struct Shared {
@@ -143,15 +210,24 @@ impl Shared {
             .clear();
     }
 
-    fn dispatch(&self, msg: Message) {
+    /// Sends `msg` to the unbounded subscribers it matches and returns the
+    /// bounded ones, which the reader queues to (waiting when full).
+    fn dispatch(&self, msg: &Message) -> Vec<(mpsc::Sender<Delivery>, Arc<Budget>)> {
+        let mut bounded = Vec::new();
         let mut subs = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
         subs.retain(|s| {
-            if s.commands.is_empty() || s.commands.contains(&msg.command) {
-                s.tx.send(msg.clone()).is_ok()
-            } else {
-                !s.tx.is_closed()
+            if !(s.commands.is_empty() || s.commands.contains(&msg.command)) {
+                return !s.tx.is_closed();
+            }
+            match &s.tx {
+                Tx::Unbounded(tx) => tx.send(msg.clone()).is_ok(),
+                Tx::Bounded(tx, budget) => {
+                    bounded.push((tx.clone(), Arc::clone(budget)));
+                    !tx.is_closed()
+                }
             }
         });
+        bounded
     }
 }
 
@@ -392,6 +468,31 @@ impl Session {
     /// from now on, until the session closes (the stream then ends).
     pub fn subscribe(&self, commands: &[&str]) -> mpsc::UnboundedReceiver<Message> {
         let (tx, rx) = mpsc::unbounded_channel();
+        self.add_subscriber(commands, Tx::Unbounded(tx));
+        rx
+    }
+
+    /// As [`Self::subscribe`], holding at most `frames` messages and
+    /// `max_bytes` bytes (headers included) not yet dropped by the caller
+    /// (each [`Delivery`]'s credit). A full stream stops the session's
+    /// reads until a message is taken; a frame past `max_bytes` closes the
+    /// session.
+    pub fn subscribe_bounded(
+        &self,
+        commands: &[&str],
+        frames: usize,
+        max_bytes: usize,
+    ) -> mpsc::Receiver<Delivery> {
+        let (tx, rx) = mpsc::channel(frames.max(1));
+        let budget = Arc::new(Budget {
+            max: max_bytes,
+            queued: AtomicUsize::new(0),
+        });
+        self.add_subscriber(commands, Tx::Bounded(tx, budget));
+        rx
+    }
+
+    fn add_subscriber(&self, commands: &[&str], tx: Tx) {
         if !self.is_closed() {
             self.shared
                 .subscribers
@@ -402,7 +503,6 @@ impl Session {
                     tx,
                 });
         }
-        rx
     }
 
     /// Closes the connection and ends every subscription. Idempotent.
@@ -495,7 +595,29 @@ async fn read_loop(
             }
             continue;
         }
-        shared.dispatch(msg);
+        let bytes = HEADER_LEN + msg.payload.len();
+        let targets = shared.dispatch(&msg);
+        let mut msg = Some(msg);
+        let n = targets.len();
+        for (i, (tx, budget)) in targets.into_iter().enumerate() {
+            let Some(credit) = Budget::charge(&budget, bytes) else {
+                tracing::debug!(
+                    bytes,
+                    max = budget.max,
+                    "p2p subscriber past its inbound budget; closing"
+                );
+                shared.close();
+                return;
+            };
+            let message = if i + 1 == n { msg.take() } else { msg.clone() };
+            let delivery = Delivery {
+                message: message.expect("taken by the last subscriber only"),
+                credit,
+            };
+            // Waits while the subscriber is behind: the peer's frames stay
+            // in the socket.
+            let _ = tx.send(delivery).await;
+        }
     }
     shared.close();
 }

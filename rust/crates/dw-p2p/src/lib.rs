@@ -37,8 +37,8 @@ pub mod testing;
 
 pub use peers::{PeerEntry, PeerPicker};
 pub use session::{
-    COINJOIN_PROTOCOL_VERSION, MIN_PEER_PROTO_VERSION, Message, P2pError, PeerVersion, Session,
-    SessionConfig, serialize,
+    COINJOIN_PROTOCOL_VERSION, Credit, Delivery, MIN_PEER_PROTO_VERSION, Message, P2pError,
+    PeerVersion, Session, SessionConfig, serialize,
 };
 
 #[cfg(test)]
@@ -93,6 +93,65 @@ mod tests {
             session.send("dsa", vec![]).await,
             Err(P2pError::Closed(_))
         ));
+        conn.shutdown().await;
+    }
+
+    /// A bounded subscription stops the reads while its reader is behind,
+    /// so a slow reader gets every frame in order without the session
+    /// queueing them; frames whose credits are kept past the byte budget
+    /// close the session.
+    #[tokio::test]
+    async fn bounded_subscriptions_push_back_then_close_past_their_budget() {
+        let peer = MockPeer::bind(Network::Regtest).await.unwrap();
+        let addr = peer.addr();
+        let server = tokio::spawn(async move {
+            let mut conn = peer.accept().await.unwrap();
+            conn.recv_command("dsa").await.unwrap();
+            for i in 0..200u8 {
+                conn.send("dssu", &[i; 600]).await.unwrap();
+            }
+            conn
+        });
+        let session = Session::connect(addr, Network::Regtest, SessionConfig::default())
+            .await
+            .unwrap();
+        // 2 frames queued, and the bytes of those and the one the reader
+        // waits to queue (600 + the 24-byte header each).
+        let mut rx = session.subscribe_bounded(&["dssu"], 2, 3 * 624);
+        session.send("dsa", vec![]).await.unwrap();
+        for i in 0..200u8 {
+            if i % 50 == 0 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            let d = rx.recv().await.unwrap();
+            assert_eq!(d.message.payload, vec![i; 600]);
+        }
+        assert!(!session.is_closed());
+        let conn = server.await.unwrap();
+
+        // Kept credits: the third 600-byte frame passes 1,500 bytes.
+        let peer = MockPeer::bind(Network::Regtest).await.unwrap();
+        let addr = peer.addr();
+        let server = tokio::spawn(async move {
+            let mut conn = peer.accept().await.unwrap();
+            conn.recv_command("dsa").await.unwrap();
+            for _ in 0..3 {
+                conn.send("dssu", &[0; 600]).await.unwrap();
+            }
+            conn
+        });
+        let other = Session::connect(addr, Network::Regtest, SessionConfig::default())
+            .await
+            .unwrap();
+        let mut rx = other.subscribe_bounded(&["dssu"], 64, 1_500);
+        other.send("dsa", vec![]).await.unwrap();
+        let kept = [rx.recv().await.unwrap(), rx.recv().await.unwrap()];
+        tokio::time::timeout(Duration::from_secs(5), other.closed())
+            .await
+            .unwrap();
+        assert!(rx.recv().await.is_none());
+        drop(kept);
+        server.await.unwrap().shutdown().await;
         conn.shutdown().await;
     }
 
