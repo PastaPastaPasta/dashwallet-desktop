@@ -468,23 +468,23 @@ fn an_avatar_candidate_sets_the_three_fields() {
     assert_eq!(shown.avatar_fingerprint, Some("cd".repeat(8)));
 }
 
-/// "Load contact pictures" where `avatar` enforces it (DP4-02 D17), on the
-/// session: off, another user's avatar reads neither Platform nor the
-/// avatar host; on, the profile is read from Platform (once, then kept) and
-/// its URL fetched. The local server speaks plain HTTP to the `https` URL a
-/// profile must show, so that fetch fails (counted at the listener) and
-/// its failure is kept: the verdicts are the pipeline's (avatar_tests.rs).
-#[test]
-fn the_pictures_toggle_holds_at_the_session() {
+/// A session with a test pipeline, and Dave publishing an avatar on
+/// Platform (the wallet holds nothing of him). The local server speaks
+/// plain HTTP to the `https` URL a profile must show, so a fetch of it
+/// fails, counted at the listener: the verdicts are the pipeline's
+/// (avatar_tests.rs).
+struct DavesAvatar {
+    server: super::avatar_tests::Server,
+    _tmp: tempfile::TempDir,
+}
+
+fn with_daves_avatar(f: &Fixture) -> DavesAvatar {
     use super::avatar::Pipeline;
     use super::avatar_cache::ThumbDir;
     use super::avatar_fetch::NameResolver;
     use super::avatar_tests::{LOCAL, Route, Script, Server, png, test_policy};
-    use super::errors::AvatarError;
-    use super::profile::AvatarSize;
     use platform_wallet::wallet::identity::{calculate_avatar_hash, calculate_dhash_fingerprint};
 
-    let f = fixture();
     let server = f.engine.block_on(Server::start((LOCAL, 0).into())).unwrap();
     let script = Arc::new(Script::default());
     script.answer("good.test", vec![vec![LOCAL]]);
@@ -495,9 +495,8 @@ fn the_pictures_toggle_holds_at_the_session() {
         script as Arc<dyn NameResolver>,
         Some(ThumbDir::open(tmp.path()).unwrap()),
         Arc::new(dw_appdb::AppDb::open_in_memory().unwrap()),
-        avatars.pictures_flag(),
+        avatars.toggle(),
     ));
-    // Dave publishes an avatar on Platform; the wallet holds nothing of him.
     let theirs = png(30, 30);
     server.route("/dave.png", Route::ok(theirs.clone()));
     let https = server
@@ -516,14 +515,35 @@ fn the_pictures_toggle_holds_at_the_session() {
         ]),
     };
     f.net.profiles.lock().unwrap().insert(id(DAVE), doc);
-    let reads = || f.net.profile_reads.load(Ordering::SeqCst);
-    let before = reads();
-    let avatar = |n: u8| {
-        let (s, net) = (Arc::clone(&f.s), Arc::clone(&f.net));
-        let (wallet, who) = (f.wallet, b58(&id(n)));
-        f.engine
-            .block_on(async move { s.avatar_of(&*net, wallet, &who, AvatarSize::Small).await })
-    };
+    DavesAvatar { server, _tmp: tmp }
+}
+
+impl Fixture {
+    async fn read_avatar(
+        &self,
+        n: u8,
+    ) -> Result<Option<super::profile::AvatarImage>, super::errors::AvatarError> {
+        let who = b58(&id(n));
+        let size = super::profile::AvatarSize::Small;
+        self.s.avatar_of(&*self.net, self.wallet, &who, size).await
+    }
+
+    fn profile_reads(&self) -> u32 {
+        self.net.profile_reads.load(Ordering::SeqCst)
+    }
+}
+
+/// "Load contact pictures" where `avatar` enforces it (DP4-02 D17), on the
+/// session: off, another user's avatar reads neither Platform nor the
+/// avatar host; on, the profile is read from Platform (once, then kept) and
+/// its URL fetched, and the fetch's failure is kept.
+#[test]
+fn the_pictures_toggle_holds_at_the_session() {
+    use super::errors::AvatarError;
+    let f = fixture();
+    let p = with_daves_avatar(&f);
+    let before = f.profile_reads();
+    let avatar = |n: u8| f.engine.block_on(f.read_avatar(n));
     let toggle = |on: bool| {
         f.engine
             .block_on(f.s.set_load_contact_pictures(on))
@@ -535,15 +555,58 @@ fn the_pictures_toggle_holds_at_the_session() {
     assert_eq!(avatar(DAVE), Ok(None));
     assert_eq!(avatar(ERIN), Ok(None));
     assert_eq!(avatar(ME), Ok(None));
-    assert_eq!((reads(), server.connections()), (before, 0));
+    assert_eq!((f.profile_reads(), p.server.connections()), (before, 0));
     toggle(true);
     assert_eq!(f.s.load_contact_pictures(), Ok(true));
     assert_eq!(avatar(DAVE), Err(AvatarError::FetchFailed));
-    let connections = server.connections();
+    let connections = p.server.connections();
     assert!(connections >= 1);
     assert_eq!(avatar(DAVE), Err(AvatarError::FetchFailed));
-    assert_eq!(reads(), before + 1, "read once, then kept");
-    assert_eq!(server.connections(), connections, "the failure is kept");
+    assert_eq!(f.profile_reads(), before + 1, "read once, then kept");
+    assert_eq!(p.server.connections(), connections, "the failure is kept");
+}
+
+/// An off that returns while a read waits to read Platform holds for it
+/// (D33): the read does not reach Platform or the avatar host, and answers
+/// `None`.
+#[test]
+fn an_off_holds_for_a_read_waiting_on_platform() {
+    let f = fixture();
+    let p = with_daves_avatar(&f);
+    let before = f.profile_reads();
+    let toggle = f.s.platform.avatars.toggle();
+    let (reached, release) = super::avatar_tests::pause_at(&toggle, "platform");
+    let off = async {
+        reached.await.unwrap();
+        f.s.set_load_contact_pictures(false).await.unwrap();
+        release.send(()).unwrap();
+    };
+    let (read, ()) = f
+        .engine
+        .block_on(async { tokio::join!(f.read_avatar(DAVE), off) });
+    assert_eq!(read, Ok(None));
+    assert_eq!((f.profile_reads(), p.server.connections()), (before, 0));
+}
+
+/// Reads of one identity the wallet does not hold share one Platform read
+/// (D35): eight at once, the first held at Platform while the others queue,
+/// make one read.
+#[test]
+fn reads_of_one_unknown_identity_share_one_platform_read() {
+    let f = fixture();
+    let _p = with_daves_avatar(&f);
+    let before = f.profile_reads();
+    let toggle = f.s.platform.avatars.toggle();
+    let (reached, release) = super::avatar_tests::pause_at(&toggle, "platform");
+    let reads = futures_util::future::join_all((0..8).map(|_| f.read_avatar(DAVE)));
+    let hold = async {
+        reached.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        release.send(()).unwrap();
+    };
+    let (reads, ()) = f.engine.block_on(async { tokio::join!(reads, hold) });
+    assert_eq!(reads.len(), 8);
+    assert_eq!(f.profile_reads(), before + 1);
 }
 
 /// Without the document key in the vault the edit is

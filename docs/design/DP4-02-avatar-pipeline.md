@@ -27,10 +27,13 @@ to `dashpay_avatar`.
 
 1. **The profile.** `profile(identity)` (DP4-01: an own identity, else a contact's profile the contacts model holds).
    An identity neither knows (a search hit, an inviter) is read from Platform (`profile_document`, proved; D14) and
-   kept in memory for 10 minutes. No profile, or one without an avatar, is `Ok(None)`.
+   kept in memory for 10 minutes; reads of one identity share one Platform read, at most 4 at once (D35). No profile,
+   or one without an avatar, is `Ok(None)`.
 2. **The toggle** (D17). Off: `Ok(None)` for every identity that is not one of the wallet's own, before any read
-   (no Platform query, no fetch); an own identity is served from the cache only, never fetched. It is read again
-   once the URL's lock is held, so a read that waited does not fetch after the user turned pictures off. A profile
+   (no Platform query, no fetch); an own identity is served from the cache only, never fetched. The read keeps what
+   it saw when it began (a ticket) and asks again at every network step and before answering: a turn-off that has
+   returned stops a Platform read or a fetch not yet started, abandons one running, and makes another user's read
+   answer `Ok(None)` whatever it found (D33). A profile
    whose `avatarHash` is not 64 hex digits or whose `avatarFingerprint` is not 16 is a mismatch without a fetch
    (D26).
 3. **The cache index** (`dp_avatar`, keyed by the SHA-256 of the URL as published). Under the URL's fetch lock, so
@@ -159,6 +162,9 @@ otherwise), before the identity's lock is taken (DP4-01 D8); the write sets `ava
 | D30 | The renderer shows the picture in My Profile's header only, from `dashpayAvatar(wallet, main identity, large)`, falling back to the initials on `null`, any error, or an image that fails to load; the fixture has a `dashpay-avatar` scenario. | The row's UI part is "wire the existing placeholder to the engine read"; lists and Edit Profile are DP4-03's. |
 | D31 | dwcli's `profile prepare-avatar --gravatar EMAIL` takes the address on the command line. | dwcli is a developer and test tool; the address is not a credential (the session grammar types it as text). The app never logs or stores it. |
 | D32 | The fingerprint does not veto an exact hash (revises the first D6, which required the library's dHash within 20 bits of `avatarFingerprint`). | T2 (below): of the 53 testnet avatars whose bytes match `avatarHash` exactly, 9 have the library's dHash bit for bit (published with platform-wallet) and the other 44 differ by 12 to 35 bits (median 21; 28 of 53 above 20; no byte or bit order explains it). The mobile wallets' dHash is another algorithm, and 32 bits is what two unrelated pictures differ by on average, so no threshold both accepts their pictures and means anything. A 20-bit rule would have shown initials for over half of the real profiles that verify. |
+| D33 | "Load contact pictures" off holds from the moment `set_load_contact_pictures(false)` returns, for reads already running too (revises D17's "read again once the URL's lock is held"). The toggle carries an epoch moved by every transition; a read takes a ticket (on, epoch) as it begins and may use the network only while the toggle is on at that epoch: checked before the Platform read and before the fetch, both run against a watch that drops them when the ticket is revoked (nothing is recorded for an abandoned fetch), and checked again before another user's read answers (`Ok(None)` then, a cached hit included). An own identity's cached thumbnail still shows. | Sol r1 M1: a read that saw "on", paused at the cache lookup, then fetched, or returned a hit or a fetch that was running, after the user turned pictures off. A turn-on does not revive a read that began off (its ticket was never "on"); one that began on and saw an off-and-on is dropped too, as the epoch moved: the caller asks again. A decode already running is not stopped (F7); its result is discarded. |
+| D34 | Transitions of the toggle are serialized per session: a lock held across the app.sqlite write and the memory store, so memory is always the last value written. A failed write leaves memory as it was. | Sol r1 M2: two calls at once could store `on` in memory after a durable `off`. |
+| D35 | Reads of one identity the wallet does not hold share one Platform read (a lock per identity; the waiters take the kept profile), and at most 4 such reads run at once. Failures are not kept, so the next waiter reads again. | Sol r1 / F8: lists (DP4-03) ask for the same search hit's avatar from several rows; without it each asked Platform. |
 
 ## T2 evidence (testnet, 2026-10-17, read only)
 
@@ -183,8 +189,13 @@ otherwise), before the identity's lock is taken (DP4-01 D8); the write sets `ava
 - F4 (D16): Windows handle-relative thumbnail I/O (`NtCreateFile` with a root handle) with W-01.
 - F5 (D17): the Settings ▸ Privacy row "Load contact pictures" (DP4-03), and pictures in every list.
 - F6 (D19): an avatar in the registration's initial profile.
-- F7 (D24): a decode deadline (a decoder that checks a cancel flag, or a decode subprocess).
-- F8: rotation by last use rather than by fetch time, and one Platform read per unknown identity at a time (D14's
-  cache has no single-flight).
+- F7 (D24): a decode deadline (a decoder that checks a cancel flag, or a decode subprocess). Residual until then
+  (Sol r1): two decode slots, and a caller that gives up (or is abandoned, D33) does not stop the blocking decode,
+  so a hostile valid image within the limits can hold both slots for as long as it takes to decode.
+- F8: rotation by last use rather than by fetch time (the single-flight half is D35).
 - F9 (DP4-03): `useAvatar` keys invalidated when the toggle changes, and an e2e case for `Avatar`'s `onError`
   fallback (a thumbnail that is not a PNG).
+- F10 (BL-190): before this wallet publishes any `avatarFingerprint` (F1 upload, F6, a DP4-01 edit setting an avatar),
+  compute it the way the mobile wallets do, or their 20-bit check refuses our avatars. T2 compared the library's dHash
+  with fingerprints already on testnet, not with a mobile implementation; D6's "9 × 9, mean grey, bilinear" for
+  Android is unverified. Check dash-wallet (Android) and the iOS DashPay fingerprint code first.

@@ -10,7 +10,7 @@ use std::io::Cursor;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dw_appdb::AppDb;
@@ -21,7 +21,7 @@ use reqwest::Url;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use super::avatar::{Pipeline, Target, Whose};
+use super::avatar::{Pictures, Pipeline, Target, Whose};
 use super::avatar_cache::ThumbDir;
 use super::avatar_fetch::{FetchError, FetchPolicy, Fetcher, MAX_BYTES, NameResolver};
 use super::avatar_image::{self, Crop, MAX_SIDE};
@@ -101,6 +101,8 @@ pub(super) struct Route {
     body: Vec<u8>,
     /// Send `Content-Length` (else the body ends at the close).
     length: bool,
+    /// Answer only after a minute: a fetch still running.
+    stall: bool,
 }
 
 impl Route {
@@ -110,6 +112,14 @@ impl Route {
             headers: vec![("Content-Type".into(), "image/png".into())],
             body,
             length: true,
+            stall: false,
+        }
+    }
+
+    fn stalled(body: Vec<u8>) -> Self {
+        Self {
+            stall: true,
+            ..Self::ok(body)
         }
     }
 
@@ -119,6 +129,7 @@ impl Route {
             headers: vec![("Location".into(), to.into())],
             body: Vec::new(),
             length: true,
+            stall: false,
         }
     }
 
@@ -128,6 +139,7 @@ impl Route {
             headers: Vec::new(),
             body: Vec::new(),
             length: true,
+            stall: false,
         }
     }
 }
@@ -160,6 +172,9 @@ async fn serve(
         .to_owned();
     hits.lock().unwrap().push(target.clone());
     let route = (routes.lock().unwrap().get(&target).cloned()).unwrap_or_else(Route::missing);
+    if route.stall {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    }
     let mut out = format!("HTTP/1.1 {} X\r\nConnection: close\r\n", route.status);
     for (k, v) in &route.headers {
         out += &format!("{k}: {v}\r\n");
@@ -269,7 +284,7 @@ struct Rig {
     server: Server,
     script: Arc<Script>,
     pipeline: Pipeline,
-    pictures: Arc<AtomicBool>,
+    pictures: Arc<Pictures>,
     db: Arc<AppDb>,
     dir: PathBuf,
     tmp: tempfile::TempDir,
@@ -285,7 +300,7 @@ impl Rig {
         std::fs::create_dir(&dir).unwrap();
         set_mode(&dir, 0o700);
         let db = Arc::new(AppDb::open_in_memory().unwrap());
-        let pictures = Arc::new(AtomicBool::new(true));
+        let pictures = Arc::new(Pictures::new(true));
         let pipeline = Pipeline::new(
             test_policy(),
             Arc::clone(&script) as Arc<dyn NameResolver>,
@@ -316,9 +331,13 @@ impl Rig {
         self.fetcher().fetch(&Url::parse(url).unwrap()).await
     }
 
+    fn ticket(&self) -> super::avatar::Ticket {
+        self.pictures.ticket()
+    }
+
     async fn read(&self, profile: &Profile) -> Result<Option<Vec<u8>>, AvatarError> {
         (self.pipeline)
-            .for_profile(profile, AvatarSize::Small, Whose::Other)
+            .for_profile(profile, AvatarSize::Small, Whose::Other, self.ticket())
             .await
     }
 }
@@ -345,7 +364,7 @@ async fn a_matching_avatar_is_shown_and_cached() {
     let thumb = rig.read(&profile).await.unwrap().unwrap();
     assert!(avatar_image::is_thumbnail(&thumb, 128));
     let large = (rig.pipeline)
-        .for_profile(&profile, AvatarSize::Large, Whose::Other)
+        .for_profile(&profile, AvatarSize::Large, Whose::Other, rig.ticket())
         .await
         .unwrap()
         .unwrap();
@@ -771,22 +790,146 @@ async fn with_pictures_off_nothing_is_fetched() {
     let bytes = png(32, 32);
     rig.server.route("/o.png", Route::ok(bytes.clone()));
     let profile = profile_for(&rig.server.url("good.test", "/o.png"), &bytes);
-    let pipeline = &rig.pipeline;
-    let read =
-        |p: Profile, whose| async move { pipeline.for_profile(&p, AvatarSize::Small, whose).await };
-    rig.pictures.store(false, Ordering::SeqCst);
+    let (pipeline, pictures) = (&rig.pipeline, &rig.pictures);
+    let read = |p: Profile, whose| async move {
+        let ticket = pictures.ticket();
+        pipeline
+            .for_profile(&p, AvatarSize::Small, whose, ticket)
+            .await
+    };
+    rig.pictures.set(false);
     assert_eq!(read(profile.clone(), Whose::Own).await, Ok(None));
     assert_eq!(read(profile.clone(), Whose::Other).await, Ok(None));
     assert!(rig.server.hits().is_empty());
-    rig.pictures.store(true, Ordering::SeqCst);
+    rig.pictures.set(true);
     assert!(read(profile.clone(), Whose::Own).await.unwrap().is_some());
-    rig.pictures.store(false, Ordering::SeqCst);
+    rig.pictures.set(false);
     assert!(read(profile.clone(), Whose::Own).await.unwrap().is_some());
     assert_eq!(read(profile.clone(), Whose::Other).await, Ok(None));
     let mut wrong = profile.clone();
     wrong.avatar_hash = Some("11".repeat(32));
     assert_eq!(read(wrong, Whose::Own).await, Ok(None));
     assert_eq!(rig.server.hits().len(), 1);
+}
+
+/// Pauses the first read reaching `at` until released: `(reached,
+/// release)`. Reads past it, and other points, go on.
+pub(super) fn pause_at(
+    pictures: &Pictures,
+    at: &'static str,
+) -> (
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release) = tokio::sync::oneshot::channel::<()>();
+    let once = Mutex::new(Some((reached, release)));
+    pictures.set_hook(Box::new(move |point| {
+        if point != at {
+            return None;
+        }
+        let (reached, release) = once.lock().unwrap().take()?;
+        let _ = reached.send(());
+        Some(Box::pin(async move {
+            let _ = release.await;
+        }))
+    }));
+    (reached_rx, release_tx)
+}
+
+/// An off holds for reads already running (D33): one that began with the
+/// toggle on and was paused at the cache lookup (no row) does not fetch;
+/// one paused at a verified cache hit answers `None` for another user
+/// (an own identity's still shows: the cache is allowed while off); one
+/// whose fetch is running has it abandoned, and nothing is recorded.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_off_holds_for_reads_already_running() {
+    let rig = Rig::new().await;
+    let bytes = png(24, 24);
+    rig.server.route("/a.png", Route::ok(bytes.clone()));
+    let profile = profile_for(&rig.server.url("good.test", "/a.png"), &bytes);
+    let pictures = &rig.pictures;
+    let off_while_paused = |at| {
+        let (reached, release) = pause_at(pictures, at);
+        async move {
+            reached.await.unwrap();
+            pictures.set(false);
+            release.send(()).unwrap();
+        }
+    };
+    // Paused at the lookup, nothing cached: no fetch.
+    let (read, ()) = tokio::join!(rig.read(&profile), off_while_paused("row"));
+    assert_eq!(read, Ok(None));
+    assert!(rig.server.hits().is_empty());
+    // Cached (on), then paused at the hit.
+    rig.pictures.set(true);
+    assert!(rig.read(&profile).await.unwrap().is_some());
+    let (read, ()) = tokio::join!(rig.read(&profile), off_while_paused("thumbnail"));
+    assert_eq!(read, Ok(None));
+    rig.pictures.set(true);
+    let own = async {
+        let ticket = rig.ticket();
+        (rig.pipeline)
+            .for_profile(&profile, AvatarSize::Small, Whose::Own, ticket)
+            .await
+    };
+    let (read, ()) = tokio::join!(own, off_while_paused("thumbnail"));
+    assert!(read.unwrap().is_some());
+    assert_eq!(rig.server.hits().len(), 1);
+    // A fetch running when the toggle goes off is abandoned at once.
+    rig.pictures.set(true);
+    let slow = png(25, 25);
+    rig.server.route("/slow.png", Route::stalled(slow.clone()));
+    let stalled = profile_for(&rig.server.url("good.test", "/slow.png"), &slow);
+    let off_mid_fetch = async {
+        while !rig.server.hits().contains(&"/slow.png".to_string()) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        rig.pictures.set(false);
+    };
+    let started = std::time::Instant::now();
+    let (read, ()) = tokio::join!(rig.read(&stalled), off_mid_fetch);
+    assert_eq!(read, Ok(None));
+    assert!(started.elapsed() < std::time::Duration::from_secs(9));
+    let key = Target::parse(&stalled.avatar_url.clone().unwrap())
+        .unwrap()
+        .url_sha;
+    assert_eq!(rig.db.avatar_row(&key).unwrap(), None, "nothing recorded");
+}
+
+/// Transitions at once apply in turn (D34): one paused between its durable
+/// write and memory holds the next back, so memory ends as the last value
+/// written, not as the slower call's.
+#[tokio::test(flavor = "multi_thread")]
+async fn overlapping_transitions_end_at_the_last_durable_write() {
+    let pictures = Pictures::new(false);
+    let durable = Mutex::new(Vec::new());
+    let (go, wait) = tokio::sync::oneshot::channel::<()>();
+    let slow_on = pictures.transition(true, async {
+        durable.lock().unwrap().push(true);
+        let _ = wait.await;
+        Ok::<_, ()>(())
+    });
+    let off = async {
+        tokio::task::yield_now().await;
+        let write = async {
+            durable.lock().unwrap().push(false);
+            Ok::<_, ()>(())
+        };
+        pictures.transition(false, write).await
+    };
+    let release = async {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        go.send(()).unwrap();
+    };
+    let (a, b, ()) = tokio::join!(slow_on, off, release);
+    assert_eq!((a, b), (Ok(()), Ok(())));
+    assert_eq!(*durable.lock().unwrap(), [true, false]);
+    assert!(!pictures.on());
+    // A failed write leaves memory as it was.
+    let failed = pictures.transition(true, async { Err::<(), _>("disk") });
+    assert_eq!(failed.await, Err("disk"));
+    assert!(!pictures.on());
 }
 
 /// One fetch per URL at a time (D12): reads of one avatar at once make one
@@ -843,12 +986,12 @@ async fn without_a_directory_thumbnails_stay_in_memory() {
         Arc::clone(&rig.script) as Arc<dyn NameResolver>,
         None,
         Arc::new(AppDb::open_in_memory().unwrap()),
-        Arc::new(AtomicBool::new(true)),
+        Arc::clone(&rig.pictures),
     );
     let profile = profile_for(&rig.server.url("good.test", "/m.png"), &bytes);
     for size in [AvatarSize::Small, AvatarSize::Small, AvatarSize::Large] {
         let png = pipeline
-            .for_profile(&profile, size, Whose::Other)
+            .for_profile(&profile, size, Whose::Other, rig.ticket())
             .await
             .unwrap()
             .unwrap();
@@ -919,7 +1062,7 @@ async fn a_url_source_is_fetched_now() {
         Arc::clone(&rig.script) as Arc<dyn NameResolver>,
         None,
         Arc::clone(&rig.db),
-        Arc::new(AtomicBool::new(true)),
+        Arc::clone(&rig.pictures),
     );
     for bad in [
         "http://example.com/a.png",

@@ -6,7 +6,8 @@
 //! of the facade.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::future::Future;
+use std::hash::Hash;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
@@ -41,14 +42,145 @@ const DECODES: usize = 2;
 /// Candidates kept, and for how long (design: "Sources").
 const CANDIDATES: usize = 16;
 const CANDIDATE_LIFE: Duration = Duration::from_secs(30 * 60);
-/// Profiles of identities the wallet does not hold (D14).
+/// Profiles of identities the wallet does not hold (D14), and the
+/// Platform reads of them at once (D35).
 const REMOTE_PROFILES: usize = 256;
 const REMOTE_PROFILE_LIFE: Duration = Duration::from_secs(600);
+const REMOTE_READS: usize = 4;
 /// Android's crop parameter (D15).
 const ZOOM_PARAM: &str = "dashpay-profile-pic-zoom";
 
 fn guard<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+type Locks<K> = Mutex<HashMap<K, Weak<tokio::sync::Mutex<()>>>>;
+
+/// The lock for `key` in `locks`, shared by every holder while one lives
+/// (dead entries are dropped as new ones come).
+fn keyed_lock<K: Hash + Eq + Clone>(locks: &Locks<K>, key: &K) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks = guard(locks);
+    locks.retain(|_, l| l.strong_count() > 0);
+    if let Some(lock) = locks.get(key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(key.clone(), Arc::downgrade(&lock));
+    lock
+}
+
+/// What a read saw of "Load contact pictures" when it began (D33).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Ticket {
+    on: bool,
+    epoch: u64,
+}
+
+#[cfg(test)]
+pub(super) type Hook = Box<
+    dyn Fn(&'static str) -> Option<std::pin::Pin<Box<dyn Future<Output = ()> + Send>>>
+        + Send
+        + Sync,
+>;
+
+/// "Load contact pictures" for the session (D17). Every transition moves
+/// the epoch, so a read that began before one can tell (D33), and
+/// transitions are serialized across their durable write, so memory is
+/// always the last value written (D34).
+pub(super) struct Pictures {
+    state: tokio::sync::watch::Sender<(bool, u64)>,
+    transitions: tokio::sync::Mutex<()>,
+    /// Test pauses at named points of a read.
+    #[cfg(test)]
+    hook: Mutex<Option<Hook>>,
+}
+
+impl Pictures {
+    pub(super) fn new(on: bool) -> Self {
+        Self {
+            state: tokio::sync::watch::Sender::new((on, 0)),
+            transitions: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            hook: Mutex::default(),
+        }
+    }
+
+    pub(super) fn on(&self) -> bool {
+        self.state.borrow().0
+    }
+
+    /// The toggle as a read beginning now sees it.
+    pub(super) fn ticket(&self) -> Ticket {
+        let (on, epoch) = *self.state.borrow();
+        Ticket { on, epoch }
+    }
+
+    /// Whether a read holding `ticket` may still use the network: it began
+    /// with the toggle on, and nothing has moved it since.
+    pub(super) fn allows(&self, ticket: Ticket) -> bool {
+        ticket.on && *self.state.borrow() == (true, ticket.epoch)
+    }
+
+    /// Sets the toggle now, without a durable write (at open, and tests).
+    pub(super) fn set(&self, on: bool) {
+        self.state.send_if_modified(|(now, epoch)| {
+            let moved = *now != on;
+            if moved {
+                (*now, *epoch) = (on, *epoch + 1);
+            }
+            moved
+        });
+    }
+
+    /// A transition: `write` (the durable one) and then memory, one
+    /// transition at a time (D34). Memory stays as it was if `write` fails.
+    pub(super) async fn transition<E>(
+        &self,
+        on: bool,
+        write: impl Future<Output = Result<(), E>>,
+    ) -> Result<(), E> {
+        let _one = self.transitions.lock().await;
+        write.await?;
+        self.set(on);
+        Ok(())
+    }
+
+    /// `work`, unless `ticket` stops allowing the network first: then
+    /// `None`, and `work` is dropped where it stands (D33).
+    pub(super) async fn unless_revoked<T>(
+        &self,
+        ticket: Ticket,
+        work: impl Future<Output = T>,
+    ) -> Option<T> {
+        if !self.allows(ticket) {
+            return None;
+        }
+        let mut state = self.state.subscribe();
+        let revoked = state.wait_for(|&(on, epoch)| !(on && epoch == ticket.epoch));
+        tokio::select! {
+            biased;
+            _ = revoked => None,
+            done = work => self.allows(ticket).then_some(done),
+        }
+    }
+
+    /// A named point of a read, where a test may pause it.
+    async fn at(&self, point: &'static str) {
+        #[cfg(test)]
+        {
+            let pause = guard(&self.hook).as_ref().and_then(|hook| hook(point));
+            if let Some(pause) = pause {
+                pause.await;
+            }
+        }
+        #[cfg(not(test))]
+        let _ = point;
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_hook(&self, hook: Hook) {
+        *guard(&self.hook) = Some(hook);
+    }
 }
 
 /// Whose avatar a read is for (D17). While "Load contact pictures" is
@@ -134,12 +266,11 @@ pub(super) struct Pipeline {
     fetcher: Fetcher,
     store: Arc<AvatarStore>,
     /// One fetch per URL at a time (D12), by `url_sha`.
-    url_locks: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
+    url_locks: Locks<String>,
     fetches: Semaphore,
     decodes: Arc<Semaphore>,
-    /// "Load contact pictures", shared with the runtime (D17): read again
-    /// after waiting for a URL's lock.
-    pictures: Arc<AtomicBool>,
+    /// "Load contact pictures", shared with the runtime (D17, D33).
+    pictures: Arc<Pictures>,
 }
 
 impl Pipeline {
@@ -148,7 +279,7 @@ impl Pipeline {
         resolver: Arc<dyn NameResolver>,
         dir: Option<ThumbDir>,
         db: Arc<AppDb>,
-        pictures: Arc<AtomicBool>,
+        pictures: Arc<Pictures>,
     ) -> Self {
         Self {
             fetcher: Fetcher::new(policy, resolver),
@@ -161,14 +292,7 @@ impl Pipeline {
     }
 
     fn url_lock(&self, url_sha: &str) -> Arc<tokio::sync::Mutex<()>> {
-        let mut locks = guard(&self.url_locks);
-        locks.retain(|_, l| l.strong_count() > 0);
-        if let Some(lock) = locks.get(url_sha).and_then(Weak::upgrade) {
-            return lock;
-        }
-        let lock = Arc::new(tokio::sync::Mutex::new(()));
-        locks.insert(url_sha.to_owned(), Arc::downgrade(&lock));
-        lock
+        keyed_lock(&self.url_locks, &url_sha.to_owned())
     }
 
     async fn blocking<T: Send + 'static>(
@@ -247,16 +371,36 @@ impl Pipeline {
     /// while "Load contact pictures" is off, for another user's or for an
     /// own identity's with nothing verified cached. A profile whose hash or
     /// fingerprint could match nothing is a mismatch without a fetch.
+    /// `ticket` is the toggle as the read began (D33): the network is used
+    /// only while it allows it, a fetch it stops allowing is abandoned, and
+    /// another user's read it stops allowing answers `None` whatever it
+    /// found.
     pub(super) async fn for_profile(
         &self,
         profile: &Profile,
         size: AvatarSize,
         whose: Whose,
+        ticket: Ticket,
+    ) -> Result<Option<Vec<u8>>, AvatarError> {
+        let read = self.read(profile, size, whose, ticket).await;
+        if whose == Whose::Other && !self.pictures.allows(ticket) {
+            return Ok(None);
+        }
+        read
+    }
+
+    async fn read(
+        &self,
+        profile: &Profile,
+        size: AvatarSize,
+        whose: Whose,
+        ticket: Ticket,
     ) -> Result<Option<Vec<u8>>, AvatarError> {
         let Some(published) = profile.avatar_url.as_deref() else {
             return Ok(None);
         };
-        if whose == Whose::Other && !self.pictures.load(Ordering::Relaxed) {
+        let network = || self.pictures.allows(ticket);
+        if whose == Whose::Other && !network() {
             return Ok(None);
         }
         if !avatar_image::verifiable(profile) {
@@ -265,29 +409,31 @@ impl Pipeline {
         let target = Target::parse(published).map_err(|_| AvatarError::FetchFailed)?;
         let lock = self.url_lock(&target.url_sha);
         let _one = lock.lock().await;
-        // The toggle may have moved while this read waited.
-        let network = self.pictures.load(Ordering::Relaxed);
-        if whose == Whose::Other && !network {
+        if whose == Whose::Other && !network() {
             return Ok(None);
         }
         let key = target.url_sha.clone();
-        if let Some(row) = self.blocking(move |s| s.row(&key)).await? {
+        let row = self.blocking(move |s| s.row(&key)).await?;
+        self.pictures.at("row").await;
+        if let Some(row) = row {
             let verified = row.status == "ok"
                 && avatar_image::matches(row.content_sha.as_deref().unwrap_or(""), profile);
             if verified {
                 if let Some(png) = self.blocking(move |s| s.thumbnail(&row, size)).await? {
+                    self.pictures.at("thumbnail").await;
                     return Ok(Some(png));
                 }
-            } else if !network {
+            } else if !network() {
                 return Ok(None);
             } else if fresh(&row, unix_now()) {
                 return Err(refusal(&row.status));
             }
         }
-        if !network {
+        let fetch = self.fetch(&target, false);
+        let Some(ingested) = self.pictures.unless_revoked(ticket, fetch).await else {
             return Ok(None);
-        }
-        let ingested = self.fetch(&target, false).await?;
+        };
+        let ingested = ingested?;
         if !avatar_image::matches(&hex::encode(ingested.sha), profile) {
             return Err(AvatarError::HashMismatch);
         }
@@ -362,18 +508,24 @@ pub(super) struct Published {
 /// The avatar state of a session's Platform runtime.
 pub(crate) struct AvatarRuntime {
     pipeline: Mutex<Option<Arc<Pipeline>>>,
-    pictures: Arc<AtomicBool>,
+    pictures: Arc<Pictures>,
     candidates: Mutex<VecDeque<(String, Candidate)>>,
     remote: Mutex<HashMap<Identifier, (Instant, Option<Profile>)>>,
+    /// One Platform read per unknown identity at a time, and at most
+    /// [`REMOTE_READS`] at once (D35).
+    remote_locks: Locks<Identifier>,
+    remote_reads: Semaphore,
 }
 
 impl Default for AvatarRuntime {
     fn default() -> Self {
         Self {
             pipeline: Mutex::default(),
-            pictures: Arc::new(AtomicBool::new(true)),
+            pictures: Arc::new(Pictures::new(true)),
             candidates: Mutex::default(),
             remote: Mutex::default(),
+            remote_locks: Mutex::default(),
+            remote_reads: Semaphore::new(REMOTE_READS),
         }
     }
 }
@@ -385,7 +537,7 @@ impl AvatarRuntime {
     }
 
     /// The toggle the pipeline reads, to build one.
-    pub(super) fn pictures_flag(&self) -> Arc<AtomicBool> {
+    pub(super) fn toggle(&self) -> Arc<Pictures> {
         Arc::clone(&self.pictures)
     }
 
@@ -394,11 +546,7 @@ impl AvatarRuntime {
     }
 
     pub(super) fn pictures(&self) -> bool {
-        self.pictures.load(Ordering::Relaxed)
-    }
-
-    pub(super) fn set_pictures(&self, on: bool) {
-        self.pictures.store(on, Ordering::Relaxed);
+        self.pictures.on()
     }
 
     /// Keeps `candidate` and returns its id, dropping expired ones and the
@@ -506,19 +654,41 @@ impl AvatarRuntime {
     }
 
     /// The profile of an identity the wallet holds nothing of, from
-    /// Platform, kept [`REMOTE_PROFILE_LIFE`] (D14).
+    /// Platform, kept [`REMOTE_PROFILE_LIFE`] (D14). Reads of one identity
+    /// share one Platform read, at most [`REMOTE_READS`] run at once (D35),
+    /// and none starts or completes once `ticket` no longer allows the
+    /// network (D33): then `None`, and nothing is kept.
     async fn remote_profile(
         &self,
         net: &impl RequestNet,
         user: Identifier,
+        ticket: Ticket,
     ) -> Result<Option<Profile>, AvatarError> {
-        if let Some((at, p)) = guard(&self.remote).get(&user)
-            && at.elapsed() < REMOTE_PROFILE_LIFE
-        {
-            return Ok(p.clone());
+        if let Some(kept) = self.kept_remote(&user) {
+            return Ok(kept);
         }
-        let doc = net.profile_document(user).await?;
-        let profile = doc.and_then(|d| super::profiles::shown(&d.properties));
+        let lock = keyed_lock(&self.remote_locks, &user);
+        let pictures = &self.pictures;
+        let Some(_one) = pictures.unless_revoked(ticket, lock.lock()).await else {
+            return Ok(None);
+        };
+        if let Some(kept) = self.kept_remote(&user) {
+            return Ok(kept);
+        }
+        let Some(_permit) = pictures
+            .unless_revoked(ticket, self.remote_reads.acquire())
+            .await
+        else {
+            return Ok(None);
+        };
+        pictures.at("platform").await;
+        let Some(doc) = pictures
+            .unless_revoked(ticket, net.profile_document(user))
+            .await
+        else {
+            return Ok(None);
+        };
+        let profile = doc?.and_then(|d| super::profiles::shown(&d.properties));
         let mut remote = guard(&self.remote);
         remote.retain(|_, (at, _)| at.elapsed() < REMOTE_PROFILE_LIFE);
         if remote.len() >= REMOTE_PROFILES
@@ -530,6 +700,12 @@ impl AvatarRuntime {
         }
         remote.insert(user, (Instant::now(), profile.clone()));
         Ok(profile)
+    }
+
+    fn kept_remote(&self, user: &Identifier) -> Option<Option<Profile>> {
+        (guard(&self.remote).get(user))
+            .filter(|(at, _)| at.elapsed() < REMOTE_PROFILE_LIFE)
+            .map(|(_, p)| p.clone())
     }
 }
 
@@ -587,13 +763,13 @@ impl NetworkSession {
         .await;
         let (pictures, dir) = opened.unwrap_or((false, None));
         let avatars = &self.platform.avatars;
-        avatars.set_pictures(pictures);
+        avatars.pictures.set(pictures);
         avatars.install(Pipeline::new(
             FetchPolicy::STRICT,
             Arc::new(SystemResolver),
             dir,
             db,
-            avatars.pictures_flag(),
+            avatars.toggle(),
         ));
     }
 
@@ -609,11 +785,14 @@ impl NetworkSession {
             detail: "not a Base58 identity id".into(),
         })?;
         let avatars = &self.platform.avatars;
+        // The toggle as this read began: checked again at every network
+        // step and before answering (D33).
+        let ticket = avatars.pictures.ticket();
         let read = self.identity_read(wallet_id).map_err(PlatformError::from)?;
         let b58 = user.to_string(Encoding::Base58);
         let (profile, whose) = match read.summaries.iter().find(|s| s.identity == b58) {
             Some(own) => (own.profile.clone(), Whose::Own),
-            None if !avatars.pictures() => return Ok(None),
+            None if !avatars.pictures.allows(ticket) => return Ok(None),
             None => {
                 let mut owners: Vec<_> = read.summaries.iter().collect();
                 owners.sort_by_key(|s| !s.is_main);
@@ -625,7 +804,7 @@ impl NetworkSession {
                     .map_err(PlatformError::from)?;
                 let profile = match known {
                     Some(profile) => profile,
-                    None => avatars.remote_profile(net, user).await?,
+                    None => avatars.remote_profile(net, user, ticket).await?,
                 };
                 (profile, Whose::Other)
             }
@@ -635,7 +814,7 @@ impl NetworkSession {
         };
         let png = avatars
             .pipeline()?
-            .for_profile(&profile, size, whose)
+            .for_profile(&profile, size, whose, ticket)
             .await?;
         Ok(png.map(|png| AvatarImage { png, size }))
     }

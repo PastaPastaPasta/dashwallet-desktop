@@ -248,13 +248,16 @@ impl NetworkSession {
 
     /// Turns "Load contact pictures" on or off for this network: stored in
     /// app.sqlite and applied at once. Off, no other user's avatar is
-    /// fetched or shown.
+    /// fetched or shown from the moment this returns, reads already running
+    /// included (DP4-02 D33); calls at once apply in turn, and the session
+    /// holds what was stored last (D34).
     pub async fn set_load_contact_pictures(&self, on: bool) -> Result<(), PlatformError> {
         let _op = self.enter().await.map_err(PlatformError::from)?;
         let value = (!on).then_some("0");
-        self.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, LOAD_PICTURES_KEY, value))
-            .await?;
-        self.platform.avatars.set_pictures(on);
+        let write = self
+            .appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, LOAD_PICTURES_KEY, value));
+        let toggle = self.platform.avatars.toggle();
+        toggle.transition(on, write).await?;
         Ok(())
     }
 }
