@@ -53,7 +53,10 @@ pub(crate) mod kind {
     /// A contact request; the key is [`super::contact_request_key`].
     pub(crate) const CONTACT_REQUEST: &str = "contact_request";
     /// A DashPay payment; the key is the txid.
-    #[expect(dead_code, reason = "DP3-04's money-move gate checks it")]
+    #[expect(
+        dead_code,
+        reason = "no consumer: DP3-04's gate checks the payee's entities (its D11)"
+    )]
     pub(crate) const PAYMENT: &str = "payment";
 }
 

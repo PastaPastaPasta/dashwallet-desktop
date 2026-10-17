@@ -175,6 +175,8 @@ const NOT_FACADE: &[&str] = &[
     "keys_policy.rs",
     "lease",
     "mod.rs",
+    "money_gate.rs",
+    "money_gate_tests.rs",
     "names_check.rs",
     "names_net.rs",
     "notifications_tests.rs",

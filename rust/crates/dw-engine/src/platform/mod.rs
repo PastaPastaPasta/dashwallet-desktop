@@ -38,6 +38,9 @@ pub(crate) mod journal;
 mod journal_tests;
 pub mod keys_policy;
 pub mod lease;
+pub(crate) mod money_gate;
+#[cfg(test)]
+pub(crate) mod money_gate_tests;
 mod names;
 mod names_check;
 mod notifications;

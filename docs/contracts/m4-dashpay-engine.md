@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 29
+Contract-Version: 30
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -55,7 +55,7 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
 DP1-01's `keys_policy.rs`, E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, DP2-04's private details `private_details.rs` with `private_details_tests.rs`, DP2-05's bell session tests `notifications_tests.rs`, DP1-06's cost table `credit_costs.rs`, balance refreshes `balances.rs` and top-up flow `topup.rs` with `topup_tests.rs`, DP1-04's contest watch `contest_watch.rs` with `contest_watch_tests.rs`, and DP3-02's contact payment attribution `attribution.rs` with `payments_tests.rs`, and DP1-08's names checks `names_check.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, DP2-04's private details `private_details.rs` with `private_details_tests.rs`, DP2-05's bell session tests `notifications_tests.rs`, DP1-06's cost table `credit_costs.rs`, balance refreshes `balances.rs` and top-up flow `topup.rs` with `topup_tests.rs`, DP1-04's contest watch `contest_watch.rs` with `contest_watch_tests.rs`, and DP3-02's contact payment attribution `attribution.rs` with `payments_tests.rs`, DP1-08's names checks `names_check.rs`, and DP3-04's money-move trust gate `money_gate.rs` with `money_gate_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -508,7 +508,7 @@ bodies decided where the rows leave room:
 |---|---|---|---|
 | `cost_table()` | sync | The credit costs of the DashPay actions at the network's protocol version, for "≈ N contact requests" and the low-credit warnings (§5 `CostTable`, §7 item 44). The table is the network's: it reads no wallet. Refused only when the SDK's protocol version is one this build does not know (`internal`). **Implemented (DP1-06).** | `CreditsError` |
 | `top_up_quote(identity, duffs)` | async | The fee bound and total in duffs, the credits a top-up of `duffs` buys, an estimate that errs low as far as measured (`duffs × credits_per_duff` less the table's `top_up_fee`; Platform's metered charge was far below it on testnet, §7 item 46), and the `grant` to ask for (`max_duffs` = the total, no credits). Refuses an identity that is not the wallet's (`identity.not_found`), below `top_up_min_duffs` (`credits.below_minimum{min}`), an identity with a top-up not applied yet (`credits.top_up_pending{txid}`), above the spendable balance (`credits.funding_insufficient{needed, available}`), and a held-back coin the asset-lock builder would select (`credits.coins_locked`). Until the dispatch journal is read it is `platform.unavailable` (retry). **Implemented (DP1-06).** | `CreditsError` |
-| `top_up(identity, duffs, grant)` | async | Funds the identity from the Core balance: an asset lock of `duffs`, then Platform's IdentityTopUp from it (§7 item 44). The quote's refusals and the funding step's (below), checked under the identity's write lock before the grant is redeemed, so a refusal keeps the grant. Held back as a registration is: SPV not caught up is `platform.context_unavailable`; the bring-up running, not run, or its identity discovery incomplete or failed is `platform.unavailable`, and the call has it run again (§7 item 46); identities waiting for an unlock is `platform.signer_unavailable`. A grant whose funding cap is below the quote's total is `platform.grant_exceeded` before it is redeemed, so a smaller top-up can still use it. Until the dispatch journal is read the call is `platform.unavailable` (retry). Once the lock is funded the call returns `TopUpOutcome{txid, state}`: `Applied{credits_added, balance}`, `ConsumptionUnknown{balance}` (Platform answered "already consumed", which nothing proves: nothing added now, and the lock stays pending), `ProofWaiting` (no InstantSend lock in its window), or `NotApplied{error}` (the apply failed); nothing is lost in the last three (`pending_top_ups`, `resume_top_up`). A funding whose outcome is unknown is `platform.broadcast_unknown{artifact}` with the funding step `topup/<index>-<k>/funding` (`dispatch_status`), and every later top-up of the identity is refused the same until that step settles. `grant` may be a `TopUp` lease id. **Implemented (DP1-06).** | `CreditsError` |
+| `top_up(identity, duffs, grant)` | async | Funds the identity from the Core balance: an asset lock of `duffs`, then Platform's IdentityTopUp from it (§7 item 44). The quote's refusals and the funding step's (below), checked under the identity's write lock before the grant is redeemed, so a refusal keeps the grant. Held back as a registration is: SPV not caught up is `platform.context_unavailable`; the bring-up running, not run, or its identity discovery incomplete or failed is `platform.unavailable`, and the call has it run again (§7 item 46); identities waiting for an unlock is `platform.signer_unavailable`. A grant whose funding cap is below the quote's total is `platform.grant_exceeded` before it is redeemed, so a smaller top-up can still use it. Until the dispatch journal is read the call is `platform.unavailable` (retry). Then the money-move gate (item 55): with the fallback latch set, an identity whose record does not match waits to verify, or is `platform.context_unavailable` (`platform.trust_mismatch` on a mismatch), the grant left unused. Once the lock is funded the call returns `TopUpOutcome{txid, state}`: `Applied{credits_added, balance}`, `ConsumptionUnknown{balance}` (Platform answered "already consumed", which nothing proves: nothing added now, and the lock stays pending), `ProofWaiting` (no InstantSend lock in its window), or `NotApplied{error}` (the apply failed); nothing is lost in the last three (`pending_top_ups`, `resume_top_up`). A funding whose outcome is unknown is `platform.broadcast_unknown{artifact}` with the funding step `topup/<index>-<k>/funding` (`dispatch_status`), and every later top-up of the identity is refused the same until that step settles. `grant` may be a `TopUp` lease id. **Implemented (DP1-06).** | `CreditsError` |
 | `pending_top_ups()` | async | The wallet's top-up locks Platform has not taken as far as the wallet can prove (in flight, proved and not applied, or funded by a top-up of this wallet and final with its consumption unknown), by identity index: txid, identity, duffs, whether the lock has its proof, and `consumption_unknown` (§7 item 44). Until the dispatch journal is read it is `platform.unavailable` (retry), never a list that cannot tell the wallet's own locks apart. **Implemented (DP1-06).** | `CreditsError` |
 | `stuck_top_up_fundings()` | async | The wallet's top-up funding steps whose outcome is unknown (`MaybeSent`) or still being recorded (`WillBeSent`), the steps `top_up` refuses with `platform.broadcast_unknown` or `platform.will_be_sent`, ordered by identity index then attempt: the step `topup/<index>-<k>/funding`, the identity index, the identity id when the wallet holds that index, and the state (§7 item 54). A step leaves the list once its outcome settles, which for Repair's `resolve_stuck_funding` is when its self-spend is ChainLocked (`DispatchResolved`); until then it stays listed. Until the dispatch journal is read, or while a top-up step's marker cannot be read by this build, it is `platform.unavailable` (retry): a list without that step would hide what refuses the top-up. **Implemented (DP1-10).** | `CreditsError` |
 | `resume_top_up(txid, grant)` | async | Applies the tracked top-up lock `txid`, waiting up to 30 s for its proof first (a lock not yet sent is sent again; one a funding call of this process is still recording is `platform.will_be_sent`); the outcome as `top_up`'s. A lock the library holds applied (Platform's proved apply) reads `AlreadyApplied` with the balance read again; any other, a resolved or historical one too, is applied again (Platform takes a lock once). The grant is redeemed only for the apply, so `AlreadyApplied`, `ProofWaiting` and `platform.will_be_sent` keep it. The apply signs with the lock's one-time funding key, which only a grant with a funding budget unlocks: the grant needs `max_duffs` ≥ 1, none of which is spent. Tools ▸ Repair "Finish transfers" (`finish_asset_locks`) also applies every proved top-up lock, under its grant. **Implemented (DP1-06).** | `CreditsError` |
@@ -554,7 +554,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 72246901f2c898eef1da150157978f958a56d09f9e1f5609a888c1697724c097 version: 29 -->
+<!-- surface-sha256: 72246901f2c898eef1da150157978f958a56d09f9e1f5609a888c1697724c097 version: 30 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1690,7 +1690,9 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 - Refusals §3.6 names no code for, so that every DP task uses the same one:
   - a write from a watch-only wallet, or with a locked vault and no lease: `platform.signer_unavailable`;
   - a Platform write before SPV's masternode state has synced ("Waiting for the network to sync", §3.7), and money
-    that would move on data verified only through the fallback (§2.2 rule 5): `platform.context_unavailable`;
+    that would move on data verified only through the fallback (§2.2 rule 5): `platform.context_unavailable`
+    (DP3-04's gate, item 55; a re-fetch it makes that SPV and the trusted service disagree on is
+    `platform.trust_mismatch`);
   - `discard_registration` unless its funding reads `NotSent` or `None` (§4.1; the journal decides, not the
     phase), an unknown draft, candidate or faucet key id, an
     `initial_profile` avatar candidate without a URL: `invalid_argument`;
@@ -1804,7 +1806,7 @@ The shapes are in §3. What they mean, where the name does not say:
   does not count); a `ContactSummary` as §2.4 `contacts` lists. Before the latch is set nothing is unverified. Builds before E0-10b served the trusted service's
   keys without setting it, so an installation that already holds wallets starts latched (dw-appdb migration
   `trust_digest`): its data reads as unverified until re-fetched. "As of" times for offline data come from `sync_status().last_pass`. `Counterparty` and the inviter in
-  `InvitationStatus::Valid` carry no flag: they are display data, and DP3-04's money-move gate checks
+  `InvitationStatus::Valid` carry no flag: they are display data, and DP3-04's money-move gate (item 55) checks
   `dp_trust_verified` (with the latch) itself before any payment, whatever the record says.
 - **`QuorumSource`.** `Spv`; `TrustedFallback` (before masternode sync, reads only, results unverified); `Trusted`
   (the developer toggle, or the degraded mode of §2.2). E0-10a failed, so 1.0 reports `Trusted` (DEC-168) until H-09
@@ -2821,9 +2823,51 @@ renames or reshapes them takes the next version bump:
     guessing step names. `resolve_stuck_funding` already accepts these steps (DP1-06). No error code and no other
     record changes.
 
-**From DP4-02** (version 29):
+**From DP3-04** (version 29, no surface change):
 
-55. **The avatar pipeline (DP4-02 design, D1–D32, version 29).** `prepare_avatar`, `avatar_upload_available`,
+55. **The money-move trust gate (DASHPAY §2.2 rule 5; `docs/design/DP3-04-trust-gate.md`).** Once the fallback latch
+    is set, money waits for its payee's data to verify against SPV. Public signatures, record shapes and error codes are
+    unchanged.
+    - **Subjects.** A contact payment's `prepare` (its "Accept and pay" too): what the contacts row of the payee
+      shows unverified (§2.4 `contacts`: the cached profile, each request the relation rests on, the shown
+      username). A `top_up`: the identity and its keys. A registration has no subject.
+    - **`Enforcing`** (tests and H-09; the trusted-only toggle off): every unverified entity is re-fetched in its own
+      trust scope, every 3 s for up to 60 s (plus one fetch's blocking lookups); a fetch that used only SPV-verified quorum keys and equals what the
+      library holds is recorded (`dp_trust_verified`), and the money moves once nothing is unverified. Otherwise
+      `platform.context_unavailable`. A re-fetch refused as a quorum-key mismatch is `platform.trust_mismatch` at
+      once. A registration's or top-up's funding is held while `TrustProvider::writes_wait` (masternode sync not
+      done): a registration waits `Sync`, a top-up is `platform.context_unavailable`, as while SPV is behind.
+    - **Degraded** (the default, DEC-168): one round of re-fetches of the unverified entities, 10 s (plus one
+      fetch's blocking lookups), records what verifies; a mismatch is `platform.trust_mismatch`; otherwise the money moves (rule 5 suspended).
+      The trusted-only toggle moves the money with no re-fetch.
+    - **The paying account, in every mode.** Whatever the mode, the toggle or the latch, a payee whose paying
+      account was built from another request than their current one (a rotation the library has not rebuilt
+      yet) is `platform.context_unavailable`, and a
+      DashPay sync is started so the library queues the rebuild a retry needs (design D12, D25; at the wait a
+      queued rebuild of the account exempts it, not after the reservation). At the wait nothing is taken; after
+      the reservation the address is dropped. Under `Enforcing` an account with no stamp is refused the same way:
+      the library does not persist the stamp, so a contact payment before the launch's first completed DashPay
+      pass is refused, and every contact payment while Platform is not running. Degraded and the toggle proceed on
+      a missing stamp, so there a rotation whose rebuild was not drained and stamped (a crash before its sweep
+      included) can pay the payee's previous account until the next completed pass (design D26).
+    - **Where.** `prepare` checks the contact's payment lock, then runs the gate, both before the coin fence and the
+      grant: a refusal redeems no grant, takes no address and holds no other send of the wallet. A vault Lock during
+      the wait ends it (`send.vault_locked`); a payment lock written during it is found by the plan
+      (`contact.payment_locked{txid}`). After the reservation, under `Enforcing`, a re-check gives what became unverified
+      meanwhile (the payee replaced, its name landed) one 10 s round of re-fetches and refuses what still does not
+      verify (`platform.context_unavailable`, `platform.trust_mismatch`); the address is kept only once it passed,
+      so no later `prepare` pays one taken from unverified data, and an address kept while rule 5 did not apply is
+      not paid under `Enforcing` (a new one is reserved). The re-check reads the address with the request it checks:
+      one no longer in the payee's paying account (a rotation rebuilt it from a new request) is
+      `platform.context_unavailable` and not kept, in every mode, with or without the latch (design D21, D25; under
+      Degraded and the toggle the re-check fetches nothing, it only reads the account). A reused address another payment's broadcast claimed
+      during the re-check, or a fresh one displaced meanwhile by another payment's address given back unsent, is
+      `send.prepared_tx_spent`. `top_up` runs the gate after its journal check and before the identity's write
+      lock, an identity the wallet lacks refused first (`identity.not_found`).
+
+**From DP4-02** (version 30):
+
+56. **The avatar pipeline (DP4-02 design, D1–D35, version 30).** `prepare_avatar`, `avatar_upload_available`,
     `upload_avatar` and `avatar` have bodies (§2.7), and `update_profile`'s `Set{candidate}` publishes the candidate's
     URL, hash and fingerprint. The toggle is two new calls on `NetworkSession` (it is per network, not per wallet):
     `load_contact_pictures` (sync, from memory) and `set_load_contact_pictures(on)` (async). Upload stays

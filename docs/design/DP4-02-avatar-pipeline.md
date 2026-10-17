@@ -21,7 +21,7 @@ to `dashpay_avatar`.
 | Tests: a local HTTP server and a scripted resolver; fixtures; the decoder seed corpus | `dw-engine/src/platform/avatar_tests.rs` (fixtures built in code), `dw-engine/tests/fixtures/avatar-corpus/` (seeds) |
 | dw-app: the toggle's two commands; My Profile's header picture | `dw-app/src/api/social.rs`; `apps/desktop/src/screens/contacts/Avatar.tsx`, `screens/dashpay/MyProfile.tsx`, `dashpay/profileQueries.ts` |
 | dwcli | `profile pictures [--set on\|off]`, `profile prepare-avatar --url\|--file\|--gravatar`; `profile avatar` and `profile set --avatar-url` already existed |
-| Contract | m4 §0, §1, §2.7 (the four calls, `update_profile`'s `Set`, the two toggle rows), §7 item 55, Contract-Version 29 |
+| Contract | m4 §0, §1, §2.7 (the four calls, `update_profile`'s `Set`, the two toggle rows), §7 item 56, Contract-Version 30 (DP3-04 took 29 and item 55) |
 
 ## The read: `avatar(identity, size)`
 
@@ -158,7 +158,7 @@ otherwise), before the identity's lock is taken (DP4-01 D8); the write sets `ava
 | D26 | A profile whose hash or fingerprint could match nothing (missing, or not 64 / 16 hex digits) is `avatar.hash_mismatch` without a fetch. | DIP-15 publishes the two together and the library writes both; a profile breaking that is malformed, and a fetch would only tell the host the wallet looked. The hash alone decides a well-formed one (D32). |
 | D27 | Candidates are capped per wallet (16), not per session. | One wallet's prepares must not evict another's candidate before its edit is published. |
 | D28 | The address policy cannot see three cases: a hairpin NAT to the user's own public address, LAN hosts with global IPv6 addresses, and a provider's NAT64 prefix other than `64:ff9b::/96`. They are accepted residuals. | Each is a public address by every rule the engine can apply; the fetch is still `https` on 443, capped, and its bytes only shown if they match the profile. |
-| D29 | Swift T0 is run (m4's contract changed: version 29, no §4 code). | dw-common's rule; Swift's `engineCodes` mirrors m1 §4 only (DP4-01 D5), so no Swift source changes. |
+| D29 | Swift T0 is run (m4's contract changed: version 30, no §4 code). | dw-common's rule; Swift's `engineCodes` mirrors m1 §4 only (DP4-01 D5), so no Swift source changes. |
 | D30 | The renderer shows the picture in My Profile's header only, from `dashpayAvatar(wallet, main identity, large)`, falling back to the initials on `null`, any error, or an image that fails to load; the fixture has a `dashpay-avatar` scenario. | The row's UI part is "wire the existing placeholder to the engine read"; lists and Edit Profile are DP4-03's. |
 | D31 | dwcli's `profile prepare-avatar --gravatar EMAIL` takes the address on the command line. | dwcli is a developer and test tool; the address is not a credential (the session grammar types it as text). The app never logs or stores it. |
 | D32 | The fingerprint does not veto an exact hash (revises the first D6, which required the library's dHash within 20 bits of `avatarFingerprint`). | T2 (below): of the 53 testnet avatars whose bytes match `avatarHash` exactly, 9 have the library's dHash bit for bit (published with platform-wallet) and the other 44 differ by 12 to 35 bits (median 21; 28 of 53 above 20; no byte or bit order explains it). The mobile wallets' dHash is another algorithm, and 32 bits is what two unrelated pictures differ by on average, so no threshold both accepts their pictures and means anything. A 20-bit rule would have shown initials for over half of the real profiles that verify. |
