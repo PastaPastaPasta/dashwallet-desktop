@@ -532,9 +532,12 @@ impl NetworkSession {
     /// D25: a payee refused as not payable gets a DashPay pass now, whose
     /// sweep queues the paying account's rebuild from its current request,
     /// so a retry once it ran pays the account that request designates.
+    /// Not while a pass is in flight: `sync_now` would skip it anyway, and a
+    /// burst of retries would each spawn a task for nothing.
     fn rebuild_soon(&self, refusal: &Refusal) {
         if *refusal == Refusal::NotPayable
             && let Ok(manager) = self.manager()
+            && !manager.dashpay_sync().is_syncing()
         {
             self.kick_dashpay_sync(&manager);
         }
