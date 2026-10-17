@@ -2839,7 +2839,8 @@ renames or reshapes them takes the next version bump:
       yet) is `platform.context_unavailable`, and a
       DashPay sync is started so the library queues the rebuild a retry needs (design D12, D25; at the wait a
       queued rebuild of the account exempts it, not after the reservation). At the wait nothing is taken; after
-      the reservation the address is dropped. An account with no stamp is refused the same way, in every mode: the
+      the reservation the address is dropped. An account with no stamp is refused the same way, in every mode,
+      Degraded and the toggle included (since DP3-04b, item 56; before it they paid on a missing stamp): the
       library's store keeps the stamp, so an account is unstamped only before its first rebuild after the upgrade,
       after a crash between a rotation's re-key and its rebuild, or when its stamp's write was lost. A payment to a
       contact whose account was built before the upgrade is refused until a DashPay pass completes, offline included
@@ -2858,3 +2859,19 @@ renames or reshapes them takes the next version bump:
       during the re-check, or a fresh one displaced meanwhile by another payment's address given back unsent, is
       `send.prepared_tx_spent`. `top_up` runs the gate after its journal check and before the identity's write
       lock, an identity the wallet lacks refused first (`identity.not_found`).
+
+**From DP3-04b** (version 29, no surface change):
+
+56. **The paying account's stamp is stored, and a missing one refuses in every mode (item 55;
+    `docs/design/DP3-04-trust-gate.md` D28–D30).** No signature, record, trait impl or code changes, so
+    `Contract-Version` stays 29 (manager ruling, 2026-10-17). Behaviour:
+    - **New refusals under Degraded and the trusted-only toggle.** A contact payment whose paying account carries no
+      stamp is `platform.context_unavailable` (at the wait nothing taken, after the reservation the address dropped,
+      a DashPay sync started), as under `Enforcing` already. Before DP3-04b these two modes paid it. This happens
+      once per contact after the upgrade, until a DashPay pass rebuilds and stamps the account (offline: until one
+      completes), and after a crash between a rotation's re-key and its rebuild, or a lost stamp write.
+    - **A rotated contact is payable.** The pinned `rs-platform-wallet-storage` (PastaPastaPasta/platform
+      `dw/dp3-04b-pool-rotation`, migration V019) retires the old pool's addresses when a contact's xpub changes,
+      instead of failing the rebuild, and keeps them for history only: they are never paid. The stamp survives a
+      relaunch.
+    - **One sync per in-flight pass.** A refusal on the paying account starts no DashPay sync while a pass runs.
