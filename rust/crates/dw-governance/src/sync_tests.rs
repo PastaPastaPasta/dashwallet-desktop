@@ -2171,3 +2171,230 @@ async fn a_timed_out_vote_stays_lost_after_a_later_notfound() {
     // so the vote is lost, not settled.
     lost_vote_run(true, Duration::from_millis(200)).await;
 }
+
+/// A run with two connected peers (ids 0 and 1) that read and drop
+/// everything, a stored current proposal and key 1 listed.
+async fn two_peer_run(p: &GovernanceObject) -> Run {
+    let mut cfg = SyncConfig::new(PeerConfig::new(Network::Regtest, "/t/", 1));
+    let (tx, _rx) = mpsc::channel(EVENTS_QUEUE);
+    let mut peers = Vec::new();
+    for id in 0..2 {
+        let mock = MockPeer::bind(Network::Regtest).await.unwrap();
+        let addr = mock.addr();
+        tokio::spawn(async move {
+            let mut conn = mock.accept().await.unwrap();
+            while conn.recv().await.is_ok() {}
+        });
+        peers.push(PeerState::new(
+            Peer::connect(id, addr, &cfg.peer, tx.clone())
+                .await
+                .unwrap(),
+        ));
+    }
+    cfg.max_in_flight = 5000;
+    let shared = Arc::new(Shared::new(Network::Regtest, Box::new(|| {})));
+    {
+        let mut s = shared.store();
+        s.set_confirmations(1);
+        s.set_masternode_list(&[ListEntry {
+            voting_key_id: key_id(1),
+            weight: Some(1),
+            valid: true,
+        }]);
+        s.add_object(p.clone(), None, unix_now()).unwrap();
+    }
+    std::mem::forget(_rx);
+    Run {
+        shared,
+        cfg,
+        history: Arc::new(Mutex::new(SyncHistory::default())),
+        peers,
+        requests: Requests::default(),
+        base_bytes: 0,
+        votes_open: true,
+        announce_open: false,
+        unassigned: Vec::new(),
+        lost: 0,
+        full_syncs_done: 0,
+        vote_parents: HashMap::new(),
+        last_progress: Instant::now(),
+    }
+}
+
+/// `v` with its signature made by key `key` instead: same hash.
+fn resigned(v: &GovernanceVote, key: u8) -> GovernanceVote {
+    let sk = SecretKey::from_secret_bytes([key; 32]).unwrap();
+    let pk = PublicKey::from_secret_key(&sk);
+    let mut f = v.clone();
+    let d = f.signing_digest(Network::Regtest);
+    let s = dashcore::secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
+    f.signature = to_recoverable_compact(&s.serialize_compact(), &pk, &d)
+        .unwrap()
+        .to_vec();
+    assert_eq!(f.hash(), v.hash());
+    f
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_late_copy_leaves_another_peers_request_alone() {
+    // Validator r7 MJ1: A announces X and answers `notfound` (a late
+    // record of A); honest H announces X (a request sent to H); A sends X
+    // re-signed by an unlisted key (same hash, refused). The retry
+    // reassigned X to H, overwriting its sent request: a leaked slot, a
+    // second `getdata` and H charged for its second copy.
+    let p = proposal("p-r7");
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    let item = InvItem {
+        kind: INV_GOVERNANCE_VOTE,
+        hash: x.hash(),
+    };
+    let mut run = two_peer_run(&p).await;
+    // H's vote sync still open: its announcement is a phase item.
+    run.peers[1].vote_asked.push(p.hash());
+    run.peers[1].vote_expected.push(1_000);
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::NotFound(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    let key = (item.hash, item.kind);
+    assert!(run.requests.pending[&key].phase);
+    assert_eq!(run.peers[1].in_flight, 1);
+    run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
+    let after = (
+        run.peers[1].in_flight,
+        run.requests.pending.get(&key).map(|r| r.phase),
+    );
+    assert_eq!(after, (1, Some(true)), "H's request was overwritten");
+    run.handle(1, PeerEvent::Vote(x.encode()));
+    let h = &run.peers[1];
+    assert_eq!((h.in_flight, h.misbehaviour), (0, 0));
+    assert!(run.shared.store().has_vote(&x.hash()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forged_late_copies_cannot_get_an_honest_peer_closed() {
+    // Validator r7 MJ1, repeated past the misbehaviour bound.
+    let p = proposal("p-r7-close");
+    let mut run = two_peer_run(&p).await;
+    let max = run.cfg.max_misbehaviour;
+    for t in 0..=max {
+        let mut x = vote(p.hash(), 1, VoteOutcome::Yes);
+        x.time -= i64::from(t) + 1;
+        let x = resigned(&x, 1);
+        let item = InvItem {
+            kind: INV_GOVERNANCE_VOTE,
+            hash: x.hash(),
+        };
+        run.handle(0, PeerEvent::Inv(vec![item]));
+        run.handle(0, PeerEvent::NotFound(vec![item]));
+        run.handle(1, PeerEvent::Inv(vec![item]));
+        run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
+        run.handle(1, PeerEvent::Vote(x.encode()));
+    }
+    let h = &run.peers[1];
+    assert_eq!((h.misbehaviour, h.in_flight), (0, 0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_uncheckable_copy_does_not_end_a_loss() {
+    // Validator r7 m1: a phase vote on an object the wallet lacks is given
+    // up (lost); its asked peer then sends the vote with a 96-byte junk
+    // signature, which the wallet cannot check and drops: that ended the
+    // loss with no copy held.
+    let mut run = one_peer_run(|c, p| {
+        c.request_timeout = Duration::ZERO;
+        p.vote_asked.push([0x77; 32]);
+        p.vote_expected.push(1_000);
+    })
+    .await;
+    run.shared.store().set_masternode_list(&[ListEntry {
+        voting_key_id: key_id(1),
+        weight: Some(1),
+        valid: true,
+    }]);
+    let q = proposal("p-r7-unknown");
+    let x = vote(q.hash(), 1, VoteOutcome::Yes);
+    let item = InvItem {
+        kind: INV_GOVERNANCE_VOTE,
+        hash: x.hash(),
+    };
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.expire(); // asked again
+    run.expire(); // given up, lost
+    assert_eq!(run.lost, 1);
+    let mut junk = x.clone();
+    junk.signature = vec![0x55; 96];
+    run.handle(0, PeerEvent::Vote(junk.encode()));
+    assert_eq!(run.lost, 1, "a junk copy the wallet dropped ended the loss");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_copy_past_the_senders_orphan_bound_does_not_end_a_loss() {
+    // Validator r7 m1: a sender at its orphan bound got `Orphan` back for
+    // a vote not kept, which ended the request and its loss.
+    let mut run = one_peer_run(|c, p| {
+        c.request_timeout = Duration::ZERO;
+        p.vote_asked.push([0x77; 32]);
+        p.vote_expected.push(1_000);
+    })
+    .await;
+    run.shared.store().set_masternode_list(&[ListEntry {
+        voting_key_id: key_id(1),
+        weight: Some(1),
+        valid: true,
+    }]);
+    let addr = run.peers[0].peer.addr;
+    let now = unix_now();
+    for i in 0..crate::store::MAX_ORPHANS_PER_PEER {
+        let mut parent = [0x44; 32];
+        parent[..4].copy_from_slice(&i.to_le_bytes());
+        let v = vote(parent, 1, VoteOutcome::Yes);
+        let outcome = run.shared.store().precheck(&v, now).unwrap();
+        let checked = recover(v, outcome, Network::Regtest).unwrap();
+        let r = run.shared.store().add_checked(checked, Some(addr), now);
+        assert_eq!(r, Err(VoteRejection::Orphan));
+    }
+    let x = vote([0x45; 32], 1, VoteOutcome::Yes);
+    let item = InvItem {
+        kind: INV_GOVERNANCE_VOTE,
+        hash: x.hash(),
+    };
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.expire(); // asked again
+    run.expire(); // given up, lost
+    assert_eq!(run.lost, 1);
+    run.handle(0, PeerEvent::Vote(x.encode()));
+    assert!(!run.shared.store().has_vote(&x.hash()));
+    assert_eq!(
+        run.lost, 1,
+        "a copy the orphan bound refused ended the loss"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_copy_taken_late_ends_the_request_still_out() {
+    // Validator r7 nit1: a late copy taken while another peer's phase
+    // request for the item was out left that request, whose timeout then
+    // counted a loss for a vote the store held.
+    let p = proposal("p-r7-late");
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    let item = InvItem {
+        kind: INV_GOVERNANCE_VOTE,
+        hash: x.hash(),
+    };
+    let mut run = two_peer_run(&p).await;
+    run.cfg.request_timeout = Duration::ZERO;
+    run.peers[1].vote_asked.push(p.hash());
+    run.peers[1].vote_expected.push(1_000);
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::NotFound(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::Vote(x.encode()));
+    assert!(run.shared.store().has_vote(&x.hash()));
+    assert!(run.requests.pending.is_empty(), "H's request still out");
+    run.expire();
+    run.expire();
+    assert_eq!(run.lost, 0);
+    // H's copy still comes: late, not unsolicited.
+    run.handle(1, PeerEvent::Vote(x.encode()));
+    assert_eq!(run.peers[1].misbehaviour, 0);
+}

@@ -22,9 +22,10 @@
 //! the list lacks may be honest under the peer's list and count against the
 //! looser [`SyncConfig::max_suspect`]. At most
 //! [`SyncConfig::max_in_flight`] items are asked of one peer at a time. A
-//! request ends with the item, `notfound`, an item that does not decode or
-//! validate, or the peer closing, and the next peer that announced the hash
-//! is asked (MG-01 D17). One that got nothing from its peer for
+//! request ends with the item, `notfound`, an item that does not validate,
+//! or the peer closing, and the next peer that announced the hash is asked
+//! (MG-01 D17); an item that does not decode names no hash, so its request
+//! runs to its timeout. One that got nothing from its peer for
 //! [`SyncConfig::request_timeout`] since that peer's last delivery moves to
 //! the next announcer, or with none is asked again once and then given up;
 //! a sync item given up on fails the phase unless it still arrives (D13).
@@ -649,8 +650,10 @@ impl Run {
         }
     }
 
-    /// Assigns `item` to peer `id` and queues it there.
+    /// Assigns `item`, which has no request, to peer `id` and queues it
+    /// there.
     fn assign(&mut self, item: Item, id: usize, t: Taken) {
+        debug_assert!(!self.requests.pending.contains_key(&item));
         self.requests.pending.insert(
             item,
             Pending {
@@ -801,9 +804,16 @@ impl Run {
         }
     }
 
-    /// The wallet took a copy of `item`: a loss of it ends, and its
-    /// announcements stop counting against their peers' limits.
+    /// The wallet took a copy of `item`: a request still out for it ends
+    /// (its peer's copy is then a late one, not unsolicited), a loss of it
+    /// ends, and its announcements stop counting against their peers'
+    /// limits (D58).
     fn accepted(&mut self, item: &Item) {
+        if let Some(r) = self.release(item) {
+            let mut asked = r.asked;
+            asked.push(r.peer);
+            self.remember_late(*item, asked, false);
+        }
         if let Some(l) = self.requests.late.get_mut(item)
             && std::mem::take(&mut l.lost)
         {
@@ -817,6 +827,11 @@ impl Run {
     /// (failing the phase if `phase` and `count`, or an asked peer timed
     /// out) and returns `true`.
     fn retry(&mut self, item: Item, tried: Option<usize>, t: Taken, count: bool) -> bool {
+        // A late copy refused while another peer's request for it is out:
+        // that request stays as it is (D58).
+        if self.requests.pending.contains_key(&item) {
+            return false;
+        }
         let mut asked = t.asked;
         if let Some(tried) = tried
             && !asked.contains(&tried)
@@ -1069,6 +1084,12 @@ impl Run {
                 self.refused(item, from, taken);
                 return;
             }
+            // Its signature, which the sender chooses, made it uncheckable:
+            // another announcer's copy may be checkable (D58).
+            Err(VoteRejection::Unverifiable) => {
+                self.refused(item, from, taken);
+                return;
+            }
             Err(_) => {
                 self.accepted(&item);
                 self.progressed();
@@ -1094,8 +1115,14 @@ impl Run {
                 self.changed();
             }
             Err(VoteRejection::Orphan) => {
-                self.accepted(&item);
-                self.progressed();
+                // Not held when the sender's orphan bound is full: another
+                // announcer's copy may be (D58).
+                if self.shared.store().has_vote(&hash) {
+                    self.accepted(&item);
+                    self.progressed();
+                } else {
+                    self.refused(item, from, taken);
+                }
                 self.fetch_parent(from, parent);
             }
             Err(r) if r.is_suspect() || r.is_invalid() => {
@@ -1471,7 +1498,8 @@ impl Run {
     ) -> Result<bool, SyncError> {
         let started = Instant::now();
         self.last_progress = started;
-        self.lost = 0;
+        // A phase ends only with nothing lost, and none is lost after.
+        debug_assert_eq!(self.lost, 0);
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         loop {
             self.note_full_syncs();
