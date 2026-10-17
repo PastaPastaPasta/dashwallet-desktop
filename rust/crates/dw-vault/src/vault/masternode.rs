@@ -24,7 +24,8 @@
 //! removing a wallet leaves them, and `recover_with_mnemonic` drops them
 //! with every other record of the old vault (its backup copy keeps them).
 
-use dashcore::hashes::{Hash, HashEngine, Hmac, HmacEngine, sha256};
+use dashcore::hashes::{Hash, HashEngine, Hmac, HmacEngine, hash160, sha256};
+use dashcore::secp256k1::{PublicKey, SecretKey};
 use zeroize::Zeroizing;
 
 use super::{KEY_LOAD_ATTEMPTS, REC_SEED, Vault, WriteGuard, decode_seed, record_id};
@@ -193,6 +194,39 @@ impl Vault {
             #[cfg(test)]
             crate::signer::test_hook::opened();
             Ok(self.roles_under(dek, pro_tx_hash))
+        })
+    }
+
+    /// The key id of the key attached for `role` of `pro_tx_hash`: the
+    /// hash160 of its compressed public key, which isn't secret. `Ok(None)`
+    /// when none is attached or the record is no secp256k1 secret. Needs the
+    /// data key with full scope, as listing the roles does; the secret is
+    /// decrypted into a zeroing buffer and doesn't leave (MG-03 D31: the
+    /// engine records the id of what the vault holds after a write whose
+    /// outcome it couldn't tell).
+    pub fn masternode_key_id(
+        &self,
+        pro_tx_hash: &[u8; 32],
+        role: &str,
+    ) -> Result<Option<[u8; 20]>, VaultError> {
+        valid_role(role)?;
+        self.with_loaded_key(|dek| {
+            #[cfg(test)]
+            crate::signer::test_hook::opened();
+            let Some(secret) = self.read_record(dek, &mn_record_id(dek, pro_tx_hash, role))? else {
+                return Ok(None);
+            };
+            let Some(secret) = <[u8; 32]>::try_from(&secret[..])
+                .ok()
+                .map(Zeroizing::new)
+                .and_then(|bytes| SecretKey::from_secret_bytes(*bytes).ok())
+            else {
+                return Ok(None);
+            };
+            let public = PublicKey::from_secret_key(&secret);
+            Ok(Some(
+                hash160::Hash::hash(&public.serialize()).to_byte_array(),
+            ))
         })
     }
 

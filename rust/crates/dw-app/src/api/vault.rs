@@ -65,6 +65,10 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: reached through the masternodes facade's rows (`MasternodeRoles::attached`, MG-03 D8, MG-01 D15)",
     ),
     (
+        "Vault::masternode_key_id",
+        "internal: the engine records an attached key's id from it after a vault write whose outcome it couldn't tell (MG-03 D31)",
+    ),
+    (
         "Vault::delete_masternode_keys",
         "internal: reached through `Masternodes::untrack` and `detach_key` (MG-03 D8, MG-00 D22)",
     ),

@@ -1753,6 +1753,10 @@ impl Vault {
             inner.high_water
         };
 
+        #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+        if crate::fault::take(&self.shared.dir, crate::fault::Fault::ReadBack) {
+            return Err(VaultError::Corrupt("injected read-back failure".into()));
+        }
         let disk = file::read(&self.shared.dir)?
             .ok_or_else(|| VaultError::Corrupt("vault file vanished after write".into()))?;
         verify_manifest(&disk, dek, high_water)?;

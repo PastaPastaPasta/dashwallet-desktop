@@ -47,6 +47,8 @@
 mod crypto;
 mod dip15;
 mod error;
+#[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+pub mod fault;
 mod file;
 #[cfg(test)]
 mod lock_race_tests;
