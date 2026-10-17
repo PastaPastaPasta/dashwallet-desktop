@@ -15,9 +15,9 @@
 //!
 //! The wallet keeps the same request rules: an item is accepted only from
 //! a peer it was asked of (the one asked now, or one asked before whose
-//! request timed out); anything else is unsolicited and counted, as are
-//! undecodable and invalid items, and a peer past
-//! [`SyncConfig::max_misbehaviour`] is closed (D10). Votes Core relays but
+//! request timed out); anything else is unsolicited and dropped with no
+//! penalty, as Core does (D59). Undecodable and invalid items are counted,
+//! and a peer past [`SyncConfig::max_misbehaviour`] is closed (D10). Votes Core relays but
 //! the wallet does not tally are ignored without a penalty; votes whose key
 //! the list lacks may be honest under the peer's list and count against the
 //! looser [`SyncConfig::max_suspect`]. At most
@@ -228,8 +228,7 @@ pub struct SyncConfig {
     pub max_request_age: Duration,
     /// A peer asked to sync that sends no `ssc` for this long is closed.
     pub answer_timeout: Duration,
-    /// Unsolicited, undecodable or invalid items before a peer is closed
-    /// (D10).
+    /// Undecodable or invalid items before a peer is closed (D10).
     pub max_misbehaviour: u32,
     /// Votes whose key the list lacks before a peer is closed (D10).
     pub max_suspect: u32,
@@ -293,6 +292,9 @@ pub enum SyncError {
 pub struct SyncHistory {
     full_synced: HashMap<SocketAddr, Instant>,
     vote_synced: HashMap<(SocketAddr, [u8; 32]), Instant>,
+    /// `vote_synced` is pruned of entries past the window when it reaches
+    /// this many (D59).
+    prune_at: usize,
 }
 
 impl SyncHistory {
@@ -307,6 +309,18 @@ impl SyncHistory {
             .get(&(*addr, *hash))
             .is_some_and(|t| t.elapsed() < window)
     }
+
+    /// Records a vote sync of `hash` asked of `addr`. Entries past `window`
+    /// go once the record doubles, so the history stays bounded by what one
+    /// window asks.
+    fn note_votes_synced(&mut self, addr: SocketAddr, hash: [u8; 32], window: Duration) {
+        if self.vote_synced.len() >= self.prune_at {
+            self.vote_synced.retain(|_, t| t.elapsed() < window);
+            self.full_synced.retain(|_, t| t.elapsed() < window);
+            self.prune_at = (2 * self.vote_synced.len()).max(MIN_HISTORY_PRUNE);
+        }
+        self.vote_synced.insert((addr, hash), Instant::now());
+    }
 }
 
 fn unix_now() -> i64 {
@@ -320,6 +334,9 @@ fn unix_now() -> i64 {
 const MAX_CONFIRMATION_ASKS: usize = 200;
 /// Given-up requests whose peers may still deliver, remembered per run.
 const MAX_LATE: usize = 100_000;
+/// Vote syncs remembered before the first pruning of the session's
+/// history.
+const MIN_HISTORY_PRUNE: usize = 1024;
 
 /// One connected peer and what the run asked of it.
 struct PeerState {
@@ -741,38 +758,39 @@ impl Run {
     }
 
     /// Accepts `item` from `from` if it was asked of `from` now or before;
-    /// counts misbehaviour otherwise.
+    /// drops it otherwise, as Core does, with no penalty (D59).
     fn take(&mut self, from: usize, item: &Item) -> Option<Taken> {
-        if let Some(r) = self.requests.pending.get(item)
-            && (r.peer == from || r.asked.contains(&from))
-        {
-            let r = self.release(item).expect("looked up");
-            if let Some(p) = self.peer_mut(from) {
-                p.last_delivery = Instant::now();
+        let taken = match self.requests.pending.get(item) {
+            Some(r) if r.peer == from => {
+                let r = self.release(item).expect("looked up");
+                if r.asked_again {
+                    // Asked twice: its second copy may still come.
+                    self.remember_late(*item, vec![r.peer], false);
+                }
+                r.into()
             }
-            if r.peer != from || r.asked_again {
-                // The peer asked now (or asked twice) may still deliver.
-                self.remember_late(*item, vec![r.peer], false);
-            }
-            return Some(r.into());
-        }
-        if let Some(l) = self.requests.late.get(item)
-            && l.asked.contains(&from)
-        {
+            // A peer asked before: the request still out stays until the
+            // wallet takes a copy (D59).
+            Some(r) if r.asked.contains(&from) => Taken {
+                phase: r.phase,
+                asked: r.asked.clone(),
+                unanswered: r.unanswered,
+            },
             // Kept: a request asked twice may be answered twice. A lost
             // item stays lost until the wallet accepts a copy (D57).
-            let taken = Taken {
-                phase: l.lost,
-                asked: l.asked.clone(),
-                unanswered: false,
-            };
-            if let Some(p) = self.peer_mut(from) {
-                p.last_delivery = Instant::now();
-            }
-            return Some(taken);
+            _ => match self.requests.late.get(item) {
+                Some(l) if l.asked.contains(&from) => Taken {
+                    phase: l.lost,
+                    asked: l.asked.clone(),
+                    unanswered: false,
+                },
+                _ => return None,
+            },
+        };
+        if let Some(p) = self.peer_mut(from) {
+            p.last_delivery = Instant::now();
         }
-        self.misbehaved(from, "unsolicited item");
-        None
+        Some(taken)
     }
 
     /// Keeps who was asked for `item` so their late copy is accepted. A
@@ -1133,6 +1151,11 @@ impl Run {
                 }
                 self.refused(item, from, taken);
             }
+            // The key's limit, met by the key the sender signed with:
+            // another announcer's copy may be kept (D59).
+            Err(VoteRejection::KeyLimit) => {
+                self.refused(item, from, taken);
+            }
             Err(_) => {
                 self.accepted(&item);
                 self.progressed();
@@ -1421,8 +1444,7 @@ impl Run {
         self.history
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .vote_synced
-            .insert((addr, hash), Instant::now());
+            .note_votes_synced(addr, hash, self.cfg.repeat_window);
         let p = &mut self.peers[i];
         p.vote_asked.push(hash);
         let before = p.relayed.len();

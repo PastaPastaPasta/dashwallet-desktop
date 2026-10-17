@@ -160,7 +160,6 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
                             return;
                         }
                     }
-                    continue;
                 }
                 if hash == [0; 32] {
                     if let Some(d) = node.object_delay {
@@ -484,7 +483,9 @@ async fn a_short_phase_fails_and_is_never_synced() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unsolicited_items_are_dropped_and_close_the_peer() {
+async fn unsolicited_items_are_dropped_without_closing_the_peer() {
+    // Core drops an item it did not ask for, with no penalty (D59): the
+    // burst before the sync answer costs the peer nothing.
     let obj = proposal("a");
     let node = Node {
         objects: vec![obj.clone()],
@@ -493,9 +494,8 @@ async fn unsolicited_items_are_dropped_and_close_the_peer() {
         ..Node::default()
     };
     let hx = start(vec![node], |c| c.max_misbehaviour = 5).await;
-    let r = hx.task.await.unwrap();
-    assert!(r.is_err(), "{r:?}");
-    assert_eq!(hx.shared.store().vote_count(), 0);
+    wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
+    assert_eq!(hx.shared.store().vote_count(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2355,4 +2355,191 @@ async fn a_copy_taken_late_ends_the_request_still_out() {
     // H's copy still comes: late, not unsolicited.
     run.handle(1, PeerEvent::Vote(x.encode()));
     assert_eq!(run.peers[1].misbehaviour, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_earlier_peers_copy_after_the_next_peers_is_no_offence() {
+    // Validator r8 MJ1: peer 0's request times out and moves to peer 1,
+    // whose copy is taken first; peer 0's copy then comes (Core answers
+    // its queue in order) and was unsolicited, closing peer 0 past the
+    // misbehaviour bound. Core drops it with no penalty (D59).
+    let p = proposal("p-r8-next");
+    let mut run = two_peer_run(&p).await;
+    run.cfg.request_timeout = Duration::ZERO;
+    let max = run.cfg.max_misbehaviour;
+    for t in 0..=max {
+        let mut x = vote(p.hash(), 1, VoteOutcome::Yes);
+        x.time -= i64::from(t) + 1;
+        let x = resigned(&x, 1);
+        let item = vote_inv(&x);
+        run.handle(0, PeerEvent::Inv(vec![item]));
+        run.handle(1, PeerEvent::Inv(vec![item]));
+        run.expire();
+        assert_eq!(run.requests.pending[&(item.hash, item.kind)].peer, 1);
+        run.handle(1, PeerEvent::Vote(x.encode()));
+        run.handle(0, PeerEvent::Vote(x.encode()));
+    }
+    assert_eq!(run.peers[0].misbehaviour, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_copy_from_a_peer_asked_before_leaves_the_live_request_alone() {
+    // Validator r8 m2: peer 0 answered `notfound`, so it is in the live
+    // request's `asked`; its re-signed copies released peer 1's request
+    // before being refused, and the retry sent it to peer 1 again.
+    let p = proposal("p-r8-asked");
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    let item = vote_inv(&x);
+    let key = (item.hash, item.kind);
+    let mut run = two_peer_run(&p).await;
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::NotFound(vec![item]));
+    let before = run.requests.pending[&key].sent;
+    assert_eq!(
+        (run.requests.pending[&key].peer, run.peers[1].in_flight),
+        (1, 1)
+    );
+    std::thread::sleep(Duration::from_millis(2));
+    for _ in 0..5 {
+        run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
+    }
+    assert_eq!(run.requests.pending.get(&key).and_then(|r| r.sent), before);
+    assert_eq!(run.peers[1].in_flight, 1);
+    // Taken from peer 0, the copy ends peer 1's request, whose copy is
+    // then late.
+    run.handle(0, PeerEvent::Vote(x.encode()));
+    assert!(run.shared.store().has_vote(&x.hash()));
+    assert!(run.requests.pending.is_empty());
+    assert_eq!(run.peers[1].in_flight, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_late_record_does_not_make_an_honest_copy_an_offence() {
+    // Validator r8 MJ2: peer 0's junk inv + `notfound` filled the late
+    // record, whose bound dropped honest peer 1's record for its second
+    // copy (asked twice, D12), which was then unsolicited.
+    let p = proposal("p-r8-flood");
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    let item = vote_inv(&x);
+    let mut run = two_peer_run(&p).await;
+    run.cfg.max_in_flight = 1_000_000;
+    run.cfg.request_timeout = Duration::ZERO;
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.expire();
+    assert!(run.requests.pending[&(item.hash, item.kind)].asked_again);
+    run.handle(1, PeerEvent::Vote(x.encode()));
+    assert!(run.shared.store().has_vote(&x.hash()));
+    for round in 0u8..3 {
+        let junk = junk_votes(round, 50_000);
+        run.handle(0, PeerEvent::Inv(junk.clone()));
+        run.handle(0, PeerEvent::NotFound(junk));
+    }
+    run.handle(1, PeerEvent::Vote(x.encode()));
+    assert_eq!(
+        (run.peers[0].misbehaviour, run.peers[1].misbehaviour),
+        (0, 0)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forged_copies_and_a_late_record_flood_cannot_close_an_honest_peer() {
+    // Validator r8 MJ2 chained with m2: each forged copy had honest peer 1
+    // asked twice; the flood then dropped the record for its second copy,
+    // and 1,001 of them closed it.
+    let p = proposal("p-r8-chain");
+    let mut run = two_peer_run(&p).await;
+    run.cfg.max_in_flight = 1_000_000;
+    let max = run.cfg.max_misbehaviour;
+    let mut xs = Vec::new();
+    for t in 0..=max {
+        let mut x = vote(p.hash(), 1, VoteOutcome::Yes);
+        x.time -= i64::from(t) + 1;
+        let x = resigned(&x, 1);
+        let item = vote_inv(&x);
+        run.handle(0, PeerEvent::Inv(vec![item]));
+        run.handle(1, PeerEvent::Inv(vec![item]));
+        run.handle(0, PeerEvent::NotFound(vec![item]));
+        run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
+        xs.push(x);
+    }
+    for round in 0u8..3 {
+        let junk = junk_votes(round, 50_000);
+        run.handle(0, PeerEvent::Inv(junk.clone()));
+        run.handle(0, PeerEvent::NotFound(junk));
+    }
+    for x in &xs {
+        run.handle(1, PeerEvent::Vote(x.encode()));
+        run.handle(1, PeerEvent::Vote(x.encode()));
+    }
+    assert_eq!(run.peers[1].misbehaviour, 0);
+    assert!(run.peers[1].peer.is_open());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_copy_past_its_keys_limit_does_not_hide_the_honest_vote() {
+    // Validator r8 MJ3: a listed key's holder re-signs the honest vote x
+    // with its own key (same hash). Past that key's limit on the proposal
+    // the copy was dropped as `KeyLimit` but taken, ending the request:
+    // the honest announcer was never asked.
+    let p = proposal("p-r8-limit");
+    let mut run = two_peer_run(&p).await;
+    run.shared.store().set_masternode_list(&[
+        ListEntry {
+            voting_key_id: key_id(1),
+            weight: Some(1),
+            valid: true,
+        },
+        ListEntry {
+            voting_key_id: key_id(2),
+            weight: Some(1),
+            valid: true,
+        },
+    ]);
+    let now = unix_now();
+    for i in 0..4u8 {
+        let f = GovernanceVote::funding(
+            OutPoint::new(dashcore::Txid::from_byte_array([0x60 + i; 32]), 0),
+            p.hash(),
+            VoteOutcome::No,
+            now - 100,
+        );
+        run.shared
+            .store()
+            .add_vote(resigned(&f, 2), None, now)
+            .unwrap();
+    }
+    let x = vote(p.hash(), 1, VoteOutcome::Yes);
+    let item = vote_inv(&x);
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
+    let key = (item.hash, item.kind);
+    assert_eq!(run.requests.pending.get(&key).map(|r| r.peer), Some(1));
+    run.handle(1, PeerEvent::Vote(x.encode()));
+    assert!(run.shared.store().has_vote(&x.hash()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vote_sync_history_drops_entries_past_the_window() {
+    // Validator r8 m3: the session's record of vote syncs gained an entry
+    // per (peer, object) asked and was never pruned.
+    let mut run = one_peer_run(|c, _| c.repeat_window = Duration::ZERO).await;
+    for round in 0..3 {
+        let hashes: Vec<[u8; 32]> = (0..500)
+            .map(|i| {
+                let o = proposal(&format!("p-r8-history-{round}-{i}"));
+                let mut s = run.shared.store();
+                s.set_confirmations(1);
+                s.add_object(o.clone(), None, unix_now()).unwrap();
+                o.hash()
+            })
+            .collect();
+        run.ask_votes(hashes);
+    }
+    let n = run.history.lock().unwrap().vote_synced.len();
+    assert!(
+        n <= MIN_HISTORY_PRUNE,
+        "{n} entries kept, all past a zero window"
+    );
 }
