@@ -332,6 +332,28 @@ fn a_full_stash_makes_room_and_keeps_invitations_longest() {
     .unwrap();
 }
 
+/// D23: the reseal after an unlock opens no sealed entry: a tampered one
+/// outlives it, and the next gated stash call deletes it.
+#[test]
+fn the_reseal_after_unlock_opens_nothing() {
+    let f = Fixture::new();
+    let v = f.open();
+    v.create(Some(b"pass")).unwrap();
+    v.lock();
+    let meta = v.stash_link(StashedLinkKind::Payment, PAY).unwrap();
+    let path = f.links_dir().join(format!("{}.dwl", meta.id));
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let ct = json["sealed"]["ct"].as_str().unwrap().to_owned();
+    let flipped = if ct.starts_with('0') { "1" } else { "0" };
+    json["sealed"]["ct"] = format!("{flipped}{}", &ct[1..]).into();
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    v.unlock(b"pass", UnlockScope::Full).unwrap();
+    assert!(path.exists(), "not opened by the reseal");
+    assert_eq!(v.stashed_links().unwrap(), vec![]);
+    assert!(!path.exists());
+}
+
 /// The associated data binds the entry's fields: an edited time or kind,
 /// or a flipped ciphertext bit, never opens; such an entry is deleted.
 #[test]
