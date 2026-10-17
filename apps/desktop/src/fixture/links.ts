@@ -5,6 +5,8 @@
 // every route and every message.
 
 import type { LinkRoute } from "../api/generated/LinkRoute";
+import type { StashedLinkInfo } from "../api/generated/StashedLinkInfo";
+import type { StashedLinkKindName } from "../api/generated/StashedLinkKindName";
 import type { UriRejected } from "../api/generated/UriRejected";
 
 /** A Base58 testnet address (P2PKH `y`, P2SH `8`). */
@@ -48,7 +50,8 @@ export function routeLink(text: string): LinkRoute {
       if (rest.startsWith("//request=")) return { kind: "unsupported", what: "addressRequest" };
       break;
     case "dashpay": {
-      if (/^\/\/invite\?/i.test(rest)) return { kind: "invitation" };
+      // Its stash id comes with the intake below.
+      if (/^\/\/invite\?/i.test(rest)) return { kind: "invitation", linkId: "" };
       const user = /^\/\/user\?(.*)$/i.exec(rest);
       if (user) {
         const p = new URLSearchParams(user[1]);
@@ -60,4 +63,44 @@ export function routeLink(text: string): LinkRoute {
     }
   }
   return { kind: "rejected", reason: { kind: "notALink" } };
+}
+
+/** A link in the fixture's stash (dw-vault's link stash, DP5-01): what `stashed_links` lists,
+ * and the route `open_stashed_link` gives a payment or contact link. */
+export interface FixtureStashedLink {
+  info: StashedLinkInfo;
+  route: LinkRoute;
+}
+
+/** dw-engine's TTLs (D8): payment 7 days, the others 30. */
+const TTL_DAYS: Record<StashedLinkKindName, number> = { payment: 7, contact: 30, invitation: 30 };
+/** dw-vault's MAX_STASHED_LINKS. */
+const MAX_STASHED = 16;
+
+const stashKind = (route: LinkRoute): StashedLinkKindName | null =>
+  route.kind === "pay" ? "payment" : route.kind === "addContact" ? "contact" : route.kind === "invitation" ? "invitation" : null;
+
+/** Puts `route` in `stash` (the same link again keeps its entry; a full stash drops its oldest
+ * payment or contact link first) and returns the entry. */
+export function stashRoute(stash: FixtureStashedLink[], route: LinkRoute, nowSecs = Math.floor(Date.now() / 1000)): StashedLinkInfo {
+  const kind = stashKind(route)!;
+  const same = JSON.stringify(route);
+  const found = stash.find((s) => s.info.kind === kind && kind !== "invitation" && JSON.stringify(s.route) === same);
+  if (found) return found.info;
+  if (stash.length >= MAX_STASHED) {
+    const drop = stash.findIndex((s) => s.info.kind !== "invitation");
+    stash.splice(drop < 0 ? 0 : drop, 1);
+  }
+  const id = (stash.reduce((n, s) => Math.max(n, parseInt(s.info.id, 16)), 0) + 1).toString(16).padStart(32, "0");
+  const info = { id, kind, stashedAt: nowSecs, expiresAt: nowSecs + TTL_DAYS[kind] * 86_400 };
+  stash.push({ info, route: kind === "invitation" ? { kind: "invitation", linkId: id } : route });
+  return info;
+}
+
+/** dw-app's `links::intake` (D2): an invitation always waits in the stash, a payment or
+ * contact link while the network has no wallet; the rest route at once. */
+export function intake(stash: FixtureStashedLink[], route: LinkRoute, hasWallet: boolean): LinkRoute {
+  if (route.kind === "invitation") return { kind: "invitation", linkId: stashRoute(stash, route).id };
+  if ((route.kind === "pay" || route.kind === "addContact") && !hasWallet) return { kind: "saved", link: stashRoute(stash, route) };
+  return route;
 }

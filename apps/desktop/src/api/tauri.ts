@@ -149,6 +149,9 @@ export class IpcBackend implements Backend {
   dashpayMarkRead = cmd.dashpayMarkRead;
   takeLinks = cmd.takeLinks;
   routeLink = cmd.routeLink;
+  stashedLinks = () => cmd.stashedLinks();
+  openStashedLink = cmd.openStashedLink;
+  dismissStashedLink = cmd.dismissStashedLink;
   shellSync = cmd.shellSync;
   warnings = () => cmd.warnings();
   consoleCommands = () => cmd.consoleCommands();

@@ -38,7 +38,7 @@ import { activityPage, contactList, eventOf, relationOf, type DashPayWorld, type
 import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { advance, costs, failRun, fundable, NAME_CREDITS, registrationHandlers } from "./registration";
-import { routeLink } from "./links";
+import { intake, routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
 import { toolsHandlers } from "./tools";
@@ -56,6 +56,15 @@ export interface Ctx {
 export type Handlers = { [K in CommandName]?: (args: CommandArgs[K], ctx: Ctx) => CommandResults[K] };
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
+
+/** Whether the window's network has a wallet (`list_wallets` is not empty). */
+const hasWallet = (w: World) => w.wallets.some((x) => !isClosed(w, x.summary.walletId));
+
+/** The stash entry `linkId` names, or -1; an id that is not 32 lower-case hex digits is refused. */
+function stashIndex(w: World, linkId: string): number {
+  if (!/^[0-9a-f]{32}$/.test(linkId)) throw fail("invalid_argument", "not a link id");
+  return w.stash.findIndex((s) => s.info.id === linkId);
+}
 
 function wallet(w: World, walletId: string) {
   const found = w.wallets.find((x) => x.summary.walletId === walletId);
@@ -765,9 +774,25 @@ export const HANDLERS: Handlers = {
   // The shell (U-01): links are queued already routed (FixtureHandle.deliverLinks).
   take_links: ({ network }, { world }) => {
     if (network !== world.launch.network.dirName) throw fail("invalid_argument", `not the window's network: ${network}`);
-    return world.links.splice(0);
+    return world.links.splice(0).map((route) => intake(world.stash, route, hasWallet(world)));
   },
-  route_link: ({ text }) => routeLink(text),
+  route_link: ({ text }, { world }) => intake(world.stash, routeLink(text), hasWallet(world)),
+  // The link stash (DP5-01): its entries without their text.
+  stashed_links: (_, { world }) => world.stash.map((s) => s.info),
+  open_stashed_link: ({ linkId }, { world }) => {
+    const i = stashIndex(world, linkId);
+    if (i < 0) return null;
+    const { info, route } = world.stash[i];
+    if (info.kind === "invitation") return route;
+    if (world.lock.state === "locked") throw fail("platform.signer_unavailable", "the vault is locked");
+    world.stash.splice(i, 1);
+    return route;
+  },
+  dismiss_stashed_link: ({ linkId }, { world }) => {
+    const i = stashIndex(world, linkId);
+    if (i >= 0) world.stash.splice(i, 1);
+    return null;
+  },
   shell_sync: ({ sync }, { world }) => {
     world.shellSync = sync;
     return null;
