@@ -23,8 +23,12 @@ use super::{
 };
 use crate::platform::contacts_model::Payee;
 use crate::platform::lease::Lease;
+#[cfg(test)]
+use crate::platform::money_gate::Point;
+use crate::platform::money_gate::{Refusal, Subject};
 use crate::platform::payment_locks::{ClaimRefused, InFlight, Pair, pair_of};
 use crate::platform::signers::LockedContactCrypto;
+use crate::platform::trust::Rule5;
 use crate::platform::{
     ChannelState, ContactError, Eligibility, FlowKind, PlatformError, Relation, VaultContactCrypto,
 };
@@ -49,6 +53,15 @@ fn placeholder(network: dashcore::Network) -> Address {
         network,
         Payload::PubkeyHash(PubkeyHash::from_byte_array([0; 20])),
     )
+}
+
+/// A refusal of the money-move gate (DP3-04 §6): a Lock during its wait
+/// is the vault's, the others the contact's Platform refusal.
+fn gate_refusal(refusal: Refusal) -> EngineError {
+    match refusal {
+        Refusal::Locked => SendFailure::VaultLocked.into(),
+        refusal => ContactError::Platform(refusal.platform()).into(),
+    }
 }
 
 /// Refuses a payment to a payee its relation or channel does not allow
@@ -98,7 +111,8 @@ impl TxDraft {
 
     /// `prepare` of a contact payment (D4–D7). Every refusal before the
     /// reservation leaves the contact's addresses alone. The relation is
-    /// read live; the lock is checked by `resolve`.
+    /// read live; the lock is checked before the trust gate's wait and
+    /// again by `resolve` (DP3-04 §4).
     pub(super) async fn prepare_contact(
         self: &Arc<Self>,
         grant_id: String,
@@ -110,6 +124,13 @@ impl TxDraft {
             return Err(SendFailure::WatchOnly.into());
         }
         check_payee(session.payee_state_live(wallet_id, &pair).await?, false)?;
+        session.check_payment_lock(wallet_id, &pair, None)?;
+        // Rule 5 (DP3-04): before anything is taken, so a refusal keeps the
+        // grant and the coin fence is not held across the wait.
+        let payee = Subject::Payee(wallet_id, pair);
+        session.money_gate(payee).await.map_err(gate_refusal)?;
+        #[cfg(test)]
+        session.platform.money_gate.reached(Point::Gated).await;
         let fence = session.coin_fence(wallet_id).await?;
         let given = (session.lease_for(&wallet_id, &grant_id))
             .transpose()
@@ -166,7 +187,8 @@ impl TxDraft {
             charge: Some(charge),
         };
         // Nothing refused so far took an address; from here one is taken.
-        r.recipients[0].address = self.payout_address(&wallet, pair, crypto).await?;
+        let address = self.payout_address(&wallet, pair, crypto).await?;
+        r.recipients[0].address = address;
         self.sign_and_reserve(
             r,
             wallet,
@@ -189,19 +211,63 @@ impl TxDraft {
         self.session.background_crypto(self.wallet_id).await
     }
 
-    /// `pair`'s reserved address, reserved now if it has none (D7, D21).
-    /// The caller holds the wallet's coin fence, so no other `prepare`
-    /// reserves meanwhile.
+    /// `pair`'s reserved address, reserved now if it has none (D7, D21),
+    /// kept once rule 5's re-check passes (DP3-04 §4). The caller holds
+    /// the wallet's coin fence, so no other `prepare` reserves meanwhile.
     async fn payout_address(
         &self,
         wallet: &PlatformWallet,
         pair: Pair,
         crypto: Option<VaultContactCrypto>,
     ) -> Result<Address, EngineError> {
-        let payments = &self.session.platform.payments;
-        if let Some(address) = payments.reserved(self.wallet_id, pair) {
-            return Ok(address);
+        let (session, payments) = (&self.session, &self.session.platform.payments);
+        #[cfg(test)]
+        session.platform.money_gate.reached(Point::Planned).await;
+        let rule = session.trust.rule_5();
+        let (address, fresh) = match payments.reserved_checked(self.wallet_id, pair) {
+            // Kept while rule 5 did not apply: not paid once it does.
+            Some((address, false)) if rule == Rule5::Enforce => {
+                payments.drop_reserved(self.wallet_id, pair, &address);
+                (self.reserve(wallet, pair, crypto).await?, true)
+            }
+            Some((address, _)) => (address, false),
+            None => (self.reserve(wallet, pair, crypto).await?, true),
+        };
+        #[cfg(test)]
+        session.platform.money_gate.reached(Point::Reserved).await;
+        // The payee may have changed since the gate (§4 step 5): an address
+        // taken from content that does not verify now is neither kept nor
+        // paid.
+        let recheck = session.money_recheck(self.wallet_id, pair, &address, rule);
+        let checked = match recheck.await {
+            Ok(checked) => checked,
+            Err(refusal) => {
+                payments.drop_reserved(self.wallet_id, pair, &address);
+                return Err(gate_refusal(refusal));
+            }
+        };
+        if fresh {
+            payments.keep(self.wallet_id, pair, address.clone(), checked);
         }
+        // Meanwhile another payment's broadcast claimed a reused address, or
+        // gave its own back before a fresh one was kept: the claim would
+        // refuse this payment, so `prepare` does.
+        if payments
+            .reserved_checked(self.wallet_id, pair)
+            .is_none_or(|(a, _)| a != address)
+        {
+            return Err(SendFailure::PreparedTxSpent.into());
+        }
+        Ok(address)
+    }
+
+    /// A new address of `pair`'s contact from the library (D7).
+    async fn reserve(
+        &self,
+        wallet: &PlatformWallet,
+        pair: Pair,
+        crypto: Option<VaultContactCrypto>,
+    ) -> Result<Address, EngineError> {
         let dashpay = wallet.identity().dashpay();
         let reserved = match &crypto {
             Some(c) => dashpay.reserve_payment_address(&pair.0, &pair.1, c).await,
@@ -218,7 +284,6 @@ impl TxDraft {
                 "the contact's payment address {reserved} is not P2PKH"
             )));
         }
-        payments.keep(self.wallet_id, pair, reserved.clone());
         Ok(reserved)
     }
 
@@ -260,7 +325,8 @@ impl TxDraft {
             (self.session)
                 .clear_payment_lock(self.wallet_id, *pair, &prepared.summary.txid)
                 .await;
-            (self.session.platform.payments).keep(self.wallet_id, *pair, address.clone());
+            // Unchecked: under rule 5 the next `prepare` reserves anew.
+            (self.session.platform.payments).keep(self.wallet_id, *pair, address.clone(), false);
             *prepared.phase() = Phase::Pending;
         }
         recorded
@@ -292,7 +358,12 @@ impl TxDraft {
         let txid = &prepared.summary.txid;
         match next {
             Phase::Pending | Phase::Released if first => {
-                (self.session.platform.payments).keep(self.wallet_id, *pair, address.clone());
+                (self.session.platform.payments).keep(
+                    self.wallet_id,
+                    *pair,
+                    address.clone(),
+                    false,
+                );
                 (self.session)
                     .clear_payment_lock(self.wallet_id, *pair, txid)
                     .await;

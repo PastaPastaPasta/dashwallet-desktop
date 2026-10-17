@@ -294,33 +294,56 @@ pub(super) trait Refetcher: Send + Sync {
     ) -> BoxFuture<Result<Vec<ContactRequest>, PlatformError>>;
 }
 
+/// What one re-fetch found ([`check`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Check {
+    /// It used only SPV-verified quorum keys and matches the library.
+    Verified,
+    /// It failed, differs, is absent or used a key SPV did not verify.
+    Unverified,
+    /// A proof it needed was refused: SPV and the trusted service disagree
+    /// on a quorum key (rule 4).
+    Mismatch,
+}
+
 /// Re-fetches one entity in its own scope: whether the fetch used only
 /// SPV-verified quorum keys and matches what the library holds.
 pub(super) async fn reverify(h: &Held, fetch: &dyn Refetcher) -> bool {
-    fn ok<T>(r: Result<Option<T>, PlatformError>) -> Option<T> {
-        r.inspect_err(|e| tracing::debug!(error = %e, "re-fetch failed"))
-            .ok()
-            .flatten()
-    }
+    check(h, fetch).await == Check::Verified
+}
+
+/// [`reverify`], telling a mismatch apart (DP3-04's gate refuses on it).
+pub(super) async fn check(h: &Held, fetch: &dyn Refetcher) -> Check {
     let (matches, tally) = trust::scoped(async {
         match h {
             Held::Identity { id, keys } => {
-                ok(fetch.identity_keys(*id).await).as_ref() == Some(keys)
+                (fetch.identity_keys(*id).await).map(|fetched| fetched.as_ref() == Some(keys))
             }
-            Held::Profile { id, shown } => ok(fetch.profile(*id).await).as_ref() == Some(shown),
+            Held::Profile { id, shown } => {
+                (fetch.profile(*id).await).map(|fetched| fetched.as_ref() == Some(shown))
+            }
             Held::Label {
                 label,
                 spelling,
                 owner,
-            } => ok(fetch.dpns_domain(label.clone()).await) == Some((spelling.clone(), *owner)),
+            } => (fetch.dpns_domain(label.clone()).await)
+                .map(|fetched| fetched == Some((spelling.clone(), *owner))),
             Held::ContactRequest(r) => {
                 let fetched = fetch.contact_requests(r.sender_id, r.recipient_id, r.created_at);
-                ok(fetched.await.map(Some)).is_some_and(|all| all.contains(r))
+                fetched.await.map(|all| all.contains(r))
             }
         }
     })
     .await;
-    matches && tally.verified()
+    match matches {
+        Ok(true) if tally.verified() => Check::Verified,
+        Ok(_) => Check::Unverified,
+        Err(PlatformError::TrustMismatch) => Check::Mismatch,
+        Err(e) => {
+            tracing::debug!(error = %e, "re-fetch failed");
+            Check::Unverified
+        }
+    }
 }
 
 /// The records to write: entities whose fetch verified and that the
