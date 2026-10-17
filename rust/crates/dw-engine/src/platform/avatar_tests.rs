@@ -881,20 +881,39 @@ async fn an_off_holds_for_reads_already_running() {
     let slow = png(25, 25);
     rig.server.route("/slow.png", Route::stalled(slow.clone()));
     let stalled = profile_for(&rig.server.url("good.test", "/slow.png"), &slow);
-    let off_mid_fetch = async {
-        while !rig.server.hits().contains(&"/slow.png".to_string()) {
+    let off_mid_fetch = || async {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let path = "/slow.png".to_string();
+        let hits = || rig.server.hits().iter().filter(|h| **h == path).count();
+        let before = hits();
+        while hits() == before {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fetch never started"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         rig.pictures.set(false);
     };
     let started = std::time::Instant::now();
-    let (read, ()) = tokio::join!(rig.read(&stalled), off_mid_fetch);
+    let (read, ()) = tokio::join!(rig.read(&stalled), off_mid_fetch());
     assert_eq!(read, Ok(None));
     assert!(started.elapsed() < std::time::Duration::from_secs(9));
     let key = Target::parse(&stalled.avatar_url.clone().unwrap())
         .unwrap()
         .url_sha;
     assert_eq!(rig.db.avatar_row(&key).unwrap(), None, "nothing recorded");
+    // An own identity's fetch is abandoned the same way (off: cache only).
+    rig.pictures.set(true);
+    let own = async {
+        let ticket = rig.ticket();
+        (rig.pipeline)
+            .for_profile(&stalled, AvatarSize::Small, Whose::Own, ticket)
+            .await
+    };
+    let (read, ()) = tokio::join!(own, off_mid_fetch());
+    assert_eq!(read, Ok(None));
+    assert_eq!(rig.db.avatar_row(&key).unwrap(), None);
 }
 
 /// Transitions at once apply in turn (D34): one paused between its durable

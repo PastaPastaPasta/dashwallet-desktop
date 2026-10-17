@@ -47,6 +47,20 @@ const CANDIDATE_LIFE: Duration = Duration::from_secs(30 * 60);
 const REMOTE_PROFILES: usize = 256;
 const REMOTE_PROFILE_LIFE: Duration = Duration::from_secs(600);
 const REMOTE_READS: usize = 4;
+/// A failed Platform read is the answer for this long, so the reads queued
+/// behind it share it rather than each asking again (D35).
+const REMOTE_FAILURE_LIFE: Duration = Duration::from_secs(5);
+
+type RemoteRead = Result<Option<Profile>, AvatarError>;
+
+/// How long a kept Platform read answers.
+fn remote_life(read: &RemoteRead) -> Duration {
+    if read.is_ok() {
+        REMOTE_PROFILE_LIFE
+    } else {
+        REMOTE_FAILURE_LIFE
+    }
+}
 /// Android's crop parameter (D15).
 const ZOOM_PARAM: &str = "dashpay-profile-pic-zoom";
 
@@ -510,7 +524,7 @@ pub(crate) struct AvatarRuntime {
     pipeline: Mutex<Option<Arc<Pipeline>>>,
     pictures: Arc<Pictures>,
     candidates: Mutex<VecDeque<(String, Candidate)>>,
-    remote: Mutex<HashMap<Identifier, (Instant, Option<Profile>)>>,
+    remote: Mutex<HashMap<Identifier, (Instant, RemoteRead)>>,
     /// One Platform read per unknown identity at a time, and at most
     /// [`REMOTE_READS`] at once (D35).
     remote_locks: Locks<Identifier>,
@@ -655,17 +669,18 @@ impl AvatarRuntime {
 
     /// The profile of an identity the wallet holds nothing of, from
     /// Platform, kept [`REMOTE_PROFILE_LIFE`] (D14). Reads of one identity
-    /// share one Platform read, at most [`REMOTE_READS`] run at once (D35),
-    /// and none starts or completes once `ticket` no longer allows the
+    /// share one Platform read, its failure too (kept
+    /// [`REMOTE_FAILURE_LIFE`]), and at most [`REMOTE_READS`] run at once
+    /// (D35). None starts or completes once `ticket` no longer allows the
     /// network (D33): then `None`, and nothing is kept.
     async fn remote_profile(
         &self,
         net: &impl RequestNet,
         user: Identifier,
         ticket: Ticket,
-    ) -> Result<Option<Profile>, AvatarError> {
+    ) -> RemoteRead {
         if let Some(kept) = self.kept_remote(&user) {
-            return Ok(kept);
+            return kept;
         }
         let lock = keyed_lock(&self.remote_locks, &user);
         let pictures = &self.pictures;
@@ -673,7 +688,7 @@ impl AvatarRuntime {
             return Ok(None);
         };
         if let Some(kept) = self.kept_remote(&user) {
-            return Ok(kept);
+            return kept;
         }
         let Some(_permit) = pictures
             .unless_revoked(ticket, self.remote_reads.acquire())
@@ -688,9 +703,11 @@ impl AvatarRuntime {
         else {
             return Ok(None);
         };
-        let profile = doc?.and_then(|d| super::profiles::shown(&d.properties));
+        let read = doc
+            .map(|doc| doc.and_then(|d| super::profiles::shown(&d.properties)))
+            .map_err(AvatarError::from);
         let mut remote = guard(&self.remote);
-        remote.retain(|_, (at, _)| at.elapsed() < REMOTE_PROFILE_LIFE);
+        remote.retain(|_, (at, kept)| at.elapsed() < remote_life(kept));
         if remote.len() >= REMOTE_PROFILES
             && let Some(oldest) = (remote.iter())
                 .min_by_key(|(_, (at, _))| *at)
@@ -698,14 +715,14 @@ impl AvatarRuntime {
         {
             remote.remove(&oldest);
         }
-        remote.insert(user, (Instant::now(), profile.clone()));
-        Ok(profile)
+        remote.insert(user, (Instant::now(), read.clone()));
+        read
     }
 
-    fn kept_remote(&self, user: &Identifier) -> Option<Option<Profile>> {
+    fn kept_remote(&self, user: &Identifier) -> Option<RemoteRead> {
         (guard(&self.remote).get(user))
-            .filter(|(at, _)| at.elapsed() < REMOTE_PROFILE_LIFE)
-            .map(|(_, p)| p.clone())
+            .filter(|(at, kept)| at.elapsed() < remote_life(kept))
+            .map(|(_, kept)| kept.clone())
     }
 }
 

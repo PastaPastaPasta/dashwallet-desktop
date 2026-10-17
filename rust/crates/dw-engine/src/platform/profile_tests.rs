@@ -609,6 +609,46 @@ fn reads_of_one_unknown_identity_share_one_platform_read() {
     assert_eq!(f.profile_reads(), before + 1);
 }
 
+/// A failed Platform read is shared too (D35): with Platform down, eight
+/// reads at once of one unknown identity ask it once, and all fail.
+#[test]
+fn a_failed_platform_read_is_shared_with_the_reads_queued_behind_it() {
+    use std::sync::atomic::AtomicU32;
+    let f = fixture();
+    let _p = with_daves_avatar(&f);
+    f.net.down.store(true, Ordering::SeqCst);
+    let asked = Arc::new(AtomicU32::new(0));
+    let (counted, gate) = (Arc::clone(&asked), Arc::new(tokio::sync::Notify::new()));
+    let opened = Arc::clone(&gate);
+    f.s.platform
+        .avatars
+        .toggle()
+        .set_hook(Box::new(move |point| {
+            if point != "platform" {
+                return None;
+            }
+            // The first read is held until the others queued behind it.
+            let first = counted.fetch_add(1, Ordering::SeqCst) == 0;
+            let gate = Arc::clone(&opened);
+            Some(Box::pin(async move {
+                if first {
+                    gate.notified().await;
+                }
+            }))
+        }));
+    let reads = futures_util::future::join_all((0..8).map(|_| f.read_avatar(DAVE)));
+    let hold = async {
+        while asked.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        gate.notify_one();
+    };
+    let (reads, ()) = f.engine.block_on(async { tokio::join!(reads, hold) });
+    assert!(reads.iter().all(Result::is_err), "{reads:?}");
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+}
+
 /// Without the document key in the vault the edit is
 /// `identity.keys_missing`, the grant unused.
 #[test]
