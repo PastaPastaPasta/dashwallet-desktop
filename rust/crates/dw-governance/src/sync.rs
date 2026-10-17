@@ -761,17 +761,20 @@ impl Run {
         });
         // Every announcer of this kind failed: ask those that announced
         // the other kind (D54).
-        let switch = next.is_none().then(|| {
-            let a = self.requests.announced.get_mut(&hash)?;
-            a.other.retain(|p| live.contains(p));
-            if a.other.is_empty() {
-                return None;
-            }
-            a.kind = other_kind(a.kind);
-            a.untried = std::mem::take(&mut a.other);
-            Some((a.untried[0], a.kind, std::mem::take(&mut a.other_phase)))
-        });
-        if let Some(Some((next, kind, phase))) = switch {
+        let switch = next
+            .is_none()
+            .then(|| {
+                let a = self.requests.announced.get_mut(&hash)?;
+                a.other.retain(|p| live.contains(p));
+                if a.other.is_empty() {
+                    return None;
+                }
+                a.kind = other_kind(a.kind);
+                a.untried = std::mem::take(&mut a.other);
+                Some((a.untried[0], a.kind, std::mem::take(&mut a.other_phase)))
+            })
+            .flatten();
+        if let Some((next, kind, phase)) = switch {
             self.assign(hash, kind, next, t.phase || phase, Vec::new());
             self.pump(next);
             return false;
@@ -858,15 +861,13 @@ impl Run {
                 if object {
                     // Full, it takes no new hashes rather than forget the
                     // ones it holds: no peer can clear another's (D53).
-                    let full =
-                        self.requests.object_announcers.len() >= self.cfg.max_late_announcers;
-                    match self.requests.object_announcers.get_mut(&i.hash) {
-                        Some(by) if !by.contains(&addr) => by.push(addr),
-                        Some(_) => {}
-                        None if !full => {
-                            self.requests.object_announcers.insert(i.hash, vec![addr]);
+                    let by_hash = &mut self.requests.object_announcers;
+                    if let Some(by) = by_hash.get_mut(&i.hash) {
+                        if !by.contains(&addr) {
+                            by.push(addr);
                         }
-                        None => {}
+                    } else if by_hash.len() < self.cfg.max_late_announcers {
+                        by_hash.insert(i.hash, vec![addr]);
                     }
                 }
                 let kind = self

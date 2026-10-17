@@ -975,12 +975,7 @@ async fn stale_triggers_make_room_for_this_runs_objects() {
             let mut store = shared.store();
             store.set_max_objects(3);
             for height in 100..103 {
-                let data = format!(
-                    r#"{{"event_block_height":{height},"payment_addresses":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amounts":"1","proposal_hashes":"{}","type":2}}"#,
-                    "ab".repeat(32)
-                );
-                let mut t = GovernanceObject::new_proposal(1, unix_now(), data.into_bytes());
-                t.object_type = crate::object::OBJECT_TYPE_TRIGGER;
+                let t = big_trigger(height, 1);
                 store.add_object(t, None, unix_now()).unwrap();
             }
         },
@@ -1150,6 +1145,13 @@ async fn an_orphan_votes_object_is_asked_of_every_peer() {
     hx.stop.send(true).unwrap();
 }
 
+/// Answers a `govsync` with its sync status count.
+async fn send_status(conn: &mut dw_p2p::testing::MockConn, kind: i32, count: i32) {
+    let mut ssc = kind.to_le_bytes().to_vec();
+    ssc.extend_from_slice(&count.to_le_bytes());
+    conn.send(commands::SYNCSTATUSCOUNT, &ssc).await.unwrap();
+}
+
 /// Answers the full sync at once with `h`, holds the `getdata` for it
 /// while the honest nodes announce it, then (if `flood`) announces and
 /// `notfound`s 150,000 junk objects before sending `h`.
@@ -1159,9 +1161,7 @@ async fn announcer_clearing_peer(mock: MockPeer, h: GovernanceObject, flood: boo
     while let Ok(msg) = conn.recv().await {
         match msg.command.as_str() {
             commands::MNGOVERNANCESYNC if msg.payload[..32] == [0; 32] => {
-                let mut ssc = SSC_GOVOBJ.to_le_bytes().to_vec();
-                ssc.extend_from_slice(&1i32.to_le_bytes());
-                conn.send(commands::SYNCSTATUSCOUNT, &ssc).await.unwrap();
+                send_status(&mut conn, SSC_GOVOBJ, 1).await;
                 let item = InvItem {
                     kind: INV_GOVERNANCE_OBJECT,
                     hash: h.hash(),
@@ -1170,9 +1170,7 @@ async fn announcer_clearing_peer(mock: MockPeer, h: GovernanceObject, flood: boo
             }
             // A vote sync: it holds no votes.
             commands::MNGOVERNANCESYNC if msg.payload[32..] != object_fetch_filter()[..] => {
-                let mut ssc = SSC_GOVOBJ_VOTE.to_le_bytes().to_vec();
-                ssc.extend_from_slice(&0i32.to_le_bytes());
-                conn.send(commands::SYNCSTATUSCOUNT, &ssc).await.unwrap();
+                send_status(&mut conn, SSC_GOVOBJ_VOTE, 0).await;
             }
             "getdata" if !sent => {
                 let items = decode_inv(&msg.payload).unwrap();
@@ -1451,9 +1449,7 @@ async fn kind_lying_peer(mock: MockPeer, h: [u8; 32]) {
     while let Ok(msg) = conn.recv().await {
         match msg.command.as_str() {
             commands::MNGOVERNANCESYNC if msg.payload[..32] == [0; 32] => {
-                let mut ssc = SSC_GOVOBJ.to_le_bytes().to_vec();
-                ssc.extend_from_slice(&0i32.to_le_bytes());
-                conn.send(commands::SYNCSTATUSCOUNT, &ssc).await.unwrap();
+                send_status(&mut conn, SSC_GOVOBJ, 0).await;
                 let item = InvItem {
                     kind: INV_GOVERNANCE_VOTE,
                     hash: h,
@@ -1461,9 +1457,7 @@ async fn kind_lying_peer(mock: MockPeer, h: [u8; 32]) {
                 conn.send("inv", &encode_inv(&[item])).await.unwrap();
             }
             commands::MNGOVERNANCESYNC if msg.payload[32..] != object_fetch_filter()[..] => {
-                let mut ssc = SSC_GOVOBJ_VOTE.to_le_bytes().to_vec();
-                ssc.extend_from_slice(&0i32.to_le_bytes());
-                conn.send(commands::SYNCSTATUSCOUNT, &ssc).await.unwrap();
+                send_status(&mut conn, SSC_GOVOBJ_VOTE, 0).await;
             }
             "getdata" => {
                 let items = decode_inv(&msg.payload).unwrap();
@@ -1509,9 +1503,7 @@ async fn junk_filler(mock: MockPeer, count: u32) {
     while let Ok(msg) = conn.recv().await {
         match msg.command.as_str() {
             commands::MNGOVERNANCESYNC if msg.payload[..32] == [0; 32] => {
-                let mut ssc = SSC_GOVOBJ.to_le_bytes().to_vec();
-                ssc.extend_from_slice(&(count as i32).to_le_bytes());
-                conn.send(commands::SYNCSTATUSCOUNT, &ssc).await.unwrap();
+                send_status(&mut conn, SSC_GOVOBJ, count as i32).await;
                 let items: Vec<InvItem> = (0..count)
                     .map(|i| {
                         let mut hash = [0xdd; 32];
@@ -1527,9 +1519,7 @@ async fn junk_filler(mock: MockPeer, count: u32) {
                 }
             }
             commands::MNGOVERNANCESYNC if msg.payload[32..] != object_fetch_filter()[..] => {
-                let mut ssc = SSC_GOVOBJ_VOTE.to_le_bytes().to_vec();
-                ssc.extend_from_slice(&0i32.to_le_bytes());
-                conn.send(commands::SYNCSTATUSCOUNT, &ssc).await.unwrap();
+                send_status(&mut conn, SSC_GOVOBJ_VOTE, 0).await;
             }
             "getdata" => {
                 conn.send("notfound", &msg.payload).await.unwrap();
