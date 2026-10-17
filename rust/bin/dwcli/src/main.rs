@@ -384,7 +384,6 @@ fn setup_error(fixed: &'static str) -> impl FnOnce(String) -> RunError {
 /// (MG-03 D32). The engine's message may quote the value, so it is only
 /// classified.
 fn open_failure(e: &EngineError, opts: &SessionOptions) -> &'static str {
-    let starts = |m: &str, p: &str| m.starts_with(p);
     if opts
         .spv_peers
         .iter()
@@ -393,10 +392,10 @@ fn open_failure(e: &EngineError, opts: &SessionOptions) -> &'static str {
         return "invalid --peer value";
     }
     match e {
-        EngineError::InvalidConfig(m) if starts(m, "CA certificate") => {
+        EngineError::InvalidConfig(m) if m.starts_with("CA certificate") => {
             "--ca-cert file not readable or not a PEM certificate"
         }
-        EngineError::InvalidConfig(m) if starts(m, "initial protocol version") => {
+        EngineError::InvalidConfig(m) if m.starts_with("initial protocol version") => {
             "unknown --initial-protocol-version"
         }
         EngineError::InvalidArgument(m) | EngineError::InvalidConfig(m) if m.contains("DAPI") => {

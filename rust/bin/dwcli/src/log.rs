@@ -114,12 +114,11 @@ mod tests {
 
     #[test]
     fn every_value_and_its_quoted_form_is_redacted() {
-        let values = [
+        let mut values = vec![
             "http://h/a\"b".to_string(),
             "http://h/a\\\"b".to_string(),
             "h/a".to_string(),
         ];
-        let mut values = values.to_vec();
         values.sort_by_key(|v| std::cmp::Reverse(v.len()));
         assert_eq!(
             redact(
