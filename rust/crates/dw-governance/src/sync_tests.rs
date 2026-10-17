@@ -2259,6 +2259,16 @@ fn late_record_then_second_announcer(run: &mut Run, item: InvItem) {
     run.handle(1, PeerEvent::Inv(vec![item]));
 }
 
+/// Peers 0 and 1 announce `item`; peer 0's request times out and moves to
+/// peer 1.
+fn moved_to_peer_1(run: &mut Run, item: InvItem) {
+    let timeout = std::mem::replace(&mut run.cfg.request_timeout, Duration::ZERO);
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.expire();
+    run.cfg.request_timeout = timeout;
+}
+
 /// Peer 0 is asked for the phase vote `x`, times out twice and is given
 /// up on: lost.
 fn lose_vote(run: &mut Run, x: &GovernanceVote) {
@@ -2384,14 +2394,11 @@ async fn an_earlier_peers_copy_after_the_next_peers_is_no_offence() {
     // misbehaviour bound. Core drops it with no penalty (D59).
     let p = proposal("p-r8-next");
     let mut run = two_peer_run(&p).await;
-    run.cfg.request_timeout = Duration::ZERO;
     let max = run.cfg.max_misbehaviour;
     for t in 0..=max {
         let x = aged_vote(p.hash(), t);
         let item = vote_inv(&x);
-        run.handle(0, PeerEvent::Inv(vec![item]));
-        run.handle(1, PeerEvent::Inv(vec![item]));
-        run.expire();
+        moved_to_peer_1(&mut run, item);
         assert_eq!(run.requests.pending[&(item.hash, item.kind)].peer, 1);
         run.handle(1, PeerEvent::Vote(x.encode()));
         run.handle(0, PeerEvent::Vote(x.encode()));
@@ -2409,11 +2416,7 @@ async fn a_refused_copy_from_a_peer_asked_before_leaves_the_live_request_alone()
     let item = vote_inv(&x);
     let key = (item.hash, item.kind);
     let mut run = two_peer_run(&p).await;
-    run.handle(0, PeerEvent::Inv(vec![item]));
-    run.handle(1, PeerEvent::Inv(vec![item]));
-    run.cfg.request_timeout = Duration::ZERO;
-    run.expire();
-    run.cfg.request_timeout = Duration::from_secs(30);
+    moved_to_peer_1(&mut run, item);
     let before = run.requests.pending[&key].sent;
     assert_eq!(
         (run.requests.pending[&key].peer, run.peers[1].in_flight),
@@ -2552,10 +2555,7 @@ async fn an_earlier_peers_copy_ends_the_request_still_out() {
     let x = vote(p.hash(), 1, VoteOutcome::Yes);
     let item = vote_inv(&x);
     let mut run = two_peer_run(&p).await;
-    run.handle(0, PeerEvent::Inv(vec![item]));
-    run.handle(1, PeerEvent::Inv(vec![item]));
-    run.cfg.request_timeout = Duration::ZERO;
-    run.expire();
+    moved_to_peer_1(&mut run, item);
     assert_eq!(run.requests.pending[&(item.hash, item.kind)].peer, 1);
     run.handle(0, PeerEvent::Vote(x.encode()));
     assert!(run.shared.store().has_vote(&x.hash()));
@@ -2606,11 +2606,7 @@ async fn an_earlier_peers_copies_answer_one_getdata() {
     let x = vote(p.hash(), 1, VoteOutcome::Yes);
     let item = vote_inv(&x);
     let mut run = two_peer_run(&p).await;
-    run.handle(0, PeerEvent::Inv(vec![item]));
-    run.handle(1, PeerEvent::Inv(vec![item]));
-    run.cfg.request_timeout = Duration::ZERO;
-    run.expire();
-    run.cfg.request_timeout = Duration::from_secs(30);
+    moved_to_peer_1(&mut run, item);
     for _ in 0..5 {
         run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
     }
