@@ -7,7 +7,7 @@
 //! one bounded round of re-fetches looks for a mismatch, which still
 //! refuses, and the payment proceeds otherwise. The trusted-only toggle
 //! proceeds. In every mode a payee whose paying account is not the one
-//! their current request designates is refused (D12, D21, D25, D26).
+//! their current request designates is refused (D12, D21, D25, D28).
 //!
 //! The gate records what verifies itself, as the background re-fetch
 //! (`reverify.rs`) does: under the wallet manager's read lock, and only for
@@ -330,16 +330,11 @@ pub(super) fn payee_held(
 /// rebuilds it at the reservation's drain; after it nothing does, as a
 /// drain may leave the op queued and derive from the old account.
 ///
-/// No stamp is staleness only when `absent_is_stale` (`Enforce`, D26):
-/// the library's store has no column for it, so every account loads
-/// unstamped until the first DashPay pass rebuilds it, and the other
-/// modes proceed on that absence as on any other (D7).
-fn paying_account_stale(
-    m: &ManagedIdentity,
-    contact: &Identifier,
-    reserved: bool,
-    absent_is_stale: bool,
-) -> bool {
+/// No stamp is staleness too, in every mode (D28): the store keeps the
+/// stamp, so an account is unstamped only before its first rebuild after
+/// the upgrade, or when a crash came between its re-key and its rebuild,
+/// and then it is the old account.
+fn paying_account_stale(m: &ManagedIdentity, contact: &Identifier, reserved: bool) -> bool {
     let dp = m.dashpay();
     let Some(c) = dp.established_contacts().get(contact) else {
         return false;
@@ -349,10 +344,7 @@ fn paying_account_stale(
             p.contact_id == *contact && p.op.kind() == PendingContactCryptoKind::RegisterExternal
         })
     };
-    let stale = match c.external_account_reference {
-        Some(built_from) => built_from != c.incoming_request.account_reference,
-        None => absent_is_stale,
-    };
+    let stale = c.external_account_reference != Some(c.incoming_request.account_reference);
     stale && (reserved || !rebuild_queued())
 }
 
@@ -388,9 +380,6 @@ struct SessionEnv<'a> {
     /// The re-check: the address reserved for the payee (D12's strict
     /// reading, D21).
     reserved: Option<&'a Address>,
-    /// Rule 5 as the caller read it once: whether an unstamped paying
-    /// account is stale (D26).
-    rule: Rule5,
 }
 
 impl SessionEnv<'_> {
@@ -398,17 +387,15 @@ impl SessionEnv<'_> {
     /// one its current request designates (D12, D25), or, at the re-check,
     /// the reserved address is not in that account (D21). Whether or not
     /// anything came through the fallback, and in every mode: it is where
-    /// the money goes, not what the data was verified by. Only `Enforce`
-    /// takes a missing stamp for a stale account (D26).
+    /// the money goes, not what the data was verified by. A missing stamp
+    /// is a stale account too (D28).
     fn payable(&self, wm: &WalletManager<PlatformWalletInfo>) -> bool {
         let Subject::Payee(wallet, pair) = self.subject else {
             return true;
         };
         // A subject the library no longer holds is `unverified`'s `None`.
-        let stale = self.managed(wm).is_some_and(|m| {
-            let enforce = self.rule == Rule5::Enforce;
-            paying_account_stale(m, &pair.1, self.reserved.is_some(), enforce)
-        });
+        let stale = (self.managed(wm))
+            .is_some_and(|m| paying_account_stale(m, &pair.1, self.reserved.is_some()));
         !stale
             && self
                 .reserved
@@ -519,7 +506,6 @@ impl NetworkSession {
             session: self,
             subject,
             reserved: None,
-            rule,
         };
         let gated = run(&env, || self.gate_refetcher(), signals, waits).await;
         if let Err(refusal) = &gated {
@@ -565,7 +551,6 @@ impl NetworkSession {
             session: self,
             subject,
             reserved: Some(address),
-            rule,
         };
         let checked = match rule {
             Rule5::Enforce => recheck(&env, || self.gate_refetcher(), waits).await,

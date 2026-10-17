@@ -2839,11 +2839,10 @@ renames or reshapes them takes the next version bump:
       yet) is `platform.context_unavailable`, and a
       DashPay sync is started so the library queues the rebuild a retry needs (design D12, D25; at the wait a
       queued rebuild of the account exempts it, not after the reservation). At the wait nothing is taken; after
-      the reservation the address is dropped. Under `Enforcing` an account with no stamp is refused the same way:
-      the library does not persist the stamp, so a contact payment before the launch's first completed DashPay
-      pass is refused, and every contact payment while Platform is not running. Degraded and the toggle proceed on
-      a missing stamp, so there a rotation whose rebuild was not drained and stamped (a crash before its sweep
-      included) can pay the payee's previous account until the next completed pass (design D26).
+      the reservation the address is dropped. An account with no stamp is refused the same way, in every mode: the
+      library's store keeps the stamp, so an account is unstamped only before its first rebuild after the upgrade
+      or after a crash between a rotation's re-key and its rebuild. A contact payment to a contact stamped before
+      the upgrade is refused until a DashPay pass completes, offline included (design D28).
     - **Where.** `prepare` checks the contact's payment lock, then runs the gate, both before the coin fence and the
       grant: a refusal redeems no grant, takes no address and holds no other send of the wallet. A vault Lock during
       the wait ends it (`send.vault_locked`); a payment lock written during it is found by the plan

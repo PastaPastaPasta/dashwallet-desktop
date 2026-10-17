@@ -1862,13 +1862,12 @@ fn an_account_a_crash_left_unrebuilt_is_not_paid() {
     assert_eq!(f.reserved(BOB), Some(rebuilt));
 }
 
-/// Design D26: the library's store keeps no stamp, so after every launch
-/// each paying account is unstamped until the first DashPay pass rebuilds
-/// it, and that looks the same as the crash above. `Enforce` refuses it
-/// (nothing reserved); `Probe` and `Off` proceed on the absence, as D7
-/// does, so the crash's old account is paid there too.
+/// Design D28: with the stamp kept by the store, a paying account is
+/// unstamped only before its first rebuild after the upgrade, or after
+/// the crash above, when it is the old account. Every setting refuses it,
+/// nothing reserved.
 #[test]
-fn an_unstamped_account_is_paid_only_where_rule_5_does_not_apply() {
+fn an_unstamped_account_is_not_paid_in_any_setting() {
     for (mode, set) in EVERY_RULE {
         for rotated in [false, true] {
             let f = fixture(false);
@@ -1878,21 +1877,14 @@ fn an_unstamped_account_is_paid_only_where_rule_5_does_not_apply() {
             } else {
                 f.bobs_account_built_from(None);
             }
-            let prepared = f.prepare(&f.draft(BOB));
-            if mode == "enforcing" {
-                // No latch, so nothing is unverified: the refusal is the
-                // destination's.
-                assert_eq!(
-                    platform_error(prepared),
-                    "platform.context_unavailable",
-                    "rotated {rotated}"
-                );
-                assert!(f.reserved(BOB).is_none(), "rotated {rotated}");
-            } else {
-                let p = prepared.unwrap();
-                let held = f.contact_address(BOB, 0);
-                assert_eq!(paid(&p), held.to_string(), "{mode}, rotated {rotated}");
-            }
+            // No latch, so nothing is unverified: the refusal is the
+            // destination's.
+            assert_eq!(
+                platform_error(f.prepare(&f.draft(BOB))),
+                "platform.context_unavailable",
+                "{mode}, rotated {rotated}"
+            );
+            assert!(f.reserved(BOB).is_none(), "{mode}, rotated {rotated}");
         }
     }
 }
@@ -1900,8 +1892,8 @@ fn an_unstamped_account_is_paid_only_where_rule_5_does_not_apply() {
 /// D12 after the reservation, in every setting (D25): a queued
 /// `RegisterExternal` lets the gate pass a stale account (the drain is to
 /// rebuild it), but a drain that leaves it queued derives from the old
-/// account, and the strict re-check refuses that address. With no stamp
-/// at all (a launch's state, D26) only `Enforce` refuses it there.
+/// account, and the strict re-check refuses that address, with no stamp
+/// at all too (D28).
 #[test]
 fn a_stale_account_the_drain_leaves_is_not_paid() {
     for ((mode, set), stamp) in EVERY_RULE
@@ -1929,21 +1921,15 @@ fn a_stale_account_the_drain_leaves_is_not_paid() {
             1,
             "{mode} {stamp:?}: the gate let it through"
         );
-        if stamp.is_none() && mode != "enforcing" {
-            let held = f.contact_address(BOB, 0);
-            prepared.unwrap();
-            assert_eq!(f.reserved(BOB), Some(held), "{mode}: paid and kept");
-        } else {
-            assert_eq!(
-                platform_error(prepared),
-                "platform.context_unavailable",
-                "{mode} {stamp:?}"
-            );
-            assert!(
-                f.reserved(BOB).is_none(),
-                "{mode} {stamp:?}: the old account's address is not kept"
-            );
-        }
+        assert_eq!(
+            platform_error(prepared),
+            "platform.context_unavailable",
+            "{mode} {stamp:?}"
+        );
+        assert!(
+            f.reserved(BOB).is_none(),
+            "{mode} {stamp:?}: the old account's address is not kept"
+        );
         let queued = Arc::new(AtomicU32::new(0));
         let count = Arc::clone(&queued);
         f.with_me(move |me| {
