@@ -495,7 +495,6 @@ fn with_daves_avatar(f: &Fixture) -> DavesAvatar {
         script as Arc<dyn NameResolver>,
         Some(ThumbDir::open(tmp.path()).unwrap()),
         Arc::new(dw_appdb::AppDb::open_in_memory().unwrap()),
-        avatars.toggle(),
     ));
     let theirs = png(30, 30);
     server.route("/dave.png", Route::ok(theirs.clone()));
@@ -566,26 +565,132 @@ fn the_pictures_toggle_holds_at_the_session() {
     assert_eq!(p.server.connections(), connections, "the failure is kept");
 }
 
-/// An off that returns while a read waits to read Platform holds for it
-/// (D33): the read does not reach Platform or the avatar host, and answers
-/// `None`.
+/// An off while a read is about to read Platform (paused after its
+/// revocation was first polled, before the read was) holds for it (D33,
+/// D36): the off returns only once the read has ended, the read reaches
+/// neither Platform nor the avatar host, and it answers `None`.
 #[test]
 fn an_off_holds_for_a_read_waiting_on_platform() {
+    use std::sync::atomic::AtomicBool;
     let f = fixture();
     let p = with_daves_avatar(&f);
     let before = f.profile_reads();
     let toggle = f.s.platform.avatars.toggle();
     let (reached, release) = super::avatar_tests::pause_at(&toggle, "platform");
+    let ended = AtomicBool::new(false);
+    let read = async {
+        let read = f.read_avatar(DAVE).await;
+        ended.store(true, Ordering::SeqCst);
+        read
+    };
     let off = async {
         reached.await.unwrap();
         f.s.set_load_contact_pictures(false).await.unwrap();
+        assert!(ended.load(Ordering::SeqCst), "off returned first");
+        let _ = release.send(());
+    };
+    let (read, ()) = f.engine.block_on(async { tokio::join!(read, off) });
+    assert_eq!(read, Ok(None));
+    assert_eq!((f.profile_reads(), p.server.connections()), (before, 0));
+}
+
+/// A setter dropped once its turn came runs to its end (D37): an on whose
+/// write is held, its caller dropped, holds a later off back, which then
+/// lands last. The store and memory both say off, and so does the session
+/// reopened.
+#[test]
+fn a_dropped_setter_cannot_undo_a_later_off() {
+    use crate::held_writes::{ReleaseOnDrop, hold_first_job};
+    let f = fixture();
+    let s = Arc::clone(&f.s);
+    f.engine
+        .block_on(f.s.set_load_contact_pictures(false))
+        .unwrap();
+    let (pause, on) = hold_first_job(&f.s, async move {
+        let _ = s.set_load_contact_pictures(true).await;
+    });
+    let _release = ReleaseOnDrop(Arc::clone(&pause));
+    wait_until("the held write", Duration::from_secs(60), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    on.abort();
+    assert!(f.engine.block_on(on).unwrap_err().is_cancelled());
+    let s = Arc::clone(&f.s);
+    let off =
+        f.s.rt
+            .spawn(async move { s.set_load_contact_pictures(false).await });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!off.is_finished(), "the off waits for the on's turn");
+    pause.release.notify_one();
+    f.engine.block_on(off).unwrap().unwrap();
+    assert!(
+        pause.done.load(Ordering::SeqCst),
+        "the on's write ran first"
+    );
+    let stored = (f.s.live().unwrap().appdb)
+        .setting(dw_appdb::GLOBAL_SCOPE, super::avatar::LOAD_PICTURES_KEY)
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("0"));
+    assert_eq!(f.s.load_contact_pictures(), Ok(false));
+    let engine = &f.engine;
+    engine
+        .block_on(engine.close_network(crate::DashNetwork::Regtest))
+        .unwrap();
+    let reopened = engine
+        .block_on(engine.open_network(
+            crate::DashNetwork::Regtest,
+            crate::SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                no_platform: true,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    assert_eq!(reopened.load_contact_pictures(), Ok(false));
+}
+
+/// A kept Platform failure answers only in the toggle's epoch it was read
+/// in (D38): after an off and an on, Platform is asked again; and a read
+/// that began before an off and finds the failure kept answers `None`.
+#[test]
+fn a_kept_platform_failure_ends_with_its_epoch() {
+    use super::errors::AvatarError;
+    let f = fixture();
+    let _p = with_daves_avatar(&f);
+    let before = f.profile_reads();
+    let toggle = |on: bool| {
+        f.engine
+            .block_on(f.s.set_load_contact_pictures(on))
+            .unwrap()
+    };
+    let unavailable = Err(AvatarError::Platform(PlatformError::Unavailable));
+    f.net.down.store(true, Ordering::SeqCst);
+    assert_eq!(f.engine.block_on(f.read_avatar(DAVE)), unavailable);
+    f.net.down.store(false, Ordering::SeqCst);
+    assert_eq!(f.engine.block_on(f.read_avatar(DAVE)), unavailable, "kept");
+    assert_eq!(f.profile_reads(), before);
+    // Kept in this epoch, a read paused before it looks: an off, and it
+    // answers `None`, not the failure.
+    let pictures = f.s.platform.avatars.toggle();
+    let (reached, release) = super::avatar_tests::pause_at(&pictures, "remote");
+    let off = async {
+        reached.await.unwrap();
+        pictures.set(false);
         release.send(()).unwrap();
     };
     let (read, ()) = f
         .engine
         .block_on(async { tokio::join!(f.read_avatar(DAVE), off) });
     assert_eq!(read, Ok(None));
-    assert_eq!((f.profile_reads(), p.server.connections()), (before, 0));
+    toggle(false);
+    toggle(true);
+    assert_eq!(
+        f.engine.block_on(f.read_avatar(DAVE)),
+        Err(AvatarError::FetchFailed)
+    );
+    assert_eq!(f.profile_reads(), before + 1, "asked again");
 }
 
 /// Reads of one identity the wallet does not hold share one Platform read

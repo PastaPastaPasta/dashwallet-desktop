@@ -747,6 +747,8 @@ impl NetworkSession {
         // Registration flows waiting keyless for a proof hold no lease.
         self.platform.registrations.abort_all();
         let _closing = self.gate.close().await;
+        // A picture toggle's write lands before the session ends (DP4-02 D37).
+        self.platform.avatars.settled().await;
         self.platform.deactivate(true).await;
         self.platform.contacts.close().await;
         // A retained session handle keeps no scanned key (DP2-03).

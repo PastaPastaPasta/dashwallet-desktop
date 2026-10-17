@@ -248,16 +248,19 @@ impl NetworkSession {
 
     /// Turns "Load contact pictures" on or off for this network: stored in
     /// app.sqlite and applied at once. Off, no other user's avatar is
-    /// fetched or shown from the moment this returns, reads already running
-    /// included (DP4-02 D33); calls at once apply in turn, and the session
-    /// holds what was stored last (D34).
+    /// fetched or shown from the moment this returns: reads already running
+    /// have ended (DP4-02 D33, D36). Calls at once apply in turn, and the
+    /// session holds what was stored last (D34), a call dropped mid-way
+    /// included: once its turn came, it runs to its end (D37).
     pub async fn set_load_contact_pictures(&self, on: bool) -> Result<(), PlatformError> {
         let _op = self.enter().await.map_err(PlatformError::from)?;
+        let db = self.live().map_err(PlatformError::from)?.appdb;
         let value = (!on).then_some("0");
-        let write = self
-            .appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, LOAD_PICTURES_KEY, value));
-        let toggle = self.platform.avatars.toggle();
-        toggle.transition(on, write).await?;
+        let write = crate::coins::appdb_job(db, move |db| {
+            db.set_setting(dw_appdb::GLOBAL_SCOPE, LOAD_PICTURES_KEY, value)
+        });
+        let turn = self.platform.avatars.toggle().begin_transition().await;
+        self.on_runtime(turn.apply(on, write)).await?;
         Ok(())
     }
 }

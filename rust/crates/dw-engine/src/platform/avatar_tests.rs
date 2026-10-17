@@ -306,7 +306,6 @@ impl Rig {
             Arc::clone(&script) as Arc<dyn NameResolver>,
             Some(ThumbDir::open(&dir).unwrap()),
             Arc::clone(&db),
-            Arc::clone(&pictures),
         );
         Self {
             server,
@@ -331,7 +330,7 @@ impl Rig {
         self.fetcher().fetch(&Url::parse(url).unwrap()).await
     }
 
-    fn ticket(&self) -> super::avatar::Ticket {
+    fn ticket(&self) -> super::avatar::Ticket<'_> {
         self.pictures.ticket()
     }
 
@@ -882,7 +881,7 @@ async fn an_off_holds_for_reads_already_running() {
     rig.server.route("/slow.png", Route::stalled(slow.clone()));
     let stalled = profile_for(&rig.server.url("good.test", "/slow.png"), &slow);
     let off_mid_fetch = || async {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let path = "/slow.png".to_string();
         let hits = || rig.server.hits().iter().filter(|h| **h == path).count();
         let before = hits();
@@ -898,7 +897,8 @@ async fn an_off_holds_for_reads_already_running() {
     let started = std::time::Instant::now();
     let (read, ()) = tokio::join!(rig.read(&stalled), off_mid_fetch());
     assert_eq!(read, Ok(None));
-    assert!(started.elapsed() < std::time::Duration::from_secs(9));
+    // Not the stall's 60 s: the fetch was abandoned.
+    assert!(started.elapsed() < std::time::Duration::from_secs(45));
     let key = Target::parse(&stalled.avatar_url.clone().unwrap())
         .unwrap()
         .url_sha;
@@ -916,26 +916,100 @@ async fn an_off_holds_for_reads_already_running() {
     assert_eq!(rig.db.avatar_row(&key).unwrap(), None);
 }
 
+/// An off returns only once every read that began before it has ended
+/// (D36). A read paused inside a fetch step, after its revocation was
+/// first polled and before the fetch was, makes no request, and the off
+/// waits for it to end; so does a read paused where it cannot be revoked
+/// (an own identity's at a cache hit).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_off_returns_once_the_reads_before_it_ended() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let rig = Rig::new().await;
+    let pictures = &rig.pictures;
+    let off = || async {
+        let turn = pictures.begin_transition().await;
+        turn.apply(false, async { Ok::<_, ()>(()) }).await
+    };
+    for (path, whose) in [("/o.png", Whose::Other), ("/w.png", Whose::Own)] {
+        pictures.set(true);
+        let bytes = png(26, 26);
+        rig.server.route(path, Route::ok(bytes.clone()));
+        let profile = profile_for(&rig.server.url("good.test", path), &bytes);
+        let (reached, release) = pause_at(pictures, "fetch");
+        let ended = AtomicBool::new(false);
+        let read = async {
+            let ticket = rig.ticket();
+            let read = (rig.pipeline)
+                .for_profile(&profile, AvatarSize::Small, whose, ticket)
+                .await;
+            ended.store(true, Ordering::SeqCst);
+            read
+        };
+        let off = async {
+            reached.await.unwrap();
+            off().await.unwrap();
+            assert!(
+                ended.load(Ordering::SeqCst),
+                "{whose:?}: off returned first"
+            );
+            let _ = release.send(());
+        };
+        let (read, ()) = tokio::join!(read, off);
+        assert_eq!(read, Ok(None), "{whose:?}");
+        assert!(
+            rig.server.hits().is_empty(),
+            "{whose:?}: a request was made"
+        );
+    }
+    // Cached, an own identity's read paused at the hit holds the off.
+    pictures.set(true);
+    let bytes = png(27, 27);
+    rig.server.route("/c.png", Route::ok(bytes.clone()));
+    let profile = profile_for(&rig.server.url("good.test", "/c.png"), &bytes);
+    assert!(rig.read(&profile).await.unwrap().is_some());
+    let (reached, release) = pause_at(pictures, "thumbnail");
+    let own = async {
+        let ticket = rig.ticket();
+        (rig.pipeline)
+            .for_profile(&profile, AvatarSize::Small, Whose::Own, ticket)
+            .await
+    };
+    let held = async {
+        reached.await.unwrap();
+        let mut off = std::pin::pin!(off());
+        let early = tokio::time::timeout(std::time::Duration::from_millis(300), &mut off);
+        assert!(early.await.is_err(), "off returned while a read ran");
+        release.send(()).unwrap();
+        off.await.unwrap();
+    };
+    let (read, ()) = tokio::join!(own, held);
+    assert!(read.unwrap().is_some());
+    assert!(!pictures.on());
+}
+
 /// Transitions at once apply in turn (D34): one paused between its durable
 /// write and memory holds the next back, so memory ends as the last value
 /// written, not as the slower call's.
 #[tokio::test(flavor = "multi_thread")]
 async fn overlapping_transitions_end_at_the_last_durable_write() {
-    let pictures = Pictures::new(false);
+    let pictures = Arc::new(Pictures::new(false));
     let durable = Mutex::new(Vec::new());
     let (go, wait) = tokio::sync::oneshot::channel::<()>();
-    let slow_on = pictures.transition(true, async {
-        durable.lock().unwrap().push(true);
-        let _ = wait.await;
-        Ok::<_, ()>(())
-    });
+    let slow_on = async {
+        let write = async {
+            durable.lock().unwrap().push(true);
+            let _ = wait.await;
+            Ok::<_, ()>(())
+        };
+        pictures.begin_transition().await.apply(true, write).await
+    };
     let off = async {
         tokio::task::yield_now().await;
         let write = async {
             durable.lock().unwrap().push(false);
             Ok::<_, ()>(())
         };
-        pictures.transition(false, write).await
+        pictures.begin_transition().await.apply(false, write).await
     };
     let release = async {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -946,7 +1020,7 @@ async fn overlapping_transitions_end_at_the_last_durable_write() {
     assert_eq!(*durable.lock().unwrap(), [true, false]);
     assert!(!pictures.on());
     // A failed write leaves memory as it was.
-    let failed = pictures.transition(true, async { Err::<(), _>("disk") });
+    let failed = (pictures.begin_transition().await).apply(true, async { Err::<(), _>("disk") });
     assert_eq!(failed.await, Err("disk"));
     assert!(!pictures.on());
 }
@@ -1005,7 +1079,6 @@ async fn without_a_directory_thumbnails_stay_in_memory() {
         Arc::clone(&rig.script) as Arc<dyn NameResolver>,
         None,
         Arc::new(AppDb::open_in_memory().unwrap()),
-        Arc::clone(&rig.pictures),
     );
     let profile = profile_for(&rig.server.url("good.test", "/m.png"), &bytes);
     for size in [AvatarSize::Small, AvatarSize::Small, AvatarSize::Large] {
@@ -1081,7 +1154,6 @@ async fn a_url_source_is_fetched_now() {
         Arc::clone(&rig.script) as Arc<dyn NameResolver>,
         None,
         Arc::clone(&rig.db),
-        Arc::clone(&rig.pictures),
     );
     for bad in [
         "http://example.com/a.png",

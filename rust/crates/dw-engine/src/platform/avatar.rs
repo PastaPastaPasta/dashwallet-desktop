@@ -5,7 +5,7 @@
 //! are `avatar_fetch.rs`, `avatar_image.rs` and `avatar_cache.rs`. Not part
 //! of the facade.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -83,13 +83,6 @@ fn keyed_lock<K: Hash + Eq + Clone>(locks: &Locks<K>, key: &K) -> Arc<tokio::syn
     lock
 }
 
-/// What a read saw of "Load contact pictures" when it began (D33).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Ticket {
-    on: bool,
-    epoch: u64,
-}
-
 #[cfg(test)]
 pub(super) type Hook = Box<
     dyn Fn(&'static str) -> Option<std::pin::Pin<Box<dyn Future<Output = ()> + Send>>>
@@ -97,13 +90,24 @@ pub(super) type Hook = Box<
         + Sync,
 >;
 
-/// "Load contact pictures" for the session (D17). Every transition moves
-/// the epoch, so a read that began before one can tell (D33), and
-/// transitions are serialized across their durable write, so memory is
-/// always the last value written (D34).
+/// The toggle, and the reads running under each epoch of it.
+#[derive(Debug, Default)]
+struct Toggle {
+    on: bool,
+    epoch: u64,
+    /// Running reads by the epoch they began in (D36).
+    reads: BTreeMap<u64, usize>,
+}
+
+/// "Load contact pictures" for the session (D17). Every change moves the
+/// epoch, so a read that began before one can tell (D33); a read is
+/// registered for as long as it runs, so an off returns only once every
+/// read of an earlier epoch has ended (D36). Transitions are serialized
+/// across their durable write, so memory is always the last value written
+/// (D34), and one runs to its end once begun (D37).
 pub(super) struct Pictures {
-    state: tokio::sync::watch::Sender<(bool, u64)>,
-    transitions: tokio::sync::Mutex<()>,
+    state: tokio::sync::watch::Sender<Toggle>,
+    transitions: Arc<tokio::sync::Mutex<()>>,
     /// Test pauses at named points of a read.
     #[cfg(test)]
     hook: Mutex<Option<Hook>>,
@@ -112,70 +116,73 @@ pub(super) struct Pictures {
 impl Pictures {
     pub(super) fn new(on: bool) -> Self {
         Self {
-            state: tokio::sync::watch::Sender::new((on, 0)),
-            transitions: tokio::sync::Mutex::new(()),
+            state: tokio::sync::watch::Sender::new(Toggle {
+                on,
+                ..Toggle::default()
+            }),
+            transitions: Arc::default(),
             #[cfg(test)]
             hook: Mutex::default(),
         }
     }
 
     pub(super) fn on(&self) -> bool {
-        self.state.borrow().0
+        self.state.borrow().on
     }
 
-    /// The toggle as a read beginning now sees it.
-    pub(super) fn ticket(&self) -> Ticket {
-        let (on, epoch) = *self.state.borrow();
-        Ticket { on, epoch }
+    /// Begins a read: the toggle as it sees it, registered until the
+    /// ticket drops.
+    pub(super) fn ticket(&self) -> Ticket<'_> {
+        let mut seen = (false, 0);
+        self.state.send_if_modified(|s| {
+            *s.reads.entry(s.epoch).or_default() += 1;
+            seen = (s.on, s.epoch);
+            false
+        });
+        Ticket {
+            pictures: self,
+            on: seen.0,
+            epoch: seen.1,
+        }
     }
 
-    /// Whether a read holding `ticket` may still use the network: it began
-    /// with the toggle on, and nothing has moved it since.
-    pub(super) fn allows(&self, ticket: Ticket) -> bool {
-        ticket.on && *self.state.borrow() == (true, ticket.epoch)
-    }
-
-    /// Sets the toggle now, without a durable write (at open, and tests).
-    pub(super) fn set(&self, on: bool) {
-        self.state.send_if_modified(|(now, epoch)| {
-            let moved = *now != on;
+    /// Sets the toggle now, without a durable write or waiting for reads
+    /// (at open, and tests). The epoch it leaves.
+    pub(super) fn set(&self, on: bool) -> u64 {
+        let mut epoch = 0;
+        self.state.send_if_modified(|s| {
+            let moved = s.on != on;
             if moved {
-                (*now, *epoch) = (on, *epoch + 1);
+                (s.on, s.epoch) = (on, s.epoch + 1);
             }
+            epoch = s.epoch;
             moved
         });
+        epoch
     }
 
-    /// A transition: `write` (the durable one) and then memory, one
-    /// transition at a time (D34). Memory stays as it was if `write` fails.
-    pub(super) async fn transition<E>(
-        &self,
-        on: bool,
-        write: impl Future<Output = Result<(), E>>,
-    ) -> Result<(), E> {
-        let _one = self.transitions.lock().await;
-        write.await?;
-        self.set(on);
-        Ok(())
-    }
-
-    /// `work`, unless `ticket` stops allowing the network first: then
-    /// `None`, and `work` is dropped where it stands (D33).
-    pub(super) async fn unless_revoked<T>(
-        &self,
-        ticket: Ticket,
-        work: impl Future<Output = T>,
-    ) -> Option<T> {
-        if !self.allows(ticket) {
-            return None;
+    /// Waits for the next transition's turn (D34). Taken before the
+    /// transition's task is spawned, so a session close that waits its
+    /// turn after the gate (`settled`) finds every spawned one ahead of it.
+    pub(super) async fn begin_transition(self: &Arc<Self>) -> Transition {
+        Transition {
+            pictures: Arc::clone(self),
+            _turn: Arc::clone(&self.transitions).lock_owned().await,
         }
+    }
+
+    /// Waits until no transition is running (at close).
+    pub(super) async fn settled(&self) {
+        let _turn = self.transitions.lock().await;
+    }
+
+    /// Waits until every read that began before `epoch` has ended.
+    async fn drained(&self, epoch: u64) {
         let mut state = self.state.subscribe();
-        let revoked = state.wait_for(|&(on, epoch)| !(on && epoch == ticket.epoch));
-        tokio::select! {
-            biased;
-            _ = revoked => None,
-            done = work => self.allows(ticket).then_some(done),
-        }
+        // The sender is `self`'s: the wait cannot fail.
+        let _ = state
+            .wait_for(|s| s.reads.range(..epoch).next().is_none())
+            .await;
     }
 
     /// A named point of a read, where a test may pause it.
@@ -194,6 +201,94 @@ impl Pictures {
     #[cfg(test)]
     pub(super) fn set_hook(&self, hook: Hook) {
         *guard(&self.hook) = Some(hook);
+    }
+}
+
+/// One transition's turn (D34, D37).
+pub(super) struct Transition {
+    pictures: Arc<Pictures>,
+    _turn: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Transition {
+    /// `write` (the durable one), then memory; turning off, then waits for
+    /// the reads of earlier epochs to end (D36). Memory stays as it was if
+    /// `write` fails. Run as one task (D37): a caller dropped mid-way
+    /// cannot part the write from memory or end the turn early.
+    pub(super) async fn apply<E>(
+        self,
+        on: bool,
+        write: impl Future<Output = Result<(), E>>,
+    ) -> Result<(), E> {
+        write.await?;
+        let epoch = self.pictures.set(on);
+        if !on {
+            self.pictures.drained(epoch).await;
+        }
+        Ok(())
+    }
+}
+
+/// A read of "Load contact pictures": what it saw when it began (D33),
+/// and its registration while it runs (D36).
+pub(super) struct Ticket<'a> {
+    pictures: &'a Pictures,
+    on: bool,
+    epoch: u64,
+}
+
+impl Ticket<'_> {
+    /// Whether the read may still use the network: it began with the
+    /// toggle on, and nothing has moved it since.
+    pub(super) fn allows(&self) -> bool {
+        let s = self.pictures.state.borrow();
+        self.on && s.on && s.epoch == self.epoch
+    }
+
+    /// `work`, unless the ticket stops allowing the network first: then
+    /// `None`, and `work` is dropped where it stands (D33). `point` names
+    /// the step for test pauses, taken inside `work`: once the revocation
+    /// was first polled, before `work` is.
+    pub(super) async fn unless_revoked<T>(
+        &self,
+        point: &'static str,
+        work: impl Future<Output = T>,
+    ) -> Option<T> {
+        if !self.allows() {
+            return None;
+        }
+        let mut state = self.pictures.state.subscribe();
+        let revoked = state.wait_for(|s| !(s.on && s.epoch == self.epoch));
+        let work = async {
+            self.pictures.at(point).await;
+            work.await
+        };
+        tokio::select! {
+            biased;
+            _ = revoked => None,
+            done = work => self.allows().then_some(done),
+        }
+    }
+
+    async fn at(&self, point: &'static str) {
+        self.pictures.at(point).await;
+    }
+}
+
+impl Drop for Ticket<'_> {
+    fn drop(&mut self) {
+        let epoch = self.epoch;
+        self.pictures.state.send_if_modified(|s| {
+            let Some(n) = s.reads.get_mut(&epoch) else {
+                return false;
+            };
+            *n -= 1;
+            let ended = *n == 0;
+            if ended {
+                s.reads.remove(&epoch);
+            }
+            ended
+        });
     }
 }
 
@@ -283,8 +378,6 @@ pub(super) struct Pipeline {
     url_locks: Locks<String>,
     fetches: Semaphore,
     decodes: Arc<Semaphore>,
-    /// "Load contact pictures", shared with the runtime (D17, D33).
-    pictures: Arc<Pictures>,
 }
 
 impl Pipeline {
@@ -293,7 +386,6 @@ impl Pipeline {
         resolver: Arc<dyn NameResolver>,
         dir: Option<ThumbDir>,
         db: Arc<AppDb>,
-        pictures: Arc<Pictures>,
     ) -> Self {
         Self {
             fetcher: Fetcher::new(policy, resolver),
@@ -301,7 +393,6 @@ impl Pipeline {
             url_locks: Mutex::default(),
             fetches: Semaphore::new(FETCHES),
             decodes: Arc::new(Semaphore::new(DECODES)),
-            pictures,
         }
     }
 
@@ -388,16 +479,16 @@ impl Pipeline {
     /// `ticket` is the toggle as the read began (D33): the network is used
     /// only while it allows it, a fetch it stops allowing is abandoned, and
     /// another user's read it stops allowing answers `None` whatever it
-    /// found.
+    /// found. The read is registered until it returns (D36).
     pub(super) async fn for_profile(
         &self,
         profile: &Profile,
         size: AvatarSize,
         whose: Whose,
-        ticket: Ticket,
+        ticket: Ticket<'_>,
     ) -> Result<Option<Vec<u8>>, AvatarError> {
-        let read = self.read(profile, size, whose, ticket).await;
-        if whose == Whose::Other && !self.pictures.allows(ticket) {
+        let read = self.read(profile, size, whose, &ticket).await;
+        if whose == Whose::Other && !ticket.allows() {
             return Ok(None);
         }
         read
@@ -408,12 +499,12 @@ impl Pipeline {
         profile: &Profile,
         size: AvatarSize,
         whose: Whose,
-        ticket: Ticket,
+        ticket: &Ticket<'_>,
     ) -> Result<Option<Vec<u8>>, AvatarError> {
         let Some(published) = profile.avatar_url.as_deref() else {
             return Ok(None);
         };
-        let network = || self.pictures.allows(ticket);
+        let network = || ticket.allows();
         if whose == Whose::Other && !network() {
             return Ok(None);
         }
@@ -422,19 +513,21 @@ impl Pipeline {
         }
         let target = Target::parse(published).map_err(|_| AvatarError::FetchFailed)?;
         let lock = self.url_lock(&target.url_sha);
-        let _one = lock.lock().await;
-        if whose == Whose::Other && !network() {
-            return Ok(None);
-        }
+        // Off, an own identity's read is of the cache only, which needs no
+        // lock: it does not wait behind a fetch (D36).
+        let _one = match ticket.unless_revoked("url lock", lock.lock()).await {
+            None if whose == Whose::Other => return Ok(None),
+            one => one,
+        };
         let key = target.url_sha.clone();
         let row = self.blocking(move |s| s.row(&key)).await?;
-        self.pictures.at("row").await;
+        ticket.at("row").await;
         if let Some(row) = row {
             let verified = row.status == "ok"
                 && avatar_image::matches(row.content_sha.as_deref().unwrap_or(""), profile);
             if verified {
                 if let Some(png) = self.blocking(move |s| s.thumbnail(&row, size)).await? {
-                    self.pictures.at("thumbnail").await;
+                    ticket.at("thumbnail").await;
                     return Ok(Some(png));
                 }
             } else if !network() {
@@ -444,7 +537,7 @@ impl Pipeline {
             }
         }
         let fetch = self.fetch(&target, false);
-        let Some(ingested) = self.pictures.unless_revoked(ticket, fetch).await else {
+        let Some(ingested) = ticket.unless_revoked("fetch", fetch).await else {
             return Ok(None);
         };
         let ingested = ingested?;
@@ -524,7 +617,9 @@ pub(crate) struct AvatarRuntime {
     pipeline: Mutex<Option<Arc<Pipeline>>>,
     pictures: Arc<Pictures>,
     candidates: Mutex<VecDeque<(String, Candidate)>>,
-    remote: Mutex<HashMap<Identifier, (Instant, RemoteRead)>>,
+    /// Platform reads of unknown identities: when, in which epoch of the
+    /// toggle, and what they answered.
+    remote: Mutex<HashMap<Identifier, (Instant, u64, RemoteRead)>>,
     /// One Platform read per unknown identity at a time, and at most
     /// [`REMOTE_READS`] at once (D35).
     remote_locks: Locks<Identifier>,
@@ -561,6 +656,11 @@ impl AvatarRuntime {
 
     pub(super) fn pictures(&self) -> bool {
         self.pictures.on()
+    }
+
+    /// Waits until no toggle transition is running (at close, D37).
+    pub(crate) async fn settled(&self) {
+        self.pictures.settled().await;
     }
 
     /// Keeps `candidate` and returns its id, dropping expired ones and the
@@ -670,59 +770,59 @@ impl AvatarRuntime {
     /// The profile of an identity the wallet holds nothing of, from
     /// Platform, kept [`REMOTE_PROFILE_LIFE`] (D14). Reads of one identity
     /// share one Platform read, its failure too (kept
-    /// [`REMOTE_FAILURE_LIFE`]), and at most [`REMOTE_READS`] run at once
-    /// (D35). None starts or completes once `ticket` no longer allows the
-    /// network (D33): then `None`, and nothing is kept.
+    /// [`REMOTE_FAILURE_LIFE`], in the toggle's epoch it was read in: D38),
+    /// and at most [`REMOTE_READS`] run at once (D35). None starts or
+    /// completes once `ticket` no longer allows the network (D33): then
+    /// `None`, and nothing is kept.
     async fn remote_profile(
         &self,
         net: &impl RequestNet,
         user: Identifier,
-        ticket: Ticket,
+        ticket: &Ticket<'_>,
     ) -> RemoteRead {
-        if let Some(kept) = self.kept_remote(&user) {
+        ticket.at("remote").await;
+        if let Some(kept) = self.kept_remote(&user, ticket) {
             return kept;
         }
         let lock = keyed_lock(&self.remote_locks, &user);
-        let pictures = &self.pictures;
-        let Some(_one) = pictures.unless_revoked(ticket, lock.lock()).await else {
+        let Some(_one) = ticket.unless_revoked("identity lock", lock.lock()).await else {
             return Ok(None);
         };
-        if let Some(kept) = self.kept_remote(&user) {
+        if let Some(kept) = self.kept_remote(&user, ticket) {
             return kept;
         }
-        let Some(_permit) = pictures
-            .unless_revoked(ticket, self.remote_reads.acquire())
-            .await
-        else {
+        let reads = self.remote_reads.acquire();
+        let Some(_permit) = ticket.unless_revoked("platform permit", reads).await else {
             return Ok(None);
         };
-        pictures.at("platform").await;
-        let Some(doc) = pictures
-            .unless_revoked(ticket, net.profile_document(user))
-            .await
-        else {
+        let doc = net.profile_document(user);
+        let Some(doc) = ticket.unless_revoked("platform", doc).await else {
             return Ok(None);
         };
         let read = doc
             .map(|doc| doc.and_then(|d| super::profiles::shown(&d.properties)))
             .map_err(AvatarError::from);
         let mut remote = guard(&self.remote);
-        remote.retain(|_, (at, kept)| at.elapsed() < remote_life(kept));
+        remote.retain(|_, (at, _, kept)| at.elapsed() < remote_life(kept));
         if remote.len() >= REMOTE_PROFILES
             && let Some(oldest) = (remote.iter())
-                .min_by_key(|(_, (at, _))| *at)
+                .min_by_key(|(_, (at, _, _))| *at)
                 .map(|(k, _)| *k)
         {
             remote.remove(&oldest);
         }
-        remote.insert(user, (Instant::now(), read.clone()));
+        remote.insert(user, (Instant::now(), ticket.epoch, read.clone()));
         read
     }
 
-    fn kept_remote(&self, user: &Identifier) -> Option<RemoteRead> {
+    /// The kept read of `user` that answers `ticket`: a failure only in
+    /// the epoch it was read in (D38).
+    fn kept_remote(&self, user: &Identifier, ticket: &Ticket<'_>) -> Option<RemoteRead> {
         (guard(&self.remote).get(user))
-            .filter(|(at, kept)| at.elapsed() < remote_life(kept))
-            .map(|(_, kept)| kept.clone())
+            .filter(|(at, epoch, kept)| {
+                at.elapsed() < remote_life(kept) && (kept.is_ok() || *epoch == ticket.epoch)
+            })
+            .map(|(_, _, kept)| kept.clone())
     }
 }
 
@@ -786,7 +886,6 @@ impl NetworkSession {
             Arc::new(SystemResolver),
             dir,
             db,
-            avatars.toggle(),
         ));
     }
 
@@ -803,13 +902,14 @@ impl NetworkSession {
         })?;
         let avatars = &self.platform.avatars;
         // The toggle as this read began: checked again at every network
-        // step and before answering (D33).
+        // step and before answering (D33). The read is registered until it
+        // returns (D36).
         let ticket = avatars.pictures.ticket();
         let read = self.identity_read(wallet_id).map_err(PlatformError::from)?;
         let b58 = user.to_string(Encoding::Base58);
         let (profile, whose) = match read.summaries.iter().find(|s| s.identity == b58) {
             Some(own) => (own.profile.clone(), Whose::Own),
-            None if !avatars.pictures.allows(ticket) => return Ok(None),
+            None if !ticket.allows() => return Ok(None),
             None => {
                 let mut owners: Vec<_> = read.summaries.iter().collect();
                 owners.sort_by_key(|s| !s.is_main);
@@ -821,7 +921,11 @@ impl NetworkSession {
                     .map_err(PlatformError::from)?;
                 let profile = match known {
                     Some(profile) => profile,
-                    None => avatars.remote_profile(net, user, ticket).await?,
+                    None => match avatars.remote_profile(net, user, &ticket).await {
+                        // An off since: `None`, not a failure (D38).
+                        Err(_) if !ticket.allows() => return Ok(None),
+                        read => read?,
+                    },
                 };
                 (profile, Whose::Other)
             }
