@@ -48,6 +48,30 @@ pub(crate) fn collateral_amount(evonode: bool) -> u64 {
     }
 }
 
+/// A ProRegTx, ProUpServTx, ProUpRegTx or ProUpRevTx.
+fn is_provider(tx: &Transaction) -> bool {
+    use TransactionPayload::*;
+    matches!(
+        tx.special_transaction_payload,
+        Some(
+            ProviderRegistrationPayloadType(_)
+                | ProviderUpdateServicePayloadType(_)
+                | ProviderUpdateRegistrarPayloadType(_)
+                | ProviderUpdateRevocationPayloadType(_)
+        )
+    )
+}
+
+/// Whether an amount is an evonode's collateral, a regular masternode's,
+/// or neither (`None`).
+pub(crate) fn collateral_kind(amount: u64) -> Option<bool> {
+    match amount {
+        MASTERNODE_COLLATERAL => Some(false),
+        EVONODE_COLLATERAL => Some(true),
+        _ => None,
+    }
+}
+
 /// Adds the provider transactions among `history` that `txs` lacks, then
 /// orders `txs` by txid, as the library hands them over.
 pub(crate) fn add_history<'a>(
@@ -58,12 +82,10 @@ pub(crate) fn add_history<'a>(
     txs.extend(
         history
             .into_iter()
-            .filter(|(_, _, tx)| {
-                tx.special_transaction_payload.is_some() && !held.contains(&tx.txid())
-            })
+            .filter(|(_, _, tx)| is_provider(tx) && !held.contains(&tx.txid()))
             .map(|(h, p, tx)| (h, p, tx.clone())),
     );
-    txs.sort_by_key(|(_, _, tx)| tx.txid());
+    txs.sort_by_cached_key(|(_, _, tx)| tx.txid());
 }
 
 /// Aggregates `(height, in-block position, tx)` provider transactions.
@@ -204,11 +226,24 @@ mod tests {
             special_transaction_payload: None,
             ..persisted.clone()
         };
+        // a special transaction of another type
+        let other = Transaction {
+            special_transaction_payload: Some(
+                TransactionPayload::ClassicalWithNonStandardVersionTypeBytesPayloadType(8),
+            ),
+            ..plain.clone()
+        };
         let mut txs = vec![(100, 1, held.clone())];
         // the held one again (another context), the persisted one, a payment
+        // and the other special transaction
         add_history(
             &mut txs,
-            [(0, 0, &held), (120, 2, &persisted), (130, 0, &plain)],
+            [
+                (0, 0, &held),
+                (120, 2, &persisted),
+                (130, 0, &plain),
+                (131, 0, &other),
+            ],
         );
         let mut want = vec![(100, 1, held.txid()), (120, 2, persisted.txid())];
         want.sort_by_key(|(_, _, t)| *t);

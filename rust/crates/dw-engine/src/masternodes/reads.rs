@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 
 use dash_sdk::platform::Fetch;
 use dash_sdk::query_types::IdentityBalance;
@@ -15,7 +16,7 @@ use platform_wallet::masternode::{
 };
 use platform_wallet::wallet::provider_key_at_index::ProviderKeyKind;
 
-use super::aggregate::{OwnedMasternode, collateral_amount};
+use super::aggregate::{OwnedMasternode, collateral_kind};
 use super::follow::{ListView, Notes, load_notes, read_list, wallet_masternodes};
 use super::records::{
     AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, ListFacts, ListedMasternode,
@@ -66,8 +67,11 @@ impl WalletView {
         let list = read_list(session, &manager).await;
         let network = session.network.core_network();
 
-        let (m, w) = (std::sync::Arc::clone(&manager), std::sync::Arc::clone(&pw));
-        let hub = std::sync::Arc::clone(&session.hub);
+        let (m, w, hub) = (
+            Arc::clone(&manager),
+            Arc::clone(&pw),
+            Arc::clone(&session.hub),
+        );
         let (owned, operator_keys, tracked, owner_ids, voting_ids) =
             tokio::task::spawn_blocking(move || {
                 let (owned, operator_index) =
@@ -87,8 +91,7 @@ impl WalletView {
                     derived_key_ids(&w, ProviderKeyKind::Voting),
                 )
             })
-            .await
-            .map_err(EngineError::from)?;
+            .await?;
 
         let hashes: Vec<[u8; 32]> = tracked.iter().map(|t| t.pro_tx_hash).collect();
         let attached = attached_roles(session, hashes).await?;
@@ -141,6 +144,11 @@ impl WalletView {
         })
     }
 
+    /// The start of the 30-day payout window.
+    fn window_start(&self) -> u64 {
+        self.now.saturating_sub(PAYOUT_WINDOW_SECS)
+    }
+
     fn owned(&self, hash: &[u8; 32]) -> Option<&OwnedMasternode> {
         self.owned.iter().find(|o| &o.record.pro_tx_hash == hash)
     }
@@ -156,16 +164,11 @@ impl WalletView {
             || self.list.entry(hash).is_some()
     }
 
+    /// The wallet's own provider transactions' payout script. A tracked
+    /// masternode's registry snapshot is unproved, so it isn't used (D6).
     fn payout_script(&self, hash: &[u8; 32]) -> Option<ScriptBuf> {
         self.owned(hash)
             .and_then(|o| o.record.payout_script.clone())
-            .or_else(|| {
-                self.tracked(hash)?
-                    .snapshot
-                    .registration
-                    .as_ref()
-                    .map(|r| r.payout_script.clone())
-            })
             .map(ScriptBuf::from)
     }
 
@@ -216,7 +219,9 @@ impl WalletView {
         }
     }
 
-    fn roles(&self, hash: &[u8; 32]) -> MasternodeRoles {
+    /// The roles, and whether the wallet holds one through its own provider
+    /// transactions ("mine", §3), which an attached key doesn't make it.
+    fn roles(&self, hash: &[u8; 32]) -> (MasternodeRoles, bool) {
         let owned = self.owned(hash);
         let entry = self.list.entry(hash);
         let attached = self
@@ -230,22 +235,27 @@ impl WalletView {
         let operator_key = entry
             .map(|e| e.operator_public_key)
             .or_else(|| owned.and_then(|o| o.record.operator_public_key));
-        MasternodeRoles {
-            collateral: owned
-                .and_then(|o| o.collateral)
-                .is_some_and(|c| self.unspent.contains(&c)),
-            owner: owned
-                .and_then(|o| o.record.owner_key_hash)
-                .is_some_and(|id| self.owner_ids.contains(&id))
-                || has(AttachedKeyRole::Owner),
-            voting: voting_id.is_some_and(|id| self.voting_ids.contains(&id))
-                || has(AttachedKeyRole::Voting),
-            payout: self
-                .payout_script(hash)
-                .is_some_and(|s| self.own_scripts.contains(&s)),
-            operator: operator_key.is_some_and(|k| self.operator_keys.contains(&k)),
+        let collateral = owned
+            .and_then(|o| o.collateral)
+            .is_some_and(|c| self.unspent.contains(&c));
+        let owner = owned
+            .and_then(|o| o.record.owner_key_hash)
+            .is_some_and(|id| self.owner_ids.contains(&id));
+        let voting = voting_id.is_some_and(|id| self.voting_ids.contains(&id));
+        let payout = self
+            .payout_script(hash)
+            .is_some_and(|s| self.own_scripts.contains(&s));
+        let operator = operator_key.is_some_and(|k| self.operator_keys.contains(&k));
+        let mine = owned.is_some() && (collateral || owner || voting || payout || operator);
+        let roles = MasternodeRoles {
+            collateral,
+            owner: owner || has(AttachedKeyRole::Owner),
+            voting: voting || has(AttachedKeyRole::Voting),
+            payout,
+            operator,
             attached,
-        }
+        };
+        (roles, mine)
     }
 
     fn row(&self, hash: &[u8; 32]) -> MasternodeRow {
@@ -268,7 +278,8 @@ impl WalletView {
             })
             .map(kind_of);
         let payouts = self.payouts(hash);
-        let since = self.now.saturating_sub(PAYOUT_WINDOW_SECS);
+        let since = self.window_start();
+        let (roles, mine) = self.roles(hash);
         MasternodeRow {
             kind,
             type_index: owned.map_or(0, |o| o.record.type_index),
@@ -282,14 +293,14 @@ impl WalletView {
             service: entry
                 .and_then(|e| e.service_address.map(|s| s.to_string()))
                 .or_else(|| owned.and_then(|o| o.record.service_address.clone())),
-            mine: owned.is_some(),
+            mine,
             tracked: tracked.is_some(),
-            roles: self.roles(hash),
+            roles,
             collateral: collateral_state(owned),
             payout_address: self.payout_address(hash),
             payouts_30d: payouts
                 .iter()
-                .filter(|p| p.timestamp.is_some_and(|t| t >= since))
+                .filter(|p| at_or_after(p.timestamp, since))
                 .map(|p| p.amount)
                 .sum(),
             last_payout: payouts.into_iter().next(),
@@ -304,19 +315,25 @@ impl WalletView {
                 hashes.push(t.pro_tx_hash);
             }
         }
-        let masternodes: Vec<MasternodeRow> = hashes.iter().map(|h| self.row(h)).collect();
+        // A provider transaction that gives the wallet no role (it paid the
+        // fee of someone's ProRegTx) doesn't make a row.
+        let masternodes: Vec<MasternodeRow> = hashes
+            .iter()
+            .map(|h| self.row(h))
+            .filter(|r| r.mine || r.tracked)
+            .collect();
         // Two masternodes sharing a payout address share its records (D9);
         // the wallet total counts each record once.
-        let since = self.now.saturating_sub(PAYOUT_WINDOW_SECS);
-        let addresses: HashSet<String> = hashes
+        let since = self.window_start();
+        let addresses: HashSet<&str> = masternodes
             .iter()
-            .filter_map(|h| self.payout_address(h))
+            .filter_map(|r| r.payout_address.as_deref())
             .collect();
         let payouts_30d = self
             .generated
             .iter()
-            .filter(|r| r.address.as_ref().is_some_and(|a| addresses.contains(a)))
-            .filter(|r| r.timestamp.is_some_and(|t| t >= since))
+            .filter(|r| r.address.as_deref().is_some_and(|a| addresses.contains(a)))
+            .filter(|r| at_or_after(r.timestamp, since))
             .map(|r| r.amount.unsigned_abs())
             .sum();
         MasternodeOverview {
@@ -347,9 +364,7 @@ impl WalletView {
             .iter()
             .filter_map(|c| {
                 let u = &c.utxo;
-                let kind = [MasternodeType::Regular, MasternodeType::Evonode]
-                    .into_iter()
-                    .find(|k| u.value() == collateral_amount(*k == MasternodeType::Evonode))?;
+                let kind = kind_of(collateral_kind(u.value())?);
                 let outpoint = outpoint_string(&u.outpoint);
                 if known.contains(outpoint.as_str()) {
                     return None;
@@ -423,7 +438,8 @@ fn derived_key_ids(
 }
 
 /// The attached roles of each tracked masternode; `None` while the vault
-/// is locked (the record ids need the data key, MG-01 D7).
+/// is locked (the record ids need the data key, MG-01 D7). Any other vault
+/// error fails the read.
 async fn attached_roles(
     session: &NetworkSession,
     hashes: Vec<[u8; 32]>,
@@ -446,9 +462,16 @@ async fn attached_roles(
             })
             .collect::<Result<HashMap<_, _>, dw_vault::VaultError>>()
     })
-    .await
-    .map_err(EngineError::from)?;
-    Ok(roles.ok())
+    .await?;
+    match roles {
+        Ok(roles) => Ok(Some(roles)),
+        Err(dw_vault::VaultError::Locked) => Ok(None),
+        Err(e) => Err(EngineError::from(e).into()),
+    }
+}
+
+fn at_or_after(timestamp: Option<u64>, since: u64) -> bool {
+    timestamp.is_some_and(|t| t >= since)
 }
 
 fn kind_of(evonode: bool) -> MasternodeType {
@@ -537,9 +560,10 @@ fn parse_query(query: &str) -> Result<MasternodeListQuery, EngineError> {
     if let Ok(ip) = q.parse::<IpAddr>() {
         return Ok(MasternodeListQuery::ServiceAddress { ip, port: None });
     }
-    Err(EngineError::InvalidArgument(format!(
-        "not a ProTx hash or a service address: {query:?}"
-    )))
+    // The query isn't repeated: it may be a pasted key.
+    Err(EngineError::InvalidArgument(
+        "not a ProTx hash or a service address".into(),
+    ))
 }
 
 impl Masternodes {
@@ -549,14 +573,8 @@ impl Masternodes {
         wallet: WalletId,
         f: impl FnOnce(&WalletView) -> Result<T, MasternodesError> + Send + 'static,
     ) -> Result<T, MasternodesError> {
-        let session = std::sync::Arc::clone(&self.session);
-        self.session
-            .on_runtime(async move {
-                let _op = session.enter().await?;
-                let view = WalletView::read(&session, wallet).await;
-                Ok(view.and_then(|v| f(&v)))
-            })
-            .await?
+        self.op(move |session| async move { f(&WalletView::read(&session, wallet).await?) })
+            .await
     }
 
     /// Whether the SPV list is synced, and its height (D3). Memory only;
@@ -588,7 +606,7 @@ impl Masternodes {
         let hash = parse_pro_tx_hash(&pro_tx_hash)?;
         self.read_wallet(wallet, move |v| {
             if !v.knows(&hash) {
-                return Err(not_found(&pro_tx_hash, &v.list));
+                return Err(not_found(&hash, &v.list));
             }
             Ok(v.detail(&hash))
         })
@@ -606,11 +624,11 @@ impl Masternodes {
         let hash = parse_pro_tx_hash(&pro_tx_hash)?;
         self.read_wallet(wallet, move |v| {
             if !v.knows(&hash) {
-                return Err(not_found(&pro_tx_hash, &v.list));
+                return Err(not_found(&hash, &v.list));
             }
             let mut payouts = v.payouts(&hash);
             if let Some(since) = since {
-                payouts.retain(|p| p.timestamp.is_some_and(|t| t >= since));
+                payouts.retain(|p| at_or_after(p.timestamp, since));
             }
             Ok(payouts)
         })
@@ -621,27 +639,24 @@ impl Masternodes {
     /// service address (`ip:port`, or `ip` for any port), in list order.
     pub async fn find(&self, query: String) -> Result<Vec<ListedMasternode>, MasternodesError> {
         let parsed = parse_query(&query)?;
-        let session = std::sync::Arc::clone(&self.session);
-        self.session
-            .on_runtime(async move {
-                let _op = session.enter().await?;
-                let manager = session.manager()?;
-                let list = read_list(&session, &manager).await;
-                if !list.synced {
-                    return Ok(Err(MasternodesError::ListUnavailable));
-                }
-                let tracked = manager.tracked_masternode_hashes();
-                let network = session.network.core_network();
-                Ok(Ok(find_in_summaries(&list.entries, &parsed)
-                    .into_iter()
-                    .map(|e| ListedMasternode {
-                        pro_tx_hash: display_hex(&e.pro_tx_hash),
-                        facts: list_facts(e, network),
-                        tracked: tracked.contains(&e.pro_tx_hash),
-                    })
-                    .collect()))
-            })
-            .await?
+        self.op(move |session| async move {
+            let manager = session.manager()?;
+            let list = read_list(&session, &manager).await;
+            if !list.synced {
+                return Err(MasternodesError::ListUnavailable);
+            }
+            let tracked = manager.tracked_masternode_hashes();
+            let network = session.network.core_network();
+            Ok(find_in_summaries(&list.entries, &parsed)
+                .into_iter()
+                .map(|e| ListedMasternode {
+                    pro_tx_hash: display_hex(&e.pro_tx_hash),
+                    facts: list_facts(e, network),
+                    tracked: tracked.contains(&e.pro_tx_hash),
+                })
+                .collect())
+        })
+        .await
     }
 
     /// An evonode's claimable credits: its owner identity's balance, read
@@ -651,50 +666,48 @@ impl Masternodes {
         pro_tx_hash: String,
     ) -> Result<EvonodeCredits, MasternodesError> {
         let hash = parse_pro_tx_hash(&pro_tx_hash)?;
-        let session = std::sync::Arc::clone(&self.session);
-        self.session
-            .on_runtime(async move {
-                let sdk = {
-                    let _op = session.enter().await?;
-                    let manager = session.manager()?;
-                    let list = read_list(&session, &manager).await;
-                    let refusal = match list.entry(&hash) {
-                        _ if !list.synced => Some(MasternodesError::ListUnavailable),
-                        None => Some(not_found(&pro_tx_hash, &list)),
-                        Some(e) if !e.is_evonode => Some(MasternodesError::NotEvonode {
-                            pro_tx_hash: pro_tx_hash.clone(),
-                        }),
-                        Some(_) if !session.platform.enabled() => {
-                            Some(MasternodesError::PlatformUnavailable {
-                                detail: "this session runs without Platform".into(),
-                            })
-                        }
-                        Some(_) => None,
-                    };
-                    if let Some(refusal) = refusal {
-                        return Ok(Err(refusal));
-                    }
-                    manager.sdk_arc()
-                };
-                // The fetch runs outside the guard: a slow DAPI call must
-                // not hold a session close back.
-                let mut id = hash;
-                id.reverse();
-                let balance = IdentityBalance::fetch(&sdk, Identifier::from(id)).await;
-                Ok(match balance {
-                    Ok(Some(credits)) => Ok(EvonodeCredits {
-                        pro_tx_hash,
-                        credits,
-                        duffs: credits / dpp::balances::credits::CREDITS_PER_DUFF,
-                        fetched_at: unix_now(),
-                    }),
-                    Ok(None) => Err(MasternodesError::NoIdentity { pro_tx_hash }),
-                    Err(e) => Err(MasternodesError::PlatformUnavailable {
-                        detail: e.to_string(),
-                    }),
-                })
+        let shown = display_hex(&hash);
+        let sdk = self
+            .op(move |session| async move {
+                let manager = session.manager()?;
+                let list = read_list(&session, &manager).await;
+                if !list.synced {
+                    return Err(MasternodesError::ListUnavailable);
+                }
+                let entry = list.entry(&hash).ok_or_else(|| not_found(&hash, &list))?;
+                if !entry.is_evonode {
+                    return Err(MasternodesError::NotEvonode {
+                        pro_tx_hash: display_hex(&hash),
+                    });
+                }
+                if !session.platform.enabled() {
+                    return Err(MasternodesError::PlatformUnavailable {
+                        detail: "this session runs without Platform".into(),
+                    });
+                }
+                Ok(manager.sdk_arc())
             })
-            .await?
+            .await?;
+        // The fetch runs outside the guard: a slow DAPI call must not hold a
+        // session close back. The identity id is the display-order hash.
+        let mut id = hash;
+        id.reverse();
+        let balance = self
+            .session
+            .on_runtime(async move { Ok(IdentityBalance::fetch(&sdk, Identifier::from(id)).await) })
+            .await?;
+        match balance {
+            Ok(Some(credits)) => Ok(EvonodeCredits {
+                pro_tx_hash: shown,
+                credits,
+                duffs: credits / dpp::balances::credits::CREDITS_PER_DUFF,
+                fetched_at: unix_now(),
+            }),
+            Ok(None) => Err(MasternodesError::NoIdentity { pro_tx_hash: shown }),
+            Err(e) => Err(MasternodesError::PlatformUnavailable {
+                detail: e.to_string(),
+            }),
+        }
     }
 
     /// The collateral outpoint of any listed masternode, checked against a
@@ -713,10 +726,10 @@ impl Masternodes {
 
 /// `masternodes.not_found`, or `list_unavailable` when the list that
 /// wasn't searched might have held it.
-fn not_found(pro_tx_hash: &str, list: &ListView) -> MasternodesError {
+fn not_found(hash: &[u8; 32], list: &ListView) -> MasternodesError {
     if list.synced {
         MasternodesError::NotFound {
-            query: pro_tx_hash.into(),
+            query: display_hex(hash),
         }
     } else {
         MasternodesError::ListUnavailable

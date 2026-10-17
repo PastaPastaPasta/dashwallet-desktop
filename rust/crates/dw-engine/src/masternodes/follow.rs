@@ -80,7 +80,7 @@ pub(crate) fn wallet_masternodes(
     history.read(wallet, |entries| {
         add_history(
             &mut txs,
-            entries.values().map(|e| {
+            entries.values().filter(|e| !e.abandoned).map(|e| {
                 let block = e.context.block_info();
                 let height = block.map_or(0, |b| b.height());
                 (height, block.and_then(|b| b.position()).unwrap_or(0), &e.tx)
@@ -88,6 +88,16 @@ pub(crate) fn wallet_masternodes(
         )
     });
     Some((aggregate(&txs), operator_index))
+}
+
+/// The masternodes of every loaded wallet, wallet by wallet. Blocking.
+pub(crate) fn all_owned(manager: &Manager, history: &HistoryStore) -> Vec<OwnedMasternode> {
+    manager
+        .list_wallet_ids_blocking()
+        .into_iter()
+        .filter_map(|id| wallet_masternodes(manager, history, &WalletId(id)))
+        .flat_map(|(owned, _)| owned)
+        .collect()
 }
 
 /// What app.sqlite keeps about masternodes (MG-03 D12), keyed by the
@@ -137,6 +147,9 @@ pub(crate) struct MasternodesRuntime {
     generation: AtomicU64,
     coalescer: JoinHandle<()>,
     follower: Mutex<Option<JoinHandle<()>>>,
+    /// Held across each tracking change, so an `attach_key` can't store a
+    /// key for a masternode an `untrack` is removing.
+    mutations: tokio::sync::Mutex<()>,
 }
 
 impl MasternodesRuntime {
@@ -160,7 +173,13 @@ impl MasternodesRuntime {
             generation: AtomicU64::new(0),
             coalescer,
             follower: Mutex::default(),
+            mutations: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// Serialises the tracking changes (see `mutations`).
+    pub async fn mutation(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mutations.lock().await
     }
 
     /// Something the facade changed itself (tracked set, a label, a key).
@@ -197,7 +216,17 @@ impl MasternodesRuntime {
         }
         self.coalescer.abort();
     }
+}
 
+/// A session that fails to open after the runtime was built never closes,
+/// so its tasks end here.
+impl Drop for MasternodesRuntime {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+impl MasternodesRuntime {
     /// One look at the list: on a new height (or a local change), re-reads
     /// the masternodes of interest, writes first sightings of bans and of
     /// listing (MG-00 D9), and sends the event when one of them changed.
@@ -219,19 +248,14 @@ impl MasternodesRuntime {
         if !list.synced {
             return Ok(());
         }
-        let wallets: Vec<WalletId> = session
-            .wallet_infos()?
-            .into_iter()
-            .map(|w| w.wallet_id)
-            .collect();
         let (m, hub) = (Arc::clone(&manager), Arc::clone(&session.hub));
         let interest: BTreeSet<[u8; 32]> = tokio::task::spawn_blocking(move || {
             let mut set: BTreeSet<[u8; 32]> = m.tracked_masternode_hashes().into_iter().collect();
-            for w in &wallets {
-                if let Some((owned, _)) = wallet_masternodes(&m, &hub.history, w) {
-                    set.extend(owned.iter().map(|o| o.record.pro_tx_hash));
-                }
-            }
+            set.extend(
+                all_owned(&m, &hub.history)
+                    .iter()
+                    .map(|o| o.record.pro_tx_hash),
+            );
             set
         })
         .await?;

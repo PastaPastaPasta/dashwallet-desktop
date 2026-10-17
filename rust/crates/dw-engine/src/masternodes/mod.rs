@@ -43,16 +43,30 @@ impl NetworkSession {
     }
 }
 
-/// Wire-order bytes of a display-order ProTx hash (64 hex characters).
-fn parse_pro_tx_hash(hex_hash: &str) -> Result<[u8; 32], EngineError> {
-    let invalid = || EngineError::InvalidArgument(format!("not a ProTx hash: {hex_hash:?}"));
-    if hex_hash.len() != 64 {
-        return Err(invalid());
+impl Masternodes {
+    /// Runs `f` on the engine runtime under one operation guard.
+    async fn op<T, F, Fut>(&self, f: F) -> Result<T, MasternodesError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<NetworkSession>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, MasternodesError>> + Send,
+    {
+        let session = Arc::clone(&self.session);
+        self.session
+            .on_runtime(async move {
+                let _op = session.enter().await?;
+                Ok(f(Arc::clone(&session)).await)
+            })
+            .await?
     }
-    let mut bytes: [u8; 32] = hex::decode(hex_hash)
-        .map_err(|_| invalid())?
-        .try_into()
-        .map_err(|_| invalid())?;
+}
+
+/// Wire-order bytes of a display-order ProTx hash (64 hex characters). The
+/// refusal doesn't repeat the input, which may be a pasted key.
+fn parse_pro_tx_hash(hex_hash: &str) -> Result<[u8; 32], EngineError> {
+    let mut bytes = [0u8; 32];
+    hex::decode_to_slice(hex_hash, &mut bytes)
+        .map_err(|_| EngineError::InvalidArgument("not a ProTx hash (64 hex)".into()))?;
     bytes.reverse();
     Ok(bytes)
 }
@@ -67,12 +81,6 @@ fn display_hex(wire: &[u8; 32]) -> String {
 /// Core's `COutPoint::ToStringShort`.
 fn outpoint_string(o: &dashcore::OutPoint) -> String {
     format!("{}-{}", o.txid, o.vout)
-}
-
-/// A contract stub's body (`masternodes.not_implemented{call}`).
-#[allow(dead_code, reason = "no call is a stub once MG-03 is complete")]
-fn stub<T>(call: &str) -> Result<T, MasternodesError> {
-    Err(MasternodesError::NotImplemented { call: call.into() })
 }
 
 #[cfg(test)]
