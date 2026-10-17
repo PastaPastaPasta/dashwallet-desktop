@@ -159,6 +159,8 @@ pub(super) trait NameResolver: Send + Sync + 'static {
 }
 
 /// The operating system's resolver (`getaddrinfo` on a blocking thread).
+/// A lookup given up on before a blocking thread takes it is not made
+/// (DP4-02 D36); one already running finishes, its answer unused.
 pub(super) struct SystemResolver;
 
 impl NameResolver for SystemResolver {
@@ -167,8 +169,18 @@ impl NameResolver for SystemResolver {
         host: String,
     ) -> Pin<Box<dyn Future<Output = std::io::Result<Vec<IpAddr>>> + Send>> {
         Box::pin(async move {
-            let addrs = tokio::net::lookup_host((host.as_str(), 0)).await?;
-            Ok(addrs.map(|a| a.ip()).collect())
+            use std::net::ToSocketAddrs;
+            // Dropped with this future, which is when the lookup is given up.
+            let wanted = Arc::new(());
+            let still = Arc::downgrade(&wanted);
+            let lookup = tokio::task::spawn_blocking(move || {
+                let Some(_wanted) = still.upgrade() else {
+                    return Err(std::io::Error::other("lookup given up"));
+                };
+                let addrs = (host.as_str(), 0).to_socket_addrs()?;
+                Ok(addrs.map(|a| a.ip()).collect())
+            });
+            lookup.await.map_err(std::io::Error::other)?
         })
     }
 }

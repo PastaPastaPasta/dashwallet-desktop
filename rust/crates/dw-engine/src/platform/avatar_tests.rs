@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use dw_appdb::AppDb;
 use image::codecs::gif::GifEncoder;
@@ -173,7 +174,7 @@ async fn serve(
     hits.lock().unwrap().push(target.clone());
     let route = (routes.lock().unwrap().get(&target).cloned()).unwrap_or_else(Route::missing);
     if route.stall {
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
     }
     let mut out = format!("HTTP/1.1 {} X\r\nConnection: close\r\n", route.status);
     for (k, v) in &route.headers {
@@ -836,6 +837,29 @@ pub(super) fn pause_at(
     (reached_rx, release_tx)
 }
 
+/// `read` (of `/slow.png`), with the toggle turned off once its fetch has
+/// reached the server.
+async fn off_mid_fetch<T: std::fmt::Debug>(rig: &Rig, read: impl Future<Output = T>) -> T {
+    let hits = || {
+        rig.server
+            .hits()
+            .iter()
+            .filter(|h| *h == "/slow.png")
+            .count()
+    };
+    let mut read = std::pin::pin!(read);
+    let (before, deadline) = (hits(), Instant::now() + Duration::from_secs(30));
+    while hits() == before {
+        assert!(Instant::now() < deadline, "the fetch never started");
+        tokio::select! {
+            read = &mut read => panic!("the read ended before its fetch: {read:?}"),
+            () = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+    }
+    rig.pictures.set(false);
+    read.await
+}
+
 /// An off holds for reads already running (D33): one that began with the
 /// toggle on and was paused at the cache lookup (no row) does not fetch;
 /// one paused at a verified cache hit answers `None` for another user
@@ -880,25 +904,10 @@ async fn an_off_holds_for_reads_already_running() {
     let slow = png(25, 25);
     rig.server.route("/slow.png", Route::stalled(slow.clone()));
     let stalled = profile_for(&rig.server.url("good.test", "/slow.png"), &slow);
-    let off_mid_fetch = || async {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        let path = "/slow.png".to_string();
-        let hits = || rig.server.hits().iter().filter(|h| **h == path).count();
-        let before = hits();
-        while hits() == before {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the fetch never started"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        rig.pictures.set(false);
-    };
-    let started = std::time::Instant::now();
-    let (read, ()) = tokio::join!(rig.read(&stalled), off_mid_fetch());
-    assert_eq!(read, Ok(None));
+    let started = Instant::now();
+    assert_eq!(off_mid_fetch(&rig, rig.read(&stalled)).await, Ok(None));
     // Not the stall's 60 s: the fetch was abandoned.
-    assert!(started.elapsed() < std::time::Duration::from_secs(45));
+    assert!(started.elapsed() < Duration::from_secs(45));
     let key = Target::parse(&stalled.avatar_url.clone().unwrap())
         .unwrap()
         .url_sha;
@@ -911,8 +920,7 @@ async fn an_off_holds_for_reads_already_running() {
             .for_profile(&stalled, AvatarSize::Small, Whose::Own, ticket)
             .await
     };
-    let (read, ()) = tokio::join!(own, off_mid_fetch());
-    assert_eq!(read, Ok(None));
+    assert_eq!(off_mid_fetch(&rig, own).await, Ok(None));
     assert_eq!(rig.db.avatar_row(&key).unwrap(), None);
 }
 
@@ -977,7 +985,7 @@ async fn an_off_returns_once_the_reads_before_it_ended() {
     let held = async {
         reached.await.unwrap();
         let mut off = std::pin::pin!(off());
-        let early = tokio::time::timeout(std::time::Duration::from_millis(300), &mut off);
+        let early = tokio::time::timeout(Duration::from_millis(300), &mut off);
         assert!(early.await.is_err(), "off returned while a read ran");
         release.send(()).unwrap();
         off.await.unwrap();
@@ -1012,7 +1020,7 @@ async fn overlapping_transitions_end_at_the_last_durable_write() {
         pictures.begin_transition().await.apply(false, write).await
     };
     let release = async {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
         go.send(()).unwrap();
     };
     let (a, b, ()) = tokio::join!(slow_on, off, release);
@@ -1353,4 +1361,15 @@ fn crc32(bytes: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+/// The system resolver answers a name, on a blocking thread (D36: one
+/// given up on before a thread takes it is not made).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_system_resolver_resolves_a_name() {
+    let ips = super::avatar_fetch::SystemResolver
+        .lookup("localhost".into())
+        .await
+        .unwrap();
+    assert!(ips.iter().any(IpAddr::is_loopback), "{ips:?}");
 }

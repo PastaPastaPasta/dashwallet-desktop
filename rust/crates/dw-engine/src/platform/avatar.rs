@@ -53,12 +53,24 @@ const REMOTE_FAILURE_LIFE: Duration = Duration::from_secs(5);
 
 type RemoteRead = Result<Option<Profile>, AvatarError>;
 
-/// How long a kept Platform read answers.
-fn remote_life(read: &RemoteRead) -> Duration {
-    if read.is_ok() {
-        REMOTE_PROFILE_LIFE
-    } else {
-        REMOTE_FAILURE_LIFE
+/// A Platform read kept: when, in which epoch of the toggle, and what it
+/// answered.
+struct KeptRead {
+    at: Instant,
+    epoch: u64,
+    read: RemoteRead,
+}
+
+impl KeptRead {
+    /// Whether it still answers: a success for [`REMOTE_PROFILE_LIFE`], a
+    /// failure for [`REMOTE_FAILURE_LIFE`].
+    fn live(&self) -> bool {
+        let life = if self.read.is_ok() {
+            REMOTE_PROFILE_LIFE
+        } else {
+            REMOTE_FAILURE_LIFE
+        };
+        self.at.elapsed() < life
     }
 }
 /// Android's crop parameter (D15).
@@ -143,6 +155,7 @@ impl Pictures {
             pictures: self,
             on: seen.0,
             epoch: seen.1,
+            registered: true,
         }
     }
 
@@ -235,13 +248,17 @@ pub(super) struct Ticket<'a> {
     pictures: &'a Pictures,
     on: bool,
     epoch: u64,
+    registered: bool,
 }
 
 impl Ticket<'_> {
     /// Whether the read may still use the network: it began with the
     /// toggle on, and nothing has moved it since.
     pub(super) fn allows(&self) -> bool {
-        let s = self.pictures.state.borrow();
+        self.permits(&self.pictures.state.borrow())
+    }
+
+    fn permits(&self, s: &Toggle) -> bool {
         self.on && s.on && s.epoch == self.epoch
     }
 
@@ -273,22 +290,38 @@ impl Ticket<'_> {
     async fn at(&self, point: &'static str) {
         self.pictures.at(point).await;
     }
+
+    /// Ends the read: whether it still allowed the network as it ended, in
+    /// one step with its end, so an off either finds it running (and waits
+    /// for it) or sees it answer before the off (D36).
+    pub(super) fn finish(mut self) -> bool {
+        self.end()
+    }
+
+    fn end(&mut self) -> bool {
+        let epoch = self.epoch;
+        let mut allowed = false;
+        if std::mem::take(&mut self.registered) {
+            self.pictures.state.send_if_modified(|s| {
+                allowed = self.permits(s);
+                let Some(n) = s.reads.get_mut(&epoch) else {
+                    return false;
+                };
+                *n -= 1;
+                let ended = *n == 0;
+                if ended {
+                    s.reads.remove(&epoch);
+                }
+                ended
+            });
+        }
+        allowed
+    }
 }
 
 impl Drop for Ticket<'_> {
     fn drop(&mut self) {
-        let epoch = self.epoch;
-        self.pictures.state.send_if_modified(|s| {
-            let Some(n) = s.reads.get_mut(&epoch) else {
-                return false;
-            };
-            *n -= 1;
-            let ended = *n == 0;
-            if ended {
-                s.reads.remove(&epoch);
-            }
-            ended
-        });
+        self.end();
     }
 }
 
@@ -479,7 +512,7 @@ impl Pipeline {
     /// `ticket` is the toggle as the read began (D33): the network is used
     /// only while it allows it, a fetch it stops allowing is abandoned, and
     /// another user's read it stops allowing answers `None` whatever it
-    /// found. The read is registered until it returns (D36).
+    /// found. The read is registered until it answers (D36).
     pub(super) async fn for_profile(
         &self,
         profile: &Profile,
@@ -488,7 +521,7 @@ impl Pipeline {
         ticket: Ticket<'_>,
     ) -> Result<Option<Vec<u8>>, AvatarError> {
         let read = self.read(profile, size, whose, &ticket).await;
-        if whose == Whose::Other && !ticket.allows() {
+        if !ticket.finish() && whose == Whose::Other {
             return Ok(None);
         }
         read
@@ -617,9 +650,8 @@ pub(crate) struct AvatarRuntime {
     pipeline: Mutex<Option<Arc<Pipeline>>>,
     pictures: Arc<Pictures>,
     candidates: Mutex<VecDeque<(String, Candidate)>>,
-    /// Platform reads of unknown identities: when, in which epoch of the
-    /// toggle, and what they answered.
-    remote: Mutex<HashMap<Identifier, (Instant, u64, RemoteRead)>>,
+    /// Platform reads of unknown identities.
+    remote: Mutex<HashMap<Identifier, KeptRead>>,
     /// One Platform read per unknown identity at a time, and at most
     /// [`REMOTE_READS`] at once (D35).
     remote_locks: Locks<Identifier>,
@@ -645,7 +677,7 @@ impl AvatarRuntime {
         *guard(&self.pipeline) = Some(Arc::new(pipeline));
     }
 
-    /// The toggle the pipeline reads, to build one.
+    /// The toggle, for its transitions (and test pauses).
     pub(super) fn toggle(&self) -> Arc<Pictures> {
         Arc::clone(&self.pictures)
     }
@@ -773,8 +805,21 @@ impl AvatarRuntime {
     /// [`REMOTE_FAILURE_LIFE`], in the toggle's epoch it was read in: D38),
     /// and at most [`REMOTE_READS`] run at once (D35). None starts or
     /// completes once `ticket` no longer allows the network (D33): then
-    /// `None`, and nothing is kept.
+    /// `None`, and nothing is kept; a failure found once it no longer
+    /// allows it is `None` too (D38).
     async fn remote_profile(
+        &self,
+        net: &impl RequestNet,
+        user: Identifier,
+        ticket: &Ticket<'_>,
+    ) -> RemoteRead {
+        match self.remote_read(net, user, ticket).await {
+            Err(_) if !ticket.allows() => Ok(None),
+            read => read,
+        }
+    }
+
+    async fn remote_read(
         &self,
         net: &impl RequestNet,
         user: Identifier,
@@ -803,15 +848,20 @@ impl AvatarRuntime {
             .map(|doc| doc.and_then(|d| super::profiles::shown(&d.properties)))
             .map_err(AvatarError::from);
         let mut remote = guard(&self.remote);
-        remote.retain(|_, (at, _, kept)| at.elapsed() < remote_life(kept));
+        remote.retain(|_, kept| kept.live());
         if remote.len() >= REMOTE_PROFILES
             && let Some(oldest) = (remote.iter())
-                .min_by_key(|(_, (at, _, _))| *at)
+                .min_by_key(|(_, kept)| kept.at)
                 .map(|(k, _)| *k)
         {
             remote.remove(&oldest);
         }
-        remote.insert(user, (Instant::now(), ticket.epoch, read.clone()));
+        let kept = KeptRead {
+            at: Instant::now(),
+            epoch: ticket.epoch,
+            read: read.clone(),
+        };
+        remote.insert(user, kept);
         read
     }
 
@@ -819,10 +869,8 @@ impl AvatarRuntime {
     /// the epoch it was read in (D38).
     fn kept_remote(&self, user: &Identifier, ticket: &Ticket<'_>) -> Option<RemoteRead> {
         (guard(&self.remote).get(user))
-            .filter(|(at, epoch, kept)| {
-                at.elapsed() < remote_life(kept) && (kept.is_ok() || *epoch == ticket.epoch)
-            })
-            .map(|(_, _, kept)| kept.clone())
+            .filter(|kept| kept.live() && (kept.read.is_ok() || kept.epoch == ticket.epoch))
+            .map(|kept| kept.read.clone())
     }
 }
 
@@ -921,11 +969,7 @@ impl NetworkSession {
                     .map_err(PlatformError::from)?;
                 let profile = match known {
                     Some(profile) => profile,
-                    None => match avatars.remote_profile(net, user, &ticket).await {
-                        // An off since: `None`, not a failure (D38).
-                        Err(_) if !ticket.allows() => return Ok(None),
-                        read => read?,
-                    },
+                    None => avatars.remote_profile(net, user, &ticket).await?,
                 };
                 (profile, Whose::Other)
             }
