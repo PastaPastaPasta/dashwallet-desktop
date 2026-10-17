@@ -867,8 +867,7 @@ impl Run {
         let max_announced = self.cfg.max_announcements;
         let state = &mut self.peers[pos];
         // Items announced while the peer's sync is still answering belong to
-        // the phase.
-        // Once synced, no item belongs to a phase (D57).
+        // the phase; once synced, none does (D57).
         let syncing = !self.announce_open;
         let objects_phase = syncing && state.full_sync.as_ref().is_some_and(|f| !f.complete());
         let votes_phase = syncing && !state.votes_done();
