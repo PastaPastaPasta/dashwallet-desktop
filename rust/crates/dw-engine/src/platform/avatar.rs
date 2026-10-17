@@ -1,0 +1,1127 @@
+//! The session's avatar pipeline (DASHPAY §3.8; DP4-02 design): the read
+//! behind `DashPay::avatar` (profile, cache, fetch, verdict), the sources
+//! behind `prepare_avatar`, the candidates `update_profile` publishes, and
+//! the "Load contact pictures" toggle. The guard, the decoder and the store
+//! are `avatar_fetch.rs`, `avatar_image.rs` and `avatar_cache.rs`. Not part
+//! of the facade.
+
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::future::Future;
+use std::hash::Hash;
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::time::{Duration, Instant};
+
+use dpp::platform_value::string_encoding::Encoding;
+use dpp::prelude::Identifier;
+use dw_appdb::{AppDb, AvatarRow};
+use reqwest::Url;
+use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
+use zeroize::Zeroizing;
+
+use super::avatar_cache::{AvatarStore, ThumbDir, stem};
+use super::avatar_fetch::{
+    BlockingResolver, FetchError, FetchPolicy, Fetcher, MAX_BYTES, MAX_URL_LEN, NameResolver,
+};
+use super::avatar_image::{self, Crop, Ingested};
+use super::contacts_model::identifier;
+use super::errors::{AvatarError, PlatformError};
+use super::profile::{AvatarCandidate, AvatarImage, AvatarSize, AvatarSource, Profile};
+use super::requests::RequestNet;
+use crate::events::unix_now;
+use crate::{NetworkSession, WalletId};
+
+/// The toggle's key in app.sqlite (global scope; D17): on unless `"0"`.
+pub(super) const LOAD_PICTURES_KEY: &str = "dashpay.load_contact_pictures";
+/// A failed URL, or one whose content another profile asked for, is
+/// fetched again after this (D11).
+const RECHECK: Duration = Duration::from_secs(600);
+/// Fetches at once per session, and decodes.
+const FETCHES: usize = 4;
+const DECODES: usize = 2;
+/// Candidates kept, and for how long (design: "Sources").
+const CANDIDATES: usize = 16;
+const CANDIDATE_LIFE: Duration = Duration::from_secs(30 * 60);
+/// Profiles of identities the wallet does not hold (D14), and the
+/// Platform reads of them at once (D35).
+const REMOTE_PROFILES: usize = 256;
+const REMOTE_PROFILE_LIFE: Duration = Duration::from_secs(600);
+const REMOTE_READS: usize = 4;
+/// A failed Platform read is the answer for this long, so the reads queued
+/// behind it share it rather than each asking again (D35).
+const REMOTE_FAILURE_LIFE: Duration = Duration::from_secs(5);
+
+type RemoteRead = Result<Option<Profile>, AvatarError>;
+
+/// A Platform read kept: when, in which epoch of the toggle, and what it
+/// answered.
+struct KeptRead {
+    at: Instant,
+    epoch: u64,
+    read: RemoteRead,
+}
+
+impl KeptRead {
+    /// Whether it still answers: a success for [`REMOTE_PROFILE_LIFE`], a
+    /// failure for [`REMOTE_FAILURE_LIFE`].
+    fn live(&self) -> bool {
+        let life = if self.read.is_ok() {
+            REMOTE_PROFILE_LIFE
+        } else {
+            REMOTE_FAILURE_LIFE
+        };
+        self.at.elapsed() < life
+    }
+}
+/// Android's crop parameter (D15).
+const ZOOM_PARAM: &str = "dashpay-profile-pic-zoom";
+
+fn guard<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+type Locks<K> = Mutex<HashMap<K, Weak<tokio::sync::Mutex<()>>>>;
+
+/// The lock for `key` in `locks`, shared by every holder while one lives
+/// (dead entries are dropped as new ones come).
+fn keyed_lock<K: Hash + Eq + Clone>(locks: &Locks<K>, key: &K) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks = guard(locks);
+    locks.retain(|_, l| l.strong_count() > 0);
+    if let Some(lock) = locks.get(key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(key.clone(), Arc::downgrade(&lock));
+    lock
+}
+
+#[cfg(test)]
+pub(super) type Hook = Box<
+    dyn Fn(&'static str) -> Option<std::pin::Pin<Box<dyn Future<Output = ()> + Send>>>
+        + Send
+        + Sync,
+>;
+
+/// The toggle, and the reads running under each epoch of it.
+#[derive(Debug, Default)]
+struct Toggle {
+    on: bool,
+    epoch: u64,
+    /// Running reads by the epoch they began in (D36).
+    reads: BTreeMap<u64, usize>,
+}
+
+/// "Load contact pictures" for the session (D17). Every change moves the
+/// epoch, so a read that began before one can tell (D33); a read is
+/// registered for as long as it runs, so an off returns only once every
+/// read of an earlier epoch has ended (D36). Transitions are serialized
+/// across their durable write, so memory is always the last value written
+/// (D34), and one runs to its end once begun (D37).
+pub(super) struct Pictures {
+    state: tokio::sync::watch::Sender<Toggle>,
+    transitions: Arc<tokio::sync::Mutex<()>>,
+    /// Test pauses at named points of a read.
+    #[cfg(test)]
+    hook: Mutex<Option<Hook>>,
+}
+
+impl Pictures {
+    pub(super) fn new(on: bool) -> Self {
+        Self {
+            state: tokio::sync::watch::Sender::new(Toggle {
+                on,
+                ..Toggle::default()
+            }),
+            transitions: Arc::default(),
+            #[cfg(test)]
+            hook: Mutex::default(),
+        }
+    }
+
+    pub(super) fn on(&self) -> bool {
+        self.state.borrow().on
+    }
+
+    /// Begins a read: the toggle as it sees it, registered until the
+    /// ticket drops.
+    pub(super) fn ticket(self: &Arc<Self>) -> Ticket {
+        let mut stamp = Stamp {
+            on: false,
+            epoch: 0,
+        };
+        self.state.send_if_modified(|s| {
+            *s.reads.entry(s.epoch).or_default() += 1;
+            stamp = Stamp {
+                on: s.on,
+                epoch: s.epoch,
+            };
+            false
+        });
+        Ticket {
+            pictures: Arc::clone(self),
+            stamp,
+            registered: true,
+        }
+    }
+
+    /// Whether the toggle still allows what was stamped `stamp` the
+    /// network (D33), or another user's picture read under it to be
+    /// delivered (D40).
+    pub(super) fn still(&self, stamp: Stamp) -> bool {
+        stamp.permits(&self.state.borrow())
+    }
+
+    /// Sets the toggle now, without a durable write or waiting for reads
+    /// (at open, and tests). The epoch it leaves.
+    pub(super) fn set(&self, on: bool) -> u64 {
+        let mut epoch = 0;
+        self.state.send_if_modified(|s| {
+            let moved = s.on != on;
+            if moved {
+                (s.on, s.epoch) = (on, s.epoch + 1);
+            }
+            epoch = s.epoch;
+            moved
+        });
+        epoch
+    }
+
+    /// Waits for the next transition's turn (D34). Taken before the
+    /// transition's task is spawned, so a session close that waits its
+    /// turn after the gate (`settled`) finds every spawned one ahead of it.
+    pub(super) async fn begin_transition(self: &Arc<Self>) -> Transition {
+        Transition {
+            pictures: Arc::clone(self),
+            _turn: Arc::clone(&self.transitions).lock_owned().await,
+        }
+    }
+
+    /// Waits until no transition is running (at close).
+    pub(super) async fn settled(&self) {
+        let _turn = self.transitions.lock().await;
+    }
+
+    /// Waits until every read that began before `epoch` has ended.
+    async fn drained(&self, epoch: u64) {
+        let mut state = self.state.subscribe();
+        // The sender is `self`'s: the wait cannot fail.
+        let _ = state
+            .wait_for(|s| s.reads.range(..epoch).next().is_none())
+            .await;
+    }
+
+    /// A named point of a read, where a test may pause it.
+    pub(super) async fn at(&self, point: &'static str) {
+        #[cfg(test)]
+        {
+            let pause = guard(&self.hook).as_ref().and_then(|hook| hook(point));
+            if let Some(pause) = pause {
+                pause.await;
+            }
+        }
+        #[cfg(not(test))]
+        let _ = point;
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_hook(&self, hook: Hook) {
+        *guard(&self.hook) = Some(hook);
+    }
+}
+
+/// One transition's turn (D34, D37).
+pub(super) struct Transition {
+    pictures: Arc<Pictures>,
+    _turn: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Transition {
+    /// `write` (the durable one), then memory; turning off, then waits for
+    /// the reads of earlier epochs to end (D36). Memory stays as it was if
+    /// `write` fails. Run as one task (D37): a caller dropped mid-way
+    /// cannot part the write from memory or end the turn early.
+    pub(super) async fn apply<E>(
+        self,
+        on: bool,
+        write: impl Future<Output = Result<(), E>>,
+    ) -> Result<(), E> {
+        write.await?;
+        let epoch = self.pictures.set(on);
+        if !on {
+            self.pictures.drained(epoch).await;
+        }
+        Ok(())
+    }
+}
+
+/// What a read saw of "Load contact pictures" when it began (D33).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Stamp {
+    on: bool,
+    epoch: u64,
+}
+
+impl Stamp {
+    /// Whether the toggle, as `s`, still allows a read stamped so the
+    /// network: it began on, and nothing has moved the toggle since.
+    fn permits(self, s: &Toggle) -> bool {
+        self.on && s.on && s.epoch == self.epoch
+    }
+}
+
+impl Toggle {
+    /// Ends one read of `epoch`; whether it was that epoch's last.
+    fn leave(&mut self, epoch: u64) -> bool {
+        let Some(n) = self.reads.get_mut(&epoch) else {
+            return false;
+        };
+        *n -= 1;
+        let ended = *n == 0;
+        if ended {
+            self.reads.remove(&epoch);
+        }
+        ended
+    }
+}
+
+/// A read of "Load contact pictures": what it saw when it began (D33),
+/// and its registration while it runs (D36).
+pub(super) struct Ticket {
+    pictures: Arc<Pictures>,
+    stamp: Stamp,
+    registered: bool,
+}
+
+impl Ticket {
+    /// Whether the read may still use the network.
+    pub(super) fn allows(&self) -> bool {
+        self.pictures.still(self.stamp)
+    }
+
+    pub(super) fn stamp(&self) -> Stamp {
+        self.stamp
+    }
+
+    /// What the read's name lookups are admitted under (D39).
+    pub(super) fn admission(&self) -> Admission {
+        Admission(Some((Arc::clone(&self.pictures), self.stamp)))
+    }
+
+    /// `work`, unless the ticket stops allowing the network first: then
+    /// `None`, and `work` is dropped where it stands (D33). `point` names
+    /// the step for test pauses, taken inside `work`: once the revocation
+    /// was first polled, before `work` is.
+    pub(super) async fn unless_revoked<T>(
+        &self,
+        point: &'static str,
+        work: impl Future<Output = T>,
+    ) -> Option<T> {
+        if !self.allows() {
+            return None;
+        }
+        let mut state = self.pictures.state.subscribe();
+        let epoch = self.stamp.epoch;
+        let revoked = state.wait_for(|s| !(s.on && s.epoch == epoch));
+        let work = async {
+            self.pictures.at(point).await;
+            work.await
+        };
+        tokio::select! {
+            biased;
+            _ = revoked => None,
+            done = work => self.allows().then_some(done),
+        }
+    }
+
+    async fn at(&self, point: &'static str) {
+        self.pictures.at(point).await;
+    }
+
+    /// Ends the read: whether it still allowed the network as it ended, in
+    /// one step with its end, so an off either finds it running (and waits
+    /// for it) or sees it answer before the off (D36).
+    pub(super) fn finish(mut self) -> bool {
+        self.end()
+    }
+
+    fn end(&mut self) -> bool {
+        let stamp = self.stamp;
+        let mut allowed = false;
+        if std::mem::take(&mut self.registered) {
+            self.pictures.state.send_if_modified(|s| {
+                allowed = stamp.permits(s);
+                s.leave(stamp.epoch)
+            });
+        }
+        allowed
+    }
+}
+
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
+/// What a name lookup of a fetch is admitted under (D39): a read's stamp,
+/// or nothing for the user's own `prepare_avatar` URL.
+#[derive(Clone)]
+pub(super) struct Admission(Option<(Arc<Pictures>, Stamp)>);
+
+impl Admission {
+    /// `prepare_avatar`'s: always admitted.
+    pub(super) fn any() -> Self {
+        Self(None)
+    }
+
+    /// Admits a lookup now: for a read, only while its stamp allows the
+    /// network, checked and registered in one step as a read is, so an off
+    /// either waits for the lookup or the lookup sees it and is not made.
+    pub(super) fn admit(&self) -> Option<Admitted> {
+        let Some((pictures, stamp)) = &self.0 else {
+            return Some(Admitted(None));
+        };
+        let mut admitted = false;
+        pictures.state.send_if_modified(|s| {
+            admitted = stamp.permits(s);
+            if admitted {
+                *s.reads.entry(stamp.epoch).or_default() += 1;
+            }
+            false
+        });
+        admitted.then(|| Admitted(Some((Arc::clone(pictures), stamp.epoch))))
+    }
+}
+
+/// An admitted lookup, registered as a read until it drops (D39).
+pub(super) struct Admitted(Option<(Arc<Pictures>, u64)>);
+
+impl Drop for Admitted {
+    fn drop(&mut self) {
+        if let Some((pictures, epoch)) = &self.0 {
+            pictures.state.send_if_modified(|s| s.leave(*epoch));
+        }
+    }
+}
+
+/// Whose avatar a read is for (D17). While "Load contact pictures" is
+/// off, an own identity's comes from the cache only and another user's is
+/// not read at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Whose {
+    Own,
+    Other,
+}
+
+/// An avatar URL as published, and what is fetched for it.
+#[derive(Debug, Clone)]
+pub(super) struct Target {
+    /// SHA-256 of the URL as published, hex: the index key.
+    pub(super) url_sha: String,
+    /// The URL fetched: the published one without Android's crop.
+    pub(super) fetch: Url,
+    pub(super) crop: Option<Crop>,
+}
+
+impl Target {
+    pub(super) fn parse(published: &str) -> Result<Self, FetchError> {
+        let mut fetch =
+            Url::parse(published).map_err(|e| FetchError::Form(format!("not a URL: {e}")))?;
+        // Only the zoom parameter's segments go; the rest of the query is
+        // kept byte for byte (a re-encoding could change what is fetched).
+        let mut crop = None;
+        if let Some(query) = fetch.query().map(str::to_owned) {
+            let (zoom, rest): (Vec<&str>, Vec<&str>) = query.split('&').partition(|segment| {
+                (url::form_urlencoded::parse(segment.as_bytes()).next())
+                    .is_some_and(|(k, _)| k == ZOOM_PARAM)
+            });
+            if !zoom.is_empty() {
+                crop = (url::form_urlencoded::parse(zoom[0].as_bytes()).next())
+                    .and_then(|(_, v)| Crop::from_zoom(&v));
+                fetch.set_query((!rest.is_empty()).then(|| rest.join("&")).as_deref());
+            }
+        }
+        Ok(Self {
+            url_sha: hex::encode(Sha256::digest(published.as_bytes())),
+            fetch,
+            crop,
+        })
+    }
+}
+
+/// What a fresh row that does not verify answers: its fetch's failure, or
+/// a mismatch when the fetch succeeded.
+fn refusal(status: &str) -> AvatarError {
+    match status {
+        "ok" => AvatarError::HashMismatch,
+        "too_large" => AvatarError::TooLarge,
+        "unsupported" => AvatarError::Unsupported,
+        _ => AvatarError::FetchFailed,
+    }
+}
+
+fn status_of(e: &AvatarError) -> &'static str {
+    match e {
+        AvatarError::TooLarge => "too_large",
+        AvatarError::Unsupported => "unsupported",
+        _ => "fetch_failed",
+    }
+}
+
+fn fetch_error(e: FetchError) -> AvatarError {
+    match e {
+        FetchError::TooLarge => AvatarError::TooLarge,
+        _ => AvatarError::FetchFailed,
+    }
+}
+
+/// Whether `row` was fetched within [`RECHECK`]; a time ahead of the clock
+/// is not fresh.
+fn fresh(row: &AvatarRow, now: u64) -> bool {
+    now.checked_sub(row.fetched_at)
+        .is_some_and(|age| age < RECHECK.as_secs())
+}
+
+/// Fetch, decode, cache: what a session shares between its reads.
+pub(super) struct Pipeline {
+    fetcher: Fetcher,
+    store: Arc<AvatarStore>,
+    /// One fetch per URL at a time (D12), by `url_sha`.
+    url_locks: Locks<String>,
+    fetches: Semaphore,
+    decodes: Arc<Semaphore>,
+}
+
+impl Pipeline {
+    pub(super) fn new(
+        policy: FetchPolicy,
+        resolver: Arc<dyn NameResolver>,
+        dir: Option<ThumbDir>,
+        db: Arc<AppDb>,
+    ) -> Self {
+        Self {
+            fetcher: Fetcher::new(policy, resolver),
+            store: Arc::new(AvatarStore::new(dir, db)),
+            url_locks: Mutex::default(),
+            fetches: Semaphore::new(FETCHES),
+            decodes: Arc::new(Semaphore::new(DECODES)),
+        }
+    }
+
+    fn url_lock(&self, url_sha: &str) -> Arc<tokio::sync::Mutex<()>> {
+        keyed_lock(&self.url_locks, &url_sha.to_owned())
+    }
+
+    async fn blocking<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&AvatarStore) -> T + Send + 'static,
+    ) -> Result<T, AvatarError> {
+        let store = Arc::clone(&self.store);
+        tokio::task::spawn_blocking(move || f(&store))
+            .await
+            .map_err(|e| {
+                AvatarError::from(PlatformError::Internal {
+                    detail: format!("avatar store task: {e}"),
+                })
+            })
+    }
+
+    /// Runs `work` (a decode) on a blocking thread, at most [`DECODES`] at
+    /// once; a panic is `avatar.unsupported`.
+    async fn decoding<T: Send + 'static>(
+        &self,
+        work: impl FnOnce() -> Result<T, AvatarError> + Send + 'static,
+    ) -> Result<T, AvatarError> {
+        // The permit goes with the work: a dropped caller does not free it
+        // while the decode still runs.
+        let permit = (Arc::clone(&self.decodes).acquire_owned().await)
+            .map_err(|_| AvatarError::Unsupported)?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            work()
+        })
+        .await
+        .unwrap_or(Err(AvatarError::Unsupported))
+    }
+
+    /// Fetches and ingests `target` (with the fingerprint for a candidate),
+    /// its lookups under `admission` (D39), and records the outcome in the
+    /// index.
+    async fn fetch(
+        &self,
+        target: &Target,
+        fingerprint: bool,
+        admission: Admission,
+    ) -> Result<Ingested, AvatarError> {
+        let fetched = {
+            let _permit = self.fetches.acquire().await;
+            self.fetcher.fetch(&target.fetch, admission).await
+        };
+        let crop = target.crop;
+        let ingested = match fetched {
+            Ok(bytes) => {
+                self.decoding(move || avatar_image::ingest(&bytes, crop, fingerprint))
+                    .await
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "avatar fetch failed");
+                Err(fetch_error(e))
+            }
+        };
+        let (url_sha, now) = (target.url_sha.clone(), unix_now());
+        let recorded = match &ingested {
+            Ok(i) => {
+                let (i, stem) = (i.clone(), stem(&i.sha, target.crop.as_ref()));
+                self.blocking(move |s| s.record_ok(&url_sha, &stem, &i, now))
+                    .await
+            }
+            Err(e) => {
+                let status = status_of(e);
+                self.blocking(move |s| s.record_failure(&url_sha, status, now))
+                    .await
+            }
+        };
+        // The store failing costs only the cache: the caller judges the
+        // ingested picture itself.
+        if let Err(e) = recorded {
+            tracing::warn!(error = %e, "avatar not recorded");
+        }
+        ingested
+    }
+
+    /// The thumbnail at `size` of `profile`'s avatar, verified against it
+    /// (design: "The read"). `None` when the profile has no avatar, or
+    /// while "Load contact pictures" is off, for another user's or for an
+    /// own identity's with nothing verified cached. A profile whose hash or
+    /// fingerprint could match nothing is a mismatch without a fetch.
+    /// `ticket` is the toggle as the read began (D33): the network is used
+    /// only while it allows it, a fetch it stops allowing is abandoned, and
+    /// another user's read it stops allowing answers `None` whatever it
+    /// found. The read is registered until it answers (D36).
+    pub(super) async fn for_profile(
+        &self,
+        profile: &Profile,
+        size: AvatarSize,
+        whose: Whose,
+        ticket: Ticket,
+    ) -> Result<Option<Vec<u8>>, AvatarError> {
+        let read = self.read(profile, size, whose, &ticket).await;
+        if !ticket.finish() && whose == Whose::Other {
+            return Ok(None);
+        }
+        read
+    }
+
+    async fn read(
+        &self,
+        profile: &Profile,
+        size: AvatarSize,
+        whose: Whose,
+        ticket: &Ticket,
+    ) -> Result<Option<Vec<u8>>, AvatarError> {
+        let Some(published) = profile.avatar_url.as_deref() else {
+            return Ok(None);
+        };
+        let network = || ticket.allows();
+        if whose == Whose::Other && !network() {
+            return Ok(None);
+        }
+        if !avatar_image::verifiable(profile) {
+            return Err(AvatarError::HashMismatch);
+        }
+        let target = Target::parse(published).map_err(|_| AvatarError::FetchFailed)?;
+        let lock = self.url_lock(&target.url_sha);
+        // Off, an own identity's read is of the cache only, which needs no
+        // lock: it does not wait behind a fetch (D36).
+        let _one = match ticket.unless_revoked("url lock", lock.lock()).await {
+            None if whose == Whose::Other => return Ok(None),
+            one => one,
+        };
+        let key = target.url_sha.clone();
+        let row = self.blocking(move |s| s.row(&key)).await?;
+        ticket.at("row").await;
+        if let Some(row) = row {
+            let verified = row.status == "ok"
+                && avatar_image::matches(row.content_sha.as_deref().unwrap_or(""), profile);
+            if verified {
+                if let Some(png) = self.blocking(move |s| s.thumbnail(&row, size)).await? {
+                    ticket.at("thumbnail").await;
+                    return Ok(Some(png));
+                }
+            } else if !network() {
+                return Ok(None);
+            } else if fresh(&row, unix_now()) {
+                return Err(refusal(&row.status));
+            }
+        }
+        let fetch = self.fetch(&target, false, ticket.admission());
+        let Some(ingested) = ticket.unless_revoked("fetch", fetch).await else {
+            return Ok(None);
+        };
+        let ingested = ingested?;
+        if !avatar_image::matches(&hex::encode(ingested.sha), profile) {
+            return Err(AvatarError::HashMismatch);
+        }
+        Ok(Some(ingested.thumbnail(size).to_vec()))
+    }
+
+    /// Tests: `bytes` cached as the picture at `published`, as a fetch of
+    /// it would have left it.
+    #[cfg(test)]
+    pub(super) fn seed(&self, published: &str, bytes: &[u8]) {
+        let target = Target::parse(published).unwrap();
+        let ingested = avatar_image::ingest(bytes, target.crop, false).unwrap();
+        let stem = stem(&ingested.sha, target.crop.as_ref());
+        (self.store).record_ok(&target.url_sha, &stem, &ingested, unix_now());
+    }
+
+    /// `prepare_avatar`'s fetch of a URL the user gave: always fetched now,
+    /// recorded in the index. Returns the URL to publish (as parsed, so
+    /// what is published is what was checked) and what it holds.
+    pub(super) async fn prepare_url(&self, url: &str) -> Result<(String, Ingested), AvatarError> {
+        let published = Url::parse(url.trim()).map_err(invalid)?.to_string();
+        if published.len() > MAX_URL_LEN {
+            return Err(invalid(format!("longer than {MAX_URL_LEN} bytes")));
+        }
+        let target = Target::parse(&published).map_err(invalid)?;
+        self.fetcher.check_url(&target.fetch).map_err(|e| match e {
+            FetchError::Form(_) => invalid(e),
+            _ => AvatarError::FetchFailed,
+        })?;
+        let lock = self.url_lock(&target.url_sha);
+        let _one = lock.lock().await;
+        let fetched = self.fetch(&target, true, Admission::any()).await?;
+        Ok((published, fetched))
+    }
+}
+
+fn invalid(e: impl std::fmt::Display) -> AvatarError {
+    PlatformError::InvalidArgument {
+        detail: format!("avatar URL: {e}"),
+    }
+    .into()
+}
+
+/// A prepared avatar (`prepare_avatar`), kept for `update_profile`.
+#[derive(Debug, Clone)]
+pub(super) struct Candidate {
+    pub(super) wallet: WalletId,
+    pub(super) url: Option<String>,
+    pub(super) sha: [u8; 32],
+    pub(super) dhash: [u8; 8],
+    /// A `File` source's PNG to upload (D18).
+    pub(super) upload: Option<Vec<u8>>,
+    made: Instant,
+}
+
+impl Candidate {
+    pub(super) fn new(
+        wallet: WalletId,
+        url: Option<String>,
+        sha: [u8; 32],
+        dhash: [u8; 8],
+        upload: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            wallet,
+            url,
+            sha,
+            dhash,
+            upload,
+            made: Instant::now(),
+        }
+    }
+}
+
+/// What `update_profile` publishes for a candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Published {
+    pub(super) url: String,
+    pub(super) sha: [u8; 32],
+    pub(super) dhash: [u8; 8],
+}
+
+/// The avatar state of a session's Platform runtime.
+pub(crate) struct AvatarRuntime {
+    pipeline: Mutex<Option<Arc<Pipeline>>>,
+    pictures: Arc<Pictures>,
+    candidates: Mutex<VecDeque<(String, Candidate)>>,
+    /// Platform reads of unknown identities.
+    remote: Mutex<HashMap<Identifier, KeptRead>>,
+    /// One Platform read per unknown identity at a time, and at most
+    /// [`REMOTE_READS`] at once (D35).
+    remote_locks: Locks<Identifier>,
+    remote_reads: Semaphore,
+}
+
+impl Default for AvatarRuntime {
+    fn default() -> Self {
+        Self {
+            pipeline: Mutex::default(),
+            pictures: Arc::new(Pictures::new(true)),
+            candidates: Mutex::default(),
+            remote: Mutex::default(),
+            remote_locks: Mutex::default(),
+            remote_reads: Semaphore::new(REMOTE_READS),
+        }
+    }
+}
+
+impl AvatarRuntime {
+    /// Installs the session's pipeline (at open; tests replace it).
+    pub(super) fn install(&self, pipeline: Pipeline) {
+        *guard(&self.pipeline) = Some(Arc::new(pipeline));
+    }
+
+    /// The toggle, for its transitions (and test pauses).
+    pub(super) fn toggle(&self) -> Arc<Pictures> {
+        Arc::clone(&self.pictures)
+    }
+
+    pub(super) fn pipeline(&self) -> Result<Arc<Pipeline>, AvatarError> {
+        (guard(&self.pipeline).clone()).ok_or(AvatarError::Platform(PlatformError::Unavailable))
+    }
+
+    pub(super) fn pictures(&self) -> bool {
+        self.pictures.on()
+    }
+
+    /// Waits until no toggle transition is running (at close, D37).
+    pub(crate) async fn settled(&self) {
+        self.pictures.settled().await;
+    }
+
+    /// Keeps `candidate` and returns its id, dropping expired ones and the
+    /// wallet's oldest past [`CANDIDATES`] (another wallet's stay).
+    pub(super) fn insert(&self, candidate: Candidate) -> String {
+        let id = format!("av-{:016x}", rand::random::<u64>());
+        let mut all = guard(&self.candidates);
+        all.retain(|(_, c)| c.made.elapsed() < CANDIDATE_LIFE);
+        let wallet = candidate.wallet;
+        while all.iter().filter(|(_, c)| c.wallet == wallet).count() >= CANDIDATES {
+            let oldest = all.iter().position(|(_, c)| c.wallet == wallet);
+            oldest.map(|i| all.remove(i));
+        }
+        all.push_back((id.clone(), candidate));
+        id
+    }
+
+    /// `f` of this wallet's live candidate `id`.
+    fn with_candidate<T>(
+        &self,
+        wallet: WalletId,
+        id: &str,
+        f: impl FnOnce(&Candidate) -> T,
+    ) -> Result<T, PlatformError> {
+        let all = guard(&self.candidates);
+        (all.iter())
+            .find(|(i, c)| i == id && c.wallet == wallet && c.made.elapsed() < CANDIDATE_LIFE)
+            .map(|(_, c)| f(c))
+            .ok_or_else(|| PlatformError::InvalidArgument {
+                detail: "unknown avatar candidate".into(),
+            })
+    }
+
+    /// The fields `update_profile` sets for the candidate `id`: one of
+    /// this wallet's, with a URL.
+    pub(super) fn published(&self, wallet: WalletId, id: &str) -> Result<Published, PlatformError> {
+        let published = self.with_candidate(wallet, id, |c| {
+            c.url.clone().map(|url| Published {
+                url,
+                sha: c.sha,
+                dhash: c.dhash,
+            })
+        })?;
+        published.ok_or_else(|| PlatformError::InvalidArgument {
+            detail: "the avatar candidate has no URL; upload it first".into(),
+        })
+    }
+
+    /// `upload_avatar` (D2): no upload host until B1.
+    pub(super) fn upload(&self, wallet: WalletId, id: &str) -> Result<String, AvatarError> {
+        if !self.with_candidate(wallet, id, |c| c.upload.is_some())? {
+            return Err(PlatformError::InvalidArgument {
+                detail: "the avatar candidate already has a URL".into(),
+            }
+            .into());
+        }
+        Err(AvatarError::UploadUnconfigured)
+    }
+
+    /// `prepare_avatar(src)` for `wallet`.
+    pub(super) async fn prepare(
+        &self,
+        wallet: WalletId,
+        src: AvatarSource,
+    ) -> Result<AvatarCandidate, AvatarError> {
+        let pipeline = self.pipeline()?;
+        let (url, upload, ingested) = match src {
+            AvatarSource::Url { url } => {
+                let (url, ingested) = pipeline.prepare_url(&url).await?;
+                (Some(url), None, ingested)
+            }
+            AvatarSource::Gravatar { email } => {
+                let url = gravatar_url(&Zeroizing::new(email))?;
+                let (url, ingested) = pipeline.prepare_url(&url).await?;
+                (Some(url), None, ingested)
+            }
+            AvatarSource::File { bytes, crop } => {
+                if bytes.len() > MAX_BYTES {
+                    return Err(AvatarError::TooLarge);
+                }
+                let (upload, ingested) = (pipeline)
+                    .decoding(move || avatar_image::ingest_file(&bytes, crop))
+                    .await?;
+                (None, Some(upload), ingested)
+            }
+        };
+        let preview = AvatarImage {
+            png: ingested.large.clone(),
+            size: AvatarSize::Large,
+        };
+        let needs_upload = upload.is_some();
+        let id = self.insert(Candidate::new(
+            wallet,
+            url.clone(),
+            ingested.sha,
+            ingested.dhash.ok_or(AvatarError::Unsupported)?,
+            upload,
+        ));
+        Ok(AvatarCandidate {
+            id,
+            preview,
+            url,
+            needs_upload,
+        })
+    }
+
+    /// The profile of an identity the wallet holds nothing of, from
+    /// Platform, kept [`REMOTE_PROFILE_LIFE`] (D14). Reads of one identity
+    /// share one Platform read, its failure too (kept
+    /// [`REMOTE_FAILURE_LIFE`], in the toggle's epoch it was read in: D38),
+    /// and at most [`REMOTE_READS`] run at once (D35). None starts or
+    /// completes once `ticket` no longer allows the network (D33): then
+    /// `None`, and nothing is kept; a failure found once it no longer
+    /// allows it is `None` too (D38).
+    async fn remote_profile(
+        &self,
+        net: &impl RequestNet,
+        user: Identifier,
+        ticket: &Ticket,
+    ) -> RemoteRead {
+        match self.remote_read(net, user, ticket).await {
+            Err(_) if !ticket.allows() => Ok(None),
+            read => read,
+        }
+    }
+
+    async fn remote_read(
+        &self,
+        net: &impl RequestNet,
+        user: Identifier,
+        ticket: &Ticket,
+    ) -> RemoteRead {
+        ticket.at("remote").await;
+        if let Some(kept) = self.kept_remote(&user, ticket) {
+            return kept;
+        }
+        let lock = keyed_lock(&self.remote_locks, &user);
+        let Some(_one) = ticket.unless_revoked("identity lock", lock.lock()).await else {
+            return Ok(None);
+        };
+        if let Some(kept) = self.kept_remote(&user, ticket) {
+            return kept;
+        }
+        let reads = self.remote_reads.acquire();
+        let Some(_permit) = ticket.unless_revoked("platform permit", reads).await else {
+            return Ok(None);
+        };
+        let doc = net.profile_document(user);
+        let Some(doc) = ticket.unless_revoked("platform", doc).await else {
+            return Ok(None);
+        };
+        let read = doc
+            .map(|doc| doc.and_then(|d| super::profiles::shown(&d.properties)))
+            .map_err(AvatarError::from);
+        let mut remote = guard(&self.remote);
+        remote.retain(|_, kept| kept.live());
+        if remote.len() >= REMOTE_PROFILES
+            && let Some(oldest) = (remote.iter())
+                .min_by_key(|(_, kept)| kept.at)
+                .map(|(k, _)| *k)
+        {
+            remote.remove(&oldest);
+        }
+        let kept = KeptRead {
+            at: Instant::now(),
+            epoch: ticket.stamp().epoch,
+            read: read.clone(),
+        };
+        remote.insert(user, kept);
+        read
+    }
+
+    /// The kept read of `user` that answers `ticket`: a failure only in
+    /// the epoch it was read in (D38).
+    fn kept_remote(&self, user: &Identifier, ticket: &Ticket) -> Option<RemoteRead> {
+        (guard(&self.remote).get(user))
+            .filter(|kept| kept.live() && (kept.read.is_ok() || kept.epoch == ticket.stamp().epoch))
+            .map(|kept| kept.read.clone())
+    }
+}
+
+/// Gravatar's URL for `email` as Android builds it (D13): the address
+/// trimmed and lower-cased, its MD5 in hex. The address is never kept.
+pub(super) fn gravatar_url(email: &str) -> Result<String, AvatarError> {
+    use md5::Digest as _;
+    let email = Zeroizing::new(email.trim().to_lowercase());
+    let plausible = email.len() <= 254
+        && !email.chars().any(char::is_whitespace)
+        && email.split_once('@').is_some_and(|(local, domain)| {
+            !local.is_empty()
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+        });
+    if !plausible {
+        return Err(PlatformError::InvalidArgument {
+            detail: "not an e-mail address".into(),
+        }
+        .into());
+    }
+    let digest = md5::Md5::digest(email.as_bytes());
+    Ok(format!(
+        "https://www.gravatar.com/avatar/{}?s=200&d=404&rating=g",
+        hex::encode(digest)
+    ))
+}
+
+impl NetworkSession {
+    /// At open: the toggle from app.sqlite, the cache directory opened once
+    /// (when `avatars_dir()` exists), and the pipeline installed.
+    pub(crate) async fn open_avatars(&self, db: Arc<AppDb>) {
+        let dir = self.avatars_dir();
+        let blocking_db = Arc::clone(&db);
+        let opened = tokio::task::spawn_blocking(move || {
+            // Unreadable, the toggle is off for the session: a user who
+            // turned it off must not see fetches.
+            let pictures = match blocking_db.setting(dw_appdb::GLOBAL_SCOPE, LOAD_PICTURES_KEY) {
+                Ok(v) => v.as_deref() != Some("0"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not read the contact-pictures setting; it is off");
+                    false
+                }
+            };
+            let dir = dir.and_then(|path| {
+                ThumbDir::open(&path)
+                    .inspect_err(|e| {
+                        tracing::warn!(error = %e, "avatar cache directory refused; thumbnails are not kept")
+                    })
+                    .ok()
+            });
+            (pictures, dir)
+        })
+        .await;
+        let (pictures, dir) = opened.unwrap_or((false, None));
+        let avatars = &self.platform.avatars;
+        avatars.pictures.set(pictures);
+        avatars.install(Pipeline::new(
+            FetchPolicy::STRICT,
+            Arc::new(BlockingResolver::system()),
+            dir,
+            db,
+        ));
+    }
+
+    /// `DashPay::avatar` (design: "The read"): the answer, to be delivered
+    /// with [`Answer::deliver`] (D40).
+    pub(super) async fn avatar_of(
+        self: &Arc<Self>,
+        net: &impl RequestNet,
+        wallet_id: WalletId,
+        identity: &str,
+        size: AvatarSize,
+    ) -> Answer {
+        // The toggle as this read began: checked again at every network
+        // step and before answering (D33). The read is registered until it
+        // answers (D36).
+        let ticket = self.platform.avatars.pictures.ticket();
+        let stamp = ticket.stamp();
+        let mut whose = None;
+        let result = (self.avatar_read(net, wallet_id, identity, size, ticket, &mut whose)).await;
+        Answer {
+            result,
+            other: (whose == Some(Whose::Other)).then_some(stamp),
+        }
+    }
+
+    async fn avatar_read(
+        self: &Arc<Self>,
+        net: &impl RequestNet,
+        wallet_id: WalletId,
+        identity: &str,
+        size: AvatarSize,
+        ticket: Ticket,
+        whose_read: &mut Option<Whose>,
+    ) -> Result<Option<AvatarImage>, AvatarError> {
+        let user = identifier(identity).map_err(|_| PlatformError::InvalidArgument {
+            detail: "not a Base58 identity id".into(),
+        })?;
+        let avatars = &self.platform.avatars;
+        let read = self.identity_read(wallet_id).map_err(PlatformError::from)?;
+        let b58 = user.to_string(Encoding::Base58);
+        let own = read.summaries.iter().find(|s| s.identity == b58);
+        let whose = if own.is_some() {
+            Whose::Own
+        } else {
+            Whose::Other
+        };
+        *whose_read = Some(whose);
+        let profile = match own {
+            Some(own) => own.profile.clone(),
+            None if !ticket.allows() => return Ok(None),
+            None => {
+                let mut owners: Vec<_> = read.summaries.iter().collect();
+                owners.sort_by_key(|s| !s.is_main);
+                let owners: Vec<Identifier> = (owners.into_iter())
+                    .filter_map(|s| Identifier::from_string(&s.identity, Encoding::Base58).ok())
+                    .collect();
+                let known = self
+                    .known_profile(wallet_id, &user, &owners)
+                    .map_err(PlatformError::from)?;
+                match known {
+                    Some(profile) => profile,
+                    None => avatars.remote_profile(net, user, &ticket).await?,
+                }
+            }
+        };
+        let Some(profile) = profile else {
+            return Ok(None);
+        };
+        let png = avatars
+            .pipeline()?
+            .for_profile(&profile, size, whose, ticket)
+            .await?;
+        Ok(png.map(|png| AvatarImage { png, size }))
+    }
+}
+
+/// An answer of `avatar`, not yet delivered (D40).
+#[must_use]
+pub(super) struct Answer {
+    result: Result<Option<AvatarImage>, AvatarError>,
+    /// The read's stamp when it was another user's.
+    other: Option<Stamp>,
+}
+
+impl Answer {
+    /// The answer as the caller gets it: another user's, read before an
+    /// off that has since been published, is `None`, a picture or a
+    /// failure; an own identity's is as read.
+    pub(super) fn deliver(self, pictures: &Pictures) -> Result<Option<AvatarImage>, AvatarError> {
+        match self.other {
+            Some(stamp) if !pictures.still(stamp) => Ok(None),
+            _ => self.result,
+        }
+    }
+}

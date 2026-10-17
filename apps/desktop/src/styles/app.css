@@ -635,6 +635,13 @@ button {
   font-weight: var(--dw-type-caption1-medium-weight);
 }
 
+.contact-avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
 .contact-avatar-row {
   width: var(--dw-layout-row-icon-size);
   height: var(--dw-layout-row-icon-size);

@@ -14,7 +14,7 @@ import { navigate, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { creditsModel, headerModel, holdsTopUp, outcomeRows, pageModel, PROFILE_COPY, requestModel, type ContestRef, type CreditsModel } from "../../dashpay/profile";
-import { useContest, useCostTable, useOutcomeEvents, usePendingTopUps, useRefreshBalanceOnVisit, useStuckTopUps } from "../../dashpay/profileQueries";
+import { useAvatar, useContest, useCostTable, useOutcomeEvents, usePendingTopUps, useRefreshBalanceOnVisit, useStuckTopUps } from "../../dashpay/profileQueries";
 import { useStatusInputs } from "../../dashpay/queries";
 import type { CardActionKind, StatusInputs } from "../../dashpay/status";
 import { outcomeText, topUpErrorText, topUpFor, type TopUpFlow } from "../../dashpay/topup";
@@ -48,9 +48,10 @@ export function buyCredits(b: Backend, walletId: string, main: IdentitySummary) 
 function Header({ main, contest, walletId }: { main: IdentitySummary; contest: string | null; walletId: string }) {
   const b = useBackend();
   const h = headerModel(main, contest);
+  const png = useAvatar(walletId, main.identity, "large");
   return (
     <section className="profile-header card-l1" data-testid="profile-header">
-      <Avatar letters={h.initials} size="pane" />
+      <Avatar letters={h.initials} size="pane" png={png} />
       <div className="profile-header-text">
         <h2 className="profile-name" data-testid="profile-name">
           {h.title}

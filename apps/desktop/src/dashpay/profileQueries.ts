@@ -4,6 +4,7 @@
 
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import type { AvatarSizeName } from "../api/generated/AvatarSizeName";
 import { keys, useBackend } from "../api/queries";
 import { dashpayKeys } from "./queries";
 
@@ -14,6 +15,9 @@ export const profileKeys = {
   contest: (walletId: string, identity: string, label: string) => ["dashpay", "contest", walletId, identity, label] as const,
   /** D12: the first page of events, apart from the bell's feed (which marks what it read). */
   outcomes: (walletId: string, identity: string) => ["dashpay", "outcomes", walletId, identity] as const,
+  /** DP4-02: under `dashpay`, so a Platform signal (a profile changed) reads it again; the engine
+   * answers from its cache. */
+  avatar: (walletId: string, identity: string, size: AvatarSizeName) => ["dashpay", "avatar", walletId, identity, size] as const,
   /** D18 */
   topUpQuote: (walletId: string, identity: string, duffs: number) => [...dashpayKeys.quote(walletId), "topUp", identity, duffs] as const,
 };
@@ -52,6 +56,19 @@ export function useContest(walletId: string, identity: string, label: string | n
 export function useOutcomeEvents(walletId: string, identity: string) {
   const b = useBackend();
   return useQuery({ queryKey: profileKeys.outcomes(walletId, identity), queryFn: () => b.dashpayEvents(walletId, identity, null, OUTCOME_EVENTS) });
+}
+
+/** An identity's avatar thumbnail (DP4-02) as base64 PNG, or `null` for initials: none, the
+ * pictures toggle off, a picture that does not match its profile, or a failed fetch. */
+export function useAvatar(walletId: string, identity: string, size: AvatarSizeName): string | null {
+  const b = useBackend();
+  const q = useQuery({
+    queryKey: profileKeys.avatar(walletId, identity, size),
+    queryFn: () => b.dashpayAvatar(walletId, identity, size),
+    retry: false,
+    staleTime: 600_000,
+  });
+  return q.data?.png ?? null;
 }
 
 export function useTopUpQuote(walletId: string, identity: string | null, duffs: number | null) {
