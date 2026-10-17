@@ -142,6 +142,10 @@ pub(crate) enum Refusal {
     /// SPV and the trusted service disagree on a quorum key a re-fetch
     /// needed (rule 4).
     Mismatch,
+    /// The payee's paying account is not the one its current request
+    /// designates (D12, D21, D25): built from another request, or the
+    /// reserved address is not in it. In every mode.
+    NotPayable,
     /// The vault was locked during the wait.
     Locked,
     /// The session closed or another engine failure.
@@ -152,7 +156,7 @@ impl Refusal {
     /// The refusal as m4 §4 names it (design §6).
     pub(crate) fn platform(self) -> PlatformError {
         match self {
-            Self::Unverified => PlatformError::ContextUnavailable,
+            Self::Unverified | Self::NotPayable => PlatformError::ContextUnavailable,
             Self::Mismatch => PlatformError::TrustMismatch,
             Self::Locked => PlatformError::SignerUnavailable,
             Self::Failed(e) => e,
@@ -373,8 +377,29 @@ struct SessionEnv<'a> {
 }
 
 impl SessionEnv<'_> {
+    /// `false` if the subject is a payee whose paying account is not the
+    /// one its current request designates (D12, D25), or, at the re-check,
+    /// the reserved address is not in that account (D21). Whether or not
+    /// anything came through the fallback, and in every mode: it is where
+    /// the money goes, not what the data was verified by.
+    fn payable(&self, wm: &WalletManager<PlatformWalletInfo>) -> bool {
+        let Subject::Payee(wallet, pair) = self.subject else {
+            return true;
+        };
+        let m = (wm.get_wallet_info(&wallet.0)).and_then(|info| {
+            (info.identity_manager.wallet_managed_identities(&wallet.0))
+                .find(|m| m.identity.id() == pair.0)
+        });
+        // A subject the library no longer holds is `unverified`'s `None`.
+        let stale = m.is_some_and(|m| paying_account_stale(m, &pair.1, self.reserved.is_some()));
+        !stale
+            && self
+                .reserved
+                .is_none_or(|address| in_paying_account(wm, wallet, pair, address))
+    }
+
     /// The subject's entities `provenance` holds unverified; `None` if the
-    /// library no longer holds the subject, or it is not payable (D12).
+    /// library no longer holds the subject.
     fn unverified(
         &self,
         wm: &WalletManager<PlatformWalletInfo>,
@@ -387,11 +412,7 @@ impl SessionEnv<'_> {
         let info = wm.get_wallet_info(&wallet.0)?;
         let m = (info.identity_manager.wallet_managed_identities(&wallet.0))
             .find(|m| m.identity.id() == owner)?;
-        let stale = |contact| {
-            provenance.fallback_used() && paying_account_stale(m, contact, self.reserved.is_some())
-        };
         let held = match self.subject {
-            Subject::Payee(_, (_, contact)) if stale(&contact) => None,
             Subject::Payee(_, (_, contact)) => {
                 let username = self.session.platform.contacts.names.label(&contact);
                 payee_held(m, &contact, username.as_deref())
@@ -414,12 +435,10 @@ impl GateEnv for SessionEnv<'_> {
         let live = self.session.live()?;
         let wm = live.manager.wallet_manager_arc();
         let wm = wm.read().await;
-        // D21: the reserved address is checked under the read that checks
-        // the account's stamp and the request it names.
-        if let (Some(address), Subject::Payee(wallet, pair)) = (self.reserved, self.subject)
-            && !in_paying_account(&wm, wallet, pair, address)
-        {
-            return Ok(None);
+        // D21: the account's stamp, the reserved address and the request
+        // they are checked against, under one read.
+        if !self.payable(&wm) {
+            return Err(Refusal::NotPayable);
         }
         Ok(self.unverified(&wm, &live.provenance))
     }
@@ -465,8 +484,20 @@ impl NetworkSession {
         let gated = run(&env, || self.gate_refetcher(), signals, waits).await;
         if let Err(refusal) = &gated {
             tracing::info!(?subject, ?refusal, "the money gate refused");
+            self.rebuild_soon(refusal);
         }
         gated
+    }
+
+    /// D25: a payee refused as not payable gets a DashPay pass now, whose
+    /// sweep queues the paying account's rebuild from its current request,
+    /// so a retry once it ran pays the account that request designates.
+    fn rebuild_soon(&self, refusal: &Refusal) {
+        if *refusal == Refusal::NotPayable
+            && let Ok(manager) = self.manager()
+        {
+            self.kick_dashpay_sync(&manager);
+        }
     }
 
     fn gate_refetcher(&self) -> Result<Arc<dyn Refetcher>, Refusal> {
@@ -477,7 +508,7 @@ impl NetworkSession {
     /// The gate's re-check (design §4 step 5) of the payment to `pair`
     /// paying `address`, under `rule`, read once by the caller: `Ok(true)`
     /// once it checked them under `Enforce`, `Ok(false)` when rule 5 does
-    /// not apply.
+    /// not apply and only where the money goes was checked (D25).
     pub(crate) async fn money_recheck(
         &self,
         wallet: WalletId,
@@ -485,9 +516,6 @@ impl NetworkSession {
         address: &Address,
         rule: Rule5,
     ) -> Result<bool, Refusal> {
-        if rule != Rule5::Enforce {
-            return Ok(false);
-        }
         let waits = *guard(&self.platform.money_gate.waits);
         let subject = Subject::Payee(wallet, pair);
         let env = SessionEnv {
@@ -495,10 +523,16 @@ impl NetworkSession {
             subject,
             reserved: Some(address),
         };
-        let checked = recheck(&env, || self.gate_refetcher(), waits).await;
+        let checked = match rule {
+            Rule5::Enforce => recheck(&env, || self.gate_refetcher(), waits).await,
+            // D25: where the money goes is checked in every mode; only
+            // what is unverified waits for rule 5.
+            Rule5::Probe | Rule5::Off => env.pending().await.map(drop),
+        };
         if let Err(refusal) = &checked {
             tracing::info!(?subject, ?refusal, "the money gate's re-check refused");
+            self.rebuild_soon(refusal);
         }
-        checked.map(|()| true)
+        checked.map(|()| rule == Rule5::Enforce)
     }
 }
