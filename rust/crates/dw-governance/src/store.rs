@@ -480,8 +480,13 @@ impl GovernanceStore {
         }
         let mut queues: Vec<_> = by.into_values().collect();
         for q in &mut queues {
-            q.sort_unstable_by_key(|o| std::cmp::Reverse((o.stored_at, o.hash_hex.clone())));
+            q.sort_unstable_by(|a, b| (b.stored_at, &b.hash_hex).cmp(&(a.stored_at, &a.hash_hex)));
         }
+        // Queues by their oldest object, so each round goes oldest first.
+        queues.sort_unstable_by(|a, b| {
+            let head = |q: &Vec<&StoredObject>| q.last().map(|o| (o.stored_at, o.hash_hex.clone()));
+            head(a).cmp(&head(b))
+        });
         let mut out = Vec::new();
         while !queues.is_empty() {
             queues.retain_mut(|q| match q.pop() {
@@ -609,7 +614,8 @@ impl GovernanceStore {
 
     /// Whether an unconfirmed object of `bytes` data bytes from `from`
     /// fits. Past its sender's share the refusal is the sender's (D53);
-    /// past the bounds in all it is overflow, which fails the run (D51).
+    /// past the bounds in all, earlier runs' objects make room, and a
+    /// refusal is overflow, which fails the run (D51).
     fn room_for_unconfirmed(
         &mut self,
         from: Option<SocketAddr>,
@@ -628,9 +634,37 @@ impl GovernanceStore {
         if from_peer >= MAX_UNCONFIRMED_PER_PEER || peer_bytes > MAX_UNCONFIRMED_BYTES_PER_PEER {
             return Err(ObjectRejection::StoreFull);
         }
-        if count >= MAX_UNCONFIRMED_OBJECTS || total > MAX_UNCONFIRMED_BYTES {
+        let fits = |count: usize, total: usize| {
+            count < MAX_UNCONFIRMED_OBJECTS && total <= MAX_UNCONFIRMED_BYTES
+        };
+        if fits(count, total) {
+            return Ok(());
+        }
+        // Earlier runs' unvoted unconfirmed objects, shown nowhere, make
+        // room first, oldest first: this run's senders alone, each held to
+        // its share, cannot fill the bounds (D53).
+        let mut stale: Vec<(i64, [u8; 32], usize)> = self
+            .objects
+            .iter()
+            .filter(|(h, o)| !o.confirmed && o.seen_in_run != self.run && !self.weighted(h))
+            .map(|(h, o)| (o.stored_at, *h, o.object.data.len()))
+            .collect();
+        stale.sort_unstable();
+        let mut evict = Vec::new();
+        for (_, h, size) in stale {
+            if fits(count, total) {
+                break;
+            }
+            evict.push(h);
+            count -= 1;
+            total -= size;
+        }
+        if !fits(count, total) {
             self.overflow += 1;
             return Err(ObjectRejection::StoreFull);
+        }
+        for h in evict {
+            self.remove_object(&h);
         }
         Ok(())
     }

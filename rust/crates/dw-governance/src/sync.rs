@@ -231,8 +231,12 @@ pub struct SyncConfig {
     /// Hashes one peer may announce that the wallet has not fetched (Core
     /// `MAX_PEER_OBJECT_ANNOUNCEMENTS`).
     pub max_announcements: usize,
-    /// Parent objects asked of one peer per run after orphan votes.
+    /// Parent objects asked for per run after one peer's orphan votes
+    /// (D52).
     pub max_parent_fetches: usize,
+    /// Hashes whose announcers are kept for a late copy; once full, no new
+    /// ones (D53).
+    pub max_late_announcers: usize,
     /// Core's fulfilled-request window for `govsync`.
     pub repeat_window: Duration,
 }
@@ -256,6 +260,7 @@ impl SyncConfig {
             max_suspect: 10_000,
             max_announcements: 100_000,
             max_parent_fetches: 100,
+            max_late_announcers: MAX_LATE,
             repeat_window,
         }
     }
@@ -435,10 +440,17 @@ struct Pending {
 /// Who announced a hash not fetched yet.
 #[derive(Default)]
 struct Announced {
+    /// The kind it is asked as: the first announcement's.
+    kind: u32,
     /// Not asked yet, in order: who to ask next.
     untried: Vec<usize>,
     /// Every peer whose announcement counts against its limit.
     all: Vec<usize>,
+    /// Peers that announced it as the other kind, asked as that once
+    /// every announcer of `kind` failed (D54), and whether one of them
+    /// did so in its phase.
+    other: Vec<usize>,
+    other_phase: bool,
 }
 
 /// A request given up on: its peers may still deliver.
@@ -463,6 +475,15 @@ struct Requests {
     /// they count towards its confirmation once it arrives (D3).
     object_announcers: HashMap<[u8; 32], Vec<SocketAddr>>,
     late: HashMap<[u8; 32], Late>,
+}
+
+/// The inv kind a hash announced as `kind` would otherwise be.
+fn other_kind(kind: u32) -> u32 {
+    if kind == INV_GOVERNANCE_OBJECT {
+        INV_GOVERNANCE_VOTE
+    } else {
+        INV_GOVERNANCE_OBJECT
+    }
 }
 
 /// Connects to up to `max` of `candidates`, peers not full-synced recently
@@ -738,6 +759,23 @@ impl Run {
             a.untried.retain(|p| !asked.contains(p) && live.contains(p));
             a.untried.first().copied()
         });
+        // Every announcer of this kind failed: ask those that announced
+        // the other kind (D54).
+        let switch = next.is_none().then(|| {
+            let a = self.requests.announced.get_mut(&hash)?;
+            a.other.retain(|p| live.contains(p));
+            if a.other.is_empty() {
+                return None;
+            }
+            a.kind = other_kind(a.kind);
+            a.untried = std::mem::take(&mut a.other);
+            Some((a.untried[0], a.kind, std::mem::take(&mut a.other_phase)))
+        });
+        if let Some(Some((next, kind, phase))) = switch {
+            self.assign(hash, kind, next, t.phase || phase, Vec::new());
+            self.pump(next);
+            return false;
+        }
         match next {
             Some(next) => {
                 self.assign(hash, kind, next, t.phase, asked);
@@ -820,7 +858,8 @@ impl Run {
                 if object {
                     // Full, it takes no new hashes rather than forget the
                     // ones it holds: no peer can clear another's (D53).
-                    let full = self.requests.object_announcers.len() >= MAX_LATE;
+                    let full =
+                        self.requests.object_announcers.len() >= self.cfg.max_late_announcers;
                     match self.requests.object_announcers.get_mut(&i.hash) {
                         Some(by) if !by.contains(&addr) => by.push(addr),
                         Some(_) => {}
@@ -830,14 +869,33 @@ impl Run {
                         None => {}
                     }
                 }
-                let a = self.requests.announced.entry(i.hash).or_default();
+                let kind = self
+                    .requests
+                    .pending
+                    .get(&i.hash)
+                    .map_or(i.kind, |r| r.kind);
+                let a = self
+                    .requests
+                    .announced
+                    .entry(i.hash)
+                    .or_insert_with(|| Announced {
+                        kind,
+                        ..Announced::default()
+                    });
                 if a.all.contains(&from) {
                     continue;
                 }
                 a.all.push(from);
-                a.untried.push(from);
                 state.announced += 1;
                 let phase = if object { objects_phase } else { votes_phase };
+                // A hash is an object's or a vote's, never both: the other
+                // kind waits until this one failed (D54).
+                if a.kind != i.kind {
+                    a.other.push(from);
+                    a.other_phase |= phase;
+                    continue;
+                }
+                a.untried.push(from);
                 match self.requests.pending.entry(i.hash) {
                     Entry::Vacant(_) => wanted.push((i, phase)),
                     Entry::Occupied(mut e) => e.get_mut().phase |= phase,
