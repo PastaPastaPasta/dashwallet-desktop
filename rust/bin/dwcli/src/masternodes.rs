@@ -1,10 +1,14 @@
 //! `dwcli mn …`: the masternodes facade (MG-03, `docs/contracts/mn-engine.md`)
 //! and nothing else. Every command prints one JSON line on stdout:
 //! `{"ok":true,"result":…}`, or `{"ok":false,"error":{"code":…,"message":…}}`
-//! with exit status 1. A key to attach is read from stdin, never argv.
+//! with exit status 1, whatever failed: the vault's unlock, a setup step
+//! before the command, a refused command line, a panic (MG-03 D26). No
+//! message repeats an argument. A key to attach is read from stdin, never
+//! argv.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use clap::{Args, Subcommand};
@@ -13,6 +17,42 @@ use dw_engine::{Engine, NetworkSession, WalletId};
 use serde::Serialize;
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
+
+/// Set once the JSON line is printed, so `main` prints none after it.
+static PRINTED: AtomicBool = AtomicBool::new(false);
+
+/// Prints the line once, best effort: a broken stdout must not turn the
+/// exit into a panic.
+fn print_line(line: &Value) {
+    if !PRINTED.swap(true, Ordering::SeqCst) {
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{line}").and_then(|()| out.flush());
+    }
+}
+
+fn error_line(code: &str, message: &str) -> Value {
+    json!({ "ok": false, "error": { "code": code, "message": message } })
+}
+
+/// The line of an `mn` command that failed before it ran (the passphrase
+/// file, the data root, opening the network), unless one was printed.
+pub fn report_setup_failure(message: &str) {
+    print_line(&error_line("setup", message));
+}
+
+/// The line after a panic, unless one was printed. The payload may quote
+/// an argument, so it isn't used.
+pub fn report_panic() {
+    print_line(&error_line(
+        "internal",
+        "dwcli panicked; the command's outcome is unknown",
+    ));
+}
+
+/// The line of a refused `mn` command line (`text` names no value).
+pub fn report_parse_failure(text: &str) {
+    print_line(&error_line("invalid_argument", text));
+}
 
 #[derive(Args)]
 pub struct MnArgs {
@@ -240,22 +280,28 @@ fn command(engine: &Engine, session: &Arc<NetworkSession>, args: MnArgs) -> Resu
     }
 }
 
-/// Runs one `mn` command and prints its JSON line. `Err` (exit status 1)
-/// carries the message for stderr.
-pub fn run(engine: &Engine, session: &Arc<NetworkSession>, args: MnArgs) -> Result<(), String> {
+/// Unlocks the vault if a passphrase was given, runs one `mn` command and
+/// prints its JSON line. `Err` (exit status 1) carries the message for
+/// stderr. A wrong passphrase is the m1 `vault` error, which names no
+/// input.
+pub fn run(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    passphrase: Option<&Zeroizing<Vec<u8>>>,
+    args: MnArgs,
+) -> Result<(), String> {
     let started_spv = args.starts_spv();
-    let result = command(engine, session, args);
+    let result = crate::unlock(engine, session, passphrase)
+        .map_err(Failure::from)
+        .and_then(|()| command(engine, session, args));
     // The line comes first: stopping SPV can fail after the command ran.
     let outcome = match result {
         Ok(v) => {
-            println!("{}", json!({ "ok": true, "result": v }));
+            print_line(&json!({ "ok": true, "result": v }));
             Ok(())
         }
         Err(f) => {
-            println!(
-                "{}",
-                json!({ "ok": false, "error": { "code": f.code, "message": f.message } })
-            );
+            print_line(&error_line(&f.code, &f.message));
             Err(f.message)
         }
     };

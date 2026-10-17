@@ -521,8 +521,8 @@ fn run(cli: Cli) -> Result<(), String> {
             return finish(engine, &session, passphrase, result);
         }
         Command::Mn(args) => {
-            unlock_if_needed(&engine, &session, passphrase.as_ref())?;
-            let result = masternodes::run(&engine, &session, args);
+            // Unlocks itself, so a failed unlock is a JSON error too.
+            let result = masternodes::run(&engine, &session, passphrase.as_ref(), args);
             return finish(engine, &session, passphrase, result);
         }
         Command::DashPay(cmd) => {
@@ -600,6 +600,23 @@ fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(e) => return parse_failure(&e),
     };
+    // `mn` commands print one JSON line whatever happens (MG-03 D26), and a
+    // panic's payload never reaches stderr.
+    if matches!(cli.command, Command::Mn(_)) {
+        dashpay::quiet_panics();
+        return match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(cli))) {
+            Ok(Ok(())) => ExitCode::SUCCESS,
+            Ok(Err(e)) => {
+                masternodes::report_setup_failure(&e);
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+            Err(_) => {
+                masternodes::report_panic();
+                ExitCode::FAILURE
+            }
+        };
+    }
     if !matches!(cli.command, Command::DashPay(_)) {
         return match run(cli) {
             Ok(()) => ExitCode::SUCCESS,
@@ -646,9 +663,13 @@ fn parse_failure(e: &clap::Error) -> ExitCode {
         let _ = e.print();
         return ExitCode::from(code);
     }
+    let text = dashpay::clap_error_text(e);
+    // An `mn` command line answers with its JSON line too (MG-03 D26).
+    if std::env::args().skip(1).any(|a| a == "mn") {
+        masternodes::report_parse_failure(&text);
+    }
     eprintln!(
-        "error: {}\n\n{}\n\nFor more information, try '--help'.",
-        dashpay::clap_error_text(e),
+        "error: {text}\n\n{}\n\nFor more information, try '--help'.",
         Cli::command().render_usage()
     );
     ExitCode::from(code)
