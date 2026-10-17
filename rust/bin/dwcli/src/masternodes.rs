@@ -89,6 +89,12 @@ enum MnCommand {
     Credits { pro_tx_hash: String },
 }
 
+impl MnArgs {
+    fn starts_spv(&self) -> bool {
+        self.spv || self.sync_height.is_some()
+    }
+}
+
 fn parse_role(s: &str) -> Result<AttachedKeyRole, String> {
     match s {
         "owner" => Ok(AttachedKeyRole::Owner),
@@ -155,9 +161,21 @@ fn wait_for_list(
                 .is_some_and(|s| s >= h)
         }))
     };
-    while !(mn.list_state()?.synced && scanned()?) {
+    while !mn.list_state()?.synced {
         if Instant::now() >= deadline {
             return Err(MasternodesError::ListUnavailable.into());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    while !scanned()? {
+        if Instant::now() >= deadline {
+            return Err(Failure {
+                code: "spv".into(),
+                message: format!(
+                    "the wallets didn't scan height {} in time",
+                    height.unwrap_or(0)
+                ),
+            });
         }
         std::thread::sleep(Duration::from_millis(250));
     }
@@ -166,7 +184,7 @@ fn wait_for_list(
 
 fn command(engine: &Engine, session: &Arc<NetworkSession>, args: MnArgs) -> Result<Value, Failure> {
     let mn = session.masternodes();
-    if args.spv || args.sync_height.is_some() {
+    if args.starts_spv() {
         let timeout = Duration::from_secs(args.sync_timeout);
         wait_for_list(engine, session, &mn, timeout, args.sync_height)?;
     }
@@ -192,7 +210,9 @@ fn command(engine: &Engine, session: &Arc<NetworkSession>, args: MnArgs) -> Resu
             value(engine.block_on(mn.set_label(pro_tx_hash, label))?)
         }
         MnCommand::Attach { pro_tx_hash, role } => {
-            let mut key = Zeroizing::new(String::new());
+            // Room for a key, so reading doesn't reallocate (and leave
+            // copies behind).
+            let mut key = Zeroizing::new(String::with_capacity(256));
             std::io::stdin()
                 .read_to_string(&mut key)
                 .map_err(|e| Failure {
@@ -223,12 +243,10 @@ fn command(engine: &Engine, session: &Arc<NetworkSession>, args: MnArgs) -> Resu
 /// Runs one `mn` command and prints its JSON line. `Err` (exit status 1)
 /// carries the message for stderr.
 pub fn run(engine: &Engine, session: &Arc<NetworkSession>, args: MnArgs) -> Result<(), String> {
-    let started_spv = args.spv || args.sync_height.is_some();
+    let started_spv = args.starts_spv();
     let result = command(engine, session, args);
-    if started_spv {
-        crate::teardown::stop_spv(session, false).map_err(|e| e.to_string())?;
-    }
-    match result {
+    // The line comes first: stopping SPV can fail after the command ran.
+    let outcome = match result {
         Ok(v) => {
             println!("{}", json!({ "ok": true, "result": v }));
             Ok(())
@@ -240,5 +258,9 @@ pub fn run(engine: &Engine, session: &Arc<NetworkSession>, args: MnArgs) -> Resu
             );
             Err(f.message)
         }
+    };
+    if started_spv {
+        crate::teardown::stop_spv(session, false).map_err(|e| e.to_string())?;
     }
+    outcome
 }
