@@ -49,7 +49,7 @@ export interface AddContactIntent {
 export type Protection = "off" | "pending" | "on" | "failed";
 
 /** `recoveryPhrase`: Show Recovery Phrase (U-02 D13); `unlock`: the full unlock from mixing only (D12). */
-export type Dialog = "openUri" | "about" | "recoveryPhrase" | "unlock";
+export type Dialog = "openUri" | "about" | "recoveryPhrase" | "unlock" | "savedLinks";
 
 export interface UiState {
   route: Route;
@@ -70,7 +70,8 @@ export interface UiState {
    * the clipboard. The tab takes it once. */
   psbtPrefill: { psbt: string; copied: boolean } | null;
   settingsTab: SettingsTab;
-  /** An invitation link arrived (DP5-01 adds its intake; Join DashPay says so meanwhile). */
+  /** An invitation link was opened: it waits in the link stash (DP5-01); Join DashPay says so
+   * until DP5-03 joins with it. */
   invitation: boolean;
   /** The wallet the window shows; `null` = the first. */
   walletId: string | null;

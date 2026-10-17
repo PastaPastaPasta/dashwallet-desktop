@@ -33,6 +33,22 @@ use crate::state::{AppState, parse_wallet_id};
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     (
+        "Vault::stash_link",
+        "internal: the engine's `NetworkSession::stash_link` calls it after classifying the link itself (DP5-01 D3)",
+    ),
+    (
+        "Vault::stashed_links",
+        "internal: reached through `NetworkSession::stashed_links` (`stashed_links`)",
+    ),
+    (
+        "Vault::take_stashed_link",
+        "internal: reached through `NetworkSession::take_stashed_link` (`open_stashed_link`), which passes only the kinds it hands back",
+    ),
+    (
+        "Vault::forget_stashed_link",
+        "internal: reached through `NetworkSession::forget_invitation` (`forget_invitation`) and `NetworkSession::forget_stashed_link` (`dismiss_stashed_link`)",
+    ),
+    (
         "NetworkSession::lock_vault_sync",
         "internal: superseded by `lock` (`lock_vault`, async, awaits the lease drain); dw-ffi's synchronous `Vault::lock` maps to it for the frozen Swift shells, and the console and the relock timer use it",
     ),

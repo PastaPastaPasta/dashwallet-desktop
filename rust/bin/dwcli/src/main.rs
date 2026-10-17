@@ -581,11 +581,15 @@ fn abandon(
 }
 
 fn main() -> ExitCode {
+    // Links never reach a log or a panic message (DASHPAY §3.8, DP5-01
+    // D14); DashPay commands withhold panic messages altogether.
+    dw_uri::redact::redact_panics();
     // `DWCLI_LOG=info,dash_spv=debug` (EnvFilter syntax) logs to stderr.
     if let Ok(filter) = std::env::var("DWCLI_LOG") {
         tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .with_writer(|| dw_uri::redact::RedactingWriter::new(std::io::stderr()))
             .init();
     }
     let cli = match Cli::try_parse() {

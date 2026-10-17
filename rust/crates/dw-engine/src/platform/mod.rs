@@ -109,7 +109,9 @@ pub use identity::{
     IdentityDetail, IdentityKeyInfo, IdentitySummary, KeyPurpose, KeyType, NamesCheck,
     SecurityLevel,
 };
-pub use invitations::{InvitationInvalidReason, InvitationStatus};
+pub use invitations::{
+    InvitationInvalidReason, InvitationStatus, StashedLink, StashedLinkKind, TakenLink,
+};
 pub use lease::{FlowOutcome, FlowReport, LeaseError, LockPhase, LockReport};
 pub use names::{
     ContestContender, ContestState, ContestStatus, NameAvailability, NameOutcome, UserHit,

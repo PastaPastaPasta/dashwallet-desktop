@@ -2227,7 +2227,17 @@ mod tests {
             r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: no pending top-up of that txid is proved","params":{"detail":"no pending top-up of that txid is proved"}}}"#,
         ),
         ("identity costs", COSTS),
+        // DP5-01: stdin is empty, no invitation link.
+        ("invite claim --label alice", INVITATION_INVALID),
+        ("invite stash", INVITATION_INVALID),
+        ("invite pending", r#"{"ok":true,"result":[]}"#),
+        (
+            "invite forget L",
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a stashed link id","params":{"detail":"not a stashed link id"}}}"#,
+        ),
     ];
+
+    const INVITATION_INVALID: &str = r#"{"ok":false,"error":{"code":"invitation.invalid","message":"invitation invalid","params":{}}}"#;
 
     /// `I` is not an identity id, as the credits calls word it.
     const NOT_IDENTIFIER: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: identity is not a base58 identifier","params":{"detail":"identity is not a base58 identifier"}}}"#;
@@ -3122,9 +3132,10 @@ mod tests {
             (lines[0]["id"].clone(), lines[0]["result"]["kind"].clone()),
             (json!(1), json!("no_identity"))
         );
+        // Not an invitation link (DP5-01): refused, quoting nothing.
         assert_eq!(
-            (lines[1]["id"].clone(), call(1)),
-            (json!("b"), json!("NetworkSession.stash_invitation"))
+            (lines[1]["id"].clone(), lines[1]["error"]["code"].clone()),
+            (json!("b"), json!("invitation.invalid"))
         );
         // Every refusal is answered in turn and the session goes on.
         let ids = [None, Some(3), Some(4), None, None, None, None, None];

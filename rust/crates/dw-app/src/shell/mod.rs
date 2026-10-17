@@ -225,7 +225,8 @@ impl Shell {
     }
 
     /// Appends `line` to the self-test's link trace, if there is one. Lines
-    /// name schemes and routes, never a link's text.
+    /// name schemes and routes, never a link's text; one that would (a route
+    /// name the renderer sent) is redacted (DP5-01 D14).
     ///
     /// One write per line, under the lock: `escape_debug` formats a character
     /// at a time, and written straight into the unbuffered file that was one
@@ -235,7 +236,7 @@ impl Shell {
     pub fn trace(&self, line: &str) {
         let Some(path) = &self.trace else { return };
         let path = path.lock().unwrap_or_else(|e| e.into_inner());
-        let line = format!("{}\n", line.escape_debug());
+        let line = format!("{}\n", dw_uri::redact::redact_links(line).escape_debug());
         let written = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

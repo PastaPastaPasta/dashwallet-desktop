@@ -20,4 +20,10 @@ retryAfterSecs: number | null,
 /**
  * Wallets with a seed record, sorted.
  */
-walletsWithSecrets: Array<string>, };
+walletsWithSecrets: Array<string>,
+/**
+ * A link stashed before the vault existed is still plaintext beside
+ * it: its seal failed or a crash stopped it (DP5-01 D26). The next
+ * unlock or stash call seals it. Absent when `false`.
+ */
+unsealedLinks?: boolean, };

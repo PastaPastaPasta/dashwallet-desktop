@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 30
+Contract-Version: 31
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -72,7 +72,7 @@ type is `pub(crate)`.
 | `notifications.rs` | DP2-05 | `events`, `unread_count`, `mark_read` |
 | `profile.rs` | DP4-01, DP4-02 | `profile`, `profile_limits`, `prepare_avatar`, `avatar_upload_available`, `upload_avatar`, `update_profile`, `avatar`, `NetworkSession.load_contact_pictures`, `set_load_contact_pictures` |
 | `credits.rs` | DP1-06, DP6-02 | `cost_table`, `top_up_quote`, `top_up`, `pending_top_ups`, `stuck_top_up_fundings`, `resume_top_up`, `resolve_top_up`, `withdraw_quote`, `withdraw` |
-| `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
+| `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_link`, `stashed_links`, `take_stashed_link`, `forget_stashed_link`, `stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
 | `errors.rs` | E0-05 (the mapping, §6) and each domain's owner | the error enums of §4 |
 
@@ -90,8 +90,8 @@ type is `pub(crate)`.
 | Errors | One enum per domain, with `code()` returning a stable string (§4), and `platform()` returning the wrapped `PlatformError`, if any. `Display` is diagnostic detail for logs. Each domain wraps `PlatformError` in a `Platform` variant, so `platform.*`, `identity.*` and the common codes reach the host from any call. |
 | Secrets | See below. |
 
-**Secrets.** Bearer credentials come in as `BearerSecret` (DASHPAY §3.8): invitation links (`stash_invitation`) and
-scanned payloads that may carry a `dapk` (`verify_scanned`). The faucet path carries no secret at all (§5).
+**Secrets.** Bearer credentials come in as `BearerSecret` (DASHPAY §3.8): links (`stash_link`, `stash_invitation`;
+`take_stashed_link` hands a payment or contact link back as one) and scanned payloads that may carry a `dapk` (`verify_scanned`). The faucet path carries no secret at all (§5).
 
 - `BearerSecret` deserializes from a JSON string and never serializes. It has no `Display`, `Clone`, `PartialEq` or
   conversion back to `String`; its `Debug` prints `BearerSecret(..)`; it is zeroed on drop; `expose()` reads it in the
@@ -516,19 +516,30 @@ bodies decided where the rows leave room:
 | `withdraw_quote(identity, amount)` | async | The credits taken, the fee in credits, the duffs expected at `to`, and the `grant` to ask for; `All` leaves the fee reserve (DP6-02). | `CreditsError` |
 | `withdraw(identity, to, amount, grant)` | async | Credits to the Core address `to`. | `CreditsError` |
 
-### 2.9 Invitations (on `NetworkSession`)
+### 2.9 Link stash and invitations (on `NetworkSession`)
 
 Per network, not per wallet: a link may arrive before any wallet exists (F18, "Paste invitation link" on the welcome
-screen), and the vault is per network. Before a vault exists (the session's vault is `NoVault`), a stashed link is a
-0600 file in the vault directory; it moves into the vault, and the file is deleted, when the vault is created (DASHPAY
-§2.9, last row). The ids stay the same across the move.
+screen), and the vault is per network. The stash (DP5-01, design `docs/design/DP5-01-link-intake.md`) keeps payment,
+contact and invitation links, as the engine classifies them: one file per link in the vault directory's `links/`,
+sealed to a key derived from the vault's DEK (sealable while locked, readable once unlocked, also mixing-only). Before
+a vault exists (`NoVault`) a link is a 0600 file in the clear; it is sealed, the ids unchanged, when the vault is
+created, unlocked or recovered (DASHPAY §2.9, last row). At most 16 links of up to 4096 bytes (a full stash drops its
+oldest payment or contact link first); payment links live 7 days, the others 30; the same link again is the same
+entry. No call quotes a link in an error.
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `NetworkSession.stash_invitation(link)` | async | Stores the link as the vault record `invitation/<id>`, or as the 0600 file before a vault exists; returns the id. A malformed link is `invitation.invalid`, and the error never quotes it. | `InvitationError` |
+| `NetworkSession.stash_link(link)` | async | Keeps a payment (with an address), contact or invitation link and returns its `StashedLink` (the existing one for the same link). Any other text, an empty one or one over 4096 bytes is `invalid_argument`. Works in every lock state, except that once a vault exists nothing is kept in plaintext: with neither the data key nor a valid stash public key (a vault locked since before DP5-01 and not unlocked since) it is `platform.signer_unavailable` and nothing is written (item 56). | `PlatformError` |
+| `NetworkSession.stashed_links()` | async | The stashed links, oldest first, as `StashedLink`s without their text; expired entries are deleted first. Works locked: the replay after a restart, onboarding or an unlock. | `PlatformError` |
+| `NetworkSession.take_stashed_link(link_id)` | async | A payment or contact link's text, once, as `TakenLink::Link`: the entry is deleted before it returns; `None` when it is gone (taken, expired, unreadable). An invitation is `TakenLink::Invitation` in every lock state: never handed back nor opened, and it stays. Otherwise a locked vault is `platform.signer_unavailable` and keeps the link; a malformed id is `invalid_argument`. | `PlatformError` |
+| `NetworkSession.forget_stashed_link(link_id)` | async | Deletes a stashed link of any kind without opening it: the user dismissed it. Works locked; an id the stash no longer has is `Ok`; a malformed id is `invalid_argument`. | `PlatformError` |
+| `NetworkSession.stash_invitation(link)` | async | `stash_link` for an invitation link only; returns the id. Anything else is `invitation.invalid`, and the error never quotes it. | `InvitationError` |
 | `NetworkSession.invitation_status(link_id)` | async | `Valid{inviter, funding_duffs, contested_allowed, expires_at}`, `Claimed`, `Invalid{reason}` or `Expired`. | `InvitationError` |
-| `NetworkSession.pending_invitations()` | async | The ids of the stashed links, oldest first: the replay after a restart or after onboarding (DP5-01). | `InvitationError` |
-| `NetworkSession.forget_invitation(link_id)` | async | Deletes a stashed link: the user dismissed it, or the claim finished. | `InvitationError` |
+| `NetworkSession.pending_invitations()` | async | The ids of the stashed invitation links, oldest first: the replay after a restart or after onboarding (DP5-01). | `InvitationError` |
+| `NetworkSession.forget_invitation(link_id)` | async | Deletes a stashed invitation: the user dismissed it, or the claim finished. An id the stash no longer has is `Ok`; one of another kind of link is `invitation.invalid`; a malformed id is `invalid_argument`. | `InvitationError` |
+
+**Done (DP5-01, Contract-Version 30, item 56):** `stash_link`, `stashed_links`, `take_stashed_link`,
+`forget_stashed_link`, `stash_invitation`, `pending_invitations` and `forget_invitation`. `invitation_status` stays a stub until DP5-02.
 
 ### 2.10 Facade
 
@@ -554,7 +565,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 72246901f2c898eef1da150157978f958a56d09f9e1f5609a888c1697724c097 version: 30 -->
+<!-- surface-sha256: ed988a4e8fa7dbdb7c3a2420dd1c243151f4d29a0ac40c84f51392890a39c48a version: 31 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1151,7 +1162,33 @@ pub enum InvitationInvalidReason {
     WrongNetwork,
     AssetLockNotFound,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StashedLinkKind {
+    Payment,
+    Contact,
+    Invitation,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StashedLink {
+    pub id: String,
+    pub kind: StashedLinkKind,
+    pub stashed_at: u64,
+    pub expires_at: u64,
+}
+#[derive(Debug)]
+pub enum TakenLink {
+    Link(BearerSecret),
+    Invitation,
+}
+impl From<VaultKind> for StashedLinkKind;
+impl From<StashedLinkKind> for VaultKind;
+impl From<StashedLinkMeta> for StashedLink;
 impl NetworkSession {
+    pub async fn stash_link(self: &Arc<Self>, link: BearerSecret) -> Result<StashedLink, PlatformError>;
+    pub async fn stashed_links(self: &Arc<Self>) -> Result<Vec<StashedLink>, PlatformError>;
+    pub async fn take_stashed_link(self: &Arc<Self>, link_id: String) -> Result<Option<TakenLink>, PlatformError>;
+    pub async fn forget_stashed_link(self: &Arc<Self>, link_id: String) -> Result<(), PlatformError>;
     pub async fn stash_invitation(self: &Arc<Self>, link: BearerSecret) -> Result<String, InvitationError>;
     pub async fn invitation_status(self: &Arc<Self>, link_id: String) -> Result<InvitationStatus, InvitationError>;
     pub async fn pending_invitations(self: &Arc<Self>) -> Result<Vec<String>, InvitationError>;
@@ -2045,7 +2082,7 @@ with 1–21 and changed 5, 8, 9, 10, 12 and 16; the result is below):
 13. **The notices** listed in §3.6 are not added to `NoticeCode` yet (§6).
 14. **The invitation calls are on `NetworkSession`.** The sketch puts them on the wallet-bound `DashPay`, but F18 takes
     a link before any wallet exists, and the vault is per network. Before a vault exists the link is a 0600 file that
-    moves into the vault at creation; `pending_invitations` and `forget_invitation` serve the replay and the dismissal
+    is sealed when the vault is created (item 56); `pending_invitations` and `forget_invitation` serve the replay and the dismissal
     (§2.9).
 15. **`send_request` takes `scan: Option<String>`.** The sketch has no way to pass a `dapk` auto-accept proof from
     `verify_scanned` to the request (§3.1 `contacts.rs`: "dapk scan"). A stale id or expired proof is
@@ -2865,9 +2902,22 @@ renames or reshapes them takes the next version bump:
       `send.prepared_tx_spent`. `top_up` runs the gate after its journal check and before the identity's write
       lock, an identity the wallet lacks refused first (`identity.not_found`).
 
-**From DP4-02** (version 30):
+**From DP5-01** (version 30):
 
-56. **The avatar pipeline (DP4-02 design, D1–D40, version 30).** `prepare_avatar`, `avatar_upload_available`,
+56. **The link stash (DP5-01 D1–D24, version 30).** `stash_link`, `stashed_links`, `take_stashed_link` and
+    `forget_stashed_link` are new
+    (§2.9), with the records `StashedLink {id, kind, stashed_at, expires_at}`, `StashedLinkKind {payment, contact,
+    invitation}` and `TakenLink {Link(BearerSecret), Invitation}`; `stash_invitation`, `pending_invitations` and `forget_invitation` are implemented on the same stash.
+    The stash is not a vault record (§2.9 used to say `invitation/<id>`): one sealed file per link beside the
+    vault, so a link arriving while the vault is locked is sealed at once and `destroy` and the no-key states are
+    unaffected. `pending_invitations` lists invitations only. A payment or contact link is taken once; an invitation
+    is never handed back, and DP5-02's claim reads it inside the engine by its id. Once a vault exists no link is kept in
+    plaintext: one with no key to seal to is `platform.signer_unavailable`, and plaintext a failed or interrupted seal left
+    shows as the vault status's `unsealed_links` until an unlock or stash call seals it (DP5-01 D26–D31). No new error code.
+
+**From DP4-02** (version 31):
+
+57. **The avatar pipeline (DP4-02 design, D1–D40, version 31).** `prepare_avatar`, `avatar_upload_available`,
     `upload_avatar` and `avatar` have bodies (§2.7), and `update_profile`'s `Set{candidate}` publishes the candidate's
     URL, hash and fingerprint. The toggle is two new calls on `NetworkSession` (it is per network, not per wallet):
     `load_contact_pictures` (sync, from memory) and `set_load_contact_pictures(on)` (async). Upload stays

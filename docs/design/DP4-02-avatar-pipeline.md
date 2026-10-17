@@ -21,7 +21,7 @@ to `dashpay_avatar`.
 | Tests: a local HTTP server and a scripted resolver; fixtures; the decoder seed corpus | `dw-engine/src/platform/avatar_tests.rs` (fixtures built in code), `dw-engine/tests/fixtures/avatar-corpus/` (seeds) |
 | dw-app: the toggle's two commands; My Profile's header picture | `dw-app/src/api/social.rs`; `apps/desktop/src/screens/contacts/Avatar.tsx`, `screens/dashpay/MyProfile.tsx`, `dashpay/profileQueries.ts` |
 | dwcli | `profile pictures [--set on\|off]`, `profile prepare-avatar --url\|--file\|--gravatar`; `profile avatar` and `profile set --avatar-url` already existed |
-| Contract | m4 §0, §1, §2.7 (the four calls, `update_profile`'s `Set`, the two toggle rows), §7 item 56, Contract-Version 30 (DP3-04 took 29 and item 55) |
+| Contract | m4 §0, §1, §2.7 (the four calls, `update_profile`'s `Set`, the two toggle rows), §7 item 57, Contract-Version 31 (DP3-04 took 29 and item 55, DP5-01 30 and item 56) |
 
 ## The read: `avatar(identity, size)`
 

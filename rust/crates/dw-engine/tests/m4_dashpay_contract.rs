@@ -107,6 +107,14 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.profile",
     "DashPay.profile_limits",
     "DashPay.update_profile",
+    // DP5-01: the link stash.
+    "NetworkSession.stash_link",
+    "NetworkSession.stashed_links",
+    "NetworkSession.take_stashed_link",
+    "NetworkSession.forget_stashed_link",
+    "NetworkSession.stash_invitation",
+    "NetworkSession.pending_invitations",
+    "NetworkSession.forget_invitation",
     // DP4-02: the avatar pipeline and the pictures toggle.
     "DashPay.prepare_avatar",
     "DashPay.avatar_upload_available",
@@ -1216,10 +1224,31 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
     };
     let mut c = Calls::default();
     engine.block_on(async {
-        c.stub(session.stash_invitation(secret()).await);
+        // DP5-01: the link stash; its behaviour is tested in dw-vault's
+        // `vault::links` and dw-app's IPC tests. Here: refusals, no vault.
+        assert_eq!(
+            session.stash_link(secret()).await.unwrap_err().code(),
+            "invalid_argument"
+        );
+        assert_eq!(session.stashed_links().await, Ok(vec![]));
+        assert_eq!(
+            session.take_stashed_link(s()).await.unwrap_err().code(),
+            "invalid_argument"
+        );
+        assert_eq!(
+            session.forget_stashed_link(s()).await.unwrap_err().code(),
+            "invalid_argument"
+        );
+        assert_eq!(
+            session.stash_invitation(secret()).await.unwrap_err().code(),
+            "invitation.invalid"
+        );
+        assert_eq!(session.pending_invitations().await, Ok(vec![]));
+        assert_eq!(
+            session.forget_invitation(s()).await.unwrap_err().code(),
+            "invalid_argument"
+        );
         c.stub(session.invitation_status(s()).await);
-        c.stub(session.pending_invitations().await);
-        c.stub(session.forget_invitation(s()).await);
         // The lease surface (E0-04.P2a) is implemented; its behaviour is
         // tested in `platform::lease`.
         assert_eq!(

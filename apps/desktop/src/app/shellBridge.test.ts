@@ -1,7 +1,7 @@
 // The wipe sheet holds the shell while it is open (U-04 D38).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyLink, runCommand } from "./shellBridge";
+import { applyLink, linkProblem, runCommand, traceName } from "./shellBridge";
 import { ui } from "./ui";
 
 const initial = ui.get();
@@ -34,7 +34,7 @@ describe("while the wipe sheet is open", () => {
   it("IOS109_aLinkIsNotOpened", () => {
     vi.stubGlobal("window", { setTimeout: () => 0 });
     ui.set({ route: "settings", wiping: true });
-    applyLink({ kind: "invitation" });
+    applyLink({ kind: "invitation", linkId: "" });
     expect(ui.get().route).toBe("settings");
   });
 });
@@ -81,7 +81,7 @@ describe("focus after a link or a menu opens a page", () => {
   it("goes to the heading when a closing sheet gave focus back to its opener", () => {
     const { doc, heading, nextFrame, listening } = shell();
     doc.activeElement = { name: "open-uri-input" };
-    applyLink({ kind: "invitation" });
+    applyLink({ kind: "invitation", linkId: "" });
     doc.activeElement = { name: "sidebar-pay" };
     nextFrame();
     expect(doc.activeElement).toBe(heading);
@@ -104,7 +104,7 @@ describe("focus after a link or a menu opens a page", () => {
   it("goes to the heading after a key that moved no focus (a modifier over a sheet's opener)", () => {
     const { doc, heading, nextFrame, fire } = shell();
     doc.activeElement = { name: "open-uri-input" };
-    applyLink({ kind: "invitation" });
+    applyLink({ kind: "invitation", linkId: "" });
     doc.activeElement = { name: "sidebar-pay" };
     fire("keydown");
     nextFrame();
@@ -125,7 +125,7 @@ describe("focus after a link or a menu opens a page", () => {
       runCommand({ kind: "navigate", route: "notifications" }, () => undefined);
       fire("keydown");
       doc.activeElement = { name: "row" };
-      applyLink({ kind: "invitation" });
+      applyLink({ kind: "invitation", linkId: "" });
       runCommand({ kind: "navigate", route: "contacts" }, () => undefined);
       expect(listening("keydown")).toBe(1);
       expect(listening("pointerdown")).toBe(1);
@@ -150,5 +150,39 @@ describe("focus after a link or a menu opens a page", () => {
     nextFrame(); // the replaced frame runs first and must not drop the newer one's input
     expect(doc.activeElement).toBe(row);
     expect(listening()).toBe(0);
+  });
+});
+
+// DP5-01: links kept in the stash.
+describe("stashed links", () => {
+  const saved = { kind: "saved", link: { id: "1".padStart(32, "0"), kind: "payment", stashedAt: 1, expiresAt: 2 } } as const;
+
+  it("DP5-01 a saved link opens nothing and is named without its contents", () => {
+    vi.stubGlobal("window", { setTimeout: () => 0 });
+    ui.set({ route: "home", onboarding: true });
+    applyLink(saved);
+    expect(ui.get().route).toBe("home");
+    expect(linkProblem(saved)).toBeNull();
+    expect(traceName(saved)).toBe("saved");
+    expect(traceName({ kind: "invitation", linkId: "f".repeat(32) })).toBe("invitation");
+  });
+
+  it("DP5-01 an invitation during onboarding stays there; later it opens Join DashPay", () => {
+    vi.stubGlobal("window", { setTimeout: () => 0 });
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => undefined);
+    vi.stubGlobal("document", { activeElement: null, addEventListener: () => undefined, removeEventListener: () => undefined });
+    ui.set({ route: "home", onboarding: true });
+    applyLink({ kind: "invitation", linkId: "1".padStart(32, "0") });
+    expect(ui.get().route).toBe("home");
+    ui.set({ onboarding: false });
+    applyLink({ kind: "invitation", linkId: "1".padStart(32, "0") });
+    expect(ui.get()).toMatchObject({ route: "joinDashPay", invitation: true });
+  });
+
+  it("DP5-01 an invitation that could not be kept says so", () => {
+    const route = { kind: "rejected", reason: { kind: "notSaved" } } as const;
+    expect(linkProblem(route)).toMatch(/could not be saved/);
+    expect(traceName(route)).toBe("rejected notSaved");
   });
 });

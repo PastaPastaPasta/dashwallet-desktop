@@ -111,7 +111,7 @@ test("dashpay and dashwallet links open their routes; refused ones say why", asy
   await expect(page.getByTestId("pay-tabs-address")).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("pay-address")).toHaveValue("");
 
-  await deliver(page, [{ kind: "invitation" }]);
+  await deliver(page, [{ kind: "invitation", linkId: "" }]);
   await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
   await expect(page.getByTestId("invitation-received")).toBeVisible();
 
@@ -123,7 +123,7 @@ test("dashpay and dashwallet links open their routes; refused ones say why", asy
 
 test("several links route in order; the last one shows", async ({ page }) => {
   await open(page, "funded");
-  await deliver(page, [{ kind: "scanQr" }, { kind: "invitation" }]);
+  await deliver(page, [{ kind: "scanQr" }, { kind: "invitation", linkId: "" }]);
   await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
   expect(await page.evaluate(() => window.__dwFixture!.world.links.length)).toBe(0);
 });
@@ -138,7 +138,7 @@ test("overlapping link drains apply in drain order; the later link shows", async
   });
   await deliver(page, [{ kind: "pay", uri: { address: ADDRESS, amount: null, label: null, message: null }, username: null }]);
   await expect.poll(() => page.evaluate(() => window.__dwFixture!.world.links.length)).toBe(0);
-  await deliver(page, [{ kind: "invitation" }]);
+  await deliver(page, [{ kind: "invitation", linkId: "" }]);
   // Give a concurrent drain the time to take B and apply it before A's reply.
   await page.waitForTimeout(250);
   await expect(page.getByTestId("page-pay")).toHaveCount(0);
