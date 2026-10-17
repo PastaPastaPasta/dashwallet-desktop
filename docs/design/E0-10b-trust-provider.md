@@ -193,8 +193,9 @@ re-fetches record.
 ## 6. Writes (rule 2)
 
 In the degraded mode writes proceed (rule 5 is suspended). In `Enforcing`, writes must wait for masternode sync.
-`TrustProvider::writes_wait()` answers that; wiring it into the write flows (registration, top-up, profile and name
-writes) belongs to H-09, when `Enforcing` becomes reachable. A gate at the provider would come too late: the state
+`TrustProvider::writes_wait()` answers that. DP3-04 holds the registration and top-up fundings on it
+(`docs/design/DP3-04-trust-gate.md`); wiring it into the other write flows (profile and name writes, a funded
+registration's later steps) belongs to H-09, when `Enforcing` becomes reachable. A gate at the provider would come too late: the state
 transition is already broadcast when its result proof is verified.
 
 ## 7. Status
