@@ -312,28 +312,19 @@ pub fn current_vote_string(vote: &GovernanceVote, weight: u32) -> String {
 /// parity bit. 64 in all, `v`'s among them (validator r12).
 #[cfg(test)]
 pub(crate) fn malleations(v: &GovernanceVote) -> Vec<GovernanceVote> {
-    // The curve order n, big-endian.
-    const N: [u8; 32] = [
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36,
-        0x41, 0x41,
-    ];
+    use dashcore::secp256k1::SecretKey;
     let sig = &v.signature;
     assert_eq!(sig.len(), COMPACT_SIG_SIZE);
     let flags = (i32::from(sig[0]) - 27) & 7;
-    let mut negated = sig[1..].to_vec();
-    let mut borrow = 0;
-    for i in (0..32).rev() {
-        let d = i32::from(N[i]) - i32::from(sig[33 + i]) - borrow;
-        borrow = i32::from(d < 0);
-        negated[32 + i] = d.rem_euclid(256) as u8;
-    }
+    let s: [u8; 32] = sig[33..].try_into().unwrap();
+    // n - s, as the negation of s taken as a scalar.
+    let negated = SecretKey::from_secret_bytes(s).unwrap().negate();
     let mut out = Vec::new();
-    for (want, rs) in [(flags, sig[1..].to_vec()), (flags ^ 1, negated)] {
+    for (want, s) in [(flags, s), (flags ^ 1, negated.to_secret_bytes())] {
         for b in 0u8..=255 {
             if (i32::from(b) - 27) & 7 == want {
                 let mut c = v.clone();
-                c.signature = [vec![b], rs.clone()].concat();
+                c.signature = [&[b], &sig[1..33], &s[..]].concat();
                 out.push(c);
             }
         }

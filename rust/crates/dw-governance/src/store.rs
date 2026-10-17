@@ -313,8 +313,9 @@ pub struct GovernanceStore {
     overflow: u32,
 }
 
-/// A vote copy's identity: its hash leaves the signature out (D62), whose
-/// forms that recover the same key are one (D63).
+/// A vote copy's identity: its hash leaves the signature out (D62); the
+/// signature enters in its canonical form, so those that recover the same
+/// key are one (D63).
 fn copy_digest(hash: &[u8; 32], signature: &[u8]) -> [u8; 32] {
     let mut engine = sha256::Hash::engine();
     engine.input(hash);
@@ -887,14 +888,19 @@ impl GovernanceStore {
         }
     }
 
+    /// Drops the remembered verdicts of unkept vote copies.
+    fn forget_dismissed(&mut self) {
+        self.dismissed.clear();
+        self.dismissed_order.clear();
+    }
+
     /// Sets the masternodes of the tip list, PoSe-banned ones included, and
     /// drops the votes and orphans whose key no longer belongs to one (Core
     /// `RemoveInvalidVotes`). Dropped votes become unseen, so a newer one
     /// can be fetched again.
     pub fn set_masternode_list(&mut self, entries: &[ListEntry]) {
         // A key's limit and resolution follow the list (D62).
-        self.dismissed.clear();
-        self.dismissed_order.clear();
+        self.forget_dismissed();
         let mut keys: HashMap<[u8; 20], KeyWeights> = HashMap::new();
         let mut valid_keys = HashSet::new();
         let mut valid_weight = 0u32;
@@ -920,8 +926,7 @@ impl GovernanceStore {
     /// votes are checked against that masternode's key and counted exactly.
     pub fn set_resolved(&mut self, resolved: HashMap<OutPoint, ResolvedMasternode>) {
         // A resolved outpoint is not limited (D11): its verdicts may change.
-        self.dismissed.clear();
-        self.dismissed_order.clear();
+        self.forget_dismissed();
         self.resolved = resolved;
         self.drop_unbacked_votes();
         let mut per_key: HashMap<([u8; 32], [u8; 20]), u32> = HashMap::new();

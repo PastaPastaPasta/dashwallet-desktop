@@ -2240,8 +2240,9 @@ fn vote_inv(v: &GovernanceVote) -> InvItem {
     }
 }
 
-/// A vote of key 1 on `parent` dated `age` + 1 seconds earlier than the
-/// first `vote` of the run: older than any `vote`, a distinct hash per `age`.
+/// A vote of key 1 on `parent` dated `age` + 1 seconds before a `vote` made
+/// at the first call of the run: older than any `vote` made since, a
+/// distinct hash per `age`.
 fn aged_vote(parent: [u8; 32], age: u32) -> GovernanceVote {
     // From one start time, so votes made a second apart do not collide.
     static START: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
@@ -2251,7 +2252,8 @@ fn aged_vote(parent: [u8; 32], age: u32) -> GovernanceVote {
 }
 
 /// `v` re-timed `by` seconds earlier, signed by key 1: obsolete once `v` is
-/// held, whatever the clock did since `v` was made.
+/// held, whatever the clock did since `v` was made (`aged_vote` is not, for
+/// a `v` made before its first call).
 fn older_than(v: &GovernanceVote, by: i64) -> GovernanceVote {
     let mut x = v.clone();
     x.time -= by;
