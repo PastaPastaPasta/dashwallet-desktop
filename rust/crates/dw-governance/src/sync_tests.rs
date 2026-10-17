@@ -2259,14 +2259,19 @@ fn late_record_then_second_announcer(run: &mut Run, item: InvItem) {
     run.handle(1, PeerEvent::Inv(vec![item]));
 }
 
+/// Times out every request out, once, whatever the configured timeout.
+fn expire_now(run: &mut Run) {
+    let timeout = std::mem::replace(&mut run.cfg.request_timeout, Duration::ZERO);
+    run.expire();
+    run.cfg.request_timeout = timeout;
+}
+
 /// Peers 0 and 1 announce `item`; peer 0's request times out and moves to
 /// peer 1.
 fn moved_to_peer_1(run: &mut Run, item: InvItem) {
-    let timeout = std::mem::replace(&mut run.cfg.request_timeout, Duration::ZERO);
     run.handle(0, PeerEvent::Inv(vec![item]));
     run.handle(1, PeerEvent::Inv(vec![item]));
-    run.expire();
-    run.cfg.request_timeout = timeout;
+    expire_now(run);
 }
 
 /// Peer 0 is asked for the phase vote `x`, times out twice and is given
@@ -2730,9 +2735,7 @@ async fn a_notfound_spends_a_copy_still_owed() {
     let key = (item.hash, item.kind);
     let mut run = two_peer_run(&p).await;
     run.handle(0, PeerEvent::Inv(vec![item]));
-    run.cfg.request_timeout = Duration::ZERO;
-    run.expire(); // asked again: two getdatas
-    run.cfg.request_timeout = Duration::from_secs(30);
+    expire_now(&mut run); // asked again: two getdatas
     assert!(run.take(0, &key).is_some());
     run.handle(0, PeerEvent::NotFound(vec![item]));
     assert!(run.take(0, &key).is_none());
@@ -2771,25 +2774,14 @@ async fn grants_and_losses_stay_consistent_under_random_events() {
                 4 => run.handle(peer, PeerEvent::Vote(resigned(x, 2).encode())),
                 _ => {
                     granting += run.requests.pending.len();
-                    let t = std::mem::replace(&mut run.cfg.request_timeout, Duration::ZERO);
-                    run.expire();
-                    run.cfg.request_timeout = t;
+                    expire_now(&mut run);
                 }
             }
             let recorded = run.requests.late.values().filter(|l| l.lost).count();
             assert_eq!(run.lost, recorded, "step {step}");
-            let owed: usize = run
-                .requests
-                .late
-                .values()
-                .map(|l| l.owed.len())
-                .sum::<usize>()
-                + run
-                    .requests
-                    .pending
-                    .values()
-                    .map(|r| r.owed.len())
-                    .sum::<usize>();
+            let owed: usize = (run.requests.late.values().map(|l| l.owed.len()))
+                .chain(run.requests.pending.values().map(|r| r.owed.len()))
+                .sum();
             assert!(
                 owed <= granting,
                 "step {step}: {owed} copies owed, {granting} granting events"
