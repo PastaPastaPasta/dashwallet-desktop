@@ -115,6 +115,8 @@ pub(crate) struct PlatformRuntime {
     pub(crate) contacts: super::contacts_model::ContactsRuntime,
     /// Search, links and the scans waiting for a send (DP2-03).
     pub(crate) users: super::users::UsersRuntime,
+    /// Avatar candidates, the fetch pipeline and the pictures toggle (DP4-02).
+    pub(crate) avatars: super::avatar::AvatarRuntime,
     /// The registration flows running in this process (DP1-02).
     pub(crate) registrations: Arc<super::registration_flow::Flows>,
     /// When the contest watch last checked each row (DP1-04).
@@ -360,6 +362,7 @@ impl PlatformRuntime {
             recovery: Default::default(),
             contacts: Default::default(),
             users: Default::default(),
+            avatars: Default::default(),
             registrations: Default::default(),
             contests: Default::default(),
             balances: Default::default(),

@@ -31,6 +31,7 @@ use dpp::prelude::Identifier;
 use platform_wallet::PlatformWallet;
 use platform_wallet::wallet::identity::DashPayProfile;
 
+use super::avatar::Published;
 use super::contacts_model::identifier;
 use super::errors::{ContactError, IdentityError, PlatformError, ProfileError};
 use super::flows::{DOCUMENT_10K_CREDITS, FlowKind};
@@ -203,6 +204,17 @@ pub(super) fn merged(current: Option<&ProfileProperties>, edit: &ProfileEdit) ->
     properties
 }
 
+/// The avatar fields of a `Set` (DP4-02), all three together as the
+/// contract requires, typed as the library writes them.
+pub(super) fn set_avatar(properties: &mut ProfileProperties, avatar: Published) {
+    properties.insert(AVATAR_URL.to_owned(), Value::Text(avatar.url));
+    properties.insert(AVATAR_HASH.to_owned(), Value::Bytes32(avatar.sha));
+    properties.insert(
+        AVATAR_FINGERPRINT.to_owned(),
+        Value::Bytes(avatar.dhash.to_vec()),
+    );
+}
+
 /// The profile the library caches for a document of `properties`, as its
 /// own fetch parses one (`fetch_contact_profiles_chunk`): an avatar URL it
 /// would not trust dropped, and `None` when no field is left.
@@ -228,7 +240,7 @@ fn library_profile(properties: &ProfileProperties) -> Option<DashPayProfile> {
 
 /// What `profile` shows of a document of `properties`: the profile the
 /// library caches for it.
-fn shown(properties: &ProfileProperties) -> Option<Profile> {
+pub(super) fn shown(properties: &ProfileProperties) -> Option<Profile> {
     library_profile(properties).as_ref().map(profile_of)
 }
 
@@ -279,12 +291,13 @@ pub(super) async fn update(
 ) -> Result<(), PlatformError> {
     let identity = identifier(identity).map_err(platform)?;
     let edit = normalized(edit, limits())?;
-    if let AvatarChange::Set { .. } = edit.avatar {
-        // No candidate exists before DP4-02 (D6).
-        return Err(PlatformError::InvalidArgument {
-            detail: "unknown avatar candidate".into(),
-        });
-    }
+    // A candidate of this wallet's with a URL (DP4-02), before any I/O.
+    let avatar = match &edit.avatar {
+        AvatarChange::Set { candidate } => {
+            Some(session.platform.avatars.published(wallet_id, candidate)?)
+        }
+        AvatarChange::Keep | AvatarChange::Remove => None,
+    };
     // Refreshes the spent balance once the write lock is released.
     let _refresh = session.after_spend(wallet_id, identity);
     let locks = identity_locks(wallet_id, identity);
@@ -303,7 +316,10 @@ pub(super) async fn update(
     let held = (current.as_ref())
         .map(|d| d.properties.clone())
         .unwrap_or_default();
-    let wanted = merged(Some(&held), &edit);
+    let mut wanted = merged(Some(&held), &edit);
+    if let Some(avatar) = avatar {
+        set_avatar(&mut wanted, avatar);
+    }
     // Nothing to send (D7), whatever the baseline: Platform's document (or
     // none) is the edit's already. The cache follows Platform.
     if held == wanted {

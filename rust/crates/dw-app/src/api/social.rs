@@ -328,6 +328,20 @@ commands! {
         let dashpay = state.dashpay(&wallet_id).await?;
         Ok(dashpay.avatar(identity, size.into()).await?.map(Into::into))
     }
+
+    /// "Load contact pictures" for the active network: on unless turned
+    /// off.
+    #[facade("NetworkSession::load_contact_pictures")]
+    fn load_contact_pictures(state) -> bool {
+        Ok(state.session().await?.load_contact_pictures()?)
+    }
+
+    /// Turns "Load contact pictures" on or off for the active network.
+    /// Off, no other user's avatar is fetched or shown.
+    #[facade("NetworkSession::set_load_contact_pictures")]
+    fn set_load_contact_pictures(state, on: bool) -> () {
+        Ok(state.session().await?.set_load_contact_pictures(on).await?)
+    }
 }
 
 #[cfg(test)]

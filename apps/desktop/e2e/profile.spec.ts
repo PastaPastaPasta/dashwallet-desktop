@@ -86,6 +86,18 @@ test("IOS-069 P4: header, usernames, identity id with copy, credits and the cont
   await expect(page.getByTestId("profile-outcomes")).toContainText("@al — went to another user");
 });
 
+test("DP4-02: the header shows the verified avatar; a failed read shows the initials", async ({ page }) => {
+  const errors = await openProfile(page, "dashpay-avatar");
+  const avatar = page.getByTestId("profile-header").locator(".contact-avatar");
+  await expect(avatar.locator("img")).toHaveAttribute("src", /^data:image\/png;base64,iVBOR/);
+  await expect(avatar).toHaveAttribute("data-picture", "");
+  await openProfile(page, "dashpay-avatar", "light", "&fail=dashpay_avatar:none");
+  await expect(page.getByTestId("profile-name")).toHaveText("Alice Liddell");
+  await expect(avatar.locator("img")).toHaveCount(0);
+  await expect(avatar).toHaveText(/\S/);
+  expect(errors).toEqual([]);
+});
+
 test("C8 / D7: discreet mode masks the credit figure and the estimate", async ({ page }) => {
   await openProfile(page, "dashpay-registered");
   await page.getByTestId("toolbar-discreet").click();

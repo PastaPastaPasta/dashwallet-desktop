@@ -163,7 +163,7 @@ pub struct NetworkSession {
     pub(crate) network: DashNetwork,
     data_dir: PathBuf,
     /// The avatar cache directory could be created at open; without it
-    /// avatars are off for the session (`avatars_dir`).
+    /// the session keeps avatar thumbnails in memory only (`avatars_dir`).
     avatars_ready: bool,
     pub(crate) rt: Handle,
     pub(crate) sink: Arc<dyn EventSink>,
@@ -513,6 +513,8 @@ impl NetworkSession {
         {
             tracing::warn!(error = %e, "could not write the open-session marker");
         }
+        // Avatars (DP4-02): the toggle, the cache directory's descriptor.
+        session.open_avatars(Arc::clone(&appdb)).await;
         session.apply_stored_lookaheads(&manager).await;
         for id in manager.list_wallet_ids_blocking() {
             session.refresh_wallet_state(&manager, WalletId(id)).await;
@@ -601,7 +603,7 @@ impl NetworkSession {
     }
 
     /// The avatar thumbnail directory (DASHPAY §3.4), or `None` when it could
-    /// not be created at open: avatars are then disabled for this session.
+    /// not be created at open: thumbnails are then kept in memory only.
     pub fn avatars_dir(&self) -> Option<PathBuf> {
         self.avatars_ready.then(|| self.data_dir.join(AVATARS_DIR))
     }
@@ -745,6 +747,8 @@ impl NetworkSession {
         // Registration flows waiting keyless for a proof hold no lease.
         self.platform.registrations.abort_all();
         let _closing = self.gate.close().await;
+        // A picture toggle's write lands before the session ends (DP4-02 D37).
+        self.platform.avatars.settled().await;
         self.platform.deactivate(true).await;
         self.platform.contacts.close().await;
         // A retained session handle keeps no scanned key (DP2-03).

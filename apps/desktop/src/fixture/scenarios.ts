@@ -46,6 +46,9 @@ export interface FixtureWallet {
   receive: ReceiveWorld;
 }
 
+/** A 4 x 4 PNG in the DashPay blue: the fixture's avatar thumbnail (DP4-02). */
+export const AVATAR_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQVR4nGOQKd3zHxkzkC4AAMqAJMErkdEyAAAAAElFTkSuQmCC";
+
 /** What the fixture's engine knows. Handlers mutate it, like the engine's own state. */
 export interface World {
   launch: LaunchInfo;
@@ -80,6 +83,8 @@ export interface World {
   shellSync: ShellSync | null;
   /** "Require authentication for every payment" (E0-13 D11; on by default). */
   paymentAuth: boolean;
+  /** "Load contact pictures" (DP4-02 D17); absent: on. */
+  loadContactPictures?: boolean;
   /** The vault's wait after a wrong passphrase (`retryAfterSecs`); null: none. */
   throttleSecs: number | null;
   /** When that wait ends (ms since epoch), for `lock_status`; null: no wait. */
@@ -516,6 +521,20 @@ const SCENARIOS = {
     const w = base(t);
     w.dashpay = registered();
     attributePayments(w);
+    return w;
+  },
+  /** DP4-02: `dashpay-registered` with Alice's avatar published and verified. */
+  "dashpay-avatar": (t) => {
+    const w = base(t);
+    const world = registered();
+    const alice = world.identities.find((i) => i.identity === IDENTITY.alice)!;
+    alice.profile = {
+      ...alice.profile!,
+      avatarUrl: "https://example.org/alice.png",
+      avatarHash: "ab".repeat(32),
+      avatarFingerprint: "cd".repeat(8),
+    };
+    w.dashpay = { ...world, avatars: { [IDENTITY.alice]: AVATAR_PNG } };
     return w;
   },
   /** DP3-03b: `dashpay-registered` with "Include my username in payment requests" off: the
