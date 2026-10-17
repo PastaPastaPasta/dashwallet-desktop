@@ -527,7 +527,7 @@ entry. No call quotes a link in an error.
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `NetworkSession.stash_link(link)` | async | Keeps a payment (with an address), contact or invitation link and returns its `StashedLink` (the existing one for the same link). Any other text, an empty one or one over 4096 bytes is `invalid_argument`. Works in every lock state. | `PlatformError` |
+| `NetworkSession.stash_link(link)` | async | Keeps a payment (with an address), contact or invitation link and returns its `StashedLink` (the existing one for the same link). Any other text, an empty one or one over 4096 bytes is `invalid_argument`. Works in every lock state, except that once a vault exists nothing is kept in plaintext: with neither the data key nor a valid stash public key (a vault locked since before DP5-01 and not unlocked since) it is `platform.signer_unavailable` and nothing is written (item 56). | `PlatformError` |
 | `NetworkSession.stashed_links()` | async | The stashed links, oldest first, as `StashedLink`s without their text; expired entries are deleted first. Works locked: the replay after a restart, onboarding or an unlock. | `PlatformError` |
 | `NetworkSession.take_stashed_link(link_id)` | async | A payment or contact link's text, once, as `TakenLink::Link`: the entry is deleted before it returns; `None` when it is gone (taken, expired, unreadable). An invitation is `TakenLink::Invitation` in every lock state: never handed back nor opened, and it stays. Otherwise a locked vault is `platform.signer_unavailable` and keeps the link; a malformed id is `invalid_argument`. | `PlatformError` |
 | `NetworkSession.forget_stashed_link(link_id)` | async | Deletes a stashed link of any kind without opening it: the user dismissed it. Works locked; an id the stash no longer has is `Ok`; a malformed id is `invalid_argument`. | `PlatformError` |
@@ -2905,4 +2905,6 @@ renames or reshapes them takes the next version bump:
     The stash is not a vault record (§2.9 used to say `invitation/<id>`): one sealed file per link beside the
     vault, so a link arriving while the vault is locked is sealed at once and `destroy` and the no-key states are
     unaffected. `pending_invitations` lists invitations only. A payment or contact link is taken once; an invitation
-    is never handed back, and DP5-02's claim reads it inside the engine by its id. No new error code.
+    is never handed back, and DP5-02's claim reads it inside the engine by its id. Once a vault exists no link is kept in
+    plaintext: one with no key to seal to is `platform.signer_unavailable`, and plaintext a failed or interrupted seal left
+    shows as the vault status's `unsealed_links` until an unlock or stash call seals it (DP5-01 D26–D31). No new error code.
