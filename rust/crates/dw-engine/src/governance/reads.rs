@@ -1,13 +1,11 @@
 //! The read calls (mg-engine §2.2, §2.3): the clock and the budget from the
 //! tip, proposal rows and votes from the store. Memory only.
 
-use std::collections::HashSet;
-
 use dw_governance::clock;
 use dw_governance::object::{display_hex, outpoint_short, parse_display_hex};
 use dw_governance::params::{GovernanceParams, PROPOSAL_FEE_CONFIRMATIONS, governance_params};
 use dw_governance::store::{GovernanceStore, ObjectKind};
-use dw_governance::tally::{self, BudgetCandidate, RangedCandidate, StatusInput};
+use dw_governance::tally::{self, RangedCandidate, StatusInput};
 
 use super::records::{
     CurrentVoteRow, GovernanceClock, GovernanceInfo, ProposalCounts, ProposalDetail, ProposalQuery,
@@ -326,21 +324,7 @@ fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, 
             })
         })
         .collect();
-    let estimate: HashSet<String> = tally::fundable(
-        &candidates
-            .iter()
-            .map(|r| BudgetCandidate {
-                hash: r.hash.clone(),
-                payment_amount: r.payment_amount,
-                absolute_yes: r.estimate,
-            })
-            .collect::<Vec<_>>(),
-        threshold,
-        budget,
-    )
-    .hashes
-    .into_iter()
-    .collect();
+    let estimate = tally::fundable_at(&candidates, threshold, budget, |r| r.estimate);
     let budget_close = tally::budget_close_calls(&candidates, threshold, budget);
     let allocated = tallied
         .iter()

@@ -354,6 +354,24 @@ pub struct RangedCandidate {
     pub high: i64,
 }
 
+/// The [`fundable`] set with each candidate at the yes count `count` gives.
+pub fn fundable_at(
+    candidates: &[RangedCandidate],
+    threshold: u32,
+    budget: u64,
+    count: impl Fn(&RangedCandidate) -> i64,
+) -> HashSet<String> {
+    let c: Vec<BudgetCandidate> = candidates
+        .iter()
+        .map(|r| BudgetCandidate {
+            hash: r.hash.clone(),
+            payment_amount: r.payment_amount,
+            absolute_yes: count(r),
+        })
+        .collect();
+    fundable(&c, threshold, budget).hashes.into_iter().collect()
+}
+
 /// The candidates whose place in the [`fundable`] set the vote ranges
 /// could change (MG-00 D45): a funded one that the set leaves out with it
 /// at its low count and every other candidate at its high, an unfunded one
@@ -364,20 +382,11 @@ pub fn budget_close_calls(
     threshold: u32,
     budget: u64,
 ) -> HashSet<String> {
-    let with = |count: &dyn Fn(&RangedCandidate) -> i64| -> HashSet<String> {
-        let c: Vec<BudgetCandidate> = candidates
-            .iter()
-            .map(|r| BudgetCandidate {
-                hash: r.hash.clone(),
-                payment_amount: r.payment_amount,
-                absolute_yes: count(r),
-            })
-            .collect();
-        fundable(&c, threshold, budget).hashes.into_iter().collect()
-    };
-    let estimate = with(&|r| r.estimate);
-    let low = with(&|r| r.low);
-    let high = with(&|r| r.high);
+    let with =
+        |count: fn(&RangedCandidate) -> i64| fundable_at(candidates, threshold, budget, count);
+    let estimate = with(|r| r.estimate);
+    let low = with(|r| r.low);
+    let high = with(|r| r.high);
     candidates
         .iter()
         .filter(|me| {
@@ -386,10 +395,12 @@ pub fn budget_close_calls(
                 return true;
             }
             // Its worst case if funded, its best if not.
-            let worst = funded;
-            let at_end = with(&|r| match (r.hash == me.hash, worst) {
-                (true, true) | (false, false) => r.low,
-                (true, false) | (false, true) => r.high,
+            let at_end = fundable_at(candidates, threshold, budget, |r| {
+                if (r.hash == me.hash) == funded {
+                    r.low
+                } else {
+                    r.high
+                }
             });
             at_end.contains(&me.hash) != funded
         })

@@ -131,14 +131,14 @@ struct Budget {
 
 impl Budget {
     /// Charges `bytes`; `None` past the budget.
-    fn charge(budget: &Arc<Budget>, bytes: usize) -> Option<Credit> {
-        let before = budget.queued.fetch_add(bytes, Ordering::SeqCst);
-        if before + bytes > budget.max {
-            budget.queued.fetch_sub(bytes, Ordering::SeqCst);
+    fn charge(self: &Arc<Self>, bytes: usize) -> Option<Credit> {
+        let before = self.queued.fetch_add(bytes, Ordering::SeqCst);
+        if before + bytes > self.max {
+            self.queued.fetch_sub(bytes, Ordering::SeqCst);
             return None;
         }
         Some(Credit {
-            budget: Arc::clone(budget),
+            budget: Arc::clone(self),
             bytes,
         })
     }
@@ -146,6 +146,7 @@ impl Budget {
 
 /// A delivered frame's bytes (header included), held against its
 /// subscription's budget until dropped.
+#[derive(Debug)]
 pub struct Credit {
     budget: Arc<Budget>,
     bytes: usize,
@@ -154,14 +155,6 @@ pub struct Credit {
 impl Drop for Credit {
     fn drop(&mut self) {
         self.budget.queued.fetch_sub(self.bytes, Ordering::SeqCst);
-    }
-}
-
-impl std::fmt::Debug for Credit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Credit")
-            .field("bytes", &self.bytes)
-            .finish()
     }
 }
 
@@ -600,7 +593,7 @@ async fn read_loop(
         let mut msg = Some(msg);
         let n = targets.len();
         for (i, (tx, budget)) in targets.into_iter().enumerate() {
-            let Some(credit) = Budget::charge(&budget, bytes) else {
+            let Some(credit) = budget.charge(bytes) else {
                 tracing::debug!(
                     bytes,
                     max = budget.max,

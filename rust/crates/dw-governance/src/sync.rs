@@ -803,8 +803,7 @@ impl Run {
                         .or_else(|| self.vote_parents.get(&i.hash).copied());
                     match parent {
                         Some(parent) => state.attribute(i.hash, parent),
-                        None if !known
-                            && state.announced < max_announced
+                        None if state.announced < max_announced
                             && state.unresolved.len() < MAX_LATE =>
                         {
                             state.unresolved.insert(i.hash);
