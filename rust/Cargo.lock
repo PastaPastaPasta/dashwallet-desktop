@@ -2718,6 +2718,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "tracing",
  "tracing-subscriber",
  "zeroize",
 ]
