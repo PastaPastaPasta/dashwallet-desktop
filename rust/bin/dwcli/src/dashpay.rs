@@ -298,6 +298,9 @@ pub enum IdentityCmd {
     },
     /// Top-up asset locks Platform has not taken yet.
     TopUpPending,
+    /// Top-up fundings whose outcome is unknown (Tools ▸ Repair resolves
+    /// them).
+    TopUpStuck,
     /// Apply a pending top-up lock (`identity top-up-pending`).
     TopUpResume { txid: String },
     /// Resolve a pending top-up lock whose consumption is unknown (its
@@ -1536,6 +1539,7 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         IdentityCmd::TopUpPending => out(ctx.block_on(dp.pending_top_ups())?),
+        IdentityCmd::TopUpStuck => out(ctx.block_on(dp.stuck_top_up_fundings())?),
         IdentityCmd::TopUpResume { txid } => {
             // The apply signs with the lock's funding key, which a grant
             // with a funding budget unlocks; it spends none of it.
@@ -2136,6 +2140,7 @@ mod tests {
             NOT_IDENTIFIER,
         ),
         ("identity top-up-pending", r#"{"ok":true,"result":[]}"#),
+        ("identity top-up-stuck", r#"{"ok":true,"result":[]}"#),
         (
             "identity top-up-resume abababababababababababababababababababababababababababababababab",
             r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: no top-up lock has that txid","params":{"detail":"no top-up lock has that txid"}}}"#,
@@ -2236,6 +2241,7 @@ mod tests {
         ),
         ("identity costs", "DashPay.cost_table"),
         ("identity top-up-pending", "DashPay.pending_top_ups"),
+        ("identity top-up-stuck", "DashPay.stuck_top_up_fundings"),
         (
             "identity top-up-resume abababababababababababababababababababababababababababababababab",
             "DashPay.resume_top_up",

@@ -6,6 +6,7 @@ use ts_rs::TS;
 
 use super::flows::GrantRequest;
 use crate::dto::mirror_enum;
+use crate::dto::platform::DispatchStateName;
 
 /// Credit costs of the DashPay actions at the network's protocol version,
 /// for "≈ N contact requests" and the low-credit warnings.
@@ -229,6 +230,38 @@ impl From<engine::PendingTopUp> for PendingTopUp {
             duffs,
             proved,
             consumption_unknown,
+        }
+    }
+}
+
+/// A top-up funding of the wallet whose outcome is unknown: it refuses the
+/// identity's next top-up until it settles or Tools ▸ Repair resolves it
+/// (`resolveStuckFunding` with `step`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StuckTopUpFunding {
+    /// `topup/<identityIndex>-<k>/funding`.
+    pub step: String,
+    pub identity_index: u32,
+    /// The identity it tops up (Base58), when known.
+    pub identity: Option<String>,
+    /// `maybeSent` or `willBeSent`.
+    pub state: DispatchStateName,
+}
+
+impl From<engine::StuckTopUpFunding> for StuckTopUpFunding {
+    fn from(s: engine::StuckTopUpFunding) -> Self {
+        let engine::StuckTopUpFunding {
+            step,
+            identity_index,
+            identity,
+            state,
+        } = s;
+        StuckTopUpFunding {
+            step,
+            identity_index,
+            identity,
+            state: state.into(),
         }
     }
 }
