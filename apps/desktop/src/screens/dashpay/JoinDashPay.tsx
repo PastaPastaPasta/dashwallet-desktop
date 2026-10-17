@@ -128,8 +128,8 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
     <Page route="joinDashPay">
       {invitation && (
         <p className="placeholder-note" role="status" data-testid="invitation-received">
-          You opened a DashPay invitation. Joining with an invitation is not available yet: keep the link and open it again once
-          it is.
+          You opened a DashPay invitation. Dash Wallet keeps it for you under Links you opened; joining with an invitation is
+          not available yet.
         </p>
       )}
       <Intro />

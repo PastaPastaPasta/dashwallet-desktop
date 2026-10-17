@@ -408,5 +408,6 @@ fn gate_panicked() -> VaultStatus {
         failed_attempts: 0,
         retry_after_secs: None,
         wallets_with_secrets: Vec::new(),
+        unsealed_links: false,
     }
 }

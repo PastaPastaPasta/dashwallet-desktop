@@ -695,6 +695,7 @@ mod tests {
                     failed_attempts: 0,
                     retry_after_secs: None,
                     wallets_with_secrets: vec![],
+                    unsealed_links: false,
                 },
                 flows: vec![],
             }),
@@ -762,6 +763,7 @@ mod tests {
                     failed_attempts: u32::MAX,
                     retry_after_secs: Some(u64::MAX),
                     wallets_with_secrets: (0..40).map(|i| [i; 32]).collect(),
+                    unsealed_links: false,
                 },
                 flows: (0..20)
                     .map(|_| FlowReport {
@@ -1022,6 +1024,7 @@ mod tests {
                 failed_attempts: 0,
                 retry_after_secs: None,
                 wallets_with_secrets: vec![],
+                unsealed_links: false,
             },
             flows: outcomes
                 .iter()
@@ -1235,6 +1238,7 @@ mod tests {
                     failed_attempts: 0,
                     retry_after_secs: None,
                     wallets_with_secrets: vec![],
+                    unsealed_links: false,
                 },
                 flows: outcomes
                     .iter()

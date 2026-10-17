@@ -51,3 +51,6 @@ tempfile = { workspace = true }
 tokio = { workspace = true }
 # `dip15.rs` must stay byte-identical to the crate platform-wallet calls.
 platform-encryption = { workspace = true }
+# platform-wallet imports `dpp::ed25519_dalek`, a feature only the workspace's
+# `dpp` entry turns on: named here so `cargo test -p dw-vault` builds alone.
+dpp = { workspace = true }

@@ -124,6 +124,7 @@ import type { SessionSettings } from "./SessionSettings";
 import type { ShellEvent } from "./ShellEvent";
 import type { ShellSync } from "./ShellSync";
 import type { SpvStateName } from "./SpvStateName";
+import type { StashedLinkInfo } from "./StashedLinkInfo";
 import type { StuckTopUpFunding } from "./StuckTopUpFunding";
 import type { SyncLoopStatus } from "./SyncLoopStatus";
 import type { SyncPassReport } from "./SyncPassReport";
@@ -1975,19 +1976,47 @@ export function unitName(unit: DisplayUnit, network: string): Promise<string> {
 /**
  * Takes the queued deep links (after `linksPending`, and once at
  * start-up), routed for `network` (a directory name: the network the
- * window shows), in arrival order. An invitation comes as a bare
- * `invitation`: its link never crosses IPC.
+ * window shows), in arrival order. An invitation goes into the link
+ * stash and comes as `invitation` with its stash id: its link never
+ * crosses IPC. While the network has no wallet, a payment or contact
+ * link is kept there too and comes as `saved` (DP5-01).
  */
 export function takeLinks(network: string): Promise<Array<LinkRoute>> {
   return invoke<Array<LinkRoute>>("take_links", { network });
 }
 
 /**
- * Where `text` leads, for File ▸ Open URI… (QT-019): the routing a
- * queued link gets, a text over `MAX_LINK_BYTES` included.
+ * Where `text` leads, for File ▸ Open URI… (QT-019): the routing and
+ * intake a queued link gets, a text over `MAX_LINK_BYTES` included.
  */
 export function routeLink(network: string, text: string): Promise<LinkRoute> {
   return invoke<LinkRoute>("route_link", { network, text });
+}
+
+/**
+ * The links in the stash, oldest first, without their text (DP5-01):
+ * what the renderer offers after onboarding and after an unlock.
+ */
+export function stashedLinks(): Promise<Array<StashedLinkInfo>> {
+  return invoke<Array<StashedLinkInfo>>("stashed_links");
+}
+
+/**
+ * Opens a stashed link: a payment or contact link leaves the stash
+ * and comes back routed for the window's network (once: `null` when
+ * it is gone); an invitation stays and comes back as `invitation`.
+ * A locked vault is `platform.signer_unavailable` and keeps the link.
+ */
+export function openStashedLink(linkId: string): Promise<LinkRoute | null> {
+  return invoke<LinkRoute | null>("open_stashed_link", { linkId });
+}
+
+/**
+ * Drops a stashed link unread: the user dismissed it. Works locked;
+ * gone already is not an error.
+ */
+export function dismissStashedLink(linkId: string): Promise<null> {
+  return invoke<null>("dismiss_stashed_link", { linkId });
 }
 
 /**
@@ -2361,6 +2390,9 @@ export type CommandArgs = {
   unit_name: { unit: DisplayUnit; network: string };
   take_links: { network: string };
   route_link: { network: string; text: string };
+  stashed_links: {  };
+  open_stashed_link: { linkId: string };
+  dismiss_stashed_link: { linkId: string };
   shell_sync: { sync: ShellSync };
   open_file: { purpose: FilePurpose };
   save_file_as: { purpose: FilePurpose; suggestedName: string; data: string };
@@ -2608,6 +2640,9 @@ export type CommandResults = {
   unit_name: string;
   take_links: Array<LinkRoute>;
   route_link: LinkRoute;
+  stashed_links: Array<StashedLinkInfo>;
+  open_stashed_link: LinkRoute | null;
+  dismiss_stashed_link: null;
   shell_sync: null;
   open_file: OpenedFile | null;
   save_file_as: string | null;
@@ -2857,6 +2892,9 @@ export const COMMANDS: Record<CommandName, string> = {
   unit_name: "units",
   take_links: "shell",
   route_link: "shell",
+  stashed_links: "shell",
+  open_stashed_link: "shell",
+  dismiss_stashed_link: "shell",
   shell_sync: "shell",
   open_file: "files",
   save_file_as: "files",

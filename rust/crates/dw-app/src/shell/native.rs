@@ -124,6 +124,17 @@ pub fn window_state<R: Runtime>(launch: &LaunchOptions) -> Option<TauriPlugin<R>
 mod tests {
     use super::*;
 
+    /// The queued links as `take_links` routes them without a session.
+    fn routed(shell: &super::super::Shell) -> Vec<super::super::links::LinkRoute> {
+        shell
+            .inbox
+            .drain("regtest")
+            .unwrap()
+            .into_iter()
+            .map(|l| crate::shell::links::route("regtest", &l.unwrap()).unwrap())
+            .collect()
+    }
+
     #[test]
     fn each_data_root_has_its_own_bus_name() {
         let a = dbus_id(Path::new("/home/u/wallet-a"));
@@ -223,7 +234,7 @@ mod tests {
                 1
             );
         }
-        let routes = shell.inbox.take("regtest").unwrap();
+        let routes = routed(&shell);
         assert!(
             matches!(&routes[0], LinkRoute::Pay { uri, .. } if uri.address == ADDRESS),
             "{routes:?}"
@@ -243,10 +254,7 @@ mod tests {
             shell.queue_from(forwarded(&slashed), LinkSource::Forwarded, false),
             1
         );
-        assert!(matches!(
-            shell.inbox.take("regtest").unwrap()[..],
-            [LinkRoute::Rejected { .. }]
-        ));
+        assert!(matches!(routed(&shell)[..], [LinkRoute::Rejected { .. }]));
     }
 
     #[test]

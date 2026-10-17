@@ -88,10 +88,8 @@ fn dashpay_commands_print_one_json_line() {
         secret.as_bytes(),
     );
     assert_eq!(out.status.code(), Some(1));
-    assert_eq!(
-        line(&out)["error"]["params"],
-        json!({"call": "NetworkSession.stash_invitation"})
-    );
+    // Not an invitation link (DP5-01): refused before anything is kept.
+    assert_eq!(line(&out)["error"]["code"], "invitation.invalid");
     for stream in [&out.stdout, &out.stderr] {
         assert!(!String::from_utf8_lossy(stream).contains("E2E-BEARER-SECRET"));
     }

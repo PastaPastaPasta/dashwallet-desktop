@@ -66,6 +66,8 @@ thiserror = { workspace = true }
 # `signal`: SIGTERM/SIGINT end the app through its normal exit path.
 tokio = { workspace = true, features = ["signal"] }
 # `DW_LOG` (EnvFilter syntax): engine logs on stderr, off by default (BL-162).
+# Intake logs kinds and codes, never link text (DP5-01 D14).
+tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zeroize = { workspace = true }
 

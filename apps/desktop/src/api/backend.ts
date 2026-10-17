@@ -18,6 +18,7 @@ import type { ScannedContactInfo } from "./generated/ScannedContactInfo";
 import type { ScreenScanMode } from "./generated/ScreenScanMode";
 import type { IdentitySummary } from "./generated/IdentitySummary";
 import type { LinkRoute } from "./generated/LinkRoute";
+import type { StashedLinkInfo } from "./generated/StashedLinkInfo";
 import type { ShellEvent } from "./generated/ShellEvent";
 import type { ShellSync } from "./generated/ShellSync";
 import type { DispatchStateName } from "./generated/DispatchStateName";
@@ -289,6 +290,11 @@ export interface Backend {
   takeLinks(network: string): Promise<LinkRoute[]>;
   /** Where `text` leads (File ▸ Open URI…). */
   routeLink(network: string, text: string): Promise<LinkRoute>;
+  /** The link stash (DP5-01): what waits, without its text; open one (a payment or contact
+   * link once, `null` when gone); dismiss one. */
+  stashedLinks(): Promise<StashedLinkInfo[]>;
+  openStashedLink(linkId: string): Promise<LinkRoute | null>;
+  dismissStashedLink(linkId: string): Promise<null>;
   /** What the native menus and the tray mirror. */
   shellSync(sync: ShellSync): Promise<null>;
   // Tools (U-05); `nodeInfo` above.
