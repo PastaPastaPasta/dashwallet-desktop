@@ -271,6 +271,18 @@ DashPay pass after the upgrade.
   (stamp ignored, absent stamp paid under `Enforce`, absent stamp refused everywhere, the `Probe`/`Off` re-check
   skipped, the gate's destination check skipped, an absent account binding). T2 on 5652f117 from a fresh launch
   (the stamp reloads absent, D26): passed (row below).
+- **DP3-04b** (2026-10-17, desktop head 177eba34 on platform f2f15b55ca): GATE EXIT 0. fmt, clippy (workspace and
+  dw-app `selftest`) clean; tests passed 2062, failed 0, no rerun; tsc clean; vitest 64 files / 900 tests. Swift T0
+  (`scripts/linux-docker-test.sh`, on 7a80daa9; 177eba34 changes only tests, docs and one equivalent expression): 568
+  tests in 73 suites passed, 1 known issue. The new relaunch test fails on the old pin (c1a7ebf1) with
+  `TypedPoolKeyConflict { account_type: "dashpay_external", address_index: 0 }`. D28's mutant (an absent stamp paid)
+  fails 4 contact tests. A targeted lib run's one failure, `trust_tests::after_masternode_sync_the_degraded_mode_falls_back_at_once`
+  (2.7 s against its limit at load ~150, untouched file), passed alone. Platform (`rs-platform-wallet-storage`,
+  `--no-fail-fast`): 995 passed, 0 failed, 3 ignored; 9 of 9 mutants caught (no retire, stamp not written, no
+  classification, earlier generations ignored, flush registrations ignored, no restore, used flags dropped, old rows
+  not deleted, corrupt history blocking); clippy clean. BL-187: only platform `source` lines change in `Cargo.lock`.
+  T2 on 177eba34 from a fresh launch (unstamped until the bring-up's pass): passed (row below), the degraded gate
+  included, which D28 now refuses on an absent stamp.
 - **T2** (D18, public testnet, `t2_testnet_the_money_gate_verifies_a_contact`):
 
   | Head | B unverified before | Degraded probe | Enforcing gate | Enforcing `prepare` |
@@ -279,6 +291,7 @@ DashPay pass after the upgrade.
   | b988c88b | yes | 134 ms, verified B | pass, attempt 1 | 132 ms, pass |
   | 5bbfb646 | yes | 155 ms, verified B | pass, attempt 1 | 171 ms, pass |
   | 5652f117 | no | 0.3 ms | pass, attempt 1 | 69 ms, pass |
+  | 177eba34 | yes | 126 ms, verified B | pass, attempt 1 | 136 ms, pass |
 
   Each `prepare` paid B's contact address yYyXvcRUyj12iqbpvWsAtXgenAM9YKzax9 (txid cbe51e9a…, never
   broadcast). An earlier head (dc87f1ca) refused at `prepare` because B's name landed between the gate and
