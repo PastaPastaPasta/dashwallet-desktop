@@ -91,6 +91,8 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.pending_top_ups",
     "DashPay.resume_top_up",
     "DashPay.resolve_top_up",
+    // DP1-10: stuck top-up fundings for Repair.
+    "DashPay.stuck_top_up_fundings",
     // DP1-04: the contest watch.
     "DashPay.contest_status",
     // DP3-01: the per-contact payment lock.
@@ -1348,6 +1350,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.pending_top_ups().await.map(drop),
             dp.resume_top_up(s(), s()).await.map(drop),
             dp.resolve_top_up(s()).await.map(drop),
+            dp.stuck_top_up_fundings().await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }

@@ -22,6 +22,7 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { UserHit } from "../api/generated/UserHit";
 import type { UserRelation } from "../api/generated/UserRelation";
+import type { CreditsWorld } from "./topup";
 import { FIXTURE_NOW, secs } from "./wallet";
 
 export interface DashPayWorld {
@@ -55,6 +56,9 @@ export interface DashPayWorld {
   assetLocks: number;
   /** The drafts whose run this session holds (DP1-09); a relaunch drops them. */
   runs: string[];
+  /** DP1-10: top-up locks, stuck fundings, the own contest's read; none until a handler or a
+   * scenario sets it (topup.ts `creditsOf`). */
+  credits?: CreditsWorld;
 }
 
 /** A kept `dapk` scan: its id, whom it reaches, and when it expires (UNIX seconds). */

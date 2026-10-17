@@ -31,6 +31,9 @@ export const REG_COPY = {
     contested:
       "The Dash network must vote to approve this username before it is created. Usernames with a number 2–9, or 20 characters or more, are approved at once.",
     votingLink: "What is username voting?",
+    /** DP1-10 D13: the instant username beside a contested one. */
+    instantTitle: "Create instant username",
+    instantOnly: "An instant username needs a number 2–9 or 20 characters or more.",
     next: "Continue",
     cancel: "Cancel",
   },

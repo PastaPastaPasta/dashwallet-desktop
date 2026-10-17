@@ -875,6 +875,16 @@ pub(super) fn funding_gate(i: &Inner, wallet: WalletId, step: &str) -> Option<Fu
         .map(|r| FundingBlock::Row(ArtifactId::from_txid(&r.txid)))
 }
 
+/// A top-up step's `(identity index, k)` from `topup/<i>-<k>/funding`;
+/// a step of another shape sorts last.
+fn top_up_step_order(step: &str) -> (u32, u32) {
+    (step.strip_prefix("topup/"))
+        .and_then(|s| s.strip_suffix("/funding"))
+        .and_then(|s| s.split_once('-'))
+        .and_then(|(i, k)| Some((i.parse().ok()?, k.parse().ok()?)))
+        .unwrap_or((u32::MAX, u32::MAX))
+}
+
 /// Why Repair's "Resolve stuck funding" (§6.5, §16.10 C9) refuses a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StuckFundingRefusal {
@@ -1451,6 +1461,39 @@ impl LeaseTable {
         (wallets.into_iter())
             .flat_map(|w| self.unresolved_lock_inputs(w))
             .collect()
+    }
+
+    /// `wallet`'s top-up funding steps (`topup/<i>-<k>/funding`) that the
+    /// funding gate holds as possibly sent (`MaybeSent`, `WillBeSent`):
+    /// each refuses its identity's next top-up (`topup.rs` `next_step`)
+    /// until it settles or Repair resolves it (DP1-10 D3). In step order.
+    /// `Err` while the dispatch journal is not read, or while a top-up
+    /// step's marker cannot be read: the gate still refuses for it, so a
+    /// list without it would hide why (as `registration_funding_steps`).
+    pub(crate) fn stuck_top_up_steps(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<(String, DispatchState)>, FundingStepsUnavailable> {
+        self.with_j(|i, _| {
+            if i.fence.journal != JournalState::Ready
+                || (i.fence.unreadable_funding.iter())
+                    .any(|(w, s)| *w == wallet && s.starts_with("topup/"))
+            {
+                return Err(FundingStepsUnavailable);
+            }
+            let mut out: Vec<(String, DispatchState)> = (i.fence.funding_steps_of(&wallet))
+                .into_iter()
+                .filter(|s| s.starts_with("topup/"))
+                .filter_map(|s| match funding_gate(i, wallet, &s) {
+                    Some(FundingBlock::Step(Some(
+                        state @ (DispatchState::MaybeSent | DispatchState::WillBeSent),
+                    ))) => Some((s, state)),
+                    _ => None,
+                })
+                .collect();
+            out.sort_by(|(a, _), (b, _)| (top_up_step_order(a), a).cmp(&(top_up_step_order(b), b)));
+            Ok(out)
+        })
     }
 
     /// Every registration funding step of `wallet` (`registration/<draft>/

@@ -15,7 +15,7 @@ import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RegistrationWaitName } from "../api/generated/RegistrationWaitName";
 import type { StartupStatus } from "../api/generated/StartupStatus";
 
-/** Each rendered state of the Home card (the design's state inventory, S2–S17). */
+/** Each rendered state of the Home card (the design's state inventory, S2–S17; DP1-10's S19, S20). */
 export type CardState =
   | "error"
   | "looking"
@@ -31,10 +31,12 @@ export type CardState =
   | "creatingPaused"
   | "creatingRepair"
   | "voting"
-  | "noUsername";
+  | "noUsername"
+  | "lowCredits"
+  | "emptyCredits";
 
 /** What a card's button does: the screen maps each to its navigation or call. */
-export type CardActionKind = "join" | "retry" | "unlock" | "continue" | "repair" | "votingInfo" | "chooseName";
+export type CardActionKind = "join" | "retry" | "unlock" | "continue" | "repair" | "votingInfo" | "chooseName" | "buyCredits";
 
 export interface CardAction {
   kind: CardActionKind;
@@ -113,6 +115,16 @@ export const COPY = {
     action: "What is username voting?",
   },
   noUsername: { title: "Finish username registration", message: "Your identity is ready. Use its existing credits to register a username.", action: "Choose a username" },
+  // DP1-10 D8: m4 item 44's copy (Android's, its swapped titles corrected).
+  lowCredits: {
+    title: "Your credit balance is low",
+    message: "Top-up your credits to continue making changes to your profile and adding contacts",
+  },
+  emptyCredits: {
+    title: "Your credit balance is fully depleted",
+    message: "You can continue to use DashPay for payments but you cannot update your profile or add more contacts until you top up your credit balance",
+  },
+  buyCredits: "Buy credits",
   unlock: "Unlock",
   continue: "Continue",
 } as const;
@@ -259,7 +271,8 @@ export function namesState(main: IdentitySummary | undefined): NamesState {
 
 /**
  * The Home card for the wallet's DashPay state (S1–S18), or `null` where Home shows none (D2):
- * the status unread, a `ready` identity with a name, or one whose names are not known yet.
+ * the status unread, a `ready` identity with a name, or one whose names are not known yet. A named
+ * identity whose credits are low or depleted has DP1-10's card (S19, S20, D8).
  */
 export function homeCard(i: StatusInputs): CardModel | null {
   if (i.statusError) return card("error", "problem", COPY.error.title, [COPY.error.message], { action: action("retry", COPY.error.action) });
@@ -288,9 +301,15 @@ export function homeCard(i: StatusInputs): CardModel | null {
       if (temporary) lines.push(COPY.voting.temporary(temporary));
       return card("voting", "pending", COPY.voting.title(s.label), lines, { action: action("votingInfo", COPY.voting.action) });
     }
-    case "ready":
-      if (namesState(i.main) !== "none") return null;
-      return card("noUsername", "quiet", COPY.noUsername.title, [COPY.noUsername.message], { action: action("chooseName", COPY.noUsername.action) });
+    case "ready": {
+      const names = namesState(i.main);
+      if (names === "none")
+        return card("noUsername", "quiet", COPY.noUsername.title, [COPY.noUsername.message], { action: action("chooseName", COPY.noUsername.action) });
+      const level = names === "named" ? i.main?.creditLevel : null;
+      if (level !== "low" && level !== "empty") return null;
+      const copy = level === "low" ? COPY.lowCredits : COPY.emptyCredits;
+      return card(level === "low" ? "lowCredits" : "emptyCredits", "problem", copy.title, [copy.message], { action: action("buyCredits", COPY.buyCredits) });
+    }
   }
 }
 
@@ -364,8 +383,9 @@ export function joinModel(
       waiting,
     };
   }
+  // The credits cards are My Profile's business: the Join page says the user has joined.
   const c = homeCard(i);
-  if (c) return { kind: "card", card: c };
+  if (c && c.state !== "lowCredits" && c.state !== "emptyCredits") return { kind: "card", card: c };
   // Unread: the intro alone, its button held until the status says.
   if (!s) return { kind: "join", cost: JOIN_COPY.costUnknown, shortfall: null, waiting: true };
   return { kind: "joined", username: i.main?.mainName ?? null };

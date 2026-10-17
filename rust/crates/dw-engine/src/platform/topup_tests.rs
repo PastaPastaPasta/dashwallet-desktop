@@ -23,7 +23,7 @@ use platform_wallet::changeset::{
 use platform_wallet::{AssetLockFundingType, AssetLockStatus, TrackedAssetLock};
 use zeroize::Zeroizing;
 
-use super::credits::{TopUpOutcome, TopUpState};
+use super::credits::{StuckTopUpFunding, TopUpOutcome, TopUpState};
 use super::errors::{CreditsError, PlatformError};
 use super::flows::{DispatchState, FlowKind};
 use super::lease::mode_b::{TrackedRow, TrackedStatus, index_trusted};
@@ -1100,6 +1100,49 @@ fn an_unknown_funding_outcome_is_never_funded_again() {
         assert_eq!(unknown(f.top_up_with(&lib, DUFFS, &grant)), first);
     }
     assert_eq!(lib.counts(), (1, 0));
+}
+
+/// DP1-10 D3: the steps that refuse a top-up are listed with their
+/// identity, a relaunch included; a funded step, or one not sent, is not;
+/// before the journal is read the list is `platform.unavailable`. (A step
+/// leaves the list once Repair's self-spend is ChainLocked: `mode_b_tests`.)
+#[test]
+fn a_funding_whose_outcome_is_unknown_is_listed_across_a_relaunch() {
+    let mut f = fixture(false);
+    let stuck = |f: &Fixture, lib: &Fake| {
+        f.engine
+            .block_on(topup::stuck(&f.session, f.wallet, lib))
+            .unwrap()
+    };
+    let lib = f.fake();
+    // Funded and applied: `Sent`, never stuck.
+    f.top_up(&lib, DUFFS).unwrap();
+    assert!(stuck(&f, &lib).is_empty());
+    // Not sent: retried under its step, not stuck.
+    lib.w().fund_script = Some(FundScript::NotSent);
+    f.top_up(&lib, DUFFS).unwrap_err();
+    assert!(stuck(&f, &lib).is_empty());
+    lib.w().fund_script = Some(FundScript::LostUntracked);
+    let step = match f.top_up(&lib, DUFFS) {
+        Err(CreditsError::Platform(PlatformError::BroadcastUnknown { artifact })) => artifact,
+        other => panic!("not broadcast_unknown: {other:?}"),
+    };
+    assert_eq!(step, top_up_step(0, 1));
+    let listed = vec![StuckTopUpFunding {
+        step: step.clone(),
+        identity_index: 0,
+        identity: Some(b58(identity())),
+        state: DispatchState::MaybeSent,
+    }];
+    assert_eq!(stuck(&f, &lib), listed);
+    // A relaunch reads it back from the journal.
+    f.reopen(None);
+    let lib = f.fake_over(lib.w.clone());
+    assert_eq!(stuck(&f, &lib), listed);
+    f.reopen_without_journal();
+    let lib = f.fake_over(lib.w.clone());
+    let err = (f.engine.block_on(topup::stuck(&f.session, f.wallet, &*lib))).unwrap_err();
+    assert_eq!(err.code(), "platform.unavailable");
 }
 
 /// A funding definitively not sent is retried under the same step.

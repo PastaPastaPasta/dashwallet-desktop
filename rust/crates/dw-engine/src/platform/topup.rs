@@ -56,7 +56,7 @@ use dw_appdb::dispatch::TopUpSettled;
 use dw_vault::VaultSigner;
 use platform_wallet::AssetLockFundingType;
 
-use super::credits::{PendingTopUp, TopUpOutcome, TopUpQuote, TopUpState};
+use super::credits::{PendingTopUp, StuckTopUpFunding, TopUpOutcome, TopUpQuote, TopUpState};
 use super::errors::{CreditsError, IdentityError, PlatformError};
 use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::identity_writes::identity_locks;
@@ -585,6 +585,43 @@ pub(crate) async fn pending<L: TopUpLib>(
         .collect();
     out.sort_by(|a, b| (a.identity_index, &a.txid).cmp(&(b.identity_index, &b.txid)));
     Ok(out)
+}
+
+/// The wallet's top-up fundings whose outcome is unknown: the steps that
+/// refuse the identities' next top-ups, read on fresh tracked rows as
+/// `next_step` reads them (DP1-10 D3). Until the dispatch journal is read,
+/// or the rows cannot be, `platform.unavailable`.
+pub(crate) async fn stuck<L: TopUpLib>(
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    lib: &L,
+) -> Result<Vec<StuckTopUpFunding>, PlatformError> {
+    if !session.leases.journal_ready() || !session.leases.refresh_funding(wallet).await {
+        return Err(PlatformError::Unavailable);
+    }
+    let steps =
+        (session.leases.stuck_top_up_steps(wallet)).map_err(|_| PlatformError::Unavailable)?;
+    let identities = lib.identities().await;
+    Ok((steps.into_iter())
+        .map(|(step, state)| {
+            let identity_index = step_index(&step);
+            StuckTopUpFunding {
+                identity: identity_index
+                    .and_then(|i| identity_at(&identities, i))
+                    .cloned(),
+                identity_index: identity_index.unwrap_or(u32::MAX),
+                step,
+                state,
+            }
+        })
+        .collect())
+}
+
+/// The identity index of a top-up step (`topup/<i>-<k>/funding`).
+fn step_index(step: &str) -> Option<u32> {
+    (step.strip_prefix("topup/"))
+        .and_then(|s| s.split_once('-'))
+        .and_then(|(i, _)| i.parse().ok())
 }
 
 pub(crate) async fn resume<L: TopUpLib>(

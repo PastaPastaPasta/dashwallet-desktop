@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { STATES as COINJOIN, pressStart } from "./coinjoin";
 import { CARDS, CHIP_TEXT, CHIPS } from "./dashpay";
-import { fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
+import { authorize, fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
 import { showSettingsView, type SettingsView } from "./settings";
 import { showWalletView, type WalletView } from "./wallet";
 
@@ -420,5 +420,59 @@ for (const theme of THEMES) {
     await page.getByTestId("settings-tabs-coinjoin").click();
     await page.getByTestId("settings-coinjoin-mixing").waitFor();
     await shoot(page, "settings-coinjoin", theme);
+  });
+}
+
+// DP1-10: My Profile's states (the design's state inventory) and the top-up sheet's steps.
+async function openProfile(page: Page, scenario: string, theme: Theme) {
+  await page.goto(fixtureUrl(scenario, theme));
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "profile" }));
+}
+
+const PROFILE: Record<string, { scenario: string; ready: string }> = {
+  registered: { scenario: "dashpay-registered", ready: "profile-outcomes" },
+  "no-profile": { scenario: "dashpay-no-identity", ready: "dashpay-card" },
+  "no-username": { scenario: "dashpay-no-username", ready: "profile-choose-name" },
+  "credits-low": { scenario: "dashpay-credits-low", ready: "profile-credits-estimate" },
+  "credits-empty": { scenario: "dashpay-low-credits", ready: "profile-credits-estimate" },
+  "credits-unknown": { scenario: "dashpay-credits-unknown", ready: "profile-credits" },
+  "top-up-pending": { scenario: "dashpay-top-up-pending", ready: "profile-pending-finish" },
+  "top-up-unknown": { scenario: "dashpay-top-up-unknown", ready: "profile-pending-arrived" },
+  "top-up-stuck": { scenario: "dashpay-top-up-stuck", ready: "profile-stuck" },
+  "contest-open": { scenario: "dashpay-contest-pending", ready: "profile-tally" },
+  "contest-instant": { scenario: "dashpay-contest-no-temporary", ready: "profile-instant" },
+  "contest-won": { scenario: "dashpay-contest-won", ready: "profile-tally" },
+  "contest-lost": { scenario: "dashpay-contest-lost", ready: "profile-tally" },
+  "contest-locked": { scenario: "dashpay-contest-locked", ready: "profile-tally" },
+};
+
+for (const theme of THEMES) {
+  for (const [name, { scenario, ready }] of Object.entries(PROFILE)) {
+    test(`visual profile-${name} ${theme}`, async ({ page }) => {
+      await openProfile(page, scenario, theme);
+      await page.getByTestId(ready).waitFor();
+      // The outcome rows land after the page (D12).
+      if (scenario === "dashpay-registered") await page.getByTestId("profile-outcomes").waitFor();
+      await page.mouse.move(0, 0);
+      await shoot(page, `profile-${name}`, theme);
+    });
+  }
+
+  test(`visual profile-top-up ${theme}`, async ({ page }) => {
+    await openProfile(page, "dashpay-registered", theme);
+    await page.getByTestId("profile-top-up").click();
+    await page.getByTestId("topup-next").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "profile-top-up-amount", theme);
+    await page.getByTestId("topup-next").click();
+    await page.getByTestId("topup-quote").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "profile-top-up-confirm", theme);
+    await page.getByTestId("topup-pay").click();
+    await authorize(page);
+    await page.getByTestId("topup-done").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "profile-top-up-done", theme);
   });
 }

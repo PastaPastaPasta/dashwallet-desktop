@@ -87,8 +87,8 @@ pub use contacts::{
     RequestOutcome, ScannedCode, ScannedContact,
 };
 pub use credits::{
-    CostTable, CreditLevel, PendingTopUp, TopUpOutcome, TopUpQuote, TopUpState, WithdrawAmount,
-    WithdrawOutcome, WithdrawQuote,
+    CostTable, CreditLevel, PendingTopUp, StuckTopUpFunding, TopUpOutcome, TopUpQuote, TopUpState,
+    WithdrawAmount, WithdrawOutcome, WithdrawQuote,
 };
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{
