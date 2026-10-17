@@ -157,6 +157,13 @@ pub fn install_logging(filter: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// The line an argument error prints: redacted, though no launch error
+/// quotes a value (D30), in case one ever does: the OS may pass a link
+/// after an option or inside one.
+pub fn launch_error(e: &str) -> String {
+    format!("dash-wallet: {}", dw_uri::redact::redact_links(e))
+}
+
 /// Entry point of the `dash-wallet` binary.
 pub fn run() {
     let started = Instant::now();
@@ -186,9 +193,7 @@ pub fn run() {
             return;
         }
         Err(e) => {
-            // An option's value may be a link the OS passed after it.
-            let e = dw_uri::redact::redact_links(&e).into_owned();
-            eprintln!("dash-wallet: {e}\n{}", launch::usage());
+            eprintln!("{}\n{}", launch_error(&e), launch::usage());
             std::process::exit(2);
         }
     };

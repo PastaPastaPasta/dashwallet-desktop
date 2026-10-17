@@ -2,11 +2,13 @@
 //! wallet reads, and anything that looks like a part of an invitation or a
 //! contact code, is replaced by [`REDACTED`] before a log line is written.
 //!
-//! A line is cut at the first link in it, and the rest of the line is
-//! replaced: parsers accept quotes, brackets and more inside a link, so no
-//! delimiter but the end of the line safely ends one (the stash refuses
-//! links with control characters, so a kept link is on one line). The
-//! search looks at *tokens*, runs of characters between whitespace, quotes,
+//! The text is cut at the first link in it, and everything after it, the
+//! following lines included, is replaced: parsers accept quotes, brackets
+//! and more inside a link, so no delimiter safely ends one, and a value
+//! with a line break (an argument the OS passed) carries the link's rest
+//! onto the next line (DP5-01 D30). One call is one log event, so a link
+//! costs the rest of its event only; the text's final line break is kept.
+//! The search looks at *tokens*, runs of characters between whitespace, quotes,
 //! backticks and angle brackets: a link starts at the first link scheme in
 //! a token (`dash:`, `pay:`, `dashpay:`, `dashwallet:`, `dash-key:`,
 //! `dash-st:`, case-insensitive, not preceded by a letter, digit, `+`, `-`
@@ -150,29 +152,27 @@ pub fn redacted_whole(link: &str) -> bool {
     link_start(link) == Some(0)
 }
 
-/// `text` with every line that holds a link cut at the link, the rest of
-/// the line replaced by [`REDACTED`]; borrowed when nothing needed it.
+/// `text` (one log event) cut at its first link: the link and everything
+/// after it, later lines included, replaced by [`REDACTED`], and the
+/// text's final line break kept; borrowed when there is no link.
 pub fn redact_links(text: &str) -> Cow<'_, str> {
-    let mut out: Option<String> = None;
-    let mut copied = 0;
     let mut line_start = 0;
     for line in text.split_inclusive(['\n', '\r']) {
         let body = line.trim_end_matches(['\n', '\r']);
         if let Some(at) = link_start(body) {
-            let o = out.get_or_insert_with(|| String::with_capacity(text.len()));
-            o.push_str(&text[copied..line_start + at]);
+            let end = text
+                .trim_end_matches(['\n', '\r'])
+                .len()
+                .max(line_start + at);
+            let mut o = String::with_capacity(line_start + at + REDACTED.len() + 2);
+            o.push_str(&text[..line_start + at]);
             o.push_str(REDACTED);
-            copied = line_start + body.len();
+            o.push_str(&text[end..]);
+            return Cow::Owned(o);
         }
         line_start += line.len();
     }
-    match out {
-        None => Cow::Borrowed(text),
-        Some(mut o) => {
-            o.push_str(&text[copied..]);
-            Cow::Owned(o)
-        }
-    }
+    Cow::Borrowed(text)
 }
 
 /// Makes panics print redacted: a panic message may quote a link (an
@@ -265,9 +265,14 @@ mod tests {
         );
         assert_eq!(r("x=dashwallet://pay=y&sender=z"), "x=<link>");
         assert_eq!(r("dash-key:abc dash-st:def"), "<link>");
+        // The rest of the event goes, later lines included (D30); the
+        // lines before the link stay.
+        assert_eq!(r("one dash:a\r\ntwo\nthree pay:b\n"), "one <link>\n");
+        assert_eq!(r("a\nb dash:x\nc"), "a\nb <link>");
+        assert_eq!(r("bad=dash:yA\nyB\n"), "bad=<link>\n");
         assert_eq!(
-            r("one dash:a\r\ntwo\nthree pay:b\n"),
-            "one <link>\r\ntwo\nthree <link>\n"
+            r("unknown option --bad=dashpay://invite?pk=cFirst\ncSuffix\n"),
+            "unknown option <link>\n"
         );
         assert_eq!(
             r("https://invitations.dashpay.io/applink?du=a&pk=s"),
@@ -278,7 +283,7 @@ mod tests {
             "<link>"
         );
         assert_eq!(r("query ?du=alice&dapk=abc tail"), "query <link>");
-        assert_eq!(r("text\tdash:yA\ny"), "text\t<link>\ny");
+        assert_eq!(r("text\tdash:yA\ny"), "text\t<link>");
         // Not schemes: a word ending in one, a hostname.
         assert_eq!(r("repay: 3 toolbar:pay"), "repay: 3 toolbar:pay");
         assert_eq!(r("a.dash: b+pay: c-dash:"), "a.dash: b+pay: c-dash:");

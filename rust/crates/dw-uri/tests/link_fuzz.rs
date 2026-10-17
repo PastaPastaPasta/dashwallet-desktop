@@ -290,4 +290,35 @@ proptest! {
         let (before, after) = SURROUNDINGS[pick];
         assert_redacted(&link, before, after);
     }
+    /// D30 (Sol r1 M3): a value with a line break inside a link, as an
+    /// argument the OS passed can be. Once redaction finds a link, the
+    /// event keeps only what came before it: nothing of the link's rest,
+    /// on any later line.
+    #[test]
+    fn a_line_break_never_carries_a_link_past_redaction(
+        link in generated_link(),
+        at in any::<usize>(),
+        cr in any::<bool>(),
+    ) {
+        let chars: Vec<char> = link.chars().collect();
+        let at = at % (chars.len() + 1);
+        let head: String = chars[..at].iter().collect();
+        let tail: String = chars[at..].iter().collect();
+        let event = format!(
+            "unknown option --bad={head}{}{tail}\n",
+            if cr { "\r" } else { "\n" }
+        );
+        let redacted = redact_links(&event);
+        if redacted == event {
+            return Ok(());
+        }
+        let body = redacted.trim_end_matches(['\n', '\r']);
+        prop_assert!(body.ends_with(REDACTED), "{redacted:?}");
+        let kept = &body[..body.len() - REDACTED.len()];
+        prop_assert!(event.starts_with(kept), "{redacted:?}");
+        // A link whole in the first line: nothing of it is kept.
+        if !head.is_empty() && redacted_whole(&head) {
+            prop_assert!(kept.len() <= "unknown option --bad=".len(), "{redacted:?}");
+        }
+    }
 }

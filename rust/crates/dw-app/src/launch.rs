@@ -128,12 +128,29 @@ pub enum ParseOutcome {
 }
 
 fn parse_network(s: &str) -> Result<DashNetwork, String> {
-    crate::dto::parse_network(s).map_err(|e| e.message)
+    crate::dto::parse_network(s).map_err(|_| {
+        "--network: unknown network (mainnet, testnet, regtest or devnet-<name> \
+         with a lower-case name)"
+            .to_owned()
+    })
+}
+
+/// How an unknown `--` option reads in an error: its name, when that is
+/// letters, digits and `-` only, else a placeholder. No error quotes an
+/// argument's value or text that is not a plain option name: the OS may
+/// pass a link (a bearer secret, DP5-01 D30) after an option or inside one.
+fn option_name(arg: &str) -> &str {
+    let name = arg.split_once('=').map_or(arg, |(name, _)| name);
+    let plain = name.len() <= 64
+        && name[2..]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    if plain { name } else { "(not shown)" }
 }
 
 /// Parses the arguments after the program name. Unknown arguments that do
 /// not start with `--` are ignored (runtimes add some); unknown `--` options
-/// are errors.
+/// are errors. No error quotes a value (D30).
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, String> {
     let mut opts = LaunchOptions::default();
     let mut it = args.into_iter();
@@ -152,7 +169,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
                 let v = value("--protocol-version")?;
                 opts.initial_protocol_version = Some(
                     v.parse()
-                        .map_err(|_| format!("--protocol-version: not a number: {v}"))?,
+                        .map_err(|_| "--protocol-version: not a number".to_owned())?,
                 );
             }
             "--no-platform" => opts.no_platform = true,
@@ -164,7 +181,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
                 let v = value("--selftest-pause")?;
                 opts.selftest_pause_ms = v
                     .parse()
-                    .map_err(|_| format!("--selftest-pause: not a number: {v}"))?;
+                    .map_err(|_| "--selftest-pause: not a number".to_owned())?;
             }
             #[cfg(feature = "selftest")]
             "--selftest-passphrase-file" => {
@@ -179,7 +196,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
                 opts.theme = Some(match value("--theme")?.as_str() {
                     "light" => ThemeName::Light,
                     "dark" => ThemeName::Dark,
-                    other => return Err(format!("unknown theme {other:?}")),
+                    _ => return Err("--theme: expected light or dark".into()),
                 })
             }
             "--window-size" => {
@@ -189,9 +206,11 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
                     .and_then(|(w, h)| w.parse().ok().zip(h.parse().ok()))
                     .filter(|&(w, h)| w > 0 && h > 0);
                 opts.window_size =
-                    Some(size.ok_or_else(|| format!("--window-size: expected WxH, got {v:?}"))?);
+                    Some(size.ok_or_else(|| "--window-size: expected WxH".to_owned())?);
             }
-            other if other.starts_with("--") => return Err(format!("unknown option {other}")),
+            other if other.starts_with("--") => {
+                return Err(format!("unknown option {}", option_name(other)));
+            }
             link if crate::shell::links::link_scheme(link).is_some() => {
                 opts.links.push(link.to_owned())
             }
@@ -303,6 +322,22 @@ mod tests {
         assert!(err(&["--datadir"]).contains("needs a value"));
         assert!(err(&["--protocol-version", "nine"]).contains("not a number"));
         assert!(err(&["--bogus"]).contains("unknown option"));
+        assert_eq!(err(&["--bogus=1"]), "unknown option --bogus");
+        // D30: no value, and no option name that is not plain, is quoted.
+        for (arg, value) in [
+            (
+                &["--bad=dashpay://invite?pk=cFirst\ncSuffix"][..],
+                "cSuffix",
+            ),
+            (&["--dashpay://invite?pk=cFirst"], "cFirst"),
+            (&["--theme", "dash:yPlanted"], "Planted"),
+            (&["--window-size", "dash:yPlanted"], "Planted"),
+            (&["--protocol-version", "dash:yPlanted"], "Planted"),
+            (&["--network", "dashpay://invite?pk=cPlanted"], "Planted"),
+        ] {
+            let e = err(arg);
+            assert!(!e.contains(value) && !e.contains("dash"), "{e}");
+        }
         // No build of the app runs on fixture data (U-07): the fixture backend
         // exists only in the renderer's browser harness.
         assert!(err(&["--fixture"]).contains("unknown option"));

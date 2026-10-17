@@ -5,8 +5,9 @@
 //! trace, then takes planted links in the way the app does: queued as launch
 //! arguments, routed and stashed before a vault exists, resealed when the
 //! vault is created, listed, taken and forgotten. It also logs one link on
-//! purpose, as a careless log line would, as a field, and in a panic
-//! message. The parent then greps everything
+//! purpose, as a careless log line would, as a field, in a panic message,
+//! and with a line break inside it, also as a bad launch option (D30). The
+//! parent then greps everything
 //! the child wrote (stderr, stdout and the trace) for each planted secret:
 //! the invitation's key and inviter, the payee address, the amount and
 //! label, and the contact's username.
@@ -27,8 +28,10 @@ const DONE: &str = "link-redaction child done";
 
 const ADDRESS: &str = "yMsgnH1xKGa85n4bq2imrZbG2KgrmGttAV";
 const IDENTITY: &str = "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx";
+/// The rest of a link past a line break (D30).
+const SUFFIX: &str = "PlantedSuffix8K";
 /// What must never appear in a log, one planted value per kind.
-const SECRETS: [&str; 7] = [
+const SECRETS: [&str; 8] = [
     "cPlantedInvitationKey7Q", // an invitation's private key (`pk=`)
     "plantedinviter",          // the inviter (`du=`)
     ADDRESS,                   // a payee
@@ -36,6 +39,7 @@ const SECRETS: [&str; 7] = [
     "PlantedLabel",            // a label
     "plantedcontact",          // a contact's username
     IDENTITY,                  // a contact's identity
+    SUFFIX,                    // a link's rest past a line break
 ];
 
 fn planted_links() -> Vec<String> {
@@ -104,6 +108,12 @@ fn no_log_sink_carries_a_link() {
     // no colour codes at all.
     assert!(stderr.contains("careless field link=<link>"), "{stderr}");
     assert!(stderr.contains("careless panic: <link>"), "{stderr}");
+    // D30: a line break inside a link carries nothing of it on.
+    assert!(stderr.contains("careless multiline: <link>"), "{stderr}");
+    assert!(
+        stderr.contains("dash-wallet: unknown option --bad\n"),
+        "{stderr}"
+    );
     assert!(!stderr.contains('\x1b'), "{stderr}");
     let queued = planted_links()
         .iter()
@@ -194,6 +204,11 @@ fn child(dir: &Path) {
     tracing::error!(link = %links[0], "careless field");
     let link = links[2].clone();
     std::panic::catch_unwind(move || panic!("careless panic: {link}")).unwrap_err();
+    let broken = format!("{}\n{SUFFIX}&x=1", links[2]);
+    tracing::error!("careless multiline: {broken}");
+    // A bad option whose value holds the link, as `dw_app::run` prints it.
+    let e = dw_app::launch::parse([format!("--bad={broken}")]).unwrap_err();
+    eprintln!("{}", dw_app::launch_error(&e));
     engine
         .block_on(engine.close_network(DashNetwork::Regtest))
         .unwrap();
