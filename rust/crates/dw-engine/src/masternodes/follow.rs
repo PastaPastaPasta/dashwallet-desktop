@@ -560,7 +560,9 @@ mod tests {
     }
 
     /// The version-3 markers survive power loss once written; without the
-    /// durable write's barrier they don't (D35).
+    /// durable write's barrier they don't (D35). Debug builds only, as the
+    /// simulator (D38).
+    #[cfg(all(test, debug_assertions))]
     #[test]
     fn version_3_markers_survive_power_loss() {
         use dw_appdb::durability_sim::{arm, power_loss};

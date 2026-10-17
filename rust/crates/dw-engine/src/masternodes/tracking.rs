@@ -653,6 +653,9 @@ mod tests {
         );
     }
 
+    /// Debug builds only: dw-vault's fault injection and dw-appdb's power
+    /// loss exist in no release build (D38).
+    #[cfg(all(test, debug_assertions))]
     mod ambiguous_writes {
         use std::path::Path;
 

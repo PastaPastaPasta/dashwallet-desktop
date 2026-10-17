@@ -1528,7 +1528,9 @@ mod tests {
 
     /// MG-03 D34: a durable setting survives power loss, with every commit
     /// before it; a plain one after it doesn't; with the barrier skipped
-    /// the durable one doesn't either.
+    /// the durable one doesn't either. Debug builds only, as the simulator
+    /// (D38).
+    #[cfg(all(test, debug_assertions))]
     #[test]
     fn a_durable_setting_survives_power_loss() {
         let dir = tempfile::tempdir().unwrap();
