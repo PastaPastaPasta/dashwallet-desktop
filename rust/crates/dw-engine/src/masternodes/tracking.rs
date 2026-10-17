@@ -107,23 +107,22 @@ impl KeyReferences {
     }
 
     pub(super) fn check(&self, role: AttachedKeyRole, id: [u8; 20]) -> KeyCheck {
-        let want = match role {
-            AttachedKeyRole::Owner => self.owner,
-            AttachedKeyRole::Voting => self.voting,
-            AttachedKeyRole::Payout => {
-                let pays = self.payout.as_ref()
-                    == Some(&ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array(id)));
-                return if pays {
-                    KeyCheck::Matched
-                } else {
-                    KeyCheck::Unchecked
-                };
-            }
-        };
-        match want {
+        let key_id = |want: Option<[u8; 20]>| match want {
             Some(want) if want == id => KeyCheck::Matched,
             Some(_) => KeyCheck::KeyMismatch,
             None => KeyCheck::Unchecked,
+        };
+        match role {
+            AttachedKeyRole::Owner => key_id(self.owner),
+            AttachedKeyRole::Voting => key_id(self.voting),
+            AttachedKeyRole::Payout => {
+                let pays = ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array(id));
+                if self.payout.as_ref() == Some(&pays) {
+                    KeyCheck::Matched
+                } else {
+                    KeyCheck::Unchecked
+                }
+            }
         }
     }
 }

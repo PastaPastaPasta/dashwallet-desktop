@@ -125,17 +125,13 @@ pub(crate) fn load_notes(db: &AppDb) -> Result<Notes, AppDbError> {
             }
         } else if let Some(hash) = key.strip_prefix(LISTED_SEEN) {
             notes.listed_seen.insert(hash.into());
-        } else if let Some(rest) = key.strip_prefix(KEY_ID) {
-            let mut id = [0u8; 20];
-            let Some((hash, role)) = rest.split_once(':') else {
-                continue;
-            };
-            if let (Some(role), Ok(())) = (
-                AttachedKeyRole::from_vault_name(role),
-                hex::decode_to_slice(&value, &mut id),
-            ) {
-                notes.key_ids.insert((hash.into(), role), id);
-            }
+        } else if let Some((hash, role)) = key
+            .strip_prefix(KEY_ID)
+            .and_then(|rest| rest.split_once(':'))
+            && let (Some(role), Some(id)) =
+                (AttachedKeyRole::from_vault_name(role), parse_key_id(&value))
+        {
+            notes.key_ids.insert((hash.into(), role), id);
         }
     }
     Ok(notes)
@@ -149,16 +145,20 @@ fn key_id_setting(hash: &str, role: AttachedKeyRole) -> String {
     format!("{KEY_ID}{hash}:{}", role.vault_name())
 }
 
+fn parse_key_id(hex_id: &str) -> Option<[u8; 20]> {
+    let mut id = [0u8; 20];
+    hex::decode_to_slice(hex_id, &mut id).ok()?;
+    Some(id)
+}
+
 pub(crate) fn key_id(
     db: &AppDb,
     hash: &str,
     role: AttachedKeyRole,
 ) -> Result<Option<[u8; 20]>, AppDbError> {
-    let mut id = [0u8; 20];
     Ok(db
         .setting(GLOBAL_SCOPE, &key_id_setting(hash, role))?
-        .filter(|v| hex::decode_to_slice(v, &mut id).is_ok())
-        .map(|_| id))
+        .and_then(|v| parse_key_id(&v)))
 }
 
 /// Records (or with `None` forgets) the id of the key attached for `role`.

@@ -489,18 +489,15 @@ impl WalletView {
     /// (D25).
     fn registration_facts(&self, o: &OwnedMasternode) -> RegistrationFacts {
         let r = &o.record;
-        let read = !o.shared_unsupported;
+        let address = |id: Option<[u8; 20]>| {
+            id.filter(|_| !o.shared_unsupported)
+                .map(|id| p2pkh(id, self.network))
+        };
         RegistrationFacts {
             registered_height: o.registered_height(),
             collateral: collateral_state(Some(o)),
-            owner_address: r
-                .owner_key_hash
-                .filter(|_| read)
-                .map(|id| p2pkh(id, self.network)),
-            voting_address: r
-                .voting_key_hash
-                .filter(|_| read)
-                .map(|id| p2pkh(id, self.network)),
+            owner_address: address(r.owner_key_hash),
+            voting_address: address(r.voting_key_hash),
             payout_address: self.payout_address(&r.pro_tx_hash),
             payout_script: self.payout_script(&r.pro_tx_hash).map(hex::encode),
             operator_reward: o.operator_reward,
@@ -846,7 +843,7 @@ mod tests {
     use dashcore::transaction::TransactionPayload;
 
     use super::super::aggregate::aggregate;
-    use super::super::aggregate::fixtures::{coins, payout, registration_v};
+    use super::super::aggregate::fixtures::{coins, null, payout, registration, registration_v};
     use dw_protx::params::MASTERNODE_COLLATERAL;
 
     const NOW: u64 = 1_800_000_000;
@@ -922,21 +919,9 @@ mod tests {
     /// none of its payouts in a total (D25).
     #[test]
     fn a_shared_masternode_is_mine_but_out_of_the_payout_totals() {
-        let plain = registration_v(
-            2,
-            null_outpoint(0),
-            false,
-            0,
-            coins(&[MASTERNODE_COLLATERAL]),
-        );
+        let plain = registration(null(0), false, 0, coins(&[MASTERNODE_COLLATERAL]));
         let shared = with_payout(
-            registration_v(
-                3,
-                null_outpoint(0),
-                false,
-                0,
-                coins(&[MASTERNODE_COLLATERAL, 1]),
-            ),
+            registration_v(3, null(0), false, 0, coins(&[MASTERNODE_COLLATERAL, 1])),
             6,
         );
         let v = view(
@@ -998,13 +983,6 @@ mod tests {
         assert!(overview.masternodes[0].shared_unsupported);
         assert_eq!(overview.payouts_30d, 0);
         assert!(overview.payouts_incomplete);
-    }
-
-    fn null_outpoint(vout: u32) -> OutPoint {
-        OutPoint {
-            txid: dashcore::Txid::all_zeros(),
-            vout,
-        }
     }
 
     #[test]
