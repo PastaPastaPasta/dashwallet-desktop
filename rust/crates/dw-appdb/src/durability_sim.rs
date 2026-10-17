@@ -13,6 +13,7 @@ use std::sync::Mutex;
 
 use rusqlite::Connection;
 
+#[derive(Clone)]
 struct Armed {
     db: PathBuf,
     skip_barriers: bool,
@@ -73,22 +74,19 @@ pub fn power_loss(db: &Path) {
     let _ = std::fs::remove_file(with_suffix(&db, "-shm"));
 }
 
-fn armed_db(conn: &Connection) -> Option<(PathBuf, bool)> {
+fn armed_db(conn: &Connection) -> Option<Armed> {
     let db = std::fs::canonicalize(conn.path()?).ok()?;
-    armed()
-        .iter()
-        .find(|a| a.db == db)
-        .map(|a| (a.db.clone(), a.skip_barriers))
+    armed().iter().find(|a| a.db == db).cloned()
 }
 
 /// Whether a durable write on `conn` skips its barrier.
 pub(crate) fn skips_barrier(conn: &Connection) -> bool {
-    armed_db(conn).is_some_and(|(_, skip)| skip)
+    armed_db(conn).is_some_and(|a| a.skip_barriers)
 }
 
 /// After a durable write on `conn`: its database's files are durable.
 pub(crate) fn synced(conn: &Connection) {
-    if let Some((db, _)) = armed_db(conn) {
-        save(&db);
+    if let Some(armed) = armed_db(conn) {
+        save(&armed.db);
     }
 }
