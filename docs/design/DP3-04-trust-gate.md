@@ -254,6 +254,17 @@ session; `Enforcing` refuses it.
   (`mutate-r1.sh`: the 19 above with the corrected claimed-slot text, plus displaced-fresh-ignored,
   account-binding-ignored, account-binding-always-refuses), and account-binding-absent-pays caught on c2c5625c by the
   no-latch teardown test.
+- **Sol r2 round** (2026-10-17, head 5652f117, after the follow-merge of main e27e9e95): GATE EXIT 0. fmt, clippy
+  (workspace and dw-app `selftest`) clean; tests passed 2060, failed 1, the `e0_05_bringup` wall-clock test
+  `close_reports_a_key_read_it_could_not_wait_for`, which the gate reran alone and passed on the first try; tsc clean;
+  vitest 64 files / 900 tests. No BL-181 lease flake this run; in an earlier targeted run (load ~300)
+  `lease::session_tests::r1_f3_a_hanging_hand_off_ends_at_the_deadline_as_maybe_sent` and
+  `trust_tests::after_masternode_sync_the_degraded_mode_falls_back_at_once` failed and passed alone (neither file is
+  touched here). The gate ran without the shared sccache wrapper (`RUSTC_WRAPPER=`): the shared server had stalled
+  (2 compiles in 30 s). Mutations: `mutate-r2.sh` 4 of 4 caught on 661b33b5, then `mutate-r2b.sh` 6 of 6 on 0a143899
+  (stamp ignored, absent stamp paid under `Enforce`, absent stamp refused everywhere, the `Probe`/`Off` re-check
+  skipped, the gate's destination check skipped, an absent account binding). T2 on 5652f117 from a fresh launch
+  (the stamp reloads absent, D26): passed (row below).
 - **T2** (D18, public testnet, `t2_testnet_the_money_gate_verifies_a_contact`):
 
   | Head | B unverified before | Degraded probe | Enforcing gate | Enforcing `prepare` |
@@ -261,6 +272,7 @@ session; `Enforcing` refuses it.
   | b988c88b | no | 0.3 ms | pass, attempt 1 | 66 ms, pass |
   | b988c88b | yes | 134 ms, verified B | pass, attempt 1 | 132 ms, pass |
   | 5bbfb646 | yes | 155 ms, verified B | pass, attempt 1 | 171 ms, pass |
+  | 5652f117 | no | 0.3 ms | pass, attempt 1 | 69 ms, pass |
 
   Each `prepare` paid B's contact address yYyXvcRUyj12iqbpvWsAtXgenAM9YKzax9 (txid cbe51e9a…, never
   broadcast). An earlier head (dc87f1ca) refused at `prepare` because B's name landed between the gate and
