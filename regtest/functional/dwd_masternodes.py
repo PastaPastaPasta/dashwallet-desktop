@@ -31,7 +31,8 @@ Checks, in order:
  3. tracking: `find` by service address, `track`, `already_tracked`, attach and check keys
     (`matched`, `key_mismatch`, `unchecked`), labels, `untrack` deleting the keys (none attached
     once tracked again); every `mn` subcommand given a secret-shaped 64 hex repeats it nowhere;
-    after D's voting key is rotated, its attached key reads `key_mismatch` and `voting: false`;
+    after D's voting key is rotated, its attached key reads `key_mismatch` and `voting: false`, and
+    `unchecked` (still no vote) without the synced list;
  4. payouts: the wallet's payouts of A and C equal Core's coinbase payments to their payout
     addresses, newest first, and mature after 100 blocks;
  5. status transitions of A: `protx revoke` (Core bans a revoked masternode) makes it
@@ -387,6 +388,11 @@ class DwdMasternodes(DashTestFramework):
         # a fresh process: the id came back from app.sqlite, the list is the new one
         d = self.row(dw.mn(rotated, "list"), mn_d)
         assert_equal(d["roles"]["attached"], [{"role": "voting", "key_id": key_id(voting_d), "check": "key_mismatch"}])
+        assert_equal(d["roles"]["voting"], False)
+        # without SPV the list isn't synced: the key is unchecked, which holds no vote (D29)
+        line = json.loads(dw.run("mn", "list").stdout.strip().splitlines()[-1])
+        d = self.row(line["result"], mn_d)
+        assert_equal(d["roles"]["attached"], [{"role": "voting", "key_id": key_id(voting_d), "check": "unchecked"}])
         assert_equal(d["roles"]["voting"], False)
         assert_equal(dw.mn(rotated, "untrack", mn_d), {"keys_deleted": 1})
 
