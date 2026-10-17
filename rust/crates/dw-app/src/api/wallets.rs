@@ -606,6 +606,25 @@ commands! {
         Ok(state.session().await?.receive_username(id).await?)
     }
 
+    /// "Include my username in payment requests" for the wallet (DP3-03b);
+    /// on by default. Off, `receiveUsername` is `null` and requests carry
+    /// no username.
+    #[facade("NetworkSession::username_in_requests")]
+    fn username_in_requests(state, wallet_id: String) -> bool {
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(state.session().await?.username_in_requests(id).await?)
+    }
+
+    #[facade("NetworkSession::set_username_in_requests")]
+    fn set_username_in_requests(state, wallet_id: String, on: bool) -> () {
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(state
+            .session()
+            .await?
+            .set_username_in_requests(id, on)
+            .await?)
+    }
+
     #[facade("NetworkSession::delete_receive_request")]
     fn delete_receive_request(state, wallet_id: String, request_id: u64) -> () {
         let id = parse_wallet_id(&wallet_id)?;
