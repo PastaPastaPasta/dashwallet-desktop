@@ -82,7 +82,9 @@ impl From<dw_engine::EngineError> for LabelsError {
             E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
             E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
-            E::StorageInUse(_) | E::Storage(_) | E::Io(_) => Self::Storage { detail },
+            E::StorageInUse(_) | E::Storage(_) | E::StorageTooNew(_) | E::Io(_) => {
+                Self::Storage { detail }
+            }
             E::NotImplemented(_) => Self::NotImplemented { call: detail },
             _ => Self::Internal { detail },
         }

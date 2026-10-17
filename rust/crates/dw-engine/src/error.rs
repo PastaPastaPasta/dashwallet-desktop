@@ -21,6 +21,12 @@ pub enum EngineError {
     StorageInUse(String),
     #[error("storage error: {0}")]
     Storage(String),
+    /// The wallet database was written by a newer build: its upstream or its
+    /// fork schema history is beyond what this build knows (DP3-04b D35).
+    /// Nothing was changed; the newer build, or a backup this build wrote,
+    /// opens it.
+    #[error("this wallet file was written by a newer build: {0}")]
+    StorageTooNew(String),
     #[error("wallet not found: {0}")]
     WalletNotFound(String),
     /// The phrase is not a valid BIP39 mnemonic in any supported wordlist.
@@ -153,6 +159,7 @@ impl EngineError {
             EngineError::NetworkNotOpen(_) => "network_not_open",
             EngineError::StorageInUse(_) => "storage_in_use",
             EngineError::Storage(_) => "storage",
+            EngineError::StorageTooNew(_) => "storage_too_new",
             EngineError::WalletNotFound(_) => "wallet_not_found",
             EngineError::InvalidMnemonic(_) => "invalid_mnemonic",
             EngineError::WalletAlreadyExists(_) => "wallet_already_exists",
@@ -229,6 +236,18 @@ impl From<WalletStorageError> for EngineError {
     fn from(e: WalletStorageError) -> Self {
         match e {
             WalletStorageError::AlreadyOpen { .. } => EngineError::StorageInUse(e.to_string()),
+            WalletStorageError::SchemaVersionUnsupported {
+                found,
+                max_supported,
+            } => EngineError::StorageTooNew(format!(
+                "schema version {found}, this build supports up to {max_supported}"
+            )),
+            WalletStorageError::ForkSchemaVersionUnsupported {
+                found,
+                max_supported,
+            } => EngineError::StorageTooNew(format!(
+                "fork schema version {found}, this build supports up to {max_supported}"
+            )),
             other => EngineError::Storage(other.to_string()),
         }
     }
