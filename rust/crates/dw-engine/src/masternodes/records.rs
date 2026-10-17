@@ -76,8 +76,9 @@ pub enum KeyCheck {
     /// was listed after the key was attached). `attach_key` refuses one,
     /// so only reads report it.
     KeyMismatch,
-    /// Nothing known to check it against (not listed, no ProRegTx held, or
-    /// a payout script that may be stale, D19).
+    /// Nothing known to check it against (the list not synced, not listed,
+    /// no ProRegTx held, or a payout script that may be stale, D19). An
+    /// unchecked voting key holds no role (D29).
     Unchecked,
 }
 
@@ -94,9 +95,15 @@ pub struct AttachedKey {
 
 impl AttachedKey {
     /// Whether the key gives the wallet its role: recorded, and not a
-    /// mismatch.
+    /// mismatch. A ProUpRegTx can rotate the voting key, so only a match
+    /// with the synced list holds it (D29).
     pub fn holds(&self) -> bool {
-        self.key_id.is_some() && self.check != KeyCheck::KeyMismatch
+        self.key_id.is_some()
+            && match self.check {
+                KeyCheck::Matched => true,
+                KeyCheck::KeyMismatch => false,
+                KeyCheck::Unchecked => self.role != AttachedKeyRole::Voting,
+            }
     }
 }
 
@@ -207,8 +214,9 @@ pub struct MasternodeRow {
     /// The wallet has a role through its own provider transactions.
     pub mine: bool,
     pub tracked: bool,
-    /// A version-3 ProRegTx/ProUpRegTx (or list entry) the pinned library
-    /// can't decode: its payouts may be shared (Core v24 `payouts` and
+    /// A version-3 ProRegTx/ProUpRegTx, or a list entry seen at version 3
+    /// (remembered, D29), the pinned library can't decode: its payouts may
+    /// be shared (Core v24 `payouts` and
     /// `shares`), so the keys and payout aren't reported and its payouts
     /// are left out of every total (MG-03 D25; shares are MG-03b).
     pub shared_unsupported: bool,
@@ -251,7 +259,10 @@ pub struct MasternodeOverview {
     pub collateral_coins: Vec<CollateralCoin>,
     /// Payouts to this wallet in the last 30 days, all masternodes.
     pub payouts_30d: u64,
-    /// A row is `shared_unsupported`: its payouts aren't in `payouts_30d`.
+    /// A row is `shared_unsupported`, so its payouts aren't in
+    /// `payouts_30d`; or, while the list has a version-3 entry, a coinbase
+    /// output in the window pays no row, which may be a share the wallet
+    /// can't attribute (D29).
     pub payouts_incomplete: bool,
 }
 

@@ -13,7 +13,7 @@ use zeroize::Zeroizing;
 use platform_wallet::masternode::MasternodeListSummary;
 
 use super::aggregate::OwnedMasternode;
-use super::follow::{all_owned, key_id, read_list, set_key_id, set_label};
+use super::follow::{all_owned, key_id, load_notes, read_list, set_key_id, set_label};
 use super::reads::{list_facts, not_found};
 use super::records::{AttachedKeyRole, KeyCheck, ListedMasternode, UntrackOutcome};
 use super::{Masternodes, MasternodesError, display_hex, parse_pro_tx_hash};
@@ -90,16 +90,19 @@ pub(super) struct KeyReferences {
 
 impl KeyReferences {
     /// From the list entry and a loaded wallet's record; a record built
-    /// from a version-3 payload is misread, so not used (D25).
+    /// from a version-3 payload is misread, so not used (D25), and a
+    /// `shared` masternode's payout isn't one script (D29).
     pub(super) fn new(
         entry: Option<&MasternodeListSummary>,
         owned: Option<&OwnedMasternode>,
+        shared: bool,
     ) -> Self {
         let record = owned.filter(|o| !o.shared_unsupported).map(|o| &o.record);
         Self {
             voting: entry.map(|e| e.voting_key_id),
             owner: record.and_then(|r| r.owner_key_hash),
             payout: record
+                .filter(|_| !shared)
                 .and_then(|r| r.payout_script.clone())
                 .map(ScriptBuf::from)
                 .filter(|s| s.is_p2pkh()),
@@ -146,7 +149,15 @@ async fn references(
             .find(|o| o.record.pro_tx_hash == hash)
     })
     .await?;
-    Ok(KeyReferences::new(list.entry(&hash), owned.as_ref()))
+    let key = display_hex(&hash);
+    let seen = session
+        .appdb_op(move |db| Ok(load_notes(db)?.shared_seen.contains(&key)))
+        .await?;
+    let entry = list.entry(&hash);
+    let shared = seen
+        || entry.is_some_and(|e| e.has_extended_net_info)
+        || owned.as_ref().is_some_and(|o| o.shared_unsupported);
+    Ok(KeyReferences::new(entry, owned.as_ref(), shared))
 }
 
 /// Forgets the recorded ids of `hash`'s keys of `roles`. The keys are gone
@@ -308,6 +319,9 @@ impl Masternodes {
         drop(key);
         let _mutation = self.session.masternodes.mutation().await;
         self.require_tracked(&hash)?;
+        // The id is cleared before the vault write and recorded after it, so
+        // a failure between them leaves a key without an id, which holds no
+        // role, never an id that names a key the vault doesn't hold (D24).
         let key = display_hex(&hash);
         let (check, previous) = self
             .op(move |session| async move {
@@ -318,7 +332,7 @@ impl Masternodes {
                 let previous = session
                     .appdb_op(move |db| {
                         let previous = key_id(db, &key, role)?;
-                        set_key_id(db, &key, role, Some(id))?;
+                        set_key_id(db, &key, role, None)?;
                         Ok(previous)
                     })
                     .await?;
@@ -329,19 +343,24 @@ impl Masternodes {
             .session
             .vault_op(move |v| v.store_masternode_key(&hash, role.vault_name(), &secret[..]))
             .await;
-        if let Err(e) = stored {
+        let key = display_hex(&hash);
+        let (recorded, failed) = match stored {
+            Ok(()) => (Some(id), None),
             // The vault still holds the key it had, if any.
-            let key = display_hex(&hash);
-            let restored = self
-                .session
-                .appdb_op(move |db| set_key_id(db, &key, role, previous))
-                .await;
-            if let Err(e) = restored {
+            Err(e) => (previous, Some(e)),
+        };
+        let written = self
+            .session
+            .appdb_op(move |db| set_key_id(db, &key, role, recorded))
+            .await;
+        self.session.masternodes.local_change();
+        if let Some(e) = failed {
+            if let Err(e) = written {
                 tracing::warn!(error = %e, "could not restore an attached key's id");
             }
             return Err(e.into());
         }
-        self.session.masternodes.local_change();
+        written?;
         Ok(check)
     }
 
@@ -424,6 +443,47 @@ mod tests {
         for role in ROLES {
             assert_eq!(none.check(role, id), KeyCheck::Unchecked);
         }
+    }
+
+    /// A version-3 masternode's payout isn't one script; its owner key, from
+    /// a version-2 record, still reads right (D29).
+    #[test]
+    fn a_shared_masternode_has_no_payout_reference() {
+        use super::super::aggregate::aggregate;
+        use super::super::aggregate::fixtures::{coins, null, registration};
+        use dw_protx::params::MASTERNODE_COLLATERAL;
+        let tx = registration(null(0), false, 0, coins(&[MASTERNODE_COLLATERAL]));
+        let owned = aggregate(&[(10, 0, tx)]);
+        let (plain, shared) = (
+            KeyReferences::new(None, owned.first(), false),
+            KeyReferences::new(None, owned.first(), true),
+        );
+        assert!(plain.payout.is_some() && shared.payout.is_none());
+        assert_eq!(shared.owner, Some([1; 20]));
+    }
+
+    /// An attached voting key holds only while it matches the synced list:
+    /// rotated, or not checked yet (the list not synced), it doesn't (D29).
+    #[test]
+    fn only_a_matched_voting_key_holds() {
+        use super::super::records::AttachedKey;
+        let key = |role, check| AttachedKey {
+            role,
+            key_id: Some("07".repeat(20)),
+            check,
+        };
+        use AttachedKeyRole::{Owner, Payout, Voting};
+        assert!(key(Voting, KeyCheck::Matched).holds());
+        assert!(!key(Voting, KeyCheck::KeyMismatch).holds());
+        assert!(!key(Voting, KeyCheck::Unchecked).holds());
+        assert!(key(Owner, KeyCheck::Unchecked).holds());
+        assert!(key(Payout, KeyCheck::Unchecked).holds());
+        assert!(!key(Owner, KeyCheck::KeyMismatch).holds());
+        let unrecorded = AttachedKey {
+            key_id: None,
+            ..key(Owner, KeyCheck::Unchecked)
+        };
+        assert!(!unrecorded.holds());
     }
 
     #[test]

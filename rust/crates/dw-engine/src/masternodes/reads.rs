@@ -179,14 +179,15 @@ impl WalletView {
         self.owned(hash).filter(|o| !o.shared_unsupported)
     }
 
-    /// A version-3 ProRegTx/ProUpRegTx in the wallet, or a version-3 list
-    /// entry: its payouts may be shared (D25).
+    /// A version-3 ProRegTx/ProUpRegTx in the wallet, or a list entry seen
+    /// at version 3, now or before (D29): its payouts may be shared (D25).
     fn shared_unsupported(&self, hash: &[u8; 32]) -> bool {
         self.owned(hash).is_some_and(|o| o.shared_unsupported)
             || self
                 .list
                 .entry(hash)
                 .is_some_and(|e| e.has_extended_net_info)
+            || self.notes.shared_seen.contains(&display_hex(hash))
     }
 
     fn tracked(&self, hash: &[u8; 32]) -> Option<&TrackedMasternode> {
@@ -269,7 +270,7 @@ impl WalletView {
             .cloned()
             .unwrap_or_default();
         let owned = self.tracked_owned.get(hash).or_else(|| self.owned(hash));
-        let refs = KeyReferences::new(self.list.entry(hash), owned);
+        let refs = KeyReferences::new(self.list.entry(hash), owned, self.shared_unsupported(hash));
         let key = display_hex(hash);
         Some(
             roles
@@ -288,8 +289,10 @@ impl WalletView {
 
     /// The roles, and whether the wallet holds one through its own provider
     /// transactions ("mine", §3), which an attached key doesn't make it. A
-    /// shared masternode whose provider transaction the wallet holds is
-    /// "mine" whatever its roles, which can't be read (D25).
+    /// version-3 provider transaction the wallet holds makes it "mine"
+    /// whatever its roles, which can't be read (D25). A version-3 list entry
+    /// hides the payout role, but a payout the wallet's own record names
+    /// still ties it to the wallet (D29).
     fn roles(&self, hash: &[u8; 32]) -> (MasternodeRoles, bool) {
         let owned = self.owned(hash);
         let decoded = self.decoded(hash);
@@ -318,13 +321,12 @@ impl WalletView {
             .payout_script(hash)
             .is_some_and(|s| self.own_scripts.contains(&s));
         let operator = operator_key.is_some_and(|k| self.operator_keys.contains(&k));
-        let mine = owned.is_some()
-            && (self.shared_unsupported(hash)
-                || collateral
-                || owner
-                || voting
-                || payout
-                || operator);
+        let paid = decoded
+            .and_then(|o| o.record.payout_script.clone())
+            .map(ScriptBuf::from)
+            .is_some_and(|s| self.own_scripts.contains(&s));
+        let mine = owned.is_some_and(|o| o.shared_unsupported)
+            || owned.is_some() && (collateral || owner || voting || paid || operator);
         let roles = MasternodeRoles {
             collateral,
             owner: owner || holds(AttachedKeyRole::Owner),
@@ -422,10 +424,22 @@ impl WalletView {
                 height: self.list.height,
             },
             collateral_coins: self.collateral_coins(&masternodes),
-            payouts_incomplete: masternodes.iter().any(|r| r.shared_unsupported),
+            payouts_incomplete: masternodes.iter().any(|r| r.shared_unsupported)
+                || self.unattributed_payouts(&addresses),
             masternodes,
             payouts_30d,
         }
+    }
+
+    /// While the list has a version-3 entry, a coinbase output in the window
+    /// that pays no row may be the wallet's share of one (D29).
+    fn unattributed_payouts(&self, addresses: &HashSet<&str>) -> bool {
+        let since = self.window_start();
+        self.list.entries.iter().any(|e| e.has_extended_net_info)
+            && self.generated.iter().any(|r| {
+                at_or_after(r.timestamp, since)
+                    && !r.address.as_deref().is_some_and(|a| addresses.contains(a))
+            })
     }
 
     /// Unspent outputs of exactly a collateral amount that are no listed
@@ -915,6 +929,25 @@ mod tests {
         }
     }
 
+    /// A synced list of `tx`'s masternode, at version 3 when `shared`.
+    fn listed(tx: &Transaction, shared: bool) -> ListView {
+        ListView {
+            synced: true,
+            height: Some(100),
+            entries: vec![MasternodeListSummary {
+                pro_tx_hash: tx.txid().to_byte_array(),
+                service_address: None,
+                platform_http_port: None,
+                operator_public_key: [2; 48],
+                voting_key_id: [3; 20],
+                platform_node_id: None,
+                is_valid: true,
+                is_evonode: false,
+                has_extended_net_info: shared,
+            }],
+        }
+    }
+
     /// A version-3 registration stays in Mine, flagged, with no payout and
     /// none of its payouts in a total (D25).
     #[test]
@@ -961,28 +994,50 @@ mod tests {
 
         // A version-3 list entry flags a version-2 registration too: a
         // ProUpRegTx the wallet doesn't hold may have shared its payout.
-        let hash = plain.txid().to_byte_array();
-        let entry = MasternodeListSummary {
-            pro_tx_hash: hash,
-            service_address: None,
-            platform_http_port: None,
-            operator_public_key: [2; 48],
-            voting_key_id: [3; 20],
-            platform_node_id: None,
-            is_valid: true,
-            is_evonode: false,
-            has_extended_net_info: true,
-        };
-        let list = ListView {
-            synced: true,
-            height: Some(100),
-            entries: vec![entry],
-        };
-        let v = view(&[plain], list, vec![reward(4, 500)]);
+        let v = view(
+            std::slice::from_ref(&plain),
+            listed(&plain, true),
+            vec![reward(4, 500)],
+        );
         let overview = v.overview();
-        assert!(overview.masternodes[0].shared_unsupported);
+        let row = &overview.masternodes[0];
+        assert!(row.shared_unsupported && !row.roles.payout);
+        assert!(row.mine, "its own record pays the wallet (D29)");
         assert_eq!(overview.payouts_30d, 0);
         assert!(overview.payouts_incomplete);
+
+        // Remembered once seen, before the list syncs (D29).
+        let mut v = view(
+            std::slice::from_ref(&plain),
+            ListView::default(),
+            vec![reward(4, 500)],
+        );
+        v.notes
+            .shared_seen
+            .insert(display_hex(&plain.txid().to_byte_array()));
+        assert!(v.overview().masternodes[0].shared_unsupported);
+    }
+
+    /// A fee the wallet paid for someone's provider transaction makes no
+    /// row, even at version 3; while the list has a version-3 entry, a
+    /// coinbase output that pays no row leaves the total incomplete (D29).
+    #[test]
+    fn unattributed_coinbase_income_marks_the_total_incomplete() {
+        let foreign = with_payout(
+            registration(null(0), false, 0, coins(&[MASTERNODE_COLLATERAL])),
+            9,
+        );
+        for shared in [false, true] {
+            let v = view(
+                std::slice::from_ref(&foreign),
+                listed(&foreign, shared),
+                vec![reward(4, 500)],
+            );
+            let overview = v.overview();
+            assert!(overview.masternodes.is_empty(), "a fee is no role");
+            assert_eq!(overview.payouts_30d, 0);
+            assert_eq!(overview.payouts_incomplete, shared);
+        }
     }
 
     #[test]

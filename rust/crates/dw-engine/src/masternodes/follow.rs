@@ -30,6 +30,8 @@ const EVENT_INTERVAL: Duration = Duration::from_secs(1);
 const LABEL: &str = "masternodes.label:";
 const BANNED_SEEN: &str = "masternodes.banned_seen:";
 const LISTED_SEEN: &str = "masternodes.listed_seen:";
+/// A list entry was seen at version 3; it never goes back (D29).
+const SHARED_SEEN: &str = "masternodes.shared_seen:";
 /// `masternodes.key:<hash>:<role>`: the hash160 of an attached key.
 const KEY_ID: &str = "masternodes.key:";
 
@@ -110,6 +112,7 @@ pub(crate) struct Notes {
     pub labels: HashMap<String, String>,
     pub banned_seen: HashMap<String, u64>,
     pub listed_seen: HashSet<String>,
+    pub shared_seen: HashSet<String>,
     /// The id of each attached key, recorded at attach (D24).
     pub key_ids: HashMap<(String, AttachedKeyRole), [u8; 20]>,
 }
@@ -125,6 +128,8 @@ pub(crate) fn load_notes(db: &AppDb) -> Result<Notes, AppDbError> {
             }
         } else if let Some(hash) = key.strip_prefix(LISTED_SEEN) {
             notes.listed_seen.insert(hash.into());
+        } else if let Some(hash) = key.strip_prefix(SHARED_SEEN) {
+            notes.shared_seen.insert(hash.into());
         } else if let Some((hash, role)) = key
             .strip_prefix(KEY_ID)
             .and_then(|rest| rest.split_once(':'))
@@ -370,19 +375,26 @@ impl MasternodesRuntime {
     }
 }
 
-/// Writes the first sighting of each ban and of each listing, and forgets a
-/// ban once the masternode is valid again (MG-00 D9).
+/// Writes the first sighting of each ban, of each listing and of a
+/// version-3 entry (D29), and forgets a ban once the masternode is valid
+/// again (MG-00 D9).
 fn record_sightings(db: &AppDb, seen: &Seen, now: u64) -> Result<(), AppDbError> {
     let notes = load_notes(db)?;
     for (hash, entry) in seen {
         let Some(entry) = entry else { continue };
         let key = super::display_hex(hash);
-        if !notes.listed_seen.contains(&key) {
+        let note = |prefix: &str| {
             db.set_setting(
                 GLOBAL_SCOPE,
-                &format!("{LISTED_SEEN}{key}"),
+                &format!("{prefix}{key}"),
                 Some(&now.to_string()),
-            )?;
+            )
+        };
+        if !notes.listed_seen.contains(&key) {
+            note(LISTED_SEEN)?;
+        }
+        if entry.has_extended_net_info && !notes.shared_seen.contains(&key) {
+            note(SHARED_SEEN)?;
         }
         match (entry.is_valid, notes.banned_seen.contains_key(&key)) {
             (false, false) => db.set_setting(
@@ -434,6 +446,7 @@ mod tests {
             1,
             "an unlisted masternode is not noted"
         );
+        assert!(notes.shared_seen.is_empty());
 
         let valid: Seen = [([1; 32], Some(summary(1, true)))].into();
         record_sightings(&db, &valid, 300).unwrap();
@@ -447,6 +460,58 @@ mod tests {
             Some(&400),
             "a new ban is a new sighting"
         );
+    }
+
+    /// A version-3 entry is remembered, so the row stays flagged before the
+    /// list syncs and after the masternode leaves it (D29).
+    #[test]
+    fn a_version_3_entry_is_remembered() {
+        let db = AppDb::open_in_memory().unwrap();
+        let key = super::super::display_hex(&[1; 32]);
+        let mut shared = summary(1, true);
+        shared.has_extended_net_info = true;
+        record_sightings(&db, &[([1; 32], Some(shared))].into(), 100).unwrap();
+        record_sightings(&db, &[([1; 32], None)].into(), 200).unwrap();
+        assert!(load_notes(&db).unwrap().shared_seen.contains(&key));
+    }
+
+    /// Every wallet-set event reaches the sink and bumps the generation, so
+    /// the follower re-reads at an unchanged height; others don't (D28).
+    #[test]
+    fn a_wallet_set_change_bumps_the_generation() {
+        struct Record(Mutex<Vec<String>>);
+        impl EventSink for Record {
+            fn emit(&self, event: EngineEvent) {
+                self.0.lock().unwrap().push(format!("{event:?}"));
+            }
+        }
+        let sink = Arc::new(Record(Mutex::default()));
+        let changes = Arc::new(Changes::default());
+        let watch = WalletSetWatch {
+            sink: sink.clone(),
+            changes: Arc::clone(&changes),
+        };
+        let (network, wallet_id) = (DashNetwork::Regtest, WalletId([7; 32]));
+        for event in [
+            EngineEvent::WalletCreated {
+                network: network.clone(),
+                wallet_id,
+            },
+            EngineEvent::WalletLoadChanged {
+                network: network.clone(),
+                wallet_id,
+                loaded: false,
+            },
+            EngineEvent::WalletRemoved { network, wallet_id },
+        ] {
+            watch.emit(event);
+        }
+        assert_eq!(changes.generation.load(Ordering::SeqCst), 3);
+        watch.emit(EngineEvent::Masternodes {
+            network: DashNetwork::Regtest,
+        });
+        assert_eq!(changes.generation.load(Ordering::SeqCst), 3);
+        assert_eq!(sink.0.lock().unwrap().len(), 4, "every event is passed on");
     }
 
     #[test]
@@ -500,7 +565,7 @@ mod tests {
         );
 
         let key = |entry: Option<&MasternodeListSummary>| {
-            let check = KeyReferences::new(entry, None).check(AttachedKeyRole::Voting, id);
+            let check = KeyReferences::new(entry, None, false).check(AttachedKeyRole::Voting, id);
             AttachedKey {
                 role: AttachedKeyRole::Voting,
                 key_id: Some(hex::encode(id)),

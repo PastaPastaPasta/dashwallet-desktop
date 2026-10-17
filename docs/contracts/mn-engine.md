@@ -75,7 +75,7 @@ Every call here sends §6's event after it changes something.
 | `track(pro_tx_hash: String, label: Option<String>)` | async | Adds a masternode of the synced list to platform-wallet's registry (wallet.sqlite; it belongs to the network, D13). Returns its `ListedMasternode`. Refusals in order: `invalid_argument` (hash, or a label over `MAX_MASTERNODE_LABEL` characters after trimming), `masternodes.list_unavailable`, `masternodes.not_found` (not in the list, D7), `masternodes.already_tracked`. **Implemented.** | `MasternodesError` |
 | `untrack(pro_tx_hash: String)` | async | Deletes the attached keys first, then the registry row (MG-00 D22). Returns `UntrackOutcome { keys_deleted }`; the keys' recorded ids go too (D24). `invalid_argument`, `masternodes.not_tracked`; a vault that can't delete (locked: `vault`) leaves it tracked. The event is sent once keys were deleted, even if the registry row then couldn't be removed. **Implemented.** | `MasternodesError` |
 | `set_label(pro_tx_hash: String, label: Option<String>)` | async | Trims the label; blank or `None` clears it (back to the default name, `type_index`). A tracked masternode's label is the registry's; a loaded wallet's masternode's or a listed one's is kept in app.sqlite (D12). Refusals in order: `invalid_argument` for a malformed hash or a label over `MAX_MASTERNODE_LABEL` characters, then for any other hash `masternodes.not_found`, or `masternodes.list_unavailable` while the list that might hold it isn't synced (D27). **Implemented.** | `MasternodesError` |
-| `attach_key(pro_tx_hash: String, role: AttachedKeyRole, key: Zeroizing<String>)` | async | Stores a WIF (mainnet's for mainnet, a test network's otherwise) or 64-hex secp256k1 secret for `role` of a tracked masternode, replacing an earlier one. Checked first (MG-00 D13): `voting` against the synced list's voting key id (`masternodes.list_unavailable` while it isn't synced; `unchecked` when the list no longer holds it); `owner` against the owner key id of a ProRegTx/ProUpRegTx a loaded wallet holds, otherwise `unchecked`; `payout` is `matched` when it pays that wallet's P2PKH payout script, otherwise `unchecked`, never refused (that script can be stale, D19). The hash160 of its public key is recorded in app.sqlite before the vault write (restored if that fails), and every read compares it again (§5, D24). Tracking changes (`track`, `untrack`, `set_label`, `attach_key`, `detach_key`) run one at a time per session, so a key can't be stored for a masternode an `untrack` is removing. Returns `KeyCheck`. Refusals in order: `invalid_argument` (hash, key), `masternodes.not_tracked`, `masternodes.list_unavailable`, `masternodes.key_mismatch{role}`, then the vault's (`vault`, for one without the full-scope data key). **Implemented.** | `MasternodesError` |
+| `attach_key(pro_tx_hash: String, role: AttachedKeyRole, key: Zeroizing<String>)` | async | Stores a WIF (mainnet's for mainnet, a test network's otherwise) or 64-hex secp256k1 secret for `role` of a tracked masternode, replacing an earlier one. Checked first (MG-00 D13): `voting` against the synced list's voting key id (`masternodes.list_unavailable` while it isn't synced; `unchecked` when the list no longer holds it); `owner` against the owner key id of a ProRegTx/ProUpRegTx a loaded wallet holds, otherwise `unchecked`; `payout` is `matched` when it pays that wallet's P2PKH payout script, otherwise `unchecked`, never refused (that script can be stale, D19). The hash160 of its public key is recorded in app.sqlite: the old id is cleared before the vault write and the new one recorded after it (the old one restored if the write fails), and every read compares it again (§5, D24). Tracking changes (`track`, `untrack`, `set_label`, `attach_key`, `detach_key`) run one at a time per session, so a key can't be stored for a masternode an `untrack` is removing. Returns `KeyCheck`. Refusals in order: `invalid_argument` (hash, key), `masternodes.not_tracked`, `masternodes.list_unavailable`, `masternodes.key_mismatch{role}`, then the vault's (`vault`, for one without the full-scope data key). **Implemented.** | `MasternodesError` |
 | `detach_key(pro_tx_hash: String, role: AttachedKeyRole)` | async | Deletes the key attached for `role`, then its recorded id. Returns whether there was one. `invalid_argument`, `masternodes.not_tracked`, then the vault's. **Implemented.** | `MasternodesError` |
 
 ## 3. Surface (generated)
@@ -344,20 +344,24 @@ Each `AttachedKey` (D24) carries its role, `key_id` (the hash160 recorded at att
 before ids were kept) and `check`, compared on every read with what the wallet knows then: `voting` with the synced
 list's voting key id (`matched` / `key_mismatch`; `unchecked` while it isn't listed or the list isn't synced),
 `owner` with the owner key id of a ProRegTx a loaded wallet holds (`matched` / `key_mismatch`, else `unchecked`),
-`payout` with that wallet's P2PKH payout script (`matched`, else `unchecked`, D19). A key holds its role when it has a
-`key_id` and isn't `key_mismatch`: a voting key a ProUpRegTx rotated away, or one attached `unchecked` before the
-masternode was listed with another key, reports `voting: false` (MG-00 D13).
+`payout` with that wallet's P2PKH payout script (`matched`, else `unchecked`, D19; none for a `shared_unsupported`
+one). A key holds its role when it has a `key_id` and isn't `key_mismatch`, and a voting key only when `matched`
+(D29): a voting key a ProUpRegTx rotated away, one attached `unchecked` before the masternode was listed with another
+key, or any voting key while the list isn't synced reports `voting: false` (MG-00 D13).
 
 A row is `mine` when the wallet holds one of these roles through its own provider transactions (an attached key
 doesn't count); a provider transaction that gives it none (it paid the fee of someone's ProRegTx) makes no row.
 
 `shared_unsupported` (D25): a version-3 ProRegTx or ProUpRegTx among the wallet's provider transactions, or a version-3
-(extended network info) list entry. Core v24 replaced `scriptPayout` with `payouts` and `shares` in that version; the
+(extended network info) list entry, now or remembered from an earlier sighting (D29). Core v24 replaced `scriptPayout` with `payouts` and `shares` in that version; the
 pinned library reads it with the version-2 layout, so only the type, mode and collateral (and a ProUpRegTx's ProTx
 hash) read right. Such a row reports no `owner`, `voting`, `payout` or `operator` role from that record, no payout
 address or registration keys, no payouts (`payouts()` refuses, `payouts_30d` 0), and the overview's
-`payouts_incomplete` is set: its total leaves those out. It stays `mine` when a provider transaction of it is in the
-wallet's history. The share table, per-share payouts and ProUpShareTx / ProUpSharedRegTx are MG-03b.
+`payouts_incomplete` is set: its total leaves those out. It stays `mine` when a version-3 provider transaction of it is
+in the wallet's history, or when the wallet's own version-2 record names a role (its payout counting, though hidden);
+a list entry alone doesn't make it `mine` (D29). `payouts_incomplete` is also set while the synced list has any
+version-3 entry and a coinbase output to the wallet in the 30-day window pays no row: it may be a share the wallet
+can't attribute (D29). The share table, per-share payouts and ProUpShareTx / ProUpSharedRegTx are MG-03b.
 
 ## 6. Events
 
@@ -377,3 +381,4 @@ their list entries changed. A §2.2 call sends it too, and so does a change of t
 | Attached keys | the vault (`Vault::store_masternode_key`, MG-01 D7) |
 | Labels of untracked masternodes, `banned_seen`, `listed_seen` | app.sqlite `settings_kv`, global scope, keys `masternodes.label:<hash>`, `masternodes.banned_seen:<hash>`, `masternodes.listed_seen:<hash>` (no migration, D12) |
 | Attached keys' ids (hash160 of the public key, not secret) | app.sqlite `settings_kv`, global scope, `masternodes.key:<hash>:<role>` (D24) |
+| A version-3 list entry seen (never cleared) | app.sqlite `settings_kv`, global scope, `masternodes.shared_seen:<hash>` (D29) |
