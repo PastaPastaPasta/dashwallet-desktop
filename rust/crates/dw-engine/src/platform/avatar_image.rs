@@ -176,8 +176,9 @@ fn preshrunk(image: DynamicImage) -> DynamicImage {
 pub(super) struct Ingested {
     /// SHA-256 of the bytes, as the library computes `avatarHash`.
     pub(super) sha: [u8; 32],
-    /// The library's dHash of the bytes (`avatarFingerprint`).
-    pub(super) dhash: [u8; 8],
+    /// The library's dHash of the bytes (`avatarFingerprint`), made only
+    /// for a candidate: a read does not compare it (D32).
+    pub(super) dhash: Option<[u8; 8]>,
     pub(super) small: Vec<u8>,
     pub(super) large: Vec<u8>,
 }
@@ -191,13 +192,18 @@ impl Ingested {
     }
 }
 
-/// Fetched (or file) bytes to their hash, fingerprint and thumbnails. The
-/// bytes are decoded within the limits first; only then do the library's
-/// functions see them (its dHash decodes them again, unbounded, so this
-/// order is what bounds it: the same formats, sniffed the same way). The
-/// thumbnails are made, and the full-size picture dropped, before that
-/// second decode. A panic anywhere is `avatar.unsupported`.
-pub(super) fn ingest(bytes: &[u8], crop: Option<Crop>) -> Result<Ingested, AvatarError> {
+/// Fetched (or file) bytes to their hash, thumbnails and, with
+/// `fingerprint` (a candidate's), the library's dHash. The bytes are
+/// decoded within the limits first; only then does the library's dHash see
+/// them (it decodes them again, unbounded, so this order is what bounds it:
+/// the same formats, sniffed the same way). The thumbnails are made, and
+/// the full-size picture dropped, before that second decode. A read skips
+/// it (D32). A panic anywhere is `avatar.unsupported`.
+pub(super) fn ingest(
+    bytes: &[u8],
+    crop: Option<Crop>,
+    fingerprint: bool,
+) -> Result<Ingested, AvatarError> {
     guarded(|| {
         let (small, large) = {
             let image = preshrunk(cropped(decode(bytes)?, crop)?);
@@ -206,7 +212,9 @@ pub(super) fn ingest(bytes: &[u8], crop: Option<Crop>) -> Result<Ingested, Avata
                 thumbnail(&image, AvatarSize::Large.px())?,
             )
         };
-        let dhash = calculate_dhash_fingerprint(bytes).map_err(|_| AvatarError::Unsupported)?;
+        let dhash = fingerprint
+            .then(|| calculate_dhash_fingerprint(bytes).map_err(|_| AvatarError::Unsupported))
+            .transpose()?;
         Ok(Ingested {
             sha: calculate_avatar_hash(bytes),
             dhash,
@@ -231,7 +239,7 @@ pub(super) fn ingest_file(
         };
         png(&image)
     })?;
-    let ingested = ingest(&upload, None)?;
+    let ingested = ingest(&upload, None, true)?;
     Ok((upload, ingested))
 }
 

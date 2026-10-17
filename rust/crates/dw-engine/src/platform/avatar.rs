@@ -203,8 +203,9 @@ impl Pipeline {
         .unwrap_or(Err(AvatarError::Unsupported))
     }
 
-    /// Fetches and ingests `target`, and records the outcome in the index.
-    async fn fetch(&self, target: &Target) -> Result<Ingested, AvatarError> {
+    /// Fetches and ingests `target` (with the fingerprint for a candidate),
+    /// and records the outcome in the index.
+    async fn fetch(&self, target: &Target, fingerprint: bool) -> Result<Ingested, AvatarError> {
         let fetched = {
             let _permit = self.fetches.acquire().await;
             self.fetcher.fetch(&target.fetch).await
@@ -212,7 +213,7 @@ impl Pipeline {
         let crop = target.crop;
         let ingested = match fetched {
             Ok(bytes) => {
-                self.decoding(move || avatar_image::ingest(&bytes, crop))
+                self.decoding(move || avatar_image::ingest(&bytes, crop, fingerprint))
                     .await
             }
             Err(e) => {
@@ -286,7 +287,7 @@ impl Pipeline {
         if !network {
             return Ok(None);
         }
-        let ingested = self.fetch(&target).await?;
+        let ingested = self.fetch(&target, false).await?;
         if !avatar_image::matches(&hex::encode(ingested.sha), profile) {
             return Err(AvatarError::HashMismatch);
         }
@@ -308,7 +309,7 @@ impl Pipeline {
         })?;
         let lock = self.url_lock(&target.url_sha);
         let _one = lock.lock().await;
-        Ok((published, self.fetch(&target).await?))
+        Ok((published, self.fetch(&target, true).await?))
     }
 }
 
@@ -493,7 +494,7 @@ impl AvatarRuntime {
             wallet,
             url.clone(),
             ingested.sha,
-            ingested.dhash,
+            ingested.dhash.ok_or(AvatarError::Unsupported)?,
             upload,
         ));
         Ok(AvatarCandidate {

@@ -306,7 +306,7 @@ impl AvatarStore {
         self.put(&AvatarRow {
             url_sha: url_sha.to_owned(),
             content_sha: Some(hex::encode(ingested.sha)),
-            dhash: Some(hex::encode(ingested.dhash)),
+            dhash: ingested.dhash.map(hex::encode),
             status: "ok".into(),
             file,
             fetched_at: now,

@@ -822,6 +822,19 @@ impl From<std::io::Error> for CliError {
     }
 }
 
+/// A picture file (`--file`, `--avatar-file`): read up to one byte over
+/// the engine's 5 MiB cap, so a larger file (or `/dev/zero`) is
+/// `avatar.too_large` without being read whole.
+fn read_picture(path: &Path) -> Result<Vec<u8>, CliError> {
+    use std::io::Read as _;
+    const CAP: u64 = (5 << 20) + 1;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(CAP)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 /// The line a command prints.
 pub(crate) fn envelope(result: &Result<Value, CliError>) -> Value {
     match result {
@@ -1912,7 +1925,7 @@ fn profile_cmd(ctx: &Ctx, cmd: ProfileCmd) -> Result<Value, CliError> {
             let source = match (avatar_url, avatar_file) {
                 (Some(url), _) => Some(AvatarSource::Url { url }),
                 (_, Some(path)) => Some(AvatarSource::File {
-                    bytes: std::fs::read(&path)?,
+                    bytes: read_picture(&path)?,
                     crop: None,
                 }),
                 _ => None,
@@ -1959,7 +1972,7 @@ fn profile_cmd(ctx: &Ctx, cmd: ProfileCmd) -> Result<Value, CliError> {
             let src = match (url, file, gravatar) {
                 (Some(url), _, _) => AvatarSource::Url { url },
                 (_, Some(path), _) => AvatarSource::File {
-                    bytes: std::fs::read(&path)?,
+                    bytes: read_picture(&path)?,
                     crop: None,
                 },
                 (_, _, Some(email)) => AvatarSource::Gravatar { email },
@@ -2193,10 +2206,7 @@ mod tests {
             "profile prepare-avatar --url https://10.0.0.1/a.png",
             FETCH_FAILED,
         ),
-        (
-            "profile prepare-avatar --file /nonexistent/a.png",
-            r#"{"ok":false,"error":{"code":"io","message":"io error: No such file or directory (os error 2)","params":{}}}"#,
-        ),
+        ("profile prepare-avatar --file /nonexistent/a.png", NO_FILE),
         (
             "profile pictures --set off",
             r#"{"ok":true,"result":false}"#,
@@ -2239,6 +2249,11 @@ mod tests {
     const NO_IDENTITY: &str = r#"{"ok":false,"error":{"code":"identity.not_found","message":"identity: identity not found","params":{}}}"#;
 
     const NO_PLATFORM: &str = r#"{"ok":false,"error":{"code":"platform.unavailable","message":"platform unavailable","params":{}}}"#;
+    /// A missing `--file`, in the platform's words.
+    #[cfg(not(windows))]
+    const NO_FILE: &str = r#"{"ok":false,"error":{"code":"io","message":"io error: No such file or directory (os error 2)","params":{}}}"#;
+    #[cfg(windows)]
+    const NO_FILE: &str = r#"{"ok":false,"error":{"code":"io","message":"io error: The system cannot find the path specified. (os error 3)","params":{}}}"#;
     /// `avatar.fetch_failed` (DP4-02).
     const FETCH_FAILED: &str = r#"{"ok":false,"error":{"code":"avatar.fetch_failed","message":"avatar fetch failed","params":{}}}"#;
 
@@ -2911,6 +2926,15 @@ mod tests {
             );
         }
         engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// `/dev/zero` as a picture: read only to one byte over the cap, which
+    /// the engine refuses as `avatar.too_large`.
+    #[cfg(unix)]
+    #[test]
+    fn a_picture_file_is_read_only_past_the_cap() {
+        let bytes = read_picture(Path::new("/dev/zero")).unwrap();
+        assert_eq!(bytes.len(), (5 << 20) + 1);
     }
 
     #[test]

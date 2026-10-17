@@ -204,6 +204,11 @@ impl Server {
         format!("http://{host}:{}{path}", self.addr.port())
     }
 
+    /// Connections accepted, whatever was sent on them.
+    pub(super) fn connections(&self) -> usize {
+        self.connections.load(Ordering::SeqCst)
+    }
+
     pub(super) fn hits(&self) -> Vec<String> {
         self.hits.lock().unwrap().clone()
     }
@@ -329,7 +334,7 @@ fn set_mode(_: &Path, _: u32) {}
 
 // ---- acceptance fixtures ----
 
-/// A picture whose hash and fingerprint match is shown, as 128 and 256 px
+/// A picture whose hash matches is shown, as 128 and 256 px
 /// PNGs, and served from the cache next time (one request, one lookup).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_matching_avatar_is_shown_and_cached() {
@@ -608,7 +613,7 @@ async fn only_png_jpeg_and_gif_are_decoded() {
     let svg = b"<svg xmlns='http://www.w3.org/2000/svg'/>".to_vec();
     for body in [webp, svg, b"hello".to_vec(), Vec::new()] {
         assert_eq!(
-            avatar_image::ingest(&body, None),
+            avatar_image::ingest(&body, None, false),
             Err(AvatarError::Unsupported)
         );
     }
@@ -640,7 +645,7 @@ async fn androids_zoom_parameter_crops_the_picture() {
         [r, g, b]
     );
     // Uncropped, the centre is where the four quadrants meet: not red.
-    let whole = avatar_image::ingest(&bytes, None).unwrap();
+    let whole = avatar_image::ingest(&bytes, None, false).unwrap();
     assert_ne!(whole.small, thumb);
     assert_eq!(Crop::from_zoom("0,0,1"), None);
     assert_eq!(Crop::from_zoom("0.5,0,0.5,1"), None);
@@ -662,12 +667,20 @@ fn hash_and_dhash_equal_the_librarys() {
     ];
     let mut checked = 0;
     for bytes in fixtures.iter().chain(corpus().iter().map(|(_, b)| b)) {
-        let Ok(ingested) = avatar_image::ingest(bytes, None) else {
+        let Ok(ingested) = avatar_image::ingest(bytes, None, true) else {
             continue;
         };
         assert_eq!(ingested.sha, calculate_avatar_hash(bytes));
         assert_eq!(ingested.sha.to_vec(), sha2::Sha256::digest(bytes).to_vec());
-        assert_eq!(ingested.dhash, calculate_dhash_fingerprint(bytes).unwrap());
+        assert_eq!(
+            ingested.dhash,
+            Some(calculate_dhash_fingerprint(bytes).unwrap())
+        );
+        // A read skips the second decode (D32).
+        assert_eq!(
+            avatar_image::ingest(bytes, None, false).unwrap().dhash,
+            None
+        );
         checked += 1;
     }
     assert!(checked >= 8, "{checked}");
@@ -687,7 +700,7 @@ async fn thumbnails_are_written_through_the_directory_descriptor() {
     let bytes = png(64, 64);
     rig.server.route("/c.png", Route::ok(bytes.clone()));
     let profile = profile_for(&rig.server.url("good.test", "/c.png"), &bytes);
-    let ingested = avatar_image::ingest(&bytes, None).unwrap();
+    let ingested = avatar_image::ingest(&bytes, None, false).unwrap();
     let stem = super::avatar_cache::stem(&ingested.sha, None);
     let small = rig.dir.join(format!("{stem}-128.png"));
     // A symlink where the small thumbnail goes, pointing outside.

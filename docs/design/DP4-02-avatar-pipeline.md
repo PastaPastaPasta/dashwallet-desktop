@@ -36,12 +36,13 @@ to `dashpay_avatar`.
 3. **The cache index** (`dp_avatar`, keyed by the SHA-256 of the URL as published). Under the URL's fetch lock, so
    one fetch serves every caller asking for the same URL at once (D12):
    - a row `ok` whose content is the profile's `avatarHash`: the thumbnail is read through the directory descriptor,
-     re-decoded and its size checked (D10), and the profile's fingerprint compared (D6). Done;
+     re-decoded and its size checked (D10). Done (the fingerprint is not compared, D32);
    - a row `ok` with other content, or a failure row, younger than 10 minutes: no fetch (D11). Other content is
      `avatar.hash_mismatch`, a failure is its code;
    - otherwise (and with the toggle on, or for a `prepare_avatar`) the URL is fetched again.
-4. **Fetch** (the guard below), **decode** and **thumbnail**, then the row is written, `ok` with `content_sha`,
-   `dhash`, `file` and `bytes`, or the failure's status; then step 3's verdict on the fresh row.
+4. **Fetch** (the guard below), **decode** and **thumbnail**, then the row is written, `ok` with `content_sha`, `file`
+   and `bytes` (and `dhash` only for a candidate's fetch: a read skips the library's second decode, D32), or the
+   failure's status; then step 3's verdict on the fresh row.
 5. **Verdict.** The SHA-256 of the fetched bytes must equal `avatarHash` exactly (D6). The fingerprint is not compared
    (D32); it only has to be well formed (D26). A mismatch is `avatar.hash_mismatch`; the UI shows the initials for that
    and for every other error (D7).
@@ -91,8 +92,8 @@ to `dashpay_avatar`.
 
 - **Directory.** `avatars_dir()` was checked at session open (dw-fs: created 0700, or a user's symlink followed).
   The engine opens it once, `O_DIRECTORY`, and keeps the descriptor; from then on it never uses the path. It refuses a
-  directory it does not own or that group or others may write (D10): no thumbnail is then kept, so each read of a
-  matching picture fetches it again (failures and mismatches are still remembered in the index).
+  directory it does not own or that group or others may write (D10): thumbnails are then kept in memory only, the last
+  64 (D23), so a read past those fetches again (failures and mismatches are still remembered in the index).
 - **Files** are named `<stem>-128.png` and `<stem>-256.png`, the stem the SHA-256 of the content's SHA-256 and the
   crop (D15). A file is written to a temporary name with `openat(O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)`,
   synced, and renamed into place with `renameat`; read with `openat(O_NOFOLLOW)` and `fstat` (a regular file, at most
@@ -178,10 +179,12 @@ otherwise), before the identity's lock is taken (DP4-01 D8); the write sets `ava
 
 - F1 (D2): Imgur upload with DCG's credentials (B1), the delete hash in the vault (`integration/imgur/<delete-hash>`).
 - F2 (D5): the engine proxy setting, then avatars through it.
-- F3 (D8): WebP, if profiles with it appear.
+- F3 (D8): WebP, if profiles with it appear (T2 found one of 59).
 - F4 (D16): Windows handle-relative thumbnail I/O (`NtCreateFile` with a root handle) with W-01.
 - F5 (D17): the Settings ▸ Privacy row "Load contact pictures" (DP4-03), and pictures in every list.
 - F6 (D19): an avatar in the registration's initial profile.
 - F7 (D24): a decode deadline (a decoder that checks a cancel flag, or a decode subprocess).
 - F8: rotation by last use rather than by fetch time, and one Platform read per unknown identity at a time (D14's
   cache has no single-flight).
+- F9 (DP4-03): `useAvatar` keys invalidated when the toggle changes, and an e2e case for `Avatar`'s `onError`
+  fallback (a thumbnail that is not a PNG).

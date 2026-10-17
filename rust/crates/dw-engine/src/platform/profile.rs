@@ -221,7 +221,7 @@ impl DashPay {
     }
 
     /// The thumbnail of any identity's avatar, verified against its
-    /// profile's hash and fingerprint (DP4-02): `None` without an avatar,
+    /// profile's hash (DP4-02 D32): `None` without an avatar,
     /// or for another user's while "Load contact pictures" is off; a
     /// picture that does not match is `avatar.hash_mismatch`.
     pub async fn avatar(

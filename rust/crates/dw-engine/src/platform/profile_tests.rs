@@ -470,15 +470,17 @@ fn an_avatar_candidate_sets_the_three_fields() {
 
 /// "Load contact pictures" where `avatar` enforces it (DP4-02 D17), on the
 /// session: off, another user's avatar reads neither Platform nor the
-/// avatar host; on, the profile is read from Platform (once, then kept).
-/// The fetch itself is the pipeline's (avatar_tests.rs): a profile shows
-/// only `https` avatars, as the library, and the local server is `http`.
+/// avatar host; on, the profile is read from Platform (once, then kept) and
+/// its URL fetched. The local server speaks plain HTTP to the `https` URL a
+/// profile must show, so that fetch fails (counted at the listener) and
+/// its failure is kept: the verdicts are the pipeline's (avatar_tests.rs).
 #[test]
 fn the_pictures_toggle_holds_at_the_session() {
     use super::avatar::Pipeline;
     use super::avatar_cache::ThumbDir;
     use super::avatar_fetch::NameResolver;
     use super::avatar_tests::{LOCAL, Route, Script, Server, png, test_policy};
+    use super::errors::AvatarError;
     use super::profile::AvatarSize;
     use platform_wallet::wallet::identity::{calculate_avatar_hash, calculate_dhash_fingerprint};
 
@@ -498,11 +500,14 @@ fn the_pictures_toggle_holds_at_the_session() {
     // Dave publishes an avatar on Platform; the wallet holds nothing of him.
     let theirs = png(30, 30);
     server.route("/dave.png", Route::ok(theirs.clone()));
+    let https = server
+        .url("good.test", "/dave.png")
+        .replacen("http:", "https:", 1);
     let doc = ProfileDocument {
         id: id(19),
         revision: 1,
         properties: properties([
-            ("avatarUrl", text(&server.url("good.test", "/dave.png"))),
+            ("avatarUrl", text(&https)),
             ("avatarHash", Value::Bytes32(calculate_avatar_hash(&theirs))),
             (
                 "avatarFingerprint",
@@ -530,13 +535,15 @@ fn the_pictures_toggle_holds_at_the_session() {
     assert_eq!(avatar(DAVE), Ok(None));
     assert_eq!(avatar(ERIN), Ok(None));
     assert_eq!(avatar(ME), Ok(None));
-    assert_eq!(reads(), before);
+    assert_eq!((reads(), server.connections()), (before, 0));
     toggle(true);
     assert_eq!(f.s.load_contact_pictures(), Ok(true));
-    assert_eq!(avatar(DAVE), Ok(None));
-    assert_eq!(avatar(DAVE), Ok(None));
+    assert_eq!(avatar(DAVE), Err(AvatarError::FetchFailed));
+    let connections = server.connections();
+    assert!(connections >= 1);
+    assert_eq!(avatar(DAVE), Err(AvatarError::FetchFailed));
     assert_eq!(reads(), before + 1, "read once, then kept");
-    assert!(server.hits().is_empty());
+    assert_eq!(server.connections(), connections, "the failure is kept");
 }
 
 /// Without the document key in the vault the edit is
