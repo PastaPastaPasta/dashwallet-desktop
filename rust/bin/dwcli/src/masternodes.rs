@@ -2,9 +2,10 @@
 //! and nothing else. Every command prints one JSON line on stdout:
 //! `{"ok":true,"result":…}`, or `{"ok":false,"error":{"code":…,"message":…}}`
 //! with exit status 1, whatever failed: the vault's unlock, a setup step
-//! before the command, a refused command line, a panic (MG-03 D26). No
-//! message repeats an argument. A key to attach is read from stdin, never
-//! argv.
+//! before the command, a refused command line, a panic (MG-03 D26), or the
+//! teardown after it: the line is printed once SPV is stopped and the
+//! engine shut down (D32). No message repeats an argument or an option's
+//! value. A key to attach is read from stdin, never argv.
 
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -36,17 +37,16 @@ fn error_line(code: &str, message: &str) -> Value {
 
 /// The line of an `mn` command that failed before it ran (the passphrase
 /// file, the data root, opening the network), unless one was printed.
-pub fn report_setup_failure(message: &str) {
+/// `message` is fixed text naming the option at fault (D32).
+pub fn report_setup_failure(message: &'static str) {
     print_line(&error_line("setup", message));
 }
 
 /// The line after a panic, unless one was printed. The payload may quote
 /// an argument, so it isn't used.
 pub fn report_panic() {
-    print_line(&error_line(
-        "internal",
-        "dwcli panicked; the command's outcome is unknown",
-    ));
+    let f = panicked();
+    print_line(&error_line(&f.code, &f.message));
 }
 
 /// The line of a refused `mn` command line (`text` names no value).
@@ -130,7 +130,7 @@ enum MnCommand {
 }
 
 impl MnArgs {
-    fn starts_spv(&self) -> bool {
+    pub fn starts_spv(&self) -> bool {
         self.spv || self.sync_height.is_some()
     }
 }
@@ -145,7 +145,7 @@ fn parse_role(s: &str) -> Result<AttachedKeyRole, String> {
 }
 
 /// A failed command: the facade's code and message.
-struct Failure {
+pub struct Failure {
     code: String,
     message: String,
 }
@@ -189,9 +189,10 @@ fn wait_for_list(
     height: Option<u32>,
 ) -> Result<(), Failure> {
     let deadline = Instant::now() + timeout;
-    crate::pay::ensure_spv_running(engine, session, timeout).map_err(|message| Failure {
+    // Its message names the timeout, an option's value (D32).
+    crate::pay::ensure_spv_running(engine, session, timeout).map_err(|_| Failure {
         code: "spv".into(),
-        message,
+        message: "SPV did not start within --sync-timeout".into(),
     })?;
     let scanned = || -> Result<bool, Failure> {
         let Some(h) = height else { return Ok(true) };
@@ -211,10 +212,7 @@ fn wait_for_list(
         if Instant::now() >= deadline {
             return Err(Failure {
                 code: "spv".into(),
-                message: format!(
-                    "the wallets didn't scan height {} in time",
-                    height.unwrap_or(0)
-                ),
+                message: "the wallets didn't scan --sync-height within --sync-timeout".into(),
             });
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -280,22 +278,41 @@ fn command(engine: &Engine, session: &Arc<NetworkSession>, args: MnArgs) -> Resu
     }
 }
 
-/// Unlocks the vault if a passphrase was given, runs one `mn` command and
-/// prints its JSON line. `Err` (exit status 1) carries the message for
-/// stderr. A wrong passphrase is the m1 `vault` error, which names no
-/// input.
+/// Unlocks the vault if a passphrase was given and runs one `mn` command;
+/// `main` tears down, then [`report`]s. A wrong passphrase is the m1
+/// `vault` error, which names no input.
 pub fn run(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     passphrase: Option<&Zeroizing<Vec<u8>>>,
     args: MnArgs,
-) -> Result<(), String> {
-    let started_spv = args.starts_spv();
-    let result = crate::unlock(engine, session, passphrase)
+) -> Result<Value, Failure> {
+    crate::unlock(engine, session, passphrase)
         .map_err(Failure::from)
-        .and_then(|()| command(engine, session, args));
-    // The line comes first: stopping SPV can fail after the command ran.
-    let outcome = match result {
+        .and_then(|()| command(engine, session, args))
+}
+
+/// What a panic in the command answers; the payload may quote an argument.
+pub fn panicked() -> Failure {
+    Failure {
+        code: "internal".into(),
+        message: "dwcli panicked; the command's outcome is unknown".into(),
+    }
+}
+
+/// Prints the command's line once the teardown ended (`torn_down`: SPV
+/// stopped and the engine shut down, in time): a success becomes the
+/// `shutdown` error when it didn't, since the process then fails (D32).
+/// `Err` (exit status 1) carries the message for stderr.
+pub fn report(result: Result<Value, Failure>, torn_down: bool) -> Result<(), String> {
+    let result = match result {
+        Ok(_) if !torn_down => Err(Failure {
+            code: "shutdown".into(),
+            message: "the command ran, but stopping SPV or shutting the engine down failed".into(),
+        }),
+        other => other,
+    };
+    match result {
         Ok(v) => {
             print_line(&json!({ "ok": true, "result": v }));
             Ok(())
@@ -304,9 +321,5 @@ pub fn run(
             print_line(&error_line(&f.code, &f.message));
             Err(f.message)
         }
-    };
-    if started_spv {
-        crate::teardown::stop_spv(session, false).map_err(|e| e.to_string())?;
     }
-    outcome
 }

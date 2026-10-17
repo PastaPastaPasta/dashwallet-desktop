@@ -134,3 +134,205 @@ fn mn_failures_are_json_lines_that_never_quote_the_arguments() {
         }
     }
 }
+
+/// One `mn list-state` run with `globals` as the whole global option set.
+fn dwcli_with(globals: &[std::ffi::OsString], env: &[(&str, &str)]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_dwcli"))
+        .args(globals)
+        .args(["mn", "list-state"])
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+/// stdout and stderr, lowercased.
+fn all_output(out: &Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+    .to_lowercase()
+}
+
+/// Every global option with the secret as (part of) its value: one JSON
+/// line, and no output (the log included) quotes the value (MG-03 D32,
+/// Sol r2 Major 1).
+#[test]
+fn mn_setup_failures_never_quote_a_global_option() {
+    let dir = dw_testutil::private_tempdir();
+    let root = dir.path();
+    std::fs::write(root.join("pass"), "dwcli mn passphrase\n").unwrap();
+    std::fs::write(root.join(SECRET), "not a certificate\n").unwrap();
+    std::fs::write(root.join("file"), "a file, not a directory\n").unwrap();
+    let path = |p: &Path| p.as_os_str().to_owned();
+    let datadir = root.join("data");
+    let base = |skip: &str| -> Vec<std::ffi::OsString> {
+        let mut args: Vec<std::ffi::OsString> = Vec::new();
+        let mut push = |name: &str, value: std::ffi::OsString| {
+            if name != skip {
+                args.push(name.into());
+                args.push(value);
+            }
+        };
+        push("--datadir", path(&datadir));
+        push("--dapi", "http://127.0.0.1:1".into());
+        push("--peer", "127.0.0.1:1".into());
+        push("--passphrase-file", path(&root.join("pass")));
+        args.push("--no-platform".into());
+        args
+    };
+    let out = dwcli(root, "pass", &["init-vault"], b"");
+    assert!(out.status.success(), "{out:?}");
+
+    let with = |skip: &str, extra: &[std::ffi::OsString]| {
+        let mut args = base(skip);
+        args.extend_from_slice(extra);
+        args
+    };
+    let os = |s: &str| std::ffi::OsString::from(s);
+    let cases: Vec<(&str, Vec<std::ffi::OsString>, Option<&str>)> = vec![
+        (
+            "--peer",
+            with("", &[os("--peer"), os(SECRET)]),
+            Some("invalid --peer value"),
+        ),
+        (
+            "--peer host",
+            with("", &[os("--peer"), os(&format!("{SECRET}:9999"))]),
+            Some("invalid --peer value"),
+        ),
+        (
+            "--ca-cert missing",
+            with(
+                "",
+                &[os("--ca-cert"), path(&root.join("missing").join(SECRET))],
+            ),
+            Some("--ca-cert file not readable or not a PEM certificate"),
+        ),
+        (
+            "--ca-cert not PEM",
+            with("", &[os("--ca-cert"), path(&root.join(SECRET))]),
+            Some("--ca-cert file not readable or not a PEM certificate"),
+        ),
+        (
+            "--datadir",
+            with(
+                "--datadir",
+                &[os("--datadir"), path(&root.join("file").join(SECRET))],
+            ),
+            Some("--datadir could not be opened"),
+        ),
+        (
+            "--passphrase-file",
+            with(
+                "--passphrase-file",
+                &[os("--passphrase-file"), path(&root.join(SECRET))],
+            ),
+            None,
+        ),
+        (
+            "--passphrase-file missing",
+            with(
+                "--passphrase-file",
+                &[
+                    os("--passphrase-file"),
+                    path(&root.join("missing").join(SECRET)),
+                ],
+            ),
+            Some("--passphrase-file not readable"),
+        ),
+        ("--dapi", with("--dapi", &[os("--dapi"), os(SECRET)]), None),
+        (
+            "--quorum-url",
+            with("", &[os("--quorum-url"), os(SECRET)]),
+            None,
+        ),
+        ("--network", with("", &[os("--network"), os(SECRET)]), None),
+        (
+            "--network devnet",
+            with("", &[os("--network"), os(&format!("devnet:{SECRET}"))]),
+            None,
+        ),
+        (
+            "--initial-protocol-version",
+            with("", &[os("--initial-protocol-version"), os(SECRET)]),
+            None,
+        ),
+        (
+            "--shutdown-timeout",
+            with("", &[os("--shutdown-timeout"), os(SECRET)]),
+            None,
+        ),
+    ];
+    let back = reversed(SECRET);
+    for (name, args, fixed) in cases {
+        // With the log on: it may not quote the value either.
+        let out = dwcli_with(&args, &[("DWCLI_LOG", "info")]);
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let lines: Vec<_> = stdout.lines().collect();
+        assert_eq!(lines.len(), 1, "{name}: {out:?}");
+        let line: Value = serde_json::from_str(lines[0]).unwrap();
+        if let Some(fixed) = fixed {
+            assert_eq!(line["ok"], false, "{name}: {line}");
+            assert_eq!(line["error"]["message"], fixed, "{name}");
+        }
+        let all = all_output(&out);
+        for s in [SECRET, back.as_str()] {
+            assert!(!all.contains(s), "{name} quotes its value: {all}");
+        }
+    }
+    // The `mn` options of the SPV wait, refused by clap or by the wait.
+    for args in [
+        &["mn", "--sync-timeout", SECRET, "list-state"][..],
+        &["mn", "--sync-height", SECRET, "list-state"],
+        &[
+            "mn",
+            "--sync-height",
+            "7",
+            "--sync-timeout",
+            "1",
+            "list-state",
+        ],
+    ] {
+        let out = dwcli(root, "pass", args, b"");
+        let lines = String::from_utf8_lossy(&out.stdout).lines().count();
+        assert_eq!(lines, 1, "{args:?}: {out:?}");
+        let all = all_output(&out);
+        assert!(!all.contains(SECRET), "{args:?}: {all}");
+    }
+}
+
+/// The teardown runs before the line: one that fails prints the error line
+/// instead of `ok: true`, and the process fails (MG-03 D32, Sol r2 Low 4).
+#[test]
+#[cfg(debug_assertions)]
+fn mn_a_failed_teardown_prints_the_error_line_not_ok() {
+    let dir = dw_testutil::private_tempdir();
+    std::fs::write(dir.path().join("pass"), "dwcli mn passphrase\n").unwrap();
+    let out = dwcli(dir.path(), "pass", &["init-vault"], b"");
+    assert!(out.status.success(), "{out:?}");
+    let ok = dwcli(dir.path(), "pass", &["mn", "list-state"], b"");
+    assert!(ok.status.success(), "{ok:?}");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dwcli"))
+        .arg("--datadir")
+        .arg(dir.path().join("data"))
+        .args(["--dapi", "http://127.0.0.1:1", "--no-platform"])
+        .args(["--peer", "127.0.0.1:1", "--passphrase-file"])
+        .arg(dir.path().join("pass"))
+        .args(["mn", "list-state"])
+        .env("DWCLI_FAULT_INJECT", "probe-spawn-fail")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let out = {
+        child.stdin.take();
+        child.wait_with_output().unwrap()
+    };
+    let (code, _) = error(&out);
+    assert_eq!(code, "shutdown", "{out:?}");
+}
