@@ -37,8 +37,9 @@ pub(crate) struct PaymentLocks {
     inputs: Mutex<HashMap<Txid, Vec<OutPoint>>>,
     /// Each pair's payment whose first broadcast is under way (D20).
     in_flight: Mutex<HashMap<(WalletId, Pair), String>>,
-    /// Each pair's reserved address that no broadcast handed out (D21).
-    reserved: Mutex<HashMap<(WalletId, Pair), Address>>,
+    /// Each pair's reserved address that no broadcast handed out (D21),
+    /// and whether rule 5's re-check passed when it was kept (DP3-04 §4).
+    reserved: Mutex<HashMap<(WalletId, Pair), (Address, bool)>>,
     /// Orders the lock changes (memory and row together): no clear's
     /// delete lands before an earlier write, nor a load between them
     /// (D23).
@@ -80,14 +81,27 @@ impl PaymentLocks {
         guard(&self.pause_settle).take()
     }
 
-    /// The pair's reserved address, if no broadcast handed it out.
-    pub(crate) fn reserved(&self, id: WalletId, pair: Pair) -> Option<Address> {
+    /// The pair's reserved address, if no broadcast handed it out, and
+    /// whether rule 5's re-check passed when it was kept.
+    pub(crate) fn reserved_checked(&self, id: WalletId, pair: Pair) -> Option<(Address, bool)> {
         guard(&self.reserved).get(&(id, pair)).cloned()
     }
 
-    /// Keeps `address` as the pair's reserved one, unless it has one.
-    pub(crate) fn keep(&self, id: WalletId, pair: Pair, address: Address) {
-        guard(&self.reserved).entry((id, pair)).or_insert(address);
+    /// Keeps `address` as the pair's reserved one, unless it has one;
+    /// `checked`: rule 5's re-check passed for it.
+    pub(crate) fn keep(&self, id: WalletId, pair: Pair, address: Address, checked: bool) {
+        guard(&self.reserved)
+            .entry((id, pair))
+            .or_insert((address, checked));
+    }
+
+    /// Drops `address` as the pair's reserved one (DP3-04: it was taken
+    /// from payee data that did not verify), so no later `prepare` pays it.
+    pub(crate) fn drop_reserved(&self, id: WalletId, pair: Pair, address: &Address) {
+        let mut reserved = guard(&self.reserved);
+        if reserved.get(&(id, pair)).is_some_and(|(a, _)| a == address) {
+            reserved.remove(&(id, pair));
+        }
     }
 }
 
@@ -229,7 +243,7 @@ impl NetworkSession {
         }
         {
             let mut reserved = guard(&payments.reserved);
-            if reserved.get(&key) != Some(address) {
+            if reserved.get(&key).is_none_or(|(a, _)| a != address) {
                 return Err(ClaimRefused::Spent);
             }
             reserved.remove(&key);

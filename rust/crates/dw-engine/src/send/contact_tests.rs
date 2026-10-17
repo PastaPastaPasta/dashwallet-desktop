@@ -17,6 +17,7 @@ use dpp::prelude::Identifier;
 use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use key_wallet::Utxo;
 use key_wallet::account::AccountType;
+use key_wallet::account::account_collection::DashpayAccountKey;
 use key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use key_wallet::managed_account::ManagedCoreFundsAccount;
 use platform_wallet::{ContactRequest, EstablishedContact};
@@ -75,6 +76,17 @@ fn contact_xpub(n: u8) -> ExtendedPubKey {
     ExtendedPubKey::from_priv(&master)
 }
 
+/// The DIP-15 address at `index` of an external account built from `xpub`.
+fn address_at(xpub: ExtendedPubKey, index: u32) -> Address {
+    let child = xpub
+        .derive_pub(&[key_wallet::bip32::ChildNumber::Normal { index }])
+        .unwrap();
+    Address::p2pkh(
+        &dashcore::PublicKey::new(child.public_key),
+        dashcore::Network::Regtest,
+    )
+}
+
 /// The library's broadcast, faked: what each attempt returns.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Net {
@@ -83,6 +95,8 @@ enum Net {
     Unconfirmed,
     /// Unconfirmed once `gate` is notified.
     Hold,
+    /// Not sent once `gate` is notified.
+    HoldUnsent,
 }
 
 struct Seam {
@@ -122,12 +136,12 @@ impl TestBroadcaster for Seam {
         let mode = *self.mode.lock().unwrap();
         let gate = Arc::clone(&self.gate);
         Box::pin(async move {
-            if mode == Net::Hold {
+            if matches!(mode, Net::Hold | Net::HoldUnsent) {
                 gate.notified().await;
             }
             match mode {
                 Net::Accept => Ok(txid),
-                Net::NoPeers => Err(PlatformWalletError::TransactionBroadcast(
+                Net::NoPeers | Net::HoldUnsent => Err(PlatformWalletError::TransactionBroadcast(
                     "not connected".into(),
                 )),
                 Net::Unconfirmed | Net::Hold => Err(
@@ -246,32 +260,8 @@ impl Fixture {
     /// leaves an accept: the request pair, the immutable account carrying
     /// the contact's xpub and its managed pool. `broken`: its channel.
     fn establish(&self, n: u8, broken: bool) {
-        let manager = self.session.manager().unwrap();
-        let wallet = self.wallet;
-        self.engine.block_on(async move {
-            let wm = manager.wallet_manager_arc();
-            let mut wm = wm.write().await;
-            let (w, info) = wm.get_wallet_mut_and_info_mut(&wallet.0).unwrap();
-            let account_type = AccountType::DashpayExternalAccount {
-                index: 0,
-                user_identity_id: [ME; 32],
-                friend_identity_id: [n; 32],
-            };
-            let xpub = contact_xpub(n);
-            w.add_account(account_type, Some(xpub)).unwrap();
-            let managed = ManagedCoreFundsAccount::from_account(&key_wallet::Account {
-                parent_wallet_id: Some(wallet.0),
-                account_type,
-                network: dashcore::Network::Regtest,
-                account_xpub: xpub,
-                is_watch_only: true,
-            });
-            (info.core_wallet.accounts)
-                .insert_funds_bearing_account(managed)
-                .unwrap();
-            let me = (info.identity_manager)
-                .managed_identity_mut(&id(ME))
-                .unwrap();
+        self.build_paying_account(n, contact_xpub(n));
+        self.with_me(move |me| {
             let mut c = EstablishedContact::new(
                 id(n),
                 request(ME, n, 1_000_000),
@@ -283,16 +273,59 @@ impl Fixture {
         });
     }
 
+    /// Contact `n`'s paying account built from `xpub`, replacing any it
+    /// had: the immutable account carrying the xpub and its managed pool,
+    /// as an accept or a rotation's teardown and rebuild leave them.
+    fn build_paying_account(&self, n: u8, xpub: ExtendedPubKey) {
+        self.tear_down_paying_account(n);
+        let manager = self.session.manager().unwrap();
+        let wallet = self.wallet;
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let (w, info) = wm.get_wallet_mut_and_info_mut(&wallet.0).unwrap();
+            let account_type = AccountType::DashpayExternalAccount {
+                index: 0,
+                user_identity_id: [ME; 32],
+                friend_identity_id: [n; 32],
+            };
+            w.add_account(account_type, Some(xpub)).unwrap();
+            let managed = ManagedCoreFundsAccount::from_account(&key_wallet::Account {
+                parent_wallet_id: Some(wallet.0),
+                account_type,
+                network: dashcore::Network::Regtest,
+                account_xpub: xpub,
+                is_watch_only: true,
+            });
+            (info.core_wallet.accounts)
+                .insert_funds_bearing_account(managed)
+                .unwrap();
+        });
+    }
+
+    /// Contact `n`'s paying account removed, as a rotation's teardown
+    /// leaves it before the rebuild: the immutable account and its pool.
+    fn tear_down_paying_account(&self, n: u8) {
+        let manager = self.session.manager().unwrap();
+        let wallet = self.wallet;
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let (w, info) = wm.get_wallet_mut_and_info_mut(&wallet.0).unwrap();
+            let key = DashpayAccountKey {
+                index: 0,
+                user_identity_id: [ME; 32],
+                friend_identity_id: [n; 32],
+            };
+            w.accounts.dashpay_external_accounts.remove(&key);
+            (info.core_wallet.accounts.dashpay_external_accounts).remove(&key);
+        });
+    }
+
     /// Contact `n`'s DIP-15 address at `index` (the external account's
     /// derivation).
     fn contact_address(&self, n: u8, index: u32) -> Address {
-        let child = (contact_xpub(n))
-            .derive_pub(&[key_wallet::bip32::ChildNumber::Normal { index }])
-            .unwrap();
-        Address::p2pkh(
-            &dashcore::PublicKey::new(child.public_key),
-            dashcore::Network::Regtest,
-        )
+        address_at(contact_xpub(n), index)
     }
 
     fn credit(&self, seed: u8, value: u64) -> OutPoint {
@@ -363,7 +396,11 @@ impl Fixture {
 
     /// The address reserved for `to` that no broadcast handed out.
     fn reserved(&self, to: u8) -> Option<Address> {
-        (self.session.platform.payments).reserved(self.wallet, (id(ME), id(to)))
+        self.reserved_checked(to).map(|(address, _)| address)
+    }
+
+    fn reserved_checked(&self, to: u8) -> Option<(Address, bool)> {
+        (self.session.platform.payments).reserved_checked(self.wallet, (id(ME), id(to)))
     }
 
     fn lock(&self, to: u8) -> Option<crate::platform::PaymentLock> {
@@ -1367,4 +1404,950 @@ fn t2_testnet_pays_a_contact() {
     engine.block_on(next.estimate()).unwrap();
     eprintln!("T2 done: {sent}");
     engine.block_on(engine.shutdown()).unwrap();
+}
+
+// DP3-04: the money-move trust gate (`platform/money_gate.rs`) in
+// `prepare`, with the fallback latch set and Platform faked.
+
+use platform_wallet::ManagedIdentity;
+use platform_wallet::changeset::{PendingContactCrypto, PendingContactCryptoOp};
+use platform_wallet::wallet::identity::{ContactProfileEntry, DashPayProfile};
+
+use crate::platform::money_gate::{Point, Refusal, Subject};
+use crate::platform::money_gate_tests::{FakePlatform, Proof, gate_session, show_username};
+use crate::platform::trust::TrustMode;
+
+impl Fixture {
+    /// The latch set, the provider in `mode`, and a Platform that holds
+    /// Bob's two requests as the library does, its proofs `proof`.
+    fn gated(&self, mode: TrustMode, proof: Proof) -> Arc<FakePlatform> {
+        let platform = FakePlatform::new(proof);
+        platform.answer_requests(vec![
+            request(ME, BOB, 1_000_000),
+            request(BOB, ME, 2_000_000),
+        ]);
+        gate_session(&self.session, mode, Arc::clone(&platform));
+        platform
+    }
+
+    /// `prepare` of `d` under a fresh grant for it.
+    fn prepare(&self, d: &Arc<TxDraft>) -> Result<Arc<PreparedTx>, EngineError> {
+        (self.engine).block_on(d.prepare(self.spend(AMOUNT + FEE_ROOM)))
+    }
+
+    /// [`Self::prepare`] on the runtime, to race it.
+    fn spawn_prepare(&self, d: &Arc<TxDraft>) -> tokio::task::JoinHandle<Result<(), EngineError>> {
+        let (d, grant) = (Arc::clone(d), self.spend(AMOUNT + FEE_ROOM));
+        self.session
+            .rt
+            .spawn(async move { d.prepare(grant).await.map(|_| ()) })
+    }
+
+    /// `prepare` of `d`, held at `point` while Bob's request is replaced.
+    fn prepare_replacing_bob_at(&self, d: &Arc<TxDraft>, point: Point) -> Result<(), EngineError> {
+        self.prepare_held_at(d, point, || self.replace_bobs_request(2_500_000))
+    }
+
+    /// `prepare` of `d`, held at `point` while `meanwhile` runs.
+    fn prepare_held_at(
+        &self,
+        d: &Arc<TxDraft>,
+        point: Point,
+        meanwhile: impl FnOnce(),
+    ) -> Result<(), EngineError> {
+        let pause = Arc::new(crate::coins::TestPause::default());
+        (self.session.platform.money_gate).pause_at(point, Arc::clone(&pause));
+        let prepare = self.spawn_prepare(d);
+        wait_until(|| pause.reached.load(Ordering::SeqCst));
+        meanwhile();
+        pause.release.notify_one();
+        self.engine.block_on(prepare).unwrap()
+    }
+
+    /// Queues `op` for Bob in the library's deferred contact crypto.
+    fn queue_for_bob(&self, op: PendingContactCryptoOp) {
+        self.with_me(move |me| {
+            (me.dashpay_pending_contact_crypto_mut()).push(PendingContactCrypto {
+                owner_identity_id: id(ME),
+                contact_id: id(BOB),
+                op,
+                enqueued_at_ms: 0,
+            });
+        });
+    }
+
+    /// Runs `f` on our identity as the library holds it.
+    fn with_me(&self, f: impl FnOnce(&mut ManagedIdentity) + Send + 'static) {
+        let manager = self.session.manager().unwrap();
+        let wallet = self.wallet;
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let (_, info) = wm.get_wallet_mut_and_info_mut(&wallet.0).unwrap();
+            f((info.identity_manager)
+                .managed_identity_mut(&id(ME))
+                .unwrap());
+        });
+    }
+
+    /// Bob's request to us replaced, as a sync pass leaves a rotation.
+    fn replace_bobs_request(&self, created_at: u64) {
+        self.with_me(move |me| {
+            let mut c = EstablishedContact::new(
+                id(BOB),
+                request(ME, BOB, 1_000_000),
+                request(BOB, ME, created_at),
+            );
+            c.external_account_reference = Some(c.incoming_request.account_reference);
+            me.apply_established_contact(c);
+        });
+    }
+
+    /// Bob rotates, as a sync pass and the drain leave it: his request to
+    /// us replaced by one naming his account 1, his paying account rebuilt
+    /// from it (its xpub `xpub`) and stamped with it, and Platform holding
+    /// the new request.
+    fn rotate_bob(&self, platform: &FakePlatform, xpub: ExtendedPubKey) {
+        let rotated = ContactRequest::new(id(BOB), id(ME), 0, 0, 1, vec![2; 96], 1, 2_500_000);
+        platform.answer_requests(vec![request(ME, BOB, 1_000_000), rotated.clone()]);
+        self.build_paying_account(BOB, xpub);
+        self.with_me(move |me| {
+            let mut c = EstablishedContact::new(id(BOB), request(ME, BOB, 1_000_000), rotated);
+            c.external_account_reference = Some(1);
+            me.apply_established_contact(c);
+        });
+    }
+
+    /// Bob's rotated request (naming his account 1) persisted with the
+    /// marker cleared, as a crash before the library's sweep leaves it: his
+    /// paying account is still the one built from his old request.
+    fn bob_rotated_before_the_sweep(&self) {
+        let rotated = ContactRequest::new(id(BOB), id(ME), 0, 0, 1, vec![2; 96], 1, 2_500_000);
+        self.with_me(move |me| {
+            let c = EstablishedContact::new(id(BOB), request(ME, BOB, 1_000_000), rotated);
+            me.apply_established_contact(c);
+        });
+    }
+
+    /// The library's paying account for Bob, built from his request
+    /// `reference` names (`None`: torn down).
+    fn bobs_account_built_from(&self, reference: Option<u32>) {
+        self.with_me(move |me| {
+            me.established_contact_mut(&id(BOB))
+                .unwrap()
+                .external_account_reference = reference;
+        });
+    }
+
+    fn cache_profile(&self, n: u8, profile: DashPayProfile) {
+        self.with_me(move |me| {
+            (me.dashpay_contact_profiles_mut()).insert(
+                id(n),
+                ContactProfileEntry {
+                    profile: Some(profile),
+                    checked_at_ms: 0,
+                },
+            );
+        });
+    }
+
+    fn bob_unverified(&self) -> bool {
+        (self.session.dashpay(self.wallet))
+            .contact(b58(ME), b58(BOB))
+            .unwrap()
+            .unwrap()
+            .summary
+            .unverified
+    }
+}
+
+fn platform_error<T: std::fmt::Debug>(r: Result<T, EngineError>) -> &'static str {
+    match contact_error(r) {
+        ContactError::Platform(e) => e.code(),
+        other => panic!("expected a Platform refusal, got {other:?}"),
+    }
+}
+
+/// Rule 5: an unverified payee that does not verify in time moves nothing:
+/// no grant redeemed, no address reserved, nothing broadcast. Once it
+/// verifies, the same grant pays it, and the records it wrote let the next
+/// payment through without a fetch.
+#[test]
+fn an_unverified_payee_moves_nothing() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Unverified);
+    let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Accept);
+    let grant = f.spend(AMOUNT + FEE_ROOM);
+    assert_eq!(
+        platform_error(f.engine.block_on(d.prepare(grant.clone()))),
+        "platform.context_unavailable"
+    );
+    assert!(platform.fetches() > 2, "it re-fetched while it waited");
+    assert!(f.reserved(BOB).is_none(), "no address taken");
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 0);
+
+    platform.set_proof(Proof::Verified);
+    let p = f
+        .engine
+        .block_on(d.prepare(grant))
+        .expect("the grant was kept");
+    assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
+    let spent = p.summary().inputs[0].outpoint;
+    f.engine.block_on(d.broadcast(p)).unwrap();
+    let fetched = platform.fetches();
+    f.see_spent(spent);
+    f.credit(2, COIN);
+    let again = f.draft(BOB);
+    Seam::install(&again, Net::Accept);
+    f.prepare(&again).unwrap();
+    assert_eq!(platform.fetches(), fetched, "recorded: no fetch");
+}
+
+/// Rule 4 under the gate: a re-fetch SPV and the trusted service disagree
+/// on refuses the payment, in the enforcing and in the degraded mode.
+#[test]
+fn a_mismatched_payee_moves_nothing_in_either_mode() {
+    for mode in [TrustMode::Enforcing, TrustMode::Degraded] {
+        let f = fixture(false);
+        f.gated(mode, Proof::Mismatch);
+        let d = f.draft(BOB);
+        let seam = Seam::install(&d, Net::Accept);
+        assert_eq!(
+            platform_error(f.prepare(&d)),
+            "platform.trust_mismatch",
+            "{mode:?}"
+        );
+        assert!(f.reserved(BOB).is_none());
+        assert_eq!(seam.entered.load(Ordering::SeqCst), 0);
+    }
+}
+
+/// The degraded mode suspends rule 5: an unverified payee is paid on the
+/// trusted provider's word, and so is one with the trusted-only toggle.
+#[test]
+fn the_degraded_mode_and_the_toggle_pay_an_unverified_payee() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
+    let d = f.draft(BOB);
+    let p = f.prepare(&d).unwrap();
+    assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
+    assert_eq!(platform.fetches(), 2, "one probe of each request");
+    assert!(f.bob_unverified());
+
+    f.engine.block_on(d.abandon(p)).unwrap();
+    f.session.trust.set_mode(TrustMode::Enforcing);
+    f.session.trust.set_trusted_only(true);
+    let p = f.prepare(&f.draft(BOB)).unwrap();
+    assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
+    assert_eq!(platform.fetches(), 2, "the toggle fetches nothing");
+}
+
+/// D1: what the gate waits on is what the contacts row shows unverified;
+/// the gate's records clear the row's flag.
+#[test]
+fn the_gate_and_the_contacts_row_agree() {
+    let f = fixture(false);
+    assert!(!f.bob_unverified(), "no latch");
+    f.gated(TrustMode::Enforcing, Proof::Verified);
+    assert!(f.bob_unverified());
+    f.prepare(&f.draft(BOB)).unwrap();
+    assert!(!f.bob_unverified(), "the gate recorded both requests");
+    f.replace_bobs_request(2_500_000);
+    assert!(f.bob_unverified(), "a replacement is unverified again");
+}
+
+/// D1: a username the contacts row shows is part of the payee: until
+/// Platform's proof-verified domain gives that spelling to the contact, the
+/// payment waits.
+#[test]
+fn a_shown_username_must_verify_too() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    show_username(&f.session, id(BOB), "Bob");
+    let d = f.draft(BOB);
+    assert_eq!(
+        platform_error(f.prepare(&d)),
+        "platform.context_unavailable",
+        "the name is not on Platform"
+    );
+    assert!(
+        f.bob_unverified(),
+        "the requests verified, the name did not"
+    );
+    platform.answer_domain("Bob", id(BOB));
+    f.prepare(&d).unwrap();
+    assert!(!f.bob_unverified());
+}
+
+/// Race: a payment lock written while the gate waits (another payment to
+/// the contact ended unknown) refuses the payment once the wait ends.
+#[test]
+fn a_payment_lock_during_the_gate_wait_refuses() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Unverified);
+    let d = f.draft(BOB);
+    let prepare = f.spawn_prepare(&d);
+    wait_until(|| platform.fetches() > 0);
+    let txid = Txid::from_byte_array([9; 32]);
+    (f.engine).block_on(
+        f.session
+            .lock_payment(f.wallet, (id(ME), id(BOB)), txid, vec![]),
+    );
+    platform.set_proof(Proof::Verified);
+    let refused = f.engine.block_on(prepare).unwrap();
+    assert!(matches!(
+        contact_error(refused),
+        ContactError::PaymentLocked { txid: t } if t == txid.to_string()
+    ));
+    assert!(f.reserved(BOB).is_none());
+}
+
+/// Race: a vault Lock while the gate waits ends the wait at once; nothing
+/// is taken, and the payment is `send.vault_locked`.
+#[test]
+fn a_lock_during_the_gate_wait_moves_nothing() {
+    let f = fixture(true);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Unverified);
+    let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Accept);
+    let prepare = f.spawn_prepare(&d);
+    wait_until(|| platform.fetches() > 0);
+    let started = std::time::Instant::now();
+    f.session.lock_vault_sync().unwrap();
+    let refused = f.engine.block_on(prepare).unwrap();
+    assert_eq!(send_failure(refused), SendFailure::VaultLocked);
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert!(f.reserved(BOB).is_none());
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 0);
+}
+
+/// §4 step 5: the payee replaced by unverified content after the gate
+/// passed and before the reservation: the payment is refused, and the
+/// address kept from an earlier payment is dropped, not paid later.
+#[test]
+fn a_payee_replaced_before_the_reservation_is_refused() {
+    let f = fixture(false);
+    f.gated(TrustMode::Enforcing, Proof::Verified);
+    // An address kept, checked, from a payment abandoned before.
+    let d = f.draft(BOB);
+    let p = f.prepare(&d).unwrap();
+    f.engine.block_on(d.abandon(p)).unwrap();
+    assert_eq!(
+        f.reserved_checked(BOB),
+        Some((f.contact_address(BOB, 0), true))
+    );
+    assert_eq!(
+        platform_error(f.prepare_replacing_bob_at(&d, Point::Gated)),
+        "platform.context_unavailable"
+    );
+    assert!(f.reserved(BOB).is_none(), "the kept address is dropped");
+}
+
+/// Race (§4 step 5): the payee replaced after its address was reserved
+/// is refused, and the address is not kept.
+#[test]
+fn a_payee_replaced_after_the_reservation_is_refused() {
+    let f = fixture(false);
+    f.gated(TrustMode::Enforcing, Proof::Verified);
+    let d = f.draft(BOB);
+    assert_eq!(
+        platform_error(f.prepare_replacing_bob_at(&d, Point::Reserved)),
+        "platform.context_unavailable"
+    );
+    assert!(f.reserved(BOB).is_none(), "the address is not kept");
+}
+
+/// An address kept while rule 5 did not apply is not paid once it does:
+/// the next `prepare` reserves another and keeps it checked.
+#[test]
+fn an_address_kept_without_rule_5_is_not_paid_under_it() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
+    let d = f.draft(BOB);
+    let p = f.prepare(&d).unwrap();
+    assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
+    f.engine.block_on(d.abandon(p)).unwrap();
+    assert_eq!(
+        f.reserved_checked(BOB),
+        Some((f.contact_address(BOB, 0), false))
+    );
+
+    f.session.trust.set_mode(TrustMode::Enforcing);
+    platform.set_proof(Proof::Verified);
+    let p = f.prepare(&d).unwrap();
+    assert_eq!(paid(&p), f.contact_address(BOB, 1).to_string());
+    assert_eq!(
+        f.reserved_checked(BOB),
+        Some((f.contact_address(BOB, 1), true))
+    );
+}
+
+/// Design D12 as amended by D25 (Sol r2): a paying account built from an
+/// older request than the current one, with no rebuild queued, is not
+/// paid, with or without the latch and in every setting; once rebuilt
+/// from the current request it is.
+#[test]
+fn a_stale_paying_account_is_not_paid() {
+    for (mode, set) in EVERY_RULE {
+        let f = fixture(false);
+        // Before the latch nothing came through the fallback, but the
+        // account is still not the one the request designates.
+        set(&f);
+        f.bobs_account_built_from(Some(77));
+        assert_eq!(
+            platform_error(f.prepare(&f.draft(BOB))),
+            "platform.context_unavailable",
+            "{mode}"
+        );
+        assert!(f.reserved(BOB).is_none(), "{mode}: no address taken");
+    }
+
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    // A queued op that does not rebuild the paying account changes nothing.
+    f.queue_for_bob(PendingContactCryptoOp::RegisterReceiving);
+    let kept = f.reserved_checked(BOB);
+    for stale in [None, Some(77)] {
+        f.bobs_account_built_from(stale);
+        let d = f.draft(BOB);
+        assert_eq!(
+            platform_error(f.prepare(&d)),
+            "platform.context_unavailable",
+            "{stale:?}"
+        );
+        assert_eq!(f.reserved_checked(BOB), kept, "no address taken");
+    }
+    assert_eq!(platform.fetches(), 0, "refused before any fetch");
+    f.with_me(|me| {
+        let c = me.established_contact_mut(&id(BOB)).unwrap();
+        c.external_account_reference = Some(c.incoming_request.account_reference);
+    });
+    let p = f.prepare(&f.draft(BOB)).unwrap();
+    assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
+}
+
+/// Design D25 (Sol r2): a crash between persisting Bob's rotated request
+/// and the library's sweep leaves the marker cleared and his old account
+/// in place, with no latch. Under `Enforce` the old account is not paid
+/// and nothing is reserved; once the account is rebuilt from the rotated
+/// request and stamped, its address is.
+#[test]
+fn an_account_a_crash_left_unrebuilt_is_not_paid() {
+    let f = fixture(false);
+    f.session.trust.set_mode(TrustMode::Enforcing);
+    f.bob_rotated_before_the_sweep();
+    assert_eq!(
+        platform_error(f.prepare(&f.draft(BOB))),
+        "platform.context_unavailable"
+    );
+    assert!(f.reserved(BOB).is_none(), "no address taken");
+
+    f.build_paying_account(BOB, contact_xpub(CAROL));
+    f.bobs_account_built_from(Some(1));
+    let p = f.prepare(&f.draft(BOB)).unwrap();
+    let rebuilt = address_at(contact_xpub(CAROL), 0);
+    assert_eq!(paid(&p), rebuilt.to_string());
+    assert_eq!(f.reserved(BOB), Some(rebuilt));
+}
+
+/// Design D26: the library's store keeps no stamp, so after every launch
+/// each paying account is unstamped until the first DashPay pass rebuilds
+/// it, and that looks the same as the crash above. `Enforce` refuses it
+/// (nothing reserved); `Probe` and `Off` proceed on the absence, as D7
+/// does, so the crash's old account is paid there too.
+#[test]
+fn an_unstamped_account_is_paid_only_where_rule_5_does_not_apply() {
+    for (mode, set) in EVERY_RULE {
+        for rotated in [false, true] {
+            let f = fixture(false);
+            set(&f);
+            if rotated {
+                f.bob_rotated_before_the_sweep();
+            } else {
+                f.bobs_account_built_from(None);
+            }
+            let prepared = f.prepare(&f.draft(BOB));
+            if mode == "enforcing" {
+                // No latch, so nothing is unverified: the refusal is the
+                // destination's.
+                assert_eq!(
+                    platform_error(prepared),
+                    "platform.context_unavailable",
+                    "rotated {rotated}"
+                );
+                assert!(f.reserved(BOB).is_none(), "rotated {rotated}");
+            } else {
+                let p = prepared.unwrap();
+                let held = f.contact_address(BOB, 0);
+                assert_eq!(paid(&p), held.to_string(), "{mode}, rotated {rotated}");
+            }
+        }
+    }
+}
+
+/// D12 after the reservation, in every setting (D25): a queued
+/// `RegisterExternal` lets the gate pass a stale account (the drain is to
+/// rebuild it), but a drain that leaves it queued derives from the old
+/// account, and the strict re-check refuses that address. With no stamp
+/// at all (a launch's state, D26) only `Enforce` refuses it there.
+#[test]
+fn a_stale_account_the_drain_leaves_is_not_paid() {
+    for ((mode, set), stamp) in EVERY_RULE
+        .into_iter()
+        .flat_map(|r| [(r, Some(77)), (r, None)])
+    {
+        let f = fixture(false);
+        f.gated(TrustMode::Enforcing, Proof::Verified);
+        set(&f);
+        f.bobs_account_built_from(stamp);
+        // The drain cannot rebuild from it (our identity has no key at the
+        // op's index, a fault the library keeps queued for a retry).
+        f.queue_for_bob(PendingContactCryptoOp::RegisterExternal {
+            encrypted_public_key: vec![0; 96],
+            our_decryption_key_index: 0,
+            contact_encryption_key_index: 0,
+        });
+        let d = f.draft(BOB);
+        let reached = Arc::new(AtomicU32::new(0));
+        let prepared = f.prepare_held_at(&d, Point::Reserved, || {
+            reached.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(
+            reached.load(Ordering::SeqCst),
+            1,
+            "{mode} {stamp:?}: the gate let it through"
+        );
+        if stamp.is_none() && mode != "enforcing" {
+            let held = f.contact_address(BOB, 0);
+            prepared.unwrap();
+            assert_eq!(f.reserved(BOB), Some(held), "{mode}: paid and kept");
+        } else {
+            assert_eq!(
+                platform_error(prepared),
+                "platform.context_unavailable",
+                "{mode} {stamp:?}"
+            );
+            assert!(
+                f.reserved(BOB).is_none(),
+                "{mode} {stamp:?}: the old account's address is not kept"
+            );
+        }
+        let queued = Arc::new(AtomicU32::new(0));
+        let count = Arc::clone(&queued);
+        f.with_me(move |me| {
+            let ops = me.dashpay().pending_contact_crypto.iter();
+            let n = ops
+                .filter(|p| {
+                    p.contact_id == id(BOB)
+                        && matches!(p.op, PendingContactCryptoOp::RegisterExternal { .. })
+                })
+                .count();
+            count.store(n as u32, Ordering::SeqCst);
+        });
+        assert_eq!(
+            queued.load(Ordering::SeqCst),
+            1,
+            "{mode} {stamp:?}: the drain left its op queued"
+        );
+    }
+}
+
+/// D13 at the contact level: the contact's name lands while the payment
+/// is between its gate and its reservation; the re-check verifies it and
+/// the payment goes on, its address kept checked.
+#[test]
+fn a_name_landing_before_the_recheck_is_verified_there() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    let d = f.draft(BOB);
+    let before = platform.fetches();
+    f.prepare_held_at(&d, Point::Gated, || {
+        show_username(&f.session, id(BOB), "Bob");
+        platform.answer_domain("Bob", id(BOB));
+    })
+    .unwrap();
+    assert_eq!(
+        platform.fetches(),
+        before + 3,
+        "both requests, then the name"
+    );
+    assert_eq!(
+        f.reserved_checked(BOB),
+        Some((f.contact_address(BOB, 0), true))
+    );
+    assert!(!f.bob_unverified());
+}
+
+/// A reused address another payment's broadcast claimed between its
+/// reservation and its keep (here before the re-check starts) is not kept
+/// again: the payment is refused as spent and no later payment reuses it.
+#[test]
+fn an_address_claimed_before_it_is_kept_is_not_kept_again() {
+    let f = fixture(false);
+    f.gated(TrustMode::Enforcing, Proof::Verified);
+    let first = f.draft(BOB);
+    let seam = Seam::install(&first, Net::Accept);
+    let p = f.prepare(&first).unwrap();
+    f.credit(2, COIN);
+    let second = f.draft(BOB);
+    let refused = f.prepare_held_at(&second, Point::Reserved, || {
+        f.engine.block_on(first.broadcast(Arc::clone(&p))).unwrap();
+    });
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        refused.map(|_| ()).unwrap_err(),
+        EngineError::Send(SendFailure::PreparedTxSpent)
+    ));
+    assert!(f.reserved(BOB).is_none());
+}
+
+/// Design D21 (Sol r1 #1): Bob rotates while his address is reserved, and
+/// the library rebuilds his paying account from the new request, which
+/// Platform holds verifiably; the address from the account it replaced is
+/// neither paid nor kept.
+#[test]
+fn an_address_from_a_replaced_account_is_not_paid() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    let d = f.draft(BOB);
+    let before = platform.fetches();
+    let refused = f.prepare_held_at(&d, Point::Reserved, || {
+        f.rotate_bob(&platform, contact_xpub(CAROL))
+    });
+    assert_eq!(platform_error(refused), "platform.context_unavailable");
+    assert_eq!(
+        platform.fetches(),
+        before + 2,
+        "the gate's two fetches only: the binding refused, not the request"
+    );
+    assert!(
+        f.reserved(BOB).is_none(),
+        "the replaced account's address is not kept"
+    );
+}
+
+/// Puts a fixture's provider in one rule 5 setting.
+type SetRule = fn(&Fixture);
+
+/// Each rule 5 setting by name: `Enforce`, `Probe` (the default) and
+/// `Off` (the trusted-only toggle).
+const EVERY_RULE: [(&str, SetRule); 3] = [
+    ("enforcing", |f| {
+        f.session.trust.set_mode(TrustMode::Enforcing)
+    }),
+    ("degraded", |f| {
+        f.session.trust.set_mode(TrustMode::Degraded)
+    }),
+    ("off", |f| f.session.trust.set_trusted_only(true)),
+];
+
+/// D21 without the latch, and (D25) in every mode: the re-check binds the
+/// address though nothing came through the fallback, so an address whose
+/// account was torn down meanwhile is neither paid nor kept.
+#[test]
+fn an_address_from_a_torn_down_account_is_not_paid() {
+    for (mode, set) in EVERY_RULE {
+        let f = fixture(false);
+        set(&f);
+        let d = f.draft(BOB);
+        let refused = f.prepare_held_at(&d, Point::Reserved, || f.tear_down_paying_account(BOB));
+        assert_eq!(
+            platform_error(refused),
+            "platform.context_unavailable",
+            "{mode}"
+        );
+        assert!(f.reserved(BOB).is_none(), "{mode}");
+    }
+}
+
+/// D21's control: a rotation whose rebuilt account derives from the same
+/// xpub still holds the reserved address; the new request verifies in the
+/// re-check and the address is paid and kept.
+#[test]
+fn an_address_the_rebuilt_account_still_holds_is_paid() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    let d = f.draft(BOB);
+    f.prepare_held_at(&d, Point::Reserved, || {
+        f.rotate_bob(&platform, contact_xpub(BOB))
+    })
+    .unwrap();
+    assert_eq!(
+        f.reserved_checked(BOB),
+        Some((f.contact_address(BOB, 0), true))
+    );
+    assert!(!f.bob_unverified(), "the new request verified");
+}
+
+/// Sol r1 #2: a payment's fresh address displaced before it is kept (the
+/// first payment's broadcast took its address, and gave it back unsent
+/// after this one reserved a fresh one) is not paid, and not kept.
+#[test]
+fn a_fresh_address_displaced_before_it_is_kept_is_not_paid() {
+    let f = fixture(false);
+    f.gated(TrustMode::Enforcing, Proof::Verified);
+    let first = f.draft(BOB);
+    let seam = Seam::install(&first, Net::HoldUnsent);
+    let p = f.prepare(&first).unwrap();
+    f.credit(2, COIN);
+    let gate = &f.session.platform.money_gate;
+    let (planned, reserved) = (
+        Arc::new(crate::coins::TestPause::default()),
+        Arc::new(crate::coins::TestPause::default()),
+    );
+    gate.pause_at(Point::Planned, Arc::clone(&planned));
+    gate.pause_at(Point::Reserved, Arc::clone(&reserved));
+    let second = f.draft(BOB);
+    let prepare = f.spawn_prepare(&second);
+    wait_until(|| planned.reached.load(Ordering::SeqCst));
+    let broadcast = f.session.rt.spawn({
+        let (d, p) = (Arc::clone(&first), Arc::clone(&p));
+        async move { d.broadcast(p).await }
+    });
+    wait_until(|| seam.entered.load(Ordering::SeqCst) == 1);
+    assert!(f.reserved(BOB).is_none(), "the first took its address");
+    planned.release.notify_one();
+    wait_until(|| reserved.reached.load(Ordering::SeqCst));
+    seam.gate.notify_one();
+    let given_back = f.contact_address(BOB, 0);
+    wait_until(|| f.reserved(BOB).is_some());
+    reserved.release.notify_one();
+    let refused = f.engine.block_on(prepare).unwrap();
+    assert!(matches!(
+        refused.unwrap_err(),
+        EngineError::Send(SendFailure::PreparedTxSpent)
+    ));
+    assert_eq!(
+        f.reserved_checked(BOB),
+        Some((given_back, false)),
+        "the fresh address is not kept"
+    );
+    assert_eq!(
+        send_failure(f.engine.block_on(broadcast).unwrap()),
+        SendFailure::NoPeers
+    );
+}
+
+/// D1 with a cached profile: the profile the user picks the payee by is
+/// an entity the payment rests on, so an unverified one holds it.
+#[test]
+fn an_unverified_profile_holds_the_payment() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    let profile = DashPayProfile {
+        display_name: Some("Bob".into()),
+        ..Default::default()
+    };
+    f.cache_profile(BOB, profile.clone());
+    let d = f.draft(BOB);
+    assert_eq!(
+        platform_error(f.prepare(&d)),
+        "platform.context_unavailable",
+        "Platform has not got the profile"
+    );
+    assert!(f.bob_unverified());
+    platform.answer_profile(id(BOB), &profile);
+    let fetched = platform.fetches();
+    f.prepare(&d).unwrap();
+    assert_eq!(
+        platform.fetches(),
+        fetched + 1,
+        "only the profile: the requests were recorded"
+    );
+    assert!(!f.bob_unverified());
+}
+
+/// "Accept and pay" under the gate: the request the accept wrote is
+/// verified before the payment moves.
+#[test]
+fn accept_and_pay_waits_for_the_new_request() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    f.establish(CAROL, false);
+    let d = f.draft(CAROL);
+    assert_eq!(
+        platform_error(f.prepare(&d)),
+        "platform.context_unavailable",
+        "Platform has not got Carol's requests"
+    );
+    assert!(f.reserved(CAROL).is_none());
+    platform.answer_requests(vec![
+        request(ME, CAROL, 1_000_000),
+        request(CAROL, ME, 2_000_000),
+    ]);
+    let p = f.prepare(&d).unwrap();
+    assert_eq!(paid(&p), f.contact_address(CAROL, 0).to_string());
+}
+
+/// T2 for DP3-04 on the testnet fixture (`DW_DP304_TESTNET_FIXTURE`, wallet
+/// A with its contact B), read-mostly: nothing is broadcast. A restored on
+/// a fresh data root; once SPV's masternode state has synced, the
+/// money-move gate runs against Platform's real proofs: in the degraded
+/// mode (the default), then in `Enforcing`, where it must verify B's
+/// requests (and name) through SPV-verified quorum keys and record them.
+/// Then a full `prepare` of A→B under `Enforcing` passes the gate and is
+/// abandoned.
+#[test]
+#[ignore = "public testnet; set DW_DP304_TESTNET_FIXTURE"]
+fn t2_testnet_the_money_gate_verifies_a_contact() {
+    use std::time::{Duration, Instant};
+
+    const PAY: u64 = 100_000;
+    let fixture = std::path::PathBuf::from(
+        std::env::var("DW_DP304_TESTNET_FIXTURE").expect("DW_DP304_TESTNET_FIXTURE"),
+    );
+    let meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.join("fixture.json")).unwrap()).unwrap();
+    let birth = meta["funding"]["birth_height_hint"].as_u64().unwrap() as u32;
+    let identity = |w: &str| meta[w]["identity_id"].as_str().unwrap().to_owned();
+    let (a_id, b_id) = (identity("A"), identity("B"));
+    let pair = (
+        Identifier::from_string(&a_id, Encoding::Base58).unwrap(),
+        Identifier::from_string(&b_id, Encoding::Base58).unwrap(),
+    );
+
+    let dir = dw_testutil::private_tempdir();
+    let engine = Engine::new(
+        EngineConfig {
+            data_root: dir.path().join("data"),
+            worker_threads: Some(4),
+            vault: VaultConfig {
+                kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                os_store: Arc::new(MemoryOsStore::new()),
+                ..VaultConfig::default()
+            },
+        },
+        Arc::new(NullSink),
+    )
+    .unwrap();
+    let s = engine
+        .block_on(engine.open_network(DashNetwork::Testnet, crate::SessionOptions::default()))
+        .unwrap();
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let phrase = std::fs::read_to_string(fixture.join("A.mnemonic")).unwrap();
+    let a = engine
+        .block_on(s.import_wallet(
+            Zeroizing::new(phrase.trim().as_bytes().to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(birth),
+                ..ImportOptions::default()
+            },
+        ))
+        .unwrap();
+    drop(phrase);
+    let t0 = Instant::now();
+    engine.block_on(s.start_spv()).unwrap();
+    let wait = |what: &str, secs: u64, done: &mut dyn FnMut() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        eprintln!("{what} after {:?}", t0.elapsed());
+    };
+    wait("A at the tip, masternodes synced", 3600, &mut || {
+        let snap = s.sync_snapshot().unwrap();
+        s.trust.masternodes_synced()
+            && snap.caught_up
+            && snap
+                .tip_height
+                .is_some_and(|tip| s.wallet_scan_height(&a).is_some_and(|h| h >= tip))
+    });
+    wait("B as A's contact, its channel ready", 900, &mut || {
+        let detail = s.dashpay(a).contact(a_id.clone(), b_id.clone());
+        detail.ok().flatten().is_some_and(|d| {
+            d.summary.relation == crate::platform::Relation::Contact
+                && d.summary.channel == crate::platform::ChannelState::Ready
+        })
+    });
+    let unverified = || {
+        (s.dashpay(a).contact(a_id.clone(), b_id.clone()))
+            .unwrap()
+            .unwrap()
+            .summary
+            .unverified
+    };
+    let latched = engine
+        .block_on(s.appdb_op(|db| {
+            db.setting(
+                dw_appdb::GLOBAL_SCOPE,
+                crate::platform::provenance::TRUST_FALLBACK_USED_KEY,
+            )
+        }))
+        .unwrap()
+        .is_some();
+    eprintln!(
+        "latch set: {latched}; B unverified before the gate: {}",
+        unverified()
+    );
+
+    let gate = |what: &str| {
+        let started = Instant::now();
+        let gated = engine.block_on(s.on_runtime({
+            let s = Arc::clone(&s);
+            async move { Ok(s.money_gate(Subject::Payee(a, pair)).await) }
+        }));
+        eprintln!(
+            "{what}: {gated:?} in {:?}; B unverified after: {}",
+            started.elapsed(),
+            unverified()
+        );
+        gated.unwrap()
+    };
+    gate("degraded gate").expect("the degraded gate passes");
+    s.trust
+        .set_mode(crate::platform::trust::TrustMode::Enforcing);
+    assert_eq!(s.trust.rule_5(), crate::platform::trust::Rule5::Enforce);
+    // Right after sync SPV may not hold the quorum a proof names yet: the
+    // gate then refuses (nothing moves) and a later attempt verifies.
+    let mut attempt = 1;
+    loop {
+        match gate(&format!("enforcing gate, attempt {attempt}")) {
+            Ok(()) => break,
+            Err(Refusal::Unverified) if attempt < 6 => attempt += 1,
+            Err(refusal) => panic!("B never verified: {refusal:?}"),
+        }
+    }
+    assert!(!unverified(), "B's data is on record as SPV-verified");
+    let identity_gate = engine.block_on(s.on_runtime({
+        let s = Arc::clone(&s);
+        async move { Ok(s.money_gate(Subject::Identity(a, pair.0)).await) }
+    }));
+    eprintln!("enforcing gate on A's identity: {identity_gate:?}");
+
+    let draft = s.new_tx_draft(a).unwrap();
+    draft
+        .set_contact_recipient(ContactRecipient {
+            identity: a_id.clone(),
+            contact: b_id.clone(),
+            amount: PAY,
+            subtract_fee: false,
+            note: Some("DP3-04 T2 (never broadcast)".into()),
+        })
+        .unwrap();
+    let estimate = engine.block_on(draft.estimate()).unwrap();
+    let grant = (s.vault())
+        .authorize(
+            GrantPurpose::Spend {
+                max_duffs: PAY + estimate.fee,
+            },
+            Some(&a.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    let started = Instant::now();
+    let prepared = engine.block_on(draft.prepare(grant)).unwrap();
+    eprintln!("enforcing prepare took {:?}", started.elapsed());
+    eprintln!(
+        "enforcing prepare passed the gate: pays {} (txid {}, never broadcast)",
+        paid(&prepared),
+        prepared.summary().txid
+    );
+    engine.block_on(draft.abandon(prepared)).unwrap();
+    engine
+        .block_on(engine.close_network(DashNetwork::Testnet))
+        .ok();
 }
