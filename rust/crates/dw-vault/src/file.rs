@@ -109,7 +109,7 @@ pub(crate) struct Manifest {
     pub records: BTreeMap<String, String>,
 }
 
-fn push_field(out: &mut Vec<u8>, field: &[u8]) {
+pub(crate) fn push_field(out: &mut Vec<u8>, field: &[u8]) {
     out.extend_from_slice(&(field.len() as u32).to_le_bytes());
     out.extend_from_slice(field);
 }

@@ -72,7 +72,8 @@ pub use types::{
 };
 pub use vault::{
     CheckedPassphraseChange, CoreMnemonicCheck, MASTERNODE_KEY_ROLES, MAX_MASTERNODE_KEY_BYTES,
-    MAX_PASSPHRASE_BYTES, Vault, WalletBackupBundle, reads_bundle_version, throttle_wait_secs,
+    MAX_PASSPHRASE_BYTES, MAX_STASHED_LINK_BYTES, MAX_STASHED_LINKS, StashedLinkKind,
+    StashedLinkMeta, Vault, WalletBackupBundle, reads_bundle_version, throttle_wait_secs,
 };
 
 /// Directory of the vault inside a network data directory.

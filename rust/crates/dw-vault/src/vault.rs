@@ -114,9 +114,11 @@ use crate::types::{
 use crate::{SignerError, VaultError};
 
 mod compat;
+mod links;
 mod masternode;
 use compat::BackupKek;
 pub use compat::{CoreMnemonicCheck, WalletBackupBundle, reads_bundle_version};
+pub use links::{MAX_STASHED_LINK_BYTES, MAX_STASHED_LINKS, StashedLinkKind, StashedLinkMeta};
 pub use masternode::{MASTERNODE_KEY_ROLES, MAX_MASTERNODE_KEY_BYTES};
 
 /// Proof that the caller holds `Shared::writer`.
@@ -458,6 +460,8 @@ pub(crate) struct Shared {
     /// The operation gate (see the module doc).
     ops: RwLock<()>,
     inner: Mutex<Inner>,
+    /// The link stash's in-process state (DP5-01, `links.rs`).
+    links: Mutex<links::LinkState>,
 }
 
 /// A passphrase change whose old passphrase was verified
@@ -532,6 +536,7 @@ impl Vault {
                     #[cfg(test)]
                     gate_log: None,
                 }),
+                links: Mutex::new(links::LinkState::new()?),
             }),
         })
     }
@@ -809,7 +814,12 @@ impl Vault {
             inner.last_passphrase_at = Some(now);
         }
         drop(writer);
-        Ok(self.status_of(&inner))
+        let status = self.status_of(&inner);
+        drop(inner);
+        drop(ops);
+        // Links stashed before the vault existed move into it (§2.9).
+        self.sync_links_after_key();
+        Ok(status)
     }
 
     /// dash-qt "Encrypt Wallet" (QT-111): adds slot P and deletes slot O.
@@ -880,11 +890,16 @@ impl Vault {
     pub fn unlock(&self, passphrase: &[u8], scope: UnlockScope) -> Result<VaultStatus, VaultError> {
         let writer = self.writer();
         let (dek, backup_kek) = self.check_passphrase(&writer, passphrase)?;
-        let ops = self.epoch_guard();
-        let mut inner = self.inner();
-        inner.install_key(dek, scope, &ops);
-        inner.backup_kek = Some(backup_kek);
-        Ok(self.status_of(&inner))
+        let status = {
+            let ops = self.epoch_guard();
+            let mut inner = self.inner();
+            inner.install_key(dek, scope, &ops);
+            inner.backup_kek = Some(backup_kek);
+            self.status_of(&inner)
+        };
+        drop(writer);
+        self.sync_links_after_key();
+        Ok(status)
     }
 
     /// Drops the data key, revokes every grant and invalidates every
@@ -2592,6 +2607,8 @@ impl Vault {
             }
         }
         drop(writer);
+        // A new data key: links sealed to the old one are dropped (D17).
+        self.sync_links_after_key();
         Ok(lost)
     }
 
@@ -2622,6 +2639,7 @@ impl Vault {
             }
         }
         file::remove_all(&self.shared.dir)?;
+        self.remove_links()?;
         {
             let ops = self.epoch_guard();
             let mut inner = self.inner();
