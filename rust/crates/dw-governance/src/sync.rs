@@ -351,6 +351,8 @@ struct PeerState {
     /// Hashes assigned to it, not asked yet ([`SyncConfig::max_in_flight`]).
     queue: VecDeque<Item>,
     in_flight: usize,
+    /// A slot freed or an item queued since its queue was last pumped.
+    refill: bool,
     /// Parents its orphan votes had the wallet ask for: its budget.
     parent_fetches: HashSet<[u8; 32]>,
     /// Parents asked of it, for any peer's orphan votes.
@@ -389,6 +391,7 @@ impl PeerState {
             last_delivery: Instant::now(),
             queue: VecDeque::new(),
             in_flight: 0,
+            refill: false,
             parent_fetches: HashSet::new(),
             parents_asked: HashSet::new(),
         }
@@ -445,6 +448,9 @@ struct Pending {
     phase: bool,
     /// Peers asked before, whose late delivery is still accepted.
     asked: Vec<usize>,
+    /// One of them timed out: given up on, the item is lost even after a
+    /// later peer's `notfound` (D57).
+    unanswered: bool,
 }
 
 /// An inventory item, hash and kind: requests are keyed by both, as
@@ -468,10 +474,23 @@ struct Late {
     lost: bool,
 }
 
-/// What [`Run::take`] accepted an item as.
+/// What a request was, once it ended: what [`Run::take`] accepted an item
+/// as, or what moves to the next announcer.
+#[derive(Default)]
 struct Taken {
     phase: bool,
     asked: Vec<usize>,
+    unanswered: bool,
+}
+
+impl From<Pending> for Taken {
+    fn from(r: Pending) -> Self {
+        Self {
+            phase: r.phase,
+            asked: r.asked,
+            unanswered: r.unanswered,
+        }
+    }
 }
 
 /// Requests in flight and who announced what.
@@ -631,7 +650,7 @@ impl Run {
     }
 
     /// Assigns `item` to peer `id` and queues it there.
-    fn assign(&mut self, item: Item, id: usize, phase: bool, asked: Vec<usize>) {
+    fn assign(&mut self, item: Item, id: usize, t: Taken) {
         self.requests.pending.insert(
             item,
             Pending {
@@ -639,8 +658,9 @@ impl Run {
                 queued: Instant::now(),
                 sent: None,
                 asked_again: false,
-                phase,
-                asked,
+                phase: t.phase,
+                asked: t.asked,
+                unanswered: t.unanswered,
             },
         );
         let pending = &self.requests.pending;
@@ -648,6 +668,7 @@ impl Run {
             return;
         };
         p.queue.push_back(item);
+        p.refill = true;
         // Entries of requests ended while queued stay until popped: past
         // twice what the peer may have queued, they go (D55).
         if p.queue.len() > 2 * p.announced + 64 {
@@ -661,30 +682,32 @@ impl Run {
         }
     }
 
-    /// Asks peer `id` for queued items up to its in-flight limit.
-    fn pump(&mut self, id: usize) {
+    /// Asks each peer whose queue or slots changed for its queued items,
+    /// up to its in-flight limit, in `getdata`s of up to the batch size
+    /// (D55).
+    fn refill(&mut self) {
         let (max, batch) = (self.cfg.max_in_flight, self.cfg.getdata_batch.max(1));
-        let Some(pos) = self.peers.iter().position(|p| p.peer.id == id) else {
-            return;
-        };
         let now = Instant::now();
-        let mut items = Vec::new();
-        let p = &mut self.peers[pos];
-        while p.in_flight < max {
-            let Some((hash, kind)) = p.queue.pop_front() else {
-                break;
-            };
-            if let Some(r) = self.requests.pending.get_mut(&(hash, kind))
-                && r.peer == id
-                && r.sent.is_none()
-            {
-                r.sent = Some(now);
-                p.in_flight += 1;
-                items.push(InvItem { kind, hash });
+        for p in self.peers.iter_mut().filter(|p| p.refill) {
+            p.refill = false;
+            let id = p.peer.id;
+            let mut items = Vec::new();
+            while p.in_flight < max {
+                let Some((hash, kind)) = p.queue.pop_front() else {
+                    break;
+                };
+                if let Some(r) = self.requests.pending.get_mut(&(hash, kind))
+                    && r.peer == id
+                    && r.sent.is_none()
+                {
+                    r.sent = Some(now);
+                    p.in_flight += 1;
+                    items.push(InvItem { kind, hash });
+                }
             }
-        }
-        for chunk in items.chunks(batch) {
-            p.peer.send_getdata(chunk);
+            for chunk in items.chunks(batch) {
+                p.peer.send_getdata(chunk);
+            }
         }
     }
 
@@ -696,7 +719,7 @@ impl Run {
             && let Some(p) = self.peer_mut(r.peer)
         {
             p.in_flight = p.in_flight.saturating_sub(1);
-            self.pump(r.peer);
+            p.refill = true;
         }
         Some(r)
     }
@@ -728,52 +751,76 @@ impl Run {
                 // The peer asked now (or asked twice) may still deliver.
                 self.remember_late(*item, vec![r.peer], false);
             }
-            return Some(Taken {
-                phase: r.phase,
-                asked: r.asked,
-            });
+            return Some(r.into());
         }
-        if let Some(l) = self.requests.late.get_mut(item)
+        if let Some(l) = self.requests.late.get(item)
             && l.asked.contains(&from)
         {
-            // Kept: a request asked twice may be answered twice.
-            let was_lost = std::mem::replace(&mut l.lost, false);
-            let asked = l.asked.clone();
-            if was_lost {
-                self.lost -= 1;
-            }
+            // Kept: a request asked twice may be answered twice. A lost
+            // item stays lost until the wallet accepts a copy (D57).
+            let taken = Taken {
+                phase: l.lost,
+                asked: l.asked.clone(),
+                unanswered: false,
+            };
             if let Some(p) = self.peer_mut(from) {
                 p.last_delivery = Instant::now();
             }
-            return Some(Taken {
-                phase: was_lost,
-                asked,
-            });
+            return Some(taken);
         }
         self.misbehaved(from, "unsolicited item");
         None
     }
 
-    fn remember_late(&mut self, item: Item, asked: Vec<usize>, lost: bool) {
-        if self.requests.late.len() >= MAX_LATE {
-            self.requests.late.retain(|_, l| l.lost);
+    /// Keeps who was asked for `item` so their late copy is accepted. A
+    /// record it replaces keeps its peers and its loss: only a copy the
+    /// wallet accepts ends a loss (D57). Past the bound, records not lost
+    /// make room; a loss with no room is counted all the same.
+    fn remember_late(&mut self, item: Item, mut asked: Vec<usize>, mut lost: bool) {
+        let late = &mut self.requests.late;
+        if let Some(old) = late.remove(&item) {
+            if old.lost {
+                self.lost -= 1;
+                lost = true;
+            }
+            for p in old.asked {
+                if !asked.contains(&p) {
+                    asked.push(p);
+                }
+            }
         }
-        if let Some(old) = self.requests.late.insert(item, Late { asked, lost })
-            && old.lost
-        {
-            self.lost -= 1;
+        // More records than losses: some are not lost and can go.
+        if late.len() >= MAX_LATE && late.len() > self.lost {
+            late.retain(|_, l| l.lost);
         }
         if lost {
             self.lost += 1;
         }
+        if late.len() < MAX_LATE {
+            late.insert(item, Late { asked, lost });
+        }
     }
 
-    /// Asks the next peer that announced `item` and was not asked; with
-    /// none, gives up on it (failing the phase if `phase` and `count`) and
-    /// returns `true`.
-    fn retry(&mut self, item: Item, tried: usize, t: Taken, count: bool) -> bool {
+    /// The wallet took a copy of `item`: a loss of it ends, and its
+    /// announcements stop counting against their peers' limits.
+    fn accepted(&mut self, item: &Item) {
+        if let Some(l) = self.requests.late.get_mut(item)
+            && std::mem::take(&mut l.lost)
+        {
+            self.lost -= 1;
+        }
+        self.finish(item);
+    }
+
+    /// Asks the next peer that announced `item` and was not asked, after
+    /// `tried` (if it was sent the request); with none, gives up on it
+    /// (failing the phase if `phase` and `count`, or an asked peer timed
+    /// out) and returns `true`.
+    fn retry(&mut self, item: Item, tried: Option<usize>, t: Taken, count: bool) -> bool {
         let mut asked = t.asked;
-        if !asked.contains(&tried) {
+        if let Some(tried) = tried
+            && !asked.contains(&tried)
+        {
             asked.push(tried);
         }
         let live: Vec<usize> = self.peers.iter().map(|p| p.peer.id).collect();
@@ -783,14 +830,14 @@ impl Run {
         });
         match next {
             Some(next) => {
-                self.assign(item, next, t.phase, asked);
-                self.pump(next);
+                let t = Taken { asked, ..t };
+                self.assign(item, next, t);
                 false
             }
             None => {
                 // Who announced an object still counts if another peer
                 // delivers it later.
-                self.remember_late(item, asked, t.phase && count);
+                self.remember_late(item, asked, t.phase && (count || t.unanswered));
                 self.finish(&item);
                 let (hash, kind) = item;
                 if kind == INV_GOVERNANCE_VOTE {
@@ -808,7 +855,7 @@ impl Run {
     /// An item the wallet refused: another announcer's copy may be
     /// accepted, but a refusal never fails the phase (D35).
     fn refused(&mut self, item: Item, from: usize, taken: Taken) -> bool {
-        self.retry(item, from, taken, false)
+        self.retry(item, Some(from), taken, false)
     }
 
     fn on_inv(&mut self, from: usize, items: Vec<InvItem>) {
@@ -821,8 +868,10 @@ impl Run {
         let state = &mut self.peers[pos];
         // Items announced while the peer's sync is still answering belong to
         // the phase.
-        let objects_phase = state.full_sync.as_ref().is_some_and(|f| !f.complete());
-        let votes_phase = !state.votes_done();
+        // Once synced, no item belongs to a phase (D57).
+        let syncing = !self.announce_open;
+        let objects_phase = syncing && state.full_sync.as_ref().is_some_and(|f| !f.complete());
+        let votes_phase = syncing && !state.votes_done();
         let mut confirmed = Vec::new();
         let mut wanted = Vec::new();
         {
@@ -893,9 +942,12 @@ impl Run {
             self.progressed();
         }
         for (item, phase) in wanted {
-            self.assign(item, from, phase, Vec::new());
+            let t = Taken {
+                phase,
+                ..Taken::default()
+            };
+            self.assign(item, from, t);
         }
-        self.pump(from);
         if !confirmed.is_empty() {
             self.changed();
             if self.votes_open {
@@ -948,7 +1000,7 @@ impl Run {
         };
         match result {
             Ok(current) => {
-                self.finish(&item);
+                self.accepted(&item);
                 self.progressed();
                 self.changed();
                 if self.votes_open && current {
@@ -971,7 +1023,7 @@ impl Run {
             }
             Err(e) => {
                 tracing::debug!(?e, "governance object not kept");
-                self.finish(&item);
+                self.accepted(&item);
                 // A bound refused it: its announcers still count, so a
                 // later announcement can confirm it on arrival (D47).
                 if e != ObjectRejection::StoreFull {
@@ -1019,7 +1071,7 @@ impl Run {
                 return;
             }
             Err(_) => {
-                self.finish(&item);
+                self.accepted(&item);
                 self.progressed();
                 return;
             }
@@ -1038,12 +1090,12 @@ impl Run {
         let result = self.shared.store().add_checked(checked, addr, now);
         match result {
             Ok(()) => {
-                self.finish(&item);
+                self.accepted(&item);
                 self.progressed();
                 self.changed();
             }
             Err(VoteRejection::Orphan) => {
-                self.finish(&item);
+                self.accepted(&item);
                 self.progressed();
                 self.fetch_parent(from, parent);
             }
@@ -1056,7 +1108,7 @@ impl Run {
                 self.refused(item, from, taken);
             }
             Err(_) => {
-                self.finish(&item);
+                self.accepted(&item);
                 self.progressed();
             }
         }
@@ -1097,7 +1149,7 @@ impl Run {
                 self.requests
                     .pending
                     .get(item)
-                    .is_some_and(|r| r.peer == from)
+                    .is_some_and(|r| r.peer == from && r.sent.is_some())
             }) else {
                 continue;
             };
@@ -1105,13 +1157,9 @@ impl Run {
                 self.misbehaved(from, "notfound of another kind");
             }
             let r = self.release(&item).expect("looked up");
-            let taken = Taken {
-                phase: r.phase,
-                asked: r.asked,
-            };
             // A peer that no longer has an item it announced (a vote
             // dropped with a list change) is not a lost sync item.
-            self.retry(item, from, taken, false);
+            self.retry(item, Some(from), r.into(), false);
         }
     }
 
@@ -1177,13 +1225,9 @@ impl Run {
         }
         for item in pending {
             let r = self.requests.pending.remove(&item).expect("listed");
-            let taken = Taken {
-                phase: r.phase,
-                asked: r.asked,
-            };
             // Votes come again from the re-asked syncs; objects it alone
             // announced are not sync items another fresh peer has.
-            self.retry(item, id, taken, false);
+            self.retry(item, Some(id), r.into(), false);
         }
         self.requests.announced.retain(|_, a| !a.all.is_empty());
         if !reask.is_empty() {
@@ -1220,6 +1264,7 @@ impl Run {
             PeerEvent::Malformed => self.misbehaved(from, "malformed message"),
             PeerEvent::Closed => self.on_closed(from),
         }
+        self.refill();
     }
 
     /// Requests whose peer delivered nothing for the timeout, or sent
@@ -1252,26 +1297,46 @@ impl Run {
             })
             .map(|(i, _)| *i)
             .collect();
+        let mut again: HashMap<usize, Vec<InvItem>> = HashMap::new();
         for item in late {
             let r = &self.requests.pending[&item];
-            let (peer, again) = (r.peer, r.asked_again);
-            if r.sent.is_some() && !again && !others(self, &item, r) {
+            let (peer, sent) = (r.peer, r.sent.is_some());
+            if sent && !r.asked_again && !others(self, &item, r) {
                 let r = self.requests.pending.get_mut(&item).expect("listed");
                 r.asked_again = true;
                 r.sent = Some(now);
-                if let Some(p) = self.peer(peer) {
-                    let (hash, kind) = item;
-                    p.peer.send_getdata(&[InvItem { kind, hash }]);
-                }
+                let (hash, kind) = item;
+                again.entry(peer).or_default().push(InvItem { kind, hash });
                 continue;
             }
             let r = self.release(&item).expect("listed");
-            let taken = Taken {
-                phase: r.phase,
-                asked: r.asked,
-            };
-            self.retry(item, peer, taken, true);
+            if sent {
+                // It may still deliver: given up on, the item is lost
+                // whatever a later peer answers (D57).
+                let t = Taken {
+                    unanswered: true,
+                    ..Taken::from(r)
+                };
+                self.retry(item, Some(peer), t, true);
+            } else {
+                // Never asked of it: the peer stays askable, after the
+                // others (D57).
+                if let Some(a) = self.requests.announced.get_mut(&item) {
+                    a.untried.retain(|p| *p != peer);
+                    a.untried.push(peer);
+                }
+                self.retry(item, None, r.into(), false);
+            }
         }
+        let batch = self.cfg.getdata_batch.max(1);
+        for (peer, items) in again {
+            if let Some(p) = self.peer(peer) {
+                for chunk in items.chunks(batch) {
+                    p.peer.send_getdata(chunk);
+                }
+            }
+        }
+        self.refill();
         for p in &self.peers {
             if p.answer_due.is_some_and(|due| due <= now) {
                 tracing::info!(peer = %p.peer.addr, "closing a governance peer that did not answer its sync");

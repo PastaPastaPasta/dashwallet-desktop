@@ -891,9 +891,14 @@ async fn objects_one_peer_announced_are_confirmed_by_the_others() {
     .await;
     let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced && p.objects == 1).await;
     assert_eq!(p.unconfirmed_objects, 0);
+    // The mock may log its vote sync after answering it.
     let mut asked = Vec::new();
-    while let Ok(s) = hx.seen[1].try_recv() {
-        asked.push(s);
+    let until = Instant::now() + Duration::from_secs(5);
+    while asked.len() < 2 && Instant::now() < until {
+        match hx.seen[1].try_recv() {
+            Ok(s) => asked.push(s),
+            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
     }
     assert!(
         matches!(&asked[..], [Seen::Govsync(x), Seen::Govsync(y)] if *x == obj.hash() && *y == obj.hash()),
@@ -1856,10 +1861,9 @@ async fn a_peer_that_keeps_delivering_cannot_hold_a_request() {
     keepalive_run(INV_GOVERNANCE_VOTE).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_peers_queue_holds_no_more_than_it_may_have_queued() {
-    // Validator r5 MJ3: inv + notfound pairs for a hash queued behind a
-    // held slot each left a queue entry.
+/// A run with one connected peer (id 0) that reads and drops everything,
+/// driven by calling its handlers.
+async fn one_peer_run(tune: impl FnOnce(&mut SyncConfig, &mut PeerState)) -> Run {
     let mock = MockPeer::bind(Network::Regtest).await.unwrap();
     let addr = mock.addr();
     tokio::spawn(async move {
@@ -1868,36 +1872,52 @@ async fn a_peers_queue_holds_no_more_than_it_may_have_queued() {
     });
     let (tx, _rx) = mpsc::channel(EVENTS_QUEUE);
     let mut cfg = SyncConfig::new(PeerConfig::new(Network::Regtest, "/t/", 1));
-    cfg.max_in_flight = 1;
     let peer = Peer::connect(0, addr, &cfg.peer, tx).await.unwrap();
-    let shared = Arc::new(Shared::new(Network::Regtest, Box::new(|| {})));
-    let mut run = Run {
-        shared,
+    let mut state = PeerState::new(peer);
+    tune(&mut cfg, &mut state);
+    Run {
+        shared: Arc::new(Shared::new(Network::Regtest, Box::new(|| {}))),
         cfg,
         history: Arc::new(Mutex::new(SyncHistory::default())),
-        peers: vec![PeerState::new(peer)],
+        peers: vec![state],
         requests: Requests::default(),
         base_bytes: 0,
-        votes_open: false,
+        votes_open: true,
         announce_open: false,
         unassigned: Vec::new(),
         lost: 0,
         full_syncs_done: 0,
         vote_parents: HashMap::new(),
         last_progress: Instant::now(),
-    };
-    let held = InvItem {
-        kind: INV_GOVERNANCE_OBJECT,
-        hash: [0x11; 32],
-    };
-    run.on_inv(0, vec![held]);
-    let x = InvItem {
-        kind: INV_GOVERNANCE_OBJECT,
-        hash: [0x22; 32],
-    };
+    }
+}
+
+/// `count` invented vote hashes, distinct per `round`.
+fn junk_votes(round: u8, count: u32) -> Vec<InvItem> {
+    (0..count)
+        .map(|i| {
+            let mut hash = [0x99; 32];
+            hash[0] = round;
+            hash[2..6].copy_from_slice(&i.to_le_bytes());
+            InvItem {
+                kind: INV_GOVERNANCE_VOTE,
+                hash,
+            }
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peers_queue_holds_no_more_than_it_may_have_queued() {
+    // Validator r5 MJ3: inv + notfound pairs for a hash queued behind a
+    // held slot each left a queue entry.
+    let mut run = one_peer_run(|c, _| c.max_in_flight = 1).await;
+    // Requests ended while queued (moved, or the peer closed) leave their
+    // entries behind.
+    let x = ([0x22; 32], INV_GOVERNANCE_OBJECT);
     for _ in 0..10_000 {
-        run.on_inv(0, vec![x]);
-        run.on_not_found(0, vec![x]);
+        run.assign(x, 0, Taken::default());
+        run.release(&x);
     }
     let p = &run.peers[0];
     assert!(
@@ -1906,4 +1926,248 @@ async fn a_peers_queue_holds_no_more_than_it_may_have_queued() {
         p.queue.len(),
         p.announced
     );
+}
+
+/// Answers its full sync with nothing, its vote syncs with `ssc(11, n)`
+/// and, after `delay` (so after the honest nodes), invs of `votes`; every
+/// `getdata` gets a `notfound`.
+async fn late_notfound_peer(mock: MockPeer, votes: Vec<[u8; 32]>, delay: Duration) {
+    let mut conn = mock.accept().await.unwrap();
+    while let Ok(msg) = conn.recv().await {
+        match msg.command.as_str() {
+            commands::MNGOVERNANCESYNC if msg.payload[..32] == [0; 32] => {
+                send_status(&mut conn, SSC_GOVOBJ, 0).await;
+            }
+            commands::MNGOVERNANCESYNC if msg.payload[32..] != object_fetch_filter()[..] => {
+                send_status(&mut conn, SSC_GOVOBJ_VOTE, votes.len() as i32).await;
+                tokio::time::sleep(delay).await;
+                let items: Vec<InvItem> = votes
+                    .iter()
+                    .map(|h| InvItem {
+                        kind: INV_GOVERNANCE_VOTE,
+                        hash: *h,
+                    })
+                    .collect();
+                conn.send("inv", &encode_inv(&items)).await.unwrap();
+            }
+            "getdata" => {
+                conn.send("notfound", &msg.payload).await.unwrap();
+            }
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_moved_queued_request_leaves_its_peer_askable() {
+    backlog_run(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backlogged_honest_votes_all_arrive() {
+    backlog_run(false).await;
+}
+
+async fn backlog_run(liar_announces: bool) {
+    // Validator r6 MJ1. Two honest nodes hold P and N votes on it; each
+    // answers one vote `getdata` per 300 ms (a backlog). The liar announces
+    // the same votes last and answers `notfound`. Queued 600 ms at A, a
+    // vote moves to B; queued 600 ms at B, it moves to the liar. A and B
+    // were never sent it, so they stay askable after its `notfound`.
+    const N: u8 = 10;
+    let p = proposal("p-backlogged");
+    let votes: Vec<GovernanceVote> = (1..=N)
+        .map(|k| vote(p.hash(), k, VoteOutcome::Yes))
+        .collect();
+    let hashes: Vec<[u8; 32]> = if liar_announces {
+        votes.iter().map(|v| v.hash()).collect()
+    } else {
+        Vec::new()
+    };
+    let honest = Node {
+        objects: vec![p.clone()],
+        votes: votes.clone(),
+        vote_delay: Some(Duration::from_millis(300)),
+        ..Node::default()
+    };
+    let (shared, end, stop) = start_custom(
+        vec![custom(move |mock| {
+            late_notfound_peer(mock, hashes, Duration::from_millis(200))
+        })],
+        vec![honest.clone(), honest],
+        |c| {
+            c.max_in_flight = 1;
+            c.request_timeout = Duration::from_millis(600);
+        },
+        |shared| {
+            let list: Vec<ListEntry> = (1..=N)
+                .map(|k| ListEntry {
+                    voting_key_id: key_id(k),
+                    weight: Some(1),
+                    valid: true,
+                })
+                .collect();
+            shared.store().set_masternode_list(&list);
+        },
+    )
+    .await;
+    let stored = shared.store().votes_on(&p.hash()).count();
+    let _ = stop.send(true);
+    assert!(shared.store().object(&p.hash()).is_some(), "{end:?}");
+    assert!(
+        end.phase != Phase::Synced || stored == N as usize,
+        "Synced with {stored} of {N} votes both honest peers hold: {end:?}"
+    );
+}
+
+/// Full sync: nothing. Vote sync: waits `wait`, then announces `v` as a
+/// vote (a phase item, its own sync still open), answers its `getdata`
+/// with `notfound`, and only then sends `ssc(11, 1)`.
+async fn reannouncing_liar(mock: MockPeer, v: [u8; 32], wait: Duration, announce: bool) {
+    let mut conn = mock.accept().await.unwrap();
+    while let Ok(msg) = conn.recv().await {
+        match msg.command.as_str() {
+            commands::MNGOVERNANCESYNC if msg.payload[..32] == [0; 32] => {
+                send_status(&mut conn, SSC_GOVOBJ, 0).await;
+            }
+            commands::MNGOVERNANCESYNC if msg.payload[32..] != object_fetch_filter()[..] => {
+                tokio::time::sleep(wait).await;
+                if !announce {
+                    send_status(&mut conn, SSC_GOVOBJ_VOTE, 0).await;
+                    continue;
+                }
+                let item = InvItem {
+                    kind: INV_GOVERNANCE_VOTE,
+                    hash: v,
+                };
+                conn.send("inv", &encode_inv(&[item])).await.unwrap();
+            }
+            "getdata" => {
+                conn.send("notfound", &msg.payload).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                send_status(&mut conn, SSC_GOVOBJ_VOTE, 1).await;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_vote_stays_lost_after_a_liars_notfound() {
+    lost_vote_run(true, Duration::from_millis(3500)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_vote_fails_the_run() {
+    lost_vote_run(false, Duration::from_millis(3500)).await;
+}
+
+async fn lost_vote_run(announce: bool, wait: Duration) {
+    // Validator r6 MJ2. The honest node is slow: its one vote is given up
+    // and counted lost, so the phase must fail (D13) unless the vote still
+    // arrives. The liar then announces the same vote and answers
+    // `notfound`: that replaced the late record uncounted, the run
+    // reported Synced, and the honest late copy was refused.
+    let p = proposal("p-slow-honest");
+    let v = vote(p.hash(), 1, VoteOutcome::Yes);
+    let vh = v.hash();
+    let honest = Node {
+        objects: vec![p.clone()],
+        votes: vec![v],
+        vote_delay: Some(Duration::from_secs(6)),
+        ..Node::default()
+    };
+    let (shared, end, stop) = start_custom(
+        vec![custom(move |mock| {
+            reannouncing_liar(mock, vh, wait, announce)
+        })],
+        vec![honest],
+        |c| c.request_timeout = Duration::from_millis(400),
+        |shared| {
+            shared.store().set_confirmations(1);
+            shared.store().set_masternode_list(&[ListEntry {
+                voting_key_id: key_id(1),
+                weight: Some(1),
+                valid: true,
+            }]);
+        },
+    )
+    .await;
+    let at_end = shared.store().votes_on(&p.hash()).count();
+    let _ = stop.send(true);
+    assert!(
+        end.phase != Phase::Synced || at_end == 1,
+        "Synced without the honest vote: {end:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lost_late_records_stay_bounded() {
+    // Validator r6 m1: a peer whose vote sync count is never met (it
+    // answered a huge `ssc(11)`) makes every vote it announces a phase
+    // item; given up by timeout, each was a lost late record that
+    // `remember_late` never dropped, rescanning them all on each insert.
+    // (Once synced no item is a phase item; this holds the bound while a
+    // phase runs.)
+    let mut run = one_peer_run(|c, p| {
+        c.max_in_flight = 1_000_000;
+        c.request_timeout = Duration::ZERO;
+        p.vote_asked.push([0x77; 32]);
+        p.vote_expected.push(i64::from(i32::MAX));
+    })
+    .await;
+    for round in 0u8..3 {
+        run.handle(0, PeerEvent::Inv(junk_votes(round, 50_000)));
+        run.expire(); // asked again
+        run.expire(); // given up, lost
+    }
+    assert!(run.lost >= 100_000, "lost {}", run.lost);
+    assert!(
+        run.requests.late.len() <= MAX_LATE,
+        "late record {} past {MAX_LATE}",
+        run.requests.late.len()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_item_is_lost_once_synced() {
+    // Validator r6 m1: after Synced, a peer whose vote count is never met
+    // made each vote it relays a phase item, lost when given up.
+    let mut run = one_peer_run(|c, p| {
+        c.request_timeout = Duration::ZERO;
+        p.vote_asked.push([0x77; 32]);
+        p.vote_expected.push(i64::from(i32::MAX));
+    })
+    .await;
+    run.announce_open = true;
+    run.handle(0, PeerEvent::Inv(junk_votes(0, 100)));
+    run.expire();
+    run.expire();
+    assert_eq!((run.lost, run.requests.pending.len()), (0, 0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_notfound_for_a_request_not_sent_is_ignored() {
+    // Validator r6 nit (D50): a `notfound` for a request still queued at
+    // the peer ended it.
+    let mut run = one_peer_run(|c, _| c.max_in_flight = 1).await;
+    let items = junk_votes(0, 2);
+    run.handle(0, PeerEvent::Inv(items.clone()));
+    let sent = |run: &Run, i: &InvItem| run.requests.pending[&(i.hash, i.kind)].sent.is_some();
+    let queued = items.iter().find(|i| !sent(&run, i)).copied().unwrap();
+    run.handle(0, PeerEvent::NotFound(vec![queued]));
+    assert!(
+        run.requests
+            .pending
+            .contains_key(&(queued.hash, queued.kind))
+    );
+    assert_eq!(run.peers[0].misbehaviour, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_timed_out_vote_stays_lost_after_a_later_notfound() {
+    // Validator r6 MJ1: the honest node's request times out and moves to
+    // the liar, which answers `notfound`; the honest copy may still come,
+    // so the vote is lost, not settled.
+    lost_vote_run(true, Duration::from_millis(200)).await;
 }
