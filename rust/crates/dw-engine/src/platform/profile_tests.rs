@@ -360,7 +360,7 @@ fn an_edit_that_changes_nothing_sends_nothing() {
 }
 
 /// Each refusal comes before the grant is redeemed: a text too long, an
-/// avatar candidate (DP4-02), Platform unreachable, an identity the wallet
+/// unknown avatar candidate (DP4-02), Platform unreachable, an identity the wallet
 /// lacks, a grant below the quote, a lease of another flow, too few
 /// credits.
 #[test]
@@ -409,6 +409,134 @@ fn refusals_come_before_the_grant() {
         "platform.insufficient_credits"
     );
     assert!(poor.unused(&grant));
+}
+
+/// A `Set` publishes the candidate's URL, hash and fingerprint together
+/// (DP4-02), and the profile shows them; a candidate without a URL (a
+/// `File` one before its upload) or another wallet's is refused before
+/// the grant is redeemed.
+#[test]
+fn an_avatar_candidate_sets_the_three_fields() {
+    use super::avatar::Candidate;
+    let candidate = |wallet, url: Option<&str>, sha, dhash| {
+        Candidate::new(
+            wallet,
+            url.map(str::to_owned),
+            sha,
+            dhash,
+            url.is_none().then(Vec::new),
+        )
+    };
+    let f = fixture();
+    let avatars = &f.s.platform.avatars;
+    let url = "https://example.org/new.png";
+    let ok = avatars.insert(candidate(f.wallet, Some(url), [0xab; 32], [0xcd; 8]));
+    let no_url = avatars.insert(candidate(f.wallet, None, [1; 32], [1; 8]));
+    let theirs = avatars.insert(candidate(
+        crate::WalletId([0xee; 32]),
+        Some(url),
+        [2; 32],
+        [2; 8],
+    ));
+    let set = |candidate: &str| ProfileEdit {
+        avatar: AvatarChange::Set {
+            candidate: candidate.into(),
+        },
+        ..edit(Some("Al"), None)
+    };
+    let grant = f.grant(DOCUMENT_10K_CREDITS);
+    for refused in [&no_url, &theirs] {
+        assert_eq!(
+            f.update(set(refused), &grant).unwrap_err().code(),
+            "invalid_argument"
+        );
+    }
+    assert!(f.unused(&grant));
+    f.publish(full(), 3);
+    f.update(set(&ok), &grant).unwrap();
+    let doc = f.document().unwrap();
+    let mut want = full();
+    want.insert("displayName".into(), text("Al"));
+    want.remove("publicMessage");
+    want.insert("avatarUrl".into(), text(url));
+    want.insert("avatarHash".into(), Value::Bytes32([0xab; 32]));
+    want.insert("avatarFingerprint".into(), Value::Bytes(vec![0xcd; 8]));
+    assert_eq!((doc.revision, &doc.properties), (4, &want));
+    let shown = f.profile(ME).unwrap().unwrap();
+    assert_eq!(shown.avatar_url.as_deref(), Some(url));
+    assert_eq!(shown.avatar_hash, Some("ab".repeat(32)));
+    assert_eq!(shown.avatar_fingerprint, Some("cd".repeat(8)));
+}
+
+/// "Load contact pictures" where `avatar` enforces it (DP4-02 D17), on the
+/// session: off, another user's avatar reads neither Platform nor the
+/// avatar host; on, the profile is read from Platform (once, then kept).
+/// The fetch itself is the pipeline's (avatar_tests.rs): a profile shows
+/// only `https` avatars, as the library, and the local server is `http`.
+#[test]
+fn the_pictures_toggle_holds_at_the_session() {
+    use super::avatar::Pipeline;
+    use super::avatar_cache::ThumbDir;
+    use super::avatar_fetch::NameResolver;
+    use super::avatar_tests::{LOCAL, Route, Script, Server, png, test_policy};
+    use super::profile::AvatarSize;
+    use platform_wallet::wallet::identity::{calculate_avatar_hash, calculate_dhash_fingerprint};
+
+    let f = fixture();
+    let server = f.engine.block_on(Server::start((LOCAL, 0).into())).unwrap();
+    let script = Arc::new(Script::default());
+    script.answer("good.test", vec![vec![LOCAL]]);
+    let tmp = dw_testutil::private_tempdir();
+    let avatars = &f.s.platform.avatars;
+    avatars.install(Pipeline::new(
+        test_policy(),
+        script as Arc<dyn NameResolver>,
+        Some(ThumbDir::open(tmp.path()).unwrap()),
+        Arc::new(dw_appdb::AppDb::open_in_memory().unwrap()),
+        avatars.pictures_flag(),
+    ));
+    // Dave publishes an avatar on Platform; the wallet holds nothing of him.
+    let theirs = png(30, 30);
+    server.route("/dave.png", Route::ok(theirs.clone()));
+    let doc = ProfileDocument {
+        id: id(19),
+        revision: 1,
+        properties: properties([
+            ("avatarUrl", text(&server.url("good.test", "/dave.png"))),
+            ("avatarHash", Value::Bytes32(calculate_avatar_hash(&theirs))),
+            (
+                "avatarFingerprint",
+                Value::Bytes(calculate_dhash_fingerprint(&theirs).unwrap().to_vec()),
+            ),
+        ]),
+    };
+    f.net.profiles.lock().unwrap().insert(id(DAVE), doc);
+    let reads = || f.net.profile_reads.load(Ordering::SeqCst);
+    let before = reads();
+    let avatar = |n: u8| {
+        let (s, net) = (Arc::clone(&f.s), Arc::clone(&f.net));
+        let (wallet, who) = (f.wallet, b58(&id(n)));
+        f.engine
+            .block_on(async move { s.avatar_of(&*net, wallet, &who, AvatarSize::Small).await })
+    };
+    let toggle = |on: bool| {
+        f.engine
+            .block_on(f.s.set_load_contact_pictures(on))
+            .unwrap()
+    };
+
+    toggle(false);
+    assert_eq!(f.s.load_contact_pictures(), Ok(false));
+    assert_eq!(avatar(DAVE), Ok(None));
+    assert_eq!(avatar(ERIN), Ok(None));
+    assert_eq!(avatar(ME), Ok(None));
+    assert_eq!(reads(), before);
+    toggle(true);
+    assert_eq!(f.s.load_contact_pictures(), Ok(true));
+    assert_eq!(avatar(DAVE), Ok(None));
+    assert_eq!(avatar(DAVE), Ok(None));
+    assert_eq!(reads(), before + 1, "read once, then kept");
+    assert!(server.hits().is_empty());
 }
 
 /// Without the document key in the vault the edit is
