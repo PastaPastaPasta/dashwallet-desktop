@@ -2829,12 +2829,16 @@ renames or reshapes them takes the next version bump:
       trust scope, every 3 s for up to 60 s (plus one fetch's blocking lookups); a fetch that used only SPV-verified quorum keys and equals what the
       library holds is recorded (`dp_trust_verified`), and the money moves once nothing is unverified. Otherwise
       `platform.context_unavailable`. A re-fetch refused as a quorum-key mismatch is `platform.trust_mismatch` at
-      once. A payee whose paying account was not built from its current request is `platform.context_unavailable`
-      at once (design D12; at the wait a queued rebuild of the account exempts it, not after the reservation). A registration's or top-up's funding is held while `TrustProvider::writes_wait` (masternode sync not
+      once. A registration's or top-up's funding is held while `TrustProvider::writes_wait` (masternode sync not
       done): a registration waits `Sync`, a top-up is `platform.context_unavailable`, as while SPV is behind.
     - **Degraded** (the default, DEC-168): one round of re-fetches of the unverified entities, 10 s (plus one
       fetch's blocking lookups), records what verifies; a mismatch is `platform.trust_mismatch`; otherwise the money moves (rule 5 suspended).
       The trusted-only toggle moves the money with no re-fetch.
+    - **The paying account, in every mode.** Whatever the mode, the toggle or the latch, a payee whose paying
+      account was not built from their current request (a rotation the library has not rebuilt yet, a crash
+      before its sweep included) is `platform.context_unavailable`, nothing taken, and a DashPay sync is started so
+      the library queues the rebuild a retry needs (design D12, D25; at the wait a queued rebuild of the account
+      exempts it, not after the reservation).
     - **Where.** `prepare` checks the contact's payment lock, then runs the gate, both before the coin fence and the
       grant: a refusal redeems no grant, takes no address and holds no other send of the wallet. A vault Lock during
       the wait ends it (`send.vault_locked`); a payment lock written during it is found by the plan
@@ -2844,7 +2848,8 @@ renames or reshapes them takes the next version bump:
       so no later `prepare` pays one taken from unverified data, and an address kept while rule 5 did not apply is
       not paid under `Enforcing` (a new one is reserved). The re-check reads the address with the request it checks:
       one no longer in the payee's paying account (a rotation rebuilt it from a new request) is
-      `platform.context_unavailable` and not kept, under `Enforcing` with or without the latch (design D21). A reused address another payment's broadcast claimed
+      `platform.context_unavailable` and not kept, in every mode, with or without the latch (design D21, D25; under
+      Degraded and the toggle the re-check fetches nothing, it only reads the account). A reused address another payment's broadcast claimed
       during the re-check, or a fresh one displaced meanwhile by another payment's address given back unsent, is
       `send.prepared_tx_spent`. `top_up` runs the gate after its journal check and before the identity's write
       lock, an identity the wallet lacks refused first (`identity.not_found`).
