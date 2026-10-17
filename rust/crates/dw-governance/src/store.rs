@@ -312,7 +312,6 @@ pub struct GovernanceStore {
     overflow: u32,
 }
 
-/// Adds `hash` to a bounded map, forgetting the oldest past `max`.
 /// A vote copy's identity: its hash leaves the signature out (D62).
 fn copy_digest(hash: &[u8; 32], signature: &[u8]) -> [u8; 32] {
     let mut engine = sha256::Hash::engine();
@@ -321,6 +320,7 @@ fn copy_digest(hash: &[u8; 32], signature: &[u8]) -> [u8; 32] {
     sha256::Hash::from_engine(engine).to_byte_array()
 }
 
+/// Adds `hash` to a bounded map, forgetting the oldest past `max`.
 fn remember<V>(
     map: &mut HashMap<[u8; 32], V>,
     order: &mut VecDeque<[u8; 32]>,
@@ -1106,7 +1106,11 @@ impl GovernanceStore {
             return false;
         }
         self.expire_orphans(now);
-        self.orphans_per_peer.get(&from).copied().unwrap_or(0) >= MAX_ORPHANS_PER_PEER
+        self.at_orphan_bound(&from)
+    }
+
+    fn at_orphan_bound(&self, peer: &SocketAddr) -> bool {
+        self.orphans_per_peer.get(peer).copied().unwrap_or(0) >= MAX_ORPHANS_PER_PEER
     }
 
     /// Keeps a vote whose key the list may not hold yet: peers announce a
@@ -1264,7 +1268,7 @@ impl GovernanceStore {
     ) -> VoteRejection {
         self.expire_orphans(now);
         if let Some(peer) = from
-            && self.orphans_per_peer.get(&peer).copied().unwrap_or(0) >= MAX_ORPHANS_PER_PEER
+            && self.at_orphan_bound(&peer)
         {
             return VoteRejection::Orphan;
         }

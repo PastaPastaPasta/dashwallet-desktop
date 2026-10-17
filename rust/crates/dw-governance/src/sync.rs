@@ -1183,15 +1183,10 @@ impl Run {
                 self.refused(item, from, taken);
                 return;
             }
-            // Its signature, which the sender chooses, made it uncheckable:
-            // another announcer's copy may be checkable (D58).
-            Err(VoteRejection::Unverifiable) => {
-                self.refused(item, from, taken);
-                return;
-            }
-            // This copy was recovered before and met its key's limit
-            // (D62): another announcer's copy may be kept (D59).
-            Err(VoteRejection::KeyLimit) => {
+            // Its signature, which the sender chooses, made it uncheckable
+            // (D58), or was recovered before and met its key's limit (D62):
+            // another announcer's copy may be kept (D59).
+            Err(VoteRejection::Unverifiable | VoteRejection::KeyLimit) => {
                 self.refused(item, from, taken);
                 return;
             }
