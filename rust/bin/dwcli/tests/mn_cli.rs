@@ -82,6 +82,19 @@ fn mn_failures_are_json_lines_that_never_quote_the_arguments() {
     let all = format!("{out:?}").to_lowercase();
     assert!(!all.contains(SECRET), "{all}");
 
+    // No subcommand is a refused command line too; a value `mn` elsewhere
+    // doesn't make one an `mn` command line.
+    let out = dwcli(dir.path(), "pass", &["mn"], b"");
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let line: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line["error"]["code"], "invalid_argument");
+    let out = Command::new(env!("CARGO_BIN_EXE_dwcli"))
+        .args(["--datadir", "mn", "no-such-command"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+
     // Every subcommand with the secret where a hash or a wallet id goes
     // (and as the key to attach), on a list that never synced.
     let commands: &[(&[&str], &[u8])] = &[

@@ -654,6 +654,15 @@ fn parse_failure(e: &clap::Error) -> ExitCode {
     use clap::CommandFactory;
     use clap::error::ErrorKind;
     let code = u8::try_from(e.exit_code()).unwrap_or(2);
+    // An `mn` command line answers with its JSON line too (MG-03 D26): the
+    // subcommand as clap reads it past the error.
+    let mn = Cli::command()
+        .ignore_errors(true)
+        .try_get_matches()
+        .is_ok_and(|m| m.subcommand_name() == Some("mn"));
+    if e.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand && mn {
+        masternodes::report_parse_failure("a subcommand is required");
+    }
     if matches!(
         e.kind(),
         ErrorKind::DisplayHelp
@@ -664,8 +673,7 @@ fn parse_failure(e: &clap::Error) -> ExitCode {
         return ExitCode::from(code);
     }
     let text = dashpay::clap_error_text(e);
-    // An `mn` command line answers with its JSON line too (MG-03 D26).
-    if std::env::args().skip(1).any(|a| a == "mn") {
+    if mn {
         masternodes::report_parse_failure(&text);
     }
     eprintln!(
