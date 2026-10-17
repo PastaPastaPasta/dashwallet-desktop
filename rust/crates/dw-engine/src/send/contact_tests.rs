@@ -2027,9 +2027,12 @@ fn an_address_from_a_replaced_account_is_not_paid() {
     );
 }
 
+/// Puts a fixture's provider in one rule 5 setting.
+type SetRule = fn(&Fixture);
+
 /// Each rule 5 setting by name: `Enforce`, `Probe` (the default) and
 /// `Off` (the trusted-only toggle).
-const EVERY_RULE: [(&str, fn(&Fixture)); 3] = [
+const EVERY_RULE: [(&str, SetRule); 3] = [
     ("enforcing", |f| {
         f.session.trust.set_mode(TrustMode::Enforcing)
     }),
