@@ -10,6 +10,7 @@ import type { IdentitySummary } from "./generated/IdentitySummary";
 import type { LockOutcome } from "./generated/LockOutcome";
 import type { LockProgress } from "./generated/LockProgress";
 import { reconcileLockReport } from "./lockReport";
+import { isChangingUsernameInRequests } from "./username";
 
 /** A history query without its paging fields. */
 export type HistoryFilter = Omit<HistoryRequest, "cursor" | "limit">;
@@ -44,6 +45,7 @@ export const keys = {
   receiveAddress: (walletId: string) => ["receive", walletId, "address"] as const,
   receiveRequests: (walletId: string) => ["receive", walletId, "requests"] as const,
   receiveUsername: (walletId: string) => ["receive", walletId, "username"] as const,
+  usernameInRequests: (walletId: string) => ["receive", walletId, "usernameInRequests"] as const,
   /** The coin control list of a wallet: history and balance changes move coins. */
   coinsAll: (walletId: string) => ["coins", walletId] as const,
   utxos: (walletId: string) => ["coins", walletId, "utxos"] as const,
@@ -141,6 +143,24 @@ export function useReceiveAddress(walletId: string) {
 export function useReceiveUsername(walletId: string) {
   const b = useBackend();
   return useQuery({ queryKey: keys.receiveUsername(walletId), queryFn: () => b.receiveUsername(walletId) });
+}
+
+/** "Include my username in payment requests" for the wallet (DP3-03b); on by default. Off while a change of it is under way (D22). */
+export function useUsernameInRequests(walletId: string) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.usernameInRequests(walletId),
+    queryFn: async () => (await b.usernameInRequests(walletId)) && !isChangingUsernameInRequests(walletId),
+  });
+}
+
+/**
+ * Whether the wallet's request URIs may show its username now (DP3-03b D22): only once the
+ * setting has read on. A failed read is off; `undefined` until it first answers.
+ */
+export function useUsernameAllowed(walletId: string): boolean | undefined {
+  const setting = useUsernameInRequests(walletId);
+  return setting.isError ? false : setting.data;
 }
 
 export function useReceiveRequests(walletId: string) {

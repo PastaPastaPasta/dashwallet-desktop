@@ -185,6 +185,23 @@ describe("event bridge", () => {
     expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
   });
 
+  it("a wallet that comes or goes drops its cached receive reads (DP3-03b D17)", async () => {
+    const client = new QueryClient();
+    for (const w of ["a", "b"]) {
+      client.setQueryData(keys.usernameInRequests(w), true);
+      client.setQueryData(keys.receiveUsername(w), "alice");
+    }
+    let emit: (e: AppEvent) => void = () => undefined;
+    const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
+    await bridgeEvents(fake, client);
+    emit({ kind: "walletCreated", network: "testnet", walletId: "a" });
+    expect(client.getQueryData(keys.usernameInRequests("a"))).toBeUndefined();
+    expect(client.getQueryData(keys.receiveUsername("a"))).toBeUndefined();
+    expect(client.getQueryData(keys.usernameInRequests("b"))).toBe(true);
+    emit({ kind: "walletRemoved", network: "testnet", walletId: "b" });
+    expect(client.getQueryData(keys.receiveUsername("b"))).toBeUndefined();
+  });
+
   it("sync re-reads only the DashPay statuses without an identity (BL-153 D9, DP1-09 D28)", async () => {
     const client = new QueryClient();
     client.setQueryData(keys.dashpayStatus("a"), { kind: "noIdentity", reason: "waitingForSync" });

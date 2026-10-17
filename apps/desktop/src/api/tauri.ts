@@ -61,6 +61,8 @@ export class IpcBackend implements Backend {
   receiveRequests = cmd.receiveRequests;
   deleteReceiveRequest = cmd.deleteReceiveRequest;
   receiveUsername = cmd.receiveUsername;
+  usernameInRequests = cmd.usernameInRequests;
+  setUsernameInRequests = cmd.setUsernameInRequests;
   buildPaymentUri = cmd.buildPaymentUri;
   qrMatrix = cmd.qrMatrix;
   classifyAddress = cmd.classifyAddress;

@@ -178,6 +178,7 @@ or excluded with a reason (`rust/crates/dw-app/src/coverage.rs`).
 | `NetworkSession::set_platform_cadence` | dw-engine/src/platform/runtime.rs | `set_platform_cadence` |
 | `NetworkSession::set_trusted_quorums_only` | dw-engine/src/platform/trust.rs | `set_trusted_quorums_only` |
 | `NetworkSession::set_tx_label` | dw-engine/src/labels.rs | `set_tx_label` |
+| `NetworkSession::set_username_in_requests` | dw-engine/src/receive.rs | `set_username_in_requests` |
 | `NetworkSession::sign_message` | dw-engine/src/keys.rs | `sign_message` |
 | `NetworkSession::sign_psbt` | dw-engine/src/send/psbt.rs | `sign_psbt` |
 | `NetworkSession::spv_running` | dw-engine/src/platform/runtime.rs | `spv_running` |
@@ -196,6 +197,7 @@ or excluded with a reason (`rust/crates/dw-app/src/coverage.rs`).
 | `NetworkSession::tx_notices` | dw-engine/src/tx_actions.rs | `tx_notices` |
 | `NetworkSession::unload_wallet` | dw-engine/src/multiwallet.rs | `unload_wallet` |
 | `NetworkSession::unlock_outpoints` | dw-engine/src/coins.rs | `unlock_outpoints` |
+| `NetworkSession::username_in_requests` | dw-engine/src/receive.rs | `username_in_requests` |
 | `NetworkSession::utxos` | dw-engine/src/coins.rs | `utxos` |
 | `NetworkSession::vault` | dw-engine/src/keys.rs | `lock_status`, `quick_unlock_policy`, `revoke_grant` |
 | `NetworkSession::vault_op` | dw-engine/src/keys.rs | `authorize`, `authorize_set`, `create_vault`, `enroll_quick_unlock`, `remove_quick_unlock`, `reveal_mnemonic`, `selftest_unlock`, `set_quick_unlock_spend_limit`, `unlock`, `unlock_for`, `unlock_mixing_only` |
