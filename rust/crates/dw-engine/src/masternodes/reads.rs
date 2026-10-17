@@ -17,12 +17,14 @@ use platform_wallet::masternode::{
 use platform_wallet::wallet::provider_key_at_index::ProviderKeyKind;
 
 use super::aggregate::{OwnedMasternode, collateral_kind};
-use super::follow::{ListView, Notes, load_notes, read_list, wallet_masternodes};
+use super::follow::{ListView, Notes, all_owned, load_notes, read_list, wallet_masternodes};
 use super::records::{
-    AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, ListFacts, ListedMasternode,
-    MasternodeDetail, MasternodeListState, MasternodeOverview, MasternodePayout, MasternodeRoles,
-    MasternodeRow, MasternodeStatus, MasternodeType, RegistrationFacts,
+    AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, KeyCheck,
+    ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState, MasternodeOverview,
+    MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus, MasternodeType,
+    RegistrationFacts,
 };
+use super::tracking::KeyReferences;
 use super::{Masternodes, MasternodesError, display_hex, outpoint_string, parse_pro_tx_hash};
 use crate::coins::{CoinSnapshot, read_coins};
 use crate::events::unix_now;
@@ -44,6 +46,9 @@ struct WalletView {
     operator_keys: HashSet<[u8; 48]>,
     /// Tracked masternodes, in the order they were tracked.
     tracked: Vec<TrackedMasternode>,
+    /// Any loaded wallet's record of a tracked masternode, which its
+    /// attached keys are checked against (D24).
+    tracked_owned: HashMap<[u8; 32], OwnedMasternode>,
     owner_ids: HashSet<[u8; 20]>,
     voting_ids: HashSet<[u8; 20]>,
     /// Attached roles per tracked masternode; `None` while the vault is
@@ -72,7 +77,7 @@ impl WalletView {
             Arc::clone(&pw),
             Arc::clone(&session.hub),
         );
-        let (owned, operator_keys, tracked, owner_ids, voting_ids) =
+        let (owned, operator_keys, tracked, tracked_owned, owner_ids, voting_ids) =
             tokio::task::spawn_blocking(move || {
                 let (owned, operator_index) =
                     wallet_masternodes(&m, &hub.history, &wallet).unwrap_or_default();
@@ -83,10 +88,24 @@ impl WalletView {
                     .filter_map(|h| service.get(h))
                     .collect();
                 tracked.sort_by_key(|t| t.added_at);
+                let tracked_owned = if tracked.is_empty() {
+                    HashMap::new()
+                } else {
+                    all_owned(&m, &hub.history)
+                        .into_iter()
+                        .filter(|o| {
+                            tracked
+                                .iter()
+                                .any(|t| t.pro_tx_hash == o.record.pro_tx_hash)
+                        })
+                        .map(|o| (o.record.pro_tx_hash, o))
+                        .collect()
+                };
                 (
                     owned,
                     operator_index.into_keys().collect::<HashSet<_>>(),
                     tracked,
+                    tracked_owned,
                     derived_key_ids(&w, ProviderKeyKind::Owner),
                     derived_key_ids(&w, ProviderKeyKind::Voting),
                 )
@@ -131,6 +150,7 @@ impl WalletView {
             owned,
             operator_keys,
             tracked,
+            tracked_owned,
             owner_ids,
             voting_ids,
             attached,
@@ -153,6 +173,22 @@ impl WalletView {
         self.owned.iter().find(|o| &o.record.pro_tx_hash == hash)
     }
 
+    /// The wallet's own record when its fields read right: not built from a
+    /// version-3 payload (D25).
+    fn decoded(&self, hash: &[u8; 32]) -> Option<&OwnedMasternode> {
+        self.owned(hash).filter(|o| !o.shared_unsupported)
+    }
+
+    /// A version-3 ProRegTx/ProUpRegTx in the wallet, or a version-3 list
+    /// entry: its payouts may be shared (D25).
+    fn shared_unsupported(&self, hash: &[u8; 32]) -> bool {
+        self.owned(hash).is_some_and(|o| o.shared_unsupported)
+            || self
+                .list
+                .entry(hash)
+                .is_some_and(|e| e.has_extended_net_info)
+    }
+
     fn tracked(&self, hash: &[u8; 32]) -> Option<&TrackedMasternode> {
         self.tracked.iter().find(|t| &t.pro_tx_hash == hash)
     }
@@ -165,9 +201,13 @@ impl WalletView {
     }
 
     /// The wallet's own provider transactions' payout script. A tracked
-    /// masternode's registry snapshot is unproved, so it isn't used (D6).
+    /// masternode's registry snapshot is unproved, so it isn't used (D6);
+    /// a shared one's payout isn't one script (D25).
     fn payout_script(&self, hash: &[u8; 32]) -> Option<ScriptBuf> {
-        self.owned(hash)
+        if self.shared_unsupported(hash) {
+            return None;
+        }
+        self.decoded(hash)
             .and_then(|o| o.record.payout_script.clone())
             .map(ScriptBuf::from)
     }
@@ -219,26 +259,58 @@ impl WalletView {
         }
     }
 
+    /// The keys attached to `hash`, each compared with what the wallet
+    /// knows now (D24); `None` while the vault is locked.
+    fn attached_keys(&self, hash: &[u8; 32]) -> Option<Vec<AttachedKey>> {
+        let roles = self
+            .attached
+            .as_ref()?
+            .get(hash)
+            .cloned()
+            .unwrap_or_default();
+        let owned = self.tracked_owned.get(hash).or_else(|| self.owned(hash));
+        let refs = KeyReferences::new(self.list.entry(hash), owned);
+        let key = display_hex(hash);
+        Some(
+            roles
+                .into_iter()
+                .map(|role| {
+                    let id = self.notes.key_ids.get(&(key.clone(), role)).copied();
+                    AttachedKey {
+                        role,
+                        key_id: id.map(hex::encode),
+                        check: id.map_or(KeyCheck::Unchecked, |id| refs.check(role, id)),
+                    }
+                })
+                .collect(),
+        )
+    }
+
     /// The roles, and whether the wallet holds one through its own provider
-    /// transactions ("mine", §3), which an attached key doesn't make it.
+    /// transactions ("mine", §3), which an attached key doesn't make it. A
+    /// shared masternode whose provider transaction the wallet holds is
+    /// "mine" whatever its roles, which can't be read (D25).
     fn roles(&self, hash: &[u8; 32]) -> (MasternodeRoles, bool) {
         let owned = self.owned(hash);
+        let decoded = self.decoded(hash);
         let entry = self.list.entry(hash);
-        let attached = self
-            .attached
-            .as_ref()
-            .map(|a| a.get(hash).cloned().unwrap_or_default());
-        let has = |role| attached.as_ref().is_some_and(|a| a.contains(&role));
+        let attached = self.attached_keys(hash);
+        let holds = |role| {
+            attached
+                .iter()
+                .flatten()
+                .any(|k| k.role == role && k.holds())
+        };
         let voting_id = entry
             .map(|e| e.voting_key_id)
-            .or_else(|| owned.and_then(|o| o.record.voting_key_hash));
+            .or_else(|| decoded.and_then(|o| o.record.voting_key_hash));
         let operator_key = entry
             .map(|e| e.operator_public_key)
-            .or_else(|| owned.and_then(|o| o.record.operator_public_key));
+            .or_else(|| decoded.and_then(|o| o.record.operator_public_key));
         let collateral = owned
             .and_then(|o| o.collateral)
             .is_some_and(|c| self.unspent.contains(&c));
-        let owner = owned
+        let owner = decoded
             .and_then(|o| o.record.owner_key_hash)
             .is_some_and(|id| self.owner_ids.contains(&id));
         let voting = voting_id.is_some_and(|id| self.voting_ids.contains(&id));
@@ -246,11 +318,17 @@ impl WalletView {
             .payout_script(hash)
             .is_some_and(|s| self.own_scripts.contains(&s));
         let operator = operator_key.is_some_and(|k| self.operator_keys.contains(&k));
-        let mine = owned.is_some() && (collateral || owner || voting || payout || operator);
+        let mine = owned.is_some()
+            && (self.shared_unsupported(hash)
+                || collateral
+                || owner
+                || voting
+                || payout
+                || operator);
         let roles = MasternodeRoles {
             collateral,
-            owner: owner || has(AttachedKeyRole::Owner),
-            voting: voting || has(AttachedKeyRole::Voting),
+            owner: owner || holds(AttachedKeyRole::Owner),
+            voting: voting || holds(AttachedKeyRole::Voting),
             payout,
             operator,
             attached,
@@ -280,6 +358,7 @@ impl WalletView {
         let payouts = self.payouts(hash);
         let since = self.window_start();
         let (roles, mine) = self.roles(hash);
+        let decoded = self.decoded(hash);
         MasternodeRow {
             kind,
             type_index: owned.map_or(0, |o| o.record.type_index),
@@ -292,9 +371,10 @@ impl WalletView {
                 .flatten(),
             service: entry
                 .and_then(|e| e.service_address.map(|s| s.to_string()))
-                .or_else(|| owned.and_then(|o| o.record.service_address.clone())),
+                .or_else(|| decoded.and_then(|o| o.record.service_address.clone())),
             mine,
             tracked: tracked.is_some(),
+            shared_unsupported: self.shared_unsupported(hash),
             roles,
             collateral: collateral_state(owned),
             payout_address: self.payout_address(hash),
@@ -342,6 +422,7 @@ impl WalletView {
                 height: self.list.height,
             },
             collateral_coins: self.collateral_coins(&masternodes),
+            payouts_incomplete: masternodes.iter().any(|r| r.shared_unsupported),
             masternodes,
             payouts_30d,
         }
@@ -404,15 +485,24 @@ impl WalletView {
         }
     }
 
+    /// A shared masternode's keys and payout are misread, so left out
+    /// (D25).
     fn registration_facts(&self, o: &OwnedMasternode) -> RegistrationFacts {
         let r = &o.record;
+        let read = !o.shared_unsupported;
         RegistrationFacts {
             registered_height: o.registered_height(),
             collateral: collateral_state(Some(o)),
-            owner_address: r.owner_key_hash.map(|id| p2pkh(id, self.network)),
-            voting_address: r.voting_key_hash.map(|id| p2pkh(id, self.network)),
+            owner_address: r
+                .owner_key_hash
+                .filter(|_| read)
+                .map(|id| p2pkh(id, self.network)),
+            voting_address: r
+                .voting_key_hash
+                .filter(|_| read)
+                .map(|id| p2pkh(id, self.network)),
             payout_address: self.payout_address(&r.pro_tx_hash),
-            payout_script: r.payout_script.as_ref().map(hex::encode),
+            payout_script: self.payout_script(&r.pro_tx_hash).map(hex::encode),
             operator_reward: o.operator_reward,
             revoked: r.revoked,
             revocation_reason: r.revoked.then_some(r.revocation_reason),
@@ -575,6 +665,13 @@ impl Masternodes {
     ) -> Result<T, MasternodesError> {
         self.op(move |session| async move { f(&WalletView::read(&session, wallet).await?) })
             .await
+            .map_err(|e| match e {
+                // The id is the caller's 64 hex (D23).
+                MasternodesError::Engine(EngineError::WalletNotFound(_)) => {
+                    EngineError::WalletNotFound("the requested wallet".into()).into()
+                }
+                e => e,
+            })
     }
 
     /// Whether the SPV list is synced, and its height (D3). Memory only;
@@ -606,7 +703,7 @@ impl Masternodes {
         let hash = parse_pro_tx_hash(&pro_tx_hash)?;
         self.read_wallet(wallet, move |v| {
             if !v.knows(&hash) {
-                return Err(not_found(&hash, &v.list));
+                return Err(not_found(&v.list));
             }
             Ok(v.detail(&hash))
         })
@@ -624,7 +721,12 @@ impl Masternodes {
         let hash = parse_pro_tx_hash(&pro_tx_hash)?;
         self.read_wallet(wallet, move |v| {
             if !v.knows(&hash) {
-                return Err(not_found(&hash, &v.list));
+                return Err(not_found(&v.list));
+            }
+            if v.shared_unsupported(&hash) {
+                return Err(MasternodesError::Unsupported {
+                    feature: "shared_masternodes".into(),
+                });
             }
             let mut payouts = v.payouts(&hash);
             if let Some(since) = since {
@@ -674,11 +776,9 @@ impl Masternodes {
                 if !list.synced {
                     return Err(MasternodesError::ListUnavailable);
                 }
-                let entry = list.entry(&hash).ok_or_else(|| not_found(&hash, &list))?;
+                let entry = list.entry(&hash).ok_or_else(|| not_found(&list))?;
                 if !entry.is_evonode {
-                    return Err(MasternodesError::NotEvonode {
-                        pro_tx_hash: display_hex(&hash),
-                    });
+                    return Err(MasternodesError::NotEvonode);
                 }
                 if !session.platform.enabled() {
                     return Err(MasternodesError::PlatformUnavailable {
@@ -703,10 +803,14 @@ impl Masternodes {
                 duffs: credits / dpp::balances::credits::CREDITS_PER_DUFF,
                 fetched_at: unix_now(),
             }),
-            Ok(None) => Err(MasternodesError::NoIdentity { pro_tx_hash: shown }),
-            Err(e) => Err(MasternodesError::PlatformUnavailable {
-                detail: e.to_string(),
-            }),
+            Ok(None) => Err(MasternodesError::NoIdentity),
+            // The SDK's text may name the identity, which is the hash.
+            Err(e) => {
+                tracing::debug!(error = %e, "evonode credits");
+                Err(MasternodesError::PlatformUnavailable {
+                    detail: "the identity balance could not be read".into(),
+                })
+            }
         }
     }
 
@@ -726,11 +830,9 @@ impl Masternodes {
 
 /// `masternodes.not_found`, or `list_unavailable` when the list that
 /// wasn't searched might have held it.
-fn not_found(hash: &[u8; 32], list: &ListView) -> MasternodesError {
+pub(super) fn not_found(list: &ListView) -> MasternodesError {
     if list.synced {
-        MasternodesError::NotFound {
-            query: display_hex(hash),
-        }
+        MasternodesError::NotFound
     } else {
         MasternodesError::ListUnavailable
     }
@@ -739,6 +841,171 @@ fn not_found(hash: &[u8; 32], list: &ListView) -> MasternodesError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{TxCategory, TxStatus};
+    use dashcore::Transaction;
+    use dashcore::transaction::TransactionPayload;
+
+    use super::super::aggregate::aggregate;
+    use super::super::aggregate::fixtures::{coins, payout, registration_v};
+    use dw_protx::params::MASTERNODE_COLLATERAL;
+
+    const NOW: u64 = 1_800_000_000;
+
+    fn with_payout(mut tx: Transaction, seed: u8) -> Transaction {
+        if let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
+            &mut tx.special_transaction_payload
+        {
+            p.script_payout = payout(seed);
+        }
+        tx
+    }
+
+    fn reward(seed: u8, amount: i64) -> TxRecord {
+        TxRecord {
+            txid: format!("{seed:064x}"),
+            record_index: 0,
+            tx_type: TxType::Generated,
+            category: TxCategory::Reward,
+            status: TxStatus {
+                kind: TxStatusKind::Confirmed,
+                confirmations: 200,
+                instant_locked: false,
+                chain_locked: true,
+                matures_in: None,
+            },
+            timestamp: Some(NOW - 1000),
+            block_height: Some(100),
+            amount,
+            fee: None,
+            address: Some(
+                Address::from_script(&payout(seed), Network::Regtest)
+                    .unwrap()
+                    .to_string(),
+            ),
+            label: None,
+            counts_toward_balance: true,
+            involves_watch_only: false,
+            counterparty: None,
+        }
+    }
+
+    fn view(txs: &[Transaction], list: ListView, generated: Vec<TxRecord>) -> WalletView {
+        let held: Vec<_> = txs
+            .iter()
+            .enumerate()
+            .map(|(i, tx)| (10 + i as u32, 0, tx.clone()))
+            .collect();
+        WalletView {
+            network: Network::Regtest,
+            list,
+            owned: aggregate(&held),
+            operator_keys: HashSet::new(),
+            tracked: Vec::new(),
+            tracked_owned: HashMap::new(),
+            owner_ids: HashSet::new(),
+            voting_ids: HashSet::new(),
+            attached: Some(HashMap::new()),
+            own_scripts: [payout(4), payout(6)].into(),
+            coins: CoinSnapshot {
+                height: 100,
+                coins: Vec::new(),
+            },
+            unspent: HashSet::new(),
+            locked: HashSet::new(),
+            generated,
+            notes: Notes::default(),
+            now: NOW,
+        }
+    }
+
+    /// A version-3 registration stays in Mine, flagged, with no payout and
+    /// none of its payouts in a total (D25).
+    #[test]
+    fn a_shared_masternode_is_mine_but_out_of_the_payout_totals() {
+        let plain = registration_v(
+            2,
+            null_outpoint(0),
+            false,
+            0,
+            coins(&[MASTERNODE_COLLATERAL]),
+        );
+        let shared = with_payout(
+            registration_v(
+                3,
+                null_outpoint(0),
+                false,
+                0,
+                coins(&[MASTERNODE_COLLATERAL, 1]),
+            ),
+            6,
+        );
+        let v = view(
+            &[plain.clone(), shared.clone()],
+            ListView::default(),
+            vec![reward(4, 500), reward(6, 700)],
+        );
+        let overview = v.overview();
+        assert_eq!(overview.masternodes.len(), 2);
+        let row = |tx: &Transaction| {
+            overview
+                .masternodes
+                .iter()
+                .find(|r| r.pro_tx_hash == display_hex(&tx.txid().to_byte_array()))
+                .unwrap()
+        };
+        let p = row(&plain);
+        assert!(!p.shared_unsupported && p.mine && p.roles.payout);
+        assert_eq!(p.payouts_30d, 500);
+        let s = row(&shared);
+        assert!(s.shared_unsupported);
+        assert!(s.mine, "its ProRegTx is in the wallet");
+        assert!(!s.roles.payout && !s.roles.owner && !s.roles.voting);
+        assert_eq!((s.payouts_30d, s.payout_address.as_ref()), (0, None));
+        assert!(s.last_payout.is_none());
+        assert_eq!(
+            overview.payouts_30d, 500,
+            "the shared one's 700 is left out"
+        );
+        assert!(overview.payouts_incomplete);
+        let hash = shared.txid().to_byte_array();
+        assert!(v.shared_unsupported(&hash) && v.payouts(&hash).is_empty());
+        let facts = v.detail(&hash).registration.unwrap();
+        assert_eq!(facts.owner_address, None);
+        assert_eq!(facts.payout_script, None);
+        assert_eq!(facts.operator_reward, None);
+
+        // A version-3 list entry flags a version-2 registration too: a
+        // ProUpRegTx the wallet doesn't hold may have shared its payout.
+        let hash = plain.txid().to_byte_array();
+        let entry = MasternodeListSummary {
+            pro_tx_hash: hash,
+            service_address: None,
+            platform_http_port: None,
+            operator_public_key: [2; 48],
+            voting_key_id: [3; 20],
+            platform_node_id: None,
+            is_valid: true,
+            is_evonode: false,
+            has_extended_net_info: true,
+        };
+        let list = ListView {
+            synced: true,
+            height: Some(100),
+            entries: vec![entry],
+        };
+        let v = view(&[plain], list, vec![reward(4, 500)]);
+        let overview = v.overview();
+        assert!(overview.masternodes[0].shared_unsupported);
+        assert_eq!(overview.payouts_30d, 0);
+        assert!(overview.payouts_incomplete);
+    }
+
+    fn null_outpoint(vout: u32) -> OutPoint {
+        OutPoint {
+            txid: dashcore::Txid::all_zeros(),
+            vout,
+        }
+    }
 
     #[test]
     fn queries_parse_hashes_and_service_addresses() {

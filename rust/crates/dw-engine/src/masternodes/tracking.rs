@@ -10,11 +10,20 @@ use dashcore::secp256k1::SecretKey;
 use dashcore::{PrivateKey, PubkeyHash, ScriptBuf};
 use zeroize::Zeroizing;
 
-use super::follow::{all_owned, read_list, set_label};
-use super::reads::list_facts;
+use platform_wallet::masternode::MasternodeListSummary;
+
+use super::aggregate::OwnedMasternode;
+use super::follow::{all_owned, key_id, read_list, set_key_id, set_label};
+use super::reads::{list_facts, not_found};
 use super::records::{AttachedKeyRole, KeyCheck, ListedMasternode, UntrackOutcome};
 use super::{Masternodes, MasternodesError, display_hex, parse_pro_tx_hash};
 use crate::{EngineError, NetworkSession};
+
+const ROLES: [AttachedKeyRole; 3] = [
+    AttachedKeyRole::Owner,
+    AttachedKeyRole::Voting,
+    AttachedKeyRole::Payout,
+];
 
 /// Longest label, in characters.
 pub const MAX_MASTERNODE_LABEL: usize = 64;
@@ -64,79 +73,106 @@ fn parse_secret(
     Ok((Zeroizing::new(private.inner.to_secret_bytes()), id))
 }
 
-/// What a role's key is checked against (MG-03 §4, MG-00 D13).
-enum Reference {
-    /// A key id the key must hash to.
-    KeyId([u8; 20]),
-    /// A P2PKH payout script the key may pay. The wallet's payout script can
-    /// be stale (a ProUpRegTx it doesn't hold, D5), so a key that doesn't
-    /// pay it is `unchecked`, not refused (D19).
-    Payout(ScriptBuf),
-    Nothing,
+/// What a key of each role is checked against (MG-03 §4, MG-00 D13, D24):
+/// at attach, and again on every read.
+#[derive(Debug, Default)]
+pub(super) struct KeyReferences {
+    /// The synced list's voting key id.
+    voting: Option<[u8; 20]>,
+    /// The owner key id of a ProRegTx a loaded wallet holds (the owner key
+    /// never changes).
+    owner: Option<[u8; 20]>,
+    /// The P2PKH payout script of its latest ProRegTx/ProUpRegTx. It can be
+    /// stale (a ProUpRegTx the wallet doesn't hold, D5), so a key that
+    /// doesn't pay it is `unchecked`, not a mismatch (D19).
+    payout: Option<ScriptBuf>,
 }
 
-impl Reference {
-    fn check(&self, id: [u8; 20], role: AttachedKeyRole) -> Result<KeyCheck, MasternodesError> {
-        match self {
-            Self::KeyId(want) if *want == id => Ok(KeyCheck::Matched),
-            Self::KeyId(_) => Err(MasternodesError::KeyMismatch { role }),
-            Self::Payout(script)
-                if *script == ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array(id)) =>
-            {
-                Ok(KeyCheck::Matched)
+impl KeyReferences {
+    /// From the list entry and a loaded wallet's record; a record built
+    /// from a version-3 payload is misread, so not used (D25).
+    pub(super) fn new(
+        entry: Option<&MasternodeListSummary>,
+        owned: Option<&OwnedMasternode>,
+    ) -> Self {
+        let record = owned.filter(|o| !o.shared_unsupported).map(|o| &o.record);
+        Self {
+            voting: entry.map(|e| e.voting_key_id),
+            owner: record.and_then(|r| r.owner_key_hash),
+            payout: record
+                .and_then(|r| r.payout_script.clone())
+                .map(ScriptBuf::from)
+                .filter(|s| s.is_p2pkh()),
+        }
+    }
+
+    pub(super) fn check(&self, role: AttachedKeyRole, id: [u8; 20]) -> KeyCheck {
+        let want = match role {
+            AttachedKeyRole::Owner => self.owner,
+            AttachedKeyRole::Voting => self.voting,
+            AttachedKeyRole::Payout => {
+                let pays = self.payout.as_ref()
+                    == Some(&ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array(id)));
+                return if pays {
+                    KeyCheck::Matched
+                } else {
+                    KeyCheck::Unchecked
+                };
             }
-            Self::Payout(_) | Self::Nothing => Ok(KeyCheck::Unchecked),
+        };
+        match want {
+            Some(want) if want == id => KeyCheck::Matched,
+            Some(_) => KeyCheck::KeyMismatch,
+            None => KeyCheck::Unchecked,
         }
     }
 }
 
-/// The reference for `role` of `hash`: the list's voting key, else (owner,
-/// payout) what a loaded wallet's ProRegTx/ProUpRegTx says. Caller holds
-/// the guard.
-async fn reference(
+/// The references for `role` of `hash`: a voting key needs the synced
+/// list. Caller holds the guard.
+async fn references(
     session: &NetworkSession,
     hash: [u8; 32],
     role: AttachedKeyRole,
-) -> Result<Reference, MasternodesError> {
+) -> Result<KeyReferences, MasternodesError> {
     let manager = session.manager()?;
-    if role == AttachedKeyRole::Voting {
-        let list = read_list(session, &manager).await;
-        if !list.synced {
-            return Err(MasternodesError::ListUnavailable);
-        }
-        return Ok(match list.entry(&hash) {
-            Some(e) => Reference::KeyId(e.voting_key_id),
-            None => Reference::Nothing,
-        });
+    let list = read_list(session, &manager).await;
+    if role == AttachedKeyRole::Voting && !list.synced {
+        return Err(MasternodesError::ListUnavailable);
     }
     let hub = Arc::clone(&session.hub);
-    Ok(tokio::task::spawn_blocking(move || {
-        let record = all_owned(&manager, &hub.history)
+    let owned = tokio::task::spawn_blocking(move || {
+        all_owned(&manager, &hub.history)
             .into_iter()
             .find(|o| o.record.pro_tx_hash == hash)
-            .map(|o| o.record);
-        if role == AttachedKeyRole::Owner {
-            record
-                .and_then(|r| r.owner_key_hash)
-                .map_or(Reference::Nothing, Reference::KeyId)
-        } else {
-            record
-                .and_then(|r| r.payout_script)
-                .map(ScriptBuf::from)
-                .filter(|s| s.is_p2pkh())
-                .map_or(Reference::Nothing, Reference::Payout)
-        }
     })
-    .await?)
+    .await?;
+    Ok(KeyReferences::new(list.entry(&hash), owned.as_ref()))
+}
+
+/// Forgets the recorded ids of `hash`'s keys of `roles`. The keys are gone
+/// from the vault already, so a failure is only logged: a stale id without
+/// a key is never read (D24).
+async fn forget_key_ids(session: &NetworkSession, hash: &[u8; 32], roles: &[AttachedKeyRole]) {
+    let key = display_hex(hash);
+    let roles = roles.to_vec();
+    let forgotten = session
+        .appdb_op(move |db| {
+            roles
+                .iter()
+                .try_for_each(|role| set_key_id(db, &key, *role, None))
+        })
+        .await;
+    if let Err(e) = forgotten {
+        tracing::warn!(error = %e, "could not forget an attached key's id");
+    }
 }
 
 impl Masternodes {
     fn require_tracked(&self, hash: &[u8; 32]) -> Result<(), MasternodesError> {
         match self.session.manager()?.tracked_masternode(hash) {
             Some(_) => Ok(()),
-            None => Err(MasternodesError::NotTracked {
-                pro_tx_hash: display_hex(hash),
-            }),
+            None => Err(MasternodesError::NotTracked),
         }
     }
 
@@ -157,16 +193,10 @@ impl Masternodes {
                 if !list.synced {
                     return Err(MasternodesError::ListUnavailable);
                 }
-                let entry = list
-                    .entry(&hash)
-                    .ok_or_else(|| MasternodesError::NotFound {
-                        query: display_hex(&hash),
-                    })?;
+                let entry = list.entry(&hash).ok_or(MasternodesError::NotFound)?;
                 let facts = list_facts(entry, session.network.core_network());
                 if manager.tracked_masternode(&hash).is_some() {
-                    return Err(MasternodesError::AlreadyTracked {
-                        pro_tx_hash: display_hex(&hash),
-                    });
+                    return Err(MasternodesError::AlreadyTracked);
                 }
                 let service = manager.tracked_masternodes_service();
                 tokio::task::spawn_blocking(move || {
@@ -198,6 +228,7 @@ impl Masternodes {
             .await?;
         let untracked = self
             .op(move |session| async move {
+                forget_key_ids(&session, &hash, &ROLES).await;
                 let service = session.manager()?.tracked_masternodes_service();
                 tokio::task::spawn_blocking(move || {
                     service.untrack_blocking(&hash).map_err(EngineError::from)
@@ -215,8 +246,9 @@ impl Masternodes {
     }
 
     /// Names a masternode (`None` or blank: back to the default name). A
-    /// tracked one's label is the registry's; a wallet masternode's is kept
-    /// in app.sqlite (MG-03 D12).
+    /// tracked one's label is the registry's; a loaded wallet's or a listed
+    /// one's is kept in app.sqlite (MG-03 D12). Any other hash is refused,
+    /// so app.sqlite holds no label of a masternode nobody knows (D27).
     pub async fn set_label(
         &self,
         pro_tx_hash: String,
@@ -236,6 +268,19 @@ impl Masternodes {
                 })
                 .await??;
             } else {
+                let list = read_list(&session, &manager).await;
+                if list.entry(&hash).is_none() {
+                    let hub = Arc::clone(&session.hub);
+                    let owned = tokio::task::spawn_blocking(move || {
+                        all_owned(&manager, &hub.history)
+                            .iter()
+                            .any(|o| o.record.pro_tx_hash == hash)
+                    })
+                    .await?;
+                    if !owned {
+                        return Err(not_found(&list));
+                    }
+                }
                 let key = display_hex(&hash);
                 session
                     .appdb_op(move |db| set_label(db, &key, label.as_deref()))
@@ -251,7 +296,8 @@ impl Masternodes {
     /// Attaches the private key of `role` to a tracked masternode, checked
     /// as far as the wallet can (MG-03 §4): a voting key against the list,
     /// an owner key or payout key against a ProRegTx a loaded wallet holds.
-    /// Needs the vault's full-scope data key.
+    /// Its public key's hash160 is recorded in app.sqlite first, so every
+    /// read compares it again (D24). Needs the vault's full-scope data key.
     pub async fn attach_key(
         &self,
         pro_tx_hash: String,
@@ -263,14 +309,39 @@ impl Masternodes {
         drop(key);
         let _mutation = self.session.masternodes.mutation().await;
         self.require_tracked(&hash)?;
-        let check =
-            self.op(move |session| async move {
-                reference(&session, hash, role).await?.check(id, role)
+        let key = display_hex(&hash);
+        let (check, previous) = self
+            .op(move |session| async move {
+                let check = references(&session, hash, role).await?.check(role, id);
+                if check == KeyCheck::KeyMismatch {
+                    return Err(MasternodesError::KeyMismatch { role });
+                }
+                let previous = session
+                    .appdb_op(move |db| {
+                        let previous = key_id(db, &key, role)?;
+                        set_key_id(db, &key, role, Some(id))?;
+                        Ok(previous)
+                    })
+                    .await?;
+                Ok((check, previous))
             })
             .await?;
-        self.session
+        let stored = self
+            .session
             .vault_op(move |v| v.store_masternode_key(&hash, role.vault_name(), &secret[..]))
-            .await?;
+            .await;
+        if let Err(e) = stored {
+            // The vault still holds the key it had, if any.
+            let key = display_hex(&hash);
+            let restored = self
+                .session
+                .appdb_op(move |db| set_key_id(db, &key, role, previous))
+                .await;
+            if let Err(e) = restored {
+                tracing::warn!(error = %e, "could not restore an attached key's id");
+            }
+            return Err(e.into());
+        }
         self.session.masternodes.local_change();
         Ok(check)
     }
@@ -288,6 +359,11 @@ impl Masternodes {
             .session
             .vault_op(move |v| v.delete_masternode_keys(&hash, Some(role.vault_name())))
             .await?;
+        self.op(move |session| async move {
+            forget_key_ids(&session, &hash, &[role]).await;
+            Ok(())
+        })
+        .await?;
         self.session.masternodes.local_change();
         Ok(deleted > 0)
     }
@@ -327,39 +403,28 @@ mod tests {
     }
 
     #[test]
-    fn references_match_key_ids_and_p2pkh_payouts_never_refuse() {
+    fn references_compare_key_ids_and_p2pkh_payouts_are_never_a_mismatch() {
         let id = [7u8; 20];
-        let role = AttachedKeyRole::Owner;
+        let refs = KeyReferences {
+            voting: Some(id),
+            owner: Some([8; 20]),
+            payout: Some(ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array(id))),
+        };
+        assert_eq!(refs.check(AttachedKeyRole::Voting, id), KeyCheck::Matched);
         assert_eq!(
-            Reference::KeyId(id).check(id, role).unwrap(),
-            KeyCheck::Matched
+            refs.check(AttachedKeyRole::Owner, id),
+            KeyCheck::KeyMismatch
         );
+        assert_eq!(refs.check(AttachedKeyRole::Payout, id), KeyCheck::Matched);
         assert_eq!(
-            Reference::KeyId([8; 20])
-                .check(id, role)
-                .unwrap_err()
-                .code(),
-            "masternodes.key_mismatch"
-        );
-        let script = ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array(id));
-        assert_eq!(
-            Reference::Payout(script)
-                .check(id, AttachedKeyRole::Payout)
-                .unwrap(),
-            KeyCheck::Matched
-        );
-        let other = ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array([8; 20]));
-        assert_eq!(
-            Reference::Payout(other)
-                .check(id, AttachedKeyRole::Payout)
-                .unwrap(),
+            refs.check(AttachedKeyRole::Payout, [8; 20]),
             KeyCheck::Unchecked,
             "a payout script can be stale"
         );
-        assert_eq!(
-            Reference::Nothing.check(id, role).unwrap(),
-            KeyCheck::Unchecked
-        );
+        let none = KeyReferences::default();
+        for role in ROLES {
+            assert_eq!(none.check(role, id), KeyCheck::Unchecked);
+        }
     }
 
     #[test]

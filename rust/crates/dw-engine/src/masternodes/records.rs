@@ -64,15 +64,40 @@ impl AttachedKeyRole {
     }
 }
 
-/// How an attached key was checked (MG-00 D13).
+/// How an attached key compares with what the wallet knows of the
+/// masternode now (MG-00 D13, MG-03 D24): the list's voting key, the owner
+/// key and P2PKH payout of a ProRegTx/ProUpRegTx a loaded wallet holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyCheck {
     /// It is the masternode's key for the role.
     Matched,
-    /// Nothing known to check it against (the list doesn't carry the owner
-    /// key or the payout); stored as given.
+    /// It is not (a ProUpRegTx rotated the voting key, or the masternode
+    /// was listed after the key was attached). `attach_key` refuses one,
+    /// so only reads report it.
+    KeyMismatch,
+    /// Nothing known to check it against (not listed, no ProRegTx held, or
+    /// a payout script that may be stale, D19).
     Unchecked,
+}
+
+/// A key attached to a tracked masternode (MG-03 D24).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachedKey {
+    pub role: AttachedKeyRole,
+    /// hash160 of its public key, 40 hex, recorded when it was attached;
+    /// `None` for a key attached before the id was kept (attach it again).
+    pub key_id: Option<String>,
+    /// Compared on this read; `Unchecked` without `key_id`.
+    pub check: KeyCheck,
+}
+
+impl AttachedKey {
+    /// Whether the key gives the wallet its role: recorded, and not a
+    /// mismatch.
+    pub fn holds(&self) -> bool {
+        self.key_id.is_some() && self.check != KeyCheck::KeyMismatch
+    }
 }
 
 /// The collateral outpoint, as far as the wallet can derive it.
@@ -92,17 +117,19 @@ pub enum CollateralState {
 pub struct MasternodeRoles {
     /// The collateral outpoint is an unspent output of the wallet.
     pub collateral: bool,
-    /// A derived owner key (indexes 0–19) or an attached owner key.
+    /// A derived owner key (indexes 0–19), or an attached owner key that
+    /// holds ([`AttachedKey::holds`]).
     pub owner: bool,
-    /// The list's voting key is derived by the wallet (0–19) or attached.
+    /// The list's voting key is derived by the wallet (0–19), or an
+    /// attached voting key holds.
     pub voting: bool,
     /// The payout script is the wallet's.
     pub payout: bool,
     /// The operator key is the wallet's (a self-operator). Never signs.
     pub operator: bool,
-    /// Roles with a key attached in the vault (tracked masternodes);
+    /// The keys attached in the vault (tracked masternodes), by role;
     /// `None` when the vault is locked (the record ids need the data key).
-    pub attached: Option<Vec<AttachedKeyRole>>,
+    pub attached: Option<Vec<AttachedKey>>,
 }
 
 /// The SPV list's facts about a masternode.
@@ -180,6 +207,11 @@ pub struct MasternodeRow {
     /// The wallet has a role through its own provider transactions.
     pub mine: bool,
     pub tracked: bool,
+    /// A version-3 ProRegTx/ProUpRegTx (or list entry) the pinned library
+    /// can't decode: its payouts may be shared (Core v24 `payouts` and
+    /// `shares`), so the keys and payout aren't reported and its payouts
+    /// are left out of every total (MG-03 D25; shares are MG-03b).
+    pub shared_unsupported: bool,
     pub roles: MasternodeRoles,
     pub collateral: CollateralState,
     pub payout_address: Option<String>,
@@ -219,6 +251,8 @@ pub struct MasternodeOverview {
     pub collateral_coins: Vec<CollateralCoin>,
     /// Payouts to this wallet in the last 30 days, all masternodes.
     pub payouts_30d: u64,
+    /// A row is `shared_unsupported`: its payouts aren't in `payouts_30d`.
+    pub payouts_incomplete: bool,
 }
 
 /// One masternode in full, each source apart.

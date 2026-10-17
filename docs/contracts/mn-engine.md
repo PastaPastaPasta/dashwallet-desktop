@@ -1,8 +1,8 @@
 # MG masternodes engine contract (`dw-engine` facade)
 
-Contract-Version: 1
+Contract-Version: 2
 
-Status: **draft**, 2026-10-16 (ROADMAP MG-03). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
+Status: **draft**, 2026-10-17 (ROADMAP MG-03; version 2 after the Sol r1 review: D23–D28). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
 the changes in §1 below.
@@ -60,10 +60,10 @@ Kind is `sync` (memory only) or `async` (on the engine runtime). Every call is i
 | `NetworkSession.masternodes()` | sync | The handle (§0). Infallible: returns `Masternodes`, not a `Result`. **Implemented.** | — |
 | `list_state()` | sync | `MasternodeListState`: whether the SPV list is synced (the headers and masternode phases done) and the masternode phase's height (D3). Memory only. **Implemented.** | `MasternodesError` |
 | `list(wallet: WalletId)` | async | `MasternodeOverview`: the list state, the wallet's own masternodes (in the library's registration order) then the tracked ones not among them (in tracking order), each a `MasternodeRow` with status (§5), roles, collateral, payout address, 30-day payouts and the newest payout; the collateral-shaped coins (MG-00 D1); the wallet's 30-day payout total, each history record counted once. `wallet_not_found` for an unknown wallet. **Implemented.** | `MasternodesError` |
-| `masternode(wallet: WalletId, pro_tx_hash: String)` | async | `MasternodeDetail`: the row, the list's facts, the registration facts from the wallet's provider transactions, `payout_checked_height` (always `None` until MG-00 D42's watch exists, D5), `tracked_at`. Any masternode the wallet owns or tracks, or that the synced list holds. `invalid_argument` for a malformed hash (first), then `masternodes.not_found{query}`, or `masternodes.list_unavailable` while the list that might hold it isn't synced. **Implemented.** | `MasternodesError` |
-| `payouts(wallet: WalletId, pro_tx_hash: String, since: Option<u64>)` | async | Every `MasternodePayout` of the masternode, newest first (by height, then time): the wallet's coinbase history records to its payout address (design §5, D9), without orphaned ones; with `since`, only those at or after it. Empty when the payout address isn't known. Refuses like `masternode`. **Implemented.** | `MasternodesError` |
+| `masternode(wallet: WalletId, pro_tx_hash: String)` | async | `MasternodeDetail`: the row, the list's facts, the registration facts from the wallet's provider transactions, `payout_checked_height` (always `None` until MG-00 D42's watch exists, D5), `tracked_at`. Any masternode the wallet owns or tracks, or that the synced list holds. `invalid_argument` for a malformed hash (first), then `masternodes.not_found`, or `masternodes.list_unavailable` while the list that might hold it isn't synced. A `wallet_not_found` names no wallet id (D23). **Implemented.** | `MasternodesError` |
+| `payouts(wallet: WalletId, pro_tx_hash: String, since: Option<u64>)` | async | Every `MasternodePayout` of the masternode, newest first (by height, then time): the wallet's coinbase history records to its payout address (design §5, D9), without orphaned ones; with `since`, only those at or after it. Empty when the payout address isn't known. Refuses like `masternode`, then `masternodes.unsupported{feature: "shared_masternodes"}` for a `shared_unsupported` one (D25). **Implemented.** | `MasternodesError` |
 | `find(query: String)` | async | The synced list's entries matching a ProTx hash (64 hex) or a service address (`ip:port`, or `ip` for any port), in list order, as `ListedMasternode` with whether each is tracked. `invalid_argument` for anything else (first), `masternodes.list_unavailable` while the list isn't synced. No private key is accepted (MG-00 D13). **Implemented.** | `MasternodesError` |
-| `evonode_credits(pro_tx_hash: String)` | async | `EvonodeCredits`: the balance of the evonode's owner identity (id = the ProTx hash's display bytes), read with a Platform proof (dash-sdk `IdentityBalance`). Refusals in order: `invalid_argument`, `masternodes.list_unavailable`, `masternodes.not_found{query}`, `masternodes.not_evonode{pro_tx_hash}`, `masternodes.platform_unavailable{detail}` (no Platform in this session, or DAPI failed), `masternodes.no_identity{pro_tx_hash}`. The fetch runs outside the session's operation guard. **Implemented.** | `MasternodesError` |
+| `evonode_credits(pro_tx_hash: String)` | async | `EvonodeCredits`: the balance of the evonode's owner identity (id = the ProTx hash's display bytes), read with a Platform proof (dash-sdk `IdentityBalance`). Refusals in order: `invalid_argument`, `masternodes.list_unavailable`, `masternodes.not_found`, `masternodes.not_evonode`, `masternodes.platform_unavailable{detail}` (no Platform in this session, or DAPI failed; the SDK's text goes to the log only, as it may name the identity), `masternodes.no_identity`. The fetch runs outside the session's operation guard. **Implemented.** | `MasternodesError` |
 | `resolve_collateral(pro_tx_hash: String)` | async | The header-checked collateral outpoint of any listed masternode (MG-00 D43). `invalid_argument` for a malformed hash, else always `masternodes.unsupported{feature: "collateral_lookup"}`: dash-spv exposes no header-by-hash or block fetch at the pin (D11). **Implemented** (as the refusal). | `MasternodesError` |
 
 ### 2.2 Tracking and attached keys
@@ -72,11 +72,11 @@ Every call here sends §6's event after it changes something.
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `track(pro_tx_hash: String, label: Option<String>)` | async | Adds a masternode of the synced list to platform-wallet's registry (wallet.sqlite; it belongs to the network, D13). Returns its `ListedMasternode`. Refusals in order: `invalid_argument` (hash, or a label over `MAX_MASTERNODE_LABEL` characters after trimming), `masternodes.list_unavailable`, `masternodes.not_found{query}` (not in the list, D7), `masternodes.already_tracked{pro_tx_hash}`. **Implemented.** | `MasternodesError` |
-| `untrack(pro_tx_hash: String)` | async | Deletes the attached keys first, then the registry row (MG-00 D22). Returns `UntrackOutcome { keys_deleted }`. `invalid_argument`, `masternodes.not_tracked{pro_tx_hash}`; a vault that can't delete (locked: `vault`) leaves it tracked. The event is sent once keys were deleted, even if the registry row then couldn't be removed. **Implemented.** | `MasternodesError` |
-| `set_label(pro_tx_hash: String, label: Option<String>)` | async | Trims the label; blank or `None` clears it (back to the default name, `type_index`). A tracked masternode's label is the registry's; any other's is kept in app.sqlite (D12). `invalid_argument` for a malformed hash or a label over `MAX_MASTERNODE_LABEL` characters. **Implemented.** | `MasternodesError` |
-| `attach_key(pro_tx_hash: String, role: AttachedKeyRole, key: Zeroizing<String>)` | async | Stores a WIF (mainnet's for mainnet, a test network's otherwise) or 64-hex secp256k1 secret for `role` of a tracked masternode, replacing an earlier one. Checked first (MG-00 D13): `voting` against the synced list's voting key id (`masternodes.list_unavailable` while it isn't synced; `unchecked` when the list no longer holds it); `owner` against the owner key id of a ProRegTx/ProUpRegTx a loaded wallet holds, otherwise `unchecked`; `payout` is `matched` when it pays that wallet's P2PKH payout script, otherwise `unchecked`, never refused (that script can be stale, D19). Tracking changes (`track`, `untrack`, `set_label`, `attach_key`, `detach_key`) run one at a time per session, so a key can't be stored for a masternode an `untrack` is removing. Returns `KeyCheck`. Refusals in order: `invalid_argument` (hash, key), `masternodes.not_tracked{pro_tx_hash}`, `masternodes.list_unavailable`, `masternodes.key_mismatch{role}`, then the vault's (`vault`, for one without the full-scope data key). **Implemented.** | `MasternodesError` |
-| `detach_key(pro_tx_hash: String, role: AttachedKeyRole)` | async | Deletes the key attached for `role`. Returns whether there was one. `invalid_argument`, `masternodes.not_tracked{pro_tx_hash}`, then the vault's. **Implemented.** | `MasternodesError` |
+| `track(pro_tx_hash: String, label: Option<String>)` | async | Adds a masternode of the synced list to platform-wallet's registry (wallet.sqlite; it belongs to the network, D13). Returns its `ListedMasternode`. Refusals in order: `invalid_argument` (hash, or a label over `MAX_MASTERNODE_LABEL` characters after trimming), `masternodes.list_unavailable`, `masternodes.not_found` (not in the list, D7), `masternodes.already_tracked`. **Implemented.** | `MasternodesError` |
+| `untrack(pro_tx_hash: String)` | async | Deletes the attached keys first, then the registry row (MG-00 D22). Returns `UntrackOutcome { keys_deleted }`; the keys' recorded ids go too (D24). `invalid_argument`, `masternodes.not_tracked`; a vault that can't delete (locked: `vault`) leaves it tracked. The event is sent once keys were deleted, even if the registry row then couldn't be removed. **Implemented.** | `MasternodesError` |
+| `set_label(pro_tx_hash: String, label: Option<String>)` | async | Trims the label; blank or `None` clears it (back to the default name, `type_index`). A tracked masternode's label is the registry's; a loaded wallet's masternode's or a listed one's is kept in app.sqlite (D12). Refusals in order: `invalid_argument` for a malformed hash or a label over `MAX_MASTERNODE_LABEL` characters, then for any other hash `masternodes.not_found`, or `masternodes.list_unavailable` while the list that might hold it isn't synced (D27). **Implemented.** | `MasternodesError` |
+| `attach_key(pro_tx_hash: String, role: AttachedKeyRole, key: Zeroizing<String>)` | async | Stores a WIF (mainnet's for mainnet, a test network's otherwise) or 64-hex secp256k1 secret for `role` of a tracked masternode, replacing an earlier one. Checked first (MG-00 D13): `voting` against the synced list's voting key id (`masternodes.list_unavailable` while it isn't synced; `unchecked` when the list no longer holds it); `owner` against the owner key id of a ProRegTx/ProUpRegTx a loaded wallet holds, otherwise `unchecked`; `payout` is `matched` when it pays that wallet's P2PKH payout script, otherwise `unchecked`, never refused (that script can be stale, D19). The hash160 of its public key is recorded in app.sqlite before the vault write (restored if that fails), and every read compares it again (§5, D24). Tracking changes (`track`, `untrack`, `set_label`, `attach_key`, `detach_key`) run one at a time per session, so a key can't be stored for a masternode an `untrack` is removing. Returns `KeyCheck`. Refusals in order: `invalid_argument` (hash, key), `masternodes.not_tracked`, `masternodes.list_unavailable`, `masternodes.key_mismatch{role}`, then the vault's (`vault`, for one without the full-scope data key). **Implemented.** | `MasternodesError` |
+| `detach_key(pro_tx_hash: String, role: AttachedKeyRole)` | async | Deletes the key attached for `role`, then its recorded id. Returns whether there was one. `invalid_argument`, `masternodes.not_tracked`, then the vault's. **Implemented.** | `MasternodesError` |
 
 ## 3. Surface (generated)
 
@@ -84,19 +84,19 @@ Generated by `mn_masternodes_contract.rs` from the facade's source files; `DW_BL
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: masternodes-surface -->
-<!-- surface-sha256: db16db31a92ee1c44611ad163bbc8fcd5c3cc4a3dae7f339bde296468eef1e91 version: 1 -->
+<!-- surface-sha256: e852cbf0ea2d6dcef8a582c11e7e98dc12085a73d8c5d33981de50856ba2e59f version: 2 -->
 
 ```rust
 // src/masternodes/errors.rs
 #[derive(Debug, thiserror::Error)]
 pub enum MasternodesError {
     ListUnavailable,
-    NotFound { query: String },
-    AlreadyTracked { pro_tx_hash: String },
-    NotTracked { pro_tx_hash: String },
+    NotFound,
+    AlreadyTracked,
+    NotTracked,
     KeyMismatch { role: AttachedKeyRole },
-    NotEvonode { pro_tx_hash: String },
-    NoIdentity { pro_tx_hash: String },
+    NotEvonode,
+    NoIdentity,
     PlatformUnavailable { detail: String },
     Unsupported { feature: String },
     NotImplemented { call: String },
@@ -110,7 +110,7 @@ impl From<dw_vault::VaultError> for MasternodesError;
 impl From<tokio::task::JoinError> for MasternodesError;
 // src/masternodes/mod.rs
 pub use errors::MasternodesError;
-pub use records::{ AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, KeyCheck, ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState, MasternodeOverview, MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus, MasternodeType, RegistrationFacts, UntrackOutcome, };
+pub use records::{ AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, KeyCheck, ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState, MasternodeOverview, MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus, MasternodeType, RegistrationFacts, UntrackOutcome, };
 pub use tracking::MAX_MASTERNODE_LABEL;
 #[derive(Clone)]
 pub struct Masternodes {
@@ -159,7 +159,17 @@ impl AttachedKeyRole {
 #[serde(rename_all = "snake_case")]
 pub enum KeyCheck {
     Matched,
+    KeyMismatch,
     Unchecked,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachedKey {
+    pub role: AttachedKeyRole,
+    pub key_id: Option<String>,
+    pub check: KeyCheck,
+}
+impl AttachedKey {
+    pub fn holds(&self) -> bool;
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -174,7 +184,7 @@ pub struct MasternodeRoles {
     pub voting: bool,
     pub payout: bool,
     pub operator: bool,
-    pub attached: Option<Vec<AttachedKeyRole>>,
+    pub attached: Option<Vec<AttachedKey>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListFacts {
@@ -220,6 +230,7 @@ pub struct MasternodeRow {
     pub service: Option<String>,
     pub mine: bool,
     pub tracked: bool,
+    pub shared_unsupported: bool,
     pub roles: MasternodeRoles,
     pub collateral: CollateralState,
     pub payout_address: Option<String>,
@@ -246,6 +257,7 @@ pub struct MasternodeOverview {
     pub masternodes: Vec<MasternodeRow>,
     pub collateral_coins: Vec<CollateralCoin>,
     pub payouts_30d: u64,
+    pub payouts_incomplete: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MasternodeDetail {
@@ -292,13 +304,17 @@ impl Masternodes {
 | `MasternodesError` | `masternodes.list_unavailable`, `masternodes.not_found`, `masternodes.already_tracked`, `masternodes.not_tracked`, `masternodes.key_mismatch`, `masternodes.not_evonode`, `masternodes.no_identity`, `masternodes.platform_unavailable`, `masternodes.unsupported`, `masternodes.not_implemented` |
 
 - `masternodes.list_unavailable`: the call needs the synced SPV list and there is none yet (or it is still syncing).
-- `masternodes.not_found{query}`: not in the synced list, and not the wallet's or tracked.
-- `masternodes.already_tracked{pro_tx_hash}` / `masternodes.not_tracked{pro_tx_hash}`.
+No code carries a hash, a key or a wallet id the caller passed, and no message repeats one: a pasted private key has
+a hash's shape (D23).
+
+- `masternodes.not_found`: not in the synced list, and not the wallet's or tracked.
+- `masternodes.already_tracked` / `masternodes.not_tracked`.
 - `masternodes.key_mismatch{role}`: the key is not the masternode's key for `role`.
-- `masternodes.not_evonode{pro_tx_hash}`: a regular masternode has no claimable credits.
-- `masternodes.no_identity{pro_tx_hash}`: Platform has no identity for the evonode (registered before Platform).
+- `masternodes.not_evonode`: a regular masternode has no claimable credits.
+- `masternodes.no_identity`: Platform has no identity for the evonode (registered before Platform).
 - `masternodes.platform_unavailable{detail}`: the session runs without Platform, or the proved read failed.
-- `masternodes.unsupported{feature}`: needs an upstream API the pin lacks (`collateral_lookup`, D11).
+- `masternodes.unsupported{feature}`: needs what the pin lacks: `collateral_lookup` (an upstream API, D11), or
+  `shared_masternodes` (the v24 version-3 payload, D25; MG-03b).
 - `masternodes.not_implemented{call}`: reserved for stubs of later MG tasks; no MG-03 call returns it.
 - `Engine(EngineError)`: `network_not_open`, `wallet_not_found`, `invalid_argument`, `vault` (a locked vault among
   them), `storage`,
@@ -319,18 +335,38 @@ impl Masternodes {
 | `unknown` | Otherwise (a tracked masternode never seen listed, or a registration above the list height). |
 
 Roles (`MasternodeRoles`, design §3): `collateral` (the resolved collateral is an unspent wallet output), `owner`
-(derived owner key 0–19, or attached), `voting` (the list's voting key id, else the wallet's latest, is a derived
-voting key 0–19, or attached), `payout` (the payout script is the wallet's), `operator` (the operator key is one the
-wallet derives, shown only), `attached` (`None` while the vault is locked; any other vault error fails the read).
+(derived owner key 0–19, or an attached owner key that holds), `voting` (the list's voting key id, else the wallet's
+latest, is a derived voting key 0–19, or an attached voting key holds), `payout` (the payout script is the wallet's),
+`operator` (the operator key is one the wallet derives, shown only), `attached` (`None` while the vault is locked;
+any other vault error fails the read).
+
+Each `AttachedKey` (D24) carries its role, `key_id` (the hash160 recorded at attach, 40 hex; `None` for a key attached
+before ids were kept) and `check`, compared on every read with what the wallet knows then: `voting` with the synced
+list's voting key id (`matched` / `key_mismatch`; `unchecked` while it isn't listed or the list isn't synced),
+`owner` with the owner key id of a ProRegTx a loaded wallet holds (`matched` / `key_mismatch`, else `unchecked`),
+`payout` with that wallet's P2PKH payout script (`matched`, else `unchecked`, D19). A key holds its role when it has a
+`key_id` and isn't `key_mismatch`: a voting key a ProUpRegTx rotated away, or one attached `unchecked` before the
+masternode was listed with another key, reports `voting: false` (MG-00 D13).
+
 A row is `mine` when the wallet holds one of these roles through its own provider transactions (an attached key
 doesn't count); a provider transaction that gives it none (it paid the fee of someone's ProRegTx) makes no row.
+
+`shared_unsupported` (D25): a version-3 ProRegTx or ProUpRegTx among the wallet's provider transactions, or a version-3
+(extended network info) list entry. Core v24 replaced `scriptPayout` with `payouts` and `shares` in that version; the
+pinned library reads it with the version-2 layout, so only the type, mode and collateral (and a ProUpRegTx's ProTx
+hash) read right. Such a row reports no `owner`, `voting`, `payout` or `operator` role from that record, no payout
+address or registration keys, no payouts (`payouts()` refuses, `payouts_30d` 0), and the overview's
+`payouts_incomplete` is set: its total leaves those out. It stays `mine` when a provider transaction of it is in the
+wallet's history. The share table, per-share payouts and ProUpShareTx / ProUpSharedRegTx are MG-03b.
 
 ## 6. Events
 
 `EngineEvent::Masternodes { network }`, at most once a second with the trailing edge kept. The follower polls every
 5 s; on a new list height, or after a §2.2 call, it re-reads the masternodes of interest (every loaded wallet's own
 and the tracked ones), writes first sightings of bans and of listing to app.sqlite, and sends the event when one of
-their list entries changed. A §2.2 call sends it too. The host re-reads what it shows. dw-app forwards it as
+their list entries changed. A §2.2 call sends it too, and so does a change of the wallet set (`WalletCreated`,
+`WalletRemoved`, `WalletLoadChanged`: a create, import, restore, load, unload or removal), at the same list height
+(D28). The host re-reads what it shows. dw-app forwards it as
 `AppEvent::Masternodes`; dw-ffi does not forward it until E0-13 binds the facade.
 
 ## 7. Persistence
@@ -340,3 +376,4 @@ their list entries changed. A §2.2 call sends it too. The host re-reads what it
 | Tracked masternodes, their labels | platform-wallet's registry in wallet.sqlite (`tracked_masternodes`, already migrated) |
 | Attached keys | the vault (`Vault::store_masternode_key`, MG-01 D7) |
 | Labels of untracked masternodes, `banned_seen`, `listed_seen` | app.sqlite `settings_kv`, global scope, keys `masternodes.label:<hash>`, `masternodes.banned_seen:<hash>`, `masternodes.listed_seen:<hash>` (no migration, D12) |
+| Attached keys' ids (hash160 of the public key, not secret) | app.sqlite `settings_kv`, global scope, `masternodes.key:<hash>:<role>` (D24) |

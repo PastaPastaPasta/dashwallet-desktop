@@ -24,6 +24,9 @@ pub(crate) struct OwnedMasternode {
     pub collateral: Option<OutPoint>,
     /// ProRegTx `operatorReward`, basis points.
     pub operator_reward: Option<u16>,
+    /// A version-3 ProRegTx or ProUpRegTx is among its transactions
+    /// (MG-03 D25): the record's keys, payout and service are misread.
+    pub shared_unsupported: bool,
 }
 
 impl OwnedMasternode {
@@ -45,6 +48,28 @@ pub(crate) fn collateral_amount(evonode: bool) -> u64 {
         EVONODE_COLLATERAL
     } else {
         MASTERNODE_COLLATERAL
+    }
+}
+
+/// The first ProRegTx/ProUpRegTx version with Core v24's `payouts` and
+/// `shares` in place of `scriptPayout` (`ProTxVersion::ExtAddr`,
+/// `evo/providertx.h`). The pinned library reads every version with the
+/// version-2 layout: only the fields before the service (type, mode,
+/// collateral) and, in a ProUpRegTx, the ProTx hash come out right.
+const SHARED_PAYLOAD_VERSION: u16 = 3;
+
+/// The ProTx hash (wire order) of a ProRegTx or ProUpRegTx of version 3 or
+/// later.
+fn shared_payload(tx: &Transaction) -> Option<[u8; 32]> {
+    use TransactionPayload::*;
+    match &tx.special_transaction_payload {
+        Some(ProviderRegistrationPayloadType(p)) if p.version >= SHARED_PAYLOAD_VERSION => {
+            Some(tx.txid().to_byte_array())
+        }
+        Some(ProviderUpdateRegistrarPayloadType(p)) if p.version >= SHARED_PAYLOAD_VERSION => {
+            Some(p.pro_tx_hash.to_byte_array())
+        }
+        _ => None,
     }
 }
 
@@ -93,6 +118,10 @@ pub(crate) fn aggregate(txs: &[(u32, u32, Transaction)]) -> Vec<OwnedMasternode>
     let records = aggregate_masternodes(txs.iter().map(|(h, p, tx)| (*h, *p, tx)), |_| {
         ListMembership::ListUnavailable
     });
+    let shared: HashSet<[u8; 32]> = txs
+        .iter()
+        .filter_map(|(_, _, tx)| shared_payload(tx))
+        .collect();
     records
         .into_iter()
         .map(|record| {
@@ -117,9 +146,14 @@ pub(crate) fn aggregate(txs: &[(u32, u32, Transaction)]) -> Vec<OwnedMasternode>
                 let out = tx.output.get(outpoint.vout as usize)?;
                 (out.value == collateral_amount(record.is_evonode)).then_some(outpoint)
             });
+            let shared_unsupported = shared.contains(&record.pro_tx_hash);
             OwnedMasternode {
-                operator_reward: registration.map(|(_, p)| p.operator_reward),
+                // after the service in the version-3 layout: misread
+                operator_reward: registration
+                    .filter(|_| !shared_unsupported)
+                    .map(|(_, p)| p.operator_reward),
                 collateral,
+                shared_unsupported,
                 record,
             }
         })
@@ -127,7 +161,7 @@ pub(crate) fn aggregate(txs: &[(u32, u32, Transaction)]) -> Vec<OwnedMasternode>
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod fixtures {
     use super::*;
     use dashcore::blockdata::transaction::special_transaction::provider_registration::{
         ProviderMasternodeType, ProviderRegistrationPayload,
@@ -137,18 +171,28 @@ mod tests {
     use dashcore::hash_types::{InputsHash, PubkeyHash};
     use dashcore::{ScriptBuf, TxIn, TxOut};
 
-    fn payout(seed: u8) -> ScriptBuf {
+    pub(crate) fn payout(seed: u8) -> ScriptBuf {
         ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array([seed; 20]))
     }
 
-    fn registration(
+    pub(crate) fn registration(
+        collateral: OutPoint,
+        evonode: bool,
+        reward: u16,
+        outputs: Vec<TxOut>,
+    ) -> Transaction {
+        registration_v(2, collateral, evonode, reward, outputs)
+    }
+
+    pub(crate) fn registration_v(
+        version: u16,
         collateral: OutPoint,
         evonode: bool,
         reward: u16,
         outputs: Vec<TxOut>,
     ) -> Transaction {
         let payload = ProviderRegistrationPayload {
-            version: 2,
+            version,
             masternode_type: if evonode {
                 ProviderMasternodeType::HighPerformance
             } else {
@@ -179,9 +223,13 @@ mod tests {
         }
     }
 
-    fn update(pro_tx_hash: Txid, payout_seed: u8) -> Transaction {
+    pub(crate) fn update(pro_tx_hash: Txid, payout_seed: u8) -> Transaction {
+        update_v(2, pro_tx_hash, payout_seed)
+    }
+
+    pub(crate) fn update_v(version: u16, pro_tx_hash: Txid, payout_seed: u8) -> Transaction {
         let payload = ProviderUpdateRegistrarPayload {
-            version: 2,
+            version,
             pro_tx_hash,
             provider_mode: 0,
             operator_public_key: BLSPublicKey::from([2; 48]),
@@ -201,14 +249,14 @@ mod tests {
         }
     }
 
-    fn null(vout: u32) -> OutPoint {
+    pub(crate) fn null(vout: u32) -> OutPoint {
         OutPoint {
             txid: Txid::all_zeros(),
             vout,
         }
     }
 
-    fn coins(amounts: &[u64]) -> Vec<TxOut> {
+    pub(crate) fn coins(amounts: &[u64]) -> Vec<TxOut> {
         amounts
             .iter()
             .map(|v| TxOut {
@@ -217,6 +265,13 @@ mod tests {
             })
             .collect()
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::*;
+    use super::*;
+    use dashcore::TxIn;
 
     #[test]
     fn history_adds_the_provider_transactions_the_library_lacks() {
@@ -319,5 +374,82 @@ mod tests {
         assert!(!out[0].record.has_registration);
         assert_eq!(out[0].collateral, None);
         assert_eq!(out[0].operator_reward, None);
+    }
+
+    #[test]
+    fn a_version_3_registration_or_update_marks_the_masternode_shared() {
+        let reg = registration(null(0), false, 250, coins(&[MASTERNODE_COLLATERAL]));
+        let plain = aggregate(&[(10, 0, reg.clone())]);
+        assert!(!plain[0].shared_unsupported);
+        assert_eq!(plain[0].operator_reward, Some(250));
+
+        let shared = registration_v(3, null(0), false, 250, coins(&[MASTERNODE_COLLATERAL]));
+        let out = aggregate(&[(10, 0, shared.clone())]);
+        assert!(out[0].shared_unsupported);
+        assert_eq!(out[0].operator_reward, None, "misread in the v3 layout");
+        // the fields before the service still resolve the collateral
+        assert_eq!(
+            out[0].collateral,
+            Some(OutPoint {
+                txid: shared.txid(),
+                vout: 0
+            })
+        );
+
+        // a version-3 ProUpRegTx of a version-2 registration
+        let out = aggregate(&[(10, 0, reg.clone()), (20, 0, update_v(3, reg.txid(), 8))]);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].shared_unsupported);
+        // a later version-2 update doesn't clear it
+        let out = aggregate(&[
+            (10, 0, reg.clone()),
+            (20, 0, update_v(3, reg.txid(), 8)),
+            (30, 0, update(reg.txid(), 9)),
+        ]);
+        assert!(out[0].shared_unsupported);
+    }
+
+    /// Core v24 bytes of a version-3 ProRegTx (`CProRegTx`'s
+    /// `SERIALIZE_METHODS`: an `ExtNetInfo` service, then `payouts` and
+    /// `shares` where version 2 has `scriptPayout`), which the pinned
+    /// library refuses: such a transaction never reaches the wallet.
+    #[test]
+    fn the_pinned_library_refuses_core_v24_version_3_registration_bytes() {
+        use dashcore::consensus::{Encodable, deserialize};
+        let mut payload = Vec::new();
+        3u16.consensus_encode(&mut payload).unwrap(); // nVersion = ExtAddr
+        0u16.consensus_encode(&mut payload).unwrap(); // nType
+        0u16.consensus_encode(&mut payload).unwrap(); // nMode
+        null(0).consensus_encode(&mut payload).unwrap(); // collateral
+        // ExtNetInfo version 1: one purpose (CORE_P2P), one entry, a
+        // service in ADDRv2 (IPv4, 4 bytes, big-endian port)
+        payload.extend([1, 1, 0, 1]);
+        payload.extend([1, 1, 4, 127, 0, 0, 1, 0x4d, 0xbb]);
+        payload.extend([1; 20]); // keyIDOwner
+        payload.extend([2; 48]); // pubKeyOperator
+        payload.extend([3; 20]); // keyIDVoting
+        0u16.consensus_encode(&mut payload).unwrap(); // nOperatorReward
+        payload.push(2); // payouts: two shares
+        for (seed, reward) in [(4u8, 6000u16), (5, 4000)] {
+            payout(seed).consensus_encode(&mut payload).unwrap();
+            reward.consensus_encode(&mut payload).unwrap();
+        }
+        payload.push(0); // shares: none
+        0u32.consensus_encode(&mut payload).unwrap(); // nEarlyPeriodBlocks
+        0i64.consensus_encode(&mut payload).unwrap(); // nEarlyPenalty
+        payload.extend([0; 32]); // inputsHash
+        payload.extend([65]);
+        payload.extend([0; 65]); // vchSig
+
+        let mut tx = Vec::new();
+        3u16.consensus_encode(&mut tx).unwrap(); // version
+        1u16.consensus_encode(&mut tx).unwrap(); // TRANSACTION_PROVIDER_REGISTER
+        vec![TxIn::default()].consensus_encode(&mut tx).unwrap();
+        coins(&[MASTERNODE_COLLATERAL])
+            .consensus_encode(&mut tx)
+            .unwrap();
+        0u32.consensus_encode(&mut tx).unwrap(); // lock time
+        payload.consensus_encode(&mut tx).unwrap(); // vExtraPayload
+        assert!(deserialize::<Transaction>(&tx).is_err());
     }
 }

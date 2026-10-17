@@ -1,8 +1,8 @@
 //! The session's masternode state (MG-03 §8; not facade): the SPV list as
 //! the facade reads it, the notes kept in app.sqlite (labels of wallet
-//! masternodes, first sightings of bans, MG-03 D12), and the follower that
-//! writes those sightings and sends the coalesced
-//! `EngineEvent::Masternodes`.
+//! masternodes, first sightings of bans, MG-03 D12; attached keys' ids,
+//! D24), and the follower that writes those sightings and sends the
+//! coalesced `EngineEvent::Masternodes`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,6 +16,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use super::aggregate::{OwnedMasternode, add_history, aggregate};
+use super::records::AttachedKeyRole;
 use crate::events::{EngineEvent, EventSink};
 use crate::history::HistoryStore;
 use crate::session::Manager;
@@ -29,6 +30,8 @@ const EVENT_INTERVAL: Duration = Duration::from_secs(1);
 const LABEL: &str = "masternodes.label:";
 const BANNED_SEEN: &str = "masternodes.banned_seen:";
 const LISTED_SEEN: &str = "masternodes.listed_seen:";
+/// `masternodes.key:<hash>:<role>`: the hash160 of an attached key.
+const KEY_ID: &str = "masternodes.key:";
 
 /// The SPV list as one read saw it. `entries` is empty unless `synced`.
 #[derive(Debug, Clone, Default)]
@@ -107,6 +110,8 @@ pub(crate) struct Notes {
     pub labels: HashMap<String, String>,
     pub banned_seen: HashMap<String, u64>,
     pub listed_seen: HashSet<String>,
+    /// The id of each attached key, recorded at attach (D24).
+    pub key_ids: HashMap<(String, AttachedKeyRole), [u8; 20]>,
 }
 
 pub(crate) fn load_notes(db: &AppDb) -> Result<Notes, AppDbError> {
@@ -120,6 +125,17 @@ pub(crate) fn load_notes(db: &AppDb) -> Result<Notes, AppDbError> {
             }
         } else if let Some(hash) = key.strip_prefix(LISTED_SEEN) {
             notes.listed_seen.insert(hash.into());
+        } else if let Some(rest) = key.strip_prefix(KEY_ID) {
+            let mut id = [0u8; 20];
+            let Some((hash, role)) = rest.split_once(':') else {
+                continue;
+            };
+            if let (Some(role), Ok(())) = (
+                AttachedKeyRole::from_vault_name(role),
+                hex::decode_to_slice(&value, &mut id),
+            ) {
+                notes.key_ids.insert((hash.into(), role), id);
+            }
         }
     }
     Ok(notes)
@@ -127,6 +143,36 @@ pub(crate) fn load_notes(db: &AppDb) -> Result<Notes, AppDbError> {
 
 pub(crate) fn set_label(db: &AppDb, hash: &str, label: Option<&str>) -> Result<(), AppDbError> {
     db.set_setting(GLOBAL_SCOPE, &format!("{LABEL}{hash}"), label)
+}
+
+fn key_id_setting(hash: &str, role: AttachedKeyRole) -> String {
+    format!("{KEY_ID}{hash}:{}", role.vault_name())
+}
+
+pub(crate) fn key_id(
+    db: &AppDb,
+    hash: &str,
+    role: AttachedKeyRole,
+) -> Result<Option<[u8; 20]>, AppDbError> {
+    let mut id = [0u8; 20];
+    Ok(db
+        .setting(GLOBAL_SCOPE, &key_id_setting(hash, role))?
+        .filter(|v| hex::decode_to_slice(v, &mut id).is_ok())
+        .map(|_| id))
+}
+
+/// Records (or with `None` forgets) the id of the key attached for `role`.
+pub(crate) fn set_key_id(
+    db: &AppDb,
+    hash: &str,
+    role: AttachedKeyRole,
+    id: Option<[u8; 20]>,
+) -> Result<(), AppDbError> {
+    db.set_setting(
+        GLOBAL_SCOPE,
+        &key_id_setting(hash, role),
+        id.map(hex::encode).as_deref(),
+    )
 }
 
 /// A masternode's list entry as last seen (`None`: not listed).
@@ -140,11 +186,48 @@ struct Followed {
     seen: Seen,
 }
 
-pub(crate) struct MasternodesRuntime {
-    changed: Arc<Notify>,
-    /// Bumped by every change of the tracked set, a label or a key; a new
-    /// value makes the follower re-read at the same height.
+/// What makes the follower re-read at the same height, and the event's
+/// wake-up.
+#[derive(Default)]
+struct Changes {
+    notify: Notify,
+    /// Bumped by every change of the tracked set, a label or a key, and of
+    /// the wallet set (D28).
     generation: AtomicU64,
+}
+
+impl Changes {
+    fn bump(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.notify.notify_one();
+    }
+}
+
+/// The session's sink, which also hears the wallet set change: a wallet
+/// created, imported, restored, loaded, unloaded or removed changes whose
+/// masternodes are "mine" at an unchanged list height (D28).
+struct WalletSetWatch {
+    sink: Arc<dyn EventSink>,
+    changes: Arc<Changes>,
+}
+
+impl EventSink for WalletSetWatch {
+    fn emit(&self, event: EngineEvent) {
+        let wallets = matches!(
+            event,
+            EngineEvent::WalletCreated { .. }
+                | EngineEvent::WalletRemoved { .. }
+                | EngineEvent::WalletLoadChanged { .. }
+        );
+        self.sink.emit(event);
+        if wallets {
+            self.changes.bump();
+        }
+    }
+}
+
+pub(crate) struct MasternodesRuntime {
+    changes: Arc<Changes>,
     coalescer: JoinHandle<()>,
     follower: Mutex<Option<JoinHandle<()>>>,
     /// Held across each tracking change, so an `attach_key` can't store a
@@ -155,13 +238,13 @@ pub(crate) struct MasternodesRuntime {
 impl MasternodesRuntime {
     /// Built at session open on the engine runtime.
     pub fn new(network: DashNetwork, sink: Arc<dyn EventSink>, rt: &Handle) -> Self {
-        let changed = Arc::new(Notify::new());
-        let wake = Arc::clone(&changed);
+        let changes = Arc::new(Changes::default());
+        let wake = Arc::clone(&changes);
         // A change during the pause leaves a permit, so the trailing edge is
         // sent when it ends.
         let coalescer = rt.spawn(async move {
             loop {
-                wake.notified().await;
+                wake.notify.notified().await;
                 sink.emit(EngineEvent::Masternodes {
                     network: network.clone(),
                 });
@@ -169,8 +252,7 @@ impl MasternodesRuntime {
             }
         });
         Self {
-            changed,
-            generation: AtomicU64::new(0),
+            changes,
             coalescer,
             follower: Mutex::default(),
             mutations: tokio::sync::Mutex::new(()),
@@ -184,8 +266,16 @@ impl MasternodesRuntime {
 
     /// Something the facade changed itself (tracked set, a label, a key).
     pub fn local_change(&self) {
-        self.generation.fetch_add(1, Ordering::SeqCst);
-        self.changed.notify_one();
+        self.changes.bump();
+    }
+
+    /// `sink`, also telling this runtime when the wallet set changes. The
+    /// session emits through it.
+    pub fn watch_wallets(&self, sink: Arc<dyn EventSink>) -> Arc<dyn EventSink> {
+        Arc::new(WalletSetWatch {
+            sink,
+            changes: Arc::clone(&self.changes),
+        })
     }
 
     /// Starts following the list for the session's life.
@@ -238,7 +328,7 @@ impl MasternodesRuntime {
         let Some(height) = session.hub.tracker().masternode_list_height() else {
             return Ok(());
         };
-        let generation = self.generation.load(Ordering::SeqCst);
+        let generation = self.changes.generation.load(Ordering::SeqCst);
         if followed.height == Some(height) && followed.generation == generation {
             return Ok(());
         }
@@ -274,7 +364,7 @@ impl MasternodesRuntime {
             seen,
         };
         if changed {
-            self.changed.notify_one();
+            self.changes.notify.notify_one();
         }
         Ok(())
     }
@@ -373,5 +463,69 @@ mod tests {
         );
         set_label(&db, "ab", None).unwrap();
         assert!(load_notes(&db).unwrap().labels.is_empty());
+    }
+
+    /// An attached key's id outlives the process (app.sqlite), and a read
+    /// after the restart compares it with the list as it is then: a
+    /// rotated voting key is a mismatch, which holds no role (D24).
+    #[test]
+    fn a_key_id_survives_a_restart_and_a_rotation_is_a_mismatch() {
+        use super::super::records::{AttachedKey, KeyCheck};
+        use super::super::tracking::KeyReferences;
+
+        let dir = dw_testutil::private_tempdir();
+        let path = dir.path().join("app.sqlite");
+        let hash = super::super::display_hex(&[1; 32]);
+        let attached = summary(1, true);
+        {
+            let db = AppDb::open(&path).unwrap();
+            set_key_id(
+                &db,
+                &hash,
+                AttachedKeyRole::Voting,
+                Some(attached.voting_key_id),
+            )
+            .unwrap();
+            set_key_id(&db, &hash, AttachedKeyRole::Owner, Some([9; 20])).unwrap();
+            set_key_id(&db, &hash, AttachedKeyRole::Owner, None).unwrap();
+        }
+        let db = AppDb::open(&path).unwrap();
+        let notes = load_notes(&db).unwrap();
+        assert_eq!(notes.key_ids.len(), 1, "a forgotten id stays forgotten");
+        let id = notes.key_ids[&(hash.clone(), AttachedKeyRole::Voting)];
+        assert_eq!(id, attached.voting_key_id);
+        assert_eq!(
+            key_id(&db, &hash, AttachedKeyRole::Voting).unwrap(),
+            Some(id)
+        );
+
+        let key = |entry: Option<&MasternodeListSummary>| {
+            let check = KeyReferences::new(entry, None).check(AttachedKeyRole::Voting, id);
+            AttachedKey {
+                role: AttachedKeyRole::Voting,
+                key_id: Some(hex::encode(id)),
+                check,
+            }
+        };
+        let same = key(Some(&attached));
+        assert_eq!(same.check, KeyCheck::Matched);
+        assert!(same.holds());
+        // a ProUpRegTx gave the masternode another voting key
+        let rotated = MasternodeListSummary {
+            voting_key_id: [2; 20],
+            ..attached.clone()
+        };
+        let stale = key(Some(&rotated));
+        assert_eq!(stale.check, KeyCheck::KeyMismatch);
+        assert!(!stale.holds());
+        // not listed: nothing to compare with
+        assert_eq!(key(None).check, KeyCheck::Unchecked);
+        // no id recorded: never holds
+        let unrecorded = AttachedKey {
+            key_id: None,
+            check: KeyCheck::Unchecked,
+            ..same
+        };
+        assert!(!unrecorded.holds());
     }
 }

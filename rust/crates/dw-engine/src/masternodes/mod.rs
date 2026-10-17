@@ -18,10 +18,10 @@ use std::sync::Arc;
 
 pub use errors::MasternodesError;
 pub use records::{
-    AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, KeyCheck, ListFacts,
-    ListedMasternode, MasternodeDetail, MasternodeListState, MasternodeOverview, MasternodePayout,
-    MasternodeRoles, MasternodeRow, MasternodeStatus, MasternodeType, RegistrationFacts,
-    UntrackOutcome,
+    AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, KeyCheck,
+    ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState, MasternodeOverview,
+    MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus, MasternodeType,
+    RegistrationFacts, UntrackOutcome,
 };
 pub use tracking::MAX_MASTERNODE_LABEL;
 

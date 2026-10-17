@@ -1,6 +1,8 @@
 //! `MasternodesError`, the facade's error with its stable codes
 //! (`docs/contracts/mn-engine.md` §4). The `Display` text is diagnostic
-//! detail for logs; the UI picks its copy by `code()`. The m1 common codes
+//! detail for logs; the UI picks its copy by `code()`. No message repeats a
+//! hash or key the caller passed: a pasted secret has a hash's shape
+//! (MG-03 D23). The m1 common codes
 //! (`network_not_open`, `wallet_not_found`, `invalid_argument`, …) come
 //! through `Engine` unchanged, so no m1–m4 table gains a code.
 
@@ -14,22 +16,21 @@ pub enum MasternodesError {
     /// masternode phase is still running).
     #[error("masternode list unavailable")]
     ListUnavailable,
-    /// No masternode in the list matches (`query` is the hash or address
-    /// asked for).
-    #[error("no masternode matches {query}")]
-    NotFound { query: String },
-    #[error("masternode already tracked: {pro_tx_hash}")]
-    AlreadyTracked { pro_tx_hash: String },
-    #[error("masternode not tracked: {pro_tx_hash}")]
-    NotTracked { pro_tx_hash: String },
+    /// No masternode the wallet or the synced list knows matches.
+    #[error("unknown masternode")]
+    NotFound,
+    #[error("masternode already tracked")]
+    AlreadyTracked,
+    #[error("masternode not tracked")]
+    NotTracked,
     /// The key isn't the masternode's key for `role` (MG-00 D13).
     #[error("the key does not belong to this masternode ({role:?})")]
     KeyMismatch { role: AttachedKeyRole },
-    #[error("not an evonode: {pro_tx_hash}")]
-    NotEvonode { pro_tx_hash: String },
+    #[error("not an evonode")]
+    NotEvonode,
     /// Platform has no identity for the evonode.
-    #[error("no Platform identity for {pro_tx_hash}")]
-    NoIdentity { pro_tx_hash: String },
+    #[error("no Platform identity for this evonode")]
+    NoIdentity,
     /// The session runs without Platform, or Platform could not be read.
     #[error("Platform unavailable: {detail}")]
     PlatformUnavailable { detail: String },
@@ -48,12 +49,12 @@ impl MasternodesError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::ListUnavailable => "masternodes.list_unavailable",
-            Self::NotFound { .. } => "masternodes.not_found",
-            Self::AlreadyTracked { .. } => "masternodes.already_tracked",
-            Self::NotTracked { .. } => "masternodes.not_tracked",
+            Self::NotFound => "masternodes.not_found",
+            Self::AlreadyTracked => "masternodes.already_tracked",
+            Self::NotTracked => "masternodes.not_tracked",
             Self::KeyMismatch { .. } => "masternodes.key_mismatch",
-            Self::NotEvonode { .. } => "masternodes.not_evonode",
-            Self::NoIdentity { .. } => "masternodes.no_identity",
+            Self::NotEvonode => "masternodes.not_evonode",
+            Self::NoIdentity => "masternodes.no_identity",
             Self::PlatformUnavailable { .. } => "masternodes.platform_unavailable",
             Self::Unsupported { .. } => "masternodes.unsupported",
             Self::NotImplemented { .. } => "masternodes.not_implemented",

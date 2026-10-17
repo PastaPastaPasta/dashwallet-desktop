@@ -417,6 +417,8 @@ impl NetworkSession {
             Arc::clone(&sink),
             &Handle::current(),
         );
+        // A change of the wallet set re-reads the masternodes (MG-03 D28).
+        let sink = masternodes.watch_wallets(sink);
         let journal = crate::platform::lease::session::open_journal(&data_dir).await;
         let leases = crate::platform::lease::LeaseTable::new(
             network.clone(),

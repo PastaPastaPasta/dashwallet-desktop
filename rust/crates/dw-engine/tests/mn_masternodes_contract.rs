@@ -29,7 +29,7 @@ use dw_engine::{
     DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
     SessionOptions, WalletId,
 };
-use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
+use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use quote::ToTokens;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -701,22 +701,14 @@ fn error_codes_match_the_contract() {
         "MasternodesError",
         &[
             MasternodesError::ListUnavailable,
-            MasternodesError::NotFound { query: hash() },
-            MasternodesError::AlreadyTracked {
-                pro_tx_hash: hash(),
-            },
-            MasternodesError::NotTracked {
-                pro_tx_hash: hash(),
-            },
+            MasternodesError::NotFound,
+            MasternodesError::AlreadyTracked,
+            MasternodesError::NotTracked,
             MasternodesError::KeyMismatch {
                 role: AttachedKeyRole::Voting,
             },
-            MasternodesError::NotEvonode {
-                pro_tx_hash: hash(),
-            },
-            MasternodesError::NoIdentity {
-                pro_tx_hash: hash(),
-            },
+            MasternodesError::NotEvonode,
+            MasternodesError::NoIdentity,
             MasternodesError::PlatformUnavailable { detail: hash() },
             MasternodesError::Unsupported { feature: hash() },
             MasternodesError::NotImplemented { call: hash() },
@@ -792,6 +784,43 @@ fn opts() -> SessionOptions {
 
 const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+const OTHER_PHRASE: &str =
+    "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
+/// A private key's shape: 64 hex a caller might paste as a ProTx hash or a
+/// wallet id (MG-03 D23).
+const SECRET: &str = "e9873d79c6d87dc0fb6a5778633389f4453213303da61f20bd67fc233aa33262";
+
+/// `SECRET` in either byte order, as text or as bytes.
+fn quotes_secret(text: &str) -> bool {
+    let mut bytes = hex::decode(SECRET).unwrap();
+    let reversed = {
+        bytes.reverse();
+        hex::encode(&bytes)
+    };
+    let lower = text.to_lowercase();
+    [SECRET, reversed.as_str()]
+        .iter()
+        .any(|s| lower.contains(s))
+        || lower.contains(&format!("{:?}", hex::decode(SECRET).unwrap()))
+        || lower.contains(&format!("{bytes:?}"))
+}
+
+fn count(sink: &CountingSink) -> usize {
+    sink.0.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Waits for a masternodes event after `before`.
+async fn event_after(sink: &CountingSink, before: usize, what: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while count(sink) == before {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no masternodes event after {what}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
 
 /// Every call is implemented, and each refuses in §2's order on a session
 /// whose SPV never ran.
@@ -897,18 +926,42 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             assert_eq!(code(refused), "masternodes.not_tracked");
         }
 
-        // An untracked masternode's label lives in app.sqlite; each change
-        // is an event.
-        let before = sink.0.load(std::sync::atomic::Ordering::SeqCst);
-        mn.set_label(hash.clone(), Some(" Home ".into()))
+        // A label needs a masternode someone knows: a loaded wallet's, a
+        // tracked one, or one of the list, which might hold it (D27).
+        assert_eq!(
+            code(mn.set_label(hash.clone(), Some(" Home ".into())).await),
+            "masternodes.list_unavailable"
+        );
+
+        // A change of the wallet set is an event at the same list height
+        // (D28): an import, then the removal.
+        let before = count(&sink);
+        let other = session
+            .import_wallet(
+                Zeroizing::new(OTHER_PHRASE.as_bytes().to_vec()),
+                Zeroizing::new(Vec::new()),
+                ImportOptions {
+                    birth_height: Some(0),
+                    ..ImportOptions::default()
+                },
+            )
             .await
             .unwrap();
-        mn.set_label(hash.clone(), None).await.unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while sink.0.load(std::sync::atomic::Ordering::SeqCst) == before {
-            assert!(std::time::Instant::now() < deadline, "no masternodes event");
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+        event_after(&sink, before, "an import").await;
+        // past the coalescer's one-second pause
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        let before = count(&sink);
+        let wipe = session
+            .vault_op(move |v| v.authorize(GrantPurpose::Wipe, Some(&other.0), Credential::None))
+            .await
+            .unwrap();
+        session.remove_wallet(other, wipe.id).await.unwrap();
+        event_after(&sink, before, "a removal").await;
+        assert_eq!(
+            mn.list_state().unwrap(),
+            unsynced,
+            "the height didn't change"
+        );
     });
 
     engine
@@ -920,4 +973,69 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
         "network_not_open"
     );
     assert_eq!(mn.list_state().unwrap_err().code(), "network_not_open");
+}
+
+/// No call's error repeats a hash, key or wallet id it was given, even of a
+/// valid length (MG-03 D23): a pasted private key has that shape.
+#[test]
+fn errors_never_quote_a_secret_shaped_argument() {
+    let dir = dw_testutil::private_tempdir();
+    let sink = Arc::new(CountingSink::default());
+    let engine = engine(&dir.path().join("data"), Arc::clone(&sink));
+    let session = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, opts()))
+        .unwrap();
+    engine
+        .block_on(session.vault_op(|v| v.create(None)))
+        .unwrap();
+    let mn = session.masternodes();
+    let secret = || SECRET.to_string();
+    let as_wallet = WalletId(hex::decode(SECRET).unwrap().try_into().unwrap());
+    let calls: Vec<(&str, Result<(), MasternodesError>)> = engine.block_on(async {
+        vec![
+            ("list", mn.list(as_wallet).await.map(drop)),
+            (
+                "masternode",
+                mn.masternode(as_wallet, secret()).await.map(drop),
+            ),
+            (
+                "payouts",
+                mn.payouts(as_wallet, secret(), None).await.map(drop),
+            ),
+            ("find", mn.find(secret()).await.map(drop)),
+            (
+                "evonode_credits",
+                mn.evonode_credits(secret()).await.map(drop),
+            ),
+            (
+                "resolve_collateral",
+                mn.resolve_collateral(secret()).await.map(drop),
+            ),
+            ("track", mn.track(secret(), None).await.map(drop)),
+            ("untrack", mn.untrack(secret()).await.map(drop)),
+            ("set_label", mn.set_label(secret(), Some("x".into())).await),
+            (
+                "attach_key",
+                mn.attach_key(
+                    secret(),
+                    AttachedKeyRole::Voting,
+                    Zeroizing::new(SECRET.into()),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "detach_key",
+                mn.detach_key(secret(), AttachedKeyRole::Owner)
+                    .await
+                    .map(drop),
+            ),
+        ]
+    });
+    for (call, result) in calls {
+        let e = result.expect_err(call);
+        for text in [e.to_string(), format!("{e:?}")] {
+            assert!(!quotes_secret(&text), "{call} quotes its argument: {text}");
+        }
+    }
 }
