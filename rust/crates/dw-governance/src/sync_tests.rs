@@ -1006,34 +1006,57 @@ fn big_trigger(height: i32, payees: usize) -> GovernanceObject {
     t
 }
 
-/// Validator r2 MJ1: one peer's forged triggers fill the unconfirmed bound;
+/// Fills the unconfirmed byte bound with forged triggers from addresses
+/// no node of the run has, each up to its share, then with short
+/// proposals: one with a longer name than `p9999` no longer fits.
+fn fill_unconfirmed(shared: &Shared) {
+    let mut store = shared.store();
+    let (max, share) = (
+        crate::store::MAX_UNCONFIRMED_BYTES,
+        crate::store::MAX_UNCONFIRMED_BYTES_PER_PEER,
+    );
+    let (mut total, mut height) = (0usize, 100);
+    for n in 1..=(max / share + 1) as u8 {
+        let from: SocketAddr = format!("10.9.9.{n}:9999").parse().unwrap();
+        let mut mine = 0usize;
+        loop {
+            let room = (max - total).min(share - mine);
+            if room <= 150 {
+                break;
+            }
+            let t = big_trigger(height, ((room - 120) / 102).clamp(1, 28_000));
+            if t.data.len() > room {
+                break;
+            }
+            total += t.data.len();
+            mine += t.data.len();
+            store.add_object(t, Some(from), unix_now()).unwrap();
+            height += 1;
+        }
+    }
+    let pad: SocketAddr = "10.9.8.1:9999".parse().unwrap();
+    let mut i = 0;
+    while store
+        .add_object(proposal(&format!("p{i}")), Some(pad), unix_now())
+        .is_ok()
+    {
+        i += 1;
+    }
+}
+
+/// Validator r2 MJ1: peers' forged triggers fill the unconfirmed bound;
 /// proposals two other peers announce are confirmed on arrival and stored
 /// regardless, rather than refused unseen.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn one_peers_unconfirmed_bytes_do_not_hide_what_two_peers_announce() {
+async fn unconfirmed_bytes_do_not_hide_what_two_peers_announce() {
     let honest = Node {
         objects: vec![proposal("a"), proposal("b")],
         ..Node::default()
     };
-    let attacker: SocketAddr = "10.9.9.9:9999".parse().unwrap();
     let hx = start_with(
         vec![honest.clone(), honest],
         |_| {},
-        move |shared, _, _| {
-            let mut store = shared.store();
-            let max = crate::store::MAX_UNCONFIRMED_BYTES;
-            let (mut total, mut height) = (0usize, 100);
-            while max - total > 150 {
-                let payees = ((max - total - 120) / 102).clamp(1, 28_000);
-                let t = big_trigger(height, payees);
-                if total + t.data.len() > max {
-                    break;
-                }
-                total += t.data.len();
-                store.add_object(t, Some(attacker), unix_now()).unwrap();
-                height += 1;
-            }
-        },
+        |shared, _, _| fill_unconfirmed(shared),
     )
     .await;
     let p = wait_for(&hx.shared, |p| {
@@ -1124,5 +1147,243 @@ async fn an_orphan_votes_object_is_asked_of_every_peer() {
     let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced && p.objects == 1).await;
     assert_eq!((p.unconfirmed_objects, p.votes), (0, 1));
     assert!(hx.shared.store().object(&x.hash()).is_some());
+    hx.stop.send(true).unwrap();
+}
+
+/// Answers the full sync at once with `h`, holds the `getdata` for it
+/// while the honest nodes announce it, then (if `flood`) announces and
+/// `notfound`s 150,000 junk objects before sending `h`.
+async fn announcer_clearing_peer(mock: MockPeer, h: GovernanceObject, flood: bool) {
+    let mut conn = mock.accept().await.unwrap();
+    let mut sent = false;
+    while let Ok(msg) = conn.recv().await {
+        match msg.command.as_str() {
+            commands::MNGOVERNANCESYNC if msg.payload[..32] == [0; 32] => {
+                let mut ssc = SSC_GOVOBJ.to_le_bytes().to_vec();
+                ssc.extend_from_slice(&1i32.to_le_bytes());
+                conn.send(commands::SYNCSTATUSCOUNT, &ssc).await.unwrap();
+                let item = InvItem {
+                    kind: INV_GOVERNANCE_OBJECT,
+                    hash: h.hash(),
+                };
+                conn.send("inv", &encode_inv(&[item])).await.unwrap();
+            }
+            // A vote sync: it holds no votes.
+            commands::MNGOVERNANCESYNC if msg.payload[32..] != object_fetch_filter()[..] => {
+                let mut ssc = SSC_GOVOBJ_VOTE.to_le_bytes().to_vec();
+                ssc.extend_from_slice(&0i32.to_le_bytes());
+                conn.send(commands::SYNCSTATUSCOUNT, &ssc).await.unwrap();
+            }
+            "getdata" if !sent => {
+                let items = decode_inv(&msg.payload).unwrap();
+                if !items.iter().any(|i| i.hash == h.hash()) {
+                    continue;
+                }
+                sent = true;
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                for round in 0u8..3 {
+                    if !flood {
+                        break;
+                    }
+                    let junk: Vec<InvItem> = (0u32..50_000)
+                        .map(|i| {
+                            let mut hash = [0xee; 32];
+                            hash[0] = round;
+                            hash[1..5].copy_from_slice(&i.to_le_bytes());
+                            InvItem {
+                                kind: INV_GOVERNANCE_OBJECT,
+                                hash,
+                            }
+                        })
+                        .collect();
+                    conn.send("inv", &encode_inv(&junk)).await.unwrap();
+                    conn.send("notfound", &encode_inv(&junk)).await.unwrap();
+                }
+                conn.send(commands::MNGOVERNANCEOBJECT, &h.encode())
+                    .await
+                    .unwrap();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// With the unconfirmed bound full, a peer asked first for `h` holds it
+/// while two honest nodes announce it; returns the run's end state and
+/// whether `h` is shown.
+async fn announcer_clearing_run(flood: bool) -> (Progress, bool) {
+    let h = proposal("a-longer-honest-name");
+    let honest = Node {
+        objects: vec![h.clone()],
+        object_delay: Some(Duration::from_millis(300)),
+        ..Node::default()
+    };
+    let shared = Arc::new(Shared::new(Network::Regtest, Box::new(|| {})));
+    fill_unconfirmed(&shared);
+    // The clearing peer comes first, so it is asked first.
+    let mock = MockPeer::bind(Network::Regtest).await.unwrap();
+    let mut addrs = vec![mock.addr()];
+    tokio::spawn(announcer_clearing_peer(mock, h.clone(), flood));
+    let mut seen = Vec::new();
+    for node in [honest.clone(), honest] {
+        let mock = MockPeer::bind(Network::Regtest).await.unwrap();
+        addrs.push(mock.addr());
+        let (tx, rx) = mpsc::unbounded_channel();
+        seen.push(rx);
+        tokio::spawn(serve(mock, node, tx));
+    }
+    let mut cfg = SyncConfig::new(PeerConfig::new(Network::Regtest, "/t/", 1));
+    cfg.idle_timeout = Duration::from_secs(60);
+    let (stop, stop_rx) = watch::channel(false);
+    let task = tokio::spawn(run(
+        Arc::clone(&shared),
+        cfg,
+        addrs,
+        Arc::new(Mutex::new(SyncHistory::default())),
+        stop_rx,
+    ));
+    let mut end = None;
+    for _ in 0..1200 {
+        let p = shared.progress().clone();
+        if matches!(p.phase, Phase::Synced | Phase::Failed) {
+            end = Some(p);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let end = end.expect("the run ends its sync");
+    let shown = shared.store().object(&h.hash()).is_some();
+    let _ = stop.send(true);
+    let _ = task.await;
+    (end, shown)
+}
+
+/// Validator r3 MJ1: the peer asked first for an object cannot clear the
+/// record of its other announcers (by flooding junk announcements) to make
+/// its copy arrive unconfirmed and be refused unseen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peer_clearing_announcer_records_does_not_hide_an_object() {
+    for flood in [false, true] {
+        let (p, shown) = announcer_clearing_run(flood).await;
+        assert_eq!(p.phase, Phase::Synced, "flood {flood}: {p:?}");
+        assert!(shown, "flood {flood}");
+    }
+}
+
+/// Validator r3 m1: with the unconfirmed bound full, an object only a
+/// fresh peer announces in a run whose other peer was full-synced within
+/// its window (D25) cannot be stored to be asked about; the run fails
+/// rather than reaching `Synced` without it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_object_the_full_unconfirmed_bound_refuses_fails_the_run() {
+    let node = Node {
+        objects: vec![proposal("a-longer-honest-name")],
+        ..Node::default()
+    };
+    let hx = start_with(
+        vec![node.clone(), node],
+        |_| {},
+        |shared, history, addrs| {
+            history.full_synced.insert(addrs[1], Instant::now());
+            fill_unconfirmed(shared);
+        },
+    )
+    .await;
+    let p = wait_for(&hx.shared, |p| {
+        matches!(p.phase, Phase::Synced | Phase::Failed)
+    })
+    .await;
+    assert_eq!(p.phase, Phase::Failed, "{p:?}");
+    assert!(p.last_error.unwrap().contains("store is full"));
+}
+
+/// Validator r3 m3: a copy refused by its sender's unconfirmed quota keeps
+/// the sender as an announcer, so the object is confirmed once another
+/// peer announces and sends it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_copys_sender_counts_once_another_peer_announces_it() {
+    let h = proposal("h");
+    let first = Node {
+        objects: vec![h.clone()],
+        ..Node::default()
+    };
+    let later = Node {
+        object_delay: Some(Duration::from_millis(700)),
+        ..first.clone()
+    };
+    let hx = start_with(
+        vec![first, later],
+        |_| {},
+        |shared, _, addrs| {
+            let mut store = shared.store();
+            for i in 0..crate::store::MAX_UNCONFIRMED_PER_PEER {
+                store
+                    .add_object(proposal(&format!("seed{i}")), Some(addrs[0]), unix_now())
+                    .unwrap();
+            }
+        },
+    )
+    .await;
+    let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
+    assert!(hx.shared.store().object(&h.hash()).is_some(), "{p:?}");
+    hx.stop.send(true).unwrap();
+}
+
+/// Validator r3 m2: orphan votes from one peer spend that peer's parent
+/// fetches only, so another peer's orphan still has its object asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_peers_orphans_do_not_spend_another_peers_parent_fetches() {
+    let x = proposal("x");
+    let fakes: Vec<GovernanceVote> = (0..3)
+        .map(|i| vote(proposal(&format!("gone{i}")).hash(), 1, VoteOutcome::Yes))
+        .collect();
+    let orphaning = Node {
+        relays: fakes,
+        ..Node::default()
+    };
+    let hidden = Node {
+        hidden_objects: vec![x.clone()],
+        object_delay: Some(Duration::from_millis(500)),
+        ..Node::default()
+    };
+    let relaying = Node {
+        relays: vec![vote(x.hash(), 2, VoteOutcome::No)],
+        ..hidden.clone()
+    };
+    let hx = start(vec![orphaning, relaying, hidden], |c| {
+        c.max_parent_fetches = 3;
+    })
+    .await;
+    let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced && p.objects == 1).await;
+    assert!(hx.shared.store().object(&x.hash()).is_some(), "{p:?}");
+    hx.stop.send(true).unwrap();
+}
+
+/// Validator r3 m1: in a run whose other peer was full-synced within its
+/// window, one fresh peer's 500 unconfirmed objects do not use up the
+/// confirmation asks another fresh peer's object needs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn confirmation_asks_are_shared_between_first_announcers() {
+    let h = proposal("h");
+    let crowding = Node {
+        objects: (0..crate::store::MAX_UNCONFIRMED_PER_PEER)
+            .map(|i| proposal(&format!("crowd{i}")))
+            .collect(),
+        ..Node::default()
+    };
+    let honest = Node {
+        objects: vec![h.clone()],
+        ..Node::default()
+    };
+    let hx = start_with(
+        vec![crowding, honest.clone(), honest],
+        |_| {},
+        |_, history, addrs| {
+            history.full_synced.insert(addrs[2], Instant::now());
+        },
+    )
+    .await;
+    let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced && p.objects >= 1).await;
+    assert!(hx.shared.store().object(&h.hash()).is_some(), "{p:?}");
     hx.stop.send(true).unwrap();
 }

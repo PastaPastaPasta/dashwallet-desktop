@@ -69,6 +69,8 @@ pub const DEFAULT_CONFIRMATIONS: usize = 2;
 pub const MAX_UNCONFIRMED_OBJECTS: usize = 2_000;
 pub const MAX_UNCONFIRMED_PER_PEER: usize = 500;
 pub const MAX_UNCONFIRMED_BYTES: usize = 32 << 20;
+/// Of them, the data bytes of objects one peer sent first (MG-02 D53).
+pub const MAX_UNCONFIRMED_BYTES_PER_PEER: usize = 8 << 20;
 /// Objects kept in all, confirmed or not, and their data bytes: past
 /// either, objects no listed key voted on make room, those not announced
 /// in the current run first, then the oldest (MG-02 D47).
@@ -469,6 +471,30 @@ impl GovernanceStore {
         self.objects.values().filter(|o| !o.confirmed)
     }
 
+    /// The unconfirmed objects announced or sent since the last object
+    /// phase began, taking each first sender's in turn (D53).
+    pub fn unconfirmed_this_run(&self) -> Vec<&StoredObject> {
+        let mut by: HashMap<Option<SocketAddr>, Vec<&StoredObject>> = HashMap::new();
+        for o in self.unconfirmed().filter(|o| o.seen_in_run == self.run) {
+            by.entry(o.announcers.first().copied()).or_default().push(o);
+        }
+        let mut queues: Vec<_> = by.into_values().collect();
+        for q in &mut queues {
+            q.sort_unstable_by_key(|o| std::cmp::Reverse((o.stored_at, o.hash_hex.clone())));
+        }
+        let mut out = Vec::new();
+        while !queues.is_empty() {
+            queues.retain_mut(|q| match q.pop() {
+                Some(o) => {
+                    out.push(o);
+                    true
+                }
+                None => false,
+            });
+        }
+        out
+    }
+
     /// The current funding votes on `hash`.
     pub fn votes_on(&self, hash: &[u8; 32]) -> impl Iterator<Item = &CurrentVote> {
         self.votes.get(hash).into_iter().flat_map(|m| m.values())
@@ -545,8 +571,8 @@ impl GovernanceStore {
     ) -> Result<bool, ObjectRejection> {
         let hash = object.hash();
         if self.has_object(&hash) {
-            for peer in from.iter().chain(also) {
-                self.note_announcer(&hash, *peer);
+            if let Some(peer) = from {
+                self.note_announcer(&hash, peer);
             }
             return Ok(false);
         }
@@ -581,23 +607,29 @@ impl GovernanceStore {
         Ok(true)
     }
 
+    /// Whether an unconfirmed object of `bytes` data bytes from `from`
+    /// fits. Past its sender's share the refusal is the sender's (D53);
+    /// past the bounds in all it is overflow, which fails the run (D51).
     fn room_for_unconfirmed(
-        &self,
+        &mut self,
         from: Option<SocketAddr>,
         bytes: usize,
     ) -> Result<(), ObjectRejection> {
-        let (mut count, mut from_peer, mut total) = (0usize, 0usize, bytes);
+        let (mut count, mut total) = (0usize, bytes);
+        let (mut from_peer, mut peer_bytes) = (0usize, bytes);
         for o in self.objects.values().filter(|o| !o.confirmed) {
             count += 1;
             total += o.object.data.len();
             if from.is_some() && o.announcers.first() == from.as_ref() {
                 from_peer += 1;
+                peer_bytes += o.object.data.len();
             }
         }
-        if count >= MAX_UNCONFIRMED_OBJECTS
-            || from_peer >= MAX_UNCONFIRMED_PER_PEER
-            || total > MAX_UNCONFIRMED_BYTES
-        {
+        if from_peer >= MAX_UNCONFIRMED_PER_PEER || peer_bytes > MAX_UNCONFIRMED_BYTES_PER_PEER {
+            return Err(ObjectRejection::StoreFull);
+        }
+        if count >= MAX_UNCONFIRMED_OBJECTS || total > MAX_UNCONFIRMED_BYTES {
+            self.overflow += 1;
             return Err(ObjectRejection::StoreFull);
         }
         Ok(())
@@ -1430,6 +1462,47 @@ mod tests {
             .unwrap();
         s.add_object(proposal("new"), None, NOW + 2).unwrap();
         assert!(!s.has_object(&hb) && s.object(&hv).is_some());
+    }
+
+    /// Validator r3 MJ1: one peer fills at most its share of the
+    /// unconfirmed bytes, silently; past the bound in all, a refusal is
+    /// overflow.
+    #[test]
+    fn one_peer_holds_at_most_its_share_of_unconfirmed_bytes() {
+        let mut s = GovernanceStore::new(Network::Regtest);
+        s.begin_run();
+        let fill = |s: &mut GovernanceStore, from: Option<SocketAddr>, height: &mut i32| {
+            loop {
+                let t = big_trigger(*height, 20_000);
+                *height += 1;
+                if s.add_object(t, from, NOW).is_err() {
+                    break;
+                }
+            }
+        };
+        let mut height = 100;
+        fill(&mut s, peer(1), &mut height);
+        let mine: usize = s.unconfirmed().map(|o| o.object.data.len()).sum();
+        assert!(mine <= MAX_UNCONFIRMED_BYTES_PER_PEER, "{mine}");
+        assert_eq!(s.take_overflow(), 0);
+        for n in 2..=6 {
+            fill(&mut s, peer(n), &mut height);
+        }
+        let all: usize = s.unconfirmed().map(|o| o.object.data.len()).sum();
+        assert!(all <= MAX_UNCONFIRMED_BYTES, "{all}");
+        assert!(s.take_overflow() > 0);
+    }
+
+    fn big_trigger(height: i32, payees: usize) -> GovernanceObject {
+        let mut t = trigger(height);
+        let addresses = vec!["yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf"; payees].join("|");
+        let amounts = vec!["1"; payees].join("|");
+        let hashes = vec![HASH; payees].join("|");
+        t.data = format!(
+            r#"{{"event_block_height":{height},"payment_addresses":"{addresses}","payment_amounts":"{amounts}","proposal_hashes":"{hashes}","type":2}}"#
+        )
+        .into_bytes();
+        t
     }
 
     fn entry(key: u8, weight: u32) -> ListEntry {

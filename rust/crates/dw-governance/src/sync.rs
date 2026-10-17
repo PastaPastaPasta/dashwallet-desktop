@@ -337,8 +337,10 @@ struct PeerState {
     /// Hashes assigned to it, not asked yet ([`SyncConfig::max_in_flight`]).
     queue: VecDeque<[u8; 32]>,
     in_flight: usize,
-    /// Parents it was asked for after it sent an orphan vote.
+    /// Parents its orphan votes had the wallet ask for: its budget.
     parent_fetches: HashSet<[u8; 32]>,
+    /// Parents asked of it, for any peer's orphan votes.
+    parents_asked: HashSet<[u8; 32]>,
 }
 
 #[derive(Default)]
@@ -374,6 +376,7 @@ impl PeerState {
             queue: VecDeque::new(),
             in_flight: 0,
             parent_fetches: HashSet::new(),
+            parents_asked: HashSet::new(),
         }
     }
 
@@ -815,12 +818,16 @@ impl Run {
                     continue;
                 }
                 if object {
-                    if self.requests.object_announcers.len() >= MAX_LATE {
-                        self.requests.object_announcers.clear();
-                    }
-                    let by = self.requests.object_announcers.entry(i.hash).or_default();
-                    if !by.contains(&addr) {
-                        by.push(addr);
+                    // Full, it takes no new hashes rather than forget the
+                    // ones it holds: no peer can clear another's (D53).
+                    let full = self.requests.object_announcers.len() >= MAX_LATE;
+                    match self.requests.object_announcers.get_mut(&i.hash) {
+                        Some(by) if !by.contains(&addr) => by.push(addr),
+                        Some(_) => {}
+                        None if !full => {
+                            self.requests.object_announcers.insert(i.hash, vec![addr]);
+                        }
+                        None => {}
                     }
                 }
                 let a = self.requests.announced.entry(i.hash).or_default();
@@ -866,9 +873,29 @@ impl Run {
         let addr = self.peer(from).map(|p| p.peer.addr);
         let now = unix_now();
         let result = {
+            // Its announcers this run: the peers asked for it (a bounded
+            // record no peer can clear) and those kept for a late copy.
+            let mut also: Vec<SocketAddr> = self
+                .requests
+                .announced
+                .get(&hash)
+                .map(|a| {
+                    a.all
+                        .iter()
+                        .filter_map(|id| self.peer(*id))
+                        .map(|p| p.peer.addr)
+                        .collect()
+                })
+                .unwrap_or_default();
+            also.extend(
+                self.requests
+                    .object_announcers
+                    .get(&hash)
+                    .into_iter()
+                    .flatten(),
+            );
             let mut store = self.shared.store();
-            let also = self.requests.object_announcers.get(&hash);
-            let r = store.add_object_announced(object, addr, also.map_or(&[], |a| &a[..]), now);
+            let r = store.add_object_announced(object, addr, &also, now);
             if r.is_ok() {
                 self.requests.object_announcers.remove(&hash);
             }
@@ -972,7 +999,7 @@ impl Run {
             Err(VoteRejection::Orphan) => {
                 self.finish(&hash);
                 self.progressed();
-                self.fetch_parent(parent);
+                self.fetch_parent(from, parent);
             }
             Err(r) if r.is_suspect() || r.is_invalid() => {
                 if r.is_suspect() {
@@ -991,17 +1018,21 @@ impl Run {
 
     /// Core asks every peer for an orphan vote's object (`govsync <hash>`
     /// with an empty filter, which Core does not rate-limit), so its
-    /// announcers can confirm it; once per parent and peer,
-    /// [`SyncConfig::max_parent_fetches`] per peer (D52).
-    fn fetch_parent(&mut self, parent: [u8; 32]) {
+    /// announcers can confirm it; once per parent and peer. The vote's
+    /// sender pays: [`SyncConfig::max_parent_fetches`] parents per sender
+    /// (D52).
+    fn fetch_parent(&mut self, from: usize, parent: [u8; 32]) {
         let known =
             self.shared.store().has_object(&parent) || self.requests.pending.contains_key(&parent);
-        if known {
+        let max = self.cfg.max_parent_fetches;
+        let Some(sender) = self.peer_mut(from) else {
+            return;
+        };
+        if known || sender.parent_fetches.len() >= max || !sender.parent_fetches.insert(parent) {
             return;
         }
-        let max = self.cfg.max_parent_fetches;
         for p in &mut self.peers {
-            if p.parent_fetches.len() < max && p.parent_fetches.insert(parent) {
+            if p.parents_asked.insert(parent) {
                 p.peer.send_govsync(parent, &object_fetch_filter());
             }
         }
@@ -1233,10 +1264,13 @@ impl Run {
     /// objects only one peer announced (Core answers `govsync <hash>` with
     /// an empty filter by an inv of the object), so they can confirm them.
     fn ask_confirmations(&mut self) {
+        // Each first sender's objects in turn, so one peer's cannot use up
+        // the asks (D53).
         let wanted: Vec<([u8; 32], Vec<SocketAddr>)> = self
             .shared
             .store()
-            .unconfirmed()
+            .unconfirmed_this_run()
+            .into_iter()
             .map(|o| (o.object.hash(), o.announcers.clone()))
             .collect();
         for (hash, by) in wanted.into_iter().take(MAX_CONFIRMATION_ASKS) {
