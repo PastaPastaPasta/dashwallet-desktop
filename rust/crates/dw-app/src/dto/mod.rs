@@ -388,6 +388,12 @@ pub struct LockStatus {
     pub retry_after_secs: Option<u64>,
     /// Wallets with a seed record, sorted.
     pub wallets_with_secrets: Vec<String>,
+    /// A link stashed before the vault existed is still plaintext beside
+    /// it: its seal failed or a crash stopped it (DP5-01 D26). The next
+    /// unlock or stash call seals it. Absent when `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub unsealed_links: bool,
 }
 
 impl From<VaultStatus> for LockStatus {
@@ -399,6 +405,7 @@ impl From<VaultStatus> for LockStatus {
             failed_attempts,
             retry_after_secs,
             wallets_with_secrets,
+            unsealed_links,
         } = s;
         LockStatus {
             state: state.into(),
@@ -407,6 +414,7 @@ impl From<VaultStatus> for LockStatus {
             failed_attempts,
             retry_after_secs,
             wallets_with_secrets: wallets_with_secrets.iter().map(hex::encode).collect(),
+            unsealed_links,
         }
     }
 }

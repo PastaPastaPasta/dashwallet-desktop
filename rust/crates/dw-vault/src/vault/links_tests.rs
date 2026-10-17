@@ -79,6 +79,18 @@ impl Fixture {
         all
     }
 
+    /// [`Self::disk_text`] of the regular files only.
+    fn disk_text_files(&self) -> String {
+        let mut all = String::new();
+        for item in std::fs::read_dir(self.links_dir()).unwrap() {
+            let path = item.unwrap().path();
+            if std::fs::symlink_metadata(&path).unwrap().is_file() {
+                all.push_str(&String::from_utf8_lossy(&std::fs::read(path).unwrap()));
+            }
+        }
+        all
+    }
+
     fn entry_files(&self) -> usize {
         std::fs::read_dir(self.links_dir())
             .map(|r| {
@@ -440,8 +452,8 @@ fn another_vaults_key_is_dropped_and_a_swapped_public_key_is_healed() {
         serde_json::from_slice(&std::fs::read(f.links_dir().join(PUB_FILE)).unwrap()).unwrap();
     assert_ne!(healed["public"], theirs["public"]);
     assert_eq!(take(&v, &lost.id), None);
-    // A stash.pub of another vault id is not used at all: plaintext until
-    // the next key, which then seals it.
+    // A stash.pub of another vault id is not used at all: with no key to
+    // seal to, the link is refused, never written in plaintext (D26).
     v.lock();
     let mut wrong_id = healed.clone();
     wrong_id["vault_id"] = "00".repeat(16).into();
@@ -450,8 +462,11 @@ fn another_vaults_key_is_dropped_and_a_swapped_public_key_is_healed() {
         serde_json::to_vec(&wrong_id).unwrap(),
     )
     .unwrap();
-    v.stash_link(StashedLinkKind::Contact, USER).unwrap();
-    assert!(f.disk_text().contains("username=bob"));
+    assert!(matches!(
+        v.stash_link(StashedLinkKind::Contact, USER),
+        Err(VaultError::Locked)
+    ));
+    assert!(!f.disk_text().contains("username=bob"));
     v.unlock(b"pass", UnlockScope::Full).unwrap();
     assert!(!f.disk_text().contains("username=bob"));
 }
@@ -524,32 +539,228 @@ fn destroy_removes_the_stash() {
     assert!(!f.links_dir().exists());
 }
 
-/// Review r1 #3: sealing a plaintext entry replaces it atomically. A
-/// failed write leaves the plaintext entry whole (it used to be zeroed
-/// first); once the sealed entry is in place, the old file is zeroed.
+/// Makes the stash directory read-only, so no file can be written in it;
+/// `false` where that does not hold (a root user), and the caller skips.
+#[cfg(unix)]
+fn read_only(dir: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let probe = dir.join("probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        std::fs::remove_file(&probe).unwrap();
+        writable(dir);
+        return false;
+    }
+    true
+}
+
+#[cfg(unix)]
+fn writable(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+/// Review r1 #3, Sol r1 H1 (D26): sealing a plaintext entry replaces it
+/// atomically. A seal that fails leaves the plaintext entry whole (it used
+/// to be zeroed first), and the vault created all the same reports it
+/// (`unsealed_links`); the next call with the key seals it, and only once
+/// the sealed entry is in place is the old file zeroed.
+#[cfg(unix)]
 #[test]
-fn sealing_never_loses_the_plaintext_entry() {
+fn a_failed_seal_keeps_the_entry_and_is_reported_until_sealed() {
     let f = Fixture::new();
     let v = f.open();
     let meta = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
     let entry = f.links_dir().join(format!("{}.dwl", meta.id));
-    // The temporary name taken: the write fails, as a crash would stop it.
-    let tmp = f.links_dir().join(format!("{}.tmp", meta.id));
-    std::fs::create_dir(&tmp).unwrap();
-    v.create(Some(b"pass")).unwrap();
+    if !read_only(&f.links_dir()) {
+        eprintln!("skipped: the stash directory stays writable (root)");
+        return;
+    }
+    let status = v.create(Some(b"pass")).unwrap();
+    assert_eq!(status.state, LockState::Unlocked);
+    assert!(status.unsealed_links, "the failed seal is reported");
+    assert!(v.status().unsealed_links);
     let kept = String::from_utf8(std::fs::read(&entry).unwrap()).unwrap();
     assert!(kept.contains("cPlantedSecretKey"), "still whole: {kept}");
-    std::fs::remove_dir(&tmp).unwrap();
+    // Restarted and still locked: still reported, and with no key and no
+    // `stash.pub` a new link is refused rather than kept in plaintext.
+    writable(&f.links_dir());
+    drop(v);
+    let v = f.open();
+    assert!(v.status().unsealed_links);
+    assert!(matches!(
+        v.stash_link(StashedLinkKind::Payment, PAY),
+        Err(VaultError::Locked)
+    ));
+    assert_eq!(f.entry_files(), 1);
 
     let old = f.root.join("old-entry");
     std::fs::hard_link(&entry, &old).unwrap();
-    assert_eq!(v.stashed_links().unwrap(), vec![meta.clone()]);
+    let status = v.unlock(b"pass", UnlockScope::Full).unwrap();
+    assert!(!status.unsealed_links, "the unlock seals it");
+    assert!(!v.status().unsealed_links);
     assert!(!f.disk_text().contains("cPlantedSecretKey"));
     let scrubbed = std::fs::read(&old).unwrap();
     assert!(!scrubbed.is_empty() && scrubbed.iter().all(|b| *b == 0));
+    assert_eq!(v.stashed_links().unwrap(), vec![meta.clone()]);
     assert_eq!(
         take(&v, &meta.id),
         Some((StashedLinkKind::Invitation, INVITE.to_owned()))
+    );
+}
+
+/// Sol r1 H1 (D28): a temporary name taken by a directory (with files
+/// in it) or a symbolic link no longer blocks the seal; it is cleared,
+/// never followed.
+#[test]
+fn a_taken_temporary_name_is_cleared() {
+    let f = Fixture::new();
+    let v = f.open();
+    let invite = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    let pay = v.stash_link(StashedLinkKind::Payment, PAY).unwrap();
+    let dir = f.links_dir().join(format!("{}.tmp", invite.id));
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("inner"), b"x").unwrap();
+    let outside = f.root.join("outside");
+    std::fs::write(&outside, b"keep").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, f.links_dir().join(format!("{}.tmp", pay.id))).unwrap();
+    let status = v.create(Some(b"pass")).unwrap();
+    assert!(!status.unsealed_links);
+    let text = f.disk_text_files();
+    assert!(!text.contains("cPlantedSecretKey") && !text.contains("PlantedLabel"));
+    assert!(!dir.exists());
+    assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
+    assert_eq!(v.stashed_links().unwrap(), vec![invite, pay]);
+}
+
+/// Sol r1 H1 (D26): plaintext beside a vault, as a crash between the
+/// vault's commit and the seal leaves it, is sealed to `stash.pub`
+/// without the key: when the vault is opened, and by a stash call while
+/// locked.
+#[test]
+fn plaintext_beside_a_vault_is_sealed_with_the_public_key() {
+    let f = Fixture::new();
+    let other = Fixture::new();
+    let plain = other.open();
+    let left = plain
+        .stash_link(StashedLinkKind::Invitation, INVITE)
+        .unwrap();
+    let left_file = other.links_dir().join(format!("{}.dwl", left.id));
+
+    let v = f.open();
+    v.create(Some(b"pass")).unwrap();
+    v.lock();
+    std::fs::copy(&left_file, f.links_dir().join(format!("{}.dwl", left.id))).unwrap();
+    assert!(f.disk_text().contains("cPlantedSecretKey"));
+    drop(v);
+    let v = f.open();
+    assert!(
+        !f.disk_text().contains("cPlantedSecretKey"),
+        "sealed at open"
+    );
+    assert!(!v.status().unsealed_links);
+    assert_eq!(v.lock_state(), LockState::Locked);
+
+    // The same while the vault is open, by the next stash call.
+    let again = other
+        .open()
+        .stash_link(StashedLinkKind::Contact, USER)
+        .unwrap();
+    std::fs::copy(
+        other.links_dir().join(format!("{}.dwl", again.id)),
+        f.links_dir().join(format!("{}.dwl", again.id)),
+    )
+    .unwrap();
+    let pay = v.stash_link(StashedLinkKind::Payment, PAY).unwrap();
+    let text = f.disk_text();
+    assert!(!text.contains("username=bob") && !text.contains("PlantedLabel"));
+    assert!(!v.status().unsealed_links);
+    v.unlock(b"pass", UnlockScope::Full).unwrap();
+    assert_eq!(
+        take(&v, &left.id),
+        Some((StashedLinkKind::Invitation, INVITE.to_owned()))
+    );
+    assert_eq!(
+        take(&v, &again.id),
+        Some((StashedLinkKind::Contact, USER.to_owned()))
+    );
+    assert_eq!(
+        take(&v, &pay.id),
+        Some((StashedLinkKind::Payment, PAY.to_owned()))
+    );
+}
+
+/// Sol r1 (D29): opening the vault (the app's start) sweeps: a
+/// plaintext entry past its time to live goes without any stash call, and
+/// so does a crash's temporary file.
+#[test]
+fn opening_sweeps_expired_entries_and_leftovers() {
+    let f = Fixture::new();
+    let v = f.open();
+    let pay = v.stash_link(StashedLinkKind::Payment, PAY).unwrap();
+    let invite = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    drop(v);
+    let tmp = f.links_dir().join(format!("{}.tmp", "e".repeat(32)));
+    std::fs::write(&tmp, b"{\"plain\":\"cPlantedPartial\"}").unwrap();
+    f.advance(7 * DAY);
+    let v = f.open();
+    assert!(!tmp.exists());
+    assert_eq!(f.entry_files(), 1, "the payment link expired");
+    assert!(!f.disk_text().contains("PlantedLabel"));
+    drop(v);
+    f.advance(23 * DAY);
+    let _v = f.open();
+    assert_eq!(f.entry_files(), 0, "the invitation expired");
+    let _ = (pay, invite);
+}
+
+/// Sol r1 M2 (D27): a huge entry or temporary file (sparse here, so the
+/// test is cheap) is deleted without being read or zeroed: no allocation
+/// of its length, no gigabytes of zeros written. A small malformed one is
+/// still zeroed before it goes. `destroy` does the same.
+#[cfg(unix)]
+#[test]
+fn an_oversized_file_is_deleted_unread() {
+    use std::os::unix::fs::MetadataExt;
+    const HUGE: u64 = 4 << 30;
+    let f = Fixture::new();
+    let v = f.open();
+    v.stash_link(StashedLinkKind::Payment, PAY).unwrap();
+    let keep = f.root.join("keep");
+    std::fs::create_dir(&keep).unwrap();
+    let mut huge = Vec::new();
+    for name in [
+        format!("{}.dwl", "c".repeat(32)),
+        format!("{}.tmp", "d".repeat(32)),
+    ] {
+        let path = f.links_dir().join(&name);
+        std::fs::File::create(&path).unwrap().set_len(HUGE).unwrap();
+        std::fs::hard_link(&path, keep.join(&name)).unwrap();
+        huge.push((path, keep.join(&name)));
+    }
+    let small = f.links_dir().join(format!("{}.dwl", "e".repeat(32)));
+    std::fs::write(&small, b"not an entry: PlantedGarbage").unwrap();
+    std::fs::hard_link(&small, keep.join("small")).unwrap();
+
+    assert_eq!(v.stashed_links().unwrap().len(), 1);
+    for (path, kept) in &huge {
+        assert!(!path.exists());
+        let meta = std::fs::metadata(kept).unwrap();
+        assert_eq!(meta.len(), HUGE);
+        assert_eq!(meta.blocks(), 0, "never written");
+    }
+    let zeroed = std::fs::read(keep.join("small")).unwrap();
+    assert!(!zeroed.is_empty() && zeroed.iter().all(|b| *b == 0));
+
+    let path = f.links_dir().join(format!("{}.dwl", "f".repeat(32)));
+    std::fs::File::create(&path).unwrap().set_len(HUGE).unwrap();
+    std::fs::hard_link(&path, keep.join("destroyed")).unwrap();
+    v.destroy(crate::Credential::None).unwrap();
+    assert!(!f.links_dir().exists());
+    assert_eq!(
+        std::fs::metadata(keep.join("destroyed")).unwrap().blocks(),
+        0
     );
 }
 

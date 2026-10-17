@@ -465,6 +465,10 @@ pub(crate) struct Shared {
     inner: Mutex<Inner>,
     /// The link stash's in-process state (DP5-01, `links.rs`).
     links: Mutex<links::LinkState>,
+    /// A vault exists and a stash entry beside it is still plaintext, as
+    /// the last stash call found (`VaultStatus::unsealed_links`, DP5-01
+    /// D26).
+    links_unsealed: std::sync::atomic::AtomicBool,
 }
 
 /// A passphrase change whose old passphrase was verified
@@ -518,7 +522,7 @@ impl Vault {
                 f.network
             )));
         }
-        Ok(Self {
+        let vault = Self {
             shared: Arc::new(Shared {
                 instance: crypto::random_array()?,
                 dir,
@@ -540,8 +544,14 @@ impl Vault {
                     gate_log: None,
                 }),
                 links: Mutex::new(links::LinkState::new()?),
+                links_unsealed: std::sync::atomic::AtomicBool::new(false),
             }),
-        })
+        };
+        // App start: expired links and a crash's leftovers go, and
+        // plaintext beside a vault is sealed to `stash.pub` (DP5-01 D26,
+        // D29).
+        vault.sweep_links_at_open();
+        Ok(vault)
     }
 
     pub fn dir(&self) -> &Path {
@@ -680,6 +690,7 @@ impl Vault {
                 failed_attempts: 0,
                 retry_after_secs: None,
                 wallets_with_secrets: Vec::new(),
+                unsealed_links: false,
             };
         };
         VaultStatus {
@@ -693,6 +704,7 @@ impl Vault {
                 .keys()
                 .filter_map(|k| seed_record_wallet(k))
                 .collect(),
+            unsealed_links: self.links_unsealed(),
         }
     }
 
@@ -817,13 +829,13 @@ impl Vault {
         if encrypted {
             inner.last_passphrase_at = Some(now);
         }
-        let status = self.status_of(&inner);
+        let mut status = self.status_of(&inner);
         drop(inner);
         drop(ops);
         // Links stashed before the vault existed move into it (§2.9),
         // before the writer goes: no recovery or destroy runs between
-        // (D23).
-        self.sync_links_after_key(&link_dek, &vault_id);
+        // (D23). A failure leaves the vault created and says so (D26).
+        status.unsealed_links = self.sync_links_after_key(&link_dek, &vault_id);
         drop(writer);
         Ok(status)
     }
@@ -897,7 +909,7 @@ impl Vault {
         let writer = self.writer();
         let (dek, backup_kek) = self.check_passphrase(&writer, passphrase)?;
         let link_dek = Zeroizing::new(*dek);
-        let (status, vault_id) = {
+        let (mut status, vault_id) = {
             let ops = self.epoch_guard();
             let mut inner = self.inner();
             inner.install_key(dek, scope, &ops);
@@ -906,7 +918,7 @@ impl Vault {
             (self.status_of(&inner), vault_id)
         };
         if let Some(vault_id) = vault_id {
-            self.sync_links_after_key(&link_dek, &vault_id);
+            status.unsealed_links = self.sync_links_after_key(&link_dek, &vault_id);
         }
         drop(writer);
         Ok(status)
@@ -2617,6 +2629,7 @@ impl Vault {
             }
         }
         // A new data key: links sealed to the old one are dropped (D17).
+        // What is left unsealed shows in `status()` (D26).
         self.sync_links_after_key(&dek, &vault_id);
         drop(writer);
         Ok(lost)

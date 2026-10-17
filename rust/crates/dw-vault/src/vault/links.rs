@@ -17,8 +17,16 @@
 //! - **Before a vault exists** (DASHPAY §2.9, last row; D6) a link is a
 //!   plaintext entry, owner-only. The vault seals every plaintext entry as
 //!   soon as it has a key (`create`, `unlock`, a recovery, or any stash call
-//!   on an open vault), overwriting the plaintext first. The same fallback
-//!   holds while a vault is locked and has no valid `stash.pub` yet.
+//!   on an open vault) or a valid `stash.pub` (opening the vault, any stash
+//!   call while locked), overwriting the plaintext once the sealed entry is
+//!   in place. Once a vault exists no new plaintext entry is written: a
+//!   link that finds neither the key nor a valid `stash.pub` is refused
+//!   (`Locked`, D26). Plaintext a failed seal left behind is reported as
+//!   [`crate::VaultStatus::unsealed_links`] and sealed again by the next
+//!   call that can (D26).
+//! - **Swept** (D29): opening the vault, and every unlock, deletes expired
+//!   entries and what a crash left (temporary files, a directory in their
+//!   place), so an idle profile keeps no plaintext past its time to live.
 //! - **Bounded** (D7, D8): at most [`MAX_STASHED_LINKS`] entries of at most
 //!   [`MAX_STASHED_LINK_BYTES`] each, with a time to live per kind. A full
 //!   stash makes room: expired entries first, then the oldest
@@ -36,6 +44,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 
 use dashcore::hashes::{Hash, HashEngine, Hmac, HmacEngine, sha256};
 use dashcore::secp256k1::{PublicKey, SecretKey};
@@ -69,8 +78,11 @@ const PUB_FILE: &str = "stash.pub";
 const PUB_TMP: &str = "stash.pub.tmp";
 const ENTRY_EXT: &str = "dwl";
 const ENTRY_TMP_EXT: &str = "tmp";
-/// An entry file larger than this is not one of ours.
+/// An entry file larger than this is not one of ours: it is deleted
+/// unread and unscrubbed (D27).
 const MAX_ENTRY_FILE_BYTES: u64 = 16 * 1024;
+/// Zeros are written this many bytes at a time (D27).
+const SCRUB_CHUNK: usize = 64 * 1024;
 const ENTRY_VERSION: u32 = 1;
 const DAY: u64 = 24 * 60 * 60;
 
@@ -381,18 +393,49 @@ fn open_entry(
     Ok(Zeroizing::new(text.to_owned()))
 }
 
-/// Overwrites `path` with zeros and syncs it: best effort, before the
-/// plaintext's name goes (D18).
-fn scrub(path: &Path) {
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
-        return;
-    };
-    if !meta.is_file() {
+/// Overwrites the first `len` bytes of `f` with zeros and syncs it, a
+/// fixed-size chunk at a time; nothing when `len` is over
+/// [`MAX_ENTRY_FILE_BYTES`]: no file this module writes is, so a larger
+/// one holds none of its plaintext, and zeroing it could take any amount
+/// of time and disk (a sparse file, D27). Best effort (D18): a
+/// copy-on-write or journaling file system may keep the old blocks.
+fn zero_file(f: &mut std::fs::File, len: u64) {
+    static ZEROS: [u8; SCRUB_CHUNK] = [0; SCRUB_CHUNK];
+    if len > MAX_ENTRY_FILE_BYTES {
         return;
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(path) {
-        let zeros = vec![0u8; meta.len() as usize];
-        let _ = f.write_all(&zeros).and_then(|()| f.sync_all());
+    let mut left = len;
+    while left > 0 {
+        let n = left.min(SCRUB_CHUNK as u64) as usize;
+        if f.write_all(&ZEROS[..n]).is_err() {
+            return;
+        }
+        left -= n as u64;
+    }
+    let _ = f.sync_all();
+}
+
+/// Overwrites the regular file `path` with zeros ([`zero_file`]), before
+/// the plaintext's name goes (D18).
+fn scrub(path: &Path) {
+    if let Some((mut f, len)) = open_old(path) {
+        zero_file(&mut f, len);
+    }
+}
+
+/// Removes whatever `path` names, a directory with its contents included
+/// (never followed when it is a symbolic link); nothing there is not an
+/// error. Clears a temporary name a crash, or anyone, left taken (D28).
+fn remove_any(path: &Path) -> Result<(), VaultError> {
+    let result = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+        Err(e) => Err(e),
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -428,11 +471,9 @@ fn write_replacing(
     bytes: &[u8],
     scrub_old: bool,
 ) -> Result<(), VaultError> {
-    match std::fs::remove_file(tmp) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
-    }
+    // A crash may have left plaintext under the temporary name.
+    scrub(tmp);
+    remove_any(tmp)?;
     {
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create_new(true);
@@ -449,8 +490,7 @@ fn write_replacing(
     std::fs::rename(tmp, path)?;
     sync_dir(dir)?;
     if let Some((mut f, len)) = old {
-        let zeros = vec![0u8; len as usize];
-        let _ = f.write_all(&zeros).and_then(|()| f.sync_all());
+        zero_file(&mut f, len);
     }
     Ok(())
 }
@@ -583,18 +623,22 @@ impl Vault {
             let name = item.file_name();
             let Some(name) = name.to_str() else { continue };
             let path = item.path();
-            // Only regular files are ours: a directory or a link that
-            // takes an entry's name is left alone, never followed.
-            if name == PUB_FILE || !item.file_type()?.is_file() {
-                continue;
-            }
             let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
+            // A temporary name, whatever took it (a crash's partial file,
+            // a directory): cleared, so no write is blocked on it (D28).
             if ext == ENTRY_TMP_EXT && is_link_id(stem) || name == PUB_TMP {
                 scrub(&path);
-                let _ = std::fs::remove_file(&path);
+                if let Err(e) = remove_any(&path) {
+                    tracing::warn!(error = %e, "link stash: a temporary file could not be removed");
+                }
                 continue;
             }
-            if ext != ENTRY_EXT || !is_link_id(stem) {
+            // Only regular files are entries: a directory or a link that
+            // takes an entry's name is left alone, never followed.
+            if name == PUB_FILE || ext != ENTRY_EXT || !is_link_id(stem) {
+                continue;
+            }
+            if !item.file_type()?.is_file() {
                 continue;
             }
             match read_entry(&path, stem) {
@@ -701,9 +745,13 @@ impl Vault {
     /// a recovery, which pass the key they just installed and still hold
     /// the writer, so no recovery or destroy changes the key meanwhile. Not
     /// a gated operation: it opens no sealed entry and hands nothing to any
-    /// caller, so a `lock()` meanwhile has nothing to stop (D23). Best
-    /// effort: a failure is logged and the next stash call tries again.
-    pub(crate) fn sync_links_after_key(&self, dek: &[u8; 32], vault_id: &[u8]) {
+    /// caller, so a `lock()` meanwhile has nothing to stop (D23). Also the
+    /// sweep at unlock (D29): expired entries and temporary files go. A
+    /// failure is logged, not returned: the vault opens all the same, and
+    /// the result is `true` when plaintext is left
+    /// ([`crate::VaultStatus::unsealed_links`], D26), which the next call
+    /// with the key or `stash.pub` seals.
+    pub(crate) fn sync_links_after_key(&self, dek: &[u8; 32], vault_id: &[u8]) -> bool {
         let _state = self.links_state();
         let result = StashKey::derive(dek, vault_id, &self.shared.tag).and_then(|key| {
             let entries = self.load_entries(self.now())?;
@@ -713,6 +761,117 @@ impl Vault {
         if let Err(e) = result {
             tracing::warn!(error = %e, "link stash: could not seal pending links");
         }
+        self.note_unsealed()
+    }
+
+    /// The sweep when the vault is opened (app start, D29): deletes
+    /// expired entries and what a crash left, and seals plaintext to
+    /// `stash.pub` when a vault exists and it names a valid key (D26).
+    /// Best effort: a failure is logged.
+    pub(crate) fn sweep_links_at_open(&self) {
+        let _state = self.links_state();
+        match self.load_entries(self.now()) {
+            Ok(mut entries) => self.seal_with_public(&mut entries),
+            Err(e) => tracing::warn!(error = %e, "link stash: the sweep at open failed"),
+        }
+        self.note_unsealed();
+    }
+
+    /// Whether a vault exists and a stash entry is still plaintext
+    /// beside it ([`crate::VaultStatus::unsealed_links`], D26), as last
+    /// recorded by a stash call. In-memory read.
+    pub(crate) fn links_unsealed(&self) -> bool {
+        self.shared.links_unsealed.load(Ordering::SeqCst)
+    }
+
+    /// Records [`Self::links_unsealed`] from what is on disk, under the
+    /// stash mutex, and returns it: the files are the truth whatever a
+    /// call managed to write. A stash directory that cannot be read counts
+    /// as holding plaintext.
+    fn note_unsealed(&self) -> bool {
+        let unsealed = self.vault_id().is_some() && self.plaintext_on_disk();
+        self.shared.links_unsealed.store(unsealed, Ordering::SeqCst);
+        unsealed
+    }
+
+    fn plaintext_on_disk(&self) -> bool {
+        let read = match std::fs::read_dir(self.links_dir()) {
+            Ok(read) => read,
+            Err(e) => return e.kind() != std::io::ErrorKind::NotFound,
+        };
+        for item in read {
+            let Ok(item) = item else { return true };
+            let name = item.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if let Some((stem, ENTRY_EXT)) = name.rsplit_once('.')
+                && read_entry(&item.path(), stem).is_some_and(|e| e.plain.is_some())
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Without the data key: seals every plaintext entry of `entries` to
+    /// the stash public key, when a vault exists and `stash.pub` names a
+    /// valid one for it (D26), and collapses plaintext duplicates. Best
+    /// effort: an entry that cannot be sealed stays as it is, plaintext,
+    /// and is logged; [`Self::note_unsealed`] reports it.
+    fn seal_with_public(&self, entries: &mut Vec<EntryFile>) {
+        if !entries.iter().any(|e| e.plain.is_some()) {
+            return;
+        }
+        let Some(vault_id) = self.vault_id() else {
+            return;
+        };
+        let Some(public) = self.stored_stash_public(&vault_id) else {
+            return;
+        };
+        let tag = &self.shared.tag;
+        let mut texts: Vec<(StashedLinkKind, Zeroizing<String>)> = Vec::new();
+        let mut kept = Vec::with_capacity(entries.len());
+        for e in std::mem::take(entries) {
+            let Some(text) = e.plain.as_ref().map(|p| Zeroizing::new(p.clone())) else {
+                kept.push(e);
+                continue;
+            };
+            let kind = e.kind;
+            let duplicate = texts
+                .iter()
+                .any(|(k, t)| *k == kind && bool::from(t.as_bytes().ct_eq(text.as_bytes())));
+            if duplicate {
+                match self.delete_entry(&e) {
+                    Ok(()) => {}
+                    Err(err) => {
+                        tracing::warn!(error = %err, "link stash: a duplicate could not be deleted");
+                        kept.push(e);
+                    }
+                }
+                continue;
+            }
+            // Sealed into a new entry: on failure the plaintext one stays,
+            // in memory as on disk.
+            let mut sealed = EntryFile {
+                v: e.v,
+                id: e.id.clone(),
+                kind: e.kind,
+                stashed_at: e.stashed_at,
+                expires_at: e.expires_at,
+                sealed: None,
+                plain: None,
+            };
+            match seal_into(&mut sealed, &text, &public, &vault_id, tag)
+                .and_then(|()| self.write_entry(&sealed))
+            {
+                Ok(()) => kept.push(sealed),
+                Err(err) => {
+                    tracing::warn!(error = %err, "link stash: a pending link could not be sealed");
+                    kept.push(e);
+                }
+            }
+            texts.push((kind, text));
+        }
+        *entries = kept;
     }
 
     /// The stash mutex, for `destroy`: held from [`Self::remove_links`]
@@ -730,7 +889,10 @@ impl Vault {
         let dir = self.links_dir();
         let read = match std::fs::read_dir(&dir) {
             Ok(read) => read,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.shared.links_unsealed.store(false, Ordering::SeqCst);
+                return Ok(());
+            }
             Err(e) => return Err(e.into()),
         };
         for item in read {
@@ -744,6 +906,7 @@ impl Vault {
             }
         }
         std::fs::remove_dir(&dir)?;
+        self.shared.links_unsealed.store(false, Ordering::SeqCst);
         sync_dir(&self.shared.dir)
     }
 
@@ -752,7 +915,11 @@ impl Vault {
     /// entry it already has (D9). A full stash makes room (D7). Works in
     /// every lock state; the text never reaches a log or an error. Text
     /// that is empty, over [`MAX_STASHED_LINK_BYTES`] or holds a control
-    /// character (after trimming) is `InvalidArgument`.
+    /// character (after trimming) is `InvalidArgument`. Once a vault
+    /// exists, a link that finds neither the data key nor a valid
+    /// `stash.pub` (a vault locked since before DP5-01, or an unencrypted
+    /// one whose OS store failed, before any sync wrote one) is `Locked`
+    /// and nothing is written: no new plaintext beside a vault (D26).
     pub fn stash_link(
         &self,
         kind: StashedLinkKind,
@@ -772,6 +939,18 @@ impl Vault {
         }
         self.load_stash_key();
         let mut state = self.links_state();
+        let result = self.stash_link_in(&mut state, kind, link);
+        self.note_unsealed();
+        result
+    }
+
+    /// [`Self::stash_link`] under the stash mutex.
+    fn stash_link_in(
+        &self,
+        state: &mut LinkState,
+        kind: StashedLinkKind,
+        link: &str,
+    ) -> Result<StashedLinkMeta, VaultError> {
         let now = self.now();
         let tag = state.tag(kind, link);
         let mut entries = self.load_entries(now)?;
@@ -811,23 +990,36 @@ impl Vault {
             Err(e) => return Err(e),
         };
         if public.is_none() {
-            if let Some(id) = state.seen.get(&tag)
-                && let Some(e) = entries.iter().find(|e| &e.id == id && e.kind == kind)
-            {
-                return Ok(e.meta());
-            }
-            // Plaintext entries can be compared without the key.
-            if let Some(e) = entries.iter().find(|e| {
-                e.kind == kind
-                    && e.plain
-                        .as_ref()
-                        .is_some_and(|p| bool::from(p.as_bytes().ct_eq(link.as_bytes())))
-            }) {
-                let meta = e.meta();
+            // Plaintext entries can be compared without the key, before
+            // `stash.pub` seals them.
+            let same = state
+                .seen
+                .get(&tag)
+                .and_then(|id| entries.iter().find(|e| &e.id == id && e.kind == kind))
+                .or_else(|| {
+                    entries.iter().find(|e| {
+                        e.kind == kind
+                            && e.plain
+                                .as_ref()
+                                .is_some_and(|p| bool::from(p.as_bytes().ct_eq(link.as_bytes())))
+                    })
+                })
+                .map(EntryFile::meta);
+            // A seal that failed earlier is retried here (D26).
+            self.seal_with_public(&mut entries);
+            if let Some(meta) = same {
                 state.seen.insert(tag, meta.id.clone());
                 return Ok(meta);
             }
         }
+        let seal_to = match &vault_id {
+            None => None,
+            Some(v) => match public.or_else(|| self.stored_stash_public(v)) {
+                Some(p) => Some((p, v)),
+                // A vault, and no key to seal to: refused (D26).
+                None => return Err(VaultError::Locked),
+            },
+        };
         // Room for one more (D7).
         while entries.len() >= MAX_STASHED_LINKS {
             let victim = entries
@@ -852,15 +1044,10 @@ impl Vault {
             sealed: None,
             plain: None,
         };
-        let seal_to = public.or_else(|| {
-            vault_id
-                .as_deref()
-                .and_then(|v| self.stored_stash_public(v))
-        });
-        match (seal_to, &vault_id) {
-            (Some(p), Some(v)) => seal_into(&mut entry, link, &p, v, &network)?,
-            // No vault yet, or no stash key on disk (D6).
-            _ => entry.plain = Some(link.to_owned()),
+        match seal_to {
+            Some((p, v)) => seal_into(&mut entry, link, &p, v, &network)?,
+            // No vault yet (D6).
+            None => entry.plain = Some(link.to_owned()),
         }
         self.write_entry(&entry)?;
         state.seen.insert(tag, id);
@@ -878,15 +1065,28 @@ impl Vault {
     pub fn stashed_links(&self) -> Result<Vec<StashedLinkMeta>, VaultError> {
         self.load_stash_key();
         let _state = self.links_state();
+        let result = self.stashed_links_in();
+        self.note_unsealed();
+        result
+    }
+
+    /// [`Self::stashed_links`] under the stash mutex.
+    fn stashed_links_in(&self) -> Result<Vec<StashedLinkMeta>, VaultError> {
         let now = self.now();
         let mut entries = self.load_entries(now)?;
         let entries = match self.with_stash_key(|key, vault_id| {
             self.sync_links_with(key, vault_id, std::mem::take(&mut entries), true)
         }) {
             Ok(Some(kept)) => kept,
-            Ok(None) => entries,
-            // Locked once the sync ran: what it left is on disk.
-            Err(VaultError::Locked) => self.load_entries(now)?,
+            Ok(None) | Err(VaultError::Locked) => {
+                // Locked once the sync ran: what it left is on disk.
+                if entries.is_empty() {
+                    entries = self.load_entries(now)?;
+                }
+                // Without the key, `stash.pub` seals what waits (D26).
+                self.seal_with_public(&mut entries);
+                entries
+            }
             Err(e) => return Err(e),
         };
         Ok(entries.iter().map(EntryFile::meta).collect())
@@ -910,6 +1110,18 @@ impl Vault {
         }
         self.load_stash_key();
         let mut state = self.links_state();
+        let result = self.take_stashed_link_in(&mut state, id, kinds);
+        self.note_unsealed();
+        result
+    }
+
+    /// [`Self::take_stashed_link`] under the stash mutex.
+    fn take_stashed_link_in(
+        &self,
+        state: &mut LinkState,
+        id: &str,
+        kinds: &[StashedLinkKind],
+    ) -> Result<Option<(StashedLinkKind, Zeroizing<String>)>, VaultError> {
         let now = self.now();
         let Some(entry) = read_entry(&self.entry_path(id), id) else {
             return Ok(None);
@@ -962,7 +1174,11 @@ impl Vault {
             return Ok(None);
         };
         if kinds.contains(&entry.kind) {
-            self.delete_entry(&entry)?;
+            let deleted = self.delete_entry(&entry);
+            if entry.plain.is_some() {
+                self.note_unsealed();
+            }
+            deleted?;
             state.forget(id);
         }
         Ok(Some(entry.kind))

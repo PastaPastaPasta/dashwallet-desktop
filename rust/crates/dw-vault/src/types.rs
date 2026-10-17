@@ -53,6 +53,11 @@ pub struct VaultStatus {
     pub retry_after_secs: Option<u64>,
     /// Wallets with a seed record, sorted.
     pub wallets_with_secrets: Vec<WalletId>,
+    /// A link stashed before the vault existed (or a seal that failed) is
+    /// still plaintext beside the vault: the last seal failed, or a crash
+    /// stopped it (DP5-01 D26). The vault works as usual; the next unlock or
+    /// stash call that has the key or `stash.pub` seals it.
+    pub unsealed_links: bool,
 }
 
 /// Credential presented to [`crate::Vault::authorize`].
