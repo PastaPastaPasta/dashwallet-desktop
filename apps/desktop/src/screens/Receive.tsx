@@ -3,12 +3,13 @@
 // payments list keeps them (dash-qt's Receive tab, QT-081…085).
 
 import { useId, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { errorMessage, hasCode } from "../api/backend";
 import type { AddressInfo } from "../api/generated/AddressInfo";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ReceiveRequest } from "../api/generated/ReceiveRequest";
-import { keys, useBackend, useQrMatrix, useReceiveAddress, useReceiveRequests, useReceiveUsername } from "../api/queries";
+import { keys, useBackend, useQrMatrix, useReceiveAddress, useReceiveRequests, useReceiveUsername, useUsernameAllowed } from "../api/queries";
+import { withoutUsername } from "../api/username";
 import { useDebounced } from "../app/useDebounced";
 import { AmountText, DashButton } from "../components/basics";
 import { CopyValue, DetailRow } from "../components/detail";
@@ -37,6 +38,15 @@ function Qr({ text, label, testId }: { text: string | undefined; label: string; 
   return <div className="qr-placeholder" style={{ width: QR_SIDE, height: QR_SIDE }} aria-hidden="true" />;
 }
 
+/** The name the QR carries: none until the setting has read on (`undefined`: wait). */
+function qrUsername(included: boolean | undefined, username: UseQueryResult<string | null>, last: string | null): string | null | undefined {
+  if (included === undefined) return undefined;
+  if (!included) return null;
+  if (username.isError) return last;
+  if (username.data === undefined) return undefined;
+  return username.data ?? last;
+}
+
 function AddressCard({ walletId }: { walletId: string }) {
   const b = useBackend();
   const current = useReceiveAddress(walletId);
@@ -47,19 +57,25 @@ function AddressCard({ walletId }: { walletId: string }) {
   // The QR carries the wallet's DashPay username as `user=` (DP3-03). The engine reads none
   // while names are updating (a busy identity store during sync), so the card keeps the last
   // name it showed for this wallet rather than dropping it (DP3-02 D25); a failed read is none.
+  // "Include my username in payment requests" decides first (DP3-03b D22): until it has read on,
+  // no name is used, held or read; off, the engine's none is the answer, not a busy store.
   const username = useReceiveUsername(walletId);
+  const included = useUsernameAllowed(walletId);
   const held = useRef<{ walletId: string; name: string } | null>(null);
   if (username.data) held.current = { walletId, name: username.data };
   const last = held.current?.walletId === walletId ? held.current.name : null;
-  const user = username.isError ? last : username.data === undefined ? undefined : (username.data ?? last);
+  const user = qrUsername(included, username, last);
   const uri = useQuery({
-    queryKey: ["paymentUri", shown?.address ?? "", user ?? null] as const,
+    // Its own prefix: Tools ▸ Address book's `paymentUri` key takes a label in the same place.
+    queryKey: ["receiveUri", shown?.address ?? "", user ?? null] as const,
     queryFn: () => b.buildPaymentUri(shown!.address, null, null, null, user ?? null),
     enabled: !!shown && user !== undefined,
     staleTime: Infinity,
     // While the username changes the QR keeps the address's previous link, not a loading
-    // state; a new address never shows the old one's.
-    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === shown?.address ? prev : undefined),
+    // state; a new address never shows the old one's, and a link without a name never shows
+    // one with it (DP3-03b D18).
+    placeholderData: (prev, prevQuery) =>
+      prevQuery?.queryKey[1] === shown?.address && (typeof user === "string" || prevQuery?.queryKey[2] === null) ? prev : undefined,
   });
   const newAddress = async () => {
     setProblem(null);
@@ -210,8 +226,11 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
   );
 }
 
-function RequestSheet({ request, network, onClose }: { request: ReceiveRequest; network: NetworkInfo; onClose: () => void }) {
+function RequestSheet({ walletId, request: read, network, onClose }: { walletId: string; request: ReceiveRequest; network: NetworkInfo; onClose: () => void }) {
   const shown = useDisplay(network);
+  // A stored or new request shows and copies its name only while the setting reads on: a change
+  // under way, a failed read or a request read before the change all show none (DP3-03b D22).
+  const request = useUsernameAllowed(walletId) === true ? read : withoutUsername(read);
   const title = `Request payment to ${request.label || shortAddress(request.address)}`;
   return (
     <Sheet title={title} width="medium" testId="request-sheet" onClose={onClose}>
@@ -324,7 +343,7 @@ export function ReceivePage({ walletId, network }: { walletId: string; network: 
         <RequestForm walletId={walletId} network={network} onCreated={setShown} />
       </div>
       <RequestList walletId={walletId} network={network} onShow={setShown} />
-      {shown && <RequestSheet request={shown} network={network} onClose={() => setShown(null)} />}
+      {shown && <RequestSheet walletId={walletId} request={shown} network={network} onClose={() => setShown(null)} />}
     </Page>
   );
 }

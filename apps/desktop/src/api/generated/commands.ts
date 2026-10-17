@@ -628,6 +628,19 @@ export function receiveUsername(walletId: string): Promise<string | null> {
   return invoke<string | null>("receive_username", { walletId });
 }
 
+/**
+ * "Include my username in payment requests" for the wallet (DP3-03b);
+ * on by default. Off, `receiveUsername` is `null` and requests carry
+ * no username.
+ */
+export function usernameInRequests(walletId: string): Promise<boolean> {
+  return invoke<boolean>("username_in_requests", { walletId });
+}
+
+export function setUsernameInRequests(walletId: string, on: boolean): Promise<null> {
+  return invoke<null>("set_username_in_requests", { walletId, on });
+}
+
 export function deleteReceiveRequest(walletId: string, requestId: number): Promise<null> {
   return invoke<null>("delete_receive_request", { walletId, requestId });
 }
@@ -2205,6 +2218,8 @@ export type CommandArgs = {
   create_receive_request: { walletId: string; amount: number | null; label: string | null; message: string | null };
   receive_requests: { walletId: string };
   receive_username: { walletId: string };
+  username_in_requests: { walletId: string };
+  set_username_in_requests: { walletId: string; on: boolean };
   delete_receive_request: { walletId: string; requestId: number };
   address_book: { walletId: string; purpose: AddressPurposeName | null; search: string | null };
   save_address_book_entry: { walletId: string; address: string; label: string; purpose: AddressPurposeName; replace: boolean };
@@ -2453,6 +2468,8 @@ export type CommandResults = {
   create_receive_request: ReceiveRequest;
   receive_requests: Array<ReceiveRequest>;
   receive_username: string | null;
+  username_in_requests: boolean;
+  set_username_in_requests: null;
   delete_receive_request: null;
   address_book: Array<AddressBookEntry>;
   save_address_book_entry: AddressBookEntry;
@@ -2703,6 +2720,8 @@ export const COMMANDS: Record<CommandName, string> = {
   create_receive_request: "wallets",
   receive_requests: "wallets",
   receive_username: "wallets",
+  username_in_requests: "wallets",
+  set_username_in_requests: "wallets",
   delete_receive_request: "wallets",
   address_book: "wallets",
   save_address_book_entry: "wallets",

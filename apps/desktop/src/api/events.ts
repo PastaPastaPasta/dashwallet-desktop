@@ -128,6 +128,10 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
         d && d.pages.length > 1 ? { pages: d.pages.slice(0, 1), pageParams: d.pageParams.slice(0, 1) } : d,
       );
     }
+    // A wallet that comes (a restore, a re-import) or goes keeps none of its receive reads: the
+    // engine may hold another "Include my username in payment requests" for it now, and a
+    // cached `true` would draw the name until a refetch (DP3-03b D17).
+    if (event.kind === "walletCreated" || event.kind === "walletRemoved") void client.resetQueries({ queryKey: keys.receiveAll(event.walletId) });
     if (event.kind === "lockProgress") {
       const { progress } = event;
       // The new report shows with its `done`, never the previous lock's while a refetch runs: a
