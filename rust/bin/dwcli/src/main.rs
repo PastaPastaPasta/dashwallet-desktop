@@ -426,6 +426,18 @@ fn open_failure(e: &EngineError, opts: &SessionOptions) -> &'static str {
     }
 }
 
+/// The session the global options ask for (also the log test's, D37).
+fn session_options(cli: &Cli) -> SessionOptions {
+    SessionOptions {
+        dapi_addresses: cli.dapi.clone(),
+        quorum_url: cli.quorum_url.clone(),
+        spv_peers: cli.peers.clone(),
+        ca_cert_path: cli.ca_cert.clone(),
+        initial_protocol_version: cli.initial_protocol_version,
+        no_platform: cli.no_platform,
+    }
+}
+
 fn run(cli: Cli) -> Result<(), RunError> {
     teardown::set_deadline(Duration::from_secs(cli.shutdown_timeout));
     let passphrase = cli
@@ -434,6 +446,7 @@ fn run(cli: Cli) -> Result<(), RunError> {
         .map(read_passphrase)
         .transpose()
         .map_err(setup_error("--passphrase-file not readable"))?;
+    let opts = session_options(&cli);
     let engine = Engine::new(
         EngineConfig {
             data_root: cli.datadir,
@@ -451,14 +464,6 @@ fn run(cli: Cli) -> Result<(), RunError> {
     )
     .map_err(|e| e.to_string())
     .map_err(setup_error("--datadir could not be opened"))?;
-    let opts = SessionOptions {
-        dapi_addresses: cli.dapi,
-        quorum_url: cli.quorum_url,
-        spv_peers: cli.peers,
-        ca_cert_path: cli.ca_cert,
-        initial_protocol_version: cli.initial_protocol_version,
-        no_platform: cli.no_platform,
-    };
     let session = match engine.block_on(engine.open_network(cli.network, opts.clone())) {
         Ok(session) => session,
         Err(e) => {

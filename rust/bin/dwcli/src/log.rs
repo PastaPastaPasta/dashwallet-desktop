@@ -84,12 +84,17 @@ fn option_values(cli: &Cli) -> Vec<String> {
 }
 
 /// The other forms of `value`: `{:?}`-quoted, a URL's parts, and a socket
-/// address as printed (dash-spv prints a `--peer`, `[::1]` for `[0::1]`).
+/// address as printed (dash-spv prints a `--peer`, `[::1]` for `[0::1]`,
+/// and `10.1.2.3` for `[::ffff:10.1.2.3]`).
 fn forms(value: &str) -> Vec<String> {
     let mut forms = vec![value.escape_debug().to_string()];
     if let Ok(addr) = value.trim().parse::<std::net::SocketAddr>() {
         forms.push(addr.to_string());
         forms.push(addr.ip().to_string());
+        // dashcore prints a mapped or compatible IPv6 address as IPv4.
+        if let std::net::IpAddr::V6(ip) = addr.ip() {
+            forms.extend(ip.to_ipv4().map(|v4| v4.to_string()));
+        }
     }
     if let Ok(url) = url::Url::parse(value) {
         forms.push(url.as_str().to_string());
@@ -98,6 +103,12 @@ fn forms(value: &str) -> Vec<String> {
         forms.extend(url.password().map(String::from));
         if let Some(host) = url.host_str() {
             forms.push(host.to_string());
+            // An IPv6 host printed as an address has no brackets.
+            forms.push(
+                host.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .to_string(),
+            );
             forms.extend(url.port_or_known_default().map(|p| format!("{host}:{p}")));
         }
         if url.path() != "/" {
@@ -230,7 +241,8 @@ mod tests {
         );
     }
 
-    /// A peer's address is redacted as dash-spv prints it (D37).
+    /// A peer's address is redacted as dash-spv and dashcore print it
+    /// (D37).
     #[test]
     fn a_socket_address_is_redacted_as_printed() {
         let values = forms("[0:0:0:0:0:0:0:1]:9999");
@@ -238,6 +250,8 @@ mod tests {
             redact("peer [::1]:9999 and ::1", &values),
             "peer <redacted> and <redacted>"
         );
+        let values = forms("[::ffff:10.1.2.3]:9999");
+        assert_eq!(redact("address: 10.1.2.3", &values), "address: <redacted>");
     }
 
     /// The SDK splits a comma-separated `--dapi` into addresses and logs a
@@ -271,7 +285,7 @@ mod tests {
         use std::sync::Mutex;
 
         use clap::Parser;
-        use dw_engine::{Engine, EngineConfig, EngineEvent, EventSink, SessionOptions};
+        use dw_engine::{Engine, EngineConfig, EngineEvent, EventSink};
 
         struct NoEvents;
         impl EventSink for NoEvents {
@@ -279,7 +293,9 @@ mod tests {
         }
 
         let dir = dw_testutil::private_tempdir();
-        let dapi = "http://127.0.0.1:1/pathTOKENa,http://127.0.0.2:1/pathTOKENb";
+        // Hosts every CI runner answers on (macOS has no 127.0.0.2; the
+        // pinned SDK panics on an IPv6 DAPI host's TLS name).
+        let dapi = "http://127.0.0.1:1/pathTOKENa,http://localhost:2/pathTOKENb";
         let cli = Cli::try_parse_from([
             "dwcli",
             "--datadir",
@@ -287,9 +303,9 @@ mod tests {
             "--dapi",
             dapi,
             "--quorum-url",
-            "http://127.0.0.3:1",
+            "http://127.0.0.1:3",
             "--peer",
-            "127.0.0.4:1",
+            "127.0.0.1:4",
             "mn",
             "credits",
             &"11".repeat(32),
@@ -319,14 +335,8 @@ mod tests {
             Arc::new(NoEvents),
         )
         .unwrap();
-        let opts = SessionOptions {
-            dapi_addresses: cli.dapi.clone(),
-            quorum_url: cli.quorum_url.clone(),
-            spv_peers: cli.peers.clone(),
-            ..SessionOptions::default()
-        };
         let session = engine
-            .block_on(engine.open_network(cli.network.clone(), opts))
+            .block_on(engine.open_network(cli.network.clone(), crate::session_options(&cli)))
             .unwrap();
         let fetched = engine.block_on(dw_engine::test_support::fetch_identity_balance(
             &session, [1; 32],
@@ -337,16 +347,10 @@ mod tests {
 
         let log = String::from_utf8(out.lock().unwrap().clone()).unwrap();
         assert!(
-            log.contains("ban address"),
-            "the SDK logged no address: {log}"
+            log.matches("ban address").count() >= 2,
+            "the SDK didn't log both addresses: {log}"
         );
-        for leak in [
-            "pathTOKEN",
-            "127.0.0.1",
-            "127.0.0.2",
-            "127.0.0.3",
-            "127.0.0.4",
-        ] {
+        for leak in ["pathTOKEN", "127.0.0.1", "localhost"] {
             assert!(!log.contains(leak), "{leak} in the log: {log}");
         }
     }
