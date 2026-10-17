@@ -408,12 +408,16 @@ class DwdMasternodes(DashTestFramework):
         assert_equal({p["txid"]: p["amount"] for p in payouts}, paid_a)
         assert_equal([p["height"] for p in payouts], sorted((p["height"] for p in payouts), reverse=True))
         assert all(p["address"] == payout_a and not p["matured"] for p in payouts)
+        # Every list entry is version 2 here, so no payout is a possible share (D30).
+        assert not any(p["unattributed"] for p in payouts)
         assert_equal({p["txid"]: p["amount"] for p in dw.mn(h, "payouts", mn_c)}, paid_c)
         overview = dw.mn(h, "list")
         a = self.row(overview, mn_a)
         assert_equal(a["payouts_30d"], sum(paid_a.values()))
         assert_equal(a["last_payout"], payouts[0])
         assert_equal(overview["payouts_30d"], sum(paid_a.values()) + sum(paid_c.values()))
+        assert not a["payouts_incomplete"] and not overview["payouts_incomplete"]
+        assert_equal(overview["unattributed_30d"], 0)
         assert_equal(dw.mn(h, "payouts", mn_b), [])
         first = payouts[-1]
         h = self.mine(100)
