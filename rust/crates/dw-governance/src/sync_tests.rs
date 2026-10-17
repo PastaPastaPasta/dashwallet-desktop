@@ -15,21 +15,28 @@ fn key_id(n: u8) -> [u8; 20] {
     hash160::Hash::hash(&PublicKey::from_secret_key(&sk).serialize()).to_byte_array()
 }
 
-fn vote(parent: [u8; 32], key: u8, outcome: VoteOutcome) -> GovernanceVote {
+/// `v` with its signature made by key `key` instead: same hash.
+fn resigned(v: &GovernanceVote, key: u8) -> GovernanceVote {
     let sk = SecretKey::from_secret_bytes([key; 32]).unwrap();
     let pk = PublicKey::from_secret_key(&sk);
-    let mut v = GovernanceVote::funding(
+    let mut f = v.clone();
+    let d = f.signing_digest(Network::Regtest);
+    let s = dashcore::secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
+    f.signature = to_recoverable_compact(&s.serialize_compact(), &pk, &d)
+        .unwrap()
+        .to_vec();
+    assert_eq!(f.hash(), v.hash());
+    f
+}
+
+fn vote(parent: [u8; 32], key: u8, outcome: VoteOutcome) -> GovernanceVote {
+    let v = GovernanceVote::funding(
         OutPoint::new(dashcore::Txid::from_byte_array([key; 32]), 0),
         parent,
         outcome,
         unix_now() - 100,
     );
-    let d = v.signing_digest(Network::Regtest);
-    let s = dashcore::secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
-    v.signature = to_recoverable_compact(&s.serialize_compact(), &pk, &d)
-        .unwrap()
-        .to_vec();
-    v
+    resigned(&v, key)
 }
 
 fn proposal(name: &str) -> GovernanceObject {
@@ -1861,9 +1868,8 @@ async fn a_peer_that_keeps_delivering_cannot_hold_a_request() {
     keepalive_run(INV_GOVERNANCE_VOTE).await;
 }
 
-/// A run with one connected peer (id 0) that reads and drops everything,
-/// driven by calling its handlers.
-async fn one_peer_run(tune: impl FnOnce(&mut SyncConfig, &mut PeerState)) -> Run {
+/// A connected peer with id `id` that reads and drops everything.
+async fn sink_peer(id: usize, cfg: &SyncConfig) -> PeerState {
     let mock = MockPeer::bind(Network::Regtest).await.unwrap();
     let addr = mock.addr();
     tokio::spawn(async move {
@@ -1871,9 +1877,14 @@ async fn one_peer_run(tune: impl FnOnce(&mut SyncConfig, &mut PeerState)) -> Run
         while conn.recv().await.is_ok() {}
     });
     let (tx, _rx) = mpsc::channel(EVENTS_QUEUE);
+    PeerState::new(Peer::connect(id, addr, &cfg.peer, tx).await.unwrap())
+}
+
+/// A run with one connected peer (id 0) that reads and drops everything,
+/// driven by calling its handlers.
+async fn one_peer_run(tune: impl FnOnce(&mut SyncConfig, &mut PeerState)) -> Run {
     let mut cfg = SyncConfig::new(PeerConfig::new(Network::Regtest, "/t/", 1));
-    let peer = Peer::connect(0, addr, &cfg.peer, tx).await.unwrap();
-    let mut state = PeerState::new(peer);
+    let mut state = sink_peer(0, &cfg).await;
     tune(&mut cfg, &mut state);
     Run {
         shared: Arc::new(Shared::new(Network::Regtest, Box::new(|| {}))),
@@ -2171,68 +2182,69 @@ async fn a_timed_out_vote_stays_lost_after_a_later_notfound() {
     // so the vote is lost, not settled.
     lost_vote_run(true, Duration::from_millis(200)).await;
 }
-
 /// A run with two connected peers (ids 0 and 1) that read and drop
 /// everything, a stored current proposal and key 1 listed.
 async fn two_peer_run(p: &GovernanceObject) -> Run {
-    let mut cfg = SyncConfig::new(PeerConfig::new(Network::Regtest, "/t/", 1));
-    let (tx, _rx) = mpsc::channel(EVENTS_QUEUE);
-    let mut peers = Vec::new();
-    for id in 0..2 {
-        let mock = MockPeer::bind(Network::Regtest).await.unwrap();
-        let addr = mock.addr();
-        tokio::spawn(async move {
-            let mut conn = mock.accept().await.unwrap();
-            while conn.recv().await.is_ok() {}
-        });
-        peers.push(PeerState::new(
-            Peer::connect(id, addr, &cfg.peer, tx.clone())
-                .await
-                .unwrap(),
-        ));
-    }
-    cfg.max_in_flight = 5000;
-    let shared = Arc::new(Shared::new(Network::Regtest, Box::new(|| {})));
-    {
-        let mut s = shared.store();
-        s.set_confirmations(1);
-        s.set_masternode_list(&[ListEntry {
-            voting_key_id: key_id(1),
-            weight: Some(1),
-            valid: true,
-        }]);
-        s.add_object(p.clone(), None, unix_now()).unwrap();
-    }
-    std::mem::forget(_rx);
-    Run {
-        shared,
-        cfg,
-        history: Arc::new(Mutex::new(SyncHistory::default())),
-        peers,
-        requests: Requests::default(),
-        base_bytes: 0,
-        votes_open: true,
-        announce_open: false,
-        unassigned: Vec::new(),
-        lost: 0,
-        full_syncs_done: 0,
-        vote_parents: HashMap::new(),
-        last_progress: Instant::now(),
+    let mut run = one_peer_run(|c, _| c.max_in_flight = 5000).await;
+    run.peers.push(sink_peer(1, &run.cfg).await);
+    list_key_1(&run);
+    let mut s = run.shared.store();
+    s.set_confirmations(1);
+    s.add_object(p.clone(), None, unix_now()).unwrap();
+    drop(s);
+    run
+}
+
+/// Key 1 as the one listed voting key.
+fn list_key_1(run: &Run) {
+    run.shared.store().set_masternode_list(&[ListEntry {
+        voting_key_id: key_id(1),
+        weight: Some(1),
+        valid: true,
+    }]);
+}
+
+/// A run with one peer whose vote sync is open and whose requests time out
+/// at once, and key 1 listed: its votes are phase items.
+async fn phase_vote_run() -> Run {
+    let run = one_peer_run(|c, p| {
+        c.request_timeout = Duration::ZERO;
+        open_vote_sync(p, [0x77; 32]);
+    })
+    .await;
+    list_key_1(&run);
+    run
+}
+
+/// Opens `p`'s vote sync, whose count is far off, so its votes are phase
+/// items.
+fn open_vote_sync(p: &mut PeerState, parent: [u8; 32]) {
+    p.vote_asked.push(parent);
+    p.vote_expected.push(1_000);
+}
+
+fn vote_inv(v: &GovernanceVote) -> InvItem {
+    InvItem {
+        kind: INV_GOVERNANCE_VOTE,
+        hash: v.hash(),
     }
 }
 
-/// `v` with its signature made by key `key` instead: same hash.
-fn resigned(v: &GovernanceVote, key: u8) -> GovernanceVote {
-    let sk = SecretKey::from_secret_bytes([key; 32]).unwrap();
-    let pk = PublicKey::from_secret_key(&sk);
-    let mut f = v.clone();
-    let d = f.signing_digest(Network::Regtest);
-    let s = dashcore::secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
-    f.signature = to_recoverable_compact(&s.serialize_compact(), &pk, &d)
-        .unwrap()
-        .to_vec();
-    assert_eq!(f.hash(), v.hash());
-    f
+/// Peer 0 announces `item` and answers `notfound` (a late record of it);
+/// then peer 1 announces it.
+fn late_record_then_second_announcer(run: &mut Run, item: InvItem) {
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::NotFound(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+}
+
+/// Peer 0 is asked for the phase vote `x`, times out twice and is given
+/// up on: lost.
+fn lose_vote(run: &mut Run, x: &GovernanceVote) {
+    run.handle(0, PeerEvent::Inv(vec![vote_inv(x)]));
+    run.expire(); // asked again
+    run.expire(); // given up, lost
+    assert_eq!(run.lost, 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2244,17 +2256,11 @@ async fn a_refused_late_copy_leaves_another_peers_request_alone() {
     // second `getdata` and H charged for its second copy.
     let p = proposal("p-r7");
     let x = vote(p.hash(), 1, VoteOutcome::Yes);
-    let item = InvItem {
-        kind: INV_GOVERNANCE_VOTE,
-        hash: x.hash(),
-    };
+    let item = vote_inv(&x);
     let mut run = two_peer_run(&p).await;
     // H's vote sync still open: its announcement is a phase item.
-    run.peers[1].vote_asked.push(p.hash());
-    run.peers[1].vote_expected.push(1_000);
-    run.handle(0, PeerEvent::Inv(vec![item]));
-    run.handle(0, PeerEvent::NotFound(vec![item]));
-    run.handle(1, PeerEvent::Inv(vec![item]));
+    open_vote_sync(&mut run.peers[1], p.hash());
+    late_record_then_second_announcer(&mut run, item);
     let key = (item.hash, item.kind);
     assert!(run.requests.pending[&key].phase);
     assert_eq!(run.peers[1].in_flight, 1);
@@ -2280,13 +2286,7 @@ async fn forged_late_copies_cannot_get_an_honest_peer_closed() {
         let mut x = vote(p.hash(), 1, VoteOutcome::Yes);
         x.time -= i64::from(t) + 1;
         let x = resigned(&x, 1);
-        let item = InvItem {
-            kind: INV_GOVERNANCE_VOTE,
-            hash: x.hash(),
-        };
-        run.handle(0, PeerEvent::Inv(vec![item]));
-        run.handle(0, PeerEvent::NotFound(vec![item]));
-        run.handle(1, PeerEvent::Inv(vec![item]));
+        late_record_then_second_announcer(&mut run, vote_inv(&x));
         run.handle(0, PeerEvent::Vote(resigned(&x, 2).encode()));
         run.handle(1, PeerEvent::Vote(x.encode()));
     }
@@ -2300,27 +2300,9 @@ async fn an_uncheckable_copy_does_not_end_a_loss() {
     // up (lost); its asked peer then sends the vote with a 96-byte junk
     // signature, which the wallet cannot check and drops: that ended the
     // loss with no copy held.
-    let mut run = one_peer_run(|c, p| {
-        c.request_timeout = Duration::ZERO;
-        p.vote_asked.push([0x77; 32]);
-        p.vote_expected.push(1_000);
-    })
-    .await;
-    run.shared.store().set_masternode_list(&[ListEntry {
-        voting_key_id: key_id(1),
-        weight: Some(1),
-        valid: true,
-    }]);
-    let q = proposal("p-r7-unknown");
-    let x = vote(q.hash(), 1, VoteOutcome::Yes);
-    let item = InvItem {
-        kind: INV_GOVERNANCE_VOTE,
-        hash: x.hash(),
-    };
-    run.handle(0, PeerEvent::Inv(vec![item]));
-    run.expire(); // asked again
-    run.expire(); // given up, lost
-    assert_eq!(run.lost, 1);
+    let mut run = phase_vote_run().await;
+    let x = vote(proposal("p-r7-unknown").hash(), 1, VoteOutcome::Yes);
+    lose_vote(&mut run, &x);
     let mut junk = x.clone();
     junk.signature = vec![0x55; 96];
     run.handle(0, PeerEvent::Vote(junk.encode()));
@@ -2331,17 +2313,7 @@ async fn an_uncheckable_copy_does_not_end_a_loss() {
 async fn a_copy_past_the_senders_orphan_bound_does_not_end_a_loss() {
     // Validator r7 m1: a sender at its orphan bound got `Orphan` back for
     // a vote not kept, which ended the request and its loss.
-    let mut run = one_peer_run(|c, p| {
-        c.request_timeout = Duration::ZERO;
-        p.vote_asked.push([0x77; 32]);
-        p.vote_expected.push(1_000);
-    })
-    .await;
-    run.shared.store().set_masternode_list(&[ListEntry {
-        voting_key_id: key_id(1),
-        weight: Some(1),
-        valid: true,
-    }]);
+    let mut run = phase_vote_run().await;
     let addr = run.peers[0].peer.addr;
     let now = unix_now();
     for i in 0..crate::store::MAX_ORPHANS_PER_PEER {
@@ -2354,14 +2326,7 @@ async fn a_copy_past_the_senders_orphan_bound_does_not_end_a_loss() {
         assert_eq!(r, Err(VoteRejection::Orphan));
     }
     let x = vote([0x45; 32], 1, VoteOutcome::Yes);
-    let item = InvItem {
-        kind: INV_GOVERNANCE_VOTE,
-        hash: x.hash(),
-    };
-    run.handle(0, PeerEvent::Inv(vec![item]));
-    run.expire(); // asked again
-    run.expire(); // given up, lost
-    assert_eq!(run.lost, 1);
+    lose_vote(&mut run, &x);
     run.handle(0, PeerEvent::Vote(x.encode()));
     assert!(!run.shared.store().has_vote(&x.hash()));
     assert_eq!(
@@ -2377,17 +2342,10 @@ async fn a_copy_taken_late_ends_the_request_still_out() {
     // counted a loss for a vote the store held.
     let p = proposal("p-r7-late");
     let x = vote(p.hash(), 1, VoteOutcome::Yes);
-    let item = InvItem {
-        kind: INV_GOVERNANCE_VOTE,
-        hash: x.hash(),
-    };
     let mut run = two_peer_run(&p).await;
     run.cfg.request_timeout = Duration::ZERO;
-    run.peers[1].vote_asked.push(p.hash());
-    run.peers[1].vote_expected.push(1_000);
-    run.handle(0, PeerEvent::Inv(vec![item]));
-    run.handle(0, PeerEvent::NotFound(vec![item]));
-    run.handle(1, PeerEvent::Inv(vec![item]));
+    open_vote_sync(&mut run.peers[1], p.hash());
+    late_record_then_second_announcer(&mut run, vote_inv(&x));
     run.handle(0, PeerEvent::Vote(x.encode()));
     assert!(run.shared.store().has_vote(&x.hash()));
     assert!(run.requests.pending.is_empty(), "H's request still out");
