@@ -1,6 +1,6 @@
 // Settings ▸ General (QT-135…141, QT-075, IOS-104…106): the display settings (saved as they
-// change, D2), dust protection, the window's network (D6), the rows that come later (D7) and
-// Reset Options (D8).
+// change, D2), dust protection, the username in payment requests (DP3-03b), the window's network
+// (D6), the rows that come later (D7) and Reset Options (D8).
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useMemo, useState } from "react";
@@ -17,6 +17,7 @@ import { DEFAULT_DUST, DIGIT_CHOICES, dustThreshold, OptionsText, UNIT_CHOICES }
 import { savePrefs, settledPending } from "../../settings/prefs";
 import { SettingsDashPayCard } from "../dashpay/MyProfile";
 import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
+import { PrivacyCard } from "./Privacy";
 
 const THEMES: { theme: ThemeName | null; label: string; id: string }[] = [
   { theme: null, label: "System", id: "system" },
@@ -130,6 +131,7 @@ export function GeneralTab() {
         </label>
       </SettingsCard>
       <DustCard />
+      <PrivacyCard />
       <NetworkCard />
       <SettingsDashPayCard />
       <SettingsCard title="Coming later" testId="settings-not-yet">

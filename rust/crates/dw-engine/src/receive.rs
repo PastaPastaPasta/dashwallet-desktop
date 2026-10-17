@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dashcore::Address;
-use dw_appdb::{BookPurpose, LabelKind};
+use dw_appdb::{AppDbError, BookPurpose, LabelKind};
 use dw_uri::core::{SendCoinsRecipient, format_request_uri};
 use key_wallet::managed_account::address_pool::{AddressPool, AddressState};
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
@@ -23,6 +23,40 @@ use crate::{EngineError, NetworkSession, WalletId};
 
 /// Dash Core `MAX_MONEY` (21 million DASH) in duffs.
 const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
+
+/// dw-appdb setting (wallet scope) of "Include my username in payment
+/// requests" (DP3-03b): `"0"` is off, absent (the default) is on; anything
+/// else is corrupt, which the URIs read as off.
+pub(crate) const USERNAME_IN_REQUESTS_KEY: &str = "dashpay.username_in_requests";
+
+/// One lock per wallet between "Include my username in payment requests"
+/// and the URIs that carry the username (DP3-03b D20): a URI is made under
+/// the read side, from the setting's read through the name's to the URI;
+/// a change of the setting takes the write side. So no URI with the name
+/// is made once turning it off has returned.
+#[derive(Default)]
+pub(crate) struct UsernameGate {
+    /// Never pruned: one empty lock per wallet seen, bounded by the wallets.
+    locks: std::sync::Mutex<HashMap<WalletId, Arc<tokio::sync::RwLock<()>>>>,
+    /// Tests: holds the next username read after its setting read.
+    #[cfg(test)]
+    pub(crate) pause_name_read: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+}
+
+impl UsernameGate {
+    fn lock(&self, wallet: WalletId) -> Arc<tokio::sync::RwLock<()>> {
+        let mut locks = self.locks.lock().unwrap_or_else(|p| p.into_inner());
+        Arc::clone(locks.entry(wallet).or_default())
+    }
+
+    async fn read(&self, wallet: WalletId) -> tokio::sync::OwnedRwLockReadGuard<()> {
+        self.lock(wallet).read_owned().await
+    }
+
+    async fn write(&self, wallet: WalletId) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        self.lock(wallet).write_owned().await
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddressInfo {
@@ -343,7 +377,7 @@ impl NetworkSession {
             })
             .await?
             .map_err(|e| EngineError::Storage(e.to_string()))?;
-            let username = this.username_of(wallet).await;
+            let (_gate, username) = this.read_username(wallet).await;
             Ok(ReceiveRequest {
                 id: u64::try_from(id)
                     .map_err(|_| EngineError::Internal(format!("request id {id}")))?,
@@ -379,7 +413,7 @@ impl NetworkSession {
                 tokio::task::spawn_blocking(move || appdb.receive_requests(&wallet.to_string()))
                     .await?
                     .map_err(|e| EngineError::Storage(e.to_string()))?;
-            let username = this.username_of(wallet).await;
+            let (_gate, username) = this.read_username(wallet).await;
             Ok(rows
                 .into_iter()
                 .filter_map(|r| {
@@ -407,8 +441,9 @@ impl NetworkSession {
 
     /// The username the Receive screen's QR carries as `user=` (IOS-055,
     /// DP3-03): the main name of the wallet's main DashPay identity. `None`
-    /// without one, while a sync pass holds the names, or while Platform's
-    /// state cannot be read: the QR is then a plain Core one.
+    /// without one, while a sync pass holds the names, while Platform's
+    /// state cannot be read, or while [`Self::username_in_requests`] is off:
+    /// the QR is then a plain Core one.
     pub async fn receive_username(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -417,17 +452,89 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             this.require_wallet(&wallet)?;
-            Ok(this.username_of(wallet).await)
+            Ok(this.read_username(wallet).await.1)
         })
         .await
     }
 
-    /// [`Self::receive_username`] inside an operation: the identity read
-    /// touches the database, so it runs off the runtime's threads. Never an
-    /// error: without the name the URI is a plain Core one.
+    /// The username the wallet's URIs carry, with the read side of its
+    /// [`UsernameGate`] (D20): the caller makes its URIs before dropping it.
+    /// The name is [`Self::receive_username`]'s: `None` while
+    /// [`Self::username_in_requests`] is off or cannot be read, and never an
+    /// error, as without it the URI is a plain Core one. The identity read
+    /// touches the database, so it runs off the runtime's threads.
+    async fn read_username(
+        self: &Arc<Self>,
+        wallet: WalletId,
+    ) -> (tokio::sync::OwnedRwLockReadGuard<()>, Option<String>) {
+        let gate = self.username_gate.read(wallet).await;
+        (gate, self.username_of(wallet).await)
+    }
+
     async fn username_of(self: &Arc<Self>, wallet: WalletId) -> Option<String> {
+        if !self.username_in_requests_of(wallet).await.ok()? {
+            return None;
+        }
+        #[cfg(test)]
+        crate::coins::pause_at(&self.username_gate.pause_name_read).await;
         let this = Arc::clone(self);
         (tokio::task::spawn_blocking(move || this.main_username(wallet)).await).ok()?
+    }
+
+    /// "Include my username in payment requests" (DP3-03b, DP3-02 D21):
+    /// while on (the default), [`Self::receive_username`] and the requests'
+    /// `username` and `uri` carry the main name; off, they are plain Core
+    /// ones. Stored in this network's app.sqlite under the wallet, so a
+    /// stored request follows it when it is read.
+    pub async fn username_in_requests(
+        self: &Arc<Self>,
+        wallet: WalletId,
+    ) -> Result<bool, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.require_wallet(&wallet)?;
+            this.username_in_requests_of(wallet).await
+        })
+        .await
+    }
+
+    /// Turns [`Self::username_in_requests`] on or off for one wallet. Waits
+    /// for the URIs being made for it (D20): once it returns, every URI follows.
+    pub async fn set_username_in_requests(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        on: bool,
+    ) -> Result<(), EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            // A removal waits for the write, so it never lands on the wallet
+            // a re-import brings back, which starts on (D21).
+            let _lifecycle = this.wallet_lifecycle.hold().await;
+            this.require_wallet(&wallet)?;
+            let _gate = this.username_gate.write(wallet).await;
+            let scope = wallet.to_string();
+            this.appdb_op(move |db| {
+                db.set_setting(&scope, USERNAME_IN_REQUESTS_KEY, (!on).then_some("0"))
+            })
+            .await
+        })
+        .await
+    }
+
+    async fn username_in_requests_of(&self, wallet: WalletId) -> Result<bool, EngineError> {
+        let scope = wallet.to_string();
+        self.appdb_op(
+            move |db| match db.setting(&scope, USERNAME_IN_REQUESTS_KEY)? {
+                None => Ok(true),
+                Some(v) if v == "0" => Ok(false),
+                Some(v) => Err(AppDbError::Corrupt(format!(
+                    "{USERNAME_IN_REQUESTS_KEY} {v:?}"
+                ))),
+            },
+        )
+        .await
     }
 
     pub async fn delete_receive_request(
