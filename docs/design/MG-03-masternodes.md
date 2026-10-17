@@ -31,7 +31,7 @@ D-numbers in this file are MG-03's (D1 and up). MG-00, MG-01 and MG-02 rows are 
 | Contract test | `rust/crates/dw-engine/tests/mn_masternodes_contract.rs` |
 | dwcli `mn` commands | `rust/bin/dwcli/src/masternodes.rs` |
 | Regtest suite | `regtest/functional/dwd_masternodes.py` |
-| T2 (testnet) check | `rust/crates/dw-engine/tests/mg03_testnet_credits.rs` (ignored; `DW_MG03_TESTNET=1`) |
+| T2 (testnet) check | `dwcli --network testnet mn --spv …` runs (§11, D22) |
 
 ## 1. What each source can prove
 
@@ -261,7 +261,10 @@ Follow-ups for later rows:
      first, and mature after 100 blocks;
   5. `protx revoke` of A makes it `pose_banned` (Core bans a revoked masternode); the wallet spending the collateral
      makes it `removed`.
-- T2 (testnet, reads only, concurrency 1): `evonode_credits` of a testnet evonode chosen from the synced list.
+- T2 (testnet, reads only, concurrency 1), run with dwcli on a fresh data dir (D22): `mn --spv list-state`, then
+  `mn --spv find <ip>` with an address from the testnet DNS seed until an evonode is listed there, then
+  `mn --spv credits <hash>`. Recorded in the MG-03 report (2026-10-16: list height 1,573,854; evonode
+  `9cb04f27…145c` at 68.67.122.1:19999, 1,143,994,435,125,307 credits).
 
 ## D-rows
 
@@ -285,3 +288,7 @@ Follow-ups for later rows:
 | D16 | The regtest suite mines whole DIP24 cycles (`llmq_test_dip0024`, 24 blocks) until Core answers `quorum rotationinfo` at the tip, instead of running DKG. | dash-spv's list sync starts with QRInfo, and Core answers it only with a stored quorum snapshot for each cycle it covers. Core stores one per cycle when it connects the cycle's block, without DKG, once there are enabled masternodes. With DKG on, the test's node-less masternodes would be PoSe-punished. |
 | D17 | `list_state()` reports whether the SPV list is synced and its height, without a wallet. | dwcli and the UI need to wait for the list without picking a wallet, and the refusal `list_unavailable` alone can't say when to retry. |
 | D18 | `dwcli mn --sync-height H` waits for every loaded wallet's scan height as well as the list. | A synced list doesn't mean the wallet has scanned the block the test just mined, so a read could miss a transaction it just made. Scan heights are already in the session's wallet state. |
+| D19 | An attached payout key is `matched` when it pays the wallet's P2PKH payout script, otherwise `unchecked`; it is never refused. A non-P2PKH payout script isn't a reference. | The wallet's payout script is latest-wins over the provider transactions it holds, and a ProUpRegTx that names no wallet key or script isn't held (D5), so the real current payout key could be refused. Owner and voting checks stay strict: the owner key id is the ProRegTx's or a held ProUpRegTx's, and the voting key id is the live list's. |
+| D20 | Tracking changes run one at a time per session (a `tokio::sync::Mutex` in the session's masternodes runtime, held across each `track`, `untrack`, `set_label`, `attach_key` and `detach_key`). | Each call takes the operation guard more than once (the registry, then the vault), so an `attach_key` racing an `untrack` could store a key after the keys were deleted, leaving a secret no call can reach (MG-00 D22). |
+| D21 | A row is `mine` only when the wallet holds a role through its own provider transactions; a provider transaction that gives it none makes no row. | key-wallet's router also matches a ProTx by an input the wallet spent (its fee), so the library's set can hold masternodes of others. "Mine" is any role (§3), and an attached key is the user's claim, not the wallet's. |
+| D22 | The T2 check is a recorded dwcli run, not an ignored engine test. | dwcli drives only the facade, as a test would, and a run on a fresh data dir includes the SPV sync a test would need anyway. An ignored test that needs testnet and minutes of sync wouldn't run in CI either. |
