@@ -22,13 +22,16 @@ Masternodes registered by the test:
      everything else Core's. The owner-key match only, and the internal collateral resolved.
   C  Core's collateral; owner and voting keys generated here, the payout a wallet address. The
      payout match; then tracked, its voting and owner keys attached (and a wrong key refused).
+  D  nothing of the wallet's; Core holds its owner key. Tracked with its voting key attached,
+     then `protx update_registrar` rotates the voting key.
 
 Checks, in order:
  1. the funded 1,000 DASH coin is a collateral-shaped coin before A is registered;
- 2. A, B and C are listed `enabled` with the expected roles, collateral and registration facts;
+ 2. A, B and C (D is registered too) are listed `enabled` with the expected roles, collateral and registration facts;
  3. tracking: `find` by service address, `track`, `already_tracked`, attach and check keys
     (`matched`, `key_mismatch`, `unchecked`), labels, `untrack` deleting the keys (none attached
-    once tracked again);
+    once tracked again); every `mn` subcommand given a secret-shaped 64 hex repeats it nowhere;
+    after D's voting key is rotated, its attached key reads `key_mismatch` and `voting: false`;
  4. payouts: the wallet's payouts of A and C equal Core's coinbase payments to their payout
     addresses, newest first, and mature after 100 blocks;
  5. status transitions of A: `protx revoke` (Core bans a revoked masternode) makes it
@@ -50,6 +53,7 @@ import time
 
 from test_framework.address import key_to_p2pkh
 from test_framework.key import ECKey, ORDER
+from test_framework.script import hash160
 from test_framework.test_framework import DashTestFramework
 from test_framework.util import assert_equal, assert_greater_than, assert_greater_than_or_equal, p2p_port
 from test_framework.wallet_util import bytes_to_wif
@@ -61,6 +65,8 @@ PHRASE = "abandon abandon abandon abandon abandon abandon abandon abandon abando
 COIN = 100_000_000
 COLLATERAL = 1000 * COIN
 HARDENED = 0x80000000
+# A private key's shape (MG-03 D23): no dwcli output may repeat it, in either byte order.
+SECRET = "e9873d79c6d87dc0fb6a5778633389f4453213303da61f20bd67fc233aa33262"
 VOTING, OWNER = 1, 2  # DIP3 sub-accounts under m/9'/coin'/3'
 
 
@@ -237,8 +243,8 @@ class DwdMasternodes(DashTestFramework):
         fee_addr = node.getnewaddress()
         node.sendtoaddress(fee_addr, 10)
         # register_fund takes the collateral and fee from one address (else the payout address)
-        fund_b, fund_c = node.getnewaddress(), node.getnewaddress()
-        for fund in (fund_b, fund_c):
+        fund_b, fund_c, fund_d = node.getnewaddress(), node.getnewaddress(), node.getnewaddress()
+        for fund in (fund_b, fund_c, fund_d):
             node.sendtoaddress(fund, COLLATERAL // COIN + 1)
 
         self.log.info("1. A funded coin of exactly 1,000 DASH is collateral-shaped")
@@ -253,7 +259,7 @@ class DwdMasternodes(DashTestFramework):
                      [(f"{funding}-{vout}", "regular", COLLATERAL)])
 
         self.log.info("2. Register A, B and C")
-        bls = [node.bls("generate") for _ in range(3)]
+        bls = [node.bls("generate") for _ in range(4)]
         prepared = node.protx("register_prepare", funding, vout, [f"127.0.0.1:{p2p_port(10)}"], address(owner0),
                               bls[0]["public"], address(voting0), 0, payout_a, fee_addr)
         assert_equal(prepared["collateralAddress"], collateral_addr)
@@ -266,9 +272,14 @@ class DwdMasternodes(DashTestFramework):
         voting_c.generate()
         mn_c = node.protx("register_fund", node.getnewaddress(), [f"127.0.0.1:{p2p_port(12)}"], address(owner_c),
                           bls[2]["public"], address(voting_c), 0, payout_c, fund_c)
+        # D: nothing of the wallet's; Core holds its owner key, so it can rotate D's voting key (step 3)
+        voting_d = ECKey()
+        voting_d.generate()
+        mn_d = node.protx("register_fund", node.getnewaddress(), [f"127.0.0.1:{p2p_port(13)}"], node.getnewaddress(),
+                          bls[3]["public"], address(voting_d), 0, node.getnewaddress(), fund_d)
         registered = self.mine()
         listed = node.protx("list", "registered", True)
-        assert {mn_a, mn_b, mn_c} <= {m["proTxHash"] for m in listed}
+        assert {mn_a, mn_b, mn_c, mn_d} <= {m["proTxHash"] for m in listed}
 
         overview = dw.mn(registered, "list")
         assert_equal(overview["collateral_coins"], [])
@@ -299,6 +310,28 @@ class DwdMasternodes(DashTestFramework):
         assert_equal(detail["payout_checked_height"], None)
 
         self.log.info("3. Tracking and attached keys")
+        # every subcommand, on the synced list, with a secret-shaped argument (D23)
+        back = bytes.fromhex(SECRET)[::-1].hex()
+        for args, stdin in [
+            (["list", "--wallet", SECRET], None),
+            (["status", SECRET], None),
+            (["find", SECRET], None),
+            (["track", SECRET], None),
+            (["untrack", SECRET], None),
+            (["label", SECRET, "--label", "x"], None),
+            (["attach", SECRET, "--role", "voting"], SECRET),
+            (["detach", SECRET, "--role", "voting"], None),
+            (["payouts", SECRET], None),
+            (["credits", SECRET], None),
+        ]:
+            p = dw.run("mn", "--sync-height", str(registered), "--sync-timeout", "600", *args, stdin=stdin,
+                       check=False)
+            line = json.loads(p.stdout.strip().splitlines()[-1])
+            # a refusal, or (find) no match
+            assert line["ok"] == (p.returncode == 0) and line.get("result", []) == [], line
+            out = (p.stdout + p.stderr).lower()
+            assert SECRET not in out and back not in out, (args, out[-2000:])
+
         static = self.mninfo[0]
         found = dw.mn(registered, "find", f"127.0.0.1:{static.nodePort}")
         assert_equal([f["pro_tx_hash"] for f in found], [static.proTxHash])
@@ -324,8 +357,12 @@ class DwdMasternodes(DashTestFramework):
         s, c, a = (self.row(overview, h) for h in (static.proTxHash, mn_c, mn_a))
         assert_equal((s["status"], s["mine"], s["tracked"], s["label"], s["type_index"]),
                      ("enabled", False, True, "Static", 0))
-        assert_equal((roles(s), s["roles"]["attached"]), ({"owner"}, ["owner"]))
-        assert_equal((c["tracked"], sorted(c["roles"]["attached"])), (True, ["owner", "payout", "voting"]))
+        attached = lambda r: {k["role"]: k["check"] for k in r["roles"]["attached"]}
+        key_id = lambda key: hash160(key.get_pubkey().get_bytes()).hex()
+        assert_equal((roles(s), attached(s)), ({"owner"}, {"owner": "unchecked"}))
+        assert_equal((c["tracked"], attached(c)), (True, {"owner": "matched", "payout": "unchecked", "voting": "matched"}))
+        assert_equal({k["role"]: k["key_id"] for k in c["roles"]["attached"]},
+                     {"owner": key_id(owner_c), "payout": key_id(owner_c), "voting": key_id(voting_c)})
         assert_equal(roles(c), {"owner", "voting", "payout"})
         assert_equal(a["label"], "Home node")
         assert_equal(dw.mn(registered, "untrack", mn_c), {"keys_deleted": 3})
@@ -335,6 +372,23 @@ class DwdMasternodes(DashTestFramework):
         dw.mn(registered, "track", mn_c)
         assert_equal(self.row(dw.mn(registered, "list"), mn_c)["roles"]["attached"], [])
         assert_equal(dw.mn(registered, "untrack", mn_c), {"keys_deleted": 0})
+
+        self.log.info("3b. A ProUpRegTx rotates D's voting key: the attached key no longer holds (D24)")
+        dw.mn(registered, "track", mn_d)
+        assert_equal(dw.mn(registered, "attach", mn_d, "--role", "voting", stdin=wif(voting_d))["check"], "matched")
+        d = self.row(dw.mn(registered, "list"), mn_d)
+        assert_equal(d["roles"]["voting"], True)
+        assert_equal(d["roles"]["attached"], [{"role": "voting", "key_id": key_id(voting_d), "check": "matched"}])
+        rotated_to = ECKey()
+        rotated_to.generate()
+        node.protx("update_registrar", mn_d, "", address(rotated_to), "", fee_addr)
+        rotated = self.mine()
+        assert_equal(node.protx("info", mn_d)["state"]["votingAddress"], address(rotated_to))
+        # a fresh process: the id came back from app.sqlite, the list is the new one
+        d = self.row(dw.mn(rotated, "list"), mn_d)
+        assert_equal(d["roles"]["attached"], [{"role": "voting", "key_id": key_id(voting_d), "check": "key_mismatch"}])
+        assert_equal(d["roles"]["voting"], False)
+        assert_equal(dw.mn(rotated, "untrack", mn_d), {"keys_deleted": 1})
 
         self.log.info("4. Payouts equal Core's coinbase payments")
         for _ in range(60):
