@@ -230,6 +230,16 @@ it.
   latch, the claimed slot, the re-check round, payee profile and label, top-up gate, `writes_wait` hold,
   probe, mismatch, `Enforce`, scoped tally, lock). One first draft of the claimed-slot mutation could not
   fail by construction and was replaced.
+- **Sol r1 round** (2026-10-17, head 7402d6b1, after the follow-merge of main 5b90e25b): GATE EXIT 0. fmt, clippy
+  (workspace and dw-app `selftest`) clean; tests passed 2053, failed 2, both wall-clock tests in `e0_05_bringup`
+  (`start_spv_returns_at_once_and_spv_starts_after_the_bring_up`, `close_reports_a_key_read_it_could_not_wait_for`)
+  that the gate reran alone and passed on the first try; tsc clean; vitest 63 files / 895 tests. Load-flake reruns
+  for BL-181, in `platform/lease` (untouched here): on c2c5625c
+  `lease::tests::a_dropped_admit_or_register_keeps_the_fence_consistent` failed in the full run ("expected First, got
+  Deferred") and 2 of 20 alone at load ~230; it passed in the 7402d6b1 run. Mutations: 22 of 22 caught on 6ca994b2
+  (`mutate-r1.sh`: the 19 above with the corrected claimed-slot text, plus displaced-fresh-ignored,
+  account-binding-ignored, account-binding-always-refuses), and account-binding-absent-pays caught on c2c5625c by the
+  no-latch teardown test.
 - **T2** (D18, public testnet, `t2_testnet_the_money_gate_verifies_a_contact`):
 
   | Head | B unverified before | Degraded probe | Enforcing gate | Enforcing `prepare` |
