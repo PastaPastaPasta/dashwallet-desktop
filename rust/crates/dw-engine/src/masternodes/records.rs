@@ -271,9 +271,9 @@ pub struct MasternodeOverview {
     /// Coinbase outputs to the wallet in the last 30 days that no row's
     /// `payouts_30d` counts: possible shares, and income paying no row.
     pub unattributed_30d: u64,
-    /// A row's `payouts_incomplete`; or, once the list had a version-3
-    /// entry, a coinbase output in the window pays no row, which may be a
-    /// share the wallet can't attribute (D30).
+    /// A row's `payouts_incomplete`; or, once version 3 was seen (D30),
+    /// any coinbase output to the wallet in the window, all of it then
+    /// `unattributed`.
     pub payouts_incomplete: bool,
 }
 

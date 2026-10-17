@@ -167,6 +167,8 @@ async fn references(
 /// session stays unrecorded, since this session's vault may hold another
 /// key in memory than on disk. Under the tracking lock, so no `attach_key`
 /// interleaves; the notes as they are then.
+/// A locked vault records nothing; a key the vault can't read is skipped
+/// (logged), not the read's failure.
 pub(super) async fn reconcile_key_ids(
     session: &NetworkSession,
     attached: &HashMap<[u8; 32], Vec<AttachedKeyRole>>,
@@ -193,30 +195,35 @@ pub(super) async fn reconcile_key_ids(
         return Ok(notes);
     }
     let vault = session.vault.clone();
-    let ids = tokio::task::spawn_blocking(move || {
+    let read = tokio::task::spawn_blocking(move || {
         missing
             .into_iter()
             .map(|(hash, role)| {
-                Ok((
+                (
                     hash,
                     role,
-                    vault.masternode_key_id(&hash, role.vault_name())?,
-                ))
+                    vault.masternode_key_id(&hash, role.vault_name()),
+                )
             })
-            .collect::<Result<Vec<_>, dw_vault::VaultError>>()
+            .collect::<Vec<_>>()
     })
     .await?;
-    let ids = match ids {
-        Ok(ids) => ids,
-        Err(dw_vault::VaultError::Locked) => return Ok(notes),
-        Err(e) => return Err(EngineError::from(e).into()),
-    };
+    let mut ids = Vec::new();
+    for (hash, role, id) in read {
+        match id {
+            Ok(Some(id)) => ids.push((hash, role, id)),
+            Ok(None) => {}
+            Err(dw_vault::VaultError::Locked) => return Ok(notes),
+            Err(e) => tracing::warn!(error = %e, "could not read an attached key's id"),
+        }
+    }
+    if ids.is_empty() {
+        return Ok(notes);
+    }
     session
         .appdb_op(move |db| {
             for (hash, role, id) in ids {
-                if let Some(id) = id {
-                    set_key_id(db, &display_hex(&hash), role, Some(id))?;
-                }
+                set_key_id(db, &display_hex(&hash), role, Some(id))?;
             }
             load_notes(db)
         })

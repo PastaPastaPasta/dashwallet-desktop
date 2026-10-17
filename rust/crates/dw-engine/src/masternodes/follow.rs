@@ -393,9 +393,13 @@ impl MasternodesRuntime {
         let now = crate::events::unix_now();
         let entries = seen.clone();
         let any_shared = list.entries.iter().any(|e| e.has_extended_net_info);
-        tokio::task::spawn_blocking(move || record_sightings(&appdb, &entries, any_shared, now))
-            .await??;
-        let changed = seen != followed.seen;
+        let first_shared = tokio::task::spawn_blocking(move || {
+            record_sightings(&appdb, &entries, any_shared, now)
+        })
+        .await??;
+        // The first version-3 entry anywhere makes every payout unattributed
+        // (D30), so it is a change even when no followed masternode changed.
+        let changed = seen != followed.seen || first_shared;
         *followed = Followed {
             height: Some(height),
             generation,
@@ -411,10 +415,16 @@ impl MasternodesRuntime {
 /// Writes the first sighting of each ban, of each listing and of a
 /// version-3 entry (D29), and of any version-3 entry in the list
 /// (`any_shared`, D30), and forgets a ban once the masternode is valid
-/// again (MG-00 D9).
-fn record_sightings(db: &AppDb, seen: &Seen, any_shared: bool, now: u64) -> Result<(), AppDbError> {
+/// again (MG-00 D9). `true` when it noted the first version-3 entry.
+fn record_sightings(
+    db: &AppDb,
+    seen: &Seen,
+    any_shared: bool,
+    now: u64,
+) -> Result<bool, AppDbError> {
     let notes = load_notes(db)?;
-    if any_shared && !notes.any_shared_seen {
+    let first_shared = any_shared && !notes.any_shared_seen;
+    if first_shared {
         db.set_setting(GLOBAL_SCOPE, ANY_SHARED_SEEN, Some(&now.to_string()))?;
     }
     for (hash, entry) in seen {
@@ -443,7 +453,7 @@ fn record_sightings(db: &AppDb, seen: &Seen, any_shared: bool, now: u64) -> Resu
             _ => {}
         }
     }
-    Ok(())
+    Ok(first_shared)
 }
 
 #[cfg(test)]
@@ -521,10 +531,14 @@ mod tests {
     fn any_version_3_entry_is_remembered() {
         let db = AppDb::open_in_memory().unwrap();
         let seen: Seen = [([1; 32], Some(summary(1, true)))].into();
-        record_sightings(&db, &seen, false, 100).unwrap();
+        assert!(!record_sightings(&db, &seen, false, 100).unwrap());
         assert!(!load_notes(&db).unwrap().any_shared_seen);
-        record_sightings(&db, &seen, true, 200).unwrap();
-        record_sightings(&db, &seen, false, 300).unwrap();
+        assert!(
+            record_sightings(&db, &seen, true, 200).unwrap(),
+            "the first"
+        );
+        assert!(!record_sightings(&db, &seen, true, 300).unwrap());
+        record_sightings(&db, &seen, false, 400).unwrap();
         let notes = load_notes(&db).unwrap();
         assert!(notes.any_shared_seen);
         assert!(notes.shared_seen.is_empty(), "not a followed masternode");

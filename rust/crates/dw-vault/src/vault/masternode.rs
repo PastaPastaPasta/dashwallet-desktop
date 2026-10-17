@@ -203,7 +203,9 @@ impl Vault {
     /// data key with full scope, as listing the roles does; the secret is
     /// decrypted into a zeroing buffer and doesn't leave (MG-03 D31: the
     /// engine records the id of what the vault holds after a write whose
-    /// outcome it couldn't tell).
+    /// outcome it couldn't tell). The vault directory is synced first, so
+    /// a key read from a file whose rename wasn't yet durable (its
+    /// directory fsync failed) is durable when its id is returned.
     pub fn masternode_key_id(
         &self,
         pro_tx_hash: &[u8; 32],
@@ -223,6 +225,7 @@ impl Vault {
             else {
                 return Ok(None);
             };
+            std::fs::File::open(&self.shared.dir)?.sync_all()?;
             let public = PublicKey::from_secret_key(&secret);
             Ok(Some(
                 hash160::Hash::hash(&public.serialize()).to_byte_array(),
