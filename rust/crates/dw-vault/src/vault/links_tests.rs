@@ -617,6 +617,8 @@ fn a_taken_temporary_name_is_cleared() {
     let f = Fixture::new();
     let v = f.open();
     let invite = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    // Listed oldest first: one second apart, so the order is fixed.
+    f.advance(1);
     let pay = v.stash_link(StashedLinkKind::Payment, PAY).unwrap();
     let dir = f.links_dir().join(format!("{}.tmp", invite.id));
     std::fs::create_dir(&dir).unwrap();
