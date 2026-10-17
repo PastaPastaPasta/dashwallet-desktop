@@ -768,7 +768,7 @@ impl Run {
         }
     }
 
-    /// Asks the next peer that announced `hash` and was not asked; with
+    /// Asks the next peer that announced `item` and was not asked; with
     /// none, gives up on it (failing the phase if `phase` and `count`) and
     /// returns `true`.
     fn retry(&mut self, item: Item, tried: usize, t: Taken, count: bool) -> bool {
@@ -1089,21 +1089,19 @@ impl Run {
 
     fn on_not_found(&mut self, from: usize, items: Vec<InvItem>) {
         for i in items {
-            let asked = |item: &Item, run: &Self| {
-                run.requests
+            // The kind is the peer's word: a request of the other kind is
+            // ended all the same, as misbehaviour, and moves on with its own
+            // kind (D50).
+            let named = [(i.hash, i.kind), (i.hash, other_kind(i.kind))];
+            let Some(item) = named.into_iter().find(|item| {
+                self.requests
                     .pending
                     .get(item)
                     .is_some_and(|r| r.peer == from)
+            }) else {
+                continue;
             };
-            let mut item = (i.hash, i.kind);
-            if !asked(&item, self) {
-                // Naming a request of the other kind ends it all the same,
-                // as misbehaviour, and the request moves on with its own
-                // kind (D50).
-                item.1 = other_kind(i.kind);
-                if !asked(&item, self) {
-                    continue;
-                }
+            if item.1 != i.kind {
                 self.misbehaved(from, "notfound of another kind");
             }
             let r = self.release(&item).expect("looked up");
@@ -1290,7 +1288,6 @@ impl Run {
     /// may be asked for are kept in `unassigned`.
     fn ask_votes(&mut self, hashes: Vec<[u8; 32]>) {
         let window = self.cfg.repeat_window;
-        let timeout = self.cfg.answer_timeout;
         let now = unix_now();
         let hashes: Vec<[u8; 32]> = {
             let store = self.shared.store();
@@ -1322,13 +1319,13 @@ impl Run {
             }
             for i in picks {
                 turn = i + 1;
-                self.ask_votes_of(i, hash, &filter, timeout);
+                self.ask_votes_of(i, hash, &filter);
             }
         }
     }
 
     /// Asks peer `i` for the votes on `hash`.
-    fn ask_votes_of(&mut self, i: usize, hash: [u8; 32], filter: &[u8], timeout: Duration) {
+    fn ask_votes_of(&mut self, i: usize, hash: [u8; 32], filter: &[u8]) {
         let addr = self.peers[i].peer.addr;
         self.history
             .lock()
@@ -1342,7 +1339,7 @@ impl Run {
         *p.vote_announced.entry(hash).or_default() += (before - p.relayed.len()) as i64;
         p.peer.send_govsync(hash, filter);
         if p.answer_due.is_none() {
-            p.rearm_answer(timeout);
+            p.rearm_answer(self.cfg.answer_timeout);
         }
     }
 

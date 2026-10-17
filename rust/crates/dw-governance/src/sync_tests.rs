@@ -1624,9 +1624,6 @@ async fn withholding_peer(mock: MockPeer, junk: u32, h: [u8; 32], h_kind: u32) {
             commands::MNGOVERNANCESYNC if msg.payload[32..] != object_fetch_filter()[..] => {
                 send_status(&mut conn, SSC_GOVOBJ_VOTE, 0).await;
             }
-            "ping" => {
-                let _ = conn.send("pong", &msg.payload).await;
-            }
             _ => {}
         }
     }
@@ -1802,9 +1799,6 @@ async fn keepalive_peer(mock: MockPeer, h: [u8; 32], h_kind: u32) {
                     }
                     commands::MNGOVERNANCESYNC if msg.payload[32..] != object_fetch_filter()[..] => {
                         send_status(&mut conn, SSC_GOVOBJ_VOTE, 0).await;
-                    }
-                    "ping" => {
-                        let _ = conn.send("pong", &msg.payload).await;
                     }
                     "getdata" => {
                         for i in decode_inv(&msg.payload).unwrap() {
