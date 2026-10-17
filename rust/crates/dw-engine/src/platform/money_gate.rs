@@ -6,7 +6,8 @@
 //! if it does not verify in time. In the degraded mode rule 5 is suspended:
 //! one bounded round of re-fetches looks for a mismatch, which still
 //! refuses, and the payment proceeds otherwise. The trusted-only toggle
-//! proceeds.
+//! proceeds. In every mode a payee whose paying account is not the one
+//! their current request designates is refused (D12, D21, D25, D26).
 //!
 //! The gate records what verifies itself, as the background re-fetch
 //! (`reverify.rs`) does: under the wallet manager's read lock, and only for
@@ -322,13 +323,23 @@ pub(super) fn payee_held(
 }
 
 /// Design D12: the account a payment to `contact` derives its address
-/// from was not built from the request the gate verifies (the library
+/// from was not built from the contact's current request (the library
 /// stamps an account with its request only when built from it, and every
 /// re-key clears the stamp; a rebuild deferred before a restart is lost
 /// with its queue). Before the reservation a queued `RegisterExternal`
 /// rebuilds it at the reservation's drain; after it nothing does, as a
 /// drain may leave the op queued and derive from the old account.
-fn paying_account_stale(m: &ManagedIdentity, contact: &Identifier, reserved: bool) -> bool {
+///
+/// No stamp is staleness only when `absent_is_stale` (`Enforce`, D26):
+/// the library's store has no column for it, so every account loads
+/// unstamped until the first DashPay pass rebuilds it, and the other
+/// modes proceed on that absence as on any other (D7).
+fn paying_account_stale(
+    m: &ManagedIdentity,
+    contact: &Identifier,
+    reserved: bool,
+    absent_is_stale: bool,
+) -> bool {
     let dp = m.dashpay();
     let Some(c) = dp.established_contacts().get(contact) else {
         return false;
@@ -338,8 +349,11 @@ fn paying_account_stale(m: &ManagedIdentity, contact: &Identifier, reserved: boo
             p.contact_id == *contact && p.op.kind() == PendingContactCryptoKind::RegisterExternal
         })
     };
-    c.external_account_reference != Some(c.incoming_request.account_reference)
-        && (reserved || !rebuild_queued())
+    let stale = match c.external_account_reference {
+        Some(built_from) => built_from != c.incoming_request.account_reference,
+        None => absent_is_stale,
+    };
+    stale && (reserved || !rebuild_queued())
 }
 
 /// Design D21: `address` is in the address pool of `pair`'s paying
@@ -374,6 +388,9 @@ struct SessionEnv<'a> {
     /// The re-check: the address reserved for the payee (D12's strict
     /// reading, D21).
     reserved: Option<&'a Address>,
+    /// Rule 5 as the caller read it once: whether an unstamped paying
+    /// account is stale (D26).
+    rule: Rule5,
 }
 
 impl SessionEnv<'_> {
@@ -381,21 +398,48 @@ impl SessionEnv<'_> {
     /// one its current request designates (D12, D25), or, at the re-check,
     /// the reserved address is not in that account (D21). Whether or not
     /// anything came through the fallback, and in every mode: it is where
-    /// the money goes, not what the data was verified by.
+    /// the money goes, not what the data was verified by. Only `Enforce`
+    /// takes a missing stamp for a stale account (D26).
     fn payable(&self, wm: &WalletManager<PlatformWalletInfo>) -> bool {
         let Subject::Payee(wallet, pair) = self.subject else {
             return true;
         };
-        let m = (wm.get_wallet_info(&wallet.0)).and_then(|info| {
-            (info.identity_manager.wallet_managed_identities(&wallet.0))
-                .find(|m| m.identity.id() == pair.0)
-        });
         // A subject the library no longer holds is `unverified`'s `None`.
-        let stale = m.is_some_and(|m| paying_account_stale(m, &pair.1, self.reserved.is_some()));
+        let stale = self.managed(wm).is_some_and(|m| {
+            let enforce = self.rule == Rule5::Enforce;
+            paying_account_stale(m, &pair.1, self.reserved.is_some(), enforce)
+        });
         !stale
             && self
                 .reserved
                 .is_none_or(|address| in_paying_account(wm, wallet, pair, address))
+    }
+
+    /// D25: only where the money goes, under one read (the re-check where
+    /// rule 5 does not apply).
+    async fn destination(&self) -> Result<(), Refusal> {
+        let manager = self.session.live()?.manager;
+        let wm = manager.wallet_manager_arc();
+        let payable = self.payable(&*wm.read().await);
+        if payable {
+            Ok(())
+        } else {
+            Err(Refusal::NotPayable)
+        }
+    }
+
+    /// The identity the subject belongs to, as the library holds it now.
+    fn managed<'w>(
+        &self,
+        wm: &'w WalletManager<PlatformWalletInfo>,
+    ) -> Option<&'w ManagedIdentity> {
+        let (wallet, owner) = match self.subject {
+            Subject::Payee(wallet, pair) => (wallet, pair.0),
+            Subject::Identity(wallet, identity) => (wallet, identity),
+        };
+        let info = wm.get_wallet_info(&wallet.0)?;
+        (info.identity_manager.wallet_managed_identities(&wallet.0))
+            .find(|m| m.identity.id() == owner)
     }
 
     /// The subject's entities `provenance` holds unverified; `None` if the
@@ -405,20 +449,14 @@ impl SessionEnv<'_> {
         wm: &WalletManager<PlatformWalletInfo>,
         provenance: &Provenance,
     ) -> Option<Vec<Held>> {
-        let (wallet, owner) = match self.subject {
-            Subject::Payee(wallet, pair) => (wallet, pair.0),
-            Subject::Identity(wallet, identity) => (wallet, identity),
-        };
-        let info = wm.get_wallet_info(&wallet.0)?;
-        let m = (info.identity_manager.wallet_managed_identities(&wallet.0))
-            .find(|m| m.identity.id() == owner)?;
+        let m = self.managed(wm)?;
         let held = match self.subject {
             Subject::Payee(_, (_, contact)) => {
                 let username = self.session.platform.contacts.names.label(&contact);
                 payee_held(m, &contact, username.as_deref())
             }
-            Subject::Identity(..) => Some(vec![Held::Identity {
-                id: owner,
+            Subject::Identity(_, id) => Some(vec![Held::Identity {
+                id,
                 keys: m.identity.public_keys().clone(),
             }]),
         };
@@ -471,8 +509,9 @@ impl NetworkSession {
     /// nothing it rests on is unverified, or the mode lets it move anyway.
     /// May wait (`Enforce`: up to a minute plus one quorum lookup's wait).
     pub(crate) async fn money_gate(&self, subject: Subject) -> Result<(), Refusal> {
+        let rule = self.trust.rule_5();
         let signals = Signals {
-            rule: self.trust.rule_5(),
+            rule,
             lock: self.platform.lock.subscribe(),
         };
         let waits = *guard(&self.platform.money_gate.waits);
@@ -480,6 +519,7 @@ impl NetworkSession {
             session: self,
             subject,
             reserved: None,
+            rule,
         };
         let gated = run(&env, || self.gate_refetcher(), signals, waits).await;
         if let Err(refusal) = &gated {
@@ -522,12 +562,13 @@ impl NetworkSession {
             session: self,
             subject,
             reserved: Some(address),
+            rule,
         };
         let checked = match rule {
             Rule5::Enforce => recheck(&env, || self.gate_refetcher(), waits).await,
             // D25: where the money goes is checked in every mode; only
             // what is unverified waits for rule 5.
-            Rule5::Probe | Rule5::Off => env.pending().await.map(drop),
+            Rule5::Probe | Rule5::Off => env.destination().await,
         };
         if let Err(refusal) = &checked {
             tracing::info!(?subject, ?refusal, "the money gate's re-check refused");
