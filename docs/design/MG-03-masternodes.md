@@ -171,7 +171,9 @@ work around it:
 | MG-00 D43 (backfill a tracked masternode's collateral: the block at `confirmedHash`'s height − `nMasternodeMinimumConfirmations`, checked against the verified header) | a header lookup by hash and a block download from dash-spv | `DashSpvClient::storage()` is public in dash-spv, but platform-wallet's `SpvRuntime` keeps the client private and exposes neither. The list summaries also drop `confirmedHash`. | `resolve_collateral` returns `masternodes.unsupported{feature: "collateral_lookup"}`. A tracked masternode's `collateral` is `CollateralState::Unresolved` (D11). |
 | MG-00 D42 (watch every known ProTx hash through compact filters from the registration height, so updates that don't name a wallet key are applied) | a filter watch on raw elements | the SPV filter matcher takes the wallet's scripts and outpoints only | Payout and payees come from the wallet's own provider transactions. `payout_checked_height` is always `None` ("checking", MG-00 D42), so the UI never offers a fixed withdrawal destination yet (D5). |
 
-Both are follow-ups (§10). Nothing in MG-03 depends on them for its acceptance.
+| MG-00 D1 and D28 for a v24 shared masternode (Core `src/evo/providertx.h`: version 3 replaces `scriptPayout` with `payouts`, and a shared registration has `shares` with per-share refund and reward scripts; ProUpShareTx and ProUpSharedRegTx update them) | rust-dashcore types for the version-3 payload and transaction types 10–12 | the pinned rust-dashcore (`d3d50520a`, PastaPastaPasta/rust-dashcore-dashpay, which platform `ebe37f8a` pins) reads every ProRegTx/ProUpRegTx with the version-2 layout, and refuses Core's v24 version-3 bytes outright | The masternode is `shared_unsupported`: its payouts are left out with `payouts_incomplete` set, and it stays in Mine when a provider transaction of it is in the wallet (D25). The share model is MG-03b. |
+
+All three are follow-ups (§10). Nothing in MG-03 depends on them for its acceptance.
 
 ## 8. The event and the follower
 
@@ -193,8 +195,12 @@ it, MG-02 D7), and dw-app maps it to `AppEvent::Masternodes`.
 
 ## 9. dwcli `mn`
 
-`dwcli mn <cmd>` drives the facade only. Each command prints JSON lines like `dashpay`:
-`{"ok":true,"result":…}` or `{"ok":false,"error":{"code","message"}}` with exit status 1.
+`dwcli mn <cmd>` drives the facade only. Each command prints one JSON line like `dashpay`:
+`{"ok":true,"result":…}` or `{"ok":false,"error":{"code","message"}}` with exit status 1. Every failure is a line,
+not only the facade's (D26): the vault's unlock (m1 `vault`, e.g. a wrong `--passphrase-file`), a setup step before
+the command (`setup`: the passphrase file, the data root, opening the network), a refused command line
+(`invalid_argument`, naming no value; exit status 2) and a panic (`internal`). No line or stderr message repeats an
+argument (D23).
 
 | Command | Facade call |
 |---|---|
@@ -229,6 +235,9 @@ As built, slices 1–3 landed as one engine commit and one dwcli commit, with ev
 fix that the restart in the suite exposed (D15).
 
 Follow-ups for later rows:
+- **MG-03b, shared masternodes (D25):** the share table, per-share payouts and payout attribution, and
+  ProUpShareTx / ProUpSharedRegTx in the aggregation. Depends on rust-dashcore exposing the v24 version-3 payload
+  (the types D25 names) at the pin platform-wallet uses.
 - **D43/D42 upstream:** a platform-wallet `SpvRuntime` accessor for header-by-hash and a block fetch (dash-spv has
   both internally), and a raw-element filter watch. MG-03b, or MG-13 before the fixed withdrawal destination.
 - **MG-10:** the Activity filter by masternode. It uses `payouts()` txids, or a `HistoryFilter` extension (D10).
@@ -241,7 +250,15 @@ Follow-ups for later rows:
 - T0:
   - the contract test (generated surface, call rows, codes, and the refusal order on a session without a list);
   - unit tests of aggregation (collateral resolution, internal-collateral amount check, operator share,
-    latest-wins), status mapping, the follower's banned and listed bookkeeping, key checks and the parser of `find`.
+    latest-wins, a version-3 ProRegTx/ProUpRegTx flagged and Core v24 version-3 bytes refused by the pin), a shared
+    row kept in Mine and out of the payout totals (and a version-3 list entry), status mapping, the follower's banned
+    and listed bookkeeping, key checks, an attached key's id across an app.sqlite reopen with a rotated voting key
+    reading `key_mismatch`, and the parser of `find`;
+  - every facade call given a secret-shaped 64 hex (as hash, wallet id and key) quotes it in no error (D23); a label
+    for an unknown hash is refused (D27); an import and a removal each send the event at the same list height (D28);
+  - `dwcli/tests/mn_cli.rs`: every `mn` subcommand with the secret-shaped value prints one JSON line and neither
+    stdout nor stderr holds it; a wrong passphrase file, a missing one and a refused command line are JSON lines
+    too (D26).
 - T1, `regtest/functional/dwd_masternodes.py`, on Core's functional framework (dashd v24.0.0-rc.2): a controller, which
   is dwcli's SPV peer, and the framework's 2 static masternodes. DKG, InstantSend and ChainLocks stay off, so the
   masternodes the test registers run no node and are never PoSe-punished. The wallet's DIP3 keys are derived in Python
@@ -256,7 +273,9 @@ Follow-ups for later rows:
      registration facts; the coin is no longer offered;
   3. tracking: `find` a static masternode by service address, `track`, `already_tracked`, `not_found`, `not_tracked`,
      labels, C's voting and owner keys attached (`matched`) and a wrong key refused (`key_mismatch`), `untrack`
-     deleting the keys;
+     deleting the keys; on the synced list, every `mn` subcommand given a secret-shaped 64 hex quotes it nowhere
+     (D23); a ProUpRegTx (`protx update_registrar`) rotates C's voting key and the next read, a fresh process, reports
+     the attached key `key_mismatch` with `voting: false` (D24);
   4. after blocks are mined, `mn payouts` of A and C equal Core's coinbase payments to their payout addresses, newest
      first, and mature after 100 blocks;
   5. `protx revoke` of A makes it `pose_banned` (Core bans a revoked masternode); the wallet spending the collateral
@@ -292,3 +311,9 @@ Follow-ups for later rows:
 | D20 | Tracking changes run one at a time per session (a `tokio::sync::Mutex` in the session's masternodes runtime, held across each `track`, `untrack`, `set_label`, `attach_key` and `detach_key`). | Each call takes the operation guard more than once (the registry, then the vault), so an `attach_key` racing an `untrack` could store a key after the keys were deleted, leaving a secret no call can reach (MG-00 D22). |
 | D21 | A row is `mine` only when the wallet holds a role through its own provider transactions; a provider transaction that gives it none makes no row. | key-wallet's router also matches a ProTx by an input the wallet spent (its fee), so the library's set can hold masternodes of others. "Mine" is any role (§3), and an attached key is the user's claim, not the wallet's. |
 | D22 | The T2 check is a recorded dwcli run, not an ignored engine test. | dwcli drives only the facade, as a test would, and a run on a fresh data dir includes the SPV sync a test would need anyway. An ignored test that needs testnet and minutes of sync wouldn't run in CI either. |
+| D23 | No error message or code payload carries a hash, key or wallet id the caller passed: `not_found`, `already_tracked`, `not_tracked`, `not_evonode` and `no_identity` are bare codes with fixed text, a read's `wallet_not_found` names "the requested wallet", and the SDK's text of a failed credits read goes to the log only. dwcli's lines and stderr follow. | A private key pasted where a ProTx hash goes is valid 64 hex, so the malformed-input guard doesn't stop it, and an echo puts it in logs and terminals (Sol r1 Major 1). The caller has the hash it passed; the code is enough for the UI's copy. |
+| D24 | An attached key's hash160 (of its public key; the voting key id for `voting`) is recorded in app.sqlite (`masternodes.key:<hash>:<role>`) before the vault write, restored if that write fails, and deleted with the key (`detach_key`, `untrack`). Every read compares it again: `voting` with the synced list, `owner` with a loaded wallet's ProRegTx, `payout` with its P2PKH payout script (D19), as `AttachedKey { role, key_id, check }`; `KeyCheck` gains `key_mismatch`. A key holds its role only with a `key_id` and no mismatch. | MG-00 D13 asks for a live comparison. A role name alone kept reporting `voting: true` after a ProUpRegTx rotated the key, or after a masternode attached `unchecked` was listed with another key (Sol r1 Major 2). The id isn't secret and app.sqlite is readable while the vault is locked; the vault stays the authority for whether a key is attached. Recording before the vault write means a crash leaves at most an id without a key, which no read uses. |
+| D25 | A masternode is `shared_unsupported` when a version-3 ProRegTx/ProUpRegTx is among the wallet's provider transactions or its list entry is version 3 (extended network info). Its record's keys, payout, service and operator share aren't used (only type, mode and collateral read right), it is left out of `payouts()` (`unsupported{feature: "shared_masternodes"}`), its row's payouts and the overview total (`payouts_incomplete`), and it stays in Mine when a provider transaction of it is in the wallet. The share model is split out as **MG-03b** (share table, per-share payouts, ProUpShareTx/ProUpSharedRegTx), which depends on rust-dashcore exposing the v24 version-3 payload. Upstream dashpay/rust-dashcore `dev` (d35a8d6c0) has it: `provider_registration::{MasternodePayoutShare, CollateralShare}` with `ProviderRegistrationPayload::{payouts, shares}` (#1152, d775b1bf8), `ProviderUpdateRegistrarPayload::payouts` (#1138, 0d215f3f4), and `provider_update_share::ProviderUpdateSharePayload`, `provider_update_shared_registrar::ProviderUpdateSharedRegistrarPayload` with ProDisTx (#1156, 2102cacf2). The node-program branches carry the same types in their `dash` crate (5b16efb7f; `node/integration` 9b75db6b3, EV1-1 `node/ev1-1-netinfo` 61785a452, EV2b `node/ev2b-dml-apply` ebab193e8). The pinned fork (`d3d50520a`) has none. | Core v24 `src/evo/providertx.h` serialises `payouts` and `shares` where version 2 has `scriptPayout` (Sol r1 Major 3). Misread fields would name the wrong payout and the wrong owner, so the row fails visibly instead. A raw script scan adds nothing here: every version-3 provider transaction the facade sees is in the wallet's history already, and the pin refuses Core's version-3 bytes (a unit test feeds them), so such a transaction reaches the facade only through the list's version-3 entry. A version-3 list entry also flags a version-2 registration, since a version-3 ProUpRegTx the wallet doesn't hold may have shared its payout. |
+| D26 | Every `dwcli mn` failure is one `{ok:false,error:{code,message}}` line: the facade's, the vault's unlock (m1 `vault`, generic), a setup step (`setup`), a refused command line (`invalid_argument`, any argv `mn`), a panic (`internal`, payload withheld). A line is printed once. | A client of the one-line protocol couldn't parse a wrong `--passphrase-file`, which only reached stderr (Sol r1 Major 4). The same shape as DashPay's (E0-09), with mn's own once-flag. |
+| D27 | `set_label` refuses a hash that isn't tracked, a loaded wallet's, or in the synced list: `not_found`, or `list_unavailable` while the list that might hold it isn't synced. | Labels of any 64 hex grew app.sqlite without bound, and every overview and follower pass loads them all (Sol r1 Low 5). |
+| D28 | A change of the wallet set (`WalletCreated`, `WalletRemoved`, `WalletLoadChanged`) bumps the follower's generation and sends the event, through a wrapper of the session's sink. | Which masternodes are "mine" changes with the wallets while the list height stays put, and the follower re-read only on a new height or a local change (Sol r1 Low 6). One wrapper hears every create, import, restore, load, unload and removal path, including later ones, without a call at each. |
