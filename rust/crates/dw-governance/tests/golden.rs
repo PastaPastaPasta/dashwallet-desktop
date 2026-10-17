@@ -58,19 +58,21 @@ fn test_qt_132_amounts_round_trip_through_core_format_money() {
 }
 
 /// Every object dashd's `gobject check` accepted passes the wallet's object
-/// rules (MG-02 §3), and so does every live testnet proposal of
-/// testdata/governance_live.json (relayed by dashd v24 nodes).
+/// rules (MG-02 §3) at its creation time, and so does every live testnet
+/// proposal of testdata/governance_live.json (relayed by dashd v24 nodes);
+/// at its end epoch, the wallet keeps none (D65).
 #[test]
 fn objects_dashd_accepts_validate() {
-    use dw_governance::validate::{ValidObject, check_object};
+    use dw_governance::validate::{ObjectRejection, ValidObject, check_object};
     for c in cases() {
         assert_eq!(c["check"]["Object status"], "OK");
+        let time = c["time"].as_i64().unwrap();
         let obj = GovernanceObject::new_proposal(
             1,
-            c["time"].as_i64().unwrap(),
+            time,
             hex::decode(c["data_hex"].as_str().unwrap()).unwrap(),
         );
-        let r = check_object(&obj, dashcore::Network::Regtest, 1_900_000_000, true);
+        let r = check_object(&obj, dashcore::Network::Regtest, time, true);
         assert!(
             matches!(r, Ok(ValidObject::Proposal(_))),
             "{r:?} {}",
@@ -86,13 +88,21 @@ fn objects_dashd_accepts_validate() {
     let proposals = live["networks"]["testnet"]["proposals"].as_array().unwrap();
     assert!(!proposals.is_empty());
     for p in proposals {
+        let time = p["creation_time"].as_i64().unwrap();
         let obj = GovernanceObject::new_proposal(
             1,
-            p["creation_time"].as_i64().unwrap(),
+            time,
             hex::decode(p["data_hex"].as_str().unwrap()).unwrap(),
         );
         assert_eq!(display_hex(&obj.hash()), p["object_hash"].as_str().unwrap());
-        let r = check_object(&obj, dashcore::Network::Testnet, 1_900_000_000, true);
-        assert!(matches!(r, Ok(ValidObject::Proposal(_))), "{r:?}");
+        let r = check_object(&obj, dashcore::Network::Testnet, time, true);
+        let Ok(ValidObject::Proposal(d)) = r else {
+            panic!("{r:?}");
+        };
+        let end = d.end_epoch.expect("a live proposal has an end epoch");
+        assert_eq!(
+            check_object(&obj, dashcore::Network::Testnet, end, true),
+            Err(ObjectRejection::ProposalExpired)
+        );
     }
 }

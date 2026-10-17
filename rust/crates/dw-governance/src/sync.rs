@@ -641,6 +641,12 @@ struct Run {
     vote_targets: HashSet<[u8; 32]>,
     /// Vote syncs completed by peers gone since (D68).
     completed: HashSet<(SocketAddr, [u8; 32])>,
+    /// Every peer of the run, gone or not: with two, no proposal is
+    /// settled by one peer's vote sync alone (D68).
+    met: HashSet<SocketAddr>,
+    /// Votes asked for again after their outpoint resolved (D64): giving
+    /// one up says nothing about a vote sync.
+    refetching: HashSet<[u8; 32]>,
     /// A vote was given up on once synced: no later vote sync is recorded
     /// as complete, as its votes may not all have come (D68).
     vote_given_up: bool,
@@ -804,6 +810,9 @@ impl Run {
     /// Done with `item`: its announcements stop counting against their
     /// peers' limits.
     fn finish(&mut self, item: &Item) {
+        if item.1 == INV_GOVERNANCE_VOTE && !self.refetching.is_empty() {
+            self.refetching.remove(&item.0);
+        }
         let Some(a) = self.requests.announced.remove(item) else {
             return;
         };
@@ -977,10 +986,13 @@ impl Run {
                 // Who announced an object still counts if another peer
                 // delivers it later.
                 self.remember_late(item, asked, t.owed, t.phase && (count || t.unanswered));
-                self.finish(&item);
                 let (hash, kind) = item;
+                let refetched = kind == INV_GOVERNANCE_VOTE && self.refetching.contains(&hash);
+                self.finish(&item);
                 if kind == INV_GOVERNANCE_VOTE {
-                    self.vote_given_up |= self.announce_open;
+                    if !refetched {
+                        self.vote_given_up |= self.announce_open;
+                    }
                     for p in &mut self.peers {
                         if p.unresolved.remove(&hash) {
                             p.unattributable += 1;
@@ -1564,9 +1576,9 @@ impl Run {
     /// that sends the re-signed copy again is refused, and the next is
     /// asked.
     fn refetch_votes(&mut self) {
-        let hashes = self.shared.store().take_refetch();
         let ids: Vec<usize> = self.peers.iter().map(|p| p.peer.id).collect();
         let Some(&first) = ids.first() else { return };
+        let hashes = self.shared.store().take_refetch();
         for hash in hashes {
             let item = (hash, INV_GOVERNANCE_VOTE);
             if self.requests.pending.contains_key(&item) {
@@ -1582,6 +1594,7 @@ impl Run {
                     }
                 }
             }
+            self.refetching.insert(hash);
             self.assign(item, first, Taken::default());
         }
     }
@@ -1598,18 +1611,17 @@ impl Run {
     /// Records this run's completed vote syncs in the session's history,
     /// once every request is done: the votes they announced all came.
     fn record_vote_syncs(&self) {
-        let window = self.cfg.repeat_window;
         let now = Instant::now();
         let mut h = self.history.lock().unwrap_or_else(|p| p.into_inner());
-        for key in self.completed_vote_syncs() {
-            h.vote_completed
-                .entry(key)
-                .and_modify(|t| {
-                    if t.elapsed() >= window {
-                        *t = now;
-                    }
-                })
-                .or_insert(now);
+        // A connected peer's are current; a gone peer's date from when it
+        // left.
+        for p in &self.peers {
+            for hash in p.votes_completed() {
+                h.vote_completed.insert((p.peer.addr, hash), now);
+            }
+        }
+        for key in &self.completed {
+            h.vote_completed.entry(*key).or_insert(now);
         }
     }
 
@@ -1617,8 +1629,10 @@ impl Run {
     /// completed a vote sync of (D68): each needs
     /// [`SyncConfig::vote_peers_per_proposal`] of them, this run or within
     /// the window, or as many as there are peers that completed one or are
-    /// connected. A connected peer asked within the window cannot be asked
-    /// again: if it did not complete, the proposal stays short until then.
+    /// connected, but never fewer than two if the run had two peers: peers
+    /// that left do not let the one left settle a proposal alone. A
+    /// connected peer asked within the window cannot be asked again: if it
+    /// did not complete, the proposal stays short until then.
     fn short_vote_syncs(&self) -> usize {
         let window = self.cfg.repeat_window;
         let mut done: HashMap<[u8; 32], HashSet<SocketAddr>> = HashMap::new();
@@ -1634,6 +1648,7 @@ impl Run {
             }
         }
         let per_proposal = self.cfg.vote_peers_per_proposal.max(1);
+        let floor = per_proposal.min(2).min(self.met.len());
         let now = unix_now();
         let store = self.shared.store();
         self.vote_targets
@@ -1647,7 +1662,7 @@ impl Run {
                     .iter()
                     .filter(|p| by.is_none_or(|b| !b.contains(&p.peer.addr)))
                     .count();
-                completed < per_proposal.min(completed + others)
+                completed < per_proposal.min(completed + others).max(floor)
             })
             .count()
     }
@@ -1885,6 +1900,8 @@ async fn run_inner(
         announce_open: false,
         vote_targets: HashSet::new(),
         completed: HashSet::new(),
+        met: HashSet::new(),
+        refetching: HashSet::new(),
         vote_given_up: false,
         lost: 0,
         recovered: 0,
@@ -1893,6 +1910,7 @@ async fn run_inner(
         vote_parent_order: VecDeque::new(),
         last_progress: Instant::now(),
     };
+    run.met = run.peers.iter().map(|p| p.peer.addr).collect();
     run.changed();
 
     let window = run.cfg.repeat_window;
@@ -1941,8 +1959,12 @@ async fn run_inner(
         }
         shared.progress().objects_secs = Some(started.elapsed().as_secs_f64());
         run.ask_confirmations();
+    }
 
-        // Votes of the current proposals, spread over the peers.
+    // Votes of the current proposals, spread over the peers that did not
+    // vote-sync them within the window; with no fresh peer, only the check
+    // that enough peers completed them (D68).
+    {
         shared.set_phase(Phase::SyncingVotes);
         let started = Instant::now();
         let current = shared.store().current_proposals(unix_now());
@@ -1965,7 +1987,6 @@ async fn run_inner(
         }
         shared.progress().votes_secs = Some(started.elapsed().as_secs_f64());
     }
-    run.votes_open = true;
 
     shared.store().set_synced();
     {

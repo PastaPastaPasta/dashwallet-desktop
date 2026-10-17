@@ -845,7 +845,9 @@ async fn a_mute_peer_is_closed_while_another_chatters() {
         mute: true,
         ..Node::default()
     };
-    let hx = start(vec![chatty, mute], |c| {
+    // Two chatty peers: a vote sync needs two completions once the run had
+    // two peers (D68).
+    let hx = start(vec![chatty.clone(), chatty, mute], |c| {
         c.peer.session.ping_interval = Duration::from_millis(200);
         c.answer_timeout = Duration::from_secs(1);
         c.idle_timeout = Duration::from_secs(5);
@@ -853,7 +855,7 @@ async fn a_mute_peer_is_closed_while_another_chatters() {
     .await;
     hx.shared.store().set_confirmations(1);
     let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
-    assert_eq!((p.objects, p.votes, p.peers), (1, 1, 1));
+    assert_eq!((p.objects, p.votes, p.peers), (1, 1, 2));
     hx.stop.send(true).unwrap();
 }
 
@@ -934,7 +936,8 @@ async fn another_proposals_relay_does_not_settle_a_vote_sync() {
         }),
         ..Node::default()
     };
-    let hx = start(vec![node.clone(), node], |_| {}).await;
+    // Three: the one that closes leaves two completions (D68).
+    let hx = start(vec![node.clone(), node.clone(), node], |_| {}).await;
     let p = wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
     assert_eq!((p.objects, p.votes), (2, 2));
     hx.stop.send(true).unwrap();
@@ -1755,7 +1758,14 @@ async fn an_announcer_that_closes_still_confirms_the_object() {
     .await;
     let shown = shared.store().object(&h.hash()).is_some();
     let _ = stop.send(true);
-    assert_eq!(p.phase, Phase::Synced, "{p:?}");
+    // The objects phase completes; the votes phase then has one peer left
+    // of three, too few to settle the proposal's votes (D68).
+    let votes_short = p
+        .last_error
+        .as_deref()
+        .is_some_and(|e| e.contains("too few peers"));
+    assert!(p.phase == Phase::Synced || votes_short, "{p:?}");
+    assert!(p.objects_secs.is_some(), "{p:?}");
     assert!(shown, "two honest peers announced it: {p:?}");
 }
 
@@ -1897,6 +1907,8 @@ async fn one_peer_run(tune: impl FnOnce(&mut SyncConfig, &mut PeerState)) -> Run
         announce_open: false,
         vote_targets: HashSet::new(),
         completed: HashSet::new(),
+        met: HashSet::new(),
+        refetching: HashSet::new(),
         vote_given_up: false,
         lost: 0,
         recovered: 0,
@@ -3491,4 +3503,115 @@ async fn a_resolved_outpoint_brings_back_the_honest_copy() {
     run.handle(1, PeerEvent::Vote(honest.encode()));
     assert_eq!(keys(&run), vec![key_id(2)]);
     assert!(run.requests.pending.is_empty());
+}
+
+/// Validator r18 Minor 5: a refetched vote every peer answers `notfound`
+/// for (its voter's key changed, D64) is given up on without marking the
+/// run's vote syncs as possibly short.
+#[tokio::test]
+async fn a_refetch_given_up_leaves_vote_syncs_recorded() {
+    let p = proposal("p-r18-refetch-notfound");
+    let mut run = two_peer_run(&p).await;
+    list_keys(&run, [1, 2]);
+    let honest = vote(p.hash(), 2, VoteOutcome::Yes);
+    let forged = resigned(&honest, 1);
+    let item = vote_inv(&honest);
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::Vote(forged.encode()));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.announce_open = true;
+    run.shared.store().set_resolved(HashMap::from([(
+        honest.masternode_outpoint,
+        crate::store::ResolvedMasternode {
+            pro_tx_hash: [9; 32],
+            voting_key_id: key_id(3),
+            weight: 1,
+        },
+    )]));
+    let key = (item.hash, item.kind);
+    run.expire();
+    assert!(run.requests.pending.contains_key(&key));
+    run.handle(0, PeerEvent::NotFound(vec![item]));
+    run.expire();
+    run.handle(1, PeerEvent::NotFound(vec![item]));
+    assert!(!run.requests.pending.contains_key(&key));
+    assert!(!run.vote_given_up);
+    assert!(run.refetching.is_empty());
+}
+
+/// Validator r18 Major 2: a retry whose peers were all full-synced within
+/// the window still checks the votes phase. Every peer was asked for A's
+/// votes in a run that failed before completing them: the retry cannot
+/// ask again, so it fails rather than reading Synced with A at no votes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retry_with_no_fresh_peer_still_needs_completed_vote_syncs() {
+    let a = proposal("a-r18-nofresh");
+    let ha = a.hash();
+    let honest = Node {
+        objects: vec![a.clone()],
+        votes: vec![vote(ha, 1, VoteOutcome::Yes)],
+        ..Node::default()
+    };
+    let hx = start_with(
+        vec![honest.clone(), honest.clone(), honest],
+        |_| {},
+        move |shared, history, addrs| {
+            shared.progress().last_synced_at = Some(unix_now() as u64 - 4_000);
+            shared.store().add_object(a, None, unix_now()).unwrap();
+            for addr in addrs {
+                history.full_synced.insert(*addr, Instant::now());
+                history.vote_synced.insert((*addr, ha), Instant::now());
+            }
+        },
+    )
+    .await;
+    let p = wait_for(&hx.shared, |p| {
+        matches!(p.phase, Phase::Failed | Phase::Synced)
+    })
+    .await;
+    let _ = hx.stop.send(true);
+    assert_eq!(p.phase, Phase::Failed, "{p:?}");
+    assert!(
+        p.last_error
+            .as_deref()
+            .unwrap_or("")
+            .contains("too few peers"),
+        "{p:?}"
+    );
+}
+
+/// Validator r18 Moderate 3: two peers that never answer `govsync` (a
+/// Core node still syncing) are closed at the answer timeout; the one
+/// left withholds A's votes (`ssc(11, 0)`). Gone peers still count toward
+/// the peers a proposal needs, so one withholder cannot settle it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn peers_that_leave_do_not_let_one_withholder_settle_a_proposal() {
+    let a = proposal("a-r18-mute");
+    let ha = a.hash();
+    let mute = Node {
+        objects: vec![a.clone()],
+        votes: vec![vote(ha, 1, VoteOutcome::Yes)],
+        mute: true,
+        ..Node::default()
+    };
+    let withholder = Node {
+        objects: vec![a.clone()],
+        ..Node::default()
+    };
+    let hx = start_with(
+        vec![mute.clone(), mute, withholder],
+        |cfg| {
+            cfg.answer_timeout = Duration::from_secs(1);
+        },
+        move |shared, _history, _addrs| {
+            shared.store().add_object(a, None, unix_now()).unwrap();
+        },
+    )
+    .await;
+    let p = wait_for(&hx.shared, |p| {
+        matches!(p.phase, Phase::Failed | Phase::Synced)
+    })
+    .await;
+    let _ = hx.stop.send(true);
+    assert_eq!(p.phase, Phase::Failed, "{p:?}");
 }
