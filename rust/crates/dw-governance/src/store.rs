@@ -53,9 +53,10 @@ use dashcore::hashes::{Hash, HashEngine, sha256};
 use dashcore::{Network, OutPoint};
 
 use crate::object::{GovernanceObject, display_hex};
+use crate::params::EVONODE_VOTE_WEIGHT;
 use crate::params::governance_params;
 use crate::proposal::{ProposalData, TriggerData};
-use crate::tally::{CurrentVote, KeyWeights};
+use crate::tally::{CurrentVote, KeyWeights, RangedTally, ranged_tally};
 use crate::validate::{MAX_TIME_FUTURE_DEVIATION, ObjectRejection, ValidObject, check_object};
 use crate::vote::{
     BLS_SIG_SIZE, COMPACT_SIG_SIZE, GovernanceVote, SIGNAL_FUNDING, VoteOutcome, canonical_compact,
@@ -109,6 +110,9 @@ pub const MAX_ERASED_OBJECTS: usize = 10_000;
 /// Hashes of lapsed proposals remembered, oldest forgotten first (MG-02
 /// D65): a forgotten one is refused again if it comes back.
 pub const MAX_EXPIRED_PROPOSALS: usize = 10_000;
+/// Hashes of votes the per-key cap refused kept per proposal (MG-02 D71):
+/// past it, a key's refused votes count as many as it has masternodes.
+pub const MAX_REFUSED_PER_PROPOSAL: usize = 1_000;
 /// Signal and outcome ranges Core accepts (`VOTE_SIGNAL_UNKNOWN`,
 /// `VOTE_OUTCOME_UNKNOWN` exclusive).
 const MAX_SIGNAL: i32 = 4;
@@ -243,6 +247,43 @@ pub struct ResolvedMasternode {
     pub weight: u32,
 }
 
+/// Votes on one proposal the store holds no countable copy of, widened
+/// into its tally (D71, D72).
+#[derive(Debug, Default)]
+struct Uncounted {
+    /// (key, outcome) → votes the per-key cap refused.
+    refused: HashMap<([u8; 20], VoteOutcome), Refused>,
+    /// Hashes held in `refused`.
+    held: usize,
+    /// Outpoint → wrong-key copies dropped while their honest copy is
+    /// fetched again.
+    awaited: HashMap<OutPoint, Vec<Awaited>>,
+}
+
+impl Uncounted {
+    fn is_empty(&self) -> bool {
+        self.refused.is_empty() && self.awaited.is_empty()
+    }
+}
+
+/// A key's refused votes on one proposal: their hashes, until more than
+/// the key has masternodes were refused, which no fetch can undo.
+#[derive(Debug, Default)]
+struct Refused {
+    hashes: HashSet<[u8; 32]>,
+    saturated: bool,
+}
+
+/// A dropped wrong-key copy: the vote of its hash, honest copy unseen, by
+/// the outpoint's masternode `key`.
+#[derive(Debug, Clone, Copy)]
+struct Awaited {
+    hash: [u8; 32],
+    outcome: VoteOutcome,
+    time: i64,
+    key: [u8; 20],
+}
+
 #[derive(Debug, Clone)]
 struct Orphan {
     vote: CheckedVote,
@@ -279,6 +320,8 @@ pub struct GovernanceStore {
     /// Votes whose stored copy a resolved outpoint showed signed by another
     /// key: the honest copy, of the same hash, is asked for again (D64).
     refetch: Vec<[u8; 32]>,
+    /// Object → its votes held as uncertainty (D71, D72).
+    uncounted: HashMap<[u8; 32], Uncounted>,
     /// Lapsed proposals, stored or refused.
     expired: HashMap<[u8; 32], ()>,
     expired_order: VecDeque<[u8; 32]>,
@@ -326,6 +369,8 @@ pub struct GovernanceStore {
     /// tests.
     max_erased: usize,
     max_expired: usize,
+    /// [`MAX_REFUSED_PER_PROPOSAL`], lower in tests.
+    max_refused: usize,
     /// The current sync run, and how many objects announced in it the cap
     /// evicted or refused (D47).
     run: u64,
@@ -376,6 +421,7 @@ impl GovernanceStore {
             erased: HashMap::new(),
             erased_order: VecDeque::new(),
             refetch: Vec::new(),
+            uncounted: HashMap::new(),
             expired: HashMap::new(),
             expired_order: VecDeque::new(),
             votes: HashMap::new(),
@@ -405,6 +451,7 @@ impl GovernanceStore {
             max_objects: MAX_OBJECTS,
             max_erased: MAX_ERASED_OBJECTS,
             max_expired: MAX_EXPIRED_PROPOSALS,
+            max_refused: MAX_REFUSED_PER_PROPOSAL,
             run: 0,
             overflow: 0,
         }
@@ -885,6 +932,7 @@ impl GovernanceStore {
             self.vote_count -= 1;
         }
         self.per_key.retain(|(object, _), _| object != hash);
+        self.uncounted.remove(hash);
     }
 
     fn adopt_orphans(&mut self, parent: &[u8; 32], now: i64) {
@@ -987,17 +1035,44 @@ impl GovernanceStore {
         self.forget_dismissed();
         self.resolved = resolved;
         // A copy re-signed by another key has the honest vote's hash, so it
-        // kept the honest copy out: drop it and fetch the hash again.
-        let resolved = &self.resolved;
-        self.refetch.extend(self.votes.values().flat_map(|m| {
-            m.iter()
-                .filter(|((outpoint, key), _)| {
-                    resolved
-                        .get(outpoint)
-                        .is_some_and(|r| &r.voting_key_id != key)
-                })
-                .map(|(_, v)| v.vote_hash)
-        }));
+        // kept the honest copy out: drop it and fetch the hash again. Until
+        // the honest copy lands, the vote stays uncertain (D72).
+        let mut awaited = Vec::new();
+        for (object, m) in &self.votes {
+            for ((outpoint, key), v) in m {
+                let Some(r) = self.resolved.get(outpoint) else {
+                    continue;
+                };
+                if &r.voting_key_id == key {
+                    continue;
+                }
+                self.refetch.push(v.vote_hash);
+                // An honest vote newer than the copy supersedes it.
+                if m.get(&(*outpoint, r.voting_key_id))
+                    .is_none_or(|honest| honest.time <= v.time)
+                {
+                    let a = Awaited {
+                        hash: v.vote_hash,
+                        outcome: v.outcome,
+                        time: v.time,
+                        key: r.voting_key_id,
+                    };
+                    awaited.push((*object, *outpoint, a));
+                }
+            }
+        }
+        for (object, outpoint, a) in awaited {
+            let list = self
+                .uncounted
+                .entry(object)
+                .or_default()
+                .awaited
+                .entry(outpoint)
+                .or_default();
+            if list.iter().all(|b| b.hash != a.hash) {
+                list.push(a);
+            }
+        }
         self.drop_unbacked_votes();
         let mut per_key: HashMap<([u8; 32], [u8; 20]), u32> = HashMap::new();
         for (object, m) in &self.votes {
@@ -1048,6 +1123,123 @@ impl GovernanceStore {
         for h in stale {
             self.remove_orphan(&h);
         }
+        // Votes no key of the list could count are no uncertainty.
+        let keys = &self.keys;
+        let resolved = &self.resolved;
+        let key_ok = |outpoint: &OutPoint, key: &[u8; 20]| match resolved.get(outpoint) {
+            Some(r) => &r.voting_key_id == key,
+            None => keys.contains_key(key),
+        };
+        self.uncounted.retain(|_, u| {
+            u.refused.retain(|(key, _), r| {
+                let keep = keys.contains_key(key);
+                if !keep {
+                    u.held -= r.hashes.len();
+                }
+                keep
+            });
+            u.awaited.retain(|outpoint, list| {
+                list.retain(|a| key_ok(outpoint, &a.key));
+                !list.is_empty()
+            });
+            !u.is_empty()
+        });
+    }
+
+    /// Keeps a vote the per-key cap refused as uncertainty on its object:
+    /// it may be a masternode's honest vote kept out by copies (D71).
+    fn note_refused(
+        &mut self,
+        parent: [u8; 32],
+        key: [u8; 20],
+        outcome: VoteOutcome,
+        hash: [u8; 32],
+    ) {
+        let n = self.keys.get(&key).map_or(0, |k| k.count) as usize;
+        let max = self.max_refused;
+        let u = self.uncounted.entry(parent).or_default();
+        let r = u.refused.entry((key, outcome)).or_default();
+        if r.saturated || r.hashes.contains(&hash) {
+            return;
+        }
+        if r.hashes.len() >= n || u.held >= max {
+            u.held -= r.hashes.len();
+            r.hashes = HashSet::new();
+            r.saturated = true;
+        } else {
+            r.hashes.insert(hash);
+            u.held += 1;
+        }
+    }
+
+    /// Settles the uncertainty a vote stored at (`parent`, `outpoint`,
+    /// `key`) resolves: its own refused or awaited hash, and awaited votes
+    /// of that masternode it supersedes (D71, D72).
+    fn settle_uncounted(&mut self, parent: &[u8; 32], v: &CurrentVote) {
+        let Some(u) = self.uncounted.get_mut(parent) else {
+            return;
+        };
+        if let Some(r) = u.refused.get_mut(&(v.key_id, v.outcome))
+            && r.hashes.remove(&v.vote_hash)
+        {
+            u.held -= 1;
+            if r.hashes.is_empty() && !r.saturated {
+                u.refused.remove(&(v.key_id, v.outcome));
+            }
+        }
+        if let Some(list) = u.awaited.get_mut(&v.outpoint) {
+            list.retain(|a| a.key != v.key_id || (a.hash != v.vote_hash && a.time >= v.time));
+            if list.is_empty() {
+                u.awaited.remove(&v.outpoint);
+            }
+        }
+        if u.is_empty() {
+            self.uncounted.remove(parent);
+        }
+    }
+
+    /// The weight `outpoint`'s votes on `hash` count exactly: its
+    /// masternode's, if resolved and no vote of it is awaited (D72).
+    pub fn exact_weight(&self, hash: &[u8; 32], outpoint: &OutPoint) -> Option<u32> {
+        let awaited = self
+            .uncounted
+            .get(hash)
+            .is_some_and(|u| u.awaited.contains_key(outpoint));
+        (!awaited).then(|| self.resolved(outpoint).map(|r| r.weight))?
+    }
+
+    /// `hash`'s ranged tally ([`ranged_tally`]), widened by the votes on it
+    /// the store holds no countable copy of: a key's refused votes up to an
+    /// evonode's weight each, at most one per masternode holding it (D71);
+    /// an awaited vote up to its masternode's weight, its outpoint's other
+    /// votes counted as unresolved ones (D72).
+    pub fn tally(&self, hash: &[u8; 32]) -> RangedTally {
+        let mut t = ranged_tally(
+            self.votes_on(hash),
+            |k| self.key_weights(k),
+            |op| self.exact_weight(hash, op),
+        );
+        let Some(u) = self.uncounted.get(hash) else {
+            return t;
+        };
+        for ((key, outcome), r) in &u.refused {
+            let n = self.keys.get(key).map_or(0, |k| k.count);
+            let votes = if r.saturated {
+                n
+            } else {
+                n.min(r.hashes.len() as u32)
+            };
+            t.widen(*outcome, votes.saturating_mul(EVONODE_VOTE_WEIGHT), votes);
+        }
+        for (outpoint, list) in &u.awaited {
+            let w = self
+                .resolved(outpoint)
+                .map_or(EVONODE_VOTE_WEIGHT, |r| r.weight);
+            for a in list {
+                t.widen(a.outcome, w, 1);
+            }
+        }
+        t
     }
 
     fn remove_vote(&mut self, (object, outpoint, key): &Slot) {
@@ -1326,6 +1518,9 @@ impl GovernanceStore {
             let n = self.keys.get(&key).map_or(0, |k| k.count);
             let used = self.per_key.get(&(parent, key)).copied().unwrap_or(0);
             if used >= 2 * n + 2 {
+                if !rate_checked {
+                    self.note_refused(parent, key, outcome, v.hash);
+                }
                 return Err(VoteRejection::KeyLimit);
             }
         }
@@ -1333,16 +1528,18 @@ impl GovernanceStore {
             return Err(self.queue_orphan(v, from, now));
         }
         self.remove_vote(&(parent, outpoint, key));
-        self.votes.entry(parent).or_default().insert(
-            (outpoint, key),
-            CurrentVote {
-                outpoint,
-                outcome,
-                time: v.vote.time,
-                key_id: key,
-                vote_hash: v.hash,
-            },
-        );
+        let stored = CurrentVote {
+            outpoint,
+            outcome,
+            time: v.vote.time,
+            key_id: key,
+            vote_hash: v.hash,
+        };
+        self.settle_uncounted(&parent, &stored);
+        self.votes
+            .entry(parent)
+            .or_default()
+            .insert((outpoint, key), stored);
         if !resolved {
             *self.per_key.entry((parent, key)).or_default() += 1;
         }
@@ -2036,6 +2233,195 @@ mod tests {
         );
         assert_eq!((t.no.min, t.no.max, t.no.estimate), (0, 4, 0));
         assert_eq!((t.yes.min, t.yes.max, t.yes.estimate), (0, 4, 1));
+    }
+
+    /// The fillers of key 1's 2n + 2 unresolved slots on `h`, ABSTAIN.
+    fn fill_key_1(s: &mut GovernanceStore, h: [u8; 32]) {
+        let n = s.key_weights(&key_id(1)).unwrap().count as u8;
+        for op in 100..100 + 2 * n + 2 {
+            let v = vote(h, 1, op, VoteOutcome::Abstain, NOW - 50);
+            assert_eq!(s.add_vote(v, peer(9), NOW), Ok(()));
+        }
+    }
+
+    fn uncounted(s: &GovernanceStore, h: &[u8; 32], outcome: VoteOutcome) -> (u32, u32) {
+        let t = s.tally(h);
+        let r = match outcome {
+            VoteOutcome::Yes => t.yes,
+            VoteOutcome::No => t.no,
+            VoteOutcome::Abstain => t.abstain,
+        };
+        (t.uncounted, r.max)
+    }
+
+    #[test]
+    fn votes_the_key_cap_refuses_widen_their_tally_until_stored() {
+        // Sol r3 Major 1: a vote the per-key cap refuses may be the key's
+        // masternode's own, which Core counts: up to 4 more for its
+        // outcome, and a close call (D71).
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 4)]);
+        fill_key_1(&mut s, h);
+        let yes = vote(h, 1, 200, VoteOutcome::Yes, NOW - 40);
+        assert_eq!(
+            s.add_vote(yes.clone(), peer(1), NOW),
+            Err(VoteRejection::KeyLimit)
+        );
+        assert_eq!(uncounted(&s, &h, VoteOutcome::Yes), (1, 4));
+        // Another copy, of another signature form, is the same vote.
+        assert_eq!(
+            s.add_vote(yes.clone(), peer(2), NOW),
+            Err(VoteRejection::KeyLimit)
+        );
+        assert_eq!(uncounted(&s, &h, VoteOutcome::Yes), (1, 4));
+        // The vote itself, stored once the key holds more masternodes,
+        // settles it.
+        s.set_masternode_list(&[entry(1, 4), entry(1, 4)]);
+        assert_eq!(s.add_vote(yes, peer(1), NOW), Ok(()));
+        assert_eq!(s.tally(&h).uncounted, 0);
+        // The wallet's own vote is refused to its caller, not kept.
+        let filler = vote(h, 1, 150, VoteOutcome::Abstain, NOW - 50);
+        assert_eq!(s.add_vote(filler, peer(9), NOW), Ok(()));
+        let own = vote(h, 1, 201, VoteOutcome::No, NOW - 40);
+        assert_eq!(s.add_own_vote(own, NOW), Err(VoteRejection::KeyLimit));
+        assert_eq!(s.tally(&h).uncounted, 0);
+    }
+
+    #[test]
+    fn refused_votes_stay_bounded_per_proposal() {
+        // D71: a key's refused votes count at most one per masternode
+        // holding it, and a proposal holds at most `max_refused` hashes;
+        // past either, the key's votes of that outcome stay at that
+        // bound, never below it.
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 4), entry(1, 4), entry(1, 4)]);
+        s.max_refused = 2;
+        fill_key_1(&mut s, h);
+        let refuse = |s: &mut GovernanceStore, h: [u8; 32], op: u8, outcome: VoteOutcome| {
+            let v = vote(h, 1, op, outcome, NOW - 40);
+            assert_eq!(s.add_vote(v, peer(1), NOW), Err(VoteRejection::KeyLimit));
+        };
+        refuse(&mut s, h, 200, VoteOutcome::Yes);
+        refuse(&mut s, h, 201, VoteOutcome::Yes);
+        assert_eq!(uncounted(&s, &h, VoteOutcome::Yes), (2, 8));
+        refuse(&mut s, h, 202, VoteOutcome::Yes);
+        assert_eq!(uncounted(&s, &h, VoteOutcome::Yes), (3, 12));
+        assert_eq!(s.uncounted[&h].held, 0);
+        for op in 203..250 {
+            refuse(&mut s, h, op, VoteOutcome::Yes);
+        }
+        assert_eq!(uncounted(&s, &h, VoteOutcome::Yes), (3, 12));
+        refuse(&mut s, h, 250, VoteOutcome::No);
+        assert_eq!(uncounted(&s, &h, VoteOutcome::No), (4, 4));
+        // One masternode per key, the bound follows the list.
+        let obj = proposal("b");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 4)]);
+        fill_key_1(&mut s, h);
+        for op in 200..210 {
+            refuse(&mut s, h, op, VoteOutcome::Yes);
+        }
+        assert_eq!(uncounted(&s, &h, VoteOutcome::Yes), (1, 4));
+        assert!(s.uncounted[&h].refused[&(key_id(1), VoteOutcome::Yes)].saturated);
+        // A key the list drops counts nothing, so leaves no uncertainty.
+        s.set_masternode_list(&[entry(2, 4)]);
+        assert!(!s.uncounted.contains_key(&h));
+        // Nor does a proposal removed.
+        let mut s = store(&obj, &[entry(1, 4)]);
+        fill_key_1(&mut s, h);
+        refuse(&mut s, h, 200, VoteOutcome::Yes);
+        s.remove_object(&h);
+        assert!(s.uncounted.is_empty());
+    }
+
+    #[test]
+    fn a_dropped_wrong_key_copy_is_uncertain_until_its_honest_copy() {
+        // Sol r3 Major 2: the copy key 2 re-signed of outpoint 1's NO is
+        // dropped once 1 resolves to key 1. Until the honest copy lands
+        // the NO stays up to the masternode's weight (D72); the outpoint's
+        // older honest vote counts unresolved meanwhile, as the newer one
+        // may replace it.
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
+        let older = vote(h, 1, 1, VoteOutcome::Yes, NOW - 60);
+        assert_eq!(s.add_vote(older, peer(1), NOW), Ok(()));
+        let honest = vote(h, 1, 1, VoteOutcome::No, NOW - 40);
+        let mut forged = honest.clone();
+        sign(&mut forged, 2);
+        assert_eq!(s.add_vote(forged.clone(), peer(2), NOW), Ok(()));
+        let resolved = ResolvedMasternode {
+            pro_tx_hash: [1; 32],
+            voting_key_id: key_id(1),
+            weight: 4,
+        };
+        s.set_resolved(HashMap::from([(outpoint(1), resolved)]));
+        assert_eq!(s.take_refetch(), vec![honest.hash()]);
+        let t = s.tally(&h);
+        assert_eq!(t.uncounted, 1);
+        assert_eq!((t.no.min, t.no.max), (0, 4));
+        assert_eq!((t.yes.min, t.yes.max), (0, 4));
+        assert_eq!(s.exact_weight(&h, &outpoint(1)), None);
+        // The re-signed copy again is refused, and settles nothing.
+        assert_eq!(
+            s.add_vote(forged, peer(2), NOW),
+            Err(VoteRejection::WrongVotingKey)
+        );
+        assert_eq!(s.tally(&h).uncounted, 1);
+        assert_eq!(s.add_vote(honest, peer(1), NOW), Ok(()));
+        let t = s.tally(&h);
+        assert_eq!(t.uncounted, 0);
+        assert_eq!((t.no.min, t.no.max, t.yes.max), (4, 4, 0));
+        assert_eq!(s.exact_weight(&h, &outpoint(1)), Some(4));
+    }
+
+    #[test]
+    fn an_awaited_copy_is_settled_by_a_newer_vote_or_a_key_change() {
+        // D72: the masternode's own later vote replaces the awaited one in
+        // Core, so settles it; an honest vote already newer leaves nothing
+        // awaited; a new voting key leaves it nothing to count for.
+        let obj = proposal("a");
+        let h = obj.hash();
+        let resolved = HashMap::from([(
+            outpoint(1),
+            ResolvedMasternode {
+                pro_tx_hash: [1; 32],
+                voting_key_id: key_id(1),
+                weight: 4,
+            },
+        )]);
+        let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
+        let mut forged = vote(h, 1, 1, VoteOutcome::No, NOW - 40);
+        sign(&mut forged, 2);
+        assert_eq!(s.add_vote(forged.clone(), peer(2), NOW), Ok(()));
+        s.set_resolved(resolved.clone());
+        assert_eq!(s.tally(&h).uncounted, 1);
+        let newer = vote(h, 1, 1, VoteOutcome::Yes, NOW - 30);
+        assert_eq!(s.add_vote(newer, peer(1), NOW), Ok(()));
+        assert_eq!(s.tally(&h).uncounted, 0);
+
+        let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
+        assert_eq!(s.add_vote(forged, peer(2), NOW), Ok(()));
+        let newer = vote(h, 1, 1, VoteOutcome::Yes, NOW - 30);
+        assert_eq!(s.add_vote(newer, peer(1), NOW), Ok(()));
+        s.set_resolved(resolved.clone());
+        assert_eq!(s.tally(&h).uncounted, 0);
+        assert_eq!(s.exact_weight(&h, &outpoint(1)), Some(4));
+
+        // A masternode's new voting key drops its old key's votes (Core
+        // `RemoveInvalidVotes`), the awaited one too.
+        let mut s = store(&obj, &[entry(1, 4), entry(2, 4), entry(3, 4)]);
+        let mut forged = vote(h, 1, 1, VoteOutcome::No, NOW - 40);
+        sign(&mut forged, 2);
+        assert_eq!(s.add_vote(forged, peer(2), NOW), Ok(()));
+        s.set_resolved(resolved.clone());
+        assert_eq!(s.tally(&h).uncounted, 1);
+        let mut rekeyed = resolved;
+        rekeyed.get_mut(&outpoint(1)).unwrap().voting_key_id = key_id(3);
+        s.set_resolved(rekeyed);
+        assert_eq!(s.tally(&h).uncounted, 0);
     }
 
     #[test]

@@ -305,6 +305,8 @@ pub struct SyncHistory {
     /// `vote_synced` is pruned of entries past the window when it reaches
     /// this many (D59).
     prune_at: usize,
+    /// And `full_synced` when it reaches this many (D73).
+    full_prune_at: usize,
 }
 
 impl SyncHistory {
@@ -331,6 +333,15 @@ impl SyncHistory {
             self.prune_at = (2 * self.vote_synced.len()).max(MIN_HISTORY_PRUNE);
         }
         self.vote_synced.insert((addr, hash), Instant::now());
+    }
+
+    /// Records a full sync asked of `addr`, pruned as vote syncs are (D73).
+    fn note_full_synced(&mut self, addr: SocketAddr, window: Duration) {
+        if self.full_synced.len() >= self.full_prune_at {
+            self.full_synced.retain(|_, t| t.elapsed() < window);
+            self.full_prune_at = (2 * self.full_synced.len()).max(MIN_HISTORY_PRUNE);
+        }
+        self.full_synced.insert(addr, Instant::now());
     }
 }
 
@@ -1955,8 +1966,7 @@ async fn run_inner(
             run.history
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .full_synced
-                .insert(p.peer.addr, Instant::now());
+                .note_full_synced(p.peer.addr, run.cfg.repeat_window);
             p.peer.send_govsync([0; 32], &filter);
             p.rearm_answer(timeout);
         }

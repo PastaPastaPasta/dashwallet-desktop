@@ -232,7 +232,7 @@ impl Governance {
         let mut votes = tally::attribute(
             store.votes_on(&key),
             |k| store.key_weights(k),
-            |o| store.resolved(o).map(|r| r.weight),
+            |o| store.exact_weight(&key, o),
         );
         // Core's order: by outpoint as `COutPoint` compares (the txid's
         // internal bytes, then the index).
@@ -301,11 +301,7 @@ fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, 
     let tallied: Vec<_> = store
         .proposals()
         .map(|(o, d)| {
-            let t = tally::ranged_tally(
-                store.votes_on(&o.object.hash()),
-                |k| store.key_weights(k),
-                |op| store.resolved(op).map(|r| r.weight),
-            );
+            let t = store.tally(&o.object.hash());
             (o, d, t)
         })
         .collect();
@@ -358,7 +354,9 @@ fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, 
             let thr = i64::from(threshold);
             let close_call = !lapsed
                 && funded_height.is_none()
-                && ((min_net >= thr) != (max_net >= thr) || budget_close.contains(&o.hash_hex));
+                && ((min_net >= thr) != (max_net >= thr)
+                    || budget_close.contains(&o.hash_hex)
+                    || t.uncounted > 0);
             let row = ProposalRow {
                 hash: o.hash_hex.clone(),
                 name: d.name.clone().unwrap_or_default(),
@@ -399,7 +397,7 @@ mod tests {
     use dashcore::secp256k1::{Message, PublicKey, SecretKey};
     use dashcore::{Network, OutPoint, Txid};
     use dw_governance::object::GovernanceObject;
-    use dw_governance::store::{ListEntry, ResolvedMasternode};
+    use dw_governance::store::{ListEntry, ResolvedMasternode, VoteRejection};
     use dw_governance::vote::{GovernanceVote, VoteOutcome, to_recoverable_compact};
     use std::collections::HashMap;
 
@@ -416,9 +414,20 @@ mod tests {
 
     /// A YES funding vote on `parent` by voting key `key` for outpoint `op`.
     fn yes(parent: [u8; 32], key: u8, op: u8) -> GovernanceVote {
+        funding(parent, key, op, VoteOutcome::Yes)
+    }
+
+    /// A funding vote on `parent` by voting key `key` for outpoint `op`.
+    fn funding(parent: [u8; 32], key: u8, op: u8, outcome: VoteOutcome) -> GovernanceVote {
+        let v = GovernanceVote::funding(outpoint(op), parent, outcome, NOW - 100);
+        signed(&v, key)
+    }
+
+    /// `v` signed by voting key `key`: the same hash, whoever signs.
+    fn signed(v: &GovernanceVote, key: u8) -> GovernanceVote {
         let sk = SecretKey::from_secret_bytes([key; 32]).unwrap();
         let pk = PublicKey::from_secret_key(&sk);
-        let mut v = GovernanceVote::funding(outpoint(op), parent, VoteOutcome::Yes, NOW - 100);
+        let mut v = v.clone();
         let d = v.signing_digest(Network::Regtest);
         let s = dashcore::secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
         v.signature = to_recoverable_compact(&s.serialize_compact(), &pk, &d)
@@ -492,6 +501,138 @@ mod tests {
         assert_eq!((after.tally.yes.min, after.tally.yes.max), (99, 103));
         assert_eq!(after.tally.ranged_votes, 1);
         assert!(after.close_call);
+    }
+
+    /// A proposal with `n` YES votes from resolved outpoints of weight 1,
+    /// against a threshold of 100: the list also holds evonode keys 150
+    /// and 151, one masternode each, and others up to a weight of 1,005.
+    fn resolved_yes_store(
+        n: u8,
+    ) -> (
+        GovernanceStore,
+        [u8; 32],
+        HashMap<OutPoint, ResolvedMasternode>,
+    ) {
+        let mut store = GovernanceStore::new(Network::Regtest);
+        store.set_confirmations(1);
+        let data = format!(
+            r#"{{"end_epoch":{},"name":"p","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}}"#,
+            NOW + 10_000
+        );
+        let p = GovernanceObject::new_proposal(1, NOW, data.into_bytes());
+        let h = p.hash();
+        store.add_object(p, None, NOW).unwrap();
+        let mut list: Vec<ListEntry> = (1..=n)
+            .map(|k| ListEntry {
+                voting_key_id: key_id(k),
+                weight: Some(1),
+                valid: true,
+            })
+            .collect();
+        list.extend([150, 151].map(|k| ListEntry {
+            voting_key_id: key_id(k),
+            weight: Some(4),
+            valid: true,
+        }));
+        list.extend((0..997 - u32::from(n)).map(|_| ListEntry {
+            voting_key_id: key_id(200),
+            weight: Some(1),
+            valid: true,
+        }));
+        store.set_masternode_list(&list);
+        let resolved: HashMap<_, _> = (1..=n)
+            .map(|k| {
+                let r = ResolvedMasternode {
+                    pro_tx_hash: [k; 32],
+                    voting_key_id: key_id(k),
+                    weight: 1,
+                };
+                (outpoint(k), r)
+            })
+            .collect();
+        store.set_resolved(resolved.clone());
+        for k in 1..=n {
+            store.add_vote(yes(h, k, k), None, NOW).unwrap();
+        }
+        (store, h, resolved)
+    }
+
+    fn only_row(store: &GovernanceStore) -> ProposalRow {
+        let t = build_table(&crate::DashNetwork::Regtest, store, 1_505, NOW);
+        assert_eq!(t.threshold, 100);
+        t.rows.into_iter().next().unwrap()
+    }
+
+    /// Sol r3 Major 1: 99 exact YES against a threshold of 100. Key 150's
+    /// holder fills its 2n + 2 unresolved slots with ABSTAIN votes for
+    /// invented outpoints; its masternode's YES (Core counts it: 103) is
+    /// refused by the per-key cap. The row is a close call with up to 4
+    /// more YES, not a definite non-passing one (MG-02 D71).
+    #[test]
+    fn a_vote_the_key_cap_refuses_keeps_the_row_a_close_call() {
+        // At 50, up to 4 more cannot reach the threshold: the row is a
+        // close call all the same.
+        for n in [99, 50] {
+            let (mut store, h, _) = resolved_yes_store(n);
+            for op in 240..244 {
+                store
+                    .add_vote(funding(h, 150, op, VoteOutcome::Abstain), None, NOW)
+                    .unwrap();
+            }
+            let before = only_row(&store);
+            assert_eq!(before.tally.net_yes_estimate, i64::from(n));
+            assert_eq!(before.status, ProposalStatus::Voting);
+            assert!(!before.close_call);
+
+            assert_eq!(
+                store.add_vote(yes(h, 150, 250), None, NOW),
+                Err(VoteRejection::KeyLimit)
+            );
+            let after = only_row(&store);
+            assert_eq!(after.tally.net_yes_estimate, i64::from(n));
+            let n = u32::from(n);
+            assert_eq!((after.tally.yes.min, after.tally.yes.max), (n, n + 4));
+            assert!(after.close_call, "{n}");
+        }
+    }
+
+    /// Sol r3 Major 2: 101 exact YES against a threshold of 100, and an
+    /// evonode's honest NO at outpoint 160 (Core: 97, not passing). Key
+    /// 151 re-signs it first, and the copy keeps the hash. Once 160
+    /// resolves to key 150 the copy is dropped and the refetch fails: the
+    /// NO stays up to 4 and the row a close call, not a definite pass,
+    /// until the honest copy lands (MG-02 D72).
+    #[test]
+    fn a_failed_refetch_keeps_the_row_a_close_call() {
+        let (mut store, h, mut resolved) = resolved_yes_store(101);
+        let honest = funding(h, 150, 160, VoteOutcome::No);
+        store.add_vote(signed(&honest, 151), None, NOW).unwrap();
+        let forged = only_row(&store);
+        assert_eq!((forged.tally.no.min, forged.tally.no.max), (0, 4));
+        assert!(forged.close_call);
+
+        resolved.insert(
+            outpoint(160),
+            ResolvedMasternode {
+                pro_tx_hash: [160; 32],
+                voting_key_id: key_id(150),
+                weight: 4,
+            },
+        );
+        store.set_resolved(resolved);
+        assert_eq!(store.take_refetch(), vec![honest.hash()]);
+        // Every peer answers `notfound`: nothing more lands.
+        let failed = only_row(&store);
+        assert_eq!(failed.tally.net_yes_estimate, 101);
+        assert_eq!((failed.tally.no.min, failed.tally.no.max), (0, 4));
+        assert!(failed.close_call);
+
+        store.add_vote(honest, None, NOW).unwrap();
+        let settled = only_row(&store);
+        assert_eq!(settled.tally.net_yes_estimate, 97);
+        assert_eq!((settled.tally.no.min, settled.tally.no.max), (4, 4));
+        assert!(!settled.close_call);
+        assert_eq!(settled.status, ProposalStatus::Voting);
     }
 
     /// MG-02 D65, D69: the fundable set is dash-qt's over the proposals not

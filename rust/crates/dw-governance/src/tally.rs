@@ -126,19 +126,25 @@ pub struct RangedTally {
     pub voters: u32,
     /// Votes whose weight is not exact.
     pub ranged_votes: u32,
+    /// Of those, votes the store holds no countable copy of (MG-02 D71,
+    /// D72): whatever the ranges, the row is a close call.
+    pub uncounted: u32,
     /// The estimates as a [`Tally`] (statuses and the budget use it).
     pub estimate: Tally,
 }
 
 impl RangedTally {
-    /// Counts one claim; `new_voter` when it is its outpoint's first.
-    fn count(&mut self, outcome: VoteOutcome, min: u32, max: u32, estimate: u32, new_voter: bool) {
-        let r = match outcome {
+    fn range(&mut self, outcome: VoteOutcome) -> &mut WeightRange {
+        match outcome {
             VoteOutcome::Yes => &mut self.yes,
             VoteOutcome::No => &mut self.no,
             VoteOutcome::Abstain => &mut self.abstain,
-        };
-        r.add(min, max, estimate);
+        }
+    }
+
+    /// Counts one claim; `new_voter` when it is its outpoint's first.
+    fn count(&mut self, outcome: VoteOutcome, min: u32, max: u32, estimate: u32, new_voter: bool) {
+        self.range(outcome).add(min, max, estimate);
         if new_voter {
             self.voters += 1;
         }
@@ -150,6 +156,15 @@ impl RangedTally {
             EVONODE_VOTE_WEIGHT => self.estimate.evonode_voters += 1,
             _ => self.estimate.regular_voters += 1,
         }
+    }
+
+    /// Adds `votes` the store holds no countable copy of, weighing up to
+    /// `max` together, to `outcome` (MG-02 D71, D72).
+    pub fn widen(&mut self, outcome: VoteOutcome, max: u32, votes: u32) {
+        let r = self.range(outcome);
+        r.max = r.max.saturating_add(max);
+        self.ranged_votes += votes;
+        self.uncounted += votes;
     }
 
     /// The smallest and largest net yes the ranges allow.

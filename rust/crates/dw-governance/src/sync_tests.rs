@@ -315,6 +315,7 @@ struct Harness {
     stop: watch::Sender<bool>,
     task: tokio::task::JoinHandle<Result<(), SyncError>>,
     seen: Vec<mpsc::UnboundedReceiver<Seen>>,
+    history: Arc<Mutex<SyncHistory>>,
 }
 
 async fn start(nodes: Vec<Node>, tune: impl FnOnce(&mut SyncConfig)) -> Harness {
@@ -360,11 +361,12 @@ async fn start_with(
     cfg.idle_timeout = Duration::from_secs(3);
     tune(&mut cfg);
     let (stop, stop_rx) = watch::channel(false);
+    let history = Arc::new(Mutex::new(history));
     let task = tokio::spawn(run(
         Arc::clone(&shared),
         cfg,
         addrs,
-        Arc::new(Mutex::new(history)),
+        Arc::clone(&history),
         stop_rx,
     ));
     Harness {
@@ -372,6 +374,7 @@ async fn start_with(
         stop,
         task,
         seen,
+        history,
     }
 }
 
@@ -3661,4 +3664,172 @@ async fn a_reconnect_within_the_window_is_synced_on_completed_vote_syncs() {
         let _ = hx.stop.send(true);
         assert_eq!(p.phase, Phase::Synced, "{completed}: {p:?}");
     }
+}
+
+/// Sol r3 Major 1: key 2's holder filled its 2n + 2 unresolved slots on A
+/// with ABSTAIN votes for invented outpoints, carried from an earlier
+/// connection; its masternode's YES, served by every vote-sync peer, hits
+/// the per-key cap at each. The run reads Synced, so the refused vote
+/// stays in A's tally as uncertainty: up to 4 more YES, a close call
+/// (D71).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn key_limit_fillers_leave_the_refused_vote_uncertain_when_synced() {
+    let a = proposal("a-r3-sol-fill");
+    let ha = a.hash();
+    let genuine = vote(ha, 2, VoteOutcome::Yes);
+    let honest = Node {
+        objects: vec![a.clone()],
+        votes: vec![genuine.clone()],
+        ..Node::default()
+    };
+    let hx = start_with(
+        vec![honest.clone(), honest.clone(), honest],
+        |_| {},
+        move |shared, _, _| {
+            let mut store = shared.store();
+            store.add_object(a, None, unix_now()).unwrap();
+            for o in 0..4u8 {
+                let f = GovernanceVote::funding(
+                    OutPoint::new(dashcore::Txid::from_byte_array([0xe0 + o; 32]), 0),
+                    ha,
+                    VoteOutcome::Abstain,
+                    unix_now() - 50,
+                );
+                store.add_vote(resigned(&f, 2), None, unix_now()).unwrap();
+            }
+        },
+    )
+    .await;
+    let p = wait_for(&hx.shared, |p| {
+        matches!(p.phase, Phase::Failed | Phase::Synced)
+    })
+    .await;
+    let _ = hx.stop.send(true);
+    assert_eq!(p.phase, Phase::Synced, "{p:?}");
+    let store = hx.shared.store();
+    assert!(!store.has_vote(&genuine.hash()));
+    let t = store.tally(&ha);
+    assert_eq!((t.yes.min, t.yes.max), (0, 4));
+    assert_eq!(t.uncounted, 1, "a refused vote vanished while Synced");
+}
+
+/// Sol r3 Major 2: key 1 re-signed key 2's honest NO, and its copy keeps
+/// the hash. Once the outpoint resolves to key 2 the copy is dropped and
+/// the hash asked for again; every peer answers `notfound`. The NO stays
+/// up to its masternode's weight. A reconnect within the window to peers
+/// whose vote syncs completed reads Synced without asking them again, and
+/// the NO is still uncertain (D72).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_refetch_leaves_the_vote_uncertain_across_a_reconnect() {
+    let p = proposal("p-r3-sol-refetch");
+    let ha = p.hash();
+    let honest = vote(ha, 2, VoteOutcome::No);
+    let forged = resigned(&honest, 1);
+    let item = vote_inv(&honest);
+    let resolved = HashMap::from([(
+        honest.masternode_outpoint,
+        crate::store::ResolvedMasternode {
+            pro_tx_hash: [9; 32],
+            voting_key_id: key_id(2),
+            weight: 4,
+        },
+    )]);
+    let uncertain = |shared: &Shared| {
+        let t = shared.store().tally(&ha);
+        assert_eq!((t.no.min, t.no.max), (0, 4));
+        assert_eq!(t.uncounted, 1);
+    };
+    let mut run = two_peer_run(&p).await;
+    list_keys(&run, [1, 2]);
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::Vote(forged.encode()));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.shared.store().set_resolved(resolved.clone());
+    let key = (item.hash, item.kind);
+    run.expire();
+    assert!(run.requests.pending.contains_key(&key));
+    run.handle(0, PeerEvent::NotFound(vec![item]));
+    run.expire();
+    run.handle(1, PeerEvent::NotFound(vec![item]));
+    assert!(!run.requests.pending.contains_key(&key));
+    uncertain(&run.shared);
+
+    let node = Node {
+        objects: vec![p.clone()],
+        votes: vec![honest],
+        ..Node::default()
+    };
+    let hx = start_with(
+        vec![node.clone(), node.clone(), node],
+        |_| {},
+        move |shared, history, addrs| {
+            shared.progress().last_synced_at = Some(unix_now() as u64 - 4_000);
+            let mut store = shared.store();
+            store.add_object(p, None, unix_now()).unwrap();
+            store.add_vote(forged, None, unix_now()).unwrap();
+            store.set_resolved(resolved);
+            // The earlier run's refetch was spent.
+            assert_eq!(store.take_refetch(), vec![item.hash]);
+            for addr in addrs {
+                history.full_synced.insert(*addr, Instant::now());
+                history.vote_synced.insert((*addr, ha), Instant::now());
+                history.vote_completed.insert((*addr, ha), Instant::now());
+            }
+        },
+    )
+    .await;
+    let progress = wait_for(&hx.shared, |p| {
+        matches!(p.phase, Phase::Failed | Phase::Synced)
+    })
+    .await;
+    let _ = hx.stop.send(true);
+    assert_eq!(progress.phase, Phase::Synced, "{progress:?}");
+    uncertain(&hx.shared);
+}
+
+/// Sol r3 Moderate: with no proposal, no vote sync prunes the record of
+/// full syncs; adding one drops the entries past the window once the
+/// record doubles, keeping those within it (D73).
+#[test]
+fn full_sync_history_drops_entries_past_the_window() {
+    let addr = |i: usize| SocketAddr::from(([10, 0, (i >> 8) as u8, i as u8], 9999));
+    let mut h = SyncHistory::default();
+    for i in 0..3 * MIN_HISTORY_PRUNE {
+        h.note_full_synced(addr(i), Duration::ZERO);
+    }
+    assert!(
+        h.full_synced.len() <= MIN_HISTORY_PRUNE,
+        "{}",
+        h.full_synced.len()
+    );
+    let mut h = SyncHistory::default();
+    for i in 0..3 * MIN_HISTORY_PRUNE {
+        h.note_full_synced(addr(i), Duration::from_secs(3_600));
+    }
+    assert_eq!(h.full_synced.len(), 3 * MIN_HISTORY_PRUNE);
+}
+
+/// D73: an object-only run records its full syncs through the bound: the
+/// stale addresses of earlier runs leave the history.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_object_only_run_prunes_stale_full_syncs() {
+    let hx = start_with(
+        vec![Node::default()],
+        |cfg| cfg.repeat_window = Duration::from_secs(1),
+        |_, history, _| {
+            let then = Instant::now() - Duration::from_secs(5);
+            for i in 0..MIN_HISTORY_PRUNE {
+                let addr = SocketAddr::from(([10, 1, (i >> 8) as u8, i as u8], 9999));
+                history.full_synced.insert(addr, then);
+            }
+        },
+    )
+    .await;
+    let p = wait_for(&hx.shared, |p| {
+        matches!(p.phase, Phase::Failed | Phase::Synced)
+    })
+    .await;
+    let _ = hx.stop.send(true);
+    assert_eq!(p.phase, Phase::Synced, "{p:?}");
+    assert_eq!(hx.history.lock().unwrap().full_synced.len(), 1);
 }
