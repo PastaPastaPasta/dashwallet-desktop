@@ -23,6 +23,8 @@ clap = { version = "4", features = ["derive", "env"] }
 # Engine and dash-spv logs on stderr when DWCLI_LOG is set (regtest debugging).
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing = { workspace = true }
+# An mn command's log redacts a URL option as the libraries print it (MG-03 D33).
+url = "2"
 zeroize = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

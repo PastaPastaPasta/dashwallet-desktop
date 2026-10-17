@@ -157,8 +157,8 @@ fn all_output(out: &Output) -> String {
 }
 
 /// Every global option with the secret as (part of) its value: one JSON
-/// line, and no output (the log included) quotes the value (MG-03 D32,
-/// Sol r2 Major 1).
+/// line, and no output (the log and `--verbose-events` included) quotes the
+/// value (MG-03 D32, D33).
 #[test]
 fn mn_setup_failures_never_quote_a_global_option() {
     let dir = dw_testutil::private_tempdir();
@@ -184,6 +184,8 @@ fn mn_setup_failures_never_quote_a_global_option() {
         if !skip.contains(&"--no-platform") {
             args.push("--no-platform".into());
         }
+        // Events as well as the log (D33).
+        args.push("--verbose-events".into());
         args
     };
     let out = dwcli(root, "pass", &["init-vault"], b"");
@@ -272,6 +274,32 @@ fn mn_setup_failures_never_quote_a_global_option() {
                 &[
                     os("--quorum-url"),
                     os(&format!("http://127.0.0.1:1/{SECRET}")),
+                ],
+            ),
+            None,
+        ),
+        // User-info in the URL, which the trusted-context provider quotes
+        // in a notice; mainnet refuses an HTTP one (D33).
+        (
+            "--quorum-url user-info, mainnet",
+            with(
+                &["--no-platform"],
+                &[
+                    os("--network"),
+                    os("mainnet"),
+                    os("--quorum-url"),
+                    os(&format!("http://user:{SECRET}@127.0.0.1:1")),
+                ],
+            ),
+            None,
+        ),
+        (
+            "--quorum-url user-info",
+            with(
+                &["--no-platform"],
+                &[
+                    os("--quorum-url"),
+                    os(&format!("HTTP://{SECRET}:x@LOCALHOST:1/")),
                 ],
             ),
             None,

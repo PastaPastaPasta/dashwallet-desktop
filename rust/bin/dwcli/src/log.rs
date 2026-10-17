@@ -1,7 +1,9 @@
 //! `DWCLI_LOG=<EnvFilter>` logs the engine, dash-spv and the SDK to stderr.
 //! For an `mn` command every global option's value is replaced in each line
 //! first: a library may quote one (the SDK's quorum fetch logs its URL), and
-//! no `mn` output may repeat a value (MG-03 D32).
+//! no `mn` output may repeat a value (MG-03 D32, D33). Every non-empty value
+//! is, in the forms a library prints it: as given, `{:?}`-quoted, and for a
+//! URL as parsed, with its user name, password, host and path apart.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -10,10 +12,6 @@ use dw_engine::DashNetwork;
 use tracing_subscriber::fmt::MakeWriter;
 
 use crate::Cli;
-
-/// Shorter values would redact unrelated text; no value meant to stay out
-/// of the log is that short.
-const MIN_REDACTED: usize = 4;
 
 pub fn init(cli: &Cli, mn: bool) {
     let Ok(filter) = std::env::var("DWCLI_LOG") else {
@@ -31,7 +29,7 @@ pub fn init(cli: &Cli, mn: bool) {
     }
 }
 
-/// The values of the global options, as given and as `{:?}` quotes them.
+/// The values of the global options, in every form above.
 fn option_values(cli: &Cli) -> Vec<String> {
     let mut values: Vec<String> = cli
         .peers
@@ -53,16 +51,32 @@ fn option_values(cli: &Cli) -> Vec<String> {
     if let DashNetwork::Devnet { name } = &cli.network {
         values.push(name.clone());
     }
-    let quoted: Vec<String> = values
-        .iter()
-        .map(|v| v.escape_debug().to_string())
-        .collect();
-    values.extend(quoted);
-    values.retain(|v| v.len() >= MIN_REDACTED);
+    let forms: Vec<String> = values.iter().flat_map(|v| forms(v)).collect();
+    values.extend(forms);
+    values.retain(|v| !v.is_empty());
     // The longest first, so a value inside another goes with it.
     values.sort_by_key(|v| std::cmp::Reverse(v.len()));
     values.dedup();
     values
+}
+
+/// The other forms of `value`: `{:?}`-quoted, and a URL's parts.
+fn forms(value: &str) -> Vec<String> {
+    let mut forms = vec![value.escape_debug().to_string()];
+    if let Ok(url) = url::Url::parse(value) {
+        forms.push(url.as_str().to_string());
+        forms.push(url.as_str().trim_end_matches('/').to_string());
+        forms.push(url.username().to_string());
+        forms.extend(url.password().map(String::from));
+        if let Some(host) = url.host_str() {
+            forms.push(host.to_string());
+            forms.extend(url.port_or_known_default().map(|p| format!("{host}:{p}")));
+        }
+        if url.path() != "/" {
+            forms.push(url.path().to_string());
+        }
+    }
+    forms
 }
 
 /// One event's text, written to stderr redacted when dropped.
@@ -111,6 +125,21 @@ fn redact(text: &str, values: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A URL's user-info and host go even where a library prints them
+    /// apart or normalised (D33).
+    #[test]
+    fn a_urls_parts_are_redacted() {
+        let mut values = forms("HTTP://User:Tok@Example.COM:81/p");
+        values.sort_by_key(|v| std::cmp::Reverse(v.len()));
+        assert_eq!(
+            redact(
+                "url: http://User:Tok@example.com:81/p/quorums, Tok, example.com:81",
+                &values
+            ),
+            "url: <redacted>/quorums, <redacted>, <redacted>"
+        );
+    }
 
     #[test]
     fn every_value_and_its_quoted_form_is_redacted() {

@@ -184,6 +184,10 @@ struct StderrSink {
     verbose: bool,
     /// Print `NewTransactions` events to stdout (`watch-events`).
     new_tx: bool,
+    /// An `mn` command: `--verbose-events` prints each event's kind only,
+    /// since its fields may carry an option's value (a devnet name, a
+    /// notice quoting `--quorum-url`; MG-03 D33).
+    kind_only: bool,
 }
 
 impl EventSink for StderrSink {
@@ -204,10 +208,21 @@ impl EventSink for StderrSink {
                 list.join(",")
             );
         }
-        if self.verbose {
+        if self.verbose && self.kind_only {
+            eprintln!("event: {}", event_kind(&event));
+        } else if self.verbose {
             eprintln!("event: {event:?}");
         }
     }
+}
+
+/// The event's variant name, a fixed identifier.
+fn event_kind(event: &EngineEvent) -> String {
+    let text = format!("{event:?}");
+    let end = text
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(text.len());
+    text[..end].to_string()
 }
 
 /// The first line of `path`, as bytes.
@@ -425,6 +440,7 @@ fn run(cli: Cli) -> Result<(), RunError> {
         },
         Arc::new(StderrSink {
             verbose: cli.verbose_events,
+            kind_only: matches!(cli.command, Command::Mn(_)),
             new_tx: matches!(
                 cli.command,
                 Command::Tools(tools::ToolsCommand::WatchEvents { .. })
