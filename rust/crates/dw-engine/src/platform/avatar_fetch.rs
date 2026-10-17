@@ -19,6 +19,8 @@ use reqwest::header::{ACCEPT, CONTENT_LENGTH, LOCATION};
 use reqwest::redirect::Policy as RedirectPolicy;
 use reqwest::{StatusCode, Url};
 
+use super::avatar::Admission;
+
 /// The largest avatar fetched or accepted from a file (§3.8).
 pub(super) const MAX_BYTES: usize = 5 << 20;
 /// The longest avatar URL (the contract's `maxLength`; the library drops
@@ -149,44 +151,80 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
         && !(s[0] == 0x3fff && s[1] < 0x1000)
 }
 
-/// Resolves a host name to addresses. The system resolver in production; a
-/// script in tests.
+tokio::task_local! {
+    /// What the fetch being made admits its name lookups under (D39).
+    static ADMISSION: Admission;
+}
+
+/// Resolves a host name to addresses, the lookup admitted under
+/// `admission` (D39): not made once that refuses it. The system resolver
+/// in production; a script in tests.
 pub(super) trait NameResolver: Send + Sync + 'static {
     fn lookup(
         &self,
         host: String,
+        admission: Admission,
     ) -> Pin<Box<dyn Future<Output = std::io::Result<Vec<IpAddr>>> + Send>>;
 }
 
-/// The operating system's resolver (`getaddrinfo` on a blocking thread).
-/// A lookup given up on before a blocking thread takes it is not made
-/// (DP4-02 D36); one already running finishes, its answer unused.
-pub(super) struct SystemResolver;
+type BlockingLookup = dyn Fn(&str) -> std::io::Result<Vec<IpAddr>> + Send + Sync;
 
-impl NameResolver for SystemResolver {
+/// A resolver that looks names up on a blocking thread: the system's
+/// (`getaddrinfo`) in production. The thread admits the lookup and holds
+/// the admission until it returns, so an off waits for a lookup running
+/// (bounded by the system resolver's own timeout: DP4-02 D39) and one that
+/// begins after an off is not made. A lookup given up on before a thread
+/// takes it is not made either (D36).
+pub(super) struct BlockingResolver {
+    lookup: Arc<BlockingLookup>,
+}
+
+impl BlockingResolver {
+    /// The operating system's resolver.
+    pub(super) fn system() -> Self {
+        Self::new(|host| {
+            use std::net::ToSocketAddrs;
+            Ok(((host, 0).to_socket_addrs()?).map(|a| a.ip()).collect())
+        })
+    }
+
+    pub(super) fn new(
+        lookup: impl Fn(&str) -> std::io::Result<Vec<IpAddr>> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            lookup: Arc::new(lookup),
+        }
+    }
+}
+
+impl NameResolver for BlockingResolver {
     fn lookup(
         &self,
         host: String,
+        admission: Admission,
     ) -> Pin<Box<dyn Future<Output = std::io::Result<Vec<IpAddr>>> + Send>> {
+        let lookup = Arc::clone(&self.lookup);
         Box::pin(async move {
-            use std::net::ToSocketAddrs;
             // Dropped with this future, which is when the lookup is given up.
             let wanted = Arc::new(());
             let still = Arc::downgrade(&wanted);
-            let lookup = tokio::task::spawn_blocking(move || {
+            let worker = tokio::task::spawn_blocking(move || {
+                let Some(_admitted) = admission.admit() else {
+                    return Err(std::io::Error::other("contact pictures are off"));
+                };
                 let Some(_wanted) = still.upgrade() else {
                     return Err(std::io::Error::other("lookup given up"));
                 };
-                let addrs = (host.as_str(), 0).to_socket_addrs()?;
-                Ok(addrs.map(|a| a.ip()).collect())
+                lookup(&host)
             });
-            lookup.await.map_err(std::io::Error::other)?
+            worker.await.map_err(std::io::Error::other)?
         })
     }
 }
 
-/// The client's resolver: one lookup, and every address must be public
-/// (D4), else the connection is refused before it is made.
+/// The client's resolver: one lookup, admitted under the fetch's
+/// admission (D39), and every address must be public (D4), else the
+/// connection is refused before it is made.
 struct Checked {
     inner: Arc<dyn NameResolver>,
     policy: FetchPolicy,
@@ -194,7 +232,11 @@ struct Checked {
 
 impl Resolve for Checked {
     fn resolve(&self, name: Name) -> Resolving {
-        let lookup = self.inner.lookup(name.as_str().to_owned());
+        // Outside a fetch (none is), nothing is looked up.
+        let Ok(admission) = ADMISSION.try_with(Admission::clone) else {
+            return Box::pin(async { Err("a lookup outside an avatar fetch".into()) });
+        };
+        let lookup = self.inner.lookup(name.as_str().to_owned(), admission);
         let policy = self.policy.clone();
         Box::pin(async move {
             let ips = lookup.await?;
@@ -226,6 +268,10 @@ impl Fetcher {
             // The environment's proxy variables must not route around the
             // address check (D5).
             .no_proxy()
+            // No pool: a connect is then made inside the fetch, never
+            // finished in a task of its own after the fetch was dropped (an
+            // off: D39).
+            .pool_max_idle_per_host(0)
             .dns_resolver(Arc::new(Checked {
                 inner: resolver,
                 policy: policy.clone(),
@@ -247,9 +293,15 @@ impl Fetcher {
     }
 
     /// The bytes at `url`, following at most [`MAX_REDIRECTS`] redirects,
-    /// every hop checked first, within [`FETCH_TIME`] and [`MAX_BYTES`].
-    pub(super) async fn fetch(&self, url: &Url) -> Result<Vec<u8>, FetchError> {
-        tokio::time::timeout(FETCH_TIME, self.follow(url.clone()))
+    /// every hop checked first, within [`FETCH_TIME`] and [`MAX_BYTES`];
+    /// its name lookups under `admission` (D39).
+    pub(super) async fn fetch(
+        &self,
+        url: &Url,
+        admission: Admission,
+    ) -> Result<Vec<u8>, FetchError> {
+        let follow = ADMISSION.scope(admission, self.follow(url.clone()));
+        tokio::time::timeout(FETCH_TIME, follow)
             .await
             .unwrap_or(Err(FetchError::Timeout))
     }

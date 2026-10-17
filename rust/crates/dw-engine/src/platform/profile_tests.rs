@@ -475,6 +475,11 @@ fn an_avatar_candidate_sets_the_three_fields() {
 /// (avatar_tests.rs).
 struct DavesAvatar {
     server: super::avatar_tests::Server,
+    /// The session's pipeline, the URL Dave's profile publishes, and the
+    /// picture there.
+    pipeline: Arc<super::avatar::Pipeline>,
+    url: String,
+    picture: Vec<u8>,
     _tmp: tempfile::TempDir,
 }
 
@@ -514,7 +519,13 @@ fn with_daves_avatar(f: &Fixture) -> DavesAvatar {
         ]),
     };
     f.net.profiles.lock().unwrap().insert(id(DAVE), doc);
-    DavesAvatar { server, _tmp: tmp }
+    DavesAvatar {
+        server,
+        pipeline: avatars.pipeline().unwrap(),
+        url: https,
+        picture: theirs,
+        _tmp: tmp,
+    }
 }
 
 impl Fixture {
@@ -524,7 +535,10 @@ impl Fixture {
     ) -> Result<Option<super::profile::AvatarImage>, super::errors::AvatarError> {
         let who = b58(&id(n));
         let size = super::profile::AvatarSize::Small;
-        self.s.avatar_of(&*self.net, self.wallet, &who, size).await
+        let net = Arc::clone(&self.net);
+        (self.s.dashpay(self.wallet))
+            .avatar_through(move |_| net, who, size)
+            .await
     }
 
     fn profile_reads(&self) -> u32 {
@@ -700,6 +714,32 @@ fn a_close_waits_for_a_dropped_setter() {
     assert!(pause.done.load(Ordering::SeqCst));
     let reopened = reopen(engine);
     assert_eq!(reopened.load_contact_pictures(), Ok(true));
+}
+
+/// Another user's picture is delivered only if no off was published since
+/// its read began (D40): a read held between its end and its delivery
+/// while an off completes answers `None`.
+#[test]
+fn a_picture_read_before_an_off_is_not_delivered_after_it() {
+    let f = fixture();
+    let p = with_daves_avatar(&f);
+    p.pipeline.seed(&p.url, &p.picture);
+    let shown = f.engine.block_on(f.read_avatar(DAVE)).unwrap();
+    assert!(shown.is_some(), "read with pictures on");
+    let toggle = f.s.platform.avatars.toggle();
+    let (reached, release) = super::avatar_tests::pause_at(&toggle, "delivery");
+    let off = async {
+        reached.await.unwrap();
+        f.s.set_load_contact_pictures(false).await.unwrap();
+        release.send(()).unwrap();
+    };
+    let both = async { tokio::join!(f.read_avatar(DAVE), off) };
+    let held = async { tokio::time::timeout(Duration::from_secs(60), both).await };
+    let (read, ()) = f
+        .engine
+        .block_on(held)
+        .expect("the off did not wait on the caller");
+    assert_eq!(read, Ok(None));
 }
 
 /// A kept Platform failure answers only in the toggle's epoch it was read

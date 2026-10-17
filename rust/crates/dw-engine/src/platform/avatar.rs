@@ -21,7 +21,7 @@ use zeroize::Zeroizing;
 
 use super::avatar_cache::{AvatarStore, ThumbDir, stem};
 use super::avatar_fetch::{
-    FetchError, FetchPolicy, Fetcher, MAX_BYTES, MAX_URL_LEN, NameResolver, SystemResolver,
+    BlockingResolver, FetchError, FetchPolicy, Fetcher, MAX_BYTES, MAX_URL_LEN, NameResolver,
 };
 use super::avatar_image::{self, Crop, Ingested};
 use super::contacts_model::identifier;
@@ -144,19 +144,31 @@ impl Pictures {
 
     /// Begins a read: the toggle as it sees it, registered until the
     /// ticket drops.
-    pub(super) fn ticket(&self) -> Ticket<'_> {
-        let mut seen = (false, 0);
+    pub(super) fn ticket(self: &Arc<Self>) -> Ticket {
+        let mut stamp = Stamp {
+            on: false,
+            epoch: 0,
+        };
         self.state.send_if_modified(|s| {
             *s.reads.entry(s.epoch).or_default() += 1;
-            seen = (s.on, s.epoch);
+            stamp = Stamp {
+                on: s.on,
+                epoch: s.epoch,
+            };
             false
         });
         Ticket {
-            pictures: self,
-            on: seen.0,
-            epoch: seen.1,
+            pictures: Arc::clone(self),
+            stamp,
             registered: true,
         }
+    }
+
+    /// Whether the toggle still allows what was stamped `stamp` the
+    /// network (D33), or another user's picture read under it to be
+    /// delivered (D40).
+    pub(super) fn still(&self, stamp: Stamp) -> bool {
+        stamp.permits(&self.state.borrow())
     }
 
     /// Sets the toggle now, without a durable write or waiting for reads
@@ -199,7 +211,7 @@ impl Pictures {
     }
 
     /// A named point of a read, where a test may pause it.
-    async fn at(&self, point: &'static str) {
+    pub(super) async fn at(&self, point: &'static str) {
         #[cfg(test)]
         {
             let pause = guard(&self.hook).as_ref().and_then(|hook| hook(point));
@@ -242,24 +254,57 @@ impl Transition {
     }
 }
 
-/// A read of "Load contact pictures": what it saw when it began (D33),
-/// and its registration while it runs (D36).
-pub(super) struct Ticket<'a> {
-    pictures: &'a Pictures,
+/// What a read saw of "Load contact pictures" when it began (D33).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Stamp {
     on: bool,
     epoch: u64,
+}
+
+impl Stamp {
+    /// Whether the toggle, as `s`, still allows a read stamped so the
+    /// network: it began on, and nothing has moved the toggle since.
+    fn permits(self, s: &Toggle) -> bool {
+        self.on && s.on && s.epoch == self.epoch
+    }
+}
+
+impl Toggle {
+    /// Ends one read of `epoch`; whether it was that epoch's last.
+    fn leave(&mut self, epoch: u64) -> bool {
+        let Some(n) = self.reads.get_mut(&epoch) else {
+            return false;
+        };
+        *n -= 1;
+        let ended = *n == 0;
+        if ended {
+            self.reads.remove(&epoch);
+        }
+        ended
+    }
+}
+
+/// A read of "Load contact pictures": what it saw when it began (D33),
+/// and its registration while it runs (D36).
+pub(super) struct Ticket {
+    pictures: Arc<Pictures>,
+    stamp: Stamp,
     registered: bool,
 }
 
-impl Ticket<'_> {
-    /// Whether the read may still use the network: it began with the
-    /// toggle on, and nothing has moved it since.
+impl Ticket {
+    /// Whether the read may still use the network.
     pub(super) fn allows(&self) -> bool {
-        self.permits(&self.pictures.state.borrow())
+        self.pictures.still(self.stamp)
     }
 
-    fn permits(&self, s: &Toggle) -> bool {
-        self.on && s.on && s.epoch == self.epoch
+    pub(super) fn stamp(&self) -> Stamp {
+        self.stamp
+    }
+
+    /// What the read's name lookups are admitted under (D39).
+    pub(super) fn admission(&self) -> Admission {
+        Admission(Some((Arc::clone(&self.pictures), self.stamp)))
     }
 
     /// `work`, unless the ticket stops allowing the network first: then
@@ -275,7 +320,8 @@ impl Ticket<'_> {
             return None;
         }
         let mut state = self.pictures.state.subscribe();
-        let revoked = state.wait_for(|s| !(s.on && s.epoch == self.epoch));
+        let epoch = self.stamp.epoch;
+        let revoked = state.wait_for(|s| !(s.on && s.epoch == epoch));
         let work = async {
             self.pictures.at(point).await;
             work.await
@@ -299,29 +345,62 @@ impl Ticket<'_> {
     }
 
     fn end(&mut self) -> bool {
-        let epoch = self.epoch;
+        let stamp = self.stamp;
         let mut allowed = false;
         if std::mem::take(&mut self.registered) {
             self.pictures.state.send_if_modified(|s| {
-                allowed = self.permits(s);
-                let Some(n) = s.reads.get_mut(&epoch) else {
-                    return false;
-                };
-                *n -= 1;
-                let ended = *n == 0;
-                if ended {
-                    s.reads.remove(&epoch);
-                }
-                ended
+                allowed = stamp.permits(s);
+                s.leave(stamp.epoch)
             });
         }
         allowed
     }
 }
 
-impl Drop for Ticket<'_> {
+impl Drop for Ticket {
     fn drop(&mut self) {
         self.end();
+    }
+}
+
+/// What a name lookup of a fetch is admitted under (D39): a read's stamp,
+/// or nothing for the user's own `prepare_avatar` URL.
+#[derive(Clone)]
+pub(super) struct Admission(Option<(Arc<Pictures>, Stamp)>);
+
+impl Admission {
+    /// `prepare_avatar`'s: always admitted.
+    pub(super) fn any() -> Self {
+        Self(None)
+    }
+
+    /// Admits a lookup now: for a read, only while its stamp allows the
+    /// network, checked and registered in one step as a read is, so an off
+    /// either waits for the lookup or the lookup sees it and is not made.
+    pub(super) fn admit(&self) -> Option<Admitted> {
+        let Some((pictures, stamp)) = &self.0 else {
+            return Some(Admitted(None));
+        };
+        let mut admitted = false;
+        pictures.state.send_if_modified(|s| {
+            admitted = stamp.permits(s);
+            if admitted {
+                *s.reads.entry(stamp.epoch).or_default() += 1;
+            }
+            false
+        });
+        admitted.then(|| Admitted(Some((Arc::clone(pictures), stamp.epoch))))
+    }
+}
+
+/// An admitted lookup, registered as a read until it drops (D39).
+pub(super) struct Admitted(Option<(Arc<Pictures>, u64)>);
+
+impl Drop for Admitted {
+    fn drop(&mut self) {
+        if let Some((pictures, epoch)) = &self.0 {
+            pictures.state.send_if_modified(|s| s.leave(*epoch));
+        }
     }
 }
 
@@ -466,11 +545,17 @@ impl Pipeline {
     }
 
     /// Fetches and ingests `target` (with the fingerprint for a candidate),
-    /// and records the outcome in the index.
-    async fn fetch(&self, target: &Target, fingerprint: bool) -> Result<Ingested, AvatarError> {
+    /// its lookups under `admission` (D39), and records the outcome in the
+    /// index.
+    async fn fetch(
+        &self,
+        target: &Target,
+        fingerprint: bool,
+        admission: Admission,
+    ) -> Result<Ingested, AvatarError> {
         let fetched = {
             let _permit = self.fetches.acquire().await;
-            self.fetcher.fetch(&target.fetch).await
+            self.fetcher.fetch(&target.fetch, admission).await
         };
         let crop = target.crop;
         let ingested = match fetched {
@@ -518,7 +603,7 @@ impl Pipeline {
         profile: &Profile,
         size: AvatarSize,
         whose: Whose,
-        ticket: Ticket<'_>,
+        ticket: Ticket,
     ) -> Result<Option<Vec<u8>>, AvatarError> {
         let read = self.read(profile, size, whose, &ticket).await;
         if !ticket.finish() && whose == Whose::Other {
@@ -532,7 +617,7 @@ impl Pipeline {
         profile: &Profile,
         size: AvatarSize,
         whose: Whose,
-        ticket: &Ticket<'_>,
+        ticket: &Ticket,
     ) -> Result<Option<Vec<u8>>, AvatarError> {
         let Some(published) = profile.avatar_url.as_deref() else {
             return Ok(None);
@@ -569,7 +654,7 @@ impl Pipeline {
                 return Err(refusal(&row.status));
             }
         }
-        let fetch = self.fetch(&target, false);
+        let fetch = self.fetch(&target, false, ticket.admission());
         let Some(ingested) = ticket.unless_revoked("fetch", fetch).await else {
             return Ok(None);
         };
@@ -578,6 +663,16 @@ impl Pipeline {
             return Err(AvatarError::HashMismatch);
         }
         Ok(Some(ingested.thumbnail(size).to_vec()))
+    }
+
+    /// Tests: `bytes` cached as the picture at `published`, as a fetch of
+    /// it would have left it.
+    #[cfg(test)]
+    pub(super) fn seed(&self, published: &str, bytes: &[u8]) {
+        let target = Target::parse(published).unwrap();
+        let ingested = avatar_image::ingest(bytes, target.crop, false).unwrap();
+        let stem = stem(&ingested.sha, target.crop.as_ref());
+        (self.store).record_ok(&target.url_sha, &stem, &ingested, unix_now());
     }
 
     /// `prepare_avatar`'s fetch of a URL the user gave: always fetched now,
@@ -595,7 +690,8 @@ impl Pipeline {
         })?;
         let lock = self.url_lock(&target.url_sha);
         let _one = lock.lock().await;
-        Ok((published, self.fetch(&target, true).await?))
+        let fetched = self.fetch(&target, true, Admission::any()).await?;
+        Ok((published, fetched))
     }
 }
 
@@ -682,7 +778,7 @@ impl AvatarRuntime {
         Arc::clone(&self.pictures)
     }
 
-    fn pipeline(&self) -> Result<Arc<Pipeline>, AvatarError> {
+    pub(super) fn pipeline(&self) -> Result<Arc<Pipeline>, AvatarError> {
         (guard(&self.pipeline).clone()).ok_or(AvatarError::Platform(PlatformError::Unavailable))
     }
 
@@ -811,7 +907,7 @@ impl AvatarRuntime {
         &self,
         net: &impl RequestNet,
         user: Identifier,
-        ticket: &Ticket<'_>,
+        ticket: &Ticket,
     ) -> RemoteRead {
         match self.remote_read(net, user, ticket).await {
             Err(_) if !ticket.allows() => Ok(None),
@@ -823,7 +919,7 @@ impl AvatarRuntime {
         &self,
         net: &impl RequestNet,
         user: Identifier,
-        ticket: &Ticket<'_>,
+        ticket: &Ticket,
     ) -> RemoteRead {
         ticket.at("remote").await;
         if let Some(kept) = self.kept_remote(&user, ticket) {
@@ -858,7 +954,7 @@ impl AvatarRuntime {
         }
         let kept = KeptRead {
             at: Instant::now(),
-            epoch: ticket.epoch,
+            epoch: ticket.stamp().epoch,
             read: read.clone(),
         };
         remote.insert(user, kept);
@@ -867,9 +963,9 @@ impl AvatarRuntime {
 
     /// The kept read of `user` that answers `ticket`: a failure only in
     /// the epoch it was read in (D38).
-    fn kept_remote(&self, user: &Identifier, ticket: &Ticket<'_>) -> Option<RemoteRead> {
+    fn kept_remote(&self, user: &Identifier, ticket: &Ticket) -> Option<RemoteRead> {
         (guard(&self.remote).get(user))
-            .filter(|kept| kept.live() && (kept.read.is_ok() || kept.epoch == ticket.epoch))
+            .filter(|kept| kept.live() && (kept.read.is_ok() || kept.epoch == ticket.stamp().epoch))
             .map(|kept| kept.read.clone())
     }
 }
@@ -931,32 +1027,58 @@ impl NetworkSession {
         avatars.pictures.set(pictures);
         avatars.install(Pipeline::new(
             FetchPolicy::STRICT,
-            Arc::new(SystemResolver),
+            Arc::new(BlockingResolver::system()),
             dir,
             db,
         ));
     }
 
-    /// `DashPay::avatar` (design: "The read").
+    /// `DashPay::avatar` (design: "The read"): the answer, to be delivered
+    /// with [`Answer::deliver`] (D40).
     pub(super) async fn avatar_of(
         self: &Arc<Self>,
         net: &impl RequestNet,
         wallet_id: WalletId,
         identity: &str,
         size: AvatarSize,
+    ) -> Answer {
+        // The toggle as this read began: checked again at every network
+        // step and before answering (D33). The read is registered until it
+        // answers (D36).
+        let ticket = self.platform.avatars.pictures.ticket();
+        let stamp = ticket.stamp();
+        let mut whose = None;
+        let result = (self.avatar_read(net, wallet_id, identity, size, ticket, &mut whose)).await;
+        Answer {
+            result,
+            other: (whose == Some(Whose::Other)).then_some(stamp),
+        }
+    }
+
+    async fn avatar_read(
+        self: &Arc<Self>,
+        net: &impl RequestNet,
+        wallet_id: WalletId,
+        identity: &str,
+        size: AvatarSize,
+        ticket: Ticket,
+        whose_read: &mut Option<Whose>,
     ) -> Result<Option<AvatarImage>, AvatarError> {
         let user = identifier(identity).map_err(|_| PlatformError::InvalidArgument {
             detail: "not a Base58 identity id".into(),
         })?;
         let avatars = &self.platform.avatars;
-        // The toggle as this read began: checked again at every network
-        // step and before answering (D33). The read is registered until it
-        // returns (D36).
-        let ticket = avatars.pictures.ticket();
         let read = self.identity_read(wallet_id).map_err(PlatformError::from)?;
         let b58 = user.to_string(Encoding::Base58);
-        let (profile, whose) = match read.summaries.iter().find(|s| s.identity == b58) {
-            Some(own) => (own.profile.clone(), Whose::Own),
+        let own = read.summaries.iter().find(|s| s.identity == b58);
+        let whose = if own.is_some() {
+            Whose::Own
+        } else {
+            Whose::Other
+        };
+        *whose_read = Some(whose);
+        let profile = match own {
+            Some(own) => own.profile.clone(),
             None if !ticket.allows() => return Ok(None),
             None => {
                 let mut owners: Vec<_> = read.summaries.iter().collect();
@@ -967,11 +1089,10 @@ impl NetworkSession {
                 let known = self
                     .known_profile(wallet_id, &user, &owners)
                     .map_err(PlatformError::from)?;
-                let profile = match known {
+                match known {
                     Some(profile) => profile,
                     None => avatars.remote_profile(net, user, &ticket).await?,
-                };
-                (profile, Whose::Other)
+                }
             }
         };
         let Some(profile) = profile else {
@@ -982,5 +1103,25 @@ impl NetworkSession {
             .for_profile(&profile, size, whose, ticket)
             .await?;
         Ok(png.map(|png| AvatarImage { png, size }))
+    }
+}
+
+/// An answer of `avatar`, not yet delivered (D40).
+#[must_use]
+pub(super) struct Answer {
+    result: Result<Option<AvatarImage>, AvatarError>,
+    /// The read's stamp when it was another user's.
+    other: Option<Stamp>,
+}
+
+impl Answer {
+    /// The answer as the caller gets it: another user's, read before an
+    /// off that has since been published, is `None`, a picture or a
+    /// failure; an own identity's is as read.
+    pub(super) fn deliver(self, pictures: &Pictures) -> Result<Option<AvatarImage>, AvatarError> {
+        match self.other {
+            Some(stamp) if !pictures.still(stamp) => Ok(None),
+            _ => self.result,
+        }
     }
 }

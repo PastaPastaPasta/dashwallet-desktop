@@ -22,7 +22,7 @@ use reqwest::Url;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use super::avatar::{Pictures, Pipeline, Target, Whose};
+use super::avatar::{Admission, Pictures, Pipeline, Target, Whose};
 use super::avatar_cache::ThumbDir;
 use super::avatar_fetch::{FetchError, FetchPolicy, Fetcher, MAX_BYTES, NameResolver};
 use super::avatar_image::{self, Crop, MAX_SIDE};
@@ -259,7 +259,12 @@ impl NameResolver for Script {
     fn lookup(
         &self,
         host: String,
+        admission: Admission,
     ) -> Pin<Box<dyn Future<Output = std::io::Result<Vec<IpAddr>>> + Send>> {
+        if admission.admit().is_none() {
+            let off = std::io::Error::other("contact pictures are off");
+            return Box::pin(async move { Err(off) });
+        }
         self.lookups.lock().unwrap().push(host.clone());
         let mut answers = self.answers.lock().unwrap();
         let answer = match answers.get_mut(&host) {
@@ -328,10 +333,11 @@ impl Rig {
     }
 
     async fn fetch(&self, url: &str) -> Result<Vec<u8>, FetchError> {
-        self.fetcher().fetch(&Url::parse(url).unwrap()).await
+        let url = Url::parse(url).unwrap();
+        self.fetcher().fetch(&url, Admission::any()).await
     }
 
-    fn ticket(&self) -> super::avatar::Ticket<'_> {
+    fn ticket(&self) -> super::avatar::Ticket {
         self.pictures.ticket()
     }
 
@@ -1367,9 +1373,60 @@ fn crc32(bytes: &[u8]) -> u32 {
 /// given up on before a thread takes it is not made).
 #[tokio::test(flavor = "multi_thread")]
 async fn the_system_resolver_resolves_a_name() {
-    let ips = super::avatar_fetch::SystemResolver
-        .lookup("localhost".into())
+    let ips = super::avatar_fetch::BlockingResolver::system()
+        .lookup("localhost".into(), Admission::any())
         .await
         .unwrap();
     assert!(ips.iter().any(IpAddr::is_loopback), "{ips:?}");
+}
+
+/// A read's name lookup is a registered read (D39): one running when the
+/// toggle goes off holds the off until it returns, and one whose worker
+/// starts after the off is not made.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_off_waits_for_a_running_lookup_and_stops_a_later_one() {
+    use super::avatar_fetch::BlockingResolver;
+    use std::sync::mpsc;
+    let pictures = Arc::new(Pictures::new(true));
+    let admission = || pictures.ticket().admission();
+    let made = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (reached_tx, reached) = mpsc::channel::<()>();
+    let (release, release_rx) = mpsc::channel::<()>();
+    let (release_rx, recorded) = (Mutex::new(release_rx), Arc::clone(&made));
+    // The worker pauses after it was admitted, before the lookup.
+    let held = BlockingResolver::new(move |host| {
+        reached_tx.send(()).unwrap();
+        release_rx.lock().unwrap().recv().unwrap();
+        recorded.lock().unwrap().push(host.to_owned());
+        Ok(vec![LOCAL])
+    });
+    let lookup = tokio::spawn(held.lookup("held.test".into(), admission()));
+    let reached = tokio::task::spawn_blocking(move || reached.recv());
+    reached.await.unwrap().unwrap();
+    let mut off = std::pin::pin!(async {
+        let turn = pictures.begin_transition().await;
+        turn.apply(false, async { Ok::<_, ()>(()) }).await
+    });
+    let early = tokio::time::timeout(Duration::from_millis(300), &mut off);
+    assert!(early.await.is_err(), "off returned while a lookup ran");
+    release.send(()).unwrap();
+    off.await.unwrap();
+    assert_eq!(lookup.await.unwrap().unwrap(), [LOCAL]);
+    assert_eq!(*made.lock().unwrap(), ["held.test"]);
+    // Admitted under a read that began on, the worker starting after an
+    // off: no lookup.
+    pictures.set(true);
+    let late = admission();
+    pictures.set(false);
+    let recorded = Arc::clone(&made);
+    let quiet = BlockingResolver::new(move |host| {
+        recorded.lock().unwrap().push(host.to_owned());
+        Ok(vec![LOCAL])
+    });
+    assert!(quiet.lookup("late.test".into(), late).await.is_err());
+    assert_eq!(
+        *made.lock().unwrap(),
+        ["held.test"],
+        "no lookup after the off"
+    );
 }

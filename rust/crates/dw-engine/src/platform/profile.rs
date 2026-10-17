@@ -8,8 +8,9 @@ use super::avatar::LOAD_PICTURES_KEY;
 use super::dashpay::DashPay;
 use super::errors::{AvatarError, PlatformError};
 use super::profiles;
-use super::requests::SdkRequests;
+use super::requests::{RequestNet, SdkRequests};
 use crate::NetworkSession;
+use crate::session::Manager;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
@@ -229,12 +230,33 @@ impl DashPay {
         identity: String,
         size: AvatarSize,
     ) -> Result<Option<AvatarImage>, AvatarError> {
+        let net = |manager: &Manager| Box::new(SdkRequests(manager.sdk_arc()));
+        self.avatar_through(net, identity, size).await
+    }
+
+    /// [`Self::avatar`] reading Platform through `net` (tests: a fake).
+    /// Delivered here, once the read's task has joined: another user's
+    /// answer read before an off that has since been published is `None`
+    /// (DP4-02 D40).
+    pub(super) async fn avatar_through<N>(
+        &self,
+        net: impl FnOnce(&Manager) -> N + Send + 'static,
+        identity: String,
+        size: AvatarSize,
+    ) -> Result<Option<AvatarImage>, AvatarError>
+    where
+        N: std::ops::Deref<Target: RequestNet + Sized> + Send + Sync + 'static,
+    {
         let wallet_id = self.wallet_id();
-        self.on_wallet(move |session, manager, _| async move {
-            let net = SdkRequests(manager.sdk_arc());
-            session.avatar_of(&net, wallet_id, &identity, size).await
-        })
-        .await
+        let answer = self
+            .on_wallet(move |session, manager, _| async move {
+                let net = net(&manager);
+                Ok::<_, AvatarError>(session.avatar_of(&*net, wallet_id, &identity, size).await)
+            })
+            .await?;
+        let pictures = self.session.platform.avatars.toggle();
+        pictures.at("delivery").await;
+        answer.deliver(&pictures)
     }
 }
 
