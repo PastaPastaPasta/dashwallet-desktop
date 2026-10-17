@@ -4,6 +4,7 @@
 mod coinjoin;
 mod compat;
 mod dashpay;
+mod log;
 mod masternodes;
 mod pay;
 mod teardown;
@@ -675,17 +676,12 @@ fn abandon(mut passphrase: Option<Zeroizing<Vec<u8>>>, why: &str, last_lines: im
 }
 
 fn main() -> ExitCode {
-    // `DWCLI_LOG=info,dash_spv=debug` (EnvFilter syntax) logs to stderr.
-    if let Ok(filter) = std::env::var("DWCLI_LOG") {
-        tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-            .with_writer(std::io::stderr)
-            .init();
-    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => return parse_failure(&e),
     };
+    // `DWCLI_LOG=info,dash_spv=debug` (EnvFilter syntax) logs to stderr.
+    log::init(&cli, matches!(cli.command, Command::Mn(_)));
     // `mn` commands print one JSON line whatever happens (MG-03 D26), and a
     // panic's payload never reaches stderr.
     if matches!(cli.command, Command::Mn(_)) {

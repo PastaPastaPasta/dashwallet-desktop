@@ -168,10 +168,11 @@ fn mn_setup_failures_never_quote_a_global_option() {
     std::fs::write(root.join("file"), "a file, not a directory\n").unwrap();
     let path = |p: &Path| p.as_os_str().to_owned();
     let datadir = root.join("data");
-    let base = |skip: &str| -> Vec<std::ffi::OsString> {
+    // The options `skip` names are left out (to give them another value).
+    let base = |skip: &[&str]| -> Vec<std::ffi::OsString> {
         let mut args: Vec<std::ffi::OsString> = Vec::new();
         let mut push = |name: &str, value: std::ffi::OsString| {
-            if name != skip {
+            if !skip.contains(&name) {
                 args.push(name.into());
                 args.push(value);
             }
@@ -180,13 +181,15 @@ fn mn_setup_failures_never_quote_a_global_option() {
         push("--dapi", "http://127.0.0.1:1".into());
         push("--peer", "127.0.0.1:1".into());
         push("--passphrase-file", path(&root.join("pass")));
-        args.push("--no-platform".into());
+        if !skip.contains(&"--no-platform") {
+            args.push("--no-platform".into());
+        }
         args
     };
     let out = dwcli(root, "pass", &["init-vault"], b"");
     assert!(out.status.success(), "{out:?}");
 
-    let with = |skip: &str, extra: &[std::ffi::OsString]| {
+    let with = |skip: &[&str], extra: &[std::ffi::OsString]| {
         let mut args = base(skip);
         args.extend_from_slice(extra);
         args
@@ -195,31 +198,31 @@ fn mn_setup_failures_never_quote_a_global_option() {
     let cases: Vec<(&str, Vec<std::ffi::OsString>, Option<&str>)> = vec![
         (
             "--peer",
-            with("", &[os("--peer"), os(SECRET)]),
+            with(&[], &[os("--peer"), os(SECRET)]),
             Some("invalid --peer value"),
         ),
         (
             "--peer host",
-            with("", &[os("--peer"), os(&format!("{SECRET}:9999"))]),
+            with(&[], &[os("--peer"), os(&format!("{SECRET}:9999"))]),
             Some("invalid --peer value"),
         ),
         (
             "--ca-cert missing",
             with(
-                "",
+                &[],
                 &[os("--ca-cert"), path(&root.join("missing").join(SECRET))],
             ),
             Some("--ca-cert file not readable or not a PEM certificate"),
         ),
         (
             "--ca-cert not PEM",
-            with("", &[os("--ca-cert"), path(&root.join(SECRET))]),
+            with(&[], &[os("--ca-cert"), path(&root.join(SECRET))]),
             Some("--ca-cert file not readable or not a PEM certificate"),
         ),
         (
             "--datadir",
             with(
-                "--datadir",
+                &["--datadir"],
                 &[os("--datadir"), path(&root.join("file").join(SECRET))],
             ),
             Some("--datadir could not be opened"),
@@ -227,7 +230,7 @@ fn mn_setup_failures_never_quote_a_global_option() {
         (
             "--passphrase-file",
             with(
-                "--passphrase-file",
+                &["--passphrase-file"],
                 &[os("--passphrase-file"), path(&root.join(SECRET))],
             ),
             None,
@@ -235,7 +238,7 @@ fn mn_setup_failures_never_quote_a_global_option() {
         (
             "--passphrase-file missing",
             with(
-                "--passphrase-file",
+                &["--passphrase-file"],
                 &[
                     os("--passphrase-file"),
                     path(&root.join("missing").join(SECRET)),
@@ -243,26 +246,50 @@ fn mn_setup_failures_never_quote_a_global_option() {
             ),
             Some("--passphrase-file not readable"),
         ),
-        ("--dapi", with("--dapi", &[os("--dapi"), os(SECRET)]), None),
         (
-            "--quorum-url",
-            with("", &[os("--quorum-url"), os(SECRET)]),
+            "--dapi",
+            with(&["--dapi"], &[os("--dapi"), os(SECRET)]),
             None,
         ),
-        ("--network", with("", &[os("--network"), os(SECRET)]), None),
+        (
+            "--quorum-url",
+            with(&[], &[os("--quorum-url"), os(SECRET)]),
+            None,
+        ),
+        // With Platform on, so the SDK uses (and may log) the URL.
+        (
+            "--dapi URL",
+            with(
+                &["--dapi", "--no-platform"],
+                &[os("--dapi"), os(&format!("http://127.0.0.1:1/{SECRET}"))],
+            ),
+            None,
+        ),
+        (
+            "--quorum-url URL",
+            with(
+                &["--no-platform"],
+                &[
+                    os("--quorum-url"),
+                    os(&format!("http://127.0.0.1:1/{SECRET}")),
+                ],
+            ),
+            None,
+        ),
+        ("--network", with(&[], &[os("--network"), os(SECRET)]), None),
         (
             "--network devnet",
-            with("", &[os("--network"), os(&format!("devnet:{SECRET}"))]),
+            with(&[], &[os("--network"), os(&format!("devnet:{SECRET}"))]),
             None,
         ),
         (
             "--initial-protocol-version",
-            with("", &[os("--initial-protocol-version"), os(SECRET)]),
+            with(&[], &[os("--initial-protocol-version"), os(SECRET)]),
             None,
         ),
         (
             "--shutdown-timeout",
-            with("", &[os("--shutdown-timeout"), os(SECRET)]),
+            with(&[], &[os("--shutdown-timeout"), os(SECRET)]),
             None,
         ),
     ];
