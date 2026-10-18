@@ -388,7 +388,7 @@ struct PeerState {
     /// phase end, but completes no object's vote sync (D68).
     unattributable: i64,
     /// Votes it announced on objects not asked of it → their object, and
-    /// whether the store held the vote then, so it was not fetched. Core
+    /// whether the store has held the vote since (D78). Core
     /// counts them in a later vote sync of the object on the connection
     /// but leaves them out of its invs (D36).
     relayed: HashMap<[u8; 32], ([u8; 32], bool)>,
@@ -481,8 +481,8 @@ impl PeerState {
     }
 
     /// Counts its inv of `vote`, on `parent`, towards its vote sync of
-    /// `parent`, or keeps it for a later one (D36); `held`: the store held
-    /// the vote, so it is not fetched.
+    /// `parent`, or keeps it for a later one (D36); `held`: the store holds
+    /// the vote (D78).
     fn attribute(&mut self, vote: [u8; 32], parent: [u8; 32], held: bool) {
         if let Some(n) = self.vote_announced.get_mut(&parent) {
             *n += 1;
@@ -1332,6 +1332,15 @@ impl Run {
         };
         let parent = checked.vote.parent_hash;
         let result = self.shared.store().add_checked(checked, addr, now);
+        // A relay fetched and held from here on: gone by its sync, it
+        // completes none (D78).
+        if self.shared.store().has_vote(&hash) {
+            for p in &mut self.peers {
+                if let Some((_, held)) = p.relayed.get_mut(&hash) {
+                    *held = true;
+                }
+            }
+        }
         if let Err(r) = result
             && !r.is_suspect()
             && !r.is_invalid()

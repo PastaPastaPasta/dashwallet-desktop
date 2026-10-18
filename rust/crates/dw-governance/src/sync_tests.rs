@@ -4210,3 +4210,64 @@ async fn an_awaited_vote_left_unasked_is_asked_by_a_later_run() {
         assert!(queued.contains(&item.hash), "no peers {no_peers}");
     }
 }
+
+/// Validator r27 (D78): a relayed vote fetched, held, and gone by its
+/// object's sync (here its orphan expired) completes none, as one held
+/// when relayed does.
+#[tokio::test]
+async fn a_fetched_relay_gone_by_its_sync_completes_none() {
+    let p = proposal("p-d78-fetched");
+    let h = p.hash();
+    let mut run = one_peer_run(|_, _| {}).await;
+    list_key_1(&run);
+    let v = aged_vote(h, 1);
+    run.vote_parents.insert(v.hash(), h);
+    run.handle(0, PeerEvent::Inv(vec![vote_inv(&v)]));
+    assert_eq!(run.requests.pending.len(), 1);
+    run.handle(0, PeerEvent::Vote(v.encode()));
+    {
+        let mut store = run.shared.store();
+        assert!(store.has_vote(&v.hash()));
+        store.expire_orphans(unix_now() + crate::store::ORPHAN_EXPIRY_SECS + 1);
+        store.add_object(p.clone(), None, unix_now()).unwrap();
+        assert!(!store.has_vote(&v.hash()));
+    }
+    run.ask_votes_of(0, h, &[]);
+    let state = &mut run.peers[0];
+    state.vote_expected.push(1);
+    assert!(!state.votes_completed().any(|x| x == h));
+    assert_eq!(state.unattributable, 1);
+}
+
+/// D78: a relayed vote the store never held is credited to its object's
+/// sync as before (D36): its fetch still out, or its copy refused (Core
+/// holds the genuine one and counts it).
+#[tokio::test]
+async fn a_relay_never_held_is_still_credited() {
+    for refused in [false, true] {
+        let p = proposal(&format!("p-d78-never-held-{refused}"));
+        let h = p.hash();
+        let mut run = one_peer_run(|_, _| {}).await;
+        list_key_1(&run);
+        let v = aged_vote(h, 1);
+        if !refused {
+            run.vote_parents.insert(v.hash(), h);
+        }
+        run.handle(0, PeerEvent::Inv(vec![vote_inv(&v)]));
+        assert_eq!(run.requests.pending.len(), 1);
+        if refused {
+            // Its object learnt from the refused copy (D46).
+            let mut junk = v.clone();
+            junk.signature = vec![0x55; 96];
+            run.handle(0, PeerEvent::Vote(junk.encode()));
+        }
+        let now = unix_now();
+        run.shared.store().add_object(p.clone(), None, now).unwrap();
+        assert!(!run.shared.store().has_vote(&v.hash()));
+        run.ask_votes_of(0, h, &[]);
+        let state = &mut run.peers[0];
+        state.vote_expected.push(1);
+        assert!(state.votes_completed().any(|x| x == h), "refused {refused}");
+        assert_eq!(state.unattributable, 0, "refused {refused}");
+    }
+}
