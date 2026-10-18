@@ -232,6 +232,10 @@ pub(crate) fn write(dir: &Path, file: &VaultFile) -> Result<(), VaultError> {
         f.sync_all()?;
     }
     std::fs::rename(&tmp, file_path(dir))?;
+    #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+    if crate::fault::take(dir, crate::fault::Fault::DirSync) {
+        return Err(std::io::Error::other("injected directory fsync failure").into());
+    }
     #[cfg(unix)]
     std::fs::File::open(dir)?.sync_all()?;
     Ok(())

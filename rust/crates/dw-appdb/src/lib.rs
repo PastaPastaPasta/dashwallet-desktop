@@ -24,6 +24,8 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 mod avatar;
 mod dashpay_journal;
 pub mod dispatch;
+#[cfg(all(debug_assertions, any(test, feature = "durability-sim")))]
+pub mod durability_sim;
 mod provenance;
 mod registration;
 mod rows;
@@ -1022,7 +1024,18 @@ impl AppDb {
 
     /// Sets a value, or deletes the key for `None`.
     pub fn set_setting(&self, scope: &str, key: &str, value: Option<&str>) -> Result<()> {
-        let conn = self.conn();
+        Self::put_setting(&self.conn(), scope, key, value)
+    }
+
+    /// [`Self::set_setting`], durable against power loss when it returns
+    /// `Ok` (as [`Self::set_dp_payment_lock_durable`]): for a setting a
+    /// later write elsewhere relies on, such as an id that must be gone
+    /// before another store holds a different key (MG-03 D34).
+    pub fn set_setting_durable(&self, scope: &str, key: &str, value: Option<&str>) -> Result<()> {
+        self.durably(|conn| Self::put_setting(conn, scope, key, value))
+    }
+
+    fn put_setting(conn: &Connection, scope: &str, key: &str, value: Option<&str>) -> Result<()> {
         match value {
             Some(v) => conn.execute(
                 "INSERT INTO settings_kv (scope, key, value) VALUES (?1, ?2, ?3)
@@ -1204,6 +1217,10 @@ impl AppDb {
         }
 
         let conn = self.conn();
+        #[cfg(all(debug_assertions, any(test, feature = "durability-sim")))]
+        if durability_sim::skips_barrier(&conn) {
+            return write(&conn);
+        }
         let mut synced = Synced(Some(&conn));
         let written = set_synced(&conn, true)
             .map_err(Into::into)
@@ -1211,6 +1228,8 @@ impl AppDb {
         let normal = synced.restore();
         let written = written?;
         normal?;
+        #[cfg(all(debug_assertions, any(test, feature = "durability-sim")))]
+        durability_sim::synced(&conn);
         Ok(written)
     }
 
@@ -1507,6 +1526,37 @@ mod tests {
             vec![row("carol", "t3", 30)]
         );
         assert_eq!(db.dp_payment_locks(W2).unwrap(), vec![row("bob", "t4", 40)]);
+    }
+
+    /// MG-03 D34: a durable setting survives power loss, with every commit
+    /// before it; a plain one after it doesn't; with the barrier skipped
+    /// the durable one doesn't either. Debug builds only, as the simulator
+    /// (D38).
+    #[cfg(all(test, debug_assertions))]
+    #[test]
+    fn a_durable_setting_survives_power_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(APP_DB_FILE);
+        drop(AppDb::open(&path).unwrap());
+        let value = |key: &str| AppDb::open(&path).unwrap().setting("g", key).unwrap();
+
+        durability_sim::arm(&path, false);
+        let db = AppDb::open(&path).unwrap();
+        db.set_setting("g", "before", Some("1")).unwrap();
+        db.set_setting_durable("g", "durable", Some("2")).unwrap();
+        db.set_setting("g", "after", Some("3")).unwrap();
+        drop(db);
+        durability_sim::power_loss(&path);
+        assert_eq!(value("before").as_deref(), Some("1"), "synced with it");
+        assert_eq!(value("durable").as_deref(), Some("2"));
+        assert_eq!(value("after"), None, "never synced");
+
+        durability_sim::arm(&path, true);
+        let db = AppDb::open(&path).unwrap();
+        db.set_setting_durable("g", "durable", None).unwrap();
+        drop(db);
+        durability_sim::power_loss(&path);
+        assert_eq!(value("durable").as_deref(), Some("2"), "the delete is lost");
     }
 
     /// D27: the durable write commits under `synchronous=FULL` (a trigger

@@ -152,25 +152,38 @@ pub fn redacted_whole(link: &str) -> bool {
     link_start(link) == Some(0)
 }
 
-/// `text` (one log event) cut at its first link: the link and everything
-/// after it, later lines included, replaced by [`REDACTED`], and the
-/// text's final line break kept; borrowed when there is no link.
-pub fn redact_links(text: &str) -> Cow<'_, str> {
+/// Where [`redact_links`] cuts `text` (one log event): the start of its
+/// first link, in any line; `None` when there is none.
+pub fn first_link(text: &str) -> Option<usize> {
     let mut line_start = 0;
     for line in text.split_inclusive(['\n', '\r']) {
         let body = line.trim_end_matches(['\n', '\r']);
         if let Some(at) = link_start(body) {
-            let cut = line_start + at;
-            let end = text.trim_end_matches(['\n', '\r']).len().max(cut);
-            let mut o = String::with_capacity(cut + REDACTED.len() + text.len() - end);
-            o.push_str(&text[..cut]);
-            o.push_str(REDACTED);
-            o.push_str(&text[end..]);
-            return Cow::Owned(o);
+            return Some(line_start + at);
         }
         line_start += line.len();
     }
-    Cow::Borrowed(text)
+    None
+}
+
+/// What [`redact_links`] keeps of `text` after the cut at `cut`, which
+/// must be [`first_link`]'s of the same text: the text's final line break.
+pub fn after_cut(text: &str, cut: usize) -> &str {
+    &text[text.trim_end_matches(['\n', '\r']).len().max(cut)..]
+}
+
+/// `text` (one log event) cut at its first link: the link and everything
+/// after it, later lines included, replaced by [`REDACTED`], and the
+/// text's final line break kept; borrowed when there is no link.
+pub fn redact_links(text: &str) -> Cow<'_, str> {
+    match first_link(text) {
+        Some(cut) => Cow::Owned(format!(
+            "{}{REDACTED}{}",
+            &text[..cut],
+            after_cut(text, cut)
+        )),
+        None => Cow::Borrowed(text),
+    }
 }
 
 /// Makes panics print redacted: a panic message may quote a link (an

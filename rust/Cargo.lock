@@ -2515,6 +2515,7 @@ dependencies = [
  "dw-fs",
  "dw-message",
  "dw-p2p",
+ "dw-protx",
  "dw-psbt",
  "dw-testutil",
  "dw-units",
@@ -2725,7 +2726,9 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "tracing",
  "tracing-subscriber",
+ "url",
  "zeroize",
 ]
 

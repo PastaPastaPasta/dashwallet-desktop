@@ -222,3 +222,35 @@ fn test_IOS_082_reading_an_attached_key_needs_a_reveal_grant() {
             .is_err()
     );
 }
+
+/// MG-03 D31: the id of an attached key, hash160 of its compressed public
+/// key, read with the full-scope key and nothing secret returned.
+#[test]
+fn test_IOS_082_an_attached_keys_id_needs_the_full_scope_key() {
+    use dashcore::hashes::{Hash, hash160};
+    use dashcore::secp256k1::{PublicKey, SecretKey};
+    let fx = Fixture::new();
+    let v = fx.open();
+    v.create(Some(PASS)).unwrap();
+    let secret = [7u8; 32];
+    v.store_masternode_key(&HASH, "voting", &secret).unwrap();
+    v.store_masternode_key(&HASH, "owner", b"not a secret key")
+        .unwrap();
+    let public = PublicKey::from_secret_key(&SecretKey::from_secret_bytes(secret).unwrap());
+    let id = hash160::Hash::hash(&public.serialize()).to_byte_array();
+    assert_eq!(v.masternode_key_id(&HASH, "voting").unwrap(), Some(id));
+    assert_eq!(v.masternode_key_id(&HASH, "owner").unwrap(), None);
+    assert_eq!(v.masternode_key_id(&HASH, "payout").unwrap(), None);
+    assert!(matches!(
+        v.masternode_key_id(&HASH, "operator").unwrap_err(),
+        VaultError::InvalidArgument(_)
+    ));
+    drop(v);
+    let v = fx.open();
+    assert_eq!(
+        v.masternode_key_id(&HASH, "voting").unwrap_err(),
+        VaultError::Locked
+    );
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    assert_eq!(v.masternode_key_id(&HASH, "voting").unwrap(), Some(id));
+}

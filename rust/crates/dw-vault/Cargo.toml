@@ -12,6 +12,10 @@ publish.workspace = true
 # the production floor (KdfPolicy::Fixed). Only honoured in debug builds and
 # never on mainnet/testnet vaults. Enable from [dev-dependencies] only.
 insecure-test-kdf = []
+# Lets callers' tests arm a one-shot failure of a vault write after its file
+# is renamed into place (`fault::arm`). Only honoured in debug builds.
+# Enable from [dev-dependencies] only.
+fault-inject = []
 
 [dependencies]
 # Same crypto stack (and exact versions) platform-wallet-storage's `secrets`

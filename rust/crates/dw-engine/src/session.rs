@@ -202,6 +202,8 @@ pub struct NetworkSession {
     pub(crate) relock: Mutex<Option<(u64, tokio::task::AbortHandle)>>,
     /// Mixing state, CoinJoin options and queues (M3, `coinjoin.rs`).
     pub(crate) coinjoin: crate::coinjoin::CoinJoinRuntime,
+    /// The masternode follower and its event (MG-03, `masternodes/`).
+    pub(crate) masternodes: crate::masternodes::follow::MasternodesRuntime,
     /// The bring-up, the Platform sync loops and their status (E0-05).
     pub(crate) platform: crate::platform::runtime::PlatformRuntime,
     /// Leases, the lock coordinator and the dispatch fence (E0-04).
@@ -413,6 +415,13 @@ impl NetworkSession {
         }
 
         let lock_state = vault.lock_state();
+        let masternodes = crate::masternodes::follow::MasternodesRuntime::new(
+            network.clone(),
+            Arc::clone(&sink),
+            &Handle::current(),
+        );
+        // A change of the wallet set re-reads the masternodes (MG-03 D28).
+        let sink = masternodes.watch_wallets(sink);
         let journal = crate::platform::lease::session::open_journal(&data_dir).await;
         let leases = crate::platform::lease::LeaseTable::new(
             network.clone(),
@@ -451,6 +460,7 @@ impl NetworkSession {
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
+            masternodes,
             platform: crate::platform::runtime::PlatformRuntime::new(
                 lock_state,
                 !opts.no_platform,
@@ -472,6 +482,7 @@ impl NetworkSession {
             }
         }
         session.leases.start_reaper();
+        session.masternodes.follow(&session);
         // Mode B's funding statuses (E0-04 §2a.5, H15): its evidence source,
         // the tap's hook on tracked-row changes, and a first read of every
         // loaded wallet's rows. The same source resumes tracked rows for
@@ -755,6 +766,7 @@ impl NetworkSession {
         self.platform.users.scans.close();
         // No proof-expiry timer outlives the session (BL-153 D23).
         self.platform.absence_expiries.abort_all();
+        self.masternodes.shutdown();
         let keys_idle = self.platform.key_work_idle().await;
         self.cancel_relock();
         self.coinjoin.shutdown();
