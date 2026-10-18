@@ -1912,7 +1912,7 @@ async fn one_peer_run(tune: impl FnOnce(&mut SyncConfig, &mut PeerState)) -> Run
         vote_targets: HashSet::new(),
         completed: HashSet::new(),
         met: HashSet::new(),
-        refetching: HashSet::new(),
+        refetching: HashMap::new(),
         vote_given_up: false,
         lost: 0,
         recovered: 0,
@@ -3832,4 +3832,153 @@ async fn an_object_only_run_prunes_stale_full_syncs() {
     let _ = hx.stop.send(true);
     assert_eq!(p.phase, Phase::Synced, "{p:?}");
     assert_eq!(hx.history.lock().unwrap().full_synced.len(), 1);
+}
+
+/// Key 1's NO on `p` re-signed by key 2 and announced first by peer 0,
+/// then replaced by key 2's newer vote in its slot; peer 1's inv of the
+/// NO was skipped as known. Returns the honest NO's inv.
+fn lose_honest_no(run: &mut Run, p: &GovernanceObject) -> InvItem {
+    list_keys(run, [1, 2]);
+    let honest = vote(p.hash(), 1, VoteOutcome::No);
+    let item = vote_inv(&honest);
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::Vote(resigned(&honest, 2).encode()));
+    if run.peers.len() > 1 {
+        run.handle(1, PeerEvent::Inv(vec![item]));
+    }
+    let own = GovernanceVote::funding(
+        honest.masternode_outpoint,
+        p.hash(),
+        VoteOutcome::Abstain,
+        unix_now() - 50,
+    );
+    let own = resigned(&own, 2);
+    run.handle(0, PeerEvent::Inv(vec![vote_inv(&own)]));
+    run.handle(0, PeerEvent::Vote(own.encode()));
+    assert!(!run.shared.store().has_vote(&honest.hash()));
+    assert_eq!(run.shared.store().tally(&p.hash()).uncounted, 1);
+    item
+}
+
+/// Manager r4 ruling on validator r21 Major 1 (D76): the lost NO is asked
+/// for again; both peers answer `notfound`, so no node holds it and it is
+/// settled. If one of them sends the re-signed copy instead, it stays.
+#[tokio::test]
+async fn a_lost_vote_two_peers_lack_is_settled() {
+    for copy_from_1 in [false, true] {
+        let p = proposal(&format!("p-d76-two-{copy_from_1}"));
+        let mut run = two_peer_run(&p).await;
+        let item = lose_honest_no(&mut run, &p);
+        let key = (item.hash, item.kind);
+        run.expire();
+        assert_eq!(run.requests.pending[&key].peer, 0);
+        run.handle(0, PeerEvent::NotFound(vec![item]));
+        run.expire();
+        assert_eq!(run.requests.pending[&key].peer, 1);
+        if copy_from_1 {
+            let honest = vote(p.hash(), 1, VoteOutcome::No);
+            run.handle(1, PeerEvent::Vote(resigned(&honest, 2).encode()));
+        } else {
+            run.handle(1, PeerEvent::NotFound(vec![item]));
+        }
+        assert!(!run.requests.pending.contains_key(&key));
+        assert!(run.refetching.is_empty());
+        let uncounted = run.shared.store().tally(&p.hash()).uncounted;
+        assert_eq!(
+            uncounted,
+            u32::from(copy_from_1),
+            "copy from 1: {copy_from_1}"
+        );
+    }
+}
+
+/// D76: with one peer, its `notfound` does not settle the lost NO; the
+/// next run asks for it again.
+#[tokio::test]
+async fn a_lost_vote_one_peer_lacks_stays_uncertain() {
+    let p = proposal("p-d76-one");
+    let mut run = one_peer_run(|_, _| {}).await;
+    {
+        let mut s = run.shared.store();
+        s.set_confirmations(1);
+        s.add_object(p.clone(), None, unix_now()).unwrap();
+    }
+    let item = lose_honest_no(&mut run, &p);
+    run.expire();
+    run.handle(0, PeerEvent::NotFound(vec![item]));
+    assert!(run.requests.pending.is_empty());
+    let mut store = run.shared.store();
+    let t = store.tally(&p.hash());
+    assert_eq!((t.uncounted, t.no.max), (1, 4));
+    store.requeue_lost();
+    assert_eq!(store.take_refetch(), vec![item.hash]);
+}
+
+/// D76: of three peers asked for the lost NO, two answer `notfound` but
+/// the first, still connected, timed out. It may hold the vote, so the NO
+/// is not settled.
+#[tokio::test]
+async fn a_lost_vote_a_live_peer_left_unanswered_stays_uncertain() {
+    let p = proposal("p-d76-three");
+    let mut run = two_peer_run(&p).await;
+    run.peers.push(sink_peer(2, &run.cfg).await);
+    let item = lose_honest_no(&mut run, &p);
+    let key = (item.hash, item.kind);
+    run.expire();
+    assert_eq!(run.requests.pending[&key].peer, 0);
+    expire_now(&mut run);
+    assert_eq!(run.requests.pending[&key].peer, 1);
+    run.handle(1, PeerEvent::NotFound(vec![item]));
+    run.expire();
+    assert_eq!(run.requests.pending[&key].peer, 2);
+    run.handle(2, PeerEvent::NotFound(vec![item]));
+    assert!(!run.requests.pending.contains_key(&key));
+    assert_eq!(run.peers.len(), 3);
+    let t = run.shared.store().tally(&p.hash());
+    assert_eq!((t.uncounted, t.no.max), (1, 4));
+}
+
+/// D76: a lost NO the last run did not settle is asked for again by the
+/// next run's votes phase; both peers answer `notfound`, so it settles.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_vote_is_asked_for_again_by_the_next_run() {
+    let p = proposal("p-d76-next-run");
+    let ha = p.hash();
+    let honest = vote(ha, 1, VoteOutcome::No);
+    let node = Node {
+        objects: vec![p.clone()],
+        ..Node::default()
+    };
+    let lost = honest.hash();
+    let hx = start_with(
+        vec![node.clone(), node],
+        |_| {},
+        move |shared, _, _| {
+            let mut store = shared.store();
+            store.add_object(p, None, unix_now()).unwrap();
+            store
+                .add_vote(resigned(&honest, 2), None, unix_now())
+                .unwrap();
+            let own = GovernanceVote::funding(
+                honest.masternode_outpoint,
+                ha,
+                VoteOutcome::Abstain,
+                unix_now() - 50,
+            );
+            store.add_vote(resigned(&own, 2), None, unix_now()).unwrap();
+            // The last run asked for it and gave up.
+            assert_eq!(store.take_refetch(), vec![lost]);
+            assert_eq!(store.tally(&ha).uncounted, 1);
+        },
+    )
+    .await;
+    let p = wait_for(&hx.shared, |p| {
+        matches!(p.phase, Phase::Failed | Phase::Synced)
+    })
+    .await;
+    let _ = hx.stop.send(true);
+    assert_eq!(p.phase, Phase::Synced, "{p:?}");
+    let store = hx.shared.store();
+    assert!(!store.has_vote(&lost));
+    assert_eq!(store.tally(&ha).uncounted, 0);
 }

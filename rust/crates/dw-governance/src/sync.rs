@@ -655,9 +655,9 @@ struct Run {
     /// Every peer of the run, gone or not: with two, no proposal is
     /// settled by one peer's vote sync alone (D68).
     met: HashSet<SocketAddr>,
-    /// Votes asked for again after their outpoint resolved (D64): giving
-    /// one up says nothing about a vote sync.
-    refetching: HashSet<[u8; 32]>,
+    /// Votes asked for again (D64, D76) → the peers that answered
+    /// `notfound`: giving one up says nothing about a vote sync.
+    refetching: HashMap<[u8; 32], Vec<usize>>,
     /// A vote was given up on once synced: no later vote sync is recorded
     /// as complete, as its votes may not all have come (D68).
     vote_given_up: bool,
@@ -996,10 +996,22 @@ impl Run {
             None => {
                 // Who announced an object still counts if another peer
                 // delivers it later.
-                self.remember_late(item, asked, t.owed, t.phase && (count || t.unanswered));
                 let (hash, kind) = item;
-                let refetched = kind == INV_GOVERNANCE_VOTE && self.refetching.contains(&hash);
+                let refetched = kind == INV_GOVERNANCE_VOTE && self.refetching.contains_key(&hash);
+                // Every connected peer asked, at least two, has no copy:
+                // a lost vote no node holds is settled (D76).
+                let none_held = self.refetching.get(&hash).is_some_and(|none| {
+                    none.len() >= 2
+                        && asked
+                            .iter()
+                            .filter(|p| live.contains(p))
+                            .all(|p| none.contains(p))
+                });
+                self.remember_late(item, asked, t.owed, t.phase && (count || t.unanswered));
                 self.finish(&item);
+                if none_held {
+                    self.shared.store().settle_lost(&hash);
+                }
                 if kind == INV_GOVERNANCE_VOTE {
                     if !refetched {
                         self.vote_given_up |= self.announce_open;
@@ -1385,6 +1397,12 @@ impl Run {
                 self.misbehaved(from, "notfound of another kind");
             }
             let r = self.release(&item).expect("looked up");
+            if item.1 == INV_GOVERNANCE_VOTE
+                && let Some(none) = self.refetching.get_mut(&item.0)
+                && !none.contains(&from)
+            {
+                none.push(from);
+            }
             // A peer that no longer has an item it announced (a vote
             // dropped with a list change) is not a lost sync item.
             self.retry(item, Some(from), r.into(), false);
@@ -1583,16 +1601,16 @@ impl Run {
     }
 
     /// Asks the connected peers in turn for the votes the store dropped as
-    /// signed by another key than their resolved outpoint's (D64): a peer
-    /// that sends the re-signed copy again is refused, and the next is
-    /// asked.
+    /// signed by another key than their resolved outpoint's (D64), or lost
+    /// (D76): a peer that sends the re-signed copy again is refused, and
+    /// the next is asked.
     fn refetch_votes(&mut self) {
         let ids: Vec<usize> = self.peers.iter().map(|p| p.peer.id).collect();
         let Some(&first) = ids.first() else { return };
         let hashes = self.shared.store().take_refetch();
         for hash in hashes {
             let item = (hash, INV_GOVERNANCE_VOTE);
-            self.refetching.insert(hash);
+            self.refetching.entry(hash).or_default();
             if self.requests.pending.contains_key(&item) {
                 continue;
             }
@@ -1926,7 +1944,7 @@ async fn run_inner(
         vote_targets: HashSet::new(),
         completed: HashSet::new(),
         met: HashSet::new(),
-        refetching: HashSet::new(),
+        refetching: HashMap::new(),
         vote_given_up: false,
         lost: 0,
         recovered: 0,
@@ -1991,7 +2009,12 @@ async fn run_inner(
     {
         shared.set_phase(Phase::SyncingVotes);
         let started = Instant::now();
-        let current = shared.store().current_proposals(unix_now());
+        let current = {
+            let mut store = shared.store();
+            // Lost votes the last run's peers did not settle (D76).
+            store.requeue_lost();
+            store.current_proposals(unix_now())
+        };
         run.votes_open = true;
         run.ask_votes(current);
         let drained = run

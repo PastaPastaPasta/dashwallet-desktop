@@ -110,9 +110,14 @@ pub const MAX_ERASED_OBJECTS: usize = 10_000;
 /// Hashes of lapsed proposals remembered, oldest forgotten first (MG-02
 /// D65): a forgotten one is refused again if it comes back.
 pub const MAX_EXPIRED_PROPOSALS: usize = 10_000;
-/// Hashes of votes the per-key cap refused kept per proposal (MG-02 D71):
-/// past it, a key's refused votes count as many as it has masternodes.
+/// Hashes of votes the per-key cap refused (MG-02 D71) or lost (D76) kept
+/// per proposal: past it, a key's refused votes count as many as it has
+/// masternodes, and a lost vote's outcome as the whole list.
 pub const MAX_REFUSED_PER_PROPOSAL: usize = 1_000;
+/// Lost votes kept for objects the store does not hold, oldest forgotten
+/// first (D76): the object's own vote sync asks for its votes when it
+/// arrives.
+pub const MAX_UNSTORED_LOST: usize = 10_000;
 /// Signal and outcome ranges Core accepts (`VOTE_SIGNAL_UNKNOWN`,
 /// `VOTE_OUTCOME_UNKNOWN` exclusive).
 const MAX_SIGNAL: i32 = 4;
@@ -253,16 +258,41 @@ pub struct ResolvedMasternode {
 struct Uncounted {
     /// (key, outcome) → votes the per-key cap refused.
     refused: HashMap<([u8; 20], VoteOutcome), Refused>,
-    /// Hashes held in `refused`.
+    /// Hashes held in `refused` and `lost`.
     held: usize,
     /// Outpoint → wrong-key copies dropped while their honest copy is
     /// fetched again.
     awaited: HashMap<OutPoint, Vec<Awaited>>,
+    /// Outpoint → removed copies whose hash may be a vote Core counts,
+    /// fetched again (D76).
+    lost: HashMap<OutPoint, Vec<Lost>>,
+    /// Outcomes of lost votes past the bound, no longer held (D76).
+    lost_past: HashSet<VoteOutcome>,
 }
 
 impl Uncounted {
     fn is_empty(&self) -> bool {
-        self.refused.is_empty() && self.awaited.is_empty()
+        self.refused.is_empty()
+            && self.awaited.is_empty()
+            && self.lost.is_empty()
+            && self.lost_past.is_empty()
+    }
+
+    /// Drops the lost vote of `hash` at `outpoint`; whether it was held.
+    fn settle_lost(&mut self, outpoint: &OutPoint, hash: &[u8; 32]) -> bool {
+        let Some(list) = self.lost.get_mut(outpoint) else {
+            return false;
+        };
+        let before = list.len();
+        list.retain(|l| &l.hash != hash);
+        let settled = list.len() < before;
+        if list.is_empty() {
+            self.lost.remove(outpoint);
+        }
+        if settled {
+            self.held -= 1;
+        }
+        settled
     }
 
     /// Awaits `a` at `outpoint`, once per hash.
@@ -290,6 +320,14 @@ struct Awaited {
     outcome: VoteOutcome,
     time: i64,
     key: [u8; 20],
+}
+
+/// A removed unresolved copy (or orphan): its hash may be a masternode's
+/// vote that Core counts, whose other copies the wallet skipped as known.
+#[derive(Debug)]
+struct Lost {
+    hash: [u8; 32],
+    outcome: VoteOutcome,
 }
 
 #[derive(Debug, Clone)]
@@ -328,8 +366,11 @@ pub struct GovernanceStore {
     /// Votes whose stored copy a resolved outpoint showed signed by another
     /// key: the honest copy, of the same hash, is asked for again (D64).
     refetch: Vec<[u8; 32]>,
-    /// Object → its votes held as uncertainty (D71, D72).
+    /// Object → its votes held as uncertainty (D71, D72, D76).
     uncounted: HashMap<[u8; 32], Uncounted>,
+    /// (object, hash) of lost votes noted while the object was not stored,
+    /// oldest first; entries gone stale are skipped (D76).
+    unstored_lost: VecDeque<([u8; 32], [u8; 32])>,
     /// Lapsed proposals, stored or refused.
     expired: HashMap<[u8; 32], ()>,
     expired_order: VecDeque<[u8; 32]>,
@@ -377,8 +418,10 @@ pub struct GovernanceStore {
     /// tests.
     max_erased: usize,
     max_expired: usize,
-    /// [`MAX_REFUSED_PER_PROPOSAL`], lower in tests.
+    /// [`MAX_REFUSED_PER_PROPOSAL`] and [`MAX_UNSTORED_LOST`], lower in
+    /// tests.
     max_refused: usize,
+    max_unstored_lost: usize,
     /// The current sync run, and how many objects announced in it the cap
     /// evicted or refused (D47).
     run: u64,
@@ -446,6 +489,7 @@ impl GovernanceStore {
             erased_order: VecDeque::new(),
             refetch: Vec::new(),
             uncounted: HashMap::new(),
+            unstored_lost: VecDeque::new(),
             expired: HashMap::new(),
             expired_order: VecDeque::new(),
             votes: HashMap::new(),
@@ -476,6 +520,7 @@ impl GovernanceStore {
             max_erased: MAX_ERASED_OBJECTS,
             max_expired: MAX_EXPIRED_PROPOSALS,
             max_refused: MAX_REFUSED_PER_PROPOSAL,
+            max_unstored_lost: MAX_UNSTORED_LOST,
             run: 0,
             overflow: 0,
         }
@@ -768,6 +813,7 @@ impl GovernanceStore {
             self.unconfirmed -= 1;
         }
         self.adopt_orphans(&hash, now);
+        self.refetch_lost(&hash);
         Ok(true)
     }
 
@@ -998,6 +1044,20 @@ impl GovernanceStore {
         Some(o)
     }
 
+    /// Drops an orphan that was not placed: its hash stays uncertain on its
+    /// object (D76).
+    fn lose_orphan(&mut self, hash: &[u8; 32]) {
+        if let Some(o) = self.remove_orphan(hash) {
+            let v = &o.vote.vote;
+            self.note_lost(
+                v.parent_hash,
+                v.masternode_outpoint,
+                o.vote.hash,
+                o.vote.outcome,
+            );
+        }
+    }
+
     /// Whether an `orphan_order` entry is still the orphan's own.
     fn live_entry(&self, at: i64, hash: &[u8; 32]) -> bool {
         self.orphans.get(hash).is_some_and(|o| o.at == at)
@@ -1010,7 +1070,7 @@ impl GovernanceStore {
                 self.orphan_order.pop_front();
             } else if at + ORPHAN_EXPIRY_SECS < now {
                 self.orphan_order.pop_front();
-                self.remove_orphan(&h);
+                self.lose_orphan(&h);
             } else {
                 break;
             }
@@ -1020,7 +1080,7 @@ impl GovernanceStore {
     fn evict_oldest_orphan(&mut self) {
         while let Some((at, h)) = self.orphan_order.pop_front() {
             if self.live_entry(at, &h) {
-                self.remove_orphan(&h);
+                self.lose_orphan(&h);
                 return;
             }
         }
@@ -1131,7 +1191,13 @@ impl GovernanceStore {
             }
         }
         for slot in dropped {
-            self.remove_vote(&slot);
+            // A wrong-key copy of a resolved outpoint is awaited (D72); an
+            // unresolved one whose key left the list is lost (D76).
+            if let Some(v) = self.remove_vote(&slot)
+                && !self.resolved.contains_key(&v.outpoint)
+            {
+                self.note_lost(slot.0, v.outpoint, v.vote_hash, v.outcome);
+            }
         }
         let stale: Vec<[u8; 32]> = self
             .orphans
@@ -1143,7 +1209,7 @@ impl GovernanceStore {
             .map(|(h, _)| *h)
             .collect();
         for h in stale {
-            self.remove_orphan(&h);
+            self.lose_orphan(&h);
         }
         // Votes no key of the list could count are no uncertainty.
         let keys = &self.keys;
@@ -1162,6 +1228,123 @@ impl GovernanceStore {
             });
             !u.is_empty()
         });
+    }
+
+    /// Keeps a removed copy's vote as uncertainty on its object until a copy
+    /// of it is stored or the peers asked have none (D76), and asks for it
+    /// again if the object is stored.
+    fn note_lost(
+        &mut self,
+        parent: [u8; 32],
+        outpoint: OutPoint,
+        hash: [u8; 32],
+        outcome: VoteOutcome,
+    ) {
+        let max = self.max_refused;
+        let u = self.uncounted.entry(parent).or_default();
+        if u.lost_past.contains(&outcome)
+            || u.lost
+                .get(&outpoint)
+                .is_some_and(|l| l.iter().any(|l| l.hash == hash))
+        {
+            return;
+        }
+        if u.held >= max {
+            u.lost_past.insert(outcome);
+            return;
+        }
+        u.lost
+            .entry(outpoint)
+            .or_default()
+            .push(Lost { hash, outcome });
+        u.held += 1;
+        if self.objects.contains_key(&parent) {
+            self.refetch.push(hash);
+            return;
+        }
+        self.unstored_lost.push_back((parent, hash));
+        let max = self.max_unstored_lost;
+        if self.unstored_lost.len() > 2 * max {
+            let live: VecDeque<_> = std::mem::take(&mut self.unstored_lost)
+                .into_iter()
+                .filter(|(p, h)| self.unstored_lost_live(p, h))
+                .collect();
+            self.unstored_lost = live;
+        }
+        while self.unstored_lost.len() > max {
+            let Some((p, h)) = self.unstored_lost.pop_front() else {
+                break;
+            };
+            if self.unstored_lost_live(&p, &h) {
+                self.forget_lost(&p, &h);
+            }
+        }
+    }
+
+    /// Whether an `unstored_lost` entry still stands for a held vote of an
+    /// object the store does not hold.
+    fn unstored_lost_live(&self, parent: &[u8; 32], hash: &[u8; 32]) -> bool {
+        !self.objects.contains_key(parent)
+            && self
+                .uncounted
+                .get(parent)
+                .is_some_and(|u| u.lost.values().any(|l| l.iter().any(|l| &l.hash == hash)))
+    }
+
+    /// Drops a held lost vote of `parent`; whether there was one.
+    fn forget_lost(&mut self, parent: &[u8; 32], hash: &[u8; 32]) -> bool {
+        let Some(u) = self.uncounted.get_mut(parent) else {
+            return false;
+        };
+        let outpoints: Vec<OutPoint> = u
+            .lost
+            .iter()
+            .filter(|(_, l)| l.iter().any(|l| &l.hash == hash))
+            .map(|(op, _)| *op)
+            .collect();
+        let settled = outpoints
+            .iter()
+            .fold(false, |any, op| u.settle_lost(op, hash) | any);
+        if u.is_empty() {
+            self.uncounted.remove(parent);
+        }
+        settled
+    }
+
+    /// Asks again for the lost votes of a stored `object` (D76).
+    fn refetch_lost(&mut self, object: &[u8; 32]) {
+        if let Some(u) = self.uncounted.get(object) {
+            self.refetch
+                .extend(u.lost.values().flatten().map(|l| l.hash));
+        }
+    }
+
+    /// Asks again for every lost vote of a stored object: a run's peers may
+    /// have it where the last run's had not (D76).
+    pub fn requeue_lost(&mut self) {
+        let objects: Vec<[u8; 32]> = self
+            .uncounted
+            .keys()
+            .filter(|h| self.objects.contains_key(*h))
+            .copied()
+            .collect();
+        for h in objects {
+            self.refetch_lost(&h);
+        }
+    }
+
+    /// Settles the lost vote `hash`: every peer asked for it again (at least
+    /// two) answered that it has none, so no node holds it (D76).
+    pub fn settle_lost(&mut self, hash: &[u8; 32]) {
+        let parents: Vec<[u8; 32]> = self
+            .uncounted
+            .iter()
+            .filter(|(_, u)| u.lost.values().flatten().any(|l| &l.hash == hash))
+            .map(|(p, _)| *p)
+            .collect();
+        for p in parents {
+            self.forget_lost(&p, hash);
+        }
     }
 
     /// Keeps a vote the per-key cap refused as uncertainty on its object:
@@ -1191,8 +1374,8 @@ impl GovernanceStore {
     }
 
     /// Settles the uncertainty a vote stored at (`parent`, `outpoint`,
-    /// `key`) resolves: its own refused or awaited hash, and awaited votes
-    /// of that masternode it supersedes (D71, D72).
+    /// `key`) resolves: its own refused, awaited or lost hash, and awaited
+    /// votes of that masternode it supersedes (D71, D72, D76).
     fn settle_uncounted(&mut self, parent: &[u8; 32], v: &CurrentVote) {
         let Some(u) = self.uncounted.get_mut(parent) else {
             return;
@@ -1211,18 +1394,21 @@ impl GovernanceStore {
                 u.awaited.remove(&v.outpoint);
             }
         }
+        // Any copy of a lost vote, stored, counts for it (D64, D76).
+        u.settle_lost(&v.outpoint, &v.vote_hash);
         if u.is_empty() {
             self.uncounted.remove(parent);
         }
     }
 
     /// The weight `outpoint`'s votes on `hash` count exactly: its
-    /// masternode's, if resolved and no vote of it is awaited (D72).
+    /// masternode's, if resolved and no vote of it is awaited (D72) or
+    /// lost (D76).
     pub fn exact_weight(&self, hash: &[u8; 32], outpoint: &OutPoint) -> Option<u32> {
         if self
             .uncounted
             .get(hash)
-            .is_some_and(|u| u.awaited.contains_key(outpoint))
+            .is_some_and(|u| u.awaited.contains_key(outpoint) || u.lost.contains_key(outpoint))
         {
             return None;
         }
@@ -1233,7 +1419,9 @@ impl GovernanceStore {
     /// the store holds no countable copy of: a key's refused votes up to an
     /// evonode's weight each, at most one per masternode holding it (D71);
     /// an awaited vote up to its masternode's weight, its outpoint's other
-    /// votes counted as unresolved ones (D72).
+    /// votes counted as unresolved ones (D72); a lost vote likewise, once
+    /// per outpoint, and an outcome whose lost votes are past the bound up
+    /// to the whole list's weight (D76).
     pub fn tally(&self, hash: &[u8; 32]) -> RangedTally {
         let mut t = ranged_tally(
             self.votes_on(hash),
@@ -1261,17 +1449,30 @@ impl GovernanceStore {
                 t.widen(a.outcome, w, 1);
             }
         }
+        // One masternode per outpoint: its lost votes count once, up to its
+        // weight for each of their outcomes (D76).
+        for (outpoint, list) in &u.lost {
+            let w = self
+                .resolved
+                .get(outpoint)
+                .map_or(EVONODE_VOTE_WEIGHT, |r| r.weight);
+            let outcomes: HashSet<VoteOutcome> = list.iter().map(|l| l.outcome).collect();
+            for (i, outcome) in outcomes.into_iter().enumerate() {
+                t.widen(outcome, w, u32::from(i == 0));
+            }
+        }
+        // Past the bound, any masternode may be one of them.
+        for outcome in &u.lost_past {
+            t.widen(*outcome, self.valid_weight, 1);
+        }
         t
     }
 
-    fn remove_vote(&mut self, (object, outpoint, key): &Slot) {
-        let Some(v) = self
+    fn remove_vote(&mut self, (object, outpoint, key): &Slot) -> Option<CurrentVote> {
+        let v = self
             .votes
             .get_mut(object)
-            .and_then(|m| m.remove(&(*outpoint, *key)))
-        else {
-            return;
-        };
+            .and_then(|m| m.remove(&(*outpoint, *key)))?;
         self.seen_votes.remove(&v.vote_hash);
         self.vote_count -= 1;
         if !self.resolved.contains_key(outpoint)
@@ -1282,6 +1483,7 @@ impl GovernanceStore {
                 self.per_key.remove(&(*object, *key));
             }
         }
+        Some(v)
     }
 
     fn remember_ignored(&mut self, hash: [u8; 32], parent: [u8; 32]) {
@@ -1549,7 +1751,11 @@ impl GovernanceStore {
         if !self.objects.contains_key(&parent) {
             return Err(self.queue_orphan(v, from, now));
         }
-        self.remove_vote(&(parent, outpoint, key));
+        // A newer vote in an unresolved slot may be the slot key's holder
+        // replacing a copy that stood for another masternode's vote (D76).
+        let replaced = self
+            .remove_vote(&(parent, outpoint, key))
+            .filter(|_| !resolved);
         let stored = CurrentVote {
             outpoint,
             outcome,
@@ -1567,6 +1773,9 @@ impl GovernanceStore {
         }
         self.vote_count += 1;
         self.seen_votes.insert(v.hash, parent);
+        if let Some(c) = replaced {
+            self.note_lost(parent, outpoint, c.vote_hash, c.outcome);
+        }
         Ok(())
     }
 
@@ -1585,7 +1794,7 @@ impl GovernanceStore {
         let parent = v.vote.parent_hash;
         let slot = (parent, v.vote.masternode_outpoint, v.key_id);
         if let Some(older) = self.orphan_slots.get(&slot).copied() {
-            self.remove_orphan(&older);
+            self.lose_orphan(&older);
         }
         if self.orphans.len() >= MAX_ORPHAN_VOTES {
             self.evict_oldest_orphan();
@@ -2347,8 +2556,23 @@ mod tests {
         }
         assert_eq!(uncounted(&s, &h, VoteOutcome::Yes), (1, 4));
         assert!(s.uncounted[&h].refused[&(key_id(1), VoteOutcome::Yes)].saturated);
-        // A key the list drops counts nothing, so leaves no uncertainty.
+        // A key the list drops counts nothing, so its refused votes leave no
+        // uncertainty; its stored votes, dropped, may have stood for other
+        // masternodes' and are lost until settled (D76).
         s.set_masternode_list(&[entry(2, 4)]);
+        assert!(s.uncounted[&h].refused.is_empty());
+        let fillers: Vec<[u8; 32]> = (100..104)
+            .map(|op| vote(h, 1, op, VoteOutcome::Abstain, NOW - 50).hash())
+            .collect();
+        let mut asked = s.take_refetch();
+        asked.sort();
+        let mut want = fillers.clone();
+        want.sort();
+        assert_eq!(asked, want);
+        assert_eq!(s.tally(&h).uncounted, 4);
+        for f in &fillers {
+            s.settle_lost(f);
+        }
         assert!(!s.uncounted.contains_key(&h));
         // Nor does a proposal removed, and its remembered `KeyLimit`
         // verdicts go with it: back again, the vote is placed (D75).
@@ -2462,6 +2686,165 @@ mod tests {
         rekeyed.get_mut(&outpoint(1)).unwrap().voting_key_id = key_id(3);
         s.set_resolved(rekeyed);
         assert_eq!(s.tally(&h).uncounted, 0);
+    }
+
+    /// Key 2's copy of key 1's NO for outpoint 1 (the same hash), stored
+    /// unresolved in key 2's slot, and the honest vote.
+    fn forged_no(s: &mut GovernanceStore, h: [u8; 32]) -> GovernanceVote {
+        let honest = vote(h, 1, 1, VoteOutcome::No, NOW - 40);
+        let mut forged = honest.clone();
+        sign(&mut forged, 2);
+        assert_eq!(s.add_vote(forged, peer(2), NOW), Ok(()));
+        assert!(s.has_vote(&honest.hash()));
+        honest
+    }
+
+    /// A lost vote on `h`: one uncounted, NO up to 4.
+    fn lost_no(s: &GovernanceStore, h: &[u8; 32]) {
+        let t = s.tally(h);
+        assert_eq!(t.uncounted, 1);
+        assert_eq!((t.no.min, t.no.max), (0, 4));
+    }
+
+    #[test]
+    fn a_copy_its_slot_replaces_is_lost_until_settled() {
+        // Validator r21 Major 1 (D76): key 2's holder replaces its own copy
+        // of key 1's NO with a newer vote; the honest copies were skipped
+        // as known. The NO stays up to 4 and is asked for again, until a
+        // copy is stored or the peers asked have none.
+        let obj = proposal("a");
+        let h = obj.hash();
+        for settle_by_copy in [true, false] {
+            let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
+            let honest = forged_no(&mut s, h);
+            assert!(s.take_refetch().is_empty());
+            let own = vote(h, 2, 1, VoteOutcome::Abstain, NOW - 30);
+            assert_eq!(s.add_vote(own, peer(2), NOW), Ok(()));
+            assert!(!s.has_vote(&honest.hash()));
+            assert_eq!(s.take_refetch(), vec![honest.hash()]);
+            lost_no(&s, &h);
+            assert_eq!(s.exact_weight(&h, &outpoint(1)), None);
+            if settle_by_copy {
+                assert_eq!(s.add_vote(honest, peer(1), NOW), Ok(()));
+            } else {
+                s.settle_lost(&honest.hash());
+            }
+            assert_eq!(s.tally(&h).uncounted, 0);
+            assert!(!s.uncounted.contains_key(&h));
+        }
+    }
+
+    #[test]
+    fn a_copy_whose_key_leaves_the_list_is_lost() {
+        // D76: key 2 leaves the list (its masternode removed or re-keyed),
+        // and its copy of key 1's NO goes with it.
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
+        let honest = forged_no(&mut s, h);
+        s.set_masternode_list(&[entry(1, 4)]);
+        assert!(!s.has_vote(&honest.hash()));
+        assert_eq!(s.take_refetch(), vec![honest.hash()]);
+        lost_no(&s, &h);
+        // A newer list keeps it: only a copy or the peers settle it.
+        s.set_masternode_list(&[entry(1, 4), entry(3, 4)]);
+        lost_no(&s, &h);
+        assert_eq!(s.add_vote(honest, peer(1), NOW), Ok(()));
+        assert_eq!(s.tally(&h).uncounted, 0);
+    }
+
+    #[test]
+    fn a_copy_lost_as_an_orphan_is_lost_on_its_object() {
+        // D76: key 2's copy waits as an orphan for object B; it expires, is
+        // displaced by key 2's newer vote in its slot, or is dropped when
+        // its outpoint resolves to key 1. B, stored later, holds the NO as
+        // uncertain and asks for it again.
+        let a = proposal("a");
+        let b = proposal("b");
+        let hb = b.hash();
+        let resolved = HashMap::from([(
+            outpoint(1),
+            ResolvedMasternode {
+                pro_tx_hash: [1; 32],
+                voting_key_id: key_id(1),
+                weight: 4,
+            },
+        )]);
+        for path in ["expired", "displaced", "resolved"] {
+            let mut s = store(&a, &[entry(1, 4), entry(2, 4)]);
+            let honest = vote(hb, 1, 1, VoteOutcome::No, NOW - 40);
+            let mut forged = honest.clone();
+            sign(&mut forged, 2);
+            assert_eq!(s.add_vote(forged, peer(2), NOW), Err(VoteRejection::Orphan));
+            match path {
+                "expired" => s.expire_orphans(NOW + ORPHAN_EXPIRY_SECS + 1),
+                "displaced" => {
+                    let own = vote(hb, 2, 1, VoteOutcome::Abstain, NOW - 30);
+                    assert_eq!(s.add_vote(own, peer(2), NOW), Err(VoteRejection::Orphan));
+                }
+                _ => s.set_resolved(resolved.clone()),
+            }
+            assert!(!s.has_vote(&honest.hash()), "{path}");
+            assert!(s.take_refetch().is_empty(), "{path}");
+            assert_eq!(s.add_object(b.clone(), peer(1), NOW), Ok(true));
+            assert_eq!(s.take_refetch(), vec![honest.hash()], "{path}");
+            lost_no(&s, &hb);
+            let exact = (path == "resolved").then_some(4);
+            assert_eq!(s.exact_weight(&hb, &outpoint(1)), None, "{path}");
+            assert_eq!(s.add_vote(honest, peer(1), NOW), Ok(()), "{path}");
+            assert_eq!(s.tally(&hb).uncounted, 0, "{path}");
+            assert_eq!(s.exact_weight(&hb, &outpoint(1)), exact, "{path}");
+        }
+    }
+
+    #[test]
+    fn lost_votes_stay_bounded() {
+        // D76: past the per-proposal bound, a lost vote's outcome counts up
+        // to the whole list; one per outpoint; lost votes of objects not
+        // stored are kept up to their bound, oldest forgotten first.
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
+        s.max_refused = 1;
+        forged_no(&mut s, h);
+        let own = vote(h, 2, 1, VoteOutcome::Abstain, NOW - 30);
+        assert_eq!(s.add_vote(own, peer(2), NOW), Ok(()));
+        lost_no(&s, &h);
+        // Key 2's ABSTAIN replaced too: the same outpoint, past the bound.
+        let newer = vote(h, 2, 1, VoteOutcome::Yes, NOW - 20);
+        assert_eq!(s.add_vote(newer, peer(2), NOW), Ok(()));
+        let t = s.tally(&h);
+        assert_eq!(t.uncounted, 2);
+        assert_eq!(t.no.max, 4);
+        assert_eq!(t.abstain.max, s.valid_weight());
+        // Two lost votes of one outpoint are one voter.
+        let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
+        forged_no(&mut s, h);
+        for (outcome, at) in [(VoteOutcome::Abstain, 30), (VoteOutcome::Yes, 20)] {
+            let v = vote(h, 2, 1, outcome, NOW - at);
+            assert_eq!(s.add_vote(v, peer(2), NOW), Ok(()));
+        }
+        let t = s.tally(&h);
+        assert_eq!(t.uncounted, 1);
+        assert_eq!((t.no.max, t.abstain.max), (4, 4));
+        // Objects not stored: the oldest lost vote goes past the bound.
+        let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
+        s.max_unstored_lost = 1;
+        let (b, c) = (proposal("b"), proposal("c"));
+        for o in [&b, &c] {
+            let v = vote(o.hash(), 2, 1, VoteOutcome::No, NOW - 40);
+            assert_eq!(s.add_vote(v, peer(2), NOW), Err(VoteRejection::Orphan));
+        }
+        s.expire_orphans(NOW + ORPHAN_EXPIRY_SECS + 1);
+        assert!(!s.uncounted.contains_key(&b.hash()));
+        assert!(s.uncounted.contains_key(&c.hash()));
+        // And with their object.
+        s.remove_object(&h);
+        let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
+        forged_no(&mut s, h);
+        s.set_masternode_list(&[entry(1, 4)]);
+        s.remove_object(&h);
+        assert!(s.uncounted.is_empty());
     }
 
     #[test]
