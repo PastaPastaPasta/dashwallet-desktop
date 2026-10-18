@@ -140,7 +140,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 [[package]]
 name = "app-connect-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -1577,7 +1577,7 @@ dependencies = [
 [[package]]
 name = "dapi-grpc"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "dash-platform-macros",
  "futures-core",
@@ -1665,7 +1665,7 @@ dependencies = [
 [[package]]
 name = "dash-async"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "futures",
  "thiserror 2.0.18",
@@ -1677,7 +1677,7 @@ dependencies = [
 [[package]]
 name = "dash-context-provider"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "dash-async",
  "dpp",
@@ -1743,7 +1743,7 @@ dependencies = [
 [[package]]
 name = "dash-platform-macros"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "heck 0.5.0",
  "quote",
@@ -1753,7 +1753,7 @@ dependencies = [
 [[package]]
 name = "dash-platform-queries"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "dapi-grpc",
  "dash-context-provider",
@@ -1771,7 +1771,7 @@ dependencies = [
 [[package]]
 name = "dash-sdk"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1954,7 +1954,7 @@ dependencies = [
 [[package]]
 name = "dashpay-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -1965,7 +1965,7 @@ dependencies = [
 [[package]]
 name = "data-contracts"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "app-connect-contract",
  "dashpay-contract",
@@ -2196,7 +2196,7 @@ dependencies = [
 [[package]]
 name = "document-history-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -2237,7 +2237,7 @@ dependencies = [
 [[package]]
 name = "dpns-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -2248,7 +2248,7 @@ dependencies = [
 [[package]]
 name = "dpp"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2304,7 +2304,7 @@ dependencies = [
 [[package]]
 name = "dpp-json-convertible-derive"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2314,7 +2314,7 @@ dependencies = [
 [[package]]
 name = "drive"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "byteorder",
  "derive_more 1.0.0",
@@ -2341,7 +2341,7 @@ dependencies = [
 [[package]]
 name = "drive-proof-verifier"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "dapi-grpc",
  "dash-context-provider",
@@ -4799,7 +4799,7 @@ dependencies = [
 [[package]]
 name = "keyword-search-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -5006,7 +5006,7 @@ dependencies = [
 [[package]]
 name = "masternode-reward-shares-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -5111,7 +5111,7 @@ dependencies = [
 [[package]]
 name = "moderation-charters-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -5973,7 +5973,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "platform-encryption"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "aes 0.8.4",
  "cbc",
@@ -5986,7 +5986,7 @@ dependencies = [
 [[package]]
 name = "platform-serialization"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "grovedb-bincode",
  "platform-version",
@@ -5995,7 +5995,7 @@ dependencies = [
 [[package]]
 name = "platform-serialization-derive"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6006,7 +6006,7 @@ dependencies = [
 [[package]]
 name = "platform-value"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -6026,7 +6026,7 @@ dependencies = [
 [[package]]
 name = "platform-version"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "grovedb-bincode",
  "grovedb-version",
@@ -6037,7 +6037,7 @@ dependencies = [
 [[package]]
 name = "platform-versioning"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6047,7 +6047,7 @@ dependencies = [
 [[package]]
 name = "platform-wallet"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -6081,7 +6081,7 @@ dependencies = [
 [[package]]
 name = "platform-wallet-storage"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "apple-native-keyring-store",
  "argon2",
@@ -6880,7 +6880,7 @@ dependencies = [
 [[package]]
 name = "rs-dapi-client"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "backon",
  "chrono",
@@ -6906,7 +6906,7 @@ dependencies = [
 [[package]]
 name = "rs-sdk-trusted-context-provider"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "arc-swap",
  "dash-async",
@@ -8439,7 +8439,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "token-history-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -9330,7 +9330,7 @@ dependencies = [
 [[package]]
 name = "wallet-utils-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -10175,7 +10175,7 @@ dependencies = [
 [[package]]
 name = "withdrawals-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=cb2988b285e86946f83d0a21548f1177dc839317#cb2988b285e86946f83d0a21548f1177dc839317"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=425f4d498f6a8d183c5a6574bd5b2059ddd7c550#425f4d498f6a8d183c5a6574bd5b2059ddd7c550"
 dependencies = [
  "num_enum 0.5.11",
  "platform-value",
