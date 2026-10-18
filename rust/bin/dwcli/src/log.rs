@@ -7,9 +7,11 @@
 //! URL as parsed, with its user name, password, host and path apart; in any
 //! ASCII case, and in one pass, so overlapping values go together. A list
 //! value is split as its reader splits it, each item a value too (D37).
-//! Links go first, from the event as written: a short value replaced first
-//! could break a link's scheme or marker (`p` in `dashpay:` and `pk=`), and
-//! the value pass leaves the markers alone (D39).
+//! The line is cut at its first link as every command's is, and both the
+//! cut and the values are found in the event as written: a short value
+//! replaced first could break a link's scheme or marker (`p` in `dashpay:`
+//! and `pk=`), and a link cut first could leave the head of a value the link
+//! starts inside (D39).
 
 use std::io::Write;
 use std::sync::Arc;
@@ -159,26 +161,16 @@ impl Write for Line {
 
 impl Drop for Line {
     fn drop(&mut self) {
-        let text = String::from_utf8_lossy(&self.text);
-        let text = redact(&dw_uri::redact::redact_links(&text), &self.values);
+        let text = redact(&String::from_utf8_lossy(&self.text), &self.values);
         (self.sink)(text.as_bytes());
     }
 }
 
-/// The value pass's marker.
-const MARKER: &str = "<redacted>";
-
-/// `text` with each run of bytes some value covers (ignoring ASCII case)
-/// replaced by one marker, the bytes of a marker already there (a link's
-/// or this pass's) left as they are.
+/// `text` (one event) cut at its first link as dw-uri cuts it, and before
+/// the cut each run of bytes some value covers in `text` (ignoring ASCII
+/// case) replaced by one marker.
 fn redact(text: &str, values: &[String]) -> String {
     let lower = text.to_ascii_lowercase();
-    let mut kept = vec![false; text.len()];
-    for marker in [dw_uri::redact::REDACTED, MARKER] {
-        for (at, _) in text.match_indices(marker) {
-            kept[at..at + marker.len()].fill(true);
-        }
-    }
     let mut covered = vec![false; text.len()];
     for value in values {
         if value.is_empty() {
@@ -188,27 +180,28 @@ fn redact(text: &str, values: &[String]) -> String {
         let mut from = 0;
         while let Some(at) = lower[from..].find(&value) {
             let start = from + at;
-            for (c, k) in covered[start..start + value.len()]
-                .iter_mut()
-                .zip(&kept[start..])
-            {
-                *c |= !k;
-            }
+            covered[start..start + value.len()].fill(true);
             from = start + lower[start..].chars().next().map_or(1, char::len_utf8);
         }
     }
+    let cut = dw_uri::redact::first_link(text);
+    let shown = cut.unwrap_or(text.len());
     let mut out = String::with_capacity(text.len());
     let mut at = 0;
-    while let Some(c) = text[at..].chars().next() {
+    while let Some(c) = text[at..shown].chars().next() {
         if covered[at] {
-            while at < text.len() && covered[at] {
+            while at < shown && covered[at] {
                 at += 1;
             }
-            out.push_str(MARKER);
+            out.push_str("<redacted>");
         } else {
             out.push(c);
             at += c.len_utf8();
         }
+    }
+    if let Some(cut) = cut {
+        out.push_str(dw_uri::redact::REDACTED);
+        out.push_str(dw_uri::redact::after_cut(text, cut));
     }
     out
 }
@@ -258,8 +251,8 @@ mod tests {
         );
     }
 
-    /// A short value can't break a link: links go first, from the event
-    /// as written (Sol r5 Major 1, D39). `p`, a devnet name, is in both
+    /// A short value can't break a link: the cut is found in the event as
+    /// written (Sol r5 Major 1, D39). `p`, a devnet name, is in both
     /// `dashpay:` and `pk=`.
     #[test]
     fn a_short_value_does_not_hide_a_link() {
@@ -304,14 +297,37 @@ mod tests {
         assert!(!log.contains("SECRET"), "SECRET in the log: {log}");
     }
 
-    /// A marker's bytes are never redacted: `link` and `e` are values here
-    /// (D39).
+    /// What the `mn` writer passes on of one event.
+    fn written(values: &[&str], event: &str) -> String {
+        let out = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = Redacting {
+            values: Arc::new(values.iter().map(|v| v.to_string()).collect()),
+            sink: {
+                let out = Arc::clone(&out);
+                Arc::new(move |text: &[u8]| out.lock().unwrap().extend_from_slice(text))
+            },
+        };
+        writer.make_writer().write_all(event.as_bytes()).unwrap();
+        String::from_utf8(out.lock().unwrap().clone()).unwrap()
+    }
+
+    /// A value a link starts inside goes whole, its head included: the
+    /// values are found in the event as written, not in what the cut left
+    /// (validator r6, D39).
     #[test]
-    fn a_marker_is_left_as_it_is() {
-        let values = ["link", "e"].map(String::from);
+    fn a_value_a_link_starts_inside_goes_whole() {
+        let values = ["/home/a/x/dash:w", "/Users/J D/pk=1"];
         assert_eq!(
-            redact("<link> <redacted> e link", &values),
-            "<link> <redacted> <redacted> <redacted>"
+            written(&values, "open datadir=/home/a/x/dash:w/db failed\n"),
+            "open datadir=<redacted><link>\n"
+        );
+        assert_eq!(
+            written(&values, "open \"/Users/J D/pk=1\""),
+            "open \"<redacted><link>"
+        );
+        assert_eq!(
+            written(&["e"], "x e dash:SECRET e\r\n"),
+            "x <redacted> <link>\r\n"
         );
     }
 
