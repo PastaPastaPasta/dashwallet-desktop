@@ -166,8 +166,8 @@ pub fn first_link(text: &str) -> Option<usize> {
     None
 }
 
-/// What [`redact_links`] keeps of `text` after the cut at `cut`: the text's
-/// final line break.
+/// What [`redact_links`] keeps of `text` after the cut at `cut`, which
+/// must be [`first_link`]'s of the same text: the text's final line break.
 pub fn after_cut(text: &str, cut: usize) -> &str {
     &text[text.trim_end_matches(['\n', '\r']).len().max(cut)..]
 }
