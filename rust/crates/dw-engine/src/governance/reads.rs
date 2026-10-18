@@ -229,26 +229,33 @@ impl Governance {
         {
             return Err(GovernanceError::ProposalNotFound { hash });
         }
-        let mut votes = tally::attribute(
-            store.votes_on(&key),
-            |k| store.key_weights(k),
-            |o| store.exact_weight(&key, o),
-        );
-        // Core's order: by outpoint as `COutPoint` compares (the txid's
-        // internal bytes, then the index).
-        votes.sort_by(|(a, _), (b, _)| a.outpoint.cmp(&b.outpoint).then(a.time.cmp(&b.time)));
-        Ok(votes
+        Ok(vote_rows(&store, &key)
             .into_iter()
-            .map(|(v, c)| CurrentVoteRow {
-                outpoint: outpoint_short(&v.outpoint),
-                time: v.time,
-                outcome: v.outcome.into(),
-                weight: c.weight.into(),
-                exact: c.exact,
-            })
             .filter(|r| outpoint.as_ref().is_none_or(|o| &r.outpoint == o))
             .collect())
     }
+}
+
+/// The current funding votes on `key` with the weights its tally gives
+/// them (MG-02 D72), in Core's order: by outpoint as `COutPoint` compares
+/// (the txid's internal bytes, then the index).
+fn vote_rows(store: &GovernanceStore, key: &[u8; 32]) -> Vec<CurrentVoteRow> {
+    let mut votes = tally::attribute(
+        store.votes_on(key),
+        |k| store.key_weights(k),
+        |o| store.exact_weight(key, o),
+    );
+    votes.sort_by(|(a, _), (b, _)| a.outpoint.cmp(&b.outpoint).then(a.time.cmp(&b.time)));
+    votes
+        .into_iter()
+        .map(|(v, c)| CurrentVoteRow {
+            outpoint: outpoint_short(&v.outpoint),
+            time: v.time,
+            outcome: v.outcome.into(),
+            weight: c.weight.into(),
+            exact: c.exact,
+        })
+        .collect()
 }
 
 pub(super) fn parse_hash(hash: &str) -> Result<[u8; 32], GovernanceError> {
@@ -605,6 +612,9 @@ mod tests {
     #[test]
     fn a_failed_refetch_keeps_the_row_a_close_call() {
         let (mut store, h, mut resolved) = resolved_yes_store(101);
+        // The outpoint's older YES, by its own key.
+        let older = GovernanceVote::funding(outpoint(160), h, VoteOutcome::Yes, NOW - 200);
+        store.add_vote(signed(&older, 150), None, NOW).unwrap();
         let honest = funding(h, 150, 160, VoteOutcome::No);
         store.add_vote(signed(&honest, 151), None, NOW).unwrap();
         let forged = only_row(&store);
@@ -621,11 +631,20 @@ mod tests {
         );
         store.set_resolved(resolved);
         assert_eq!(store.take_refetch(), vec![honest.hash()]);
-        // Every peer answers `notfound`: nothing more lands.
+        // Every peer answers `notfound`: nothing more lands. The older YES
+        // may be replaced, so `getcurrentvotes` shows it as the tally
+        // counts it, not exactly.
         let failed = only_row(&store);
-        assert_eq!(failed.tally.net_yes_estimate, 101);
         assert_eq!((failed.tally.no.min, failed.tally.no.max), (0, 4));
+        assert_eq!((failed.tally.yes.min, failed.tally.yes.max), (101, 105));
         assert!(failed.close_call);
+        let row = |store: &GovernanceStore| {
+            vote_rows(store, &h)
+                .into_iter()
+                .find(|r| r.outpoint == outpoint_short(&outpoint(160)))
+                .unwrap()
+        };
+        assert!(!row(&store).exact);
 
         store.add_vote(honest, None, NOW).unwrap();
         let settled = only_row(&store);
@@ -633,6 +652,7 @@ mod tests {
         assert_eq!((settled.tally.no.min, settled.tally.no.max), (4, 4));
         assert!(!settled.close_call);
         assert_eq!(settled.status, ProposalStatus::Voting);
+        assert!(row(&store).exact);
     }
 
     /// MG-02 D65, D69: the fundable set is dash-qt's over the proposals not

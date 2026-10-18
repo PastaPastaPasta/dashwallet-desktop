@@ -264,6 +264,14 @@ impl Uncounted {
     fn is_empty(&self) -> bool {
         self.refused.is_empty() && self.awaited.is_empty()
     }
+
+    /// Awaits `a` at `outpoint`, once per hash.
+    fn await_copy(&mut self, outpoint: OutPoint, a: Awaited) {
+        let list = self.awaited.entry(outpoint).or_default();
+        if list.iter().all(|b| b.hash != a.hash) {
+            list.push(a);
+        }
+    }
 }
 
 /// A key's refused votes on one proposal: their hashes, until more than
@@ -276,7 +284,7 @@ struct Refused {
 
 /// A dropped wrong-key copy: the vote of its hash, honest copy unseen, by
 /// the outpoint's masternode `key`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct Awaited {
     hash: [u8; 32],
     outcome: VoteOutcome,
@@ -388,6 +396,22 @@ fn copy_digest(hash: &[u8; 32], signature: &[u8]) -> [u8; 32] {
         None => engine.input(signature),
     }
     sha256::Hash::from_engine(engine).to_byte_array()
+}
+
+/// Whether `key` may sign for `outpoint`: its resolved masternode's key, or
+/// any key of the list if unresolved.
+fn check_key(
+    resolved: &HashMap<OutPoint, ResolvedMasternode>,
+    keys: &HashMap<[u8; 20], KeyWeights>,
+    outpoint: &OutPoint,
+    key: &[u8; 20],
+) -> Result<(), VoteRejection> {
+    match resolved.get(outpoint) {
+        Some(r) if &r.voting_key_id == key => Ok(()),
+        Some(_) => Err(VoteRejection::WrongVotingKey),
+        None if keys.contains_key(key) => Ok(()),
+        None => Err(VoteRejection::UnknownVotingKey),
+    }
 }
 
 /// Adds `hash` to a bounded map, forgetting the oldest past `max`.
@@ -932,7 +956,15 @@ impl GovernanceStore {
             self.vote_count -= 1;
         }
         self.per_key.retain(|(object, _), _| object != hash);
-        self.uncounted.remove(hash);
+        // A remembered `KeyLimit` verdict stood on this object's slots: an
+        // object back again starts with none (D75).
+        if self
+            .uncounted
+            .remove(hash)
+            .is_some_and(|u| !u.refused.is_empty())
+        {
+            self.forget_dismissed();
+        }
     }
 
     fn adopt_orphans(&mut self, parent: &[u8; 32], now: i64) {
@@ -1037,7 +1069,6 @@ impl GovernanceStore {
         // A copy re-signed by another key has the honest vote's hash, so it
         // kept the honest copy out: drop it and fetch the hash again. Until
         // the honest copy lands, the vote stays uncertain (D72).
-        let mut awaited = Vec::new();
         for (object, m) in &self.votes {
             for ((outpoint, key), v) in m {
                 let Some(r) = self.resolved.get(outpoint) else {
@@ -1057,20 +1088,11 @@ impl GovernanceStore {
                         time: v.time,
                         key: r.voting_key_id,
                     };
-                    awaited.push((*object, *outpoint, a));
+                    self.uncounted
+                        .entry(*object)
+                        .or_default()
+                        .await_copy(*outpoint, a);
                 }
-            }
-        }
-        for (object, outpoint, a) in awaited {
-            let list = self
-                .uncounted
-                .entry(object)
-                .or_default()
-                .awaited
-                .entry(outpoint)
-                .or_default();
-            if list.iter().all(|b| b.hash != a.hash) {
-                list.push(a);
             }
         }
         self.drop_unbacked_votes();
@@ -1091,12 +1113,12 @@ impl GovernanceStore {
     }
 
     fn key_ok(&self, outpoint: &OutPoint, key: &[u8; 20]) -> Result<(), VoteRejection> {
-        match self.resolved.get(outpoint) {
-            Some(r) if &r.voting_key_id == key => Ok(()),
-            Some(_) => Err(VoteRejection::WrongVotingKey),
-            None if self.keys.contains_key(key) => Ok(()),
-            None => Err(VoteRejection::UnknownVotingKey),
-        }
+        check_key(&self.resolved, &self.keys, outpoint, key)
+    }
+
+    /// How many masternodes of the tip list hold `key`.
+    fn holders(&self, key: &[u8; 20]) -> u32 {
+        self.keys.get(key).map_or(0, |k| k.count)
     }
 
     fn drop_unbacked_votes(&mut self) {
@@ -1126,10 +1148,6 @@ impl GovernanceStore {
         // Votes no key of the list could count are no uncertainty.
         let keys = &self.keys;
         let resolved = &self.resolved;
-        let key_ok = |outpoint: &OutPoint, key: &[u8; 20]| match resolved.get(outpoint) {
-            Some(r) => &r.voting_key_id == key,
-            None => keys.contains_key(key),
-        };
         self.uncounted.retain(|_, u| {
             u.refused.retain(|(key, _), r| {
                 let keep = keys.contains_key(key);
@@ -1139,7 +1157,7 @@ impl GovernanceStore {
                 keep
             });
             u.awaited.retain(|outpoint, list| {
-                list.retain(|a| key_ok(outpoint, &a.key));
+                list.retain(|a| check_key(resolved, keys, outpoint, &a.key).is_ok());
                 !list.is_empty()
             });
             !u.is_empty()
@@ -1155,7 +1173,7 @@ impl GovernanceStore {
         outcome: VoteOutcome,
         hash: [u8; 32],
     ) {
-        let n = self.keys.get(&key).map_or(0, |k| k.count) as usize;
+        let n = self.holders(&key) as usize;
         let max = self.max_refused;
         let u = self.uncounted.entry(parent).or_default();
         let r = u.refused.entry((key, outcome)).or_default();
@@ -1201,11 +1219,14 @@ impl GovernanceStore {
     /// The weight `outpoint`'s votes on `hash` count exactly: its
     /// masternode's, if resolved and no vote of it is awaited (D72).
     pub fn exact_weight(&self, hash: &[u8; 32], outpoint: &OutPoint) -> Option<u32> {
-        let awaited = self
+        if self
             .uncounted
             .get(hash)
-            .is_some_and(|u| u.awaited.contains_key(outpoint));
-        (!awaited).then(|| self.resolved(outpoint).map(|r| r.weight))?
+            .is_some_and(|u| u.awaited.contains_key(outpoint))
+        {
+            return None;
+        }
+        self.resolved.get(outpoint).map(|r| r.weight)
     }
 
     /// `hash`'s ranged tally ([`ranged_tally`]), widened by the votes on it
@@ -1223,7 +1244,7 @@ impl GovernanceStore {
             return t;
         };
         for ((key, outcome), r) in &u.refused {
-            let n = self.keys.get(key).map_or(0, |k| k.count);
+            let n = self.holders(key);
             let votes = if r.saturated {
                 n
             } else {
@@ -1233,7 +1254,8 @@ impl GovernanceStore {
         }
         for (outpoint, list) in &u.awaited {
             let w = self
-                .resolved(outpoint)
+                .resolved
+                .get(outpoint)
                 .map_or(EVONODE_VOTE_WEIGHT, |r| r.weight);
             for a in list {
                 t.widen(a.outcome, w, 1);
@@ -1515,7 +1537,7 @@ impl GovernanceStore {
         self.key_ok(&outpoint, &key)?;
         let resolved = self.resolved.contains_key(&outpoint);
         if current.is_none() && !resolved {
-            let n = self.keys.get(&key).map_or(0, |k| k.count);
+            let n = self.holders(&key);
             let used = self.per_key.get(&(parent, key)).copied().unwrap_or(0);
             if used >= 2 * n + 2 {
                 if !rate_checked {
@@ -2328,12 +2350,16 @@ mod tests {
         // A key the list drops counts nothing, so leaves no uncertainty.
         s.set_masternode_list(&[entry(2, 4)]);
         assert!(!s.uncounted.contains_key(&h));
-        // Nor does a proposal removed.
+        // Nor does a proposal removed, and its remembered `KeyLimit`
+        // verdicts go with it: back again, the vote is placed (D75).
         let mut s = store(&obj, &[entry(1, 4)]);
         fill_key_1(&mut s, h);
         refuse(&mut s, h, 200, VoteOutcome::Yes);
         s.remove_object(&h);
         assert!(s.uncounted.is_empty());
+        assert_eq!(s.add_object(obj.clone(), peer(1), NOW), Ok(true));
+        let v = vote(h, 1, 200, VoteOutcome::Yes, NOW - 40);
+        assert_eq!(s.add_vote(v, peer(1), NOW), Ok(()));
     }
 
     #[test]
@@ -2398,7 +2424,11 @@ mod tests {
         assert_eq!(s.add_vote(forged.clone(), peer(2), NOW), Ok(()));
         s.set_resolved(resolved.clone());
         assert_eq!(s.tally(&h).uncounted, 1);
-        let newer = vote(h, 1, 1, VoteOutcome::Yes, NOW - 30);
+        // A vote of the same time is not newer: it leaves the copy awaited.
+        let same_time = vote(h, 1, 1, VoteOutcome::Yes, NOW - 40);
+        assert_eq!(s.add_vote(same_time, peer(1), NOW), Ok(()));
+        assert_eq!(s.tally(&h).uncounted, 1);
+        let newer = vote(h, 1, 1, VoteOutcome::Abstain, NOW - 30);
         assert_eq!(s.add_vote(newer, peer(1), NOW), Ok(()));
         assert_eq!(s.tally(&h).uncounted, 0);
 
@@ -2409,6 +2439,16 @@ mod tests {
         s.set_resolved(resolved.clone());
         assert_eq!(s.tally(&h).uncounted, 0);
         assert_eq!(s.exact_weight(&h, &outpoint(1)), Some(4));
+
+        // Nor does an honest vote of the copy's time: Core keeps either.
+        let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
+        let mut forged = vote(h, 1, 1, VoteOutcome::No, NOW - 40);
+        sign(&mut forged, 2);
+        assert_eq!(s.add_vote(forged, peer(2), NOW), Ok(()));
+        let same_time = vote(h, 1, 1, VoteOutcome::Yes, NOW - 40);
+        assert_eq!(s.add_vote(same_time, peer(1), NOW), Ok(()));
+        s.set_resolved(resolved.clone());
+        assert_eq!(s.tally(&h).uncounted, 1);
 
         // A masternode's new voting key drops its old key's votes (Core
         // `RemoveInvalidVotes`), the awaited one too.

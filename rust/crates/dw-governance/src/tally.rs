@@ -134,6 +134,7 @@ pub struct RangedTally {
 }
 
 impl RangedTally {
+    /// The range of `outcome`.
     fn range(&mut self, outcome: VoteOutcome) -> &mut WeightRange {
         match outcome {
             VoteOutcome::Yes => &mut self.yes,
