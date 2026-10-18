@@ -289,6 +289,20 @@ impl Uncounted {
             || self.lost.values().flatten().any(|l| l.valid)
     }
 
+    /// Drops the lost votes at `outpoint` older than `time`: its
+    /// masternode's newer vote supersedes them, as in Core (DEC-257, D77).
+    fn supersede_lost(&mut self, outpoint: &OutPoint, time: i64) {
+        let Some(list) = self.lost.get_mut(outpoint) else {
+            return;
+        };
+        let before = list.len();
+        list.retain(|l| l.time >= time);
+        self.held -= before - list.len();
+        if list.is_empty() {
+            self.lost.remove(outpoint);
+        }
+    }
+
     /// Drops the lost vote of `hash` at `outpoint`; whether it was held.
     fn drop_lost(&mut self, outpoint: &OutPoint, hash: &[u8; 32]) -> bool {
         let Some(list) = self.lost.get_mut(outpoint) else {
@@ -339,6 +353,7 @@ struct Awaited {
 struct Lost {
     hash: [u8; 32],
     outcome: VoteOutcome,
+    time: i64,
     /// Whether the key that signed the removed copy was a valid
     /// masternode's when it went: only then does the record keep its
     /// object from eviction, as the copy did (D47).
@@ -1087,6 +1102,7 @@ impl GovernanceStore {
                 o.vote.key_id,
                 o.vote.hash,
                 o.vote.outcome,
+                v.time,
             );
         }
     }
@@ -1191,6 +1207,21 @@ impl GovernanceStore {
             }
         }
         self.drop_unbacked_votes();
+        // Lost votes its masternode's stored vote is newer than (D77).
+        for (object, u) in &mut self.uncounted {
+            let outpoints: Vec<OutPoint> = u.lost.keys().copied().collect();
+            for outpoint in outpoints {
+                let newest = self.resolved.get(&outpoint).and_then(|r| {
+                    self.votes
+                        .get(object)
+                        .and_then(|m| m.get(&(outpoint, r.voting_key_id)))
+                });
+                if let Some(v) = newest {
+                    u.supersede_lost(&outpoint, v.time);
+                }
+            }
+        }
+        self.uncounted.retain(|_, u| !u.is_empty());
         let mut per_key: HashMap<([u8; 32], [u8; 20]), u32> = HashMap::new();
         for (object, m) in &self.votes {
             for (outpoint, key) in m.keys() {
@@ -1231,7 +1262,7 @@ impl GovernanceStore {
             if let Some(v) = self.remove_vote(&slot)
                 && !self.resolved.contains_key(&v.outpoint)
             {
-                self.note_lost(slot.0, v.outpoint, slot.2, v.vote_hash, v.outcome);
+                self.note_lost(slot.0, v.outpoint, slot.2, v.vote_hash, v.outcome, v.time);
             }
         }
         let stale: Vec<[u8; 32]> = self
@@ -1265,9 +1296,10 @@ impl GovernanceStore {
         });
     }
 
-    /// Keeps a removed copy's vote as uncertainty on its object until a copy
-    /// of it is stored or the peers asked have none (D76), and asks for it
-    /// again if the object is stored.
+    /// Keeps a removed copy's vote, of `key` at `time`, as uncertainty on
+    /// its object until a copy of it is stored, its masternode's newer vote
+    /// is, or the object goes (D76, D77), and asks for it again if the
+    /// object is stored.
     fn note_lost(
         &mut self,
         parent: [u8; 32],
@@ -1275,6 +1307,7 @@ impl GovernanceStore {
         key: [u8; 20],
         hash: [u8; 32],
         outcome: VoteOutcome,
+        time: i64,
     ) {
         let max = self.max_refused;
         let u = self.uncounted.entry(parent).or_default();
@@ -1296,6 +1329,7 @@ impl GovernanceStore {
         u.lost.entry(outpoint).or_default().push(Lost {
             hash,
             outcome,
+            time,
             valid: self.valid_keys.contains(&key),
         });
         u.held += 1;
@@ -1365,24 +1399,6 @@ impl GovernanceStore {
         }
     }
 
-    /// Settles the lost vote `hash`: every peer asked for it again (at least
-    /// two) answered that it has none, so no node holds it (D76).
-    pub fn settle_lost(&mut self, hash: &[u8; 32]) {
-        let held: Vec<([u8; 32], OutPoint)> = self
-            .uncounted
-            .iter()
-            .flat_map(|(p, u)| {
-                u.lost
-                    .iter()
-                    .filter(|(_, l)| l.iter().any(|l| &l.hash == hash))
-                    .map(|(op, _)| (*p, *op))
-            })
-            .collect();
-        for (p, op) in held {
-            self.forget_lost(&p, &op, hash);
-        }
-    }
-
     /// Keeps a vote the per-key cap refused as uncertainty on its object:
     /// it may be a masternode's honest vote kept out by copies (D71).
     fn note_refused(
@@ -1430,8 +1446,17 @@ impl GovernanceStore {
                 u.awaited.remove(&v.outpoint);
             }
         }
-        // Any copy of a lost vote, stored, counts for it (D64, D76).
+        // Any copy of a lost vote, stored, counts for it (D64, D76); its
+        // masternode's newer vote supersedes it. An unresolved outpoint's
+        // masternode key is not known, so no other vote does (D77).
         u.drop_lost(&v.outpoint, &v.vote_hash);
+        if self
+            .resolved
+            .get(&v.outpoint)
+            .is_some_and(|r| r.voting_key_id == v.key_id)
+        {
+            u.supersede_lost(&v.outpoint, v.time);
+        }
         if u.is_empty() {
             self.uncounted.remove(parent);
         }
@@ -1810,7 +1835,7 @@ impl GovernanceStore {
         self.vote_count += 1;
         self.seen_votes.insert(v.hash, parent);
         if let Some(c) = replaced {
-            self.note_lost(parent, outpoint, key, c.vote_hash, c.outcome);
+            self.note_lost(parent, outpoint, key, c.vote_hash, c.outcome, c.time);
         }
         Ok(())
     }
@@ -2606,9 +2631,8 @@ mod tests {
         want.sort();
         assert_eq!(asked, want);
         assert_eq!(s.tally(&h).uncounted, 4);
-        for f in &fillers {
-            s.settle_lost(f);
-        }
+        // No answer settles them; they go with their proposal (D77).
+        s.remove_object(&h);
         assert!(!s.uncounted.contains_key(&h));
         // Nor does a proposal removed, and its remembered `KeyLimit`
         // verdicts go with it: back again, the vote is placed (D75).
@@ -2742,15 +2766,35 @@ mod tests {
         assert_eq!((t.no.min, t.no.max), (0, 4));
     }
 
+    #[derive(Clone, Copy, Debug)]
+    enum Settle {
+        Copy,
+        ResolvedThenNewer,
+        NewerThenResolved,
+    }
+
     #[test]
     fn a_copy_its_slot_replaces_is_lost_until_settled() {
         // Validator r21 Major 1 (D76): key 2's holder replaces its own copy
         // of key 1's NO with a newer vote; the honest copies were skipped
         // as known. The NO stays up to 4 and is asked for again, until a
-        // copy is stored or the peers asked have none.
+        // copy is stored or its masternode's newer vote is (DEC-257, D77):
+        // while the outpoint is unresolved no vote is known to be that.
         let obj = proposal("a");
         let h = obj.hash();
-        for settle_by_copy in [true, false] {
+        let mn = HashMap::from([(
+            outpoint(1),
+            ResolvedMasternode {
+                pro_tx_hash: [1; 32],
+                voting_key_id: key_id(1),
+                weight: 4,
+            },
+        )]);
+        for how in [
+            Settle::Copy,
+            Settle::ResolvedThenNewer,
+            Settle::NewerThenResolved,
+        ] {
             let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
             let honest = forged_no(&mut s, h);
             assert!(s.take_refetch().is_empty());
@@ -2760,13 +2804,38 @@ mod tests {
             assert_eq!(s.take_refetch(), vec![honest.hash()]);
             lost_no(&s, &h);
             assert_eq!(s.exact_weight(&h, &outpoint(1)), None);
-            if settle_by_copy {
-                assert_eq!(s.add_vote(honest, peer(1), NOW), Ok(()));
-            } else {
-                s.settle_lost(&honest.hash());
+            // The holder's newer vote again settles nothing.
+            let again = vote(h, 2, 1, VoteOutcome::Yes, NOW - 25);
+            assert_eq!(s.add_vote(again, peer(2), NOW), Ok(()));
+            assert_eq!(s.tally(&h).no.max, 4, "{how:?}");
+            let newer = vote(h, 1, 1, VoteOutcome::Yes, NOW - 20);
+            match how {
+                Settle::Copy => assert_eq!(s.add_vote(honest, peer(1), NOW), Ok(())),
+                Settle::ResolvedThenNewer => {
+                    s.set_resolved(mn.clone());
+                    assert_eq!(s.tally(&h).no.max, 4);
+                    // Older than the lost vote: it stays.
+                    let older = vote(h, 1, 1, VoteOutcome::Abstain, NOW - 45);
+                    assert_eq!(s.add_vote(older, peer(1), NOW), Ok(()));
+                    assert_eq!(s.tally(&h).no.max, 4);
+                    assert_eq!(s.add_vote(newer, peer(1), NOW), Ok(()));
+                }
+                Settle::NewerThenResolved => {
+                    assert_eq!(s.add_vote(newer, peer(1), NOW), Ok(()));
+                    assert_eq!(s.tally(&h).no.max, 4);
+                    s.set_resolved(mn.clone());
+                }
             }
-            assert_eq!(s.tally(&h).uncounted, 0);
-            assert!(!s.uncounted.contains_key(&h));
+            let t = s.tally(&h);
+            assert_eq!(
+                t.no.max,
+                u32::from(matches!(how, Settle::Copy)) * 4,
+                "{how:?}"
+            );
+            if !matches!(how, Settle::Copy) {
+                assert_eq!(t.uncounted, 0, "{how:?}");
+                assert!(!s.uncounted.contains_key(&h), "{how:?}");
+            }
         }
     }
 

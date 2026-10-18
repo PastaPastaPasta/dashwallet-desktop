@@ -60,7 +60,7 @@ use crate::peer::{
     EVENTS_QUEUE, INV_GOVERNANCE_OBJECT, INV_GOVERNANCE_VOTE, Inbound, InvItem, Peer, PeerConfig,
     PeerEvent, SSC_GOVOBJ, SSC_GOVOBJ_VOTE, empty_vote_filter, object_fetch_filter,
 };
-use crate::store::{GovernanceStore, VoteRejection, recover};
+use crate::store::{GovernanceStore, MAX_REFUSED_PER_PROPOSAL, VoteRejection, recover};
 use crate::validate::ObjectRejection;
 use crate::vote::GovernanceVote;
 
@@ -242,6 +242,9 @@ pub struct SyncConfig {
     /// Hashes one peer may announce that the wallet has not fetched (Core
     /// `MAX_PEER_OBJECT_ANNOUNCEMENTS`).
     pub max_announcements: usize,
+    /// Votes asked for again per run (D64, D76), apart from peers'
+    /// announcements; the rest wait for a later run (DEC-257, D77).
+    pub max_refetches: usize,
     /// Parent objects asked for per run after one peer's orphan votes
     /// (D52).
     pub max_parent_fetches: usize,
@@ -275,6 +278,7 @@ impl SyncConfig {
             max_suspect: 10_000,
             max_unkept: 25_000,
             max_announcements: 100_000,
+            max_refetches: MAX_REFUSED_PER_PROPOSAL,
             max_parent_fetches: 100,
             max_late_announcers: MAX_LATE,
             vote_peers_per_proposal: 3,
@@ -542,6 +546,8 @@ struct Taken {
     asked: Vec<usize>,
     owed: Vec<usize>,
     unanswered: bool,
+    /// A copy asked for again: the peers left to ask (D77).
+    refetch: Option<Vec<usize>>,
 }
 
 impl From<Pending> for Taken {
@@ -551,8 +557,27 @@ impl From<Pending> for Taken {
             asked: r.asked,
             owed: r.owed,
             unanswered: r.unanswered,
+            refetch: None,
         }
     }
+}
+
+/// A vote asked for again of one connected peer after another, apart from
+/// what peers announced: no peer's announcement limit, request record or
+/// vote sync counts it (DEC-257, D77).
+struct Refetch {
+    peer: usize,
+    sent: Instant,
+    /// Connected peers not asked yet, in order.
+    untried: Vec<usize>,
+}
+
+/// The run's votes asked for again (D64, D76), best effort.
+#[derive(Default)]
+struct Refetches {
+    out: HashMap<[u8; 32], Refetch>,
+    /// Hashes asked for this run, at most [`SyncConfig::max_refetches`].
+    started: usize,
 }
 
 /// Requests in flight and who announced what.
@@ -655,9 +680,8 @@ struct Run {
     /// Every peer of the run, gone or not: with two, no proposal is
     /// settled by one peer's vote sync alone (D68).
     met: HashSet<SocketAddr>,
-    /// Votes asked for again (D64, D76) → the peers that answered
-    /// `notfound`: giving one up says nothing about a vote sync.
-    refetching: HashMap<[u8; 32], Vec<usize>>,
+    /// Votes asked for again (D64, D76, D77).
+    refetches: Refetches,
     /// A vote was given up on once synced: no later vote sync is recorded
     /// as complete, as its votes may not all have come (D68).
     vote_given_up: bool,
@@ -821,9 +845,6 @@ impl Run {
     /// Done with `item`: its announcements stop counting against their
     /// peers' limits.
     fn finish(&mut self, item: &Item) {
-        if item.1 == INV_GOVERNANCE_VOTE && !self.refetching.is_empty() {
-            self.refetching.remove(&item.0);
-        }
         let Some(a) = self.requests.announced.remove(item) else {
             return;
         };
@@ -858,6 +879,7 @@ impl Run {
                 asked: r.asked.clone(),
                 owed: Vec::new(),
                 unanswered: r.unanswered,
+                refetch: None,
             }
         } else if let Some(l) = self.requests.late.get_mut(item)
             && take_owed(&mut l.owed, from)
@@ -870,6 +892,7 @@ impl Run {
                 asked: l.asked.clone(),
                 owed: Vec::new(),
                 unanswered: false,
+                refetch: None,
             };
             if l.owed.is_empty() && !l.lost {
                 self.requests.late.remove(item);
@@ -997,22 +1020,10 @@ impl Run {
                 // Who announced an object still counts if another peer
                 // delivers it later.
                 let (hash, kind) = item;
-                let refetched = kind == INV_GOVERNANCE_VOTE && self.refetching.contains_key(&hash);
-                // Every connected peer, at least two, has no copy: a lost
-                // vote no node holds is settled (D76).
-                let none_held = self
-                    .refetching
-                    .get(&hash)
-                    .is_some_and(|none| none.len() >= 2 && live.iter().all(|p| none.contains(p)));
                 self.remember_late(item, asked, t.owed, t.phase && (count || t.unanswered));
                 self.finish(&item);
-                if none_held {
-                    self.shared.store().settle_lost(&hash);
-                }
                 if kind == INV_GOVERNANCE_VOTE {
-                    if !refetched {
-                        self.vote_given_up |= self.announce_open;
-                    }
+                    self.vote_given_up |= self.announce_open;
                     for p in &mut self.peers {
                         if p.unresolved.remove(&hash) {
                             p.unattributable += 1;
@@ -1027,6 +1038,10 @@ impl Run {
     /// An item the wallet refused: another announcer's copy may be
     /// accepted, but a refusal never fails the phase (D35).
     fn refused(&mut self, item: Item, from: usize, taken: Taken) -> bool {
+        if let Some(untried) = taken.refetch {
+            self.ask_refetch(item.0, untried);
+            return false;
+        }
         self.retry(item, Some(from), taken, false)
     }
 
@@ -1062,13 +1077,25 @@ impl Run {
                 } else {
                     store.has_vote(&i.hash)
                 };
+                let item = (i.hash, i.kind);
+                // Past its limit, a hash it did not announce before is not
+                // fetched (Core `MAX_PEER_OBJECT_ANNOUNCEMENTS`).
+                let dropped = !known
+                    && state.announced >= max_announced
+                    && self
+                        .requests
+                        .announced
+                        .get(&item)
+                        .is_none_or(|a| !a.all.contains(&from));
                 if !object {
                     // Only a vote on an object asked of the peer counts
-                    // towards that sync (D46).
+                    // towards that sync (D46), and only one it is fetched
+                    // or held: a dropped one completes none (DEC-257, D77).
                     let parent = store
                         .vote_parent(&i.hash)
                         .or_else(|| self.vote_parents.get(&i.hash).copied());
                     match parent {
+                        _ if dropped => state.unattributable += 1,
                         Some(parent) => state.attribute(i.hash, parent),
                         None if state.announced < max_announced
                             && state.unresolved.len() < MAX_LATE =>
@@ -1078,7 +1105,7 @@ impl Run {
                         None => state.unattributable += 1,
                     }
                 }
-                if known || state.announced >= max_announced {
+                if known || dropped {
                     continue;
                 }
                 if object {
@@ -1093,7 +1120,6 @@ impl Run {
                         by_hash.insert(i.hash, vec![addr]);
                     }
                 }
-                let item = (i.hash, i.kind);
                 let a = self.requests.announced.entry(item).or_default();
                 if a.all.contains(&from) {
                     continue;
@@ -1236,7 +1262,13 @@ impl Run {
         };
         let hash = vote.hash();
         let item = (hash, INV_GOVERNANCE_VOTE);
-        let Some(taken) = self.take(from, &item) else {
+        let Some(taken) = self.take(from, &item).or_else(|| {
+            let untried = self.take_refetch(from, &hash)?;
+            Some(Taken {
+                refetch: Some(untried),
+                ..Taken::default()
+            })
+        }) else {
             return;
         };
         self.credit_relays(hash, vote.parent_hash);
@@ -1382,6 +1414,12 @@ impl Run {
                     .get(item)
                     .is_some_and(|r| r.peer == from && r.sent.is_some())
             }) else {
+                // A vote asked for again: the next peer is asked. No answer
+                // settles it, as none proves no node holds it (D77).
+                if let Some(untried) = self.take_refetch(from, &i.hash) {
+                    self.ask_refetch(i.hash, untried);
+                    continue;
+                }
                 // An answer to a `getdata` that timed out spends it (D61).
                 for item in named {
                     if self.spend_owed(&item, from) {
@@ -1394,12 +1432,6 @@ impl Run {
                 self.misbehaved(from, "notfound of another kind");
             }
             let r = self.release(&item).expect("looked up");
-            if item.1 == INV_GOVERNANCE_VOTE
-                && let Some(none) = self.refetching.get_mut(&item.0)
-                && !none.contains(&from)
-            {
-                none.push(from);
-            }
             // A peer that no longer has an item it announced (a vote
             // dropped with a list change) is not a lost sync item.
             self.retry(item, Some(from), r.into(), false);
@@ -1470,6 +1502,17 @@ impl Run {
                     by.push(gone.peer.addr);
                 }
             }
+        }
+        let refetched: Vec<([u8; 32], Vec<usize>)> = self
+            .refetches
+            .out
+            .iter()
+            .filter(|(_, r)| r.peer == id)
+            .map(|(h, r)| (*h, r.untried.clone()))
+            .collect();
+        for (hash, untried) in refetched {
+            self.refetches.out.remove(&hash);
+            self.ask_refetch(hash, untried);
         }
         for item in pending {
             let r = self.requests.pending.remove(&item).expect("listed");
@@ -1586,6 +1629,17 @@ impl Run {
                 }
             }
         }
+        let late: Vec<([u8; 32], Vec<usize>)> = self
+            .refetches
+            .out
+            .iter()
+            .filter(|(_, r)| now.duration_since(r.sent) >= timeout)
+            .map(|(h, r)| (*h, r.untried.clone()))
+            .collect();
+        for (hash, untried) in late {
+            self.refetches.out.remove(&hash);
+            self.ask_refetch(hash, untried);
+        }
         self.refetch_votes();
         self.refill();
         for p in &self.peers {
@@ -1600,32 +1654,75 @@ impl Run {
     /// Asks the connected peers in turn for the votes the store dropped as
     /// signed by another key than their resolved outpoint's (D64), or lost
     /// (D76): a peer that sends the re-signed copy again is refused, and
-    /// the next is asked.
+    /// the next is asked. Apart from peers' announcements, up to
+    /// [`SyncConfig::max_refetches`] per run; the store keeps the rest
+    /// uncertain, for a later run (DEC-257, D77).
     fn refetch_votes(&mut self) {
-        let ids: Vec<usize> = self.peers.iter().map(|p| p.peer.id).collect();
-        let Some(&first) = ids.first() else { return };
         let hashes = self.shared.store().take_refetch();
+        let ids: Vec<usize> = self.peers.iter().map(|p| p.peer.id).collect();
+        let mut asks: HashMap<usize, Vec<InvItem>> = HashMap::new();
         for hash in hashes {
-            let item = (hash, INV_GOVERNANCE_VOTE);
-            // Every connected peer is asked in turn, also after the
-            // announcers of a request already out.
-            let a = self.requests.announced.entry(item).or_default();
-            for id in &ids {
-                if !a.all.contains(id) {
-                    a.all.push(*id);
-                    a.untried.push(*id);
-                    if let Some(p) = self.peers.iter_mut().find(|p| p.peer.id == *id) {
-                        p.announced += 1;
-                    }
-                }
+            if self.refetches.started >= self.cfg.max_refetches {
+                break;
             }
-            // An announced vote stays one: its `notfound`s settle nothing,
-            // and giving it up counts as for any relay (D76).
-            if self.requests.pending.contains_key(&item) {
+            // A request out for its announcement may fetch it.
+            if self.refetches.out.contains_key(&hash)
+                || self
+                    .requests
+                    .pending
+                    .contains_key(&(hash, INV_GOVERNANCE_VOTE))
+            {
                 continue;
             }
-            self.refetching.entry(hash).or_default();
-            self.assign(item, first, Taken::default());
+            let Some((&peer, untried)) = ids.split_first() else {
+                return;
+            };
+            self.refetches.started += 1;
+            let r = Refetch {
+                peer,
+                sent: Instant::now(),
+                untried: untried.to_vec(),
+            };
+            self.refetches.out.insert(hash, r);
+            let kind = INV_GOVERNANCE_VOTE;
+            asks.entry(peer).or_default().push(InvItem { kind, hash });
+        }
+        let batch = self.cfg.getdata_batch.max(1);
+        for (peer, items) in asks {
+            if let Some(p) = self.peer(peer) {
+                for chunk in items.chunks(batch) {
+                    p.peer.send_getdata(chunk);
+                }
+            }
+        }
+    }
+
+    /// Ends the refetch of `hash` asked of `from`, if any; the peers left
+    /// to ask.
+    fn take_refetch(&mut self, from: usize, hash: &[u8; 32]) -> Option<Vec<usize>> {
+        if self.refetches.out.get(hash)?.peer != from {
+            return None;
+        }
+        self.refetches.out.remove(hash).map(|r| r.untried)
+    }
+
+    /// Asks the next connected peer of `untried` for `hash`; with none, the
+    /// store keeps it uncertain (D72, D76).
+    fn ask_refetch(&mut self, hash: [u8; 32], mut untried: Vec<usize>) {
+        untried.retain(|id| self.peer(*id).is_some());
+        if untried.is_empty() {
+            return;
+        }
+        let peer = untried.remove(0);
+        let r = Refetch {
+            peer,
+            sent: Instant::now(),
+            untried,
+        };
+        self.refetches.out.insert(hash, r);
+        if let Some(p) = self.peer(peer) {
+            let kind = INV_GOVERNANCE_VOTE;
+            p.peer.send_getdata(&[InvItem { kind, hash }]);
         }
     }
 
@@ -1945,7 +2042,7 @@ async fn run_inner(
         vote_targets: HashSet::new(),
         completed: HashSet::new(),
         met: HashSet::new(),
-        refetching: HashMap::new(),
+        refetches: Refetches::default(),
         vote_given_up: false,
         lost: 0,
         recovered: 0,
@@ -2012,7 +2109,7 @@ async fn run_inner(
         let started = Instant::now();
         let current = {
             let mut store = shared.store();
-            // Lost votes the last run's peers did not settle (D76).
+            // Lost votes still uncertain are asked for again (D76, D77).
             store.requeue_lost();
             store.current_proposals(unix_now())
         };

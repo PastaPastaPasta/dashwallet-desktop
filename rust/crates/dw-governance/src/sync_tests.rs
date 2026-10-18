@@ -87,6 +87,8 @@ struct Node {
     /// Served and announced on a one-object `govsync`, but left out of the
     /// full sync.
     hidden_objects: Vec<GovernanceObject>,
+    /// Served on `getdata`, never announced.
+    hidden_votes: Vec<GovernanceVote>,
 }
 
 /// A vote sync of `asked` (the first one, over every node sharing `once`)
@@ -115,6 +117,8 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
     let mut chatter = 0u32;
     let mut votes = node.votes.clone();
     votes.extend(node.relays.iter().cloned());
+    let mut held = votes.clone();
+    held.extend(node.hidden_votes.iter().cloned());
     let mut served = node.objects.clone();
     served.extend(node.follow_objects.iter().cloned());
     served.extend(node.hidden_objects.iter().cloned());
@@ -262,7 +266,7 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
                         .then(|| served.iter().find(|o| o.hash() == i.hash))
                         .flatten();
                     let vote = (i.kind == INV_GOVERNANCE_VOTE)
-                        .then(|| votes.iter().find(|v| v.hash() == i.hash))
+                        .then(|| held.iter().find(|v| v.hash() == i.hash))
                         .flatten();
                     if let Some(o) = object {
                         conn.send(commands::MNGOVERNANCEOBJECT, &o.encode())
@@ -1912,7 +1916,7 @@ async fn one_peer_run(tune: impl FnOnce(&mut SyncConfig, &mut PeerState)) -> Run
         vote_targets: HashSet::new(),
         completed: HashSet::new(),
         met: HashSet::new(),
-        refetching: HashMap::new(),
+        refetches: Refetches::default(),
         vote_given_up: false,
         lost: 0,
         recovered: 0,
@@ -2894,18 +2898,26 @@ async fn counting_peer(
 }
 
 /// Copies `peer` may still send for `item` in the run's records: its live
-/// sent request (two once asked again) and each grant it holds.
+/// sent request (two once asked again), each grant it holds, and a refetch
+/// asked of it (D77).
 fn capacity(run: &Run, peer: usize, item: &Item) -> usize {
+    let refetch = item.1 == INV_GOVERNANCE_VOTE
+        && run
+            .refetches
+            .out
+            .get(&item.0)
+            .is_some_and(|r| r.peer == peer);
     let live = run.requests.pending.get(item).map_or(0, |r| {
         let mine = r.peer == peer && r.sent.is_some();
         usize::from(mine) * (1 + usize::from(r.asked_again))
             + r.owed.iter().filter(|p| **p == peer).count()
     });
-    live + run
-        .requests
-        .late
-        .get(item)
-        .map_or(0, |l| l.owed.iter().filter(|p| **p == peer).count())
+    live + usize::from(refetch)
+        + run
+            .requests
+            .late
+            .get(item)
+            .map_or(0, |l| l.owed.iter().filter(|p| **p == peer).count())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2968,6 +2980,12 @@ async fn copies_taken_never_exceed_getdatas_sent() {
                 .iter()
                 .map(|(i, r)| (*i, (r.peer, r.sent)))
                 .collect();
+            let refetch_before: HashMap<[u8; 32], (usize, Instant)> = run
+                .refetches
+                .out
+                .iter()
+                .map(|(h, r)| (*h, (r.peer, r.sent)))
+                .collect();
             let cap_before: Vec<usize> = items.iter().map(|i| capacity(&run, peer, i)).collect();
             let mut copy = false;
             let mut notfound = false;
@@ -3018,6 +3036,11 @@ async fn copies_taken_never_exceed_getdatas_sent() {
                     && before.get(i) != Some(&(r.peer, Some(s)))
                 {
                     *sent.entry((r.peer, *i)).or_default() += 1;
+                }
+            }
+            for (h, r) in &run.refetches.out {
+                if refetch_before.get(h) != Some(&(r.peer, r.sent)) {
+                    *sent.entry((r.peer, (*h, INV_GOVERNANCE_VOTE))).or_default() += 1;
                 }
             }
             assert!(run.phase_requests_done() || run.requests.phase_pending > 0);
@@ -3532,15 +3555,13 @@ async fn a_refetch_given_up_leaves_vote_syncs_recorded() {
             weight: 1,
         },
     )]));
-    let key = (item.hash, item.kind);
     run.expire();
-    assert!(run.requests.pending.contains_key(&key));
+    assert_eq!(run.refetches.out[&item.hash].peer, 0);
     run.handle(0, PeerEvent::NotFound(vec![item]));
-    run.expire();
+    assert_eq!(run.refetches.out[&item.hash].peer, 1);
     run.handle(1, PeerEvent::NotFound(vec![item]));
-    assert!(!run.requests.pending.contains_key(&key));
+    assert!(run.refetches.out.is_empty());
     assert!(!run.vote_given_up);
-    assert!(run.refetching.is_empty());
 }
 
 /// Validator r18 Major 2: a retry whose peers were all full-synced within
@@ -3745,13 +3766,11 @@ async fn a_failed_refetch_leaves_the_vote_uncertain_across_a_reconnect() {
     run.handle(0, PeerEvent::Vote(forged.encode()));
     run.handle(1, PeerEvent::Inv(vec![item]));
     run.shared.store().set_resolved(resolved.clone());
-    let key = (item.hash, item.kind);
     run.expire();
-    assert!(run.requests.pending.contains_key(&key));
+    assert!(run.refetches.out.contains_key(&item.hash));
     run.handle(0, PeerEvent::NotFound(vec![item]));
-    run.expire();
     run.handle(1, PeerEvent::NotFound(vec![item]));
-    assert!(!run.requests.pending.contains_key(&key));
+    assert!(run.refetches.out.is_empty());
     uncertain(&run.shared);
 
     let node = Node {
@@ -3860,35 +3879,33 @@ fn lose_honest_no(run: &mut Run, p: &GovernanceObject) -> InvItem {
     item
 }
 
-/// Manager r4 ruling on validator r21 Major 1 (D76): the lost NO is asked
-/// for again; both peers answer `notfound`, so no node holds it and it is
-/// settled. If one of them sends the re-signed copy instead, it stays.
+/// Sol r4 Major 1 (DEC-257, D77): of three peers asked for the lost NO
+/// again, two answer `notfound` and leave; the third, which may hold it,
+/// leaves too. No answer proves no node holds it: the NO stays uncounted,
+/// with or without the peers leaving.
 #[tokio::test]
-async fn a_lost_vote_two_peers_lack_is_settled() {
-    for copy_from_1 in [false, true] {
-        let p = proposal(&format!("p-d76-two-{copy_from_1}"));
+async fn forged_notfounds_and_disconnects_leave_a_lost_vote_uncounted() {
+    for leave in [false, true] {
+        let p = proposal(&format!("p-d77-notfound-{leave}"));
         let mut run = two_peer_run(&p).await;
+        run.peers.push(sink_peer(2, &run.cfg).await);
         let item = lose_honest_no(&mut run, &p);
-        let key = (item.hash, item.kind);
         run.expire();
-        assert_eq!(run.requests.pending[&key].peer, 0);
+        assert_eq!(run.refetches.out[&item.hash].peer, 0);
         run.handle(0, PeerEvent::NotFound(vec![item]));
-        run.expire();
-        assert_eq!(run.requests.pending[&key].peer, 1);
-        if copy_from_1 {
-            let honest = vote(p.hash(), 1, VoteOutcome::No);
-            run.handle(1, PeerEvent::Vote(resigned(&honest, 2).encode()));
+        assert_eq!(run.refetches.out[&item.hash].peer, 1);
+        run.handle(1, PeerEvent::NotFound(vec![item]));
+        assert_eq!(run.refetches.out[&item.hash].peer, 2);
+        if leave {
+            run.handle(1, PeerEvent::Closed);
+            run.handle(2, PeerEvent::Closed);
+            assert_eq!(run.peers.len(), 1);
         } else {
-            run.handle(1, PeerEvent::NotFound(vec![item]));
+            run.handle(2, PeerEvent::NotFound(vec![item]));
         }
-        assert!(!run.requests.pending.contains_key(&key));
-        assert!(run.refetching.is_empty());
-        let uncounted = run.shared.store().tally(&p.hash()).uncounted;
-        assert_eq!(
-            uncounted,
-            u32::from(copy_from_1),
-            "copy from 1: {copy_from_1}"
-        );
+        assert!(run.refetches.out.is_empty());
+        let t = run.shared.store().tally(&p.hash());
+        assert_eq!((t.uncounted, t.no.max), (1, 4), "leave: {leave}");
     }
 }
 
@@ -3906,7 +3923,7 @@ async fn a_lost_vote_one_peer_lacks_stays_uncertain() {
     let item = lose_honest_no(&mut run, &p);
     run.expire();
     run.handle(0, PeerEvent::NotFound(vec![item]));
-    assert!(run.requests.pending.is_empty());
+    assert!(run.refetches.out.is_empty());
     let mut store = run.shared.store();
     let t = store.tally(&p.hash());
     assert_eq!((t.uncounted, t.no.max), (1, 4));
@@ -3914,32 +3931,9 @@ async fn a_lost_vote_one_peer_lacks_stays_uncertain() {
     assert_eq!(store.take_refetch(), vec![item.hash]);
 }
 
-/// D76: of three peers asked for the lost NO, two answer `notfound` but
-/// the first, still connected, timed out. It may hold the vote, so the NO
-/// is not settled.
-#[tokio::test]
-async fn a_lost_vote_a_live_peer_left_unanswered_stays_uncertain() {
-    let p = proposal("p-d76-three");
-    let mut run = two_peer_run(&p).await;
-    run.peers.push(sink_peer(2, &run.cfg).await);
-    let item = lose_honest_no(&mut run, &p);
-    let key = (item.hash, item.kind);
-    run.expire();
-    assert_eq!(run.requests.pending[&key].peer, 0);
-    expire_now(&mut run);
-    assert_eq!(run.requests.pending[&key].peer, 1);
-    run.handle(1, PeerEvent::NotFound(vec![item]));
-    run.expire();
-    assert_eq!(run.requests.pending[&key].peer, 2);
-    run.handle(2, PeerEvent::NotFound(vec![item]));
-    assert!(!run.requests.pending.contains_key(&key));
-    assert_eq!(run.peers.len(), 3);
-    let t = run.shared.store().tally(&p.hash());
-    assert_eq!((t.uncounted, t.no.max), (1, 4));
-}
-
-/// D76: a lost NO the last run did not settle is asked for again by the
-/// next run's votes phase; both peers answer `notfound`, so it settles.
+/// D76: a lost NO the last run did not fetch is asked for again by the
+/// next run's votes phase; a node that holds it but does not announce it
+/// serves it, and the NO is no longer lost.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lost_vote_is_asked_for_again_by_the_next_run() {
     let p = proposal("p-d76-next-run");
@@ -3947,6 +3941,7 @@ async fn a_lost_vote_is_asked_for_again_by_the_next_run() {
     let honest = vote(ha, 1, VoteOutcome::No);
     let node = Node {
         objects: vec![p.clone()],
+        hidden_votes: vec![honest.clone()],
         ..Node::default()
     };
     let lost = honest.hash();
@@ -3976,19 +3971,24 @@ async fn a_lost_vote_is_asked_for_again_by_the_next_run() {
         matches!(p.phase, Phase::Failed | Phase::Synced)
     })
     .await;
-    let _ = hx.stop.send(true);
     assert_eq!(p.phase, Phase::Synced, "{p:?}");
+    for _ in 0..100 {
+        if hx.shared.store().has_vote(&lost) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let _ = hx.stop.send(true);
     let store = hx.shared.store();
-    assert!(!store.has_vote(&lost));
+    assert!(store.has_vote(&lost));
     assert_eq!(store.tally(&ha).uncounted, 0);
 }
 
 /// Validator r23 Major 1 (D76): two peers announce the lost NO before it
-/// is asked for again and answer `notfound`. The third connected peer is
-/// still asked, and with an announced request nothing settles: the NO
-/// stays uncertain.
+/// is asked for again and answer `notfound`. Their request was theirs:
+/// it is given up as any relay, and the NO stays uncertain.
 #[tokio::test]
-async fn a_lost_vote_its_announcers_lack_asks_every_peer() {
+async fn a_lost_vote_its_announcers_lack_stays_uncertain() {
     let p = proposal("p-d76-announced");
     let mut run = two_peer_run(&p).await;
     run.peers.push(sink_peer(2, &run.cfg).await);
@@ -3997,13 +3997,124 @@ async fn a_lost_vote_its_announcers_lack_asks_every_peer() {
     run.handle(0, PeerEvent::Inv(vec![item]));
     run.handle(1, PeerEvent::Inv(vec![item]));
     run.expire();
+    assert!(run.refetches.out.is_empty());
     assert_eq!(run.requests.pending[&key].peer, 0);
     run.handle(0, PeerEvent::NotFound(vec![item]));
     assert_eq!(run.requests.pending[&key].peer, 1);
     run.handle(1, PeerEvent::NotFound(vec![item]));
-    assert_eq!(run.requests.pending[&key].peer, 2);
-    run.handle(2, PeerEvent::NotFound(vec![item]));
     assert!(!run.requests.pending.contains_key(&key));
     let t = run.shared.store().tally(&p.hash());
     assert_eq!((t.uncounted, t.no.max), (1, 4));
+}
+
+/// Sol r4 Major 2 (DEC-257, D77): with one announcement allowed per peer,
+/// asking every peer for a lost vote again takes none of it: the honest
+/// peer's next announced vote is still fetched.
+#[tokio::test]
+async fn a_refetch_takes_no_announcement_allowance() {
+    let p = proposal("p-d77-allowance");
+    let mut run = two_peer_run(&p).await;
+    run.cfg.max_announcements = 1;
+    let item = lose_honest_no(&mut run, &p);
+    run.expire();
+    assert_eq!(run.refetches.out[&item.hash].peer, 0);
+    run.handle(0, PeerEvent::NotFound(vec![item]));
+    assert_eq!(run.refetches.out[&item.hash].peer, 1);
+    assert!(run.peers.iter().all(|s| s.announced == 0));
+    assert!(run.requests.announced.is_empty());
+    open_vote_sync(&mut run.peers[1], p.hash());
+    let yes = vote(p.hash(), 1, VoteOutcome::Yes);
+    let yes = GovernanceVote::funding(
+        OutPoint::new(dashcore::Txid::from_byte_array([0x5e; 32]), 0),
+        p.hash(),
+        VoteOutcome::Yes,
+        yes.time,
+    );
+    let yes_item = vote_inv(&resigned(&yes, 1));
+    run.handle(1, PeerEvent::Inv(vec![yes_item]));
+    let r = &run.requests.pending[&(yes_item.hash, yes_item.kind)];
+    assert_eq!(r.peer, 1);
+    assert!(r.phase);
+}
+
+/// Sol r4 Major 2 (DEC-257, D77): past its allowance, a phase vote the
+/// peer announces is not fetched, so it completes no vote sync: the count
+/// it makes up still lets the peer's sync end, as D68's unattributable
+/// votes do, but not as complete for the proposal.
+#[tokio::test]
+async fn a_dropped_phase_vote_completes_no_sync() {
+    let p = proposal("p-d77-dropped");
+    let h = p.hash();
+    for limit in [1, 2] {
+        let mut run = one_peer_run(|c, s| {
+            c.max_announcements = limit;
+            s.vote_asked.push(h);
+            s.vote_expected.push(2);
+            s.vote_announced.insert(h, 0);
+        })
+        .await;
+        list_key_1(&run);
+        let (a, b) = (aged_vote(h, 1), aged_vote(h, 2));
+        for v in [&a, &b] {
+            run.vote_parents.insert(v.hash(), h);
+        }
+        run.handle(0, PeerEvent::Inv(vec![vote_inv(&a), vote_inv(&b)]));
+        let state = &run.peers[0];
+        assert!(state.votes_done());
+        let completed: Vec<[u8; 32]> = state.votes_completed().collect();
+        let fetched = run.requests.pending.len();
+        assert_eq!(fetched, limit);
+        assert_eq!(completed.contains(&h), limit == 2, "limit {limit}");
+    }
+}
+
+/// D77: a run asks for at most `max_refetches` lost votes again; the rest
+/// stay lost for a later run. A refetch that times out moves to the next
+/// peer, apart from any announcement.
+#[tokio::test]
+async fn refetches_stay_within_the_run_budget() {
+    let p = proposal("p-d77-budget");
+    let mut run = two_peer_run(&p).await;
+    run.cfg.max_refetches = 1;
+    let item = lose_honest_no(&mut run, &p);
+    run.expire();
+    assert_eq!(run.refetches.out.len(), 1);
+    assert_eq!(run.refetches.out[&item.hash].peer, 0);
+    expire_now(&mut run);
+    assert_eq!(run.refetches.out[&item.hash].peer, 1);
+    expire_now(&mut run);
+    assert!(run.refetches.out.is_empty());
+    // Spent: asked again only by a later run.
+    run.shared.store().requeue_lost();
+    run.expire();
+    assert!(run.refetches.out.is_empty());
+    assert_eq!(run.refetches.started, 1);
+    assert!(run.peers.iter().all(|s| s.announced == 0));
+    assert_eq!(run.shared.store().tally(&p.hash()).uncounted, 1);
+}
+
+/// D77: a lost vote asked for again is answered only by the peer asked.
+/// Another peer's copy is unsolicited and dropped (D59); a copy the store
+/// refuses moves the ask to the next peer; the asked peer's copy is stored
+/// and settles it.
+#[tokio::test]
+async fn a_refetched_vote_is_taken_only_from_the_peer_asked() {
+    let p = proposal("p-d77-asked");
+    let mut run = two_peer_run(&p).await;
+    let item = lose_honest_no(&mut run, &p);
+    let honest = vote(p.hash(), 1, VoteOutcome::No);
+    assert_eq!(honest.hash(), item.hash);
+    run.expire();
+    assert_eq!(run.refetches.out[&item.hash].peer, 0);
+    run.handle(1, PeerEvent::Vote(honest.encode()));
+    assert!(!run.shared.store().has_vote(&item.hash));
+    assert_eq!(run.refetches.out[&item.hash].peer, 0);
+    let mut junk = honest.clone();
+    junk.signature = vec![0x55; 96];
+    run.handle(0, PeerEvent::Vote(junk.encode()));
+    assert_eq!(run.refetches.out[&item.hash].peer, 1);
+    run.handle(1, PeerEvent::Vote(honest.encode()));
+    assert!(run.shared.store().has_vote(&item.hash));
+    assert!(run.refetches.out.is_empty());
+    assert_eq!(run.shared.store().tally(&p.hash()).uncounted, 0);
 }
