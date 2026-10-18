@@ -3982,3 +3982,28 @@ async fn a_lost_vote_is_asked_for_again_by_the_next_run() {
     assert!(!store.has_vote(&lost));
     assert_eq!(store.tally(&ha).uncounted, 0);
 }
+
+/// Validator r23 Major 1 (D76): two peers announce the lost NO before it
+/// is asked for again and answer `notfound`. The third connected peer is
+/// still asked, and with an announced request nothing settles: the NO
+/// stays uncertain.
+#[tokio::test]
+async fn a_lost_vote_its_announcers_lack_asks_every_peer() {
+    let p = proposal("p-d76-announced");
+    let mut run = two_peer_run(&p).await;
+    run.peers.push(sink_peer(2, &run.cfg).await);
+    let item = lose_honest_no(&mut run, &p);
+    let key = (item.hash, item.kind);
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.expire();
+    assert_eq!(run.requests.pending[&key].peer, 0);
+    run.handle(0, PeerEvent::NotFound(vec![item]));
+    assert_eq!(run.requests.pending[&key].peer, 1);
+    run.handle(1, PeerEvent::NotFound(vec![item]));
+    assert_eq!(run.requests.pending[&key].peer, 2);
+    run.handle(2, PeerEvent::NotFound(vec![item]));
+    assert!(!run.requests.pending.contains_key(&key));
+    let t = run.shared.store().tally(&p.hash());
+    assert_eq!((t.uncounted, t.no.max), (1, 4));
+}

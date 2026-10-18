@@ -998,15 +998,12 @@ impl Run {
                 // delivers it later.
                 let (hash, kind) = item;
                 let refetched = kind == INV_GOVERNANCE_VOTE && self.refetching.contains_key(&hash);
-                // Every connected peer asked, at least two, has no copy:
-                // a lost vote no node holds is settled (D76).
-                let none_held = self.refetching.get(&hash).is_some_and(|none| {
-                    none.len() >= 2
-                        && asked
-                            .iter()
-                            .filter(|p| live.contains(p))
-                            .all(|p| none.contains(p))
-                });
+                // Every connected peer, at least two, has no copy: a lost
+                // vote no node holds is settled (D76).
+                let none_held = self
+                    .refetching
+                    .get(&hash)
+                    .is_some_and(|none| none.len() >= 2 && live.iter().all(|p| none.contains(p)));
                 self.remember_late(item, asked, t.owed, t.phase && (count || t.unanswered));
                 self.finish(&item);
                 if none_held {
@@ -1610,10 +1607,8 @@ impl Run {
         let hashes = self.shared.store().take_refetch();
         for hash in hashes {
             let item = (hash, INV_GOVERNANCE_VOTE);
-            self.refetching.entry(hash).or_default();
-            if self.requests.pending.contains_key(&item) {
-                continue;
-            }
+            // Every connected peer is asked in turn, also after the
+            // announcers of a request already out.
             let a = self.requests.announced.entry(item).or_default();
             for id in &ids {
                 if !a.all.contains(id) {
@@ -1624,6 +1619,12 @@ impl Run {
                     }
                 }
             }
+            // An announced vote stays one: its `notfound`s settle nothing,
+            // and giving it up counts as for any relay (D76).
+            if self.requests.pending.contains_key(&item) {
+                continue;
+            }
+            self.refetching.entry(hash).or_default();
             self.assign(item, first, Taken::default());
         }
     }
