@@ -3738,8 +3738,9 @@ async fn key_limit_fillers_leave_the_refused_vote_uncertain_when_synced() {
 /// the hash. Once the outpoint resolves to key 2 the copy is dropped and
 /// the hash asked for again; every peer answers `notfound`. The NO stays
 /// up to its masternode's weight. A reconnect within the window to peers
-/// whose vote syncs completed reads Synced without asking them again, and
-/// the NO is still uncertain (D72).
+/// whose vote syncs completed reads Synced without asking them again; the
+/// NO is asked for again (D77), and stays uncertain unless a peer serves it
+/// (D72).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_refetch_leaves_the_vote_uncertain_across_a_reconnect() {
     let p = proposal("p-r3-sol-refetch");
@@ -3773,37 +3774,54 @@ async fn a_failed_refetch_leaves_the_vote_uncertain_across_a_reconnect() {
     assert!(run.refetches.out.is_empty());
     uncertain(&run.shared);
 
-    let node = Node {
-        objects: vec![p.clone()],
-        votes: vec![honest],
-        ..Node::default()
-    };
-    let hx = start_with(
-        vec![node.clone(), node.clone(), node],
-        |_| {},
-        move |shared, history, addrs| {
-            shared.progress().last_synced_at = Some(unix_now() as u64 - 4_000);
-            let mut store = shared.store();
-            store.add_object(p, None, unix_now()).unwrap();
-            store.add_vote(forged, None, unix_now()).unwrap();
-            store.set_resolved(resolved);
-            // The earlier run's refetch was spent.
-            assert_eq!(store.take_refetch(), vec![item.hash]);
-            for addr in addrs {
-                history.full_synced.insert(*addr, Instant::now());
-                history.vote_synced.insert((*addr, ha), Instant::now());
-                history.vote_completed.insert((*addr, ha), Instant::now());
+    for served in [false, true] {
+        let node = Node {
+            objects: vec![p.clone()],
+            hidden_votes: if served { vec![honest.clone()] } else { vec![] },
+            ..Node::default()
+        };
+        let (p, forged, resolved) = (p.clone(), forged.clone(), resolved.clone());
+        let hx = start_with(
+            vec![node.clone(), node.clone(), node],
+            |_| {},
+            move |shared, history, addrs| {
+                shared.progress().last_synced_at = Some(unix_now() as u64 - 4_000);
+                let mut store = shared.store();
+                store.add_object(p, None, unix_now()).unwrap();
+                store.add_vote(forged, None, unix_now()).unwrap();
+                store.set_resolved(resolved);
+                // The earlier run's refetch was spent.
+                assert_eq!(store.take_refetch(), vec![item.hash]);
+                for addr in addrs {
+                    history.full_synced.insert(*addr, Instant::now());
+                    history.vote_synced.insert((*addr, ha), Instant::now());
+                    history.vote_completed.insert((*addr, ha), Instant::now());
+                }
+            },
+        )
+        .await;
+        let progress = wait_for(&hx.shared, |p| {
+            matches!(p.phase, Phase::Failed | Phase::Synced)
+        })
+        .await;
+        assert_eq!(progress.phase, Phase::Synced, "{progress:?}");
+        if served {
+            for _ in 0..100 {
+                if hx.shared.store().has_vote(&item.hash) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
-        },
-    )
-    .await;
-    let progress = wait_for(&hx.shared, |p| {
-        matches!(p.phase, Phase::Failed | Phase::Synced)
-    })
-    .await;
-    let _ = hx.stop.send(true);
-    assert_eq!(progress.phase, Phase::Synced, "{progress:?}");
-    uncertain(&hx.shared);
+            let _ = hx.stop.send(true);
+            let t = hx.shared.store().tally(&ha);
+            assert_eq!((t.no.min, t.no.max, t.uncounted), (4, 4, 0));
+        } else {
+            // Every node lacks it: give the refetch time to be answered.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let _ = hx.stop.send(true);
+            uncertain(&hx.shared);
+        }
+    }
 }
 
 /// Sol r3 Moderate: with no proposal, no vote sync prunes the record of
@@ -4117,4 +4135,78 @@ async fn a_refetched_vote_is_taken_only_from_the_peer_asked() {
     assert!(run.shared.store().has_vote(&item.hash));
     assert!(run.refetches.out.is_empty());
     assert_eq!(run.shared.store().tally(&p.hash()).uncounted, 0);
+}
+
+/// Validator r26 (D78): a vote a peer relays before its object's vote sync
+/// is credited to that sync without a fetch when the store holds it. Gone
+/// by the sync (its copy displaced or expired, its lost record trimmed
+/// with the object unstored), it may be a vote Core counts that the wallet
+/// lacks: it completes no sync, though the peer's may still end.
+#[tokio::test]
+async fn a_relayed_vote_gone_by_its_sync_completes_none() {
+    for gone in [false, true] {
+        let p = proposal(&format!("p-d78-relayed-{gone}"));
+        let h = p.hash();
+        let mut run = one_peer_run(|_, _| {}).await;
+        list_key_1(&run);
+        let v = aged_vote(h, 1);
+        let now = unix_now();
+        let r = run.shared.store().add_vote(v.clone(), None, now);
+        assert_eq!(r, Err(VoteRejection::Orphan));
+        run.handle(0, PeerEvent::Inv(vec![vote_inv(&v)]));
+        assert!(run.requests.pending.is_empty());
+        {
+            let mut store = run.shared.store();
+            if gone {
+                store.expire_orphans(now + crate::store::ORPHAN_EXPIRY_SECS + 1);
+            }
+            store.add_object(p.clone(), None, now).unwrap();
+            assert_eq!(store.has_vote(&v.hash()), !gone);
+        }
+        run.ask_votes_of(0, h, &[]);
+        let state = &mut run.peers[0];
+        state.vote_expected.push(1);
+        assert!(state.votes_done());
+        let completed: Vec<[u8; 32]> = state.votes_completed().collect();
+        assert_eq!(completed.contains(&h), !gone, "gone {gone}");
+        assert_eq!(state.unattributable, i64::from(gone));
+    }
+}
+
+/// Validator r26 (D77): an awaited (D72) vote the run did not ask for again,
+/// past its budget or with no peer connected, is asked for by a later run.
+#[tokio::test]
+async fn an_awaited_vote_left_unasked_is_asked_by_a_later_run() {
+    for no_peers in [false, true] {
+        let p = proposal(&format!("p-d77-awaited-{no_peers}"));
+        let ha = p.hash();
+        let honest = vote(ha, 2, VoteOutcome::No);
+        let item = vote_inv(&honest);
+        let resolved = HashMap::from([(
+            honest.masternode_outpoint,
+            crate::store::ResolvedMasternode {
+                pro_tx_hash: [9; 32],
+                voting_key_id: key_id(2),
+                weight: 4,
+            },
+        )]);
+        let mut run = two_peer_run(&p).await;
+        list_keys(&run, [1, 2]);
+        run.handle(0, PeerEvent::Inv(vec![item]));
+        run.handle(0, PeerEvent::Vote(resigned(&honest, 1).encode()));
+        if no_peers {
+            run.handle(0, PeerEvent::Closed);
+            run.handle(1, PeerEvent::Closed);
+        } else {
+            run.cfg.max_refetches = 0;
+        }
+        run.shared.store().set_resolved(resolved);
+        run.expire();
+        assert!(run.refetches.out.is_empty());
+        let t = run.shared.store().tally(&ha);
+        assert_eq!((t.uncounted, t.no.max), (1, 4));
+        run.shared.store().requeue_lost();
+        let queued = run.shared.store().take_refetch();
+        assert!(queued.contains(&item.hash), "no peers {no_peers}");
+    }
 }

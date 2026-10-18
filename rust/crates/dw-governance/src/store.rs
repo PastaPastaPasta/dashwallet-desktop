@@ -1377,16 +1377,19 @@ impl GovernanceStore {
         }
     }
 
-    /// Asks again for the lost votes of a stored `object` (D76).
+    /// Asks again for the awaited and lost votes of a stored `object` (D72,
+    /// D76).
     fn refetch_lost(&mut self, object: &[u8; 32]) {
         if let Some(u) = self.uncounted.get(object) {
-            self.refetch
-                .extend(u.lost.values().flatten().map(|l| l.hash));
+            let awaited = u.awaited.values().flatten().map(|a| a.hash);
+            let lost = u.lost.values().flatten().map(|l| l.hash);
+            self.refetch.extend(awaited.chain(lost));
         }
     }
 
-    /// Asks again for every lost vote of a stored object: a run's peers may
-    /// have it where the last run's had not (D76).
+    /// Asks again for every awaited and lost vote of a stored object: a
+    /// run's peers may have it where the last run's had not, or the last
+    /// run's budget left it (D76, D77).
     pub fn requeue_lost(&mut self) {
         let objects: Vec<[u8; 32]> = self
             .uncounted
@@ -2836,6 +2839,40 @@ mod tests {
                 assert_eq!(t.uncounted, 0, "{how:?}");
                 assert!(!s.uncounted.contains_key(&h), "{how:?}");
             }
+        }
+    }
+
+    #[test]
+    fn a_same_time_vote_does_not_settle_a_lost_vote() {
+        // Validator r26 (D77): Core refuses a vote no newer than the one it
+        // holds for the slot, so only a strictly newer vote of the resolved
+        // key settles the lost NO; a same-time YES leaves it either way.
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mn = HashMap::from([(
+            outpoint(1),
+            ResolvedMasternode {
+                pro_tx_hash: [1; 32],
+                voting_key_id: key_id(1),
+                weight: 4,
+            },
+        )]);
+        for resolve_first in [true, false] {
+            let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
+            forged_no(&mut s, h);
+            let own = vote(h, 2, 1, VoteOutcome::Abstain, NOW - 30);
+            assert_eq!(s.add_vote(own, peer(2), NOW), Ok(()));
+            lost_no(&s, &h);
+            let same = vote(h, 1, 1, VoteOutcome::Yes, NOW - 40);
+            if resolve_first {
+                s.set_resolved(mn.clone());
+            }
+            assert_eq!(s.add_vote(same, peer(1), NOW), Ok(()));
+            if !resolve_first {
+                s.set_resolved(mn.clone());
+            }
+            assert_eq!(s.tally(&h).no.max, 4, "resolve first {resolve_first}");
+            assert!(s.uncounted[&h].lost.contains_key(&outpoint(1)));
         }
     }
 

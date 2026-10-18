@@ -387,10 +387,11 @@ struct PeerState {
     /// of: they may make up a count its invs fall short of, which lets the
     /// phase end, but completes no object's vote sync (D68).
     unattributable: i64,
-    /// Votes it announced on objects not asked of it → their object. Core
+    /// Votes it announced on objects not asked of it → their object, and
+    /// whether the store held the vote then, so it was not fetched. Core
     /// counts them in a later vote sync of the object on the connection
     /// but leaves them out of its invs (D36).
-    relayed: HashMap<[u8; 32], [u8; 32]>,
+    relayed: HashMap<[u8; 32], ([u8; 32], bool)>,
     /// When its next `ssc` is due, while one is outstanding.
     answer_due: Option<Instant>,
     /// When it last delivered an item.
@@ -480,12 +481,13 @@ impl PeerState {
     }
 
     /// Counts its inv of `vote`, on `parent`, towards its vote sync of
-    /// `parent`, or keeps it for a later one (D36).
-    fn attribute(&mut self, vote: [u8; 32], parent: [u8; 32]) {
+    /// `parent`, or keeps it for a later one (D36); `held`: the store held
+    /// the vote, so it is not fetched.
+    fn attribute(&mut self, vote: [u8; 32], parent: [u8; 32], held: bool) {
         if let Some(n) = self.vote_announced.get_mut(&parent) {
             *n += 1;
         } else if self.relayed.len() < MAX_LATE {
-            self.relayed.insert(vote, parent);
+            self.relayed.insert(vote, (parent, held));
         }
     }
 
@@ -1096,7 +1098,7 @@ impl Run {
                         .or_else(|| self.vote_parents.get(&i.hash).copied());
                     match parent {
                         _ if dropped => state.unattributable += 1,
-                        Some(parent) => state.attribute(i.hash, parent),
+                        Some(parent) => state.attribute(i.hash, parent, known),
                         None if state.announced < max_announced
                             && state.unresolved.len() < MAX_LATE =>
                         {
@@ -1250,7 +1252,7 @@ impl Run {
         }
         for p in &mut self.peers {
             if p.unresolved.remove(&vote) {
-                p.attribute(vote, parent);
+                p.attribute(vote, parent, false);
             }
         }
     }
@@ -1858,11 +1860,27 @@ impl Run {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .note_votes_synced(addr, hash, self.cfg.repeat_window);
+        // A relayed vote skipped as held and since gone was never fetched:
+        // it may be a vote Core counts that the wallet lost, so it completes
+        // no sync (D78).
+        let store = self.shared.store();
         let p = &mut self.peers[i];
         p.vote_asked.push(hash);
-        let before = p.relayed.len();
-        p.relayed.retain(|_, parent| *parent != hash);
-        *p.vote_announced.entry(hash).or_default() += (before - p.relayed.len()) as i64;
+        let (mut credited, mut gone) = (0, 0);
+        p.relayed.retain(|vote, (parent, held)| {
+            if *parent != hash {
+                return true;
+            }
+            if *held && !store.has_vote(vote) {
+                gone += 1;
+            } else {
+                credited += 1;
+            }
+            false
+        });
+        drop(store);
+        *p.vote_announced.entry(hash).or_default() += credited;
+        p.unattributable += gone;
         p.peer.send_govsync(hash, filter);
         if p.answer_due.is_none() {
             p.rearm_answer(self.cfg.answer_timeout);
