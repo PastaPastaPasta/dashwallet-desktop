@@ -151,6 +151,9 @@ export class IpcBackend implements Backend {
   dashpayMarkRead = cmd.dashpayMarkRead;
   takeLinks = cmd.takeLinks;
   routeLink = cmd.routeLink;
+  stashedLinks = () => cmd.stashedLinks();
+  openStashedLink = cmd.openStashedLink;
+  dismissStashedLink = cmd.dismissStashedLink;
   shellSync = cmd.shellSync;
   warnings = () => cmd.warnings();
   consoleCommands = () => cmd.consoleCommands();
@@ -179,6 +182,7 @@ export class IpcBackend implements Backend {
   registerName = cmd.registerName;
   identityRefreshBalance = cmd.identityRefreshBalance;
   contestStatus = cmd.contestStatus;
+  dashpayAvatar = cmd.dashpayAvatar;
   creditsTopUpQuote = cmd.creditsTopUpQuote;
   creditsTopUp = cmd.creditsTopUp;
   creditsPendingTopUps = cmd.creditsPendingTopUps;

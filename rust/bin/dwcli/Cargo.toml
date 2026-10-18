@@ -14,6 +14,8 @@ dw-engine = { workspace = true }
 dw-units = { workspace = true }
 dw-message = { workspace = true }
 dw-psbt = { workspace = true }
+# Log lines pass through its link redaction (DP5-01 D14).
+dw-uri = { workspace = true }
 hex = { workspace = true }
 # The DashPay commands print the facade's records as JSON (E0-09).
 serde = { version = "1", features = ["derive"] }
@@ -22,6 +24,9 @@ dw-vault = { workspace = true }
 clap = { version = "4", features = ["derive", "env"] }
 # Engine and dash-spv logs on stderr when DWCLI_LOG is set (regtest debugging).
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing = { workspace = true }
+# An mn command's log redacts a URL option as the libraries print it (MG-03 D33).
+url = "2"
 zeroize = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -31,3 +36,5 @@ libc = "0.2"
 [dev-dependencies]
 # private_tempdir(): engine data roots that pass the storage permission check under any umask.
 dw-testutil = { workspace = true }
+# The log test drives a session SDK's own failing request (MG-03 D37).
+dw-engine = { workspace = true, features = ["test-support"] }

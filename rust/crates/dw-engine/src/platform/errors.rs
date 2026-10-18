@@ -439,7 +439,8 @@ pub enum AvatarError {
     Unsupported,
     #[error("avatar fetch failed")]
     FetchFailed,
-    /// The image does not match the profile's `avatarHash` or fingerprint.
+    /// The image does not match the profile's `avatarHash`, or the profile's
+    /// hash or fingerprint is malformed (DP4-02 D26).
     #[error("avatar hash mismatch")]
     HashMismatch,
     /// No Imgur client id is configured.

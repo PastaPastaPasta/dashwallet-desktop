@@ -13,6 +13,7 @@ import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { LinkRoute } from "../api/generated/LinkRoute";
+import { stashRoute, type FixtureStashedLink } from "./links";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
 import type { LockStatus } from "../api/generated/LockStatus";
@@ -45,6 +46,9 @@ export interface FixtureWallet {
   receive: ReceiveWorld;
 }
 
+/** A 4 x 4 PNG in the DashPay blue: the fixture's avatar thumbnail (DP4-02). */
+export const AVATAR_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQVR4nGOQKd3zHxkzkC4AAMqAJMErkdEyAAAAAElFTkSuQmCC";
+
 /** What the fixture's engine knows. Handlers mutate it, like the engine's own state. */
 export interface World {
   launch: LaunchInfo;
@@ -73,10 +77,14 @@ export interface World {
   notices: RecentNotice[];
   /** Deep links waiting for `take_links` (`FixtureHandle.deliverLinks`), already routed. */
   links: LinkRoute[];
+  /** The engine's link stash (DP5-01): links kept for after onboarding, and invitations. */
+  stash: FixtureStashedLink[];
   /** The last `shell_sync`: what the native menus would show. */
   shellSync: ShellSync | null;
   /** "Require authentication for every payment" (E0-13 D11; on by default). */
   paymentAuth: boolean;
+  /** "Load contact pictures" (DP4-02 D17); absent: on. */
+  loadContactPictures?: boolean;
   /** The vault's wait after a wrong passphrase (`retryAfterSecs`); null: none. */
   throttleSecs: number | null;
   /** When that wait ends (ms since epoch), for `lock_status`; null: no wait. */
@@ -174,6 +182,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     cut: { flows: [], flowsOmitted: 0 },
     notices: [],
     links: [],
+    stash: [],
     shellSync: null,
     paymentAuth: true,
     throttleSecs: null,
@@ -439,6 +448,10 @@ function syncing(): SyncStatus {
   };
 }
 
+/** The `saved-links` scenario's links: a testnet payee and a contact's identity. */
+const SAVED_PAYEE = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
+const SAVED_CONTACT = "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF";
+
 const SCENARIOS = {
   /** The reference wallet: balance, a month of history, caught up, unlocked. */
   funded: (t) => base(t),
@@ -458,6 +471,16 @@ const SCENARIOS = {
     w.wallets = [];
     w.phrases = {};
     w.lock = unlocked([]);
+    return w;
+  },
+  /** The funded wallet with links opened before it existed (DP5-01): "Links you opened" at
+   * launch, a payment request, a contact and an invitation. */
+  "saved-links": (t) => {
+    const w = base(t);
+    const now = Math.floor(Date.now() / 1000);
+    stashRoute(w.stash, { kind: "invitation", linkId: "" }, now - 3 * 86_400);
+    stashRoute(w.stash, { kind: "addContact", identity: SAVED_CONTACT, username: "alice" }, now - 2 * 3600);
+    stashRoute(w.stash, { kind: "pay", uri: { address: SAVED_PAYEE, amount: 25_000_000, label: "Coffee", message: null }, username: null }, now - 5 * 60);
     return w;
   },
   /** The funded wallet in a vault without a passphrase: Settings ▸ Security offers Encrypt (QT-111). */
@@ -498,6 +521,20 @@ const SCENARIOS = {
     const w = base(t);
     w.dashpay = registered();
     attributePayments(w);
+    return w;
+  },
+  /** DP4-02: `dashpay-registered` with Alice's avatar published and verified. */
+  "dashpay-avatar": (t) => {
+    const w = base(t);
+    const world = registered();
+    const alice = world.identities.find((i) => i.identity === IDENTITY.alice)!;
+    alice.profile = {
+      ...alice.profile!,
+      avatarUrl: "https://example.org/alice.png",
+      avatarHash: "ab".repeat(32),
+      avatarFingerprint: "cd".repeat(8),
+    };
+    w.dashpay = { ...world, avatars: { [IDENTITY.alice]: AVATAR_PNG } };
     return w;
   },
   /** DP3-03b: `dashpay-registered` with "Include my username in payment requests" off: the

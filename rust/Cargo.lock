@@ -2413,6 +2413,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "tracing-subscriber",
  "ts-rs",
  "zbus",
@@ -2514,6 +2515,7 @@ dependencies = [
  "dw-fs",
  "dw-message",
  "dw-p2p",
+ "dw-protx",
  "dw-psbt",
  "dw-testutil",
  "dw-units",
@@ -2521,14 +2523,18 @@ dependencies = [
  "dw-vault",
  "futures-util",
  "hex",
+ "image",
  "key-wallet",
  "libc",
+ "md-5",
  "platform-wallet",
  "platform-wallet-storage",
  "quote",
  "rand 0.8.6",
+ "reqwest 0.12.28",
  "rs-sdk-trusted-context-provider",
  "rusqlite",
+ "rustix 1.1.4",
  "rustls-pki-types",
  "rustls-webpki",
  "serde",
@@ -2540,6 +2546,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
  "zeroize",
 ]
 
@@ -2677,6 +2684,7 @@ dependencies = [
  "cbc",
  "chacha20poly1305",
  "dashcore",
+ "dpp",
  "dw-compat",
  "dw-fs",
  "dw-message",
@@ -2712,12 +2720,15 @@ dependencies = [
  "dw-psbt",
  "dw-testutil",
  "dw-units",
+ "dw-uri",
  "dw-vault",
  "hex",
  "libc",
  "serde",
  "serde_json",
+ "tracing",
  "tracing-subscriber",
+ "url",
  "zeroize",
 ]
 
@@ -5023,6 +5034,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest 0.10.7",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6460,7 +6481,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

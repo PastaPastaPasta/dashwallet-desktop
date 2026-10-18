@@ -32,6 +32,8 @@
     "allow-dashpay-prepare-avatar",
     "allow-dashpay-avatar-upload-available",
     "allow-dashpay-upload-avatar",
-    "allow-dashpay-avatar"
+    "allow-dashpay-avatar",
+    "allow-load-contact-pictures",
+    "allow-set-load-contact-pictures"
   ]
 }

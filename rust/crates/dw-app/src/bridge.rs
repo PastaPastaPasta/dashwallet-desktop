@@ -178,6 +178,11 @@ pub enum AppEvent {
         wallet_id: String,
         change: PlatformChangeName,
     },
+    /// A masternode of interest or a track, label or key changed (MG-03,
+    /// ≤ 1 Hz): re-read what is shown.
+    Masternodes {
+        network: String,
+    },
     LeaseChanged {
         network: String,
         lease: Lease,
@@ -396,6 +401,9 @@ impl From<EngineEvent> for AppEvent {
                 network: net(network),
                 wallet_id: wallet_id.to_string(),
                 change: change.into(),
+            },
+            EngineEvent::Masternodes { network } => AppEvent::Masternodes {
+                network: net(network),
             },
             EngineEvent::LeaseChanged { network, lease } => AppEvent::LeaseChanged {
                 network: net(network),
@@ -695,6 +703,7 @@ mod tests {
                     failed_attempts: 0,
                     retry_after_secs: None,
                     wallets_with_secrets: vec![],
+                    unsealed_links: false,
                 },
                 flows: vec![],
             }),
@@ -762,6 +771,7 @@ mod tests {
                     failed_attempts: u32::MAX,
                     retry_after_secs: Some(u64::MAX),
                     wallets_with_secrets: (0..40).map(|i| [i; 32]).collect(),
+                    unsealed_links: false,
                 },
                 flows: (0..20)
                     .map(|_| FlowReport {
@@ -902,6 +912,7 @@ mod tests {
                         identity: text(MAX_ID_BYTES),
                     },
                 },
+                EngineEvent::Masternodes { network: network() },
                 // More than the engine sends: the bridge cuts too.
                 EngineEvent::DashPayNews {
                     network: network(),
@@ -950,9 +961,10 @@ mod tests {
                 AppEvent::LockProgress { .. } => 16,
                 AppEvent::DispatchResolved { .. } => 17,
                 AppEvent::DashPayNews { .. } => 18,
+                AppEvent::Masternodes { .. } => 19,
             };
             let seen: std::collections::BTreeSet<_> = events.iter().map(variant).collect();
-            assert_eq!(seen, (0..19).collect());
+            assert_eq!(seen, (0..20).collect());
 
             let mut largest = (0, None);
             for event in &events {
@@ -1022,6 +1034,7 @@ mod tests {
                 failed_attempts: 0,
                 retry_after_secs: None,
                 wallets_with_secrets: vec![],
+                unsealed_links: false,
             },
             flows: outcomes
                 .iter()
@@ -1235,6 +1248,7 @@ mod tests {
                     failed_attempts: 0,
                     retry_after_secs: None,
                     wallets_with_secrets: vec![],
+                    unsealed_links: false,
                 },
                 flows: outcomes
                     .iter()
