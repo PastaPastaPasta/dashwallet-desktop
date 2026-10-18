@@ -278,6 +278,17 @@ impl Uncounted {
             && self.lost_past.is_empty()
     }
 
+    /// Whether a record stands for a vote of a valid masternode's key: an
+    /// awaited copy's masternode's, or a removed copy's when it went. (A
+    /// refused vote's key holds stored votes on the proposal.)
+    fn by_valid_key(&self, valid_keys: &HashSet<[u8; 20]>) -> bool {
+        self.awaited
+            .values()
+            .flatten()
+            .any(|a| valid_keys.contains(&a.key))
+            || self.lost.values().flatten().any(|l| l.valid)
+    }
+
     /// Drops the lost vote of `hash` at `outpoint`; whether it was held.
     fn drop_lost(&mut self, outpoint: &OutPoint, hash: &[u8; 32]) -> bool {
         let Some(list) = self.lost.get_mut(outpoint) else {
@@ -328,6 +339,10 @@ struct Awaited {
 struct Lost {
     hash: [u8; 32],
     outcome: VoteOutcome,
+    /// Whether the key that signed the removed copy was a valid
+    /// masternode's when it went: only then does the record keep its
+    /// object from eviction, as the copy did (D47).
+    valid: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -813,6 +828,17 @@ impl GovernanceStore {
             self.unconfirmed -= 1;
         }
         self.adopt_orphans(&hash, now);
+        // Votes on a trigger are ignored: none is uncertain, and a
+        // remembered `KeyLimit` verdict goes as with a removed object (D75,
+        // D76).
+        if matches!(self.objects[&hash].kind, ObjectKind::Trigger(_))
+            && self
+                .uncounted
+                .remove(&hash)
+                .is_some_and(|u| !u.refused.is_empty())
+        {
+            self.forget_dismissed();
+        }
         self.refetch_lost(&hash);
         Ok(true)
     }
@@ -920,13 +946,17 @@ impl GovernanceStore {
     }
 
     /// Whether a key of a valid masternode of the list voted on `hash`
-    /// (Core's tally counts no banned masternode), or votes on it are held
-    /// as uncertainty, which evicting it would forget (D71, D72, D76).
+    /// (Core's tally counts no banned masternode), or such a key's vote on
+    /// it is held as uncertainty, which evicting it would forget (D72,
+    /// D76). A trigger holds none: its records go when it is stored.
     fn weighted(&self, hash: &[u8; 32]) -> bool {
         self.votes
             .get(hash)
             .is_some_and(|m| m.values().any(|v| self.valid_keys.contains(&v.key_id)))
-            || self.uncounted.contains_key(hash)
+            || self
+                .uncounted
+                .get(hash)
+                .is_some_and(|u| u.by_valid_key(&self.valid_keys))
     }
 
     /// Drops the proposals lapsed by `now` (D65), erases the triggers
@@ -1054,6 +1084,7 @@ impl GovernanceStore {
             self.note_lost(
                 v.parent_hash,
                 v.masternode_outpoint,
+                o.vote.key_id,
                 o.vote.hash,
                 o.vote.outcome,
             );
@@ -1115,10 +1146,12 @@ impl GovernanceStore {
             }
         }
         self.keys = keys;
-        self.valid_keys = valid_keys;
         self.valid_weight = valid_weight;
         self.list_size = entries.len() as u32;
+        // A removed copy's key counts as valid by the list it was stored
+        // under (D76).
         self.drop_unbacked_votes();
+        self.valid_keys = valid_keys;
         self.place_suspects();
     }
 
@@ -1198,7 +1231,7 @@ impl GovernanceStore {
             if let Some(v) = self.remove_vote(&slot)
                 && !self.resolved.contains_key(&v.outpoint)
             {
-                self.note_lost(slot.0, v.outpoint, v.vote_hash, v.outcome);
+                self.note_lost(slot.0, v.outpoint, slot.2, v.vote_hash, v.outcome);
             }
         }
         let stale: Vec<[u8; 32]> = self
@@ -1239,6 +1272,7 @@ impl GovernanceStore {
         &mut self,
         parent: [u8; 32],
         outpoint: OutPoint,
+        key: [u8; 20],
         hash: [u8; 32],
         outcome: VoteOutcome,
     ) {
@@ -1259,10 +1293,11 @@ impl GovernanceStore {
             }
             return;
         }
-        u.lost
-            .entry(outpoint)
-            .or_default()
-            .push(Lost { hash, outcome });
+        u.lost.entry(outpoint).or_default().push(Lost {
+            hash,
+            outcome,
+            valid: self.valid_keys.contains(&key),
+        });
         u.held += 1;
         if self.objects.contains_key(&parent) {
             self.refetch.push(hash);
@@ -1775,7 +1810,7 @@ impl GovernanceStore {
         self.vote_count += 1;
         self.seen_votes.insert(v.hash, parent);
         if let Some(c) = replaced {
-            self.note_lost(parent, outpoint, c.vote_hash, c.outcome);
+            self.note_lost(parent, outpoint, key, c.vote_hash, c.outcome);
         }
         Ok(())
     }
@@ -2881,10 +2916,11 @@ mod tests {
         assert!(s.uncounted.is_empty());
     }
 
-    /// Validator r23 Minor 4 (D76): a proposal whose only trace is a lost
-    /// vote is not evicted; the uncertainty would go with it.
+    /// Validator r23 Minor 4 (D72, D76): a proposal whose only trace is a
+    /// lost vote, or an awaited one, is not evicted; the uncertainty would
+    /// go with it.
     #[test]
-    fn a_proposal_holding_lost_votes_is_not_evicted() {
+    fn a_proposal_holding_uncertain_votes_is_not_evicted() {
         let obj = proposal("a");
         let h = obj.hash();
         let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
@@ -2898,6 +2934,77 @@ mod tests {
         assert_eq!(s.add_object(c.clone(), peer(1), NOW + 2), Ok(true));
         assert!(s.object(&h).is_some() && s.object(&b.hash()).is_none());
         lost_no(&s, &h);
+        // An awaited copy of a valid masternode's vote.
+        let mut s = store(&obj, &[entry(1, 4), entry(2, 4)]);
+        s.max_objects = 2;
+        forged_no(&mut s, h);
+        let resolved = ResolvedMasternode {
+            pro_tx_hash: [1; 32],
+            voting_key_id: key_id(1),
+            weight: 4,
+        };
+        s.set_resolved(HashMap::from([(outpoint(1), resolved)]));
+        assert!(s.votes.get(&h).is_none_or(|m| m.is_empty()));
+        assert_eq!(s.tally(&h).uncounted, 1);
+        assert_eq!(s.add_object(b, peer(1), NOW + 1), Ok(true));
+        assert_eq!(s.add_object(c.clone(), peer(1), NOW + 2), Ok(true));
+        assert!(s.object(&h).is_some() && s.object(&c.hash()).is_some());
+        assert_eq!(s.tally(&h).uncounted, 1);
+    }
+
+    /// Validator r24 Moderate 1 (D47, D76): a lost vote of a banned key
+    /// keeps nothing, as its stored copy did not.
+    #[test]
+    fn a_banned_keys_lost_vote_does_not_keep_an_object() {
+        let mut s = GovernanceStore::new(Network::Regtest);
+        s.max_objects = 2;
+        s.set_masternode_list(&[
+            entry(1, 1),
+            ListEntry {
+                valid: false,
+                ..entry(2, 1)
+            },
+        ]);
+        let (banned, valid) = (proposal("banned"), proposal("valid"));
+        let (hb, hv) = (banned.hash(), valid.hash());
+        s.add_object(banned, None, NOW).unwrap();
+        s.add_vote(vote(hb, 2, 1, VoteOutcome::Yes, NOW - 20), None, NOW)
+            .unwrap();
+        s.add_vote(vote(hb, 2, 1, VoteOutcome::No, NOW - 10), None, NOW)
+            .unwrap();
+        assert_eq!(s.tally(&hb).uncounted, 1);
+        s.add_object(valid, None, NOW + 1).unwrap();
+        s.add_vote(vote(hv, 1, 2, VoteOutcome::Yes, NOW - 10), None, NOW)
+            .unwrap();
+        assert_eq!(s.add_object(proposal("new"), None, NOW + 2), Ok(true));
+        assert!(!s.has_object(&hb) && s.has_object(&hv));
+    }
+
+    /// Validator r24 Moderate 1 (D47, D76): votes on a trigger are ignored,
+    /// so a lost vote noted before it arrived is dropped with it: nothing
+    /// is asked for again, and the trigger is evicted as unvoted.
+    #[test]
+    fn a_trigger_keeps_no_lost_vote() {
+        let mut s = GovernanceStore::new(Network::Regtest);
+        s.set_confirmations(1);
+        s.max_objects = 2;
+        s.set_masternode_list(&[entry(1, 1), entry(2, 1)]);
+        s.begin_run();
+        let t = trigger(100);
+        let ht = t.hash();
+        let v = vote(ht, 2, 1, VoteOutcome::Yes, NOW - 40);
+        assert_eq!(s.add_vote(v, peer(2), NOW), Err(VoteRejection::Orphan));
+        s.expire_orphans(NOW + ORPHAN_EXPIRY_SECS + 1);
+        assert!(s.uncounted.contains_key(&ht));
+        assert_eq!(s.add_object(t, peer(1), NOW), Ok(true));
+        assert!(!s.uncounted.contains_key(&ht));
+        assert!(s.take_refetch().is_empty());
+        s.requeue_lost();
+        assert!(s.take_refetch().is_empty());
+        s.begin_run();
+        assert_eq!(s.add_object(proposal("x"), peer(1), NOW + 1), Ok(true));
+        assert_eq!(s.add_object(proposal("y"), peer(1), NOW + 2), Ok(true));
+        assert!(!s.has_object(&ht));
     }
 
     #[test]
