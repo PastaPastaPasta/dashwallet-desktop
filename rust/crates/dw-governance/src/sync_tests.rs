@@ -4426,6 +4426,47 @@ async fn moved_refetches_go_out_in_batches_from_alternate_peers() {
     }
 }
 
+/// D87, D89: a refetch out ends only once the vote is held. A copy parked
+/// for its unresolved outpoint is not (it may be a forged one), so the
+/// asked peer's copy is still awaited.
+#[tokio::test]
+async fn a_parked_copy_does_not_end_a_refetch() {
+    let p = proposal("p-d89-parked-refetch");
+    let mut run = two_peer_run(&p).await;
+    list_keys(&run, [1, 2]);
+    let outpoint = OutPoint::new(dashcore::Txid::from_byte_array([0x33; 32]), 0);
+    let mut v = GovernanceVote::funding(outpoint, p.hash(), VoteOutcome::Yes, unix_now() - 100);
+    v.signal = SentinelSignal::Valid.code();
+    v.signature = vec![7; crate::vote::BLS_SIG_SIZE];
+    let item = vote_inv(&v);
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::Vote(v.encode()));
+    // Parked, then failing under its masternode's key: asked for again.
+    let resolved = |key| {
+        HashMap::from([(
+            outpoint,
+            crate::store::ResolvedMasternode {
+                pro_tx_hash: [3; 32],
+                voting_key_id: key_id(2),
+                operator_key: key,
+                weight: 1,
+            },
+        )])
+    };
+    run.shared.store().set_resolved(resolved([0; 48]));
+    run.expire();
+    run.expire();
+    let asked = run.refetches.out[&item.hash].peer;
+    // The masternode leaves the list; another announcer's copy parks.
+    run.shared.store().set_resolved(HashMap::new());
+    let other = 1 - asked;
+    open_vote_sync(&mut run.peers[other], p.hash());
+    run.handle(other, PeerEvent::Inv(vec![item]));
+    run.handle(other, PeerEvent::Vote(v.encode()));
+    assert!(!run.shared.store().has_vote(&item.hash));
+    assert!(run.refetches.out.contains_key(&item.hash));
+}
+
 /// BL-230 (b), D87: a refetch out ends when a request for the vote's
 /// announcement stores it; the asked peer's copy is then unsolicited.
 #[tokio::test]
