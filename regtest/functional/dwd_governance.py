@@ -25,7 +25,7 @@ Checks, in order:
     as Core does for the same chain;
  3. `voteraw`: a vote signed outside (`signmessage` with the voting key, regtest's message
     signing) relayed by the wallet reaches Core's nodes;
- 4. resolved outpoints: the evonode changes its vote on p1 from no to yes; dwcli, resolving
+ 4. resolved outpoints: a masternode votes no on p1, then changes to yes; dwcli, resolving
     every voter's outpoint from its ProRegTx, counts each vote exactly (no ranged vote, no close
     call) and its tally and `gobject getcurrentvotes` follow Core's;
  5. the superblock: the masternodes' trigger pays the passing proposal at height 1500, and the
@@ -38,6 +38,7 @@ Run (DWCLI = a built dwcli):
 
 import json
 import os
+import sqlite3
 import subprocess
 import time
 from decimal import Decimal
@@ -69,7 +70,7 @@ class Dwcli:
         with open(self.passfile, "w", encoding="utf8") as f:
             f.write(PASSPHRASE + "\n")
 
-    def run(self, *args, timeout=900):
+    def run(self, *args, timeout=900, options=()):
         cmd = [
             self.binary,
             "--datadir", os.path.join(self.datadir, "data"),
@@ -79,6 +80,7 @@ class Dwcli:
             "--no-platform",
             "--peer", f"127.0.0.1:{self.peer_port}",
             "--passphrase-file", self.passfile,
+            *options,
         ] + list(args)
         env = dict(os.environ)
         env.setdefault("DWCLI_LOG", "warn,dw_governance=debug,dw_engine::governance=debug")
@@ -88,11 +90,11 @@ class Dwcli:
             raise AssertionError(f"dwcli {args} failed: {p.stderr[-3000:]}")
         return p.stdout.splitlines()
 
-    def governance(self, *args, timeout=900):
-        """Runs `dwcli governance`; returns its lines grouped by kind."""
+    def governance(self, *args, timeout=900, options=()):
+        """Runs `dwcli governance` (after the global `options`); returns its lines grouped by kind."""
         out = {"govstate": [], "govinfo": [], "offinfo": [], "proposal": [], "votes": {}, "relayed": [],
                "relay_error": [], "console": []}
-        for line in self.run("governance", *args, timeout=timeout):
+        for line in self.run("governance", *args, timeout=timeout, options=options):
             kind, _, rest = line.partition(" ")
             if kind in ("govstate", "govinfo", "offinfo", "proposal", "relayed"):
                 out[kind].append(json.loads(rest))
@@ -288,41 +290,67 @@ class DwdGovernance(DashTestFramework):
                 core, ours = core[:cut], ours[:cut]
             assert_equal(ours, core)
 
-        self.log.info("4. resolved outpoints: the evonode changes its vote, the tally follows Core")
-        mover = evo[0]
-        outpoint = f"{mover.collateral_txid}-{mover.collateral_vout}"
-        # Core's entries read `<outpoint>:<time>:<outcome>:<signal>`.
-        first = [v for v in node.gobject("getcurrentvotes", p1).values() if v.startswith(outpoint + ":")]
-        assert_equal(len(first), 1)
-        _, first_time, first_outcome, _ = first[0].split(":")
-        assert_equal(first_outcome, "no")
-        # A masternode may change its vote an hour after its last (GOVERNANCE_UPDATE_MIN), and
-        # Core takes a vote up to an hour ahead of its clock.
-        moved_time = int(first_time) + 3600
-        message = f"{outpoint}|{p1}|1|{OUTCOME_CODES['yes']}|{moved_time}"
-        node.voteraw(mover.collateral_txid, mover.collateral_vout, p1, "funding", "yes", moved_time,
-                     node.signmessage(mover.votingAddr, message))
-        self.wait_until(lambda: self.core_counts(p1) == (1 + 4, 0, 1), timeout=30)
-        out = dwcli.governance(
-            "--sync-height", str(node.getblockcount()), "--min-proposals", "2", "--min-voters", "7",
-            "--max-ranged", "0", "--votes", p1, "--console", f"gobject getcurrentvotes {p1}",
-            "--collateral-rpc", rpc_url(node.datadir, 0, self.chain),
-        )
-        rows = {r["hash"]: r for r in out["proposal"]}
-        for h in (p0, p1):
-            t, counts = rows[h]["tally"], self.core_counts(h)
-            for k, core in zip(("yes", "no", "abstain"), counts):
-                # Resolved, every vote proves its weight.
-                assert_equal((t[k]["min"], t[k]["estimate"], t[k]["max"]), (core, core, core))
-            assert_equal(t["ranged_votes"], 0)
-            assert_equal(rows[h]["close_call"], False)
-        assert_equal(rows[p1]["tally"]["voters"], 3)
-        moved = [v for v in out["votes"][p1] if v["outcome"] == "yes" and v["weight"]["estimate"] == 4]
-        assert_equal(len(moved), 1)
-        assert_equal((moved[0]["weight"]["min"], moved[0]["weight"]["max"]), (4, 4))
-        kind, votes_text = dict(out["console"])[f"gobject getcurrentvotes {p1}"]
-        assert_equal(kind, "result")
-        assert_equal(list(json.loads(votes_text).items()), list(node.gobject("getcurrentvotes", p1).items()))
+        self.log.info("4. resolved outpoints: a masternode changes its vote, the tally follows Core")
+        mover = regular[2]
+        # Core's own record of the collateral: a masternode funded by its ProRegTx has the
+        # registration's output (an internal collateral), whatever the framework noted.
+        info = node.protx("info", mover.proTxHash)
+        outpoint = (info["collateralHash"], info["collateralIndex"])
+
+        def vote_as_mover(outcome, when):
+            message = f"{outpoint[0]}-{outpoint[1]}|{p1}|1|{OUTCOME_CODES[outcome]}|{when}"
+            node.voteraw(*outpoint, p1, "funding", outcome, when, node.signmessage(mover.votingAddr, message))
+
+        vote_as_mover("no", int(time.time()))
+        self.wait_until(lambda: self.core_counts(p1) == (1, 4 + 1, 1), timeout=30)
+        rpc = rpc_url(node.datadir, 0, self.chain)
+
+        def resolved_sync(voters):
+            out = dwcli.governance(
+                "--sync-height", str(node.getblockcount()), "--min-proposals", "2",
+                "--min-voters", str(voters), "--max-ranged", "0", "--votes", p1,
+                "--console", f"gobject getcurrentvotes {p1}", options=("--collateral-rpc", rpc),
+            )
+            rows = {r["hash"]: r for r in out["proposal"]}
+            for h in (p0, p1):
+                t, counts = rows[h]["tally"], self.core_counts(h)
+                for k, core in zip(("yes", "no", "abstain"), counts):
+                    # Resolved, every vote proves its weight.
+                    assert_equal((t[k]["min"], t[k]["estimate"], t[k]["max"]), (core, core, core))
+                assert_equal(t["ranged_votes"], 0)
+                assert_equal(rows[h]["close_call"], False)
+            kind, votes_text = dict(out["console"])[f"gobject getcurrentvotes {p1}"]
+            assert_equal(kind, "result")
+            assert_equal(list(json.loads(votes_text).items()),
+                         list(node.gobject("getcurrentvotes", p1).items()))
+            return out
+
+        out = resolved_sync(4 + 4)
+        assert_equal(sorted(v["outcome"] for v in out["votes"][p1]), ["abstain", "no", "no", "yes"])
+        # Each listed masternode's ProRegTx is kept for the next session.
+        dbs = [os.path.join(d, f) for d, _, fs in os.walk(dwcli.datadir) for f in fs if f == "app.sqlite"]
+        assert_equal(len(dbs), 1)
+        with sqlite3.connect(dbs[0]) as db:
+            assert_equal(db.execute("SELECT COUNT(*) FROM governance_registrations").fetchone()[0], 4)
+
+        # Core takes a masternode's new vote an hour after it accepted the last one, by its own
+        # clock (GOVERNANCE_UPDATE_MIN, `last_update`). The nodes' clocks move ahead in steps
+        # shorter than the inactivity timeout, so their peers keep pinging; the vote is dated
+        # by the real clock dwcli checks it against, and the clocks go back after.
+        ahead = int(time.time())
+        for _ in range(6):
+            ahead += 650
+            for n in self.nodes:
+                n.setmocktime(ahead)
+            time.sleep(2)
+        vote_as_mover("yes", int(time.time()) + 60)
+        self.wait_until(lambda: self.core_counts(p1) == (1 + 1, 4, 1), timeout=30)
+        self.wait_until(lambda: all(n.gobject("getcurrentvotes", p1) == node.gobject("getcurrentvotes", p1)
+                                    for n in self.nodes), timeout=30)
+        for n in self.nodes:
+            n.setmocktime(0)
+        out = resolved_sync(4 + 4)
+        assert_equal(sorted(v["outcome"] for v in out["votes"][p1]), ["abstain", "no", "yes", "yes"])
 
         self.log.info("5. the superblock pays p0; the wallet shows it funded")
         self.mine_to(FIRST_SUPERBLOCK - MATURITY_WINDOW)

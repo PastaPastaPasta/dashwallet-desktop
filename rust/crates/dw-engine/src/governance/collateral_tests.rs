@@ -318,10 +318,11 @@ async fn a_tampered_row_is_deleted_and_fetched_again() {
 }
 
 /// A fetch that failed is asked again; a ProRegTx the source doesn't have,
-/// or that fails its check, is not asked again this session. Nothing
-/// unlisted is ever asked for.
+/// or another transaction under its hash, is asked for 3 times (one DAPI
+/// node may lag) and then not again this session. Nothing unlisted is ever
+/// asked for.
 #[tokio::test]
-async fn a_failed_fetch_is_retried_a_missing_one_is_not() {
+async fn a_failed_fetch_is_retried_a_missing_one_three_times() {
     let a = external(op(1));
     let b = external(op(2));
     let liar = external(op(3));
@@ -337,7 +338,9 @@ async fn a_failed_fetch_is_retried_a_missing_one_is_not() {
     source.failing.lock().unwrap().insert(txid(&b));
     let c = Collaterals::default();
     let r = resolve_all(&c, &list, source.as_ref(), &None).await;
-    assert_eq!((r.asked, r.found, r.failed), (5, 1, 2));
+    assert_eq!((r.asked, r.found, r.failed), (4 + 3 + 3 + 1, 1, 4));
+    let times = |k: [u8; 32]| source.asked().iter().filter(|a| **a == k).count();
+    assert_eq!((times([0xee; 32]), times([0xdd; 32])), (3, 3));
     // The failed one comes back, the missing and false ones never.
     let r = resolve_round(&c, &list, source.as_ref(), None).await;
     assert_eq!((r.asked, r.failed), (1, 1));
@@ -345,9 +348,54 @@ async fn a_failed_fetch_is_retried_a_missing_one_is_not() {
     let r = resolve_all(&c, &list, source.as_ref(), &None).await;
     assert_eq!((r.asked, r.found, r.failed), (1, 1, 0));
     assert_eq!(c.resolved(&list).len(), 2);
+    assert_eq!((times([0xee; 32]), times([0xdd; 32])), (3, 3));
     let listed: HashSet<[u8; 32]> = list.entries.iter().map(|e| e.pro_tx_hash).collect();
     assert!(source.asked().iter().all(|k| listed.contains(k)));
-    assert_eq!(c.fetches(), 7);
+    assert_eq!(c.fetches(), 13);
+}
+
+/// The follower hands the store a resolved set only when it changed:
+/// `set_resolved` forgets dismissed verdicts and checks every vote again.
+#[tokio::test]
+async fn the_store_gets_a_resolved_set_only_when_it_changed() {
+    let a = external(op(1));
+    let b = external(op(2));
+    let list = |key_a: u8, valid_c: bool| {
+        let mut c = summary([0xcc; 32], [9; 20], false);
+        c.is_valid = valid_c;
+        snapshot(vec![
+            summary(txid(&a), [key_a; 20], false),
+            summary(txid(&b), [2; 20], false),
+            c,
+        ])
+    };
+    let source = Script::with([a.clone(), b.clone()]);
+    let rt = GovernanceRuntime::new(
+        DashNetwork::Regtest,
+        Arc::new(NullSink),
+        &Handle::current(),
+        true,
+        Some(source.clone()),
+    );
+    let sets = || rt.resolved_sets.load(Ordering::SeqCst);
+    rt.apply_list(list(1, true));
+    rt.apply_resolved();
+    assert_eq!(sets(), 0);
+    resolve_all(&rt.collaterals, &list(1, true), source.as_ref(), &None).await;
+    rt.apply_resolved();
+    assert_eq!(sets(), 1);
+    rt.apply_resolved();
+    rt.apply_list(list(1, true));
+    assert_eq!(sets(), 1);
+    // Another masternode's change leaves the set as it was.
+    rt.apply_list(list(1, false));
+    rt.apply_resolved();
+    assert_eq!(sets(), 1);
+    // A resolved masternode's new voting key changes it.
+    rt.apply_list(list(7, false));
+    assert_eq!(sets(), 2);
+    rt.apply_resolved();
+    assert_eq!(sets(), 2);
 }
 
 /// DEC-265: at most 8 fetches at a time, 4,000 a session; the rest stay

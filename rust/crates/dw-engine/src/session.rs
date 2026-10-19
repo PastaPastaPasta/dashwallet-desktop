@@ -108,7 +108,7 @@ impl fmt::Debug for CreatedWallet {
 
 /// How to reach the network. Empty lists mean "network defaults"; devnet and
 /// regtest have no defaults and need explicit DAPI addresses.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct SessionOptions {
     /// DAPI endpoints (`https://host:port`). Empty = SDK defaults (mainnet/testnet only).
     pub dapi_addresses: Vec<String>,
@@ -135,6 +135,24 @@ pub struct SessionOptions {
     /// txindex on) in place of DAPI for the ProRegTxs governance resolves
     /// vote outpoints with (MG-02 D80); regtest has no DAPI.
     pub collateral_rpc: Option<String>,
+}
+
+impl std::fmt::Debug for SessionOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionOptions")
+            .field("dapi_addresses", &self.dapi_addresses)
+            .field("quorum_url", &self.quorum_url)
+            .field("spv_peers", &self.spv_peers)
+            .field("ca_cert_path", &self.ca_cert_path)
+            .field("initial_protocol_version", &self.initial_protocol_version)
+            .field("no_platform", &self.no_platform)
+            // Its URL may carry the RPC password.
+            .field(
+                "collateral_rpc",
+                &self.collateral_rpc.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// What a session holds while it is open. Taken out on close so the

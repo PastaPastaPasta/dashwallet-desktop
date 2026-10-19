@@ -42,12 +42,17 @@ const MIN_BACKOFF: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(5 * 60);
 /// How often an idle resolver looks for new masternodes.
 const POLL: Duration = Duration::from_secs(2);
+/// Answers without a usable ProRegTx (not found, undecodable, or another
+/// transaction) after which a masternode is not asked for again this
+/// session; one DAPI node may lag or lack the transaction.
+const MISSES: u8 = 3;
 
 /// Where ProRegTxs come from: DAPI, dashd's RPC on regtest, or a test's
 /// script.
 pub(crate) trait CollateralSource: Send + Sync {
     /// The transaction whose txid is `pro_tx_hash` (wire order), `None`
-    /// when the source doesn't know it. Unchecked.
+    /// when the source doesn't know it or sent bytes that don't decode.
+    /// Unchecked. `Err` is a failed request, asked again after a pause.
     fn registration(
         &self,
         pro_tx_hash: [u8; 32],
@@ -72,6 +77,8 @@ impl CollateralSource for SdkSource {
             let txid = Txid::from_byte_array(pro_tx_hash).to_string();
             match self.0.get_transaction_placement(&txid, settings).await {
                 Ok(found) => Ok(found.map(|p| p.transaction)),
+                // The reply's bytes don't decode (`decode_transaction`).
+                Err(dash_sdk::Error::CoreError(_)) => Ok(None),
                 Err(e) => Err(e.to_string()),
             }
         })
@@ -136,10 +143,9 @@ impl CollateralSource for RpcSource {
             let Some(hex) = reply["result"].as_str() else {
                 return Err(format!("getrawtransaction: {}", reply["error"]));
             };
-            let bytes = hex::decode(hex).map_err(|e| e.to_string())?;
-            dashcore::consensus::deserialize(&bytes)
-                .map(Some)
-                .map_err(|e| e.to_string())
+            Ok(hex::decode(hex)
+                .ok()
+                .and_then(|bytes| dashcore::consensus::deserialize(&bytes).ok()))
         })
     }
 }
@@ -183,8 +189,10 @@ struct State {
     /// app.sqlite's rows were read (once a session, by the resolver).
     loaded: bool,
     known: HashMap<[u8; 32], Collateral>,
-    /// Listed masternodes whose ProRegTx the source didn't have or that
-    /// failed [`verify`]: not asked for again this session.
+    /// Answers without a usable ProRegTx per listed masternode.
+    misses: HashMap<[u8; 32], u8>,
+    /// Listed masternodes [`MISSES`] answers had no usable ProRegTx for:
+    /// not asked for again this session.
     refused: HashSet<[u8; 32]>,
     fetches: u32,
     ceiling_logged: bool,
@@ -248,6 +256,7 @@ impl Collaterals {
             state.known.remove(k);
         }
         state.refused.retain(|k| listed.contains(k));
+        state.misses.retain(|k, _| listed.contains(k));
         if !gone.is_empty() {
             state.generation += 1;
         }
@@ -298,12 +307,18 @@ impl Collaterals {
         claimed
     }
 
-    fn settle(&self, found: &[([u8; 32], Collateral)], refused: &[[u8; 32]]) {
+    fn settle(&self, found: &[([u8; 32], Collateral)], missed: &[[u8; 32]]) {
         let mut state = self.state();
         for (k, c) in found {
             state.known.insert(*k, *c);
         }
-        state.refused.extend(refused.iter().copied());
+        for k in missed {
+            let n = state.misses.entry(*k).or_default();
+            *n += 1;
+            if *n >= MISSES {
+                state.refused.insert(*k);
+            }
+        }
         if !found.is_empty() {
             state.generation += 1;
         }
@@ -370,7 +385,7 @@ pub(super) async fn resolve_round(
             .buffer_unordered(IN_FLIGHT)
             .collect()
             .await;
-    let (mut found, mut refused, mut put) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut found, mut missed, mut put) = (Vec::new(), Vec::new(), Vec::new());
     for (k, r) in results {
         match r {
             Ok(Some(tx)) => match verify(&k, &tx) {
@@ -380,10 +395,10 @@ pub(super) async fn resolve_round(
                 }
                 None => {
                     tracing::info!(pro_tx_hash = %Txid::from_byte_array(k), "governance: the fetched ProRegTx fails its check");
-                    refused.push(k);
+                    missed.push(k);
                 }
             },
-            Ok(None) => refused.push(k),
+            Ok(None) => missed.push(k),
             Err(e) => {
                 tracing::debug!(error = %e, "governance: ProRegTx fetch failed");
                 round.failed += 1;
@@ -392,7 +407,7 @@ pub(super) async fn resolve_round(
     }
     round.found = found.len();
     persist(&appdb, put, Vec::new()).await;
-    collaterals.settle(&found, &refused);
+    collaterals.settle(&found, &missed);
     round
 }
 

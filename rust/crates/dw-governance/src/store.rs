@@ -1183,7 +1183,19 @@ impl GovernanceStore {
     pub fn set_resolved(&mut self, resolved: HashMap<OutPoint, ResolvedMasternode>) {
         // A resolved outpoint is not limited (D11): its verdicts may change.
         self.forget_dismissed();
-        self.resolved = resolved;
+        let previous = std::mem::replace(&mut self.resolved, resolved);
+        // A masternode whose voting key changed (ProUpRegTx): Core drops
+        // the votes its old key signed (`RemoveInvalidVotes`), and they were
+        // checked against that key, so they are no copies to fetch again.
+        let rekeyed: HashSet<(OutPoint, [u8; 20])> = previous
+            .iter()
+            .filter(|(o, old)| {
+                self.resolved
+                    .get(*o)
+                    .is_some_and(|new| new.voting_key_id != old.voting_key_id)
+            })
+            .map(|(o, old)| (*o, old.voting_key_id))
+            .collect();
         // A copy re-signed by another key has the honest vote's hash, so it
         // kept the honest copy out: drop it and fetch the hash again. Until
         // the honest copy lands, the vote stays uncertain (D72).
@@ -1192,7 +1204,7 @@ impl GovernanceStore {
                 let Some(r) = self.resolved.get(outpoint) else {
                     continue;
                 };
-                if &r.voting_key_id == key {
+                if &r.voting_key_id == key || rekeyed.contains(&(*outpoint, *key)) {
                     continue;
                 }
                 self.refetch.push(v.vote_hash);
@@ -2792,6 +2804,41 @@ mod tests {
         rekeyed.get_mut(&outpoint(1)).unwrap().voting_key_id = key_id(3);
         s.set_resolved(rekeyed);
         assert_eq!(s.tally(&h).uncounted, 0);
+    }
+
+    /// BL-229 (D80): a resolved masternode's honest vote, then a ProUpRegTx
+    /// gives it a new voting key. Core drops the votes its old key signed
+    /// (`RemoveInvalidVotes`) and counts nothing for it; the old vote is no
+    /// wrong-key copy, so nothing is awaited or fetched again.
+    #[test]
+    fn a_new_voting_key_drops_the_old_keys_vote_without_a_refetch() {
+        let obj = proposal("a");
+        let h = obj.hash();
+        let resolved = |key: u8| {
+            HashMap::from([(
+                outpoint(1),
+                ResolvedMasternode {
+                    pro_tx_hash: [1; 32],
+                    voting_key_id: key_id(key),
+                    weight: 4,
+                },
+            )])
+        };
+        // Key 1 stays listed (another masternode holds it), so only the
+        // resolution says the vote is no longer the masternode's.
+        let mut s = store(&obj, &[entry(1, 4), entry(1, 4), entry(3, 4)]);
+        s.set_resolved(resolved(1));
+        let honest = vote(h, 1, 1, VoteOutcome::No, NOW - 40);
+        assert_eq!(s.add_vote(honest, peer(1), NOW), Ok(()));
+        assert_eq!(s.exact_weight(&h, &outpoint(1)), Some(4));
+        assert!(s.take_refetch().is_empty());
+
+        s.set_resolved(resolved(3));
+        assert_eq!(s.tally(&h).uncounted, 0);
+        assert!(s.take_refetch().is_empty());
+        // Exact: the masternode is known to count nothing.
+        assert_eq!(s.exact_weight(&h, &outpoint(1)), Some(4));
+        assert_eq!((s.tally(&h).no.min, s.tally(&h).no.max), (0, 0));
     }
 
     /// Key 2's copy of key 1's NO for outpoint 1 (the same hash), stored

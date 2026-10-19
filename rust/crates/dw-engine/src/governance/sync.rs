@@ -11,6 +11,8 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
@@ -129,6 +131,9 @@ pub(crate) struct GovernanceRuntime {
     /// The resolver found collaterals: the follower hands them over.
     pub(super) resolved_changed: Arc<Notify>,
     applied: Mutex<Applied>,
+    /// `set_resolved` calls, for the tests.
+    #[cfg(test)]
+    pub(super) resolved_sets: AtomicUsize,
 }
 
 impl GovernanceRuntime {
@@ -173,6 +178,8 @@ impl GovernanceRuntime {
             collaterals: Arc::default(),
             resolved_changed: Arc::default(),
             applied: Mutex::default(),
+            #[cfg(test)]
+            resolved_sets: AtomicUsize::new(0),
         }
     }
 
@@ -321,6 +328,8 @@ impl GovernanceRuntime {
             store.set_masternode_list(&snapshot.store_entries());
             if resolved != applied.resolved {
                 store.set_resolved(resolved.clone());
+                #[cfg(test)]
+                self.resolved_sets.fetch_add(1, Ordering::SeqCst);
                 applied.resolved = resolved;
             }
             applied.generation = Some(generation);
@@ -346,6 +355,8 @@ impl GovernanceRuntime {
             return;
         }
         self.shared.store().set_resolved(resolved.clone());
+        #[cfg(test)]
+        self.resolved_sets.fetch_add(1, Ordering::SeqCst);
         applied.resolved = resolved;
         drop(applied);
         self.changed();
