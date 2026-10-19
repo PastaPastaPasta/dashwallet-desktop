@@ -257,13 +257,9 @@ fn vote_rows(store: &GovernanceStore, key: &[u8; 32]) -> Vec<CurrentVoteRow> {
     .map(|vc| (VoteSignal::Funding, vc))
     .collect();
     for signal in SentinelSignal::ALL {
-        let of_signal = store
-            .signal_votes_on(key)
-            .filter(|(s, _)| *s == signal)
-            .map(|(_, v)| v);
         votes.extend(
             tally::attribute(
-                of_signal,
+                store.signal_votes_of(key, signal),
                 |k| store.key_weights(k),
                 |o| store.resolved(o).map(|r| r.weight),
             )
@@ -504,7 +500,6 @@ mod tests {
             v.signature = vec![op; 96];
             let v = OperatorVote {
                 vote: v,
-                outcome,
                 checked: Some(([op; 48], true)),
                 held: false,
             };

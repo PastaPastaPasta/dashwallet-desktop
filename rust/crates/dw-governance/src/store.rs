@@ -291,7 +291,6 @@ pub struct ResolvedMasternode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperatorVote {
     pub vote: GovernanceVote,
-    pub outcome: VoteOutcome,
     pub checked: Option<([u8; 48], bool)>,
     /// Taken as held by the sync when it was parked: no other announcer's
     /// copy was asked for (D89).
@@ -301,30 +300,32 @@ pub struct OperatorVote {
 impl OperatorVote {
     /// `vote`, not held, checked against `operator_key`, its outpoint's
     /// ([`GovernanceStore::operator_key`]), if resolved.
-    pub fn checked(
-        vote: GovernanceVote,
-        outcome: VoteOutcome,
-        operator_key: Option<[u8; 48]>,
-    ) -> Self {
+    pub fn checked(vote: GovernanceVote, operator_key: Option<[u8; 48]>) -> Self {
         let checked = operator_key.map(|k| (k, vote.verify_operator(&k)));
         Self {
             vote,
-            outcome,
             checked,
             held: false,
         }
     }
+
+    /// A held `delete` NO, perhaps its masternode's (D85).
+    fn held_delete_no(&self) -> bool {
+        self.held && is_delete_no(&self.vote)
+    }
 }
 
-/// An operator vote waiting to be checked (D89).
+fn is_delete_no(vote: &GovernanceVote) -> bool {
+    vote.signal == SentinelSignal::Delete.code() && vote.vote_outcome() == Some(VoteOutcome::No)
+}
+
+/// An operator vote waiting to be checked (D89), unchecked.
 #[derive(Debug, Clone)]
 struct Parked {
-    vote: GovernanceVote,
-    outcome: VoteOutcome,
+    vote: OperatorVote,
     /// The operator key it failed under; `None` while its outpoint is
     /// unresolved.
     failed_under: Option<[u8; 48]>,
-    held: bool,
     from: Option<SocketAddr>,
 }
 
@@ -592,6 +593,18 @@ fn copy_digest(hash: &[u8; 32], signature: &[u8]) -> [u8; 32] {
         None => engine.input(signature),
     }
     sha256::Hash::from_engine(engine).to_byte_array()
+}
+
+/// Frees one of `peer`'s slots in a per-peer count.
+fn release(per_peer: &mut HashMap<SocketAddr, u32>, peer: Option<SocketAddr>) {
+    if let Some(p) = peer
+        && let Some(n) = per_peer.get_mut(&p)
+    {
+        *n -= 1;
+        if *n == 0 {
+            per_peer.remove(&p);
+        }
+    }
 }
 
 /// Whether `key` may sign for `outpoint`: its resolved masternode's key, or
@@ -895,13 +908,22 @@ impl GovernanceStore {
             .flat_map(|m| m.iter().map(|((signal, _), v)| (*signal, v)))
     }
 
+    /// The current votes of `signal` on `hash` (D82).
+    pub fn signal_votes_of(
+        &self,
+        hash: &[u8; 32],
+        signal: SentinelSignal,
+    ) -> impl Iterator<Item = &CurrentVote> {
+        self.signal_votes_on(hash)
+            .filter(move |(s, _)| *s == signal)
+            .map(|(_, v)| v)
+    }
+
     /// `hash`'s tally of `signal` (D82): its operator votes, each counted
     /// with its resolved masternode's weight, so the range is exact (D89).
     pub fn signal_tally(&self, hash: &[u8; 32], signal: SentinelSignal) -> RangedTally {
         ranged_tally(
-            self.signal_votes_on(hash)
-                .filter(|(s, _)| *s == signal)
-                .map(|(_, v)| v),
+            self.signal_votes_of(hash, signal),
             |k| self.key_weights(k),
             |op| self.resolved.get(op).map(|r| r.weight),
         )
@@ -1248,12 +1270,8 @@ impl GovernanceStore {
         let waiting: HashSet<[u8; 32]> = self
             .parked
             .values()
-            .filter(|p| {
-                p.held
-                    && p.vote.signal == SentinelSignal::Delete.code()
-                    && p.outcome == VoteOutcome::No
-            })
-            .map(|p| p.vote.parent_hash)
+            .filter(|p| p.vote.held_delete_no())
+            .map(|p| p.vote.vote.parent_hash)
             .collect();
         let marked: Vec<[u8; 32]> = self
             .signal_votes
@@ -1300,7 +1318,7 @@ impl GovernanceStore {
         let parked: Vec<[u8; 32]> = self
             .parked
             .iter()
-            .filter(|(_, p)| &p.vote.parent_hash == hash)
+            .filter(|(_, p)| &p.vote.vote.parent_hash == hash)
             .map(|(c, _)| *c)
             .collect();
         for c in parked {
@@ -1343,14 +1361,7 @@ impl GovernanceStore {
                 self.orphans_by_parent.remove(&v.parent_hash);
             }
         }
-        if let Some(peer) = o.from
-            && let Some(n) = self.orphans_per_peer.get_mut(&peer)
-        {
-            *n -= 1;
-            if *n == 0 {
-                self.orphans_per_peer.remove(&peer);
-            }
-        }
+        release(&mut self.orphans_per_peer, o.from);
         Some(o)
     }
 
@@ -1611,7 +1622,7 @@ impl GovernanceStore {
             .collect();
         // A vote that failed under a key now re-encoded is not tried again.
         for p in self.parked.values_mut() {
-            let o = p.vote.masternode_outpoint;
+            let o = p.vote.vote.masternode_outpoint;
             if p.failed_under.is_some() && reencoded.get(&o) == p.failed_under.as_ref() {
                 p.failed_under = resolved.get(&o).map(|r| r.operator_key);
             }
@@ -1629,7 +1640,7 @@ impl GovernanceStore {
         let stale: Vec<[u8; 32]> = self
             .parked
             .iter()
-            .filter(|(_, p)| !known(&p.vote.masternode_outpoint))
+            .filter(|(_, p)| !known(&p.vote.vote.masternode_outpoint))
             .map(|(c, _)| *c)
             .collect();
         for (h, slot) in dropped {
@@ -2036,8 +2047,7 @@ impl GovernanceStore {
         let outcome = self.precheck(&vote, now)?;
         if SentinelSignal::from_code(vote.signal).is_some() {
             let key = self.operator_key(&vote.masternode_outpoint);
-            let v = OperatorVote::checked(vote, outcome, key);
-            return self.add_operator_vote(v, from, now);
+            return self.add_operator_vote(OperatorVote::checked(vote, key), from, now);
         }
         let checked = recover(vote, outcome, self.network)?;
         self.add_checked(checked, from, now)
@@ -2123,14 +2133,7 @@ impl GovernanceStore {
 
     fn remove_suspect(&mut self, slot: &([u8; 32], [u8; 20])) -> Option<Orphan> {
         let o = self.suspects.remove(slot)?;
-        if let Some(p) = o.from
-            && let Some(n) = self.suspects_per_peer.get_mut(&p)
-        {
-            *n -= 1;
-            if *n == 0 {
-                self.suspects_per_peer.remove(&p);
-            }
-        }
+        release(&mut self.suspects_per_peer, o.from);
         Some(o)
     }
 
@@ -2303,7 +2306,7 @@ impl GovernanceStore {
             (Some(r), Some((key, false))) if same_operator_key(&key, &r.operator_key) => {
                 let key = r.operator_key;
                 if v.held {
-                    self.lose_held(&v.vote, outcome);
+                    self.lose_held(&v.vote);
                 }
                 self.park(v, Some(key), from);
                 Err(VoteRejection::Unverifiable)
@@ -2312,13 +2315,13 @@ impl GovernanceStore {
             // is no masternode's (Core: unknown masternode).
             (None, _) if self.all_resolved() => Err(VoteRejection::Unverifiable),
             _ => {
-                let (vote, outcome) = (v.vote.clone(), v.outcome);
+                let vote = v.vote.clone();
                 if self.park(v, None, from) {
                     Err(VoteRejection::Parked)
                 } else {
                     // Its sender's bound is full: perhaps its only
                     // announcer's copy, lost as one held that fails.
-                    self.lose_held(&vote, outcome);
+                    self.lose_held(&vote);
                     Err(VoteRejection::Unverifiable)
                 }
             }
@@ -2329,8 +2332,8 @@ impl GovernanceStore {
     /// announcer (held parked, or refused for its sender's bound): asked
     /// for again, and a `delete` NO is a doubt on its proposal until then
     /// (D85).
-    fn lose_held(&mut self, vote: &GovernanceVote, outcome: VoteOutcome) {
-        if vote.signal == SentinelSignal::Delete.code() && outcome == VoteOutcome::No {
+    fn lose_held(&mut self, vote: &GovernanceVote) {
+        if is_delete_no(vote) {
             self.doubt(vote.parent_hash, vote.masternode_outpoint, vote.time);
         }
         self.refetch.push(vote.hash());
@@ -2352,7 +2355,7 @@ impl GovernanceStore {
             .filter(|c| {
                 self.parked.get(*c).is_some_and(|p| {
                     self.resolved
-                        .get(&p.vote.masternode_outpoint)
+                        .get(&p.vote.vote.masternode_outpoint)
                         .is_some_and(|r| p.failed_under != Some(r.operator_key))
                 })
             })
@@ -2362,15 +2365,7 @@ impl GovernanceStore {
         ready
             .iter()
             .filter_map(|c| self.unpark(c))
-            .map(|p| {
-                let v = OperatorVote {
-                    vote: p.vote,
-                    outcome: p.outcome,
-                    checked: None,
-                    held: p.held,
-                };
-                (v, p.from)
-            })
+            .map(|p| (p.vote, p.from))
             .collect()
     }
 
@@ -2379,7 +2374,7 @@ impl GovernanceStore {
     /// goes past [`MAX_PARKED_VOTES`]: one held so is lost (D85).
     fn park(
         &mut self,
-        v: OperatorVote,
+        mut v: OperatorVote,
         failed_under: Option<[u8; 48]>,
         from: Option<SocketAddr>,
     ) -> bool {
@@ -2387,7 +2382,7 @@ impl GovernanceStore {
         let copy = copy_digest(&v.vote.hash(), &v.vote.signature);
         if let Some(p) = self.parked.get_mut(&copy) {
             p.failed_under = failed_under;
-            p.held |= held;
+            p.vote.held |= held;
             return true;
         }
         if let Some(peer) = from
@@ -2400,21 +2395,22 @@ impl GovernanceStore {
                 break;
             };
             if let Some(p) = self.unpark(&old)
-                && p.held
+                && p.vote.held
             {
-                self.lose_held(&p.vote, p.outcome);
+                self.lose_held(&p.vote.vote);
             }
         }
         if let Some(peer) = from {
             *self.parked_per_peer.entry(peer).or_default() += 1;
         }
+        // Not always the vote's own `held`: one held that failed under its
+        // masternode's key is parked unheld.
+        (v.checked, v.held) = (None, held);
         self.parked.insert(
             copy,
             Parked {
-                vote: v.vote,
-                outcome: v.outcome,
+                vote: v,
                 failed_under,
-                held,
                 from,
             },
         );
@@ -2428,14 +2424,7 @@ impl GovernanceStore {
 
     fn unpark(&mut self, copy: &[u8; 32]) -> Option<Parked> {
         let p = self.parked.remove(copy)?;
-        if let Some(peer) = p.from
-            && let Some(n) = self.parked_per_peer.get_mut(&peer)
-        {
-            *n -= 1;
-            if *n == 0 {
-                self.parked_per_peer.remove(&peer);
-            }
-        }
+        release(&mut self.parked_per_peer, p.from);
         Some(p)
     }
 
@@ -4291,13 +4280,11 @@ mod tests {
         v: GovernanceVote,
         verifies: bool,
     ) -> Result<(), VoteRejection> {
-        let outcome = v.vote_outcome().unwrap();
         let checked = s
             .operator_key(&v.masternode_outpoint)
             .map(|k| (k, verifies));
         let v = OperatorVote {
             vote: v,
-            outcome,
             checked,
             held: false,
         };
@@ -4564,7 +4551,6 @@ mod tests {
         let v3 = signal_vote(h, 2, Valid, VoteOutcome::No, 11);
         let stale = OperatorVote {
             vote: v3,
-            outcome: VoteOutcome::No,
             checked: Some((op_key(2), true)),
             held: false,
         };
@@ -4577,7 +4563,6 @@ mod tests {
         let v4 = signal_vote(h, 2, Valid, VoteOutcome::No, 12);
         let failed = OperatorVote {
             vote: v4.clone(),
-            outcome: VoteOutcome::No,
             checked: Some((op_key(2), false)),
             held: false,
         };
@@ -4585,7 +4570,7 @@ mod tests {
             s.add_operator_vote(failed, peer(1), NOW),
             Err(VoteRejection::Parked)
         );
-        assert!(s.parked.values().any(|p| p.vote == v4 && p.held));
+        assert!(s.parked.values().any(|p| p.vote.vote == v4 && p.vote.held));
         assert_eq!(check_parked(&mut s, &[]), 0);
         assert_eq!(signal_estimates(&s, &h, Valid), (1, 1));
     }
@@ -4858,7 +4843,6 @@ mod tests {
             v.masternode_outpoint.vout = 1_000 + i;
             let o = OperatorVote {
                 vote: v,
-                outcome,
                 checked: None,
                 held: false,
             };
@@ -4894,7 +4878,11 @@ mod tests {
             );
         }
         assert_eq!(s.parked.len(), MAX_PARKED_PER_PEER as usize + 1);
-        assert!(s.parked.values().all(|p| p.outcome == VoteOutcome::Yes));
+        assert!(
+            s.parked
+                .values()
+                .all(|p| p.vote.vote.vote_outcome() == Some(VoteOutcome::Yes))
+        );
         assert_eq!(
             s.take_refetch().len(),
             MAX_PARKED_PER_PEER as usize + 1,
@@ -4942,7 +4930,11 @@ mod tests {
         assert_eq!(s.parked_per_peer[&peer(1).unwrap()], 2);
         s.remove_object(&a.hash());
         assert_eq!(s.parked.len(), 1);
-        assert!(s.parked.values().all(|p| p.vote.parent_hash == b.hash()));
+        assert!(
+            s.parked
+                .values()
+                .all(|p| p.vote.vote.parent_hash == b.hash())
+        );
         assert_eq!(s.parked_per_peer[&peer(1).unwrap()], 1);
     }
 
@@ -4972,7 +4964,6 @@ mod tests {
             v.masternode_outpoint.vout = 1_000 + i;
             let o = OperatorVote {
                 vote: v,
-                outcome,
                 checked: None,
                 held: false,
             };
@@ -4988,7 +4979,11 @@ mod tests {
             parked(&mut s, MAX_PARKED_PER_PEER, VoteOutcome::No),
             Err(VoteRejection::Unverifiable)
         );
-        assert!(s.parked.values().all(|p| p.outcome == VoteOutcome::Yes));
+        assert!(
+            s.parked
+                .values()
+                .all(|p| p.vote.vote.vote_outcome() == Some(VoteOutcome::Yes))
+        );
         s.prune(NOW);
         assert_eq!(s.deletion_mark(&h), None);
     }
@@ -5011,7 +5006,6 @@ mod tests {
             v.masternode_outpoint.vout = 1_000 + i;
             let o = OperatorVote {
                 vote: v,
-                outcome,
                 checked: None,
                 held: false,
             };

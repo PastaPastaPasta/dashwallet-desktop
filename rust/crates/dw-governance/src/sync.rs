@@ -1353,7 +1353,7 @@ impl Run {
                 return;
             }
             self.recovered += 1;
-            let v = OperatorVote::checked(vote, outcome, key);
+            let v = OperatorVote::checked(vote, key);
             if matches!(v.checked, Some((_, false)))
                 && let Some(p) = self.peer_mut(from)
             {
@@ -1572,9 +1572,6 @@ impl Run {
             .filter(|(_, r)| r.peer == id)
             .map(|(h, r)| (*h, r.untried.clone()))
             .collect();
-        for (hash, _) in &refetched {
-            self.refetches.out.remove(hash);
-        }
         self.ask_refetches(refetched);
         for item in pending {
             let r = self.requests.pending.remove(&item).expect("listed");
@@ -1683,14 +1680,7 @@ impl Run {
                 self.retry(item, None, r.into(), false);
             }
         }
-        let batch = self.cfg.getdata_batch.max(1);
-        for (peer, items) in again {
-            if let Some(p) = self.peer(peer) {
-                for chunk in items.chunks(batch) {
-                    p.peer.send_getdata(chunk);
-                }
-            }
-        }
+        self.send_batched(again);
         let late: Vec<([u8; 32], Vec<usize>)> = self
             .refetches
             .out
@@ -1698,9 +1688,6 @@ impl Run {
             .filter(|(_, r)| now.duration_since(r.sent) >= timeout)
             .map(|(h, r)| (*h, r.untried.clone()))
             .collect();
-        for (hash, _) in &late {
-            self.refetches.out.remove(hash);
-        }
         self.ask_refetches(late);
         self.refetch_votes();
         self.refill();
@@ -1731,7 +1718,7 @@ impl Run {
                 .operator_key(&v.vote.masternode_outpoint);
             let v = OperatorVote {
                 held: v.held,
-                ..OperatorVote::checked(v.vote, v.outcome, key)
+                ..OperatorVote::checked(v.vote, key)
             };
             stored |= self.shared.store().add_operator_vote(v, from, now).is_ok();
         }
@@ -1791,11 +1778,12 @@ impl Run {
     }
 
     /// Asks the next connected peer of each hash's `untried` for it, in
-    /// batches per peer (BL-230, D87); a hash with none left the store
-    /// keeps uncertain (D72, D76).
+    /// batches per peer (BL-230, D87), ending a refetch already out for
+    /// it; a hash with none left the store keeps uncertain (D72, D76).
     fn ask_refetches(&mut self, asks: Vec<([u8; 32], Vec<usize>)>) {
         let mut by_peer: HashMap<usize, Vec<InvItem>> = HashMap::new();
         for (hash, mut untried) in asks {
+            self.refetches.out.remove(&hash);
             untried.retain(|id| self.peer(*id).is_some());
             if untried.is_empty() {
                 continue;
@@ -1813,6 +1801,12 @@ impl Run {
                 .or_default()
                 .push(InvItem { kind, hash });
         }
+        self.send_batched(by_peer);
+    }
+
+    /// Sends each connected peer its items, in `getdata`s of up to the
+    /// batch size.
+    fn send_batched(&self, by_peer: HashMap<usize, Vec<InvItem>>) {
         let batch = self.cfg.getdata_batch.max(1);
         for (peer, items) in by_peer {
             if let Some(p) = self.peer(peer) {
