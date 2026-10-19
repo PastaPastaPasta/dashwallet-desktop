@@ -655,6 +655,102 @@ mod tests {
         assert!(row(&store).exact);
     }
 
+    /// BL-229 (D80): evonode key 150 changed its vote on the proposal from
+    /// YES to NO, both signed by its own key, against 101 exact YES and a
+    /// threshold of 100. While its outpoint is unresolved the NO counts 0
+    /// to 4 and the row is a close call; once the resolver fetched its
+    /// ProRegTx and the follower handed the store the outpoint, the NO
+    /// counts 4 (Core: 97, not passing) and the row leaves the close call.
+    #[tokio::test]
+    async fn an_updated_vote_leaves_the_close_call_once_the_list_resolves_the_voter() {
+        use super::super::collateral::tests::{
+            NullSink, Script, external, registration, resolve_all, snapshot, summary,
+        };
+        use dw_protx::params::EVONODE_COLLATERAL;
+
+        // Keys 1..=101 regular, their collaterals outpoints 1..=101; key 150
+        // an evonode whose ProRegTx funds its collateral itself; key 151 an
+        // evonode, and key 200 fills the list up to a weight of 1,005.
+        let regular: Vec<_> = (1..=101).map(|k| external(outpoint(k))).collect();
+        let null = OutPoint::new(Txid::all_zeros(), 0);
+        let evo = registration(
+            null,
+            true,
+            vec![dashcore::TxOut {
+                value: EVONODE_COLLATERAL,
+                script_pubkey: dashcore::ScriptBuf::new(),
+            }],
+            0,
+        );
+        let evo_outpoint = OutPoint::new(evo.txid(), 0);
+        let mut entries: Vec<_> = regular
+            .iter()
+            .zip(1u8..)
+            .map(|(tx, k)| summary(tx.txid().to_byte_array(), key_id(k), false))
+            .collect();
+        entries.push(summary(evo.txid().to_byte_array(), key_id(150), true));
+        entries.push(summary([151; 32], key_id(151), true));
+        entries.extend((0..896u16).map(|n| {
+            let mut h = [200; 32];
+            h[..2].copy_from_slice(&n.to_le_bytes());
+            summary(h, key_id(200), false)
+        }));
+        let list = snapshot(entries);
+        let source = Script::with(regular.iter().cloned().chain([evo.clone()]));
+        source
+            .failing
+            .lock()
+            .unwrap()
+            .insert(evo.txid().to_byte_array());
+        let rt = GovernanceRuntime::new(
+            crate::DashNetwork::Regtest,
+            std::sync::Arc::new(NullSink),
+            &tokio::runtime::Handle::current(),
+            true,
+            Some(source.clone()),
+        );
+        rt.shared.store().set_confirmations(1);
+        rt.apply_list(list.clone());
+        resolve_all(&rt.collaterals, &list, source.as_ref(), &None).await;
+        rt.apply_resolved();
+
+        let data = format!(
+            r#"{{"end_epoch":{},"name":"p","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}}"#,
+            NOW + 10_000
+        );
+        let p = GovernanceObject::new_proposal(1, NOW, data.into_bytes());
+        let h = p.hash();
+        let row = |rt: &GovernanceRuntime| only_row(&rt.shared.store());
+        {
+            let mut store = rt.shared.store();
+            store.add_object(p, None, NOW).unwrap();
+            for k in 1..=101 {
+                store.add_vote(yes(h, k, k), None, NOW).unwrap();
+            }
+            let older = GovernanceVote::funding(evo_outpoint, h, VoteOutcome::Yes, NOW - 200);
+            store.add_vote(signed(&older, 150), None, NOW).unwrap();
+            let newer = GovernanceVote::funding(evo_outpoint, h, VoteOutcome::No, NOW - 100);
+            store.add_vote(signed(&newer, 150), None, NOW).unwrap();
+        }
+        // Unresolved, its vote may be either copy and weigh 0 to 4 (D64).
+        let open = row(&rt);
+        assert_eq!((open.tally.yes.min, open.tally.yes.max), (101, 105));
+        assert_eq!((open.tally.no.min, open.tally.no.max), (0, 4));
+        assert!(open.close_call);
+
+        source.failing.lock().unwrap().clear();
+        resolve_all(&rt.collaterals, &list, source.as_ref(), &None).await;
+        // The resolver wakes the follower, which hands the store the
+        // outpoint.
+        rt.apply_resolved();
+        let settled = row(&rt);
+        assert_eq!(settled.tally.net_yes_estimate, 97);
+        assert_eq!((settled.tally.no.min, settled.tally.no.max), (4, 4));
+        assert_eq!((settled.tally.yes.min, settled.tally.yes.max), (101, 101));
+        assert!(!settled.close_call);
+        assert_eq!(settled.status, ProposalStatus::Voting);
+    }
+
     /// MG-02 D65, D69: the fundable set is dash-qt's over the proposals not
     /// lapsed. One for a later cycle is passing and allocated, as dash-qt
     /// shows it; one at its end epoch (not pruned yet) is neither, as

@@ -10,6 +10,14 @@ const COIN: u64 = 100_000_000;
 pub const MASTERNODE_COLLATERAL: u64 = 1_000 * COIN;
 /// Collateral of an EvoNode.
 pub const EVONODE_COLLATERAL: u64 = 4_000 * COIN;
+/// The collateral of a masternode type (Core `dmn_types`).
+pub fn collateral_amount(evonode: bool) -> u64 {
+    if evonode {
+        EVONODE_COLLATERAL
+    } else {
+        MASTERNODE_COLLATERAL
+    }
+}
 /// Shares of a shared masternode (`CProRegTx::MIN_SHARES`/`MAX_SHARES`).
 pub const MIN_SHARES: u32 = 2;
 pub const MAX_SHARES: u32 = 8;

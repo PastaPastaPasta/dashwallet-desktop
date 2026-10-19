@@ -10,7 +10,7 @@ use dashcore::hashes::Hash;
 use dashcore::transaction::TransactionPayload;
 use dashcore::{OutPoint, Transaction, Txid};
 use dw_protx::params::{EVONODE_COLLATERAL, MASTERNODE_COLLATERAL};
-use dw_protx::payloads::resolve_collateral;
+use dw_protx::payloads::checked_collateral;
 use platform_wallet::masternode::{ListMembership, MasternodeRecord, aggregate_masternodes};
 
 /// One of the wallet's masternodes.
@@ -39,15 +39,6 @@ impl OwnedMasternode {
     pub fn registered_height(&self) -> Option<u32> {
         (self.record.has_registration && self.record.registration_height > 0)
             .then_some(self.record.registration_height)
-    }
-}
-
-/// The collateral amount of a masternode type (Core `dmn_types`).
-pub(crate) fn collateral_amount(evonode: bool) -> u64 {
-    if evonode {
-        EVONODE_COLLATERAL
-    } else {
-        MASTERNODE_COLLATERAL
     }
 }
 
@@ -135,17 +126,8 @@ pub(crate) fn aggregate(txs: &[(u32, u32, Transaction)]) -> Vec<OwnedMasternode>
                         }
                         _ => None,
                     });
-            let collateral = registration.and_then(|(tx, p)| {
-                let outpoint = resolve_collateral(tx.txid(), p.collateral_outpoint);
-                if p.collateral_outpoint.txid != Txid::all_zeros() {
-                    return Some(outpoint);
-                }
-                // Internal collateral: Core checks the ProRegTx's own output
-                // (`specialtxman.cpp`); a held ProRegTx that fails it can't
-                // be the one Core accepted.
-                let out = tx.output.get(outpoint.vout as usize)?;
-                (out.value == collateral_amount(record.is_evonode)).then_some(outpoint)
-            });
+            let collateral =
+                registration.and_then(|(tx, p)| checked_collateral(tx, p, record.is_evonode));
             let shared_unsupported = shared.contains(&record.pro_tx_hash);
             OwnedMasternode {
                 // after the service in the version-3 layout: misread

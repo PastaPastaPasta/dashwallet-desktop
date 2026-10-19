@@ -131,6 +131,10 @@ pub struct SessionOptions {
     /// no DashPay bring-up and no Platform sync loops, and every wallet's
     /// `dashpay_startup` stays `NotRun`.
     pub no_platform: bool,
+    /// Regtest only: dashd's JSON-RPC (`http://user:password@host:port`,
+    /// txindex on) in place of DAPI for the ProRegTxs governance resolves
+    /// vote outpoints with (MG-02 D80); regtest has no DAPI.
+    pub collateral_rpc: Option<String>,
 }
 
 /// What a session holds while it is open. Taken out on close so the
@@ -239,6 +243,18 @@ impl NetworkSession {
         // Everything the caller can get wrong, before any directory, vault or
         // network I/O exists to clean up.
         let sdk_options = SdkOptions::validate(&opts)?;
+        let collateral_rpc = match &opts.collateral_rpc {
+            Some(_) if network != DashNetwork::Regtest => {
+                return Err(EngineError::InvalidArgument(
+                    "a collateral RPC is for regtest only".into(),
+                ));
+            }
+            Some(url) => Some(
+                crate::governance::collateral::RpcSource::new(url)
+                    .map_err(EngineError::InvalidArgument)?,
+            ),
+            None => None,
+        };
         create_owned_dir(&data_dir, Path::new(""))?;
         let marker = data_dir.join(crate::tools::SESSION_MARKER);
         let unclean_previous = marker.exists();
@@ -436,11 +452,20 @@ impl NetworkSession {
             Default::default(),
             vault.epoch(),
         );
+        let collateral_source: Option<Arc<dyn crate::governance::collateral::CollateralSource>> =
+            match collateral_rpc {
+                Some(rpc) => Some(Arc::new(rpc)),
+                None if opts.no_platform => None,
+                None => Some(Arc::new(crate::governance::collateral::SdkSource(
+                    manager.sdk_arc(),
+                ))),
+            };
         let governance = crate::governance::sync::GovernanceRuntime::new(
             network.clone(),
             Arc::clone(&sink),
             &Handle::current(),
             governance_enabled,
+            collateral_source,
         );
         let session = Arc::new(Self {
             network,

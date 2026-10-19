@@ -6,6 +6,7 @@
 //!
 //! No call signs with, takes or returns an operator key (MG-01's guard).
 
+pub(crate) mod collateral;
 mod errors;
 mod reads;
 mod records;

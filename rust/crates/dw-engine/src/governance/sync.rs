@@ -2,8 +2,14 @@
 //! facade). One [`GovernanceRuntime`] per session holds the store the
 //! facade reads, the masternode list snapshot it was fed (by a follower
 //! that runs whether sync is on or off), and the task running
-//! `dw_governance::sync::run` with the backoff of D13.
+//! `dw_governance::sync::run` with the backoff of D13, beside the resolver
+//! of the collaterals votes name (D80, `collateral.rs`).
+//!
+//! The follower is the only writer of the store's list and resolved
+//! outpoints. Locks are taken in the order `applied`, `list`, store, and
+//! none is held across an await.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -11,7 +17,7 @@ use std::time::Duration;
 
 use dw_governance::params::EVONODE_VOTE_WEIGHT;
 use dw_governance::peer::PeerConfig;
-use dw_governance::store::ListEntry;
+use dw_governance::store::{ListEntry, ResolvedMasternode};
 use dw_governance::sync::{Phase, Shared, SyncConfig, SyncError, SyncHistory};
 use platform_wallet::masternode::MasternodeListSummary;
 use rand::seq::SliceRandom;
@@ -19,6 +25,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 
+use super::collateral::{self, CollateralSource, Collaterals};
 use crate::events::{EngineEvent, EventSink, unix_now};
 use crate::{DashNetwork, NetworkSession};
 
@@ -97,6 +104,14 @@ struct Task {
     handle: JoinHandle<()>,
 }
 
+/// The resolved outpoints the store was last handed.
+#[derive(Debug, Default)]
+struct Applied {
+    /// [`Collaterals::generation`] they were built from.
+    generation: Option<u64>,
+    resolved: HashMap<dashcore::OutPoint, ResolvedMasternode>,
+}
+
 pub(crate) struct GovernanceRuntime {
     pub shared: Arc<Shared>,
     history: Arc<Mutex<SyncHistory>>,
@@ -107,12 +122,25 @@ pub(crate) struct GovernanceRuntime {
     coalescer: JoinHandle<()>,
     follower: Mutex<Option<JoinHandle<()>>>,
     changed: Arc<Notify>,
+    /// Where ProRegTxs come from; `None` without Platform (and no regtest
+    /// RPC), when every outpoint stays unresolved.
+    pub(super) source: Option<Arc<dyn CollateralSource>>,
+    pub(super) collaterals: Arc<Collaterals>,
+    /// The resolver found collaterals: the follower hands them over.
+    pub(super) resolved_changed: Arc<Notify>,
+    applied: Mutex<Applied>,
 }
 
 impl GovernanceRuntime {
     /// Built at session open on the engine runtime; `enabled` is the stored
     /// setting (the session starts the task after it is built).
-    pub fn new(network: DashNetwork, sink: Arc<dyn EventSink>, rt: &Handle, enabled: bool) -> Self {
+    pub fn new(
+        network: DashNetwork,
+        sink: Arc<dyn EventSink>,
+        rt: &Handle,
+        enabled: bool,
+        source: Option<Arc<dyn CollateralSource>>,
+    ) -> Self {
         let changed = Arc::new(Notify::new());
         let notify = Arc::clone(&changed);
         let shared = Arc::new(Shared::new(
@@ -141,6 +169,10 @@ impl GovernanceRuntime {
             coalescer,
             follower: Mutex::default(),
             changed,
+            source,
+            collaterals: Arc::default(),
+            resolved_changed: Arc::default(),
+            applied: Mutex::default(),
         }
     }
 
@@ -164,8 +196,12 @@ impl GovernanceRuntime {
             loop {
                 let Some(s) = weak.upgrade() else { return };
                 s.governance.refresh(&s).await;
+                let resolved = Arc::clone(&s.governance.resolved_changed);
                 drop(s);
-                tokio::time::sleep(POLL).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(POLL) => {}
+                    _ = resolved.notified() => {}
+                }
             }
         });
         *self.follower.lock().unwrap_or_else(|p| p.into_inner()) = Some(handle);
@@ -199,7 +235,11 @@ impl GovernanceRuntime {
             if let Some(p) = previous {
                 let _ = p.await;
             }
-            sync_loop(weak, stop_rx).await;
+            // Collaterals are fetched only while sync runs (DEC-265).
+            tokio::join!(
+                sync_loop(weak.clone(), stop_rx.clone()),
+                collateral::resolve_loop(weak, stop_rx)
+            );
         });
         *slot = Some(Task { stop, handle });
     }
@@ -240,7 +280,8 @@ impl GovernanceRuntime {
         self.coalescer.abort();
     }
 
-    /// Feeds the store the tip and, when it changed, the list.
+    /// Feeds the store the tip, the list when it changed, and the resolved
+    /// outpoints when they changed.
     async fn refresh(&self, session: &NetworkSession) {
         let Some(tip) = session.hub.tracker().tip_height() else {
             return;
@@ -253,22 +294,61 @@ impl GovernanceRuntime {
             let Some(entries) = manager.spv().masternode_list_summaries().await else {
                 return;
             };
-            let snapshot = ListSnapshot {
+            let gone = self.apply_list(ListSnapshot {
                 height: tip,
                 entries,
-            };
-            let same = snapshot.entries == known.entries;
-            if !same {
-                self.shared
-                    .store()
-                    .set_masternode_list(&snapshot.store_entries());
-            }
-            *self.list.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(snapshot);
-            if !same {
-                self.changed();
-            }
+            });
+            let appdb = session.live().ok().map(|l| l.appdb);
+            collateral::persist(&appdb, Vec::new(), gone).await;
         }
+        self.apply_resolved();
         self.shared.store().set_tip(tip);
+    }
+
+    /// Takes a list. A changed one goes to the store with the resolved
+    /// outpoints it implies, under one lock and list first (D76 judges a
+    /// removed copy by the list it was stored under). Returns the
+    /// collaterals of the masternodes it dropped, to delete from app.sqlite.
+    pub(super) fn apply_list(&self, snapshot: ListSnapshot) -> Vec<[u8; 32]> {
+        let same = snapshot.entries == self.list().entries;
+        let mut gone = Vec::new();
+        if !same {
+            gone = self.collaterals.retain_listed(&snapshot);
+            let mut applied = self.applied.lock().unwrap_or_else(|p| p.into_inner());
+            let generation = self.collaterals.generation();
+            let resolved = self.collaterals.resolved(&snapshot);
+            let mut store = self.shared.store();
+            store.set_masternode_list(&snapshot.store_entries());
+            if resolved != applied.resolved {
+                store.set_resolved(resolved.clone());
+                applied.resolved = resolved;
+            }
+            applied.generation = Some(generation);
+        }
+        *self.list.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(snapshot);
+        if !same {
+            self.changed();
+        }
+        gone
+    }
+
+    /// Hands the store the resolved outpoints of the current list once the
+    /// resolver changed them.
+    pub(super) fn apply_resolved(&self) {
+        let mut applied = self.applied.lock().unwrap_or_else(|p| p.into_inner());
+        let generation = self.collaterals.generation();
+        if applied.generation == Some(generation) {
+            return;
+        }
+        let resolved = self.collaterals.resolved(&self.list());
+        applied.generation = Some(generation);
+        if resolved == applied.resolved {
+            return;
+        }
+        self.shared.store().set_resolved(resolved.clone());
+        applied.resolved = resolved;
+        drop(applied);
+        self.changed();
     }
 
     /// The followed tip, once its list is known and not empty.

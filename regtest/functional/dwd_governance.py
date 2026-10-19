@@ -6,8 +6,9 @@
 Our governance sync (`dwcli governance`, built on dw-engine's governance facade over dw-p2p)
 against 4 regtest masternodes, one of them an evonode (vote weight 4).
 
-Network: node0 controller/miner, SPV peer of dwcli (BIP157 filters) and holder of the
-masternodes' voting keys; nodes 1..3 regular masternodes, node 4 an evonode added after setup
+Network: node0 controller/miner, SPV peer of dwcli (BIP157 filters), holder of the
+masternodes' voting keys and, with -txindex, the source of the ProRegTxs dwcli resolves vote
+outpoints from in check 4 (`--collateral-rpc`, regtest's stand-in for DAPI, MG-02 D80); nodes 1..3 regular masternodes, node 4 an evonode added after setup
 (the framework's static masternodes are all regular). Real time (no mocktime): the wallet checks
 object and vote times against the wall clock, as Core checks them against adjusted time. With
 real time, InstantSend and ChainLocks are switched off again: without quorums nothing is
@@ -24,7 +25,10 @@ Checks, in order:
     as Core does for the same chain;
  3. `voteraw`: a vote signed outside (`signmessage` with the voting key, regtest's message
     signing) relayed by the wallet reaches Core's nodes;
- 4. the superblock: the masternodes' trigger pays the passing proposal at height 1500, and the
+ 4. resolved outpoints: the evonode changes its vote on p1 from no to yes; dwcli, resolving
+    every voter's outpoint from its ProRegTx, counts each vote exactly (no ranged vote, no close
+    call) and its tally and `gobject getcurrentvotes` follow Core's;
+ 5. the superblock: the masternodes' trigger pays the passing proposal at height 1500, and the
     wallet, synced again, shows it Funded at that height.
 
 Run (DWCLI = a built dwcli):
@@ -42,10 +46,10 @@ from test_framework.governance import prepare_object
 from test_framework.messages import uint256_to_string
 from test_framework.test_framework import EVONODE_COLLATERAL, DashTestFramework
 from test_framework.authproxy import JSONRPCException
-from test_framework.util import assert_equal, assert_greater_than, p2p_port
+from test_framework.util import assert_equal, assert_greater_than, p2p_port, rpc_url
 
 SPORK_OFF = 4070908800  # 2099-01-01: a spork time that never comes
-CONTROLLER_ARGS = ["-peerblockfilters=1", "-blockfilterindex=1", "-debug=gobject"]
+CONTROLLER_ARGS = ["-peerblockfilters=1", "-blockfilterindex=1", "-txindex=1", "-debug=gobject"]
 MN_ARGS = ["-debug=gobject"]
 FIRST_SUPERBLOCK = 1500
 SUPERBLOCK_CYCLE = 20
@@ -284,7 +288,43 @@ class DwdGovernance(DashTestFramework):
                 core, ours = core[:cut], ours[:cut]
             assert_equal(ours, core)
 
-        self.log.info("4. the superblock pays p0; the wallet shows it funded")
+        self.log.info("4. resolved outpoints: the evonode changes its vote, the tally follows Core")
+        mover = evo[0]
+        outpoint = f"{mover.collateral_txid}-{mover.collateral_vout}"
+        # Core's entries read `<outpoint>:<time>:<outcome>:<signal>`.
+        first = [v for v in node.gobject("getcurrentvotes", p1).values() if v.startswith(outpoint + ":")]
+        assert_equal(len(first), 1)
+        _, first_time, first_outcome, _ = first[0].split(":")
+        assert_equal(first_outcome, "no")
+        # A masternode may change its vote an hour after its last (GOVERNANCE_UPDATE_MIN), and
+        # Core takes a vote up to an hour ahead of its clock.
+        moved_time = int(first_time) + 3600
+        message = f"{outpoint}|{p1}|1|{OUTCOME_CODES['yes']}|{moved_time}"
+        node.voteraw(mover.collateral_txid, mover.collateral_vout, p1, "funding", "yes", moved_time,
+                     node.signmessage(mover.votingAddr, message))
+        self.wait_until(lambda: self.core_counts(p1) == (1 + 4, 0, 1), timeout=30)
+        out = dwcli.governance(
+            "--sync-height", str(node.getblockcount()), "--min-proposals", "2", "--min-voters", "7",
+            "--max-ranged", "0", "--votes", p1, "--console", f"gobject getcurrentvotes {p1}",
+            "--collateral-rpc", rpc_url(node.datadir, 0, self.chain),
+        )
+        rows = {r["hash"]: r for r in out["proposal"]}
+        for h in (p0, p1):
+            t, counts = rows[h]["tally"], self.core_counts(h)
+            for k, core in zip(("yes", "no", "abstain"), counts):
+                # Resolved, every vote proves its weight.
+                assert_equal((t[k]["min"], t[k]["estimate"], t[k]["max"]), (core, core, core))
+            assert_equal(t["ranged_votes"], 0)
+            assert_equal(rows[h]["close_call"], False)
+        assert_equal(rows[p1]["tally"]["voters"], 3)
+        moved = [v for v in out["votes"][p1] if v["outcome"] == "yes" and v["weight"]["estimate"] == 4]
+        assert_equal(len(moved), 1)
+        assert_equal((moved[0]["weight"]["min"], moved[0]["weight"]["max"]), (4, 4))
+        kind, votes_text = dict(out["console"])[f"gobject getcurrentvotes {p1}"]
+        assert_equal(kind, "result")
+        assert_equal(list(json.loads(votes_text).items()), list(node.gobject("getcurrentvotes", p1).items()))
+
+        self.log.info("5. the superblock pays p0; the wallet shows it funded")
         self.mine_to(FIRST_SUPERBLOCK - MATURITY_WINDOW)
         # The elected masternode creates the trigger inside the window, the others vote.
         for _ in range(MATURITY_WINDOW - 1):
