@@ -280,6 +280,10 @@ async fn a_restart_fetches_nothing_already_stored() {
     // The stored rows reach the store with nothing fetched.
     rt.apply_resolved();
     assert_eq!(rt.resolved_sets.load(Ordering::SeqCst), 1);
+    // The rows are read once a session.
+    let generation = restarted.generation();
+    resolve_round(restarted, &list, source.as_ref(), db.clone()).await;
+    assert_eq!(restarted.generation(), generation);
 }
 
 /// DEC-265: a stored row that fails its check is deleted and fetched again,
