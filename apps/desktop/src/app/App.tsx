@@ -32,6 +32,7 @@ import { SecurityText } from "../settings/security";
 import { useStatusRegistration } from "../dashpay/queries";
 import { useSavedLinksOffer } from "./savedLinksOffer";
 import { useShellBridge } from "./shellBridge";
+import { openFailure, type OpenFailure } from "./openFailure";
 import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
 import { navigate, ui, useUi } from "./ui";
@@ -43,19 +44,22 @@ const closeForgot = () => ui.set({ forgotPassphrase: false });
 export const LaunchContext = createContext<LaunchInfo | null>(null);
 export const useLaunch = () => useContext(LaunchContext)!;
 
-/** Splash (UX-SPEC §4.2) while the engine opens the network, or its error with a retry. */
-function Splash({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+/** Splash (UX-SPEC §4.2) while the engine opens the network, or its error, with a retry unless the file is from a newer
+ * build (DP3-04b D35). */
+function Splash({ error, onRetry }: { error: OpenFailure | null; onRetry: () => void }) {
   return (
     <div className="splash" data-testid="splash">
       <DashLogo className="splash-logo" />
       {error ? (
         <>
           <p className="splash-error" role="alert">
-            Dash Wallet could not open the wallet: {error}
+            {error.text}
           </p>
-          <DashButton variant="plainBlue" onClick={onRetry}>
-            Try again
-          </DashButton>
+          {error.retry && (
+            <DashButton variant="plainBlue" onClick={onRetry}>
+              Try again
+            </DashButton>
+          )}
         </>
       ) : (
         <>
@@ -275,7 +279,7 @@ export function App() {
       {network.isSuccess ? (
         <Shell />
       ) : (
-        <Splash error={network.isError ? errorMessage(network.error) : null} onRetry={() => void network.refetch()} />
+        <Splash error={network.isError ? openFailure(network.error) : null} onRetry={() => void network.refetch()} />
       )}
       <ToastHost />
     </div>

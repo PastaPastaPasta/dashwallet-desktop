@@ -667,9 +667,11 @@ impl From<crate::EngineError> for PlatformError {
             }
             E::NetworkNotOpen(_) => Self::NetworkNotOpen,
             E::WalletNotFound(_) => Self::WalletNotFound,
-            e @ (E::Storage(_) | E::StorageInUse(_) | E::Io(_)) => Self::Storage {
-                detail: e.to_string(),
-            },
+            e @ (E::Storage(_) | E::StorageInUse(_) | E::StorageTooNew(_) | E::Io(_)) => {
+                Self::Storage {
+                    detail: e.to_string(),
+                }
+            }
             E::InsufficientCredits {
                 needed, available, ..
             } => Self::InsufficientCredits { needed, available },

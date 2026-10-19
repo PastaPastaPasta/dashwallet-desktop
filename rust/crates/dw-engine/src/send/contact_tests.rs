@@ -70,6 +70,20 @@ fn request(sender: u8, recipient: u8, created_at: u64) -> ContactRequest {
     )
 }
 
+/// Bob's request to us after he rotates to his account 1.
+fn bobs_rotated_request() -> ContactRequest {
+    ContactRequest::new(id(BOB), id(ME), 0, 0, 1, vec![2; 96], 1, 2_500_000)
+}
+
+/// The key of the external account paying contact `n`.
+fn paying_account_key(n: u8) -> DashpayAccountKey {
+    DashpayAccountKey {
+        index: 0,
+        user_identity_id: [ME; 32],
+        friend_identity_id: [n; 32],
+    }
+}
+
 /// The external account's xpub paying contact `n` (a test key).
 fn contact_xpub(n: u8) -> ExtendedPubKey {
     let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[100 + n; 32]).unwrap();
@@ -176,18 +190,7 @@ fn fixture(encrypted: bool) -> Fixture {
         Arc::new(NullSink),
     )
     .unwrap();
-    let session = engine
-        .block_on(engine.open_network(
-            DashNetwork::Regtest,
-            crate::SessionOptions {
-                dapi_addresses: vec!["http://127.0.0.1:1".into()],
-                quorum_url: Some("http://127.0.0.1:1".into()),
-                spv_peers: vec!["127.0.0.1:1".into()],
-                no_platform: true,
-                ..Default::default()
-            },
-        ))
-        .unwrap();
+    let session = open_session(&engine);
     let pass: Option<&'static [u8]> = encrypted.then_some(PASS);
     engine
         .block_on(session.vault_op(move |v| v.create(pass)))
@@ -221,6 +224,23 @@ fn fixture(encrypted: bool) -> Fixture {
     });
     f.credit(1, COIN);
     f
+}
+
+/// The regtest session, with no Platform (so no DashPay pass rebuilds
+/// anything behind a test's back).
+fn open_session(engine: &Engine) -> Arc<NetworkSession> {
+    engine
+        .block_on(engine.open_network(
+            DashNetwork::Regtest,
+            crate::SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                no_platform: true,
+                ..Default::default()
+            },
+        ))
+        .unwrap()
 }
 
 impl Fixture {
@@ -276,27 +296,37 @@ impl Fixture {
     /// Contact `n`'s paying account built from `xpub`, replacing any it
     /// had: the immutable account carrying the xpub and its managed pool,
     /// as an accept or a rotation's teardown and rebuild leave them.
+    /// Contact `n`'s paying account built from `xpub`, with its pool.
+    fn paying_account(
+        &self,
+        n: u8,
+        xpub: ExtendedPubKey,
+    ) -> (AccountType, ManagedCoreFundsAccount) {
+        let account_type = AccountType::DashpayExternalAccount {
+            index: 0,
+            user_identity_id: [ME; 32],
+            friend_identity_id: [n; 32],
+        };
+        let managed = ManagedCoreFundsAccount::from_account(&key_wallet::Account {
+            parent_wallet_id: Some(self.wallet.0),
+            account_type,
+            network: dashcore::Network::Regtest,
+            account_xpub: xpub,
+            is_watch_only: true,
+        });
+        (account_type, managed)
+    }
+
     fn build_paying_account(&self, n: u8, xpub: ExtendedPubKey) {
         self.tear_down_paying_account(n);
         let manager = self.session.manager().unwrap();
         let wallet = self.wallet;
+        let (account_type, managed) = self.paying_account(n, xpub);
         self.engine.block_on(async move {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
             let (w, info) = wm.get_wallet_mut_and_info_mut(&wallet.0).unwrap();
-            let account_type = AccountType::DashpayExternalAccount {
-                index: 0,
-                user_identity_id: [ME; 32],
-                friend_identity_id: [n; 32],
-            };
             w.add_account(account_type, Some(xpub)).unwrap();
-            let managed = ManagedCoreFundsAccount::from_account(&key_wallet::Account {
-                parent_wallet_id: Some(wallet.0),
-                account_type,
-                network: dashcore::Network::Regtest,
-                account_xpub: xpub,
-                is_watch_only: true,
-            });
             (info.core_wallet.accounts)
                 .insert_funds_bearing_account(managed)
                 .unwrap();
@@ -312,11 +342,7 @@ impl Fixture {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
             let (w, info) = wm.get_wallet_mut_and_info_mut(&wallet.0).unwrap();
-            let key = DashpayAccountKey {
-                index: 0,
-                user_identity_id: [ME; 32],
-                friend_identity_id: [n; 32],
-            };
+            let key = paying_account_key(n);
             w.accounts.dashpay_external_accounts.remove(&key);
             (info.core_wallet.accounts.dashpay_external_accounts).remove(&key);
         });
@@ -1409,8 +1435,13 @@ fn t2_testnet_pays_a_contact() {
 // DP3-04: the money-move trust gate (`platform/money_gate.rs`) in
 // `prepare`, with the fallback latch set and Platform faked.
 
+use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use platform_wallet::ManagedIdentity;
-use platform_wallet::changeset::{PendingContactCrypto, PendingContactCryptoOp};
+use platform_wallet::changeset::{
+    AccountAddressPoolEntry, AccountRegistrationEntry, ContactChangeSet, PendingContactCrypto,
+    PendingContactCryptoOp, PlatformWalletChangeSet, PlatformWalletPersistence,
+    SentContactRequestKey,
+};
 use platform_wallet::wallet::identity::{ContactProfileEntry, DashPayProfile};
 
 use crate::platform::money_gate::{Point, Refusal, Subject};
@@ -1492,15 +1523,9 @@ impl Fixture {
 
     /// Bob's request to us replaced, as a sync pass leaves a rotation.
     fn replace_bobs_request(&self, created_at: u64) {
-        self.with_me(move |me| {
-            let mut c = EstablishedContact::new(
-                id(BOB),
-                request(ME, BOB, 1_000_000),
-                request(BOB, ME, created_at),
-            );
-            c.external_account_reference = Some(c.incoming_request.account_reference);
-            me.apply_established_contact(c);
-        });
+        let incoming = request(BOB, ME, created_at);
+        let stamp = Some(incoming.account_reference);
+        self.with_me(move |me| me.apply_established_contact(bobs_contact(incoming, stamp)));
     }
 
     /// Bob rotates, as a sync pass and the drain leave it: his request to
@@ -1508,25 +1533,18 @@ impl Fixture {
     /// from it (its xpub `xpub`) and stamped with it, and Platform holding
     /// the new request.
     fn rotate_bob(&self, platform: &FakePlatform, xpub: ExtendedPubKey) {
-        let rotated = ContactRequest::new(id(BOB), id(ME), 0, 0, 1, vec![2; 96], 1, 2_500_000);
+        let rotated = bobs_rotated_request();
         platform.answer_requests(vec![request(ME, BOB, 1_000_000), rotated.clone()]);
         self.build_paying_account(BOB, xpub);
-        self.with_me(move |me| {
-            let mut c = EstablishedContact::new(id(BOB), request(ME, BOB, 1_000_000), rotated);
-            c.external_account_reference = Some(1);
-            me.apply_established_contact(c);
-        });
+        self.with_me(move |me| me.apply_established_contact(bobs_contact(rotated, Some(1))));
     }
 
     /// Bob's rotated request (naming his account 1) persisted with the
     /// marker cleared, as a crash before the library's sweep leaves it: his
     /// paying account is still the one built from his old request.
     fn bob_rotated_before_the_sweep(&self) {
-        let rotated = ContactRequest::new(id(BOB), id(ME), 0, 0, 1, vec![2; 96], 1, 2_500_000);
-        self.with_me(move |me| {
-            let c = EstablishedContact::new(id(BOB), request(ME, BOB, 1_000_000), rotated);
-            me.apply_established_contact(c);
-        });
+        let rotated = bobs_rotated_request();
+        self.with_me(move |me| me.apply_established_contact(bobs_contact(rotated, None)));
     }
 
     /// The library's paying account for Bob, built from his request
@@ -1851,13 +1869,12 @@ fn an_account_a_crash_left_unrebuilt_is_not_paid() {
     assert_eq!(f.reserved(BOB), Some(rebuilt));
 }
 
-/// Design D26: the library's store keeps no stamp, so after every launch
-/// each paying account is unstamped until the first DashPay pass rebuilds
-/// it, and that looks the same as the crash above. `Enforce` refuses it
-/// (nothing reserved); `Probe` and `Off` proceed on the absence, as D7
-/// does, so the crash's old account is paid there too.
+/// Design D28: with the stamp kept by the store, a paying account is
+/// unstamped before its first rebuild after the upgrade, or after the
+/// crash above, when it is the old account. Every setting refuses it,
+/// nothing reserved.
 #[test]
-fn an_unstamped_account_is_paid_only_where_rule_5_does_not_apply() {
+fn an_unstamped_account_is_not_paid_in_any_setting() {
     for (mode, set) in EVERY_RULE {
         for rotated in [false, true] {
             let f = fixture(false);
@@ -1867,21 +1884,14 @@ fn an_unstamped_account_is_paid_only_where_rule_5_does_not_apply() {
             } else {
                 f.bobs_account_built_from(None);
             }
-            let prepared = f.prepare(&f.draft(BOB));
-            if mode == "enforcing" {
-                // No latch, so nothing is unverified: the refusal is the
-                // destination's.
-                assert_eq!(
-                    platform_error(prepared),
-                    "platform.context_unavailable",
-                    "rotated {rotated}"
-                );
-                assert!(f.reserved(BOB).is_none(), "rotated {rotated}");
-            } else {
-                let p = prepared.unwrap();
-                let held = f.contact_address(BOB, 0);
-                assert_eq!(paid(&p), held.to_string(), "{mode}, rotated {rotated}");
-            }
+            // No latch, so nothing is unverified: the refusal is the
+            // destination's.
+            assert_eq!(
+                platform_error(f.prepare(&f.draft(BOB))),
+                "platform.context_unavailable",
+                "{mode}, rotated {rotated}"
+            );
+            assert!(f.reserved(BOB).is_none(), "{mode}, rotated {rotated}");
         }
     }
 }
@@ -1889,8 +1899,8 @@ fn an_unstamped_account_is_paid_only_where_rule_5_does_not_apply() {
 /// D12 after the reservation, in every setting (D25): a queued
 /// `RegisterExternal` lets the gate pass a stale account (the drain is to
 /// rebuild it), but a drain that leaves it queued derives from the old
-/// account, and the strict re-check refuses that address. With no stamp
-/// at all (a launch's state, D26) only `Enforce` refuses it there.
+/// account, and the strict re-check refuses that address, with no stamp
+/// at all too (D28).
 #[test]
 fn a_stale_account_the_drain_leaves_is_not_paid() {
     for ((mode, set), stamp) in EVERY_RULE
@@ -1918,21 +1928,15 @@ fn a_stale_account_the_drain_leaves_is_not_paid() {
             1,
             "{mode} {stamp:?}: the gate let it through"
         );
-        if stamp.is_none() && mode != "enforcing" {
-            let held = f.contact_address(BOB, 0);
-            prepared.unwrap();
-            assert_eq!(f.reserved(BOB), Some(held), "{mode}: paid and kept");
-        } else {
-            assert_eq!(
-                platform_error(prepared),
-                "platform.context_unavailable",
-                "{mode} {stamp:?}"
-            );
-            assert!(
-                f.reserved(BOB).is_none(),
-                "{mode} {stamp:?}: the old account's address is not kept"
-            );
-        }
+        assert_eq!(
+            platform_error(prepared),
+            "platform.context_unavailable",
+            "{mode} {stamp:?}"
+        );
+        assert!(
+            f.reserved(BOB).is_none(),
+            "{mode} {stamp:?}: the old account's address is not kept"
+        );
         let queued = Arc::new(AtomicU32::new(0));
         let count = Arc::clone(&queued);
         f.with_me(move |me| {
@@ -2027,6 +2031,100 @@ fn an_address_from_a_replaced_account_is_not_paid() {
     );
 }
 
+/// Bob's established contact: his request to us `incoming`, its paying
+/// account stamped `stamp`.
+fn bobs_contact(incoming: ContactRequest, stamp: Option<u32>) -> EstablishedContact {
+    let mut c = EstablishedContact::new(id(BOB), request(ME, BOB, 1_000_000), incoming);
+    c.external_account_reference = stamp;
+    c
+}
+
+impl Fixture {
+    /// `cs` through the persister the library writes with.
+    fn store(&self, cs: PlatformWalletChangeSet) {
+        let store = self.session.live().unwrap().store;
+        store.store(self.wallet.0, cs).expect("stored");
+    }
+
+    /// Bob's contact, as `bobs_contact` describes it, through the persister.
+    fn store_bobs_contact(&self, incoming: ContactRequest, stamp: Option<u32>) {
+        let key = SentContactRequestKey {
+            owner_id: id(ME),
+            recipient_id: id(BOB),
+        };
+        self.store(PlatformWalletChangeSet {
+            contacts: Some(ContactChangeSet {
+                established: [(key, bobs_contact(incoming, stamp))].into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+    }
+
+    /// Bob's paying account built from `xpub`, as
+    /// `register_external_contact_account` persists it: the registration
+    /// and its derived pool.
+    fn bobs_account(&self, xpub: ExtendedPubKey) -> PlatformWalletChangeSet {
+        let (account_type, managed) = self.paying_account(BOB, xpub);
+        let pools = managed.managed_account_type().address_pools();
+        PlatformWalletChangeSet {
+            account_registrations: vec![AccountRegistrationEntry {
+                account_type,
+                account_xpub: xpub,
+            }],
+            account_address_pools: (pools.into_iter())
+                .filter(|pool| !pool.addresses.is_empty())
+                .map(|pool| AccountAddressPoolEntry {
+                    account_type,
+                    pool_type: pool.pool_type,
+                    addresses: pool.addresses.values().cloned().collect(),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// A close and a reopen of the network: everything in memory is gone,
+    /// and the wallet is what its store holds.
+    fn relaunch(&mut self) {
+        (self.engine)
+            .block_on(self.engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        self.session = open_session(&self.engine);
+    }
+
+    /// Bob's request's account reference and his paying account's stamp.
+    fn bobs_stamp(&self) -> (u32, Option<u32>) {
+        self.with_wallet(|w| async move {
+            let state = w.state().await;
+            let me = state.identity_manager.managed_identity(&id(ME)).unwrap();
+            let c = &me.dashpay().established_contacts()[&id(BOB)];
+            (
+                c.incoming_request.account_reference,
+                c.external_account_reference,
+            )
+        })
+    }
+
+    fn bobs_paying_xpub(&self) -> Option<ExtendedPubKey> {
+        self.with_wallet(|w| async move {
+            let state = w.state().await;
+            (state.wallet().accounts.dashpay_external_accounts)
+                .get(&paying_account_key(BOB))
+                .map(|a| a.account_xpub)
+        })
+    }
+
+    fn bobs_pool_holds(&self, address: Address) -> bool {
+        self.with_wallet(move |w| async move {
+            let state = w.state().await;
+            (state.core_wallet.accounts.dashpay_external_accounts)
+                .get(&paying_account_key(BOB))
+                .is_some_and(|a| a.contains_address(&address))
+        })
+    }
+}
+
 /// Puts a fixture's provider in one rule 5 setting.
 type SetRule = fn(&Fixture);
 
@@ -2078,6 +2176,82 @@ fn an_address_the_rebuilt_account_still_holds_is_paid() {
         Some((f.contact_address(BOB, 0), true))
     );
     assert!(!f.bob_unverified(), "the new request verified");
+}
+
+/// DP3-04b (Sol r3 High), design D29: Bob rotates to a new xpub through
+/// the library's own store, as its re-key, `register_external_contact_account`
+/// and `note_external_account_registered` write it, and a relaunch reaches
+/// his new paying account and its stamp from SQLite alone (no Platform, so
+/// no DashPay pass rebuilds anything). In every rule 5 setting the new
+/// account's address is paid, and an address of the account it replaced
+/// is not, however it was kept: refused (D21), or under `Enforce` replaced
+/// unchecked by a fresh one from the new account (D14).
+#[test]
+fn a_rotation_the_store_kept_is_what_a_relaunch_pays() {
+    let mut f = fixture(false);
+    let (old, new) = (contact_xpub(BOB), contact_xpub(CAROL));
+    let rotated = bobs_rotated_request();
+    // The accept the fixture holds in memory: Bob's account built from his
+    // first request (account 0) and stamped with it.
+    f.store(f.bobs_account(old));
+    f.store_bobs_contact(request(BOB, ME, 2_000_000), Some(0));
+    // The rotation: the re-key clears the stamp, the rebuild replaces the
+    // account (the store retires its old pool), the stamp names account 1.
+    f.store_bobs_contact(rotated.clone(), None);
+    f.store(f.bobs_account(new));
+    f.store_bobs_contact(rotated, Some(1));
+
+    f.relaunch();
+    assert_eq!(
+        f.bobs_stamp(),
+        (1, Some(1)),
+        "the stamp matches the request"
+    );
+    // Compared serialized: the store keeps the BIP32 encoding, in which
+    // regtest and testnet share their version bytes.
+    assert_eq!(f.bobs_paying_xpub().map(|x| x.encode()), Some(new.encode()));
+    assert!(f.bobs_pool_holds(address_at(new, 0)));
+    assert!(!f.bobs_pool_holds(address_at(old, 0)));
+
+    f.credit(1, COIN);
+    let pair = (id(ME), id(BOB));
+    let payments = &f.session.platform.payments;
+    // A payment pays the next address of the account it derives from.
+    let derives_from = |xpub, to: &str| (0..20).any(|i| address_at(xpub, i).to_string() == to);
+    let pays_the_new_account = |d: &Arc<TxDraft>, p: Arc<PreparedTx>, what: &str| {
+        let to = paid(&p);
+        assert!(derives_from(new, &to), "{what}: {to}");
+        assert!(!derives_from(old, &to), "{what}");
+        f.engine.block_on(d.abandon(p)).unwrap();
+        let kept = f.reserved(BOB).expect("the address is kept");
+        payments.drop_reserved(f.wallet, pair, &kept);
+    };
+    for (mode, set) in EVERY_RULE {
+        set(&f);
+        for checked in [false, true] {
+            payments.keep(f.wallet, pair, address_at(old, 0), checked);
+            let d = f.draft(BOB);
+            let prepared = f.prepare(&d);
+            if mode == "enforcing" && !checked {
+                // D14: an address kept while rule 5 did not apply is
+                // replaced by a fresh one, from the new account.
+                pays_the_new_account(&d, prepared.unwrap(), "unchecked under enforce");
+            } else {
+                // D21: not in the paying account the store rebuilt.
+                assert_eq!(
+                    platform_error(prepared),
+                    "platform.context_unavailable",
+                    "{mode}, checked {checked}"
+                );
+                assert!(
+                    f.reserved(BOB).is_none(),
+                    "{mode}: the old address is dropped"
+                );
+            }
+        }
+        let d = f.draft(BOB);
+        pays_the_new_account(&d, f.prepare(&d).unwrap(), mode);
+    }
 }
 
 /// Sol r1 #2: a payment's fresh address displaced before it is kept (the
