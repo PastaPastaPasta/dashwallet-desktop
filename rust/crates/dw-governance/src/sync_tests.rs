@@ -598,6 +598,53 @@ async fn votes_core_relays_but_the_wallet_ignores_cost_no_penalty() {
     assert_eq!(hx.task.await.unwrap(), Ok(()));
 }
 
+/// D89, validator r2 m-F: the sync checks an operator vote's BLS signature
+/// against its resolved masternode's operator key. A copy failing it is
+/// refused without penalty and the other announcer's asked for; the
+/// operator's own is stored. The vote is signed, outside this repo (MG-01),
+/// with the throwaway secret [0x42; 32] (vote.rs `verify_operator_*`).
+#[tokio::test]
+async fn an_operator_vote_is_checked_against_the_operator_key() {
+    let data = r#"{"end_epoch":4000000000,"name":"p-d89-vector","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}"#;
+    let p = GovernanceObject::new_proposal(1, 1_760_000_000, data.as_bytes().to_vec());
+    assert_eq!(
+        hex::encode(p.hash()),
+        "48d02d679cf9dee06ad6679a67ae2b26baa3ddc5f88bf6c145828d3680d1792e"
+    );
+    let mut run = two_peer_run(&p).await;
+    let outpoint = OutPoint::new(dashcore::Txid::from_byte_array([0x11; 32]), 1);
+    let operator_key = <[u8; 48]>::try_from(hex::decode("b5b99c967e4c69822f427db1f6871dd119afb95ab9646ba2e707990a3db31777a59b66f69e89c2055699b0ade7357eae").unwrap()).unwrap();
+    run.shared.store().set_resolved(HashMap::from([(
+        outpoint,
+        crate::store::ResolvedMasternode {
+            pro_tx_hash: [9; 32],
+            voting_key_id: key_id(1),
+            operator_key,
+            weight: 1,
+        },
+    )]));
+    let mut honest = GovernanceVote::funding(outpoint, p.hash(), VoteOutcome::No, 1_760_000_100);
+    honest.signal = SentinelSignal::Delete.code();
+    honest.signature = hex::decode(
+        "97d21c57832efb74a7c8f3cf7c73914edf6d0a1ec87d2cd56e03ffd926fa5009\
+         526b6c32bbf8a0d55ed2ae48a762dfc5134b51be37aa1614fdd46bd455dd499b\
+         fda2c7f4e630cd957984f3ccd8e05598e62ca0d0376f942a9a57ef6ef9dd9a7c",
+    )
+    .unwrap();
+    let mut forged = honest.clone();
+    forged.signature[95] ^= 1;
+    let item = vote_inv(&honest);
+    let stored = |run: &Run| run.shared.store().signal_votes_on(&p.hash()).count();
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::Vote(forged.encode()));
+    assert_eq!(stored(&run), 0);
+    assert_eq!(run.peers[0].misbehaviour, 0);
+    run.handle(1, PeerEvent::Vote(honest.encode()));
+    assert_eq!(stored(&run), 1);
+    assert_eq!(run.peers[1].misbehaviour, 0);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_late_delivery_after_a_timeout_is_accepted_without_penalty() {
     let obj = proposal("a");

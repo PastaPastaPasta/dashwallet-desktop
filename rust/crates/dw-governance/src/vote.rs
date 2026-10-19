@@ -193,8 +193,10 @@ impl GovernanceVote {
     /// CBLSPublicKey&)`: the signature read and checked under the basic
     /// scheme, over [`Self::signature_hash`]). The list writes a version-1
     /// entry's key in the legacy encoding and carries no version here, so a
-    /// key that does not verify in the basic encoding is read as legacy:
-    /// the same point either way, so no third party's signature verifies.
+    /// key that does not verify in the basic encoding is read as legacy.
+    /// Legacy bytes read as basic are the key's negation, under which the
+    /// negated signature verifies: a copy only the operator's own signature
+    /// yields, of the same vote (the hash leaves the signature out).
     pub fn verify_operator(&self, operator_key: &[u8; 48]) -> bool {
         let Ok(sig) = <[u8; BLS_SIG_SIZE]>::try_from(self.signature.as_slice()) else {
             return false;

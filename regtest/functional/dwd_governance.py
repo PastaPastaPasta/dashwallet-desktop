@@ -398,8 +398,8 @@ class DwdGovernance(DashTestFramework):
             for d in [*r["detail"].values(), *r2["detail"].values()]:
                 assert "-- Invalid vote," in d["errorMessage"], d
         self.maintenance_pass([node])
-        lists = [f"gobject list {signal} proposals" for signal in ("valid", "funding", "delete", "endorsed")]
-        lines = [f"gobject get {p0}", f"gobject get {p1}", *lists]
+        lists = {signal: f"gobject list {signal} proposals" for signal in ("valid", "funding", "delete", "endorsed")}
+        lines = [f"gobject get {p0}", f"gobject get {p1}", *lists.values()]
         out = dwcli.governance(
             "--sync-height", str(node.getblockcount()), "--min-proposals", "2", "--max-ranged", "0",
             *[a for line in lines for a in ("--console", line)],
@@ -415,10 +415,9 @@ class DwdGovernance(DashTestFramework):
                 assert_equal((h, k, ours[k]), (h, k, core[k]))
             for result in ("ValidResult", "DeleteResult", "EndorsedResult"):
                 assert_equal(core[result]["YesCount"] + core[result]["NoCount"], 0)
-        for line in lists:
+        for signal, line in lists.items():
             kind, text = console[line]
             assert_equal(kind, "result")
-            signal = line.split()[2]
             assert_equal(sorted(json.loads(text)), sorted(node.gobject("list", signal, "proposals")))
         assert_equal(sorted(node.gobject("list", "valid", "proposals")), sorted([p0, p1]))
         self.log.info("governance suite passed")

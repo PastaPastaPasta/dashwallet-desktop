@@ -294,6 +294,24 @@ pub struct OperatorVote {
     pub held: bool,
 }
 
+impl OperatorVote {
+    /// `vote`, not held, checked against `operator_key`, its outpoint's
+    /// ([`GovernanceStore::operator_key`]), if resolved.
+    pub fn checked(
+        vote: GovernanceVote,
+        outcome: VoteOutcome,
+        operator_key: Option<[u8; 48]>,
+    ) -> Self {
+        let checked = operator_key.map(|k| (k, vote.verify_operator(&k)));
+        Self {
+            vote,
+            outcome,
+            checked,
+            held: false,
+        }
+    }
+}
+
 /// An operator vote waiting to be checked (D89).
 #[derive(Debug, Clone)]
 struct Parked {
@@ -1987,15 +2005,8 @@ impl GovernanceStore {
     ) -> Result<(), VoteRejection> {
         let outcome = self.precheck(&vote, now)?;
         if SentinelSignal::from_code(vote.signal).is_some() {
-            let checked = self
-                .operator_key(&vote.masternode_outpoint)
-                .map(|k| (k, vote.verify_operator(&k)));
-            let v = OperatorVote {
-                vote,
-                outcome,
-                checked,
-                held: false,
-            };
+            let key = self.operator_key(&vote.masternode_outpoint);
+            let v = OperatorVote::checked(vote, outcome, key);
             return self.add_operator_vote(v, from, now);
         }
         let checked = recover(vote, outcome, self.network)?;
@@ -2147,10 +2158,9 @@ impl GovernanceStore {
             .get(&parent)
             .and_then(|m| m.get(&(outpoint, key)));
         self.check_slot(&v, current, rate_checked, now)?;
-        let has_current = current.is_some();
         self.key_ok(&outpoint, &key)?;
         let resolved = self.resolved.contains_key(&outpoint);
-        if !has_current && !resolved {
+        if current.is_none() && !resolved {
             let n = self.holders(&key);
             let used = self.per_key.get(&(parent, key)).copied().unwrap_or(0);
             if used >= 2 * n + 2 {
@@ -2260,24 +2270,37 @@ impl GovernanceStore {
                 self.place_signal(&v.vote, outcome, signal, &r)
             }
             (Some(r), Some((key, false))) if key == r.operator_key => {
-                if v.held && signal == SentinelSignal::Delete && outcome == VoteOutcome::No {
-                    self.doubt(v.vote.parent_hash, outpoint, v.vote.time);
-                    self.refetch.push(v.vote.hash());
+                if v.held {
+                    self.lose_held(&v.vote, outcome);
                 }
-                self.park(v, Some(key), false, from);
+                self.park(v, Some(key), from);
                 Err(VoteRejection::Unverifiable)
             }
             // With every listed masternode resolved, an unknown outpoint
             // is no masternode's (Core: unknown masternode).
             (None, _) if self.all_resolved() => Err(VoteRejection::Unverifiable),
             _ => {
-                if self.park(v, None, true, from) {
+                let (vote, outcome) = (v.vote.clone(), v.outcome);
+                if self.park(v, None, from) {
                     Err(VoteRejection::Parked)
                 } else {
+                    // Its sender's bound is full: perhaps its only
+                    // announcer's copy, lost as one held that fails.
+                    self.lose_held(&vote, outcome);
                     Err(VoteRejection::Unverifiable)
                 }
             }
         }
+    }
+
+    /// An operator vote the sync took as held (no other announcer's copy
+    /// asked for) but the wallet could not keep: asked for again, and a
+    /// `delete` NO is a doubt on its proposal until then (D85).
+    fn lose_held(&mut self, vote: &GovernanceVote, outcome: VoteOutcome) {
+        if vote.signal == SentinelSignal::Delete.code() && outcome == VoteOutcome::No {
+            self.doubt(vote.parent_hash, vote.masternode_outpoint, vote.time);
+        }
+        self.refetch.push(vote.hash());
     }
 
     /// Whether every masternode of the list is resolved.
@@ -2318,16 +2341,16 @@ impl GovernanceStore {
             .collect()
     }
 
-    /// Parks an operator vote; `false` when its sender's bound is full. The
-    /// oldest goes past [`MAX_PARKED_VOTES`]: a `delete` NO held so is a
-    /// doubt on its proposal, asked for again (D85).
+    /// Parks an operator vote, held unless it `failed_under` its
+    /// masternode's key; `false` when its sender's bound is full. The oldest
+    /// goes past [`MAX_PARKED_VOTES`]: one held so is lost (D85).
     fn park(
         &mut self,
         v: OperatorVote,
         failed_under: Option<[u8; 48]>,
-        held: bool,
         from: Option<SocketAddr>,
     ) -> bool {
+        let held = failed_under.is_none();
         let copy = copy_digest(&v.vote.hash(), &v.vote.signature);
         if let Some(p) = self.parked.get_mut(&copy) {
             p.failed_under = failed_under;
@@ -2345,11 +2368,8 @@ impl GovernanceStore {
             };
             if let Some(p) = self.unpark(&old)
                 && p.held
-                && p.vote.signal == SentinelSignal::Delete.code()
-                && p.outcome == VoteOutcome::No
             {
-                self.doubt(p.vote.parent_hash, p.vote.masternode_outpoint, p.vote.time);
-                self.refetch.push(p.vote.hash());
+                self.lose_held(&p.vote, p.outcome);
             }
         }
         if let Some(peer) = from {
@@ -4781,17 +4801,20 @@ mod tests {
             };
             s.add_operator_vote(o, from, NOW)
         };
-        // One sender's bound: past it, refused for another announcer's.
+        // One sender's bound: past it, refused, and asked for again of
+        // another announcer.
         for i in 0..MAX_PARKED_PER_PEER {
             assert_eq!(
                 parked(&mut s, i, VoteOutcome::Yes, peer(1)),
                 Err(VoteRejection::Parked)
             );
         }
+        assert!(s.take_refetch().is_empty());
         assert_eq!(
-            parked(&mut s, MAX_PARKED_PER_PEER, VoteOutcome::No, peer(1)),
+            parked(&mut s, MAX_PARKED_PER_PEER, VoteOutcome::Yes, peer(1)),
             Err(VoteRejection::Unverifiable)
         );
+        assert_eq!(s.take_refetch().len(), 1);
         assert_eq!(
             parked(&mut s, MAX_PARKED_PER_PEER, VoteOutcome::No, None),
             Err(VoteRejection::Parked)
@@ -4809,9 +4832,77 @@ mod tests {
         }
         assert_eq!(s.parked.len(), MAX_PARKED_PER_PEER as usize + 1);
         assert!(s.parked.values().all(|p| p.outcome == VoteOutcome::Yes));
-        assert_eq!(s.take_refetch().len(), 1);
+        assert_eq!(
+            s.take_refetch().len(),
+            MAX_PARKED_PER_PEER as usize + 1,
+            "every held vote evicted is asked for again"
+        );
         s.prune(NOW);
         assert_eq!(s.deletion_mark(&h), None, "the evicted NO is a doubt");
         assert!(!s.parked_per_peer.contains_key(&peer(1).unwrap()));
+    }
+
+    #[test]
+    fn a_delete_no_refused_for_its_senders_bound_is_a_doubt() {
+        // Validator r2 m-C: perhaps its only announcer's copy.
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = deletion_store(&obj);
+        s.set_synced(&[h]);
+        for op in 1..=4 {
+            delete(&mut s, h, op, VoteOutcome::Yes);
+        }
+        let list: Vec<ListEntry> = (1..=7).map(|k| entry(k, 1)).collect();
+        s.set_masternode_list(&list);
+        let parked = |s: &mut GovernanceStore, i: u32, outcome| {
+            let mut v = signal_vote(h, 0, SentinelSignal::Delete, outcome, 10);
+            v.masternode_outpoint.vout = 1_000 + i;
+            let o = OperatorVote {
+                vote: v,
+                outcome,
+                checked: None,
+                held: false,
+            };
+            s.add_operator_vote(o, peer(1), NOW)
+        };
+        for i in 0..MAX_PARKED_PER_PEER {
+            assert_eq!(
+                parked(&mut s, i, VoteOutcome::Yes),
+                Err(VoteRejection::Parked)
+            );
+        }
+        assert_eq!(
+            parked(&mut s, MAX_PARKED_PER_PEER, VoteOutcome::No),
+            Err(VoteRejection::Unverifiable)
+        );
+        assert!(s.parked.values().all(|p| p.outcome == VoteOutcome::Yes));
+        s.prune(NOW);
+        assert_eq!(s.deletion_mark(&h), None);
+    }
+
+    #[test]
+    fn a_held_operator_vote_that_fails_is_asked_for_again() {
+        // Validator r2 m-D: no other announcer's copy was asked for while
+        // it was held, whatever its signal.
+        use SentinelSignal::Valid;
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 1), entry(2, 1)]);
+        let v = signal_vote(h, 1, Valid, VoteOutcome::Yes, 10);
+        assert_eq!(
+            add_signal(&mut s, v.clone(), true),
+            Err(VoteRejection::Parked)
+        );
+        assert!(s.take_refetch().is_empty());
+        resolve(&mut s, &[(1, 1)]);
+        assert_eq!(check_parked(&mut s, &[]), 0);
+        assert_eq!(s.take_refetch(), vec![v.hash()]);
+        assert_eq!(signal_estimates(&s, &h, Valid), (0, 0));
+        // Not held a second time: a failing copy is refused at once.
+        assert_eq!(
+            add_signal(&mut s, v, false),
+            Err(VoteRejection::Unverifiable)
+        );
+        assert!(s.take_refetch().is_empty());
     }
 }

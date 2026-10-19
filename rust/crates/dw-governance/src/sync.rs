@@ -1335,13 +1335,7 @@ impl Run {
         let result = if SentinelSignal::from_code(vote.signal).is_some() {
             // An operator vote, checked without the store's lock (D89).
             let key = self.shared.store().operator_key(&vote.masternode_outpoint);
-            let checked = key.map(|k| (k, vote.verify_operator(&k)));
-            let v = OperatorVote {
-                vote,
-                outcome,
-                checked,
-                held: false,
-            };
+            let v = OperatorVote::checked(vote, outcome, key);
             self.shared.store().add_operator_vote(v, addr, now)
         } else {
             // Recovered without the store's lock.
@@ -1706,12 +1700,15 @@ impl Run {
             .store()
             .take_parked_ready(PARKED_CHECKS_PER_TICK);
         let mut stored = false;
-        for (mut v, from) in ready {
+        for (v, from) in ready {
             let key = self
                 .shared
                 .store()
                 .operator_key(&v.vote.masternode_outpoint);
-            v.checked = key.map(|k| (k, v.vote.verify_operator(&k)));
+            let v = OperatorVote {
+                held: v.held,
+                ..OperatorVote::checked(v.vote, v.outcome, key)
+            };
             stored |= self.shared.store().add_operator_vote(v, from, now).is_ok();
         }
         if stored {
