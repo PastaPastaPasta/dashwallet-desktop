@@ -20,6 +20,9 @@ tracing = { workspace = true }
 [features]
 # The engine's mutation tests only (DEC-160 `EraseAll`); never in a release.
 test-mutations = []
+# Debug builds' tests only: power loss on an armed database (MG-03 D34);
+# never in a release.
+durability-sim = []
 
 [dev-dependencies]
 tempfile = { workspace = true }

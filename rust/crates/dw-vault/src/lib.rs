@@ -47,6 +47,8 @@
 mod crypto;
 mod dip15;
 mod error;
+#[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+pub mod fault;
 mod file;
 #[cfg(test)]
 mod lock_race_tests;
@@ -71,8 +73,10 @@ pub use types::{
     SeedDerivation, SystemClock, UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
 };
 pub use vault::{
-    CheckedPassphraseChange, CoreMnemonicCheck, MASTERNODE_KEY_ROLES, MAX_MASTERNODE_KEY_BYTES,
-    MAX_PASSPHRASE_BYTES, Vault, WalletBackupBundle, reads_bundle_version, throttle_wait_secs,
+    ALL_LINK_KINDS, CheckedPassphraseChange, CoreMnemonicCheck, MASTERNODE_KEY_ROLES,
+    MAX_MASTERNODE_KEY_BYTES, MAX_PASSPHRASE_BYTES, MAX_STASHED_LINK_BYTES, MAX_STASHED_LINKS,
+    OTHER_KIND, StashedLinkKind, StashedLinkMeta, Vault, WalletBackupBundle, reads_bundle_version,
+    throttle_wait_secs,
 };
 
 /// Directory of the vault inside a network data directory.

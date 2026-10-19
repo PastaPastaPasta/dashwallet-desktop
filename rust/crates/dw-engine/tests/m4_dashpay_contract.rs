@@ -107,6 +107,21 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.profile",
     "DashPay.profile_limits",
     "DashPay.update_profile",
+    // DP5-01: the link stash.
+    "NetworkSession.stash_link",
+    "NetworkSession.stashed_links",
+    "NetworkSession.take_stashed_link",
+    "NetworkSession.forget_stashed_link",
+    "NetworkSession.stash_invitation",
+    "NetworkSession.pending_invitations",
+    "NetworkSession.forget_invitation",
+    // DP4-02: the avatar pipeline and the pictures toggle.
+    "DashPay.prepare_avatar",
+    "DashPay.avatar_upload_available",
+    "DashPay.upload_avatar",
+    "DashPay.avatar",
+    "NetworkSession.load_contact_pictures",
+    "NetworkSession.set_load_contact_pictures",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -143,9 +158,15 @@ const FACADE: &[&str] = &[
 /// its tests (DP1-04), the contact payment locks (DP3-01), contact
 /// payment attribution with its tests (DP3-02), and the DashPay status's
 /// rules with their tests (BL-153), the profile reads and writes with
-/// their tests (DP4-01), and the names checks (DP1-08).
+/// their tests (DP4-01), the names checks (DP1-08), and the avatar
+/// pipeline's guard, decoder, cache and tests (DP4-02).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
+    "avatar.rs",
+    "avatar_cache.rs",
+    "avatar_fetch.rs",
+    "avatar_image.rs",
+    "avatar_tests.rs",
     "balances.rs",
     "banner.rs",
     "banner_tests.rs",
@@ -162,6 +183,8 @@ const NOT_FACADE: &[&str] = &[
     "keys_policy.rs",
     "lease",
     "mod.rs",
+    "money_gate.rs",
+    "money_gate_tests.rs",
     "names_check.rs",
     "names_net.rs",
     "notifications_tests.rs",
@@ -1201,10 +1224,31 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
     };
     let mut c = Calls::default();
     engine.block_on(async {
-        c.stub(session.stash_invitation(secret()).await);
+        // DP5-01: the link stash; its behaviour is tested in dw-vault's
+        // `vault::links` and dw-app's IPC tests. Here: refusals, no vault.
+        assert_eq!(
+            session.stash_link(secret()).await.unwrap_err().code(),
+            "invalid_argument"
+        );
+        assert_eq!(session.stashed_links().await, Ok(vec![]));
+        assert_eq!(
+            session.take_stashed_link(s()).await.unwrap_err().code(),
+            "invalid_argument"
+        );
+        assert_eq!(
+            session.forget_stashed_link(s()).await.unwrap_err().code(),
+            "invalid_argument"
+        );
+        assert_eq!(
+            session.stash_invitation(secret()).await.unwrap_err().code(),
+            "invitation.invalid"
+        );
+        assert_eq!(session.pending_invitations().await, Ok(vec![]));
+        assert_eq!(
+            session.forget_invitation(s()).await.unwrap_err().code(),
+            "invalid_argument"
+        );
         c.stub(session.invitation_status(s()).await);
-        c.stub(session.pending_invitations().await);
-        c.stub(session.forget_invitation(s()).await);
         // The lease surface (E0-04.P2a) is implemented; its behaviour is
         // tested in `platform::lease`.
         assert_eq!(
@@ -1334,10 +1378,23 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.update_profile(s(), edit, s()).await.unwrap_err().code(),
             "wallet_not_found"
         );
-        c.stub(dp.prepare_avatar(AvatarSource::Url { url: s() }).await);
-        c.stub(dp.avatar_upload_available());
-        c.stub(dp.upload_avatar(s()).await);
-        c.stub(dp.avatar(s(), AvatarSize::Small).await);
+        // DP4-02's: an unknown wallet is refused; nothing uploads until B1;
+        // the pictures toggle is the network's, on until turned off.
+        for refused in [
+            dp.prepare_avatar(AvatarSource::Url { url: s() })
+                .await
+                .map(drop),
+            dp.upload_avatar(s()).await.map(drop),
+            dp.avatar(s(), AvatarSize::Small).await.map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
+        assert_eq!(dp.avatar_upload_available(), Ok(false));
+        assert_eq!(session.load_contact_pictures(), Ok(true));
+        session.set_load_contact_pictures(false).await.unwrap();
+        assert_eq!(session.load_contact_pictures(), Ok(false));
+        session.set_load_contact_pictures(true).await.unwrap();
+        assert_eq!(session.load_contact_pictures(), Ok(true));
 
         // DP1-06: the cost table is the network's, so it reads no wallet;
         // the others refuse an unknown one.

@@ -2,28 +2,74 @@
 //! and the state the native menus mirror. The shell's own events are in
 //! `shell`.
 
+use dw_engine::platform::TakenLink;
+
 use crate::error::{AppCode, AppError};
 use crate::ipc::commands;
 use crate::shell::ShellSync;
-use crate::shell::links::{self, LinkRoute};
+use crate::shell::links::{self, LinkRoute, Routed, StashedLinkInfo};
 
-pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
+pub(crate) const EXCLUDED: &[(&str, &str)] = &[(
+    "NetworkSession::stash_link",
+    "internal: links reach the stash through `take_links` and `route_link` (shell::links::intake), so a link's text never comes from the renderer as its own command",
+)];
 
 commands! {
     /// Takes the queued deep links (after `linksPending`, and once at
     /// start-up), routed for `network` (a directory name: the network the
-    /// window shows), in arrival order. An invitation comes as a bare
-    /// `invitation`: its link never crosses IPC.
+    /// window shows), in arrival order. An invitation goes into the link
+    /// stash and comes as `invitation` with its stash id: its link never
+    /// crosses IPC. While the network has no wallet, a payment or contact
+    /// link is kept there too and comes as `saved` (DP5-01).
     #[facade()]
     fn take_links(state, network: String) -> Vec<LinkRoute> {
-        state.shell.inbox.take(&network)
+        let session = state.session().await.ok();
+        state.shell.inbox.take(session, &network).await
     }
 
-    /// Where `text` leads, for File ▸ Open URI… (QT-019): the routing a
-    /// queued link gets, a text over `MAX_LINK_BYTES` included.
+    /// Where `text` leads, for File ▸ Open URI… (QT-019): the routing and
+    /// intake a queued link gets, a text over `MAX_LINK_BYTES` included.
     #[facade()]
     fn route_link(state, network: String, text: String) -> LinkRoute {
-        links::route(&network, &zeroize::Zeroizing::new(text))
+        let session = state.session().await.ok();
+        links::intake(session, &network, &zeroize::Zeroizing::new(text)).await
+    }
+
+    /// The links in the stash, oldest first, without their text (DP5-01):
+    /// what the renderer offers after onboarding and after an unlock.
+    #[facade("NetworkSession::stashed_links")]
+    fn stashed_links(state) -> Vec<StashedLinkInfo> {
+        let links = state.session().await?.stashed_links().await?;
+        Ok(links.into_iter().map(Into::into).collect())
+    }
+
+    /// Opens a stashed link: a payment or contact link leaves the stash
+    /// and comes back routed for the window's network (once: `null` when
+    /// it is gone); an invitation stays and comes back as `invitation`.
+    /// A locked vault is `platform.signer_unavailable` and keeps the link.
+    #[facade("NetworkSession::take_stashed_link")]
+    fn open_stashed_link(state, link_id: String) -> Option<LinkRoute> {
+        let session = state.session().await?;
+        // The vault checks the kind under its lock: an invitation is
+        // neither opened nor deleted (review r1 #6).
+        let text = match session.take_stashed_link(link_id.clone()).await? {
+            None => return Ok(None),
+            Some(TakenLink::Invitation) => return Ok(Some(LinkRoute::Invitation { link_id })),
+            Some(TakenLink::Link(text)) => text,
+        };
+        let network = session.network().dir_name();
+        Ok(Some(match links::route_text(&network, text.expose())? {
+            Routed::Route(route) => route,
+            // Not stashed as a payment or contact link: nothing to open.
+            Routed::Invitation => return Ok(None),
+        }))
+    }
+
+    /// Drops a stashed link unread: the user dismissed it. Works locked;
+    /// gone already is not an error.
+    #[facade("NetworkSession::forget_stashed_link")]
+    fn dismiss_stashed_link(state, link_id: String) -> () {
+        Ok(state.session().await?.forget_stashed_link(link_id).await?)
     }
 
     /// What the native menus and the tray mirror: Discreet Mode's check

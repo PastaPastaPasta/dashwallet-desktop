@@ -124,6 +124,7 @@ import type { SessionSettings } from "./SessionSettings";
 import type { ShellEvent } from "./ShellEvent";
 import type { ShellSync } from "./ShellSync";
 import type { SpvStateName } from "./SpvStateName";
+import type { StashedLinkInfo } from "./StashedLinkInfo";
 import type { StuckTopUpFunding } from "./StuckTopUpFunding";
 import type { SyncLoopStatus } from "./SyncLoopStatus";
 import type { SyncPassReport } from "./SyncPassReport";
@@ -625,6 +626,19 @@ export function receiveRequests(walletId: string): Promise<Array<ReceiveRequest>
  */
 export function receiveUsername(walletId: string): Promise<string | null> {
   return invoke<string | null>("receive_username", { walletId });
+}
+
+/**
+ * "Include my username in payment requests" for the wallet (DP3-03b);
+ * on by default. Off, `receiveUsername` is `null` and requests carry
+ * no username.
+ */
+export function usernameInRequests(walletId: string): Promise<boolean> {
+  return invoke<boolean>("username_in_requests", { walletId });
+}
+
+export function setUsernameInRequests(walletId: string, on: boolean): Promise<null> {
+  return invoke<null>("set_username_in_requests", { walletId, on });
 }
 
 export function deleteReceiveRequest(walletId: string, requestId: number): Promise<null> {
@@ -1910,6 +1924,22 @@ export function dashpayAvatar(walletId: string, identity: string, size: AvatarSi
 }
 
 /**
+ * "Load contact pictures" for the active network: on unless turned
+ * off.
+ */
+export function loadContactPictures(): Promise<boolean> {
+  return invoke<boolean>("load_contact_pictures");
+}
+
+/**
+ * Turns "Load contact pictures" on or off for the active network.
+ * Off, no other user's avatar is fetched or shown.
+ */
+export function setLoadContactPictures(on: boolean): Promise<null> {
+  return invoke<null>("set_load_contact_pictures", { on });
+}
+
+/**
  * Every console command, sorted by name.
  */
 export function consoleCommands(): Promise<Array<ConsoleCommand>> {
@@ -1962,19 +1992,47 @@ export function unitName(unit: DisplayUnit, network: string): Promise<string> {
 /**
  * Takes the queued deep links (after `linksPending`, and once at
  * start-up), routed for `network` (a directory name: the network the
- * window shows), in arrival order. An invitation comes as a bare
- * `invitation`: its link never crosses IPC.
+ * window shows), in arrival order. An invitation goes into the link
+ * stash and comes as `invitation` with its stash id: its link never
+ * crosses IPC. While the network has no wallet, a payment or contact
+ * link is kept there too and comes as `saved` (DP5-01).
  */
 export function takeLinks(network: string): Promise<Array<LinkRoute>> {
   return invoke<Array<LinkRoute>>("take_links", { network });
 }
 
 /**
- * Where `text` leads, for File ▸ Open URI… (QT-019): the routing a
- * queued link gets, a text over `MAX_LINK_BYTES` included.
+ * Where `text` leads, for File ▸ Open URI… (QT-019): the routing and
+ * intake a queued link gets, a text over `MAX_LINK_BYTES` included.
  */
 export function routeLink(network: string, text: string): Promise<LinkRoute> {
   return invoke<LinkRoute>("route_link", { network, text });
+}
+
+/**
+ * The links in the stash, oldest first, without their text (DP5-01):
+ * what the renderer offers after onboarding and after an unlock.
+ */
+export function stashedLinks(): Promise<Array<StashedLinkInfo>> {
+  return invoke<Array<StashedLinkInfo>>("stashed_links");
+}
+
+/**
+ * Opens a stashed link: a payment or contact link leaves the stash
+ * and comes back routed for the window's network (once: `null` when
+ * it is gone); an invitation stays and comes back as `invitation`.
+ * A locked vault is `platform.signer_unavailable` and keeps the link.
+ */
+export function openStashedLink(linkId: string): Promise<LinkRoute | null> {
+  return invoke<LinkRoute | null>("open_stashed_link", { linkId });
+}
+
+/**
+ * Drops a stashed link unread: the user dismissed it. Works locked;
+ * gone already is not an error.
+ */
+export function dismissStashedLink(linkId: string): Promise<null> {
+  return invoke<null>("dismiss_stashed_link", { linkId });
 }
 
 /**
@@ -2176,6 +2234,8 @@ export type CommandArgs = {
   create_receive_request: { walletId: string; amount: number | null; label: string | null; message: string | null };
   receive_requests: { walletId: string };
   receive_username: { walletId: string };
+  username_in_requests: { walletId: string };
+  set_username_in_requests: { walletId: string; on: boolean };
   delete_receive_request: { walletId: string; requestId: number };
   address_book: { walletId: string; purpose: AddressPurposeName | null; search: string | null };
   save_address_book_entry: { walletId: string; address: string; label: string; purpose: AddressPurposeName; replace: boolean };
@@ -2338,6 +2398,8 @@ export type CommandArgs = {
   dashpay_avatar_upload_available: { walletId: string };
   dashpay_upload_avatar: { walletId: string; candidate: string };
   dashpay_avatar: { walletId: string; identity: string; size: AvatarSizeName };
+  load_contact_pictures: {  };
+  set_load_contact_pictures: { on: boolean };
   console_commands: {  };
   console_redact: { line: string };
   console_execute: { walletId: string | null; line: string; grantId: string | null };
@@ -2346,6 +2408,9 @@ export type CommandArgs = {
   unit_name: { unit: DisplayUnit; network: string };
   take_links: { network: string };
   route_link: { network: string; text: string };
+  stashed_links: {  };
+  open_stashed_link: { linkId: string };
+  dismiss_stashed_link: { linkId: string };
   shell_sync: { sync: ShellSync };
   open_file: { purpose: FilePurpose };
   save_file_as: { purpose: FilePurpose; suggestedName: string; data: string };
@@ -2421,6 +2486,8 @@ export type CommandResults = {
   create_receive_request: ReceiveRequest;
   receive_requests: Array<ReceiveRequest>;
   receive_username: string | null;
+  username_in_requests: boolean;
+  set_username_in_requests: null;
   delete_receive_request: null;
   address_book: Array<AddressBookEntry>;
   save_address_book_entry: AddressBookEntry;
@@ -2583,6 +2650,8 @@ export type CommandResults = {
   dashpay_avatar_upload_available: boolean;
   dashpay_upload_avatar: string;
   dashpay_avatar: AvatarThumbnail | null;
+  load_contact_pictures: boolean;
+  set_load_contact_pictures: null;
   console_commands: Array<ConsoleCommand>;
   console_redact: string;
   console_execute: ConsoleOutput;
@@ -2591,6 +2660,9 @@ export type CommandResults = {
   unit_name: string;
   take_links: Array<LinkRoute>;
   route_link: LinkRoute;
+  stashed_links: Array<StashedLinkInfo>;
+  open_stashed_link: LinkRoute | null;
+  dismiss_stashed_link: null;
   shell_sync: null;
   open_file: OpenedFile | null;
   save_file_as: string | null;
@@ -2668,6 +2740,8 @@ export const COMMANDS: Record<CommandName, string> = {
   create_receive_request: "wallets",
   receive_requests: "wallets",
   receive_username: "wallets",
+  username_in_requests: "wallets",
+  set_username_in_requests: "wallets",
   delete_receive_request: "wallets",
   address_book: "wallets",
   save_address_book_entry: "wallets",
@@ -2830,6 +2904,8 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_avatar_upload_available: "social",
   dashpay_upload_avatar: "social",
   dashpay_avatar: "social",
+  load_contact_pictures: "social",
+  set_load_contact_pictures: "social",
   console_commands: "console",
   console_redact: "console",
   console_execute: "console",
@@ -2838,6 +2914,9 @@ export const COMMANDS: Record<CommandName, string> = {
   unit_name: "units",
   take_links: "shell",
   route_link: "shell",
+  stashed_links: "shell",
+  open_stashed_link: "shell",
+  dismiss_stashed_link: "shell",
   shell_sync: "shell",
   open_file: "files",
   save_file_as: "files",
@@ -2879,6 +2958,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "network_not_open",
   "storage_in_use",
   "storage",
+  "storage_too_new",
   "wallet_not_found",
   "invalid_mnemonic",
   "wallet_already_exists",

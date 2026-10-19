@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 28
+Contract-Version: 31
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -55,7 +55,7 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
 DP1-01's `keys_policy.rs`, E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, DP2-04's private details `private_details.rs` with `private_details_tests.rs`, DP2-05's bell session tests `notifications_tests.rs`, DP1-06's cost table `credit_costs.rs`, balance refreshes `balances.rs` and top-up flow `topup.rs` with `topup_tests.rs`, DP1-04's contest watch `contest_watch.rs` with `contest_watch_tests.rs`, and DP3-02's contact payment attribution `attribution.rs` with `payments_tests.rs`, and DP1-08's names checks `names_check.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, DP2-04's private details `private_details.rs` with `private_details_tests.rs`, DP2-05's bell session tests `notifications_tests.rs`, DP1-06's cost table `credit_costs.rs`, balance refreshes `balances.rs` and top-up flow `topup.rs` with `topup_tests.rs`, DP1-04's contest watch `contest_watch.rs` with `contest_watch_tests.rs`, and DP3-02's contact payment attribution `attribution.rs` with `payments_tests.rs`, DP1-08's names checks `names_check.rs`, and DP3-04's money-move trust gate `money_gate.rs` with `money_gate_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -70,9 +70,9 @@ type is `pub(crate)`.
 | `contacts.rs` | DP2-01…DP2-04 | `contacts`, `contact`, `pending_setup_count`, `eligibility`, `send_request`, `accept_request`, `ignore`, `unignore`, `set_private_details`, `enable_dashpay_keys`, `my_user_link`, `verify_scanned` |
 | `payments.rs` | DP3-01, DP3-02 | `payment_lock`, `resolve_payment_lock`, `contact_activity`, `frequent_contacts` |
 | `notifications.rs` | DP2-05 | `events`, `unread_count`, `mark_read` |
-| `profile.rs` | DP4-01, DP4-02 | `profile`, `profile_limits`, `prepare_avatar`, `avatar_upload_available`, `upload_avatar`, `update_profile`, `avatar` |
+| `profile.rs` | DP4-01, DP4-02 | `profile`, `profile_limits`, `prepare_avatar`, `avatar_upload_available`, `upload_avatar`, `update_profile`, `avatar`, `NetworkSession.load_contact_pictures`, `set_load_contact_pictures` |
 | `credits.rs` | DP1-06, DP6-02 | `cost_table`, `top_up_quote`, `top_up`, `pending_top_ups`, `stuck_top_up_fundings`, `resume_top_up`, `resolve_top_up`, `withdraw_quote`, `withdraw` |
-| `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
+| `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_link`, `stashed_links`, `take_stashed_link`, `forget_stashed_link`, `stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
 | `errors.rs` | E0-05 (the mapping, §6) and each domain's owner | the error enums of §4 |
 
@@ -83,15 +83,15 @@ type is `pub(crate)`.
 | Ids | Wallet: `WalletId` (the facade is bound to one wallet). Identities and contacts: Base58 `String`. Txids: lower-case hex. Drafts, candidates, scans, faucet keys, invitation links, activity cursors: opaque `String` ids the engine issued, each 1–64 characters of `[0-9a-z_-]` (`dwcli dashpay session` checks them by that form), as is the `<id>` of a funding step id (`registration/<id>/funding`, `topup/<id>/funding`). |
 | Amounts | Duffs and credits are `u64`; the field name or doc says which. |
 | Every call returns `Result` | Including the in-memory reads DASHPAY §3.6 sketched without one (`status`, `identities`, `contacts`, …) and `check_username`. A stub has to return `platform.not_implemented`, and the finished reads need `network_not_open` and `wallet_not_found`. |
-| Sync and async | A sync call reads in-memory state only (m1 rule 3): no SQLite on the caller's thread. An async call touches the network or persistence; once implemented it runs on the engine runtime (`NetworkSession::on_runtime`), so any executor may poll it. The sync reads are served from caches their owners keep in the session's Platform runtime, filled at bring-up and refreshed on each `Platform` signal: the status snapshot (`status`, `sync_status`; E0-05), the identity list with the main identity (`identities`, `profile`; DP1-05), the contacts read model (`contacts`, `contact`, `pending_setup_count`, `frequent_contacts`, `my_user_link`; DP2-01), the payment locks (`payment_lock`; DP3-01), the unread counts (`unread_count`; DP2-05, kept by the changeset tap, which recounts after each journal write) and the static tables (`profile_limits`, `cost_table`, `avatar_upload_available`). The contacts read model (DP2-01) reads the library's memory on each call instead, under a non-blocking read lock, and keeps the result as a snapshot that answers only while a writer holds that lock (§2.4). Paged or unbounded reads (`events`, `registrations`) are async. |
+| Sync and async | A sync call reads in-memory state only (m1 rule 3): no SQLite on the caller's thread. An async call touches the network or persistence; once implemented it runs on the engine runtime (`NetworkSession::on_runtime`), so any executor may poll it. The sync reads are served from caches their owners keep in the session's Platform runtime, filled at bring-up and refreshed on each `Platform` signal: the status snapshot (`status`, `sync_status`; E0-05), the identity list with the main identity (`identities`, `profile`; DP1-05), the contacts read model (`contacts`, `contact`, `pending_setup_count`, `frequent_contacts`, `my_user_link`; DP2-01), the payment locks (`payment_lock`; DP3-01), the unread counts (`unread_count`; DP2-05, kept by the changeset tap, which recounts after each journal write) the static tables (`profile_limits`, `cost_table`, `avatar_upload_available`) and the "Load contact pictures" toggle (`load_contact_pictures`; DP4-02). The contacts read model (DP2-01) reads the library's memory on each call instead, under a non-blocking read lock, and keeps the result as a snapshot that answers only while a writer holds that lock (§2.4). Paged or unbounded reads (`events`, `registrations`) are async. |
 | Static tables before Platform answers | `profile_limits` reads the DashPay contract the library bundles (25 / 140 at the pin; the built-in 25 / 140 only if it lacked a `maxLength`, §7 item 50); `cost_table` prices the SDK's current protocol version (the seed floor until Platform's proved metadata raises it). Neither waits for the network. |
 | Grants and leases | `grant: String` is either a grant id from `Vault.authorize` or a lease id from `NetworkSession.begin_flow` (§2.11). The purposes, caps and budgets are E0-04's (DASHPAY §2.6). A flow that spans calls ("Accept and pay": `accept_request`, then the payment's `TxDraft.prepare`, §2.3) redeems its grants once with `begin_flow`, from one credential prompt, and passes the lease id to each call, so the 120 s grant lifetime cannot run out between them; `end_flow` releases it. **A lease id is accepted only by a call of the lease's own wallet, and only for a purpose the lease carries**: another wallet's lease is `platform.grant_invalid`, and a lease without the purpose the call needs (a `ProfileEdit` lease passed to `top_up`) is `platform.needs_grant{purpose}`; a write that names the flows whose leases it takes refuses a lease of another flow with `platform.grant_invalid` (§7 item 41, E0-04 amendment 3). The idle reaper ends a vault-key lease after **10 minutes** with no call, no permit and no running flow task; an own-key lease's key is dropped at its `key_until` (the flow then needs a grant again), so a host that abandons a sheet leaks nothing. Every write's quote says what to authorize (`grant: GrantRequest`, or `grant_request(identity, action)`), and the engine charges no more than it quoted. Where Platform meters the fee against its state (IdentityUpdate, `contactRequest`), the quote is a bound and the charge is measured afterwards (DEC-195, §7 item 41). |
 | Records | Derive `serde` `Serialize` and `Deserialize`, plus `Debug`, `Clone` and `PartialEq`. The exceptions are inputs that carry private data, which derive `Deserialize` only: `AvatarSource` (the Gravatar e-mail). Enums with data are internally tagged with `kind` and snake-case names; unit enums serialize as snake-case strings. Byte payloads (`AvatarSource::File.bytes`, `AvatarImage.png`) serialize as standard base64 strings, never as number arrays. |
 | Errors | One enum per domain, with `code()` returning a stable string (§4), and `platform()` returning the wrapped `PlatformError`, if any. `Display` is diagnostic detail for logs. Each domain wraps `PlatformError` in a `Platform` variant, so `platform.*`, `identity.*` and the common codes reach the host from any call. |
 | Secrets | See below. |
 
-**Secrets.** Bearer credentials come in as `BearerSecret` (DASHPAY §3.8): invitation links (`stash_invitation`) and
-scanned payloads that may carry a `dapk` (`verify_scanned`). The faucet path carries no secret at all (§5).
+**Secrets.** Bearer credentials come in as `BearerSecret` (DASHPAY §3.8): links (`stash_link`, `stash_invitation`;
+`take_stashed_link` hands a payment or contact link back as one) and scanned payloads that may carry a `dapk` (`verify_scanned`). The faucet path carries no secret at all (§5).
 
 - `BearerSecret` deserializes from a JSON string and never serializes. It has no `Display`, `Clone`, `PartialEq` or
   conversion back to `String`; its `Debug` prints `BearerSecret(..)`; it is zeroed on drop; `expose()` reads it in the
@@ -494,11 +494,13 @@ bodies decided where the rows leave room:
 |---|---|---|---|
 | `profile(identity)` | sync | The profile of any identity from memory; `None` if none. One of the wallet's identities: its profile as `identities()` shows it (the same read, live or snapshot). Another user: the profile the contacts read model holds for it (§2.4, the library's cache of contacts' and senders' profiles), under the main identity first, then the others by index; `None` for a user the wallet holds nothing of. While a writer holds the state and no read has left a snapshot to answer from, `platform.unavailable`: re-query on the `Platform{Identities}` or `Platform{Contacts}` that follows. `updated_at` is `None` (the library keeps no `$updatedAt`). **Implemented (DP4-01).** | `PlatformError` (`invalid_argument` for an id that is not Base58) |
 | `profile_limits()` | sync | The `maxLength` of the `profile` document's `displayName` and `publicMessage` in the DashPay contract the library bundles: 25 / 140 at the pin (§1). Reads no wallet and never the network. **Implemented (DP4-01).** | `PlatformError` |
-| `prepare_avatar(src)` | async | Fetches or decodes `File{bytes, crop}`, `Url{url}` or `Gravatar{email}`, re-encodes to PNG and returns a candidate with a preview (DASHPAY §3.8). | `AvatarError` |
-| `avatar_upload_available()` | sync | An Imgur client id is configured. | `AvatarError` |
-| `upload_avatar(candidate)` | async | Uploads a `File` candidate to Imgur; returns its URL and sets the candidate's `url`. | `AvatarError` |
-| `update_profile(identity, edit, grant)` | async | Publishes the whole new profile (`None` clears a field) as the identity's `profile` document: a replacement at the next revision when Platform holds one, else a creation. Each text is trimmed and an empty one clears its field; a text longer than its limit (`profile_limits`, counted in Unicode scalar values) is `profile.too_long{field, length, max}`. The avatar fields are kept (`Keep`) or removed together (`Remove`); `Set` is `invalid_argument` until DP4-02. Every field of Platform's document the edit does not own (the avatar on `Keep`, the v2 contract's payment-address fields) is carried over. An edit that leaves Platform's document as it is (or sets nothing where there is none) is `Ok` with nothing sent and the grant unused. An edit with a `baseline` (what `profile` showed when the user began it) whose profile is not what `profile` shows of Platform's document now (`updated_at` aside) is `profile.conflict{current}`, with that profile (`None`: Platform holds none), and the cache follows Platform; without a baseline the edit replaces whatever Platform holds. One that would leave the document no field is `profile.empty`. When the `profile` type of the DashPay contract Platform runs (fetched, proved) has a property the bundled contract lacks or types otherwise, or Platform has no such type, the write would drop or reshape a field it parsed with the bundled type: `profile.unsupported_contract`. Then, before the grant is redeemed, as `send_request`: the identity's proved balance below the quote (`DOCUMENT_10K_CREDITS`, `grant_request(UpdateProfile)`'s bound) is `platform.insufficient_credits`, a grant capped below it `platform.grant_exceeded`, a lease of another flow than `ProfileEdit` `platform.grant_invalid`, no `HIGH` or `CRITICAL` authentication key the vault holds that may sign a profile now `identity.keys_missing` (one bound to another contract or another DashPay document type, a group-bound one, an expired or a disabled one may not; one with no budget or expiry is chosen before one with them, as the library's `usable_authentication_key`, item 50). A watched identity (no index) is `invalid_argument`. The document is signed by that one key under a call permit charged the quote; a write that failed after signing is read back, and succeeds if Platform holds the new document. On success the library's cached profile is the new one, signalled `Platform{Identities}`. The write runs under the identity's write lock (§2.4). Contacts see the change on their next DashPay pass: the engine expires the library's contact-profile cache at session open and after every pass that fetched it, so every pass fetches the contacts' profiles (item 50). **Implemented (DP4-01).** | `PlatformError` |
-| `avatar(identity, size)` | async | The cached or fetched thumbnail of any identity (a contact, a search hit, the inviter, an own identity); `None` if there is no avatar or "Load contact pictures" is off. The contact and user records carry no image, so this call serves them. | `AvatarError` |
+| `prepare_avatar(src)` | async | Fetches or decodes `File{bytes, crop}`, `Url{url}` or `Gravatar{email}`, re-encodes to PNG and returns a candidate with a preview (DASHPAY §3.8). `Url` and `Gravatar` (the trimmed, lower-cased address's MD5, as Android) are fetched now through the guard (DP4-02 design: `https` on 443 only, every address of every hop public, at most 3 redirects, 5 MiB, 10 s; PNG, JPEG or GIF sniffed from the bytes, at most 4096 px a side); the candidate's hash and fingerprint are the library's of the bytes fetched. A `File` is cropped, re-encoded to a PNG of at most 512 px a side, and hashed as that PNG; it `needs_upload`. A candidate is the wallet's, lives 30 minutes in the session, and the session keeps 16 per wallet (DP4-02 D27). Fetched even while "Load contact pictures" is off (the user asked for it). **Implemented (DP4-02).** | `AvatarError` (`invalid_argument` for a URL the guard's form rules refuse, or a crop outside the picture; `avatar.fetch_failed` for a non-public address, a status other than 200 or a network failure) |
+| `avatar_upload_available()` | sync | An Imgur client id is configured: `false` until B1 (DP4-02 D2). **Implemented (DP4-02).** | `AvatarError` |
+| `upload_avatar(candidate)` | async | Uploads a `File` candidate to Imgur; returns its URL and sets the candidate's `url`. Until B1: `avatar.upload_unconfigured` for a `File` candidate of this wallet. **Implemented (DP4-02).** | `AvatarError` (`invalid_argument` for an unknown or expired candidate, another wallet's, or one with a URL already) |
+| `update_profile(identity, edit, grant)` | async | Publishes the whole new profile (`None` clears a field) as the identity's `profile` document: a replacement at the next revision when Platform holds one, else a creation. Each text is trimmed and an empty one clears its field; a text longer than its limit (`profile_limits`, counted in Unicode scalar values) is `profile.too_long{field, length, max}`. The avatar fields are kept (`Keep`), removed together (`Remove`), or set together (`Set{candidate}`: the candidate's URL, hash and fingerprint, DP4-02); a `Set` naming an unknown or expired candidate, another wallet's, or one without a URL is `invalid_argument` before any network read. Every field of Platform's document the edit does not own (the avatar on `Keep`, the v2 contract's payment-address fields) is carried over. An edit that leaves Platform's document as it is (or sets nothing where there is none) is `Ok` with nothing sent and the grant unused. An edit with a `baseline` (what `profile` showed when the user began it) whose profile is not what `profile` shows of Platform's document now (`updated_at` aside) is `profile.conflict{current}`, with that profile (`None`: Platform holds none), and the cache follows Platform; without a baseline the edit replaces whatever Platform holds. One that would leave the document no field is `profile.empty`. When the `profile` type of the DashPay contract Platform runs (fetched, proved) has a property the bundled contract lacks or types otherwise, or Platform has no such type, the write would drop or reshape a field it parsed with the bundled type: `profile.unsupported_contract`. Then, before the grant is redeemed, as `send_request`: the identity's proved balance below the quote (`DOCUMENT_10K_CREDITS`, `grant_request(UpdateProfile)`'s bound) is `platform.insufficient_credits`, a grant capped below it `platform.grant_exceeded`, a lease of another flow than `ProfileEdit` `platform.grant_invalid`, no `HIGH` or `CRITICAL` authentication key the vault holds that may sign a profile now `identity.keys_missing` (one bound to another contract or another DashPay document type, a group-bound one, an expired or a disabled one may not; one with no budget or expiry is chosen before one with them, as the library's `usable_authentication_key`, item 50). A watched identity (no index) is `invalid_argument`. The document is signed by that one key under a call permit charged the quote; a write that failed after signing is read back, and succeeds if Platform holds the new document. On success the library's cached profile is the new one, signalled `Platform{Identities}`. The write runs under the identity's write lock (§2.4). Contacts see the change on their next DashPay pass: the engine expires the library's contact-profile cache at session open and after every pass that fetched it, so every pass fetches the contacts' profiles (item 50). **Implemented (DP4-01).** | `PlatformError` |
+| `avatar(identity, size)` | async | The thumbnail (`Small` 128 px, `Large` 256 px PNG) of any identity's avatar (a contact, a search hit, the inviter, an own identity), verified against its profile: the SHA-256 of the bytes fetched must be `avatarHash` (the fingerprint is not compared: the mobile wallets' dHash is another algorithm, DP4-02 D6, D32); a picture that does not match is `avatar.hash_mismatch` (show initials). The profile is the one `profile` shows; for a user the wallet holds nothing of, Platform's `profile` document, kept 10 minutes. `None` if there is no avatar. The URL's outcome is cached (`dp_avatar`, thumbnails in `avatars/` written through the directory's descriptor) and a failure or mismatch is not fetched again for 10 minutes; a profile whose hash or fingerprint is malformed is `avatar.hash_mismatch` without a fetch. While "Load contact pictures" is off, another user's is `None` without any read, and an own identity's comes from the cache only (`None` when nothing verified is cached). The contact and user records carry no image, so this call serves them. **Implemented (DP4-02).** | `AvatarError` (`invalid_argument` for an id that is not Base58; `avatar.fetch_failed`, `avatar.too_large`, `avatar.unsupported` as the fetch failed; `platform.unavailable` while a writer holds the state and no snapshot answers, as `profile`; `wallet_not_found`) |
+| `NetworkSession.load_contact_pictures()` | sync | "Load contact pictures" (DASHPAY §3.8; DP4-02 D17): `true` unless turned off. Read from memory; stored per network in app.sqlite; off for the session when the stored value cannot be read at open. **Implemented (DP4-02).** | `PlatformError` |
+| `NetworkSession.set_load_contact_pictures(on)` | async | Stores the toggle and applies it at once: off, `avatar` reads no other user's picture and fetches nothing (own identities from the cache only), from the moment the call returns, for reads already running too (they have ended by then, name lookups included; D33, D36, D39): no request or name lookup for an avatar host starts after it returns. Platform transport work an avatar read already queued may still connect to the session's configured DAPI nodes, and its answer is discarded (DP4-02 D41). An `avatar` call checks the toggle a last time before it answers: one that finds an off published since its read began answers `None` for another user's picture, so a contact picture is returned after the off returns only if it had passed that check before (DP4-02 D40). `prepare_avatar` still fetches. Calls at once apply in turn, and the session holds the value stored last (D34), a call dropped mid-way included (D37). **Implemented (DP4-02).** | `PlatformError` (`storage` when app.sqlite fails) |
 
 ### 2.8 Credits
 
@@ -506,7 +508,7 @@ bodies decided where the rows leave room:
 |---|---|---|---|
 | `cost_table()` | sync | The credit costs of the DashPay actions at the network's protocol version, for "≈ N contact requests" and the low-credit warnings (§5 `CostTable`, §7 item 44). The table is the network's: it reads no wallet. Refused only when the SDK's protocol version is one this build does not know (`internal`). **Implemented (DP1-06).** | `CreditsError` |
 | `top_up_quote(identity, duffs)` | async | The fee bound and total in duffs, the credits a top-up of `duffs` buys, an estimate that errs low as far as measured (`duffs × credits_per_duff` less the table's `top_up_fee`; Platform's metered charge was far below it on testnet, §7 item 46), and the `grant` to ask for (`max_duffs` = the total, no credits). Refuses an identity that is not the wallet's (`identity.not_found`), below `top_up_min_duffs` (`credits.below_minimum{min}`), an identity with a top-up not applied yet (`credits.top_up_pending{txid}`), above the spendable balance (`credits.funding_insufficient{needed, available}`), and a held-back coin the asset-lock builder would select (`credits.coins_locked`). Until the dispatch journal is read it is `platform.unavailable` (retry). **Implemented (DP1-06).** | `CreditsError` |
-| `top_up(identity, duffs, grant)` | async | Funds the identity from the Core balance: an asset lock of `duffs`, then Platform's IdentityTopUp from it (§7 item 44). The quote's refusals and the funding step's (below), checked under the identity's write lock before the grant is redeemed, so a refusal keeps the grant. Held back as a registration is: SPV not caught up is `platform.context_unavailable`; the bring-up running, not run, or its identity discovery incomplete or failed is `platform.unavailable`, and the call has it run again (§7 item 46); identities waiting for an unlock is `platform.signer_unavailable`. A grant whose funding cap is below the quote's total is `platform.grant_exceeded` before it is redeemed, so a smaller top-up can still use it. Until the dispatch journal is read the call is `platform.unavailable` (retry). Once the lock is funded the call returns `TopUpOutcome{txid, state}`: `Applied{credits_added, balance}`, `ConsumptionUnknown{balance}` (Platform answered "already consumed", which nothing proves: nothing added now, and the lock stays pending), `ProofWaiting` (no InstantSend lock in its window), or `NotApplied{error}` (the apply failed); nothing is lost in the last three (`pending_top_ups`, `resume_top_up`). A funding whose outcome is unknown is `platform.broadcast_unknown{artifact}` with the funding step `topup/<index>-<k>/funding` (`dispatch_status`), and every later top-up of the identity is refused the same until that step settles. `grant` may be a `TopUp` lease id. **Implemented (DP1-06).** | `CreditsError` |
+| `top_up(identity, duffs, grant)` | async | Funds the identity from the Core balance: an asset lock of `duffs`, then Platform's IdentityTopUp from it (§7 item 44). The quote's refusals and the funding step's (below), checked under the identity's write lock before the grant is redeemed, so a refusal keeps the grant. Held back as a registration is: SPV not caught up is `platform.context_unavailable`; the bring-up running, not run, or its identity discovery incomplete or failed is `platform.unavailable`, and the call has it run again (§7 item 46); identities waiting for an unlock is `platform.signer_unavailable`. A grant whose funding cap is below the quote's total is `platform.grant_exceeded` before it is redeemed, so a smaller top-up can still use it. Until the dispatch journal is read the call is `platform.unavailable` (retry). Then the money-move gate (item 55): with the fallback latch set, an identity whose record does not match waits to verify, or is `platform.context_unavailable` (`platform.trust_mismatch` on a mismatch), the grant left unused. Once the lock is funded the call returns `TopUpOutcome{txid, state}`: `Applied{credits_added, balance}`, `ConsumptionUnknown{balance}` (Platform answered "already consumed", which nothing proves: nothing added now, and the lock stays pending), `ProofWaiting` (no InstantSend lock in its window), or `NotApplied{error}` (the apply failed); nothing is lost in the last three (`pending_top_ups`, `resume_top_up`). A funding whose outcome is unknown is `platform.broadcast_unknown{artifact}` with the funding step `topup/<index>-<k>/funding` (`dispatch_status`), and every later top-up of the identity is refused the same until that step settles. `grant` may be a `TopUp` lease id. **Implemented (DP1-06).** | `CreditsError` |
 | `pending_top_ups()` | async | The wallet's top-up locks Platform has not taken as far as the wallet can prove (in flight, proved and not applied, or funded by a top-up of this wallet and final with its consumption unknown), by identity index: txid, identity, duffs, whether the lock has its proof, and `consumption_unknown` (§7 item 44). Until the dispatch journal is read it is `platform.unavailable` (retry), never a list that cannot tell the wallet's own locks apart. **Implemented (DP1-06).** | `CreditsError` |
 | `stuck_top_up_fundings()` | async | The wallet's top-up funding steps whose outcome is unknown (`MaybeSent`) or still being recorded (`WillBeSent`), the steps `top_up` refuses with `platform.broadcast_unknown` or `platform.will_be_sent`, ordered by identity index then attempt: the step `topup/<index>-<k>/funding`, the identity index, the identity id when the wallet holds that index, and the state (§7 item 54). A step leaves the list once its outcome settles, which for Repair's `resolve_stuck_funding` is when its self-spend is ChainLocked (`DispatchResolved`); until then it stays listed. Until the dispatch journal is read, or while a top-up step's marker cannot be read by this build, it is `platform.unavailable` (retry): a list without that step would hide what refuses the top-up. **Implemented (DP1-10).** | `CreditsError` |
 | `resume_top_up(txid, grant)` | async | Applies the tracked top-up lock `txid`, waiting up to 30 s for its proof first (a lock not yet sent is sent again; one a funding call of this process is still recording is `platform.will_be_sent`); the outcome as `top_up`'s. A lock the library holds applied (Platform's proved apply) reads `AlreadyApplied` with the balance read again; any other, a resolved or historical one too, is applied again (Platform takes a lock once). The grant is redeemed only for the apply, so `AlreadyApplied`, `ProofWaiting` and `platform.will_be_sent` keep it. The apply signs with the lock's one-time funding key, which only a grant with a funding budget unlocks: the grant needs `max_duffs` ≥ 1, none of which is spent. Tools ▸ Repair "Finish transfers" (`finish_asset_locks`) also applies every proved top-up lock, under its grant. **Implemented (DP1-06).** | `CreditsError` |
@@ -514,19 +516,30 @@ bodies decided where the rows leave room:
 | `withdraw_quote(identity, amount)` | async | The credits taken, the fee in credits, the duffs expected at `to`, and the `grant` to ask for; `All` leaves the fee reserve (DP6-02). | `CreditsError` |
 | `withdraw(identity, to, amount, grant)` | async | Credits to the Core address `to`. | `CreditsError` |
 
-### 2.9 Invitations (on `NetworkSession`)
+### 2.9 Link stash and invitations (on `NetworkSession`)
 
 Per network, not per wallet: a link may arrive before any wallet exists (F18, "Paste invitation link" on the welcome
-screen), and the vault is per network. Before a vault exists (the session's vault is `NoVault`), a stashed link is a
-0600 file in the vault directory; it moves into the vault, and the file is deleted, when the vault is created (DASHPAY
-§2.9, last row). The ids stay the same across the move.
+screen), and the vault is per network. The stash (DP5-01, design `docs/design/DP5-01-link-intake.md`) keeps payment,
+contact and invitation links, as the engine classifies them: one file per link in the vault directory's `links/`,
+sealed to a key derived from the vault's DEK (sealable while locked, readable once unlocked, also mixing-only). Before
+a vault exists (`NoVault`) a link is a 0600 file in the clear; it is sealed, the ids unchanged, when the vault is
+created, unlocked or recovered (DASHPAY §2.9, last row). At most 16 links of up to 4096 bytes (a full stash drops its
+oldest payment or contact link first); payment links live 7 days, the others 30; the same link again is the same
+entry. No call quotes a link in an error.
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `NetworkSession.stash_invitation(link)` | async | Stores the link as the vault record `invitation/<id>`, or as the 0600 file before a vault exists; returns the id. A malformed link is `invitation.invalid`, and the error never quotes it. | `InvitationError` |
+| `NetworkSession.stash_link(link)` | async | Keeps a payment (with an address), contact or invitation link and returns its `StashedLink` (the existing one for the same link). Any other text, an empty one or one over 4096 bytes is `invalid_argument`. Works in every lock state, except that once a vault exists nothing is kept in plaintext: with neither the data key nor a valid stash public key (a vault locked since before DP5-01 and not unlocked since) it is `platform.signer_unavailable` and nothing is written (item 56). | `PlatformError` |
+| `NetworkSession.stashed_links()` | async | The stashed links, oldest first, as `StashedLink`s without their text; expired entries are deleted first. Works locked: the replay after a restart, onboarding or an unlock. | `PlatformError` |
+| `NetworkSession.take_stashed_link(link_id)` | async | A payment or contact link's text, once, as `TakenLink::Link`: the entry is deleted before it returns; `None` when it is gone (taken, expired, unreadable). An invitation is `TakenLink::Invitation` in every lock state: never handed back nor opened, and it stays. Otherwise a locked vault is `platform.signer_unavailable` and keeps the link; a malformed id is `invalid_argument`. | `PlatformError` |
+| `NetworkSession.forget_stashed_link(link_id)` | async | Deletes a stashed link of any kind without opening it: the user dismissed it. Works locked; an id the stash no longer has is `Ok`; a malformed id is `invalid_argument`. | `PlatformError` |
+| `NetworkSession.stash_invitation(link)` | async | `stash_link` for an invitation link only; returns the id. Anything else is `invitation.invalid`, and the error never quotes it. | `InvitationError` |
 | `NetworkSession.invitation_status(link_id)` | async | `Valid{inviter, funding_duffs, contested_allowed, expires_at}`, `Claimed`, `Invalid{reason}` or `Expired`. | `InvitationError` |
-| `NetworkSession.pending_invitations()` | async | The ids of the stashed links, oldest first: the replay after a restart or after onboarding (DP5-01). | `InvitationError` |
-| `NetworkSession.forget_invitation(link_id)` | async | Deletes a stashed link: the user dismissed it, or the claim finished. | `InvitationError` |
+| `NetworkSession.pending_invitations()` | async | The ids of the stashed invitation links, oldest first: the replay after a restart or after onboarding (DP5-01). | `InvitationError` |
+| `NetworkSession.forget_invitation(link_id)` | async | Deletes a stashed invitation: the user dismissed it, or the claim finished. An id the stash no longer has is `Ok`; one of another kind of link is `invitation.invalid`; a malformed id is `invalid_argument`. | `InvitationError` |
+
+**Done (DP5-01, Contract-Version 30, item 56):** `stash_link`, `stashed_links`, `take_stashed_link`,
+`forget_stashed_link`, `stash_invitation`, `pending_invitations` and `forget_invitation`. `invitation_status` stays a stub until DP5-02.
 
 ### 2.10 Facade
 
@@ -552,7 +565,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 189b99973eabc5e95cab2c7ba799b6b9005f140614ef4196829e6c507aba8a49 version: 28 -->
+<!-- surface-sha256: ed988a4e8fa7dbdb7c3a2420dd1c243151f4d29a0ac40c84f51392890a39c48a version: 31 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1149,7 +1162,33 @@ pub enum InvitationInvalidReason {
     WrongNetwork,
     AssetLockNotFound,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StashedLinkKind {
+    Payment,
+    Contact,
+    Invitation,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StashedLink {
+    pub id: String,
+    pub kind: StashedLinkKind,
+    pub stashed_at: u64,
+    pub expires_at: u64,
+}
+#[derive(Debug)]
+pub enum TakenLink {
+    Link(BearerSecret),
+    Invitation,
+}
+impl From<VaultKind> for StashedLinkKind;
+impl From<StashedLinkKind> for VaultKind;
+impl From<StashedLinkMeta> for StashedLink;
 impl NetworkSession {
+    pub async fn stash_link(self: &Arc<Self>, link: BearerSecret) -> Result<StashedLink, PlatformError>;
+    pub async fn stashed_links(self: &Arc<Self>) -> Result<Vec<StashedLink>, PlatformError>;
+    pub async fn take_stashed_link(self: &Arc<Self>, link_id: String) -> Result<Option<TakenLink>, PlatformError>;
+    pub async fn forget_stashed_link(self: &Arc<Self>, link_id: String) -> Result<(), PlatformError>;
     pub async fn stash_invitation(self: &Arc<Self>, link: BearerSecret) -> Result<String, InvitationError>;
     pub async fn invitation_status(self: &Arc<Self>, link_id: String) -> Result<InvitationStatus, InvitationError>;
     pub async fn pending_invitations(self: &Arc<Self>) -> Result<Vec<String>, InvitationError>;
@@ -1405,6 +1444,10 @@ impl DashPay {
     pub fn avatar_upload_available(&self) -> Result<bool, AvatarError>;
     pub async fn upload_avatar(&self, candidate: String) -> Result<String, AvatarError>;
     pub async fn avatar(&self, identity: String, size: AvatarSize) -> Result<Option<AvatarImage>, AvatarError>;
+}
+impl NetworkSession {
+    pub fn load_contact_pictures(&self) -> Result<bool, PlatformError>;
+    pub async fn set_load_contact_pictures(&self, on: bool) -> Result<(), PlatformError>;
 }
 // src/platform/registration.rs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1684,7 +1727,9 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 - Refusals §3.6 names no code for, so that every DP task uses the same one:
   - a write from a watch-only wallet, or with a locked vault and no lease: `platform.signer_unavailable`;
   - a Platform write before SPV's masternode state has synced ("Waiting for the network to sync", §3.7), and money
-    that would move on data verified only through the fallback (§2.2 rule 5): `platform.context_unavailable`;
+    that would move on data verified only through the fallback (§2.2 rule 5): `platform.context_unavailable`
+    (DP3-04's gate, item 55; a re-fetch it makes that SPV and the trusted service disagree on is
+    `platform.trust_mismatch`);
   - `discard_registration` unless its funding reads `NotSent` or `None` (§4.1; the journal decides, not the
     phase), an unknown draft, candidate or faucet key id, an
     `initial_profile` avatar candidate without a URL: `invalid_argument`;
@@ -1798,7 +1843,7 @@ The shapes are in §3. What they mean, where the name does not say:
   does not count); a `ContactSummary` as §2.4 `contacts` lists. Before the latch is set nothing is unverified. Builds before E0-10b served the trusted service's
   keys without setting it, so an installation that already holds wallets starts latched (dw-appdb migration
   `trust_digest`): its data reads as unverified until re-fetched. "As of" times for offline data come from `sync_status().last_pass`. `Counterparty` and the inviter in
-  `InvitationStatus::Valid` carry no flag: they are display data, and DP3-04's money-move gate checks
+  `InvitationStatus::Valid` carry no flag: they are display data, and DP3-04's money-move gate (item 55) checks
   `dp_trust_verified` (with the latch) itself before any payment, whatever the record says.
 - **`QuorumSource`.** `Spv`; `TrustedFallback` (before masternode sync, reads only, results unverified); `Trusted`
   (the developer toggle, or the degraded mode of §2.2). E0-10a failed, so 1.0 reports `Trusted` (DEC-168) until H-09
@@ -2037,7 +2082,7 @@ with 1–21 and changed 5, 8, 9, 10, 12 and 16; the result is below):
 13. **The notices** listed in §3.6 are not added to `NoticeCode` yet (§6).
 14. **The invitation calls are on `NetworkSession`.** The sketch puts them on the wallet-bound `DashPay`, but F18 takes
     a link before any wallet exists, and the vault is per network. Before a vault exists the link is a 0600 file that
-    moves into the vault at creation; `pending_invitations` and `forget_invitation` serve the replay and the dismissal
+    is sealed when the vault is created (item 56); `pending_invitations` and `forget_invitation` serve the replay and the dismissal
     (§2.9).
 15. **`send_request` takes `scan: Option<String>`.** The sketch has no way to pass a `dapk` auto-accept proof from
     `verify_scanned` to the request (§3.1 `contacts.rs`: "dapk scan"). A stale id or expired proof is
@@ -2814,3 +2859,83 @@ renames or reshapes them takes the next version bump:
     so after a restart a host could not show what blocks the identity nor offer Tools ▸ Repair for it without
     guessing step names. `resolve_stuck_funding` already accepts these steps (DP1-06). No error code and no other
     record changes.
+
+**From DP3-04** (version 29, no surface change):
+
+55. **The money-move trust gate (DASHPAY §2.2 rule 5; `docs/design/DP3-04-trust-gate.md`).** Once the fallback latch
+    is set, money waits for its payee's data to verify against SPV. Public signatures, record shapes and error codes are
+    unchanged.
+    - **Subjects.** A contact payment's `prepare` (its "Accept and pay" too): what the contacts row of the payee
+      shows unverified (§2.4 `contacts`: the cached profile, each request the relation rests on, the shown
+      username). A `top_up`: the identity and its keys. A registration has no subject.
+    - **`Enforcing`** (tests and H-09; the trusted-only toggle off): every unverified entity is re-fetched in its own
+      trust scope, every 3 s for up to 60 s (plus one fetch's blocking lookups); a fetch that used only SPV-verified quorum keys and equals what the
+      library holds is recorded (`dp_trust_verified`), and the money moves once nothing is unverified. Otherwise
+      `platform.context_unavailable`. A re-fetch refused as a quorum-key mismatch is `platform.trust_mismatch` at
+      once. A registration's or top-up's funding is held while `TrustProvider::writes_wait` (masternode sync not
+      done): a registration waits `Sync`, a top-up is `platform.context_unavailable`, as while SPV is behind.
+    - **Degraded** (the default, DEC-168): one round of re-fetches of the unverified entities, 10 s (plus one
+      fetch's blocking lookups), records what verifies; a mismatch is `platform.trust_mismatch`; otherwise the money moves (rule 5 suspended).
+      The trusted-only toggle moves the money with no re-fetch.
+    - **The paying account, in every mode.** Whatever the mode, the toggle or the latch, a payee whose paying
+      account was built from another request than their current one (a rotation the library has not rebuilt
+      yet) is `platform.context_unavailable`, and a
+      DashPay sync is started so the library queues the rebuild a retry needs (design D12, D25; at the wait a
+      queued rebuild of the account exempts it, not after the reservation). At the wait nothing is taken; after
+      the reservation the address is dropped. An account with no stamp is refused the same way, in every mode,
+      Degraded and the toggle included (since DP3-04b, item 58; before it they paid on a missing stamp): the
+      library's store keeps the stamp, so an account is unstamped only before its first rebuild after the upgrade,
+      after a crash between a rotation's re-key and its rebuild, or when its stamp's write was lost. A payment to a
+      contact whose account was built before the upgrade is refused until a DashPay pass completes, offline included
+      (design D28).
+    - **Where.** `prepare` checks the contact's payment lock, then runs the gate, both before the coin fence and the
+      grant: a refusal redeems no grant, takes no address and holds no other send of the wallet. A vault Lock during
+      the wait ends it (`send.vault_locked`); a payment lock written during it is found by the plan
+      (`contact.payment_locked{txid}`). After the reservation, under `Enforcing`, a re-check gives what became unverified
+      meanwhile (the payee replaced, its name landed) one 10 s round of re-fetches and refuses what still does not
+      verify (`platform.context_unavailable`, `platform.trust_mismatch`); the address is kept only once it passed,
+      so no later `prepare` pays one taken from unverified data, and an address kept while rule 5 did not apply is
+      not paid under `Enforcing` (a new one is reserved). The re-check reads the address with the request it checks:
+      one no longer in the payee's paying account (a rotation rebuilt it from a new request) is
+      `platform.context_unavailable` and not kept, in every mode, with or without the latch (design D21, D25; under
+      Degraded and the toggle the re-check fetches nothing, it only reads the account). A reused address another payment's broadcast claimed
+      during the re-check, or a fresh one displaced meanwhile by another payment's address given back unsent, is
+      `send.prepared_tx_spent`. `top_up` runs the gate after its journal check and before the identity's write
+      lock, an identity the wallet lacks refused first (`identity.not_found`).
+
+**From DP5-01** (version 30):
+
+56. **The link stash (DP5-01 D1–D24, version 30).** `stash_link`, `stashed_links`, `take_stashed_link` and
+    `forget_stashed_link` are new
+    (§2.9), with the records `StashedLink {id, kind, stashed_at, expires_at}`, `StashedLinkKind {payment, contact,
+    invitation}` and `TakenLink {Link(BearerSecret), Invitation}`; `stash_invitation`, `pending_invitations` and `forget_invitation` are implemented on the same stash.
+    The stash is not a vault record (§2.9 used to say `invitation/<id>`): one sealed file per link beside the
+    vault, so a link arriving while the vault is locked is sealed at once and `destroy` and the no-key states are
+    unaffected. `pending_invitations` lists invitations only. A payment or contact link is taken once; an invitation
+    is never handed back, and DP5-02's claim reads it inside the engine by its id. Once a vault exists no link is kept in
+    plaintext: one with no key to seal to is `platform.signer_unavailable`, and plaintext a failed or interrupted seal left
+    shows as the vault status's `unsealed_links` until an unlock or stash call seals it (DP5-01 D26–D31). No new error code.
+
+**From DP4-02** (version 31):
+
+57. **The avatar pipeline (DP4-02 design, D1–D41, version 31).** `prepare_avatar`, `avatar_upload_available`,
+    `upload_avatar` and `avatar` have bodies (§2.7), and `update_profile`'s `Set{candidate}` publishes the candidate's
+    URL, hash and fingerprint. The toggle is two new calls on `NetworkSession` (it is per network, not per wallet):
+    `load_contact_pictures` (sync, from memory) and `set_load_contact_pictures(on)` (async). Upload stays
+    `avatar.upload_unconfigured` until B1. No error code and no record changes.
+
+**From DP3-04b** (version 31, no surface change):
+
+58. **The paying account's stamp is stored, and a missing one refuses in every mode (item 55;
+    `docs/design/DP3-04-trust-gate.md` D28–D30).** No signature, record, trait impl or code changes, so
+    `Contract-Version` stays 31 (manager ruling, 2026-10-17, made at 29). Behaviour:
+    - **New refusals under Degraded and the trusted-only toggle.** A contact payment whose paying account carries no
+      stamp is `platform.context_unavailable` (at the wait nothing taken, after the reservation the address dropped,
+      a DashPay sync started), as under `Enforcing` already. Before DP3-04b these two modes paid it. This happens
+      once per contact after the upgrade, until a DashPay pass rebuilds and stamps the account (offline: until one
+      completes), and after a crash between a rotation's re-key and its rebuild, or a lost stamp write.
+    - **A rotated contact is payable.** The pinned `rs-platform-wallet-storage` (PastaPastaPasta/platform
+      `dw/dp3-04b-pool-rotation`, fork migration 1 in its own history, design D32) retires the old pool's addresses when a contact's xpub changes,
+      instead of failing the rebuild, and keeps them for history only: they are never paid. The stamp survives a
+      relaunch.
+    - **One sync per in-flight pass.** A refusal on the paying account starts no DashPay sync while a pass runs.

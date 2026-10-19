@@ -12,6 +12,10 @@ publish.workspace = true
 # size, prover warm-up; E0-12, docs/research/shielded-cost.md). Enables the
 # platform-wallet shielded wallet and its SqlitePersister tables.
 shielded = ["platform-wallet/shielded", "platform-wallet-storage/shielded"]
+# A request through a session's own SDK for dwcli's log redaction test
+# (MG-03 D37), enabled only by dwcli's dev-dependency. The module also needs
+# `debug_assertions`, so a release or dist build never has it (D40).
+test-support = []
 
 [[example]]
 name = "shielded_warmup"
@@ -40,6 +44,8 @@ dw-coinjoin = { workspace = true }
 dw-p2p = { workspace = true }
 # MG-02 (docs/contracts/mg-engine.md): the governance facade over govsync.
 dw-governance = { workspace = true }
+# MG-03 (docs/contracts/mn-engine.md): collateral resolution and amounts.
+dw-protx = { workspace = true }
 dw-units = { workspace = true }
 dw-compat = { workspace = true }
 dw-psbt = { workspace = true }
@@ -66,11 +72,24 @@ base64 = "0.22"
 # persister has no list API); same version dw-appdb and
 # platform-wallet-storage link, so one bundled libsqlite3.
 rusqlite = { version = "0.38", features = ["bundled"] }
+# DP4-02 avatars: the guarded fetch (the reqwest the trusted context provider
+# already links; its TLS), URL parsing, the bounded decoder and thumbnails
+# (the image features platform-wallet's dHash builds with), the hashes.
+reqwest = { version = "0.12", default-features = false, features = ["default-tls"] }
+url = "2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+sha2 = "0.10"
+md-5 = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+# The avatar cache's openat/renameat/unlinkat on its directory descriptor
+# (DASHPAY §3.8); the version dw-fs uses.
+rustix = { version = "1", default-features = false, features = ["std", "fs", "process"] }
 
 [dev-dependencies]
-dw-appdb = { workspace = true, features = ["test-mutations"] }
+dw-appdb = { workspace = true, features = ["test-mutations", "durability-sim"] }
 # Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
-dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
+dw-vault = { workspace = true, features = ["insecure-test-kdf", "fault-inject"] }
 dw-message = { workspace = true }
 serde_json = "1"
 tempfile = { workspace = true }
@@ -84,7 +103,6 @@ syn = { version = "2", features = ["full", "printing"] }
 quote = "1"
 # The listing's fingerprint, and compile-time checks that bearer secrets
 # never serialize, print or copy.
-sha2 = "0.10"
 static_assertions = "1"
 
 [target.'cfg(unix)'.dev-dependencies]

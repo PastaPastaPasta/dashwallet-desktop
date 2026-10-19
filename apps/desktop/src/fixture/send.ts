@@ -116,15 +116,17 @@ export function contactAddress(walletId: string, r: Pick<ContactRecipient, "iden
   return makeIds(prng(seed)).address();
 }
 
-/** A wallet's receive side: the first unused receiving index, the last one issued, requests. */
+/** A wallet's receive side: the first unused receiving index, the last one issued, requests, and
+ * "Include my username in payment requests" (DP3-03b). */
 export interface ReceiveWorld {
   firstUnused: number;
   issued: number;
   requests: ReceiveRequest[];
   nextRequest: number;
+  usernameInRequests: boolean;
 }
 
-export const newReceiveWorld = (): ReceiveWorld => ({ firstUnused: 0, issued: 0, requests: [], nextRequest: 1 });
+export const newReceiveWorld = (): ReceiveWorld => ({ firstUnused: 0, issued: 0, requests: [], nextRequest: 1, usernameInRequests: true });
 
 /** The funded wallet's coins: the confirmed ones add up to `FUNDED_BALANCES.confirmed`; the
  * unconfirmed one (neither mined nor InstantSend-locked) cannot be spent yet. */
@@ -205,6 +207,9 @@ export function paymentUri(address: string, amount: number | null, label: string
   if (user) query.push(`user=${percentEncode(user)}`);
   return `dash:${address}${query.length ? `?${query.join("&")}` : ""}`;
 }
+
+/** The username requests and the Receive QR carry: none while the wallet's opt-out is off. */
+const requestUsername = (world: World, w: FixtureWallet): string | null => (w.receive.usernameInRequests ? mainUsername(world.dashpay) : null);
 
 /** A stored request as a read shows it: `username` and its `uri` follow the current main name. */
 const withUsername = (r: ReceiveRequest, username: string | null): ReceiveRequest => ({
@@ -784,16 +789,21 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         uri: "",
       };
       // Before it is stored: an amount out of range stores nothing, as the engine.
-      const shown = withUsername(request, mainUsername(world.dashpay));
+      const shown = withUsername(request, requestUsername(world, w));
       w.receive.requests = [request, ...w.receive.requests];
       return shown;
     },
     // The username is the current main name, not stored (DP3-03 D18).
-    receive_requests: ({ walletId }, { world }) =>
-      wallet(world, walletId).receive.requests.map((r) => withUsername(r, mainUsername(world.dashpay))),
-    receive_username: ({ walletId }, { world }) => {
-      wallet(world, walletId);
-      return mainUsername(world.dashpay);
+    receive_requests: ({ walletId }, { world }) => {
+      const w = wallet(world, walletId);
+      const username = requestUsername(world, w);
+      return w.receive.requests.map((r) => withUsername(r, username));
+    },
+    receive_username: ({ walletId }, { world }) => requestUsername(world, wallet(world, walletId)),
+    username_in_requests: ({ walletId }, { world }) => wallet(world, walletId).receive.usernameInRequests,
+    set_username_in_requests: ({ walletId, on }, { world }) => {
+      wallet(world, walletId).receive.usernameInRequests = on;
+      return null;
     },
     delete_receive_request: ({ walletId, requestId }, { world }) => {
       const w = wallet(world, walletId);

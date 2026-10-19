@@ -128,6 +128,13 @@ pub enum EngineEvent {
         events: Vec<crate::platform::DashPayEvent>,
         more: u32,
     },
+    /// MG-03 (mn-engine §6): a masternode of interest (the wallets' own or
+    /// a tracked one) changed in the list, or a track, label or key
+    /// changed. At most once a second, trailing edge kept; hosts re-read
+    /// what they show. Engine-side until E0-13 binds the facade.
+    Masternodes {
+        network: DashNetwork,
+    },
     /// E0-04 §16.7, engine-side until E0-13: a lease's view changed.
     LeaseChanged {
         network: DashNetwork,
@@ -159,6 +166,7 @@ impl EngineEvent {
     pub fn engine_side(&self) -> bool {
         match self {
             Self::Platform { .. }
+            | Self::Masternodes { .. }
             | Self::DashPayNews { .. }
             | Self::LeaseChanged { .. }
             | Self::LockProgress { .. }

@@ -439,7 +439,8 @@ pub enum AvatarError {
     Unsupported,
     #[error("avatar fetch failed")]
     FetchFailed,
-    /// The image does not match the profile's `avatarHash` or fingerprint.
+    /// The image does not match the profile's `avatarHash`, or the profile's
+    /// hash or fingerprint is malformed (DP4-02 D26).
     #[error("avatar hash mismatch")]
     HashMismatch,
     /// No Imgur client id is configured.
@@ -666,9 +667,11 @@ impl From<crate::EngineError> for PlatformError {
             }
             E::NetworkNotOpen(_) => Self::NetworkNotOpen,
             E::WalletNotFound(_) => Self::WalletNotFound,
-            e @ (E::Storage(_) | E::StorageInUse(_) | E::Io(_)) => Self::Storage {
-                detail: e.to_string(),
-            },
+            e @ (E::Storage(_) | E::StorageInUse(_) | E::StorageTooNew(_) | E::Io(_)) => {
+                Self::Storage {
+                    detail: e.to_string(),
+                }
+            }
             E::InsufficientCredits {
                 needed, available, ..
             } => Self::InsufficientCredits { needed, available },

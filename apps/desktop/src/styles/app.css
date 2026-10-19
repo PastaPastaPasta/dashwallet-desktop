@@ -635,6 +635,13 @@ button {
   font-weight: var(--dw-type-caption1-medium-weight);
 }
 
+.contact-avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
 .contact-avatar-row {
   width: var(--dw-layout-row-icon-size);
   height: var(--dw-layout-row-icon-size);
@@ -4110,4 +4117,37 @@ button.bell-row-open:focus-visible {
 
 .topup-total .detail-value {
   font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+/* ------------------------------------------------------------------ saved links (DP5-01 D11) */
+
+.saved-links {
+  margin: 0 0 var(--dw-space-m);
+  padding: 0;
+  list-style: none;
+}
+
+.saved-link {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-s) 0;
+  border-bottom: 1px solid var(--dw-role-separator);
+}
+
+.saved-link-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.saved-link-when {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+}
+
+.saved-link-actions {
+  display: flex;
+  gap: var(--dw-space-xs);
 }

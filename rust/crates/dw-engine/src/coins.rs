@@ -315,6 +315,25 @@ pub(crate) fn held_appdb_job() -> Option<Arc<TestPause>> {
         .filter(|p| !p.reached.load(std::sync::atomic::Ordering::SeqCst))
 }
 
+/// [`NetworkSession::appdb_op`] on `db`, for a future that must own it.
+pub(crate) async fn appdb_job<T, F>(db: Arc<AppDb>, f: F) -> Result<T, EngineError>
+where
+    F: FnOnce(&AppDb) -> Result<T, AppDbError> + Send + 'static,
+    T: Send + 'static,
+{
+    #[cfg(test)]
+    let pause = held_appdb_job();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            return pause.hold_then(|| f(&db));
+        }
+        f(&db)
+    })
+    .await?
+    .map_err(EngineError::from)
+}
+
 impl CoinFences {
     fn map(&self) -> std::sync::MutexGuard<'_, HashMap<WalletId, Arc<tokio::sync::Mutex<()>>>> {
         self.fences.lock().unwrap_or_else(|p| p.into_inner())
@@ -562,18 +581,7 @@ impl NetworkSession {
         F: FnOnce(&AppDb) -> Result<T, AppDbError> + Send + 'static,
         T: Send + 'static,
     {
-        let db = self.live()?.appdb;
-        #[cfg(test)]
-        let pause = held_appdb_job();
-        tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
-            if let Some(pause) = pause {
-                return pause.hold_then(|| f(&db));
-            }
-            f(&db)
-        })
-        .await?
-        .map_err(EngineError::from)
+        appdb_job(self.live()?.appdb, f).await
     }
 
     /// Waits for `wallet_id`'s coin fence (module doc). A holder passes it

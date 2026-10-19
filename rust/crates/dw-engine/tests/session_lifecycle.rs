@@ -279,6 +279,67 @@ fn second_engine_on_same_data_dir_gets_storage_in_use() {
     first.block_on(first.shutdown()).unwrap();
 }
 
+/// A wallet file a newer build wrote (a migration this build does not have,
+/// in upstream's history or the fork's) is refused at open with
+/// `storage_too_new`, not the generic `storage`, and both histories are left
+/// as they were (DP3-04b D35).
+#[test]
+fn a_wallet_file_from_a_newer_build_is_storage_too_new() {
+    let histories = |db: &std::path::Path| -> Vec<(i64, String)> {
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let mut rows = Vec::new();
+        for table in ["refinery_schema_history", "dw_fork_schema_history"] {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT version, name FROM {table} ORDER BY version"
+                ))
+                .unwrap();
+            let read = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            rows.extend(read.map(Result::unwrap));
+        }
+        rows
+    };
+    for (table, version) in [
+        ("dw_fork_schema_history", 99),
+        ("refinery_schema_history", 999),
+    ] {
+        let dir = dw_testutil::private_tempdir();
+        let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
+        let s = engine
+            .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
+            .unwrap();
+        let db = s.data_dir().join("wallet.sqlite");
+        drop(s);
+        engine.block_on(engine.shutdown()).unwrap();
+        drop(engine);
+
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute(
+                &format!(
+                    "INSERT INTO {table} (version, name, applied_on, checksum)
+                     VALUES (?1, 'from_a_newer_build', '2026-10-17T00:00:00Z', '1')"
+                ),
+                [version],
+            )
+            .unwrap();
+        let before = histories(&db);
+
+        let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
+        let err = engine
+            .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
+            .err()
+            .expect("refused");
+        assert_eq!(err.code(), "storage_too_new", "{table}: {err:?}");
+        assert!(
+            err.to_string().contains("written by a newer build")
+                && err.to_string().contains(&format!("version {version}")),
+            "{table}: {err}"
+        );
+        assert_eq!(histories(&db), before, "{table}");
+    }
+}
+
 #[test]
 fn rejects_bad_arguments() {
     let dir = dw_testutil::private_tempdir();

@@ -6,6 +6,12 @@
 //! helper never becomes API by accident.
 
 pub(crate) mod attribution;
+mod avatar;
+mod avatar_cache;
+mod avatar_fetch;
+mod avatar_image;
+#[cfg(test)]
+mod avatar_tests;
 mod balances;
 mod banner;
 #[cfg(test)]
@@ -32,6 +38,9 @@ pub(crate) mod journal;
 mod journal_tests;
 pub mod keys_policy;
 pub mod lease;
+pub(crate) mod money_gate;
+#[cfg(test)]
+pub(crate) mod money_gate_tests;
 mod names;
 mod names_check;
 mod notifications;
@@ -100,7 +109,9 @@ pub use identity::{
     IdentityDetail, IdentityKeyInfo, IdentitySummary, KeyPurpose, KeyType, NamesCheck,
     SecurityLevel,
 };
-pub use invitations::{InvitationInvalidReason, InvitationStatus};
+pub use invitations::{
+    InvitationInvalidReason, InvitationStatus, StashedLink, StashedLinkKind, TakenLink,
+};
 pub use lease::{FlowOutcome, FlowReport, LeaseError, LockPhase, LockReport};
 pub use names::{
     ContestContender, ContestState, ContestStatus, NameAvailability, NameOutcome, UserHit,

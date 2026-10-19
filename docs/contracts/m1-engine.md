@@ -337,7 +337,8 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
 | `addresses(id, AddressFilter{chain, used})` | async | BIP44 account 0 addresses, receiving then change, by index. `balance` from the account's UTXOs; `tx_count` from the history. | — | QT-096 | **works** |
 | `create_receive_request(id, amount, label, message)` | async | Stores a `ReceiveRequest { id, created_at, address, amount, label, message, username, uri }` on a freshly issued address; `uri` from dw-uri `format_request_uri`: dash-qt's `format_bitcoin_uri`, then `user=<username>` last when `username` is set (DP3-03). `username` is `receive_username`'s answer when the request is read, not stored with it. Amount 0 = any amount; above 21 M DASH is `invalid_argument`. | `receive.gap_limit`, `invalid_argument` | QT-081/082/085, IOS-055 | **works** |
 | `receive_requests(id)` / `delete_receive_request(id, request_id)` | async | Newest first; `username` and `uri` as `create_receive_request`'s. | `receive.request_not_found` | QT-083 | **works** |
-| `receive_username(id)` | async | The DashPay username the Receive QR carries as `user=` (IOS-055, DP3-03): the main name of the wallet's main identity (m4 `IdentitySummary`). `None` without one, while a sync pass holds the identity state, or when Platform's state cannot be read: the QR is then a plain Core one. Re-query on `Platform{Identities}` and `Platform{Names}`. | `wallet_not_found` | IOS-055 | **works** |
+| `receive_username(id)` | async | The DashPay username the Receive QR carries as `user=` (IOS-055, DP3-03): the main name of the wallet's main identity (m4 `IdentitySummary`). `None` without one, while a sync pass holds the identity state, when Platform's state cannot be read, or while `username_in_requests` is off (or cannot be read): the QR is then a plain Core one. Re-query on `Platform{Identities}` and `Platform{Names}`, and after `set_username_in_requests`. | `wallet_not_found` | IOS-055 | **works** |
+| `username_in_requests(id)` / `set_username_in_requests(id, on)` | async | "Include my username in payment requests" (DASHPAY §5 F15, DP3-03b), one per wallet and network, default on. Stored in the network's app.sqlite in the wallet's settings scope (removed with the wallet, carried by its `.dwbackup`): absent is on, `"0"` off; any other stored value is `storage` here and off for the URIs. Off: `receive_username` is `None`, and `create_receive_request` / `receive_requests` leave `username` out and build `uri` as dash-qt's `format_bitcoin_uri` alone. Stored requests follow it, as `username` is read with them. `set_username_in_requests` waits for the URIs being made for the wallet: once it returns, every URI follows it. A removal of the wallet waits for a write already under way, so that write never reaches the wallet re-imported after the removal. No event: the host that changes it re-reads the Receive QR and the requests. | `wallet_not_found`, `storage` | IOS-055 | **works** |
 
 ### 2.7 Send (`send.rs`) — owner E2
 
@@ -416,7 +417,13 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
   rules, with these differences. `estimate` plans a P2PKH placeholder (the length of every DIP-15 address), so its
   fee is the payment's, and the payment always counts as leaving the wallet: the host authorizes `amount +
   estimate.fee` after Confirm (`amount` with subtract-fee). `prepare` checks the contact again (now established:
-  a pending request is `contact.ineligible{PendingIncoming}`), then the grant, plans, redeems the grant into a
+  a pending request is `contact.ineligible{PendingIncoming}`) and its payment lock, then passes m4's money-move
+  trust gate (item 55: once the fallback latch is set, the contact's data must verify against SPV; it may wait up
+  to a minute, then `platform.context_unavailable`, or `platform.trust_mismatch`, with nothing taken; in every mode a
+  contact whose paying account was built from another request than their current one, and under `Enforcing` one
+  not yet stamped (before the launch's first completed DashPay pass, or with Platform not running), is `platform.context_unavailable`, and a retry after the library's rebuild
+  pays), then the
+  grant, plans, redeems the grant into a
   lease and charges it (`send.grant_exceeded` for a fee grown since), and **only then** reserves the contact's
   next address, swaps it into the planned output and signs: a refusal before the reservation takes no address.
   The session keeps that address for the contact's later `prepare`s, of any draft (after `send.no_peers`,

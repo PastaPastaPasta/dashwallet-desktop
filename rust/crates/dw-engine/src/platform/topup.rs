@@ -62,6 +62,7 @@ use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::identity_writes::identity_locks;
 use super::lease::mode_b::TrackedRow;
 use super::lease::{CallPermit, FundingKey, Lease, LeaseError};
+use super::money_gate::Subject;
 use super::registration::{FinishReport, RegistrationWait, funding_cap};
 use super::registration_flow::{
     FundError, LockInfo, LockStatus, PwLib, RegistrationLib as Reg, Spendable, parse_identity,
@@ -425,7 +426,15 @@ pub(crate) async fn top_up<L: TopUpLib>(
     if !session.leases.journal_ready() {
         return Err(PlatformError::Unavailable.into());
     }
-    let locks = identity_locks(wallet, parse_identity(identity)?);
+    let id = parse_identity(identity)?;
+    if !(lib.identities().await.iter()).any(|(_, i)| i == identity) {
+        return Err(PlatformError::Identity(IdentityError::NotFound).into());
+    }
+    // Rule 5 (DP3-04): the identity the credits go to verified, before its
+    // write lock (not held across the wait) and before the grant.
+    (session.money_gate(Subject::Identity(wallet, id)).await)
+        .map_err(|refusal| CreditsError::from(refusal.platform()))?;
+    let locks = identity_locks(wallet, id);
     let _write = locks.write.lock().await;
     // Under the write lock, so no concurrent top-up of the identity funds
     // in between, and before the grant is redeemed, so a refusal keeps it.

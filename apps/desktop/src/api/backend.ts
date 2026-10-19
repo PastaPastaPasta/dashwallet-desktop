@@ -18,6 +18,7 @@ import type { ScannedContactInfo } from "./generated/ScannedContactInfo";
 import type { ScreenScanMode } from "./generated/ScreenScanMode";
 import type { IdentitySummary } from "./generated/IdentitySummary";
 import type { LinkRoute } from "./generated/LinkRoute";
+import type { StashedLinkInfo } from "./generated/StashedLinkInfo";
 import type { ShellEvent } from "./generated/ShellEvent";
 import type { ShellSync } from "./generated/ShellSync";
 import type { DispatchStateName } from "./generated/DispatchStateName";
@@ -99,6 +100,8 @@ import type { ContactDetailInfo } from "./generated/ContactDetailInfo";
 import type { ContactRequestOutcome } from "./generated/ContactRequestOutcome";
 import type { CostTable } from "./generated/CostTable";
 import type { ContestStatus } from "./generated/ContestStatus";
+import type { AvatarSizeName } from "./generated/AvatarSizeName";
+import type { AvatarThumbnail } from "./generated/AvatarThumbnail";
 import type { PendingTopUp } from "./generated/PendingTopUp";
 import type { StuckTopUpFunding } from "./generated/StuckTopUpFunding";
 import type { TopUpOutcome } from "./generated/TopUpOutcome";
@@ -164,6 +167,10 @@ export interface Backend {
   deleteReceiveRequest(walletId: string, requestId: number): Promise<null>;
   /** The wallet's DashPay username for the Receive QR (DP3-03); `null` without one. */
   receiveUsername(walletId: string): Promise<string | null>;
+  /** "Include my username in payment requests" (DP3-03b); off, the username above is `null`
+   * and requests carry none. */
+  usernameInRequests(walletId: string): Promise<boolean>;
+  setUsernameInRequests(walletId: string, on: boolean): Promise<null>;
   /** dash-qt's payment URI, with `user=` last when `user` is set (DP3-03, IOS-055). */
   buildPaymentUri(address: string, amount: number | null, label: string | null, message: string | null, user: string | null): Promise<string>;
   qrMatrix(text: string): Promise<QrMatrix>;
@@ -285,6 +292,11 @@ export interface Backend {
   takeLinks(network: string): Promise<LinkRoute[]>;
   /** Where `text` leads (File ▸ Open URI…). */
   routeLink(network: string, text: string): Promise<LinkRoute>;
+  /** The link stash (DP5-01): what waits, without its text; open one (a payment or contact
+   * link once, `null` when gone); dismiss one. */
+  stashedLinks(): Promise<StashedLinkInfo[]>;
+  openStashedLink(linkId: string): Promise<LinkRoute | null>;
+  dismissStashedLink(linkId: string): Promise<null>;
   /** What the native menus and the tray mirror. */
   shellSync(sync: ShellSync): Promise<null>;
   // Tools (U-05); `nodeInfo` above.
@@ -332,6 +344,9 @@ export interface Backend {
   /** Asks Platform for the identity's balance; the answer arrives as `Platform{Identities}`. */
   identityRefreshBalance(walletId: string, identity: string): Promise<string | null>;
   contestStatus(walletId: string, identity: string, label: string): Promise<ContestStatus>;
+  /** Any identity's avatar thumbnail, verified against its profile (DP4-02); `null` without one or while
+   * "Load contact pictures" is off; `avatar.hash_mismatch` and the fetch errors show initials. */
+  dashpayAvatar(walletId: string, identity: string, size: AvatarSizeName): Promise<AvatarThumbnail | null>;
   creditsTopUpQuote(walletId: string, identity: string, duffs: number): Promise<TopUpQuote>;
   creditsTopUp(walletId: string, identity: string, duffs: number, grant: string): Promise<TopUpOutcome>;
   creditsPendingTopUps(walletId: string): Promise<PendingTopUp[]>;

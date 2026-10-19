@@ -23,13 +23,16 @@ import { NotificationsPage, NotificationsPopover } from "../screens/notification
 import { ToolsPage } from "../screens/tools/ToolsPage";
 import { SettingsPage } from "../screens/settings/SettingsPage";
 import { AboutSheet, OpenUriSheet } from "../screens/ShellDialogs";
+import { SavedLinksSheet } from "../screens/SavedLinks";
 import { Transactions } from "../screens/Transactions";
 import { TxDetailSheet } from "../screens/TxDetailSheet";
 import { ACTIVITY_EVENTS, armedFor, AutoLockTimer } from "../settings/autoLock";
 import { useDisplay } from "../format/display";
 import { SecurityText } from "../settings/security";
 import { useStatusRegistration } from "../dashpay/queries";
+import { useSavedLinksOffer } from "./savedLinksOffer";
 import { useShellBridge } from "./shellBridge";
+import { openFailure, type OpenFailure } from "./openFailure";
 import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
 import { navigate, ui, useUi } from "./ui";
@@ -41,19 +44,22 @@ const closeForgot = () => ui.set({ forgotPassphrase: false });
 export const LaunchContext = createContext<LaunchInfo | null>(null);
 export const useLaunch = () => useContext(LaunchContext)!;
 
-/** Splash (UX-SPEC §4.2) while the engine opens the network, or its error with a retry. */
-function Splash({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+/** Splash (UX-SPEC §4.2) while the engine opens the network, or its error, with a retry unless the file is from a newer
+ * build (DP3-04b D35). */
+function Splash({ error, onRetry }: { error: OpenFailure | null; onRetry: () => void }) {
   return (
     <div className="splash" data-testid="splash">
       <DashLogo className="splash-logo" />
       {error ? (
         <>
           <p className="splash-error" role="alert">
-            Dash Wallet could not open the wallet: {error}
+            {error.text}
           </p>
-          <DashButton variant="plainBlue" onClick={onRetry}>
-            Try again
-          </DashButton>
+          {error.retry && (
+            <DashButton variant="plainBlue" onClick={onRetry}>
+              Try again
+            </DashButton>
+          )}
         </>
       ) : (
         <>
@@ -159,6 +165,7 @@ function Shell() {
     await wallets.refetch();
     ui.set({ onboarding: false, ...(id ? { walletId: id } : {}) });
     navigate("home");
+    savedLinks.trigger();
   };
 
   let content;
@@ -206,6 +213,11 @@ function Shell() {
   const joined = !(dashpay.status?.kind === "noIdentity" || dashpay.status?.kind === "registering");
   const sheet = !!(detail && wallet && !locked);
   const layered = useLayeredSheet();
+  const savedLinks = useSavedLinksOffer(backend, {
+    hasWallet: !!wallet,
+    locked,
+    covered: onboarding || wiping || forgot || sheet || layered || dialog !== null,
+  });
   const [layer, setLayer] = useState<HTMLDivElement | null>(null);
   // A dialog asked for while locked, onboarding, or behind a sheet is dropped, not kept for later.
   const shown = locked || onboarding || sheet || layered ? null : dialog;
@@ -248,6 +260,7 @@ function Shell() {
       {shown === "about" && <AboutSheet launch={launch} />}
       {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={recoveryWallet ?? wallet?.walletId ?? null} onClose={closeDialog} />}
       {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
+      {shown === "savedLinks" && <SavedLinksSheet onClose={closeDialog} />}
       {onboarding && <Onboarding network={network} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
       {locked && <LockScreen network={network} covered={forgot} onForgot={() => ui.set({ forgotPassphrase: true })} />}
       {/* Over the lock screen, and still open once the recovery unlocked the vault (U-02 D11). */}
@@ -266,7 +279,7 @@ export function App() {
       {network.isSuccess ? (
         <Shell />
       ) : (
-        <Splash error={network.isError ? errorMessage(network.error) : null} onRetry={() => void network.refetch()} />
+        <Splash error={network.isError ? openFailure(network.error) : null} onRetry={() => void network.refetch()} />
       )}
       <ToastHost />
     </div>

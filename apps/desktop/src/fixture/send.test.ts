@@ -54,6 +54,25 @@ describe("fixture receive username (DP3-03)", () => {
     await expect(cmd.receiveUsername("ff".repeat(32))).rejects.toMatchObject({ code: "wallet_not_found" });
   });
 
+  it("leaves the username out while the wallet's opt-out is off, and stored requests follow (DP3-03b)", async () => {
+    fixture.world.dashpay = registered();
+    expect(await cmd.usernameInRequests(W)).toBe(true);
+    const stored = await cmd.createReceiveRequest(W, null, "Rent & co", null);
+    expect(stored.uri).toBe(`dash:${stored.address}?label=Rent%20%26%20co&user=alice`);
+    await cmd.setUsernameInRequests(W, false);
+    expect(await cmd.usernameInRequests(W)).toBe(false);
+    expect(await cmd.receiveUsername(W)).toBeNull();
+    const fresh = await cmd.createReceiveRequest(W, null, null, null);
+    expect(fresh).toMatchObject({ username: null, uri: `dash:${fresh.address}` });
+    expect((await cmd.receiveRequests(W)).map((r) => [r.username, r.uri])).toEqual([
+      [null, `dash:${fresh.address}`],
+      [null, `dash:${stored.address}?label=Rent%20%26%20co`],
+    ]);
+    await cmd.setUsernameInRequests(W, true);
+    expect((await cmd.receiveRequests(W))[1]).toEqual(stored);
+    await expect(cmd.setUsernameInRequests("ff".repeat(32), false)).rejects.toMatchObject({ code: "wallet_not_found" });
+  });
+
   it("stores no request whose amount is out of range", async () => {
     await expect(cmd.createReceiveRequest(W, -1, "Rent", null)).rejects.toMatchObject({ code: "invalid_argument" });
     expect(await cmd.receiveRequests(W)).toEqual([]);

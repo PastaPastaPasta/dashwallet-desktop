@@ -134,11 +134,13 @@ case "$os" in
     ;;
 esac
 
-# The first launch: a link argument, as when a click starts the app.
+# The first launch: a link argument, as when a click starts the app. The data root is new, so
+# the network has no wallet: a payment or contact link is kept in the link stash for after
+# onboarding (`routed saved`, DP5-01 D2), and an invitation always is (`routed invitation`).
 "$exe" "${CHAIN[@]}" --selftest-link-trace "$trace" "dash:$ADDRESS?amount=0.5&label=Launch" > "$out/app.log" 2>&1 &
 app_pid=$!
 expect "received launch dash"
-expect "routed pay"
+expect "routed saved"
 expect "routed ready"
 
 # A running app: the OS hands each link to it (macOS: an Apple Event; Linux and Windows: a
@@ -147,10 +149,13 @@ source=forwarded
 [[ "$os" != macos ]] || source=opened
 open_link "pay:$ADDRESS?label=Second"
 expect "received $source pay"
-expect "routed pay" 2
+expect "routed saved" 2
 open_link "dashpay://user?id=$IDENTITY&username=bob"
 expect "received $source dashpay"
-expect "routed addContact"
+expect "routed saved" 3
+open_link "dashpay://invite?du=alice&pk=cDeepLinksPlantedKey&assetlocktx=00&islock=00"
+expect "received $source dashpay" 2
+expect "routed invitation"
 open_link "dashwallet://scanqr"
 expect "received $source dashwallet"
 expect "routed scanQr"
@@ -159,5 +164,9 @@ open_link "dash:XwnLY9Tf7Zsef8gMGL2fhWA9ZmMjt4KPwg"
 expect "routed rejected payment invalidAddress"
 
 kill -0 "$app_pid" 2>/dev/null || fail "the app is no longer running"
+# DP5-01 D14: no link text in the trace or the app's log.
+for secret in "$ADDRESS" "$IDENTITY" cDeepLinksPlantedKey; do
+  ! grep -qF -- "$secret" "$trace" "$out/app.log" || fail "a log carries $secret"
+done
 cp "$trace" "$out/"
 echo "deep-links: PASS ($os)"

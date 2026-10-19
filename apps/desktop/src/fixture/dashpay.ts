@@ -59,6 +59,9 @@ export interface DashPayWorld {
   /** DP1-10: top-up locks, stuck fundings, the own contest's read; none until a handler or a
    * scenario sets it (topup.ts `creditsOf`). */
   credits?: CreditsWorld;
+  /** DP4-02: the verified thumbnails `dashpay_avatar` hands over, base64 PNG by identity; an
+   * identity not here shows its initials. None unless a scenario sets them. */
+  avatars?: Record<string, string>;
 }
 
 /** A kept `dapk` scan: its id, whom it reaches, and when it expires (UNIX seconds). */

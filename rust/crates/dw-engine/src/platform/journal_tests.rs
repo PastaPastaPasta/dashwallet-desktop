@@ -1159,7 +1159,7 @@ fn the_first_bring_up_restarts_after_removal_and_survives_bad_reads() {
     );
 }
 
-const ABANDON_12: &[u8] =
+pub(super) const ABANDON_12: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
 pub(super) fn engine(dir: &std::path::Path, sink: Arc<dyn EventSink>) -> Engine {

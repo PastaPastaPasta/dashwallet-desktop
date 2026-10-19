@@ -306,6 +306,24 @@ fewer than its maximum outbound peers) and skip every connected masternode
 sessions going. One pass takes 8–15 minutes on the laptop (quorums about 2, mixing 5–12) and about
 6–7 minutes on agentbox.
 
+### Suite `masternodes` (MG-03)
+
+`functional/dwd_masternodes.py` runs `dwcli mn` (set `DWCLI`) against Core's deterministic
+masternode list: a masternode registered with an external collateral the wallet funds and signs
+for, two more matched by owner key or payout, tracking and attached keys, payouts against Core's
+coinbase outputs, and `enabled` → `pose_banned` (revoked) → `removed` (collateral spent). DKG stays
+off, so the masternodes it registers run no node; before the first sync it mines whole DIP24
+cycles until Core answers `quorum rotationinfo`, which dash-spv's list sync needs (MG-03 D16). Run
+it on the host like `coinjoin`:
+
+```sh
+DWCLI=${CARGO_TARGET_DIR:-$PWD/rust/target}/debug/dwcli DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python \
+    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0-rc.2 regtest/functional/run.sh dwd_masternodes.py --portseed=<n>
+```
+
+`DWD_MG03_EVIDENCE=<dir>` also writes the list, A's payouts and its removed detail as JSON. One
+pass takes about 3 minutes on agentbox.
+
 ## Layout
 
 ```
@@ -326,5 +344,6 @@ regtest/
     ├── test_framework/      vendored from dash v24.0.0-rc.2 (MIT)
     ├── feature_llmq_chainlocks.py   upstream, unmodified
     ├── dwd_mn_chainlock.py  4 MNs → quorums → ChainLock + InstantSend
-    └── dwd_coinjoin_probe.py        4 MNs + 3 mixing wallets → real CoinJoin rounds
+    ├── dwd_coinjoin_probe.py        4 MNs + 3 mixing wallets → real CoinJoin rounds
+    └── dwd_masternodes.py   dwcli mn against the MN list: roles, tracking, payouts, status
 ```

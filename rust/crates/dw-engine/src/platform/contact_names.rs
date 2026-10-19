@@ -135,6 +135,15 @@ impl ContactNames {
         }
     }
 
+    /// Tests: lands `name` for `identity` without a fetch.
+    #[cfg(test)]
+    pub(super) fn show(&self, identity: Identifier, name: &str) {
+        let mut states = guard(&self.states);
+        let state = states.entry(identity).or_default();
+        state.label = Some(name.to_owned());
+        state.checked = Some((Instant::now(), false));
+    }
+
     /// Drops the waiters of a wallet the session forgets.
     pub(super) fn forget(&self, wallet: &WalletId) {
         for state in guard(&self.states).values_mut() {

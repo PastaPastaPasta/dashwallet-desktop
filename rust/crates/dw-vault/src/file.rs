@@ -109,7 +109,7 @@ pub(crate) struct Manifest {
     pub records: BTreeMap<String, String>,
 }
 
-fn push_field(out: &mut Vec<u8>, field: &[u8]) {
+pub(crate) fn push_field(out: &mut Vec<u8>, field: &[u8]) {
     out.extend_from_slice(&(field.len() as u32).to_le_bytes());
     out.extend_from_slice(field);
 }
@@ -232,6 +232,10 @@ pub(crate) fn write(dir: &Path, file: &VaultFile) -> Result<(), VaultError> {
         f.sync_all()?;
     }
     std::fs::rename(&tmp, file_path(dir))?;
+    #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+    if crate::fault::take(dir, crate::fault::Fault::DirSync) {
+        return Err(std::io::Error::other("injected directory fsync failure").into());
+    }
     #[cfg(unix)]
     std::fs::File::open(dir)?.sync_all()?;
     Ok(())

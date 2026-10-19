@@ -5,6 +5,8 @@ mod coinjoin;
 mod compat;
 mod dashpay;
 mod governance;
+mod log;
+mod masternodes;
 mod pay;
 mod teardown;
 #[cfg(test)]
@@ -159,6 +161,8 @@ enum Command {
     CoinJoin(coinjoin::CoinJoinCommand),
     #[command(flatten)]
     DashPay(dashpay::DashPayCommand),
+    /// Masternodes (MG-03): one JSON line per command.
+    Mn(masternodes::MnArgs),
     /// MG-02: turn governance sync on, wait until it is synced, print the
     /// state, info, proposals and votes as JSON lines; optionally relay a
     /// vote and run console lines.
@@ -185,6 +189,10 @@ struct StderrSink {
     verbose: bool,
     /// Print `NewTransactions` events to stdout (`watch-events`).
     new_tx: bool,
+    /// An `mn` command: `--verbose-events` prints each event's kind only,
+    /// since its fields may carry an option's value (a devnet name, a
+    /// notice quoting `--quorum-url`; MG-03 D33).
+    kind_only: bool,
 }
 
 impl EventSink for StderrSink {
@@ -206,9 +214,22 @@ impl EventSink for StderrSink {
             );
         }
         if self.verbose {
-            eprintln!("event: {event:?}");
+            if self.kind_only {
+                eprintln!("event: {}", event_kind(&event));
+            } else {
+                eprintln!("event: {event:?}");
+            }
         }
     }
+}
+
+/// The event's variant name, a fixed identifier.
+fn event_kind(event: &EngineEvent) -> String {
+    let text = format!("{event:?}");
+    let end = text
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(text.len());
+    text[..end].to_string()
 }
 
 /// The first line of `path`, as bytes.
@@ -352,13 +373,85 @@ fn sync(
     printed
 }
 
-fn run(cli: Cli) -> Result<(), String> {
+/// A setup step before the command that failed. Other commands print its
+/// `detail`; `mn` prints only `fixed`, which names the option at fault and
+/// never its value. Only the engine error's code is logged (MG-03 D32).
+#[derive(Debug)]
+struct SetupError {
+    fixed: &'static str,
+    detail: String,
+}
+
+/// Why [`run`] failed: a setup step, or the command (its message).
+#[derive(Debug)]
+enum RunError {
+    Setup(SetupError),
+    Command(String),
+}
+
+impl std::fmt::Display for RunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunError::Setup(s) => f.write_str(&s.detail),
+            RunError::Command(m) => f.write_str(m),
+        }
+    }
+}
+
+fn setup_error(fixed: &'static str) -> impl FnOnce(String) -> RunError {
+    move |detail| RunError::Setup(SetupError { fixed, detail })
+}
+
+/// The option at fault when the network didn't open, for `mn`'s fixed text
+/// (MG-03 D32). The engine's message may quote the value, so it is only
+/// classified.
+fn open_failure(e: &EngineError, opts: &SessionOptions) -> &'static str {
+    if opts
+        .spv_peers
+        .iter()
+        .any(|p| p.parse::<std::net::SocketAddr>().is_err())
+    {
+        return "invalid --peer value";
+    }
+    match e {
+        EngineError::InvalidConfig(m) if m.starts_with("CA certificate") => {
+            "--ca-cert file not readable or not a PEM certificate"
+        }
+        EngineError::InvalidConfig(m) if m.starts_with("initial protocol version") => {
+            "unknown --initial-protocol-version"
+        }
+        EngineError::InvalidArgument(m) | EngineError::InvalidConfig(m) if m.contains("DAPI") => {
+            "invalid or missing --dapi value"
+        }
+        EngineError::StorageInUse(_) => "--datadir is in use by another process",
+        EngineError::Storage(_) | EngineError::Io(_) | EngineError::Vault(_) => {
+            "--datadir could not be opened"
+        }
+        _ => "the network could not be opened (check --dapi, --quorum-url and --peer)",
+    }
+}
+
+/// The session the global options ask for (also the log test's, D37).
+fn session_options(cli: &Cli) -> SessionOptions {
+    SessionOptions {
+        dapi_addresses: cli.dapi.clone(),
+        quorum_url: cli.quorum_url.clone(),
+        spv_peers: cli.peers.clone(),
+        ca_cert_path: cli.ca_cert.clone(),
+        initial_protocol_version: cli.initial_protocol_version,
+        no_platform: cli.no_platform,
+    }
+}
+
+fn run(cli: Cli) -> Result<(), RunError> {
     teardown::set_deadline(Duration::from_secs(cli.shutdown_timeout));
-    let mut passphrase = cli
+    let passphrase = cli
         .passphrase_file
         .as_deref()
         .map(read_passphrase)
-        .transpose()?;
+        .transpose()
+        .map_err(setup_error("--passphrase-file not readable"))?;
+    let opts = session_options(&cli);
     let engine = Engine::new(
         EngineConfig {
             data_root: cli.datadir,
@@ -367,26 +460,34 @@ fn run(cli: Cli) -> Result<(), String> {
         },
         Arc::new(StderrSink {
             verbose: cli.verbose_events,
+            kind_only: matches!(cli.command, Command::Mn(_)),
             new_tx: matches!(
                 cli.command,
                 Command::Tools(tools::ToolsCommand::WatchEvents { .. })
             ),
         }),
     )
-    .map_err(|e| e.to_string())?;
-    let opts = SessionOptions {
-        dapi_addresses: cli.dapi,
-        quorum_url: cli.quorum_url,
-        spv_peers: cli.peers,
-        ca_cert_path: cli.ca_cert,
-        initial_protocol_version: cli.initial_protocol_version,
-        no_platform: cli.no_platform,
+    .map_err(|e| e.to_string())
+    .map_err(setup_error("--datadir could not be opened"))?;
+    let session = match engine.block_on(engine.open_network(cli.network, opts.clone())) {
+        Ok(session) => session,
+        Err(e) => {
+            // The message may quote an option's value; the code doesn't.
+            tracing::warn!(code = e.code(), "the network could not be opened");
+            return Err(setup_error(open_failure(&e, &opts))(e.to_string()));
+        }
     };
-    let session = engine
-        .block_on(engine.open_network(cli.network, opts))
-        .map_err(|e| e.to_string())?;
+    run_command(engine, session, passphrase, cli.command).map_err(RunError::Command)
+}
 
-    let result = match cli.command {
+/// Runs the command on the opened session and ends the engine.
+fn run_command(
+    engine: Engine,
+    session: Arc<NetworkSession>,
+    mut passphrase: Option<Zeroizing<Vec<u8>>>,
+    command: Command,
+) -> Result<(), String> {
+    let result = match command {
         Command::InitVault { unencrypted } => {
             let secret = match (unencrypted, passphrase.take()) {
                 (true, None) => None,
@@ -526,6 +627,28 @@ fn run(cli: Cli) -> Result<(), String> {
             let result = coinjoin::run(&engine, &session, passphrase.as_ref(), cmd);
             return finish(engine, &session, passphrase, result);
         }
+        Command::Mn(args) => {
+            // Unlocks itself, so a failed unlock is a JSON error too, and
+            // prints its line once SPV is stopped and the engine shut down:
+            // a teardown that fails makes it an error line (MG-03 D32). A
+            // panic on this thread is answered too, and the engine still
+            // ends through `teardown`.
+            let started_spv = args.starts_spv();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                masternodes::run(&engine, &session, passphrase.as_ref(), args)
+            }))
+            .unwrap_or_else(|_| Err(masternodes::panicked()));
+            let stopped = !started_spv || teardown::stop_spv(&session, false).is_ok();
+            return match teardown::shut_down(engine, &session, dashpay::probe_fault()) {
+                Ok(done) => {
+                    drop(passphrase);
+                    masternodes::report(result, stopped && done.is_ok())
+                }
+                Err(why) => abandon(passphrase, &why, || {
+                    let _ = masternodes::report(result, false);
+                }),
+            };
+        }
         Command::DashPay(cmd) => {
             // Unlocks itself, so a failed unlock is a JSON error too, and
             // prints its JSON line once the engine is shut down. A panic on
@@ -542,7 +665,7 @@ fn run(cli: Cli) -> Result<(), String> {
                     drop(passphrase);
                     dashpay::report(result, done.map_err(|e| format!("shutdown: {e}")))
                 }
-                Err(why) => abandon(passphrase, &why, Some(&result)),
+                Err(why) => abandon(passphrase, &why, || dashpay::report_abandoned(&result)),
             };
         }
     };
@@ -565,42 +688,56 @@ fn finish(
 ) -> Result<(), String> {
     match teardown::shut_down(engine, session, false) {
         Ok(done) => done.map_err(|e| e.to_string()).and(result),
-        Err(why) => abandon(passphrase, &why, None),
+        Err(why) => abandon(passphrase, &why, || {}),
     }
 }
 
 /// Exits with status 1 without the rest of the engine's shutdown, which may
 /// never finish (DEC-110). `exit` runs no destructor, so the passphrase is
-/// wiped first, before the last lines (a DashPay command's), whose write may
-/// block.
-fn abandon(
-    mut passphrase: Option<Zeroizing<Vec<u8>>>,
-    why: &str,
-    dashpay: Option<&Result<serde_json::Value, dashpay::CliError>>,
-) -> ! {
+/// wiped first, before `last_lines` (a DashPay or `mn` command's), whose
+/// write may block.
+fn abandon(mut passphrase: Option<Zeroizing<Vec<u8>>>, why: &str, last_lines: impl FnOnce()) -> ! {
     if let Some(p) = passphrase.as_mut() {
         p.zeroize();
     }
     dashpay::report_wiped(passphrase.as_ref());
     eprintln!("error: {why}; exiting without the engine's shutdown");
-    if let Some(result) = dashpay {
-        dashpay::report_abandoned(result);
-    }
+    last_lines();
     std::process::exit(1)
 }
 
 fn main() -> ExitCode {
-    // `DWCLI_LOG=info,dash_spv=debug` (EnvFilter syntax) logs to stderr.
-    if let Ok(filter) = std::env::var("DWCLI_LOG") {
-        tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-            .with_writer(std::io::stderr)
-            .init();
-    }
+    // Links never reach a log or a panic message (DASHPAY §3.8, DP5-01
+    // D14); DashPay commands withhold panic messages altogether. The log
+    // starts once the arguments are parsed (`log::init`).
+    dw_uri::redact::redact_panics();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => return parse_failure(&e),
     };
+    // `DWCLI_LOG=info,dash_spv=debug` (EnvFilter syntax) logs to stderr.
+    log::init(&cli, matches!(cli.command, Command::Mn(_)));
+    // `mn` commands print one JSON line whatever happens (MG-03 D26), and a
+    // panic's payload never reaches stderr.
+    if matches!(cli.command, Command::Mn(_)) {
+        dashpay::quiet_panics();
+        return match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(cli))) {
+            Ok(Ok(())) => ExitCode::SUCCESS,
+            Ok(Err(RunError::Setup(s))) => {
+                masternodes::report_setup_failure(s.fixed);
+                eprintln!("error: {}", s.fixed);
+                ExitCode::FAILURE
+            }
+            Ok(Err(RunError::Command(m))) => {
+                eprintln!("error: {m}");
+                ExitCode::FAILURE
+            }
+            Err(_) => {
+                masternodes::report_panic();
+                ExitCode::FAILURE
+            }
+        };
+    }
     if !matches!(cli.command, Command::DashPay(_)) {
         return match run(cli) {
             Ok(()) => ExitCode::SUCCESS,
@@ -619,7 +756,7 @@ fn main() -> ExitCode {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(cli))) {
         Ok(Ok(())) => ExitCode::SUCCESS,
         Ok(Err(e)) => {
-            dashpay::report_setup_failure(&e);
+            dashpay::report_setup_failure(&e.to_string());
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
@@ -638,6 +775,15 @@ fn parse_failure(e: &clap::Error) -> ExitCode {
     use clap::CommandFactory;
     use clap::error::ErrorKind;
     let code = u8::try_from(e.exit_code()).unwrap_or(2);
+    // An `mn` command line answers with its JSON line too (MG-03 D26): the
+    // subcommand as clap reads it past the error.
+    let mn = Cli::command()
+        .ignore_errors(true)
+        .try_get_matches()
+        .is_ok_and(|m| m.subcommand_name() == Some("mn"));
+    if e.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand && mn {
+        masternodes::report_parse_failure("a subcommand is required");
+    }
     if matches!(
         e.kind(),
         ErrorKind::DisplayHelp
@@ -647,9 +793,12 @@ fn parse_failure(e: &clap::Error) -> ExitCode {
         let _ = e.print();
         return ExitCode::from(code);
     }
+    let text = dashpay::clap_error_text(e);
+    if mn {
+        masternodes::report_parse_failure(&text);
+    }
     eprintln!(
-        "error: {}\n\n{}\n\nFor more information, try '--help'.",
-        dashpay::clap_error_text(e),
+        "error: {text}\n\n{}\n\nFor more information, try '--help'.",
         Cli::command().render_usage()
     );
     ExitCode::from(code)
@@ -658,6 +807,22 @@ fn parse_failure(e: &clap::Error) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_events_kind_is_its_variant_name() {
+        let opened = EngineEvent::SessionOpened {
+            network: DashNetwork::Devnet {
+                name: "secret".into(),
+            },
+        };
+        assert_eq!(event_kind(&opened), "SessionOpened");
+        assert_eq!(
+            event_kind(&EngineEvent::SessionClosed {
+                network: DashNetwork::Regtest
+            }),
+            "SessionClosed"
+        );
+    }
 
     #[test]
     fn parses_networks() {
@@ -692,12 +857,12 @@ mod tests {
         };
         // Without a vault there is nowhere to keep the seed.
         let err = run(base(Command::Create { words: 12 }, false)).unwrap_err();
-        assert!(err.contains("no vault"), "{err}");
+        assert!(err.to_string().contains("no vault"), "{err}");
         assert!(run(base(Command::InitVault { unencrypted: false }, false)).is_err());
         run(base(Command::InitVault { unencrypted: false }, true)).unwrap();
         // A fresh process sees a locked vault; the passphrase file unlocks it.
         let err = run(base(Command::Create { words: 12 }, false)).unwrap_err();
-        assert!(err.contains("locked"), "{err}");
+        assert!(err.to_string().contains("locked"), "{err}");
         run(base(Command::Create { words: 12 }, true)).unwrap();
         run(base(Command::List, false)).unwrap();
         assert!(dir.path().join("data/regtest/wallet.sqlite").exists());

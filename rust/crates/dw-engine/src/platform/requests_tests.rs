@@ -133,6 +133,8 @@ pub(crate) struct FakeRequests {
     pub(crate) infos_down_after: AtomicBool,
     /// The `profile` documents, by owner.
     pub(crate) profiles: Mutex<HashMap<Identifier, ProfileDocument>>,
+    /// `profile_document` reads (DP4-02).
+    pub(crate) profile_reads: AtomicU32,
     /// The key each profile write was signed with.
     pub(crate) profile_keys: Mutex<Vec<KeyID>>,
     /// Platform's `profile` type, when not the bundled contract's.
@@ -349,6 +351,7 @@ impl RequestNet for FakeRequests {
         owner: Identifier,
     ) -> Result<Option<ProfileDocument>, PlatformError> {
         self.up()?;
+        self.profile_reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.profiles.lock().unwrap().get(&owner).cloned())
     }
 

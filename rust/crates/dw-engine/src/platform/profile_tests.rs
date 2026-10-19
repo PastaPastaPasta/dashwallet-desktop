@@ -360,7 +360,7 @@ fn an_edit_that_changes_nothing_sends_nothing() {
 }
 
 /// Each refusal comes before the grant is redeemed: a text too long, an
-/// avatar candidate (DP4-02), Platform unreachable, an identity the wallet
+/// unknown avatar candidate (DP4-02), Platform unreachable, an identity the wallet
 /// lacks, a grant below the quote, a lease of another flow, too few
 /// credits.
 #[test]
@@ -409,6 +409,440 @@ fn refusals_come_before_the_grant() {
         "platform.insufficient_credits"
     );
     assert!(poor.unused(&grant));
+}
+
+/// A `Set` publishes the candidate's URL, hash and fingerprint together
+/// (DP4-02), and the profile shows them; a candidate without a URL (a
+/// `File` one before its upload) or another wallet's is refused before
+/// the grant is redeemed.
+#[test]
+fn an_avatar_candidate_sets_the_three_fields() {
+    use super::avatar::Candidate;
+    let candidate = |wallet, url: Option<&str>, sha, dhash| {
+        Candidate::new(
+            wallet,
+            url.map(str::to_owned),
+            sha,
+            dhash,
+            url.is_none().then(Vec::new),
+        )
+    };
+    let f = fixture();
+    let avatars = &f.s.platform.avatars;
+    let url = "https://example.org/new.png";
+    let ok = avatars.insert(candidate(f.wallet, Some(url), [0xab; 32], [0xcd; 8]));
+    let no_url = avatars.insert(candidate(f.wallet, None, [1; 32], [1; 8]));
+    let theirs = avatars.insert(candidate(
+        crate::WalletId([0xee; 32]),
+        Some(url),
+        [2; 32],
+        [2; 8],
+    ));
+    let set = |candidate: &str| ProfileEdit {
+        avatar: AvatarChange::Set {
+            candidate: candidate.into(),
+        },
+        ..edit(Some("Al"), None)
+    };
+    let grant = f.grant(DOCUMENT_10K_CREDITS);
+    for refused in [&no_url, &theirs] {
+        assert_eq!(
+            f.update(set(refused), &grant).unwrap_err().code(),
+            "invalid_argument"
+        );
+    }
+    assert!(f.unused(&grant));
+    f.publish(full(), 3);
+    f.update(set(&ok), &grant).unwrap();
+    let doc = f.document().unwrap();
+    let mut want = full();
+    want.insert("displayName".into(), text("Al"));
+    want.remove("publicMessage");
+    want.insert("avatarUrl".into(), text(url));
+    want.insert("avatarHash".into(), Value::Bytes32([0xab; 32]));
+    want.insert("avatarFingerprint".into(), Value::Bytes(vec![0xcd; 8]));
+    assert_eq!((doc.revision, &doc.properties), (4, &want));
+    let shown = f.profile(ME).unwrap().unwrap();
+    assert_eq!(shown.avatar_url.as_deref(), Some(url));
+    assert_eq!(shown.avatar_hash, Some("ab".repeat(32)));
+    assert_eq!(shown.avatar_fingerprint, Some("cd".repeat(8)));
+}
+
+/// A session with a test pipeline, and Dave publishing an avatar on
+/// Platform (the wallet holds nothing of him). The local server speaks
+/// plain HTTP to the `https` URL a profile must show, so a fetch of it
+/// fails, counted at the listener: the verdicts are the pipeline's
+/// (avatar_tests.rs).
+struct DavesAvatar {
+    server: super::avatar_tests::Server,
+    /// The session's pipeline, the URL Dave's profile publishes, and the
+    /// picture there.
+    pipeline: Arc<super::avatar::Pipeline>,
+    url: String,
+    picture: Vec<u8>,
+    _tmp: tempfile::TempDir,
+}
+
+fn with_daves_avatar(f: &Fixture) -> DavesAvatar {
+    use super::avatar::Pipeline;
+    use super::avatar_cache::ThumbDir;
+    use super::avatar_fetch::NameResolver;
+    use super::avatar_tests::{LOCAL, Route, Script, Server, png, test_policy};
+    use platform_wallet::wallet::identity::{calculate_avatar_hash, calculate_dhash_fingerprint};
+
+    let server = f.engine.block_on(Server::start((LOCAL, 0).into())).unwrap();
+    let script = Arc::new(Script::default());
+    script.answer("good.test", vec![vec![LOCAL]]);
+    let tmp = dw_testutil::private_tempdir();
+    let avatars = &f.s.platform.avatars;
+    avatars.install(Pipeline::new(
+        test_policy(),
+        script as Arc<dyn NameResolver>,
+        Some(ThumbDir::open(tmp.path()).unwrap()),
+        Arc::new(dw_appdb::AppDb::open_in_memory().unwrap()),
+    ));
+    let theirs = png(30, 30);
+    server.route("/dave.png", Route::ok(theirs.clone()));
+    let https = server
+        .url("good.test", "/dave.png")
+        .replacen("http:", "https:", 1);
+    let doc = ProfileDocument {
+        id: id(19),
+        revision: 1,
+        properties: properties([
+            ("avatarUrl", text(&https)),
+            ("avatarHash", Value::Bytes32(calculate_avatar_hash(&theirs))),
+            (
+                "avatarFingerprint",
+                Value::Bytes(calculate_dhash_fingerprint(&theirs).unwrap().to_vec()),
+            ),
+        ]),
+    };
+    f.net.profiles.lock().unwrap().insert(id(DAVE), doc);
+    DavesAvatar {
+        server,
+        pipeline: avatars.pipeline().unwrap(),
+        url: https,
+        picture: theirs,
+        _tmp: tmp,
+    }
+}
+
+impl Fixture {
+    async fn read_avatar(
+        &self,
+        n: u8,
+    ) -> Result<Option<super::profile::AvatarImage>, super::errors::AvatarError> {
+        let who = b58(&id(n));
+        let size = super::profile::AvatarSize::Small;
+        let net = Arc::clone(&self.net);
+        (self.s.dashpay(self.wallet))
+            .avatar_through(move |_| net, who, size)
+            .await
+    }
+
+    fn profile_reads(&self) -> u32 {
+        self.net.profile_reads.load(Ordering::SeqCst)
+    }
+}
+
+/// "Load contact pictures" where `avatar` enforces it (DP4-02 D17), on the
+/// session: off, another user's avatar reads neither Platform nor the
+/// avatar host; on, the profile is read from Platform (once, then kept) and
+/// its URL fetched, and the fetch's failure is kept.
+#[test]
+fn the_pictures_toggle_holds_at_the_session() {
+    use super::errors::AvatarError;
+    let f = fixture();
+    let p = with_daves_avatar(&f);
+    let before = f.profile_reads();
+    let avatar = |n: u8| f.engine.block_on(f.read_avatar(n));
+    let toggle = |on: bool| {
+        f.engine
+            .block_on(f.s.set_load_contact_pictures(on))
+            .unwrap()
+    };
+
+    toggle(false);
+    assert_eq!(f.s.load_contact_pictures(), Ok(false));
+    assert_eq!(avatar(DAVE), Ok(None));
+    assert_eq!(avatar(ERIN), Ok(None));
+    assert_eq!(avatar(ME), Ok(None));
+    assert_eq!((f.profile_reads(), p.server.connections()), (before, 0));
+    toggle(true);
+    assert_eq!(f.s.load_contact_pictures(), Ok(true));
+    assert_eq!(avatar(DAVE), Err(AvatarError::FetchFailed));
+    let connections = p.server.connections();
+    assert!(connections >= 1);
+    assert_eq!(avatar(DAVE), Err(AvatarError::FetchFailed));
+    assert_eq!(f.profile_reads(), before + 1, "read once, then kept");
+    assert_eq!(p.server.connections(), connections, "the failure is kept");
+}
+
+/// An off while a read is about to read Platform holds for it (D33, D36):
+/// paused after its revocation was first polled and before the Platform
+/// read was, the read reaches neither Platform nor the avatar host, and
+/// answers `None`; paused where it cannot be revoked, the off waits until
+/// it has ended.
+#[test]
+fn an_off_holds_for_a_read_waiting_on_platform() {
+    let f = fixture();
+    let p = with_daves_avatar(&f);
+    let before = f.profile_reads();
+    let toggle = f.s.platform.avatars.toggle();
+    let (reached, release) = super::avatar_tests::pause_at(&toggle, "platform");
+    let off = async {
+        reached.await.unwrap();
+        f.s.set_load_contact_pictures(false).await.unwrap();
+        let _ = release.send(());
+    };
+    let (read, ()) = f
+        .engine
+        .block_on(async { tokio::join!(f.read_avatar(DAVE), off) });
+    assert_eq!(read, Ok(None));
+    assert_eq!((f.profile_reads(), p.server.connections()), (before, 0));
+    // Held before it looks for a kept read: the off returns after it.
+    f.engine
+        .block_on(f.s.set_load_contact_pictures(true))
+        .unwrap();
+    let (reached, release) = super::avatar_tests::pause_at(&toggle, "remote");
+    let off = async {
+        reached.await.unwrap();
+        let mut off = std::pin::pin!(f.s.set_load_contact_pictures(false));
+        let early = tokio::time::timeout(Duration::from_millis(300), &mut off);
+        assert!(early.await.is_err(), "off returned while a read ran");
+        release.send(()).unwrap();
+        off.await.unwrap();
+    };
+    let (read, ()) = f
+        .engine
+        .block_on(async { tokio::join!(f.read_avatar(DAVE), off) });
+    assert_eq!(read, Ok(None));
+    assert_eq!((f.profile_reads(), p.server.connections()), (before, 0));
+}
+
+/// The regtest session opened again (after a close).
+fn reopen(engine: &crate::Engine) -> Arc<crate::NetworkSession> {
+    engine
+        .block_on(engine.open_network(
+            crate::DashNetwork::Regtest,
+            crate::SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                no_platform: true,
+                ..Default::default()
+            },
+        ))
+        .unwrap()
+}
+
+/// With pictures off, an on whose app.sqlite write is held and whose
+/// caller was dropped: the pause (released when the guard drops).
+fn a_dropped_on(
+    f: &Fixture,
+) -> (
+    Arc<crate::coins::TestPause>,
+    crate::held_writes::ReleaseOnDrop,
+) {
+    use crate::held_writes::{ReleaseOnDrop, hold_first_job};
+    let s = Arc::clone(&f.s);
+    f.engine
+        .block_on(f.s.set_load_contact_pictures(false))
+        .unwrap();
+    let (pause, on) = hold_first_job(&f.s, async move {
+        let _ = s.set_load_contact_pictures(true).await;
+    });
+    let release = ReleaseOnDrop(Arc::clone(&pause));
+    wait_until("the held write", Duration::from_secs(60), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    on.abort();
+    assert!(f.engine.block_on(on).unwrap_err().is_cancelled());
+    (pause, release)
+}
+
+/// A setter dropped once its turn came runs to its end (D37): an on whose
+/// write is held, its caller dropped, holds a later off back, which then
+/// lands last. The store and memory both say off, and so does the session
+/// reopened.
+#[test]
+fn a_dropped_setter_cannot_undo_a_later_off() {
+    let f = fixture();
+    let (pause, _release) = a_dropped_on(&f);
+    let s = Arc::clone(&f.s);
+    let off =
+        f.s.rt
+            .spawn(async move { s.set_load_contact_pictures(false).await });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!off.is_finished(), "the off waits for the on's turn");
+    pause.release.notify_one();
+    f.engine.block_on(off).unwrap().unwrap();
+    assert!(
+        pause.done.load(Ordering::SeqCst),
+        "the on's write ran first"
+    );
+    let stored = (f.s.live().unwrap().appdb)
+        .setting(dw_appdb::GLOBAL_SCOPE, super::avatar::LOAD_PICTURES_KEY)
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("0"));
+    assert_eq!(f.s.load_contact_pictures(), Ok(false));
+    let engine = &f.engine;
+    engine
+        .block_on(engine.close_network(crate::DashNetwork::Regtest))
+        .unwrap();
+    let reopened = reopen(engine);
+    assert_eq!(reopened.load_contact_pictures(), Ok(false));
+}
+
+/// A session close waits for a transition whose caller was dropped (D37):
+/// the held write lands before the close returns, and the session reopened
+/// holds it.
+#[test]
+fn a_close_waits_for_a_dropped_setter() {
+    let f = fixture();
+    let (pause, _release) = a_dropped_on(&f);
+    let engine = &f.engine;
+    std::thread::scope(|scope| {
+        let close =
+            scope.spawn(|| engine.block_on(engine.close_network(crate::DashNetwork::Regtest)));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!close.is_finished(), "the close waits for the transition");
+        pause.release.notify_one();
+        close.join().unwrap().unwrap();
+    });
+    assert!(pause.done.load(Ordering::SeqCst));
+    let reopened = reopen(engine);
+    assert_eq!(reopened.load_contact_pictures(), Ok(true));
+}
+
+/// Another user's picture is delivered only if no off was published since
+/// its read began (D40): a read held between its end and its delivery
+/// while an off completes answers `None`.
+#[test]
+fn a_picture_read_before_an_off_is_not_delivered_after_it() {
+    let f = fixture();
+    let p = with_daves_avatar(&f);
+    p.pipeline.seed(&p.url, &p.picture);
+    let shown = f.engine.block_on(f.read_avatar(DAVE)).unwrap();
+    assert!(shown.is_some(), "read with pictures on");
+    let toggle = f.s.platform.avatars.toggle();
+    let (reached, release) = super::avatar_tests::pause_at(&toggle, "delivery");
+    let off = async {
+        reached.await.unwrap();
+        f.s.set_load_contact_pictures(false).await.unwrap();
+        release.send(()).unwrap();
+    };
+    let both = async { tokio::join!(f.read_avatar(DAVE), off) };
+    let held = async { tokio::time::timeout(Duration::from_secs(60), both).await };
+    let (read, ()) = f
+        .engine
+        .block_on(held)
+        .expect("the off did not wait on the caller");
+    assert_eq!(read, Ok(None));
+}
+
+/// A kept Platform failure answers only in the toggle's epoch it was read
+/// in (D38): after an off and an on, Platform is asked again; and a read
+/// that began before an off and finds the failure kept answers `None`.
+#[test]
+fn a_kept_platform_failure_ends_with_its_epoch() {
+    use super::errors::AvatarError;
+    let f = fixture();
+    let _p = with_daves_avatar(&f);
+    let before = f.profile_reads();
+    let toggle = |on: bool| {
+        f.engine
+            .block_on(f.s.set_load_contact_pictures(on))
+            .unwrap()
+    };
+    let unavailable = Err(AvatarError::Platform(PlatformError::Unavailable));
+    f.net.down.store(true, Ordering::SeqCst);
+    assert_eq!(f.engine.block_on(f.read_avatar(DAVE)), unavailable);
+    f.net.down.store(false, Ordering::SeqCst);
+    assert_eq!(f.engine.block_on(f.read_avatar(DAVE)), unavailable, "kept");
+    assert_eq!(f.profile_reads(), before);
+    // Kept in this epoch, a read paused before it looks: an off, and it
+    // answers `None`, not the failure.
+    let pictures = f.s.platform.avatars.toggle();
+    let (reached, release) = super::avatar_tests::pause_at(&pictures, "remote");
+    let off = async {
+        reached.await.unwrap();
+        pictures.set(false);
+        release.send(()).unwrap();
+    };
+    let (read, ()) = f
+        .engine
+        .block_on(async { tokio::join!(f.read_avatar(DAVE), off) });
+    assert_eq!(read, Ok(None));
+    toggle(false);
+    toggle(true);
+    assert_eq!(
+        f.engine.block_on(f.read_avatar(DAVE)),
+        Err(AvatarError::FetchFailed)
+    );
+    assert_eq!(f.profile_reads(), before + 1, "asked again");
+}
+
+/// Reads of one identity the wallet does not hold share one Platform read
+/// (D35): eight at once, the first held at Platform while the others queue,
+/// make one read.
+#[test]
+fn reads_of_one_unknown_identity_share_one_platform_read() {
+    let f = fixture();
+    let _p = with_daves_avatar(&f);
+    let before = f.profile_reads();
+    let toggle = f.s.platform.avatars.toggle();
+    let (reached, release) = super::avatar_tests::pause_at(&toggle, "platform");
+    let reads = futures_util::future::join_all((0..8).map(|_| f.read_avatar(DAVE)));
+    let hold = async {
+        reached.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        release.send(()).unwrap();
+    };
+    let (reads, ()) = f.engine.block_on(async { tokio::join!(reads, hold) });
+    assert_eq!(reads.len(), 8);
+    assert_eq!(f.profile_reads(), before + 1);
+}
+
+/// A failed Platform read is shared too (D35): with Platform down, eight
+/// reads at once of one unknown identity ask it once, and all fail.
+#[test]
+fn a_failed_platform_read_is_shared_with_the_reads_queued_behind_it() {
+    use std::sync::atomic::AtomicU32;
+    let f = fixture();
+    let _p = with_daves_avatar(&f);
+    f.net.down.store(true, Ordering::SeqCst);
+    let asked = Arc::new(AtomicU32::new(0));
+    let (counted, gate) = (Arc::clone(&asked), Arc::new(tokio::sync::Notify::new()));
+    let opened = Arc::clone(&gate);
+    f.s.platform
+        .avatars
+        .toggle()
+        .set_hook(Box::new(move |point| {
+            if point != "platform" {
+                return None;
+            }
+            // The first read is held until the others queued behind it.
+            let first = counted.fetch_add(1, Ordering::SeqCst) == 0;
+            let gate = Arc::clone(&opened);
+            Some(Box::pin(async move {
+                if first {
+                    gate.notified().await;
+                }
+            }))
+        }));
+    let reads = futures_util::future::join_all((0..8).map(|_| f.read_avatar(DAVE)));
+    let hold = async {
+        while asked.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        gate.notify_one();
+    };
+    let (reads, ()) = f.engine.block_on(async { tokio::join!(reads, hold) });
+    assert!(reads.iter().all(Result::is_err), "{reads:?}");
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
 }
 
 /// Without the document key in the vault the edit is

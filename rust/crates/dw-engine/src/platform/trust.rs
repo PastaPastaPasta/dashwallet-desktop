@@ -77,6 +77,18 @@ pub(crate) enum TrustMode {
 /// The mode sessions open with.
 pub(crate) const DEFAULT_MODE: TrustMode = TrustMode::Degraded;
 
+/// What rule 5 (money never moves on unverified data) is under the mode
+/// and the toggle: DP3-04's money-move gate (`money_gate.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rule5 {
+    /// `Enforcing`: money waits until the data re-verifies against SPV.
+    Enforce,
+    /// `Degraded`: rule 5 is suspended, a mismatch still refuses.
+    Probe,
+    /// The trusted-only toggle: SPV is not consulted.
+    Off,
+}
+
 /// What SPV holds for a quorum (design §3, status mapping).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SpvAnswer {
@@ -189,7 +201,9 @@ struct Attached {
 /// The session's quorum provider. Shared by the SDK's `ContextProvider`
 /// handle, the sync tracker (masternode sync) and the re-fetch task.
 pub(crate) struct TrustProvider {
-    mode: TrustMode,
+    /// The mode is `Enforcing` (else `Degraded`). Set at construction;
+    /// tests switch it ([`Self::set_mode`]).
+    enforcing: AtomicBool,
     trusted_only: AtomicBool,
     trusted: Arc<dyn TrustedQuorums>,
     /// SPV and provenance, attached once the wallet manager exists. Until
@@ -216,7 +230,7 @@ impl TrustProvider {
         network: DashNetwork,
     ) -> Self {
         Self {
-            mode,
+            enforcing: AtomicBool::new(mode == TrustMode::Enforcing),
             trusted_only: AtomicBool::new(false),
             trusted,
             attached: OnceLock::new(),
@@ -243,6 +257,19 @@ impl TrustProvider {
     pub(crate) fn with_lookup_timeout(mut self, limit: Duration) -> Self {
         self.spv_lookup_timeout = limit;
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_mode(&self, mode: TrustMode) {
+        (self.enforcing).store(mode == TrustMode::Enforcing, Ordering::SeqCst);
+    }
+
+    fn mode(&self) -> TrustMode {
+        if self.enforcing.load(Ordering::SeqCst) {
+            TrustMode::Enforcing
+        } else {
+            TrustMode::Degraded
+        }
     }
 
     /// Gives the provider SPV and provenance. Later calls are ignored.
@@ -278,7 +305,7 @@ impl TrustProvider {
 
     /// Where proofs get their quorum keys now (`sync_status`).
     pub(crate) fn source(&self) -> QuorumSource {
-        match self.mode {
+        match self.mode() {
             _ if self.trusted_only() => QuorumSource::Trusted,
             TrustMode::Degraded => QuorumSource::Trusted,
             TrustMode::Enforcing if self.masternodes_synced() => QuorumSource::Spv,
@@ -291,7 +318,16 @@ impl TrustProvider {
     /// developer's choice. DP2-02's send reads it for a scan shown on the
     /// fallback's word; H-09 wires it into every write flow.
     pub(crate) fn writes_wait(&self) -> bool {
-        self.mode == TrustMode::Enforcing && !self.trusted_only() && !self.masternodes_synced()
+        self.mode() == TrustMode::Enforcing && !self.trusted_only() && !self.masternodes_synced()
+    }
+
+    /// Rule 5 now (DP3-04): the toggle wins over the mode, as for keys.
+    pub(crate) fn rule_5(&self) -> Rule5 {
+        match self.mode() {
+            _ if self.trusted_only() => Rule5::Off,
+            TrustMode::Enforcing => Rule5::Enforce,
+            TrustMode::Degraded => Rule5::Probe,
+        }
     }
 
     /// The `ContextProvider` lookup. Blocking: it may wait for SPV, the
@@ -339,7 +375,8 @@ impl TrustProvider {
             return self.unverified(attached, trusted()?);
         }
         let spv = self.spv_answer(attached, quorum, height);
-        match (self.mode, spv) {
+        let mode = self.mode();
+        match (mode, spv) {
             (_, SpvAnswer::Invalid) => Err(ContextProviderError::InvalidQuorum(format!(
                 "SPV marks quorum {} invalid",
                 hex::encode(quorum_hash)
@@ -357,7 +394,7 @@ impl TrustProvider {
             // compared with what SPV holds.
             (_, held) => {
                 let t = trusted()?;
-                if matches!(self.mode, TrustMode::Enforcing) && self.masternodes_synced() {
+                if matches!(mode, TrustMode::Enforcing) && self.masternodes_synced() {
                     // Synced while the service answered: no fallback now.
                     return self.wait_for_verified(attached, quorum, height);
                 }
