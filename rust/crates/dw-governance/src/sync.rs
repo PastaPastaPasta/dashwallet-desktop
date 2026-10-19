@@ -1667,13 +1667,16 @@ impl Run {
     /// (D76): a peer that sends the re-signed copy again is refused, and
     /// the next is asked. Apart from peers' announcements, up to
     /// [`SyncConfig::max_refetches`] per run; the store keeps the rest
-    /// uncertain, for a later run (DEC-257, D77).
+    /// uncertain, for a later run that starts with them (DEC-257, D77, D79).
     fn refetch_votes(&mut self) {
         let hashes = self.shared.store().take_refetch();
         let ids: Vec<usize> = self.peers.iter().map(|p| p.peer.id).collect();
         let mut asks: HashMap<usize, Vec<InvItem>> = HashMap::new();
         for hash in hashes {
+            // The rest wait for a later run, which starts with this one
+            // (D79).
             if self.refetches.started >= self.cfg.max_refetches {
+                self.shared.store().defer_refetch(hash);
                 break;
             }
             // A request out for its announcement may fetch it.

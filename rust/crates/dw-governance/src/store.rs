@@ -396,6 +396,11 @@ pub struct GovernanceStore {
     /// Votes whose stored copy a resolved outpoint showed signed by another
     /// key: the honest copy, of the same hash, is asked for again (D64).
     refetch: Vec<[u8; 32]>,
+    /// Where the next [`Self::requeue_lost`] starts in hash order: the
+    /// first hash a run left unasked, so each gets a turn (D79).
+    refetch_from: Option<[u8; 32]>,
+    /// Whether this pass's first unasked hash is already noted.
+    refetch_deferred: bool,
     /// Object → its votes held as uncertainty (D71, D72, D76).
     uncounted: HashMap<[u8; 32], Uncounted>,
     /// (object, outpoint, hash) of lost votes noted while the object was
@@ -518,6 +523,8 @@ impl GovernanceStore {
             erased: HashMap::new(),
             erased_order: VecDeque::new(),
             refetch: Vec::new(),
+            refetch_from: None,
+            refetch_deferred: false,
             uncounted: HashMap::new(),
             unstored_lost: VecDeque::new(),
             expired: HashMap::new(),
@@ -1389,17 +1396,53 @@ impl GovernanceStore {
 
     /// Asks again for every awaited and lost vote of a stored object: a
     /// run's peers may have it where the last run's had not, or the last
-    /// run's budget left it (D76, D77).
+    /// run's budget left it (D76, D77). In hash order from where the last
+    /// pass left off, so a run's budget cannot keep a hash waiting past
+    /// a turn of the whole set (D79).
     pub fn requeue_lost(&mut self) {
-        let objects: Vec<[u8; 32]> = self
+        let mut ring: Vec<[u8; 32]> = self
             .uncounted
-            .keys()
-            .filter(|h| self.objects.contains_key(*h))
-            .copied()
+            .iter()
+            .filter(|(h, _)| self.objects.contains_key(*h))
+            .flat_map(|(_, u)| {
+                let awaited = u.awaited.values().flatten().map(|a| a.hash);
+                awaited.chain(u.lost.values().flatten().map(|l| l.hash))
+            })
             .collect();
-        for h in objects {
-            self.refetch_lost(&h);
+        ring.sort_unstable();
+        ring.dedup();
+        if let Some(from) = self.refetch_from {
+            let start = ring.partition_point(|h| *h < from);
+            ring.rotate_left(start);
         }
+        self.refetch = ring;
+        self.refetch_deferred = false;
+    }
+
+    /// Notes `hash` as the first a run left unasked, its budget spent or no
+    /// peer connected: the next [`Self::requeue_lost`] starts there (D79).
+    pub fn defer_refetch(&mut self, hash: [u8; 32]) {
+        if !self.refetch_deferred {
+            self.refetch_from = Some(hash);
+            self.refetch_deferred = true;
+        }
+    }
+
+    /// Lost votes `ids` on `parent`, of invented hashes; their hashes.
+    #[cfg(test)]
+    pub(crate) fn lose_for_tests(
+        &mut self,
+        parent: [u8; 32],
+        ids: std::ops::Range<u32>,
+    ) -> Vec<[u8; 32]> {
+        ids.map(|i| {
+            let mut hash = sha256::Hash::hash(&parent).to_byte_array();
+            hash[..4].copy_from_slice(&i.to_le_bytes());
+            let outpoint = OutPoint::new(dashcore::Txid::from_byte_array(hash), i);
+            self.note_lost(parent, outpoint, [0; 20], hash, VoteOutcome::No, 0);
+            hash
+        })
+        .collect()
     }
 
     /// Keeps a vote the per-key cap refused as uncertainty on its object:

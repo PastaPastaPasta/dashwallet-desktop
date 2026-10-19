@@ -4271,3 +4271,39 @@ async fn a_relay_never_held_is_still_credited() {
         assert_eq!(state.unattributable, 0, "refused {refused}");
     }
 }
+
+/// Sol r5 (D79): more lost votes than a run's refetch budget are asked for
+/// in turn, though no peer serves any: of 1,501 (one lost mid-run) with a
+/// budget of 1,000, each run and the next ask every one.
+#[tokio::test]
+async fn lost_votes_past_the_budget_are_each_asked_within_two_runs() {
+    let p = proposal("p-d79-a");
+    let q = proposal("p-d79-b");
+    let mut run = two_peer_run(&p).await;
+    assert_eq!(run.cfg.max_refetches, 1_000);
+    let mut lost: HashSet<[u8; 32]> = {
+        let mut store = run.shared.store();
+        store.add_object(q.clone(), None, unix_now()).unwrap();
+        let mut lost = store.lose_for_tests(p.hash(), 0..750);
+        lost.extend(store.lose_for_tests(q.hash(), 0..750));
+        lost.into_iter().collect()
+    };
+    let mut passes: Vec<HashSet<[u8; 32]>> = Vec::new();
+    for pass in 0..4 {
+        run.refetches = Refetches::default();
+        run.shared.store().requeue_lost();
+        run.expire();
+        assert_eq!(run.refetches.out.len(), 1_000, "pass {pass}");
+        if pass == 0 {
+            // Lost while the run's budget is spent: a later run asks it.
+            let late = run.shared.store().lose_for_tests(p.hash(), 750..751);
+            lost.extend(late);
+            run.expire();
+        }
+        passes.push(run.refetches.out.keys().copied().collect());
+    }
+    for (i, pair) in passes.windows(2).enumerate() {
+        let both: HashSet<[u8; 32]> = pair[0].union(&pair[1]).copied().collect();
+        assert_eq!(both, lost, "passes {i} and {}", i + 1);
+    }
+}
