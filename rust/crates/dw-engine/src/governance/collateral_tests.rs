@@ -424,8 +424,11 @@ async fn fetches_stop_at_the_session_ceiling_eight_at_a_time() {
     );
     let source = Script::with([]);
     let c = Collaterals::default();
+    resolve_round(&c, &list, source.as_ref(), None).await;
+    assert!(!c.state().ceiling_logged, "logged before the ceiling");
     let r = resolve_all(&c, &list, source.as_ref(), &None).await;
-    assert_eq!(r.asked, SESSION_FETCHES as usize);
+    assert!(c.state().ceiling_logged);
+    assert_eq!(r.asked + ROUND, SESSION_FETCHES as usize);
     assert_eq!(source.asked().len(), SESSION_FETCHES as usize);
     assert_eq!(c.fetches(), SESSION_FETCHES);
     assert_eq!(
