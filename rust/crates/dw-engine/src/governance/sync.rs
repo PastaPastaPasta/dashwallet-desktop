@@ -134,6 +134,9 @@ pub(crate) struct GovernanceRuntime {
     /// `set_resolved` calls, for the tests.
     #[cfg(test)]
     pub(super) resolved_sets: AtomicUsize,
+    /// `changed` calls, for the tests.
+    #[cfg(test)]
+    pub(super) changes: AtomicUsize,
 }
 
 impl GovernanceRuntime {
@@ -180,6 +183,8 @@ impl GovernanceRuntime {
             applied: Mutex::default(),
             #[cfg(test)]
             resolved_sets: AtomicUsize::new(0),
+            #[cfg(test)]
+            changes: AtomicUsize::new(0),
         }
     }
 
@@ -192,6 +197,8 @@ impl GovernanceRuntime {
     }
 
     fn changed(&self) {
+        #[cfg(test)]
+        self.changes.fetch_add(1, Ordering::SeqCst);
         self.changed.notify_one();
     }
 

@@ -393,15 +393,19 @@ async fn the_store_gets_a_resolved_set_only_when_it_changed() {
         Some(source.clone()),
     );
     let sets = || rt.resolved_sets.load(Ordering::SeqCst);
+    let changes = || rt.changes.load(Ordering::SeqCst);
     rt.apply_list(list(1, true));
+    assert_eq!(changes(), 1, "a new list wakes the reads");
     rt.apply_resolved();
     assert_eq!(sets(), 0);
     resolve_all(&rt.collaterals, &list(1, true), source.as_ref(), &None).await;
     rt.apply_resolved();
     assert_eq!(sets(), 1);
+    assert_eq!(changes(), 2, "a new resolved set wakes the reads");
     rt.apply_resolved();
     rt.apply_list(list(1, true));
     assert_eq!(sets(), 1);
+    assert_eq!(changes(), 2, "the same list again wakes nothing");
     // Another masternode's change leaves the set as it was.
     rt.apply_list(list(1, false));
     rt.apply_resolved();
