@@ -6,7 +6,7 @@
 
 use dashcore::Network;
 
-use crate::params::{GovernanceParams, governance_params};
+use crate::params::{ETA_BLOCK_TENTHS, GovernanceParams, governance_params};
 
 const COIN: u64 = 100_000_000;
 
@@ -31,11 +31,11 @@ pub fn in_maturity_window(p: &GovernanceParams, height: u32) -> bool {
     height % p.superblock_cycle >= p.superblock_cycle - p.maturity_window
 }
 
-/// The estimated time of `height` from the tip: `tip_time` plus the target
-/// spacing per block (negative distances count back).
-pub fn estimated_time(p: &GovernanceParams, tip_height: u32, tip_time: u64, height: u32) -> u64 {
+/// The estimated time of `height` from the tip: `tip_time` plus 157.2 s
+/// per block ([`ETA_BLOCK_TENTHS`]; negative distances count back).
+pub fn estimated_time(tip_height: u32, tip_time: u64, height: u32) -> u64 {
     let blocks = i64::from(height) - i64::from(tip_height);
-    let t = tip_time as i64 + blocks * i64::from(p.target_spacing_secs);
+    let t = tip_time as i64 + blocks * ETA_BLOCK_TENTHS / 10;
     t.max(0) as u64
 }
 
@@ -75,7 +75,7 @@ pub fn clock(p: &GovernanceParams, tip_height: u32, eta_base: u64) -> Clock {
         last_superblock: last,
         next_superblock: next,
         blocks_to_superblock: next - tip_height,
-        superblock_eta: estimated_time(p, tip_height, eta_base, next),
+        superblock_eta: estimated_time(tip_height, eta_base, next),
         voting_cutoff,
         voting_open: tip_height < voting_cutoff,
     }
@@ -219,7 +219,8 @@ mod tests {
         );
         assert!(c.voting_open);
         assert!((c.cycle_progress - 0.25).abs() < 1e-9);
-        assert_eq!(c.superblock_eta, 1_000 + 15 * 150);
+        // 157.2 s per block (MG-02 D9).
+        assert_eq!(c.superblock_eta, 1_000 + 15 * 1572 / 10);
         let c = clock(&r, 1512, 0);
         assert!(!c.voting_open);
         assert!(in_maturity_window(&r, 1512));

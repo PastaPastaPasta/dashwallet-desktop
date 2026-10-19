@@ -257,15 +257,16 @@ impl EngineEvent {
                 wallet_id: wallet_id.to_string(),
             },
             // Withheld until E0-13 binds them: the DashPay signals (E0-06),
-            // the DashPay news (DP2-05) and E0-04's lease, lock and
-            // dispatch events.
+            // the DashPay news (DP2-05), E0-04's lease, lock and dispatch
+            // events, and governance (MG-02 D7).
             // Masternodes (MG-03) waits for the same.
             E::Platform { .. }
             | E::Masternodes { .. }
             | E::DashPayNews { .. }
             | E::LeaseChanged { .. }
             | E::LockProgress { .. }
-            | E::DispatchResolved { .. } => return None,
+            | E::DispatchResolved { .. }
+            | E::Governance { .. } => return None,
         })
     }
 }

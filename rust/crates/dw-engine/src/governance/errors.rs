@@ -1,0 +1,60 @@
+//! `GovernanceError`, the facade's error with its stable codes
+//! (`docs/contracts/mg-engine.md` §4). The `Display` text is diagnostic
+//! detail for logs; the UI picks its copy by `code()`. The m1 common codes
+//! (`network_not_open`, `wallet_not_found`, …) come through `Engine`
+//! unchanged, so no m1–m3 table gains a code (MG-02 D8).
+
+use crate::error::EngineError;
+
+use super::records::GovernanceSyncPhase;
+
+#[derive(Debug, thiserror::Error)]
+pub enum GovernanceError {
+    /// Governance sync is off and the call needs it.
+    #[error("governance sync is disabled")]
+    SyncDisabled,
+    /// No sync run reached `synced` yet (MG-00 D21), or no tip is known.
+    #[error("governance is not synced ({phase:?})")]
+    NotSynced { phase: GovernanceSyncPhase },
+    /// Unknown, unconfirmed (MG-02 D3) or not a proposal.
+    #[error("proposal not found: {hash}")]
+    ProposalNotFound { hash: String },
+    /// A relayed vote failed a check; `reason` is the store's rejection in
+    /// snake case.
+    #[error("vote rejected: {reason}")]
+    VoteRejected { reason: String },
+    /// No full node to talk to.
+    #[error("no governance peers")]
+    NoPeers,
+    /// The call needs the masternode list and SPV has none yet.
+    #[error("masternode list unavailable")]
+    ListUnavailable,
+    /// A contract stub (`call` is `"Governance.<method>"`).
+    #[error("not implemented: {call}")]
+    NotImplemented { call: String },
+    #[error(transparent)]
+    Engine(#[from] EngineError),
+}
+
+impl GovernanceError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::SyncDisabled => "governance.sync_disabled",
+            Self::NotSynced { .. } => "governance.not_synced",
+            Self::ProposalNotFound { .. } => "governance.proposal_not_found",
+            Self::VoteRejected { .. } => "governance.vote_rejected",
+            Self::NoPeers => "governance.no_peers",
+            Self::ListUnavailable => "governance.list_unavailable",
+            Self::NotImplemented { .. } => "governance.not_implemented",
+            Self::Engine(e) => e.code(),
+        }
+    }
+
+    /// The wrapped engine error, if any.
+    pub fn engine(&self) -> Option<&EngineError> {
+        match self {
+            Self::Engine(e) => Some(e),
+            _ => None,
+        }
+    }
+}

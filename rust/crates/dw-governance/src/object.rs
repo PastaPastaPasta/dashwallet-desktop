@@ -111,7 +111,8 @@ impl GovernanceObject {
         let data = read_bytes(&mut r, usize::MAX)?;
         let object_type = i32::consensus_decode(&mut r)?;
         let masternode_outpoint = OutPoint::consensus_decode(&mut r)?;
-        let signature = read_bytes(&mut r, 1024)?;
+        // Core caps `vchSig` by the message only.
+        let signature = read_bytes(&mut r, usize::MAX)?;
         if !r.is_empty() {
             return Err(encode::Error::ParseFailed("trailing bytes after govobj"));
         }
@@ -192,6 +193,10 @@ mod tests {
         longer.push(0);
         assert!(GovernanceObject::decode(&longer).is_err());
         assert!(GovernanceObject::decode(&bytes[..bytes.len() - 1]).is_err());
+        // Core caps `vchSig` by the message only.
+        let mut signed = obj.clone();
+        signed.signature = vec![7; 2000];
+        assert_eq!(GovernanceObject::decode(&signed.encode()).unwrap(), signed);
     }
 
     #[test]

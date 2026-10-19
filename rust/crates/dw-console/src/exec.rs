@@ -24,13 +24,15 @@ use crate::parse::{Executor, Parsed, execute};
 use crate::{CATEGORIES, COMMANDS, ConsoleFailure, command};
 
 /// Core RPC error codes used here (src/rpc/protocol.h).
-mod code {
+pub(crate) mod code {
     pub const MISC_ERROR: i32 = -1;
     pub const TYPE_ERROR: i32 = -3;
     pub const WALLET_ERROR: i32 = -4;
     pub const INVALID_ADDRESS_OR_KEY: i32 = -5;
     pub const WALLET_INSUFFICIENT_FUNDS: i32 = -6;
     pub const INVALID_PARAMETER: i32 = -8;
+    pub const CLIENT_NOT_CONNECTED: i32 = -9;
+    pub const CLIENT_IN_INITIAL_DOWNLOAD: i32 = -10;
     pub const WALLET_UNLOCK_NEEDED: i32 = -13;
     pub const WALLET_PASSPHRASE_INCORRECT: i32 = -14;
     pub const WALLET_NOT_FOUND: i32 = -18;
@@ -38,7 +40,7 @@ mod code {
     pub const INTERNAL_ERROR: i32 = -32603;
 }
 
-fn rpc(code: i32, message: impl Into<String>) -> ConsoleFailure {
+pub(crate) fn rpc(code: i32, message: impl Into<String>) -> ConsoleFailure {
     ConsoleFailure::Rpc {
         code,
         message: message.into(),
@@ -52,7 +54,7 @@ pub fn help_console_text() -> &'static str {
 
 /// Maps an engine failure to Core's RPC error for the same condition, or
 /// passes it on.
-fn engine_failure(e: EngineError) -> ConsoleFailure {
+pub(crate) fn engine_failure(e: EngineError) -> ConsoleFailure {
     match e {
         EngineError::WalletNotFound(_) => rpc(
             code::WALLET_NOT_FOUND,
@@ -163,7 +165,7 @@ impl Executor for ConsoleContext {
     }
 }
 
-fn arg(args: &[Zeroizing<String>], i: usize) -> Option<&str> {
+pub(crate) fn arg(args: &[Zeroizing<String>], i: usize) -> Option<&str> {
     args.get(i).map(|a| a.as_str())
 }
 
@@ -172,7 +174,7 @@ fn usage(name: &str) -> ConsoleFailure {
     rpc(code::MISC_ERROR, text)
 }
 
-fn arity(
+pub(crate) fn arity(
     name: &str,
     args: &[Zeroizing<String>],
     min: usize,
@@ -237,7 +239,7 @@ fn parse_amount(s: &str) -> Result<u64, ConsoleFailure> {
     Ok(duffs)
 }
 
-fn i64_of(v: u64) -> i64 {
+pub(crate) fn i64_of(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
 }
 
@@ -895,6 +897,9 @@ impl ConsoleContext {
                 s.relock_after(Duration::from_secs(timeout));
                 Ok(Json::Null)
             }
+            "getgovernanceinfo" | "getsuperblockbudget" | "gobject" | "voteraw" => {
+                self.governance_command(method, args).await
+            }
             other => Err(ConsoleFailure::NotAvailable(other.to_string())),
         }
     }
@@ -987,6 +992,9 @@ mod tests {
         let h = help_index();
         assert!(h.starts_with("== Blockchain ==\ngetbestchainlock\ngetblockcount"));
         assert!(h.contains("== Wallet ==\nabandontransaction \"txid\""));
+        assert!(
+            h.contains("== Governance ==\ngetgovernanceinfo\ngetsuperblockbudget index\ngobject")
+        );
         assert!(
             !h.contains("getblockhash"),
             "unavailable commands are not listed"

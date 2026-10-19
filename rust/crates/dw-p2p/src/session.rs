@@ -1,6 +1,7 @@
 //! One outbound P2P session: TCP connect, the `version`/`verack` handshake
 //! (plus `senddsq` when the caller wants CoinJoin queues), ping/pong, a
-//! reader task that fans messages out to subscribers, a rate-limited writer
+//! reader task that fans messages out to subscribers (bounded ones by
+//! frames and bytes, with backpressure on the reads), a rate-limited writer
 //! task, and a clean close.
 //!
 //! Handshake as Dash Core's `PeerManagerImpl::ProcessMessage`
@@ -10,6 +11,7 @@
 //! same nonce, here inside the reader so subscribers never see it.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -61,6 +63,9 @@ pub struct SessionConfig {
     pub idle_timeout: Duration,
     /// Outbound messages per second (token bucket, burst of the same size).
     pub send_rate_per_sec: u32,
+    /// Outbound messages queued before [`Session::send`] waits and
+    /// [`Session::try_send`] gives up on the peer.
+    pub send_queue: usize,
 }
 
 impl Default for SessionConfig {
@@ -76,6 +81,7 @@ impl Default for SessionConfig {
             ping_interval: Duration::from_secs(120),
             idle_timeout: Duration::from_secs(20 * 60),
             send_rate_per_sec: 50,
+            send_queue: 256,
         }
     }
 }
@@ -115,15 +121,76 @@ pub struct PeerVersion {
     pub start_height: i32,
 }
 
+/// The bytes a bounded subscription holds: frames in its channel, the one
+/// its reader waits to queue, and those taken but not yet dropped.
+#[derive(Debug)]
+struct Budget {
+    max: usize,
+    queued: AtomicUsize,
+}
+
+impl Budget {
+    /// Charges `bytes`; `None` past the budget.
+    fn charge(self: &Arc<Self>, bytes: usize) -> Option<Credit> {
+        let before = self.queued.fetch_add(bytes, Ordering::SeqCst);
+        if before + bytes > self.max {
+            self.queued.fetch_sub(bytes, Ordering::SeqCst);
+            return None;
+        }
+        Some(Credit {
+            budget: Arc::clone(self),
+            bytes,
+        })
+    }
+}
+
+/// A delivered frame's bytes (header included), held against its
+/// subscription's budget until dropped.
+#[derive(Debug)]
+pub struct Credit {
+    budget: Arc<Budget>,
+    bytes: usize,
+}
+
+impl Drop for Credit {
+    fn drop(&mut self) {
+        self.budget.queued.fetch_sub(self.bytes, Ordering::SeqCst);
+    }
+}
+
+/// A message of a [`Session::subscribe_bounded`] stream. Keep `credit`
+/// until the message is handled: its bytes count until then.
+#[derive(Debug)]
+pub struct Delivery {
+    pub message: Message,
+    pub credit: Credit,
+}
+
+enum Tx {
+    Unbounded(mpsc::UnboundedSender<Message>),
+    Bounded(mpsc::Sender<Delivery>, Arc<Budget>),
+}
+
+impl Tx {
+    fn is_closed(&self) -> bool {
+        match self {
+            Tx::Unbounded(tx) => tx.is_closed(),
+            Tx::Bounded(tx, _) => tx.is_closed(),
+        }
+    }
+}
+
 struct Subscriber {
     /// Empty: every command.
     commands: Vec<String>,
-    tx: mpsc::UnboundedSender<Message>,
+    tx: Tx,
 }
 
 struct Shared {
     subscribers: Mutex<Vec<Subscriber>>,
     closed: watch::Sender<bool>,
+    /// Bytes of every frame read after the handshake, headers included.
+    bytes_received: AtomicU64,
 }
 
 impl Shared {
@@ -136,15 +203,24 @@ impl Shared {
             .clear();
     }
 
-    fn dispatch(&self, msg: Message) {
+    /// Sends `msg` to the unbounded subscribers it matches and returns the
+    /// bounded ones, which the reader queues to (waiting when full).
+    fn dispatch(&self, msg: &Message) -> Vec<(mpsc::Sender<Delivery>, Arc<Budget>)> {
+        let mut bounded = Vec::new();
         let mut subs = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
         subs.retain(|s| {
-            if s.commands.is_empty() || s.commands.contains(&msg.command) {
-                s.tx.send(msg.clone()).is_ok()
-            } else {
-                !s.tx.is_closed()
+            if !(s.commands.is_empty() || s.commands.contains(&msg.command)) {
+                return !s.tx.is_closed();
+            }
+            match &s.tx {
+                Tx::Unbounded(tx) => tx.send(msg.clone()).is_ok(),
+                Tx::Bounded(tx, budget) => {
+                    bounded.push((tx.clone(), Arc::clone(budget)));
+                    !tx.is_closed()
+                }
             }
         });
+        bounded
     }
 }
 
@@ -287,13 +363,15 @@ impl Session {
         let shared = Arc::new(Shared {
             subscribers: Mutex::new(Vec::new()),
             closed,
+            bytes_received: AtomicU64::new(0),
         });
-        let (out, out_rx) = mpsc::channel::<Vec<u8>>(256);
+        let (out, out_rx) = mpsc::channel::<Vec<u8>>(config.send_queue.max(1));
         let tasks = vec![
             tokio::spawn(write_loop(
                 writer,
                 out_rx,
                 config.send_rate_per_sec.max(1),
+                config.idle_timeout,
                 Arc::clone(&shared),
             )),
             tokio::spawn(read_loop(
@@ -339,6 +417,12 @@ impl Session {
         *self.shared.closed.borrow()
     }
 
+    /// Bytes read from the peer since the handshake (frame headers
+    /// included, pings too).
+    pub fn bytes_received(&self) -> u64 {
+        self.shared.bytes_received.load(Ordering::Relaxed)
+    }
+
     /// Resolves once the session closed (peer, error or [`Self::close`]).
     pub async fn closed(&self) {
         let mut rx = self.shared.closed.subscribe();
@@ -357,10 +441,51 @@ impl Session {
             .map_err(|_| P2pError::Closed(self.addr))
     }
 
+    /// Queues `payload` as `command` without waiting. A full queue means the
+    /// peer stopped reading: the session is closed. Fails once closed.
+    pub fn try_send(&self, command: &str, payload: Vec<u8>) -> Result<(), P2pError> {
+        if self.is_closed() {
+            return Err(P2pError::Closed(self.addr));
+        }
+        let framed = codec::encode(self.magic, command, &payload)?;
+        self.out.try_send(framed).map_err(|e| {
+            if matches!(e, mpsc::error::TrySendError::Full(_)) {
+                tracing::debug!(addr = %self.addr, "p2p send queue full; closing");
+                self.close();
+            }
+            P2pError::Closed(self.addr)
+        })
+    }
+
     /// Messages whose command is in `commands` (every message when empty),
     /// from now on, until the session closes (the stream then ends).
     pub fn subscribe(&self, commands: &[&str]) -> mpsc::UnboundedReceiver<Message> {
         let (tx, rx) = mpsc::unbounded_channel();
+        self.add_subscriber(commands, Tx::Unbounded(tx));
+        rx
+    }
+
+    /// As [`Self::subscribe`], holding at most `frames` messages and
+    /// `max_bytes` bytes (headers included) not yet dropped by the caller
+    /// (each [`Delivery`]'s credit). A full stream stops the session's
+    /// reads until a message is taken; a frame past `max_bytes` closes the
+    /// session.
+    pub fn subscribe_bounded(
+        &self,
+        commands: &[&str],
+        frames: usize,
+        max_bytes: usize,
+    ) -> mpsc::Receiver<Delivery> {
+        let (tx, rx) = mpsc::channel(frames.max(1));
+        let budget = Arc::new(Budget {
+            max: max_bytes,
+            queued: AtomicUsize::new(0),
+        });
+        self.add_subscriber(commands, Tx::Bounded(tx, budget));
+        rx
+    }
+
+    fn add_subscriber(&self, commands: &[&str], tx: Tx) {
         if !self.is_closed() {
             self.shared
                 .subscribers
@@ -371,7 +496,6 @@ impl Session {
                     tx,
                 });
         }
-        rx
     }
 
     /// Closes the connection and ends every subscription. Idempotent.
@@ -394,10 +518,13 @@ impl Drop for Session {
     }
 }
 
+/// Writes queued frames at `rate` per second; a write that does not finish
+/// within `stall` (the peer stopped reading) closes the session.
 async fn write_loop(
     mut writer: OwnedWriteHalf,
     mut rx: mpsc::Receiver<Vec<u8>>,
     rate: u32,
+    stall: Duration,
     shared: Arc<Shared>,
 ) {
     let mut tokens = rate;
@@ -412,9 +539,16 @@ async fn write_loop(
             refill = now + Duration::from_secs(1);
         }
         tokens = tokens.saturating_sub(1);
-        if let Err(e) = writer.write_all(&frame).await {
-            tracing::debug!(error = %e, "p2p write failed; closing");
-            break;
+        match tokio::time::timeout(stall, writer.write_all(&frame)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, "p2p write failed; closing");
+                break;
+            }
+            Err(_) => {
+                tracing::debug!("p2p write stalled; closing");
+                break;
+            }
         }
     }
     let _ = writer.shutdown().await;
@@ -440,18 +574,43 @@ async fn read_loop(
                 break;
             }
         };
+        shared
+            .bytes_received
+            .fetch_add((HEADER_LEN + msg.payload.len()) as u64, Ordering::Relaxed);
         if msg.command == "ping" {
-            match codec::encode(magic, "pong", &msg.payload) {
-                Ok(pong) => {
-                    if out.send(pong).await.is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
+            // Never wait here: a peer that pings but does not read our
+            // writes would hold the loop outside its idle timeout.
+            let queued = codec::encode(magic, "pong", &msg.payload)
+                .is_ok_and(|pong| out.try_send(pong).is_ok());
+            if !queued {
+                tracing::debug!("p2p pong not queued; closing");
+                break;
             }
             continue;
         }
-        shared.dispatch(msg);
+        let bytes = HEADER_LEN + msg.payload.len();
+        let targets = shared.dispatch(&msg);
+        let mut msg = Some(msg);
+        let n = targets.len();
+        for (i, (tx, budget)) in targets.into_iter().enumerate() {
+            let Some(credit) = budget.charge(bytes) else {
+                tracing::debug!(
+                    bytes,
+                    max = budget.max,
+                    "p2p subscriber past its inbound budget; closing"
+                );
+                shared.close();
+                return;
+            };
+            let message = if i + 1 == n { msg.take() } else { msg.clone() };
+            let delivery = Delivery {
+                message: message.expect("taken by the last subscriber only"),
+                credit,
+            };
+            // Waits while the subscriber is behind: the peer's frames stay
+            // in the socket.
+            let _ = tx.send(delivery).await;
+        }
     }
     shared.close();
 }

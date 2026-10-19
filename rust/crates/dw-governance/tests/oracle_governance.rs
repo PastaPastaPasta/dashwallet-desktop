@@ -6,7 +6,9 @@
 //! - testdata/governance_budget.json (regtest, same script) and
 //!   testdata/governance_live.json (mainnet and testnet nodes,
 //!   gen_governance_live.py): `getsuperblockbudget`, `getgovernanceinfo`,
-//!   and testnet proposals with their current votes.
+//!   and testnet proposals with their current votes;
+//! - testdata/governance_votes_testnet.json (examples/capture_votes.rs):
+//!   raw testnet votes as a dashd v24 peer relays them (MG-02 §7).
 
 #![allow(non_snake_case)] // test names carry checklist ids
 
@@ -155,6 +157,59 @@ fn test_QT_131_testnet_current_votes_equal_dashd() {
         votes += check_current_votes(object.hash(), &p["current_votes"]);
     }
     assert!(votes > 0, "no testnet vote to compare");
+}
+
+/// Testnet signs a vote's `GetSignatureHash` (MG-01 D12): each raw vote
+/// round-trips byte for byte and hashes to a vote dashd lists for the
+/// object (the check independent of this crate). The recorded voting key
+/// ids are this crate's own recovery at capture, so the key checks guard
+/// against regressions only: the key recovers under the testnet digest,
+/// and differs under mainnet's.
+#[test]
+fn test_QT_131_testnet_raw_votes_recover_their_voting_keys() {
+    let doc = load("governance_votes_testnet.json");
+    assert_eq!(doc["network"], "testnet");
+    let object_hash = doc["object_hash"].as_str().unwrap();
+    let live = load("governance_live.json");
+    let dashd = live["networks"]["testnet"]["proposals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["object_hash"] == object_hash)
+        .expect("the object in governance_live.json")["current_votes"]
+        .as_object()
+        .unwrap();
+    let votes = doc["votes"].as_array().unwrap();
+    assert_eq!(votes.len(), 11);
+    for v in votes {
+        let payload = hex::decode(v["payload_hex"].as_str().unwrap()).unwrap();
+        let vote = GovernanceVote::decode(&payload).unwrap();
+        assert_eq!(vote.encode(), payload);
+        let hash = display_hex(&vote.hash());
+        assert_eq!(hash, v["vote_hash"].as_str().unwrap());
+        assert!(
+            dashd.contains_key(&hash),
+            "{hash} not in dashd's current votes"
+        );
+        assert_eq!(display_hex(&vote.parent_hash), object_hash);
+        assert_eq!(
+            display_hex(&vote.signature_hash()),
+            v["signature_hash"].as_str().unwrap()
+        );
+        let key = v["voting_key_id"].as_str().unwrap();
+        assert_eq!(
+            vote.signer_key_id(Network::Testnet)
+                .map(hex::encode)
+                .as_deref(),
+            Some(key)
+        );
+        assert_ne!(
+            vote.signer_key_id(Network::Mainnet)
+                .map(hex::encode)
+                .as_deref(),
+            Some(key)
+        );
+    }
 }
 
 #[test]

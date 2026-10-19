@@ -151,6 +151,13 @@ pub enum EngineEvent {
         network: DashNetwork,
         resolved: crate::platform::DispatchResolved,
     },
+    /// MG-02 (mg-engine §5): the governance store, the sync state or the
+    /// masternode list's voting keys changed. At most once a second,
+    /// trailing edge kept; hosts re-read what they show. Engine-side until
+    /// E0-13 binds the facade (MG-02 D7).
+    Governance {
+        network: DashNetwork,
+    },
 }
 
 impl EngineEvent {
@@ -163,7 +170,8 @@ impl EngineEvent {
             | Self::DashPayNews { .. }
             | Self::LeaseChanged { .. }
             | Self::LockProgress { .. }
-            | Self::DispatchResolved { .. } => true,
+            | Self::DispatchResolved { .. }
+            | Self::Governance { .. } => true,
             Self::Notice { code, .. } => code.engine_side(),
             _ => false,
         }

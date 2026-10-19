@@ -206,6 +206,11 @@ pub enum AppEvent {
         events: Vec<DashPayEventInfo>,
         more: u32,
     },
+    /// Governance data or sync state changed (MG-02, ≤ 1 Hz): re-read what
+    /// is shown.
+    Governance {
+        network: String,
+    },
 }
 
 /// The domain of a `platform` event. Identities are Base58.
@@ -416,6 +421,9 @@ impl From<EngineEvent> for AppEvent {
             EngineEvent::DispatchResolved { network, resolved } => AppEvent::DispatchResolved {
                 network: net(network),
                 settled: resolved.into(),
+            },
+            EngineEvent::Governance { network } => AppEvent::Governance {
+                network: net(network),
             },
             EngineEvent::DashPayNews {
                 network,
@@ -913,6 +921,7 @@ mod tests {
                     },
                 },
                 EngineEvent::Masternodes { network: network() },
+                EngineEvent::Governance { network: network() },
                 // More than the engine sends: the bridge cuts too.
                 EngineEvent::DashPayNews {
                     network: network(),
@@ -962,9 +971,10 @@ mod tests {
                 AppEvent::DispatchResolved { .. } => 17,
                 AppEvent::DashPayNews { .. } => 18,
                 AppEvent::Masternodes { .. } => 19,
+                AppEvent::Governance { .. } => 20,
             };
             let seen: std::collections::BTreeSet<_> = events.iter().map(variant).collect();
-            assert_eq!(seen, (0..20).collect());
+            assert_eq!(seen, (0..21).collect());
 
             let mut largest = (0, None);
             for event in &events {

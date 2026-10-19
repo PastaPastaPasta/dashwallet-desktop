@@ -174,7 +174,7 @@ pub struct NetworkSession {
     /// Holds every wallet's seed (`<network dir>/vault`). platform-wallet
     /// registers wallets external-signable, so this is the only key material.
     pub(crate) vault: Vault,
-    spv_peers: Vec<SocketAddr>,
+    pub(crate) spv_peers: Vec<SocketAddr>,
     pub(crate) hub: Arc<SessionHub>,
     /// Admission of operations vs close (review M1).
     gate: OpGate,
@@ -213,6 +213,8 @@ pub struct NetworkSession {
     pub(crate) flow_leases: Mutex<
         std::collections::HashMap<crate::platform::lease::LeaseId, crate::platform::lease::Lease>,
     >,
+    /// Governance sync and its store (MG-02, `governance/`).
+    pub(crate) governance: crate::governance::sync::GovernanceRuntime,
 }
 
 impl NetworkSession {
@@ -276,6 +278,10 @@ impl NetworkSession {
         let coinjoin_settings = {
             let db = Arc::clone(&appdb);
             tokio::task::spawn_blocking(move || crate::coinjoin::load_settings(&db)).await?
+        };
+        let governance_enabled = {
+            let db = Arc::clone(&appdb);
+            tokio::task::spawn_blocking(move || crate::governance::sync::load_enabled(&db)).await?
         };
 
         let context = Arc::new(LazyTrustedContext::new(
@@ -430,6 +436,12 @@ impl NetworkSession {
             Default::default(),
             vault.epoch(),
         );
+        let governance = crate::governance::sync::GovernanceRuntime::new(
+            network.clone(),
+            Arc::clone(&sink),
+            &Handle::current(),
+            governance_enabled,
+        );
         let session = Arc::new(Self {
             network,
             data_dir,
@@ -468,7 +480,12 @@ impl NetworkSession {
             ),
             leases,
             flow_leases: Mutex::default(),
+            governance,
         });
+        session.governance.follow(&session);
+        if session.governance.enabled() {
+            session.governance.start(&session);
+        }
         match journal {
             Some((backend, rows, steps, calls)) => {
                 session
@@ -770,6 +787,7 @@ impl NetworkSession {
         let keys_idle = self.platform.key_work_idle().await;
         self.cancel_relock();
         self.coinjoin.shutdown();
+        self.governance.shutdown().await;
         let pump = self.pump.lock().unwrap_or_else(|p| p.into_inner()).take();
         if let Some(pump) = pump {
             let _ = pump.stop.send(true);

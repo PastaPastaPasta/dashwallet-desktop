@@ -13,7 +13,7 @@ use dashcore::Network;
 use dashcore::OutPoint;
 use dashcore::consensus::encode::{self, Decodable, Encodable, VarInt};
 use dashcore::hashes::{Hash, hash160, sha256d};
-use dashcore::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+use dashcore::secp256k1::ecdsa::{RecoverableSignature, RecoveryId, Signature};
 use dashcore::secp256k1::{Message, PublicKey};
 
 use crate::object::{display_hex, outpoint_short};
@@ -226,6 +226,29 @@ pub fn recover_compact(sig: &[u8], digest: &[u8; 32]) -> Option<Vec<u8>> {
     })
 }
 
+/// The one form of the 65-byte compact `sig` among those that recover the
+/// same key over any digest (D63): [`recover_compact`] reads only the low 3
+/// bits of `header - 27`, and (r, n - s) with the other parity recovers
+/// what (r, s) does. Header `27 + flags`, low s. `None` when `sig` is no
+/// compact signature, which then recovers nothing.
+pub fn canonical_compact(sig: &[u8]) -> Option<[u8; COMPACT_SIG_SIZE]> {
+    if sig.len() != COMPACT_SIG_SIZE {
+        return None;
+    }
+    let mut flags = ((i32::from(sig[0]) - 27) & 7) as u8;
+    let mut s = Signature::from_compact(&sig[1..]).ok()?;
+    let raw = s.serialize_compact();
+    s.normalize_s();
+    let low = s.serialize_compact();
+    if low != raw {
+        flags ^= 1;
+    }
+    let mut out = [0; COMPACT_SIG_SIZE];
+    out[0] = 27 + flags;
+    out[1..].copy_from_slice(&low);
+    Some(out)
+}
+
 /// Turns a 64-byte compact ECDSA signature by `pubkey` over `digest` into
 /// Core's 65-byte recoverable form (header `31 + recid`, compressed key):
 /// the recovery id is the one that recovers `pubkey`.
@@ -283,6 +306,36 @@ pub fn current_vote_string(vote: &GovernanceVote, weight: u32) -> String {
     )
 }
 
+/// Every signature that recovers what `v`'s does over any digest:
+/// `recover_compact` reads only the low 3 bits of the header byte (32
+/// header values each), and (r, n - s) recovers the same key with the other
+/// parity bit. 64 in all, `v`'s among them (validator r12).
+#[cfg(test)]
+pub(crate) fn malleations(v: &GovernanceVote) -> Vec<GovernanceVote> {
+    use dashcore::secp256k1::SecretKey;
+    let sig = &v.signature;
+    assert_eq!(sig.len(), COMPACT_SIG_SIZE);
+    let flags = (i32::from(sig[0]) - 27) & 7;
+    let s: [u8; 32] = sig[33..].try_into().unwrap();
+    // n - s, as the negation of s taken as a scalar.
+    let negated = SecretKey::from_secret_bytes(s).unwrap().negate();
+    let mut out = Vec::new();
+    for (want, s) in [(flags, s), (flags ^ 1, negated.to_secret_bytes())] {
+        for b in 0u8..=255 {
+            if (i32::from(b) - 27) & 7 == want {
+                let mut c = v.clone();
+                c.signature = [&[b], &sig[1..33], &s[..]].concat();
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+#[path = "vote_canonical_tests.rs"]
+mod canonical_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +373,28 @@ mod tests {
         let pk = PublicKey::from_secret_key(sk);
         let full = to_recoverable_compact(&sig.serialize_compact(), &pk, &digest).unwrap();
         vote.signature = full.to_vec();
+    }
+
+    #[test]
+    fn signatures_recovering_one_key_have_one_canonical_form() {
+        // D63: 64 signatures recover the same key; their canonical form is
+        // one. The compressed flag names another key, so it stays.
+        let sk = SecretKey::from_secret_bytes([9; 32]).unwrap();
+        let mut v = sample();
+        sign(&mut v, Network::Regtest, &sk);
+        let id = v.signer_key_id(Network::Regtest);
+        let canonical = canonical_compact(&v.signature).unwrap();
+        let copies = malleations(&v);
+        assert_eq!(copies.len(), 64);
+        for c in &copies {
+            assert_eq!(c.signer_key_id(Network::Regtest), id);
+            assert_eq!(canonical_compact(&c.signature), Some(canonical));
+        }
+        let mut other = v.clone();
+        other.signature[0] ^= 4;
+        assert_ne!(other.signer_key_id(Network::Regtest), id);
+        assert_ne!(canonical_compact(&other.signature), Some(canonical));
+        assert_eq!(canonical_compact(&[0; 96]), None);
     }
 
     #[test]

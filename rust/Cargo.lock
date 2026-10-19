@@ -2470,6 +2470,7 @@ version = "0.1.0"
 dependencies = [
  "dashcore",
  "dw-engine",
+ "dw-governance",
  "dw-message",
  "dw-testutil",
  "dw-vault",
@@ -2513,6 +2514,7 @@ dependencies = [
  "dw-coinjoin",
  "dw-compat",
  "dw-fs",
+ "dw-governance",
  "dw-message",
  "dw-p2p",
  "dw-protx",
@@ -2591,6 +2593,7 @@ dependencies = [
  "dw-message",
  "dw-p2p",
  "hex",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
