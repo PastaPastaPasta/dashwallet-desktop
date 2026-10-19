@@ -448,8 +448,20 @@ async fn a_dropped_masternode_leaves_the_cache_and_app_sqlite() {
     assert_eq!(stored(db.as_ref().unwrap()).len(), 2);
 
     assert!(rt.apply_list(snapshot(Vec::new())).is_empty());
+    let generation = rt.collaterals.generation();
+    let rekeyed = snapshot(vec![
+        summary(txid(&a), [9; 20], false),
+        summary(txid(&b), [2; 20], false),
+    ]);
+    assert!(rt.apply_list(rekeyed).is_empty());
+    assert_eq!(
+        rt.collaterals.generation(),
+        generation,
+        "no collateral left"
+    );
     let gone = rt.apply_list(snapshot(vec![summary(txid(&b), [2; 20], false)]));
     assert_eq!(gone, vec![txid(&a)]);
+    assert_eq!(rt.collaterals.generation(), generation + 1);
     persist(&db, Vec::new(), gone).await;
     assert_eq!(
         stored(db.as_ref().unwrap()).into_keys().collect::<Vec<_>>(),
