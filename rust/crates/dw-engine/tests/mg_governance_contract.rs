@@ -56,8 +56,8 @@ const IMPLEMENTED: &[&str] = &[
 const FACADE: &[&str] = &["errors.rs", "mod.rs", "reads.rs", "records.rs", "voting.rs"];
 
 /// Files of `src/governance/` that are not part of the facade: the sync
-/// task and its tracker.
-const NOT_FACADE: &[&str] = &["sync.rs"];
+/// task and its tracker, and the collateral resolver (D80) with its tests.
+const NOT_FACADE: &[&str] = &["collateral.rs", "collateral_tests.rs", "sync.rs"];
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: governance-surface -->";
 const END: &str = "<!-- END GENERATED: governance-surface -->";

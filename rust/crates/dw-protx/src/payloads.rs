@@ -260,6 +260,24 @@ pub fn resolve_collateral(pro_tx_hash: Txid, payload_outpoint: OutPoint) -> OutP
     }
 }
 
+/// The collateral of a registration as Core accepted it: the payload's
+/// outpoint, or for an internal collateral the ProRegTx's own output, which
+/// must hold its type's amount (`specialtxman.cpp`). `None` when that output
+/// is missing or holds another amount: Core refuses such a ProRegTx, so it
+/// can't be the one Core accepted.
+pub fn checked_collateral(
+    tx: &Transaction,
+    payload: &ProviderRegistrationPayload,
+    evonode: bool,
+) -> Option<OutPoint> {
+    let outpoint = resolve_collateral(tx.txid(), payload.collateral_outpoint);
+    if payload.collateral_outpoint.txid != Txid::all_zeros() {
+        return Some(outpoint);
+    }
+    let out = tx.output.get(outpoint.vout as usize)?;
+    (out.value == crate::params::collateral_amount(evonode)).then_some(outpoint)
+}
+
 #[cfg(test)]
 #[allow(non_snake_case)]
 mod tests {
@@ -363,6 +381,27 @@ mod tests {
                 vout: 1
             }
         );
+        // The internal output holds a regular masternode's collateral, not
+        // an evonode's.
+        assert_eq!(
+            checked_collateral(&tx, &p, false),
+            Some(OutPoint {
+                txid: tx.txid(),
+                vout: 1
+            })
+        );
+        assert_eq!(checked_collateral(&tx, &p, true), None);
+        let mut short = tx.clone();
+        short.output.truncate(1);
+        assert_eq!(checked_collateral(&short, &p, false), None);
+        // An external collateral is the payload's, whatever the outputs.
+        let external = OutPoint {
+            txid: Txid::from_byte_array([5; 32]),
+            vout: 7,
+        };
+        let mut q = p.clone();
+        q.collateral_outpoint = external;
+        assert_eq!(checked_collateral(&short, &q, true), Some(external));
     }
 
     #[test]

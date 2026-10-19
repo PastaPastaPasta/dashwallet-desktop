@@ -1009,6 +1009,52 @@ impl AppDb {
         Ok(stale.len())
     }
 
+    // ---- governance registrations (MG-02 D80) ----
+
+    /// Every stored `(proTxHash, ProRegTx bytes)`, unchecked: the caller
+    /// verifies each and deletes the ones that fail.
+    pub fn governance_registrations(&self) -> Result<Vec<([u8; 32], Vec<u8>)>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT pro_tx_hash, registration FROM governance_registrations")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (key, bytes) = row?;
+            // The CHECK keeps every key 32 bytes long.
+            if let Ok(key) = <[u8; 32]>::try_from(key.as_slice()) {
+                out.push((key, bytes));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Stores (or replaces) registrations and deletes `remove`, in one
+    /// transaction.
+    pub fn update_governance_registrations(
+        &self,
+        put: &[([u8; 32], Vec<u8>)],
+        remove: &[[u8; 32]],
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        for (key, bytes) in put {
+            tx.execute(
+                "INSERT OR REPLACE INTO governance_registrations (pro_tx_hash, registration)
+                 VALUES (?1, ?2)",
+                params![key.as_slice(), bytes],
+            )?;
+        }
+        for key in remove {
+            tx.execute(
+                "DELETE FROM governance_registrations WHERE pro_tx_hash = ?1",
+                params![key.as_slice()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     // ---- settings ----
 
     pub fn setting(&self, scope: &str, key: &str) -> Result<Option<String>> {
@@ -1477,7 +1523,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026101401);
+        assert_eq!(db.schema_version().unwrap(), 2026101901);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();
@@ -1879,6 +1925,27 @@ mod tests {
             db.setting(GLOBAL_SCOPE, "b").unwrap().as_deref(),
             Some("garbled")
         );
+    }
+
+    #[test]
+    fn governance_registrations_put_replace_and_remove() {
+        let db = AppDb::open_in_memory().unwrap();
+        assert!(db.governance_registrations().unwrap().is_empty());
+        db.update_governance_registrations(&[([1; 32], vec![1]), ([2; 32], vec![2])], &[])
+            .unwrap();
+        db.update_governance_registrations(&[([2; 32], vec![2, 2])], &[[1; 32], [9; 32]])
+            .unwrap();
+        assert_eq!(
+            db.governance_registrations().unwrap(),
+            vec![([2; 32], vec![2, 2])]
+        );
+        // A key of another length never comes back.
+        db.conn()
+            .execute(
+                "INSERT INTO governance_registrations VALUES (x'01', x'02')",
+                [],
+            )
+            .unwrap_err();
     }
 
     #[test]

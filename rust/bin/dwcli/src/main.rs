@@ -59,6 +59,11 @@ struct Cli {
     /// command refuses up front with `platform.feature_off`.
     #[arg(long)]
     no_platform: bool,
+    /// Regtest only: dashd's JSON-RPC URL (`http://user:password@host:port`,
+    /// txindex on) governance fetches ProRegTxs from to resolve vote
+    /// outpoints, as DAPI does on other networks (MG-02 D80).
+    #[arg(long)]
+    collateral_rpc: Option<String>,
     /// Print engine events to stderr.
     #[arg(long)]
     verbose_events: bool,
@@ -440,6 +445,7 @@ fn session_options(cli: &Cli) -> SessionOptions {
         ca_cert_path: cli.ca_cert.clone(),
         initial_protocol_version: cli.initial_protocol_version,
         no_platform: cli.no_platform,
+        collateral_rpc: cli.collateral_rpc.clone(),
     }
 }
 
@@ -850,6 +856,7 @@ mod tests {
             ca_cert: None,
             initial_protocol_version: None,
             no_platform: false,
+            collateral_rpc: None,
             verbose_events: false,
             passphrase_file: passphrase.then(|| pass.clone()),
             shutdown_timeout: 10,

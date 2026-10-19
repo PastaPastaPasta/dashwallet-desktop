@@ -104,6 +104,8 @@ impl SessionSettings {
             initial_protocol_version: initial_protocol_version
                 .or(launch.initial_protocol_version),
             no_platform: no_platform || launch.no_platform,
+            // A regtest-only test seam (MG-02 D80); the app always uses DAPI.
+            collateral_rpc: None,
         }
     }
 }

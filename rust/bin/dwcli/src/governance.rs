@@ -33,6 +33,11 @@ pub struct GovernanceArgs {
     /// Done once the proposals' voters add up to at least this many.
     #[arg(long, default_value_t = 0)]
     min_voters: u32,
+    /// Done once the proposals' ranged (unresolved) votes add up to at most
+    /// this many: with `--collateral-rpc`, once every voter is resolved
+    /// (MG-02 D80).
+    #[arg(long)]
+    max_ranged: Option<u32>,
     /// Print the current votes of this proposal; repeatable.
     #[arg(long = "votes")]
     votes: Vec<String>,
@@ -135,7 +140,11 @@ pub fn run(
         if state.phase == GovernanceSyncPhase::Synced {
             let rows = all_proposals().map_err(e)?;
             let voters: u32 = rows.iter().map(|r| r.tally.voters).sum();
-            if rows.len() >= args.min_proposals && voters >= args.min_voters {
+            let ranged: u32 = rows.iter().map(|r| r.tally.ranged_votes).sum();
+            if rows.len() >= args.min_proposals
+                && voters >= args.min_voters
+                && args.max_ranged.is_none_or(|m| ranged <= m)
+            {
                 break;
             }
         }
