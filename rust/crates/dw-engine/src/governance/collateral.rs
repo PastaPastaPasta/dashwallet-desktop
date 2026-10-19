@@ -347,21 +347,7 @@ pub(super) async fn resolve_round(
     appdb: Option<Arc<dw_appdb::AppDb>>,
 ) -> Round {
     if !collaterals.loaded() {
-        let rows = match &appdb {
-            Some(db) => {
-                let db = Arc::clone(db);
-                match tokio::task::spawn_blocking(move || db.governance_registrations()).await {
-                    Ok(Ok(rows)) => rows,
-                    Ok(Err(e)) => {
-                        tracing::warn!(error = %e, "governance: could not read stored ProRegTxs");
-                        Vec::new()
-                    }
-                    Err(_) => Vec::new(),
-                }
-            }
-            None => Vec::new(),
-        };
-        let mut remove = collaterals.load(rows);
+        let mut remove = collaterals.load(stored(&appdb).await);
         if !remove.is_empty() {
             tracing::warn!(
                 rows = remove.len(),
@@ -379,12 +365,11 @@ pub(super) async fn resolve_round(
     if claimed.is_empty() {
         return round;
     }
-    let results: Vec<([u8; 32], Result<Option<Transaction>, String>)> =
-        futures_util::stream::iter(claimed)
-            .map(|k| async move { (k, source.registration(k).await) })
-            .buffer_unordered(IN_FLIGHT)
-            .collect()
-            .await;
+    let results: Vec<_> = futures_util::stream::iter(claimed)
+        .map(|k| async move { (k, source.registration(k).await) })
+        .buffer_unordered(IN_FLIGHT)
+        .collect()
+        .await;
     let (mut found, mut missed, mut put) = (Vec::new(), Vec::new(), Vec::new());
     for (k, r) in results {
         match r {
@@ -409,6 +394,21 @@ pub(super) async fn resolve_round(
     persist(&appdb, put, Vec::new()).await;
     collaterals.settle(&found, &missed);
     round
+}
+
+/// app.sqlite's rows; none when unreadable.
+async fn stored(appdb: &Option<Arc<dw_appdb::AppDb>>) -> Vec<([u8; 32], Vec<u8>)> {
+    let Some(db) = appdb.clone() else {
+        return Vec::new();
+    };
+    match tokio::task::spawn_blocking(move || db.governance_registrations()).await {
+        Ok(Ok(rows)) => rows,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "governance: could not read stored ProRegTxs");
+            Vec::new()
+        }
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Writes rows to app.sqlite; a failure only costs a fetch next session.
@@ -451,7 +451,8 @@ pub(super) async fn resolve_loop(session: Weak<NetworkSession>, mut stop: watch:
         let Some(source) = g.source.clone() else {
             return;
         };
-        let (collaterals, list) = (Arc::clone(&g.collaterals), g.list());
+        let collaterals = Arc::clone(&g.collaterals);
+        let list = g.list();
         let resolved = Arc::clone(&g.resolved_changed);
         let appdb = s.live().ok().map(|l| l.appdb);
         drop(s);
