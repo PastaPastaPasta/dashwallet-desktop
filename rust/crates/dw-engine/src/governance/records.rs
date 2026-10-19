@@ -138,6 +138,28 @@ pub struct VoteTally {
     pub ranged_votes: u32,
 }
 
+impl From<dw_governance::tally::RangedTally> for VoteTally {
+    fn from(t: dw_governance::tally::RangedTally) -> Self {
+        Self {
+            yes: t.yes.into(),
+            no: t.no.into(),
+            abstain: t.abstain.into(),
+            net_yes_estimate: t.estimate.absolute_yes(),
+            voters: t.voters,
+            ranged_votes: t.ranged_votes,
+        }
+    }
+}
+
+/// The tallies of the signals besides funding (MG-02 D82), for Core's
+/// sentinel flags (D83).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SignalTallies {
+    pub valid: VoteTally,
+    pub delete: VoteTally,
+    pub endorsed: VoteTally,
+}
+
 /// dash-qt's proposal status (`tally::Status`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -192,6 +214,31 @@ pub struct ProposalDetail {
     pub collateral_txid: String,
     pub created_at: i64,
     pub data_json: String,
+    pub signals: SignalTallies,
+    /// When the wallet marked the proposal deleted by vote; it leaves 10
+    /// minutes later (MG-02 D84).
+    pub deletion_marked_at: Option<i64>,
+}
+
+/// A vote's signal (`vote_signal_enum_t`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoteSignal {
+    Funding,
+    Valid,
+    Delete,
+    Endorsed,
+}
+
+impl From<dw_governance::vote::SentinelSignal> for VoteSignal {
+    fn from(s: dw_governance::vote::SentinelSignal) -> Self {
+        use dw_governance::vote::SentinelSignal as S;
+        match s {
+            S::Valid => Self::Valid,
+            S::Delete => Self::Delete,
+            S::Endorsed => Self::Endorsed,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,6 +273,7 @@ impl From<VoteOutcome> for dw_governance::vote::VoteOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentVoteRow {
     pub outpoint: String,
+    pub signal: VoteSignal,
     pub time: i64,
     pub outcome: VoteOutcome,
     pub weight: WeightRange,

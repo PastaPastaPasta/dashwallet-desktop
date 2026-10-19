@@ -239,6 +239,7 @@ fn resolved_takes_the_lists_key_and_the_registrations_weight() {
             ResolvedMasternode {
                 pro_tx_hash: txid(&evo),
                 voting_key_id: [9; 20],
+                operator_key: [0; 48],
                 weight: 4,
             }
         )])
@@ -537,4 +538,178 @@ fn failed_rounds_back_off_exponentially_and_reset() {
     assert_eq!(pace.after(&round(8, 0)), None);
     assert_eq!(pace.after(&round(0, 0)), Some(POLL));
     assert_eq!(secs(pace.after(&round(8, 8))), Some(5));
+}
+
+/// A one-shot JSON-RPC server on localhost: reads one request and answers
+/// it with `status` and `body`, or closes the connection unanswered for
+/// `None`. Returns the URL (with credentials) and the request it read.
+async fn rpc_mock(status: u16, body: Option<String>) -> (String, tokio::task::JoinHandle<String>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://user:pw@{}/", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        let (mut conn, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buf = [0u8; 4096];
+        // Headers, then as much body as Content-Length says.
+        loop {
+            let n = conn.read(&mut buf).await.unwrap();
+            assert!(n > 0, "the client closed before its request was read");
+            request.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&request);
+            let Some(end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let length = text[..end]
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            if request.len() >= end + 4 + length {
+                break;
+            }
+        }
+        if let Some(body) = body {
+            let reply = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            conn.write_all(reply.as_bytes()).await.unwrap();
+        }
+        String::from_utf8(request).unwrap()
+    });
+    (url, task)
+}
+
+/// `RpcSource` asks dashd's `getrawtransaction` (verbose off) with the URL's
+/// credentials as basic auth, and maps the reply: the decoded transaction;
+/// `None` for RPC_INVALID_ADDRESS_OR_KEY (-5) or bytes that don't decode;
+/// `Err` (asked again after a pause) for any other error, a reply that isn't
+/// JSON-RPC, or a failed request.
+#[tokio::test]
+async fn the_rpc_source_maps_dashds_replies() {
+    let tx = external(op(1));
+    let key = txid(&tx);
+    let reply = |result: &str, error: &str| {
+        Some(format!(
+            r#"{{"result":{result},"error":{error},"id":"dw"}}"#
+        ))
+    };
+    let ask = |url: String| async move { RpcSource::new(&url).unwrap().registration(key).await };
+
+    let hex = format!("\"{}\"", hex::encode(dashcore::consensus::serialize(&tx)));
+    let (url, server) = rpc_mock(200, reply(&hex, "null")).await;
+    assert_eq!(ask(url).await, Ok(Some(tx.clone())));
+    let request = server.await.unwrap();
+    assert!(request.starts_with("POST / HTTP/1.1\r\n"), "{request}");
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: basic dxnlcjpwdw=="),
+        "{request}"
+    );
+    let body: serde_json::Value =
+        serde_json::from_str(&request[request.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+    assert_eq!(body["method"], "getrawtransaction");
+    assert_eq!(
+        body["params"],
+        serde_json::json!([Txid::from_byte_array(key).to_string(), false])
+    );
+
+    // dashd answers RPC errors with HTTP 500 and the JSON-RPC error.
+    let not_found = r#"{"code":-5,"message":"No such mempool or blockchain transaction."}"#;
+    let (url, _server) = rpc_mock(500, reply("null", not_found)).await;
+    assert_eq!(ask(url).await, Ok(None));
+    let (url, _server) = rpc_mock(200, reply("\"00zz\"", "null")).await;
+    assert_eq!(ask(url).await, Ok(None), "not hex");
+    let (url, _server) = rpc_mock(200, reply("\"0100\"", "null")).await;
+    assert_eq!(ask(url).await, Ok(None), "hex that isn't a transaction");
+
+    let warming = r#"{"code":-28,"message":"Loading block index..."}"#;
+    let (url, _server) = rpc_mock(500, reply("null", warming)).await;
+    let e = ask(url).await.unwrap_err();
+    assert!(e.contains("-28"), "{e}");
+    let (url, _server) = rpc_mock(200, reply("7", "null")).await;
+    assert!(ask(url).await.is_err(), "a result that isn't a string");
+    // A wrong password: dashd's 401 has no body.
+    let (url, _server) = rpc_mock(401, Some(String::new())).await;
+    assert!(ask(url).await.is_err());
+    let (url, _server) = rpc_mock(200, None).await;
+    assert!(ask(url).await.is_err(), "the connection closed unanswered");
+
+    assert!(RpcSource::new("ftp://127.0.0.1/").is_err());
+    assert!(RpcSource::new("not a url").is_err());
+}
+
+/// A source whose fetches never end, counting how many started.
+#[derive(Default)]
+struct Hang {
+    started: AtomicUsize,
+    notify: tokio::sync::Notify,
+}
+
+impl CollateralSource for Hang {
+    fn registration(&self, _: [u8; 32]) -> BoxedFuture<'_, Result<Option<Transaction>, String>> {
+        Box::pin(async move {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            self.notify.notify_one();
+            std::future::pending().await
+        })
+    }
+}
+
+/// A stop ends a round mid-fetch, as does a dropped sender; the dropped
+/// round stores nothing, and the next run fetches those masternodes again.
+#[tokio::test]
+async fn a_stop_during_a_fetch_ends_the_round_and_stores_nothing() {
+    let txs: Vec<Transaction> = (1..=3).map(|n| external(op(n))).collect();
+    let list = snapshot(
+        txs.iter()
+            .map(|tx| summary(txid(tx), [1; 20], false))
+            .collect(),
+    );
+    let db = Arc::new(AppDb::open_in_memory().unwrap());
+    let appdb = Some(db.clone());
+    let c = Collaterals::default();
+    let hang = Hang::default();
+
+    for drop_sender in [false, true] {
+        let (stop_tx, mut stop) = watch::channel(false);
+        let round = round_unless_stopped(&c, &list, &hang, appdb.clone(), &mut stop);
+        let stopper = async {
+            while hang.started.load(Ordering::SeqCst) < 3 * (1 + drop_sender as usize) {
+                hang.notify.notified().await;
+            }
+            if drop_sender {
+                drop(stop_tx);
+            } else {
+                stop_tx.send(true).unwrap();
+            }
+        };
+        let (r, ()) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(round, stopper)
+        })
+        .await
+        .expect("the round ends when sync stops");
+        assert_eq!(r, None);
+        assert!(c.resolved(&list).is_empty());
+        assert!(stored(&db).is_empty());
+    }
+    assert_eq!(c.fetches(), 6, "the dropped rounds' fetches still count");
+
+    let (_stop_tx, mut stop) = watch::channel(false);
+    let r = round_unless_stopped(&c, &list, Script::with(txs).as_ref(), appdb, &mut stop).await;
+    assert_eq!(
+        r,
+        Some(Round {
+            asked: 3,
+            found: 3,
+            failed: 0
+        })
+    );
+    assert_eq!(c.resolved(&list).len(), 3);
+    assert_eq!(stored(&db).len(), 3);
 }

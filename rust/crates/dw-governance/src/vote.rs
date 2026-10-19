@@ -7,10 +7,14 @@
 //! (`CHashSigner`); on every other network it is a Dash signed message
 //! (`CMessageSigner`, "DarkCoin Signed Message:\n") of
 //! `"<txid>-<n>|<parent>|<signal>|<outcome>|<time>"`. BLS (96-byte)
-//! signatures are the operator-key form used for trigger votes.
+//! signatures are the operator-key form: Core takes only that form for a
+//! trigger's votes and for a proposal's `valid`, `delete` and `endorsed`
+//! votes (`CGovernanceObject::ProcessVote`'s `onlyVotingKeyAllowed`), over
+//! the serialization hash under the basic scheme (MG-02 D89).
 
 use dashcore::Network;
 use dashcore::OutPoint;
+use dashcore::bls_sig_utils::{BlsPkBytes, BlsScheme, BlsSigBytes};
 use dashcore::consensus::encode::{self, Decodable, Encodable, VarInt};
 use dashcore::hashes::{Hash, hash160, sha256d};
 use dashcore::secp256k1::ecdsa::{RecoverableSignature, RecoveryId, Signature};
@@ -59,9 +63,39 @@ impl VoteOutcome {
     }
 }
 
-/// `VOTE_SIGNAL_FUNDING`: the only signal the wallet casts (dash-qt) and
-/// the one tallies count.
+/// `VOTE_SIGNAL_FUNDING`: the only signal the wallet casts (dash-qt), and
+/// the one budgets and statuses count.
 pub const SIGNAL_FUNDING: i32 = 1;
+
+/// The signals besides funding (`vote_signal_enum_t`), tallied for Core's
+/// sentinel flags and deletion by vote (MG-02 D82–D84).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SentinelSignal {
+    Valid,
+    Delete,
+    Endorsed,
+}
+
+impl SentinelSignal {
+    pub const ALL: [Self; 3] = [Self::Valid, Self::Delete, Self::Endorsed];
+
+    pub fn from_code(code: i32) -> Option<Self> {
+        match code {
+            2 => Some(Self::Valid),
+            3 => Some(Self::Delete),
+            4 => Some(Self::Endorsed),
+            _ => None,
+        }
+    }
+
+    pub fn code(self) -> i32 {
+        match self {
+            Self::Valid => 2,
+            Self::Delete => 3,
+            Self::Endorsed => 4,
+        }
+    }
+}
 
 /// One governance vote.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +186,28 @@ impl GovernanceVote {
     pub fn signer_key_id(&self, network: Network) -> Option<[u8; 20]> {
         let pubkey = recover_compact(&self.signature, &self.signing_digest(network))?;
         Some(hash160::Hash::hash(&pubkey).to_byte_array())
+    }
+
+    /// Whether the 96-byte signature is the operator's, of `operator_key`
+    /// as the masternode list carries it (Core `CheckSignature(const
+    /// CBLSPublicKey&)`: the signature read and checked under the basic
+    /// scheme, over [`Self::signature_hash`]). The list writes a version-1
+    /// entry's key in the legacy encoding and carries no version here, so a
+    /// key that does not verify in the basic encoding is read as legacy:
+    /// the same point either way, so no third party's signature verifies.
+    pub fn verify_operator(&self, operator_key: &[u8; 48]) -> bool {
+        let Ok(sig) = <[u8; BLS_SIG_SIZE]>::try_from(self.signature.as_slice()) else {
+            return false;
+        };
+        let sig = BlsSigBytes::from_bytes(sig);
+        let digest = self.signature_hash();
+        let key = BlsPkBytes::from_bytes(*operator_key);
+        let verifies = |k: BlsPkBytes| k.as_scheme(BlsScheme::Modern).verify(&digest, &sig).is_ok();
+        verifies(key)
+            || key
+                .as_scheme(BlsScheme::Legacy)
+                .reencode(BlsScheme::Modern)
+                .is_ok_and(verifies)
     }
 
     fn encode_unsigned(&self, buf: &mut Vec<u8>) {
@@ -442,5 +498,62 @@ mod tests {
             s.starts_with("f3d0bbd2e2c0e21a6a3a44a0f4b4c2fb4a2a6f1d1b4b9f6cfc2e3e2d1c0b0a09-1|")
         );
         assert!(s.ends_with("|1|1|1700000000"));
+    }
+
+    #[test]
+    fn verify_operator_checks_a_basic_bls_signature_under_either_key_encoding() {
+        // D89 vector: a delete NO signed, outside this repo (MG-01: the
+        // wallet never signs with an operator key), by dash-pkc's BLS with
+        // the throwaway secret [0x42; 32]; the key in Core's basic encoding
+        // and in the legacy one a v1 masternode entry carries.
+        use dashcore::Txid;
+        use dashcore::hashes::Hash;
+        let mut v = GovernanceVote::funding(
+            OutPoint::new(Txid::from_byte_array([0x11; 32]), 1),
+            [0x22; 32],
+            VoteOutcome::No,
+            1_700_000_000,
+        );
+        v.signal = SentinelSignal::Delete.code();
+        assert_eq!(
+            hex::encode(v.signature_hash()),
+            "ee2c57eed913bb2ff83ab5bfef44c01a479334d2b210b8b2796dacc43c7a5a50"
+        );
+        v.signature = hex::decode(
+            "a4b805dfe336a076d09676d361dc682fcecd22dfe2c9b7f6464c563a3f662dc1\
+             29b543816609a355d8e016430f831f0805efb986f77f71357127db338df16c13\
+             062cb62262cbea463b4dd8908c737ff94565696e5dbb2f7e047920cdf6a15ef0",
+        )
+        .unwrap();
+        let key = |s: &str| <[u8; 48]>::try_from(hex::decode(s).unwrap()).unwrap();
+        let basic = key(
+            "b5b99c967e4c69822f427db1f6871dd119afb95ab9646ba2e707990a3db31777a59b66f69e89c2055699b0ade7357eae",
+        );
+        let legacy = key(
+            "95b99c967e4c69822f427db1f6871dd119afb95ab9646ba2e707990a3db31777a59b66f69e89c2055699b0ade7357eae",
+        );
+        assert!(v.verify_operator(&basic));
+        assert!(v.verify_operator(&legacy));
+
+        // Any signed field, the signature, its length or the key changed: no.
+        let mut other = v.clone();
+        other.outcome = VoteOutcome::Yes.code();
+        assert!(!other.verify_operator(&basic));
+        let mut other = v.clone();
+        other.signal = SentinelSignal::Endorsed.code();
+        assert!(!other.verify_operator(&basic));
+        let mut other = v.clone();
+        other.time += 1;
+        assert!(!other.verify_operator(&basic));
+        let mut other = v.clone();
+        other.signature[95] ^= 1;
+        assert!(!other.verify_operator(&basic));
+        let mut other = v.clone();
+        other.signature.pop();
+        assert!(!other.verify_operator(&basic));
+        let mut wrong = basic;
+        wrong[47] ^= 1;
+        assert!(!v.verify_operator(&wrong));
+        assert!(!v.verify_operator(&[0; 48]));
     }
 }

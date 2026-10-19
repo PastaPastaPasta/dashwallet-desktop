@@ -568,8 +568,10 @@ async fn votes_core_relays_but_the_wallet_ignores_cost_no_penalty() {
     let obj = proposal("a");
     let h = obj.hash();
     let t = trigger();
-    // Operators' BLS-signed votes on the trigger, and a delete vote on the
-    // proposal, relayed; one funding vote to count.
+    // Operators' BLS-signed votes on the trigger, a BLS-signed delete vote
+    // of an outpoint the wallet cannot resolve (parked, D89) and an
+    // ECDSA-signed one (Core: checked under the operator key, invalid)
+    // on the proposal, relayed; one funding vote to count.
     let mut relays = Vec::new();
     for key in 3..8u8 {
         let mut v = vote(t.hash(), key, VoteOutcome::Yes);
@@ -578,6 +580,9 @@ async fn votes_core_relays_but_the_wallet_ignores_cost_no_penalty() {
     }
     let mut delete = vote(h, 1, VoteOutcome::Yes);
     delete.signal = 3;
+    relays.push(delete.clone());
+    delete.masternode_outpoint.vout = 9;
+    delete.signature = vec![9; crate::vote::BLS_SIG_SIZE];
     relays.push(delete);
     let node = Node {
         objects: vec![obj, t],
@@ -3520,6 +3525,7 @@ async fn a_resolved_outpoint_brings_back_the_honest_copy() {
         crate::store::ResolvedMasternode {
             pro_tx_hash: [9; 32],
             voting_key_id: key_id(2),
+            operator_key: [0; 48],
             weight: 1,
         },
     )]));
@@ -3552,6 +3558,7 @@ async fn a_refetch_given_up_leaves_vote_syncs_recorded() {
         crate::store::ResolvedMasternode {
             pro_tx_hash: [9; 32],
             voting_key_id: key_id(3),
+            operator_key: [0; 48],
             weight: 1,
         },
     )]));
@@ -3753,6 +3760,7 @@ async fn a_failed_refetch_leaves_the_vote_uncertain_across_a_reconnect() {
         crate::store::ResolvedMasternode {
             pro_tx_hash: [9; 32],
             voting_key_id: key_id(2),
+            operator_key: [0; 48],
             weight: 4,
         },
     )]);
@@ -4187,6 +4195,7 @@ async fn an_awaited_vote_left_unasked_is_asked_by_a_later_run() {
             crate::store::ResolvedMasternode {
                 pro_tx_hash: [9; 32],
                 voting_key_id: key_id(2),
+                operator_key: [0; 48],
                 weight: 4,
             },
         )]);
@@ -4306,4 +4315,86 @@ async fn lost_votes_past_the_budget_are_each_asked_within_two_runs() {
         let both: HashSet<[u8; 32]> = pair[0].union(&pair[1]).copied().collect();
         assert_eq!(both, lost, "passes {i} and {}", i + 1);
     }
+}
+
+/// A connected peer (id `id`) that reads everything and reports the items
+/// of each `getdata` it gets, in order.
+async fn getdata_peer(id: usize, cfg: &SyncConfig) -> (PeerState, mpsc::UnboundedReceiver<usize>) {
+    let mock = MockPeer::bind(Network::Regtest).await.unwrap();
+    let addr = mock.addr();
+    let (seen, getdatas) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let mut conn = mock.accept().await.unwrap();
+        while let Ok(msg) = conn.recv().await {
+            if msg.command == "getdata" {
+                let _ = seen.send(decode_inv(&msg.payload).unwrap().len());
+            }
+        }
+    });
+    let (tx, _rx) = mpsc::channel(EVENTS_QUEUE);
+    let state = PeerState::new(Peer::connect(id, addr, &cfg.peer, tx).await.unwrap());
+    (state, getdatas)
+}
+
+async fn next_getdata(getdatas: &mut mpsc::UnboundedReceiver<usize>) -> usize {
+    tokio::time::timeout(Duration::from_secs(10), getdatas.recv())
+        .await
+        .expect("a getdata")
+        .expect("open")
+}
+
+/// BL-230 (a, d), D87: lost votes asked for again start at alternate
+/// peers, and the ones a timeout or a close moves to the next peer go out
+/// in one batch, not one `getdata` each.
+#[tokio::test]
+async fn moved_refetches_go_out_in_batches_from_alternate_peers() {
+    let p = proposal("p-bl230-batch");
+    let h = p.hash();
+    for close in [false, true] {
+        let mut run = one_peer_run(|c, _| c.max_in_flight = 5000).await;
+        let (peer, mut getdatas) = getdata_peer(1, &run.cfg).await;
+        run.peers.push(peer);
+        list_key_1(&run);
+        {
+            let mut s = run.shared.store();
+            s.set_confirmations(1);
+            s.add_object(p.clone(), None, unix_now()).unwrap();
+            s.lose_for_tests(h, 0..4);
+        }
+        run.expire();
+        let by_peer = |run: &Run, id| run.refetches.out.values().filter(|r| r.peer == id).count();
+        assert_eq!(
+            (by_peer(&run, 0), by_peer(&run, 1)),
+            (2, 2),
+            "close {close}"
+        );
+        assert_eq!(next_getdata(&mut getdatas).await, 2);
+        if close {
+            run.on_closed(0);
+        } else {
+            expire_now(&mut run);
+        }
+        assert_eq!(by_peer(&run, 1), if close { 4 } else { 2 });
+        assert_eq!(next_getdata(&mut getdatas).await, 2, "close {close}");
+    }
+}
+
+/// BL-230 (b), D87: a refetch out ends when a request for the vote's
+/// announcement stores it; the asked peer's copy is then unsolicited.
+#[tokio::test]
+async fn a_vote_stored_from_its_announcement_ends_its_refetch() {
+    let p = proposal("p-bl230-stored");
+    let mut run = two_peer_run(&p).await;
+    let item = lose_honest_no(&mut run, &p);
+    let honest = vote(p.hash(), 1, VoteOutcome::No);
+    run.expire();
+    assert_eq!(run.refetches.out[&item.hash].peer, 0);
+    open_vote_sync(&mut run.peers[1], p.hash());
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    assert_eq!(run.requests.pending[&(item.hash, item.kind)].peer, 1);
+    run.handle(1, PeerEvent::Vote(honest.encode()));
+    assert!(run.shared.store().has_vote(&item.hash));
+    assert!(run.refetches.out.is_empty());
+    run.handle(0, PeerEvent::Vote(honest.encode()));
+    assert_eq!(run.peers[0].unkept, 0);
 }

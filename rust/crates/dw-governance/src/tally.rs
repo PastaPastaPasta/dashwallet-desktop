@@ -25,6 +25,12 @@ pub fn threshold(valid_weighted: u32, min_quorum: u32) -> u32 {
     min_quorum.max(valid_weighted / 10)
 }
 
+/// Core's deletion threshold: `max(min_quorum, 2 · valid_weighted / 3)`
+/// (`nAbsDeleteReq`, `UpdateSentinelVariables`; MG-02 D83).
+pub fn delete_threshold(valid_weighted: u32, min_quorum: u32) -> u32 {
+    min_quorum.max((2 * u64::from(valid_weighted) / 3) as u32)
+}
+
 /// A masternode's current funding vote on one object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurrentVote {
@@ -987,5 +993,24 @@ mod tests {
         );
         assert!(sort_key(Status::Funded, 0, 0) < sort_key(Status::Passing, 100, 0));
         assert!(sort_key(Status::Passing, 10, 3) < sort_key(Status::Passing, 5, 3));
+    }
+
+    #[test]
+    fn sentinel_thresholds_follow_core_at_their_bounds() {
+        // `UpdateSentinelVariables`: nAbsVoteReq = max(q, W / 10) for
+        // funding, valid and endorsed; nAbsDeleteReq = max(q, 2W / 3),
+        // integer division.
+        assert_eq!(threshold(30, 1), 3);
+        assert_eq!(threshold(29, 1), 2);
+        assert_eq!(threshold(5, 10), 10);
+        assert_eq!(delete_threshold(30, 1), 20);
+        assert_eq!(delete_threshold(31, 1), 20);
+        assert_eq!(delete_threshold(29, 1), 19);
+        assert_eq!(delete_threshold(14, 10), 10);
+        assert_eq!(delete_threshold(15, 10), 10);
+        assert_eq!(delete_threshold(16, 10), 10);
+        assert_eq!(delete_threshold(18, 10), 12);
+        assert_eq!(delete_threshold(0, 1), 1);
+        assert_eq!(delete_threshold(u32::MAX, 10), 2_863_311_530);
     }
 }

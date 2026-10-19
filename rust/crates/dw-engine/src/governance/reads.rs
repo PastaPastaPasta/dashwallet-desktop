@@ -6,10 +6,11 @@ use dw_governance::object::{display_hex, outpoint_short, parse_display_hex};
 use dw_governance::params::{GovernanceParams, PROPOSAL_FEE_CONFIRMATIONS, governance_params};
 use dw_governance::store::{GovernanceStore, ObjectKind};
 use dw_governance::tally::{self, RangedCandidate, StatusInput};
+use dw_governance::vote::SentinelSignal;
 
 use super::records::{
     CurrentVoteRow, GovernanceClock, GovernanceInfo, ProposalCounts, ProposalDetail, ProposalQuery,
-    ProposalRow, ProposalScope, ProposalStatus, SuperblockDate, VoteTally,
+    ProposalRow, ProposalScope, ProposalStatus, SignalTallies, SuperblockDate, VoteSignal,
 };
 use super::sync::{GovernanceRuntime, ListSnapshot};
 use super::{Governance, GovernanceError, superblock_budget};
@@ -204,17 +205,24 @@ impl Governance {
             .into_iter()
             .find(|r| r.hash == o.hash_hex)
             .ok_or(GovernanceError::ProposalNotFound { hash })?;
+        let signal = |s| store.signal_tally(&key, s).into();
         Ok(ProposalDetail {
             row,
             collateral_txid: display_hex(&o.object.collateral_hash),
             created_at: o.object.time,
             data_json: o.object.data_text(),
+            signals: SignalTallies {
+                valid: signal(SentinelSignal::Valid),
+                delete: signal(SentinelSignal::Delete),
+                endorsed: signal(SentinelSignal::Endorsed),
+            },
+            deletion_marked_at: store.deletion_mark(&key),
         })
     }
 
-    /// Core's `gobject getcurrentvotes`: the current funding votes on a
-    /// proposal, optionally of one outpoint (`"<txid>-<n>"`), each with its
-    /// weight range.
+    /// Core's `gobject getcurrentvotes`: the current votes of every signal
+    /// on a proposal (MG-02 D86), optionally of one outpoint
+    /// (`"<txid>-<n>"`), each with its weight range.
     pub fn current_votes(
         &self,
         hash: String,
@@ -236,20 +244,41 @@ impl Governance {
     }
 }
 
-/// The current funding votes on `key` with the weights its tally gives
-/// them (MG-02 D72), in Core's order: by outpoint as `COutPoint` compares
-/// (the txid's internal bytes, then the index).
+/// The current votes on `key` with the weights its tallies give them
+/// (MG-02 D72, D82), in Core's order: by outpoint as `COutPoint` compares
+/// (the txid's internal bytes, then the index), then by signal (D86).
 fn vote_rows(store: &GovernanceStore, key: &[u8; 32]) -> Vec<CurrentVoteRow> {
-    let mut votes = tally::attribute(
+    let mut votes: Vec<_> = tally::attribute(
         store.votes_on(key),
         |k| store.key_weights(k),
         |o| store.exact_weight(key, o),
-    );
-    votes.sort_by(|(a, _), (b, _)| a.outpoint.cmp(&b.outpoint).then(a.time.cmp(&b.time)));
+    )
+    .into_iter()
+    .map(|vc| (VoteSignal::Funding, vc))
+    .collect();
+    for signal in SentinelSignal::ALL {
+        let of_signal = store
+            .signal_votes_on(key)
+            .filter(|(s, _)| *s == signal)
+            .map(|(_, v)| v);
+        votes.extend(
+            tally::attribute(
+                of_signal,
+                |k| store.key_weights(k),
+                |o| store.resolved(o).map(|r| r.weight),
+            )
+            .into_iter()
+            .map(|vc| (signal.into(), vc)),
+        );
+    }
+    votes.sort_by(|(sa, (a, _)), (sb, (b, _))| {
+        (a.outpoint, sa, a.time).cmp(&(b.outpoint, sb, b.time))
+    });
     votes
         .into_iter()
-        .map(|(v, c)| CurrentVoteRow {
+        .map(|(signal, (v, c))| CurrentVoteRow {
             outpoint: outpoint_short(&v.outpoint),
+            signal,
             time: v.time,
             outcome: v.outcome.into(),
             weight: c.weight.into(),
@@ -375,14 +404,7 @@ fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, 
                 payments_requested: d.payments_requested(&p),
                 status: status.into(),
                 close_call,
-                tally: VoteTally {
-                    yes: t.yes.into(),
-                    no: t.no.into(),
-                    abstain: t.abstain.into(),
-                    net_yes_estimate: absolute_yes,
-                    voters: t.voters,
-                    ranged_votes: t.ranged_votes,
-                },
+                tally: t.into(),
                 funded_height,
             };
             (tally::sort_key(status, absolute_yes, threshold), row)
@@ -404,7 +426,7 @@ mod tests {
     use dashcore::secp256k1::{Message, PublicKey, SecretKey};
     use dashcore::{Network, OutPoint, Txid};
     use dw_governance::object::GovernanceObject;
-    use dw_governance::store::{ListEntry, ResolvedMasternode, VoteRejection};
+    use dw_governance::store::{ListEntry, OperatorVote, ResolvedMasternode, VoteRejection};
     use dw_governance::vote::{GovernanceVote, VoteOutcome, to_recoverable_compact};
     use std::collections::HashMap;
 
@@ -441,6 +463,78 @@ mod tests {
             .unwrap()
             .to_vec();
         v
+    }
+
+    /// MG-02 D86: Core's `GetCurrentVotes` walks `mapCurrentMNVotes` by
+    /// outpoint, then each outpoint's instances by signal.
+    #[test]
+    fn current_votes_list_every_signal_in_core_order() {
+        let mut store = GovernanceStore::new(Network::Regtest);
+        store.set_confirmations(1);
+        let data = format!(
+            r#"{{"end_epoch":{},"name":"p","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}}"#,
+            NOW + 10_000
+        );
+        let p = GovernanceObject::new_proposal(1, NOW, data.into_bytes());
+        let h = p.hash();
+        store.add_object(p, None, NOW).unwrap();
+        let list: Vec<ListEntry> = [1, 2, 3]
+            .map(|k| ListEntry {
+                voting_key_id: key_id(k),
+                weight: Some(1),
+                valid: true,
+            })
+            .into();
+        store.set_masternode_list(&list);
+        store.set_resolved(HashMap::from([1, 2].map(|op| {
+            (
+                outpoint(op),
+                ResolvedMasternode {
+                    pro_tx_hash: [op; 32],
+                    voting_key_id: key_id(op),
+                    operator_key: [op; 48],
+                    weight: 1,
+                },
+            )
+        })));
+        // Operator votes (D89), as the sync hands them over once checked.
+        let operator = |store: &mut GovernanceStore, signal: SentinelSignal, op: u8, outcome| {
+            let mut v = GovernanceVote::funding(outpoint(op), h, outcome, NOW - 100);
+            v.signal = signal.code();
+            v.signature = vec![op; 96];
+            let v = OperatorVote {
+                vote: v,
+                outcome,
+                checked: Some(([op; 48], true)),
+                held: false,
+            };
+            store.add_operator_vote(v, None, NOW).unwrap();
+        };
+        // Added out of order; outpoint 3 is unresolved.
+        operator(&mut store, SentinelSignal::Endorsed, 2, VoteOutcome::Yes);
+        store.add_vote(yes(h, 3, 3), None, NOW).unwrap();
+        operator(&mut store, SentinelSignal::Delete, 1, VoteOutcome::No);
+        store
+            .add_vote(funding(h, 2, 2, VoteOutcome::Abstain), None, NOW)
+            .unwrap();
+        operator(&mut store, SentinelSignal::Valid, 1, VoteOutcome::Yes);
+        store.add_vote(yes(h, 1, 1), None, NOW).unwrap();
+        let rows: Vec<_> = vote_rows(&store, &h)
+            .into_iter()
+            .map(|r| (r.outpoint, r.signal, r.exact))
+            .collect();
+        let [one, two, three] = [1, 2, 3].map(|op| outpoint_short(&outpoint(op)));
+        assert_eq!(
+            rows,
+            [
+                (one.clone(), VoteSignal::Funding, true),
+                (one.clone(), VoteSignal::Valid, true),
+                (one, VoteSignal::Delete, true),
+                (two.clone(), VoteSignal::Funding, true),
+                (two, VoteSignal::Endorsed, true),
+                (three, VoteSignal::Funding, false),
+            ]
+        );
     }
 
     /// Sol r2 Major 5: 99 votes from resolved outpoints, against a threshold
@@ -483,6 +577,7 @@ mod tests {
                     let r = ResolvedMasternode {
                         pro_tx_hash: [k; 32],
                         voting_key_id: key_id(k),
+                        operator_key: [0; 48],
                         weight: 1,
                     };
                     (outpoint(k), r)
@@ -552,6 +647,7 @@ mod tests {
                 let r = ResolvedMasternode {
                     pro_tx_hash: [k; 32],
                     voting_key_id: key_id(k),
+                    operator_key: [0; 48],
                     weight: 1,
                 };
                 (outpoint(k), r)
@@ -626,6 +722,7 @@ mod tests {
             ResolvedMasternode {
                 pro_tx_hash: [160; 32],
                 voting_key_id: key_id(150),
+                operator_key: [0; 48],
                 weight: 4,
             },
         );

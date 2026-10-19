@@ -19,8 +19,8 @@ pub use errors::GovernanceError;
 pub use records::{
     CurrentVoteRow, GovernanceClock, GovernanceInfo, GovernanceSyncPhase, GovernanceSyncState,
     MasternodeType, ProposalCounts, ProposalDetail, ProposalQuery, ProposalRow, ProposalScope,
-    ProposalStatus, RawVote, SuperblockDate, VoteOutcome, VoteRelayed, VoteTally, VotingMasternode,
-    WeightRange,
+    ProposalStatus, RawVote, SignalTallies, SuperblockDate, VoteOutcome, VoteRelayed, VoteSignal,
+    VoteTally, VotingMasternode, WeightRange,
 };
 
 use crate::{DashNetwork, EngineError, NetworkSession};
