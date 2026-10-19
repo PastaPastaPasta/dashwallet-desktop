@@ -646,7 +646,7 @@ async fn an_operator_vote_is_checked_against_the_operator_key() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_parked_operator_vote_is_stored_once_its_key_resolves() {
+async fn a_parked_operator_vote_is_checked_once_its_key_resolves() {
     let data = r#"{"end_epoch":4000000000,"name":"p-d89-vector","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}"#;
     let p = GovernanceObject::new_proposal(1, 1_760_000_000, data.as_bytes().to_vec());
     let mut run = two_peer_run(&p).await;
@@ -678,6 +678,24 @@ async fn a_parked_operator_vote_is_stored_once_its_key_resolves() {
     run.expire();
     assert_eq!(stored(&run), 1);
     assert_eq!(run.peers[0].misbehaviour, 0);
+    // A held vote that fails under the key it waited for is asked for
+    // again (D85, D89).
+    let mut other = vote.clone();
+    other.time += 1;
+    run.handle(0, PeerEvent::Inv(vec![vote_inv(&other)]));
+    run.shared.store().set_resolved(HashMap::new());
+    run.handle(0, PeerEvent::Vote(other.encode()));
+    run.shared.store().set_resolved(HashMap::from([(
+        outpoint,
+        crate::store::ResolvedMasternode {
+            pro_tx_hash: [9; 32],
+            voting_key_id: key_id(1),
+            operator_key: [0; 48],
+            weight: 1,
+        },
+    )]));
+    run.expire();
+    assert!(run.shared.store().take_refetch().contains(&other.hash()));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
