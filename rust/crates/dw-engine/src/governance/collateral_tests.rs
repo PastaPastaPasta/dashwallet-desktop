@@ -515,3 +515,22 @@ async fn rows_of_unlisted_masternodes_are_deleted_on_reading() {
         vec![txid(&b)]
     );
 }
+
+/// DEC-265: a failed fetch backs off from 5 s, doubling to 5 min; a round
+/// without failures resets it, goes on at once while it asked, and polls
+/// when there was nothing to ask.
+#[test]
+fn failed_rounds_back_off_exponentially_and_reset() {
+    let round = |asked, failed| Round {
+        asked,
+        found: asked - failed,
+        failed,
+    };
+    let mut pace = Pace::default();
+    let secs = |w: Option<Duration>| w.map(|d| d.as_secs());
+    let waits: Vec<_> = (0..8).map(|_| secs(pace.after(&round(8, 1)))).collect();
+    assert_eq!(waits, [5, 10, 20, 40, 80, 160, 300, 300].map(Some).to_vec());
+    assert_eq!(pace.after(&round(8, 0)), None);
+    assert_eq!(pace.after(&round(0, 0)), Some(POLL));
+    assert_eq!(secs(pace.after(&round(8, 8))), Some(5));
+}

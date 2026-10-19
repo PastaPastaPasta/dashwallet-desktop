@@ -429,6 +429,34 @@ pub(super) async fn persist(
     }
 }
 
+/// The wait after a round: none while rounds have masternodes to fetch,
+/// [`POLL`] when idle, and after a failed fetch [`MIN_BACKOFF`] doubling up
+/// to [`MAX_BACKOFF`].
+#[derive(Debug)]
+struct Pace {
+    backoff: Duration,
+}
+
+impl Default for Pace {
+    fn default() -> Self {
+        Self {
+            backoff: MIN_BACKOFF,
+        }
+    }
+}
+
+impl Pace {
+    fn after(&mut self, round: &Round) -> Option<Duration> {
+        if round.failed > 0 {
+            let wait = self.backoff;
+            self.backoff = (self.backoff * 2).min(MAX_BACKOFF);
+            return Some(wait);
+        }
+        self.backoff = MIN_BACKOFF;
+        (round.asked == 0).then_some(POLL)
+    }
+}
+
 /// Waits `d`; `true` when stopped.
 async fn pause(d: Duration, stop: &mut watch::Receiver<bool>) -> bool {
     tokio::select! {
@@ -441,7 +469,7 @@ async fn pause(d: Duration, stop: &mut watch::Receiver<bool>) -> bool {
 /// off after a failed fetch, until sync stops. Each round that found one
 /// wakes the follower to hand the store the new outpoints.
 pub(super) async fn resolve_loop(session: Weak<NetworkSession>, mut stop: watch::Receiver<bool>) {
-    let mut backoff = MIN_BACKOFF;
+    let mut pace = Pace::default();
     loop {
         if *stop.borrow() {
             return;
@@ -469,16 +497,8 @@ pub(super) async fn resolve_loop(session: Weak<NetworkSession>, mut stop: watch:
         if collaterals.generation() != before {
             resolved.notify_one();
         }
-        let wait = if round.failed > 0 {
-            let w = backoff;
-            backoff = (backoff * 2).min(MAX_BACKOFF);
-            w
-        } else {
-            backoff = MIN_BACKOFF;
-            if round.asked > 0 {
-                continue;
-            }
-            POLL
+        let Some(wait) = pace.after(&round) else {
+            continue;
         };
         if pause(wait, &mut stop).await {
             return;
