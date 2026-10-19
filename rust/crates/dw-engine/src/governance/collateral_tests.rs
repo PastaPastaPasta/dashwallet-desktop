@@ -263,12 +263,23 @@ async fn a_restart_fetches_nothing_already_stored() {
     assert_eq!(stored(db.as_ref().unwrap()).len(), 20);
 
     let source = Script::with([]);
-    let restarted = Collaterals::default();
-    let r = resolve_all(&restarted, &list, source.as_ref(), &db).await;
+    let rt = GovernanceRuntime::new(
+        DashNetwork::Regtest,
+        Arc::new(NullSink),
+        &Handle::current(),
+        true,
+        Some(source.clone()),
+    );
+    rt.apply_list(list.clone());
+    let restarted = &rt.collaterals;
+    let r = resolve_all(restarted, &list, source.as_ref(), &db).await;
     assert_eq!(r, Round::default());
     assert!(source.asked().is_empty());
     assert_eq!(restarted.resolved(&list), first.resolved(&list));
     assert_eq!(restarted.resolved(&list).len(), 20);
+    // The stored rows reach the store with nothing fetched.
+    rt.apply_resolved();
+    assert_eq!(rt.resolved_sets.load(Ordering::SeqCst), 1);
 }
 
 /// DEC-265: a stored row that fails its check is deleted and fetched again,
