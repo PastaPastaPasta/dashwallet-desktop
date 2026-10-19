@@ -2841,6 +2841,32 @@ mod tests {
         assert_eq!((s.tally(&h).no.min, s.tally(&h).no.max), (0, 0));
     }
 
+    #[test]
+    fn resolving_a_masternode_takes_its_vote_off_the_key_cap() {
+        // BL-229: `set_resolved` recounts the key cap (D76) over the votes
+        // still unresolved; key 1 holds two masternodes, so six of them.
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 4), entry(1, 4), entry(2, 4)]);
+        let add = |s: &mut GovernanceStore, op: u8| {
+            s.add_vote(vote(h, 1, op, VoteOutcome::Yes, NOW - 40), peer(1), NOW)
+        };
+        for op in 1..=5 {
+            assert_eq!(add(&mut s, op), Ok(()));
+        }
+        s.set_resolved(HashMap::from([(
+            outpoint(1),
+            ResolvedMasternode {
+                pro_tx_hash: [1; 32],
+                voting_key_id: key_id(1),
+                weight: 4,
+            },
+        )]));
+        assert_eq!(add(&mut s, 6), Ok(()));
+        assert_eq!(add(&mut s, 7), Ok(()));
+        assert_eq!(add(&mut s, 8), Err(VoteRejection::KeyLimit));
+    }
+
     /// Key 2's copy of key 1's NO for outpoint 1 (the same hash), stored
     /// unresolved in key 2's slot, and the honest vote.
     fn forged_no(s: &mut GovernanceStore, h: [u8; 32]) -> GovernanceVote {
