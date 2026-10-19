@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "governance",
+  "description": "Governance: sync, the clock and budget, proposals, votes and the wallet's voting masternodes (MG-02, BL-232). Granted to the main window only.",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-governance-sync-enabled",
+    "allow-governance-set-sync-enabled",
+    "allow-governance-sync-state",
+    "allow-governance-resync",
+    "allow-governance-clock",
+    "allow-governance-info",
+    "allow-governance-upcoming-superblocks",
+    "allow-governance-proposals",
+    "allow-governance-proposal",
+    "allow-governance-current-votes",
+    "allow-governance-voting-masternodes"
+  ]
+}

@@ -14,6 +14,7 @@
 //!   below 2^53. Credits are decimal strings ([`credits`]): 1 DASH is 1e11
 //!   credits, so an identity's balance can pass 2^53.
 
+pub mod governance;
 pub mod history;
 pub mod platform;
 

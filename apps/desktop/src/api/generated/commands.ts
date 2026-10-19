@@ -46,6 +46,7 @@ import type { CostTable } from "./CostTable";
 import type { CreatedWallet } from "./CreatedWallet";
 import type { CredentialSpec } from "./CredentialSpec";
 import type { CsvUnitName } from "./CsvUnitName";
+import type { CurrentVoteRow } from "./CurrentVoteRow";
 import type { DashPayEventPage } from "./DashPayEventPage";
 import type { DashPayProfile } from "./DashPayProfile";
 import type { DashPayProfileLimits } from "./DashPayProfileLimits";
@@ -62,6 +63,9 @@ import type { FeePolicy } from "./FeePolicy";
 import type { FilePurpose } from "./FilePurpose";
 import type { FinishReport } from "./FinishReport";
 import type { FlowKindName } from "./FlowKindName";
+import type { GovernanceClock } from "./GovernanceClock";
+import type { GovernanceInfo } from "./GovernanceInfo";
+import type { GovernanceSyncState } from "./GovernanceSyncState";
 import type { GrantAction } from "./GrantAction";
 import type { GrantPurposeSpec } from "./GrantPurposeSpec";
 import type { GrantRequest } from "./GrantRequest";
@@ -104,6 +108,9 @@ import type { PreparedTxHandle } from "./PreparedTxHandle";
 import type { PreparedTxSummary } from "./PreparedTxSummary";
 import type { PrivateContactDetails } from "./PrivateContactDetails";
 import type { ProfileEditArgs } from "./ProfileEditArgs";
+import type { ProposalDetail } from "./ProposalDetail";
+import type { ProposalQuery } from "./ProposalQuery";
+import type { ProposalRow } from "./ProposalRow";
 import type { PsbtAnalysis } from "./PsbtAnalysis";
 import type { PublishStateName } from "./PublishStateName";
 import type { QrMatrix } from "./QrMatrix";
@@ -126,6 +133,7 @@ import type { ShellSync } from "./ShellSync";
 import type { SpvStateName } from "./SpvStateName";
 import type { StashedLinkInfo } from "./StashedLinkInfo";
 import type { StuckTopUpFunding } from "./StuckTopUpFunding";
+import type { SuperblockDate } from "./SuperblockDate";
 import type { SyncLoopStatus } from "./SyncLoopStatus";
 import type { SyncPassReport } from "./SyncPassReport";
 import type { SyncStatus } from "./SyncStatus";
@@ -145,6 +153,7 @@ import type { Utxo } from "./Utxo";
 import type { UtxoFilter } from "./UtxoFilter";
 import type { VaultRecovery } from "./VaultRecovery";
 import type { VerifyMessageResult } from "./VerifyMessageResult";
+import type { VotingMasternode } from "./VotingMasternode";
 import type { WalletFileInfo } from "./WalletFileInfo";
 import type { WalletLoadStatus } from "./WalletLoadStatus";
 import type { WalletSummary } from "./WalletSummary";
@@ -2123,6 +2132,93 @@ export function cancelScreenScan(): Promise<null> {
 }
 
 /**
+ * Whether governance sync is on (off by default).
+ */
+export function governanceSyncEnabled(): Promise<boolean> {
+  return invoke<boolean>("governance_sync_enabled");
+}
+
+/**
+ * Saves the setting, then starts or stops the sync task. Stopping keeps
+ * what was synced. Idempotent.
+ */
+export function governanceSetSyncEnabled(enabled: boolean): Promise<null> {
+  return invoke<null>("governance_set_sync_enabled", { enabled });
+}
+
+/**
+ * The sync phase and its counters.
+ */
+export function governanceSyncState(): Promise<GovernanceSyncState> {
+  return invoke<GovernanceSyncState>("governance_sync_state");
+}
+
+/**
+ * Starts a new sync run now; `governance.sync_disabled` while sync is off.
+ */
+export function governanceResync(): Promise<null> {
+  return invoke<null>("governance_resync");
+}
+
+/**
+ * The superblock cycle at the tip: progress, the next superblock and its
+ * ETA, and the estimated voting cutoff.
+ */
+export function governanceClock(): Promise<GovernanceClock> {
+  return invoke<GovernanceClock>("governance_clock");
+}
+
+/**
+ * The clock, the next superblock's budget, Core's `getgovernanceinfo`
+ * numbers, and (once synced) the proposal counts and allocation.
+ */
+export function governanceInfo(): Promise<GovernanceInfo> {
+  return invoke<GovernanceInfo>("governance_info");
+}
+
+/**
+ * The next `count` (at most 24) superblocks with their ETAs and budgets.
+ */
+export function governanceUpcomingSuperblocks(count: number): Promise<Array<SuperblockDate>> {
+  return invoke<Array<SuperblockDate>>("governance_upcoming_superblocks", { count });
+}
+
+/**
+ * Confirmed proposals, sorted by status group then net yes;
+ * `governance.not_synced` until a run reached `synced`.
+ */
+export function governanceProposals(query: ProposalQuery): Promise<Array<ProposalRow>> {
+  return invoke<Array<ProposalRow>>("governance_proposals", { query });
+}
+
+/**
+ * One proposal with its object fields and the valid, delete and
+ * endorsed tallies.
+ */
+export function governanceProposal(hash: string): Promise<ProposalDetail> {
+  return invoke<ProposalDetail>("governance_proposal", { hash });
+}
+
+/**
+ * Core's `gobject getcurrentvotes`: every current vote on the proposal,
+ * of one collateral outpoint (`"<txid>-<n>"`, lower-case hex) when
+ * given. The engine matches the string as written, so an outpoint in
+ * another form finds no votes (MG-02 D97).
+ */
+export function governanceCurrentVotes(hash: string, outpoint: string | null): Promise<Array<CurrentVoteRow>> {
+  return invoke<Array<CurrentVoteRow>>("governance_current_votes", { hash, outpoint });
+}
+
+/**
+ * The masternodes whose voting key the wallet derives, each with its own
+ * vote on `proposal` as seen; `governance.list_unavailable` while SPV has
+ * no masternode list.
+ */
+export function governanceVotingMasternodes(walletId: string, proposal: string): Promise<Array<VotingMasternode>> {
+  return invoke<Array<VotingMasternode>>("governance_voting_masternodes", { walletId, proposal });
+}
+
+/**
  * `--selftest`: writes the renderer's report, and exits once the report
  * is final (`"final": false` is a checkpoint before a probe that could
  * end the page).
@@ -2420,6 +2516,17 @@ export type CommandArgs = {
   scan_qr_image: { data: string };
   scan_qr_screen: {  };
   cancel_screen_scan: {  };
+  governance_sync_enabled: {  };
+  governance_set_sync_enabled: { enabled: boolean };
+  governance_sync_state: {  };
+  governance_resync: {  };
+  governance_clock: {  };
+  governance_info: {  };
+  governance_upcoming_superblocks: { count: number };
+  governance_proposals: { query: ProposalQuery };
+  governance_proposal: { hash: string };
+  governance_current_votes: { hash: string; outpoint: string | null };
+  governance_voting_masternodes: { walletId: string; proposal: string };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -2672,6 +2779,17 @@ export type CommandResults = {
   scan_qr_image: Array<string>;
   scan_qr_screen: Array<string> | null;
   cancel_screen_scan: null;
+  governance_sync_enabled: boolean;
+  governance_set_sync_enabled: null;
+  governance_sync_state: GovernanceSyncState;
+  governance_resync: null;
+  governance_clock: GovernanceClock;
+  governance_info: GovernanceInfo;
+  governance_upcoming_superblocks: Array<SuperblockDate>;
+  governance_proposals: Array<ProposalRow>;
+  governance_proposal: ProposalDetail;
+  governance_current_votes: Array<CurrentVoteRow>;
+  governance_voting_masternodes: Array<VotingMasternode>;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -2926,6 +3044,17 @@ export const COMMANDS: Record<CommandName, string> = {
   scan_qr_image: "scan",
   scan_qr_screen: "scan",
   cancel_screen_scan: "scan",
+  governance_sync_enabled: "governance",
+  governance_set_sync_enabled: "governance",
+  governance_sync_state: "governance",
+  governance_resync: "governance",
+  governance_clock: "governance",
+  governance_info: "governance",
+  governance_upcoming_superblocks: "governance",
+  governance_proposals: "governance",
+  governance_proposal: "governance",
+  governance_current_votes: "governance",
+  governance_voting_masternodes: "governance",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",
@@ -3152,4 +3281,11 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.below_minimum",
   "credits.coins_locked",
   "credits.top_up_pending",
+  "governance.sync_disabled",
+  "governance.not_synced",
+  "governance.proposal_not_found",
+  "governance.vote_rejected",
+  "governance.no_peers",
+  "governance.list_unavailable",
+  "governance.not_implemented",
 ];

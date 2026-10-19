@@ -77,6 +77,7 @@ describe("fixture backend", () => {
       "topup.ts",
       "vault.ts",
       "vectors/accept.json",
+      "vectors/governance.json",
       "vectors/history.json",
       "vectors/notifications.json",
       "wallet.ts",

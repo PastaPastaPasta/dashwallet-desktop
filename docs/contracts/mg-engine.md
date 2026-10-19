@@ -7,13 +7,13 @@ Code: `rust/crates/dw-engine/src/governance/` (§0). Design: [`MG-02-governance.
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
 the changes in §1 below.
 
-The facade is plain Rust in dw-engine. `dwcli` and the console drive it directly; E0-13 binds it for the UI stack,
-with binding derives in the binding crate only. MG-03 (masternodes), MG-05 (voting grants) and MG-06 (proposals)
-extend this file; **a change to a signature, a record or a code updates this file and raises `Contract-Version` in
-the same change.** `rust/crates/dw-engine/tests/mg_governance_contract.rs` enforces it the way
-`m4_dashpay_contract.rs` enforces m4: the generated §3 listing with its SHA-256 (`DW_BLESS=1` to approve a raised
-version), one §2 row per call with matching Kind and Errors, the §4 codes per variant and the `vote_rejected` reasons,
-and the stub calls' `governance.not_implemented{call}`.
+The facade is plain Rust in dw-engine. `dwcli` and the console drive it directly; dw-app binds it for the Tauri UI
+(`api/governance.rs`, BL-232), with binding derives in the binding crate only. MG-03 (masternodes), MG-05 (voting
+grants) and MG-06 (proposals) extend this file; **a change to a signature, a record or a code updates this file and
+raises `Contract-Version` in the same change.** `rust/crates/dw-engine/tests/mg_governance_contract.rs` enforces it
+the way `m4_dashpay_contract.rs` enforces m4: the generated §3 listing with its SHA-256 (`DW_BLESS=1` to approve a
+raised version), one §2 row per call with matching Kind and Errors, the §4 codes per variant and the `vote_rejected`
+reasons, and the stub calls' `governance.not_implemented{call}`.
 
 ## 0. Object model and files
 
@@ -382,7 +382,8 @@ impl Governance {
 
 `EngineEvent::Governance { network }` (D7), at most once a second with the trailing edge kept, after any change of
 the store (objects, votes, confirmations), of `sync_state` or of the masternode list's voting keys. The host re-reads
-what it shows. dw-app forwards it as `AppEvent::Governance`; dw-ffi does not forward it until E0-13 binds the facade.
+what it shows. dw-app forwards it as `AppEvent::Governance`, and binds the facade's calls as its `governance` domain
+(BL-232, design D92–D96); dw-ffi does not forward it, as the Swift host has no governance calls (D95).
 
 Phases (`GovernanceSyncPhase`; design §2.3):
 

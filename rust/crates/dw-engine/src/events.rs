@@ -153,8 +153,8 @@ pub enum EngineEvent {
     },
     /// MG-02 (mg-engine §5): the governance store, the sync state or the
     /// masternode list's voting keys changed. At most once a second,
-    /// trailing edge kept; hosts re-read what they show. Engine-side until
-    /// E0-13 binds the facade (MG-02 D7).
+    /// trailing edge kept; hosts re-read what they show. Bound for the Tauri
+    /// host (BL-232); dw-ffi withholds it (MG-02 D95).
     Governance {
         network: DashNetwork,
     },
