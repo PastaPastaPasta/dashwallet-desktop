@@ -4843,6 +4843,28 @@ mod tests {
     }
 
     #[test]
+    fn a_proposal_with_operator_votes_only_is_not_evicted() {
+        // Validator r1 m2: its operator votes count as Core counts them
+        // (D89), so it is weighted, as one with funding votes is.
+        let obj = proposal("a");
+        let mut s = store(&obj, &[entry(1, 1)]);
+        s.max_objects = 1;
+        assert!(
+            s.add_object(proposal("b"), peer(1), NOW).is_ok(),
+            "unweighted, evicted"
+        );
+        let mut s = store(&obj, &[entry(1, 1)]);
+        resolve(&mut s, &[(1, 1)]);
+        let v = signal_vote(obj.hash(), 1, SentinelSignal::Valid, VoteOutcome::No, 10);
+        assert_eq!(add_signal(&mut s, v, true), Ok(()));
+        s.max_objects = 1;
+        assert_eq!(
+            s.add_object(proposal("b"), peer(1), NOW),
+            Err(ObjectRejection::StoreFull)
+        );
+    }
+
+    #[test]
     fn a_delete_no_refused_for_its_senders_bound_is_a_doubt() {
         // Validator r2 m-C: perhaps its only announcer's copy.
         let obj = proposal("a");
