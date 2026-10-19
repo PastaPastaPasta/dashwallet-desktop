@@ -1982,15 +1982,14 @@ impl GovernanceStore {
             (Parent::Proposal, true, true) => {}
             // Its funding votes take only the voting key's.
             (Parent::Proposal, false, true) => return Err(VoteRejection::Malformed),
+            // A funding vote, signed by the voting key.
+            (_, false, false) => {}
             // A voting-key signature Core refuses for another signal, and
             // relays none: another announcer's copy may be the operator's
-            // (D89). Not remembered: the hash leaves the signature out.
-            (Parent::Proposal, true, false) => return Err(VoteRejection::Unverifiable),
-            (Parent::Proposal, false, false) => {}
-            // Its object has not arrived: an operator signature waits for
+            // (D89). Not remembered: the hash leaves the signature out. Or
+            // its object has not arrived: an operator signature waits for
             // the object's vote sync, which fetches it again (D58, D89).
-            (_, true, _) | (_, _, true) => return Err(VoteRejection::Unverifiable),
-            _ => {}
+            _ => return Err(VoteRejection::Unverifiable),
         }
         Ok(outcome.expect("checked above"))
     }
@@ -4523,6 +4522,20 @@ mod tests {
             s.add_operator_vote(stale, peer(1), NOW),
             Err(VoteRejection::Parked)
         );
+        // So is one that failed under a key since replaced: held, as no
+        // check under the current key refused it.
+        let v4 = signal_vote(h, 2, Valid, VoteOutcome::No, 12);
+        let failed = OperatorVote {
+            vote: v4.clone(),
+            outcome: VoteOutcome::No,
+            checked: Some((op_key(2), false)),
+            held: false,
+        };
+        assert_eq!(
+            s.add_operator_vote(failed, peer(1), NOW),
+            Err(VoteRejection::Parked)
+        );
+        assert!(s.parked.values().any(|p| p.vote == v4 && p.held));
         assert_eq!(check_parked(&mut s, &[]), 0);
         assert_eq!(signal_estimates(&s, &h, Valid), (1, 1));
     }
@@ -4862,6 +4875,34 @@ mod tests {
             s.add_object(proposal("b"), peer(1), NOW),
             Err(ObjectRejection::StoreFull)
         );
+    }
+
+    #[test]
+    fn removing_an_object_unparks_its_votes_only() {
+        // Its parked votes go with it; another object's stay, and their
+        // sender's count with them.
+        use SentinelSignal::Valid;
+        let (a, b) = (proposal("a"), proposal("b"));
+        let mut s = store(&a, &[entry(1, 1), entry(2, 1)]);
+        s.add_object(b.clone(), None, NOW).unwrap();
+        for obj in [&a, &b] {
+            let v = signal_vote(obj.hash(), 1, Valid, VoteOutcome::No, 10);
+            assert_eq!(add_signal(&mut s, v, true), Err(VoteRejection::Parked));
+        }
+        assert_eq!(s.parked_per_peer[&peer(1).unwrap()], 2);
+        s.remove_object(&a.hash());
+        assert_eq!(s.parked.len(), 1);
+        assert!(s.parked.values().all(|p| p.vote.parent_hash == b.hash()));
+        assert_eq!(s.parked_per_peer[&peer(1).unwrap()], 1);
+    }
+
+    #[test]
+    fn with_no_list_yet_an_operator_vote_waits() {
+        // No outpoint is known to be no masternode's before the list.
+        let obj = proposal("a");
+        let mut s = store(&obj, &[]);
+        let v = signal_vote(obj.hash(), 1, SentinelSignal::Valid, VoteOutcome::No, 10);
+        assert_eq!(add_signal(&mut s, v, true), Err(VoteRejection::Parked));
     }
 
     #[test]
