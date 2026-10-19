@@ -2,8 +2,8 @@
 //! `governance_*` commands return, through dw-app's conversion, and every
 //! `GovernanceError` through `AppError`, written to
 //! `apps/desktop/src/fixture/vectors/governance.json`. The renderer's
-//! contract test (`apps/desktop/src/api/governance.test.ts`) replays them
-//! through the generated commands. This test fails when the committed file
+//! contract test (`apps/desktop/src/api/governance.test.ts`) holds them
+//! against the records of mg-engine §3. This test fails when the committed file
 //! differs from what dw-app produces now; regenerate it with
 //! `DW_UPDATE_VECTORS=1 cargo test -p dw-app governance_vectors`.
 
@@ -250,7 +250,7 @@ fn governance_vectors_are_current() {
 }
 
 /// Every governance command has a result in the vectors, so the renderer's
-/// contract test replays each one.
+/// contract test checks each one.
 #[test]
 fn every_command_has_a_vector() {
     let v = build();

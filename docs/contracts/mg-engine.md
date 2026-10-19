@@ -383,7 +383,7 @@ impl Governance {
 `EngineEvent::Governance { network }` (D7), at most once a second with the trailing edge kept, after any change of
 the store (objects, votes, confirmations), of `sync_state` or of the masternode list's voting keys. The host re-reads
 what it shows. dw-app forwards it as `AppEvent::Governance`, and binds the facade's calls as its `governance` domain
-(BL-232, design D92–D96); dw-ffi does not forward it, as the Swift host has no governance calls (D95).
+(BL-232, design D92–D97); dw-ffi does not forward it, as the Swift host has no governance calls (D95).
 
 Phases (`GovernanceSyncPhase`; design §2.3):
 

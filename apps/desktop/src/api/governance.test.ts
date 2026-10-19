@@ -3,7 +3,8 @@
 // stated reason, and each §4 code is in the error union. Then dw-app's own JSON
 // (fixture/vectors/governance.json, which rust/crates/dw-app/src/governance_vectors_tests.rs
 // writes from engine records and fails on when it drifts) is held against the §3 records: each
-// record carries exactly its contract fields, camelCased. Every wrapper is called once, for the
+// command returns what its §3 signature says, and each record carries exactly its contract
+// fields, camelCased. Every wrapper is called once, for the
 // shape of its arguments.
 
 import { readFileSync } from "node:fs";
@@ -44,46 +45,50 @@ function contractCalls(): string[] {
   return [...section("## 2. Calls").matchAll(/^\| `(?:NetworkSession\.)?(\w+)\(/gm)].map((m) => m[1]);
 }
 
-/** The §3 records' fields, in snake case with their Rust types, by record name. */
+/** The §3 records' fields, in snake case with their Rust types, by record name. Every
+ * `pub struct` with a body must parse, so a format change fails here, not by skipping a record. */
 function contractRecords(): Map<string, [string, string][]> {
+  const surface = section("## 3. Surface");
   const records = new Map<string, [string, string][]>();
-  for (const m of section("## 3. Surface").matchAll(/^pub struct (\w+) \{\n((?:    pub .*\n)*)\}/gm)) {
+  for (const m of surface.matchAll(/^pub struct (\w+) \{\n((?:    pub .*\n)*)\}/gm)) {
     records.set(m[1], [...m[2].matchAll(/^    pub (\w+): (.*),$/gm)].map((f) => [f[1], f[2]]));
   }
+  const declared = [...surface.matchAll(/^pub struct (\w+) \{\n(?! {4}\.\.\n)/gm)].map((m) => m[1]);
+  expect([...records.keys()].sort()).toEqual(declared.sort());
   return records;
+}
+
+/** What each facade method of §3 returns: the type inside `Result<…>`, and whether it is a `Vec`. */
+function contractReturns(): Map<string, { type: string; list: boolean }> {
+  const returns = new Map<string, { type: string; list: boolean }>();
+  const signatures = section("## 3. Surface").matchAll(/^ {4}pub (?:async )?fn (\w+)\(.*\) -> Result<(Vec<)?(\w+|\(\))>?, GovernanceError>;$/gm);
+  for (const m of signatures) returns.set(m[1], { type: m[3], list: m[2] !== undefined });
+  return returns;
 }
 
 const camel = (s: string) => s.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
 
-/** Checks that `value` has exactly `record`'s fields, then the §3 records nested in it. */
-function expectRecord(records: Map<string, [string, string][]>, record: string, value: unknown, at: string) {
+/** Checks that `value` has exactly `record`'s fields, then the §3 records nested in it, adding
+ * each record it checks to `seen`. */
+function expectRecord(records: Map<string, [string, string][]>, record: string, value: unknown, at: string, seen: Set<string>) {
   const fields = records.get(record);
   expect(fields, `${at}: ${record} in §3`).toBeDefined();
   expect(Object.keys(value as object).sort(), at).toEqual(fields!.map(([f]) => camel(f)).sort());
+  seen.add(record);
   for (const [field, type] of fields!) {
-    const nested = type.match(/^(?:Option<|Vec<)?(\w+)>?$/)?.[1];
+    const [, list, nested] = type.match(/^(?:Option<)?(Vec<)?(\w+)>?>?$/) ?? [];
+    if (!nested || !records.has(nested)) continue;
     const inner = (value as Record<string, unknown>)[camel(field)];
-    if (!nested || !records.has(nested) || inner == null) continue;
-    for (const [i, v] of (Array.isArray(inner) ? inner : [inner]).entries()) {
-      expectRecord(records, nested, v, `${at}.${camel(field)}[${i}]`);
+    if (inner === null && type.startsWith("Option<")) continue;
+    expect(Array.isArray(inner), `${at}.${camel(field)}`).toBe(list !== undefined);
+    for (const [i, v] of (list ? (inner as unknown[]) : [inner]).entries()) {
+      expectRecord(records, nested, v, `${at}.${camel(field)}[${i}]`, seen);
     }
   }
 }
 
-/** The §3 record each command returns (a list of it where the call returns a `Vec`). */
-const RETURNS: { [K in GovernanceCommand]: string | null } = {
-  governance_sync_enabled: null,
-  governance_set_sync_enabled: null,
-  governance_sync_state: "GovernanceSyncState",
-  governance_resync: null,
-  governance_clock: "GovernanceClock",
-  governance_info: "GovernanceInfo",
-  governance_upcoming_superblocks: "SuperblockDate",
-  governance_proposals: "ProposalRow",
-  governance_proposal: "ProposalDetail",
-  governance_current_votes: "CurrentVoteRow",
-  governance_voting_masternodes: "VotingMasternode",
-};
+/** §3 records no bound command returns: the `proposals` argument and the unbound calls' (D93). */
+const NOT_RETURNED = ["ProposalQuery", "RawVote", "VoteRelayed"];
 
 /** The codes §4 lists for `GovernanceError`. */
 function contractCodes(): string[] {
@@ -165,17 +170,24 @@ describe("governance contract", () => {
 
   it("returns exactly the §3 records, camelCased", () => {
     const records = contractRecords();
+    const returns = contractReturns();
+    const seen = new Set<string>();
     const r = VECTORS.results;
-    for (const [name, record] of Object.entries(RETURNS) as [GovernanceCommand, string | null][]) {
-      const value = r[name];
-      if (record === null) {
-        expect(typeof value === "boolean" || value === null, name).toBe(true);
-        continue;
+    for (const [name, value] of Object.entries(r) as [GovernanceCommand, unknown][]) {
+      const ret = returns.get(name.replace(/^governance_/, ""));
+      expect(ret, name).toBeDefined();
+      const { type, list } = ret!;
+      expect(Array.isArray(value), name).toBe(list);
+      if (type === "()") expect(value, name).toBeNull();
+      else if (type === "bool") expect(typeof value, name).toBe("boolean");
+      else {
+        const values = list ? (value as unknown[]) : [value];
+        expect(values.length, name).toBeGreaterThan(0);
+        for (const [i, v] of values.entries()) expectRecord(records, type, v, `${name}[${i}]`, seen);
       }
-      const values = Array.isArray(value) ? value : [value];
-      expect(values.length, name).toBeGreaterThan(0);
-      for (const [i, v] of values.entries()) expectRecord(records, record, v, `${name}[${i}]`);
     }
+    // Every record a bound command can return was checked, none skipped for being absent.
+    expect([...seen].sort()).toEqual([...records.keys()].filter((k) => !NOT_RETURNED.includes(k)).sort());
     // The fields BL-231 added reach the renderer under their camelCase names (MG-02 D82, D84).
     expect(r.governance_proposal.signals.delete.no.estimate).toBe(2402);
     expect(r.governance_proposal.deletionMarkedAt).toBe(1_790_000_600);
