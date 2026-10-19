@@ -645,6 +645,58 @@ async fn an_operator_vote_is_checked_against_the_operator_key() {
     assert_eq!(run.peers[1].misbehaviour, 0);
 }
 
+/// Opus r1 m1: a BLS check costs a pairing, so a peer's failed operator
+/// checks have their own budget a run. Past it, its operator copies are
+/// refused before the check, at no penalty, and another announcer's is
+/// asked for; the other peer's budget is its own.
+#[tokio::test]
+async fn failed_operator_checks_are_bounded_per_peer() {
+    let data = r#"{"end_epoch":4000000000,"name":"p-d89-vector","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}"#;
+    let p = GovernanceObject::new_proposal(1, 1_760_000_000, data.as_bytes().to_vec());
+    let mut run = two_peer_run(&p).await;
+    run.cfg.max_failed_operator_checks = 2;
+    let outpoint = OutPoint::new(dashcore::Txid::from_byte_array([0x11; 32]), 1);
+    let operator_key = <[u8; 48]>::try_from(hex::decode("b5b99c967e4c69822f427db1f6871dd119afb95ab9646ba2e707990a3db31777a59b66f69e89c2055699b0ade7357eae").unwrap()).unwrap();
+    run.shared.store().set_resolved(HashMap::from([(
+        outpoint,
+        crate::store::ResolvedMasternode {
+            pro_tx_hash: [9; 32],
+            voting_key_id: key_id(1),
+            operator_key,
+            weight: 1,
+        },
+    )]));
+    let mut honest = GovernanceVote::funding(outpoint, p.hash(), VoteOutcome::No, 1_760_000_100);
+    honest.signal = SentinelSignal::Delete.code();
+    honest.signature = hex::decode(
+        "97d21c57832efb74a7c8f3cf7c73914edf6d0a1ec87d2cd56e03ffd926fa5009\
+         526b6c32bbf8a0d55ed2ae48a762dfc5134b51be37aa1614fdd46bd455dd499b\
+         fda2c7f4e630cd957984f3ccd8e05598e62ca0d0376f942a9a57ef6ef9dd9a7c",
+    )
+    .unwrap();
+    let stored = |run: &Run| run.shared.store().signal_votes_on(&p.hash()).count();
+    // Two forged votes spend peer 0's budget.
+    for dt in 1..=2 {
+        let mut forged = honest.clone();
+        forged.time -= dt;
+        run.handle(0, PeerEvent::Inv(vec![vote_inv(&forged)]));
+        run.handle(0, PeerEvent::Vote(forged.encode()));
+    }
+    assert_eq!((run.peers[0].failed_checks, run.recovered), (2, 2));
+    // Its next copy is refused unchecked, even the operator's own.
+    let item = vote_inv(&honest);
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::Vote(honest.encode()));
+    assert_eq!((run.peers[0].failed_checks, run.recovered), (2, 2));
+    assert_eq!(stored(&run), 0);
+    assert_eq!(run.peers[0].misbehaviour, 0);
+    // The other announcer's copy is asked for, checked and stored.
+    run.handle(1, PeerEvent::Vote(honest.encode()));
+    assert_eq!(stored(&run), 1);
+    assert_eq!((run.peers[1].failed_checks, run.recovered), (0, 3));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_parked_operator_vote_is_checked_once_its_key_resolves() {
     let data = r#"{"end_epoch":4000000000,"name":"p-d89-vector","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}"#;

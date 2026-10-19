@@ -191,25 +191,22 @@ impl GovernanceVote {
     /// Whether the 96-byte signature is the operator's, of `operator_key`
     /// as the masternode list carries it (Core `CheckSignature(const
     /// CBLSPublicKey&)`: the signature read and checked under the basic
-    /// scheme, over [`Self::signature_hash`]). The list writes a version-1
-    /// entry's key in the legacy encoding and carries no version here, so a
-    /// key that does not verify in the basic encoding is read as legacy.
-    /// Legacy bytes read as basic are the key's negation, under which the
-    /// negated signature verifies: a copy only the operator's own signature
-    /// yields, of the same vote (the hash leaves the signature out).
+    /// scheme, over [`Self::signature_hash`]), under any of the key's
+    /// [`operator_key_readings`]. Legacy bytes read as basic are the key's
+    /// negation, under which the negated signature verifies: a copy only
+    /// the operator's own signature yields, of the same vote (the hash
+    /// leaves the signature out).
     pub fn verify_operator(&self, operator_key: &[u8; 48]) -> bool {
         let Ok(sig) = <[u8; BLS_SIG_SIZE]>::try_from(self.signature.as_slice()) else {
             return false;
         };
         let sig = BlsSigBytes::from_bytes(sig);
         let digest = self.signature_hash();
-        let key = BlsPkBytes::from_bytes(*operator_key);
-        let verifies = |k: BlsPkBytes| k.as_scheme(BlsScheme::Modern).verify(&digest, &sig).is_ok();
-        verifies(key)
-            || key
-                .as_scheme(BlsScheme::Legacy)
-                .reencode(BlsScheme::Modern)
-                .is_ok_and(verifies)
+        operator_key_readings(operator_key).into_iter().any(|k| {
+            (BlsPkBytes::from_bytes(k).as_scheme(BlsScheme::Modern))
+                .verify(&digest, &sig)
+                .is_ok()
+        })
     }
 
     fn encode_unsigned(&self, buf: &mut Vec<u8>) {
@@ -394,6 +391,36 @@ pub(crate) fn malleations(v: &GovernanceVote) -> Vec<GovernanceVote> {
 #[path = "vote_canonical_tests.rs"]
 mod canonical_tests;
 
+/// The basic-scheme keys the list's operator key bytes may be (D89, MG-02
+/// D98): the list writes a version-1 entry's key in the legacy encoding and
+/// a later one's in the basic, and carries no version here, so the bytes are
+/// read both ways. One reading, or two when the legacy bytes are also a
+/// basic key (that of the point's negation); none for bytes that are no key.
+pub fn operator_key_readings(key: &[u8; 48]) -> Vec<[u8; 48]> {
+    let bytes = BlsPkBytes::from_bytes(*key);
+    let mut readings = Vec::with_capacity(2);
+    for scheme in [BlsScheme::Modern, BlsScheme::Legacy] {
+        if let Ok(k) = bytes.as_scheme(scheme).reencode(BlsScheme::Modern) {
+            let k = *k.as_bytes();
+            if !readings.contains(&k) {
+                readings.push(k);
+            }
+        }
+    }
+    readings
+}
+
+/// Whether two operator keys as the list carries them may be the same key
+/// (Core `CBLSLazyWrapper::operator==`, which compares the points when the
+/// encodings differ): equal bytes, or a reading in common. A masternode
+/// whose list entry moved from version 1 to 2 keeps its key so (D98).
+pub fn same_operator_key(a: &[u8; 48], b: &[u8; 48]) -> bool {
+    a == b || {
+        let a = operator_key_readings(a);
+        operator_key_readings(b).iter().any(|k| a.contains(k))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,6 +563,14 @@ mod tests {
         );
         assert!(v.verify_operator(&basic));
         assert!(v.verify_operator(&legacy));
+        // The legacy bytes read as basic too (the negated key); the basic
+        // bytes are no legacy key. Both are one key (MG-02 D98).
+        assert_eq!(operator_key_readings(&basic), vec![basic]);
+        let readings = operator_key_readings(&legacy);
+        assert_eq!(readings.len(), 2);
+        assert!(readings.contains(&basic) && readings.contains(&legacy));
+        assert!(same_operator_key(&basic, &legacy) && same_operator_key(&legacy, &basic));
+        assert!(operator_key_readings(&[0; 48]).is_empty());
 
         // Any signed field, the signature, its length or the key changed: no.
         let mut other = v.clone();
@@ -556,6 +591,7 @@ mod tests {
         let mut wrong = basic;
         wrong[47] ^= 1;
         assert!(!v.verify_operator(&wrong));
+        assert!(!same_operator_key(&basic, &wrong) && !same_operator_key(&legacy, &wrong));
         assert!(!v.verify_operator(&[0; 48]));
     }
 }

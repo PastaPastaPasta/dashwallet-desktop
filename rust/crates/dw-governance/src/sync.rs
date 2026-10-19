@@ -241,6 +241,10 @@ pub struct SyncConfig {
     /// Votes recovered and not kept, past which a peer's vote copies are
     /// refused before recovery, at no penalty (D63).
     pub max_unkept: u32,
+    /// Operator signatures that failed their check, past which a peer's
+    /// operator vote copies are refused before the check, at no penalty: a
+    /// BLS check costs a pairing, some 20 to 40 compact recoveries (D89).
+    pub max_failed_operator_checks: u32,
     /// Hashes one peer may announce that the wallet has not fetched (Core
     /// `MAX_PEER_OBJECT_ANNOUNCEMENTS`).
     pub max_announcements: usize,
@@ -279,6 +283,7 @@ impl SyncConfig {
             max_misbehaviour: 1000,
             max_suspect: 10_000,
             max_unkept: 25_000,
+            max_failed_operator_checks: 1_000,
             max_announcements: 100_000,
             max_refetches: MAX_REFUSED_PER_PROPOSAL,
             max_parent_fetches: 100,
@@ -376,6 +381,8 @@ struct PeerState {
     suspect: u32,
     /// Its votes recovered and not kept (D63).
     unkept: u32,
+    /// Its operator votes whose signature failed the check (D89).
+    failed_checks: u32,
     /// Hashes it announced that are not fetched or given up yet.
     announced: usize,
     /// Objects phase: `ssc(10)`'s count and the object invs since.
@@ -433,6 +440,7 @@ impl PeerState {
             misbehaviour: 0,
             suspect: 0,
             unkept: 0,
+            failed_checks: 0,
             announced: 0,
             full_sync: None,
             vote_asked: Vec::new(),
@@ -1330,15 +1338,31 @@ impl Run {
             self.refused(item, from, taken);
             return;
         }
-        self.recovered += 1;
         let parent = vote.parent_hash;
         let result = if SentinelSignal::from_code(vote.signal).is_some() {
-            // An operator vote, checked without the store's lock (D89).
+            // An operator vote, checked without the store's lock (D89);
+            // past its budget of failed checks, the sender's copies go to
+            // the next announcer unchecked.
             let key = self.shared.store().operator_key(&vote.masternode_outpoint);
+            if key.is_some()
+                && self
+                    .peer(from)
+                    .is_some_and(|p| p.failed_checks >= self.cfg.max_failed_operator_checks)
+            {
+                self.refused(item, from, taken);
+                return;
+            }
+            self.recovered += 1;
             let v = OperatorVote::checked(vote, outcome, key);
+            if matches!(v.checked, Some((_, false)))
+                && let Some(p) = self.peer_mut(from)
+            {
+                p.failed_checks += 1;
+            }
             self.shared.store().add_operator_vote(v, addr, now)
         } else {
             // Recovered without the store's lock.
+            self.recovered += 1;
             let checked = match recover(vote, outcome, self.shared.network) {
                 Ok(c) => c,
                 Err(_) => {
