@@ -8,7 +8,7 @@ use dashcore::secp256k1::{Message, PublicKey, SecretKey};
 use dw_p2p::commands;
 use dw_p2p::testing::MockPeer;
 use std::collections::HashSet;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 fn key_id(n: u8) -> [u8; 20] {
     let sk = SecretKey::from_secret_bytes([n; 32]).unwrap();
@@ -650,6 +650,19 @@ async fn a_parked_operator_vote_is_checked_once_its_key_resolves() {
     let data = r#"{"end_epoch":4000000000,"name":"p-d89-vector","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}"#;
     let p = GovernanceObject::new_proposal(1, 1_760_000_000, data.as_bytes().to_vec());
     let mut run = two_peer_run(&p).await;
+    // Counts the change notices.
+    let changes = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::new(Shared::new(Network::Regtest, {
+        let changes = changes.clone();
+        Box::new(move || {
+            changes.fetch_add(1, Ordering::Relaxed);
+        })
+    }));
+    *counted.store() = std::mem::replace(
+        &mut run.shared.store(),
+        GovernanceStore::new(Network::Regtest),
+    );
+    run.shared = counted;
     let outpoint = OutPoint::new(dashcore::Txid::from_byte_array([0x11; 32]), 1);
     let mut vote = GovernanceVote::funding(outpoint, p.hash(), VoteOutcome::No, 1_760_000_100);
     vote.signal = SentinelSignal::Delete.code();
@@ -674,9 +687,11 @@ async fn a_parked_operator_vote_is_checked_once_its_key_resolves() {
             weight: 1,
         },
     )]));
-    // The next tick checks it under the key and stores it.
+    // The next tick checks it under the key, stores it and says so.
+    let before = changes.load(Ordering::Relaxed);
     run.expire();
     assert_eq!(stored(&run), 1);
+    assert!(changes.load(Ordering::Relaxed) > before);
     assert_eq!(run.peers[0].misbehaviour, 0);
     // A held vote that fails under the key it waited for is asked for
     // again (D85, D89).
