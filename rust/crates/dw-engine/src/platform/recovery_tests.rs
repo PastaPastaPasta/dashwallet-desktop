@@ -3016,8 +3016,8 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
     // app.sqlite as a build from before E0-10b left it: without the later
     // migrations too (DP1-02's registration columns, DP2-04's digests and
     // removed wallets with their triggers, DP2-05's page index, DP3-01's
-    // payment-lock inputs), which such a build never had,
-    // or the runner refuses the gap below them.
+    // payment-lock inputs, BL-229's governance registrations), which such a
+    // build never had, or the runner refuses the gap below them.
     let conn = rusqlite::Connection::open(&appdb).unwrap();
     let drop_triggers: String = conn
         .query_row(
@@ -3037,6 +3037,7 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
              ALTER TABLE dp_registration DROP COLUMN profile_error;
              DROP TABLE dp_contact_info;
              ALTER TABLE dp_payment_lock DROP COLUMN inputs;
+             DROP TABLE governance_registrations;
              DELETE FROM refinery_schema_history WHERE version >= 2026101101;
              DELETE FROM settings_kv WHERE key = 'trust.fallback_used_at';",
     )
