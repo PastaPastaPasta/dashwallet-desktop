@@ -216,6 +216,23 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.derive_masternode_keys(wallet_id, role, start, count)
+                .await
+        })
+        .await
+    }
+
+    /// [`Self::masternode_keys`] for a caller that holds an operation
+    /// guard on the runtime (MG-04's key picks).
+    pub(crate) async fn derive_masternode_keys(
+        &self,
+        wallet_id: WalletId,
+        role: MasternodeKeyRole,
+        start: u32,
+        count: u32,
+    ) -> Result<Vec<MasternodeKeyInfo>, EngineError> {
+        {
+            let this = self;
             let network = this.network.core_network();
             let wallet = this.wallet(&wallet_id).await?;
             let end = start.saturating_add(count);
@@ -271,8 +288,7 @@ impl NetworkSession {
                     .collect::<Result<Vec<_>, EngineError>>()
             })
             .await?
-        })
-        .await
+        }
     }
 
     /// One provider private key of a wallet (IOS-083) under a `RevealSecret`

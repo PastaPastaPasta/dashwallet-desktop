@@ -34,7 +34,7 @@ use quote::ToTokens;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-/// Calls with real bodies: all of MG-03's.
+/// Calls with real bodies: all of MG-03's and MG-04's.
 const IMPLEMENTED: &[&str] = &[
     "NetworkSession.masternodes",
     "Masternodes.list_state",
@@ -49,6 +49,17 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.set_label",
     "Masternodes.attach_key",
     "Masternodes.detach_key",
+    "Masternodes.registration_keys",
+    "Masternodes.preview_registration",
+    "Masternodes.register",
+    "Masternodes.prepare_external_registration",
+    "Masternodes.submit_external_registration",
+    "Masternodes.refresh_external_registration",
+    "Masternodes.operations",
+    "Masternodes.resend_operation",
+    "Masternodes.discard_operation",
+    "Masternodes.release_collateral",
+    "Masternodes.lock_collateral",
 ];
 
 /// The facade's files in `src/masternodes/` (mn-engine.md §0). A new file
@@ -56,14 +67,17 @@ const IMPLEMENTED: &[&str] = &[
 const FACADE: &[&str] = &[
     "errors.rs",
     "mod.rs",
+    "protx.rs",
+    "protx_records.rs",
     "reads.rs",
     "records.rs",
     "tracking.rs",
 ];
 
 /// Files of `src/masternodes/` that are not part of the facade: the
-/// provider-transaction aggregation, and the list reader with its follower.
-const NOT_FACADE: &[&str] = &["aggregate.rs", "follow.rs"];
+/// provider-transaction aggregation, the list reader with its follower, and
+/// the ProTx keys, builder and operations behind `protx.rs`.
+const NOT_FACADE: &[&str] = &["aggregate.rs", "follow.rs", "protx"];
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: masternodes-surface -->";
 const END: &str = "<!-- END GENERATED: masternodes-surface -->";
@@ -710,8 +724,18 @@ fn error_codes_match_the_contract() {
             MasternodesError::NotEvonode,
             MasternodesError::NoIdentity,
             MasternodesError::PlatformUnavailable { detail: hash() },
-            MasternodesError::Unsupported { feature: hash() },
+            MasternodesError::Unsupported {
+                feature: hash(),
+                field: None,
+            },
             MasternodesError::NotImplemented { call: hash() },
+            MasternodesError::ProtxRefused { reason: hash() },
+            MasternodesError::CollateralUnavailable,
+            MasternodesError::SignatureMismatch,
+            MasternodesError::OperationNotFound,
+            MasternodesError::OperationState { state: hash() },
+            MasternodesError::InFlight,
+            MasternodesError::KeysExhausted { role: hash() },
         ],
         MasternodesError::code,
     );
@@ -822,6 +846,40 @@ async fn event_after(sink: &CountingSink, before: usize, what: &str) {
     }
 }
 
+/// A well-formed regular registration (MG-04).
+fn request() -> RegistrationRequest {
+    RegistrationRequest {
+        kind: MasternodeType::Regular,
+        collateral: CollateralChoice::FundNew,
+        service: "1.2.3.4".into(),
+        operator: OperatorChoice::NextUnused,
+        operator_reward: 0,
+        owner_index: None,
+        voting: VotingChoice::NextUnused,
+        payout: PayoutChoice::NewAddress,
+        evonode: None,
+    }
+}
+
+/// One with a malformed service address.
+fn bad_request() -> RegistrationRequest {
+    RegistrationRequest {
+        service: String::new(),
+        ..request()
+    }
+}
+
+/// One with another wallet's collateral.
+fn external() -> RegistrationRequest {
+    RegistrationRequest {
+        collateral: CollateralChoice::External {
+            outpoint: format!("{}-1", "77".repeat(32)),
+            address: "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n".into(),
+        },
+        ..request()
+    }
+}
+
 /// Every call is implemented, and each refuses in §2's order on a session
 /// whose SPV never ran.
 #[test]
@@ -893,9 +951,43 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.detach_key("zz".into(), AttachedKeyRole::Owner)
                 .await
                 .map(drop),
+            mn.preview_registration(wallet, bad_request())
+                .await
+                .map(drop),
+            mn.register(wallet, bad_request(), "g".into())
+                .await
+                .map(drop),
+            mn.register(wallet, external(), "g".into()).await.map(drop),
+            mn.prepare_external_registration(wallet, bad_request())
+                .await
+                .map(drop),
+            mn.prepare_external_registration(wallet, request())
+                .await
+                .map(drop),
+            mn.submit_external_registration(wallet, "zz".into(), "AA==".into(), "g".into())
+                .await
+                .map(drop),
+            mn.refresh_external_registration(wallet, "zz".into())
+                .await
+                .map(drop),
+            mn.resend_operation(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
+            mn.discard_operation(wallet, "zz".into()).await,
+            mn.release_collateral(wallet, "zz".into()).await,
+            mn.lock_collateral(wallet, "zz".into()).await,
         ] {
             assert_eq!(code(refused), "invalid_argument");
         }
+        // A version-3 service is named as such (MG-04 D1).
+        let mut v6 = request();
+        v6.service = "[2001:db8::1]:19899".into();
+        let e = mn.preview_registration(wallet, v6).await.unwrap_err();
+        assert!(
+            matches!(&e, MasternodesError::Unsupported { feature, field }
+                if feature == "protx_v3" && field.as_deref() == Some("service")),
+            "{e:?}"
+        );
 
         // Then the list.
         for refused in [
@@ -905,8 +997,41 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.find("10.0.0.1".into()).await.map(drop),
             mn.evonode_credits(hash.clone()).await.map(drop),
             mn.track(hash.clone(), None).await.map(drop),
+            mn.registration_keys(wallet, MasternodeType::Regular)
+                .await
+                .map(drop),
+            mn.preview_registration(wallet, request()).await.map(drop),
+            mn.register(wallet, request(), "g".into()).await.map(drop),
+            mn.prepare_external_registration(wallet, external())
+                .await
+                .map(drop),
         ] {
             assert_eq!(code(refused), "masternodes.list_unavailable");
+        }
+
+        // Operations: none yet.
+        assert!(mn.operations(wallet).await.unwrap().is_empty());
+        let op = || "00".repeat(16);
+        for refused in [
+            mn.submit_external_registration(wallet, op(), "AA==".into(), "g".into())
+                .await
+                .map(drop),
+            mn.refresh_external_registration(wallet, op())
+                .await
+                .map(drop),
+            mn.resend_operation(wallet, op(), "g".into())
+                .await
+                .map(drop),
+            mn.discard_operation(wallet, op()).await,
+        ] {
+            assert_eq!(code(refused), "masternodes.operation_not_found");
+        }
+        // Collateral locks need one of the wallet's masternodes.
+        for refused in [
+            mn.release_collateral(wallet, hash.clone()).await,
+            mn.lock_collateral(wallet, hash.clone()).await,
+        ] {
+            assert_eq!(code(refused), "masternodes.not_found");
         }
         assert_eq!(
             code(mn.resolve_collateral(hash.clone()).await.map(drop)),
@@ -990,6 +1115,13 @@ fn errors_never_quote_a_secret_shaped_argument() {
         .unwrap();
     let mn = session.masternodes();
     let secret = || SECRET.to_string();
+    // A pasted secret where an operator public key goes (MG-04 D15).
+    let secret_request = || RegistrationRequest {
+        operator: OperatorChoice::Given {
+            public_key: SECRET.into(),
+        },
+        ..request()
+    };
     let as_wallet = WalletId(hex::decode(SECRET).unwrap().try_into().unwrap());
     let calls: Vec<(&str, Result<(), MasternodesError>)> = engine.block_on(async {
         vec![
@@ -1029,6 +1161,38 @@ fn errors_never_quote_a_secret_shaped_argument() {
                 mn.detach_key(secret(), AttachedKeyRole::Owner)
                     .await
                     .map(drop),
+            ),
+            (
+                "preview_registration",
+                mn.preview_registration(as_wallet, secret_request())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "register",
+                mn.register(as_wallet, secret_request(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "submit_external_registration",
+                mn.submit_external_registration(as_wallet, secret(), secret(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "resend_operation",
+                mn.resend_operation(as_wallet, secret(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "discard_operation",
+                mn.discard_operation(as_wallet, secret()).await,
+            ),
+            (
+                "release_collateral",
+                mn.release_collateral(as_wallet, secret()).await,
             ),
         ]
     });

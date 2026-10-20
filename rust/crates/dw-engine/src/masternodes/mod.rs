@@ -4,12 +4,16 @@
 //! (`follow.rs`); the wallet is an argument of each call, since tracked
 //! masternodes belong to the network (MG-03 D13).
 //!
-//! Read and track only: no call signs a ProTx (MG-04), withdraws credits
-//! (MG-13), or takes, holds or returns an operator key (MG-01's guard).
+//! The ProTx calls (`protx.rs`, MG-04) sign the owner's side of a ProRegTx
+//! under a `MasternodeOp` grant; no call signs as operator, withdraws
+//! credits (MG-13), or takes, holds or returns an operator secret (MG-01's
+//! guard).
 
 mod aggregate;
 mod errors;
 pub(crate) mod follow;
+mod protx;
+mod protx_records;
 mod reads;
 mod records;
 mod tracking;
@@ -17,6 +21,12 @@ mod tracking;
 use std::sync::Arc;
 
 pub use errors::MasternodesError;
+pub use protx_records::{
+    CollateralChoice, CollateralKind, EvonodeTerms, KeyPick, OperatorChoice, PayoutChoice,
+    PlatformFacts, PlatformNodeChoice, ProTxKeys, ProTxOperation, ProTxOperationKind,
+    ProTxOperationState, ProTxTerms, RegistrationPreview, RegistrationRequest, SignRequest,
+    VotingChoice,
+};
 pub use records::{
     AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, KeyCheck,
     ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState, MasternodeOverview,

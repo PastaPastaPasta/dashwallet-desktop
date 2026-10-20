@@ -81,7 +81,11 @@ impl AppDb {
     /// Inserts a new operation, synced: an External row before its fee
     /// inputs are reported locked, a signed row before any hand-off (save
     /// before broadcast). The row's `sent_at` must be null.
-    pub fn insert_masternode_op_durable(&self, wallet_id: &str, row: &MasternodeOpRow) -> Result<()> {
+    pub fn insert_masternode_op_durable(
+        &self,
+        wallet_id: &str,
+        row: &MasternodeOpRow,
+    ) -> Result<()> {
         debug_assert!(row.sent_at.is_none());
         self.durably(|conn| {
             conn.execute(
@@ -152,7 +156,14 @@ impl AppDb {
                 "UPDATE masternode_ops SET signed_tx = ?3, txid = ?4, pro_tx_hash = ?5,
                      signed_at = ?6, last_error = NULL
                  WHERE wallet_id = ?1 AND id = ?2 AND signed_tx IS NULL",
-                params![wallet_id, id, signed_tx, txid, pro_tx_hash, sql_u64(signed_at)],
+                params![
+                    wallet_id,
+                    id,
+                    signed_tx,
+                    txid,
+                    pro_tx_hash,
+                    sql_u64(signed_at)
+                ],
             )? == 1)
         })
     }
@@ -173,7 +184,14 @@ impl AppDb {
                 "UPDATE masternode_ops SET unsigned_tx = ?3, sign_message = ?4, fee_inputs = ?5,
                      fee = ?6, last_error = NULL
                  WHERE wallet_id = ?1 AND id = ?2 AND signed_tx IS NULL",
-                params![wallet_id, id, unsigned_tx, sign_message, fee_inputs, sql_u64(fee)],
+                params![
+                    wallet_id,
+                    id,
+                    unsigned_tx,
+                    sign_message,
+                    fee_inputs,
+                    sql_u64(fee)
+                ],
             )? == 1)
         })
     }
@@ -210,7 +228,12 @@ impl AppDb {
 
     /// Records how an attempt ended. A first attempt that definitely did
     /// not send clears `sent_at` again; nothing else does.
-    pub fn end_masternode_op_attempt(&self, wallet_id: &str, id: &str, end: &AttemptEnd) -> Result<()> {
+    pub fn end_masternode_op_attempt(
+        &self,
+        wallet_id: &str,
+        id: &str,
+        end: &AttemptEnd,
+    ) -> Result<()> {
         let conn = self.conn();
         match end {
             AttemptEnd::Out { error } => conn.execute(
@@ -222,7 +245,10 @@ impl AppDb {
                  WHERE wallet_id = ?1 AND id = ?2",
                 params![wallet_id, id, error],
             )?,
-            AttemptEnd::NotSent { first: false, error } => conn.execute(
+            AttemptEnd::NotSent {
+                first: false,
+                error,
+            } => conn.execute(
                 "UPDATE masternode_ops SET last_error = ?3 WHERE wallet_id = ?1 AND id = ?2",
                 params![wallet_id, id, error],
             )?,
@@ -238,6 +264,16 @@ impl AppDb {
             "DELETE FROM masternode_ops WHERE wallet_id = ?1 AND id = ?2 AND sent_at IS NULL",
             params![wallet_id, id],
         )? == 1)
+    }
+
+    /// Forgets the inputs an operation locked, once the engine unlocked
+    /// them (its transaction is in a block or conflicted).
+    pub fn clear_masternode_op_inputs(&self, wallet_id: &str, id: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE masternode_ops SET fee_inputs = '[]' WHERE wallet_id = ?1 AND id = ?2",
+            params![wallet_id, id],
+        )?;
+        Ok(())
     }
 }
 
@@ -273,10 +309,16 @@ mod tests {
     fn a_row_that_may_be_out_is_never_deleted() {
         let db = AppDb::open_in_memory().unwrap();
         db.insert_masternode_op_durable(W, &row("a", true)).unwrap();
-        assert_eq!(db.begin_masternode_op_attempt(W, "a", 5).unwrap(), Some(false));
+        assert_eq!(
+            db.begin_masternode_op_attempt(W, "a", 5).unwrap(),
+            Some(false)
+        );
         assert!(!db.delete_unsent_masternode_op(W, "a").unwrap());
         // A second attempt keeps the first's time.
-        assert_eq!(db.begin_masternode_op_attempt(W, "a", 9).unwrap(), Some(true));
+        assert_eq!(
+            db.begin_masternode_op_attempt(W, "a", 9).unwrap(),
+            Some(true)
+        );
         assert_eq!(db.masternode_op(W, "a").unwrap().unwrap().sent_at, Some(5));
         // A later definite refusal doesn't clear it.
         db.end_masternode_op_attempt(
@@ -308,7 +350,10 @@ mod tests {
         )
         .unwrap();
         let r = db.masternode_op(W, "a").unwrap().unwrap();
-        assert_eq!((r.sent_at, r.last_error.as_deref()), (None, Some("send.no_peers")));
+        assert_eq!(
+            (r.sent_at, r.last_error.as_deref()),
+            (None, Some("send.no_peers"))
+        );
         assert!(db.delete_unsent_masternode_op(W, "a").unwrap());
         assert!(db.masternode_op(W, "a").unwrap().is_none());
     }
@@ -316,29 +361,44 @@ mod tests {
     #[test]
     fn an_external_row_is_signed_once_and_only_unsigned_rows_reprepare() {
         let db = AppDb::open_in_memory().unwrap();
-        db.insert_masternode_op_durable(W, &row("e", false)).unwrap();
+        db.insert_masternode_op_durable(W, &row("e", false))
+            .unwrap();
         assert_eq!(db.begin_masternode_op_attempt(W, "e", 1).unwrap(), None);
-        assert!(db.reprepare_masternode_op(W, "e", &[3], "m", "[]", 9).unwrap());
-        assert!(db.sign_masternode_op_durable(W, "e", &[4], "t", "t", 3).unwrap());
-        assert!(!db.sign_masternode_op_durable(W, "e", &[5], "u", "u", 4).unwrap());
-        assert!(!db.reprepare_masternode_op(W, "e", &[6], "m", "[]", 9).unwrap());
+        assert!(
+            db.reprepare_masternode_op(W, "e", &[3], "m", "[]", 9)
+                .unwrap()
+        );
+        assert!(
+            db.sign_masternode_op_durable(W, "e", &[4], "t", "t", 3)
+                .unwrap()
+        );
+        assert!(
+            !db.sign_masternode_op_durable(W, "e", &[5], "u", "u", 4)
+                .unwrap()
+        );
+        assert!(
+            !db.reprepare_masternode_op(W, "e", &[6], "m", "[]", 9)
+                .unwrap()
+        );
         let r = db.masternode_op(W, "e").unwrap().unwrap();
         assert_eq!((r.signed_tx, r.fee), (Some(vec![4]), 9));
         // The CHECKs: sent needs signed bytes; signed bytes need a txid.
         let conn = db.conn();
-        assert!(conn
-            .execute(
+        assert!(
+            conn.execute(
                 "INSERT INTO masternode_ops (id, wallet_id, kind, terms, request, fee, created_at,
                      sent_at) VALUES ('x', 'aa', 'k', '{}', '{}', 1, 1, 1)",
                 [],
             )
-            .is_err());
-        assert!(conn
-            .execute(
+            .is_err()
+        );
+        assert!(
+            conn.execute(
                 "INSERT INTO masternode_ops (id, wallet_id, kind, terms, request, fee, created_at,
                      signed_tx) VALUES ('y', 'aa', 'k', '{}', '{}', 1, 1, x'00')",
                 [],
             )
-            .is_err());
+            .is_err()
+        );
     }
 }

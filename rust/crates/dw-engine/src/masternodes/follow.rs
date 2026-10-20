@@ -264,6 +264,11 @@ pub(crate) struct MasternodesRuntime {
     /// Every recorded id was compared with the key the vault holds, once
     /// this session (D34).
     pub(super) ids_verified: AtomicBool,
+    /// ProTx operations with a call running on them (MG-04 §5).
+    protx_in_flight: Mutex<HashSet<(WalletId, String)>>,
+    /// The ProTx hand-off's test seam (MG-04 §7).
+    #[cfg(test)]
+    protx_seam: Mutex<Option<Arc<super::protx::ops::Seam>>>,
 }
 
 impl MasternodesRuntime {
@@ -289,7 +294,26 @@ impl MasternodesRuntime {
             mutations: tokio::sync::Mutex::new(()),
             unsettled: Mutex::default(),
             ids_verified: AtomicBool::new(false),
+            protx_in_flight: Mutex::default(),
+            #[cfg(test)]
+            protx_seam: Mutex::default(),
         }
+    }
+
+    pub(crate) fn protx_in_flight(&self) -> std::sync::MutexGuard<'_, HashSet<(WalletId, String)>> {
+        self.protx_in_flight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn protx_seam(&self) -> Option<Arc<super::protx::ops::Seam>> {
+        self.protx_seam.lock().unwrap().clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_protx_seam(&self, seam: Option<Arc<super::protx::ops::Seam>>) {
+        *self.protx_seam.lock().unwrap() = seam;
     }
 
     /// Serialises the tracking changes (see `mutations`).
@@ -429,6 +453,9 @@ impl MasternodesRuntime {
         };
         if changed {
             self.changes.notify.notify_one();
+        }
+        if let Err(e) = session.protx_follow_pass().await {
+            tracing::debug!(error = %e, "ProTx follower pass");
         }
         Ok(())
     }

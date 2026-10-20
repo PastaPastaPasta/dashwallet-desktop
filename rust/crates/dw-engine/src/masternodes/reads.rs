@@ -758,6 +758,7 @@ impl Masternodes {
             if v.shared_unsupported(&hash) {
                 return Err(MasternodesError::Unsupported {
                     feature: "shared_masternodes".into(),
+                    field: None,
                 });
             }
             let mut payouts = v.payouts(&hash);
@@ -856,6 +857,7 @@ impl Masternodes {
         parse_pro_tx_hash(&pro_tx_hash)?;
         Err(MasternodesError::Unsupported {
             feature: "collateral_lookup".into(),
+            field: None,
         })
     }
 }

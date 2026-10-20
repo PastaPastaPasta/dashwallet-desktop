@@ -219,7 +219,7 @@ impl From<PlanError> for SendFailure {
 }
 
 /// Maps a lease's refusal at `prepare` (E0-04 §4.6, §16.4).
-fn lease_failure(e: LeaseError, outflow: u64) -> EngineError {
+pub(crate) fn lease_failure(e: LeaseError, outflow: u64) -> EngineError {
     match e {
         // Mode B call steps only; a `TxDraft` never takes one.
         LeaseError::JournalUnavailable => return EngineError::Storage(e.to_string()),
@@ -244,13 +244,26 @@ fn lease_failure(e: LeaseError, outflow: u64) -> EngineError {
 /// A lease's charge made before signing (E0-04 §4.2), to its Spend or
 /// Masternode budget (MG-05 §2): refunded on drop unless bound to the
 /// signed txid.
-struct SpendCharge {
+pub(crate) struct SpendCharge {
     lease: Lease,
     purpose: crate::platform::BudgetPurpose,
     charge: Option<crate::platform::lease::budget::Charge>,
 }
 
 impl SpendCharge {
+    /// `charge`, made from `lease`'s `purpose` budget.
+    pub(crate) fn new(
+        lease: Lease,
+        purpose: crate::platform::BudgetPurpose,
+        charge: crate::platform::lease::budget::Charge,
+    ) -> Self {
+        Self {
+            lease,
+            purpose,
+            charge: Some(charge),
+        }
+    }
+
     fn bind(mut self, txid: ArtifactId) {
         if let Some(charge) = self.charge.take() {
             self.lease.table.bind_spend(
@@ -400,6 +413,21 @@ impl PendingSpends {
         self.map()
             .get(wallet)
             .map(|claims| claims.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// The coins an owner other than `owner` holds (a ProTx resend's
+    /// check, MG-04 D7).
+    pub(crate) fn held_by_others(&self, wallet: &WalletId, owner: SpendOwner) -> HashSet<OutPoint> {
+        self.map()
+            .get(wallet)
+            .map(|claims| {
+                claims
+                    .iter()
+                    .filter(|(_, owners)| owners.iter().any(|o| *o != owner))
+                    .map(|(o, _)| *o)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -745,7 +773,7 @@ impl NetworkSession {
     /// The coins `source` offers and the wallet height they were read at,
     /// under the fenced wallet's coin fence; coin control may also take the
     /// `exempt` ones a tracked asset lock reserves.
-    async fn source_coins(
+    pub(crate) async fn source_coins(
         &self,
         fence: &CoinFence,
         source: &CoinSource,
@@ -1270,6 +1298,52 @@ impl TxDraft {
         }))
     }
 
+    /// A transaction the engine assembled and signed itself (a ProTx,
+    /// MG-04 §2) as this draft's prepared transaction, made as the CoinJoin
+    /// branch of `sign_and_reserve` makes one: its inputs reserved under
+    /// `SpendOwner::Tx(txid)`, then the fence released and the charge bound
+    /// to the txid. `maybe_out`: saved bytes that may already be on the
+    /// network (MG-04 D7), handled as after a `BroadcastUnknown`: every
+    /// outcome but acceptance is `BroadcastUnknown`, and nothing releases
+    /// the inputs.
+    pub(crate) fn assembled(
+        self: &Arc<Self>,
+        tx: Transaction,
+        summary: PreparedSummary,
+        charge: SpendCharge,
+        fence: CoinFence,
+        maybe_out: bool,
+    ) -> Arc<PreparedTx> {
+        let owner = SpendOwner::Tx(tx.txid());
+        self.session.spends.reserve(
+            self.wallet_id,
+            owner,
+            tx.input.iter().map(|i| i.previous_output),
+        );
+        drop(fence);
+        let artifact = ArtifactId::from_txid(&tx.txid());
+        let lease = charge.lease.clone();
+        charge.bind(artifact);
+        Arc::new(PreparedTx {
+            session: Arc::clone(&self.session),
+            wallet_id: self.wallet_id,
+            draft_id: self.id,
+            summary,
+            records: Vec::new(),
+            owner,
+            signed: Mutex::new(None),
+            mixed: Some(tx),
+            phase: Mutex::new(if maybe_out {
+                Phase::Unknown
+            } else {
+                Phase::Pending
+            }),
+            attempts: tokio::sync::Mutex::new(()),
+            lease: Some((lease, artifact)),
+            contact: None,
+        })
+    }
+
     fn check_mine(&self, prepared: &PreparedTx) -> Result<(), EngineError> {
         if prepared.draft_id != self.id {
             return Err(EngineError::InvalidArgument(
@@ -1317,7 +1391,7 @@ impl TxDraft {
             .await
     }
 
-    async fn broadcast_inner(
+    pub(crate) async fn broadcast_inner(
         &self,
         prepared: Arc<PreparedTx>,
     ) -> Result<BroadcastOutcome, EngineError> {
@@ -1863,6 +1937,22 @@ impl PreparedTx {
 
     fn phase(&self) -> std::sync::MutexGuard<'_, Phase> {
         self.phase.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Definitely not sent, its inputs and charge released (abandoned, or
+    /// a first broadcast that never left).
+    pub(crate) fn released(&self) -> bool {
+        *self.phase() == Phase::Released
+    }
+
+    /// Refunds a charge no admission took (a resend the fence ran as
+    /// `Resend`, MG-04 D7); a no-op once one did.
+    pub(crate) fn refund_unadmitted(&self) {
+        if let Some((lease, artifact)) = &self.lease {
+            lease
+                .table
+                .unbind_spend(lease.id(), lease.wallet(), *artifact);
+        }
     }
 
     fn signed(&self) -> std::sync::MutexGuard<'_, Option<Arc<SignedCoreTransaction>>> {

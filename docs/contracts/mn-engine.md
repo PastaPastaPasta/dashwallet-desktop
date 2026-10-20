@@ -1,8 +1,9 @@
 # MG masternodes engine contract (`dw-engine` facade)
 
-Contract-Version: 3
+Contract-Version: 4
 
-Status: **draft**, 2026-10-17 (ROADMAP MG-03; version 2 after the Sol r1 review: D23–D28; version 3 after Sol r2: D30–D32). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
+Status: **draft**, 2026-10-17 (ROADMAP MG-03; version 2 after the Sol r1 review: D23–D28; version 3 after Sol r2: D30–D32; version 4 adds MG-04's ProTx owner flows, §2.3, citing
+[`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
 the changes in §1 below.
@@ -35,6 +36,9 @@ After `close_network` every call returns `network_not_open`.
 | `masternodes/errors.rs` | MG-03 | `MasternodesError` |
 | `masternodes/aggregate.rs` | MG-03 | a wallet's masternodes from its provider transactions (not facade) |
 | `masternodes/follow.rs` | MG-03 | the list reader, the app.sqlite notes and the follower (not facade) |
+| `masternodes/protx.rs` | MG-04 | §2.3 |
+| `masternodes/protx_records.rs` | MG-04 | the records of §2.3 |
+| `masternodes/protx/` | MG-04 | keys, the transaction builder and the operations' rows and hand-off (not facade) |
 
 ## 1. Conventions (changes to m1-engine.md §1)
 
@@ -47,7 +51,7 @@ After `close_network` every call returns `network_not_open`.
 | The list | Only a synced list counts (the headers and masternode phases done; design §2). Before that, list-only facts are absent and status is `unknown`, except a held unconfirmed ProRegTx (`unconfirmed`). |
 | Records | `serde` `Serialize` and `Deserialize`, plus `Debug`, `Clone` and `PartialEq`. Unit enums are snake-case strings; enums with data are tagged with `kind`. |
 | Errors | `MasternodesError` (§4); `code()` is a stable string, `engine()` returns a wrapped `EngineError`. |
-| Keys | Attached keys are secp256k1 secrets for `owner`, `voting` or `payout`, kept by the vault (MG-01 D7). No call takes, holds, returns or signs with an operator or platform-node key (MG-01's guard). No call signs anything (ProTx management is MG-04's). |
+| Keys | Attached keys are secp256k1 secrets for `owner`, `voting` or `payout`, kept by the vault (MG-01 D7). No call takes, holds, returns or signs with an operator or platform-node secret (MG-01's guard, `dw-protx/tests/no_operator_signing.rs`): the operator key is a BLS **public** key, given or the keychain's (MG-04 D14). Only §2.3's calls sign, with the vault's `MasternodeOwner` signer under a lease from a `MasternodeOp` grant (MG-05): the inputs, and an `ExistingUtxo` collateral's message. |
 
 ## 2. Calls
 
@@ -78,13 +82,43 @@ Every call here sends §6's event after it changes something.
 | `attach_key(pro_tx_hash: String, role: AttachedKeyRole, key: Zeroizing<String>)` | async | Stores a compressed WIF (mainnet's for mainnet, a test network's otherwise; an uncompressed one is refused, D36) or 64-hex secp256k1 secret for `role` of a tracked masternode, replacing an earlier one. Checked first (MG-00 D13): `voting` against the synced list's voting key id (`masternodes.list_unavailable` while it isn't synced; `unchecked` when the list no longer holds it); `owner` against the owner key id of a ProRegTx/ProUpRegTx a loaded wallet holds, otherwise `unchecked`; `payout` is `matched` when it pays that wallet's P2PKH payout script, otherwise `unchecked`, never refused (that script can be stale, D19). The hash160 of its public key is recorded in app.sqlite: the old id is cleared, durably (D34), before the vault write and the new one recorded after it succeeds, and every read compares it again (§5, D24). After a failed vault write no id is recorded: the key may be stored all the same, so it reads `key_id: None`, `unchecked`, holding nothing, until a later session's read records the id of the key the vault holds (D31). Tracking changes (`track`, `untrack`, `set_label`, `attach_key`, `detach_key`) run one at a time per session, so a key can't be stored for a masternode an `untrack` is removing. Returns `KeyCheck`. Refusals in order: `invalid_argument` (hash, key), `masternodes.not_tracked`, `masternodes.list_unavailable`, `masternodes.key_mismatch{role}`, then the vault's (`vault`, for one without the full-scope data key). **Implemented.** | `MasternodesError` |
 | `detach_key(pro_tx_hash: String, role: AttachedKeyRole)` | async | Deletes the key attached for `role`, then its recorded id. Returns whether there was one. `invalid_argument`, `masternodes.not_tracked`, then the vault's. **Implemented.** | `MasternodesError` |
 
+### 2.3 ProTx owner flows (MG-04)
+
+A `RegistrationRequest` is checked first on its own (`invalid_argument`; `masternodes.unsupported{feature:
+"protx_v3", field: "service"}` for a service only a version-3 payload carries, MG-04 D1; `masternodes.protx_refused`
+for a port Core refuses), then against the synced list (`masternodes.list_unavailable` before it is synced), the
+wallet's masternodes and its saved operations: keys in use (`masternodes.protx_refused{reason:
+"bad-protx-dup-key"}` for a given one, MG-04 D5, D13; `masternodes.keys_exhausted{role}` when every keychain index
+0–19 is in use), a listed service (`bad-protx-dup-netinfo-entry`), the collateral (`masternodes.collateral_unavailable`,
+MG-04 D23). An operation id is 32 lower-case hex (`invalid_argument` otherwise), then `masternodes.operation_not_found`,
+then `masternodes.in_flight` while another call on it runs, then `masternodes.operation_state{state}` when the call
+doesn't apply to its state. A grant is the lease's: `MasternodeOp` for the wallet, its cap covering the fee
+(`send.grant_exceeded`, nothing signed); its refusals come through `Platform`/`Engine` unchanged (MG-05 D12). Each
+signing call saves its row durably, with its inputs locked (MG-04 D25), before the hand-off; then hands the bytes to
+`TxDraft`'s fenced path, and returns the operation whatever the hand-off's outcome: `sent` (it may be out), or
+`not_sent` with `last_error` (definitely not). Every call that changes a row sends §6's event.
+
+| Call | Kind | Semantics | Errors |
+|---|---|---|---|
+| `registration_keys(wallet: WalletId, kind: MasternodeType)` | async | `ProTxKeys`: the keychain owner, voting and operator keys (and an evonode's platform node key) a registration of `kind` would use by default, the lowest index 0–19 no masternode of the list, of the wallet or of a saved operation uses (MG-04 D13). Public keys and addresses only. `wallet_not_found`, `masternodes.list_unavailable`, `masternodes.keys_exhausted{role}`. **Implemented.** | `MasternodesError` |
+| `preview_registration(wallet: WalletId, request: RegistrationRequest)` | async | `RegistrationPreview`: the resolved terms, the fee and `total_debit` (the fee: a `FundNew` collateral stays in the wallet), and the collateral amount. Locks, reserves, issues and signs nothing; a `NewAddress` payout and a `FundNew` collateral address are issued at registration, so the preview leaves them empty. Refusals as above, then the funding's `send.*` (`send.amount_exceeds_balance`, …). **Implemented.** | `MasternodesError` |
+| `register(wallet: WalletId, request: RegistrationRequest, grant: String)` | async | A version-2 ProRegTx with a `FundNew` collateral (an output of the transaction to a fresh address) or an `ExistingUtxo` one (an unspent wallet coin of the type's amount at a P2PKH address, locked, MG-04 D9; its key signs Core's `MakeSignString`), regular or evonode, funded from the wallet's standard coins, BIP69-sorted (MG-04 D2, D3). Returns the `ProTxOperation`. `invalid_argument` for an `External` collateral. **Implemented.** | `MasternodesError` |
+| `prepare_external_registration(wallet: WalletId, request: RegistrationRequest)` | async | An `External` collateral (another wallet's coin, MG-04 D4): plans and saves the unsigned transaction with its fee inputs locked (MG-04 D8) and returns the operation as `needs_signature` with its `SignRequest`: the collateral address and Core's message, byte-identical to `protx register_prepare`'s `signMessage`. Takes no grant and signs nothing (MG-04 D19). `invalid_argument` for another collateral, or for a coin or address of this wallet. **Implemented.** | `MasternodesError` |
+| `submit_external_registration(wallet: WalletId, operation: String, signature: String, grant: String)` | async | Checks `signature` (base64, Core's `signmessage`) by the collateral address over the saved message (`masternodes.signature_mismatch`), signs the inputs under the grant, saves and hands off as `register` does. Only from `needs_signature`. **Implemented.** | `MasternodesError` |
+| `refresh_external_registration(wallet: WalletId, operation: String)` | async | Plans a `needs_signature` or `inputs_spent` row again: new fee inputs, a new message, the same terms. The old inputs are unlocked and the new ones locked; a plan that fails keeps the old ones locked. **Implemented.** | `MasternodesError` |
+| `operations(wallet: WalletId)` | async | Every `ProTxOperation` of the wallet, newest first, its state derived now (§5). Settled rows' input locks are released on the way (MG-04 D25). **Implemented.** | `MasternodesError` |
+| `resend_operation(wallet: WalletId, operation: String, grant: String)` | async | Hands a `signed`, `not_sent` or `sent` row's saved bytes to the fence again (MG-04 D7): under its own lease, charged the row's fee, its inputs reserved again (`send.outpoint_unavailable` when another owner holds one). The same txid, so a resend of bytes that may be out is the fence's resend. **Implemented.** | `MasternodesError` |
+| `discard_operation(wallet: WalletId, operation: String)` | async | Deletes a `needs_signature`, `inputs_spent`, `signed` or `not_sent` row, unlocking its inputs and the collateral it locked (MG-04 D6). A row whose bytes may be out (`sent_at` set) is never deleted: `masternodes.operation_state`. **Implemented.** | `MasternodesError` |
+| `release_collateral(wallet: WalletId, pro_tx_hash: String)` | async | Unlocks the collateral coin of one of the wallet's masternodes and remembers the release, so the follower leaves it unlocked (MG-04 D9). Sends nothing. `invalid_argument`, `masternodes.not_found` (not the wallet's), `masternodes.collateral_unavailable` (no resolved collateral). **Implemented.** | `MasternodesError` |
+| `lock_collateral(wallet: WalletId, pro_tx_hash: String)` | async | Locks it again and forgets the release. Refuses as `release_collateral`. **Implemented.** | `MasternodesError` |
+
 ## 3. Surface (generated)
 
 Generated by `mn_masternodes_contract.rs` from the facade's source files; `DW_BLESS=1` rewrites it after
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: masternodes-surface -->
-<!-- surface-sha256: cfac0610d1132f4532cdeddc4a46c1c5e5b047ec8be74cd5aa4b149855aa74db version: 3 -->
+<!-- surface-sha256: 7e31f42af55a90e063c0143d0348975f227ecaa42a8e96287eca8cc20e626763 version: 4 -->
 
 ```rust
 // src/masternodes/errors.rs
@@ -98,8 +132,16 @@ pub enum MasternodesError {
     NotEvonode,
     NoIdentity,
     PlatformUnavailable { detail: String },
-    Unsupported { feature: String },
+    Unsupported { feature: String, field: Option<String> },
     NotImplemented { call: String },
+    ProtxRefused { reason: String },
+    CollateralUnavailable,
+    SignatureMismatch,
+    OperationNotFound,
+    OperationState { state: String },
+    InFlight,
+    KeysExhausted { role: String },
+    Platform(PlatformError),
     Engine(EngineError),
 }
 impl MasternodesError {
@@ -110,6 +152,7 @@ impl From<dw_vault::VaultError> for MasternodesError;
 impl From<tokio::task::JoinError> for MasternodesError;
 // src/masternodes/mod.rs
 pub use errors::MasternodesError;
+pub use protx_records::{ CollateralChoice, CollateralKind, EvonodeTerms, KeyPick, OperatorChoice, PayoutChoice, PlatformFacts, PlatformNodeChoice, ProTxKeys, ProTxOperation, ProTxOperationKind, ProTxOperationState, ProTxTerms, RegistrationPreview, RegistrationRequest, SignRequest, VotingChoice, };
 pub use records::{ AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, KeyCheck, ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState, MasternodeOverview, MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus, MasternodeType, RegistrationFacts, UntrackOutcome, };
 pub use tracking::MAX_MASTERNODE_LABEL;
 #[derive(Clone)]
@@ -118,6 +161,166 @@ pub struct Masternodes {
 }
 impl NetworkSession {
     pub fn masternodes(self: &Arc<Self>) -> Masternodes;
+}
+// src/masternodes/protx.rs
+impl Masternodes {
+    pub async fn registration_keys(&self, wallet: WalletId, kind: MasternodeType) -> Result<ProTxKeys, MasternodesError>;
+    pub async fn preview_registration(&self, wallet: WalletId, request: RegistrationRequest) -> Result<RegistrationPreview, MasternodesError>;
+    pub async fn register(&self, wallet: WalletId, request: RegistrationRequest, grant: String) -> Result<ProTxOperation, MasternodesError>;
+    pub async fn prepare_external_registration(&self, wallet: WalletId, request: RegistrationRequest) -> Result<ProTxOperation, MasternodesError>;
+    pub async fn submit_external_registration(&self, wallet: WalletId, operation: String, signature: String, grant: String) -> Result<ProTxOperation, MasternodesError>;
+    pub async fn refresh_external_registration(&self, wallet: WalletId, operation: String) -> Result<ProTxOperation, MasternodesError>;
+    pub async fn operations(&self, wallet: WalletId) -> Result<Vec<ProTxOperation>, MasternodesError>;
+    pub async fn resend_operation(&self, wallet: WalletId, operation: String, grant: String) -> Result<ProTxOperation, MasternodesError>;
+    pub async fn discard_operation(&self, wallet: WalletId, operation: String) -> Result<(), MasternodesError>;
+    pub async fn release_collateral(&self, wallet: WalletId, pro_tx_hash: String) -> Result<(), MasternodesError>;
+    pub async fn lock_collateral(&self, wallet: WalletId, pro_tx_hash: String) -> Result<(), MasternodesError>;
+}
+// src/masternodes/protx_records.rs
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CollateralChoice {
+    FundNew,
+    ExistingUtxo { outpoint: String },
+    External { outpoint: String, address: String },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollateralKind {
+    FundNew,
+    ExistingUtxo,
+    External,
+}
+impl CollateralChoice {
+    pub fn kind(&self) -> CollateralKind;
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OperatorChoice {
+    Given { public_key: String },
+    Keychain { index: u32 },
+    NextUnused,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VotingChoice {
+    Keychain { index: u32 },
+    Address { address: String },
+    NextUnused,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PayoutChoice {
+    NewAddress,
+    Address { address: String },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlatformNodeChoice {
+    Given { node_id: String },
+    Keychain { index: u32 },
+    NextUnused,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvonodeTerms {
+    pub node: PlatformNodeChoice,
+    pub p2p_port: Option<u16>,
+    pub http_port: Option<u16>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrationRequest {
+    pub kind: MasternodeType,
+    pub collateral: CollateralChoice,
+    pub service: String,
+    pub operator: OperatorChoice,
+    pub operator_reward: u16,
+    pub owner_index: Option<u32>,
+    pub voting: VotingChoice,
+    pub payout: PayoutChoice,
+    pub evonode: Option<EvonodeTerms>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformFacts {
+    pub node_id: String,
+    pub p2p_port: u16,
+    pub http_port: u16,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProTxTerms {
+    pub masternode_type: MasternodeType,
+    pub version: u16,
+    pub service: String,
+    pub owner_address: String,
+    pub owner_index: Option<u32>,
+    pub voting_address: String,
+    pub voting_index: Option<u32>,
+    pub operator_public_key: String,
+    pub operator_index: Option<u32>,
+    pub operator_reward: u16,
+    pub payout_address: String,
+    pub collateral: Option<CollateralKind>,
+    pub collateral_outpoint: Option<String>,
+    pub collateral_address: Option<String>,
+    pub platform: Option<PlatformFacts>,
+    pub platform_node_index: Option<u32>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrationPreview {
+    pub terms: ProTxTerms,
+    pub fee: u64,
+    pub total_debit: u64,
+    pub collateral_amount: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProTxKeys {
+    pub owner: KeyPick,
+    pub voting: KeyPick,
+    pub operator: KeyPick,
+    pub platform_node: Option<KeyPick>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyPick {
+    pub index: u32,
+    pub address: Option<String>,
+    pub public_key: Option<String>,
+    pub node_id: Option<String>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProTxOperationKind {
+    Registration,
+    UpdateRegistrar,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProTxOperationState {
+    NeedsSignature,
+    InputsSpent,
+    Signed,
+    NotSent,
+    Sent,
+    Confirmed { height: u32 },
+    Conflicted,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignRequest {
+    pub address: String,
+    pub message: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProTxOperation {
+    pub id: String,
+    pub kind: ProTxOperationKind,
+    pub pro_tx_hash: Option<String>,
+    pub txid: Option<String>,
+    pub state: ProTxOperationState,
+    pub sign_request: Option<SignRequest>,
+    pub fee: u64,
+    pub created_at: u64,
+    pub signed_at: Option<u64>,
+    pub sent_at: Option<u64>,
+    pub last_error: Option<String>,
+    pub terms: ProTxTerms,
 }
 // src/masternodes/reads.rs
 impl Masternodes {
@@ -304,7 +507,7 @@ impl Masternodes {
 
 | Error enum | Codes |
 |---|---|
-| `MasternodesError` | `masternodes.list_unavailable`, `masternodes.not_found`, `masternodes.already_tracked`, `masternodes.not_tracked`, `masternodes.key_mismatch`, `masternodes.not_evonode`, `masternodes.no_identity`, `masternodes.platform_unavailable`, `masternodes.unsupported`, `masternodes.not_implemented` |
+| `MasternodesError` | `masternodes.list_unavailable`, `masternodes.not_found`, `masternodes.already_tracked`, `masternodes.not_tracked`, `masternodes.key_mismatch`, `masternodes.not_evonode`, `masternodes.no_identity`, `masternodes.platform_unavailable`, `masternodes.unsupported`, `masternodes.not_implemented`, `masternodes.protx_refused`, `masternodes.collateral_unavailable`, `masternodes.signature_mismatch`, `masternodes.operation_not_found`, `masternodes.operation_state`, `masternodes.in_flight`, `masternodes.keys_exhausted` |
 
 - `masternodes.list_unavailable`: the call needs the synced SPV list and there is none yet (or it is still syncing).
 No code carries a hash, a key or a wallet id the caller passed, and no message repeats one: a pasted private key has
@@ -316,12 +519,25 @@ a hash's shape (D23).
 - `masternodes.not_evonode`: a regular masternode has no claimable credits.
 - `masternodes.no_identity`: Platform has no identity for the evonode (registered before Platform).
 - `masternodes.platform_unavailable{detail}`: the session runs without Platform, or the proved read failed.
-- `masternodes.unsupported{feature}`: needs what the pin lacks: `collateral_lookup` (an upstream API, D11), or
-  `shared_masternodes` (the v24 version-3 payload, D25; MG-03b).
-- `masternodes.not_implemented{call}`: reserved for stubs of later MG tasks; no MG-03 call returns it.
+- `masternodes.unsupported{feature, field}`: needs what the pin lacks: `collateral_lookup` (an upstream API, D11),
+  `shared_masternodes` (the v24 version-3 payload, D25; MG-03b), or `protx_v3` (a ProTx only version 3 carries,
+  MG-04 D1; BL-291) with `field` naming what needs it (`service`: a host name, IPv6 or several entries). `field` is
+  `None` for the others.
+- `masternodes.not_implemented{call}`: reserved for stubs of later MG tasks; no MG-03 or MG-04 call returns it.
+- `masternodes.protx_refused{reason}`: one of Core's rules refuses the ProTx; `reason` is Core's reject reason
+  verbatim (`bad-protx-dup-key`, `bad-protx-netinfo-port`, …, MG-04 D5).
+- `masternodes.collateral_unavailable`: the collateral isn't an unspent wallet coin of the type's amount at a P2PKH
+  address, or is a collateral of the wallet's masternodes or saved operations already (MG-04 D23).
+- `masternodes.signature_mismatch`: the external signature isn't the collateral address's over the saved message.
+- `masternodes.operation_not_found`: no such operation of the wallet.
+- `masternodes.operation_state{state}`: the call doesn't apply to the operation's state (§5's snake-case name).
+- `masternodes.in_flight`: another call on the operation is running.
+- `masternodes.keys_exhausted{role}`: every keychain key index 0–19 of `role` is in use (MG-04 D13).
+- `Platform(PlatformError)`: a lease's refusal (MG-05 D12), its code unchanged.
 - `Engine(EngineError)`: `network_not_open`, `wallet_not_found`, `invalid_argument`, `vault` (a locked vault among
   them), `storage`,
-  `internal` and the rest of m1 §4, unchanged. These are not new §4 codes for the m1–m4 tables, so the Swift
+  `internal` and the rest of m1 §4, unchanged; `TxDraft`'s `send.*` failures among them (`send.grant_exceeded`,
+  `send.outpoint_unavailable`, `send.amount_exceeds_balance`, …). These are not new §4 codes for the m1–m4 tables, so the Swift
   `engineCodes` are unchanged.
 
 ## 5. Status
@@ -378,6 +594,18 @@ any other coinbase income no row counts. `payouts()` still lists it. A row's `pa
 is `shared_unsupported`. The overview's `payouts_incomplete` is any row's, or unattributed income in the window once
 version 3 was seen.
 
+ProTx operations (§2.3, MG-04 §5): `ProTxOperationState`, derived on every read, first match wins:
+
+| State | When |
+|---|---|
+| `needs_signature` | An `External` row prepared and not signed, its fee inputs unspent. |
+| `inputs_spent` | The same, a fee input since spent: refresh it. |
+| `confirmed{height}` | Its transaction is in a block of the wallet's history. |
+| `conflicted` | Another transaction in a block spends one of its inputs. |
+| `sent` | Signed, `sent_at` set: handed to the network or may have been (`last_error` keeps an unknown outcome's code). |
+| `not_sent` | Signed, its attempts definitely not sent (`last_error`: a `send.*` code). |
+| `signed` | Signed and saved, no hand-off started (a crash between the save and the hand-off). |
+
 ## 6. Events
 
 `EngineEvent::Masternodes { network }`, at most once a second with the trailing edge kept. The follower polls every
@@ -385,7 +613,9 @@ version 3 was seen.
 and the tracked ones), writes first sightings of bans and of listing to app.sqlite, and sends the event when one of
 their list entries changed. A §2.2 call sends it too, and so does a change of the wallet set (`WalletCreated`,
 `WalletRemoved`, `WalletLoadChanged`: a create, import, restore, load, unload or removal), at the same list height
-(D28). The host re-reads what it shows. dw-app forwards it as
+(D28). §2.3's calls send it after they change an operation or a lock. The host re-reads what it shows. Each pass
+the follower also releases settled operations' input locks and locks the collateral of each masternode of the
+wallet's it holds unspent, unless released (MG-04 D9, D25). dw-app forwards it as
 `AppEvent::Masternodes`; dw-ffi does not forward it until E0-13 binds the facade.
 
 ## 7. Persistence
@@ -398,6 +628,9 @@ their list entries changed. A §2.2 call sends it too, and so does a change of t
 | Attached keys' ids (hash160 of the public key, not secret) | app.sqlite `settings_kv`, global scope, `masternodes.key:<hash>:<role>` (D24) |
 | A version-3 list entry seen (never cleared) | app.sqlite `settings_kv`, global scope, `masternodes.shared_seen:<hash>` (D29) |
 | Any version-3 entry seen in the synced list (never cleared) | app.sqlite `settings_kv`, global scope, `masternodes.any_shared_seen` (D30) |
+| ProTx operations | app.sqlite `masternode_ops` (migration `V2026102101`, MG-04 §3): the request, terms, unsigned or signed bytes, the fee inputs, the attempt (`sent_at` durable before each hand-off, `last_error`); not in `.dwbackup` (MG-04 D24) |
+| ProTx input and collateral locks | app.sqlite's persistent coin locks (`lock_manual`), from the row's save until settled or discarded (MG-04 D8, D9, D25) |
+| A released collateral | app.sqlite `settings_kv`, wallet scope, `masternodes.collateral_released:<txid>-<n>` (MG-04 D9) |
 
 The version-3 markers are written durably (`synchronous=FULL`, D35), as is the clearing of an attached key's id
 before the vault write (D34).

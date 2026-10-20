@@ -688,7 +688,7 @@ fn p2pkh_script_sig(
 
 /// Signs inputs of `tx` with `signer`: `(input index, previous script,
 /// derivation path)`.
-async fn sign_p2pkh_inputs(
+pub(crate) async fn sign_p2pkh_inputs(
     signer: &VaultSigner,
     tx: &mut Transaction,
     inputs: &[(usize, ScriptBuf, DerivationPath)],
@@ -721,7 +721,7 @@ fn display_hex(hash: &[u8; 32]) -> String {
 }
 
 /// `SIGHASH_ALL`.
-const SIGHASH_ALL: u32 = 1;
+pub(crate) const SIGHASH_ALL: u32 = 1;
 
 // ---------------------------------------------------------------------------
 // Session-level operations
