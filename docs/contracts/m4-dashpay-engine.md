@@ -2960,4 +2960,5 @@ renames or reshapes them takes the next version bump:
       Each vote is a row-less fence artifact admitted only under a live voting lease; a lock before its hand-off
       refuses it.
     - **Ownership.** An output to a DashPay contact's address is foreign, not the wallet's (D19), for `Spend` and
-      `Masternode` alike, and for the PSBT cap.
+      `Masternode` alike, and for the PSBT cap. `create_unsigned` writes no derivation record for it, and
+      `analyze_psbt` does not count an input from one as signable.

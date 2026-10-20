@@ -22,7 +22,7 @@ use crate::platform::PlatformError;
 use crate::platform::flows::{
     BudgetPurpose, DispatchResolution, DispatchState, FlowKind, LeaseStateView, RevokeCause,
 };
-use crate::send::{CoinSource, Recipient, SendFailure};
+use crate::send::{ChangePolicy, CoinSource, Recipient, SendFailure};
 use crate::{
     DashNetwork, Engine, EngineConfig, EngineError, ImportOptions, NetworkSession, WalletId,
 };
@@ -463,6 +463,27 @@ impl Fixture {
                     let wallet = inner.wallet(&id).await?;
                     let address = wallet.core().next_receive_address_for_account(0).await?;
                     Ok(address.to_string())
+                })
+                .await
+                .unwrap()
+        })
+    }
+
+    /// A DashPay contact's address, listed by the wallet's accounts but not
+    /// the wallet's ([`crate::coins::insert_contact_account`]).
+    fn contact_address(&self) -> dashcore::Address {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let inner = Arc::clone(&session);
+        self.engine.block_on(async move {
+            session
+                .on_runtime(async move {
+                    let wallet = inner.wallet(&id).await?;
+                    let mut state = wallet.state_mut().await;
+                    Ok(crate::coins::insert_contact_account(
+                        &mut state.core_wallet,
+                        id.0,
+                    ))
                 })
                 .await
                 .unwrap()
@@ -3460,48 +3481,9 @@ fn mg05_a_fund_new_collateral_is_not_charged_and_its_fee_is() {
 /// paying it, or sending its change there, is charged amount and fee.
 #[test]
 fn mg05_a_contacts_address_is_charged_as_foreign() {
-    use key_wallet::account::AccountType;
-    use key_wallet::bip32::{ChildNumber, ExtendedPrivKey, ExtendedPubKey};
-    use key_wallet::managed_account::ManagedCoreFundsAccount;
-
     let f = fixture(false);
     f.credit(1, 2 * COIN);
-    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[0x42; 32]).unwrap();
-    let xpub = ExtendedPubKey::from_priv(&master);
-    let child = xpub
-        .derive_pub(&[ChildNumber::Normal { index: 0 }])
-        .unwrap();
-    let contact = dashcore::Address::p2pkh(
-        &dashcore::PublicKey::new(child.public_key),
-        dashcore::Network::Regtest,
-    );
-    let session = Arc::clone(&f.session);
-    let id = f.wallet;
-    let target = contact.clone();
-    let listed = f.engine.block_on(session.clone().on_runtime(async move {
-        let wallet = session.wallet(&id).await?;
-        let mut state = wallet.state_mut().await;
-        let managed = ManagedCoreFundsAccount::from_account(&key_wallet::Account {
-            parent_wallet_id: Some(id.0),
-            account_type: AccountType::DashpayExternalAccount {
-                index: 0,
-                user_identity_id: [1; 32],
-                friend_identity_id: [2; 32],
-            },
-            network: dashcore::Network::Regtest,
-            account_xpub: xpub,
-            is_watch_only: true,
-        });
-        let accounts = &mut state.core_wallet.accounts;
-        accounts.insert_funds_bearing_account(managed).unwrap();
-        let info = &state.core_wallet;
-        let listed = info
-            .all_managed_accounts()
-            .into_iter()
-            .any(|a| a.get_address_info(&target).is_some());
-        Ok((listed, crate::coins::wallet_owns(info, &target)))
-    }));
-    assert_eq!(listed.unwrap(), (true, false), "listed, not owned");
+    let contact = f.contact_address();
 
     let d = f.draft_to(contact.to_string(), 1_000_000);
     let l = masternode_lease(&f, FlowKind::MasternodeRegistration, COIN);
@@ -3515,4 +3497,46 @@ fn mg05_a_contacts_address_is_charged_as_foreign() {
         send_failure(f.engine.block_on(d.prepare(under.id_string()))),
         SendFailure::GrantExceeded { .. }
     ));
+
+    // Change sent to the contact leaves the wallet too: paying the wallet
+    // itself from the one 2 DASH coin, all but the payment is charged
+    // (review r1 F3).
+    let d = f.draft_to(f.own_address(), 1_000_000);
+    d.set_change(ChangePolicy::Address(contact.to_string()))
+        .unwrap();
+    let l = masternode_lease(&f, FlowKind::MasternodeRegistration, 2 * COIN);
+    let p = f.engine.block_on(d.prepare(l.id_string())).unwrap();
+    let debit = 2 * COIN - 1_000_000;
+    assert_eq!(p.summary().total_debit, debit);
+    assert_eq!(spent(&l, BudgetPurpose::Masternode), Some(debit));
+    f.engine.block_on(d.abandon(p)).unwrap();
+}
+
+/// A prepare that fails after its charge, before it signed (a lock while
+/// it waits to sign), refunds the charge to the budget it was taken from:
+/// the Masternode budget's spent returns to 0 (review r1 F3, mutant E11).
+#[test]
+fn mg05_a_failed_prepare_refunds_the_masternode_budget() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let d = f.draft(1_000_000);
+    let l = masternode_lease(&f, FlowKind::KeyChange, COIN);
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.coin_fences.pause_prepare.lock().unwrap() = Some(Arc::clone(&pause));
+    let prepare = f.session.rt.spawn({
+        let (d, id) = (Arc::clone(&d), l.id_string());
+        async move { d.prepare(id).await }
+    });
+    f.eventually("the prepare's pause", || pause.reached.load(SeqCst));
+    let charged = spent(&l, BudgetPurpose::Masternode).unwrap();
+    assert!(charged > 1_000_000, "{charged}");
+    f.session.lock_vault_sync().unwrap();
+    pause.release.notify_one();
+    let failed = f.engine.block_on(prepare).unwrap();
+    assert!(failed.is_err(), "{failed:?}");
+    assert_eq!(spent(&l, BudgetPurpose::Masternode), Some(0));
+    assert_eq!(spend_of(&l), None);
+    assert_eq!(f.reserved(), 0);
 }

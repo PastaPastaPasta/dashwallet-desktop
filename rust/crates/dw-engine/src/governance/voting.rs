@@ -166,6 +166,21 @@ impl Governance {
         masternodes: Vec<String>,
         grant: String,
     ) -> Result<Vec<VoteCast>, GovernanceError> {
+        self.vote_stamped(wallet, proposal, outcome, masternodes, grant, now)
+            .await
+    }
+
+    /// [`Self::vote`] with `stamp` the clock each vote is stamped with
+    /// (tests pin it).
+    async fn vote_stamped(
+        &self,
+        wallet: WalletId,
+        proposal: String,
+        outcome: VoteOutcome,
+        masternodes: Vec<String>,
+        grant: String,
+        stamp: impl Fn() -> i64 + Send + 'static,
+    ) -> Result<Vec<VoteCast>, GovernanceError> {
         let rt = self.require_relaying()?;
         let parent = parse_hash(&proposal)?;
         let list = rt.list();
@@ -202,7 +217,7 @@ impl Governance {
             targets
                 .into_iter()
                 .map(|t| {
-                    let vote = sign_one(&signer, &mut keychain, &t, parent, outcome);
+                    let vote = sign_one(&signer, &mut keychain, &t, parent, outcome, &stamp);
                     (t.pro_tx_hash, vote)
                 })
                 .collect::<Vec<_>>()
@@ -336,19 +351,17 @@ fn parse_masternodes(texts: &[String], listed: usize) -> Result<Vec<[u8; 32]>, G
 /// The wallet's keychain voting keys by key id, indexes 0–19.
 type Keychain = Result<HashMap<[u8; 20], u32>, SignerError>;
 
-/// Signs `t`'s vote, or says why not (MG-05 §5). `keychain` is filled on
-/// first use. On the blocking pool: each key use is a vault operation.
+/// Signs `t`'s vote, stamped with `stamp`'s time, or says why not (MG-05
+/// §5). `keychain` is filled on first use. On the blocking pool: each key
+/// use is a vault operation.
 fn sign_one(
     signer: &VoteSigner,
     keychain: &mut Option<Keychain>,
     t: &Target,
     parent: [u8; 32],
     outcome: VoteOutcome,
+    stamp: &dyn Fn() -> i64,
 ) -> Result<GovernanceVote, &'static str> {
-    let refused = |e: SignerError| match e {
-        SignerError::Locked => "cancelled",
-        _ => "signer_unavailable",
-    };
     let id = t.voting_key_id.ok_or("unknown_masternode")?;
     let collateral = t.collateral.ok_or("collateral_unresolved")?;
     let keys = keychain.get_or_insert_with(|| {
@@ -356,27 +369,8 @@ fn sign_one(
             .map(|index| Ok((signer.key_id(&VotingKey::Keychain { index })?, index)))
             .collect()
     });
-    // A keychain the vault cannot read (other than locked) leaves the
-    // attached key to try (D20).
-    let key = match keys {
-        Ok(keys) => keys.get(&id).map(|&index| VotingKey::Keychain { index }),
-        Err(SignerError::Locked) => return Err("cancelled"),
-        Err(_) => None,
-    };
-    let key = match key {
-        Some(k) => k,
-        None => {
-            let attached = VotingKey::Attached {
-                pro_tx_hash: t.pro_tx_hash,
-            };
-            match signer.key_id(&attached) {
-                Ok(a) if a == id => attached,
-                Ok(_) | Err(SignerError::NoSecret) => return Err("no_voting_key"),
-                Err(e) => return Err(refused(e)),
-            }
-        }
-    };
-    let time = now();
+    let key = choose_key(keys, id, t.pro_tx_hash, |k| signer.key_id(k))?;
+    let time = stamp();
     let fields = FundingVote {
         collateral,
         proposal: parent,
@@ -387,6 +381,44 @@ fn sign_one(
     let mut vote = GovernanceVote::funding(collateral, parent, outcome.into(), time);
     vote.signature = signature.to_vec();
     Ok(vote)
+}
+
+/// The key with the list's key id `id`: the keychain's, else the
+/// masternode's attached key (`attached_id` reads its id), or why there
+/// is none. A keychain the vault cannot read (other than locked, or a
+/// wallet without a seed) leaves the attached key to try (D20); without
+/// it the vote is `signer_unavailable`, not `no_voting_key`, since the
+/// keychain may hold the key (D23).
+fn choose_key(
+    keychain: &Keychain,
+    id: [u8; 20],
+    pro_tx_hash: [u8; 32],
+    attached_id: impl FnOnce(&VotingKey) -> Result<[u8; 20], SignerError>,
+) -> Result<VotingKey, &'static str> {
+    let unread = match keychain {
+        Ok(keys) => match keys.get(&id) {
+            Some(&index) => return Ok(VotingKey::Keychain { index }),
+            None => false,
+        },
+        Err(SignerError::Locked) => return Err("cancelled"),
+        Err(SignerError::NoSecret) => false,
+        Err(_) => true,
+    };
+    let attached = VotingKey::Attached { pro_tx_hash };
+    match attached_id(&attached) {
+        Ok(a) if a == id => Ok(attached),
+        Ok(_) | Err(SignerError::NoSecret) if unread => Err("signer_unavailable"),
+        Ok(_) | Err(SignerError::NoSecret) => Err("no_voting_key"),
+        Err(e) => Err(refused(e)),
+    }
+}
+
+/// The reason of a vault refusal while signing.
+fn refused(e: SignerError) -> &'static str {
+    match e {
+        SignerError::Locked => "cancelled",
+        _ => "signer_unavailable",
+    }
 }
 
 /// The vault's name of a funding vote's outcome.
@@ -645,5 +677,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Which key a vote uses, or why none (D20, D23; review r1 F3 E9/E10,
+    /// F4).
+    #[test]
+    fn a_vote_uses_the_keychain_key_else_the_attached_key_with_the_lists_id() {
+        let (id, other, mn) = (key_id(1), key_id(2), [5; 32]);
+        let attached = VotingKey::Attached { pro_tx_hash: mn };
+        let has = |k: [u8; 20]| move |_: &VotingKey| Ok(k);
+        let none = |_: &VotingKey| Err(SignerError::NoSecret);
+        let fails = |e: fn() -> SignerError| move |_: &VotingKey| Err(e());
+        let derivation = || SignerError::Derivation("unreadable".into());
+
+        let keys: Keychain = Ok(HashMap::from([(id, 3)]));
+        assert_eq!(
+            choose_key(&keys, id, mn, has(id)),
+            Ok(VotingKey::Keychain { index: 3 })
+        );
+        // Not in the keychain: the attached key when it has the list's id.
+        let empty: Keychain = Ok(HashMap::new());
+        assert_eq!(choose_key(&empty, id, mn, has(id)), Ok(attached));
+        assert_eq!(choose_key(&empty, id, mn, has(other)), Err("no_voting_key"));
+        assert_eq!(choose_key(&empty, id, mn, none), Err("no_voting_key"));
+        assert_eq!(
+            choose_key(&empty, id, mn, fails(derivation)),
+            Err("signer_unavailable")
+        );
+        assert_eq!(
+            choose_key(&empty, id, mn, fails(|| SignerError::Locked)),
+            Err("cancelled")
+        );
+        // An unreadable keychain still lets the attached key vote (D20);
+        // without it the key may be the keychain's (D23).
+        let unread: Keychain = Err(derivation());
+        assert_eq!(choose_key(&unread, id, mn, has(id)), Ok(attached));
+        assert_eq!(choose_key(&unread, id, mn, none), Err("signer_unavailable"));
+        assert_eq!(
+            choose_key(&unread, id, mn, has(other)),
+            Err("signer_unavailable")
+        );
+        // A wallet without a seed has no keychain keys; a locked vault
+        // ends the batch.
+        let seedless: Keychain = Err(SignerError::NoSecret);
+        assert_eq!(choose_key(&seedless, id, mn, none), Err("no_voting_key"));
+        assert_eq!(choose_key(&seedless, id, mn, has(id)), Ok(attached));
+        let locked: Keychain = Err(SignerError::Locked);
+        assert_eq!(choose_key(&locked, id, mn, has(id)), Err("cancelled"));
     }
 }

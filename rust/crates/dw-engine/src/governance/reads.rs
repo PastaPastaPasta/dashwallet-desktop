@@ -69,8 +69,6 @@ impl Governance {
         })
     }
 
-    /// `governance.not_synced{phase}` until a run reached `synced` (MG-00
-    /// D21).
     /// The runtime of a call that stores and relays votes: sync on, and a
     /// run reached `synced` (D40).
     pub(super) fn require_relaying(&self) -> Result<&GovernanceRuntime, GovernanceError> {
@@ -80,6 +78,8 @@ impl Governance {
         self.require_synced()
     }
 
+    /// `governance.not_synced{phase}` until a run reached `synced` (MG-00
+    /// D21).
     pub(super) fn require_synced(&self) -> Result<&GovernanceRuntime, GovernanceError> {
         let rt = self.runtime()?;
         let p = rt.shared.progress();

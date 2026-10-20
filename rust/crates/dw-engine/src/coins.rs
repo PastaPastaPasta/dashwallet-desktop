@@ -69,6 +69,7 @@ use dw_appdb::{AppDb, AppDbError, GLOBAL_SCOPE, LabelKind, LockReason};
 use key_wallet::Utxo;
 use key_wallet::bip32::ChildNumber;
 use key_wallet::managed_account::ManagedCoreFundsAccount;
+use key_wallet::managed_account::address_pool::AddressInfo;
 use key_wallet::managed_account::managed_account_collection::ManagedAccountCollection;
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use key_wallet::managed_account::transaction_record::TransactionDirection;
@@ -94,16 +95,58 @@ pub(crate) fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Whether `address` is one of the wallet's derived addresses. A DashPay
-/// contact's external account holds the contact's addresses, derived from
-/// the contact's xpub (the library's `is_contact_owned`): they are not the
-/// wallet's, so a payment to one leaves it and every cap counts it (MG-05
-/// D19).
+/// The wallet's own record of `address` (its derivation path and key), if
+/// it is one of the wallet's derived addresses. A DashPay contact's
+/// external account holds the contact's addresses, derived from the
+/// contact's xpub (the library's `is_contact_owned`): they are not the
+/// wallet's, so a payment to one leaves it, every cap counts it, and the
+/// wallet neither signs for one nor claims it in a PSBT (MG-05 D19).
+pub(crate) fn own_address_info(info: &ManagedWalletInfo, address: &Address) -> Option<AddressInfo> {
+    info.all_managed_accounts()
+        .into_iter()
+        .filter(|account| !account.managed_account_type().is_contact_owned())
+        .find_map(|account| account.get_address_info(address))
+}
+
+/// Whether `address` is one of the wallet's derived addresses
+/// ([`own_address_info`]).
 pub(crate) fn wallet_owns(info: &ManagedWalletInfo, address: &Address) -> bool {
-    info.all_managed_accounts().into_iter().any(|account| {
-        !account.managed_account_type().is_contact_owned()
-            && account.get_address_info(address).is_some()
-    })
+    own_address_info(info, address).is_some()
+}
+
+/// Tests: adds a DashPay contact's external account (watch-only, from a
+/// fixed xpub) to the wallet `id` and returns the contact's first address,
+/// which the account lists and the wallet does not own (MG-05 D19).
+#[cfg(test)]
+pub(crate) fn insert_contact_account(info: &mut ManagedWalletInfo, id: [u8; 32]) -> Address {
+    use key_wallet::account::AccountType;
+    use key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
+
+    let network = dashcore::Network::Regtest;
+    let master = ExtendedPrivKey::new_master(network, &[0x42; 32]).unwrap();
+    let xpub = ExtendedPubKey::from_priv(&master);
+    let child = xpub
+        .derive_pub(&[ChildNumber::Normal { index: 0 }])
+        .unwrap();
+    let contact = Address::p2pkh(&dashcore::PublicKey::new(child.public_key), network);
+    let managed = ManagedCoreFundsAccount::from_account(&key_wallet::Account {
+        parent_wallet_id: Some(id),
+        account_type: AccountType::DashpayExternalAccount {
+            index: 0,
+            user_identity_id: [1; 32],
+            friend_identity_id: [2; 32],
+        },
+        network,
+        account_xpub: xpub,
+        is_watch_only: true,
+    });
+    info.accounts.insert_funds_bearing_account(managed).unwrap();
+    let listed = info
+        .all_managed_accounts()
+        .into_iter()
+        .any(|a| a.get_address_info(&contact).is_some());
+    assert!(listed && !wallet_owns(info, &contact), "listed, not owned");
+    contact
 }
 
 /// One unspent output of the wallet with what coin control shows about it.

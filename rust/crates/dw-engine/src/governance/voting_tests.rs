@@ -2,6 +2,7 @@
 //! voting lease, the vault's vote signer, the dispatch fence and the store.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use dashcore::hashes::{Hash, hash160};
 use dashcore::secp256k1::{PublicKey, SecretKey};
@@ -16,22 +17,31 @@ use super::super::reads::now;
 use super::super::{Governance, GovernanceError, VoteCast, VoteOutcome};
 use crate::masternode_keys::MasternodeKeyRole;
 use crate::platform::FlowKind;
-use crate::platform::lease::ArtifactId;
 use crate::platform::lease::session_tests::{Fixture, fixture};
+use crate::platform::lease::{
+    AdmitRequest, ArtifactId, ArtifactKind, DispatchScope, Outcome, Verdict,
+};
 use crate::platform::{DispatchState, LeaseStateView};
 
 /// The list's masternodes: A and B vote with the keychain keys at indexes
 /// 0 and 3, C with an attached key, D's key is someone else's, E's
-/// collateral is unresolved, and G is only listed.
+/// collateral is unresolved, G is only listed, and H has an attached key
+/// that is not the list's.
 const A: [u8; 32] = [0xa1; 32];
 const B: [u8; 32] = [0xb2; 32];
 const C: [u8; 32] = [0xc3; 32];
 const D: [u8; 32] = [0xd4; 32];
 const E: [u8; 32] = [0xe5; 32];
 const G: [u8; 32] = [0x67; 32];
+const H: [u8; 32] = [0x78; 32];
 /// Not listed.
 const F: [u8; 32] = [0xf6; 32];
 const ATTACHED: [u8; 32] = [7; 32];
+/// A second wallet's mnemonic (the BIP39 test vector after the fixture's).
+const OTHER_PHRASE: &str =
+    "legal winner thank year wave sausage worth useful legal winner thank yellow";
+/// H's attached key, whose id is not H's listed `[0x11; 20]`.
+const STRAY: [u8; 32] = [8; 32];
 
 struct Voting {
     f: Fixture,
@@ -39,6 +49,9 @@ struct Voting {
     proposal: String,
     parent: [u8; 32],
     collateral: HashMap<[u8; 32], OutPoint>,
+    /// The time every vote of the tests is stamped with: a batch repeated
+    /// is the same vote, whatever the clock did between them.
+    time: i64,
 }
 
 fn collateral_of(mn: &[u8; 32]) -> OutPoint {
@@ -50,8 +63,8 @@ fn attached_id() -> [u8; 20] {
     hash160::Hash::hash(&PublicKey::from_secret_key(&sk).serialize()).to_byte_array()
 }
 
-/// A synced store holding one proposal and the list above, with A–D's
-/// collaterals resolved.
+/// A synced store holding one proposal and the list above, with A–D's and
+/// H's collaterals resolved.
 fn voting() -> Voting {
     let f = fixture(false);
     let gov = f.session.governance();
@@ -66,12 +79,14 @@ fn voting() -> Voting {
         let pk = hex::decode(&keys[index].public_key_hex).unwrap();
         hash160::Hash::hash(&pk).to_byte_array()
     };
-    f.engine
-        .block_on(
-            f.session
-                .vault_op(|v| v.store_masternode_key(&C, "voting", &ATTACHED)),
-        )
-        .unwrap();
+    for (mn, key) in [(C, ATTACHED), (H, STRAY)] {
+        f.engine
+            .block_on(
+                f.session
+                    .vault_op(move |v| v.store_masternode_key(&mn, "voting", &key)),
+            )
+            .unwrap();
+    }
 
     let rt = &f.session.governance;
     rt.set_enabled_flag(true);
@@ -95,6 +110,7 @@ fn voting() -> Voting {
         (D, [9; 20]),
         (E, id(5)),
         (G, [8; 20]),
+        (H, [0x11; 20]),
     ];
     rt.apply_list(snapshot(
         entries
@@ -102,7 +118,7 @@ fn voting() -> Voting {
             .map(|(h, k)| summary(*h, *k, false))
             .collect(),
     ));
-    let collateral: HashMap<_, _> = [A, B, C, D]
+    let collateral: HashMap<_, _> = [A, B, C, D, H]
         .iter()
         .map(|h| (*h, collateral_of(h)))
         .collect();
@@ -127,6 +143,7 @@ fn voting() -> Voting {
         proposal: display_hex(&parent),
         parent,
         collateral,
+        time: t,
     }
 }
 
@@ -142,12 +159,14 @@ impl Voting {
         grant: String,
     ) -> Result<Vec<VoteCast>, GovernanceError> {
         let mns = mns.iter().map(display_hex).collect();
-        self.f.engine.block_on(self.gov.vote(
+        let time = self.time;
+        self.f.engine.block_on(self.gov.vote_stamped(
             self.f.wallet,
             self.proposal.clone(),
             outcome,
             mns,
             grant,
+            move || time,
         ))
     }
 
@@ -182,7 +201,7 @@ fn reasons(cast: &[VoteCast]) -> Vec<(String, Option<&str>)> {
 fn vote_signs_and_stores_one_vote_per_masternode() {
     let v = voting();
     let cast = v
-        .vote(VoteOutcome::Yes, &[A, B, C, D, E, F], v.grant())
+        .vote(VoteOutcome::Yes, &[A, B, C, D, E, F, H], v.grant())
         .unwrap();
     assert_eq!(
         reasons(&cast),
@@ -193,6 +212,8 @@ fn vote_signs_and_stores_one_vote_per_masternode() {
             (display_hex(&D), Some("no_voting_key")),
             (display_hex(&E), Some("collateral_unresolved")),
             (display_hex(&F), Some("unknown_masternode")),
+            // Its attached key is not the list's: never signed with.
+            (display_hex(&H), Some("no_voting_key")),
         ]
     );
     let mut expected: Vec<_> = [A, B, C].iter().map(|h| v.collateral[h]).collect();
@@ -212,19 +233,14 @@ fn vote_signs_and_stores_one_vote_per_masternode() {
     assert!(cast[3..].iter().all(|c| c.hash.is_none() && c.peers == 0));
     assert_eq!(v.leases(), 0, "the lease ends with the call");
 
-    // A second batch at once is refused by the store's rate rules (Core's
-    // `CGovernanceObject::ProcessVote`): the same vote again is a
-    // duplicate, a changed one too often.
+    // A second batch in the same second is refused by the store's rate
+    // rules (Core's `CGovernanceObject::ProcessVote`): the same vote again
+    // is a duplicate, a changed one (a higher outcome, so not
+    // `same_timestamp`) too often.
     let again = v.vote(VoteOutcome::Yes, &[A], v.grant()).unwrap();
     assert_eq!(again[0].rejected.as_deref(), Some("duplicate"));
     let changed = v.vote(VoteOutcome::No, &[A], v.grant()).unwrap();
-    assert!(
-        matches!(
-            changed[0].rejected.as_deref(),
-            Some("too_often" | "same_timestamp")
-        ),
-        "{changed:?}"
-    );
+    assert_eq!(changed[0].rejected.as_deref(), Some("too_often"));
     assert_eq!(v.stored(), expected);
 }
 
@@ -236,7 +252,7 @@ fn whole_call_errors_leave_the_grant_unused() {
     let grant = v.grant();
     let code = |r: Result<Vec<VoteCast>, GovernanceError>| r.unwrap_err().code();
     let a = display_hex(&A);
-    for mns in [vec![], vec![A, A], vec![A, B, C, D, E, F, G]] {
+    for mns in [vec![], vec![A, A], vec![A, B, C, D, E, F, G, H]] {
         assert_eq!(
             code(v.vote(VoteOutcome::Yes, &mns, grant.clone())),
             "invalid_argument",
@@ -337,4 +353,62 @@ fn a_lock_before_hand_off_cancels_the_vote() {
     let r = v.f.engine.block_on(v.gov.hand_off(&lease, &v.parent, vote));
     assert_eq!(r, Err("cancelled"));
     assert!(v.stored().is_empty());
+}
+
+/// A vote another wallet of the session is handing off (the same bytes:
+/// its masternode, outcome and second) is `in_flight` for this one, not
+/// stored again (D13; review r1 F3, E8).
+#[test]
+fn a_vote_another_wallet_is_handing_off_is_in_flight() {
+    let v = voting();
+    let other =
+        v.f.engine
+            .block_on(v.f.session.import_wallet(
+                zeroize::Zeroizing::new(OTHER_PHRASE.as_bytes().to_vec()),
+                zeroize::Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(0),
+                    core_compat: false,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+    let grant = |w: crate::WalletId| {
+        let vault = v.f.session.vault();
+        let g = vault.authorize(GrantPurpose::Governance, Some(&w.0), Credential::None);
+        g.unwrap().id
+    };
+    let theirs =
+        v.f.engine
+            .block_on(
+                v.f.session
+                    .begin_lease(other, FlowKind::Voting, &[grant(other)]),
+            )
+            .unwrap();
+    let vote = GovernanceVote::funding(
+        v.collateral[&A],
+        v.parent,
+        dw_governance::vote::VoteOutcome::Yes,
+        v.time,
+    );
+    let (table, artifact) = (Arc::clone(&theirs.table), ArtifactId(vote.hash()));
+    let held = v.f.engine.block_on(theirs.scope(async move {
+        table
+            .admit(AdmitRequest {
+                wallet: other,
+                artifact,
+                kind: ArtifactKind::Vote,
+                tracked_row: false,
+                scope: DispatchScope::current(),
+            })
+            .await
+    }));
+    let Verdict::First(permit) = held else {
+        panic!("expected First, got {held:?}");
+    };
+    let ours = v.f.lease(FlowKind::Voting, &[v.grant()]).unwrap();
+    let r = v.f.engine.block_on(v.gov.hand_off(&ours, &v.parent, vote));
+    assert_eq!(r, Err("in_flight"));
+    assert!(v.stored().is_empty());
+    permit.finish(Outcome::NotSent);
 }

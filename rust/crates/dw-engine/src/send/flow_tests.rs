@@ -1268,6 +1268,69 @@ fn psbt_failure<T: std::fmt::Debug>(r: Result<T, EngineError>) -> PsbtFailure {
     }
 }
 
+/// MG-05 D19 (review r1 F2): a DashPay contact's address is not the
+/// wallet's in a PSBT either. An output paying it gets no derivation
+/// record (this wallet's fingerprint on the contact's key), and an input
+/// spending from it is not reported signable.
+#[test]
+fn psbt_a_contacts_address_is_not_the_wallets() {
+    let f = fixture(false);
+    let own = Address::from_str(&f.own_address())
+        .unwrap()
+        .assume_checked();
+    let session = Arc::clone(&f.session);
+    let id = f.wallet;
+    let inner = Arc::clone(&session);
+    let (contact, derivations) = f
+        .engine
+        .block_on(session.on_runtime(async move {
+            let wallet = inner.wallet(&id).await?;
+            let mut state = wallet.state_mut().await;
+            let info = &mut state.core_wallet;
+            let contact = crate::coins::insert_contact_account(info, id.0);
+            let fp = Some(key_wallet::bip32::Fingerprint::default());
+            let derivation = |a| super::psbt::derivation_of(info, a, fp).is_some();
+            let derivations = (derivation(&contact), derivation(&own));
+            Ok::<_, EngineError>((contact, derivations))
+        }))
+        .unwrap();
+    assert_eq!(derivations, (false, true), "(contact, own)");
+
+    let prev = Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: OutPoint::new(Txid::from_byte_array([9; 32]), 0),
+            script_sig: dashcore::ScriptBuf::new(),
+            sequence: u32::MAX,
+            witness: dashcore::Witness::default(),
+        }],
+        output: vec![TxOut {
+            value: COIN,
+            script_pubkey: contact.script_pubkey(),
+        }],
+        special_transaction_payload: None,
+    };
+    let psbt = psbt_spending(
+        &prev,
+        &[(FOREIGN, COIN / 2), (&contact.to_string(), COIN / 4)],
+    );
+    let a = f
+        .engine
+        .block_on(f.session.analyze_psbt(Some(f.wallet), psbt))
+        .unwrap();
+    assert_eq!(a.signability, PsbtSignability::NoMatchingKeys);
+    assert!(a.outputs.iter().all(|o| !o.is_mine), "{:?}", a.outputs);
+    // The same PSBT from a coin of the wallet's own can be signed.
+    let mine = f.credit_with_prev(1, COIN);
+    let psbt = psbt_spending(&mine, &[(&contact.to_string(), COIN / 2)]);
+    let a = f
+        .engine
+        .block_on(f.session.analyze_psbt(Some(f.wallet), psbt))
+        .unwrap();
+    assert_eq!(a.signability, PsbtSignability::CanSign);
+}
+
 /// Before H1 the cap covered only the outputs to others, so a PSBT could
 /// burn the rest of a coin as fee under a small grant.
 #[test]

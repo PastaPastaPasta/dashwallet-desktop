@@ -97,6 +97,8 @@ sighash signable by any digest signer at that path. So `MasternodeVoting` is not
   the permit (I5), so no vote enters the store after the lock's drain (the async lock returns after it; the
   synchronous one may return before).
   - A vote the store refuses ends `NotSent`; one it takes ends `Sent`.
+  - A vote handed off under an unleased dispatch scope is refused, as a row-less asset lock is: its authority is
+    the voting lease (D5).
   - There is no charge and no journal row: a vote moves nothing, and a lost one is cast again with no harm. Core
     dedups by hash and keeps a masternode's newest vote.
 - **`MasternodeOp` Core sends** are row-less Core transactions, like DP3-01's contact payment. `prepare` charges and
@@ -117,14 +119,15 @@ sighash signable by any digest signer at that path. So `MasternodeVoting` is not
     voting key id (`no_voting_key`). A store refusal sets it to `relay_vote`'s reason vocabulary (`too_often`,
     `same_timestamp`, `obsolete`, `duplicate`, …). Three reasons are the batch's own (D13): `cancelled` (the vault
     locked, or the fence refused the vote because a lock revoked the lease), `signer_unavailable` (another vault
-    error) and `in_flight` (the same vote is still in flight or being resolved, the fence's `Deferred`).
+    error, including a keychain the vault could not read when no attached key has the id, D23) and `in_flight`
+    (the same vote is still in flight or being resolved, the fence's `Deferred`).
   - Otherwise `hash` is set, and `peers` counts the peers it was relayed to. With no peer, the vote is kept and
     announced on the next connection (D24), and `peers` is 0. That is no error, unlike `relay_vote`'s
     `governance.no_peers`, so one offline moment does not hide the other results.
 - **Keys.** It tries the keychain voting key first, at indexes 0–19 (`VOTING_KEY_INDEXES`, as `voting_masternodes`
   uses), then the masternode's attached `voting` key. Each must hash to the list's voting key id. A keychain the
   vault cannot read, other than a lock, leaves the attached key to try (D20).
-- **Time.** Each vote is stamped with `now`. Core's per-masternode limits on vote time stay the store's to enforce.
+- **Time.** Each vote is stamped with `now` (tests pin the clock, so a repeated batch is the same vote). Core's per-masternode limits on vote time stay the store's to enforce.
 
 ## 6. Left to other rows
 
@@ -154,15 +157,24 @@ sighash signable by any digest signer at that path. So `MasternodeVoting` is not
   - **a `FundNew`-shaped draft charges only its fee**: an output of 1,000 DASH to the wallet itself, under a cap of
     exactly the fee, signs, and one duff less refuses;
   - a draft paying a foreign script charges the amount plus the fee;
-  - a draft paying a DashPay contact's address charges the amount plus the fee (D19);
-  - `vote` signs and stores one vote per masternode, and returns per-masternode refusals;
+  - a draft paying a DashPay contact's address, or sending its change there, charges what leaves the wallet (D19);
+  - a prepare that fails after its charge refunds the `Masternode` budget (review r1 F3);
+  - in a PSBT, an output to a contact's address gets no derivation record and an input from one is not signable
+    (D19, review r1 F2);
+  - `vote` signs and stores one vote per masternode, and returns per-masternode refusals, an attached key that is
+    not the list's included;
+  - the key choice: keychain, then attached, an unreadable keychain falling through (D20) or reporting
+    `signer_unavailable` (D23);
+  - a vote another wallet is handing off is `in_flight` (D13);
   - a lock between two votes ends the batch with the rest refused;
-  - the vote fence kind is admitted only under a live voting lease.
+  - the vote fence kind is admitted only under a live voting lease, and refused unleased (D5).
 - **dw-app:** the `governance_vote` command and the grant purposes in the contract test.
 
 Where they are: `dw-vault/tests/masternode_signers.rs` and the scope tests in `signer.rs`;
-`dw-engine/src/platform/lease/session_tests.rs` (`mg05_*`), `governance/voting.rs`
-(`the_vaults_vote_digest_is_the_governance_digest`) and `governance/voting_tests.rs`. A lock between two votes is
+`dw-engine/src/platform/lease/session_tests.rs` (`mg05_*`), `platform/lease/tests.rs`
+(`the_fence_refuses_an_unleased_vote`), `send/flow_tests.rs` (`psbt_a_contacts_address_is_not_the_wallets`),
+`governance/voting.rs` (`the_vaults_vote_digest_is_the_governance_digest`, the key choice) and
+`governance/voting_tests.rs`. A lock between two votes is
 tested at the hand-off: signing runs before the first hand-off, so a lock mid-batch reaches the rest there, as
 `cancelled`.
 
@@ -174,7 +186,7 @@ tested at the hand-off: signing runs before the first hand-off, so a lock mid-ba
 | D2 | `Governance` and `MasternodeOp` follow the `Spend` credential column. `QuickUnlock` issues `Governance` at value 0 and `MasternodeOp` at `max_duffs`. | Both sign; neither reveals a secret. A vote moves no funds, as a `SignMessage` signature doesn't. The UI still ends every signing flow with the passphrase field where the host requires it (UX-SPEC §4.25). |
 | D3 | A `Governance` grant is bound to the acting wallet, and its vote signer may use any attached `voting` key. | Attached keys are vault-wide (MG-01 D11): a tracked masternode belongs to no wallet. The keychain keys are the wallet's. |
 | D4 | The cap is `TxDraft`'s outflow (foreign outputs plus the fee), charged at `prepare` from the `masternode` budget. It bounds what any draft under the lease takes; it does not check that the draft is a ProTx (MG-04's builders are its callers). A `MasternodeOp{0}` grant leases, but nothing prepares under it. | That is the net debit plus fees the row asks for: a `FundNew` collateral pays the wallet and is not counted, and the fee is. It is the measure `Spend` and quick unlock already use. |
-| D5 | A vote is a row-less fence artifact (`ArtifactKind::Vote`) with no charge and no journal row, handed off when it enters the store. | I2 and I5 then cover votes: none enters the store after a lock returns. A journal row would protect nothing, because a lost vote is cast again with no harm. |
+| D5 | A vote is a row-less fence artifact (`ArtifactKind::Vote`) with no charge and no journal row, handed off when it enters the store. Its authority is a live voting lease; the fence refuses one handed off unleased. | I2 and I5 then cover votes: none enters the store after a lock returns. A journal row would protect nothing, because a lost vote is cast again with no harm. Refusing the unleased case makes the authority structural, as for a row-less asset lock (review r1 F5). |
 | D6 | `vote` returns `Vec<VoteCast>`, one per masternode with its own refusal; argument, sync and grant errors fail the whole call. mg-engine `Contract-Version` 4 → 5. | Core's `vote-many` reports per masternode. One rate-limited masternode must not hide nine relayed votes. `vote` was a stub that nothing bound, so no client breaks. |
 | D7 | A batch with no connected peer succeeds, with `peers: 0`. | The votes are kept and announced on the next connection (MG-02 D24). An error would hide which votes were taken. |
 | D8 | Flows `voting`, `masternode_registration` and `key_change` now. "Proposal", "Credit withdrawal", "Shared masternode" and "Dissolution" come with MG-06, MG-13 and MG-04b. | A flow with no caller would be dead surface; each row adds its flow with its grant. |
@@ -188,7 +200,8 @@ tested at the hand-off: signing runs before the first hand-off, so a lock mid-ba
 | D16 | A vote's fence admission needs the dispatch journal's backend, as every leased artifact's does; without it the vote is `cancelled`. A taken vote ends `Sent` and emits `DispatchResolved`, as other artifacts do. | One admission rule for every kind. The journal is open whenever a session is (E0-04 §6.4), so this refuses only in a broken session. |
 | D17 | MG-02's `stub` helper is removed with its last caller; `GovernanceError::NotImplemented` stays. | MG-06's calls arrive as stubs again and need the variant; a helper with no caller is dead code. |
 | D18 | dw-app's `MAX_LEASE_BUDGETS` is 6, the number of `BudgetPurpose` variants. | A lease view's budget list is bounded by the purposes; the DTO cap test pins it. |
-| D19 | `wallet_owns` leaves out contact-owned accounts (the library's `is_contact_owned`: a DashPay contact's external account). A payment to a contact's address, or change sent there, is foreign to every cap: `Spend`, `Masternode`, the PSBT cap, and the address book's "mine". | Review r1 H1: those addresses are derived from the contact's xpub and listed among the wallet's accounts, so a draft paying one counted as a self-payment, and a `MasternodeOp{fee}` grant could empty the wallet to a contact. DP3-01 D3 worked around it for contact payments only. Tested by `mg05_a_contacts_address_is_charged_as_foreign`. |
+| D19 | `wallet_owns` leaves out contact-owned accounts (the library's `is_contact_owned`: a DashPay contact's external account). A payment to a contact's address, or change sent there, is foreign to every cap: `Spend`, `Masternode`, the PSBT cap, and the address book's "mine". The PSBT derivation lookups use the same helper (`own_address_info`): an output to a contact gets no derivation record of this wallet, and an input from one is not counted signable. | Review r1 H1: those addresses are derived from the contact's xpub and listed among the wallet's accounts, so a draft paying one counted as a self-payment, and a `MasternodeOp{fee}` grant could empty the wallet to a contact. DP3-01 D3 worked around it for contact payments only. Tested by `mg05_a_contacts_address_is_charged_as_foreign` and `psbt_a_contacts_address_is_not_the_wallets`. A derivation record on a contact output named this wallet's fingerprint with the contact's key, which a co-signer could read as change (review r1 F2). |
 | D20 | Attached-key voting needs a wallet with a seed (a vote signer is the wallet's), and `voting_masternodes` lists keychain keys only; a host votes with an attached key by naming a tracked masternode (MG-03's list). A keychain the vault cannot read, other than locked, falls through to the attached key. | MG-00 asks that `MasternodeVoting` cover attached keys, which it does for any wallet with a seed. A watch-only wallet signs nothing (MG-00 D37). Listing attached-key masternodes in `voting_masternodes` is MG-09's UI call (review r1 L3). |
 | D21 | Attaching a key needs the full-scope data key and no grant (MG-01's open question to MG-05); using it to vote needs a `Governance` grant. | Storing a secret the user typed signs nothing and reveals nothing; every use is behind a grant (review r1 L8). |
 | D22 | Accepted, not changed: secp256k1 0.33 takes a secret's bytes by value, so one unerased copy passes through its constructor; `with_attached_key` erases the key on drop, panics included. | The crate has no by-reference constructor; `masternode_key_id` already shared the pattern (review r1 L9). |
+| D23 | When the keychain could not be read (a vault error other than a lock or a missing seed) and no attached key has the list's id, the vote is `signer_unavailable`, not `no_voting_key`. | The keychain may hold the key; `no_voting_key` would tell the user the wallet lacks it (review r1 F4). A wallet without a seed has no keychain keys, so its `no_voting_key` stands. |

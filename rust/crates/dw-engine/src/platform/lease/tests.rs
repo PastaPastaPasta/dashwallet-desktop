@@ -1469,6 +1469,36 @@ async fn the_fence_row_less_guards() {
     drop(r);
 }
 
+/// MG-05 D5 (review r1 F5): a vote's authority is its voting lease, so
+/// one handed off unleased is refused and its bytes stay unknown, where an
+/// unleased Core send is admitted.
+#[tokio::test(start_paused = true)]
+async fn the_fence_refuses_an_unleased_vote() {
+    let (t, _rec) = table();
+    with_journal(&t);
+    let unleased = |artifact, kind| {
+        let t = Arc::clone(&t);
+        DispatchScope::unleased(W, UnleasedKind::Rebroadcast, async move {
+            t.admit(AdmitRequest {
+                wallet: W,
+                artifact,
+                kind,
+                tracked_row: false,
+                scope: DispatchScope::current(),
+            })
+            .await
+        })
+    };
+    let v = unleased(art(1), ArtifactKind::Vote).await;
+    assert!(matches!(v, Verdict::Refused { .. }), "{v:?}");
+    assert_eq!(t.dispatch_status(W, art(1)), None);
+    let v = unleased(art(2), ArtifactKind::CoreTx { asset_lock: false }).await;
+    let Verdict::FirstUnleased(g) = v else {
+        panic!("expected FirstUnleased, got {v:?}");
+    };
+    drop(g);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_definite_rejection_tombstones_and_the_identical_retry_is_admitted() {
     let (t, rec) = table();

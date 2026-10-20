@@ -2887,7 +2887,13 @@ impl LeaseTable {
             Some(RowlessState::NotSent) => false,
             None => false,
         };
-        if !joins && req.kind == (ArtifactKind::CoreTx { asset_lock: true }) {
+        // Neither has an unleased authority: a row-less asset lock must be
+        // registered (§4.4), and a vote's is its voting lease (MG-05 D5).
+        let unleased = matches!(origin, Some(Origin::Unleased(_)));
+        if !joins
+            && (req.kind == (ArtifactKind::CoreTx { asset_lock: true })
+                || (req.kind == ArtifactKind::Vote && unleased))
+        {
             return Step::Done(Verdict::Refused {
                 cleanup: false,
                 step_possibly_dispatched: false,

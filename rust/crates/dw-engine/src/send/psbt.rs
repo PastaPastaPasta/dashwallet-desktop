@@ -184,10 +184,7 @@ fn ownership(
 ) -> Ownership {
     let path_of = |script: &dashcore::ScriptBuf| -> Option<DerivationPath> {
         let address = Address::from_script(script, network).ok()?;
-        info.all_managed_accounts()
-            .into_iter()
-            .find_map(|account| account.get_address_info(&address))
-            .map(|i| i.path)
+        crate::coins::own_address_info(info, &address).map(|i| i.path)
     };
     let mut paths = BTreeMap::new();
     for i in 0..psbt.inputs.len() {
@@ -213,16 +210,13 @@ fn ownership(
 }
 
 /// The key data of `address` for a PSBT derivation record.
-fn derivation_of(
+pub(super) fn derivation_of(
     info: &ManagedWalletInfo,
     address: &Address,
     fingerprint: Option<Fingerprint>,
 ) -> Option<(dashcore::secp256k1::PublicKey, Fingerprint, DerivationPath)> {
     let fp = fingerprint?;
-    let a = info
-        .all_managed_accounts()
-        .into_iter()
-        .find_map(|account| account.get_address_info(address))?;
+    let a = crate::coins::own_address_info(info, address)?;
     let pk = match a.public_key? {
         PublicKeyType::ECDSA(bytes) => dashcore::secp256k1::PublicKey::from_slice(&bytes).ok()?,
         _ => return None,
